@@ -23,3 +23,14 @@ is a decision — a decision is a file in `docs/decisions/`.
 - etcd-druid's scale at ~1000 `Etcd` objects with its default
   `concurrentSyncs: 3` is not documented; measure in phase 4 or ask the
   maintainers.
+
+## From the skeleton (2026-10-24)
+
+- kube-api-linter on `api/`, as `releases-and-support` lists; it is not in
+  `.golangci.yml` yet.
+- Before the repository goes public: an address for conduct reports
+  (`CODE_OF_CONDUCT.md` names only the maintainers), private vulnerability
+  reporting switched on (`SECURITY.md` points at it), and `GOVERNANCE.md` and
+  `ADOPTERS.md` from the CNCF template.
+- The workflow's actions are pinned by commit with nothing to bump them;
+  Dependabot or Renovate for `github-actions` and `gomod`.

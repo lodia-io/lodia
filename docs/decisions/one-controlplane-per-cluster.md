@@ -1,6 +1,7 @@
 # One ControlPlane object describes one tenant cluster; four small objects describe storage classes, shared stores, access and snapshots
 
-Proposed 2026-10-23; not decided yet. Not built.
+Proposed 2026-10-23; not decided yet. The five kinds are built as types and
+CRDs; no controller acts on them yet.
 
 ## Decision
 
@@ -70,4 +71,6 @@ examples are in [`docs/api/examples/`](../api/examples/).
 
 ## Code
 
-none yet.
+- `api/v1alpha1/controlplane_types.go`, `datastore_types.go` and
+  `access_types.go` — the five kinds; `config/crd/bases/` is generated from
+  them.

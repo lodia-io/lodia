@@ -24,8 +24,8 @@ Scope:
 
 - Repository: Go module, `make verify` (golangci-lint, unit tests, envtest),
   GitHub Actions, DCO check, the community files.
-- The CRD types for `ControlPlane`, `DatastoreClass`, `KubeconfigRequest`
-  and `Backup` with every CEL rule from
+- The CRD types for `ControlPlane`, `DatastoreClass`, `Datastore`,
+  `KubeconfigRequest` and `Backup` with every CEL rule from
   [`api/controlplane.md`](api/controlplane.md), and an envtest table of
   accepted and rejected manifests.
 - The e2e harness: a kind cluster named `kind-brygga-e2e-*`, and the refusal

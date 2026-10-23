@@ -59,8 +59,9 @@ Proposed 2026-10-23; not decided yet. Not built.
   for the API types ([kube-api-linter](https://github.com/kubernetes-sigs/kube-api-linter)).
 - The community files of the CNCF project template (CONTRIBUTING,
   CODE_OF_CONDUCT, SECURITY, MAINTAINERS, GOVERNANCE, ADOPTERS), DCO sign-off
-  checked in CI, OpenSSF Scorecard published from CI
-  ([project template](https://github.com/cncf/project-template),
+  checked on every pull request by the DCO app, OpenSSF Scorecard published
+  from CI ([project template](https://github.com/cncf/project-template),
+  [DCO app](https://github.com/dcoapp/app),
   [Scorecard](https://github.com/ossf/scorecard)).
 
 ## Why

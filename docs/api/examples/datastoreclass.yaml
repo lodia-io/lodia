@@ -32,6 +32,6 @@ spec:
     deltaSnapshotPeriod: 5m
     retention:
       days: 30
-      afterDelete: 30d                    # how long snapshots outlive their ControlPlane
+      afterDelete: 720h                   # how long snapshots outlive their ControlPlane
   placement:
     nodeSelector: {node-role.example.com/control-planes: "true"}

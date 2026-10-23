@@ -11,8 +11,9 @@ workloads alive when the path to its nodes breaks.
 *Brygga* is Swedish for a ship's bridge, the place a vessel is steered from,
 and for brewing a pot of coffee.
 
-**Status: design.** Nothing is built yet; the documents below are the plan
-and the reasons behind it.
+**Status: phase 0 of the [roadmap](docs/roadmap.md).** The API types, their
+CRDs and the test harness are built; no controller yet. The documents below
+are the plan and the reasons behind it.
 
 - [`docs/README.md`](docs/README.md) — what Brygga is: the objects, the
   controllers, the shape of a tenant namespace, networking, lifecycle,

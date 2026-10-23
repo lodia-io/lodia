@@ -1,0 +1,253 @@
+// Copyright 2026 The Brygga Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+package v1alpha1
+
+import (
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+// DatastoreClass is how a dedicated etcd is built. The class annotated
+// brygga.segla.io/is-default-class: "true" serves ControlPlanes that name none.
+// +kubebuilder:object:root=true
+// +kubebuilder:resource:scope=Cluster,shortName=dsc
+// +kubebuilder:printcolumn:name="Storage",type=string,JSONPath=".spec.storage.className"
+// +kubebuilder:printcolumn:name="Backups",type=string,JSONPath=".spec.backup.store.provider"
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
+type DatastoreClass struct {
+	metav1.TypeMeta `json:",inline"`
+
+	// +optional
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	// +required
+	Spec DatastoreClassSpec `json:"spec"`
+}
+
+// DatastoreClassList is a list of DatastoreClasses.
+// +kubebuilder:object:root=true
+type DatastoreClassList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []DatastoreClass `json:"items"`
+}
+
+// DatastoreClassSpec describes a dedicated etcd. Members follow the
+// ControlPlane: one, or three with high availability.
+type DatastoreClassSpec struct {
+	// Etcd configures the members.
+	// +optional
+	Etcd *EtcdSettings `json:"etcd,omitempty"`
+
+	// Storage is the members' volumes.
+	// +required
+	Storage EtcdStorage `json:"storage"`
+
+	// Backup is where and how often snapshots go; without it, no backups.
+	// +optional
+	Backup *EtcdBackup `json:"backup,omitempty"`
+
+	// Placement says where members run.
+	// +optional
+	Placement *Placement `json:"placement,omitempty"`
+}
+
+// EtcdSettings configure etcd members.
+type EtcdSettings struct {
+	// QuotaBackendBytes is the database size limit.
+	// +optional
+	// +kubebuilder:default="4Gi"
+	QuotaBackendBytes *resource.Quantity `json:"quotaBackendBytes,omitempty"`
+
+	// AutoCompaction is etcd's own compaction.
+	// +optional
+	AutoCompaction *AutoCompaction `json:"autoCompaction,omitempty"`
+
+	// Defragmentation runs followers first, the leader last.
+	// +optional
+	Defragmentation *Defragmentation `json:"defragmentation,omitempty"`
+
+	// Resources of each member.
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+}
+
+// AutoCompaction is etcd's compaction mode and retention.
+type AutoCompaction struct {
+	// Mode is periodic or revision.
+	// +optional
+	// +kubebuilder:default=periodic
+	// +kubebuilder:validation:Enum=periodic;revision
+	Mode string `json:"mode,omitempty"`
+
+	// Retention is a duration in periodic mode, a revision count in revision mode.
+	// +optional
+	// +kubebuilder:default="15m"
+	// +kubebuilder:validation:MaxLength=32
+	Retention string `json:"retention,omitempty"`
+}
+
+// Defragmentation is a cron schedule.
+type Defragmentation struct {
+	// Schedule is a cron expression.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=64
+	Schedule string `json:"schedule"`
+}
+
+// EtcdStorage is the members' persistent volumes.
+type EtcdStorage struct {
+	// ClassName is the StorageClass; empty means the cluster's default.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	ClassName string `json:"className,omitempty"`
+
+	// Size of each member's volume.
+	// +required
+	Size resource.Quantity `json:"size"`
+
+	// ReclaimPolicy is what happens to the volumes of a deleted ControlPlane.
+	// +optional
+	// +kubebuilder:default=Retain
+	// +kubebuilder:validation:Enum=Delete;Retain
+	ReclaimPolicy string `json:"reclaimPolicy,omitempty"`
+}
+
+// EtcdBackup is continuous snapshots to object storage.
+type EtcdBackup struct {
+	// Store is the bucket.
+	// +required
+	Store BackupStore `json:"store"`
+
+	// FullSnapshotSchedule is a cron expression; the hour moves into the
+	// tenant's maintenance window.
+	// +optional
+	// +kubebuilder:default="0 0 * * *"
+	// +kubebuilder:validation:MaxLength=64
+	FullSnapshotSchedule string `json:"fullSnapshotSchedule,omitempty"`
+
+	// DeltaSnapshotPeriod is how often a delta snapshot is taken.
+	// +optional
+	// +kubebuilder:default="5m"
+	DeltaSnapshotPeriod *metav1.Duration `json:"deltaSnapshotPeriod,omitempty"`
+
+	// Retention is how long snapshots are kept.
+	// +optional
+	Retention *BackupRetention `json:"retention,omitempty"`
+}
+
+// BackupStore is an object storage bucket.
+type BackupStore struct {
+	// Provider is S3, GCS, ABS or Swift.
+	// +required
+	// +kubebuilder:validation:Enum=S3;GCS;ABS;Swift
+	Provider string `json:"provider"`
+
+	// Bucket name.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Bucket string `json:"bucket"`
+
+	// Prefix inside the bucket.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	Prefix string `json:"prefix,omitempty"`
+
+	// Region of the bucket.
+	// +optional
+	// +kubebuilder:validation:MaxLength=64
+	Region string `json:"region,omitempty"`
+
+	// Endpoint for S3-compatible stores.
+	// +optional
+	// +kubebuilder:validation:MaxLength=512
+	// +kubebuilder:validation:XValidation:rule="self.startsWith('https://') || self.startsWith('http://')",message="must be a URL"
+	Endpoint string `json:"endpoint,omitempty"`
+
+	// SecretRef names the credentials.
+	// +required
+	SecretRef SecretReference `json:"secretRef"`
+}
+
+// BackupRetention is how long snapshots live.
+type BackupRetention struct {
+	// Days of snapshots kept for a running ControlPlane.
+	// +optional
+	// +kubebuilder:default=30
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=3650
+	Days int32 `json:"days,omitempty"`
+
+	// AfterDelete is how long snapshots outlive their ControlPlane.
+	// +optional
+	AfterDelete *metav1.Duration `json:"afterDelete,omitempty"`
+}
+
+// Datastore is an etcd several tenants share by key prefix. There is no quota
+// per tenant in a shared store, and one tenant's load is its neighbours'.
+// +kubebuilder:object:root=true
+// +kubebuilder:resource:scope=Cluster,shortName=ds
+// +kubebuilder:printcolumn:name="Driver",type=string,JSONPath=".spec.driver"
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
+type Datastore struct {
+	metav1.TypeMeta `json:",inline"`
+
+	// +optional
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	// +required
+	Spec DatastoreSpec `json:"spec"`
+}
+
+// DatastoreList is a list of Datastores.
+// +kubebuilder:object:root=true
+type DatastoreList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []Datastore `json:"items"`
+}
+
+// DatastoreSpec is how to reach the shared store and administer it.
+type DatastoreSpec struct {
+	// Driver is etcd; the field leaves room for other stores later.
+	// +optional
+	// +kubebuilder:default=etcd
+	// +kubebuilder:validation:Enum=etcd
+	Driver string `json:"driver,omitempty"`
+
+	// Endpoints of the members.
+	// +required
+	// +listType=set
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=9
+	// +kubebuilder:validation:items:MaxLength=512
+	// +kubebuilder:validation:items:XValidation:rule="self.startsWith('https://')",message="must be an https URL"
+	Endpoints []string `json:"endpoints"`
+
+	// TLS is the store's CA and the root client Brygga creates tenants with.
+	// +required
+	TLS DatastoreTLS `json:"tls"`
+
+	// Prefix under which every tenant gets its own prefix.
+	// +optional
+	// +kubebuilder:default="/brygga"
+	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:Pattern=`^/[a-z0-9/-]*$`
+	Prefix string `json:"prefix,omitempty"`
+}
+
+// DatastoreTLS names the Secrets for a shared store.
+type DatastoreTLS struct {
+	// CASecretRef holds ca.crt.
+	// +required
+	CASecretRef SecretReference `json:"caSecretRef"`
+
+	// RootClientSecretRef holds tls.crt and tls.key of a client allowed to
+	// manage users and roles.
+	// +required
+	RootClientSecretRef SecretReference `json:"rootClientSecretRef"`
+}

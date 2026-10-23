@@ -1,0 +1,3 @@
+// Copyright 2026 The Brygga Authors.
+// SPDX-License-Identifier: Apache-2.0
+
