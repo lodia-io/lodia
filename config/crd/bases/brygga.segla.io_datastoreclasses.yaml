@@ -1,0 +1,335 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
+  name: datastoreclasses.brygga.segla.io
+spec:
+  group: brygga.segla.io
+  names:
+    kind: DatastoreClass
+    listKind: DatastoreClassList
+    plural: datastoreclasses
+    shortNames:
+    - dsc
+    singular: datastoreclass
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.storage.className
+      name: Storage
+      type: string
+    - jsonPath: .spec.backup.store.provider
+      name: Backups
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          DatastoreClass is how a dedicated etcd is built. The class annotated
+          brygga.segla.io/is-default-class: "true" serves ControlPlanes that name none.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              DatastoreClassSpec describes a dedicated etcd. Members follow the
+              ControlPlane: one, or three with high availability.
+            properties:
+              backup:
+                description: Backup is where and how often snapshots go; without it,
+                  no backups.
+                properties:
+                  deltaSnapshotPeriod:
+                    default: 5m
+                    description: DeltaSnapshotPeriod is how often a delta snapshot
+                      is taken.
+                    type: string
+                  fullSnapshotSchedule:
+                    default: 0 0 * * *
+                    description: |-
+                      FullSnapshotSchedule is a cron expression; the hour moves into the
+                      tenant's maintenance window.
+                    maxLength: 64
+                    type: string
+                  retention:
+                    description: Retention is how long snapshots are kept.
+                    properties:
+                      afterDelete:
+                        description: AfterDelete is how long snapshots outlive their
+                          ControlPlane.
+                        type: string
+                      days:
+                        default: 30
+                        description: Days of snapshots kept for a running ControlPlane.
+                        format: int32
+                        maximum: 3650
+                        minimum: 1
+                        type: integer
+                    type: object
+                  store:
+                    description: Store is the bucket.
+                    properties:
+                      bucket:
+                        description: Bucket name.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      endpoint:
+                        description: Endpoint for S3-compatible stores.
+                        maxLength: 512
+                        type: string
+                        x-kubernetes-validations:
+                        - message: must be a URL
+                          rule: self.startsWith('https://') || self.startsWith('http://')
+                      prefix:
+                        description: Prefix inside the bucket.
+                        maxLength: 253
+                        type: string
+                      provider:
+                        description: Provider is S3, GCS, ABS or Swift.
+                        enum:
+                        - S3
+                        - GCS
+                        - ABS
+                        - Swift
+                        type: string
+                      region:
+                        description: Region of the bucket.
+                        maxLength: 64
+                        type: string
+                      secretRef:
+                        description: SecretRef names the credentials.
+                        properties:
+                          name:
+                            description: Name of the Secret.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                          namespace:
+                            description: Namespace of the Secret.
+                            maxLength: 63
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        - namespace
+                        type: object
+                    required:
+                    - bucket
+                    - provider
+                    - secretRef
+                    type: object
+                required:
+                - store
+                type: object
+              etcd:
+                description: Etcd configures the members.
+                properties:
+                  autoCompaction:
+                    description: AutoCompaction is etcd's own compaction.
+                    properties:
+                      mode:
+                        default: periodic
+                        description: Mode is periodic or revision.
+                        enum:
+                        - periodic
+                        - revision
+                        type: string
+                      retention:
+                        default: 15m
+                        description: Retention is a duration in periodic mode, a revision
+                          count in revision mode.
+                        maxLength: 32
+                        type: string
+                    type: object
+                  defragmentation:
+                    description: Defragmentation runs followers first, the leader
+                      last.
+                    properties:
+                      schedule:
+                        description: Schedule is a cron expression.
+                        maxLength: 64
+                        minLength: 1
+                        type: string
+                    required:
+                    - schedule
+                    type: object
+                  quotaBackendBytes:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    default: 4Gi
+                    description: QuotaBackendBytes is the database size limit.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  resources:
+                    description: Resources of each member.
+                    properties:
+                      claims:
+                        description: |-
+                          Claims lists the names of resources, defined in spec.resourceClaims,
+                          that are used by this container.
+
+                          This field depends on the
+                          DynamicResourceAllocation feature gate.
+
+                          This field is immutable. It can only be set for containers.
+                        items:
+                          description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                          properties:
+                            name:
+                              description: |-
+                                Name must match the name of one entry in pod.spec.resourceClaims of
+                                the Pod where this field is used. It makes that resource available
+                                inside a container.
+                              type: string
+                            request:
+                              description: |-
+                                Request is the name chosen for a request in the referenced claim.
+                                If empty, everything from the claim is made available, otherwise
+                                only the result of this request.
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                      limits:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Limits describes the maximum amount of compute resources allowed.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                      requests:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Requests describes the minimum amount of compute resources required.
+                          If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                          otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                    type: object
+                type: object
+              placement:
+                description: Placement says where members run.
+                properties:
+                  nodeSelector:
+                    additionalProperties:
+                      type: string
+                    description: NodeSelector for every control plane pod.
+                    maxProperties: 16
+                    type: object
+                  priorityClassName:
+                    description: PriorityClassName for every control plane pod.
+                    maxLength: 253
+                    type: string
+                  tolerations:
+                    description: Tolerations for every control plane pod.
+                    items:
+                      description: |-
+                        The pod this Toleration is attached to tolerates any taint that matches
+                        the triple <key,value,effect> using the matching operator <operator>.
+                      properties:
+                        effect:
+                          description: |-
+                            Effect indicates the taint effect to match. Empty means match all taint effects.
+                            When specified, allowed values are NoSchedule, PreferNoSchedule and NoExecute.
+                          type: string
+                        key:
+                          description: |-
+                            Key is the taint key that the toleration applies to. Empty means match all taint keys.
+                            If the key is empty, operator must be Exists; this combination means to match all values and all keys.
+                          type: string
+                        operator:
+                          description: |-
+                            Operator represents a key's relationship to the value.
+                            Valid operators are Exists, Equal, Lt, and Gt. Defaults to Equal.
+                            Exists is equivalent to wildcard for value, so that a pod can
+                            tolerate all taints of a particular category.
+                            Lt and Gt perform numeric comparisons (requires feature gate TaintTolerationComparisonOperators).
+                          type: string
+                        tolerationSeconds:
+                          description: |-
+                            TolerationSeconds represents the period of time the toleration (which must be
+                            of effect NoExecute, otherwise this field is ignored) tolerates the taint. By default,
+                            it is not set, which means tolerate the taint forever (do not evict). Zero and
+                            negative values will be treated as 0 (evict immediately) by the system.
+                          format: int64
+                          type: integer
+                        value:
+                          description: |-
+                            Value is the taint value the toleration matches to.
+                            If the operator is Exists, the value should be empty, otherwise just a regular string.
+                          type: string
+                      type: object
+                    maxItems: 16
+                    type: array
+                    x-kubernetes-list-type: atomic
+                type: object
+              storage:
+                description: Storage is the members' volumes.
+                properties:
+                  className:
+                    description: ClassName is the StorageClass; empty means the cluster's
+                      default.
+                    maxLength: 253
+                    type: string
+                  reclaimPolicy:
+                    default: Retain
+                    description: ReclaimPolicy is what happens to the volumes of a
+                      deleted ControlPlane.
+                    enum:
+                    - Delete
+                    - Retain
+                    type: string
+                  size:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: Size of each member's volume.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                required:
+                - size
+                type: object
+            required:
+            - storage
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources: {}

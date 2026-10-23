@@ -1,0 +1,83 @@
+# Every Segla Go repository carries this file as .golangci.yml, unchanged: the
+# lint job fails on any difference. An exception goes at its site as
+# //nolint:<linter> // <why>, never as a rule switched off for one repository.
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - durationcheck
+    - errchkjson
+    - errorlint
+    - exhaustive
+    - fatcontext
+    - forbidigo
+    - gocritic
+    - gosec
+    - misspell
+    - modernize
+    - nilerr
+    - nilnesserr
+    - noctx
+    - nolintlint
+    - perfsprint
+    - protogetter
+    - revive
+    - rowserrcheck
+    - sloglint
+    - spancheck
+    - sqlclosecheck
+    - testifylint
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - wastedassign
+  settings:
+    exhaustive:
+      default-signifies-exhaustive: true
+      ignore-enum-types: ^(google\.golang\.org/grpc/codes\.Code|github\.com/stripe/stripe-go/v\d+\.EventType)$
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: ^uuid\.New$
+          pkg: ^github\.com/google/uuid$
+          msg: ids are UUID v7, use uuid.NewV7()
+    gocritic:
+      enabled-tags: [diagnostic, performance]
+      disabled-checks: [hugeParam, rangeValCopy]
+    gosec:
+      excludes: [G101, G104, G115, G117, G304, G404]
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    revive:
+      rules:
+        - name: context-as-argument
+        - name: error-return
+        - name: error-strings
+        - name: errorf
+        - name: indent-error-flow
+        - name: receiver-naming
+        - name: redefines-builtin-id
+        - name: superfluous-else
+        - name: unreachable-code
+    sloglint:
+      context: scope
+  exclusions:
+    generated: lax
+    rules:
+      - path: _test\.go
+        linters: [bodyclose, errchkjson, fatcontext, forbidigo, gosec, noctx, perfsprint]
+
+formatters:
+  enable:
+    - gci
+    - gofmt
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(go.segla.dev)
+        - localmodule

@@ -1,14 +1,15 @@
 # End-to-end tests run only against a cluster named on the command line, and never the current kube context
 
-Proposed 2026-10-23; not decided yet. Not built.
+Proposed 2026-10-23; not decided yet. The refusal and `make e2e` are built;
+kubeadm workers, upgrade tests and conformance come with phase 1.
 
 ## Decision
 
-- `make e2e` requires `E2E_KUBECONFIG=<path>` (or creates its own kind
-  cluster named `brygga-e2e-<run id>` and deletes it afterwards). The suite
-  refuses to start when the variable is unset, when the kubeconfig has more
-  than one context, or when the context name does not start with
-  `kind-brygga-e2e`.
+- `make e2e` runs against `E2E_KUBECONFIG=<path>`, or creates its own kind
+  cluster (`brygga-e2e-local`, or the name in `E2E_CLUSTER`) and deletes it
+  afterwards. The suite refuses to start when the variable is unset, when the
+  kubeconfig has more than one context, or when the context name does not
+  start with `kind-brygga-e2e`.
 - Unit tests use fakes; controller tests use envtest (a real API server and
   etcd, no kubelet, so no garbage collection) for every controller and every
   CEL rule; e2e uses kind with real `kubeadm join` workers, written with
@@ -56,4 +57,7 @@ Proposed 2026-10-23; not decided yet. Not built.
 
 ## Code
 
-none yet.
+- `test/e2e/guard.go` — `RequireNamedCluster`, the refusal;
+  `TestRequireNamedCluster` in `guard_test.go` holds it.
+- `test/e2e/suite_test.go` — the suite, behind the `e2e` build tag.
+- `Makefile` — the `e2e` target.

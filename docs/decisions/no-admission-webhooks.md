@@ -1,6 +1,7 @@
 # Brygga runs no admission webhooks: validation and defaults live in the CRD schema
 
-Proposed 2026-10-23; not decided yet. Not built.
+Proposed 2026-10-23; not decided yet. The schema rules and defaults are
+built; the conditions and the tenant write lock come with their controllers.
 
 ## Decision
 
@@ -53,4 +54,8 @@ Proposed 2026-10-23; not decided yet. Not built.
 
 ## Code
 
-none yet.
+- `api/v1alpha1/*_types.go` — every rule and default as a
+  `+kubebuilder:validation` or `+kubebuilder:default` marker;
+  `config/crd/bases/` is generated from them.
+- `api/v1alpha1/validation_test.go` — the envtest table of accepted and
+  rejected manifests.

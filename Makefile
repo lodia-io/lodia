@@ -1,0 +1,37 @@
+# Every tool runs through `go tool` (see the tool block in go.mod), except
+# golangci-lint, which is installed on its own.
+
+ENVTEST_K8S_VERSION ?= 1.35.0
+E2E_CLUSTER ?= brygga-e2e-local
+E2E_DIR ?= $(CURDIR)/work/e2e
+GENERATED = api/v1alpha1/zz_generated.deepcopy.go config/crd/bases/*.yaml
+
+.PHONY: generate
+generate: ## regenerate deepcopy functions and CRDs from api/
+	go tool controller-gen object:headerFile=hack/boilerplate.go.txt paths=./api/...
+	go tool controller-gen crd paths=./api/... output:crd:artifacts:config=config/crd/bases
+
+.PHONY: lint
+lint:
+	golangci-lint run ./...
+
+.PHONY: test
+test: ## unit and envtest tests; envtest runs a real API server and etcd
+	KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test ./...
+
+.PHONY: verify
+verify: ## the check that says a change is done
+	@before="$$(cat $(GENERATED) | cksum)"; $(MAKE) --no-print-directory generate; \
+	[ "$$before" = "$$(cat $(GENERATED) | cksum)" ] || { echo "make generate changed the generated files: review and commit them"; exit 1; }
+	$(MAKE) --no-print-directory lint test
+
+.PHONY: e2e
+e2e: ## the e2e suite against E2E_KUBECONFIG, else against a kind cluster of its own that it deletes afterwards
+ifdef E2E_KUBECONFIG
+	E2E_KUBECONFIG=$(abspath $(E2E_KUBECONFIG)) go test -tags e2e -count=1 ./test/e2e/...
+else
+	mkdir -p $(E2E_DIR)
+	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig
+	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -tags e2e -count=1 ./test/e2e/...; status=$$?; \
+	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
+endif

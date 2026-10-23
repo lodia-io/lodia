@@ -33,9 +33,14 @@ the same change.
 
 ## Commands
 
-No code yet. When it lands, `make verify` is the one check whose exit code
-says a change is done (lint, unit, envtest); `make e2e` needs an explicitly
-named kind cluster (`docs/decisions/e2e-on-a-named-cluster.md`).
+- `make generate` — deepcopy functions and CRDs from `api/`; commit the
+  result.
+- `make verify` — the one check whose exit code says a change is done:
+  generated files current, golangci-lint (installed on its own), unit and
+  envtest tests. CI runs it on every pull request.
+- `make e2e` — the suite in `test/e2e` against `E2E_KUBECONFIG`, or against a
+  kind cluster of its own that it deletes afterwards; it refuses any other
+  cluster (`docs/decisions/e2e-on-a-named-cluster.md`).
 
 ## Rules
 
