@@ -1,0 +1,52 @@
+# The tenant's controller manager: its own Deployment, reaching the API server
+# through the Service by name. It holds the cluster CA key to sign kubelet
+# certificates, as kubeadm does; Brygga gives it only an intermediate.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${CP}-controller-manager
+  namespace: ${CP}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: ${CP}-controller-manager}
+  template:
+    metadata:
+      labels: {app: ${CP}-controller-manager}
+    spec:
+      containers:
+        - name: kube-controller-manager
+          image: registry.k8s.io/kube-controller-manager:${K8S_VERSION}
+          command:
+            - kube-controller-manager
+            - --kubeconfig=/kubeconfigs/controller-manager.conf
+            - --authentication-kubeconfig=/kubeconfigs/controller-manager.conf
+            - --authorization-kubeconfig=/kubeconfigs/controller-manager.conf
+            - --bind-address=0.0.0.0
+            - --client-ca-file=/pki/ca.crt
+            - --requestheader-client-ca-file=/pki/front-proxy-ca.crt
+            - --cluster-name=${CP}
+            - --cluster-signing-cert-file=/pki/ca.crt
+            - --cluster-signing-key-file=/pki/ca.key
+            - --controllers=*,bootstrapsigner,tokencleaner
+            - --leader-elect=true
+            - --root-ca-file=/pki/ca.crt
+            - --use-service-account-credentials=true
+            - --allocate-node-cidrs=true
+            - --cluster-cidr=${POD_CIDR}
+            - --service-cluster-ip-range=${SERVICE_CIDR}
+            - --node-cidr-mask-size=24
+          livenessProbe:
+            httpGet: {scheme: HTTPS, path: /healthz, port: 10257}
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+          volumeMounts:
+            - {name: pki, mountPath: /pki, readOnly: true}
+            - {name: kubeconfigs, mountPath: /kubeconfigs, readOnly: true}
+      volumes:
+        - name: pki
+          secret: {secretName: ${CP}-pki}
+        - name: kubeconfigs
+          secret: {secretName: ${CP}-kubeconfigs}

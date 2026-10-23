@@ -25,6 +25,8 @@ and the reasons behind it.
   control plane solutions that came before, and where the bar is.
 - [`docs/roadmap.md`](docs/roadmap.md) — the phases, and how each one is
   verified before the next starts.
+- [`docs/hard-way.md`](docs/hard-way.md) — a hosted control plane built by
+  hand in kind, step by step: what Brygga will automate.
 - [`docs/operations.md`](docs/operations.md) — installing, upgrading and
   running Brygga; the runbooks.
 - [`CLAUDE.md`](CLAUDE.md) — how to work on the repository.

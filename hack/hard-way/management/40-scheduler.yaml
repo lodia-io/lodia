@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${CP}-scheduler
+  namespace: ${CP}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: ${CP}-scheduler}
+  template:
+    metadata:
+      labels: {app: ${CP}-scheduler}
+    spec:
+      containers:
+        - name: kube-scheduler
+          image: registry.k8s.io/kube-scheduler:${K8S_VERSION}
+          command:
+            - kube-scheduler
+            - --kubeconfig=/kubeconfigs/scheduler.conf
+            - --authentication-kubeconfig=/kubeconfigs/scheduler.conf
+            - --authorization-kubeconfig=/kubeconfigs/scheduler.conf
+            - --bind-address=0.0.0.0
+            - --leader-elect=true
+          livenessProbe:
+            httpGet: {scheme: HTTPS, path: /livez, port: 10259}
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 20m, memory: 32Mi}
+          volumeMounts:
+            - {name: kubeconfigs, mountPath: /kubeconfigs, readOnly: true}
+      volumes:
+        - name: kubeconfigs
+          secret: {secretName: ${CP}-kubeconfigs}

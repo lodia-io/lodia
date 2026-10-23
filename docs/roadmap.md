@@ -30,12 +30,12 @@ Scope:
   accepted and rejected manifests.
 - The e2e harness: a kind cluster named `kind-brygga-e2e-*`, and the refusal
   to run elsewhere ([decision](decisions/e2e-on-a-named-cluster.md)).
-- **The hard way, once:** one tenant control plane assembled by hand in kind
-  (certificates with `openssl` or `cfssl`, etcd, kube-apiserver with
-  konnectivity-server, controller manager, scheduler, then `kubeadm join` of
-  a container running the kind node image). The notes become
-  `docs/hard-way.md` and, later, the first templates. This is also where the
-  team learns every flag it will automate.
+- **The hard way, once:** one tenant control plane assembled by hand in kind,
+  following [`hard-way.md`](hard-way.md): certificates with `openssl`, etcd,
+  kube-apiserver with konnectivity-server, controller manager, scheduler,
+  then `kubeadm join` of a container running the kind node image. Its
+  *What we learned* table feeds the decisions, its files become the first
+  templates, and it is where the team learns every flag it will automate.
 - The etcd spike: etcd-druid installed from its Helm chart on a plain kind
   cluster with `enableEtcdSpecAutoReconcile`, an `Etcd` of one member with
   our own CA, snapshots to MinIO. Then: scale to three, lose one member's

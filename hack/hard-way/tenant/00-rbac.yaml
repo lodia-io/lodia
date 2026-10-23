@@ -1,0 +1,20 @@
+# Applied once with super-admin.conf (system:masters). After this, admin.conf
+# (group kubeadm:cluster-admins) is enough, and deleting the first binding
+# revokes every admin certificate at once.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubeadm:cluster-admins
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: cluster-admin}
+subjects:
+  - {apiGroup: rbac.authorization.k8s.io, kind: Group, name: "kubeadm:cluster-admins"}
+---
+# konnectivity-server checks every agent's ServiceAccount token with a
+# TokenReview; system:auth-delegator allows exactly that.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: system:konnectivity-server
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: "system:auth-delegator"}
+subjects:
+  - {apiGroup: rbac.authorization.k8s.io, kind: User, name: "system:konnectivity-server"}

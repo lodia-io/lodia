@@ -17,3 +17,6 @@ go.work.sum
 .env
 *.kubeconfig
 .claude/settings.local.json
+
+# hard way: generated keys, certificates and kubeconfigs
+/work/

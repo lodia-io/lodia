@@ -1,0 +1,56 @@
+# One agent per node. It dials the konnectivity server (outbound only) and keeps
+# the tunnel open; the API server sends kubelet, webhook and pod traffic back
+# through it. With destHost, traffic for a node goes through that node's agent.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: konnectivity-agent
+  namespace: kube-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: konnectivity-agent
+  namespace: kube-system
+  labels: {k8s-app: konnectivity-agent}
+spec:
+  selector:
+    matchLabels: {k8s-app: konnectivity-agent}
+  template:
+    metadata:
+      labels: {k8s-app: konnectivity-agent}
+    spec:
+      priorityClassName: system-cluster-critical
+      serviceAccountName: konnectivity-agent
+      tolerations:
+        - {key: CriticalAddonsOnly, operator: Exists}
+      containers:
+        - name: konnectivity-agent
+          image: registry.k8s.io/kas-network-proxy/proxy-agent:${KONNECTIVITY_VERSION}
+          command:
+            - /proxy-agent
+            - --logtostderr=true
+            - --ca-cert=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+            - --proxy-server-host=${MGMT_IP}
+            - --proxy-server-port=${KONNECTIVITY_PORT}
+            - --admin-server-port=8133
+            - --health-server-port=8134
+            - --service-account-token-path=/var/run/secrets/tokens/konnectivity-agent-token
+            - --agent-identifiers=ipv4=$(HOST_IP)
+          env:
+            - name: HOST_IP
+              valueFrom: {fieldRef: {fieldPath: status.hostIP}}
+          livenessProbe:
+            httpGet: {path: /healthz, port: 8134}
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          volumeMounts:
+            - {name: konnectivity-agent-token, mountPath: /var/run/secrets/tokens}
+      volumes:
+        - name: konnectivity-agent-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: konnectivity-agent-token
+                  audience: system:konnectivity-server
+                  expirationSeconds: 3600

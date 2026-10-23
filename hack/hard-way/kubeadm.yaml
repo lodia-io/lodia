@@ -1,0 +1,44 @@
+# Input for the kubeadm phases that write the tenant's bootstrap objects. kubeadm
+# never runs a control plane here: it only talks to the API server we built.
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+nodeRegistration:
+  name: hard-way
+  criSocket: unix:///run/containerd/containerd.sock
+bootstrapTokens:
+  - token: "${BOOTSTRAP_TOKEN}"
+    ttl: 24h0m0s
+    usages: [signing, authentication]
+    groups: ["system:bootstrappers:kubeadm:default-node-token"]
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+clusterName: ${CP}
+kubernetesVersion: ${K8S_VERSION}
+controlPlaneEndpoint: "${MGMT_IP}:${APISERVER_PORT}"
+certificatesDir: /work/pki
+networking:
+  serviceSubnet: ${SERVICE_CIDR}
+  podSubnet: ${POD_CIDR}
+  dnsDomain: cluster.local
+---
+# What every node's kubelet starts with; the values a kubelet in a container
+# needs are kind's own.
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: systemd
+cgroupRoot: /kubelet
+failSwapOn: false
+imageGCHighThresholdPercent: 100
+evictionHard:
+  nodefs.available: "0%"
+  nodefs.inodesFree: "0%"
+  imagefs.available: "0%"
+---
+apiVersion: kubeproxy.config.k8s.io/v1alpha1
+kind: KubeProxyConfiguration
+mode: iptables
+iptables:
+  minSyncPeriod: 1s
+conntrack:
+  maxPerCore: 0

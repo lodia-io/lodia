@@ -1,0 +1,73 @@
+# The tenant's own etcd: one member, client TLS with its own CA, data on a PVC.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${CP}-etcd
+  namespace: ${CP}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector: {app: ${CP}-etcd}
+  ports:
+    - {name: client, port: 2379}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ${CP}-etcd
+  namespace: ${CP}
+spec:
+  serviceName: ${CP}-etcd
+  replicas: 1
+  selector:
+    matchLabels: {app: ${CP}-etcd}
+  template:
+    metadata:
+      labels: {app: ${CP}-etcd}
+    spec:
+      containers:
+        - name: etcd
+          image: ${ETCD_IMAGE}
+          command:
+            - etcd
+            - --name=${CP}-etcd-0
+            - --data-dir=/var/lib/etcd
+            - --listen-client-urls=https://0.0.0.0:2379
+            - --advertise-client-urls=https://${CP}-etcd-0.${CP}-etcd.${CP}.svc:2379
+            - --listen-peer-urls=http://127.0.0.1:2380
+            - --initial-advertise-peer-urls=http://127.0.0.1:2380
+            - --initial-cluster=${CP}-etcd-0=http://127.0.0.1:2380
+            - --initial-cluster-state=new
+            - --client-cert-auth=true
+            - --trusted-ca-file=/pki/etcd-ca.crt
+            - --cert-file=/pki/etcd-server.crt
+            - --key-file=/pki/etcd-server.key
+            - --listen-metrics-urls=http://0.0.0.0:2381
+            - --quota-backend-bytes=2147483648
+            - --auto-compaction-mode=periodic
+            - --auto-compaction-retention=15m
+            - --snapshot-count=10000
+          ports:
+            - {name: client, containerPort: 2379}
+            - {name: metrics, containerPort: 2381}
+          readinessProbe:
+            httpGet: {path: "/health?serializable=true", port: 2381}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: "/health?serializable=true", port: 2381}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 8
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/etcd}
+            - {name: pki, mountPath: /pki, readOnly: true}
+      volumes:
+        - name: pki
+          secret: {secretName: ${CP}-pki}
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: {requests: {storage: 1Gi}}
