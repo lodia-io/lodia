@@ -1,6 +1,7 @@
 # Credentials rotate in stages, and the routine ones never touch a node: the trust anchor is split from the client CA, and ServiceAccount tokens are signed by a sidecar
 
-Proposed 2026-10-23; not decided yet. Not built.
+Proposed 2026-10-23; not decided yet. `brygga-signer` is built; the PKI and
+Workloads controllers and the rotation operations are not.
 
 ## Decision
 
@@ -25,12 +26,40 @@ requests. kubelet client certificates live 30 days
 API server pod that implements the external JWT signer API over a Unix
 socket on an `emptyDir` (`--service-account-signing-endpoint`); it serves
 the signing key and the verification keys from a Secret the PKI controller
-writes. The external signer is beta and on by default in 1.34 and 1.35 and
-stable in 1.36, the minors Brygga supports
-([KEP-740](https://github.com/kubernetes/enhancements/blob/master/keps/sig-auth/740-service-account-external-signing/README.md)).
+writes. The external signer is beta and on by default in 1.35, and GA and
+locked on since 1.36, so it is on in every minor Brygga supports
+([KEP-740](https://github.com/kubernetes/enhancements/blob/master/keps/sig-auth/740-service-account-external-signing/README.md),
+[`ExternalServiceAccountTokenSigner`](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/features/kube_features.go#L1612-L1616)).
 The controller manager gets no ServiceAccount key at all: its
 `--service-account-private-key-file` only enables legacy secret-based tokens.
 Each tenant has its own issuer, `https://<public API host>`.
+
+The Secret `<cp>-sa-keys` is the signer's whole input; a Secret key cannot
+contain `/`, so its files are flat:
+
+- `signing.key` — exactly one PEM private key (PKCS#8; PKCS#1 RSA and SEC1 EC
+  are accepted): RSA of at least 2048 bits signs RS256, ECDSA P-256, P-384 and
+  P-521 sign ES256, ES384 and ES512, the algorithms kube-apiserver accepts
+  from a signer
+  ([`validateJWTHeader`](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/serviceaccount/externaljwt/plugin/plugin.go#L148-L184));
+- `verify-*.pub` — any number of PEM PKIX public keys, published for
+  verification only;
+- every other entry is ignored, including the kubelet's `..data` links, through
+  which the signer reads the Secret so that one load never mixes two versions.
+
+The published set is the signing key's public key and every `verify-*.pub`,
+deduplicated and ordered by key ID; no key is excluded from OIDC discovery. A
+key's ID is kube-apiserver's own: the unpadded base64url SHA-256 of its PKIX
+DER
+([`keyIDFromPublicKey`](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/serviceaccount/jwt.go#L99)),
+so a cluster that moves from a static key file to the signer keeps its tokens
+valid. The key set's timestamp changes only when the published set does, and
+a Secret that does not load leaves the last good set in place: every replica
+reads the same Secret, so the signer keeps serving and stays ready rather than
+take every API server out at once. The three stages of the ServiceAccount key
+rotation below are three states of this Secret: (1) `signing.key` K₁,
+`verify-k2.pub` K₂; (2) `signing.key` K₂, `verify-k1.pub` K₁; (3)
+`signing.key` K₂.
 
 **Leaf certificates** renew at two thirds of their lifetime. The API server
 reloads its serving certificate, client CA bundles, kubelet client
@@ -115,4 +144,14 @@ first four.
 
 ## Code
 
-none yet.
+- `cmd/brygga-signer` — the sidecar: the socket, the keys directory, the
+  probes, `--max-token-expiration` (8760h, so the API server keeps upstream's
+  one-year extension) and `--refresh-hint` (1m).
+- `internal/signer` — the `ExternalJWTSigner` service of
+  [`k8s.io/externaljwt/apis/v1`](https://github.com/kubernetes/externaljwt/blob/v0.37.1/apis/v1/api.proto),
+  the file contract above, and the reload on a changed directory.
+  `signer_test.go` holds each invariant for RSA and ECDSA keys;
+  `TestRotationUnderARunningAPIServer` in `apiserver_test.go` runs the three
+  stages against one envtest kube-apiserver whose only signer it is.
+- [The hard way, spike d](../hard-way.md#d-spike-serviceaccount-tokens-from-an-external-signer)
+  — the same rotation by hand in kind, with a pod calling the API throughout.
