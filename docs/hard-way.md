@@ -387,7 +387,7 @@ kid "$WORK/sa-k2.key"                                      # K₂: ES256 this ti
 **Build the image into the management cluster** and remember its name:
 
 ```bash
-export SIGNER_IMAGE="$(KO_DOCKER_REPO=kind.local KIND_CLUSTER_NAME="$MGMT" go tool ko build --base-import-paths ./cmd/brygga-signer)"
+export SIGNER_IMAGE="$(KO_DOCKER_REPO=kind.local KIND_CLUSTER_NAME="$MGMT" go run github.com/google/ko@v0.19.1 build --base-import-paths ./cmd/brygga-signer)"
 echo "$SIGNER_IMAGE"                                       # kind.local/brygga-signer:<digest>
 ```
 
