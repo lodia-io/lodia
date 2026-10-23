@@ -1,0 +1,18 @@
+# An on-demand full snapshot of a tenant's etcd, kept in the DatastoreClass's
+# backup store. A new ControlPlane with spec.restoreFrom.backupRef pointing at
+# it starts as a clone.
+apiVersion: brygga.segla.io/v1alpha1
+kind: Backup
+metadata:
+  name: prod-eu-before-migration
+  namespace: team-a
+spec:
+  controlPlaneRef: {name: prod-eu}
+# status:
+#   phase: Completed                   # Pending | Running | Completed | Failed
+#   startedAt: "2026-10-23T02:00:00Z"
+#   completedAt: "2026-10-23T02:00:07Z"
+#   kubernetesVersion: v1.37.1
+#   revision: 184739
+#   sizeBytes: 41943040
+#   location: s3://brygga-backups/prod/team-a/prod-eu/Full-00000000-00184739-1761184807

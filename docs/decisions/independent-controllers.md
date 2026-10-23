@@ -1,0 +1,103 @@
+# Six controllers share one object and communicate only through status conditions
+
+Proposed 2026-10-23; not decided yet. Not built.
+
+## Decision
+
+One operator binary, one controller-runtime manager, six controllers that all
+watch `ControlPlane`:
+
+| controller | owns | writes condition | waits on |
+|---|---|---|---|
+| **PKI** | CAs, leaf certificates, kubeconfigs, ServiceAccount keys, encryption keys; renewal and staged rotation | `CertificatesReady` | nothing |
+| **Datastore** | the tenant's etcd (dedicated through etcd-druid, or a user and prefix in a shared store), backups, defragmentation; the only controller that talks to etcd | `DatastoreReady` | nothing |
+| **Workloads** | Deployments, Services, PodDisruptionBudgets, NetworkPolicies, ConfigMaps, Gateway routes in the tenant namespace | `APIServerReady` | `CertificatesReady`, `DatastoreReady` |
+| **Tenant** | objects inside the tenant cluster: kubeadm bootstrap objects, kube-proxy, CoreDNS, konnectivity-agent, apiserver-proxy, RBAC | `AddonsReady` | `APIServerReady` |
+| **Health** | probes the API from outside and inside, samples node leases; holds the controller manager when nodes cannot reach the API | `Reachable` | `APIServerReady` |
+| **Lifecycle** | the pace: which version to run now, whether to hibernate, which rotation stage is active, when a tenant's maintenance window is open and how many tenants roll at once | `status.target` and `Progressing` | the others' conditions |
+
+Rules:
+
+- A controller never calls another controller and never writes another
+  controller's objects. It reads `spec` and `status.target`, writes its own
+  objects with server-side apply under its own field manager, and reports
+  through its own condition. Blocked work is a condition with a reason, not a
+  retry loop.
+- Each controller has its own work queue, worker count and rate limiter; a
+  failure in one tenant's datastore does not delay certificate renewal in
+  another.
+- The cache holds only objects with the label `brygga.segla.io/control-plane`
+  (a default label selector), strips `managedFields`, and keeps metadata only
+  for Secrets and ConfigMaps; a controller reads a payload with the uncached
+  API reader when it needs it. Tests run the client with
+  `ReaderFailOnMissingInformer`, so an accidental cluster-wide informer fails
+  a test instead of filling memory
+  ([controller-runtime cache](https://pkg.go.dev/sigs.k8s.io/controller-runtime/pkg/cache)).
+- `status.conditions` is a map list keyed by `type`, and each controller
+  applies only its own condition through the status subresource with its own
+  field manager, so six writers never conflict on the list; one condition
+  type has exactly one writer, and an envtest case enforces it.
+- Each controller is registered under its own name (`pki`, `datastore`, …)
+  with its own `MaxConcurrentReconciles` and a reconcile timeout; the
+  priority queue that controller-runtime enables by default puts resyncs
+  behind real changes
+  ([priority queue design](https://github.com/kubernetes-sigs/controller-runtime/blob/main/designs/priorityqueue.md)).
+- `Ready` on the `ControlPlane` is computed by Lifecycle from the others:
+  `CertificatesReady ∧ DatastoreReady ∧ APIServerReady ∧ AddonsReady ∧ Reachable`,
+  and `Hibernated` when asleep.
+
+```mermaid
+flowchart LR
+  CP[("ControlPlane<br/>spec · status")]
+  PKI -->|CertificatesReady| CP
+  DS[Datastore] -->|DatastoreReady| CP
+  WL[Workloads] -->|APIServerReady| CP
+  TN[Tenant] -->|AddonsReady| CP
+  HL[Health] -->|Reachable| CP
+  LC[Lifecycle] -->|status.target, Progressing, Ready| CP
+  CP -. watch .-> PKI
+  CP -. watch .-> DS
+  CP -. watch .-> WL
+  CP -. watch .-> TN
+  CP -. watch .-> HL
+  CP -. watch .-> LC
+```
+
+## Why
+
+- In the solutions we studied, a common shape is one reconcile per cluster
+  that runs every step in sequence; any failing step stops the rest, and a
+  slow dependency (a datastore connection, a webhook) slows everything behind
+  it. Independent queues keep failures local and make each controller small
+  enough to test alone.
+- Conditions are the Kubernetes way to express "this part is done" to other
+  parts without coupling them, and they are what a platform on top watches
+  anyway.
+- Server-side apply with one field manager per controller makes ownership
+  visible in `managedFields` and lets two controllers touch the same object
+  (Lifecycle's hold on the controller manager's replicas, for instance) without
+  overwriting each other.
+
+## Rejected
+
+- One reconcile with ordered handlers — simple to read, but every failure is
+  global and the function grows without bound.
+- One operator process per tenant (the HyperShift shape) — strong isolation
+  and per-tenant versions of the renderer, at the cost of one more pod per
+  tenant; maintenance windows give most of the benefit
+  ([upgrades-and-maintenance-windows](upgrades-and-maintenance-windows.md)).
+- Informers inside every tenant cluster — see
+  [tenant-resources-by-inventory](tenant-resources-by-inventory.md).
+
+## Consequences
+
+- Two or more controllers may hold a `ControlPlane` in a partially ready state
+  for a while; `status` says exactly which part and why.
+- Lifecycle is the only place that knows about time (windows, concurrency,
+  stages); the other five are pure functions of `spec` and `status.target`.
+- Metrics come per controller: queue depth, reconcile duration and errors,
+  labelled by controller and tenant.
+
+## Code
+
+none yet.

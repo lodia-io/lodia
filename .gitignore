@@ -1,0 +1,19 @@
+# IDEs and tools
+.idea
+.vscode
+.task
+*.iml
+
+# Go
+*.exe
+*.test
+*.out
+/bin/
+/dist/
+go.work
+go.work.sum
+
+# local environment
+.env
+*.kubeconfig
+.claude/settings.local.json

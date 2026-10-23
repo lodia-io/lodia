@@ -1,0 +1,66 @@
+# A production ControlPlane: highly available, exposed through a shared
+# Gateway by SNI, OIDC for people, audit and encryption at rest, a maintenance
+# window at night and hibernation outside working hours.
+apiVersion: brygga.segla.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: prod-eu
+  namespace: team-a
+spec:
+  version: v1.37.1
+  highAvailability:
+    failureTolerance: Node          # Node | Zone
+  datastore:
+    dedicated:
+      className: fast-ssd           # a DatastoreClass; omitted → the default class
+  endpoint:
+    gateway:
+      parentRef: {name: tenants, namespace: gateway}
+      hostnames:
+        apiServer: api.prod-eu.k8s.example.com
+        konnectivity: konnectivity.prod-eu.k8s.example.com
+        tunnel: tunnel.prod-eu.k8s.example.com   # in-cluster access; omit to disable apiserver-proxy
+    certSANs: [prod-eu.corp.example.com]
+  network:
+    serviceCIDRs: [10.96.0.0/16]
+    podCIDRs: [10.244.0.0/16]
+    clusterDomain: cluster.local
+  apiServer:
+    authentication:                 # structured authentication configuration
+      jwt:
+        - issuer:
+            url: https://id.example.com
+            audiences: [kubernetes]
+          claimMappings:
+            username: {claim: email, prefix: "oidc:"}
+            groups: {claim: groups, prefix: "oidc:"}
+      # anonymous access is Brygga's: only cluster-info and the health paths
+    audit:
+      policyRef: {name: audit-default}   # a ConfigMap in this namespace, key policy.yaml
+    encryption:
+      provider: secretbox                 # None | secretbox | aescbc | kms
+    featureGates: {}
+    extraArgs:
+      max-requests-inflight: "800"
+  controllerManager:
+    extraArgs:
+      node-monitor-grace-period: 40s
+  scheduler: {}
+  addons:
+    konnectivity:
+      agent:
+        mode: DaemonSet                   # DaemonSet | Deployment
+    kubeProxy:
+      mode: nftables                      # iptables | nftables | ipvs
+    coreDNS:
+      replicas: 2
+  placement:
+    nodeSelector: {node-role.example.com/control-planes: "true"}
+    priorityClassName: tenant-control-plane
+  maintenance:
+    window: {begin: "02:00", end: "04:00", timeZone: Europe/Kyiv}
+    autoUpdate:
+      kubernetesPatch: true
+  hibernation:
+    schedules:
+      - {start: "0 20 * * 1-5", end: "0 7 * * 1-5", timeZone: Europe/Kyiv}
