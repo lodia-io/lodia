@@ -51,7 +51,7 @@ flowchart LR
 
 - Docker Desktop with at least 6 GB of memory, kind ≥ v0.33, kubectl (a
   1.34 or newer client works with the 1.35 cluster), openssl 3, perl (macOS
-  ships it).
+  ships it); Go for spike d.
 - In every new terminal, from the repository root:
 
   ```bash
@@ -359,13 +359,143 @@ konnectivity-agent` and step 10.
 
 ### d. Spike: ServiceAccount tokens from an external signer
 
-Not runnable yet: it needs `brygga-signer`, which the repository skeleton
-brings. The plan: replace `--service-account-key-file` and
-`--service-account-signing-key-file` with
-`--service-account-signing-endpoint=/run/signer/signer.sock`, run the signer as
-a sidecar on a shared `emptyDir`, then add a verification key, switch the
-signing key and drop the old one while a pod keeps calling the API with its
-projected token, and the API server never restarts.
+[staged-credential-rotation](decisions/staged-credential-rotation.md) signs
+ServiceAccount tokens with `brygga-signer`, a sidecar that implements
+kube-apiserver's external signer API on a Unix socket
+([KEP-740](https://github.com/kubernetes/enhancements/blob/master/keps/sig-auth/740-service-account-external-signing/README.md)),
+so the signing key can rotate in three stages while the API server keeps
+running. This spike switches the hard way's API server from its static
+`sa.key` to the signer, then rotates the key while a pod calls the API. It
+needs Go as well (ko builds the image), and a node: steps 11 and 12.
+
+The signer reads the Secret `$CP-sa-keys`: `signing.key`, the one private key
+that signs, and any number of `verify-*.pub`, public keys published for
+verification only. Every key's ID is kube-apiserver's own: the unpadded
+base64url SHA-256 of its PKIX DER
+([`keyIDFromPublicKey`](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/serviceaccount/jwt.go#L99)).
+`kid` prints it for a key file:
+
+```bash
+kid() { openssl pkey -in "$1" -pubout -outform der 2>/dev/null | openssl dgst -sha256 -binary | openssl base64 -A | tr '+/' '-_' | tr -d '='; echo; }
+jwt() { cut -d. -f"$1" | tr '_-' '/+' | awk '{while (length($0) % 4) $0 = $0 "="; print}' | openssl base64 -d -A; echo; }   # jwt 1: header, jwt 2: claims
+kid "$PKI/sa.key"                                          # K₁: the static key of step 3
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$WORK/sa-k2.key"
+openssl pkey -in "$WORK/sa-k2.key" -pubout -out "$WORK/sa-k2.pub"
+kid "$WORK/sa-k2.key"                                      # K₂: ES256 this time
+```
+
+**Build the image into the management cluster** and remember its name:
+
+```bash
+export SIGNER_IMAGE="$(KO_DOCKER_REPO=kind.local KIND_CLUSTER_NAME="$MGMT" go tool ko build --base-import-paths ./cmd/brygga-signer)"
+echo "$SIGNER_IMAGE"                                       # kind.local/brygga-signer:<digest>
+```
+
+**A token from the static key**, minted before the switch, must stay valid
+after it: K₁'s ID does not change.
+
+```bash
+tk -n default create serviceaccount token-caller
+tk -n default create token token-caller --duration=2h > "$WORK/static.token"
+satk() { kubectl --kubeconfig /dev/null --server "https://127.0.0.1:$APISERVER_PORT" --certificate-authority "$PKI/ca.crt" --token "$(cat "$1")" auth whoami; }
+jwt 1 < "$WORK/static.token"; satk "$WORK/static.token"     # kid of K₁; system:serviceaccount:default:token-caller
+```
+
+**Switch the API server to the signer.** The Secret holds K₁ alone; the
+patch adds the signer as a native sidecar (an init container with
+`restartPolicy: Always` and a startup probe on `/readyz`, so the API server
+starts only once the socket serves a key set) on a shared `emptyDir` at
+`/run/signer`, and replaces `--service-account-key-file` and
+`--service-account-signing-key-file`, which the endpoint excludes
+([authentication.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/kubeapiserver/options/authentication.go#L624)),
+with `--service-account-signing-endpoint=/run/signer/signer.sock`
+([`50-signer-patch.yaml`](../hack/hard-way/management/50-signer-patch.yaml)):
+
+```bash
+mk -n "$CP" create secret generic "$CP-sa-keys" --from-file=signing.key="$PKI/sa.key"
+mk -n "$CP" patch deployment "$CP-apiserver" --type json -p "$(render "$HW/management/50-signer-patch.yaml")"
+mk -n "$CP" rollout status deployment/"$CP-apiserver"
+mk -n "$CP" logs deploy/"$CP-apiserver" -c brygga-signer   # "key set loaded", signing = K₁
+tk get --raw /openid/v1/jwks; echo                         # one key, K₁'s kid
+satk "$WORK/static.token"                                  # still the ServiceAccount
+```
+
+That rollout is the last restart of the API server in this spike. Note the
+pod and its restart counts, and start the caller: a pod that calls the API
+every three seconds with a projected token of `expirationSeconds: 600`
+([`20-token-caller.yaml`](../hack/hard-way/tenant/20-token-caller.yaml)):
+
+```bash
+apiserver() { mk -n "$CP" get pods -l app="$CP-apiserver" -o jsonpath='{range .items[*]}{.metadata.name} restarts:{.status.initContainerStatuses[*].restartCount} {.status.containerStatuses[*].restartCount}{"\n"}{end}'; }
+apiserver                                                  # one pod, every count 0
+tk apply -f "$HW/tenant/20-token-caller.yaml"
+tk -n default wait --for=condition=Ready pod/token-caller --timeout=120s
+tk -n default logs -f token-caller &                       # "ok" every three seconds; leave it running
+pod_kid() { tk -n default exec token-caller -- cat /var/run/secrets/tokens/token | jwt 1; }
+```
+
+Each stage is one state of the Secret. The kubelet updates the mounted
+Secret within about a minute, the signer reloads it at once, and the API
+server fetches the keys again within the signer's refresh hint, one minute.
+
+**Stage 1 — K₂ published.** K₁ still signs.
+
+```bash
+mk -n "$CP" create secret generic "$CP-sa-keys" --from-file=signing.key="$PKI/sa.key" \
+  --from-file=verify-k2.pub="$WORK/sa-k2.pub" --dry-run=client -o yaml | mk apply -f -
+until [ "$(tk get --raw /openid/v1/jwks | grep -o '"kid"' | wc -l)" -eq 2 ]; do sleep 5; done
+tk get --raw /openid/v1/jwks; echo                         # K₁ and K₂
+tk -n default create token token-caller | jwt 1             # still K₁
+tk -n default exec token-caller -- cat /var/run/secrets/tokens/token > "$WORK/captured.token"
+jwt 1 < "$WORK/captured.token"                             # the pod's token of now: K₁
+```
+
+**Stage 2 — K₂ signs.** Brygga does this only once every API server replica
+serves K₂; with one replica, the `jwks` above is that proof.
+
+```bash
+mk -n "$CP" create secret generic "$CP-sa-keys" --from-file=signing.key="$WORK/sa-k2.key" \
+  --from-file=verify-k1.pub="$PKI/sa.pub" --dry-run=client -o yaml | mk apply -f -
+until tk -n default create token token-caller | jwt 1 | grep -q '"ES256"'; do sleep 5; done
+tk -n default create token token-caller | jwt 1             # K₂
+satk "$WORK/captured.token"; satk "$WORK/static.token"     # both K₁ tokens still valid
+```
+
+Now wait for the kubelet to refresh the pod's token: it requests a new one
+once the old one is older than 80% of its lifetime, so within about eight
+minutes plus the volume's resync
+([token manager](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/kubelet/token/token_manager.go#L172-L193)).
+This is what the owner's confirmation stands for: no client holds a K₁
+token any more.
+
+```bash
+until pod_kid | grep -q '"ES256"'; do sleep 15; done
+pod_kid                                                    # K₂'s kid
+tk -n default exec token-caller -- cat /var/run/secrets/tokens/token | jwt 2   # a new iat
+```
+
+**Stage 3 — K₁ dropped.**
+
+```bash
+mk -n "$CP" create secret generic "$CP-sa-keys" --from-file=signing.key="$WORK/sa-k2.key" \
+  --dry-run=client -o yaml | mk apply -f -
+until [ "$(tk get --raw /openid/v1/jwks | grep -o '"kid"' | wc -l)" -eq 1 ]; do sleep 5; done
+sleep 70                                                   # one refresh hint, and the API server's 10 s token cache
+satk "$WORK/captured.token"                                # error: You must be logged in to the server (Unauthorized)
+satk "$WORK/static.token"                                  # the same
+kill %1
+tk -n default logs token-caller | grep -c FAIL             # 0
+apiserver                                                  # the same pod, every count still 0
+mk -n "$CP" logs deploy/"$CP-apiserver" -c brygga-signer | grep 'key set loaded'   # four sets: K₁; K₁+K₂; K₂ signs; K₂
+```
+
+The API server caches a successful token authentication for ten seconds
+([`TokenSuccessCacheTTL`](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/kubeapiserver/options/authentication.go#L168)),
+so a K₁ token that was used in those ten seconds outlives K₁ by that much.
+
+Put the API server back with `render "$HW/management/20-apiserver.yaml" | mk
+replace -f -` (the patch is not reversible by `apply`) and delete
+`$CP-sa-keys`.
 
 ## 15. Measure
 
@@ -393,7 +523,12 @@ decision or a `todo.md` entry.
 
 | step | what happened | what it means for Brygga |
 |---|---|---|
-| | | |
+| 14d | Found while building the signer, before running the spike: a K₁ token authenticated in the last ten seconds is still accepted that long after K₁ is dropped, because the API server caches successful token authentications for 10 s ([`TokenSuccessCacheTTL`](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/kubeapiserver/options/authentication.go#L168), applied to every token authenticator in [config.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/kubeapiserver/authenticator/config.go#L207-L210)); `TestRotationUnderARunningAPIServer` shows it | K₁ is gone one refresh hint plus ten seconds after stage 3 reaches every replica; the phase 3 gate waits that long, not one refresh hint |
+| 14d | Found while building the signer: the kubelet swaps a Secret volume by repointing `..data` and only then adds the links of new keys ([atomic_writer.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/volume/util/atomic_writer.go#L93-L118)); a reader that opens the files one by one can straddle the swap, and between stages 1 and 2 that reads `signing.key` K₂ without `verify-k1.pub` — a set without K₁ | the signer reads every file through one resolved `..data` ([staged-credential-rotation](decisions/staged-credential-rotation.md)) |
+| 14d | | the switch from `sa.key` keeps the static token valid: expected, because K₁'s ID is derived as kube-apiserver derives it; confirm here |
+| 14d | | zero `FAIL` lines through the three stages, the API server pod and its restart counts unchanged: confirm here |
+| 14d | | how long the kubelet took to refresh the caller's 600 s token (the time between stage 2 and the pod's K₂ kid): measure here; it bounds how soon stage 3 is safe for projected tokens |
+| 14d | Open question: how does the PKI controller learn that every API server replica serves the new key set before it switches the signing key (stage 2) or drops K₁? The signer knows only what it loaded; each replica fetches on its own, and `/openid/v1/jwks` answers from whichever replica the request reaches. Each replica exports the timestamp of the set it holds as `apiserver_externaljwt_fetch_keys_data_timestamp` ([metrics.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/serviceaccount/externaljwt/metrics/metrics.go#L50-L58)) | open: decide before the PKI controller builds stage 2; the metric per replica is one candidate, waiting for one refresh hint after every signer reloaded is another |
 
 Measured at idle (step 15):
 

@@ -1,0 +1,41 @@
+# Spike d: a JSON patch for the API server Deployment of 20-apiserver.yaml.
+# brygga-signer joins the pod as a native sidecar (an init container that keeps
+# running), which the kubelet starts first and reports started only once
+# /readyz says a key set has loaded; the API server then replaces its two
+# static key flags with the signer's socket on a shared emptyDir. The test ops
+# stop the patch if the flags are not where 20-apiserver.yaml puts them.
+- {op: test, path: /spec/template/spec/containers/0/command/24, value: --service-account-key-file=/pki/sa.pub}
+- {op: test, path: /spec/template/spec/containers/0/command/25, value: --service-account-signing-key-file=/pki/sa.key}
+- {op: replace, path: /spec/template/spec/containers/0/command/24, value: --service-account-signing-endpoint=/run/signer/signer.sock}
+- {op: remove, path: /spec/template/spec/containers/0/command/25}
+- op: add
+  path: /spec/template/spec/containers/0/volumeMounts/-
+  value: {name: signer, mountPath: /run/signer}
+- op: add
+  path: /spec/template/spec/initContainers
+  value:
+    - name: brygga-signer
+      image: ${SIGNER_IMAGE}
+      imagePullPolicy: Never
+      restartPolicy: Always
+      args:
+        - --socket=/run/signer/signer.sock
+        - --keys-dir=/keys
+      startupProbe:
+        httpGet: {path: /readyz, port: 8081}
+        periodSeconds: 1
+        failureThreshold: 30
+      livenessProbe:
+        httpGet: {path: /healthz, port: 8081}
+        periodSeconds: 10
+      resources:
+        requests: {cpu: 10m, memory: 16Mi}
+      volumeMounts:
+        - {name: signer, mountPath: /run/signer}
+        - {name: sa-keys, mountPath: /keys, readOnly: true}
+- op: add
+  path: /spec/template/spec/volumes/-
+  value: {name: signer, emptyDir: {}}
+- op: add
+  path: /spec/template/spec/volumes/-
+  value: {name: sa-keys, secret: {secretName: ${CP}-sa-keys}}
