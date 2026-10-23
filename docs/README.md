@@ -3,9 +3,10 @@
 Brygga is an operator that runs Kubernetes control planes as pods on a
 management cluster, one `ControlPlane` object per tenant cluster. A control
 plane is a kube-apiserver with a konnectivity-server at its side, a
-kube-controller-manager, a kube-scheduler, each in its own Deployment, and an
-etcd of its own; the tenant's worker nodes stand anywhere with outbound TCP
-443 and join with `kubeadm join`. Six independent controllers keep every
+kube-controller-manager, a kube-scheduler, each in its own Deployment (or all
+in one pod in the Compact layout), and an etcd of its own (or a prefix in a
+shared one); the tenant's worker nodes stand anywhere with outbound TCP 443
+and join with `kubeadm join`. Six independent controllers keep every
 control plane certified, stored, running, reachable and up to date, and talk
 to each other only through status conditions.
 
@@ -29,7 +30,8 @@ S3-compatible object storage.
 | the tenant namespace's control plane objects | Deployments, Services, PodDisruptionBudgets, NetworkPolicies, Gateway routes, Secrets, ConfigMaps, the etcd resource; all owned by the `ControlPlane` and labelled `brygga.segla.io/control-plane` |
 | the PKI of every tenant | CAs, leaf certificates, kubeconfigs, ServiceAccount keys, encryption keys, their renewal and staged rotation |
 | the bootstrap of the tenant cluster | what `kubeadm join` reads and the RBAC it needs, kube-proxy, CoreDNS, konnectivity-agent, apiserver-proxy, the admin group's binding |
-| the pace | upgrades in order, maintenance windows, the fleet limit, hibernation, holding the controller manager while nodes are cut off |
+| the pace | upgrades in order, maintenance windows, the fleet limit, hibernation |
+| the tenant's workloads during an outage | holding the controller manager while most nodes are cut off from the control plane, so nothing evicts healthy pods |
 
 And deliberately not: machines and their operating systems (a Cluster API
 provider or a node agent on top), the CNI and every other addon the tenant
@@ -64,7 +66,7 @@ in [`api/examples/`](api/examples/).
 | Datastore | the etcd resource (dedicated) or a user and role (shared); backups and defragmentation | `DatastoreReady` | — |
 | Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady` | `CertificatesReady`, `DatastoreReady` |
 | Tenant | objects inside the tenant cluster, with an inventory | `AddonsReady` | `APIServerReady` |
-| Health | nothing but status; asks Lifecycle to hold the controller manager | `Reachable` | `APIServerReady` |
+| Health | status, and the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable` | `APIServerReady` |
 | Lifecycle | `status.target`, `Progressing`, `Ready`; the pre-upgrade `Backup` | `Progressing` | the others |
 
 Each controller has its own queue and field manager, reads only `spec` and
@@ -127,7 +129,9 @@ flowchart TB
 ```
 
 Four pods for a single control plane, nine for HA
-([decision](decisions/component-per-deployment.md)). The Secrets and
+([decision](decisions/component-per-deployment.md)); the Compact layout puts
+the control plane into one pod, two with a dedicated etcd and one with a
+shared store ([compact-layout](decisions/compact-layout.md)). The Secrets and
 ConfigMaps, who consumes them, and what a change does:
 
 | object | consumer | on renewal or change |
@@ -349,15 +353,18 @@ and snapshots to the class's reclaim and retention settings.
 ## Health
 
 Health probes `/readyz` through the public endpoint, the way a kubelet
-reaches it, and through the in-namespace Service. It also lists the
-tenant's node leases on a timer. Public probe failing or most leases stale
-while the internal probe succeeds means the nodes are cut off from the
-control plane, not down: Health sets `Reachable=False`, Lifecycle sets
-`target.controllerManagerHold`, and Workloads scales the controller manager
-to zero so it cannot mark every node `NotReady` and evict the tenant's
-workloads. When the path returns, the hold lifts. This is the dependency
-watchdog of Gardener, inside the operator
-([seed bootstrapping, dependency-watchdog](https://github.com/gardener/gardener/blob/master/docs/operations/seed_bootstrapping.md)).
+reaches it, and through the in-namespace Service, and every 5 seconds reads
+the tenant's nodes and their leases through that Service. When 60% or more of
+the counted nodes have been silent for 20 seconds while the API server
+answers, the nodes are cut off from the control plane, not dead: Health takes
+the controller manager's leader Lease inside the tenant and keeps renewing
+it, the controller manager steps down and waits, and nothing marks the nodes
+or evicts their pods. Two minutes after the nodes are back, Health lets the
+lease go. It works the same in both layouts, rolls nothing, and never takes a
+lease another component holds
+([controller-manager-hold](decisions/controller-manager-hold.md)). This is
+what Gardener's dependency-watchdog does for its clusters, built into the
+operator.
 
 ## Identity and tenancy
 
@@ -409,6 +416,7 @@ it from values):
 | `controllers.<name>.workers` | concurrent reconciles per controller | 10 |
 | `fleet.maxConcurrentRollouts` | tenants rolling Brygga-initiated changes at once | 5 |
 | `tenant.applyInterval` | the inventory re-apply period | 10m |
+| `health.silentAfter`, `health.holdFraction`, `health.releaseAfter` | when a node counts as silent, the share of silent nodes that starts the hold, how long the nodes must be back before it ends | 20s, 0.6, 2m |
 | `pki.leafLifetime`, `pki.caLifetime` | | 1 year, 10 years |
 | `kubeconfigRequests.maxExpiration` | | 24h |
 | `defaults.resources.<component>` | requests and limits per component | measured in phase 1 |
@@ -420,8 +428,8 @@ pod templates re-render in their windows, the release notes say what changes
 ## Operations
 
 [`operations.md`](operations.md): what breaks and how it shows, the
-runbooks (restore, lost quorum, forced rotation, stuck upgrade), capacity
-planning, the alert rules and what each means.
+runbooks (restore, lost quorum, forced rotation, stuck upgrade, nodes cut
+off), capacity planning, the alert rules and what each means.
 
 ## Conventions
 
@@ -450,13 +458,15 @@ planning, the alert rules and what each means.
 - [one-controlplane-per-cluster](decisions/one-controlplane-per-cluster.md) — five kinds; `ControlPlane` is the whole cluster; operations through an annotation.
 - [independent-controllers](decisions/independent-controllers.md) — six controllers, one object, conditions as the only coupling.
 - [component-per-deployment](decisions/component-per-deployment.md) — a Deployment per component, konnectivity as the API server's sidecar, 4 or 9 pods.
+- [compact-layout](decisions/compact-layout.md) — every component in one pod for development and free tiers; one pod per tenant with a shared store.
 - [dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md) — an etcd per tenant through etcd-druid; a shared store as an option.
 - [no-admission-webhooks](decisions/no-admission-webhooks.md) — CEL in the schema; conditions for what a schema cannot check.
 - [nodes-join-with-kubeadm](decisions/nodes-join-with-kubeadm.md) — `kubeadm join`; Brygga writes the bootstrap objects; no `k8s.io/kubernetes` import.
 - [tenant-resources-by-inventory](decisions/tenant-resources-by-inventory.md) — apply with inventory and prune; no informers in tenants.
 - [api-exposure](decisions/api-exposure.md) — Gateway by SNI as the default; in-cluster access through apiserver-proxy.
-- [staged-credential-rotation](decisions/staged-credential-rotation.md) — CA, ServiceAccount key and encryption key rotate in stages.
+- [staged-credential-rotation](decisions/staged-credential-rotation.md) — a CA per purpose and a signer sidecar, so routine rotations never touch a node.
 - [upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md) — the upgrade order; Brygga-initiated changes roll in windows, N tenants at a time.
+- [controller-manager-hold](decisions/controller-manager-hold.md) — while most nodes are silent, Health holds the controller manager's leader lease, so an outage evicts nothing.
 - [short-lived-kubeconfigs](decisions/short-lived-kubeconfigs.md) — `KubeconfigRequest`; the admin group is revocable.
 - [e2e-on-a-named-cluster](decisions/e2e-on-a-named-cluster.md) — e2e refuses the current context; conformance nightly.
 - [releases-and-support](decisions/releases-and-support.md) — ko, cosign, attestations, the chart in GHCR; the three maintained Kubernetes minors.

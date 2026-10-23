@@ -13,6 +13,10 @@ A tenant namespace holds:
 | Deployment `<name>-kube-scheduler` | `kube-scheduler` | 1 | 2 | leader election; same path to the API |
 | etcd (a `StatefulSet` managed by etcd-druid) | `etcd`, `backup-restore` | 1 | 3 | own CA, quota, continuous snapshots to object storage |
 
+This is the `Split` layout, the default; `Compact` puts every component in
+one pod for development clusters and free tiers
+([compact-layout](compact-layout.md)).
+
 Four pods for a single control plane, nine for a highly available one. Each
 Deployment has its own readiness: the API server on `/readyz`, the two
 controllers on their secure health endpoints; none waits on another through
@@ -74,8 +78,10 @@ flowchart TB
   bundles, the kubelet client certificate, the encryption and authentication
   configuration, certificates referenced from kubeconfigs, and the
   ServiceAccount keys behind the signer sidecar.
-- The controller manager's replicas are also the lever Lifecycle uses to hold
-  it while nodes cannot reach the API ([Health](../README.md#health)).
+- Holding the controller manager while nodes cannot reach the API does not
+  touch its replicas: Health takes its leader lease
+  ([controller-manager-hold](controller-manager-hold.md)), which works the
+  same when every component shares one pod.
 - Resource requests are per component and per tenant; the defaults are in the
   operator configuration and overridable per `ControlPlane`.
 

@@ -13,7 +13,7 @@ watch `ControlPlane`:
 | **Datastore** | the tenant's etcd (dedicated through etcd-druid, or a user and prefix in a shared store), backups, defragmentation; the only controller that talks to etcd | `DatastoreReady` | nothing |
 | **Workloads** | Deployments, Services, PodDisruptionBudgets, NetworkPolicies, ConfigMaps, Gateway routes in the tenant namespace | `APIServerReady` | `CertificatesReady`, `DatastoreReady` |
 | **Tenant** | objects inside the tenant cluster: kubeadm bootstrap objects, kube-proxy, CoreDNS, konnectivity-agent, apiserver-proxy, RBAC | `AddonsReady` | `APIServerReady` |
-| **Health** | probes the API from outside and inside, samples node leases; holds the controller manager when nodes cannot reach the API | `Reachable` | `APIServerReady` |
+| **Health** | probes the API from outside and inside, samples node leases; holds the controller manager's leader lease inside the tenant while most nodes cannot reach the API ([controller-manager-hold](controller-manager-hold.md)) | `Reachable` | `APIServerReady` |
 | **Lifecycle** | the pace: which version to run now, whether to hibernate, which rotation stage is active, when a tenant's maintenance window is open and how many tenants roll at once | `status.target` and `Progressing` | the others' conditions |
 
 Rules:
@@ -74,9 +74,9 @@ flowchart LR
   parts without coupling them, and they are what a platform on top watches
   anyway.
 - Server-side apply with one field manager per controller makes ownership
-  visible in `managedFields` and lets two controllers touch the same object
-  (Lifecycle's hold on the controller manager's replicas, for instance) without
-  overwriting each other.
+  visible in `managedFields` and lets several controllers write the same
+  object (each its own condition in the `ControlPlane`'s status, for
+  instance) without overwriting each other.
 
 ## Rejected
 
@@ -93,8 +93,11 @@ flowchart LR
 
 - Two or more controllers may hold a `ControlPlane` in a partially ready state
   for a while; `status` says exactly which part and why.
-- Lifecycle is the only place that knows about time (windows, concurrency,
-  stages); the other five are pure functions of `spec` and `status.target`.
+- Two controllers know about time: Lifecycle (windows, the fleet limit,
+  rotation stages) and Health (how long nodes have been silent); the other
+  four are pure functions of `spec` and `status.target`.
+- The layout (`Split` or `Compact`) is known to Workloads alone
+  ([compact-layout](compact-layout.md)).
 - Metrics come per controller: queue depth, reconcile duration and errors,
   labelled by controller and tenant.
 

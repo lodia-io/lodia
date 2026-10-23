@@ -113,6 +113,17 @@ enforce version skew in their API or UI
 in smaller projects the order of control plane, add-ons and nodes is a
 manual plan ([k0smotron autopilot](https://docs.k0smotron.io/stable/update/hcp-autopilot/)).
 
+**An outage between the control plane and its nodes evicts healthy
+workloads.** Remote nodes stop renewing their leases when the path to their
+control plane breaks, and the controller manager cannot tell that from dead
+machines: it taints them and evicts their pods after the toleration.
+Kubernetes stops evicting when every node goes silent at once, but a taint
+added before can stay
+([kubernetes#131481](https://github.com/kubernetes/kubernetes/issues/131481)).
+Gardener guards its clusters with a dependency-watchdog that stops the
+controller manager while node leases expire and the API server answers
+([configuration](https://github.com/gardener/dependency-watchdog/blob/master/docs/deployment/configure.md)).
+
 **A new operator release can roll the whole fleet at once.** Re-rendering
 every control plane the moment an operator upgrades turns one changed
 default into a fleet-wide rollout. Gardener bounds it with maintenance
@@ -161,6 +172,8 @@ toggle of that add-on does the same.
 | upgrade order left to the user | the skew-policy order enforced step by step | [upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md) |
 | operator releases roll the fleet | Brygga-initiated changes roll in each tenant's window, N at a time | [upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md) |
 | hibernation is uneven | hibernation with schedules, etcd included | [one-controlplane-per-cluster](decisions/one-controlplane-per-cluster.md) |
+| an outage between control plane and nodes evicts healthy pods | Health holds the controller manager's leader lease while most nodes are silent | [controller-manager-hold](decisions/controller-manager-hold.md) |
+| separate pods per component cost density | an optional `Compact` layout: one pod per tenant with a shared store | [compact-layout](decisions/compact-layout.md) |
 | control planes roll twice at creation | every component rendered in one pass by one controller | [independent-controllers](decisions/independent-controllers.md) |
 | a sequential reconcile makes failures global | six controllers with their own queues, coupled only by conditions | [independent-controllers](decisions/independent-controllers.md) |
 | standing admin credentials in the super-user group | short-lived kubeconfigs; the standing admin group is revocable | [short-lived-kubeconfigs](decisions/short-lived-kubeconfigs.md) |

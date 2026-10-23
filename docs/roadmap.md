@@ -9,12 +9,13 @@ and a gate that fails after it passed is a regression, not a backlog item.
 |---|---|---|
 | 0 · Foundations | the repository can build, test and ship; one control plane built by hand | `make verify` green in CI; the hand-built control plane runs a pod; the etcd spike has numbers |
 | 1 · Walking skeleton | a single-replica `ControlPlane` a real kubeadm node joins | e2e: `Ready` in under 3 minutes, node `Ready`, `kubectl logs` and `exec` through the tunnel, conformance passes |
-| 2 · Production | HA, Gateway exposure with in-cluster access, backups, upgrades, maintenance windows, Health, metrics | zero failed API requests during a rollout and an upgrade; restore from backup passes conformance; Health holds the controller manager within 2 minutes |
-| 3 · Parity | shared etcd, migration by snapshot, staged rotations, hibernation, `Backup`, write lock, a Cluster API provider | rotation keeps nodes `Ready` and tokens valid; sleep and wake keep data; migration freezes writes for seconds, reads never |
+| 2 · Production | HA, Gateway exposure with in-cluster access, backups, upgrades, maintenance windows, Health, metrics | zero failed API requests during a rollout and an upgrade; restore from backup passes conformance; nodes cut off for 10 minutes lose no pod |
+| 3 · Parity | shared etcd, migration by snapshot, staged rotations, hibernation, `Backup`, write lock, the `Compact` layout, a Cluster API provider | rotation keeps nodes `Ready` and tokens valid; sleep and wake keep data; migration freezes writes for seconds, reads never; a `Compact` tenant is one pod |
 | 4 · Scale and community | hundreds of tenants per operator, zone spread, `v1beta1`, docs site, supply-chain badges | 200 tenants on one management cluster within the resource budget; OpenSSF Scorecard ≥ 8 |
 
 Segla's own cut-over (its `cluster` service rendering a `ControlPlane`
-instead of a Cluster API `Cluster`, its agent dropping its own API proxy)
+instead of a Cluster API `Cluster`, its agent dropping its own API proxy,
+its regional watchdog stepping down for Brygga's controller manager hold)
 runs beside phases 1 and 2 and is tracked in Segla's repositories, not here.
 
 ## Phase 0 · Foundations
@@ -119,9 +120,12 @@ Gate:
 - e2e: a `ControlPlane` created with `restoreFrom` a backup of another
   serves the same namespaces and Secrets, and passes the conformance smoke
   subset.
-- e2e: block the Gateway path; within 2 minutes `Reachable=False` and the
-  controller manager is at zero replicas; no node is marked NotReady by the
-  control plane; unblock, and it returns.
+- e2e: cut both workers of a tenant off from the Gateway for 10 minutes;
+  within 30 seconds Brygga holds the controller manager's lease and the
+  controller manager exits; no node is tainted and every pod keeps its UID;
+  reconnect, and the lease is released 2 minutes later. Cut one worker of two:
+  no hold, and its pods move to the other after the toleration, as upstream
+  does ([controller-manager-hold](decisions/controller-manager-hold.md)).
 - e2e: an operator upgrade re-renders a tenant only inside its window;
   outside it, `status.target.reason` says `WaitingForWindow`.
 - Measured: API p99 latency through the Gateway against a direct Service,
@@ -132,8 +136,8 @@ Gate:
 Scope: shared `Datastore` with a user and prefix per tenant; migration
 between stores through a write lock and a snapshot; staged rotation of the
 CA, the ServiceAccount key and the etcd encryption key; hibernation with
-schedules; `Backup`; the `ValidatingAdmissionPolicy` write lock; a Cluster
-API control plane provider in its own repository.
+schedules; `Backup`; the `ValidatingAdmissionPolicy` write lock; the
+`Compact` layout; a Cluster API control plane provider in its own repository.
 
 Gate:
 
@@ -144,6 +148,9 @@ Gate:
   without intervention.
 - e2e: migrate a tenant from a shared `Datastore` to a dedicated etcd; writes
   are refused for at most 30 seconds, reads succeed throughout.
+- e2e: a `Compact` `ControlPlane` on a shared `Datastore` runs as one pod; a
+  node joins, the conformance smoke subset passes, and the controller manager
+  hold works as in `Split` ([compact-layout](decisions/compact-layout.md)).
 
 ## Phase 4 · Scale and community
 

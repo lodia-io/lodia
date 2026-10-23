@@ -80,6 +80,12 @@ carries the pending template changes.
 - Lifecycle is the only controller that knows the time and the fleet; it
   holds an in-memory semaphore, which is correct because only the leader
   runs controllers.
+- In the `Compact` layout steps 3 and 4 are one rollout of the single pod:
+  the API server, controller manager and scheduler change version together,
+  which the skew policy allows ([compact-layout](compact-layout.md)).
+- An upgrade does not start while Health holds the controller manager, and
+  one in progress waits at step 4 until the hold ends
+  ([controller-manager-hold](controller-manager-hold.md)).
 - `status.target` becomes part of the API that users read:
   `target.version`, `target.operatorVersion`, `target.reason`,
   `target.scheduledFor`.

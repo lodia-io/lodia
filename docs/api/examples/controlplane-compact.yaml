@@ -1,0 +1,26 @@
+# The densest ControlPlane: every component in one pod, the data in a shared
+# etcd. For development clusters and free tiers; no high availability.
+apiVersion: brygga.segla.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: sandbox
+  namespace: team-b
+spec:
+  version: v1.37.1
+  layout: Compact
+  datastore:
+    shared:
+      name: pool-a                  # a Datastore
+  endpoint:
+    gateway:
+      parentRef: {name: tenants, namespace: gateway}
+      hostnames:
+        apiServer: api.sandbox.k8s.example.com
+        konnectivity: konnectivity.sandbox.k8s.example.com
+        tunnel: tunnel.sandbox.k8s.example.com
+  network:
+    serviceCIDRs: [10.96.0.0/16]
+    podCIDRs: [10.244.0.0/16]
+  hibernation:
+    schedules:
+      - {start: "0 20 * * *", end: "0 8 * * 1-5", timeZone: Europe/Kyiv}

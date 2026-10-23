@@ -9,6 +9,7 @@ Examples: [`examples/`](examples/).
 | field | type | default | rules |
 |---|---|---|---|
 | `version` | string | required | `v<major>.<minor>.<patch>`; the minor never decreases (CEL transition rule); the patch may |
+| `layout` | `Split` \| `Compact` | `Split` | immutable; `Compact` puts every control plane component in one pod and excludes `highAvailability` and `apiServer.replicas` above 1 ([compact-layout](../decisions/compact-layout.md)) |
 | `highAvailability.failureTolerance` | `Node` \| `Zone` | absent = single | sets replicas (2/2/2, etcd 3) and the spread topology key (`kubernetes.io/hostname` or `topology.kubernetes.io/zone`) |
 | `datastore` | union | required | exactly one of `dedicated`, `shared`; immutable in v1alpha1 (migration is a later operation) |
 | `datastore.dedicated.className` | string | the default `DatastoreClass` | |
@@ -46,6 +47,7 @@ Examples: [`examples/`](examples/).
 | `hibernation.enabled` | bool | `false` | an explicit override of the schedules |
 | `hibernation.schedules[]` | `{start, end, timeZone}` | | cron expressions; `start` puts the control plane to sleep, `end` wakes it |
 | `restoreFrom.backupRef` | `{name, namespace?}` | | set only at creation (CEL: cannot be added or changed later); the datastore starts from that snapshot |
+| `health.holdControllerManager` | bool | `true` | hold the controller manager's leader lease while most nodes are silent ([controller-manager-hold](../decisions/controller-manager-hold.md)); `false` releases a hold in progress |
 | `paused` | bool | `false` | Brygga stops reconciling but keeps watching; `Progressing=False`, reason `Paused` |
 
 ## status
@@ -57,7 +59,6 @@ Examples: [`examples/`](examples/).
 | `target.version` | Lifecycle | the Kubernetes version being rolled now; one minor at a time towards `spec.version` |
 | `target.operatorVersion` | Lifecycle | the Brygga version whose templates this tenant's pods are rendered with |
 | `target.hibernated` | Lifecycle | the desired sleep state |
-| `target.controllerManagerHold` | Lifecycle (from Health) | the controller manager is scaled to 0 while nodes cannot reach the API |
 | `target.rotation.{clientCA, ca, serviceAccountKey, etcdEncryptionKey, etcdCA, frontProxyCA}` | Lifecycle | `Idle` \| `Preparing` \| `Prepared` \| `Completing` |
 | `target.reason`, `target.scheduledFor` | Lifecycle | why the target lags `spec`: a closed window, the fleet limit, a failed step |
 | `kubernetes.version` | Lifecycle | the version every component runs |
@@ -71,6 +72,7 @@ Examples: [`examples/`](examples/).
 | `datastore.lastBackup.{time, kind, revision}` | Datastore | the newest full or delta snapshot |
 | `components.{apiServer, controllerManager, scheduler}.{replicas, ready}` | Workloads | from the Deployments |
 | `nodes.{total, ready, outdatedKubelets, sampledAt}` | Health | from a periodic list of nodes and leases in the tenant |
+| `health.controllerManagerHold.{since, silentNodes, countedNodes, blockedBy}` | Health | present while Brygga holds the controller manager's leader lease; `blockedBy` names a foreign holder Brygga left alone |
 
 ## Conditions and their reasons
 
@@ -80,7 +82,7 @@ Examples: [`examples/`](examples/).
 | `DatastoreReady` | the etcd (or the tenant's prefix in a shared store) accepts writes | `Provisioning`, `QuorumLost`, `Restoring`, `DatastoreClassNotFound`, `DatastoreNotFound`, `Hibernated` |
 | `APIServerReady` | all API server replicas answer `/readyz`; controller manager and scheduler have leaders | `WaitingForCertificates`, `WaitingForDatastore`, `RollingOut`, `Unhealthy`, `Hibernated` |
 | `AddonsReady` | the inventory is applied and kube-proxy, CoreDNS and the agents report ready | `WaitingForAPIServer`, `Applying`, `RolloutPending` |
-| `Reachable` | the public endpoint answers `/readyz` and nodes' leases are fresh | `ExternalProbeFailed`, `NodesSilent`, `Hibernated` |
+| `Reachable` | the public endpoint answers `/readyz` and nodes' leases are fresh | `ExternalProbeFailed`, `NodesSilent` (the controller manager is held), `HoldBlocked` (nodes silent, another holder keeps the lease), `Hibernated` |
 | `Progressing` | an upgrade, rotation stage, hibernation transition or deferred rollout is running | `Idle`, `WaitingForWindow`, `FleetLimit`, `Failed`, `Paused` |
 | `Hibernated` | every component is scaled to zero and the data is kept | `Awake`, `FallingAsleep`, `WakingUp` |
 | `Ready` | the five readiness conditions are True and the control plane is awake | the first False one's reason |

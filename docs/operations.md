@@ -22,6 +22,7 @@ itself and the support policy. Installation is in
 | Take a snapshot now | create a `Backup` ([example](api/examples/backup.yaml)); its `status.location` is the object in the bucket |
 | Clone or recover a cluster | create a new `ControlPlane` with `spec.restoreFrom.backupRef`; nodes of the old cluster can join it with a new token |
 | Stop Brygga touching a cluster | `spec.paused: true`; everything keeps running, nothing is reconciled |
+| Turn the controller manager hold off for a cluster | `spec.health.holdControllerManager: false`; a hold in progress is released at once |
 | Delete a cluster | delete the `ControlPlane`; the finalizer takes a last snapshot when a backup store exists; volumes and snapshots follow the class's reclaim and retention |
 
 ## What breaks, and how it shows
@@ -33,7 +34,8 @@ itself and the support policy. Installation is in
 | API calls fail with `etcdserver: mvcc: database space exceeded` | the [space quota](#etcd-space-quota) runbook; `status.datastore.dbSizeBytes` against the class quota |
 | `APIServerReady=False`, `RollingOut` for long | the kube-apiserver Deployment's events; a new replica failing `/readyz` (often a flag in `extraArgs` that the new minor removed) |
 | `CertificatesReady=False`, `CAExpiring` | the CA is within its renewal margin; start a [CA rotation](#forced-ca-rotation) |
-| `Reachable=False`, `NodesSilent`, controller manager at 0 replicas | Health holds the controller manager because nodes cannot reach the API; check the Gateway, DNS of the endpoint, the path from the nodes' network |
+| `Reachable=False`, `NodesSilent`; in the tenant, the Lease `kube-system/kube-controller-manager` held by `brygga` | most nodes cannot reach the API, so Health holds the controller manager; the [nodes cut off](#nodes-cut-off-from-the-control-plane) runbook |
+| `Reachable=False`, `HoldBlocked` | nodes are silent but another component holds the controller manager's lease (`status.health.controllerManagerHold.blockedBy`), for example a platform's own watchdog; run one of the two, not both |
 | `Reachable=False`, `ExternalProbeFailed`, nodes fine | the public endpoint from the management cluster's side: Gateway listener, route status, certificate SANs |
 | `AddonsReady=False`, `RolloutPending` | the DaemonSet or Deployment inside the tenant; a node that cannot pull images; a CNI missing (pods of CoreDNS stay Pending until a CNI is installed) |
 | `kubectl logs` / `exec` hang, everything else works | the konnectivity path: agents connected to every server (`konnectivity_network_proxy_server_ready_backend_connections`), the agent's DaemonSet, outbound 443 for the konnectivity hostname |
@@ -118,6 +120,23 @@ scheduler.
   it. Between start and complete both CAs are trusted; completing before the
   nodes have the bundle cuts off every node that trusts only the old CA.
 
+### Nodes cut off from the control plane
+
+1. Confirm: `Reachable=False`, reason `NodesSilent`;
+   `status.health.controllerManagerHold` says since when and how many nodes
+   are silent. Workloads on the nodes keep running; the tenant's controllers do
+   not (no new ReplicaSets, no node IPAM) until the hold ends.
+2. Find the broken path: the Gateway listener and routes, DNS of the API
+   hostname, the network between the nodes and the Gateway. Kubelets log
+   their failed lease renewals.
+3. When the nodes reach the API again, Health releases the lease two minutes
+   later and the controller manager starts afresh; no node was tainted, no pod
+   evicted.
+4. If the nodes really are gone (a site lost for good), turn the hold off
+   with `spec.health.holdControllerManager: false`, so the controller manager
+   can mark them and move their pods to the nodes that remain
+   ([controller-manager-hold](decisions/controller-manager-hold.md)).
+
 ### Operator down
 
 Tenants keep running: their pods, their certificates (valid for a year) and
@@ -135,7 +154,7 @@ back. Renewal and backups pause; the `BryggaOperatorDown` alert fires first.
 | `BryggaBackupStale` | the newest snapshot older than two periods | the backup sidecar or the bucket credentials |
 | `BryggaEtcdSpaceNearQuota` | the database above 80% of the quota | compaction is not keeping up, or the tenant writes too much |
 | `BryggaEtcdNoLeader` | a dedicated etcd without a leader for 1 m | quorum or network inside the management cluster |
-| `BryggaControllerManagerHeld` | the hold active for 15 m | nodes cannot reach the control plane |
+| `BryggaControllerManagerHeld` | the hold active for 15 m | most nodes cannot reach the control plane; the tenant's workloads run, its controllers wait |
 | `BryggaUpgradeFailed` | `Progressing=False`, reason `Failed` | the stuck upgrade runbook |
 | `BryggaReconcileErrors` | a controller's error rate above 5% for 15 m | the operator logs, by controller |
 
