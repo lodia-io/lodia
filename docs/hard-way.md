@@ -187,7 +187,9 @@ mk -n "$CP" rollout status deployment/"$CP-scheduler"
 tk -n kube-system get leases
 ```
 
-Two leases, `kube-controller-manager` and `kube-scheduler`, each held by its
+Beside the API server's own identity lease (`apiserver-…`,
+[API server identity](https://kubernetes.io/docs/concepts/architecture/leases/#api-server-identity)),
+two leases, `kube-controller-manager` and `kube-scheduler`, each held by its
 pod: leader election works through the tenant's API. Note
 `--controllers=*,bootstrapsigner,tokencleaner`: the two controllers `kubeadm
 join` depends on are off by default.
@@ -279,7 +281,7 @@ tk wait --for=condition=Ready pod/web --timeout=180s
 tk logs web | head -3                          # API server → kubelet: through the tunnel
 tk exec web -- nginx -v
 tk port-forward pod/web 8080:80 >/dev/null & sleep 2; curl -s localhost:8080 | head -4; kill %1
-tk run dns --image=busybox:1.36 --rm -it --restart=Never -- nslookup kubernetes.default
+tk run dns --image=busybox:1.36 --rm -it --restart=Never -- nslookup kubernetes.default.svc.cluster.local
 tk run api --image=curlimages/curl:8.10.1 --rm -it --restart=Never -- curl -sk https://kubernetes.default/version
 ```
 
@@ -387,7 +389,7 @@ kid "$WORK/sa-k2.key"                                      # K₂: ES256 this ti
 **Build the image into the management cluster** and remember its name:
 
 ```bash
-export SIGNER_IMAGE="$(KO_DOCKER_REPO=kind.local KIND_CLUSTER_NAME="$MGMT" go run github.com/google/ko@v0.19.1 build --base-import-paths ./cmd/brygga-signer)"
+export SIGNER_IMAGE="$(KO_DOCKER_REPO=kind.local KIND_CLUSTER_NAME="$MGMT" go run github.com/google/ko@v0.19.1 build --base-import-paths --platform="linux/$(go env GOARCH)" ./cmd/brygga-signer)"
 echo "$SIGNER_IMAGE"                                       # kind.local/brygga-signer:<digest>
 ```
 
@@ -494,8 +496,10 @@ The API server caches a successful token authentication for ten seconds
 so a K₁ token that was used in those ten seconds outlives K₁ by that much.
 
 Put the API server back with `render "$HW/management/20-apiserver.yaml" | mk
-replace -f -` (the patch is not reversible by `apply`) and delete
-`$CP-sa-keys`.
+replace -f -` (the patch is not reversible by `apply`), delete
+`$CP-sa-keys`, and delete the caller with `tk delete -f
+"$HW/tenant/20-token-caller.yaml"`, so that step 15 measures an idle API
+server.
 
 ## 15. Measure
 
@@ -523,22 +527,26 @@ decision or a `todo.md` entry.
 
 | step | what happened | what it means for Brygga |
 |---|---|---|
+| 11 | The joined node's kubelet exited at start: `unable to load client CA file /work/pki/ca.crt`. kubeadm derives the kubelet's `authentication.x509.clientCAFile` from `certificatesDir` when it is unset ([kubelet.go](https://github.com/kubernetes/kubernetes/blob/v1.35.8/cmd/kubeadm/app/componentconfigs/kubelet.go#L144-L150)), here the kubeadm container's `/work/pki`; `kubeadm.yaml` now sets it to `/etc/kubernetes/pki/ca.crt`, where `kubeadm join` writes the CA ([`caCertPath`](https://kubernetes.io/docs/reference/config-api/kubeadm-config.v1beta4/#kubeadm-k8s-io-v1beta4-JoinConfiguration)) | the Tenant controller writes node paths into `kubelet-config`, never paths of its own: `clientCAFile` is `/etc/kubernetes/pki/ca.crt` |
+| 14a | The serving certificate's serial changed 81 s after the Secret did; every restart count stayed 0 | as expected |
+| 14b | The controller manager lost its lease and restarted 12 s after the hold; no ReplicaSet while held; the ReplicaSet appeared 56 s after the hold stopped | as expected; letting go takes up to the hold's `leaseDurationSeconds` after its last renewal |
+| 14c | nginx logged `sni="konnectivity.tenant-a.example"`, and `kubectl logs` worked through it: the agent sends `--proxy-server-host` as SNI ([server.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.35.0/cmd/agent/app/server.go#L134), [certificates.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.35.0/pkg/util/certificates.go#L65)); Go sends none for an IP address ([`hostnameInSNI`](https://github.com/golang/go/blob/go1.26.10/src/crypto/tls/handshake_client.go#L1305-L1315)) | agents share the Gateway's passthrough listener on 443 and dial it by name ([api-exposure](decisions/api-exposure.md)) |
 | 14d | Found while building the signer, before running the spike: a K₁ token authenticated in the last ten seconds is still accepted that long after K₁ is dropped, because the API server caches successful token authentications for 10 s ([`TokenSuccessCacheTTL`](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/kubeapiserver/options/authentication.go#L168), applied to every token authenticator in [config.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/kubeapiserver/authenticator/config.go#L207-L210)); `TestRotationUnderARunningAPIServer` shows it | K₁ is gone one refresh hint plus ten seconds after stage 3 reaches every replica; the phase 3 gate waits that long, not one refresh hint |
 | 14d | Found while building the signer: the kubelet swaps a Secret volume by repointing `..data` and only then adds the links of new keys ([atomic_writer.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/volume/util/atomic_writer.go#L93-L118)); a reader that opens the files one by one can straddle the swap, and between stages 1 and 2 that reads `signing.key` K₂ without `verify-k1.pub` — a set without K₁ | the signer reads every file through one resolved `..data` ([staged-credential-rotation](decisions/staged-credential-rotation.md)) |
-| 14d | | the switch from `sa.key` keeps the static token valid: expected, because K₁'s ID is derived as kube-apiserver derives it; confirm here |
-| 14d | | zero `FAIL` lines through the three stages, the API server pod and its restart counts unchanged: confirm here |
-| 14d | | how long the kubelet took to refresh the caller's 600 s token (the time between stage 2 and the pod's K₂ kid): measure here; it bounds how soon stage 3 is safe for projected tokens |
+| 14d | The token minted from `sa.key` before the switch still authenticated after it; `/openid/v1/jwks` listed K₁ alone | the switch from `sa.key` keeps every token valid, because K₁'s ID is derived as kube-apiserver derives it |
+| 14d | 228 calls through the three stages, 0 `FAIL`; one API server pod throughout, every restart count 0. The signer loaded each stage 34–39 s after its Secret changed; new tokens followed at once (stage 2), `/openid/v1/jwks` within 34 s (stages 1 and 3). After stage 3 both K₁ tokens were refused | a rotation is three Secret updates and no rollout |
+| 14d | The caller's token moved to K₂ 392 s after stage 2: the kubelet asked for it 513 s after the previous token's `iat`, 80% of 600 s and then the volume's resync | stage 3 is safe for projected tokens 80% of the longest lifetime plus a resync after stage 2: for the default `kube-api-access` token of 3607 s ([claims.go](https://github.com/kubernetes/kubernetes/blob/v1.35.8/pkg/serviceaccount/claims.go#L39)), about 49 minutes |
 | 14d | Open question: how does the PKI controller learn that every API server replica serves the new key set before it switches the signing key (stage 2) or drops K₁? The signer knows only what it loaded; each replica fetches on its own, and `/openid/v1/jwks` answers from whichever replica the request reaches. Each replica exports the timestamp of the set it holds as `apiserver_externaljwt_fetch_keys_data_timestamp` ([metrics.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/serviceaccount/externaljwt/metrics/metrics.go#L50-L58)) | open: decide before the PKI controller builds stage 2; the metric per replica is one candidate, waiting for one refresh hint after every signer reloaded is another |
 
 Measured at idle (step 15):
 
 | container | CPU | memory |
 |---|---|---|
-| kube-apiserver | | |
-| konnectivity-server | | |
-| kube-controller-manager | | |
-| kube-scheduler | | |
-| etcd | | |
+| kube-apiserver | 27m | 184 MiB |
+| konnectivity-server | 1m | 7 MiB |
+| kube-controller-manager | 15m | 48 MiB |
+| kube-scheduler | 3m | 19 MiB |
+| etcd | 12m | 40 MiB |
 
 The gate of phase 0 for this part: step 13 passes, experiments a and b behave
 as expected, spike c has an answer, and the two tables above are filled in.

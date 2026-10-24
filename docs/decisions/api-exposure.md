@@ -122,10 +122,12 @@ a node flag (`--address`, `--node-ip`), which the node's owner passes through
 
 ## Consequences
 
-- Owed to the phase 0 spike: whether the konnectivity agent sends SNI from
-  `--proxy-server-host`, so agents can share the passthrough listener on 443.
-  If it does not, the konnectivity route moves to a dedicated listener port
-  (8132) on the same Gateway, as some projects do.
+- Agents share the passthrough listener on 443: the konnectivity agent sends
+  its `--proxy-server-host` as SNI
+  ([hard way, spike c](../hard-way.md#c-spike-does-the-konnectivity-agent-send-sni)).
+  Go sends no SNI for an IP address
+  ([`hostnameInSNI`](https://github.com/golang/go/blob/go1.26.10/src/crypto/tls/handshake_client.go#L1305-L1315)),
+  so agents dial `konnectivity.<cp>` by name.
 - `apiserver-proxy` is a Brygga image (a small Go binary) that runs
   privileged on every node (`NET_ADMIN` for the address); its scope is
   exactly one address and one listener, and it is in the inventory like
