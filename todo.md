@@ -14,12 +14,16 @@ is a decision — a decision is a file in `docs/decisions/`.
   rollout from certificate renewal.
 - Decide the deletion policy of a dedicated etcd's volumes (`Delete` or
   `Retain`) and of its backups after a `ControlPlane` is deleted; Gardener
-  keeps backups for a configurable retention period.
+  keeps backups for a configurable retention period. etcd-druid keeps both
+  when an `Etcd` is deleted, so either policy is Brygga's code (etcd spike,
+  finding 6).
 - Measure, not assume, the idle footprint of one control plane in phase 1 and
   replace the planning numbers in `docs/operations.md`.
 - etcd-druid's restore keeps the snapshot's revisions (no
   `--bump-revision`); propose the bump upstream in etcd-backup-restore, and
   until then roll the tenant's API server after any restore Brygga detects.
+  The etcd spike measured the stale cache (finding 5); how the Datastore
+  controller detects a restore is still open.
 - etcd-druid's scale at ~1000 `Etcd` objects with its default
   `concurrentSyncs: 3` is not documented; measure in phase 4 or ask the
   maintainers.
@@ -46,3 +50,12 @@ is a decision — a decision is a file in `docs/decisions/`.
 - The signer logs a failed load at error level when it reads a Secret volume
   while the kubelet removes the previous version; the next event reloads the
   complete set. If that noise matters, retry once before logging.
+
+## From the etcd spike (2026-10-24)
+
+- Upstream for etcd-druid: the etcd container's readiness probe takes its
+  scheme from `backup.tls` while the wrapper serves HTTPS whenever client TLS
+  is on; and a failing pre-scale snapshot shows only on its `EtcdOpsTask`, not
+  on the `Etcd` (findings 1 and 4).
+- Upstream for etcd-backup-restore: the sidecar keeps serving its first
+  serving certificate after the Secret changes (finding 3).

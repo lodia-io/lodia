@@ -38,13 +38,13 @@ Scope:
   templates, and it is where the team learns every flag it will automate.
 - The etcd spike: etcd-druid installed from its Helm chart on a plain kind
   cluster with `enableEtcdSpecAutoReconcile`, an `Etcd` of one member with
-  our own CA, snapshots to MinIO. Then: scale to three, lose one member's
-  volume, hibernate with `replicas: 0` and wake, delete the data of a single
-  member and watch the sidecar restore it, and a kube-apiserver on top
-  through all of it. Measured: idle memory and CPU per member and sidecar,
-  snapshot and restore time, time to scale 1 → 3, what assumes Gardener. Its
-  result decides [dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md);
-  the fallback is our own StatefulSet with the etcd-backup-restore sidecar.
+  our own CA, snapshots to an S3-compatible store. Then: scale to three,
+  lose one member's volume, hibernate with `replicas: 0` and wake, delete the
+  data of a single member and watch the sidecar restore it, and a
+  kube-apiserver on top through all of it. Measured: idle memory and CPU per member and sidecar,
+  snapshot and restore time, time to scale 1 → 3, what assumes Gardener.
+  Run on 2026-10-24 ([etcd-spike-2026-10](etcd-spike-2026-10.md)); it decided
+  [dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md).
 - Two smaller spikes on the hand-built control plane: whether the
   konnectivity agent sends SNI from `--proxy-server-host`, so it can share the
   Gateway's passthrough listener on 443

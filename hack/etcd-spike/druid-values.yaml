@@ -1,0 +1,7 @@
+# The etcd component protection webhook stays off, the chart's default.
+image:
+  tag: v0.39.0
+operatorConfig:
+  controllers:
+    etcd:
+      enableEtcdSpecAutoReconcile: true

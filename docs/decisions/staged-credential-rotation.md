@@ -66,8 +66,13 @@ reloads its serving certificate, client CA bundles, kubelet client
 certificate and, per handshake, its etcd client certificate; components read
 their kubeconfigs' certificates from mounted files, which client-go reloads;
 etcd reloads its certificates per connection. A renewal therefore rolls
-nothing, except the konnectivity server's certificate, which is renewed in
-the maintenance window until a reload is proven.
+nothing except two, both in the maintenance window: the konnectivity server's
+certificate, until a reload is proven, and the certificate of etcd's
+backup-restore sidecar, which keeps serving its first one. etcd-druid rolls
+the members only when the `Etcd` names a new Secret, so the PKI controller
+renews etcd's certificates together, under new names: one roll, no API outage
+with three members, about 20 s with one
+([etcd spike](../etcd-spike-2026-10.md), finding 3).
 
 **Rotations**, started with `brygga.segla.io/operation=<name>-start` and,
 where a stage waits for people, completed with `<name>-complete`; phases in
