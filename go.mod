@@ -2,6 +2,8 @@ module github.com/segla-io/brygga
 
 go 1.26.0
 
+toolchain go1.26.10
+
 require (
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-jose/go-jose/v4 v4.1.6
