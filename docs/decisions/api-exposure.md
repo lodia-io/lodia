@@ -1,6 +1,6 @@
 # Control planes are exposed through a shared Gateway by SNI; pods reach their API through a node-local proxy and a fixed advertise address
 
-Proposed 2026-10-23; not decided yet. Not built.
+Decided 2026-10-25. Not built.
 
 ## Decision
 
@@ -42,8 +42,9 @@ already runs in production:
 3. For each connection it opens TLS to `<hostnames.tunnel>:443` with that
    SNI, verifying the tunnel certificate against the cluster CA, and copies
    the pod's bytes inside. The pod's own TLS session with the API server
-   travels untouched; the API server's serving certificate carries
-   `10.96.0.1` (the `kubernetes` ClusterIP) as a SAN, as always.
+   travels untouched; the API server's serving certificate carries the
+   `kubernetes` ClusterIP, the first address of the tenant's service range,
+   as a SAN, as always.
 4. The Gateway terminates the outer TLS on the tenant's `ListenerSet`
    listener, whose certificate PKI issues from the cluster CA, and its
    `TLSRoute` in `Terminate` mode forwards the inner stream to the API

@@ -1,6 +1,6 @@
 # A ControlPlane can run Compact: every control plane component in one pod, for development and free tiers
 
-Proposed 2026-10-23; not decided yet. Not built.
+Decided 2026-10-25. Not built.
 
 ## Decision
 

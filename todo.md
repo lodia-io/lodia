@@ -59,3 +59,10 @@ is a decision — a decision is a file in `docs/decisions/`.
   on the `Etcd` (findings 1 and 4).
 - Upstream for etcd-backup-restore: the sidecar keeps serving its first
   serving certificate after the Secret changes (finding 3).
+
+## From deciding the design (2026-10-25)
+
+- `KubeconfigRequest`'s schema refuses only `system:masters`;
+  [short-lived-kubeconfigs](docs/decisions/short-lived-kubeconfigs.md) now
+  refuses every `user` and group under `system:`. The rule and its envtest
+  cases come with the controller that answers requests.

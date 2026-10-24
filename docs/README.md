@@ -65,7 +65,7 @@ in [`api/examples/`](api/examples/).
 | PKI | Secrets with certificates, keys and kubeconfigs | `CertificatesReady` | — |
 | Datastore | the etcd resource (dedicated) or a user and role (shared); backups and defragmentation | `DatastoreReady` | — |
 | Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady` | `CertificatesReady`, `DatastoreReady` |
-| Tenant | objects inside the tenant cluster, with an inventory | `AddonsReady` | `APIServerReady` |
+| Tenant | objects inside the tenant cluster, with an inventory | `AddonsApplied`, `AddonsAvailable` | `APIServerReady` |
 | Health | status, and the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable` | `APIServerReady` |
 | Lifecycle | `status.target`, `Progressing`, `Ready`; the pre-upgrade `Backup` | `Progressing` | the others |
 
@@ -92,7 +92,7 @@ sequenceDiagram
   WL->>API: APIServerReady=True
   API-->>TN: event
   TN->>T: apply bootstrap objects, kube-proxy, CoreDNS, agents
-  TN->>API: AddonsReady=True
+  TN->>API: AddonsApplied=True
   Note over U,T: Lifecycle sets Ready, then the owner runs kubeadm join on nodes
 ```
 
@@ -352,9 +352,10 @@ writes stop for the copy.
 
 ### Deletion
 
-The finalizer takes a final snapshot when a backup store exists, lets the
-owner references garbage-collect the namespace objects, and leaves volumes
-and snapshots to the class's reclaim and retention settings.
+The Datastore controller's finalizer takes a final snapshot when a backup
+store exists, lets the owner references garbage-collect the namespace
+objects, and leaves volumes and snapshots to the class's reclaim and
+retention settings.
 
 ## Health
 

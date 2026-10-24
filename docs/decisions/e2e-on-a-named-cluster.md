@@ -1,6 +1,6 @@
 # End-to-end tests run only against a cluster named on the command line, and never the current kube context
 
-Proposed 2026-10-23; not decided yet. The refusal and `make e2e` are built;
+Decided 2026-10-25. The refusal and `make e2e` are built;
 kubeadm workers, upgrade tests and conformance come with phase 1.
 
 ## Decision

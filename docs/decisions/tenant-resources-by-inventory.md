@@ -1,6 +1,6 @@
 # Objects inside a tenant cluster are applied with an inventory and pruned; Brygga keeps no informers in tenant clusters
 
-Proposed 2026-10-23; not decided yet. Not built.
+Decided 2026-10-25. Not built.
 
 ## Decision
 
@@ -12,9 +12,11 @@ Proposed 2026-10-23; not decided yet. Not built.
 - It applies on every change of the `ControlPlane` or of `status.target`, and
   again on a timer (every 10 minutes by default), so a deleted or hand-edited
   object comes back within that period.
-- Readiness of in-tenant workloads (kube-proxy, CoreDNS, konnectivity-agent,
+- `AddonsApplied` says the inventory is applied and pruned. The readiness of
+  in-tenant workloads (kube-proxy, CoreDNS, konnectivity-agent,
   apiserver-proxy) is read with direct GETs at apply time and on the timer,
-  and summarised in `AddonsReady`.
+  and reported in `AddonsAvailable`, which `Ready` does not wait for: their
+  pods need the owner's nodes and CNI, which a new cluster does not have yet.
 - Brygga opens no watch into a tenant cluster. The only long-lived
   connections into tenants are the konnectivity tunnels the API servers own.
 - Fields a tenant may legitimately set on Brygga's objects (replica counts of

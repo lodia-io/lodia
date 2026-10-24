@@ -1,6 +1,6 @@
 # Credentials rotate in stages, and the routine ones never touch a node: the trust anchor is split from the client CA, and ServiceAccount tokens are signed by a sidecar
 
-Proposed 2026-10-23; not decided yet. `brygga-signer` is built; the PKI and
+Decided 2026-10-25. `brygga-signer` is built; the PKI and
 Workloads controllers and the rotation operations are not.
 
 ## Decision

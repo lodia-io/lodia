@@ -1,6 +1,6 @@
 # One ControlPlane object describes one tenant cluster; four small objects describe storage classes, shared stores, access and snapshots
 
-Proposed 2026-10-23; not decided yet. The five kinds are built as types and
+Decided 2026-10-25. The five kinds are built as types and
 CRDs; no controller acts on them yet.
 
 ## Decision
@@ -25,15 +25,17 @@ Rules that hold across all of them:
   `ownerReference` to it and the label `brygga.segla.io/control-plane: <name>`;
   deleting the `ControlPlane` garbage-collects it. The dedicated etcd's
   volumes and its backups follow the `DatastoreClass` reclaim policy.
-- A `ControlPlane` has one finalizer, `brygga.segla.io/controlplane`; deletion
-  takes a final snapshot when backups are configured, then lets garbage
-  collection run.
+- A `ControlPlane` has one finalizer, `brygga.segla.io/controlplane`, which the
+  Datastore controller holds: deletion takes a final snapshot when backups are
+  configured, then lets garbage collection run.
 - Imperative operations that are not desired state — starting or completing a
   credential rotation — are requested through the annotation
-  `brygga.segla.io/operation`, which Brygga removes when it has recorded the
-  request in `status`. The same pattern Gardener uses with
-  `gardener.cloud/operation`
-  ([credentials rotation](https://github.com/gardener/gardener/blob/master/docs/usage/shoot-operations/shoot_credentials_rotation.md)).
+  `brygga.segla.io/operation`. Brygga never removes it: it acts once on each
+  value it has not handled and records that value in `status`, so a GitOps
+  tool that keeps the annotation in Git never repeats an operation, and
+  running one again takes a new value (`<operation>@<anything>`). Flux
+  triggers a reconcile the same way
+  ([`reconcile.fluxcd.io/requestedAt`](https://fluxcd.io/flux/components/kustomize/kustomizations/#triggering-a-reconcile)).
 - Validation and defaults live in the CRD schema (CEL and defaults), not in a
   webhook ([no-admission-webhooks](no-admission-webhooks.md)).
 
@@ -59,6 +61,11 @@ examples are in [`docs/api/examples/`](../api/examples/).
   but every caller re-implements the ordering.
 - Putting etcd settings inline in every `ControlPlane` — the same storage and
   backup settings repeated per tenant drift apart; a class is edited once.
+- Removing the operation annotation once handled, as Gardener does with
+  `gardener.cloud/operation`
+  ([credentials rotation](https://github.com/gardener/gardener/blob/master/docs/usage/shoot-operations/shoot_credentials_rotation.md))
+  — a GitOps tool that applies the object puts it back, and the operation
+  runs again.
 - A `JoinToken` resource — a bootstrap token is a Secret in the tenant
   cluster that any admin kubeconfig can create with `kubeadm token create`;
   Brygga documents the command instead of wrapping it.

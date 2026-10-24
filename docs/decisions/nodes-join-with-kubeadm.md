@@ -1,6 +1,6 @@
 # Nodes join with `kubeadm join`; Brygga writes the bootstrap objects itself and never imports k8s.io/kubernetes
 
-Proposed 2026-10-23; not decided yet. Not built.
+Decided 2026-10-25. Not built.
 
 ## Decision
 
