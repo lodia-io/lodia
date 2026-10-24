@@ -62,11 +62,11 @@ in [`api/examples/`](api/examples/).
 
 | controller | writes | condition | needs |
 |---|---|---|---|
-| PKI | Secrets with certificates, keys and kubeconfigs | `CertificatesReady` | `status.endpoint` |
+| PKI | Secrets with certificates, keys and kubeconfigs; the tenant's bindings for Brygga, the admin group and the kubelet client | `CertificatesReady`, `AccessReady` | `status.endpoint`; `APIServerReady` for the bindings |
 | Datastore | the etcd resource (dedicated) or a user and role (shared); backups and defragmentation | `DatastoreReady` | — |
 | Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady` | `CertificatesReady`, `DatastoreReady` |
-| Tenant | objects inside the tenant cluster, with an inventory | `AddonsApplied`, `AddonsAvailable` | `APIServerReady` |
-| Health | status, and the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable` | `APIServerReady` |
+| Tenant | objects inside the tenant cluster, with an inventory | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
+| Health | status, and the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable` | `AccessReady` |
 | Lifecycle | `status.target`, `Progressing`, `Ready`; the pre-upgrade `Backup` | `Progressing` | the others |
 
 Each controller has its own queue and field manager, reads `spec`,
@@ -91,6 +91,8 @@ sequenceDiagram
   DS->>API: DatastoreReady=True
   API-->>WL: both True
   WL->>API: APIServerReady=True
+  PKI->>T: bindings, with a ten-minute system:masters certificate
+  PKI->>API: AccessReady=True
   API-->>TN: event
   TN->>T: apply bootstrap objects, kube-proxy, CoreDNS, agents
   TN->>API: AddonsApplied=True
@@ -150,6 +152,7 @@ ConfigMaps, who consumes them, and what a change does:
 | `<cp>-konnectivity-server`, `<cp>-konnectivity-kubeconfig` | konnectivity-server | the API server pod rolls, in the maintenance window |
 | `<cp>-controller-manager-kubeconfig`, `<cp>-scheduler-kubeconfig` | each its own; certificates referenced as files | reloaded by client-go |
 | `<cp>-admin-kubeconfig` | the platform; `brygga:cluster-admins` | nothing restarts |
+| `<cp>-brygga-kubeconfig` (`brygga:operator`, dialling the in-namespace Service) | Brygga's PKI, Tenant and Health inside the tenant | nothing restarts |
 | ConfigMap `authentication-config` | API server | reloaded, except its anonymous section |
 | ConfigMaps `egress-selector`, `audit-policy`, `admission-config` / `scheduler-config` | API server / scheduler | that component restarts |
 
@@ -251,7 +254,7 @@ The kubeadm objects use kubeadm's own names, so `kubeadm join` and
 | CoreDNS: ServiceAccount, ClusterRole and binding, ConfigMap, Deployment, Service `kube-dns` at the tenth service address | cluster DNS, the version kubeadm pins for the minor |
 | konnectivity-agent: ServiceAccount, DaemonSet, Role to list and watch server leases in `kube-system` | the tunnel to every API server replica |
 | `apiserver-proxy` DaemonSet | in-cluster API access in `gateway` mode ([api-exposure](decisions/api-exposure.md)) |
-| ClusterRoleBindings for `brygga:operator` and `brygga:cluster-admins` (→ `cluster-admin`), `brygga:kubelet-api-admins` (→ `system:kubelet-api-admin`), `system:konnectivity-server` (→ `system:auth-delegator`) with its lease Role | the identities above |
+| ClusterRoleBinding for `system:konnectivity-server` (→ `system:auth-delegator`) with its lease Role; the bindings of `brygga:operator` and `brygga:cluster-admins` (→ `cluster-admin`) and `brygga:kubelet-api-admins` (→ `system:kubelet-api-admin`) are PKI's, since nothing can apply them before they exist (`AccessReady`) | the identities above |
 | `ValidatingAdmissionPolicy` and binding `brygga-write-lock`, only while a lock is requested | refusing writes during a migration, without a webhook |
 | ConfigMap `kube-system/brygga-inventory` | what to prune next time |
 

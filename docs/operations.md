@@ -34,6 +34,7 @@ itself and the support policy. Installation is in
 | API calls fail with `etcdserver: mvcc: database space exceeded` | the [space quota](#etcd-space-quota) runbook; `status.datastore.dbSizeBytes` against the class quota |
 | `APIServerReady=False`, `RollingOut` for long | the kube-apiserver Deployment's events; a new replica failing `/readyz` (often a flag in `extraArgs` that the new minor removed) |
 | `CertificatesReady=False`, `CAExpiring` | the CA is within its renewal margin; start a [CA rotation](#forced-ca-rotation) |
+| `AccessReady=False`, `Binding` | a ClusterRoleBinding of Brygga, the admin group or the kubelet client is missing in the tenant; PKI recreates it with a ten-minute `system:masters` certificate on its next pass |
 | `Reachable=False`, `NodesSilent`; in the tenant, the Lease `kube-system/kube-controller-manager` held by `brygga` | most nodes cannot reach the API, so Health holds the controller manager; the [nodes cut off](#nodes-cut-off-from-the-control-plane) runbook |
 | `Reachable=False`, `HoldBlocked` | nodes are silent but another component holds the controller manager's lease (`status.health.controllerManagerHold.blockedBy`), for example a platform's own watchdog; run one of the two, not both |
 | `Reachable=False`, `ExternalProbeFailed`, nodes fine | the public endpoint from the management cluster's side: Gateway listener, route status, certificate SANs |

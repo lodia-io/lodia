@@ -28,6 +28,12 @@ Decided 2026-10-25. Not built.
   admin group and the kubelet client are created at bootstrap with a
   `system:masters` certificate PKI issues for ten minutes, uses and discards;
   the same certificate is the break-glass path when a binding was deleted.
+  PKI does this once the API server is ready, checks the bindings with
+  Brygga's own credential (`brygga:operator`, in
+  `<name>-brygga-kubeconfig`, which dials the in-namespace Service) on every
+  pass, and reports them in its condition `AccessReady`, which Tenant and
+  Health wait on; `CertificatesReady` never waits for the API server, so the
+  API server never waits for its own bindings.
 
 ## Why
 
