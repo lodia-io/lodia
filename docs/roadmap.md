@@ -36,6 +36,7 @@ Scope:
   then `kubeadm join` of a container running the kind node image. Its
   *What we learned* table feeds the decisions, its files become the first
   templates, and it is where the team learns every flag it will automate.
+  Run on 2026-10-25: [What we learned](hard-way.md#what-we-learned).
 - The etcd spike: etcd-druid installed from its Helm chart on a plain kind
   cluster with `enableEtcdSpecAutoReconcile`, an `Etcd` of one member with
   our own CA, snapshots to an S3-compatible store. Then: scale to three,

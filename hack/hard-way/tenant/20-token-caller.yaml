@@ -31,7 +31,7 @@ spec:
               -d '{"apiVersion":"authentication.k8s.io/v1","kind":"SelfSubjectReview"}' \
               https://kubernetes.default.svc/apis/authentication.k8s.io/v1/selfsubjectreviews)
             if [ "$code" = 201 ]; then
-              echo "$(date -u +%T) ok $(grep -o '"username":"[^"]*"' /tmp/review)"
+              echo "$(date -u +%T) ok $(grep -o '"username": *"[^"]*"' /tmp/review)"
             else
               echo "$(date -u +%T) FAIL $code"
             fi
