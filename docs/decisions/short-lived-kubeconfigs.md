@@ -9,8 +9,9 @@ Decided 2026-10-25. Not built.
   set by the operator configuration). A schema rule refuses a user or group
   that starts with `system:`, the prefix Kubernetes keeps for its own
   identities: nodes, components, ServiceAccounts
-  ([authentication configuration](https://kubernetes.io/docs/reference/access-authn-authz/authentication/#api-server-authn-config)).
-  The PKI controller issues a client
+  ([authentication configuration](https://kubernetes.io/docs/reference/access-authn-authz/authentication/#api-server-authn-config)),
+  and a user that starts with `brygga:`, where Brygga's own identity,
+  `brygga:operator`, lives. The PKI controller issues a client
   certificate with that lifetime, writes a kubeconfig into a Secret named in
   `status.secretRef`, and deletes both the Secret and the request after
   expiry. Creating a `KubeconfigRequest` needs `create` on that resource in

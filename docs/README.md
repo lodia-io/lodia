@@ -173,7 +173,7 @@ role, the less privileged option the
 [certificate best practices](https://kubernetes.io/docs/setup/best-practices/certificates/)
 recommend; konnectivity-server runs as `system:konnectivity-server`, allowed
 to create TokenReviews and nothing else; the controller manager and scheduler
-use their standard identities; Brygga reaches the tenant as `system:brygga`,
+use their standard identities; Brygga reaches the tenant as `brygga:operator`,
 bound to `cluster-admin` because it manages RBAC; people and platforms use the
 admin group or a `KubeconfigRequest`
 ([decision](decisions/short-lived-kubeconfigs.md)). The bindings themselves
@@ -250,7 +250,7 @@ The kubeadm objects use kubeadm's own names, so `kubeadm join` and
 | CoreDNS: ServiceAccount, ClusterRole and binding, ConfigMap, Deployment, Service `kube-dns` at the tenth service address | cluster DNS, the version kubeadm pins for the minor |
 | konnectivity-agent: ServiceAccount, DaemonSet, Role to list and watch server leases in `kube-system` | the tunnel to every API server replica |
 | `apiserver-proxy` DaemonSet | in-cluster API access in `gateway` mode ([api-exposure](decisions/api-exposure.md)) |
-| ClusterRoleBindings for `system:brygga` and `brygga:cluster-admins` (→ `cluster-admin`), `brygga:kubelet-api-admins` (→ `system:kubelet-api-admin`), `system:konnectivity-server` (→ `system:auth-delegator`) with its lease Role | the identities above |
+| ClusterRoleBindings for `brygga:operator` and `brygga:cluster-admins` (→ `cluster-admin`), `brygga:kubelet-api-admins` (→ `system:kubelet-api-admin`), `system:konnectivity-server` (→ `system:auth-delegator`) with its lease Role | the identities above |
 | `ValidatingAdmissionPolicy` and binding `brygga-write-lock`, only while a lock is requested | refusing writes during a migration, without a webhook |
 | ConfigMap `kube-system/brygga-inventory` | what to prune next time |
 
@@ -381,7 +381,7 @@ operator.
   and ConfigMaps by label, Gateway API routes and listener sets, and etcd-druid's `Etcd`.
 - Every field Brygga writes has a field manager `brygga/<controller>`;
   another manager's fields on the same object are left alone.
-- Inside a tenant, Brygga is `system:brygga`; its objects carry
+- Inside a tenant, Brygga is `brygga:operator`; its objects carry
   `app.kubernetes.io/managed-by: brygga` and are listed in the inventory.
 - No cross-tenant object: every Secret, Service and route is in the tenant's
   namespace, and NetworkPolicies keep its pods to their own arrows. A

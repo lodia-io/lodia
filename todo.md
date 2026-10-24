@@ -64,5 +64,6 @@ is a decision — a decision is a file in `docs/decisions/`.
 
 - `KubeconfigRequest`'s schema refuses only `system:masters`;
   [short-lived-kubeconfigs](docs/decisions/short-lived-kubeconfigs.md) now
-  refuses every `user` and group under `system:`. The rule and its envtest
-  cases come with the controller that answers requests.
+  refuses every user and group under `system:` and every user under
+  `brygga:`. The rule and its envtest cases come with the controller that
+  answers requests.
