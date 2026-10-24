@@ -1,7 +1,7 @@
 # Every tenant gets its own etcd, run by etcd-druid; a shared etcd is an opt-in for density
 
-Proposed 2026-10-23; not decided yet. The phase 0 spike (2026-10-24) found
-etcd-druid fit ([etcd spike](../etcd-spike-2026-10.md)). Not built.
+Decided 2026-10-24. The phase 0 spike found etcd-druid fit
+([etcd spike](../etcd-spike-2026-10.md)). Not built.
 
 ## Decision
 
@@ -102,9 +102,8 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
 - etcd-io/etcd-operator — the official home of an etcd operator and the one
   to watch, but pre-release and without backups; re-evaluated when its
   backups land.
-- Our own StatefulSet with the etcd-backup-restore sidecar — the fallback if
-  the spike rejects etcd-druid; it covers one member well and three only
-  statically.
+- Our own StatefulSet with the etcd-backup-restore sidecar — it covers one
+  member well and three only statically.
 - kine with SQL or NATS — a second storage semantics with no auth API, so
   isolation means a database per tenant; nothing it offers outweighs that
   for us.
