@@ -1,6 +1,6 @@
 # While most of a tenant's nodes are silent, Brygga holds its controller manager's leader lease
 
-Proposed 2026-10-23; not decided yet. Not built.
+Decided 2026-10-25. Not built.
 
 ## Decision
 

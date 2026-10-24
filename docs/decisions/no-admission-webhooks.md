@@ -1,6 +1,6 @@
 # Brygga runs no admission webhooks: validation and defaults live in the CRD schema
 
-Proposed 2026-10-23; not decided yet. The schema rules and defaults are
+Decided 2026-10-25. The schema rules and defaults are
 built; the conditions and the tenant write lock come with their controllers.
 
 ## Decision

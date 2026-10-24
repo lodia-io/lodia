@@ -1,12 +1,17 @@
 # People get short-lived kubeconfigs through KubeconfigRequest; the standing admin credential belongs to a revocable group, not to system:masters
 
-Proposed 2026-10-23; not decided yet. Not built.
+Decided 2026-10-25. Not built.
 
 ## Decision
 
 - A person who needs access creates a `KubeconfigRequest` naming the
   `ControlPlane`, the groups to carry and an expiration (default 1 h, maximum
-  set by the operator configuration). The PKI controller issues a client
+  set by the operator configuration). A schema rule refuses a user or group
+  that starts with `system:`, the prefix Kubernetes keeps for its own
+  identities: nodes, components, ServiceAccounts
+  ([authentication configuration](https://kubernetes.io/docs/reference/access-authn-authz/authentication/#api-server-authn-config)),
+  and a user that starts with `brygga:`, where Brygga's own identity,
+  `brygga:operator`, lives. The PKI controller issues a client
   certificate with that lifetime, writes a kubeconfig into a Secret named in
   `status.secretRef`, and deletes both the Secret and the request after
   expiry. Creating a `KubeconfigRequest` needs `create` on that resource in
@@ -23,6 +28,12 @@ Proposed 2026-10-23; not decided yet. Not built.
   admin group and the kubelet client are created at bootstrap with a
   `system:masters` certificate PKI issues for ten minutes, uses and discards;
   the same certificate is the break-glass path when a binding was deleted.
+  PKI does this once the API server is ready, checks the bindings with
+  Brygga's own credential (`brygga:operator`, in
+  `<name>-brygga-kubeconfig`, which dials the in-namespace Service) on every
+  pass, and reports them in its condition `AccessReady`, which Tenant and
+  Health wait on; `CertificatesReady` never waits for the API server, so the
+  API server never waits for its own bindings.
 
 ## Why
 

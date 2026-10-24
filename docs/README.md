@@ -62,15 +62,16 @@ in [`api/examples/`](api/examples/).
 
 | controller | writes | condition | needs |
 |---|---|---|---|
-| PKI | Secrets with certificates, keys and kubeconfigs | `CertificatesReady` | — |
+| PKI | Secrets with certificates, keys and kubeconfigs; the tenant's bindings for Brygga, the admin group and the kubelet client | `CertificatesReady`, `AccessReady` | `status.endpoint`; `APIServerReady` for the bindings |
 | Datastore | the etcd resource (dedicated) or a user and role (shared); backups and defragmentation | `DatastoreReady` | — |
 | Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady` | `CertificatesReady`, `DatastoreReady` |
-| Tenant | objects inside the tenant cluster, with an inventory | `AddonsReady` | `APIServerReady` |
-| Health | status, and the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable` | `APIServerReady` |
+| Tenant | objects inside the tenant cluster, with an inventory | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
+| Health | status, and the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable` | `AccessReady` |
 | Lifecycle | `status.target`, `Progressing`, `Ready`; the pre-upgrade `Backup` | `Progressing` | the others |
 
-Each controller has its own queue and field manager, reads only `spec` and
-`status.target`, and reports through its own condition; none calls another
+Each controller has its own queue and field manager, reads `spec`,
+`status.target` and the endpoint Workloads publishes, and reports through its
+own condition; none calls another
 ([decision](decisions/independent-controllers.md)). The cache is scoped to
 labelled objects, with metadata only for Secrets.
 
@@ -90,9 +91,11 @@ sequenceDiagram
   DS->>API: DatastoreReady=True
   API-->>WL: both True
   WL->>API: APIServerReady=True
+  PKI->>T: bindings, with a ten-minute system:masters certificate
+  PKI->>API: AccessReady=True
   API-->>TN: event
   TN->>T: apply bootstrap objects, kube-proxy, CoreDNS, agents
-  TN->>API: AddonsReady=True
+  TN->>API: AddonsApplied=True
   Note over U,T: Lifecycle sets Ready, then the owner runs kubeadm join on nodes
 ```
 
@@ -143,12 +146,13 @@ ConfigMaps, who consumes them, and what a change does:
 | `<cp>-apiserver-serving`, `<cp>-apiserver-kubelet-client` | API server | reloaded (the kubelet client certificate for new connections) |
 | `<cp>-front-proxy-ca`, `<cp>-front-proxy-client` | API server, aggregated APIs | the CA is reloaded; the client certificate restarts the API server until a reload is proven |
 | `<cp>-etcd-ca`, `<cp>-apiserver-etcd-client` | API server | the client certificate is read per connection; a new etcd CA restarts the API server (`--etcd-cafile` is read once) |
-| `<cp>-etcd-server`, `<cp>-etcd-peer`, `<cp>-etcd-backup-restore` | etcd and its backup-restore sidecar, through etcd-druid | renewed under new names, since the sidecar keeps its first certificate and etcd-druid rolls the members only for a new name: no API outage with three members, about 20 s with one ([etcd spike](etcd-spike-2026-10.md)) |
+| `<cp>-etcd-{ca,server,client,peer,backup-restore}-<g>`, one generation `g` per renewal, labelled `brygga.segla.io/etcd-certificates: "<g>"` | etcd, its backup-restore sidecar and etcd-druid's client, through the `Etcd`, which Datastore points at the newest complete generation | renewed as the next generation, since the sidecar keeps its first certificate and etcd-druid rolls the members only for a new name: no API outage with three members, about 20 s with one ([etcd spike](etcd-spike-2026-10.md)); PKI keeps the previous generation and deletes older ones |
 | `<cp>-sa-keys` (`signing.key` and the `verify-*.pub` keys published beside it) | `brygga-signer` sidecar | reloaded by the sidecar; the API server fetches the keys again within the signer's refresh hint and does not restart |
 | `<cp>-encryption-config` | API server | reloaded every minute (automatic reload) |
 | `<cp>-konnectivity-server`, `<cp>-konnectivity-kubeconfig` | konnectivity-server | the API server pod rolls, in the maintenance window |
 | `<cp>-controller-manager-kubeconfig`, `<cp>-scheduler-kubeconfig` | each its own; certificates referenced as files | reloaded by client-go |
 | `<cp>-admin-kubeconfig` | the platform; `brygga:cluster-admins` | nothing restarts |
+| `<cp>-brygga-kubeconfig` (`brygga:operator`, dialling the in-namespace Service) | Brygga's PKI, Tenant and Health inside the tenant | nothing restarts |
 | ConfigMap `authentication-config` | API server | reloaded, except its anonymous section |
 | ConfigMaps `egress-selector`, `audit-policy`, `admission-config` / `scheduler-config` | API server / scheduler | that component restarts |
 
@@ -173,7 +177,7 @@ role, the less privileged option the
 [certificate best practices](https://kubernetes.io/docs/setup/best-practices/certificates/)
 recommend; konnectivity-server runs as `system:konnectivity-server`, allowed
 to create TokenReviews and nothing else; the controller manager and scheduler
-use their standard identities; Brygga reaches the tenant as `system:brygga`,
+use their standard identities; Brygga reaches the tenant as `brygga:operator`,
 bound to `cluster-admin` because it manages RBAC; people and platforms use the
 admin group or a `KubeconfigRequest`
 ([decision](decisions/short-lived-kubeconfigs.md)). The bindings themselves
@@ -250,7 +254,7 @@ The kubeadm objects use kubeadm's own names, so `kubeadm join` and
 | CoreDNS: ServiceAccount, ClusterRole and binding, ConfigMap, Deployment, Service `kube-dns` at the tenth service address | cluster DNS, the version kubeadm pins for the minor |
 | konnectivity-agent: ServiceAccount, DaemonSet, Role to list and watch server leases in `kube-system` | the tunnel to every API server replica |
 | `apiserver-proxy` DaemonSet | in-cluster API access in `gateway` mode ([api-exposure](decisions/api-exposure.md)) |
-| ClusterRoleBindings for `system:brygga` and `brygga:cluster-admins` (→ `cluster-admin`), `brygga:kubelet-api-admins` (→ `system:kubelet-api-admin`), `system:konnectivity-server` (→ `system:auth-delegator`) with its lease Role | the identities above |
+| ClusterRoleBinding for `system:konnectivity-server` (→ `system:auth-delegator`) with its lease Role; the bindings of `brygga:operator` and `brygga:cluster-admins` (→ `cluster-admin`) and `brygga:kubelet-api-admins` (→ `system:kubelet-api-admin`) are PKI's, since nothing can apply them before they exist (`AccessReady`) | the identities above |
 | `ValidatingAdmissionPolicy` and binding `brygga-write-lock`, only while a lock is requested | refusing writes during a migration, without a webhook |
 | ConfigMap `kube-system/brygga-inventory` | what to prune next time |
 
@@ -352,9 +356,10 @@ writes stop for the copy.
 
 ### Deletion
 
-The finalizer takes a final snapshot when a backup store exists, lets the
-owner references garbage-collect the namespace objects, and leaves volumes
-and snapshots to the class's reclaim and retention settings.
+The Datastore controller's finalizer takes a final snapshot when a backup
+store exists, lets the owner references garbage-collect the namespace
+objects, and leaves volumes and snapshots to the class's reclaim and
+retention settings.
 
 ## Health
 
@@ -380,7 +385,7 @@ operator.
   and ConfigMaps by label, Gateway API routes and listener sets, and etcd-druid's `Etcd`.
 - Every field Brygga writes has a field manager `brygga/<controller>`;
   another manager's fields on the same object are left alone.
-- Inside a tenant, Brygga is `system:brygga`; its objects carry
+- Inside a tenant, Brygga is `brygga:operator`; its objects carry
   `app.kubernetes.io/managed-by: brygga` and are listed in the inventory.
 - No cross-tenant object: every Secret, Service and route is in the tenant's
   namespace, and NetworkPolicies keep its pods to their own arrows. A
@@ -423,7 +428,7 @@ it from values):
 | `fleet.maxConcurrentRollouts` | tenants rolling Brygga-initiated changes at once | 5 |
 | `tenant.applyInterval` | the inventory re-apply period | 10m |
 | `health.silentAfter`, `health.holdFraction`, `health.releaseAfter` | when a node counts as silent, the share of silent nodes that starts the hold, how long the nodes must be back before it ends | 20s, 0.6, 2m |
-| `pki.leafLifetime`, `pki.caLifetime` | | 1 year, 10 years |
+| `pki.leafLifetime`, `pki.caLifetime`, `pki.trustAnchorLifetime` | leaf certificates and the kubelet signer; every CA but the cluster CA; the cluster CA ([staged-credential-rotation](decisions/staged-credential-rotation.md)) | 1 year, 5 years, 10 years |
 | `kubeconfigRequests.maxExpiration` | | 24h |
 | `defaults.resources.<component>` | requests and limits per component | measured in phase 1 |
 

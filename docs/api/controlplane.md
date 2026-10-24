@@ -55,7 +55,7 @@ Examples: [`examples/`](examples/).
 | field | written by | meaning |
 |---|---|---|
 | `observedGeneration` | Lifecycle | the last `metadata.generation` every controller has fully processed |
-| `conditions[]` | each controller its own | `CertificatesReady`, `DatastoreReady`, `APIServerReady`, `AddonsReady`, `Reachable`, `Progressing`, `Hibernated`, `Ready`; each with `reason`, `message`, `observedGeneration` |
+| `conditions[]` | each controller its own | `CertificatesReady`, `DatastoreReady`, `APIServerReady`, `AccessReady`, `AddonsApplied`, `AddonsAvailable`, `Reachable`, `Progressing`, `Hibernated`, `Ready`; each with `reason`, `message`, `observedGeneration` |
 | `target.version` | Lifecycle | the Kubernetes version being rolled now; one minor at a time towards `spec.version` |
 | `target.operatorVersion` | Lifecycle | the Brygga version whose templates this tenant's pods are rendered with |
 | `target.hibernated` | Lifecycle | the desired sleep state |
@@ -63,7 +63,7 @@ Examples: [`examples/`](examples/).
 | `target.reason`, `target.scheduledFor` | Lifecycle | why the target lags `spec`: a closed window, the fleet limit, a failed step |
 | `kubernetes.version` | Lifecycle | the version every component runs |
 | `kubernetes.upgrade.{from, to, step, startedAt, message}` | Lifecycle | present while an upgrade runs or is stuck |
-| `endpoint.{host, port}` | Workloads | the public endpoint, as in the admin kubeconfig |
+| `endpoint.{host, port}` | Workloads | the public endpoint, published as soon as the Service has an address; PKI puts it into the serving certificate and the kubeconfigs |
 | `endpoint.internal` | Workloads | the in-namespace Service, `https://<name>-kube-apiserver.<ns>.svc:443` |
 | `credentials.adminKubeconfigSecretRef` | PKI | `<name>-admin-kubeconfig` |
 | `credentials.caBundleSecretRef` | PKI | `<name>-ca-bundle`: the CAs a client must trust now (two during a rotation) |
@@ -81,8 +81,10 @@ Examples: [`examples/`](examples/).
 | `CertificatesReady` | every certificate, key and kubeconfig exists and is valid for more than its renewal margin | `Issuing`, `RotationInProgress`, `CAExpiring` |
 | `DatastoreReady` | the etcd (or the tenant's prefix in a shared store) accepts writes | `Provisioning`, `QuorumLost`, `Restoring`, `DatastoreClassNotFound`, `DatastoreNotFound`, `Hibernated` |
 | `APIServerReady` | all API server replicas answer `/readyz`; controller manager and scheduler have leaders | `WaitingForCertificates`, `WaitingForDatastore`, `RollingOut`, `Unhealthy`, `Hibernated` |
-| `AddonsReady` | the inventory is applied and kube-proxy, CoreDNS and the agents report ready | `WaitingForAPIServer`, `Applying`, `RolloutPending` |
+| `AccessReady` | the tenant's ClusterRoleBindings for `brygga:operator`, `brygga:cluster-admins` and `brygga:kubelet-api-admins` exist, checked with `brygga:operator` | `WaitingForAPIServer`, `Binding` |
+| `AddonsApplied` | the inventory is applied and pruned | `WaitingForAPIServer`, `Applying` |
+| `AddonsAvailable` | kube-proxy, CoreDNS and the agents report ready; not part of `Ready`, since their pods need the owner's nodes | `RolloutPending` |
 | `Reachable` | the public endpoint answers `/readyz` and nodes' leases are fresh | `ExternalProbeFailed`, `NodesSilent` (the controller manager is held), `HoldBlocked` (nodes silent, another holder keeps the lease), `Hibernated` |
 | `Progressing` | an upgrade, rotation stage, hibernation transition or deferred rollout is running | `Idle`, `WaitingForWindow`, `FleetLimit`, `Failed`, `Paused` |
 | `Hibernated` | every component is scaled to zero and the data is kept | `Awake`, `FallingAsleep`, `WakingUp` |
-| `Ready` | the five readiness conditions are True and the control plane is awake | the first False one's reason |
+| `Ready` | the six readiness conditions are True and the control plane is awake | the first False one's reason |

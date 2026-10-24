@@ -1,6 +1,6 @@
 # Six controllers share one object and communicate only through status conditions
 
-Proposed 2026-10-23; not decided yet. Not built.
+Decided 2026-10-25. Not built.
 
 ## Decision
 
@@ -9,11 +9,11 @@ watch `ControlPlane`:
 
 | controller | owns | writes condition | waits on |
 |---|---|---|---|
-| **PKI** | CAs, leaf certificates, kubeconfigs, ServiceAccount keys, encryption keys; renewal and staged rotation | `CertificatesReady` | nothing |
+| **PKI** | CAs, leaf certificates, kubeconfigs, ServiceAccount keys, encryption keys; renewal and staged rotation; the tenant's bindings for Brygga, the admin group and the kubelet client | `CertificatesReady`, `AccessReady` | `status.endpoint`; `APIServerReady` for the bindings |
 | **Datastore** | the tenant's etcd (dedicated through etcd-druid, or a user and prefix in a shared store), backups, defragmentation; the only controller that talks to etcd | `DatastoreReady` | nothing |
 | **Workloads** | Deployments, Services, PodDisruptionBudgets, NetworkPolicies, ConfigMaps, Gateway routes in the tenant namespace | `APIServerReady` | `CertificatesReady`, `DatastoreReady` |
-| **Tenant** | objects inside the tenant cluster: kubeadm bootstrap objects, kube-proxy, CoreDNS, konnectivity-agent, apiserver-proxy, RBAC | `AddonsReady` | `APIServerReady` |
-| **Health** | probes the API from outside and inside, samples node leases; holds the controller manager's leader lease inside the tenant while most nodes cannot reach the API ([controller-manager-hold](controller-manager-hold.md)) | `Reachable` | `APIServerReady` |
+| **Tenant** | objects inside the tenant cluster: kubeadm bootstrap objects, kube-proxy, CoreDNS, konnectivity-agent, apiserver-proxy, RBAC | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
+| **Health** | probes the API from outside and inside, samples node leases; holds the controller manager's leader lease inside the tenant while most nodes cannot reach the API ([controller-manager-hold](controller-manager-hold.md)) | `Reachable` | `AccessReady` |
 | **Lifecycle** | the pace: which version to run now, whether to hibernate, which rotation stage is active, when a tenant's maintenance window is open and how many tenants roll at once | `status.target` and `Progressing` | the others' conditions |
 
 Rules:
@@ -23,12 +23,18 @@ Rules:
   objects with server-side apply under its own field manager, and reports
   through its own condition. Blocked work is a condition with a reason, not a
   retry loop.
+- The public address is known only once Workloads' Service has one (a load
+  balancer's, a node's), so Workloads publishes `status.endpoint` from the
+  Service before it waits on anything, and PKI and Tenant read it: the
+  serving certificate's addresses, the kubeconfigs' server, `cluster-info`.
 - Each controller has its own work queue, worker count and rate limiter; a
   failure in one tenant's datastore does not delay certificate renewal in
   another.
-- The cache holds only objects with the label `brygga.segla.io/control-plane`
-  (a default label selector), strips `managedFields`, and keeps metadata only
-  for Secrets and ConfigMaps; a controller reads a payload with the uncached
+- The cache holds Brygga's own kinds and, of every other kind, only objects
+  with the label `brygga.segla.io/control-plane` (a default label selector);
+  it strips `managedFields` and keeps metadata only for Secrets and
+  ConfigMaps; a controller reads a payload, or an object someone else created
+  for a tenant, with the uncached
   API reader when it needs it. Tests run the client with
   `ReaderFailOnMissingInformer`, so an accidental cluster-wide informer fails
   a test instead of filling memory
@@ -43,16 +49,18 @@ Rules:
   behind real changes
   ([priority queue design](https://github.com/kubernetes-sigs/controller-runtime/blob/main/designs/priorityqueue.md)).
 - `Ready` on the `ControlPlane` is computed by Lifecycle from the others:
-  `CertificatesReady ∧ DatastoreReady ∧ APIServerReady ∧ AddonsReady ∧ Reachable`,
-  and `Hibernated` when asleep.
+  `CertificatesReady ∧ DatastoreReady ∧ APIServerReady ∧ AccessReady ∧ AddonsApplied ∧ Reachable`,
+  and `Hibernated` when asleep. Nothing in it waits for the tenant's nodes:
+  the owner joins them once the control plane is `Ready`, so
+  `AddonsAvailable`, the addons' pods on those nodes, is reported beside it.
 
 ```mermaid
 flowchart LR
   CP[("ControlPlane<br/>spec · status")]
-  PKI -->|CertificatesReady| CP
+  PKI -->|CertificatesReady, AccessReady| CP
   DS[Datastore] -->|DatastoreReady| CP
   WL[Workloads] -->|APIServerReady| CP
-  TN[Tenant] -->|AddonsReady| CP
+  TN[Tenant] -->|AddonsApplied, AddonsAvailable| CP
   HL[Health] -->|Reachable| CP
   LC[Lifecycle] -->|status.target, Progressing, Ready| CP
   CP -. watch .-> PKI

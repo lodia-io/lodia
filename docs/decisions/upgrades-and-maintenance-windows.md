@@ -1,6 +1,6 @@
 # Upgrades follow the version skew policy step by step; changes Brygga initiates roll in each tenant's maintenance window, a bounded number of tenants at a time
 
-Proposed 2026-10-23; not decided yet. Not built.
+Decided 2026-10-25. Not built.
 
 ## Decision
 
@@ -16,7 +16,8 @@ Proposed 2026-10-23; not decided yet. Not built.
 4. kube-controller-manager and kube-scheduler roll; done when each has a
    leader and answers its health endpoint.
 5. In the tenant: kube-proxy, CoreDNS and konnectivity-agent move to the
-   versions of the new minor; done when their rollouts complete.
+   versions of the new minor; done when they are applied. Their pods roll on
+   the owner's nodes and are reported in `AddonsAvailable`, not awaited.
 6. `status.kubernetes.version` becomes the new version. Nodes are the
    owner's: `status.nodes` reports how many run an older kubelet, and nothing
    forces them.
@@ -78,8 +79,9 @@ carries the pending template changes.
 ## Consequences
 
 - Lifecycle is the only controller that knows the time and the fleet; it
-  holds an in-memory semaphore, which is correct because only the leader
-  runs controllers.
+  counts the tenants rolling a Brygga-initiated change from their `status`
+  (`Progressing`), not in memory, so a restarted operator neither forgets nor
+  double-counts a rollout in progress.
 - In the `Compact` layout steps 3 and 4 are one rollout of the single pod:
   the API server, controller manager and scheduler change version together,
   which the skew policy allows ([compact-layout](compact-layout.md)).
