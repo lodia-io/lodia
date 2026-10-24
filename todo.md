@@ -59,6 +59,3 @@ is a decision — a decision is a file in `docs/decisions/`.
   on the `Etcd` (findings 1 and 4).
 - Upstream for etcd-backup-restore: the sidecar keeps serving its first
   serving certificate after the Secret changes (finding 3).
-- The NetworkPolicy of a tenant's etcd admits etcd-druid on 2379 and 8080 and
-  lets compaction Jobs reach DNS and the object store, which etcd-druid
-  labels for Gardener's policies only.

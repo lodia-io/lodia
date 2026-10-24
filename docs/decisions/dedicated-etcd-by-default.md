@@ -1,8 +1,7 @@
 # Every tenant gets its own etcd, run by etcd-druid; a shared etcd is an opt-in for density
 
 Proposed 2026-10-23; not decided yet. The phase 0 spike (2026-10-24) found
-etcd-druid fit, with the work its findings give Brygga
-([etcd spike](../etcd-spike-2026-10.md)). Not built.
+etcd-druid fit ([etcd spike](../etcd-spike-2026-10.md)). Not built.
 
 ## Decision
 
@@ -36,13 +35,14 @@ etcd-druid fit, with the work its findings give Brygga
   ([managing](https://gardener.github.io/etcd-druid/usage/managing-etcd-clusters.html),
   [recovering](https://gardener.github.io/etcd-druid/usage/recovering-etcd-clusters.html)).
 - **Brygga adds what etcd-druid leaves to its consumer:** the NetworkPolicy
-  that admits only the tenant's API server and the members themselves
-  ([etcd-druid#505](https://github.com/gardener/etcd-druid/issues/505)), the
-  ServiceMonitor for the etcd and sidecar metrics, the `Backup` object as an
-  on-demand snapshot through the sidecar, the failures of etcd-druid's
-  `EtcdOpsTask`s in its own condition, and the volumes and snapshots of a
-  deleted `ControlPlane`, which etcd-druid keeps
-  ([etcd spike](../etcd-spike-2026-10.md), findings 4 and 6).
+  that admits only the tenant's API server, the members themselves and
+  etcd-druid, which calls the members on 2379 and their sidecars on 8080
+  ([etcd-druid#505](https://github.com/gardener/etcd-druid/issues/505)); the
+  ServiceMonitor for the etcd and sidecar metrics; the `Backup` object as an
+  on-demand snapshot through the sidecar; the failures of etcd-druid's
+  `EtcdOpsTask`s in its own condition; and deleting the volumes and snapshots
+  of a deleted `ControlPlane`, which etcd-druid keeps
+  ([etcd spike](../etcd-spike-2026-10.md), findings 2, 4 and 6).
 - **Shared, opt-in.** `spec.datastore.shared` names a `Datastore`: an etcd
   several tenants use. Brygga creates per tenant an etcd user named after the
   `ControlPlane`'s UID, authenticated by the CN of a client certificate (the

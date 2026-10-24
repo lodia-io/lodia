@@ -126,6 +126,7 @@ flowchart TB
   gw["Gateway :443 · SNI"] --> svc
   gw --> ksvc --> k
   op["Brygga"] --> svc
+  druid["etcd-druid"] -->|:2379 :8080| etcd
 ```
 
 Four pods for a single control plane, nine for HA
@@ -142,7 +143,7 @@ ConfigMaps, who consumes them, and what a change does:
 | `<cp>-apiserver-serving`, `<cp>-apiserver-kubelet-client` | API server | reloaded (the kubelet client certificate for new connections) |
 | `<cp>-front-proxy-ca`, `<cp>-front-proxy-client` | API server, aggregated APIs | the CA is reloaded; the client certificate restarts the API server until a reload is proven |
 | `<cp>-etcd-ca`, `<cp>-apiserver-etcd-client` | API server | the client certificate is read per connection; a new etcd CA restarts the API server (`--etcd-cafile` is read once) |
-| `<cp>-etcd-server`, `<cp>-etcd-peer`, `<cp>-etcd-backup-restore` | etcd and its backup-restore sidecar, through etcd-druid | written under new names at each renewal, since the sidecar keeps the certificate it started with and etcd-druid rolls the members only for a new Secret name: no API outage with three members, about 20 s with one ([etcd spike](etcd-spike-2026-10.md)) |
+| `<cp>-etcd-server`, `<cp>-etcd-peer`, `<cp>-etcd-backup-restore` | etcd and its backup-restore sidecar, through etcd-druid | renewed under new names, since the sidecar keeps its first certificate and etcd-druid rolls the members only for a new name: no API outage with three members, about 20 s with one ([etcd spike](etcd-spike-2026-10.md)) |
 | `<cp>-sa-keys` (`signing.key` and the `verify-*.pub` keys published beside it) | `brygga-signer` sidecar | reloaded by the sidecar; the API server fetches the keys again within the signer's refresh hint and does not restart |
 | `<cp>-encryption-config` | API server | reloaded every minute (automatic reload) |
 | `<cp>-konnectivity-server`, `<cp>-konnectivity-kubeconfig` | konnectivity-server | the API server pod rolls, in the maintenance window |
@@ -182,8 +183,10 @@ minutes and never stores, the way kubeadm uses `super-admin.conf` only to bind
 
 NetworkPolicies default-deny the namespace and allow exactly the arrows
 above: Gateway → API server and konnectivity-server, controller manager and
-scheduler and Brygga → the API Service, API server → etcd, etcd ↔ etcd, etcd
-→ object storage, metrics scrapers → the health ports.
+scheduler and Brygga → the API Service, API server → etcd, etcd ↔ etcd,
+etcd-druid → etcd and its backup-restore sidecar, etcd and its compaction
+Jobs → object storage, metrics scrapers → the health ports, and every pod →
+the cluster DNS.
 
 ## Networking
 
