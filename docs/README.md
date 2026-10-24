@@ -428,7 +428,7 @@ it from values):
 | `fleet.maxConcurrentRollouts` | tenants rolling Brygga-initiated changes at once | 5 |
 | `tenant.applyInterval` | the inventory re-apply period | 10m |
 | `health.silentAfter`, `health.holdFraction`, `health.releaseAfter` | when a node counts as silent, the share of silent nodes that starts the hold, how long the nodes must be back before it ends | 20s, 0.6, 2m |
-| `pki.leafLifetime`, `pki.caLifetime` | | 1 year, 10 years |
+| `pki.leafLifetime`, `pki.caLifetime`, `pki.trustAnchorLifetime` | leaf certificates and the kubelet signer; every CA but the cluster CA; the cluster CA ([staged-credential-rotation](decisions/staged-credential-rotation.md)) | 1 year, 5 years, 10 years |
 | `kubeconfigRequests.maxExpiration` | | 24h |
 | `defaults.resources.<component>` | requests and limits per component | measured in phase 1 |
 
