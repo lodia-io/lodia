@@ -1,5 +1,4 @@
-# An S3-compatible store for the snapshots: RustFS with one volume, and a Job
-# that creates the bucket. MinIO's community edition ships no images any more.
+# RustFS, because MinIO's community edition ships no images any more.
 apiVersion: v1
 kind: Namespace
 metadata: {name: s3}

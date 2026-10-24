@@ -1,12 +1,8 @@
 #!/usr/bin/env bash
-# Issues the certificates etcd-druid needs from the hard way's etcd CA
-# ($PKI/etcd-ca.*, written by hack/hard-way/pki.sh): server and peer
-# certificates for every name etcd-druid gives an Etcd called $CP-etcd in the
-# namespace $CP, the backup-restore sidecar's serving certificate, and the
-# client certificate the etcd-wrapper and the sidecar use. The names follow
-# etcd-wrapper's development PKI script, etcd-druid's pod host alias
-# $CP-etcd-local, and the client Service through which etcd-druid calls the
-# sidecar (an on-demand full snapshot before every scale-out).
+# Issues etcd-druid's certificates for an Etcd called $CP-etcd from the hard
+# way's etcd CA. The names follow etcd-wrapper's development PKI script; the
+# sidecar's also carry the client Service, through which etcd-druid calls it
+# for the snapshot before a scale-out.
 #
 #   bash hack/etcd-spike/pki.sh                     issue everything
 #   bash hack/etcd-spike/pki.sh etcd-druid-backup   issue only the named certificates

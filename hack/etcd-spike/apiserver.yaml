@@ -1,5 +1,4 @@
-# An API server on top of the spike's etcd: the hard way's flags without
-# konnectivity, nodes or aggregation, pointed at etcd-druid's client Service.
+# The hard way's API server without konnectivity, nodes or aggregation.
 apiVersion: v1
 kind: Service
 metadata:

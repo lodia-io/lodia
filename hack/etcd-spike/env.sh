@@ -1,7 +1,6 @@
 # Source from the repository root: `source hack/etcd-spike/env.sh`.
-# The hard way's environment with the spike's own kind cluster, namespace, port
-# and work directory, so its helpers (mk, tk, render) and scripts (pki.sh,
-# kubeconfigs.sh) work unchanged; plus the versions the spike pins.
+# The hard way's environment with the spike's own cluster, namespace, port and
+# work directory, so its helpers and scripts work unchanged.
 source "$PWD/hack/hard-way/env.sh"
 
 export MGMT=brygga-etcd-spike   # the spike's kind cluster

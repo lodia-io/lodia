@@ -1,6 +1,5 @@
-# The spike's cluster: one kind node for etcd-druid, the tenant's etcd, the
-# object store and an API server on top. The port mapping lets kubectl on the
-# host reach that API server through its NodePort.
+# The port mapping lets kubectl on the host reach the spike's API server
+# through its NodePort.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
