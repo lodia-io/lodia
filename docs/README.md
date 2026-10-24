@@ -143,7 +143,7 @@ ConfigMaps, who consumes them, and what a change does:
 | `<cp>-front-proxy-ca`, `<cp>-front-proxy-client` | API server, aggregated APIs | the CA is reloaded; the client certificate restarts the API server until a reload is proven |
 | `<cp>-etcd-ca`, `<cp>-apiserver-etcd-client` | API server | the client certificate is read per connection; a new etcd CA restarts the API server (`--etcd-cafile` is read once) |
 | `<cp>-etcd-server`, `<cp>-etcd-peer` | etcd, through etcd-druid | as etcd-druid applies them (measured in the spike) |
-| `<cp>-sa-keys` | `brygga-signer` sidecar | reloaded by the sidecar; the API server does not restart |
+| `<cp>-sa-keys` (`signing.key` and the `verify-*.pub` keys published beside it) | `brygga-signer` sidecar | reloaded by the sidecar; the API server fetches the keys again within the signer's refresh hint and does not restart |
 | `<cp>-encryption-config` | API server | reloaded every minute (automatic reload) |
 | `<cp>-konnectivity-server`, `<cp>-konnectivity-kubeconfig` | konnectivity-server | the API server pod rolls, in the maintenance window |
 | `<cp>-controller-manager-kubeconfig`, `<cp>-scheduler-kubeconfig` | each its own; certificates referenced as files | reloaded by client-go |
@@ -308,7 +308,10 @@ between stages, as Gardener does
 and the routine rotations never touch a node: the client CA, the
 ServiceAccount key (signed by the `brygga-signer` sidecar, so the API server
 does not restart), the etcd encryption key, the etcd and front-proxy CAs.
-Only the trust anchor, the cluster CA, waits for node owners. Started and
+Only the trust anchor, the cluster CA, waits for node owners. The
+ServiceAccount key rotates through three states of `<cp>-sa-keys`: K₂
+published beside K₁, then K₂ signing with K₁ still published, then K₁ dropped
+once the owner confirms that no client holds a K₁ token. Started and
 completed through the `brygga.segla.io/operation` annotation; the phases are
 in `status.credentials.rotation`
 ([decision](decisions/staged-credential-rotation.md)).

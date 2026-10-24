@@ -1,5 +1,8 @@
 # Every tool runs through `go tool` (see the tool block in go.mod), except
-# golangci-lint, which is installed on its own.
+# golangci-lint, which is installed on its own, and ko, which runs as
+# `go run github.com/google/ko@<version>`: their dependency graphs would move
+# the operator's own dependencies, and those of every module that imports
+# api/v1alpha1.
 
 ENVTEST_K8S_VERSION ?= 1.35.0
 E2E_CLUSTER ?= brygga-e2e-local

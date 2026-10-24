@@ -1,0 +1,49 @@
+# Spike d: a tenant pod that calls the API every three seconds with a projected
+# ServiceAccount token of ten minutes, which the kubelet refreshes once the
+# token is older than 80% of that. Each line of its log is one call: "ok" with
+# the token's user, or "FAIL" with the HTTP status.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: token-caller
+  namespace: default
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: token-caller
+  namespace: default
+spec:
+  serviceAccountName: token-caller
+  automountServiceAccountToken: false
+  containers:
+    - name: caller
+      image: curlimages/curl:8.10.1
+      command:
+        - sh
+        - -c
+        - |
+          while true; do
+            code=$(curl -s -o /tmp/review -w '%{http_code}' --max-time 5 \
+              --cacert /var/run/secrets/tokens/ca.crt \
+              -H "Authorization: Bearer $(cat /var/run/secrets/tokens/token)" \
+              -H 'Content-Type: application/json' -X POST \
+              -d '{"apiVersion":"authentication.k8s.io/v1","kind":"SelfSubjectReview"}' \
+              https://kubernetes.default.svc/apis/authentication.k8s.io/v1/selfsubjectreviews)
+            if [ "$code" = 201 ]; then
+              echo "$(date -u +%T) ok $(grep -o '"username":"[^"]*"' /tmp/review)"
+            else
+              echo "$(date -u +%T) FAIL $code"
+            fi
+            sleep 3
+          done
+      volumeMounts:
+        - {name: tokens, mountPath: /var/run/secrets/tokens, readOnly: true}
+  volumes:
+    - name: tokens
+      projected:
+        sources:
+          - serviceAccountToken: {path: token, expirationSeconds: 600}
+          - configMap:
+              name: kube-root-ca.crt
+              items: [{key: ca.crt, path: ca.crt}]

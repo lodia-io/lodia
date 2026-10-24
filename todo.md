@@ -34,3 +34,15 @@ is a decision — a decision is a file in `docs/decisions/`.
   `ADOPTERS.md` from the CNCF template.
 - The workflow's actions are pinned by commit with nothing to bump them;
   Dependabot or Renovate for `github-actions` and `gomod`.
+
+## From brygga-signer (2026-10-23)
+
+- The signer's socket is mode 0600 and owned by the signer's user (65532 on
+  distroless `nonroot`); kube-apiserver can dial it only as that user or as
+  root. When the Workloads controller runs the API server as non-root, both
+  containers need the same user.
+- `.ko.yaml` pins the base image by digest with nothing to bump it; add it to
+  the Renovate configuration with the other base images.
+- The signer logs a failed load at error level when it reads a Secret volume
+  while the kubelet removes the previous version; the next event reloads the
+  complete set. If that noise matters, retry once before logging.
