@@ -1,0 +1,64 @@
+# An S3-compatible store for the snapshots: RustFS with one volume, and a Job
+# that creates the bucket. MinIO's community edition ships no images any more.
+apiVersion: v1
+kind: Namespace
+metadata: {name: s3}
+---
+apiVersion: v1
+kind: Secret
+metadata: {name: rustfs, namespace: s3}
+stringData: {RUSTFS_ACCESS_KEY: spike-access, RUSTFS_SECRET_KEY: spike-secret-key}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: rustfs, namespace: s3}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 2Gi}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: rustfs, namespace: s3}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: rustfs}}
+  template:
+    metadata: {labels: {app: rustfs}}
+    spec:
+      containers:
+        - name: rustfs
+          image: ${RUSTFS_IMAGE}
+          envFrom: [{secretRef: {name: rustfs}}]
+          ports: [{containerPort: 9000}]
+          readinessProbe: {tcpSocket: {port: 9000}, periodSeconds: 2}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: logs, mountPath: /logs}
+      volumes:
+        - {name: data, persistentVolumeClaim: {claimName: rustfs}}
+        - {name: logs, emptyDir: {}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: rustfs, namespace: s3}
+spec:
+  selector: {app: rustfs}
+  ports: [{name: s3, port: 9000}]
+---
+apiVersion: batch/v1
+kind: Job
+metadata: {name: bucket, namespace: s3}
+spec:
+  backoffLimit: 20
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mb
+          image: ${AWS_CLI_IMAGE}
+          command: [sh, -c, 'aws configure set default.s3.addressing_style path && aws --endpoint-url http://rustfs.s3.svc:9000 s3 mb s3://etcd-backups']
+          env:
+            - {name: AWS_ACCESS_KEY_ID, valueFrom: {secretKeyRef: {name: rustfs, key: RUSTFS_ACCESS_KEY}}}
+            - {name: AWS_SECRET_ACCESS_KEY, valueFrom: {secretKeyRef: {name: rustfs, key: RUSTFS_SECRET_KEY}}}
+            - {name: AWS_DEFAULT_REGION, value: us-east-1}

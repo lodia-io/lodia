@@ -1,0 +1,9 @@
+# etcd-druid v0.39.0 from its chart at the tag: the released image, spec
+# changes reconciled without an annotation. The etcd component protection
+# webhook stays off, the chart's default.
+image:
+  tag: v0.39.0
+operatorConfig:
+  controllers:
+    etcd:
+      enableEtcdSpecAutoReconcile: true

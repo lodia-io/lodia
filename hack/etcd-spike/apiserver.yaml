@@ -1,0 +1,62 @@
+# An API server on top of the spike's etcd: the hard way's flags without
+# konnectivity, nodes or aggregation, pointed at etcd-druid's client Service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${CP}-apiserver
+  namespace: ${CP}
+spec:
+  type: NodePort
+  selector: {app: ${CP}-apiserver}
+  ports:
+    - {name: https, port: ${APISERVER_PORT}, targetPort: ${APISERVER_PORT}, nodePort: ${APISERVER_PORT}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${CP}-apiserver
+  namespace: ${CP}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: ${CP}-apiserver}
+  template:
+    metadata:
+      labels: {app: ${CP}-apiserver}
+    spec:
+      containers:
+        - name: kube-apiserver
+          image: registry.k8s.io/kube-apiserver:${K8S_VERSION}
+          command:
+            - kube-apiserver
+            - --advertise-address=${MGMT_IP}
+            - --secure-port=${APISERVER_PORT}
+            - --authorization-mode=RBAC
+            - --client-ca-file=/pki/ca.crt
+            - --etcd-servers=https://${CP}-etcd-client.${CP}.svc:2379
+            - --etcd-cafile=/pki/etcd-ca.crt
+            - --etcd-certfile=/pki/apiserver-etcd-client.crt
+            - --etcd-keyfile=/pki/apiserver-etcd-client.key
+            - --service-account-issuer=https://kubernetes.default.svc.cluster.local
+            - --service-account-key-file=/pki/sa.pub
+            - --service-account-signing-key-file=/pki/sa.key
+            - --service-cluster-ip-range=${SERVICE_CIDR}
+            - --tls-cert-file=/pki/apiserver.crt
+            - --tls-private-key-file=/pki/apiserver.key
+          ports:
+            - {name: https, containerPort: ${APISERVER_PORT}}
+          readinessProbe:
+            httpGet: {scheme: HTTPS, path: /readyz, port: ${APISERVER_PORT}}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {scheme: HTTPS, path: /livez, port: ${APISERVER_PORT}}
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 8
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+          volumeMounts:
+            - {name: pki, mountPath: /pki, readOnly: true}
+      volumes:
+        - name: pki
+          secret: {secretName: ${CP}-pki}

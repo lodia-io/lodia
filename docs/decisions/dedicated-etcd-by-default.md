@@ -1,7 +1,8 @@
 # Every tenant gets its own etcd, run by etcd-druid; a shared etcd is an opt-in for density
 
-Proposed 2026-10-23; not decided yet — the phase 0 spike confirms or
-overturns it. Not built.
+Proposed 2026-10-23; not decided yet. The phase 0 spike (2026-10-24) found
+etcd-druid fit, with the work its findings give Brygga
+([etcd spike](../etcd-spike-2026-10.md)). Not built.
 
 ## Decision
 
@@ -10,11 +11,16 @@ overturns it. Not built.
   the tenant's namespace: 1 member, or 3 with `highAvailability`, built from
   the `DatastoreClass` (quota, compaction, storage, backup store and
   schedules, defragmentation, placement). Brygga's PKI controller issues the
-  etcd CA and the server, peer and client certificates; etcd-druid takes them
-  as Secrets, because it does not generate TLS itself
+  etcd CA and the server, peer and client certificates and the backup-restore
+  sidecar's serving certificate; etcd-druid takes them as Secrets, because it
+  does not generate TLS itself
   ([securing etcd clusters](https://gardener.github.io/etcd-druid/usage/securing-etcd-clusters.html)).
-- **The engine is etcd-druid**, installed beside Brygga (the chart depends on
-  its Helm chart), run with `enableEtcdSpecAutoReconcile: true` so a spec
+  Client, peer and backup-restore TLS are set together, and the sidecar's
+  certificate also names the client Service, through which etcd-druid calls
+  it ([etcd spike](../etcd-spike-2026-10.md), findings 1 and 2).
+- **The engine is etcd-druid**, installed beside Brygga (Brygga's chart
+  vendors etcd-druid's at a tag, since it is not released as a versioned
+  chart), run with `enableEtcdSpecAutoReconcile: true` so a spec
   change reconciles without an annotation, and with its optional components
   webhook off ([configuration](https://gardener.github.io/etcd-druid/deployment/configure-etcd-druid.html)).
   What Brygga gets from it, per tenant:
@@ -25,14 +31,18 @@ overturns it. Not built.
   - scaling 1 → 3 learner-first and back;
   - `replicas: 0` that keeps the volumes and takes a full snapshot first,
     which is hibernation;
-  - defragmentation on a schedule
+  - defragmentation on a schedule, which the sidecar skips below 3 GiB
+    unless more than 1 GiB is free
   ([managing](https://gardener.github.io/etcd-druid/usage/managing-etcd-clusters.html),
   [recovering](https://gardener.github.io/etcd-druid/usage/recovering-etcd-clusters.html)).
 - **Brygga adds what etcd-druid leaves to its consumer:** the NetworkPolicy
   that admits only the tenant's API server and the members themselves
   ([etcd-druid#505](https://github.com/gardener/etcd-druid/issues/505)), the
-  ServiceMonitor for the etcd and sidecar metrics, and the `Backup` object as
-  an on-demand snapshot through the sidecar.
+  ServiceMonitor for the etcd and sidecar metrics, the `Backup` object as an
+  on-demand snapshot through the sidecar, the failures of etcd-druid's
+  `EtcdOpsTask`s in its own condition, and the volumes and snapshots of a
+  deleted `ControlPlane`, which etcd-druid keeps
+  ([etcd spike](../etcd-spike-2026-10.md), findings 4 and 6).
 - **Shared, opt-in.** `spec.datastore.shared` names a `Datastore`: an etcd
   several tenants use. Brygga creates per tenant an etcd user named after the
   `ControlPlane`'s UID, authenticated by the CN of a client certificate (the
@@ -103,13 +113,19 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
 
 - etcd-druid becomes a dependency with its own release cadence and image
   registry (Gardener's public Artifact Registry, amd64 and arm64); Brygga's
-  version table pins the druid chart and its images, and the operator
+  version table pins the vendored chart and its images, and the operator
   configuration's registry mirror applies to them too.
-- The etcd version is the one etcd-druid's wrapper runs, on the 3.5 line
-  today, while kubeadm pins 3.6 for Kubernetes 1.34 and 1.35; both lines are
-  supported by those Kubernetes releases. Moving to 3.6 follows etcd-druid.
+- The etcd version is the one etcd-druid's wrapper runs: etcd 3.5.27 with
+  etcd-druid v0.39.0, while kubeadm defaults to 3.6.6 for Kubernetes 1.35 and
+  3.7.0 for 1.37 and accepts an external etcd from 3.5.24
+  ([1.35](https://github.com/kubernetes/kubernetes/blob/v1.35.0/cmd/kubeadm/app/constants/constants.go#L326-L329),
+  [1.37](https://github.com/kubernetes/kubernetes/blob/v1.37.0/cmd/kubeadm/app/constants/constants.go#L326-L330)).
+  `spec.etcd.image` and `spec.backup.image` let the version table pin newer
+  builds; moving to 3.6 follows etcd-druid.
 - A restore from snapshot starts a new etcd cluster and, as etcd-druid does
   it, keeps the snapshot's revisions: clients with caches must relist. The
+  spike measured it: until it restarted, the API server's cache listed 19
+  objects lost with the data and missed 16 of 17 written afterwards. The
   Datastore controller rolls the tenant's API server after any restore it
   detects, and the in-place restore runbook uses
   `etcdutl snapshot restore --bump-revision --mark-compacted`, which ends

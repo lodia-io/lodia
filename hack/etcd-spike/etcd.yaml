@@ -1,0 +1,49 @@
+# The tenant's etcd as the Datastore controller would render it from Brygga's
+# default DatastoreClass, with schedules short enough to watch: one member,
+# Brygga's own CA on client, peer and backup-restore traffic, snapshots to the
+# S3 store. backup.tls is not optional once clientUrlTls is set: etcd-druid
+# probes the etcd-wrapper over HTTPS only when backup.tls is set, while the
+# wrapper serves HTTPS whenever client TLS is on.
+apiVersion: druid.gardener.cloud/v1alpha1
+kind: Etcd
+metadata:
+  name: ${CP}-etcd
+  namespace: ${CP}
+spec:
+  replicas: 1
+  labels: {app: ${CP}-etcd}
+  storageCapacity: 1Gi
+  etcd:
+    quota: 4Gi
+    metrics: basic
+    defragmentationSchedule: "*/15 * * * *"
+    resources:
+      requests: {cpu: 30m, memory: 150M}
+    clientUrlTls:
+      tlsCASecretRef: {name: ${CP}-etcd-ca, dataKey: ca.crt}
+      serverTLSSecretRef: {name: ${CP}-etcd-server}
+      clientTLSSecretRef: {name: ${CP}-etcd-client}
+    peerUrlTls:
+      tlsCASecretRef: {name: ${CP}-etcd-ca, dataKey: ca.crt}
+      serverTLSSecretRef: {name: ${CP}-etcd-peer}
+  sharedConfig:
+    autoCompactionMode: periodic
+    autoCompactionRetention: 15m
+  backup:
+    tls:
+      tlsCASecretRef: {name: ${CP}-etcd-ca, dataKey: ca.crt}
+      serverTLSSecretRef: {name: ${CP}-etcd-backup-restore}
+      clientTLSSecretRef: {name: ${CP}-etcd-client}
+    store:
+      provider: S3
+      container: etcd-backups
+      prefix: ${CP}
+      endpointOverride: http://rustfs.s3.svc:9000
+      secretRef: {name: ${CP}-etcd-backup}
+    fullSnapshotSchedule: "*/10 * * * *"
+    deltaSnapshotPeriod: 1m
+    garbageCollectionPolicy: Exponential
+    garbageCollectionPeriod: 5m
+    compression: {enabled: true, policy: gzip}
+    resources:
+      requests: {cpu: 10m, memory: 40Mi}
