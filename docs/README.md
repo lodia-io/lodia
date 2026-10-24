@@ -62,15 +62,16 @@ in [`api/examples/`](api/examples/).
 
 | controller | writes | condition | needs |
 |---|---|---|---|
-| PKI | Secrets with certificates, keys and kubeconfigs | `CertificatesReady` | — |
+| PKI | Secrets with certificates, keys and kubeconfigs | `CertificatesReady` | `status.endpoint` |
 | Datastore | the etcd resource (dedicated) or a user and role (shared); backups and defragmentation | `DatastoreReady` | — |
 | Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady` | `CertificatesReady`, `DatastoreReady` |
 | Tenant | objects inside the tenant cluster, with an inventory | `AddonsApplied`, `AddonsAvailable` | `APIServerReady` |
 | Health | status, and the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable` | `APIServerReady` |
 | Lifecycle | `status.target`, `Progressing`, `Ready`; the pre-upgrade `Backup` | `Progressing` | the others |
 
-Each controller has its own queue and field manager, reads only `spec` and
-`status.target`, and reports through its own condition; none calls another
+Each controller has its own queue and field manager, reads `spec`,
+`status.target` and the endpoint Workloads publishes, and reports through its
+own condition; none calls another
 ([decision](decisions/independent-controllers.md)). The cache is scoped to
 labelled objects, with metadata only for Secrets.
 
@@ -143,7 +144,7 @@ ConfigMaps, who consumes them, and what a change does:
 | `<cp>-apiserver-serving`, `<cp>-apiserver-kubelet-client` | API server | reloaded (the kubelet client certificate for new connections) |
 | `<cp>-front-proxy-ca`, `<cp>-front-proxy-client` | API server, aggregated APIs | the CA is reloaded; the client certificate restarts the API server until a reload is proven |
 | `<cp>-etcd-ca`, `<cp>-apiserver-etcd-client` | API server | the client certificate is read per connection; a new etcd CA restarts the API server (`--etcd-cafile` is read once) |
-| `<cp>-etcd-server`, `<cp>-etcd-peer`, `<cp>-etcd-backup-restore` | etcd and its backup-restore sidecar, through etcd-druid | renewed under new names, since the sidecar keeps its first certificate and etcd-druid rolls the members only for a new name: no API outage with three members, about 20 s with one ([etcd spike](etcd-spike-2026-10.md)) |
+| `<cp>-etcd-{ca,server,client,peer,backup-restore}-<g>`, one generation `g` per renewal, labelled `brygga.segla.io/etcd-certificates: "<g>"` | etcd, its backup-restore sidecar and etcd-druid's client, through the `Etcd`, which Datastore points at the newest complete generation | renewed as the next generation, since the sidecar keeps its first certificate and etcd-druid rolls the members only for a new name: no API outage with three members, about 20 s with one ([etcd spike](etcd-spike-2026-10.md)); PKI keeps the previous generation and deletes older ones |
 | `<cp>-sa-keys` (`signing.key` and the `verify-*.pub` keys published beside it) | `brygga-signer` sidecar | reloaded by the sidecar; the API server fetches the keys again within the signer's refresh hint and does not restart |
 | `<cp>-encryption-config` | API server | reloaded every minute (automatic reload) |
 | `<cp>-konnectivity-server`, `<cp>-konnectivity-kubeconfig` | konnectivity-server | the API server pod rolls, in the maintenance window |

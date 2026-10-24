@@ -63,7 +63,7 @@ Examples: [`examples/`](examples/).
 | `target.reason`, `target.scheduledFor` | Lifecycle | why the target lags `spec`: a closed window, the fleet limit, a failed step |
 | `kubernetes.version` | Lifecycle | the version every component runs |
 | `kubernetes.upgrade.{from, to, step, startedAt, message}` | Lifecycle | present while an upgrade runs or is stuck |
-| `endpoint.{host, port}` | Workloads | the public endpoint, as in the admin kubeconfig |
+| `endpoint.{host, port}` | Workloads | the public endpoint, published as soon as the Service has an address; PKI puts it into the serving certificate and the kubeconfigs |
 | `endpoint.internal` | Workloads | the in-namespace Service, `https://<name>-kube-apiserver.<ns>.svc:443` |
 | `credentials.adminKubeconfigSecretRef` | PKI | `<name>-admin-kubeconfig` |
 | `credentials.caBundleSecretRef` | PKI | `<name>-ca-bundle`: the CAs a client must trust now (two during a rotation) |

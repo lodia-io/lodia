@@ -72,7 +72,11 @@ backup-restore sidecar, which keeps serving its first one. etcd-druid rolls
 the members only when the `Etcd` names a new Secret, so the PKI controller
 renews etcd's certificates together, under new names: one roll, no API outage
 with three members, about 20 s with one
-([etcd spike](../etcd-spike-2026-10.md), finding 3).
+([etcd spike](../etcd-spike-2026-10.md), finding 3). Each renewal is a
+generation `g` of five Secrets, `<cp>-etcd-{ca,server,client,peer,backup-restore}-<g>`,
+labelled `brygga.segla.io/etcd-certificates: "<g>"`; Datastore points the
+`Etcd` at the newest complete generation, and PKI keeps the previous one and
+deletes older ones, so neither controller reads the other's state.
 
 **Rotations**, started with `brygga.segla.io/operation=<name>-start` and,
 where a stage waits for people, completed with `<name>-complete`; phases in

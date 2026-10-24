@@ -67,3 +67,7 @@ is a decision — a decision is a file in `docs/decisions/`.
   refuses every user and group under `system:` and every user under
   `brygga:`. The rule and its envtest cases come with the controller that
   answers requests.
+- `loadBalancer` mode with a load balancer that reports only a host name
+  (AWS NLB and CLB): `--advertise-address` takes an IP, so the `kubernetes`
+  endpoint needs another source there; decide before that mode is supported
+  on such a provider.

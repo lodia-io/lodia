@@ -9,7 +9,7 @@ watch `ControlPlane`:
 
 | controller | owns | writes condition | waits on |
 |---|---|---|---|
-| **PKI** | CAs, leaf certificates, kubeconfigs, ServiceAccount keys, encryption keys; renewal and staged rotation | `CertificatesReady` | nothing |
+| **PKI** | CAs, leaf certificates, kubeconfigs, ServiceAccount keys, encryption keys; renewal and staged rotation | `CertificatesReady` | `status.endpoint` |
 | **Datastore** | the tenant's etcd (dedicated through etcd-druid, or a user and prefix in a shared store), backups, defragmentation; the only controller that talks to etcd | `DatastoreReady` | nothing |
 | **Workloads** | Deployments, Services, PodDisruptionBudgets, NetworkPolicies, ConfigMaps, Gateway routes in the tenant namespace | `APIServerReady` | `CertificatesReady`, `DatastoreReady` |
 | **Tenant** | objects inside the tenant cluster: kubeadm bootstrap objects, kube-proxy, CoreDNS, konnectivity-agent, apiserver-proxy, RBAC | `AddonsApplied`, `AddonsAvailable` | `APIServerReady` |
@@ -23,6 +23,10 @@ Rules:
   objects with server-side apply under its own field manager, and reports
   through its own condition. Blocked work is a condition with a reason, not a
   retry loop.
+- The public address is known only once Workloads' Service has one (a load
+  balancer's, a node's), so Workloads publishes `status.endpoint` from the
+  Service before it waits on anything, and PKI and Tenant read it: the
+  serving certificate's addresses, the kubeconfigs' server, `cluster-info`.
 - Each controller has its own work queue, worker count and rate limiter; a
   failure in one tenant's datastore does not delay certificate renewal in
   another.
