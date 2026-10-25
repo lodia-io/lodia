@@ -71,6 +71,7 @@ func TestMain(m *testing.M) {
 	env := &envtest.Environment{
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "config", "crd", "bases")},
 		ErrorIfCRDPathMissing: true,
+		UseExistingCluster:    new(false),
 	}
 	var err error
 	cfg, err = env.Start()

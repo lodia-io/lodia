@@ -47,7 +47,7 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 		}
 		return path
 	}
-	env := &envtest.Environment{}
+	env := &envtest.Environment{UseExistingCluster: new(false)}
 	api := env.ControlPlane.GetAPIServer()
 	api.Authn = &tenantAuthn{
 		api:       api,
