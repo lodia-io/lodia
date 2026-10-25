@@ -462,6 +462,31 @@ func TestATenantThatNeverAnsweredIsApplying(t *testing.T) {
 	})
 }
 
+func TestASecretAnotherOwnerKeepsIsNotUsed(t *testing.T) {
+	cp := controlPlane(t, "tenant-predecessor")
+	publish(t, cp)
+	bundle := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Namespace: cp.Namespace,
+		Name:      "dev-ca-bundle",
+		OwnerReferences: []metav1.OwnerReference{{
+			APIVersion: bryggav1alpha1.GroupVersion.String(), Kind: "ControlPlane", Name: "dev", UID: "predecessor", Controller: new(true),
+		}},
+	}}
+	if err := k8s.Create(t.Context(), bundle); err != nil {
+		t.Fatal(err)
+	}
+	setCondition(t, cp, bryggav1alpha1.ConditionAccessReady, bryggav1alpha1.ReasonBound)
+	eventually(t, 30*time.Second, func() error {
+		if err := expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForAccess); err != nil {
+			return err
+		}
+		if c := condition(t, cp, bryggav1alpha1.ConditionAddonsApplied); !strings.Contains(c.Message, "Secret dev-ca-bundle is kept by ControlPlane dev with UID predecessor") {
+			return fmt.Errorf("AddonsApplied says %q", c.Message)
+		}
+		return nil
+	})
+}
+
 type tenantClient struct {
 	client.Client
 	host string
