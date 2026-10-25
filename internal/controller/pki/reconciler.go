@@ -208,7 +208,7 @@ func listed(items []string) string {
 func (r *Reconciler) access(ctx context.Context, t *tenant) (metav1.Condition, error) {
 	c := metav1.Condition{Type: bryggav1alpha1.ConditionAccessReady, Status: metav1.ConditionFalse, Reason: ReasonWaitingForAPIServer, Message: "APIServerReady is not True for this generation"}
 	ready := meta.FindStatusCondition(t.cp.Status.Conditions, bryggav1alpha1.ConditionAPIServerReady)
-	if ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != t.cp.Generation || t.existing[t.name("brygga-kubeconfig")] == nil {
+	if ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != t.cp.Generation || t.existing[t.secret(bryggav1alpha1.BryggaKubeconfigSecret)] == nil {
 		return c, nil
 	}
 	refused, err := r.bind(ctx, t)

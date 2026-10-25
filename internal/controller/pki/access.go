@@ -20,6 +20,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
+	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
 	"github.com/segla-io/brygga/internal/certs"
 )
 
@@ -41,7 +42,7 @@ var bindings = []struct {
 // failure is the tenant's refusal; once brygga:operator is forbidden, every
 // failure is.
 func (r *Reconciler) bind(ctx context.Context, t *tenant) (bool, error) {
-	cfg, err := clientcmd.RESTConfigFromKubeConfig(t.existing[t.name("brygga-kubeconfig")].Data[kubeconfigKey])
+	cfg, err := clientcmd.RESTConfigFromKubeConfig(t.existing[t.secret(bryggav1alpha1.BryggaKubeconfigSecret)].Data[kubeconfigKey])
 	if err != nil {
 		return false, err
 	}

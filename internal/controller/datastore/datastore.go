@@ -85,7 +85,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 	}
 	backupCopy := predicate.NewPredicateFuncs(func(secret client.Object) bool {
 		cp, ok := secret.GetLabels()[bryggav1alpha1.ControlPlaneLabel]
-		return ok && secret.GetName() == backupSecretName(cp)
+		return ok && secret.GetName() == bryggav1alpha1.EtcdBackupSecret.Name(cp)
 	})
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(Name).
@@ -205,7 +205,7 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 	}
 	if !found {
 		message := fmt.Sprintf("waiting for a complete generation of the etcd certificates that this ControlPlane controls: the Secrets %s-etcd-{%s}-<g> labelled %s=<g>",
-			cp.Name, strings.Join(Certificates, ","), bryggav1alpha1.EtcdCertificatesLabel)
+			cp.Name, strings.Join(bryggav1alpha1.EtcdCertificateRoles, ","), bryggav1alpha1.EtcdCertificatesLabel)
 		return current, newCondition(metav1.ConditionFalse, ReasonProvisioning, message), 0, nil
 	}
 	if current == nil {
@@ -254,7 +254,7 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 		return nil, metav1.Condition{}, 0, err
 	}
 	sts := &appsv1.StatefulSet{}
-	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: etcdName(cp.Name)}, sts); err != nil {
+	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: bryggav1alpha1.EtcdName(cp.Name)}, sts); err != nil {
 		if !apierrors.IsNotFound(err) {
 			return nil, metav1.Condition{}, 0, err
 		}
@@ -302,7 +302,7 @@ func refused(err error) bool {
 // runs.
 func (r *Reconciler) currentEtcd(ctx context.Context, cp *bryggav1alpha1.ControlPlane) (*druidv1alpha1.Etcd, error) {
 	etcd := &druidv1alpha1.Etcd{}
-	key := client.ObjectKey{Namespace: cp.Namespace, Name: etcdName(cp.Name)}
+	key := client.ObjectKey{Namespace: cp.Namespace, Name: bryggav1alpha1.EtcdName(cp.Name)}
 	err := r.Get(ctx, key, etcd)
 	if apierrors.IsNotFound(err) {
 		err = r.Reader.Get(ctx, key, etcd)
@@ -456,8 +456,8 @@ func newestCompleteGeneration(cp *bryggav1alpha1.ControlPlane, secrets []metav1.
 			continue
 		}
 		complete := true
-		for _, certificate := range Certificates {
-			if labelled[SecretName(cp.Name, certificate, generation)] != label {
+		for _, certificate := range bryggav1alpha1.EtcdCertificateRoles {
+			if labelled[bryggav1alpha1.EtcdCertificateSecretName(cp.Name, certificate, generation)] != label {
 				complete = false
 				break
 			}
@@ -477,7 +477,7 @@ func namedGeneration(cp string, etcd *druidv1alpha1.Etcd) (int, bool) {
 	if etcd == nil || etcd.Spec.Etcd.ClientUrlTLS == nil {
 		return 0, false
 	}
-	suffix, ok := strings.CutPrefix(etcd.Spec.Etcd.ClientUrlTLS.ServerTLSSecretRef.Name, etcdName(cp)+"-server-")
+	suffix, ok := strings.CutPrefix(etcd.Spec.Etcd.ClientUrlTLS.ServerTLSSecretRef.Name, bryggav1alpha1.EtcdName(cp)+"-server-")
 	generation, err := strconv.Atoi(suffix)
 	return generation, ok && err == nil
 }
@@ -492,7 +492,7 @@ func (r *Reconciler) claims(ctx context.Context, cp *bryggav1alpha1.ControlPlane
 	if err := r.Reader.List(ctx, list, client.InNamespace(cp.Namespace)); err != nil {
 		return nil, err
 	}
-	prefix := etcdName(cp.Name) + "-" + etcdName(cp.Name) + "-"
+	prefix := bryggav1alpha1.EtcdName(cp.Name) + "-" + bryggav1alpha1.EtcdName(cp.Name) + "-"
 	var claims []corev1.PersistentVolumeClaim
 	for _, claim := range list.Items {
 		ordinal, named := strings.CutPrefix(claim.Name, prefix)
@@ -550,7 +550,7 @@ func (r *Reconciler) copyCredentials(ctx context.Context, cp *bryggav1alpha1.Con
 		}
 		return "", fmt.Errorf("read the credentials Secret %s/%s of DatastoreClass %s: %w", store.SecretRef.Namespace, store.SecretRef.Name, class.Name, err)
 	}
-	name := backupSecretName(cp.Name)
+	name := bryggav1alpha1.EtcdBackupSecret.Name(cp.Name)
 	existing, err := r.secret(ctx, cp, name, secrets)
 	if err != nil {
 		return "", err
@@ -617,7 +617,7 @@ func (r *Reconciler) finalize(ctx context.Context, cp *bryggav1alpha1.ControlPla
 	case etcd != nil:
 		return 10 * time.Second, nil
 	case foreign:
-		logf.FromContext(ctx).Info("leaving the Etcd and the claims its StatefulSet uses alone, the ControlPlane does not control it", "etcd", etcdName(cp.Name))
+		logf.FromContext(ctx).Info("leaving the Etcd and the claims its StatefulSet uses alone, the ControlPlane does not control it", "etcd", bryggav1alpha1.EtcdName(cp.Name))
 	default:
 		if err := r.reclaimClaims(ctx, cp); err != nil {
 			return 0, err

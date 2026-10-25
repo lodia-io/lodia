@@ -22,7 +22,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
-	"github.com/segla-io/brygga/internal/controller/datastore"
 )
 
 func Generation(controlPlane *bryggav1alpha1.ControlPlane, g int) ([]*corev1.Secret, error) {
@@ -55,7 +54,7 @@ func Generation(controlPlane *bryggav1alpha1.ControlPlane, g int) ([]*corev1.Sec
 	labels := map[string]string{bryggav1alpha1.ControlPlaneLabel: cp, bryggav1alpha1.EtcdCertificatesLabel: strconv.Itoa(g)}
 	owner := metav1.NewControllerRef(controlPlane, bryggav1alpha1.GroupVersion.WithKind("ControlPlane"))
 	secrets := []*corev1.Secret{{
-		ObjectMeta: metav1.ObjectMeta{Name: datastore.SecretName(cp, "ca", g), Namespace: namespace, Labels: maps.Clone(labels), OwnerReferences: []metav1.OwnerReference{*owner}},
+		ObjectMeta: metav1.ObjectMeta{Name: bryggav1alpha1.EtcdCertificateSecretName(cp, "ca", g), Namespace: namespace, Labels: maps.Clone(labels), OwnerReferences: []metav1.OwnerReference{*owner}},
 		Type:       corev1.SecretTypeOpaque,
 		Data:       map[string][]byte{"ca.crt": caPEM},
 	}}
@@ -65,7 +64,7 @@ func Generation(controlPlane *bryggav1alpha1.ControlPlane, g int) ([]*corev1.Sec
 			return nil, fmt.Errorf("issue the %s certificate: %w", l.name, err)
 		}
 		secrets = append(secrets, &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: datastore.SecretName(cp, l.name, g), Namespace: namespace, Labels: maps.Clone(labels), OwnerReferences: []metav1.OwnerReference{*owner}},
+			ObjectMeta: metav1.ObjectMeta{Name: bryggav1alpha1.EtcdCertificateSecretName(cp, l.name, g), Namespace: namespace, Labels: maps.Clone(labels), OwnerReferences: []metav1.OwnerReference{*owner}},
 			Type:       corev1.SecretTypeTLS,
 			Data:       map[string][]byte{"tls.crt": cert, "tls.key": key},
 		})

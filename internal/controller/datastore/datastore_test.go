@@ -302,7 +302,7 @@ func writeGeneration(t *testing.T, ns, cp string, generation int, only ...string
 	}
 	for _, secret := range secrets {
 		if len(only) > 0 && !slices.ContainsFunc(only, func(certificate string) bool {
-			return secret.Name == datastore.SecretName(cp, certificate, generation)
+			return secret.Name == bryggav1alpha1.EtcdCertificateSecretName(cp, certificate, generation)
 		}) {
 			continue
 		}
@@ -734,7 +734,9 @@ func TestNewestCompleteGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	terminating := secrets[slices.IndexFunc(secrets, func(s *corev1.Secret) bool { return s.Name == datastore.SecretName("dev", "client", 2) })]
+	terminating := secrets[slices.IndexFunc(secrets, func(s *corev1.Secret) bool {
+		return s.Name == bryggav1alpha1.EtcdCertificateSecretName("dev", "client", 2)
+	})]
 	label := terminating.Labels[bryggav1alpha1.EtcdCertificatesLabel]
 	delete(terminating.Labels, bryggav1alpha1.EtcdCertificatesLabel)
 	terminating.Finalizers = []string{"brygga.segla.io/test"}
@@ -788,7 +790,7 @@ func TestGenerationsMoveForward(t *testing.T) {
 	waitEtcd(t, ns, "dev", namesGeneration(2))
 
 	held := &corev1.Secret{}
-	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: datastore.SecretName("dev", "client", 2)}, held); err != nil {
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: bryggav1alpha1.EtcdCertificateSecretName("dev", "client", 2)}, held); err != nil {
 		t.Fatal(err)
 	}
 	patch := client.MergeFrom(held.DeepCopy())
@@ -855,8 +857,8 @@ func TestMountedSecretsMustExist(t *testing.T) {
 	waitEtcd(t, ns, cp, namesGeneration(2))
 	readyOn(t, ns, cp, 2)
 
-	for _, certificate := range datastore.Certificates {
-		if err := k8s.Delete(t.Context(), &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: datastore.SecretName(cp, certificate, 2)}}); err != nil {
+	for _, certificate := range bryggav1alpha1.EtcdCertificateRoles {
+		if err := k8s.Delete(t.Context(), &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: bryggav1alpha1.EtcdCertificateSecretName(cp, certificate, 2)}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -870,7 +872,7 @@ func TestMountedSecretsMustExist(t *testing.T) {
 	waitEtcd(t, ns, cp, namesGeneration(3))
 	readyOn(t, ns, cp, 3)
 	terminating := &corev1.Secret{}
-	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: datastore.SecretName(cp, "ca", 3)}, terminating); err != nil {
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: bryggav1alpha1.EtcdCertificateSecretName(cp, "ca", 3)}, terminating); err != nil {
 		t.Fatal(err)
 	}
 	held := client.MergeFrom(terminating.DeepCopy())
@@ -1161,8 +1163,8 @@ func getCopy(t *testing.T, ns, cp string) *corev1.Secret {
 
 func certificateVolumes(cp string, generation int) []corev1.Volume {
 	var volumes []corev1.Volume
-	for _, certificate := range datastore.Certificates {
-		volumes = append(volumes, corev1.Volume{Name: certificate, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: datastore.SecretName(cp, certificate, generation)}}})
+	for _, certificate := range bryggav1alpha1.EtcdCertificateRoles {
+		volumes = append(volumes, corev1.Volume{Name: certificate, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: bryggav1alpha1.EtcdCertificateSecretName(cp, certificate, generation)}}})
 	}
 	return volumes
 }

@@ -13,8 +13,8 @@ import (
 )
 
 func TestNoSecretNameOfOneControlPlaneIsAnothers(t *testing.T) {
-	suffixes := append([]string{"etcd-backup"}, names...)
-	for _, role := range etcdRoles {
+	suffixes := append([]string{string(bryggav1alpha1.EtcdBackupSecret)}, names...)
+	for _, role := range bryggav1alpha1.EtcdCertificateRoles {
 		suffixes = append(suffixes, "etcd-"+role+"-1", "etcd-"+role+"-12")
 	}
 	for _, a := range suffixes {

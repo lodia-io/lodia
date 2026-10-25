@@ -26,16 +26,6 @@ import (
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
 )
 
-var Certificates = []string{"ca", "server", "client", "peer", "backup-restore"}
-
-func SecretName(cp, certificate string, generation int) string {
-	return fmt.Sprintf("%s-etcd-%s-%d", cp, certificate, generation)
-}
-
-func etcdName(cp string) string { return cp + "-etcd" }
-
-func backupSecretName(cp string) string { return cp + "-etcd-backup" }
-
 // TLS is set on client, peer and backup-restore together: etcd-druid probes
 // the members over HTTPS only with backup.tls, while they serve HTTPS whenever
 // client TLS is on (docs/decisions/dedicated-etcd-by-default.md). The storage
@@ -44,7 +34,7 @@ func backupSecretName(cp string) string { return cp + "-etcd-backup" }
 // place. A nil class is a recorded class that is gone.
 func render(cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClass, generation int, current *druidv1alpha1.Etcd) *druidv1alpha1.Etcd {
 	secret := func(certificate string) corev1.SecretReference {
-		return corev1.SecretReference{Name: SecretName(cp.Name, certificate, generation)}
+		return corev1.SecretReference{Name: bryggav1alpha1.EtcdCertificateSecretName(cp.Name, certificate, generation)}
 	}
 	// etcd-druid reads the CA under ca.crt for the members and under
 	// bundle.crt for its own calls to the sidecar unless the key is named
@@ -55,7 +45,7 @@ func render(cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClas
 	etcd := &druidv1alpha1.Etcd{
 		TypeMeta: metav1.TypeMeta{APIVersion: druidv1alpha1.SchemeGroupVersion.String(), Kind: "Etcd"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:            etcdName(cp.Name),
+			Name:            bryggav1alpha1.EtcdName(cp.Name),
 			Namespace:       cp.Namespace,
 			Labels:          labels,
 			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cp, bryggav1alpha1.GroupVersion.WithKind("ControlPlane"))},
@@ -109,7 +99,7 @@ func render(cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClas
 			Provider:  new(druidv1alpha1.StorageProvider(backup.Store.Provider)),
 			Container: new(backup.Store.Bucket),
 			Prefix:    path.Join(backup.Store.Prefix, cp.Namespace, cp.Name, string(cp.UID)),
-			SecretRef: &corev1.SecretReference{Name: backupSecretName(cp.Name)},
+			SecretRef: &corev1.SecretReference{Name: bryggav1alpha1.EtcdBackupSecret.Name(cp.Name)},
 		}
 		if backup.Store.Endpoint != "" {
 			etcd.Spec.Backup.Store.EndpointOverride = new(backup.Store.Endpoint)
@@ -256,8 +246,8 @@ func mounts(sts *appsv1.StatefulSet, cp string, generation int) bool {
 			mounted = append(mounted, volume.Secret.SecretName)
 		}
 	}
-	for _, certificate := range Certificates {
-		if !slices.Contains(mounted, SecretName(cp, certificate, generation)) {
+	for _, certificate := range bryggav1alpha1.EtcdCertificateRoles {
+		if !slices.Contains(mounted, bryggav1alpha1.EtcdCertificateSecretName(cp, certificate, generation)) {
 			return false
 		}
 	}

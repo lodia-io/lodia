@@ -24,7 +24,9 @@ Rules:
   controller's objects. It reads `spec` and `status.target`, writes its own
   objects with server-side apply under its own field manager, and reports
   through its own condition. Blocked work is a condition with a reason, not a
-  retry loop.
+  retry loop. An object one controller writes and another reads, a Secret
+  PKI writes and Workloads mounts for instance, is named once, in
+  `api/v1alpha1/names.go`.
 - The public address is known only once Workloads' Service has one (a load
   balancer's, a node's), so Workloads publishes `status.endpoint` from the
   Service, whole, before it waits on anything, and PKI, Tenant and Health

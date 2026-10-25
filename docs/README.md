@@ -213,6 +213,20 @@ and a ServiceAccount key that is not the RSA key PKI writes, turn
 `CertificatesReady` False with `SecretUnreadable`: a new key would leave what
 the old one encrypted unreadable, or every token it signed invalid.
 
+The names one controller writes and another reads are defined once, in
+`api/v1alpha1/names.go`, and every controller takes them from there:
+
+| name | writer | readers |
+|---|---|---|
+| `<cp>-ca-bundle` | PKI | Workloads, which mounts it; Tenant, for `cluster-info`; Health, through `status.credentials.caBundleSecretRef` |
+| `<cp>-client-ca`, `-front-proxy-ca`, `-etcd-ca`, `-apiserver-serving`, `-apiserver-kubelet-client`, `-apiserver-etcd-client`, `-front-proxy-client`, `-konnectivity-server`, `-konnectivity-kubeconfig`, `-controller-manager-kubeconfig`, `-scheduler-kubeconfig`, `-kubelet-signer`, `-sa-keys`, `-encryption-config` | PKI | Workloads, which mounts them |
+| `<cp>-brygga-kubeconfig` | PKI | Tenant; Health in phase 2 |
+| `<cp>-admin-kubeconfig` | PKI | the platform, through `status.credentials.adminKubeconfigSecretRef` |
+| `<cp>-etcd-{ca,server,client,peer,backup-restore}-<g>` | PKI | the Datastore controller, which names a generation in the `Etcd` |
+| `Etcd` `<cp>-etcd` | Datastore | PKI, whose etcd certificates name its members and Services |
+| `<cp>-etcd-backup` | Datastore | etcd-druid, through the `Etcd` |
+| Deployments `<cp>-kube-apiserver`, `<cp>-kube-controller-manager`, `<cp>-kube-scheduler`; Service `<cp>-kube-apiserver` | Workloads | PKI, which names the Service in certificates and kubeconfigs |
+
 The dedicated etcd is etcd-druid's `Etcd` `<cp>-etcd`, which the Datastore
 controller renders from the `DatastoreClass` and the newest complete
 generation of the etcd certificates, under the `ControlPlane`'s finalizer
@@ -749,7 +763,8 @@ off), capacity planning, the alert rules and what each means.
 - Names: `<cp>-<component>` for workloads and Services, `<cp>-<purpose>` for
   Secrets, `brygga.segla.io/*` for labels, annotations and the finalizer.
 - Every reconcile is idempotent and uses server-side apply; no controller
-  reads an object it did not render except through status.
+  reads an object it did not render except through status, or by a name in
+  `api/v1alpha1/names.go`.
 - Every claim about Kubernetes or a neighbour carries a source.
 
 ## Deliberately not offered — and owed

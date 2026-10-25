@@ -58,14 +58,13 @@ var caBundles = []struct {
 // names are PKI's Secrets, <cp>-<name>, beside the etcd generations
 // <cp>-etcd-<role>-<g>. They are reserved: PKI finds them by name, labelled or
 // not.
-var names = []string{
-	"cakey-cluster", "cakey-client", "cakey-front-proxy", "cakey-etcd",
-	"ca-bundle", "client-ca", "front-proxy-ca", "etcd-ca",
-	"kubelet-signer", "apiserver-serving", "apiserver-kubelet-client", "konnectivity-server",
-	"front-proxy-client", "apiserver-etcd-client",
-	"konnectivity-kubeconfig", "controller-manager-kubeconfig", "scheduler-kubeconfig", "brygga-kubeconfig", "admin-kubeconfig",
-	"sa-keys", "encryption-config",
-}
+var names = func() []string {
+	names := []string{"cakey-cluster", "cakey-client", "cakey-front-proxy", "cakey-etcd"}
+	for _, s := range bryggav1alpha1.PKISecrets {
+		names = append(names, string(s))
+	}
+	return names
+}()
 
 const (
 	// signingDuration is how long the controller manager's kubelet client
@@ -90,7 +89,6 @@ var (
 	serverAuth       = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
 	clientAuth       = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
 	serverClientAuth = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}
-	etcdRoles        = []string{"ca", "server", "client", "peer", "backup-restore"}
 )
 
 type tenant struct {
@@ -155,7 +153,7 @@ func (t *tenant) reserved(name string) (int, bool) {
 	if slices.Contains(names, suffix) {
 		return 0, true
 	}
-	for _, role := range etcdRoles {
+	for _, role := range bryggav1alpha1.EtcdCertificateRoles {
 		if n, ok := strings.CutPrefix(suffix, "etcd-"+role+"-"); ok {
 			if g, err := strconv.Atoi(n); err == nil && g > 0 && strconv.Itoa(g) == n {
 				return g, true
@@ -279,7 +277,7 @@ func (t *tenant) foreignRequeue() time.Duration {
 
 func (t *tenant) credentials() map[string]any {
 	out := map[string]any{}
-	for field, secret := range map[string]string{"adminKubeconfigSecretRef": t.name("admin-kubeconfig"), "caBundleSecretRef": t.name("ca-bundle")} {
+	for field, secret := range map[string]string{"adminKubeconfigSecretRef": t.secret(bryggav1alpha1.AdminKubeconfigSecret), "caBundleSecretRef": t.secret(bryggav1alpha1.CABundleSecret)} {
 		if t.existing[secret] != nil {
 			out[field] = map[string]any{"name": secret}
 		}
@@ -325,17 +323,17 @@ func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 	cluster, cl, frontProxy, etcd := t.cas[clusterCA], t.cas[clientCA], t.cas[frontProxyCA], t.cas[etcdCA]
 
 	if cluster != nil {
-		if err := r.bundle(ctx, t, t.name("ca-bundle"), cluster.Cert); err != nil {
+		if err := r.bundle(ctx, t, t.secret(bryggav1alpha1.CABundleSecret), cluster.Cert); err != nil {
 			return err
 		}
-		if err := r.tls(ctx, t, t.name("apiserver-kubelet-client"), cluster, certs.Profile{CommonName: "kube-apiserver-kubelet-client", Organizations: []string{"brygga:kubelet-api-admins"}, Usages: clientAuth}); err != nil {
+		if err := r.tls(ctx, t, t.secret(bryggav1alpha1.APIServerKubeletClientSecret), cluster, certs.Profile{CommonName: "kube-apiserver-kubelet-client", Organizations: []string{"brygga:kubelet-api-admins"}, Usages: clientAuth}); err != nil {
 			return err
 		}
 		if t.endpoint != nil {
-			if err := r.tls(ctx, t, t.name("apiserver-serving"), cluster, t.servingProfile()); err != nil {
+			if err := r.tls(ctx, t, t.secret(bryggav1alpha1.APIServerServingSecret), cluster, t.servingProfile()); err != nil {
 				return err
 			}
-			if err := r.tls(ctx, t, t.name("konnectivity-server"), cluster, t.konnectivityProfile()); err != nil {
+			if err := r.tls(ctx, t, t.secret(bryggav1alpha1.KonnectivityServerSecret), cluster, t.konnectivityProfile()); err != nil {
 				return err
 			}
 		}
@@ -347,7 +345,7 @@ func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 		}
 	}
 	if cl != nil && cluster != nil {
-		internal := "https://" + t.name("kube-apiserver") + "." + t.cp.Namespace + ".svc:443"
+		internal := "https://" + bryggav1alpha1.APIServerName(t.cp.Name) + "." + t.cp.Namespace + ".svc:443"
 		kubeconfigs := []kubeconfig{
 			{"konnectivity-kubeconfig", "system:konnectivity-server", nil, "https://127.0.0.1:6443", false},
 			{"controller-manager-kubeconfig", "system:kube-controller-manager", nil, internal, false},
@@ -365,19 +363,19 @@ func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 	}
 
 	if frontProxy != nil {
-		if err := r.bundle(ctx, t, t.name("front-proxy-ca"), frontProxy.Cert); err != nil {
+		if err := r.bundle(ctx, t, t.secret(bryggav1alpha1.FrontProxyCASecret), frontProxy.Cert); err != nil {
 			return err
 		}
-		if err := r.tls(ctx, t, t.name("front-proxy-client"), frontProxy, certs.Profile{CommonName: "front-proxy-client", Usages: clientAuth}); err != nil {
+		if err := r.tls(ctx, t, t.secret(bryggav1alpha1.FrontProxyClientSecret), frontProxy, certs.Profile{CommonName: "front-proxy-client", Usages: clientAuth}); err != nil {
 			return err
 		}
 	}
 
 	if etcd != nil {
-		if err := r.bundle(ctx, t, t.name("etcd-ca"), etcd.Cert); err != nil {
+		if err := r.bundle(ctx, t, t.secret(bryggav1alpha1.EtcdCASecret), etcd.Cert); err != nil {
 			return err
 		}
-		if err := r.tls(ctx, t, t.name("apiserver-etcd-client"), etcd, certs.Profile{CommonName: "kube-apiserver-etcd-client", Usages: clientAuth}); err != nil {
+		if err := r.tls(ctx, t, t.secret(bryggav1alpha1.APIServerEtcdClientSecret), etcd, certs.Profile{CommonName: "kube-apiserver-etcd-client", Usages: clientAuth}); err != nil {
 			return err
 		}
 		if err := r.etcd(ctx, t); err != nil {
@@ -448,7 +446,7 @@ func (r *Reconciler) notice(t *tenant, ca *x509.Certificate) {
 // kubeletSigner compares no subject, since every signer gets a new one, and
 // writes a new signer only after the client CA bundle that trusts it.
 func (r *Reconciler) kubeletSigner(ctx context.Context, t *tenant) error {
-	name := t.name("kubelet-signer")
+	name := t.secret(bryggav1alpha1.KubeletSignerSecret)
 	ca := t.cas[clientCA]
 	s := t.existing[name]
 	c, err := certs.Parse(data(s, corev1.TLSCertKey), data(s, corev1.TLSPrivateKeyKey))
@@ -458,7 +456,7 @@ func (r *Reconciler) kubeletSigner(ctx context.Context, t *tenant) error {
 		}
 	}
 	t.renew(c.Cert, ca.Cert)
-	if err := r.bundle(ctx, t, t.name("client-ca"), t.clientBundle(c)...); err != nil {
+	if err := r.bundle(ctx, t, t.secret(bryggav1alpha1.ClientCASecret), t.clientBundle(c)...); err != nil {
 		return err
 	}
 	return r.applyTLS(ctx, t, name, c, nil, false)
@@ -500,7 +498,7 @@ func (r *Reconciler) bundle(ctx context.Context, t *tenant, name string, bundle 
 func (t *tenant) clientBundle(signer *certs.Certificate) []*x509.Certificate {
 	ca := t.cas[clientCA].Cert
 	bundle := []*x509.Certificate{ca, signer.Cert}
-	previous, _ := certs.ParseCerts(data(t.existing[t.name("client-ca")], caKey))
+	previous, _ := certs.ParseCerts(data(t.existing[t.secret(bryggav1alpha1.ClientCASecret)], caKey))
 	replaced := signer.Cert.NotBefore.Add(certs.Backdate)
 	for _, c := range previous {
 		if c.IsCA && !c.Equal(ca) && certs.Verify(c, ca, t.now) == nil && t.now.Before(replaced.Add(signingDuration)) {
@@ -516,7 +514,7 @@ func (t *tenant) servingProfile() certs.Profile {
 	if domain == "" {
 		domain = "cluster.local"
 	}
-	api := t.name("kube-apiserver")
+	api := bryggav1alpha1.APIServerName(t.cp.Name)
 	p := certs.Profile{CommonName: "kube-apiserver", Usages: serverAuth}
 	for _, name := range []string{"kubernetes", "kubernetes.default", "kubernetes.default.svc", "kubernetes.default.svc." + domain} {
 		p.SAN(name)
@@ -592,7 +590,7 @@ func (r *Reconciler) kubeconfig(ctx context.Context, t *tenant, k kubeconfig) er
 // it cannot read is never replaced: every token it signed would stop
 // verifying.
 func (r *Reconciler) serviceAccountKey(ctx context.Context, t *tenant) error {
-	name := t.name("sa-keys")
+	name := t.secret(bryggav1alpha1.ServiceAccountKeysSecret)
 	if s := t.existing[name]; s != nil {
 		if !isServiceAccountKey(s.Data[signingKey]) {
 			t.unreadable = append(t.unreadable, name)
@@ -624,7 +622,7 @@ func isServiceAccountKey(pem []byte) bool {
 // configuration it cannot read is never replaced: the data its keys
 // encrypted would be lost.
 func (r *Reconciler) encryptionConfig(ctx context.Context, t *tenant) error {
-	name := t.name("encryption-config")
+	name := t.secret(bryggav1alpha1.EncryptionConfigSecret)
 	want := providerSecretbox
 	if api := t.cp.Spec.APIServer; api != nil && api.Encryption != nil && api.Encryption.Provider != "" {
 		want = api.Encryption.Provider
@@ -744,7 +742,7 @@ func (r *Reconciler) etcd(ctx context.Context, t *tenant) error {
 		if g == current || g == previous {
 			continue
 		}
-		for _, role := range etcdRoles {
+		for _, role := range bryggav1alpha1.EtcdCertificateRoles {
 			s := t.existing[t.etcdName(role, g)]
 			if s == nil || s.DeletionTimestamp != nil || t.writeErr != nil {
 				continue
@@ -765,7 +763,7 @@ func (r *Reconciler) etcd(ctx context.Context, t *tenant) error {
 // invisible to the label-filtered cache.
 func (r *Reconciler) adopt(ctx context.Context, t *tenant, g int) {
 	labels := map[string]string{bryggav1alpha1.EtcdCertificatesLabel: strconv.Itoa(g)}
-	for _, role := range etcdRoles {
+	for _, role := range bryggav1alpha1.EtcdCertificateRoles {
 		if s := t.existing[t.etcdName(role, g)]; s != nil && s.DeletionTimestamp == nil {
 			r.applySecret(ctx, t, s.Name, s.Type, s.Data, labels, true)
 		}
@@ -795,7 +793,7 @@ func (r *Reconciler) issueEtcd(ctx context.Context, t *tenant, g int, ca *certs.
 }
 
 func (t *tenant) etcdComplete(g int) bool {
-	for _, role := range etcdRoles {
+	for _, role := range bryggav1alpha1.EtcdCertificateRoles {
 		if s := t.existing[t.etcdName(role, g)]; s == nil || s.DeletionTimestamp != nil {
 			return false
 		}
@@ -824,7 +822,11 @@ func (t *tenant) etcdGeneration(g int, ca *certs.Certificate, profiles []etcdPro
 }
 
 func (t *tenant) etcdName(role string, generation int) string {
-	return t.name("etcd-" + role + "-" + strconv.Itoa(generation))
+	return bryggav1alpha1.EtcdCertificateSecretName(t.cp.Name, role, generation)
+}
+
+func (t *tenant) secret(s bryggav1alpha1.Secret) string {
+	return s.Name(t.cp.Name)
 }
 
 type etcdProfile struct {
@@ -835,7 +837,7 @@ type etcdProfile struct {
 // etcdProfiles are the certificates etcd-druid expects for the Etcd named
 // <cp>-etcd, as hack/etcd-spike/pki.sh issued them.
 func (t *tenant) etcdProfiles() []etcdProfile {
-	n := t.name("etcd")
+	n := bryggav1alpha1.EtcdName(t.cp.Name)
 	forms := func(names ...string) []string {
 		var out []string
 		for _, s := range names {
