@@ -1,11 +1,7 @@
 // Copyright 2026 The Brygga Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package pki is the PKI controller: for every ControlPlane it keeps the CAs,
-// leaf certificates, kubeconfigs, ServiceAccount key and encryption
-// configuration of the tenant namespace in place, renews leaves at two thirds
-// of their lifetime, and binds the tenant's three identities once its API
-// server answers.
+// Package pki is the PKI controller.
 package pki
 
 import (
@@ -33,14 +29,13 @@ import (
 const (
 	fieldManager = "brygga/pki"
 	kind         = "ControlPlane"
-	// bindingsPeriod is how often the tenant's bindings are checked at least:
-	// the Tenant controller's apply period.
+	// bindingsPeriod is the Tenant controller's apply period.
 	bindingsPeriod = 10 * time.Minute
 )
 
-// The reasons of PKI's conditions. Each has one message, which depends on
-// the state alone, so a pass that changes nothing writes nothing; the error
-// behind Issuing and Binding is in the log.
+// Each reason has one message, which depends on the state alone, so a pass
+// that changes nothing writes nothing; the errors behind Issuing and Binding
+// go to the log.
 const (
 	ReasonReconciling                   = "Reconciling"
 	ReasonIssued                        = "Issued"
@@ -56,14 +51,12 @@ const (
 	ReasonWaitingForAPIServer           = "WaitingForAPIServer"
 )
 
-// Reconciler is the PKI controller.
 type Reconciler struct {
 	client.Client
 	// Reader reads Secrets whole; the manager's cache holds their metadata only.
 	Reader client.Reader
-	// LeafLifetime is the lifetime of every leaf certificate and of the
-	// kubelet signer, CALifetime of every CA but the cluster CA,
-	// TrustAnchorLifetime of the cluster CA.
+	// The kubelet signer lives LeafLifetime, the cluster CA
+	// TrustAnchorLifetime, every other CA CALifetime.
 	LeafLifetime        time.Duration
 	CALifetime          time.Duration
 	TrustAnchorLifetime time.Duration
@@ -75,7 +68,6 @@ type Reconciler struct {
 	Dial func(ctx context.Context, network, address string) (net.Conn, error)
 }
 
-// SetupWithManager registers the controller as pki.
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("pki").
@@ -85,10 +77,6 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// Reconcile issues what the ControlPlane's namespace lacks, renews what is
-// due, binds the tenant's identities once its API server is ready, and
-// returns at the next moment a later pass has work, or in ten minutes,
-// whichever is first.
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	cp := &bryggav1alpha1.ControlPlane{}
 	if err := r.Get(ctx, req.NamespacedName, cp); err != nil {
@@ -130,8 +118,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	return ctrl.Result{RequeueAfter: t.requeueAfter()}, nil
 }
 
-// previous is the condition as the ControlPlane has it, or Unknown on the
-// first visit.
 func previous(cp *bryggav1alpha1.ControlPlane, conditionType string) metav1.Condition {
 	if c := meta.FindStatusCondition(cp.Status.Conditions, conditionType); c != nil {
 		return *c
@@ -162,9 +148,7 @@ func (t *tenant) certificatesReady(err error) metav1.Condition {
 	return c
 }
 
-// caValidity is True while every CA is valid for longer than notice, False
-// with each CA that is not and its NotAfter, and Unknown while a CA's key
-// cannot be read. It reports whether every CA was read: a pass that failed
+// caValidity also reports whether every CA was read: a pass that failed
 // before keeps the condition it had.
 func (t *tenant) caValidity(notice time.Duration) (metav1.Condition, bool) {
 	c := metav1.Condition{Type: bryggav1alpha1.ConditionCAValidityAcceptable, Status: metav1.ConditionTrue, Reason: ReasonValid, Message: "no CA expires within " + notice.String()}
@@ -183,8 +167,6 @@ func (t *tenant) caValidity(notice time.Duration) (metav1.Condition, bool) {
 	return c, len(t.caCerts)+len(t.missingCAs) == len(caBundles)
 }
 
-// access binds the tenant's identities once APIServerReady is True for the
-// current generation; an older True counts as Unknown.
 func (r *Reconciler) access(ctx context.Context, t *tenant) (metav1.Condition, error) {
 	c := metav1.Condition{Type: bryggav1alpha1.ConditionAccessReady, Status: metav1.ConditionFalse, Reason: ReasonWaitingForAPIServer, Message: "APIServerReady is not True for this generation"}
 	ready := meta.FindStatusCondition(t.cp.Status.Conditions, bryggav1alpha1.ConditionAPIServerReady)
@@ -199,11 +181,10 @@ func (r *Reconciler) access(ctx context.Context, t *tenant) (metav1.Condition, e
 	return c, nil
 }
 
-// applyStatus applies PKI's conditions and credential references through the
-// status subresource, and only when one of them changed. A condition that
-// already carries an observedGeneration was kept from an earlier pass, and
-// nil credentials keep the references the ControlPlane has: an apply that
-// left out a field PKI owns would remove it.
+// applyStatus writes only on a change. Nil credentials keep the
+// ControlPlane's references, and a condition carried from an earlier pass
+// keeps its observedGeneration: an apply that leaves out a field PKI owns
+// removes it.
 func (r *Reconciler) applyStatus(ctx context.Context, cp *bryggav1alpha1.ControlPlane, now time.Time, credentials map[string]any, conditions ...metav1.Condition) error {
 	if credentials == nil {
 		credentials = map[string]any{}

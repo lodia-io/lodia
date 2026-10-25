@@ -3,22 +3,14 @@
 
 package v1alpha1
 
-// The condition types of a ControlPlane that more than one controller reads;
-// each is written by exactly one controller.
+// Condition types more than one controller reads, each with its one writer.
 const (
-	// ConditionCertificatesReady is PKI's: every certificate, key and
-	// kubeconfig exists and is valid beyond its renewal time.
-	ConditionCertificatesReady = "CertificatesReady"
-	// ConditionAccessReady is PKI's: the tenant's bindings for Brygga, the
-	// admin group and the kubelet client exist.
-	ConditionAccessReady = "AccessReady"
-	// ConditionCAValidityAcceptable is PKI's and not part of Ready: every CA
-	// is valid for more than a year.
-	ConditionCAValidityAcceptable = "CAValidityAcceptable"
-	// ConditionAPIServerReady is Workloads': every API server replica answers.
-	ConditionAPIServerReady = "APIServerReady"
+	ConditionCertificatesReady    = "CertificatesReady"    // PKI
+	ConditionAccessReady          = "AccessReady"          // PKI
+	ConditionCAValidityAcceptable = "CAValidityAcceptable" // PKI
+	ConditionAPIServerReady       = "APIServerReady"       // Workloads
 )
 
-// EtcdCertificatesLabel marks the five Secrets of one generation of a
-// tenant's etcd certificates; its value is the generation number.
+// EtcdCertificatesLabel's value is the generation of the etcd certificate
+// Secret it marks.
 const EtcdCertificatesLabel = "brygga.segla.io/etcd-certificates"

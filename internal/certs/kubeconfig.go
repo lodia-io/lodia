@@ -10,9 +10,6 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
-// Kubeconfig renders a kubeconfig for user at server. With embed the CA, the
-// certificate and the key are inline; otherwise they are the files ca.crt,
-// tls.crt and tls.key beside the kubeconfig, which client-go reloads.
 func Kubeconfig(cluster, server, user string, ca, cert, key []byte, embed bool) ([]byte, error) {
 	c := clientcmdapi.NewCluster()
 	c.Server = server
@@ -31,7 +28,6 @@ func Kubeconfig(cluster, server, user string, ca, cert, key []byte, embed bool) 
 	return clientcmd.Write(*cfg)
 }
 
-// Embedded returns the client certificate and key inline in a kubeconfig.
 func Embedded(kubeconfig []byte) (cert, key []byte, err error) {
 	cfg, err := clientcmd.Load(kubeconfig)
 	if err != nil {

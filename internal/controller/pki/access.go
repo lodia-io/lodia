@@ -26,8 +26,6 @@ import (
 // bindings lives; it exists in memory only.
 const bootstrapLifetime = 10 * time.Minute
 
-// bindings are the tenant's ClusterRoleBindings: each subject is bound under
-// its own name.
 var bindings = []struct {
 	name, kind, role string
 }{

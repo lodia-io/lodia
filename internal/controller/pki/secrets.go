@@ -38,8 +38,8 @@ const (
 	etcdCA       = "etcd"
 )
 
-// caBundles is the Secret that proves a tenant once had each CA: a tenant with
-// neither it nor the key Secret has no CA yet.
+// A CA's bundle proves the tenant had that CA, so a CA is created only when
+// neither the bundle nor its key Secret exists.
 var caBundles = []struct {
 	ca, bundle string
 }{
@@ -75,8 +75,6 @@ var (
 	etcdRoles        = []string{"ca", "server", "client", "peer", "backup-restore"}
 )
 
-// tenant is one ControlPlane's PKI during a pass: what exists, what was
-// decided, and when a later pass has work.
 type tenant struct {
 	cp       *bryggav1alpha1.ControlPlane
 	existing map[string]*corev1.Secret
@@ -84,9 +82,8 @@ type tenant struct {
 	// wake is the earliest renewal, CA notice or CA expiry still ahead.
 	wake time.Time
 	// cas sign; caCerts holds every CA read, expired ones included.
-	cas     map[string]*certs.Certificate
-	caCerts map[string]*x509.Certificate
-	// Nothing a missing or expired CA would sign is written.
+	cas                 map[string]*certs.Certificate
+	caCerts             map[string]*x509.Certificate
 	missingCAs          []string
 	expiredCAs          []string
 	unsupportedProvider bryggav1alpha1.EncryptionProvider
@@ -148,7 +145,6 @@ func (t *tenant) requeueAfter() time.Duration {
 	return max(after.Truncate(time.Second), time.Second)
 }
 
-// credentials names the Secrets of status.credentials that exist.
 func (t *tenant) credentials() map[string]any {
 	out := map[string]any{}
 	for field, secret := range map[string]string{"adminKubeconfigSecretRef": t.name("admin-kubeconfig"), "caBundleSecretRef": t.name("ca-bundle")} {
@@ -170,15 +166,11 @@ func isImmutable(s *corev1.Secret) bool {
 	return s.Immutable != nil && *s.Immutable
 }
 
-// current reports whether c chains to ca, is p's and is not due: two thirds
-// into its lifetime, unless it already ends with its CA.
 func (t *tenant) current(c, ca *certs.Certificate, p certs.Profile) bool {
 	return certs.Verify(c.Cert, ca.Cert) == nil && certs.Matches(c.Cert, p) &&
 		(t.now.Before(certs.RenewalTime(c.Cert)) || !c.Cert.NotAfter.Before(ca.Cert.NotAfter))
 }
 
-// leaf keeps the certificate in certPEM and keyPEM when it is current, and
-// issues one otherwise.
 func (t *tenant) leaf(certPEM, keyPEM []byte, ca *certs.Certificate, p certs.Profile, lifetime time.Duration) (*certs.Certificate, error) {
 	c, err := certs.Parse(certPEM, keyPEM)
 	if err != nil || !t.current(c, ca, p) {
@@ -190,9 +182,8 @@ func (t *tenant) leaf(certPEM, keyPEM []byte, ca *certs.Certificate, p certs.Pro
 	return c, nil
 }
 
-// issue brings every Secret of the tenant namespace contract up to date,
-// skipping what a missing or expired CA would sign, with the encryption
-// configuration last so that an unsupported provider blocks nothing else.
+// issue writes the encryption configuration last, so that an unsupported
+// provider blocks nothing else.
 func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 	for _, ca := range caBundles {
 		if err := r.ca(ctx, t, ca.ca, ca.bundle); err != nil {
@@ -268,8 +259,8 @@ func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 	return r.encryptionConfig(ctx, t)
 }
 
-// lookup returns a Secret from the labelled list or, when the list lacks it,
-// read by name: one restored without its labels is used, not replaced.
+// lookup reads a Secret the labelled list lacks by name, so one restored
+// without its labels is used, not replaced.
 func (r *Reconciler) lookup(ctx context.Context, t *tenant, name string) (*corev1.Secret, error) {
 	if s := t.existing[name]; s != nil {
 		return s, nil
@@ -282,11 +273,9 @@ func (r *Reconciler) lookup(ctx context.Context, t *tenant, name string) (*corev
 	return s, nil
 }
 
-// ca reads the CA from <cp>-cakey-<name>. A tenant with neither that Secret
-// nor the CA's bundle, read by name if need be, gets a new CA. A key that is
-// missing or unreadable beside a bundle is a lost CA, and an expired one
-// cannot sign: nothing either would sign is written, since a new CA would
-// cut every client or node off at once.
+// ca creates a CA only for a tenant with neither its key Secret nor its
+// bundle: a new CA in place of a lost or expired one would cut every client
+// or node off at once.
 func (r *Reconciler) ca(ctx context.Context, t *tenant, name, bundle string) error {
 	secret := t.name("cakey-" + name)
 	key, err := r.lookup(ctx, t, secret)
@@ -325,7 +314,6 @@ func (r *Reconciler) ca(ctx context.Context, t *tenant, name, bundle string) err
 	return r.applySecret(ctx, t, secret, corev1.SecretTypeTLS, map[string][]byte{corev1.TLSCertKey: key.Data[corev1.TLSCertKey], corev1.TLSPrivateKeyKey: key.Data[corev1.TLSPrivateKeyKey]}, nil, false)
 }
 
-// readCA returns the self-signed CA a key Secret holds, or nil.
 func readCA(s *corev1.Secret) *certs.Certificate {
 	c, err := certs.Parse(data(s, corev1.TLSCertKey), data(s, corev1.TLSPrivateKeyKey))
 	if err != nil || !c.Cert.IsCA || c.Cert.CheckSignatureFrom(c.Cert) != nil {
@@ -334,17 +322,13 @@ func readCA(s *corev1.Secret) *certs.Certificate {
 	return c
 }
 
-// notice wakes the controller when a CA enters its last notice period and
-// when it expires.
 func (r *Reconciler) notice(t *tenant, ca *x509.Certificate) {
 	t.wakeAt(ca.NotAfter.Add(-r.CAExpiryNotice))
 	t.wakeAt(ca.NotAfter)
 }
 
-// kubeletSigner keeps the intermediate in <cp>-kubelet-signer while it chains
-// to the client CA and is not due; its subject is not compared, since every
-// signer gets a new one. A new signer is written only once the client CA
-// bundle trusts it.
+// kubeletSigner compares no subject, since every signer gets a new one, and
+// writes a new signer only after the client CA bundle that trusts it.
 func (r *Reconciler) kubeletSigner(ctx context.Context, t *tenant) error {
 	name := t.name("kubelet-signer")
 	ca := t.cas[clientCA]
@@ -362,7 +346,6 @@ func (r *Reconciler) kubeletSigner(ctx context.Context, t *tenant) error {
 	return r.applyTLS(ctx, t, name, c, nil, false)
 }
 
-// tls keeps or issues the certificate of a kubernetes.io/tls Secret.
 func (r *Reconciler) tls(ctx context.Context, t *tenant, name string, ca *certs.Certificate, p certs.Profile) error {
 	s := t.existing[name]
 	c, err := t.leaf(data(s, corev1.TLSCertKey), data(s, corev1.TLSPrivateKeyKey), ca, p, r.LeafLifetime)
@@ -392,9 +375,8 @@ func (r *Reconciler) bundle(ctx context.Context, t *tenant, name string, bundle 
 	return r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, map[string][]byte{caKey: pem}, nil, false)
 }
 
-// clientBundle is the client CA, the kubelet signer and every previous signer
-// for one signing duration after its replacement, since kubelets present only
-// their leaf.
+// clientBundle keeps each replaced signer for one signing duration, since
+// kubelets present only their leaf.
 func (t *tenant) clientBundle(signer *certs.Certificate) []*x509.Certificate {
 	ca := t.cas[clientCA].Cert
 	bundle := []*x509.Certificate{ca, signer.Cert}
@@ -408,8 +390,6 @@ func (t *tenant) clientBundle(signer *certs.Certificate) []*x509.Certificate {
 	return bundle
 }
 
-// servingProfile is the API server's serving certificate: every name and
-// address a client may dial.
 func (t *tenant) servingProfile() certs.Profile {
 	cp := t.cp
 	domain := string(cp.Spec.Network.ClusterDomain)
@@ -449,7 +429,6 @@ func (t *tenant) konnectivityProfile() certs.Profile {
 	return p
 }
 
-// kubeconfig is a client identity under the client CA and the server it dials.
 type kubeconfig struct {
 	suffix string
 	user   string
@@ -494,8 +473,7 @@ func (r *Reconciler) kubeconfig(ctx context.Context, t *tenant, k kubeconfig) er
 	return r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, content, nil, false)
 }
 
-// serviceAccountKey keeps the signing key of <cp>-sa-keys, brygga-signer's
-// file contract, or creates it.
+// serviceAccountKey keeps <cp>-sa-keys, brygga-signer's file contract.
 func (r *Reconciler) serviceAccountKey(ctx context.Context, t *tenant) error {
 	name := t.name("sa-keys")
 	content := map[string][]byte{}
@@ -519,10 +497,8 @@ func isServiceAccountKey(key any) bool {
 	return ok && rsaKey.N.BitLen() >= serviceAccountKeyBits
 }
 
-// encryptionConfig keeps <cp>-encryption-config while its first provider is
-// the one in spec; a changed provider goes first with a new key and the
-// previous providers stay readable. A provider PKI cannot render is reported
-// and blocks nothing else.
+// encryptionConfig puts a changed provider first with a new key, and keeps
+// the previous providers so that what they encrypted stays readable.
 func (r *Reconciler) encryptionConfig(ctx context.Context, t *tenant) error {
 	name := t.name("encryption-config")
 	existing := data(t.existing[name], encryptionConfigKey)
@@ -589,10 +565,8 @@ func newProvider(provider bryggav1alpha1.EncryptionProvider) (apiserverv1.Provid
 	}
 }
 
-// etcd keeps the newest generation of the five etcd Secrets while it is
-// whole and current, and otherwise issues the next one. It keeps the newest
-// complete generation below the current one, the one the Etcd may still run
-// on, and deletes every other.
+// etcd keeps the current generation and the newest complete one below it,
+// which the Etcd may still run on, and deletes every other.
 func (r *Reconciler) etcd(ctx context.Context, t *tenant) error {
 	ca := t.cas[etcdCA]
 	profiles := t.etcdProfiles()
@@ -665,8 +639,6 @@ func (r *Reconciler) issueEtcd(ctx context.Context, t *tenant, g int, ca *certs.
 	return nil
 }
 
-// etcdComplete reports whether all five Secrets of generation g exist and
-// none is being deleted.
 func (t *tenant) etcdComplete(g int) bool {
 	for _, role := range etcdRoles {
 		if s := t.existing[t.etcdName(role, g)]; s == nil || s.DeletionTimestamp != nil {
@@ -676,8 +648,6 @@ func (t *tenant) etcdComplete(g int) bool {
 	return true
 }
 
-// etcdGeneration returns generation g's leaves by role when it is complete,
-// immutable and current; nil otherwise, and then the next generation is due.
 func (t *tenant) etcdGeneration(g int, ca *certs.Certificate, profiles []etcdProfile) map[string]*certs.Certificate {
 	if g == 0 || !t.etcdComplete(g) {
 		return nil
@@ -728,9 +698,6 @@ func (t *tenant) etcdProfiles() []etcdProfile {
 	}
 }
 
-// applySecret writes the Secret with server-side apply, owned by the
-// ControlPlane and labelled for the cache, unless it already is that. An
-// immutable one that exists is never written again.
 func (r *Reconciler) applySecret(ctx context.Context, t *tenant, name string, typ corev1.SecretType, content map[string][]byte, labels map[string]string, immutable bool) error {
 	cp := t.cp
 	labels = maps.Clone(labels)
