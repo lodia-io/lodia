@@ -26,7 +26,7 @@ spec:
     - jsonPath: .status.conditions[?(@.type=='Ready')].reason
       name: Reason
       type: string
-    - jsonPath: .status.endpoint.host
+    - jsonPath: .status.endpoint.apiServer.host
       name: Endpoint
       priority: 1
       type: string
@@ -1192,20 +1192,50 @@ spec:
                     type: string
                 type: object
               endpoint:
-                description: Endpoint is where the API server is reachable.
+                description: Endpoint is where the control plane is reachable.
                 properties:
-                  host:
-                    description: Host of the public endpoint.
-                    maxLength: 253
-                    type: string
+                  apiServer:
+                    description: APIServer is the API server's public endpoint.
+                    properties:
+                      host:
+                        description: Host is a DNS name or an IP address.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      port:
+                        description: Port is a TCP port.
+                        format: int32
+                        maximum: 65535
+                        minimum: 1
+                        type: integer
+                    required:
+                    - host
+                    - port
+                    type: object
                   internal:
                     description: Internal is the in-namespace URL.
                     maxLength: 512
                     type: string
-                  port:
-                    description: Port of the public endpoint.
-                    format: int32
-                    type: integer
+                  konnectivity:
+                    description: |-
+                      Konnectivity is where konnectivity agents reach the konnectivity
+                      server.
+                    properties:
+                      host:
+                        description: Host is a DNS name or an IP address.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      port:
+                        description: Port is a TCP port.
+                        format: int32
+                        maximum: 65535
+                        minimum: 1
+                        type: integer
+                    required:
+                    - host
+                    - port
+                    type: object
                 type: object
               health:
                 description: Health is present while Brygga holds the controller manager.

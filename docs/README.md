@@ -155,7 +155,7 @@ ConfigMaps, who consumes them, and what a change does:
 | `<cp>-encryption-config` (`encryption-config.yaml`: an `EncryptionConfiguration` for `secrets` with the provider of `apiServer.encryption.provider` and a random 32-byte key) | API server | reloaded every minute (automatic reload) |
 | `<cp>-konnectivity-server` (`kubernetes.io/tls`), `<cp>-konnectivity-kubeconfig` (`kubeconfig`, `tls.crt`, `tls.key`, `ca.crt`; server `https://127.0.0.1:6443`) | konnectivity-server | the API server pod rolls, in the maintenance window |
 | `<cp>-controller-manager-kubeconfig`, `<cp>-scheduler-kubeconfig` (`kubeconfig`, `tls.crt`, `tls.key`, `ca.crt`; server `https://<cp>-kube-apiserver.<ns>.svc:443`) | each its own; the kubeconfig names its certificates as files beside it | reloaded by client-go |
-| `<cp>-admin-kubeconfig` (`kubeconfig`, certificates embedded; server `status.endpoint`) | the platform; `brygga:cluster-admins` | nothing restarts |
+| `<cp>-admin-kubeconfig` (`kubeconfig`, certificates embedded; server `status.endpoint.apiServer`) | the platform; `brygga:cluster-admins` | nothing restarts |
 | `<cp>-brygga-kubeconfig` (`kubeconfig`, certificates embedded; `brygga:operator`, dialling the in-namespace Service) | Brygga's PKI, Tenant and Health inside the tenant | nothing restarts |
 | ConfigMap `authentication-config` | API server | reloaded, except its anonymous section |
 | ConfigMaps `egress-selector`, `audit-policy`, `admission-config` / `scheduler-config` | API server / scheduler | that component restarts |

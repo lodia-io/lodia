@@ -879,6 +879,27 @@ func applyStatus(t *testing.T, cp *bryggav1alpha1.ControlPlane, status map[strin
 	}
 }
 
+func TestTheKonnectivityCertificateNamesTheKonnectivityHost(t *testing.T) {
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "pki-konnectivity")
+	const konnectivity = "203.0.113.12"
+	applyStatus(t, cp, map[string]any{"endpoint": map[string]any{
+		"apiServer":    map[string]any{"host": endpointHost, "port": int64(endpointPort)},
+		"konnectivity": map[string]any{"host": konnectivity, "port": int64(8132)},
+	}})
+	reconcile(t, r, cp)
+	secrets := secretsOf(t, cp)
+	for name, want := range map[string]string{"dev-konnectivity-server": konnectivity, "dev-apiserver-serving": endpointHost} {
+		ips := parseTLS(t, secrets[name]).Cert.IPAddresses
+		if !slices.ContainsFunc(ips, func(ip net.IP) bool { return ip.String() == want }) {
+			t.Errorf("%s names %v, want %s", name, ips, want)
+		}
+	}
+	if ips := parseTLS(t, secrets["dev-konnectivity-server"]).Cert.IPAddresses; slices.ContainsFunc(ips, func(ip net.IP) bool { return ip.String() == endpointHost }) {
+		t.Errorf("dev-konnectivity-server names the API server's host %s", endpointHost)
+	}
+}
+
 func publishEndpoint(t *testing.T, cp *bryggav1alpha1.ControlPlane) {
 	t.Helper()
 	publishEndpointAt(t, cp, endpointHost)
@@ -886,7 +907,10 @@ func publishEndpoint(t *testing.T, cp *bryggav1alpha1.ControlPlane) {
 
 func publishEndpointAt(t *testing.T, cp *bryggav1alpha1.ControlPlane, host string) {
 	t.Helper()
-	applyStatus(t, cp, map[string]any{"endpoint": map[string]any{"host": host, "port": int64(endpointPort)}})
+	applyStatus(t, cp, map[string]any{"endpoint": map[string]any{
+		"apiServer":    map[string]any{"host": host, "port": int64(endpointPort)},
+		"konnectivity": map[string]any{"host": host, "port": int64(8132)},
+	}})
 }
 
 func setAPIServerReady(t *testing.T, cp *bryggav1alpha1.ControlPlane) {

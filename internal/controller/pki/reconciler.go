@@ -153,7 +153,7 @@ func (t *tenant) certificatesReady() metav1.Condition {
 	case len(t.pending) > 0:
 		c.Reason, c.Message = ReasonIssuing, "not written yet: "+listed(t.pending)+"; the error is in the log"
 	case t.endpoint == nil:
-		c.Reason, c.Message = ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint"
+		c.Reason, c.Message = ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint.apiServer"
 	case t.unsupportedProvider != "":
 		c.Reason, c.Message = ReasonEncryptionProviderUnsupported, "apiServer.encryption.provider "+string(t.unsupportedProvider)+" is not supported yet"
 	default:
