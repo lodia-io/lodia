@@ -188,7 +188,12 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   generation after eight months, two thirds of it
   ([staged-credential-rotation](staged-credential-rotation.md)), and the
   current one expires at a year. `DatastoreClassNotFound` is therefore a
-  reason only before the `Etcd` exists.
+  reason only before the `Etcd` exists. A class whose credentials copy
+  cannot be made — its Secret missing, another owner holding
+  `<cp>-etcd-backup`, the API server refusing the copy — is held the same
+  way, whole, with a note in `DatastoreReady`'s message, since the rest of an
+  edit could add a store whose copy does not exist; only the copy stops, never
+  the certificate generations.
 - The claims carry the `ControlPlane`'s UID as a label and the class as an
   annotation, since they outlive the `Etcd`: deletion reclaims only this
   `ControlPlane`'s claims, under the class each records, and keeps them when
@@ -245,7 +250,9 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   the status alone), `TestEtcdRefused` (an admission policy refuses the
   `Etcd`), `TestPaused`, `TestNewestCompleteGeneration`,
   `TestGenerationsMoveForward`, `TestDatastoreClassNotFound`,
-  `TestBackupCredentialsCopied`, `TestDatastoreReadyFollowsEtcdStatus`,
+  `TestBackupCredentialsCopied`, `TestHeldClass`,
+  `TestBackupCopyFollowsItsEvents`, `TestPredecessorsCopy`,
+  `TestDatastoreReadyFollowsEtcdStatus`,
   `TestVolumesExist`, `TestForeignEtcd`, `TestStorageAtCreation`,
   `TestRecordedClass`, `TestClassGone`, `TestDeletionBeforeLabelling` and
   `TestDeletion`. `datastoretest` stands in for PKI there.

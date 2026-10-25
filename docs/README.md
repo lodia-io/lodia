@@ -196,13 +196,22 @@ owned by the `Etcd`
 ([helper.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/helper.go)).
 With a backup store, the class's credentials Secret is copied into the
 namespace as `<cp>-etcd-backup`, since etcd-druid mounts it from the `Etcd`'s
-namespace. A pass of the controller refreshes the copy, and nothing watches
-the class's Secret: an edit of the class reaches every tenant on it at once,
-while the Secret edited in place reaches a tenant only at its next pass, at
-worst the cache's resync, every 10 hours by default
+namespace. A pass of the controller refreshes the copy, and a deletion or edit
+of the copy brings a pass; nothing watches the class's Secret: an edit of the
+class reaches every tenant on it at once, while the Secret edited in place
+reaches a tenant only at its next pass, at worst the cache's resync, every 10
+hours by default
 ([cache.go](https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/cache/cache.go#L93-L97)).
 Credentials are therefore rotated with a new Secret that the class is
-pointed at ([operations](operations.md#everyday-tasks)).
+pointed at ([operations](operations.md#everyday-tasks)). When the copy cannot
+be made — the class's Secret is missing, another owner controls
+`<cp>-etcd-backup` (a predecessor's the garbage collector has not removed
+yet), or the API server refuses the copy — the class is held whole: the
+`Etcd` keeps the class fields it has and still takes each new certificate
+generation, and `DatastoreReady`'s message ends with `DatastoreClass <c> is
+held:` and the cause, checked again every minute. Held whole, since the rest
+of an edit could add a store whose copy cannot be made; before the first
+`Etcd` exists, the same cause is `Provisioning`, and nothing is created.
 
 The class is resolved once, when the `Etcd` is created, and
 recorded on it in `brygga.segla.io/datastore-class`, with the class

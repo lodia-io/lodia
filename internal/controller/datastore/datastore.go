@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	corev1ac "k8s.io/client-go/applyconfigurations/core/v1"
 	metav1ac "k8s.io/client-go/applyconfigurations/meta/v1"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -80,12 +81,16 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 	if err != nil {
 		return err
 	}
+	backupCopy := predicate.NewPredicateFuncs(func(secret client.Object) bool {
+		cp, ok := secret.GetLabels()[bryggav1alpha1.ControlPlaneLabel]
+		return ok && secret.GetName() == backupSecretName(cp)
+	})
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(Name).
 		WithOptions(controller.Options{MaxConcurrentReconciles: workers}).
 		For(&bryggav1alpha1.ControlPlane{}).
 		Owns(&druidv1alpha1.Etcd{}, builder.WithPredicates(etcdChanged())).
-		WatchesMetadata(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(controlPlaneOf), builder.WithPredicates(certificates)).
+		WatchesMetadata(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(controlPlaneOf), builder.WithPredicates(predicate.Or(certificates, backupCopy))).
 		Watches(&bryggav1alpha1.DatastoreClass{}, handler.EnqueueRequestsFromMapFunc(r.controlPlanesUsing)).
 		Complete(r)
 }
@@ -176,10 +181,11 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 	if class == nil && current == nil {
 		return nil, newCondition(metav1.ConditionFalse, ReasonDatastoreClassNotFound, missing), 0, nil
 	}
-	generation, found, err := r.newestCompleteGeneration(ctx, cp)
+	secrets, err := r.secrets(ctx, cp)
 	if err != nil {
 		return nil, metav1.Condition{}, 0, err
 	}
+	generation, found := newestCompleteGeneration(cp, secrets)
 	if named, ok := namedGeneration(cp.Name, current); ok && (!found || named > generation) {
 		generation, found = named, true
 	}
@@ -199,15 +205,24 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 			return nil, newCondition(metav1.ConditionFalse, ReasonVolumesExist, message), time.Minute, nil
 		}
 	}
+	var held string
+	var heldFor time.Duration
+	var refusal error
 	if class != nil && class.Spec.Backup != nil {
-		copied, err := r.copyCredentials(ctx, cp, class)
-		if err != nil {
+		blocked, err := r.copyCredentials(ctx, cp, class, secrets)
+		if blocked == "" && err != nil {
 			return nil, metav1.Condition{}, 0, err
 		}
-		if !copied {
-			ref := class.Spec.Backup.Store.SecretRef
-			message := fmt.Sprintf("waiting for the credentials Secret %s/%s of DatastoreClass %s", ref.Namespace, ref.Name, class.Name)
-			return current, newCondition(metav1.ConditionFalse, ReasonProvisioning, message), time.Minute, nil
+		refusal = err
+		if blocked != "" && current == nil {
+			message := fmt.Sprintf("DatastoreClass %s cannot be applied yet: %s", class.Name, blocked)
+			return nil, newCondition(metav1.ConditionFalse, ReasonProvisioning, message), time.Minute, refusal
+		}
+		// A class is held whole: applying the rest of an edit could add a store
+		// whose copy cannot be made, and the certificate generations still move.
+		if blocked != "" {
+			held = fmt.Sprintf("DatastoreClass %s is held: %s", class.Name, blocked)
+			class, heldFor = nil, time.Minute
 		}
 	}
 	rendered := render(cp, class, generation, current)
@@ -215,9 +230,9 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 	if err != nil {
 		err = fmt.Errorf("apply Etcd %s: %w", rendered.Name, err)
 		if refused(err) {
-			message := fmt.Sprintf("the API server refuses Etcd %s on certificate generation %d with the fields of DatastoreClass %s generation %s; the reason is in Brygga's log",
-				rendered.Name, generation, rendered.Annotations[ClassAnnotation], rendered.Annotations[ClassGenerationAnnotation])
-			return current, newCondition(metav1.ConditionFalse, ReasonEtcdRefused, message), 0, err
+			message := note(fmt.Sprintf("the API server refuses Etcd %s on certificate generation %d with the fields of DatastoreClass %s generation %s; the reason is in Brygga's log",
+				rendered.Name, generation, rendered.Annotations[ClassAnnotation], rendered.Annotations[ClassGenerationAnnotation]), held)
+			return current, newCondition(metav1.ConditionFalse, ReasonEtcdRefused, message), 0, errors.Join(err, refusal)
 		}
 		return nil, metav1.Condition{}, 0, err
 	}
@@ -232,10 +247,18 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 		sts = nil
 	}
 	condition, statefulSetLags := readiness(cp.Name, etcd, sts, generation)
+	condition.Message = note(condition.Message, held)
 	if statefulSetLags {
-		return etcd, condition, 15 * time.Second, nil
+		return etcd, condition, 15 * time.Second, refusal
 	}
-	return etcd, condition, 0, nil
+	return etcd, condition, heldFor, refusal
+}
+
+func note(message, held string) string {
+	if held == "" {
+		return message
+	}
+	return message + "; " + held
 }
 
 func foreignEtcd(etcd *druidv1alpha1.Etcd) string {
@@ -327,14 +350,45 @@ func (r *Reconciler) class(ctx context.Context, cp *bryggav1alpha1.ControlPlane,
 	}
 }
 
-func (r *Reconciler) newestCompleteGeneration(ctx context.Context, cp *bryggav1alpha1.ControlPlane) (int, bool, error) {
+func (r *Reconciler) secrets(ctx context.Context, cp *bryggav1alpha1.ControlPlane) ([]metav1.PartialObjectMetadata, error) {
 	secrets := &metav1.PartialObjectMetadataList{}
 	secrets.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("SecretList"))
 	if err := r.List(ctx, secrets, client.InNamespace(cp.Namespace), client.MatchingLabels{bryggav1alpha1.ControlPlaneLabel: cp.Name}); err != nil {
-		return 0, false, err
+		return nil, err
 	}
-	labelled := make(map[string]string, len(secrets.Items))
-	for _, secret := range secrets.Items {
+	return secrets.Items, nil
+}
+
+// secret finds a Secret's metadata in the cache, and on the API server when
+// the cache does not hold it; nil when it does not exist.
+func (r *Reconciler) secret(ctx context.Context, cp *bryggav1alpha1.ControlPlane, name string, secrets []metav1.PartialObjectMetadata) (*metav1.PartialObjectMetadata, error) {
+	if i := slices.IndexFunc(secrets, func(s metav1.PartialObjectMetadata) bool { return s.Name == name }); i >= 0 {
+		return &secrets[i], nil
+	}
+	secret := &metav1.PartialObjectMetadata{}
+	secret.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Secret"))
+	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: name}, secret); err != nil {
+		return nil, client.IgnoreNotFound(err)
+	}
+	return secret, nil
+}
+
+// controlledElsewhere returns the owner reference that makes an object
+// another owner's: a controller that is not this ControlPlane, or any
+// reference to another ControlPlane.
+func controlledElsewhere(obj metav1.Object, cp *bryggav1alpha1.ControlPlane) *metav1.OwnerReference {
+	for _, ref := range obj.GetOwnerReferences() {
+		if ref.UID != cp.UID && (ptr.Deref(ref.Controller, false) ||
+			ref.Kind == "ControlPlane" && strings.HasPrefix(ref.APIVersion, bryggav1alpha1.GroupVersion.Group+"/")) {
+			return &ref
+		}
+	}
+	return nil
+}
+
+func newestCompleteGeneration(cp *bryggav1alpha1.ControlPlane, secrets []metav1.PartialObjectMetadata) (int, bool) {
+	labelled := make(map[string]string, len(secrets))
+	for _, secret := range secrets {
 		if generation, ok := secret.Labels[bryggav1alpha1.EtcdCertificatesLabel]; ok && secret.DeletionTimestamp.IsZero() {
 			labelled[secret.Name] = generation
 		}
@@ -356,7 +410,7 @@ func (r *Reconciler) newestCompleteGeneration(ctx context.Context, cp *bryggav1a
 			newest, found = generation, true
 		}
 	}
-	return newest, found, nil
+	return newest, found
 }
 
 // The Etcd moves forward only: while a Secret of the generation it names is
@@ -433,15 +487,26 @@ func (r *Reconciler) labelClaims(ctx context.Context, cp *bryggav1alpha1.Control
 }
 
 // etcd-druid mounts the store's Secret from the Etcd's namespace, and the
-// backup-restore sidecar reads the region from it.
-func (r *Reconciler) copyCredentials(ctx context.Context, cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClass) (bool, error) {
+// backup-restore sidecar reads the region from it. The first result says why
+// the copy cannot be made, the second carries a refusal for the log.
+func (r *Reconciler) copyCredentials(ctx context.Context, cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClass, secrets []metav1.PartialObjectMetadata) (string, error) {
 	store := class.Spec.Backup.Store
 	source := &corev1.Secret{}
 	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: store.SecretRef.Namespace, Name: store.SecretRef.Name}, source); err != nil {
 		if apierrors.IsNotFound(err) {
-			return false, nil
+			return fmt.Sprintf("its credentials Secret %s/%s is missing", store.SecretRef.Namespace, store.SecretRef.Name), nil
 		}
-		return false, fmt.Errorf("read the credentials Secret %s/%s of DatastoreClass %s: %w", store.SecretRef.Namespace, store.SecretRef.Name, class.Name, err)
+		return "", fmt.Errorf("read the credentials Secret %s/%s of DatastoreClass %s: %w", store.SecretRef.Namespace, store.SecretRef.Name, class.Name, err)
+	}
+	name := backupSecretName(cp.Name)
+	existing, err := r.secret(ctx, cp, name, secrets)
+	if err != nil {
+		return "", err
+	}
+	if existing != nil {
+		if ref := controlledElsewhere(existing, cp); ref != nil {
+			return fmt.Sprintf("%s is controlled by %s %s with UID %s", name, ref.Kind, ref.Name, ref.UID), nil
+		}
 	}
 	data := maps.Clone(source.Data)
 	if store.Region != "" {
@@ -450,7 +515,7 @@ func (r *Reconciler) copyCredentials(ctx context.Context, cp *bryggav1alpha1.Con
 		}
 		data["region"] = []byte(store.Region)
 	}
-	secret := corev1ac.Secret(backupSecretName(cp.Name), cp.Namespace).
+	secret := corev1ac.Secret(name, cp.Namespace).
 		WithLabels(map[string]string{bryggav1alpha1.ControlPlaneLabel: cp.Name}).
 		WithOwnerReferences(metav1ac.OwnerReference().
 			WithAPIVersion(bryggav1alpha1.GroupVersion.String()).
@@ -460,7 +525,14 @@ func (r *Reconciler) copyCredentials(ctx context.Context, cp *bryggav1alpha1.Con
 			WithController(true).
 			WithBlockOwnerDeletion(true)).
 		WithData(data)
-	return true, r.Apply(ctx, secret, client.FieldOwner(FieldManager), client.ForceOwnership)
+	if err := r.Apply(ctx, secret, client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
+		err = fmt.Errorf("apply Secret %s: %w", name, err)
+		if refused(err) {
+			return fmt.Sprintf("the API server refuses %s; the reason is in Brygga's log", name), err
+		}
+		return "", err
+	}
+	return "", nil
 }
 
 func (r *Reconciler) finalize(ctx context.Context, cp *bryggav1alpha1.ControlPlane) (time.Duration, error) {
