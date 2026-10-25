@@ -6,11 +6,13 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -39,7 +41,7 @@ import (
 
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
 	"github.com/segla-io/brygga/internal/controller/datastore"
-	"github.com/segla-io/brygga/internal/controller/datastore/datastoretest"
+	"github.com/segla-io/brygga/internal/controller/pki"
 )
 
 const (
@@ -57,7 +59,7 @@ func TestDatastoreOnKind(t *testing.T) {
 		stop    context.CancelFunc
 		stopped chan error
 	)
-	f := features.New("the Datastore controller with etcd-druid "+druidVersion).
+	f := features.New("the PKI and Datastore controllers with etcd-druid "+druidVersion).
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			installEtcdDruid(t, cfg.KubeconfigFile())
 			scheme := runtime.NewScheme()
@@ -81,7 +83,6 @@ func TestDatastoreOnKind(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "e2e"},
 				Spec:       bryggav1alpha1.DatastoreClassSpec{Storage: bryggav1alpha1.EtcdStorage{Size: resource.MustParse("1Gi"), ReclaimPolicy: "Delete"}},
 			})
-			writeGeneration(ctx, t, k8s, 1)
 			create(ctx, t, k8s, &bryggav1alpha1.ControlPlane{
 				ObjectMeta: metav1.ObjectMeta{Name: controlPlane, Namespace: tenant},
 				Spec: bryggav1alpha1.ControlPlaneSpec{
@@ -93,7 +94,10 @@ func TestDatastoreOnKind(t *testing.T) {
 			})
 			return ctx
 		}).
-		Assess("DatastoreReady=True with the member running", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("DatastoreReady=True with the member running on PKI's generation 1", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			until(ctx, t, 2*time.Minute, "PKI issued generation 1 of the etcd certificates", func(ctx context.Context) error {
+				return issued(ctx, k8s, 1)
+			})
 			until(ctx, t, 5*time.Minute, "DatastoreReady=True for generation 1", func(ctx context.Context) error {
 				return conditionIs(ctx, k8s, metav1.ConditionTrue, datastore.ReasonReady)
 			})
@@ -111,8 +115,27 @@ func TestDatastoreOnKind(t *testing.T) {
 			logEtcd(ctx, t, k8s)
 			return ctx
 		}).
-		Assess("generation 2 rolls the member and DatastoreReady returns to True", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			writeGeneration(ctx, t, k8s, 2)
+		Assess("a member Secret deleted, PKI issues generation 2 under the same CA and the member rolls onto it", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			first := &corev1.Secret{}
+			if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: datastore.SecretName(controlPlane, "ca", 1)}, first); err != nil {
+				t.Fatal(err)
+			}
+			member := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: tenant, Name: datastore.SecretName(controlPlane, "client", 1)}}
+			if err := k8s.Delete(ctx, member); err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("Secret %s of generation 1 deleted", member.Name)
+			until(ctx, t, 2*time.Minute, "PKI issued generation 2 of the etcd certificates", func(ctx context.Context) error {
+				return issued(ctx, k8s, 2)
+			})
+			second := &corev1.Secret{}
+			if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: datastore.SecretName(controlPlane, "ca", 2)}, second); err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(first.Data["ca.crt"], second.Data["ca.crt"]) {
+				t.Fatalf("generation 2 is not under the CA of generation 1")
+			}
+			t.Logf("generation 2 is under the CA of generation 1")
 			until(ctx, t, 2*time.Minute, "the Etcd names generation 2 in clientUrlTls, peerUrlTls and backup.tls", func(ctx context.Context) error {
 				etcd := &druidv1alpha1.Etcd{}
 				if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: controlPlane + "-etcd"}, etcd); err != nil {
@@ -230,12 +253,25 @@ func manager(t *testing.T, cfg *rest.Config, scheme *runtime.Scheme) ctrl.Manage
 			DefaultTransform:            cache.TransformStripManagedFields(),
 			ReaderFailOnMissingInformer: true,
 			ByObject: map[client.Object]cache.ByObject{
-				&bryggav1alpha1.ControlPlane{}:   everything,
-				&bryggav1alpha1.DatastoreClass{}: everything,
+				&bryggav1alpha1.ControlPlane{}:      everything,
+				&bryggav1alpha1.DatastoreClass{}:    everything,
+				&bryggav1alpha1.Datastore{}:         everything,
+				&bryggav1alpha1.KubeconfigRequest{}: everything,
+				&bryggav1alpha1.Backup{}:            everything,
 			},
 		},
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (&pki.Reconciler{
+		Client:              mgr.GetClient(),
+		Reader:              mgr.GetAPIReader(),
+		LeafLifetime:        365 * 24 * time.Hour,
+		CALifetime:          5 * 365 * 24 * time.Hour,
+		TrustAnchorLifetime: 10 * 365 * 24 * time.Hour,
+		CAExpiryNotice:      365 * 24 * time.Hour,
+	}).SetupWithManager(mgr, 1); err != nil {
 		t.Fatal(err)
 	}
 	if err := (&datastore.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader()}).SetupWithManager(mgr, 1); err != nil {
@@ -251,16 +287,23 @@ func create(ctx context.Context, t *testing.T, k8s client.Client, obj client.Obj
 	}
 }
 
-func writeGeneration(ctx context.Context, t *testing.T, k8s client.Client, generation int) {
-	t.Helper()
-	secrets, err := datastoretest.Generation(tenant, controlPlane, generation)
-	if err != nil {
-		t.Fatal(err)
+func issued(ctx context.Context, k8s client.Client, generation int) error {
+	secrets := &corev1.SecretList{}
+	if err := k8s.List(ctx, secrets, client.InNamespace(tenant), client.MatchingLabels{bryggav1alpha1.EtcdCertificatesLabel: strconv.Itoa(generation)}); err != nil {
+		return err
 	}
-	for _, secret := range secrets {
-		create(ctx, t, k8s, secret)
+	var names []string
+	for _, secret := range secrets.Items {
+		if secret.DeletionTimestamp.IsZero() {
+			names = append(names, secret.Name)
+		}
 	}
-	t.Logf("generation %d of the etcd certificates written: %d Secrets labelled %s=%d", generation, len(secrets), bryggav1alpha1.EtcdCertificatesLabel, generation)
+	for _, certificate := range datastore.Certificates {
+		if name := datastore.SecretName(controlPlane, certificate, generation); !slices.Contains(names, name) {
+			return fmt.Errorf("%s is missing; generation %d holds %s", name, generation, strings.Join(names, ", "))
+		}
+	}
+	return nil
 }
 
 func until(ctx context.Context, t *testing.T, timeout time.Duration, what string, check func(context.Context) error) {

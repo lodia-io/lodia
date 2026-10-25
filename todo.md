@@ -119,8 +119,8 @@ is a decision — a decision is a file in `docs/decisions/`.
 - Backup credentials scoped to one tenant's prefix, so a tenant namespace's
   `<cp>-etcd-backup` reaches only that tenant's snapshots and not every
   tenant's on the class (`docs/README.md`, Identity and tenancy).
-- The e2e suite runs the Datastore controller in the test process and needs
-  `git` and `helm`; the suite against Brygga's image and chart comes with the
+- The e2e suite runs the PKI and Datastore controllers in the test process
+  and needs `git` and `helm`; the suite against Brygga's image and chart comes with the
   chart, and `make e2e` could check for the tools.
 - The cache keeps metadata only for Secrets because this controller watches
   them as `PartialObjectMetadata`; nothing stops a future controller from

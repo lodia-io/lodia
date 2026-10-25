@@ -29,6 +29,9 @@ etcd-druid v0.39.0 from its chart at the tag (the chart is not released) into
 the namespace `etcd-druid` with
 [`hack/etcd-spike/druid-values.yaml`](../../hack/etcd-spike/druid-values.yaml),
 the way the [etcd spike](../../docs/etcd-spike-2026-10.md) ran it, and leaves
-it installed. It runs the Datastore controller inside the test process
-against the cluster, with the cache rules of `cmd/brygga`; the suite against
-Brygga's own image and chart comes with the chart.
+it installed. It runs the PKI and Datastore controllers inside the test
+process against the cluster, with the cache rules of `cmd/brygga`: PKI issues
+the etcd certificate generations, and generation 2 is the one it issues under
+the same CA once a member Secret of generation 1 is deleted, the roll a
+tenant sees in production. The suite against Brygga's own image and chart
+comes with the chart.

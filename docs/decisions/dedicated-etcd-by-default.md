@@ -247,8 +247,10 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   `TestBackupCredentialsCopied`, `TestDatastoreReadyFollowsEtcdStatus`,
   `TestVolumesExist`, `TestForeignEtcd`, `TestStorageAtCreation`,
   `TestRecordedClass`, `TestClassGone`, `TestDeletionBeforeLabelling` and
-  `TestDeletion`. `datastoretest` issues the certificate generations PKI will.
+  `TestDeletion`. `datastoretest` stands in for PKI there.
 - `test/e2e/datastore_test.go` — `TestDatastoreOnKind`: etcd-druid v0.39.0
-  from its chart at the tag, a `ControlPlane` to `DatastoreReady=True` with
-  the member running, generation 2 rolling the member, deletion under
+  from its chart at the tag, the PKI and Datastore controllers in the test
+  process, a `ControlPlane` to `DatastoreReady=True` with the member running
+  on PKI's generation 1, a member Secret of generation 1 deleted and PKI's
+  generation 2, under the same CA, rolling the member, deletion under
   `Delete`.
