@@ -20,6 +20,7 @@ import (
 	druidapicommon "github.com/gardener/etcd-druid/api/common"
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	"github.com/gardener/etcd-druid/api/core/v1alpha1/crds"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -345,8 +346,6 @@ func namesGeneration(want int) func(*druidv1alpha1.Etcd) error {
 	}
 }
 
-// settle bumps the ControlPlane's generation and waits for the controller to
-// report it, so that a reconcile is known to have run.
 func settle(t *testing.T, ns, name string) {
 	t.Helper()
 	cp := getControlPlane(t, ns, name)
@@ -604,37 +603,153 @@ func TestBackupCredentialsCopied(t *testing.T) {
 
 func TestDatastoreReadyFollowsEtcdStatus(t *testing.T) {
 	ns := namespace(t)
+	const cp = "reported"
+	volumes := func(generation int) []corev1.Volume {
+		var out []corev1.Volume
+		for _, certificate := range datastore.Certificates {
+			out = append(out, corev1.Volume{Name: certificate, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: datastore.SecretName(cp, certificate, generation)}}})
+		}
+		return out
+	}
+	setStatefulSetStatus := func(t *testing.T, mutate func(*appsv1.StatefulSetStatus)) {
+		t.Helper()
+		sts := &appsv1.StatefulSet{}
+		if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: cp + "-etcd"}, sts); err != nil {
+			t.Fatal(err)
+		}
+		sts.Status = appsv1.StatefulSetStatus{ObservedGeneration: sts.Generation, Replicas: 1, ReadyReplicas: 1, CurrentReplicas: 1, UpdatedReplicas: 1, CurrentRevision: "rev", UpdateRevision: "rev"}
+		if mutate != nil {
+			mutate(&sts.Status)
+		}
+		if err := k8s.Status().Update(t.Context(), sts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setEtcdStatus := func(t *testing.T, mutate func(*druidv1alpha1.EtcdStatus)) {
+		t.Helper()
+		etcd := getEtcd(t, ns, cp)
+		etcd.Status = druidv1alpha1.EtcdStatus{
+			ObservedGeneration: new(etcd.Generation),
+			Ready:              new(true),
+			Replicas:           1,
+			ReadyReplicas:      1,
+			CurrentReplicas:    1,
+			Conditions: []druidv1alpha1.Condition{{
+				Type: druidv1alpha1.ConditionTypeAllMembersUpdated, Status: druidv1alpha1.ConditionTrue, Reason: "AllMembersUpdated",
+				Message: "All members reflect latest desired spec", LastTransitionTime: metav1.Now(), LastUpdateTime: metav1.Now(),
+			}},
+			Members: []druidv1alpha1.EtcdMemberStatus{{
+				Name: cp + "-etcd-0", ID: new("8e9e05c52164694d"), Role: new(druidv1alpha1.EtcdRoleLeader),
+				Status: druidv1alpha1.EtcdMemberStatusReady, Reason: "LeaseSucceeded", LastTransitionTime: metav1.Now(),
+			}},
+		}
+		if mutate != nil {
+			mutate(&etcd.Status)
+		}
+		if err := k8s.Status().Update(t.Context(), etcd); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	createClass(t, newClass("reported", "Retain"))
-	create(t, controlPlane(ns, "reported", "reported"))
-	writeGeneration(t, ns, "reported", 1)
-	etcd := waitEtcd(t, ns, "reported", nil)
-	waitCondition(t, ns, "reported", metav1.ConditionFalse, datastore.ReasonProvisioning, "etcd-druid has not reported Etcd reported-etcd ready for generation 1")
+	create(t, controlPlane(ns, cp, "reported"))
+	writeGeneration(t, ns, cp, 1)
+	waitEtcd(t, ns, cp, nil)
+	waitCondition(t, ns, cp, metav1.ConditionFalse, datastore.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd reported-etcd, observedGeneration 0")
 
-	etcd.Status = druidv1alpha1.EtcdStatus{
-		ObservedGeneration: new(etcd.Generation),
-		Ready:              new(false),
-		Replicas:           1,
-		LastErrors:         []druidapicommon.LastError{{Code: "ERR_SYNC_STATEFULSET", Description: "pod reported-etcd-0 is not ready", ObservedAt: metav1.Now()}},
-	}
-	if err := k8s.Status().Update(t.Context(), etcd); err != nil {
-		t.Fatal(err)
-	}
-	waitCondition(t, ns, "reported", metav1.ConditionFalse, datastore.ReasonProvisioning, "last errors: ERR_SYNC_STATEFULSET: pod reported-etcd-0 is not ready")
-
-	etcd = getEtcd(t, ns, "reported")
-	etcd.Status.Ready = new(true)
-	etcd.Status.ReadyReplicas = 1
-	etcd.Status.LastErrors = nil
-	etcd.Status.Members = []druidv1alpha1.EtcdMemberStatus{{
-		Name: "reported-etcd-0", ID: new("8e9e05c52164694d"), Role: new(druidv1alpha1.EtcdRoleLeader),
-		Status: druidv1alpha1.EtcdMemberStatusReady, Reason: "LeaseSucceeded", LastTransitionTime: metav1.Now(),
-	}}
-	if err := k8s.Status().Update(t.Context(), etcd); err != nil {
-		t.Fatal(err)
-	}
-	waitCondition(t, ns, "reported", metav1.ConditionTrue, datastore.ReasonReady, "etcd-druid reports Etcd reported-etcd ready, 1 of 1 replicas")
-	if got, want := ptr.Deref(getControlPlane(t, ns, "reported").Status.Datastore, bryggav1alpha1.DatastoreStatus{}), (bryggav1alpha1.DatastoreStatus{Kind: "Dedicated", Name: "reported-etcd", Members: 1}); got != want {
+	labels := druidv1alpha1.GetDefaultLabels(metav1.ObjectMeta{Name: cp + "-etcd"})
+	create(t, &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{Name: cp + "-etcd", Namespace: ns, Labels: labels},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas:    new(int32(1)),
+			Selector:    &metav1.LabelSelector{MatchLabels: labels},
+			ServiceName: cp + "-etcd-peer",
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "etcd", Image: "etcd"}}, Volumes: volumes(1)},
+			},
+		},
+	})
+	setStatefulSetStatus(t, nil)
+	setEtcdStatus(t, nil)
+	waitCondition(t, ns, cp, metav1.ConditionTrue, datastore.ReasonReady, "etcd-druid reports Etcd reported-etcd ready on certificate generation 1, 1 of 1 replicas")
+	if got, want := ptr.Deref(getControlPlane(t, ns, cp).Status.Datastore, bryggav1alpha1.DatastoreStatus{}), (bryggav1alpha1.DatastoreStatus{Kind: "Dedicated", Name: "reported-etcd", Members: 1}); got != want {
 		t.Errorf("status.datastore %+v, want %+v", got, want)
+	}
+
+	rows := []struct {
+		name    string
+		etcd    func(*druidv1alpha1.EtcdStatus)
+		sts     func(*appsv1.StatefulSetStatus)
+		message string
+	}{
+		{"last errors", func(s *druidv1alpha1.EtcdStatus) {
+			s.LastErrors = []druidapicommon.LastError{{Code: "ERR_SYNC_STATEFULSET", Description: "pod reported-etcd-0 is not ready", ObservedAt: metav1.Now()}}
+		}, nil, "etcd-druid reports errors on Etcd reported-etcd: ERR_SYNC_STATEFULSET: pod reported-etcd-0 is not ready"},
+		{"generation not observed", func(s *druidv1alpha1.EtcdStatus) { s.ObservedGeneration = new(*s.ObservedGeneration - 1) }, nil,
+			"etcd-druid has not observed generation"},
+		{"AllMembersUpdated False", func(s *druidv1alpha1.EtcdStatus) {
+			s.Conditions[0].Status, s.Conditions[0].Reason, s.Conditions[0].Message = druidv1alpha1.ConditionFalse, "NotAllMembersUpdated", "At least one member is not yet updated"
+		}, nil, "etcd-druid reports AllMembersUpdated=False on Etcd reported-etcd: At least one member is not yet updated"},
+		{"AllMembersUpdated absent", func(s *druidv1alpha1.EtcdStatus) { s.Conditions = nil }, nil,
+			"etcd-druid reports no AllMembersUpdated condition on Etcd reported-etcd"},
+		{"not ready", func(s *druidv1alpha1.EtcdStatus) { s.Ready, s.ReadyReplicas = new(false), 0 }, nil,
+			"etcd-druid reports Etcd reported-etcd not ready, 0 of 1 replicas"},
+		{"StatefulSet not updated", nil, func(s *appsv1.StatefulSetStatus) { s.UpdatedReplicas = 0 },
+			"StatefulSet reported-etcd: 0 of 1 replicas updated, 1 ready"},
+		{"StatefulSet not ready", nil, func(s *appsv1.StatefulSetStatus) { s.ReadyReplicas = 0 },
+			"StatefulSet reported-etcd: 1 of 1 replicas updated, 0 ready"},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			setEtcdStatus(t, row.etcd)
+			setStatefulSetStatus(t, row.sts)
+			settle(t, ns, cp)
+			waitCondition(t, ns, cp, metav1.ConditionFalse, datastore.ReasonProvisioning, row.message)
+			setEtcdStatus(t, nil)
+			setStatefulSetStatus(t, nil)
+			settle(t, ns, cp)
+			waitCondition(t, ns, cp, metav1.ConditionTrue, datastore.ReasonReady, "ready on certificate generation 1")
+		})
+	}
+
+	writeGeneration(t, ns, cp, 2)
+	waitEtcd(t, ns, cp, namesGeneration(2))
+	setEtcdStatus(t, nil)
+	settle(t, ns, cp)
+	waitCondition(t, ns, cp, metav1.ConditionFalse, datastore.ReasonProvisioning, "StatefulSet reported-etcd does not mount certificate generation 2 yet")
+	sts := &appsv1.StatefulSet{}
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: cp + "-etcd"}, sts); err != nil {
+		t.Fatal(err)
+	}
+	sts.Spec.Template.Spec.Volumes = volumes(2)
+	if err := k8s.Update(t.Context(), sts); err != nil {
+		t.Fatal(err)
+	}
+	setStatefulSetStatus(t, nil)
+	settle(t, ns, cp)
+	waitCondition(t, ns, cp, metav1.ConditionTrue, datastore.ReasonReady, "etcd-druid reports Etcd reported-etcd ready on certificate generation 2, 1 of 1 replicas")
+
+	if err := k8s.Delete(t.Context(), sts); err != nil {
+		t.Fatal(err)
+	}
+	settle(t, ns, cp)
+	waitCondition(t, ns, cp, metav1.ConditionFalse, datastore.ReasonProvisioning, "StatefulSet reported-etcd does not exist")
+
+	etcd := getEtcd(t, ns, cp)
+	held := client.MergeFrom(etcd.DeepCopy())
+	etcd.Finalizers = append(etcd.Finalizers, "brygga.segla.io/test")
+	if err := k8s.Patch(t.Context(), etcd, held); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Delete(t.Context(), etcd); err != nil {
+		t.Fatal(err)
+	}
+	waitCondition(t, ns, cp, metav1.ConditionFalse, datastore.ReasonProvisioning, "Etcd reported-etcd is being deleted")
+	released := client.MergeFrom(etcd.DeepCopy())
+	etcd.Finalizers = nil
+	if err := k8s.Patch(t.Context(), etcd, released); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -859,6 +974,7 @@ func TestDeletion(t *testing.T) {
 			if !controllerutil.ContainsFinalizer(getControlPlane(t, ns, "dev"), datastore.Finalizer) {
 				t.Fatal("the finalizer left before the Etcd was gone")
 			}
+			waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonDeleting, "the ControlPlane is being deleted")
 			untouched(t, ns, "dev-etcd-dev-etcd-0")
 			untouched(t, ns, "dev-etcd-dev-etcd-1")
 

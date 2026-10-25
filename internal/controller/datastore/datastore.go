@@ -18,6 +18,7 @@ import (
 	"time"
 
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -74,6 +75,8 @@ const (
 	// ReasonVolumesExist says claims of another ControlPlane stand where this
 	// one's etcd would be created.
 	ReasonVolumesExist = "VolumesExist"
+	// ReasonDeleting says the ControlPlane is being deleted.
+	ReasonDeleting = "Deleting"
 	// ReasonReady says etcd-druid reports the Etcd ready for its current generation.
 	ReasonReady = "Ready"
 )
@@ -98,7 +101,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 		Named(Name).
 		WithOptions(controller.Options{MaxConcurrentReconciles: workers}).
 		For(&bryggav1alpha1.ControlPlane{}).
-		Owns(&druidv1alpha1.Etcd{}).
+		Owns(&druidv1alpha1.Etcd{}, builder.WithPredicates(etcdChanged())).
 		WatchesMetadata(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(controlPlaneOf), builder.WithPredicates(certificates)).
 		Watches(&bryggav1alpha1.DatastoreClass{}, handler.EnqueueRequestsFromMapFunc(r.controlPlanesUsing)).
 		Complete(r)
@@ -217,7 +220,18 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 	if err := r.labelClaims(ctx, cp, class.Name); err != nil {
 		return etcd, metav1.Condition{}, 0, err
 	}
-	return etcd, readiness(etcd), 0, nil
+	sts := &appsv1.StatefulSet{}
+	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: etcdName(cp.Name)}, sts); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return etcd, metav1.Condition{}, 0, err
+		}
+		sts = nil
+	}
+	condition, statefulSetLags := readiness(cp.Name, etcd, sts, generation)
+	if statefulSetLags {
+		return etcd, condition, 15 * time.Second, nil
+	}
+	return etcd, condition, 0, nil
 }
 
 // currentEtcd reads the Etcd from the cache, and from the API server when the
@@ -416,9 +430,14 @@ func (r *Reconciler) finalize(ctx context.Context, cp *bryggav1alpha1.ControlPla
 		return 0, nil
 	}
 	etcd, err := r.currentEtcd(ctx, cp)
-	switch {
-	case err != nil:
+	if err != nil {
 		return 0, err
+	}
+	deleting := newCondition(metav1.ConditionFalse, ReasonDeleting, "the ControlPlane is being deleted: the Etcd goes first, then its claims as the class says")
+	if err := r.applyStatus(ctx, cp, etcd, deleting); err != nil {
+		return 0, err
+	}
+	switch {
 	case etcd != nil && etcd.DeletionTimestamp.IsZero():
 		logf.FromContext(ctx).Info("deleting the Etcd", "etcd", etcd.Name)
 		return 0, client.IgnoreNotFound(r.Delete(ctx, etcd))

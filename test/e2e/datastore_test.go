@@ -129,6 +129,9 @@ func TestDatastoreOnKind(t *testing.T) {
 				}
 				return nil
 			})
+			until(ctx, t, 2*time.Minute, "DatastoreReady leaves True for the roll", func(ctx context.Context) error {
+				return conditionIs(ctx, k8s, metav1.ConditionFalse, datastore.ReasonProvisioning)
+			})
 			until(ctx, t, 5*time.Minute, "the member runs with generation 2 mounted", func(ctx context.Context) error {
 				pod := &corev1.Pod{}
 				if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: controlPlane + "-etcd-0"}, pod); err != nil {
@@ -191,9 +194,6 @@ func TestDatastoreOnKind(t *testing.T) {
 	testenv.Test(t, f)
 }
 
-// installEtcdDruid installs etcd-druid from its chart at the tag with the
-// spike's values, as docs/etcd-spike-2026-10.md runs it; the chart is not
-// released, so the repository is cloned.
 func installEtcdDruid(t *testing.T, kubeconfig string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -214,8 +214,6 @@ func installEtcdDruid(t *testing.T, kubeconfig string) {
 	t.Logf("etcd-druid %s installed from its chart into namespace %s", druidVersion, druidNamespace)
 }
 
-// manager runs the Datastore controller in the test process against the
-// cluster, with the cache rules of cmd/brygga.
 func manager(t *testing.T, cfg *rest.Config, scheme *runtime.Scheme) ctrl.Manager {
 	t.Helper()
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))

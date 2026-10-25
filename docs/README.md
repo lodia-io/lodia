@@ -212,15 +212,22 @@ everything the class does not set is etcd-druid's default:
 | the etcd certificates, generation `g` | `spec.etcd.clientUrlTls`, `spec.etcd.peerUrlTls`, `spec.backup.tls` | all three name one complete generation, with `dataKey: ca.crt` on the CA; a newer complete generation is one update of the `Etcd`, so one roll of the members |
 
 `DatastoreReady` is `Provisioning` until a complete certificate generation
-exists and etcd-druid reports the `Etcd` for its current generation
-(`status.observedGeneration`, `ready`, `readyReplicas`), with etcd-druid's
-`lastErrors` in the message; `DatastoreClassNotFound` when the class is
+exists and etcd-druid reports the `Etcd` for its current generation, checked
+in the order Gardener waits for an `Etcd`
+([waiter.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/component/etcd/etcd/waiter.go#L21-L97)):
+not being deleted, no `lastErrors` (they go into the message),
+`observedGeneration` current, `AllMembersUpdated` True, `ready`; then the
+StatefulSet itself, read from the API server, must mount the certificate
+generation with every replica updated and ready, since etcd-druid computes
+`ready` from its cached StatefulSet before it stamps the observed generation
+and would otherwise report a generation switch ready before the member
+rolled. `DatastoreClassNotFound` when the class is
 missing or more than one class is the default; `VolumesExist` when claims of
 `<cp>-etcd` without this `ControlPlane`'s UID label stand where its first
 `Etcd` would be created, since a StatefulSet re-attaches a claim of that
 name and starting from another tenant's data is a restore, not a start —
-nothing is created until they are deleted; True once etcd-druid reports the
-members ready. `status.datastore` is `kind: Dedicated`, the `Etcd`'s
+nothing is created until they are deleted; `Deleting` while the
+`ControlPlane` is being deleted; True once every check above holds. `status.datastore` is `kind: Dedicated`, the `Etcd`'s
 name and its member count.
 
 Identities: no root CA key is mounted into a control plane pod; the

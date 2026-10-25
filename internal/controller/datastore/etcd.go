@@ -13,12 +13,15 @@ import (
 	"strings"
 
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
 )
@@ -169,23 +172,97 @@ func (r *Reconciler) apply(ctx context.Context, etcd *druidv1alpha1.Etcd) (*drui
 	return result, nil
 }
 
-// readiness is DatastoreReady as etcd-druid reports the Etcd: True once it has
-// observed the current generation and every replica is ready.
-func readiness(etcd *druidv1alpha1.Etcd) metav1.Condition {
-	observed := ptr.Deref(etcd.Status.ObservedGeneration, 0)
-	ready := ptr.Deref(etcd.Status.Ready, false)
-	if observed == etcd.Generation && ready && etcd.Status.ReadyReplicas == etcd.Spec.Replicas {
-		return newCondition(metav1.ConditionTrue, ReasonReady,
-			fmt.Sprintf("etcd-druid reports Etcd %s ready, %d of %d replicas", etcd.Name, etcd.Status.ReadyReplicas, etcd.Spec.Replicas))
+// readiness is DatastoreReady from etcd-druid's report and the StatefulSet it
+// runs, in the order Gardener waits for an Etcd
+// (gardener/gardener@v1.154.0 pkg/component/etcd/etcd/waiter.go#L21-L97): not
+// being deleted, no last errors, the generation observed, every member
+// updated, ready. Then the StatefulSet itself, read from the API server, must
+// mount the certificate generation on every replica, since etcd-druid computes
+// ready from its cached StatefulSet before it stamps the observed generation.
+// The second result says the Etcd's report is complete and only the
+// StatefulSet lags, which nothing watched reports.
+func readiness(cp string, etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet, generation int) (metav1.Condition, bool) {
+	not := func(message string) (metav1.Condition, bool) {
+		return newCondition(metav1.ConditionFalse, ReasonProvisioning, message), false
 	}
-	message := fmt.Sprintf("etcd-druid has not reported Etcd %s ready for generation %d: observedGeneration %d, ready %t, %d of %d replicas ready",
-		etcd.Name, etcd.Generation, observed, ready, etcd.Status.ReadyReplicas, etcd.Spec.Replicas)
+	if !etcd.DeletionTimestamp.IsZero() {
+		return not(fmt.Sprintf("Etcd %s is being deleted", etcd.Name))
+	}
 	if len(etcd.Status.LastErrors) > 0 {
 		errs := make([]string, 0, len(etcd.Status.LastErrors))
 		for _, lastError := range etcd.Status.LastErrors {
 			errs = append(errs, string(lastError.Code)+": "+lastError.Description)
 		}
-		message += "; last errors: " + strings.Join(errs, "; ")
+		return not(fmt.Sprintf("etcd-druid reports errors on Etcd %s: %s", etcd.Name, strings.Join(errs, "; ")))
 	}
-	return newCondition(metav1.ConditionFalse, ReasonProvisioning, message)
+	if observed := ptr.Deref(etcd.Status.ObservedGeneration, 0); observed != etcd.Generation {
+		return not(fmt.Sprintf("etcd-druid has not observed generation %d of Etcd %s, observedGeneration %d", etcd.Generation, etcd.Name, observed))
+	}
+	updated := slices.IndexFunc(etcd.Status.Conditions, func(c druidv1alpha1.Condition) bool { return c.Type == druidv1alpha1.ConditionTypeAllMembersUpdated })
+	switch {
+	case updated < 0:
+		return not(fmt.Sprintf("etcd-druid reports no %s condition on Etcd %s", druidv1alpha1.ConditionTypeAllMembersUpdated, etcd.Name))
+	case etcd.Status.Conditions[updated].Status != druidv1alpha1.ConditionTrue:
+		c := etcd.Status.Conditions[updated]
+		return not(fmt.Sprintf("etcd-druid reports %s=%s on Etcd %s: %s", c.Type, c.Status, etcd.Name, c.Message))
+	}
+	if !ptr.Deref(etcd.Status.Ready, false) || etcd.Status.ReadyReplicas != etcd.Spec.Replicas {
+		return not(fmt.Sprintf("etcd-druid reports Etcd %s not ready, %d of %d replicas", etcd.Name, etcd.Status.ReadyReplicas, etcd.Spec.Replicas))
+	}
+	if sts == nil {
+		condition, _ := not(fmt.Sprintf("StatefulSet %s does not exist", etcd.Name))
+		return condition, true
+	}
+	if !mounts(sts, cp, generation) {
+		condition, _ := not(fmt.Sprintf("StatefulSet %s does not mount certificate generation %d yet", sts.Name, generation))
+		return condition, true
+	}
+	replicas := ptr.Deref(sts.Spec.Replicas, 1)
+	if sts.Status.ObservedGeneration != sts.Generation || sts.Status.UpdatedReplicas != replicas || sts.Status.ReadyReplicas != replicas {
+		condition, _ := not(fmt.Sprintf("StatefulSet %s: %d of %d replicas updated, %d ready", sts.Name, sts.Status.UpdatedReplicas, replicas, sts.Status.ReadyReplicas))
+		return condition, true
+	}
+	return newCondition(metav1.ConditionTrue, ReasonReady,
+		fmt.Sprintf("etcd-druid reports Etcd %s ready on certificate generation %d, %d of %d replicas", etcd.Name, generation, etcd.Status.ReadyReplicas, etcd.Spec.Replicas)), false
+}
+
+// mounts says whether the StatefulSet's pod template names every Secret of
+// the certificate generation.
+func mounts(sts *appsv1.StatefulSet, cp string, generation int) bool {
+	var mounted []string
+	for _, volume := range sts.Spec.Template.Spec.Volumes {
+		if volume.Secret != nil {
+			mounted = append(mounted, volume.Secret.SecretName)
+		}
+	}
+	for _, certificate := range Certificates {
+		if !slices.Contains(mounted, SecretName(cp, certificate, generation)) {
+			return false
+		}
+	}
+	return true
+}
+
+// etcdChanged passes the Etcd events that can move DatastoreReady or
+// status.datastore and drops etcd-druid's status refresh every 15 seconds,
+// which moves timestamps alone.
+func etcdChanged() predicate.Funcs {
+	return predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool {
+		before, ok := e.ObjectOld.(*druidv1alpha1.Etcd)
+		after, ok2 := e.ObjectNew.(*druidv1alpha1.Etcd)
+		return !ok || !ok2 || readinessInput(before) != readinessInput(after)
+	}}
+}
+
+func readinessInput(etcd *druidv1alpha1.Etcd) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d %t %d %t %d/%d %d;", etcd.Generation, !etcd.DeletionTimestamp.IsZero(), ptr.Deref(etcd.Status.ObservedGeneration, 0),
+		ptr.Deref(etcd.Status.Ready, false), etcd.Status.ReadyReplicas, etcd.Spec.Replicas, len(etcd.Status.Members))
+	for _, lastError := range etcd.Status.LastErrors {
+		fmt.Fprintf(&b, "%s:%s;", lastError.Code, lastError.Description)
+	}
+	for _, c := range etcd.Status.Conditions {
+		fmt.Fprintf(&b, "%s=%s/%s;", c.Type, c.Status, c.Reason)
+	}
+	return b.String()
 }
