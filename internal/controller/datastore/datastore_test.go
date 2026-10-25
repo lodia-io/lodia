@@ -1521,6 +1521,63 @@ func TestRecordedClass(t *testing.T) {
 	untouched(t, ns, "dev-etcd-dev-etcd-0")
 }
 
+func TestClassSurvivesTheEtcd(t *testing.T) {
+	ns := namespace(t)
+	first := newClass("survivor-first", "Retain")
+	first.Annotations = map[string]string{datastore.DefaultClassAnnotation: "true"}
+	first.Spec.Storage.Size = resource.MustParse("3Gi")
+	createClass(t, first)
+	create(t, controlPlane(ns, "dev", ""))
+	writeGeneration(t, ns, "dev", 1)
+	etcd := waitEtcd(t, ns, "dev", nil)
+	create(t, claim(ns, "dev-etcd-dev-etcd-0", druidv1alpha1.GetDefaultLabels(etcd.ObjectMeta)))
+	settle(t, ns, "dev")
+
+	second := newClass("survivor-second", "Delete")
+	second.Annotations = map[string]string{datastore.DefaultClassAnnotation: "true"}
+	second.Spec.Storage.Size = resource.MustParse("5Gi")
+	createClass(t, second)
+	if err := k8s.Get(t.Context(), client.ObjectKey{Name: "survivor-first"}, first); err != nil {
+		t.Fatal(err)
+	}
+	delete(first.Annotations, datastore.DefaultClassAnnotation)
+	if err := k8s.Update(t.Context(), first); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Delete(t.Context(), etcd); err != nil {
+		t.Fatal(err)
+	}
+	waitEtcd(t, ns, "dev", func(again *druidv1alpha1.Etcd) error {
+		if again.UID == etcd.UID {
+			return errors.New("the Etcd has not been created again yet")
+		}
+		if class, size := again.Annotations[datastore.ClassAnnotation], quantity(again.Spec.StorageCapacity); class != "survivor-first" || size != "3Gi" {
+			return fmt.Errorf("the Etcd created again follows class %s with %s, want survivor-first, which its claims record, with 3Gi", class, size)
+		}
+		return nil
+	})
+
+	if err := k8s.Delete(t.Context(), newClass("survivor-first", "")); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Delete(t.Context(), getEtcd(t, ns, "dev")); err != nil {
+		t.Fatal(err)
+	}
+	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonDatastoreClassNotFound,
+		"DatastoreClass survivor-first, which the claims of this ControlPlane record, does not exist")
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev-etcd"}, &druidv1alpha1.Etcd{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("want no Etcd while the class its claims record is gone, got %v", err)
+	}
+
+	createClass(t, newClass("survivor-first", "Retain"))
+	waitEtcd(t, ns, "dev", func(again *druidv1alpha1.Etcd) error {
+		if class := again.Annotations[datastore.ClassAnnotation]; class != "survivor-first" {
+			return fmt.Errorf("the Etcd follows class %s, want survivor-first", class)
+		}
+		return nil
+	})
+}
+
 func withoutTLS(etcd *druidv1alpha1.Etcd) druidv1alpha1.EtcdSpec {
 	spec := etcd.Spec.DeepCopy()
 	spec.Etcd.ClientUrlTLS, spec.Etcd.PeerUrlTLS, spec.Backup.TLS = nil, nil, nil

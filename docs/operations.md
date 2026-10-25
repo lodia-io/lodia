@@ -94,7 +94,9 @@ until it restarts, and then cannot start:
 2. For a gone certificate generation, delete the `Etcd` `<cp>-etcd`, not the
    `ControlPlane`: etcd-druid deletes the StatefulSet and keeps the claims,
    the Datastore controller creates the `Etcd` again on the newest complete
-   generation, and the new StatefulSet re-attaches the claims
+   generation and the class the claims record (recreate that class first if
+   it was deleted: until then it is `DatastoreClassNotFound`), and the new
+   StatefulSet re-attaches the claims
    `<cp>-etcd-<cp>-etcd-<n>` by name, so the members start on their data and
    fresh mounts. Do it even when `DatastoreReady` turns True again by itself:
    PKI numbers generations from the Secrets present and may have issued the

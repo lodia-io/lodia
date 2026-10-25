@@ -178,7 +178,9 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   StorageClass is written into a claim when the claim is created
   ([storage classes](https://kubernetes.io/docs/concepts/storage/storage-classes/#default-storageclass)).
   A default that moves therefore re-renders no running etcd and never turns a
-  `Retain` into a `Delete`.
+  `Retain` into a `Delete`. The claims record the class too, for their
+  reclaim, and an `Etcd` created again over this `ControlPlane`'s claims takes
+  the class they record, not the current default.
 - A recorded class that is deleted stops only its own edits. The `Etcd` keeps
   every field the class gave it, the way a dynamically provisioned
   PersistentVolume keeps in its own spec the reclaim policy and mount options
@@ -257,7 +259,7 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   `TestBackupCopyFollowsItsEvents`, `TestPredecessorsCopy`,
   `TestDatastoreReadyFollowsEtcdStatus`,
   `TestVolumesExist`, `TestForeignEtcd`, `TestStorageAtCreation`,
-  `TestRecordedClass`, `TestClassGone`, `TestDeletionBeforeLabelling` and
+  `TestRecordedClass`, `TestClassSurvivesTheEtcd`, `TestClassGone`, `TestDeletionBeforeLabelling` and
   `TestDeletion`. `datastoretest` stands in for PKI there.
 - `test/e2e/datastore_test.go` — `TestDatastoreOnKind`: etcd-druid v0.39.0
   from its chart at the tag, the PKI and Datastore controllers in the test

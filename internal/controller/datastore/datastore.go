@@ -172,7 +172,13 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 	if current != nil && !metav1.IsControlledBy(current, cp) {
 		return nil, newCondition(metav1.ConditionFalse, ReasonVolumesExist, foreignEtcd(current)), time.Minute, nil
 	}
-	class, missing, err := r.class(ctx, cp, current)
+	var claims []corev1.PersistentVolumeClaim
+	if current == nil {
+		if claims, err = r.claims(ctx, cp); err != nil {
+			return nil, metav1.Condition{}, 0, err
+		}
+	}
+	class, missing, err := r.class(ctx, cp, current, claims)
 	if err != nil {
 		return nil, metav1.Condition{}, 0, err
 	}
@@ -195,11 +201,7 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 		return current, newCondition(metav1.ConditionFalse, ReasonProvisioning, message), 0, nil
 	}
 	if current == nil {
-		foreign, err := r.foreignClaims(ctx, cp)
-		if err != nil {
-			return nil, metav1.Condition{}, 0, err
-		}
-		if len(foreign) > 0 {
+		if foreign := foreignClaims(cp, claims); len(foreign) > 0 {
 			message := fmt.Sprintf("the claims %s of another ControlPlane stand where the etcd of %s would be created: delete them to start empty; to keep their data, restore it from a Backup with restoreFrom once they are deleted",
 				strings.Join(foreign, ", "), cp.Name)
 			return nil, newCondition(metav1.ConditionFalse, ReasonVolumesExist, message), time.Minute, nil
@@ -310,19 +312,24 @@ func (r *Reconciler) currentEtcd(ctx context.Context, cp *bryggav1alpha1.Control
 }
 
 // A class is resolved once and recorded on the Etcd, so a default that moves
-// changes no running etcd.
-func (r *Reconciler) class(ctx context.Context, cp *bryggav1alpha1.ControlPlane, current *druidv1alpha1.Etcd) (*bryggav1alpha1.DatastoreClass, string, error) {
-	name := cp.Spec.Datastore.Dedicated.ClassName
+// changes no running etcd; this ControlPlane's claims record it too, so an
+// Etcd created again over them keeps it.
+func (r *Reconciler) class(ctx context.Context, cp *bryggav1alpha1.ControlPlane, current *druidv1alpha1.Etcd, claims []corev1.PersistentVolumeClaim) (*bryggav1alpha1.DatastoreClass, string, error) {
+	name, recordedBy := cp.Spec.Datastore.Dedicated.ClassName, ""
 	if current != nil {
 		if recorded, ok := current.Annotations[ClassAnnotation]; ok {
 			name = recorded
 		}
+	} else if i := slices.IndexFunc(claims, func(claim corev1.PersistentVolumeClaim) bool {
+		return claim.Labels[ControlPlaneUIDLabel] == string(cp.UID) && claim.Annotations[ClassAnnotation] != ""
+	}); i >= 0 {
+		name, recordedBy = claims[i].Annotations[ClassAnnotation], ", which the claims of this ControlPlane record,"
 	}
 	if name != "" {
 		class := &bryggav1alpha1.DatastoreClass{}
 		if err := r.Get(ctx, client.ObjectKey{Name: name}, class); err != nil {
 			if apierrors.IsNotFound(err) {
-				return nil, "DatastoreClass " + name + " does not exist", nil
+				return nil, "DatastoreClass " + name + recordedBy + " does not exist", nil
 			}
 			return nil, "", err
 		}
@@ -487,11 +494,7 @@ func (r *Reconciler) claims(ctx context.Context, cp *bryggav1alpha1.ControlPlane
 
 // Starting an etcd on a claim without this ControlPlane's UID would be a
 // restore of another tenant's data by name.
-func (r *Reconciler) foreignClaims(ctx context.Context, cp *bryggav1alpha1.ControlPlane) ([]string, error) {
-	claims, err := r.claims(ctx, cp)
-	if err != nil {
-		return nil, err
-	}
+func foreignClaims(cp *bryggav1alpha1.ControlPlane, claims []corev1.PersistentVolumeClaim) []string {
 	var foreign []string
 	for _, claim := range claims {
 		if claim.Labels[ControlPlaneUIDLabel] != string(cp.UID) {
@@ -499,7 +502,7 @@ func (r *Reconciler) foreignClaims(ctx context.Context, cp *bryggav1alpha1.Contr
 		}
 	}
 	slices.Sort(foreign)
-	return foreign, nil
+	return foreign
 }
 
 // The claims outlive the Etcd, so they carry the UID and the class their

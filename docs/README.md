@@ -219,7 +219,11 @@ generation it was rendered from in `brygga.segla.io/datastore-class-generation`;
 from then on the `Etcd` follows that class, its reclaim policy included, as a
 default StorageClass is written into a claim when the claim is created
 ([storage classes](https://kubernetes.io/docs/concepts/storage/storage-classes/#default-storageclass)).
-An edit of that class reaches the `Etcd` of every tenant on it at once and
+The claims record it too, for their reclaim, so an `Etcd` created again over
+this `ControlPlane`'s claims, after someone deleted it, takes the class they
+record rather than `className` or the current default, which could give it
+another bucket and placement; while that class is gone, it is
+`DatastoreClassNotFound` and nothing is created. An edit of that class reaches the `Etcd` of every tenant on it at once and
 rolls their members, a single member with an outage, until Lifecycle holds
 class edits for each tenant's maintenance window in phase 2. A recorded
 class that is deleted stops only its own edits: the `Etcd` keeps every field
