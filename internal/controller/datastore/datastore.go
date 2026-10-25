@@ -459,8 +459,11 @@ func (r *Reconciler) copyCredentials(ctx context.Context, cp *bryggav1alpha1.Con
 }
 
 // finalize deletes the Etcd, waits for etcd-druid to let it go, reclaims the
-// claims it left behind and releases the finalizer. An Etcd this ControlPlane
-// does not control is left alone, with the claims its StatefulSet uses.
+// claims it left behind and releases the finalizer. While the Etcd exists,
+// each pass first labels the claims no pass has labelled yet: they can only
+// be its own, since VolumesExist kept it from being created while anything
+// else stood there. An Etcd this ControlPlane does not control is left
+// alone, with the claims its StatefulSet uses.
 func (r *Reconciler) finalize(ctx context.Context, cp *bryggav1alpha1.ControlPlane) (time.Duration, error) {
 	if !controllerutil.ContainsFinalizer(cp, Finalizer) {
 		return 0, nil
@@ -476,6 +479,11 @@ func (r *Reconciler) finalize(ctx context.Context, cp *bryggav1alpha1.ControlPla
 	deleting := newCondition(metav1.ConditionFalse, ReasonDeleting, "the ControlPlane is being deleted: the Etcd goes first, then its claims as the class says")
 	if err := r.applyStatus(ctx, cp, datastoreStatus(etcd), deleting); err != nil {
 		return 0, err
+	}
+	if etcd != nil {
+		if err := r.labelClaims(ctx, cp, etcd.Annotations[ClassAnnotation]); err != nil {
+			return 0, err
+		}
 	}
 	switch {
 	case etcd != nil && etcd.DeletionTimestamp.IsZero():

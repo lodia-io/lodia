@@ -176,7 +176,12 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   `Retain` into a `Delete`. The claims carry the `ControlPlane`'s UID as a
   label and the class as an annotation, since they outlive the `Etcd`:
   deletion reclaims only this `ControlPlane`'s claims, under the class each
-  records, and keeps them when that class is gone.
+  records, and keeps them when that class is gone. While the `Etcd` exists,
+  the deletion labels the claims no pass has labelled yet, such as one the
+  StatefulSet created seconds before; they can only be its own, since
+  `VolumesExist` kept the `Etcd` from being created while anything else
+  stood there. A claim that appears after the last such pass stays
+  unlabelled and is kept, the safe side.
 - Snapshots hold the tenant's Secrets as the API server stored them, so
   encryption at rest is on by default (`secretbox`), and the encryption key is
   backed up next to the snapshots; bucket-side encryption is recommended on

@@ -1117,6 +1117,27 @@ func TestRecordedClass(t *testing.T) {
 	untouched(t, ns, "orphan-etcd-orphan-etcd-0")
 }
 
+func TestDeletionBeforeLabelling(t *testing.T) {
+	ns := namespace(t)
+	createClass(t, newClass("unlabelled", "Delete"))
+	create(t, controlPlane(ns, "dev", "unlabelled"))
+	writeGeneration(t, ns, "dev", 1)
+	waitEtcd(t, ns, "dev", nil)
+	settle(t, ns, "dev")
+
+	create(t, claim(ns, "dev-etcd-dev-etcd-0", druidv1alpha1.GetDefaultLabels(metav1.ObjectMeta{Name: "dev-etcd"})))
+	if pvc := getClaim(t, ns, "dev-etcd-dev-etcd-0"); pvc.Labels[datastore.ControlPlaneUIDLabel] != "" {
+		t.Fatalf("a pass labelled the claim before the deletion: %v", pvc.Labels)
+	}
+	if err := k8s.Delete(t.Context(), getControlPlane(t, ns, "dev")); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() error {
+		return gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev"}, &bryggav1alpha1.ControlPlane{}))
+	})
+	deleted(t, ns, "dev-etcd-dev-etcd-0")
+}
+
 func TestDeletion(t *testing.T) {
 	for _, policy := range []string{"Delete", "Retain"} {
 		t.Run(policy, func(t *testing.T) {

@@ -438,7 +438,11 @@ for etcd-druid to let it go, then reclaims the volumes, which etcd-druid
 keeps: of the PersistentVolumeClaims named `<cp>-etcd-<cp>-etcd-<n>`, which
 the StatefulSet attaches by that name, those labelled with the `ControlPlane`'s
 UID are deleted when the class each records says `Delete`, and left when it
-says `Retain` or no longer exists; a claim of another `ControlPlane` is never
+says `Retain` or no longer exists. While the `Etcd` exists, each pass of the
+deletion first labels the claims no earlier pass has labelled, which can only
+be its own, since `VolumesExist` kept it from being created while anything
+else stood there; a claim that appears after the last such pass stays
+unlabelled and is kept. A claim of another `ControlPlane` is never
 touched, and neither is an `Etcd` `<cp>-etcd` this `ControlPlane` does not
 control, nor the claims its StatefulSet uses. Then the finalizer goes and the owner references garbage-collect
 the rest of the namespace objects. The final snapshot when a backup store
