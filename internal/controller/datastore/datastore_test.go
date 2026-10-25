@@ -482,8 +482,8 @@ func TestFinalizerAndEtcdFromClass(t *testing.T) {
 	create(t, controlPlane(ns, "dev", "mapped"))
 
 	eventually(t, func() error {
-		if !controllerutil.ContainsFinalizer(getControlPlane(t, ns, "dev"), datastore.Finalizer) {
-			return fmt.Errorf("the finalizer %s is not on the ControlPlane", datastore.Finalizer)
+		if !controllerutil.ContainsFinalizer(getControlPlane(t, ns, "dev"), bryggav1alpha1.DatastoreFinalizer) {
+			return fmt.Errorf("the finalizer %s is not on the ControlPlane", bryggav1alpha1.DatastoreFinalizer)
 		}
 		return nil
 	})
@@ -544,8 +544,8 @@ func TestFinalizerAndEtcdFromClass(t *testing.T) {
 			Class:     &bryggav1alpha1.DatastoreClassStatus{Name: "mapped", Generation: 1},
 			Members:   bryggav1alpha1.Count{Total: 1},
 		}},
-		{"the class → metadata.annotations[" + datastore.ClassAnnotation + "]", etcd.Annotations[datastore.ClassAnnotation], "mapped"},
-		{"the class's generation → metadata.annotations[" + datastore.ClassGenerationAnnotation + "]", etcd.Annotations[datastore.ClassGenerationAnnotation], "1"},
+		{"the class → metadata.annotations[" + bryggav1alpha1.DatastoreClassAnnotation + "]", etcd.Annotations[bryggav1alpha1.DatastoreClassAnnotation], "mapped"},
+		{"the class's generation → metadata.annotations[" + bryggav1alpha1.DatastoreClassGenerationAnnotation + "]", etcd.Annotations[bryggav1alpha1.DatastoreClassGenerationAnnotation], "1"},
 	}
 	for _, row := range rows {
 		t.Run(row.field, func(t *testing.T) {
@@ -672,7 +672,7 @@ func TestPaused(t *testing.T) {
 	writeGeneration(t, ns, "dev", 1)
 	consistently(t, func() error {
 		cp := getControlPlane(t, ns, "dev")
-		if controllerutil.ContainsFinalizer(cp, datastore.Finalizer) || meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionDatastoreReady) != nil {
+		if controllerutil.ContainsFinalizer(cp, bryggav1alpha1.DatastoreFinalizer) || meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionDatastoreReady) != nil {
 			return fmt.Errorf("a paused ControlPlane was reconciled: finalizers %v, conditions %+v", cp.Finalizers, cp.Status.Conditions)
 		}
 		if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev-etcd"}, &druidv1alpha1.Etcd{}); !apierrors.IsNotFound(err) {
@@ -684,7 +684,7 @@ func TestPaused(t *testing.T) {
 	setPaused(t, ns, "dev", false)
 	waitEtcd(t, ns, "dev", namesGeneration(1))
 	waitCondition(t, ns, "dev", metav1.ConditionFalse, bryggav1alpha1.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd dev-etcd")
-	if !controllerutil.ContainsFinalizer(getControlPlane(t, ns, "dev"), datastore.Finalizer) {
+	if !controllerutil.ContainsFinalizer(getControlPlane(t, ns, "dev"), bryggav1alpha1.DatastoreFinalizer) {
 		t.Fatal("the finalizer is not on the unpaused ControlPlane")
 	}
 
@@ -695,7 +695,7 @@ func TestPaused(t *testing.T) {
 	}
 	consistently(t, func() error {
 		cp := getControlPlane(t, ns, "dev")
-		if !controllerutil.ContainsFinalizer(cp, datastore.Finalizer) {
+		if !controllerutil.ContainsFinalizer(cp, bryggav1alpha1.DatastoreFinalizer) {
 			return errors.New("the finalizer of a paused ControlPlane was released")
 		}
 		if condition := meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionDatastoreReady); condition.Reason == bryggav1alpha1.ReasonDeleting {
@@ -902,7 +902,7 @@ func TestDatastoreClassNotFound(t *testing.T) {
 
 	for _, name := range []string{"default-a", "default-b"} {
 		class := newClass(name, "Retain")
-		class.Annotations = map[string]string{datastore.DefaultClassAnnotation: "true"}
+		class.Annotations = map[string]string{bryggav1alpha1.DefaultClassAnnotation: "true"}
 		class.Spec.Storage.Size = resource.MustParse("3Gi")
 		createClass(t, class)
 	}
@@ -996,7 +996,7 @@ func TestHeldClass(t *testing.T) {
 	}
 	writeGeneration(t, ns, cp, 2)
 	etcd := waitEtcd(t, ns, cp, namesGeneration(2))
-	if quota, recorded := quantity(etcd.Spec.Etcd.Quota), etcd.Annotations[datastore.ClassGenerationAnnotation]; quota != "2Gi" || recorded != "1" {
+	if quota, recorded := quantity(etcd.Spec.Etcd.Quota), etcd.Annotations[bryggav1alpha1.DatastoreClassGenerationAnnotation]; quota != "2Gi" || recorded != "1" {
 		t.Errorf("quota %s from class generation %s: the held class's edit reached the Etcd", quota, recorded)
 	}
 	readyOn(t, ns, cp, 2)
@@ -1419,7 +1419,7 @@ func TestVolumesExist(t *testing.T) {
 	createClass(t, newClass("reused", "Delete"))
 	etcdLabels := druidv1alpha1.GetDefaultLabels(metav1.ObjectMeta{Name: "dev-etcd"})
 	previous := maps.Clone(etcdLabels)
-	previous[datastore.ControlPlaneUIDLabel] = "11111111-2222-3333-4444-555555555555"
+	previous[bryggav1alpha1.ControlPlaneUIDLabel] = "11111111-2222-3333-4444-555555555555"
 	create(t, claim(ns, "dev-etcd-dev-etcd-0", nil))
 	create(t, claim(ns, "dev-etcd-dev-etcd-1", previous))
 	create(t, claim(ns, "dev-etcd-scratch", etcdLabels))
@@ -1443,10 +1443,10 @@ func TestVolumesExist(t *testing.T) {
 	create(t, claim(ns, "dev-etcd-dev-etcd-0", nil))
 	settle(t, ns, "dev")
 	pvc := getClaim(t, ns, "dev-etcd-dev-etcd-0")
-	if pvc.Labels[datastore.ControlPlaneUIDLabel] != string(cp.UID) || pvc.Annotations[datastore.ClassAnnotation] != "reused" {
+	if pvc.Labels[bryggav1alpha1.ControlPlaneUIDLabel] != string(cp.UID) || pvc.Annotations[bryggav1alpha1.DatastoreClassAnnotation] != "reused" {
 		t.Errorf("the StatefulSet's claim carries labels %v and annotations %v, want the ControlPlane's UID %s and the class reused", pvc.Labels, pvc.Annotations, cp.UID)
 	}
-	if pvc := getClaim(t, ns, "dev-etcd-scratch"); pvc.Labels[datastore.ControlPlaneUIDLabel] != "" {
+	if pvc := getClaim(t, ns, "dev-etcd-scratch"); pvc.Labels[bryggav1alpha1.ControlPlaneUIDLabel] != "" {
 		t.Errorf("a claim the StatefulSet does not attach was labelled: %v", pvc.Labels)
 	}
 }
@@ -1522,7 +1522,7 @@ func TestStorageAtCreation(t *testing.T) {
 	if etcd.Spec.StorageClass != nil || quantity(etcd.Spec.StorageCapacity) != "1Gi" {
 		t.Errorf("storageClass %v, storageCapacity %s: storage changed after creation", etcd.Spec.StorageClass, quantity(etcd.Spec.StorageCapacity))
 	}
-	if got := etcd.Annotations[datastore.ClassGenerationAnnotation]; got != "2" {
+	if got := etcd.Annotations[bryggav1alpha1.DatastoreClassGenerationAnnotation]; got != "2" {
 		t.Errorf("class generation %s recorded, want 2", got)
 	}
 }
@@ -1530,36 +1530,36 @@ func TestStorageAtCreation(t *testing.T) {
 func TestRecordedClass(t *testing.T) {
 	ns := namespace(t)
 	first := newClass("default-first", "Retain")
-	first.Annotations = map[string]string{datastore.DefaultClassAnnotation: "true"}
+	first.Annotations = map[string]string{bryggav1alpha1.DefaultClassAnnotation: "true"}
 	first.Spec.Storage.Size = resource.MustParse("3Gi")
 	createClass(t, first)
 	create(t, controlPlane(ns, "dev", ""))
 	writeGeneration(t, ns, "dev", 1)
 	etcd := waitEtcd(t, ns, "dev", nil)
-	if got := etcd.Annotations[datastore.ClassAnnotation]; got != "default-first" {
+	if got := etcd.Annotations[bryggav1alpha1.DatastoreClassAnnotation]; got != "default-first" {
 		t.Fatalf("class %s recorded, want default-first", got)
 	}
 	create(t, claim(ns, "dev-etcd-dev-etcd-0", druidv1alpha1.GetDefaultLabels(etcd.ObjectMeta)))
 	settle(t, ns, "dev")
 
 	second := newClass("default-second", "Delete")
-	second.Annotations = map[string]string{datastore.DefaultClassAnnotation: "true"}
+	second.Annotations = map[string]string{bryggav1alpha1.DefaultClassAnnotation: "true"}
 	second.Spec.Storage.Size = resource.MustParse("5Gi")
 	createClass(t, second)
 	if err := k8s.Get(t.Context(), client.ObjectKey{Name: "default-first"}, first); err != nil {
 		t.Fatal(err)
 	}
-	delete(first.Annotations, datastore.DefaultClassAnnotation)
+	delete(first.Annotations, bryggav1alpha1.DefaultClassAnnotation)
 	if err := k8s.Update(t.Context(), first); err != nil {
 		t.Fatal(err)
 	}
 	settle(t, ns, "dev")
 	etcd = getEtcd(t, ns, "dev")
-	if etcd.Annotations[datastore.ClassAnnotation] != "default-first" || quantity(etcd.Spec.StorageCapacity) != "3Gi" {
-		t.Errorf("the Etcd follows class %s with %s, want default-first with 3Gi after the default moved", etcd.Annotations[datastore.ClassAnnotation], quantity(etcd.Spec.StorageCapacity))
+	if etcd.Annotations[bryggav1alpha1.DatastoreClassAnnotation] != "default-first" || quantity(etcd.Spec.StorageCapacity) != "3Gi" {
+		t.Errorf("the Etcd follows class %s with %s, want default-first with 3Gi after the default moved", etcd.Annotations[bryggav1alpha1.DatastoreClassAnnotation], quantity(etcd.Spec.StorageCapacity))
 	}
-	if pvc := getClaim(t, ns, "dev-etcd-dev-etcd-0"); pvc.Annotations[datastore.ClassAnnotation] != "default-first" {
-		t.Errorf("the claim records class %s, want default-first", pvc.Annotations[datastore.ClassAnnotation])
+	if pvc := getClaim(t, ns, "dev-etcd-dev-etcd-0"); pvc.Annotations[bryggav1alpha1.DatastoreClassAnnotation] != "default-first" {
+		t.Errorf("the claim records class %s, want default-first", pvc.Annotations[bryggav1alpha1.DatastoreClassAnnotation])
 	}
 
 	if err := k8s.Delete(t.Context(), getControlPlane(t, ns, "dev")); err != nil {
@@ -1583,7 +1583,7 @@ func reconcileNow(t *testing.T, ns, name string) time.Duration {
 func TestClassSurvivesTheEtcd(t *testing.T) {
 	ns := namespace(t)
 	first := newClass("survivor-first", "Retain")
-	first.Annotations = map[string]string{datastore.DefaultClassAnnotation: "true"}
+	first.Annotations = map[string]string{bryggav1alpha1.DefaultClassAnnotation: "true"}
 	first.Spec.Storage.Size = resource.MustParse("3Gi")
 	createClass(t, first)
 	create(t, controlPlane(ns, "dev", ""))
@@ -1593,13 +1593,13 @@ func TestClassSurvivesTheEtcd(t *testing.T) {
 	settle(t, ns, "dev")
 
 	second := newClass("survivor-second", "Delete")
-	second.Annotations = map[string]string{datastore.DefaultClassAnnotation: "true"}
+	second.Annotations = map[string]string{bryggav1alpha1.DefaultClassAnnotation: "true"}
 	second.Spec.Storage.Size = resource.MustParse("5Gi")
 	createClass(t, second)
 	if err := k8s.Get(t.Context(), client.ObjectKey{Name: "survivor-first"}, first); err != nil {
 		t.Fatal(err)
 	}
-	delete(first.Annotations, datastore.DefaultClassAnnotation)
+	delete(first.Annotations, bryggav1alpha1.DefaultClassAnnotation)
 	if err := k8s.Update(t.Context(), first); err != nil {
 		t.Fatal(err)
 	}
@@ -1610,7 +1610,7 @@ func TestClassSurvivesTheEtcd(t *testing.T) {
 		if again.UID == etcd.UID {
 			return errors.New("the Etcd has not been created again yet")
 		}
-		if class, size := again.Annotations[datastore.ClassAnnotation], quantity(again.Spec.StorageCapacity); class != "survivor-first" || size != "3Gi" {
+		if class, size := again.Annotations[bryggav1alpha1.DatastoreClassAnnotation], quantity(again.Spec.StorageCapacity); class != "survivor-first" || size != "3Gi" {
 			return fmt.Errorf("the Etcd created again follows class %s with %s, want survivor-first, which its claims record, with 3Gi", class, size)
 		}
 		return nil
@@ -1635,7 +1635,7 @@ func TestClassSurvivesTheEtcd(t *testing.T) {
 
 	createClass(t, newClass("survivor-first", "Retain"))
 	waitEtcd(t, ns, "dev", func(again *druidv1alpha1.Etcd) error {
-		if class := again.Annotations[datastore.ClassAnnotation]; class != "survivor-first" {
+		if class := again.Annotations[bryggav1alpha1.DatastoreClassAnnotation]; class != "survivor-first" {
 			return fmt.Errorf("the Etcd follows class %s, want survivor-first", class)
 		}
 		return nil
@@ -1676,7 +1676,7 @@ func TestClassGone(t *testing.T) {
 	if got, want := withoutTLS(after), withoutTLS(before); !reflect.DeepEqual(got, want) {
 		t.Errorf("the Etcd's fields from the gone class moved:\n got %+v\nwant %+v", got, want)
 	}
-	for _, key := range []string{datastore.ClassAnnotation, datastore.ClassGenerationAnnotation} {
+	for _, key := range []string{bryggav1alpha1.DatastoreClassAnnotation, bryggav1alpha1.DatastoreClassGenerationAnnotation} {
 		if after.Annotations[key] != before.Annotations[key] {
 			t.Errorf("annotation %s moved from %q to %q", key, before.Annotations[key], after.Annotations[key])
 		}
@@ -1703,7 +1703,7 @@ func TestDeletionBeforeLabelling(t *testing.T) {
 	settle(t, ns, "dev")
 
 	create(t, claim(ns, "dev-etcd-dev-etcd-0", druidv1alpha1.GetDefaultLabels(metav1.ObjectMeta{Name: "dev-etcd"})))
-	if pvc := getClaim(t, ns, "dev-etcd-dev-etcd-0"); pvc.Labels[datastore.ControlPlaneUIDLabel] != "" {
+	if pvc := getClaim(t, ns, "dev-etcd-dev-etcd-0"); pvc.Labels[bryggav1alpha1.ControlPlaneUIDLabel] != "" {
 		t.Fatalf("a pass labelled the claim before the deletion: %v", pvc.Labels)
 	}
 	if err := k8s.Delete(t.Context(), getControlPlane(t, ns, "dev")); err != nil {
@@ -1728,12 +1728,12 @@ func TestDeletion(t *testing.T) {
 
 			etcdLabels := druidv1alpha1.GetDefaultLabels(etcd.ObjectMeta)
 			previous := maps.Clone(etcdLabels)
-			previous[datastore.ControlPlaneUIDLabel] = "11111111-2222-3333-4444-555555555555"
+			previous[bryggav1alpha1.ControlPlaneUIDLabel] = "11111111-2222-3333-4444-555555555555"
 			create(t, claim(ns, "dev-etcd-dev-etcd-0", etcdLabels))
 			create(t, claim(ns, "dev-etcd-dev-etcd-1", previous))
 			create(t, claim(ns, "someone-elses", nil))
 			settle(t, ns, "dev")
-			if pvc := getClaim(t, ns, "dev-etcd-dev-etcd-0"); pvc.Labels[datastore.ControlPlaneUIDLabel] != string(cp.UID) || pvc.Annotations[datastore.ClassAnnotation] != className {
+			if pvc := getClaim(t, ns, "dev-etcd-dev-etcd-0"); pvc.Labels[bryggav1alpha1.ControlPlaneUIDLabel] != string(cp.UID) || pvc.Annotations[bryggav1alpha1.DatastoreClassAnnotation] != className {
 				t.Fatalf("the StatefulSet's claim carries labels %v and annotations %v, want the ControlPlane's UID %s and the class %s", pvc.Labels, pvc.Annotations, cp.UID, className)
 			}
 
@@ -1751,7 +1751,7 @@ func TestDeletion(t *testing.T) {
 				}
 				return nil
 			})
-			if !controllerutil.ContainsFinalizer(getControlPlane(t, ns, "dev"), datastore.Finalizer) {
+			if !controllerutil.ContainsFinalizer(getControlPlane(t, ns, "dev"), bryggav1alpha1.DatastoreFinalizer) {
 				t.Fatal("the finalizer left before the Etcd was gone")
 			}
 			waitCondition(t, ns, "dev", metav1.ConditionFalse, bryggav1alpha1.ReasonDeleting, "the ControlPlane is being deleted")

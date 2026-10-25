@@ -68,7 +68,9 @@ func EtcdName(controlPlane string) string { return controlPlane + "-etcd" }
 func APIServerName(controlPlane string) string { return controlPlane + "-kube-apiserver" }
 
 // ControllerManagerName is the controller manager's Deployment.
-func ControllerManagerName(controlPlane string) string { return controlPlane + "-kube-controller-manager" }
+func ControllerManagerName(controlPlane string) string {
+	return controlPlane + "-kube-controller-manager"
+}
 
 // SchedulerName is the scheduler's Deployment.
 func SchedulerName(controlPlane string) string { return controlPlane + "-kube-scheduler" }

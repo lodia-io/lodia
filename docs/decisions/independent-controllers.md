@@ -124,7 +124,9 @@ flowchart LR
 - Metrics come per controller: queue depth, reconcile duration and errors,
   labelled by controller and tenant.
 - No controller uses the content of, or writes over, an object whose
-  controller is not its `ControlPlane`. A controller-less object is adopted,
+  controller is not its `ControlPlane`, or that refers to another
+  `ControlPlane` at all; `internal/ownership` is the one place that rule is
+  written, and every controller asks it. A controller-less object is adopted,
   except where adopting it would start a tenant on another's data (the
   Datastore's `Etcd` and claims). A predecessor's objects, left when a
   `ControlPlane` is recreated under the same name, are the garbage

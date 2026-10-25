@@ -22,18 +22,17 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/apis/apiserver"
 	apiserverv1 "k8s.io/apiserver/pkg/apis/apiserver/v1"
 	"k8s.io/apiserver/pkg/apis/apiserver/validation"
 	corev1ac "k8s.io/client-go/applyconfigurations/core/v1"
 	metav1ac "k8s.io/client-go/applyconfigurations/meta/v1"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
 	"github.com/segla-io/brygga/internal/certs"
+	"github.com/segla-io/brygga/internal/ownership"
 )
 
 // The CAs, by the suffix of their <cp>-cakey-<ca> Secret.
@@ -164,24 +163,6 @@ func (t *tenant) reserved(name string) (int, bool) {
 	return 0, false
 }
 
-// elsewhere is the owner that keeps a Secret from this ControlPlane: a
-// controller with another UID, or any owner reference to another
-// ControlPlane.
-func (t *tenant) elsewhere(obj metav1.Object) *metav1.OwnerReference {
-	refs := obj.GetOwnerReferences()
-	for i := range refs {
-		if refs[i].UID != t.cp.UID && (ptr.Deref(refs[i].Controller, false) || controlPlane(refs[i])) {
-			return &refs[i]
-		}
-	}
-	return nil
-}
-
-func controlPlane(ref metav1.OwnerReference) bool {
-	gv, err := schema.ParseGroupVersion(ref.APIVersion)
-	return err == nil && gv.Group == bryggav1alpha1.GroupVersion.Group && ref.Kind == kind
-}
-
 // read takes the Secrets under PKI's names, labelled or not: the labelled ones
 // whole, and the namespace's metadata to find the others, so that no list
 // carries the data of every Secret in the namespace.
@@ -229,7 +210,7 @@ func (r *Reconciler) read(ctx context.Context, t *tenant) error {
 
 // held records a Secret another owner keeps.
 func (t *tenant) held(obj metav1.Object) bool {
-	owner := t.elsewhere(obj)
+	owner := ownership.ControlledElsewhere(obj, t.cp)
 	if owner != nil {
 		t.foreign = append(t.foreign, foreign{name: obj.GetName(), owner: *owner})
 	}
@@ -268,7 +249,7 @@ func (t *tenant) requeueAfter() time.Duration {
 // is a previous ControlPlane's of this name, and for a person otherwise.
 func (t *tenant) foreignRequeue() time.Duration {
 	for _, f := range t.foreign {
-		if !controlPlane(f.owner) || f.owner.Name != t.cp.Name {
+		if !ownership.IsControlPlane(f.owner) || f.owner.Name != t.cp.Name {
 			return time.Minute
 		}
 	}

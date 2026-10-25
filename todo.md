@@ -96,11 +96,6 @@ is a decision — a decision is a file in `docs/decisions/`.
   test the `VolumesExist` remedy end to end: the claims kept, a `Backup` of
   the old cluster, a new `ControlPlane` with `restoreFrom` that serves the old
   data.
-- The finalizer `brygga.segla.io/controlplane` and the annotation
-  `brygga.segla.io/is-default-class` are constants of
-  `internal/controller/datastore`; move them to `api/v1alpha1` when Lifecycle
-  or another controller reads them, as `DatastoreReady` and
-  `brygga.segla.io/etcd-certificates` moved with PKI.
 - The backup-restore sidecar's `spec.backup.resources` have no field in the
   `DatastoreClass` and stay etcd-druid's default (50m / 128Mi at v0.39.0);
   the operator configuration's `defaults.resources` should cover them once

@@ -68,8 +68,8 @@ func render(cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClas
 	}
 	spec := &class.Spec
 	etcd.Annotations = map[string]string{
-		ClassAnnotation:           class.Name,
-		ClassGenerationAnnotation: strconv.FormatInt(class.Generation, 10),
+		bryggav1alpha1.DatastoreClassAnnotation:           class.Name,
+		bryggav1alpha1.DatastoreClassGenerationAnnotation: strconv.FormatInt(class.Generation, 10),
 	}
 	etcd.Spec.StorageCapacity = new(spec.Storage.Size)
 	if spec.Storage.ClassName != "" {
@@ -127,7 +127,7 @@ func render(cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClas
 
 // keep must copy every field render takes from the class.
 func keep(etcd, current *druidv1alpha1.Etcd) {
-	for _, key := range []string{ClassAnnotation, ClassGenerationAnnotation} {
+	for _, key := range []string{bryggav1alpha1.DatastoreClassAnnotation, bryggav1alpha1.DatastoreClassGenerationAnnotation} {
 		if value, ok := current.Annotations[key]; ok {
 			metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, key, value)
 		}

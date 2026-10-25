@@ -23,11 +23,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	corev1ac "k8s.io/client-go/applyconfigurations/core/v1"
 	metav1ac "k8s.io/client-go/applyconfigurations/meta/v1"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -39,20 +37,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
+	"github.com/segla-io/brygga/internal/ownership"
 )
 
 const (
-	Name                   = "datastore"
-	FieldManager           = "brygga/" + Name
-	Finalizer              = "brygga.segla.io/controlplane"
-	DefaultClassAnnotation = "brygga.segla.io/is-default-class"
-	// ControlPlaneUIDLabel on a claim keeps a ControlPlane recreated under the
-	// same name from starting on the old one's data.
-	ControlPlaneUIDLabel = "brygga.segla.io/control-plane-uid"
-	ClassAnnotation      = "brygga.segla.io/datastore-class"
-	// ClassGenerationAnnotation is for Lifecycle, which will hold a class
-	// edit for each tenant's maintenance window.
-	ClassGenerationAnnotation = "brygga.segla.io/datastore-class-generation"
+	Name         = "datastore"
+	FieldManager = "brygga/" + Name
 )
 
 type Reconciler struct {
@@ -126,7 +116,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		requeueAfter, err := r.finalize(ctx, cp)
 		return ctrl.Result{RequeueAfter: requeueAfter}, err
 	}
-	if !controllerutil.ContainsFinalizer(cp, Finalizer) {
+	if !controllerutil.ContainsFinalizer(cp, bryggav1alpha1.DatastoreFinalizer) {
 		err := r.setFinalizer(ctx, cp, true)
 		switch {
 		case apierrors.IsNotFound(err):
@@ -235,12 +225,12 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 		err = fmt.Errorf("apply Etcd %s: %w", rendered.Name, err)
 		if refused(err) {
 			message := note(fmt.Sprintf("the API server refuses Etcd %s on certificate generation %d with the fields of DatastoreClass %s generation %s; the reason is in Brygga's log",
-				rendered.Name, generation, rendered.Annotations[ClassAnnotation], rendered.Annotations[ClassGenerationAnnotation]), held)
+				rendered.Name, generation, rendered.Annotations[bryggav1alpha1.DatastoreClassAnnotation], rendered.Annotations[bryggav1alpha1.DatastoreClassGenerationAnnotation]), held)
 			return current, newCondition(metav1.ConditionFalse, bryggav1alpha1.ReasonEtcdRefused, message), 0, errors.Join(err, refusal)
 		}
 		return nil, metav1.Condition{}, 0, err
 	}
-	if err := r.labelClaims(ctx, cp, etcd.Annotations[ClassAnnotation]); err != nil {
+	if err := r.labelClaims(ctx, cp, etcd.Annotations[bryggav1alpha1.DatastoreClassAnnotation]); err != nil {
 		return nil, metav1.Condition{}, 0, err
 	}
 	absent, err := r.missingSecrets(ctx, cp, etcd, secrets)
@@ -315,13 +305,13 @@ func (r *Reconciler) currentEtcd(ctx context.Context, cp *bryggav1alpha1.Control
 // Etcd created again over them keeps it.
 func className(cp *bryggav1alpha1.ControlPlane, current *druidv1alpha1.Etcd, claims []corev1.PersistentVolumeClaim) (string, bool) {
 	if current != nil {
-		if recorded, ok := current.Annotations[ClassAnnotation]; ok {
+		if recorded, ok := current.Annotations[bryggav1alpha1.DatastoreClassAnnotation]; ok {
 			return recorded, false
 		}
 	} else if i := slices.IndexFunc(claims, func(claim corev1.PersistentVolumeClaim) bool {
-		return claim.Labels[ControlPlaneUIDLabel] == string(cp.UID) && claim.Annotations[ClassAnnotation] != ""
+		return claim.Labels[bryggav1alpha1.ControlPlaneUIDLabel] == string(cp.UID) && claim.Annotations[bryggav1alpha1.DatastoreClassAnnotation] != ""
 	}); i >= 0 {
-		return claims[i].Annotations[ClassAnnotation], true
+		return claims[i].Annotations[bryggav1alpha1.DatastoreClassAnnotation], true
 	}
 	return cp.Spec.Datastore.Dedicated.ClassName, false
 }
@@ -346,7 +336,7 @@ func (r *Reconciler) class(ctx context.Context, name string, byClaims bool) (*br
 	}
 	var defaults []*bryggav1alpha1.DatastoreClass
 	for i := range classes.Items {
-		if classes.Items[i].Annotations[DefaultClassAnnotation] == "true" {
+		if classes.Items[i].Annotations[bryggav1alpha1.DefaultClassAnnotation] == "true" {
 			defaults = append(defaults, &classes.Items[i])
 		}
 	}
@@ -354,7 +344,7 @@ func (r *Reconciler) class(ctx context.Context, name string, byClaims bool) (*br
 	case 1:
 		return defaults[0], "", nil
 	case 0:
-		return nil, "no DatastoreClass is annotated " + DefaultClassAnnotation + `: "true"`, nil
+		return nil, "no DatastoreClass is annotated " + bryggav1alpha1.DefaultClassAnnotation + `: "true"`, nil
 	default:
 		names := make([]string, 0, len(defaults))
 		for _, class := range defaults {
@@ -362,7 +352,7 @@ func (r *Reconciler) class(ctx context.Context, name string, byClaims bool) (*br
 		}
 		slices.Sort(names)
 		return nil, fmt.Sprintf("%d DatastoreClasses are annotated %s: %q, exactly one may be: %s",
-			len(defaults), DefaultClassAnnotation, "true", strings.Join(names, ", ")), nil
+			len(defaults), bryggav1alpha1.DefaultClassAnnotation, "true", strings.Join(names, ", ")), nil
 	}
 }
 
@@ -385,21 +375,6 @@ func (r *Reconciler) secret(ctx context.Context, cp *bryggav1alpha1.ControlPlane
 		return nil, client.IgnoreNotFound(err)
 	}
 	return secret, nil
-}
-
-func controlledElsewhere(obj metav1.Object, cp *bryggav1alpha1.ControlPlane) *metav1.OwnerReference {
-	refs := obj.GetOwnerReferences()
-	for i := range refs {
-		if refs[i].UID != cp.UID && (ptr.Deref(refs[i].Controller, false) || controlPlane(refs[i])) {
-			return &refs[i]
-		}
-	}
-	return nil
-}
-
-func controlPlane(ref metav1.OwnerReference) bool {
-	gv, err := schema.ParseGroupVersion(ref.APIVersion)
-	return err == nil && gv.Group == bryggav1alpha1.GroupVersion.Group && ref.Kind == "ControlPlane"
 }
 
 // A terminating Secret is still mounted: etcd-druid holds its finalizer on
@@ -502,7 +477,7 @@ func (r *Reconciler) claims(ctx context.Context, cp *bryggav1alpha1.ControlPlane
 func foreignClaims(cp *bryggav1alpha1.ControlPlane, claims []corev1.PersistentVolumeClaim) []string {
 	var foreign []string
 	for _, claim := range claims {
-		if claim.Labels[ControlPlaneUIDLabel] != string(cp.UID) {
+		if claim.Labels[bryggav1alpha1.ControlPlaneUIDLabel] != string(cp.UID) {
 			foreign = append(foreign, claim.Name)
 		}
 	}
@@ -519,12 +494,12 @@ func (r *Reconciler) labelClaims(ctx context.Context, cp *bryggav1alpha1.Control
 	}
 	for i := range claims {
 		claim := &claims[i]
-		if _, labelled := claim.Labels[ControlPlaneUIDLabel]; labelled {
+		if _, labelled := claim.Labels[bryggav1alpha1.ControlPlaneUIDLabel]; labelled {
 			continue
 		}
 		patch := client.MergeFrom(claim.DeepCopy())
-		metav1.SetMetaDataLabel(&claim.ObjectMeta, ControlPlaneUIDLabel, string(cp.UID))
-		metav1.SetMetaDataAnnotation(&claim.ObjectMeta, ClassAnnotation, class)
+		metav1.SetMetaDataLabel(&claim.ObjectMeta, bryggav1alpha1.ControlPlaneUIDLabel, string(cp.UID))
+		metav1.SetMetaDataAnnotation(&claim.ObjectMeta, bryggav1alpha1.DatastoreClassAnnotation, class)
 		if err := client.IgnoreNotFound(r.Patch(ctx, claim, patch, client.FieldOwner(FieldManager))); err != nil {
 			return err
 		}
@@ -550,7 +525,7 @@ func (r *Reconciler) copyCredentials(ctx context.Context, cp *bryggav1alpha1.Con
 		return "", err
 	}
 	if existing != nil {
-		if ref := controlledElsewhere(existing, cp); ref != nil {
+		if ref := ownership.ControlledElsewhere(existing, cp); ref != nil {
 			return fmt.Sprintf("%s is controlled by %s %s with UID %s", name, ref.Kind, ref.Name, ref.UID), nil
 		}
 	}
@@ -582,7 +557,7 @@ func (r *Reconciler) copyCredentials(ctx context.Context, cp *bryggav1alpha1.Con
 }
 
 func (r *Reconciler) finalize(ctx context.Context, cp *bryggav1alpha1.ControlPlane) (time.Duration, error) {
-	if !controllerutil.ContainsFinalizer(cp, Finalizer) {
+	if !controllerutil.ContainsFinalizer(cp, bryggav1alpha1.DatastoreFinalizer) {
 		return 0, nil
 	}
 	etcd, err := r.currentEtcd(ctx, cp)
@@ -600,7 +575,7 @@ func (r *Reconciler) finalize(ctx context.Context, cp *bryggav1alpha1.ControlPla
 	// A claim no pass has labelled yet can only be this Etcd's: VolumesExist
 	// kept it from being created while anything else stood there.
 	if etcd != nil {
-		if err := r.labelClaims(ctx, cp, etcd.Annotations[ClassAnnotation]); err != nil {
+		if err := r.labelClaims(ctx, cp, etcd.Annotations[bryggav1alpha1.DatastoreClassAnnotation]); err != nil {
 			return 0, err
 		}
 	}
@@ -631,11 +606,11 @@ func (r *Reconciler) reclaimClaims(ctx context.Context, cp *bryggav1alpha1.Contr
 	}
 	for i := range claims {
 		claim := &claims[i]
-		if claim.Labels[ControlPlaneUIDLabel] != string(cp.UID) || !claim.DeletionTimestamp.IsZero() {
+		if claim.Labels[bryggav1alpha1.ControlPlaneUIDLabel] != string(cp.UID) || !claim.DeletionTimestamp.IsZero() {
 			continue
 		}
 		class := &bryggav1alpha1.DatastoreClass{}
-		name := claim.Annotations[ClassAnnotation]
+		name := claim.Annotations[bryggav1alpha1.DatastoreClassAnnotation]
 		if name == "" {
 			log.Info("keeping the claim, it records no class", "claim", claim.Name)
 			continue
@@ -664,9 +639,9 @@ func (r *Reconciler) reclaimClaims(ctx context.Context, cp *bryggav1alpha1.Contr
 func (r *Reconciler) setFinalizer(ctx context.Context, cp *bryggav1alpha1.ControlPlane, held bool) error {
 	patch := client.MergeFromWithOptions(cp.DeepCopy(), client.MergeFromWithOptimisticLock{})
 	if held {
-		controllerutil.AddFinalizer(cp, Finalizer)
+		controllerutil.AddFinalizer(cp, bryggav1alpha1.DatastoreFinalizer)
 	} else {
-		controllerutil.RemoveFinalizer(cp, Finalizer)
+		controllerutil.RemoveFinalizer(cp, bryggav1alpha1.DatastoreFinalizer)
 	}
 	return r.Patch(ctx, cp, patch, client.FieldOwner(FieldManager))
 }
@@ -684,8 +659,8 @@ func datastoreStatus(etcd *druidv1alpha1.Etcd) *bryggav1alpha1.DatastoreStatus {
 		}},
 		Members: bryggav1alpha1.Count{Total: etcd.Spec.Replicas, Ready: etcd.Status.ReadyReplicas},
 	}
-	generation, err := strconv.ParseInt(etcd.Annotations[ClassGenerationAnnotation], 10, 64)
-	if name := etcd.Annotations[ClassAnnotation]; name != "" && err == nil {
+	generation, err := strconv.ParseInt(etcd.Annotations[bryggav1alpha1.DatastoreClassGenerationAnnotation], 10, 64)
+	if name := etcd.Annotations[bryggav1alpha1.DatastoreClassAnnotation]; name != "" && err == nil {
 		status.Class = &bryggav1alpha1.DatastoreClassStatus{Name: name, Generation: generation}
 	}
 	return status

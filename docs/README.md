@@ -227,10 +227,23 @@ The names one controller writes and another reads are defined once, in
 | `<cp>-etcd-backup` | Datastore | etcd-druid, through the `Etcd` |
 | Deployments `<cp>-kube-apiserver`, `<cp>-kube-controller-manager`, `<cp>-kube-scheduler`; Service `<cp>-kube-apiserver` | Workloads | PKI, which names the Service in certificates and kubeconfigs |
 
+The labels, annotations and the finalizer they share are defined in
+`api/v1alpha1/labels.go`:
+
+| key | on | writer | readers |
+|---|---|---|---|
+| label `brygga.segla.io/control-plane: <cp>` | every object Brygga creates for a `ControlPlane` | each controller, on its objects | the operator's cache, which holds only labelled objects |
+| label `brygga.segla.io/control-plane-uid` | the etcd claims | Datastore | Datastore, which reclaims and starts only on its own claims |
+| label `brygga.segla.io/etcd-certificates: <g>` | the etcd certificate Secrets | PKI | Datastore, which counts complete generations |
+| annotation `brygga.segla.io/is-default-class: "true"` | a `DatastoreClass` | the platform | Datastore |
+| annotations `brygga.segla.io/datastore-class`, `-datastore-class-generation` | the `Etcd` and its claims | Datastore | Datastore; the class reaches others through `status.datastore.class` |
+| annotation `brygga.segla.io/operation` | a `ControlPlane` | the platform | Lifecycle and PKI, with rotations in phase 3 |
+| finalizer `brygga.segla.io/datastore` | a `ControlPlane` | Datastore | the API server, which deletes the `ControlPlane` once it is gone |
+
 The dedicated etcd is etcd-druid's `Etcd` `<cp>-etcd`, which the Datastore
 controller renders from the `DatastoreClass` and the newest complete
 generation of the etcd certificates, under the `ControlPlane`'s finalizer
-`brygga.segla.io/controlplane`, which it holds from before the first `Etcd`
+`brygga.segla.io/datastore`, which it holds from before the first `Etcd`
 exists. etcd-druid turns it into the StatefulSet `<cp>-etcd`, the client
 Service `<cp>-etcd-client` (`https://<cp>-etcd-client.<ns>.svc:2379`, the
 address Workloads gives the API server's `--etcd-servers`), the peer Service
@@ -624,7 +637,7 @@ writes stop for the copy.
 ### Deletion
 
 The Datastore controller holds the `ControlPlane`'s finalizer
-`brygga.segla.io/controlplane`; while `spec.paused` is true it touches
+`brygga.segla.io/datastore`; while `spec.paused` is true it touches
 nothing, so the deletion of a paused `ControlPlane` waits until it is
 unpaused. On deletion it deletes the `Etcd` and waits
 for etcd-druid to let it go, then reclaims the volumes, which etcd-druid

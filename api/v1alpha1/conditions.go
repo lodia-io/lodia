@@ -92,7 +92,3 @@ const (
 	ReasonPaused                      = "Paused"
 	ReasonLatestGenerationNotObserved = "LatestGenerationNotObserved"
 )
-
-// EtcdCertificatesLabel's value is the generation of the etcd certificate
-// Secret it marks.
-const EtcdCertificatesLabel = "brygga.segla.io/etcd-certificates"
