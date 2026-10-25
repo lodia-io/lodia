@@ -8,11 +8,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"maps"
 	"net"
@@ -851,7 +848,7 @@ func (r *Reconciler) applySecret(ctx context.Context, t *tenant, name string, ty
 	}
 	labels[bryggav1alpha1.ControlPlaneLabel] = cp.Name
 	s := t.existing[name]
-	hash := dataHash(content)
+	hash := bryggav1alpha1.DataHash(content)
 	changes := s == nil || s.Type != typ || !maps.EqualFunc(s.Data, content, bytes.Equal)
 	if !changes && t.owns(s) && hasLabels(s, labels) && s.Annotations[bryggav1alpha1.DataHashAnnotation] == hash && (!immutable || isImmutable(s)) {
 		return
@@ -889,12 +886,6 @@ func (r *Reconciler) write(ctx context.Context, t *tenant, name string, typ core
 		Immutable: secret.Immutable,
 	}
 	return nil
-}
-
-func dataHash(data map[string][]byte) string {
-	encoded, _ := json.Marshal(data)
-	sum := sha256.Sum256(encoded)
-	return hex.EncodeToString(sum[:])
 }
 
 func (t *tenant) owns(s *corev1.Secret) bool {

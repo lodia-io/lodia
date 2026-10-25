@@ -240,7 +240,7 @@ The labels, annotations and the finalizer they share are defined in
 | label `brygga.segla.io/etcd-certificates: <g>` | the etcd certificate Secrets | PKI | Datastore, which counts complete generations |
 | annotation `brygga.segla.io/is-default-class: "true"` | a `DatastoreClass` | the platform | Datastore |
 | annotations `brygga.segla.io/datastore-class`, `-datastore-class-generation` | the `Etcd` and its claims | Datastore | Datastore; the class reaches others through `status.datastore.class` |
-| annotation `brygga.segla.io/data-hash` | every Secret PKI writes | PKI: the hex SHA-256 of the JSON of the Secret's data | Workloads, for the restart hashes of its pod templates |
+| annotation `brygga.segla.io/data-hash` | every Secret PKI writes | PKI: `DataHash` of the Secret's data, a SHA-256 that changes whenever the data does | Workloads, for the restart hashes of its pod templates |
 | annotation `brygga.segla.io/operation` | a `ControlPlane` | the platform | Lifecycle and PKI, with rotations in phase 3 |
 | finalizer `brygga.segla.io/datastore` | a `ControlPlane` | Datastore | the API server, which deletes the `ControlPlane` once it is gone |
 

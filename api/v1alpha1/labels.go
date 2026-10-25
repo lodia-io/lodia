@@ -3,6 +3,14 @@
 
 package v1alpha1
 
+import (
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"maps"
+	"slices"
+)
+
 // The labels, annotations and finalizer Brygga's controllers and its users
 // share, each with its writer.
 const (
@@ -30,9 +38,9 @@ const (
 	DatastoreClassAnnotation           = "brygga.segla.io/datastore-class"
 	DatastoreClassGenerationAnnotation = "brygga.segla.io/datastore-class-generation"
 
-	// DataHashAnnotation, written by PKI on every Secret it writes, is the
-	// hex SHA-256 of the JSON of the Secret's data, so that Workloads hashes a
-	// restart-only Secret into a pod template from its metadata alone.
+	// DataHashAnnotation, written by PKI on every Secret it writes, holds
+	// DataHash of the Secret's data, so that Workloads hashes a restart-only
+	// Secret into a pod template from its metadata alone.
 	DataHashAnnotation = "brygga.segla.io/data-hash"
 
 	// OperationAnnotation, set by the platform, requests an operation such
@@ -43,3 +51,17 @@ const (
 	// ControlPlane until its etcd is deleted and its claims reclaimed.
 	DatastoreFinalizer = "brygga.segla.io/datastore"
 )
+
+// DataHash is the hex SHA-256 over a Secret's keys in order, each key and
+// its value prefixed by its length.
+func DataHash(data map[string][]byte) string {
+	var b []byte
+	for _, key := range slices.Sorted(maps.Keys(data)) {
+		b = binary.BigEndian.AppendUint64(b, uint64(len(key)))
+		b = append(b, key...)
+		b = binary.BigEndian.AppendUint64(b, uint64(len(data[key])))
+		b = append(b, data[key]...)
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}

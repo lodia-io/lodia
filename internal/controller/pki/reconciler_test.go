@@ -8,11 +8,8 @@ import (
 	"context"
 	"crypto"
 	"crypto/rsa"
-	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/hex"
-	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -454,12 +451,7 @@ func TestEverySecretCarriesTheHashOfItsData(t *testing.T) {
 	publishEndpoint(t, cp)
 	reconcile(t, r, cp)
 	for name, s := range secretsOf(t, cp) {
-		encoded, err := json.Marshal(s.Data)
-		if err != nil {
-			t.Fatal(err)
-		}
-		sum := sha256.Sum256(encoded)
-		if got, want := s.Annotations[bryggav1alpha1.DataHashAnnotation], hex.EncodeToString(sum[:]); got != want {
+		if got, want := s.Annotations[bryggav1alpha1.DataHashAnnotation], bryggav1alpha1.DataHash(s.Data); got != want {
 			t.Errorf("%s carries %s %q, want %q", name, bryggav1alpha1.DataHashAnnotation, got, want)
 		}
 	}

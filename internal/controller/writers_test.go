@@ -129,7 +129,7 @@ func statusOwners(cp *bryggav1alpha1.ControlPlane) (map[string][]string, error) 
 			continue
 		}
 		var fields map[string]map[string]json.RawMessage
-		if err := json.Unmarshal(entry.FieldsV1.Raw, &fields); err != nil {
+		if err := json.Unmarshal(entry.FieldsV1.GetRawBytes(), &fields); err != nil {
 			return nil, err
 		}
 		for field, raw := range fields["f:status"] {
