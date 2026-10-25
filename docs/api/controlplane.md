@@ -76,6 +76,11 @@ Examples: [`examples/`](examples/).
 
 ## Conditions and their reasons
 
+A controller writes its conditions `Unknown` with reason `Reconciling` on its
+first visit, before its first pass; a reader counts a condition only while its
+`observedGeneration` is the object's generation
+([independent-controllers](../decisions/independent-controllers.md)).
+
 | condition | True | False reasons |
 |---|---|---|
 | `CertificatesReady` | every certificate, key and kubeconfig exists and is valid for more than its renewal margin | `Issuing`, `RotationInProgress`, `CAExpiring` |

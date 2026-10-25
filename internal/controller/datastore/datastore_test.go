@@ -30,12 +30,15 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/selection"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/apimachinery/pkg/watch"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -47,7 +50,7 @@ import (
 	"github.com/segla-io/brygga/internal/controller/datastore/datastoretest"
 )
 
-var k8s client.Client
+var k8s client.WithWatch
 
 func TestMain(m *testing.M) {
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
@@ -81,7 +84,7 @@ func TestMain(m *testing.M) {
 			stop("scheme", err)
 		}
 	}
-	if k8s, err = client.New(cfg, client.Options{Scheme: scheme}); err != nil {
+	if k8s, err = client.NewWithWatch(cfg, client.Options{Scheme: scheme}); err != nil {
 		stop("client", err)
 	}
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
@@ -475,6 +478,59 @@ func TestFinalizerAndEtcdFromClass(t *testing.T) {
 	}
 }
 
+func TestConditionsFromState(t *testing.T) {
+	ns := namespace(t)
+	createClass(t, newClass("state", "Retain"))
+	events, err := k8s.Watch(t.Context(), &bryggav1alpha1.ControlPlaneList{}, client.InNamespace(ns))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer events.Stop()
+	create(t, controlPlane(ns, "dev", "state"))
+	var first *metav1.Condition
+	for first == nil {
+		select {
+		case event := <-events.ResultChan():
+			if cp, ok := event.Object.(*bryggav1alpha1.ControlPlane); ok && event.Type == watch.Modified {
+				first = meta.FindStatusCondition(cp.Status.Conditions, datastore.ConditionType)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatal("no DatastoreReady condition was written")
+		}
+	}
+	if first.Status != metav1.ConditionUnknown || first.Reason != datastore.ReasonReconciling {
+		t.Errorf("the first DatastoreReady is %s/%s %q, want Unknown/%s", first.Status, first.Reason, first.Message, datastore.ReasonReconciling)
+	}
+
+	writeGeneration(t, ns, "dev", 1)
+	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd dev-etcd")
+	var before *bryggav1alpha1.ControlPlane
+	eventually(t, func() error {
+		if before = getControlPlane(t, ns, "dev"); before.Status.Datastore == nil {
+			return errors.New("status.datastore is not written yet")
+		}
+		return nil
+	})
+	injected := errors.New("injected: the API server did not answer")
+	failing := interceptor.NewClient(k8s, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*druidv1alpha1.Etcd); ok {
+				return injected
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	reconciler := &datastore.Reconciler{Client: failing, Reader: failing}
+	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: "dev"}}); !errors.Is(err, injected) {
+		t.Fatalf("a pass whose Etcd read fails returned %v, want the read's error", err)
+	}
+	if after := getControlPlane(t, ns, "dev"); after.ResourceVersion != before.ResourceVersion {
+		condition := meta.FindStatusCondition(after.Status.Conditions, datastore.ConditionType)
+		t.Errorf("a pass whose Etcd read fails moved the ControlPlane from resourceVersion %s to %s: DatastoreReady %s/%s %q, status.datastore %+v",
+			before.ResourceVersion, after.ResourceVersion, condition.Status, condition.Reason, condition.Message, after.Status.Datastore)
+	}
+}
+
 func TestNewestCompleteGeneration(t *testing.T) {
 	ns := namespace(t)
 	createClass(t, newClass("generations", "Retain"))
@@ -561,7 +617,7 @@ func TestBackupCredentialsCopied(t *testing.T) {
 	createClass(t, fullClass("backed-up", credentialsNamespace))
 	create(t, controlPlane(ns, "backed", "backed-up"))
 	writeGeneration(t, ns, "backed", 1)
-	waitCondition(t, ns, "backed", metav1.ConditionFalse, datastore.ReasonProvisioning, "read the credentials Secret "+credentialsNamespace+"/s3 of DatastoreClass backed-up")
+	waitCondition(t, ns, "backed", metav1.ConditionFalse, datastore.ReasonProvisioning, "waiting for the credentials Secret "+credentialsNamespace+"/s3 of DatastoreClass backed-up")
 
 	source := credentials(credentialsNamespace)
 	create(t, source)

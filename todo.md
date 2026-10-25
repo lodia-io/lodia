@@ -105,9 +105,9 @@ is a decision — a decision is a file in `docs/decisions/`.
   is decided.
 - The `DatastoreClass` schema checks `fullSnapshotSchedule` and
   `defragmentation.schedule` only for length; etcd-druid's CRD wants standard
-  five-field cron, so a bad schedule fails the `Etcd` apply and shows as
-  `DatastoreReady=False`, `Provisioning` with the error. A pattern on the
-  class, or a reason of its own.
+  five-field cron, so a bad schedule fails the `Etcd` apply: the error is in
+  the controller's log and `DatastoreReady` keeps what it said before. A
+  pattern on the class, or a reason of its own.
 - A class edit that reaches the `Etcd` rolls its members at once; the decision
   wants it in the tenant's maintenance window, which Lifecycle gates in phase
   2. The `Etcd` records the class generation it was rendered from for that.

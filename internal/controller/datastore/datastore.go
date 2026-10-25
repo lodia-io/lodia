@@ -9,7 +9,6 @@ package datastore
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -68,6 +67,9 @@ const (
 	// class it was rendered from.
 	ClassGenerationAnnotation = "brygga.segla.io/datastore-class-generation"
 
+	// ReasonReconciling is DatastoreReady's reason, Unknown, until the first
+	// pass has finished.
+	ReasonReconciling = "Reconciling"
 	// ReasonProvisioning says the certificates or etcd-druid's report are awaited.
 	ReasonProvisioning = "Provisioning"
 	// ReasonDatastoreClassNotFound says no class serves the ControlPlane.
@@ -157,14 +159,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			return ctrl.Result{}, err
 		}
 	}
+	if meta.FindStatusCondition(cp.Status.Conditions, ConditionType) == nil {
+		first := newCondition(metav1.ConditionUnknown, ReasonReconciling, "the first pass has not finished")
+		if err := r.applyStatus(ctx, cp, cp.Status.Datastore, first); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	etcd, condition, requeueAfter, err := r.reconcileEtcd(ctx, cp)
 	if err != nil {
-		condition = newCondition(metav1.ConditionFalse, ReasonProvisioning, err.Error())
+		return ctrl.Result{}, err
 	}
-	if statusErr := r.applyStatus(ctx, cp, etcd, condition); statusErr != nil {
-		return ctrl.Result{}, errors.Join(err, statusErr)
-	}
-	if err != nil {
+	if err := r.applyStatus(ctx, cp, datastoreStatus(etcd), condition); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
@@ -172,22 +177,23 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 // reconcileEtcd applies the Etcd once the class and a complete certificate
 // generation exist and no other ControlPlane's claims stand in its way, and
-// says what DatastoreReady reports meanwhile.
+// says what DatastoreReady reports meanwhile. An error is the API server's:
+// the pass ends with it and leaves the status as it is.
 func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.ControlPlane) (*druidv1alpha1.Etcd, metav1.Condition, time.Duration, error) {
 	current, err := r.currentEtcd(ctx, cp)
 	if err != nil {
 		return nil, metav1.Condition{}, 0, err
 	}
-	class, err := r.class(ctx, cp, current)
-	if _, missing := errors.AsType[classNotFound](err); missing {
-		return current, newCondition(metav1.ConditionFalse, ReasonDatastoreClassNotFound, err.Error()), 0, nil
-	}
+	class, missing, err := r.class(ctx, cp, current)
 	if err != nil {
-		return current, metav1.Condition{}, 0, err
+		return nil, metav1.Condition{}, 0, err
+	}
+	if class == nil {
+		return current, newCondition(metav1.ConditionFalse, ReasonDatastoreClassNotFound, missing), 0, nil
 	}
 	generation, found, err := r.newestCompleteGeneration(ctx, cp)
 	if err != nil {
-		return current, metav1.Condition{}, 0, err
+		return nil, metav1.Condition{}, 0, err
 	}
 	if !found {
 		message := fmt.Sprintf("waiting for a complete generation of the etcd certificates: the Secrets %s-etcd-{%s}-<g> labelled %s=<g>",
@@ -205,25 +211,28 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 			return nil, newCondition(metav1.ConditionFalse, ReasonVolumesExist, message), time.Minute, nil
 		}
 	}
-	if class.Spec.Backup != nil {
-		if err := r.copyCredentials(ctx, cp, class); err != nil {
-			if apierrors.IsNotFound(err) {
-				return current, newCondition(metav1.ConditionFalse, ReasonProvisioning, err.Error()), time.Minute, nil
-			}
-			return current, metav1.Condition{}, 0, err
+	if backup := class.Spec.Backup; backup != nil {
+		copied, err := r.copyCredentials(ctx, cp, class)
+		if err != nil {
+			return nil, metav1.Condition{}, 0, err
+		}
+		if !copied {
+			ref := backup.Store.SecretRef
+			message := fmt.Sprintf("waiting for the credentials Secret %s/%s of DatastoreClass %s", ref.Namespace, ref.Name, class.Name)
+			return current, newCondition(metav1.ConditionFalse, ReasonProvisioning, message), time.Minute, nil
 		}
 	}
 	etcd, err := r.apply(ctx, render(cp, class, generation, current))
 	if err != nil {
-		return current, metav1.Condition{}, 0, fmt.Errorf("apply Etcd %s: %w", etcdName(cp.Name), err)
+		return nil, metav1.Condition{}, 0, fmt.Errorf("apply Etcd %s: %w", etcdName(cp.Name), err)
 	}
 	if err := r.labelClaims(ctx, cp, class.Name); err != nil {
-		return etcd, metav1.Condition{}, 0, err
+		return nil, metav1.Condition{}, 0, err
 	}
 	sts := &appsv1.StatefulSet{}
 	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: etcdName(cp.Name)}, sts); err != nil {
 		if !apierrors.IsNotFound(err) {
-			return etcd, metav1.Condition{}, 0, err
+			return nil, metav1.Condition{}, 0, err
 		}
 		sts = nil
 	}
@@ -252,15 +261,12 @@ func (r *Reconciler) currentEtcd(ctx context.Context, cp *bryggav1alpha1.Control
 	return etcd, nil
 }
 
-type classNotFound string
-
-func (e classNotFound) Error() string { return string(e) }
-
 // class is the DatastoreClass recorded on the Etcd or, before the Etcd
 // exists, the one the ControlPlane names or the one default class. A class is
 // resolved once, as a default StorageClass is written into a claim when the
-// claim is created, so a default that moves changes no running etcd.
-func (r *Reconciler) class(ctx context.Context, cp *bryggav1alpha1.ControlPlane, current *druidv1alpha1.Etcd) (*bryggav1alpha1.DatastoreClass, error) {
+// claim is created, so a default that moves changes no running etcd. When no
+// class serves, the class is nil and the message says what is missing.
+func (r *Reconciler) class(ctx context.Context, cp *bryggav1alpha1.ControlPlane, current *druidv1alpha1.Etcd) (*bryggav1alpha1.DatastoreClass, string, error) {
 	name := cp.Spec.Datastore.Dedicated.ClassName
 	if current != nil {
 		if recorded, ok := current.Annotations[ClassAnnotation]; ok {
@@ -271,15 +277,15 @@ func (r *Reconciler) class(ctx context.Context, cp *bryggav1alpha1.ControlPlane,
 		class := &bryggav1alpha1.DatastoreClass{}
 		if err := r.Get(ctx, client.ObjectKey{Name: name}, class); err != nil {
 			if apierrors.IsNotFound(err) {
-				return nil, classNotFound("DatastoreClass " + name + " does not exist")
+				return nil, "DatastoreClass " + name + " does not exist", nil
 			}
-			return nil, err
+			return nil, "", err
 		}
-		return class, nil
+		return class, "", nil
 	}
 	classes := &bryggav1alpha1.DatastoreClassList{}
 	if err := r.List(ctx, classes); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	var defaults []*bryggav1alpha1.DatastoreClass
 	for i := range classes.Items {
@@ -289,17 +295,17 @@ func (r *Reconciler) class(ctx context.Context, cp *bryggav1alpha1.ControlPlane,
 	}
 	switch len(defaults) {
 	case 1:
-		return defaults[0], nil
+		return defaults[0], "", nil
 	case 0:
-		return nil, classNotFound("no DatastoreClass is annotated " + DefaultClassAnnotation + `: "true"`)
+		return nil, "no DatastoreClass is annotated " + DefaultClassAnnotation + `: "true"`, nil
 	default:
 		names := make([]string, 0, len(defaults))
 		for _, class := range defaults {
 			names = append(names, class.Name)
 		}
 		slices.Sort(names)
-		return nil, classNotFound(fmt.Sprintf("%d DatastoreClasses are annotated %s: %q, exactly one may be: %s",
-			len(defaults), DefaultClassAnnotation, "true", strings.Join(names, ", ")))
+		return nil, fmt.Sprintf("%d DatastoreClasses are annotated %s: %q, exactly one may be: %s",
+			len(defaults), DefaultClassAnnotation, "true", strings.Join(names, ", ")), nil
 	}
 }
 
@@ -396,12 +402,16 @@ func (r *Reconciler) labelClaims(ctx context.Context, cp *bryggav1alpha1.Control
 
 // copyCredentials copies the class's credentials Secret into the tenant's
 // namespace, where etcd-druid mounts it, with the class's region under the key
-// the backup-restore sidecar reads.
-func (r *Reconciler) copyCredentials(ctx context.Context, cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClass) error {
+// the backup-restore sidecar reads. It copies nothing while the class's
+// Secret does not exist.
+func (r *Reconciler) copyCredentials(ctx context.Context, cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClass) (bool, error) {
 	store := class.Spec.Backup.Store
 	source := &corev1.Secret{}
 	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: store.SecretRef.Namespace, Name: store.SecretRef.Name}, source); err != nil {
-		return fmt.Errorf("read the credentials Secret %s/%s of DatastoreClass %s: %w", store.SecretRef.Namespace, store.SecretRef.Name, class.Name, err)
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read the credentials Secret %s/%s of DatastoreClass %s: %w", store.SecretRef.Namespace, store.SecretRef.Name, class.Name, err)
 	}
 	data := maps.Clone(source.Data)
 	if store.Region != "" {
@@ -420,7 +430,7 @@ func (r *Reconciler) copyCredentials(ctx context.Context, cp *bryggav1alpha1.Con
 			WithController(true).
 			WithBlockOwnerDeletion(true)).
 		WithData(data)
-	return r.Apply(ctx, secret, client.FieldOwner(FieldManager), client.ForceOwnership)
+	return true, r.Apply(ctx, secret, client.FieldOwner(FieldManager), client.ForceOwnership)
 }
 
 // finalize deletes the Etcd, waits for etcd-druid to let it go, reclaims the
@@ -434,7 +444,7 @@ func (r *Reconciler) finalize(ctx context.Context, cp *bryggav1alpha1.ControlPla
 		return 0, err
 	}
 	deleting := newCondition(metav1.ConditionFalse, ReasonDeleting, "the ControlPlane is being deleted: the Etcd goes first, then its claims as the class says")
-	if err := r.applyStatus(ctx, cp, etcd, deleting); err != nil {
+	if err := r.applyStatus(ctx, cp, datastoreStatus(etcd), deleting); err != nil {
 		return 0, err
 	}
 	switch {
@@ -503,10 +513,25 @@ func (r *Reconciler) setFinalizer(ctx context.Context, cp *bryggav1alpha1.Contro
 	return r.Patch(ctx, cp, patch, client.FieldOwner(FieldManager))
 }
 
+// datastoreStatus is status.datastore for the Etcd, nil while there is none.
+func datastoreStatus(etcd *druidv1alpha1.Etcd) *bryggav1alpha1.DatastoreStatus {
+	if etcd == nil {
+		return nil
+	}
+	return &bryggav1alpha1.DatastoreStatus{Kind: "Dedicated", Name: etcd.Name, Members: int32(len(etcd.Status.Members))}
+}
+
 // applyStatus writes the condition and status.datastore through the status
-// subresource, the only fields of the ControlPlane's status this controller owns.
-func (r *Reconciler) applyStatus(ctx context.Context, cp *bryggav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, condition metav1.Condition) error {
+// subresource, the only fields of the ControlPlane's status this controller
+// owns, and only when one of them changed.
+func (r *Reconciler) applyStatus(ctx context.Context, cp *bryggav1alpha1.ControlPlane, datastore *bryggav1alpha1.DatastoreStatus, condition metav1.Condition) error {
 	condition.ObservedGeneration = cp.Generation
+	previous := meta.FindStatusCondition(cp.Status.Conditions, ConditionType)
+	unchanged := previous != nil && previous.Status == condition.Status && previous.Reason == condition.Reason &&
+		previous.Message == condition.Message && previous.ObservedGeneration == condition.ObservedGeneration
+	if unchanged && sameDatastore(cp.Status.Datastore, datastore) {
+		return nil
+	}
 	conditions := slices.Clone(cp.Status.Conditions)
 	meta.SetStatusCondition(&conditions, condition)
 	current, err := runtime.DefaultUnstructuredConverter.ToUnstructured(meta.FindStatusCondition(conditions, ConditionType))
@@ -514,8 +539,8 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *bryggav1alpha1.Control
 		return err
 	}
 	status := map[string]any{"conditions": []any{current}}
-	if etcd != nil {
-		status["datastore"] = map[string]any{"kind": "Dedicated", "name": etcd.Name, "members": int64(len(etcd.Status.Members))}
+	if datastore != nil {
+		status["datastore"] = map[string]any{"kind": datastore.Kind, "name": datastore.Name, "members": int64(datastore.Members)}
 	}
 	controlPlane := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": bryggav1alpha1.GroupVersion.String(),
@@ -524,6 +549,13 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *bryggav1alpha1.Control
 		"status":     status,
 	}}
 	return r.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(controlPlane), client.FieldOwner(FieldManager), client.ForceOwnership)
+}
+
+func sameDatastore(a, b *bryggav1alpha1.DatastoreStatus) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Kind == b.Kind && a.Name == b.Name && a.Members == b.Members
 }
 
 func newCondition(status metav1.ConditionStatus, reason, message string) metav1.Condition {

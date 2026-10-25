@@ -211,9 +211,10 @@ everything the class does not set is etcd-druid's default:
 | the `ControlPlane`'s availability | `spec.replicas` | 1 today; 3 with `highAvailability` and 0 while hibernating come with later phases |
 | the etcd certificates, generation `g` | `spec.etcd.clientUrlTls`, `spec.etcd.peerUrlTls`, `spec.backup.tls` | all three name one complete generation, with `dataKey: ca.crt` on the CA; a newer complete generation is one update of the `Etcd`, so one roll of the members |
 
-`DatastoreReady` is `Provisioning` until a complete certificate generation
-exists and etcd-druid reports the `Etcd` for its current generation, checked
-in the order Gardener waits for an `Etcd`
+`DatastoreReady` is `Unknown`, reason `Reconciling`, until the controller's
+first pass has finished, and `Provisioning` until a complete certificate
+generation exists and etcd-druid reports the `Etcd` for its current
+generation, checked in the order Gardener waits for an `Etcd`
 ([waiter.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/component/etcd/etcd/waiter.go#L21-L97)):
 not being deleted, no `lastErrors` (they go into the message),
 `observedGeneration` current, `AllMembersUpdated` True, `ready`; then the
@@ -228,7 +229,10 @@ missing or more than one class is the default; `VolumesExist` when claims of
 name and starting from another tenant's data is a restore, not a start —
 nothing is created until they are deleted; `Deleting` while the
 `ControlPlane` is being deleted; True once every check above holds. `status.datastore` is `kind: Dedicated`, the `Etcd`'s
-name and its member count.
+name and its member count. Every message is built from the state alone, so
+a pass that changes nothing writes nothing; an error of the API server ends
+the pass, goes to the log and leaves the status as it was
+([independent-controllers](decisions/independent-controllers.md)).
 
 Identities: no root CA key is mounted into a control plane pod; the
 controller manager holds only the kubelet signer, an intermediate that signs
