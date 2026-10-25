@@ -8,8 +8,11 @@ import (
 	"context"
 	"crypto"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -442,6 +445,23 @@ func TestNoSecretButTheCAKeysAndTheKubeletSignerHoldsACAKey(t *testing.T) {
 	}
 	if keys < 20 {
 		t.Errorf("found %d private keys, expected one per CA, leaf and kubeconfig", keys)
+	}
+}
+
+func TestEverySecretCarriesTheHashOfItsData(t *testing.T) {
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "pki-data-hash")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	for name, s := range secretsOf(t, cp) {
+		encoded, err := json.Marshal(s.Data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(encoded)
+		if got, want := s.Annotations[bryggav1alpha1.DataHashAnnotation], hex.EncodeToString(sum[:]); got != want {
+			t.Errorf("%s carries %s %q, want %q", name, bryggav1alpha1.DataHashAnnotation, got, want)
+		}
 	}
 }
 

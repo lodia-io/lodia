@@ -278,12 +278,26 @@ func TestAnImmutableSecretIsWrittenOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	replaceSecret(t, server, map[string][]byte{"tls.crt": server.Data["tls.crt"], "tls.key": pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: sec1})})
+	encoded := map[string][]byte{"tls.crt": server.Data["tls.crt"], "tls.key": pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: sec1})}
+	replaceSecret(t, server, encoded)
 	before, cpBefore := resourceVersions(t, cp)
 	reconcile(t, r, cp)
 	after, cpAfter := resourceVersions(t, cp)
-	if !maps.Equal(before, after) || cpBefore != cpAfter {
-		t.Error("a pass rewrote something beside a member written in another encoding")
+	for name, version := range after {
+		if name != "dev-etcd-server-1" && before[name] != version {
+			t.Errorf("%s was rewritten beside a member written in another encoding", name)
+		}
+	}
+	if cpBefore != cpAfter {
+		t.Error("the ControlPlane's status changed")
+	}
+	if got := secretsOf(t, cp)["dev-etcd-server-1"].Data; !maps.EqualFunc(got, encoded, bytes.Equal) {
+		t.Error("the member written in another encoding was rewritten")
+	}
+	before, cpBefore = resourceVersions(t, cp)
+	reconcile(t, r, cp)
+	if after, cpAfter := resourceVersions(t, cp); !maps.Equal(before, after) || cpBefore != cpAfter {
+		t.Error("a second pass wrote something")
 	}
 	expectGenerations(t, cp, 1)
 

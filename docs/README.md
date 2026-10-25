@@ -170,6 +170,9 @@ Hashes of the restart-only objects sit in the pod template of the component
 that mounts them; nothing else does, so a routine renewal of a reloaded
 certificate rolls nothing
 ([staged-credential-rotation](decisions/staged-credential-rotation.md)).
+PKI writes the hash of each Secret's data on the Secret, in the annotation
+`brygga.segla.io/data-hash`, so Workloads takes a restart-only Secret's hash
+from its metadata and never reads the keys it mounts.
 Every Secret above is PKI's, applied as `brygga/pki` with an owner reference
 to the `ControlPlane`; every key is ECDSA P-256 except the ServiceAccount
 signing key, and a pass over an unchanged `ControlPlane` writes nothing
@@ -237,6 +240,7 @@ The labels, annotations and the finalizer they share are defined in
 | label `brygga.segla.io/etcd-certificates: <g>` | the etcd certificate Secrets | PKI | Datastore, which counts complete generations |
 | annotation `brygga.segla.io/is-default-class: "true"` | a `DatastoreClass` | the platform | Datastore |
 | annotations `brygga.segla.io/datastore-class`, `-datastore-class-generation` | the `Etcd` and its claims | Datastore | Datastore; the class reaches others through `status.datastore.class` |
+| annotation `brygga.segla.io/data-hash` | every Secret PKI writes | PKI: the hex SHA-256 of the JSON of the Secret's data | Workloads, for the restart hashes of its pod templates |
 | annotation `brygga.segla.io/operation` | a `ControlPlane` | the platform | Lifecycle and PKI, with rotations in phase 3 |
 | finalizer `brygga.segla.io/datastore` | a `ControlPlane` | Datastore | the API server, which deletes the `ControlPlane` once it is gone |
 

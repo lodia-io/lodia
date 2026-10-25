@@ -8,8 +8,11 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"net"
@@ -848,19 +851,20 @@ func (r *Reconciler) applySecret(ctx context.Context, t *tenant, name string, ty
 	}
 	labels[bryggav1alpha1.ControlPlaneLabel] = cp.Name
 	s := t.existing[name]
+	hash := dataHash(content)
 	changes := s == nil || s.Type != typ || !maps.EqualFunc(s.Data, content, bytes.Equal)
-	if !changes && t.owns(s) && hasLabels(s, labels) && (!immutable || isImmutable(s)) {
+	if !changes && t.owns(s) && hasLabels(s, labels) && s.Annotations[bryggav1alpha1.DataHashAnnotation] == hash && (!immutable || isImmutable(s)) {
 		return
 	}
 	if t.writeErr == nil {
-		t.writeErr = r.write(ctx, t, name, typ, content, labels, immutable)
+		t.writeErr = r.write(ctx, t, name, typ, content, labels, hash, immutable)
 	}
 	if t.writeErr != nil && (changes || labels[bryggav1alpha1.EtcdCertificatesLabel] != "") {
 		t.pending = append(t.pending, name)
 	}
 }
 
-func (r *Reconciler) write(ctx context.Context, t *tenant, name string, typ corev1.SecretType, content map[string][]byte, labels map[string]string, immutable bool) error {
+func (r *Reconciler) write(ctx context.Context, t *tenant, name string, typ corev1.SecretType, content map[string][]byte, labels map[string]string, hash string, immutable bool) error {
 	cp := t.cp
 	owner := metav1ac.OwnerReference().
 		WithAPIVersion(bryggav1alpha1.GroupVersion.String()).
@@ -869,7 +873,8 @@ func (r *Reconciler) write(ctx context.Context, t *tenant, name string, typ core
 		WithUID(cp.UID).
 		WithController(true).
 		WithBlockOwnerDeletion(true)
-	secret := corev1ac.Secret(name, cp.Namespace).WithLabels(labels).WithOwnerReferences(owner).WithType(typ).WithData(content)
+	annotations := map[string]string{bryggav1alpha1.DataHashAnnotation: hash}
+	secret := corev1ac.Secret(name, cp.Namespace).WithLabels(labels).WithAnnotations(annotations).WithOwnerReferences(owner).WithType(typ).WithData(content)
 	if immutable {
 		secret.WithImmutable(true)
 	}
@@ -877,13 +882,19 @@ func (r *Reconciler) write(ctx context.Context, t *tenant, name string, typ core
 		return fmt.Errorf("apply Secret %s: %w", name, err)
 	}
 	t.existing[name] = &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cp.Namespace, Labels: labels,
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cp.Namespace, Labels: labels, Annotations: annotations,
 			OwnerReferences: []metav1.OwnerReference{{APIVersion: *owner.APIVersion, Kind: kind, Name: cp.Name, UID: cp.UID, Controller: owner.Controller}}},
 		Type:      typ,
 		Data:      content,
 		Immutable: secret.Immutable,
 	}
 	return nil
+}
+
+func dataHash(data map[string][]byte) string {
+	encoded, _ := json.Marshal(data)
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:])
 }
 
 func (t *tenant) owns(s *corev1.Secret) bool {

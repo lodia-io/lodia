@@ -30,6 +30,11 @@ const (
 	DatastoreClassAnnotation           = "brygga.segla.io/datastore-class"
 	DatastoreClassGenerationAnnotation = "brygga.segla.io/datastore-class-generation"
 
+	// DataHashAnnotation, written by PKI on every Secret it writes, is the
+	// hex SHA-256 of the JSON of the Secret's data, so that Workloads hashes a
+	// restart-only Secret into a pod template from its metadata alone.
+	DataHashAnnotation = "brygga.segla.io/data-hash"
+
 	// OperationAnnotation, set by the platform, requests an operation such
 	// as a rotation (docs/decisions/one-controlplane-per-cluster.md).
 	OperationAnnotation = "brygga.segla.io/operation"

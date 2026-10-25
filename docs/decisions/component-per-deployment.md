@@ -77,7 +77,9 @@ flowchart TB
   Files that are reloaded are not hashed: serving certificates, client CA
   bundles, the kubelet client certificate, the encryption and authentication
   configuration, certificates referenced from kubeconfigs, and the
-  ServiceAccount keys behind the signer sidecar.
+  ServiceAccount keys behind the signer sidecar. A Secret's hash is PKI's
+  annotation `brygga.segla.io/data-hash` on it, so Workloads reads the
+  metadata of the Secrets it mounts and never their keys.
 - Holding the controller manager while nodes cannot reach the API does not
   touch its replicas: Health takes its leader lease
   ([controller-manager-hold](controller-manager-hold.md)), which works the
