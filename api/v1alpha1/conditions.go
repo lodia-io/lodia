@@ -11,6 +11,7 @@ const (
 	ConditionDatastoreReady       = "DatastoreReady"       // Datastore
 	ConditionAPIServerReady       = "APIServerReady"       // Workloads
 	ConditionAddonsApplied        = "AddonsApplied"        // Tenant
+	ConditionAddonsAvailable      = "AddonsAvailable"      // Tenant
 	ConditionReachable            = "Reachable"            // Health
 	ConditionProgressing          = "Progressing"          // Lifecycle
 	ConditionReady                = "Ready"                // Lifecycle

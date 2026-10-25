@@ -1,0 +1,130 @@
+# The konnectivity agents, which dial the servers and count them from the
+# servers' leases, and what the servers need in the tenant: TokenReviews for
+# the agents' tokens and their own leases (apiserver-network-proxy v0.35.0,
+# cmd/agent/app/options and pkg/server/leases).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: system:konnectivity-server
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: system:auth-delegator}
+subjects:
+- {apiGroup: rbac.authorization.k8s.io, kind: User, name: system:konnectivity-server}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: system:konnectivity-server
+  namespace: kube-system
+rules:
+- apiGroups: [coordination.k8s.io]
+  resources: [leases]
+  verbs: [get, list, create, update, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: system:konnectivity-server
+  namespace: kube-system
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: system:konnectivity-server}
+subjects:
+- {apiGroup: rbac.authorization.k8s.io, kind: User, name: system:konnectivity-server}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: konnectivity-agent
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: konnectivity-agent
+  namespace: kube-system
+rules:
+- apiGroups: [coordination.k8s.io]
+  resources: [leases]
+  verbs: [list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: konnectivity-agent
+  namespace: kube-system
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: konnectivity-agent}
+subjects:
+- {kind: ServiceAccount, name: konnectivity-agent, namespace: kube-system}
+---
+apiVersion: apps/v1
+kind: {{ if .AgentDeployment }}Deployment{{ else }}DaemonSet{{ end }}
+metadata:
+  name: konnectivity-agent
+  namespace: kube-system
+  labels:
+    k8s-app: konnectivity-agent
+spec:
+{{- if .AgentDeployment }}
+  replicas: {{ .AgentReplicas }}
+{{- end }}
+  selector:
+    matchLabels:
+      k8s-app: konnectivity-agent
+  template:
+    metadata:
+      labels:
+        k8s-app: konnectivity-agent
+    spec:
+{{- if .AgentDeployment }}
+      priorityClassName: system-cluster-critical
+      tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+{{- else }}
+      priorityClassName: system-node-critical
+      tolerations:
+      - operator: Exists
+{{- end }}
+      serviceAccountName: konnectivity-agent
+      nodeSelector:
+        kubernetes.io/os: linux
+      containers:
+      - name: konnectivity-agent
+        image: {{ quote .AgentImage }}
+        command:
+        - /proxy-agent
+        - --logtostderr=true
+        - --ca-cert=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        - --proxy-server-host={{ .KonnectivityHost }}
+        - --proxy-server-port={{ .KonnectivityPort }}
+        - --service-account-token-path=/var/run/secrets/tokens/konnectivity-agent-token
+        - --count-server-leases
+        - --sync-forever
+{{- if not .AgentDeployment }}
+        - --agent-identifiers=ipv4=$(HOST_IP)
+        env:
+        - name: HOST_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+{{- end }}
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8093
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8093
+          periodSeconds: 10
+        volumeMounts:
+        - name: konnectivity-agent-token
+          mountPath: /var/run/secrets/tokens
+      volumes:
+      - name: konnectivity-agent-token
+        projected:
+          sources:
+          - serviceAccountToken:
+              path: konnectivity-agent-token
+              audience: system:konnectivity-server
+              expirationSeconds: 3600

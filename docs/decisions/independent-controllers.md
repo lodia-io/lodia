@@ -2,7 +2,8 @@
 
 Decided 2026-10-25. The manager, PKI, the Datastore controller, for a
 dedicated etcd of one member, and Lifecycle, for the target within a minor
-and `Ready`, are built; Workloads, Tenant and Health are not.
+and `Ready`, and Tenant, without the apiserver-proxy, are built; Workloads
+and Health are not.
 
 ## Decision
 
@@ -141,7 +142,9 @@ flowchart LR
   record, since deleting them to start empty brings no event; all after a
   minute. A StatefulSet that lags etcd-druid's report, read uncached, after
   15 seconds; and an `Etcd` being deleted, which has left the cache if its
-  label was removed, after 10 seconds.
+  label was removed, after 10 seconds. The Tenant controller's: the addons'
+  rollout in the tenant, which Brygga does not watch, every minute until it
+  is complete.
 
 ## Code
 
@@ -184,3 +187,14 @@ flowchart LR
   one-minute reconcile timeout. `lifecycle_test.go` runs it under the same
   cache with `ReaderFailOnMissingInformer`, as a user bound to exactly its
   rules; `internal/versions` holds the minors it supports.
+- `internal/controller/tenant` — waits on `AccessReady` at the current
+  generation, applies the tenant's objects as `brygga/tenant` with the
+  inventory in the tenant, and applies `AddonsApplied` and
+  `AddonsAvailable` (`Unknown` on the first visit, messages from the state,
+  a tenant that does not answer leaving a True as it was); a pass runs only
+  when the target, the endpoint, `AccessReady` or the generation changes,
+  and on its timers. Registered as `tenant` with ten workers and a
+  one-minute reconcile timeout. `tenant_test.go` runs it under the same
+  cache with `ReaderFailOnMissingInformer`, as a user bound to exactly its
+  rules, against a tenant kube-apiserver started from PKI's certificates
+  ([tenant-resources-by-inventory](tenant-resources-by-inventory.md)).

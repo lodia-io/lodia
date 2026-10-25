@@ -200,3 +200,16 @@ is a decision — a decision is a file in `docs/decisions/`.
 - The previous etcd generation is kept and adopted on completeness alone,
   even when it does not chain to the current etcd CA (a restored
   predecessor's generation, for instance); keep it only if it chains.
+
+## From the Tenant controller (2026-10-25)
+
+- A kind node container needs kubelet settings a real node does not
+  (`cgroupRoot: /kubelet`, `failSwapOn: false`, eviction thresholds at 0%),
+  and kube-proxy in a container cannot raise `nf_conntrack_max`, which the
+  hard way avoided with `conntrack.maxPerCore: 0`; the phase 1 gate joins
+  with kubeadm's kubelet patches and decides kube-proxy's conntrack setting.
+- Nothing watches `<cp>-ca-bundle`: a rotated cluster CA reaches
+  `cluster-info` within the apply period; the CA rotation of phase 3 should
+  bring a Tenant pass.
+- `addons.konnectivity.version` pins the agents' image here; the server's
+  is Workloads'.

@@ -1,6 +1,6 @@
 # Objects inside a tenant cluster are applied with an inventory and pruned; Brygga keeps no informers in tenant clusters
 
-Decided 2026-10-25. Not built.
+Decided 2026-10-25. Built for phase 1, without the apiserver-proxy.
 
 ## Decision
 
@@ -57,4 +57,14 @@ Decided 2026-10-25. Not built.
 
 ## Code
 
-none yet.
+- `internal/controller/tenant` — `inventory.go` holds the inventory: an
+  object is named in it before its first write and the entries that left
+  the render are pruned before it is rewritten, so a pass that stops
+  anywhere leaks nothing; an object at another API version is the same
+  entry; an inventory it cannot read stops the pass with `AddonsApplied`
+  False until someone deletes it. `tenant.go` holds the pass and the
+  conditions, `render.go` and `manifests/` the objects.
+- `internal/controller/tenant/tenant_test.go` — the objects on a tenant
+  kube-apiserver, prune and restore of CoreDNS, a deleted DaemonSet coming
+  back, an object the tenant refuses that leaks nothing, a tenant that does
+  not answer.

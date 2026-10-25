@@ -74,9 +74,10 @@ Each controller has its own queue and field manager, reads `spec`,
 own condition; none calls another
 ([decision](decisions/independent-controllers.md)). The cache is scoped to
 labelled objects, with metadata only for Secrets. PKI, the Datastore
-controller and a first Lifecycle are built (`internal/controller/pki`,
-`datastore` and `lifecycle`, registered under those names in
-`cmd/brygga/main.go`); Workloads, Tenant and Health are not.
+controller, a first Lifecycle and the Tenant controller are built
+(`internal/controller/pki`, `datastore`, `lifecycle` and `tenant`,
+registered under those names in `cmd/brygga/main.go`); Workloads and Health
+are not.
 
 ```mermaid
 sequenceDiagram
@@ -509,6 +510,21 @@ v1.13.1 and etcd 3.6.6 for 1.35, CoreDNS v1.14.2 for 1.36, CoreDNS v1.14.6 for
 1.37, and konnectivity 0.NN for Kubernetes 1.NN
 ([kubeadm constants](https://github.com/kubernetes/kubernetes/blob/release-1.37/cmd/kubeadm/app/constants/constants.go)).
 
+Built for phase 1, without `apiserver-proxy` and the write lock
+(`internal/controller/tenant`, the templates in its `manifests/`, taken from
+kubeadm v1.35.0 and the hard way). Once `AccessReady` is True for the
+generation, the controller applies every object as `brygga/tenant` through
+`<cp>-brygga-kubeconfig`, on a change of the inputs it reads and every 10
+minutes. The inventory names an object before it is first written, and is
+rewritten to what the render holds once the objects that left it are
+deleted, so a pass that stops anywhere leaves nothing to leak; an object at
+another API version is the same entry. `AddonsApplied` is True once every
+object is applied and pruned; False with `Applying` names the object the
+tenant refused, an inventory it cannot read, or a tenant that never
+answered, while a tenant that stops answering leaves a True as it was.
+`AddonsAvailable` reads the kube-proxy and agent DaemonSets and the CoreDNS
+Deployment, every minute until they are rolled out.
+
 ## Lifecycle
 
 Built so far, for phase 1: Lifecycle sets `status.target.version` to
@@ -688,7 +704,10 @@ one, on by default since 1.35, and falls back to `list` where it does not
 
 Lifecycle reads `ControlPlane`s from the cache and applies their status:
 `list` and `watch` on `controlplanes`, `patch` on `controlplanes/status`; its
-envtest suite runs it as a user bound to exactly these rules.
+envtest suite runs it as a user bound to exactly these rules. The Tenant
+controller needs the same and `get` on `secrets`, for `<cp>-brygga-kubeconfig`
+and `<cp>-ca-bundle`, read uncached; inside the tenant it is
+`brygga:operator`.
 
 ## Installation
 

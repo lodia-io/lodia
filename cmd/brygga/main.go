@@ -28,6 +28,7 @@ import (
 	"github.com/segla-io/brygga/internal/controller/datastore"
 	"github.com/segla-io/brygga/internal/controller/lifecycle"
 	"github.com/segla-io/brygga/internal/controller/pki"
+	"github.com/segla-io/brygga/internal/controller/tenant"
 )
 
 // workers is the default of controllers.<name>.workers until the operator
@@ -101,6 +102,10 @@ func main() {
 	}
 	if err := (&lifecycle.Reconciler{Client: mgr.GetClient()}).SetupWithManager(mgr, workers); err != nil {
 		log.Error(err, "set up the lifecycle controller")
+		os.Exit(1)
+	}
+	if err := (&tenant.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), ApplyPeriod: 10 * time.Minute}).SetupWithManager(mgr, workers); err != nil {
+		log.Error(err, "set up the tenant controller")
 		os.Exit(1)
 	}
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
