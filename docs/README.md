@@ -183,7 +183,10 @@ namespace. The class is resolved once, when the `Etcd` is created, and
 recorded on it in `brygga.segla.io/datastore-class`, with the class
 generation it was rendered from in `brygga.segla.io/datastore-class-generation`;
 from then on the `Etcd` follows that class, its reclaim policy included, as a
-default StorageClass is written into a claim when the claim is created. The
+default StorageClass is written into a claim when the claim is created. A
+recorded class that is deleted stops only its own edits: the `Etcd` keeps
+every field the class gave it, still takes each new certificate generation
+and reports its readiness as before, and its claims are kept on deletion. The
 claims the StatefulSet attaches are found by name, as the StatefulSet finds
 them: `<cp>-etcd-<cp>-etcd-<n>`, its claim template named after the `Etcd`
 ([stateful_set_utils.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/controller/statefulset/stateful_set_utils.go#L116-L119),
@@ -226,8 +229,8 @@ StatefulSet itself, read from the API server, must mount the certificate
 generation with every replica updated and ready, since etcd-druid computes
 `ready` from its cached StatefulSet before it stamps the observed generation
 and would otherwise report a generation switch ready before the member
-rolled. `DatastoreClassNotFound` when the class is
-missing or more than one class is the default; `VolumesExist` when claims
+rolled. `DatastoreClassNotFound`, before the `Etcd` exists, when the class
+is missing or more than one class is the default; `VolumesExist` when claims
 `<cp>-etcd-<cp>-etcd-<n>` without this `ControlPlane`'s UID label stand where its first
 `Etcd` would be created, since a StatefulSet re-attaches a claim of that
 name and starting from another tenant's data is a restore, not a start —

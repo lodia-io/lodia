@@ -179,8 +179,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 // reconcileEtcd applies the Etcd once the class and a complete certificate
 // generation exist and no other ControlPlane's Etcd or claims stand in its
-// way, and says what DatastoreReady reports meanwhile. An error is the API
-// server's: the pass ends with it and leaves the status as it is.
+// way, and says what DatastoreReady reports meanwhile. Once the Etcd exists,
+// a recorded class that is gone stops only its own edits: the Etcd keeps
+// what the class gave it and still follows the certificate generations. An
+// error is the API server's: the pass ends with it and leaves the status as
+// it is.
 func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.ControlPlane) (*druidv1alpha1.Etcd, metav1.Condition, time.Duration, error) {
 	current, err := r.currentEtcd(ctx, cp)
 	if err != nil {
@@ -193,8 +196,8 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 	if err != nil {
 		return nil, metav1.Condition{}, 0, err
 	}
-	if class == nil {
-		return current, newCondition(metav1.ConditionFalse, ReasonDatastoreClassNotFound, missing), 0, nil
+	if class == nil && current == nil {
+		return nil, newCondition(metav1.ConditionFalse, ReasonDatastoreClassNotFound, missing), 0, nil
 	}
 	generation, found, err := r.newestCompleteGeneration(ctx, cp)
 	if err != nil {
@@ -216,13 +219,13 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 			return nil, newCondition(metav1.ConditionFalse, ReasonVolumesExist, message), time.Minute, nil
 		}
 	}
-	if backup := class.Spec.Backup; backup != nil {
+	if class != nil && class.Spec.Backup != nil {
 		copied, err := r.copyCredentials(ctx, cp, class)
 		if err != nil {
 			return nil, metav1.Condition{}, 0, err
 		}
 		if !copied {
-			ref := backup.Store.SecretRef
+			ref := class.Spec.Backup.Store.SecretRef
 			message := fmt.Sprintf("waiting for the credentials Secret %s/%s of DatastoreClass %s", ref.Namespace, ref.Name, class.Name)
 			return current, newCondition(metav1.ConditionFalse, ReasonProvisioning, message), time.Minute, nil
 		}
@@ -231,7 +234,7 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 	if err != nil {
 		return nil, metav1.Condition{}, 0, fmt.Errorf("apply Etcd %s: %w", etcdName(cp.Name), err)
 	}
-	if err := r.labelClaims(ctx, cp, class.Name); err != nil {
+	if err := r.labelClaims(ctx, cp, etcd.Annotations[ClassAnnotation]); err != nil {
 		return nil, metav1.Condition{}, 0, err
 	}
 	sts := &appsv1.StatefulSet{}

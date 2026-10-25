@@ -46,7 +46,9 @@ func backupSecretName(cp string) string { return cp + "-etcd-backup" }
 // over HTTPS only with backup.tls, while they serve HTTPS whenever client TLS
 // is on (docs/decisions/dedicated-etcd-by-default.md). The storage class and
 // size come from the current Etcd once it exists: the first is immutable in
-// the Etcd, the second a StatefulSet field that cannot change in place.
+// the Etcd, the second a StatefulSet field that cannot change in place. A nil
+// class is a recorded class that is gone: the current Etcd keeps every field
+// the class gave it.
 func render(cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClass, generation int, current *druidv1alpha1.Etcd) *druidv1alpha1.Etcd {
 	secret := func(certificate string) corev1.SecretReference {
 		return corev1.SecretReference{Name: SecretName(cp.Name, certificate, generation)}
@@ -57,17 +59,12 @@ func render(cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClas
 	// internal/controller/compaction/snapshot.go#L87).
 	ca := druidv1alpha1.SecretReference{SecretReference: secret("ca"), DataKey: new("ca.crt")}
 	labels := map[string]string{bryggav1alpha1.ControlPlaneLabel: cp.Name}
-	spec := &class.Spec
 	etcd := &druidv1alpha1.Etcd{
 		TypeMeta: metav1.TypeMeta{APIVersion: druidv1alpha1.SchemeGroupVersion.String(), Kind: "Etcd"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      etcdName(cp.Name),
-			Namespace: cp.Namespace,
-			Labels:    labels,
-			Annotations: map[string]string{
-				ClassAnnotation:           class.Name,
-				ClassGenerationAnnotation: strconv.FormatInt(class.Generation, 10),
-			},
+			Name:            etcdName(cp.Name),
+			Namespace:       cp.Namespace,
+			Labels:          labels,
 			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cp, bryggav1alpha1.GroupVersion.WithKind("ControlPlane"))},
 		},
 		Spec: druidv1alpha1.EtcdSpec{
@@ -80,9 +77,18 @@ func render(cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClas
 			Backup: druidv1alpha1.BackupSpec{
 				TLS: &druidv1alpha1.TLSConfig{TLSCASecretRef: ca, ServerTLSSecretRef: secret("backup-restore"), ClientTLSSecretRef: secret("client")},
 			},
-			StorageCapacity: new(spec.Storage.Size),
 		},
 	}
+	if class == nil {
+		keep(etcd, current)
+		return etcd
+	}
+	spec := &class.Spec
+	etcd.Annotations = map[string]string{
+		ClassAnnotation:           class.Name,
+		ClassGenerationAnnotation: strconv.FormatInt(class.Generation, 10),
+	}
+	etcd.Spec.StorageCapacity = new(spec.Storage.Size)
 	if spec.Storage.ClassName != "" {
 		etcd.Spec.StorageClass = new(spec.Storage.ClassName)
 	}
@@ -134,6 +140,31 @@ func render(cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClas
 		}
 	}
 	return etcd
+}
+
+// keep copies from the current Etcd every field render takes from the class,
+// the recorded class and its generation included.
+func keep(etcd, current *druidv1alpha1.Etcd) {
+	for _, key := range []string{ClassAnnotation, ClassGenerationAnnotation} {
+		if value, ok := current.Annotations[key]; ok {
+			metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, key, value)
+		}
+	}
+	etcd.Spec.StorageClass = current.Spec.StorageClass
+	etcd.Spec.StorageCapacity = current.Spec.StorageCapacity
+	etcd.Spec.Etcd.Quota = current.Spec.Etcd.Quota
+	etcd.Spec.Etcd.Resources = current.Spec.Etcd.Resources
+	etcd.Spec.Etcd.DefragmentationSchedule = current.Spec.Etcd.DefragmentationSchedule
+	etcd.Spec.Common.AutoCompactionMode = current.Spec.Common.AutoCompactionMode
+	etcd.Spec.Common.AutoCompactionRetention = current.Spec.Common.AutoCompactionRetention
+	etcd.Spec.Backup.Store = current.Spec.Backup.Store
+	etcd.Spec.Backup.FullSnapshotSchedule = current.Spec.Backup.FullSnapshotSchedule
+	etcd.Spec.Backup.DeltaSnapshotPeriod = current.Spec.Backup.DeltaSnapshotPeriod
+	etcd.Spec.Backup.GarbageCollectionPolicy = current.Spec.Backup.GarbageCollectionPolicy
+	etcd.Spec.Backup.MaxBackupsLimitBasedGC = current.Spec.Backup.MaxBackupsLimitBasedGC
+	etcd.Spec.SchedulingConstraints.Affinity = current.Spec.SchedulingConstraints.Affinity
+	etcd.Spec.SchedulingConstraints.Tolerations = current.Spec.SchedulingConstraints.Tolerations
+	etcd.Spec.PriorityClassName = current.Spec.PriorityClassName
 }
 
 // nodeAffinity is the node selector as the required node affinity the Etcd

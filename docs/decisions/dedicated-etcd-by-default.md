@@ -173,15 +173,27 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   StorageClass is written into a claim when the claim is created
   ([storage classes](https://kubernetes.io/docs/concepts/storage/storage-classes/#default-storageclass)).
   A default that moves therefore re-renders no running etcd and never turns a
-  `Retain` into a `Delete`. The claims carry the `ControlPlane`'s UID as a
-  label and the class as an annotation, since they outlive the `Etcd`:
-  deletion reclaims only this `ControlPlane`'s claims, under the class each
-  records, and keeps them when that class is gone. While the `Etcd` exists,
-  the deletion labels the claims no pass has labelled yet, such as one the
-  StatefulSet created seconds before; they can only be its own, since
-  `VolumesExist` kept the `Etcd` from being created while anything else
-  stood there. A claim that appears after the last such pass stays
-  unlabelled and is kept, the safe side.
+  `Retain` into a `Delete`.
+- A recorded class that is deleted stops only its own edits. The `Etcd` keeps
+  every field the class gave it, the way a dynamically provisioned
+  PersistentVolume keeps in its own spec the reclaim policy and mount options
+  its StorageClass gave it
+  ([storage classes](https://kubernetes.io/docs/concepts/storage/storage-classes/#reclaim-policy)),
+  and it keeps following the certificate generations and reporting its
+  readiness: with the default `pki.leafLifetime` of a year
+  ([operator configuration](../README.md#installation)), PKI issues the next
+  generation after eight months, two thirds of it
+  ([staged-credential-rotation](staged-credential-rotation.md)), and the
+  current one expires at a year. `DatastoreClassNotFound` is therefore a
+  reason only before the `Etcd` exists.
+- The claims carry the `ControlPlane`'s UID as a label and the class as an
+  annotation, since they outlive the `Etcd`: deletion reclaims only this
+  `ControlPlane`'s claims, under the class each records, and keeps them when
+  that class is gone. While the `Etcd` exists, the deletion labels the claims
+  no pass has labelled yet, such as one the StatefulSet created seconds
+  before; they can only be its own, since `VolumesExist` kept the `Etcd` from
+  being created while anything else stood there. A claim that appears after
+  the last such pass stays unlabelled and is kept, the safe side.
 - Snapshots hold the tenant's Secrets as the API server stored them, so
   encryption at rest is on by default (`secretbox`), and the encryption key is
   backed up next to the snapshots; bucket-side encryption is recommended on
