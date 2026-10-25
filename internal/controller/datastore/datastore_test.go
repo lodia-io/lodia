@@ -972,6 +972,52 @@ func TestVolumesExist(t *testing.T) {
 	}
 }
 
+func TestForeignEtcd(t *testing.T) {
+	createClass(t, newClass("foreign", "Delete"))
+	rows := []struct {
+		name, cp string
+		labels   map[string]string
+		owners   []metav1.OwnerReference
+		message  string
+	}{
+		{"no controller", "orphaned", nil, nil, "Etcd orphaned-etcd is not this ControlPlane's, it has no controller"},
+		{"another ControlPlane", "succeeded", map[string]string{bryggav1alpha1.ControlPlaneLabel: "succeeded"}, []metav1.OwnerReference{{
+			APIVersion: "brygga.segla.io/v1alpha1", Kind: "ControlPlane", Name: "succeeded", UID: "11111111-2222-3333-4444-555555555555",
+			Controller: new(true), BlockOwnerDeletion: new(true),
+		}}, "Etcd succeeded-etcd is not this ControlPlane's, its controller is ControlPlane succeeded with UID 11111111-2222-3333-4444-555555555555"},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			ns := namespace(t)
+			etcd := &druidv1alpha1.Etcd{
+				ObjectMeta: metav1.ObjectMeta{Name: row.cp + "-etcd", Namespace: ns, Labels: row.labels, OwnerReferences: row.owners},
+				Spec:       druidv1alpha1.EtcdSpec{Replicas: 1, Labels: map[string]string{"app": "etcd"}},
+			}
+			create(t, etcd)
+			create(t, controlPlane(ns, row.cp, "foreign"))
+			writeGeneration(t, ns, row.cp, 1)
+			waitCondition(t, ns, row.cp, metav1.ConditionFalse, datastore.ReasonVolumesExist, row.message)
+			settle(t, ns, row.cp)
+			if datastore := getControlPlane(t, ns, row.cp).Status.Datastore; datastore != nil {
+				t.Errorf("status.datastore %+v describes an Etcd of another ControlPlane", datastore)
+			}
+			if again := getEtcd(t, ns, row.cp); again.ResourceVersion != etcd.ResourceVersion {
+				t.Errorf("the Etcd moved from resourceVersion %s to %s: owners %+v", etcd.ResourceVersion, again.ResourceVersion, again.OwnerReferences)
+			}
+
+			if err := k8s.Delete(t.Context(), getControlPlane(t, ns, row.cp)); err != nil {
+				t.Fatal(err)
+			}
+			eventually(t, func() error {
+				return gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: row.cp}, &bryggav1alpha1.ControlPlane{}))
+			})
+			if again := getEtcd(t, ns, row.cp); again.ResourceVersion != etcd.ResourceVersion || !again.DeletionTimestamp.IsZero() {
+				t.Errorf("the deletion touched the Etcd: resourceVersion %s to %s, deletionTimestamp %v", etcd.ResourceVersion, again.ResourceVersion, again.DeletionTimestamp)
+			}
+		})
+	}
+}
+
 func TestStorageAtCreation(t *testing.T) {
 	ns := namespace(t)
 	createClass(t, newClass("growing", "Retain"))

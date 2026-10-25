@@ -227,7 +227,10 @@ missing or more than one class is the default; `VolumesExist` when claims of
 `<cp>-etcd` without this `ControlPlane`'s UID label stand where its first
 `Etcd` would be created, since a StatefulSet re-attaches a claim of that
 name and starting from another tenant's data is a restore, not a start —
-nothing is created until they are deleted; `Deleting` while the
+nothing is created until they are deleted — and when an `Etcd` `<cp>-etcd`
+exists whose controller is not this `ControlPlane` (an orphan, or a
+predecessor's the garbage collector has not removed yet): it is neither
+adopted nor written, and the message names it; `Deleting` while the
 `ControlPlane` is being deleted; True once every check above holds. `status.datastore` is `kind: Dedicated`, the `Etcd`'s
 name and its member count. Every message is built from the state alone, so
 a pass that changes nothing writes nothing; an error of the API server ends
@@ -433,7 +436,8 @@ keeps: of the PersistentVolumeClaims the StatefulSet created
 copies from etcd-druid's selector) those labelled with the `ControlPlane`'s
 UID are deleted when the class each records says `Delete`, and left when it
 says `Retain` or no longer exists; a claim of another `ControlPlane` is never
-touched. Then the finalizer goes and the owner references garbage-collect
+touched, and neither is an `Etcd` `<cp>-etcd` this `ControlPlane` does not
+control, nor the claims its StatefulSet uses. Then the finalizer goes and the owner references garbage-collect
 the rest of the namespace objects. The final snapshot when a backup store
 exists, and the snapshots' retention after deletion, come with backups in
 phase 2.

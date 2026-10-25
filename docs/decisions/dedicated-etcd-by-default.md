@@ -151,7 +151,11 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   ([stateful_pod_control.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/statefulset/stateful_pod_control.go#L381-L405)),
   so when claims of a retained `<cp>-etcd` exist before a new `ControlPlane`'s
   first `Etcd`, Datastore stops with `DatastoreReady=False`, `VolumesExist`,
-  until someone deletes them; starting from old data is a restore.
+  until someone deletes them; starting from old data is a restore. The same
+  holds for an `Etcd` `<cp>-etcd` whose controller reference is not the
+  `ControlPlane`'s UID, an orphan or a predecessor's not yet collected:
+  Datastore neither adopts it, which a server-side apply with
+  `ForceOwnership` would do, nor deletes it.
 - Every edit of a class that reaches the `Etcd` rolls its members, a single
   member with an outage, so a class edit is a Brygga-initiated change for each
   tenant on it and rolls in that tenant's maintenance window

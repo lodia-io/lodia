@@ -74,8 +74,8 @@ const (
 	ReasonProvisioning = "Provisioning"
 	// ReasonDatastoreClassNotFound says no class serves the ControlPlane.
 	ReasonDatastoreClassNotFound = "DatastoreClassNotFound"
-	// ReasonVolumesExist says claims of another ControlPlane stand where this
-	// one's etcd would be created.
+	// ReasonVolumesExist says an Etcd or claims of another ControlPlane stand
+	// where this one's etcd would be.
 	ReasonVolumesExist = "VolumesExist"
 	// ReasonDeleting says the ControlPlane is being deleted.
 	ReasonDeleting = "Deleting"
@@ -178,13 +178,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 }
 
 // reconcileEtcd applies the Etcd once the class and a complete certificate
-// generation exist and no other ControlPlane's claims stand in its way, and
-// says what DatastoreReady reports meanwhile. An error is the API server's:
-// the pass ends with it and leaves the status as it is.
+// generation exist and no other ControlPlane's Etcd or claims stand in its
+// way, and says what DatastoreReady reports meanwhile. An error is the API
+// server's: the pass ends with it and leaves the status as it is.
 func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.ControlPlane) (*druidv1alpha1.Etcd, metav1.Condition, time.Duration, error) {
 	current, err := r.currentEtcd(ctx, cp)
 	if err != nil {
 		return nil, metav1.Condition{}, 0, err
+	}
+	if current != nil && !metav1.IsControlledBy(current, cp) {
+		return nil, newCondition(metav1.ConditionFalse, ReasonVolumesExist, foreignEtcd(current)), time.Minute, nil
 	}
 	class, missing, err := r.class(ctx, cp, current)
 	if err != nil {
@@ -243,6 +246,18 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 		return etcd, condition, 15 * time.Second, nil
 	}
 	return etcd, condition, 0, nil
+}
+
+// foreignEtcd says whose the Etcd is when it is not this ControlPlane's: an
+// orphan, or a predecessor's the garbage collector has not removed yet.
+// Adopting it would start this ControlPlane on another tenant's data.
+func foreignEtcd(etcd *druidv1alpha1.Etcd) string {
+	owner := "it has no controller"
+	if ref := metav1.GetControllerOfNoCopy(etcd); ref != nil {
+		owner = fmt.Sprintf("its controller is %s %s with UID %s", ref.Kind, ref.Name, ref.UID)
+	}
+	return fmt.Sprintf("Etcd %s is not this ControlPlane's, %s: delete it and its claims to start empty; to keep their data, restore it from a Backup with restoreFrom once they are deleted",
+		etcd.Name, owner)
 }
 
 // currentEtcd reads the Etcd from the cache, and from the API server when the
@@ -436,7 +451,8 @@ func (r *Reconciler) copyCredentials(ctx context.Context, cp *bryggav1alpha1.Con
 }
 
 // finalize deletes the Etcd, waits for etcd-druid to let it go, reclaims the
-// claims it left behind and releases the finalizer.
+// claims it left behind and releases the finalizer. An Etcd this ControlPlane
+// does not control is left alone, with the claims its StatefulSet uses.
 func (r *Reconciler) finalize(ctx context.Context, cp *bryggav1alpha1.ControlPlane) (time.Duration, error) {
 	if !controllerutil.ContainsFinalizer(cp, Finalizer) {
 		return 0, nil
@@ -444,6 +460,10 @@ func (r *Reconciler) finalize(ctx context.Context, cp *bryggav1alpha1.ControlPla
 	etcd, err := r.currentEtcd(ctx, cp)
 	if err != nil {
 		return 0, err
+	}
+	foreign := etcd != nil && !metav1.IsControlledBy(etcd, cp)
+	if foreign {
+		etcd = nil
 	}
 	deleting := newCondition(metav1.ConditionFalse, ReasonDeleting, "the ControlPlane is being deleted: the Etcd goes first, then its claims as the class says")
 	if err := r.applyStatus(ctx, cp, datastoreStatus(etcd), deleting); err != nil {
@@ -455,9 +475,12 @@ func (r *Reconciler) finalize(ctx context.Context, cp *bryggav1alpha1.ControlPla
 		return 0, client.IgnoreNotFound(r.Delete(ctx, etcd))
 	case etcd != nil:
 		return 10 * time.Second, nil
-	}
-	if err := r.reclaimClaims(ctx, cp); err != nil {
-		return 0, err
+	case foreign:
+		logf.FromContext(ctx).Info("leaving the Etcd and its claims alone, the ControlPlane does not control it", "etcd", etcdName(cp.Name))
+	default:
+		if err := r.reclaimClaims(ctx, cp); err != nil {
+			return 0, err
+		}
 	}
 	if err := r.setFinalizer(ctx, cp, false); err != nil && !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
 		return 0, err
