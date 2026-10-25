@@ -25,7 +25,7 @@ Rules that hold across all of them:
   `ownerReference` to it and the label `brygga.segla.io/control-plane: <name>`;
   deleting the `ControlPlane` garbage-collects it. The dedicated etcd's
   volumes and its backups follow the `DatastoreClass` reclaim policy.
-- A `ControlPlane` has one finalizer, `brygga.segla.io/controlplane`, which the
+- A `ControlPlane` has one finalizer, `brygga.segla.io/datastore`, which the
   Datastore controller holds: deletion takes a final snapshot when backups are
   configured, then lets garbage collection run.
 - Imperative operations that are not desired state — starting or completing a

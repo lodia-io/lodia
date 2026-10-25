@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -18,14 +17,11 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -34,6 +30,7 @@ import (
 
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
 	"github.com/segla-io/brygga/internal/controller/lifecycle"
+	"github.com/segla-io/brygga/internal/operator"
 )
 
 var lifecycleRules = []rbacv1.PolicyRule{
@@ -86,27 +83,12 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		stop("the controller's ClusterRole", err)
 	}
-	labelled, err := labels.NewRequirement(bryggav1alpha1.ControlPlaneLabel, selection.Exists, nil)
+	cache, err := operator.Cache()
 	if err != nil {
-		stop("label selector", err)
+		stop("cache options", err)
 	}
-	everything := cache.ByObject{Label: labels.Everything()}
-	mgr, err := ctrl.NewManager(controller, ctrl.Options{
-		Scheme:  scheme,
-		Metrics: metricsserver.Options{BindAddress: "0"},
-		Cache: cache.Options{
-			DefaultLabelSelector:        labels.NewSelector().Add(*labelled),
-			DefaultTransform:            cache.TransformStripManagedFields(),
-			ReaderFailOnMissingInformer: true,
-			ByObject: map[client.Object]cache.ByObject{
-				&bryggav1alpha1.ControlPlane{}:      everything,
-				&bryggav1alpha1.DatastoreClass{}:    everything,
-				&bryggav1alpha1.Datastore{}:         everything,
-				&bryggav1alpha1.KubeconfigRequest{}: everything,
-				&bryggav1alpha1.Backup{}:            everything,
-			},
-		},
-	})
+	cache.ReaderFailOnMissingInformer = true
+	mgr, err := ctrl.NewManager(controller, ctrl.Options{Scheme: scheme, Metrics: metricsserver.Options{BindAddress: "0"}, Cache: cache})
 	if err != nil {
 		stop("manager", err)
 	}
@@ -162,77 +144,114 @@ func asLifecycleController(cfg *rest.Config) (*rest.Config, error) {
 
 func TestTheTargetFollowsTheVersionWithinAMinor(t *testing.T) {
 	cp := controlPlane(t, "v1.35.0")
-	eventually(t, func() error { return expect(t, cp, "v1.35.0", "", lifecycle.ReasonIdle) })
+	eventually(t, func() error { return expect(t, cp, "v1.35.0", "", bryggav1alpha1.ReasonIdle) })
 
 	setVersion(t, cp, "v1.35.1")
-	eventually(t, func() error { return expect(t, cp, "v1.35.1", "", lifecycle.ReasonIdle) })
+	eventually(t, func() error { return expect(t, cp, "v1.35.1", "", bryggav1alpha1.ReasonIdle) })
 
 	setVersion(t, cp, "v1.36.0")
 	eventually(t, func() error {
-		return expect(t, cp, "v1.35.1", lifecycle.ReasonMinorUpgradeUnsupported, lifecycle.ReasonMinorUpgradeUnsupported)
+		return expect(t, cp, "v1.35.1", bryggav1alpha1.ReasonUnsupported, bryggav1alpha1.ReasonUnsupported)
 	})
+	if c := condition(t, cp, bryggav1alpha1.ConditionProgressing); c.Message != "spec.version v1.36.0 is another minor than the target v1.35.1, which stays until minor upgrades are supported" {
+		t.Errorf("Progressing says %q", c.Message)
+	}
 
 	setVersion(t, cp, "v1.38.0")
 	eventually(t, func() error {
-		return expect(t, cp, "v1.35.1", lifecycle.ReasonUnsupportedVersion, lifecycle.ReasonUnsupportedVersion)
+		return expect(t, cp, "v1.35.1", bryggav1alpha1.ReasonUnsupported, bryggav1alpha1.ReasonUnsupported)
 	})
-	if c := condition(t, cp, bryggav1alpha1.ConditionProgressing); !strings.Contains(c.Message, "1.35, 1.36, 1.37") {
-		t.Errorf("Progressing does not name the minors Brygga runs: %s", c.Message)
+	if c := condition(t, cp, bryggav1alpha1.ConditionProgressing); c.Message != "spec.version v1.38.0 is not of a minor Brygga runs: 1.35, 1.36, 1.37" {
+		t.Errorf("Progressing says %q", c.Message)
 	}
 }
 
 func TestAnUnsupportedMinorGetsNoTarget(t *testing.T) {
 	cp := controlPlane(t, "v1.34.2")
 	eventually(t, func() error {
-		return expect(t, cp, "", lifecycle.ReasonUnsupportedVersion, lifecycle.ReasonUnsupportedVersion)
+		return expect(t, cp, "", bryggav1alpha1.ReasonUnsupported, bryggav1alpha1.ReasonUnsupported)
 	})
 
 	setVersion(t, cp, "v1.35.0")
-	eventually(t, func() error { return expect(t, cp, "v1.35.0", "", lifecycle.ReasonIdle) })
+	eventually(t, func() error { return expect(t, cp, "v1.35.0", "", bryggav1alpha1.ReasonIdle) })
 }
 
 func TestReadyFollowsTheReadinessConditions(t *testing.T) {
 	cp := controlPlane(t, "v1.37.1")
 	eventually(t, func() error {
-		return expectReady(t, cp, metav1.ConditionUnknown, lifecycle.ReasonReconciling, "CertificatesReady is not reported for generation 1", 0)
+		return expectReady(t, cp, metav1.ConditionUnknown, bryggav1alpha1.ReasonLatestGenerationNotObserved, "CertificatesReady is not reported for generation 1", 0)
 	})
 
 	for _, conditionType := range readiness {
 		setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
 	}
 	eventually(t, func() error {
-		return expectReady(t, cp, metav1.ConditionTrue, lifecycle.ReasonReady,
+		return expectReady(t, cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReady,
 			"CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied and Reachable are True", 1)
 	})
 
-	setCondition(t, cp, bryggav1alpha1.ConditionAPIServerReady, metav1.ConditionFalse, "RollingOut", "0 of 1 replicas updated")
+	setCondition(t, cp, bryggav1alpha1.ConditionAPIServerReady, metav1.ConditionFalse, bryggav1alpha1.ReasonRollingOut, "0 of 1 replicas updated")
 	eventually(t, func() error {
-		return expectReady(t, cp, metav1.ConditionFalse, "RollingOut", "APIServerReady: 0 of 1 replicas updated", 1)
+		return expectReady(t, cp, metav1.ConditionFalse, bryggav1alpha1.ReasonRollingOut, "APIServerReady: 0 of 1 replicas updated", 1)
 	})
 
-	setCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, "Issuing", "dev-ca-bundle is not written yet")
+	setCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, bryggav1alpha1.ReasonIssuing, "dev-ca-bundle is not written yet")
 	eventually(t, func() error {
-		return expectReady(t, cp, metav1.ConditionFalse, "Issuing", "CertificatesReady: dev-ca-bundle is not written yet", 1)
+		return expectReady(t, cp, metav1.ConditionFalse, bryggav1alpha1.ReasonIssuing, "CertificatesReady: dev-ca-bundle is not written yet", 1)
 	})
 
 	setVersion(t, cp, "v1.37.2")
 	eventually(t, func() error {
-		return expectReady(t, cp, metav1.ConditionUnknown, lifecycle.ReasonReconciling, "CertificatesReady is not reported for generation 2", 1)
+		return expectReady(t, cp, metav1.ConditionUnknown, bryggav1alpha1.ReasonLatestGenerationNotObserved, "CertificatesReady is not reported for generation 2", 1)
 	})
 }
 
 func TestAPausedControlPlaneKeepsItsTarget(t *testing.T) {
 	cp := controlPlane(t, "v1.35.0")
-	eventually(t, func() error { return expect(t, cp, "v1.35.0", "", lifecycle.ReasonIdle) })
+	eventually(t, func() error { return expect(t, cp, "v1.35.0", "", bryggav1alpha1.ReasonIdle) })
 
 	update(t, cp, func(cp *bryggav1alpha1.ControlPlane) {
 		cp.Spec.Paused = true
 		cp.Spec.Version = "v1.35.1"
 	})
-	eventually(t, func() error { return expect(t, cp, "v1.35.0", "", lifecycle.ReasonPaused) })
+	eventually(t, func() error { return expect(t, cp, "v1.35.0", "", bryggav1alpha1.ReasonPaused) })
 
 	update(t, cp, func(cp *bryggav1alpha1.ControlPlane) { cp.Spec.Paused = false })
-	eventually(t, func() error { return expect(t, cp, "v1.35.1", "", lifecycle.ReasonIdle) })
+	eventually(t, func() error { return expect(t, cp, "v1.35.1", "", bryggav1alpha1.ReasonIdle) })
+}
+
+func TestReadyDuringDeletion(t *testing.T) {
+	cp := controlPlane(t, "v1.35.0")
+	setFinalizers(t, cp, "test.brygga.segla.io/hold")
+	for _, conditionType := range readiness {
+		setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
+	}
+	eventually(t, func() error {
+		return expectReady(t, cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReady,
+			"CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied and Reachable are True", 1)
+	})
+
+	if err := k8s.Delete(t.Context(), get(t, cp)); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() error {
+		c := condition(t, cp, bryggav1alpha1.ConditionReady)
+		if c == nil || c.Status != metav1.ConditionFalse || c.Reason != bryggav1alpha1.ReasonDeleting {
+			return fmt.Errorf("Ready is %+v, want False %s", c, bryggav1alpha1.ReasonDeleting)
+		}
+		return nil
+	})
+	setFinalizers(t, cp)
+}
+
+func setFinalizers(t *testing.T, cp *bryggav1alpha1.ControlPlane, finalizers ...string) {
+	t.Helper()
+	fresh := get(t, cp)
+	patch := client.MergeFrom(fresh.DeepCopy())
+	fresh.Finalizers = finalizers
+	if err := k8s.Patch(t.Context(), fresh, patch); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestAPassThatChangesNothingWritesNothing(t *testing.T) {

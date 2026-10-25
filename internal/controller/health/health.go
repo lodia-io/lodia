@@ -42,13 +42,6 @@ const (
 	FailuresBeforeFalse = 3
 )
 
-const (
-	ReasonReconciling         = "Reconciling"
-	ReasonReachable           = "Reachable"
-	ReasonWaitingForEndpoint  = "WaitingForEndpoint"
-	ReasonExternalProbeFailed = "ExternalProbeFailed"
-)
-
 type Reconciler struct {
 	client.Client
 	// Reader reads the CA bundle, whose data the cache does not hold.
@@ -65,17 +58,17 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(Name).
 		WithOptions(controller.Options{MaxConcurrentReconciles: workers, ReconciliationTimeout: time.Minute}).
-		For(&bryggav1alpha1.ControlPlane{}, builder.WithPredicates(predicate.Or[client.Object](predicate.GenerationChangedPredicate{}, probeInputChanged()))).
+		For(&bryggav1alpha1.ControlPlane{}, builder.WithPredicates(predicate.Or[client.Object](predicate.GenerationChangedPredicate{}, endpointChanged()))).
 		Complete(r)
 }
 
-// Between the periodic passes, only a change of what a probe reads brings
-// one, so the failures counted are probes a period apart.
-func probeInputChanged() predicate.Funcs {
+// Between the periodic passes, only a change of the endpoint brings one, so
+// the failures counted are probes a period apart.
+func endpointChanged() predicate.Funcs {
 	return predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool {
 		before, ok := e.ObjectOld.(*bryggav1alpha1.ControlPlane)
 		after, ok2 := e.ObjectNew.(*bryggav1alpha1.ControlPlane)
-		return !ok || !ok2 || endpoint(before) != endpoint(after) || caBundle(before) != caBundle(after)
+		return !ok || !ok2 || endpoint(before) != endpoint(after)
 	}}
 }
 
@@ -91,7 +84,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, nil
 	}
 	if meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionReachable) == nil {
-		if err := r.apply(ctx, cp, newCondition(cp, metav1.ConditionUnknown, ReasonReconciling, "the first probe has not finished")); err != nil {
+		if err := r.apply(ctx, cp, newCondition(cp, metav1.ConditionUnknown, bryggav1alpha1.ReasonReconciling, "the first probe has not finished")); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -114,30 +107,26 @@ func (r *Reconciler) reachable(ctx context.Context, cp *bryggav1alpha1.ControlPl
 	url := endpoint(cp)
 	if url == "" {
 		r.count(key, false)
-		return newCondition(cp, metav1.ConditionFalse, ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint.apiServer"), nil
+		return newCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint"), nil
 	}
-	name := caBundle(cp)
-	if name == "" {
-		r.count(key, false)
-		return newCondition(cp, metav1.ConditionFalse, ReasonWaitingForEndpoint, "waiting for PKI to publish status.credentials.caBundleSecretRef"), nil
-	}
+	name := bryggav1alpha1.CABundleSecret.Name(cp.Name)
 	secret := &corev1.Secret{}
 	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: name}, secret); err != nil {
 		if apierrors.IsNotFound(err) {
 			r.count(key, false)
-			return newCondition(cp, metav1.ConditionFalse, ReasonWaitingForEndpoint, "waiting for the CA bundle Secret "+name), nil
+			return newCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the CA bundle "+name), nil
 		}
 		return nil, err
 	}
 	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(secret.Data["ca.crt"]) {
+	if !roots.AppendCertsFromPEM(secret.Data[bryggav1alpha1.CACertKey]) {
 		r.count(key, false)
-		return newCondition(cp, metav1.ConditionFalse, ReasonWaitingForEndpoint, "the CA bundle Secret "+name+" holds no certificate"), nil
+		return newCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForCertificates, "the CA bundle "+name+" holds no certificate"), nil
 	}
 	code := r.probe(ctx, url, roots)
 	if code == http.StatusOK {
 		r.count(key, false)
-		return newCondition(cp, metav1.ConditionTrue, ReasonReachable, url+" answered 200"), nil
+		return newCondition(cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReachable, url+" answered 200"), nil
 	}
 	failures := r.count(key, true)
 	if previous := meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionReachable); previous != nil &&
@@ -148,7 +137,7 @@ func (r *Reconciler) reachable(ctx context.Context, cp *bryggav1alpha1.ControlPl
 	if code != 0 {
 		answer = fmt.Sprintf("%s answered %d", url, code)
 	}
-	return newCondition(cp, metav1.ConditionFalse, ReasonExternalProbeFailed, answer), nil
+	return newCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonExternalProbeFailed, answer), nil
 }
 
 // probe returns the status code the endpoint answered with, or 0 for none.
@@ -192,18 +181,11 @@ func (r *Reconciler) count(key types.NamespacedName, failed bool) int {
 }
 
 func endpoint(cp *bryggav1alpha1.ControlPlane) string {
-	e := cp.Status.Endpoint
-	if e == nil || e.APIServer == nil {
+	if cp.Status.Endpoint == nil {
 		return ""
 	}
-	return "https://" + net.JoinHostPort(e.APIServer.Host, strconv.Itoa(int(e.APIServer.Port))) + "/readyz"
-}
-
-func caBundle(cp *bryggav1alpha1.ControlPlane) string {
-	if c := cp.Status.Credentials; c != nil && c.CABundleSecretRef != nil {
-		return c.CABundleSecretRef.Name
-	}
-	return ""
+	api := cp.Status.Endpoint.APIServer
+	return "https://" + net.JoinHostPort(api.Host, strconv.Itoa(int(api.Port))) + "/readyz"
 }
 
 func newCondition(cp *bryggav1alpha1.ControlPlane, status metav1.ConditionStatus, reason, message string) *metav1.Condition {

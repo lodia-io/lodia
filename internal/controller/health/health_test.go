@@ -163,30 +163,37 @@ func asHealthController(cfg *rest.Config) (*rest.Config, error) {
 func TestReachableFollowsTheProbe(t *testing.T) {
 	cp := controlPlane(t)
 	eventually(t, func() error {
-		return expect(t, cp, metav1.ConditionFalse, health.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint.apiServer")
+		return expect(t, cp, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint")
 	})
 
-	e := serve(t, cp)
+	e := serve(t)
+	publish(t, cp, e)
 	eventually(t, func() error {
-		return expect(t, cp, metav1.ConditionTrue, health.ReasonReachable, e.url+" answered 200")
+		return expect(t, cp, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the CA bundle dev-ca-bundle")
 	})
 
 	probe := &health.Reconciler{Client: k8s, Reader: k8s, Period: time.Hour, Timeout: 300 * time.Millisecond}
+	writeBundle(t, cp, e)
+	reconcile(t, probe, cp)
+	if err := expect(t, cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
+		t.Fatal(err)
+	}
+
 	e.code.Store(http.StatusServiceUnavailable)
 	for failed := 1; failed < health.FailuresBeforeFalse; failed++ {
 		reconcile(t, probe, cp)
-		if err := expect(t, cp, metav1.ConditionTrue, health.ReasonReachable, e.url+" answered 200"); err != nil {
+		if err := expect(t, cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
 			t.Fatalf("after %d failed probes: %v", failed, err)
 		}
 	}
 	reconcile(t, probe, cp)
-	if err := expect(t, cp, metav1.ConditionFalse, health.ReasonExternalProbeFailed, e.url+" answered 503"); err != nil {
+	if err := expect(t, cp, metav1.ConditionFalse, bryggav1alpha1.ReasonExternalProbeFailed, e.url+" answered 503"); err != nil {
 		t.Fatal(err)
 	}
 
 	e.code.Store(http.StatusOK)
 	reconcile(t, probe, cp)
-	if err := expect(t, cp, metav1.ConditionTrue, health.ReasonReachable, e.url+" answered 200"); err != nil {
+	if err := expect(t, cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -194,16 +201,18 @@ func TestReachableFollowsTheProbe(t *testing.T) {
 	for range health.FailuresBeforeFalse {
 		reconcile(t, probe, cp)
 	}
-	if err := expect(t, cp, metav1.ConditionFalse, health.ReasonExternalProbeFailed, e.url+" did not answer"); err != nil {
+	if err := expect(t, cp, metav1.ConditionFalse, bryggav1alpha1.ReasonExternalProbeFailed, e.url+" did not answer"); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestAPassThatChangesNothingWritesNothing(t *testing.T) {
 	cp := controlPlane(t)
-	e := serve(t, cp)
+	e := serve(t)
+	writeBundle(t, cp, e)
+	publish(t, cp, e)
 	eventually(t, func() error {
-		return expect(t, cp, metav1.ConditionTrue, health.ReasonReachable, e.url+" answered 200")
+		return expect(t, cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReachable, e.url+" answered 200")
 	})
 
 	applies := 0
@@ -222,9 +231,11 @@ func TestAPassThatChangesNothingWritesNothing(t *testing.T) {
 
 func TestAFailedReadLeavesTheStatus(t *testing.T) {
 	cp := controlPlane(t)
-	e := serve(t, cp)
+	e := serve(t)
+	writeBundle(t, cp, e)
+	publish(t, cp, e)
 	eventually(t, func() error {
-		return expect(t, cp, metav1.ConditionTrue, health.ReasonReachable, e.url+" answered 200")
+		return expect(t, cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReachable, e.url+" answered 200")
 	})
 
 	e.code.Store(http.StatusServiceUnavailable)
@@ -250,12 +261,13 @@ func TestAFailedReadLeavesTheStatus(t *testing.T) {
 
 type endpoint struct {
 	*httptest.Server
-	url  string
-	code atomic.Int32
-	hang atomic.Bool
+	url    string
+	bundle []byte
+	code   atomic.Int32
+	hang   atomic.Bool
 }
 
-func serve(t *testing.T, cp *bryggav1alpha1.ControlPlane) *endpoint {
+func serve(t *testing.T) *endpoint {
 	t.Helper()
 	now := time.Now()
 	ca, err := certs.NewCA("health-test-ca", now, time.Hour)
@@ -295,15 +307,25 @@ func serve(t *testing.T, cp *bryggav1alpha1.ControlPlane) *endpoint {
 	e.StartTLS()
 	t.Cleanup(e.Close)
 	e.url = "https://" + e.Listener.Addr().String() + "/readyz"
-
-	bundle, err := certs.CertPEM(ca.Cert)
-	if err != nil {
+	if e.bundle, err = certs.CertPEM(ca.Cert); err != nil {
 		t.Fatal(err)
 	}
-	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: cp.Name + "-ca-bundle", Namespace: cp.Namespace}, Data: map[string][]byte{"ca.crt": bundle}}
+	return e
+}
+
+func writeBundle(t *testing.T, cp *bryggav1alpha1.ControlPlane, e *endpoint) {
+	t.Helper()
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: bryggav1alpha1.CABundleSecret.Name(cp.Name), Namespace: cp.Namespace},
+		Data:       map[string][]byte{bryggav1alpha1.CACertKey: e.bundle},
+	}
 	if err := k8s.Create(t.Context(), secret); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func publish(t *testing.T, cp *bryggav1alpha1.ControlPlane, e *endpoint) {
+	t.Helper()
 	host, port, err := net.SplitHostPort(e.Listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
@@ -312,19 +334,16 @@ func serve(t *testing.T, cp *bryggav1alpha1.ControlPlane) *endpoint {
 	if err != nil {
 		t.Fatal(err)
 	}
+	address := map[string]any{"host": host, "port": int64(p)}
 	u := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": bryggav1alpha1.GroupVersion.String(),
 		"kind":       "ControlPlane",
 		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
-		"status": map[string]any{
-			"endpoint":    map[string]any{"apiServer": map[string]any{"host": host, "port": int64(p)}},
-			"credentials": map[string]any{"caBundleSecretRef": map[string]any{"name": secret.Name}},
-		},
+		"status":     map[string]any{"endpoint": map[string]any{"apiServer": address, "konnectivity": address}},
 	}}
 	if err := k8s.Status().Apply(t.Context(), client.ApplyConfigurationFromUnstructured(u), client.FieldOwner("test/endpoint"), client.ForceOwnership); err != nil {
 		t.Fatal(err)
 	}
-	return e
 }
 
 func controlPlane(t *testing.T) *bryggav1alpha1.ControlPlane {

@@ -96,11 +96,6 @@ is a decision — a decision is a file in `docs/decisions/`.
   test the `VolumesExist` remedy end to end: the claims kept, a `Backup` of
   the old cluster, a new `ControlPlane` with `restoreFrom` that serves the old
   data.
-- The finalizer `brygga.segla.io/controlplane` and the annotation
-  `brygga.segla.io/is-default-class` are constants of
-  `internal/controller/datastore`; move them to `api/v1alpha1` when Lifecycle
-  or another controller reads them, as `DatastoreReady` and
-  `brygga.segla.io/etcd-certificates` moved with PKI.
 - The backup-restore sidecar's `spec.backup.resources` have no field in the
   `DatastoreClass` and stay etcd-druid's default (50m / 128Mi at v0.39.0);
   the operator configuration's `defaults.resources` should cover them once
@@ -161,9 +156,8 @@ is a decision — a decision is a file in `docs/decisions/`.
   until it is built, document the change as unsupported, or refuse it in the
   schema.
 - `apiServer.encryption.provider: kms` is accepted by the schema; PKI issues
-  everything else and reports `CertificatesReady` False with
-  `EncryptionProviderUnsupported`. Refuse it in CEL until the provider is
-  built.
+  everything else and reports `CertificatesReady` False with `Unsupported`.
+  Refuse it in CEL until the provider is built.
 - The kubelet signer narrows nothing: whoever holds it can sign any identity
   the API server accepts. A signer outside the controller manager, serving
   only kubelet CSRs (those for `kubernetes.io/kube-apiserver-client-kubelet`,
@@ -196,7 +190,33 @@ is a decision — a decision is a file in `docs/decisions/`.
   ([config.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/server/options/encryptionconfig/config.go#L140-L146),
   [loadConfig](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/server/options/encryptionconfig/config.go#L519-L536));
   with `kms` requested, an unreadable configuration is reported as
-  `EncryptionProviderUnsupported`, not `SecretUnreadable`.
+  `Unsupported`, not `SecretUnreadable`.
 - The previous etcd generation is kept and adopted on completeness alone,
   even when it does not chain to the current etcd CA (a restored
   predecessor's generation, for instance); keep it only if it chains.
+
+## From the contracts audit (2026-10-25)
+
+- Phase 1, wave 3: the etcd NetworkPolicy belongs to the Datastore
+  controller, which knows etcd-druid's labels and ports: it admits the API
+  server's pods by Workloads' pod label, defined in `api/v1alpha1`, and
+  etcd-druid's namespace is a setting of the Datastore controller, not of
+  Workloads.
+- Phase 2: one `status.target.version` cannot order an upgrade's steps,
+  since Workloads and Tenant both render from it; a target per step, decided
+  with a status field that says which version each component runs.
+- Phase 2: `status.endpoint.tunnel`, the tunnel listener's host and port in
+  gateway mode, absent without a tunnel, for Tenant's apiserver-proxy and
+  PKI's certificate.
+- Phase 2: `status.health` is present only while Brygga holds the controller
+  manager; a blocked hold is reported in `HoldBlocked`'s message, and
+  `nodes.outdatedKubelets` compares against the tenant's own `/version`.
+- Phase 2: `Backup` and `KubeconfigRequest` get a named status writer, and
+  `Backup` reports conditions instead of a `phase`.
+- Phase 2: the default `advertiseAddress`, `172.20.0.1`, becomes a constant
+  that Workloads and Tenant both read.
+- Phase 3: `target.rotation.*`, which `Target` lacks, gets a stage enum of
+  its own instead of sharing PKI's observed `RotationPhase`, and
+  `rotation.ca` becomes `clusterCA`.
+- Phase 3: `Hibernated`, with Lifecycle as its writer, and the handled
+  `brygga.segla.io/operation` value recorded in `status`.

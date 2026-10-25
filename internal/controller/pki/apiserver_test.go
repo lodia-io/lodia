@@ -28,7 +28,6 @@ import (
 
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
 	"github.com/segla-io/brygga/internal/certs"
-	"github.com/segla-io/brygga/internal/controller/pki"
 )
 
 func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
@@ -37,8 +36,8 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 	cp := controlPlane(t, "pki-apiserver")
 	publishEndpoint(t, cp)
 	reconcile(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, pki.ReasonIssued)
-	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionFalse, pki.ReasonWaitingForAPIServer)
+	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, bryggav1alpha1.ReasonIssued)
+	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForAPIServer)
 	secrets := secretsOf(t, cp)
 
 	dir := t.TempDir()
@@ -55,20 +54,20 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 	api.Authn = &tenantAuthn{
 		api:       api,
 		clientCA:  parseTLS(t, secrets["dev-cakey-client"]),
-		clusterCA: secrets["dev-ca-bundle"].Data["ca.crt"],
-		bundle:    file("dev-client-ca", "ca.crt"),
+		clusterCA: secrets["dev-ca-bundle"].Data[bryggav1alpha1.CACertKey],
+		bundle:    file("dev-client-ca", bryggav1alpha1.CACertKey),
 	}
-	saKey := file("dev-sa-keys", "signing.key")
+	saKey := file("dev-sa-keys", bryggav1alpha1.SigningKeyKey)
 	api.Configure().
-		Set("tls-cert-file", file("dev-apiserver-serving", "tls.crt")).
-		Set("tls-private-key-file", file("dev-apiserver-serving", "tls.key")).
-		Set("requestheader-client-ca-file", file("dev-front-proxy-ca", "ca.crt")).
+		Set("tls-cert-file", file("dev-apiserver-serving", bryggav1alpha1.TLSCertKey)).
+		Set("tls-private-key-file", file("dev-apiserver-serving", bryggav1alpha1.TLSPrivateKeyKey)).
+		Set("requestheader-client-ca-file", file("dev-front-proxy-ca", bryggav1alpha1.CACertKey)).
 		Set("requestheader-allowed-names", "front-proxy-client").
 		Set("requestheader-username-headers", "X-Remote-User").
 		Set("requestheader-group-headers", "X-Remote-Group").
 		Set("requestheader-extra-headers-prefix", "X-Remote-Extra-").
-		Set("proxy-client-cert-file", file("dev-front-proxy-client", "tls.crt")).
-		Set("proxy-client-key-file", file("dev-front-proxy-client", "tls.key")).
+		Set("proxy-client-cert-file", file("dev-front-proxy-client", bryggav1alpha1.TLSCertKey)).
+		Set("proxy-client-key-file", file("dev-front-proxy-client", bryggav1alpha1.TLSPrivateKeyKey)).
 		Set("service-account-signing-key-file", saKey).
 		Set("service-account-key-file", saKey)
 	tenantCfg, err := env.Start()
@@ -91,7 +90,7 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	kcmCfg, err := clientcmd.BuildConfigFromFlags(tenantCfg.Host, filepath.Join(kcmDir, "kubeconfig"))
+	kcmCfg, err := clientcmd.BuildConfigFromFlags(tenantCfg.Host, filepath.Join(kcmDir, bryggav1alpha1.KubeconfigKey))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,12 +109,12 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 	setAPIServerReady(t, cp)
 	r.Dial = dialer(t, tenantCfg.Host)
 	reconcile(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionTrue, pki.ReasonBound)
+	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionTrue, bryggav1alpha1.ReasonBound)
 	r.Dial = unreachable
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
 		t.Fatal("a pass that could not reach the tenant succeeded")
 	}
-	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionTrue, pki.ReasonBound)
+	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionTrue, bryggav1alpha1.ReasonBound)
 	r.Dial = dialer(t, tenantCfg.Host)
 	for _, b := range []struct {
 		name, kind, role string
@@ -136,7 +135,7 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 	if err := admin.RbacV1().ClusterRoleBindings().Delete(ctx, "brygga:operator", metav1.DeleteOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	bryggaCfg, err := clientcmd.RESTConfigFromKubeConfig(secrets["dev-brygga-kubeconfig"].Data["kubeconfig"])
+	bryggaCfg, err := clientcmd.RESTConfigFromKubeConfig(secrets["dev-brygga-kubeconfig"].Data[bryggav1alpha1.KubeconfigKey])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +151,7 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 	})
 
 	reconcile(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionTrue, pki.ReasonBound)
+	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionTrue, bryggav1alpha1.ReasonBound)
 	if _, err := admin.RbacV1().ClusterRoleBindings().Get(ctx, "brygga:operator", metav1.GetOptions{}); err != nil {
 		t.Fatalf("brygga:operator's binding was not restored: %v", err)
 	}
@@ -177,11 +176,11 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 		return nil, errors.New("not dialed")
 	}
 	reconcile(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionFalse, pki.ReasonWaitingForAPIServer)
+	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForAPIServer)
 	setAPIServerReady(t, cp)
 	r.Dial = dialer(t, tenantCfg.Host)
 	reconcile(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionTrue, pki.ReasonBound)
+	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionTrue, bryggav1alpha1.ReasonBound)
 }
 
 func TestAccessReadyIsBindingUntilTheTenantAnswers(t *testing.T) {
@@ -194,7 +193,7 @@ func TestAccessReadyIsBindingUntilTheTenantAnswers(t *testing.T) {
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
 		t.Fatal("a pass that could not reach the tenant succeeded")
 	}
-	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionFalse, pki.ReasonBinding)
+	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionFalse, bryggav1alpha1.ReasonBinding)
 }
 
 func unreachable(context.Context, string, string) (net.Conn, error) {
