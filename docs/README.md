@@ -141,9 +141,10 @@ Four pods for a single control plane, nine for HA
 the control plane into one pod, two with a dedicated etcd and one with a
 shared store ([compact-layout](decisions/compact-layout.md)). The objects of
 a tenant namespace, who writes and who reads each, and what a change does;
-the names one controller writes and another reads are defined once, in
-`api/v1alpha1/names.go`, and every controller takes them from there, while
-the CA keys and the ConfigMaps are their writer's alone:
+the names one controller writes and another reads, and the keys of those
+Secrets that a reader names, are defined once, in `api/v1alpha1/names.go`,
+and every controller takes them from there, while the CA keys and the
+ConfigMaps are their writer's alone:
 
 | object | writer | readers | on renewal or change |
 |---|---|---|---|

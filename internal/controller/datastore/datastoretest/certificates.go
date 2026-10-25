@@ -57,7 +57,7 @@ func Generation(controlPlane *bryggav1alpha1.ControlPlane, g int) ([]*corev1.Sec
 	secrets := []*corev1.Secret{{
 		ObjectMeta: metav1.ObjectMeta{Name: bryggav1alpha1.EtcdCertificateSecretName(cp, bryggav1alpha1.EtcdCARole, g), Namespace: namespace, Labels: maps.Clone(labels), OwnerReferences: []metav1.OwnerReference{*owner}},
 		Type:       corev1.SecretTypeOpaque,
-		Data:       map[string][]byte{"ca.crt": caPEM},
+		Data:       map[string][]byte{bryggav1alpha1.CACertKey: caPEM},
 	}}
 	for _, l := range leaves {
 		cert, key, err := leaf(ca, caKey, l.commonName, l.usages, l.dns, l.ips)
@@ -67,7 +67,7 @@ func Generation(controlPlane *bryggav1alpha1.ControlPlane, g int) ([]*corev1.Sec
 		secrets = append(secrets, &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: bryggav1alpha1.EtcdCertificateSecretName(cp, l.role, g), Namespace: namespace, Labels: maps.Clone(labels), OwnerReferences: []metav1.OwnerReference{*owner}},
 			Type:       corev1.SecretTypeTLS,
-			Data:       map[string][]byte{"tls.crt": cert, "tls.key": key},
+			Data:       map[string][]byte{bryggav1alpha1.TLSCertKey: cert, bryggav1alpha1.TLSPrivateKeyKey: key},
 		})
 	}
 	return secrets, nil

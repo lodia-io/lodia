@@ -40,7 +40,7 @@ func render(cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClas
 	// bundle.crt for its own calls to the sidecar unless the key is named
 	// (etcd-druid@v0.39.0 internal/component/statefulset/builder.go#L468,
 	// internal/controller/compaction/snapshot.go#L87).
-	ca := druidv1alpha1.SecretReference{SecretReference: secret(bryggav1alpha1.EtcdCARole), DataKey: new("ca.crt")}
+	ca := druidv1alpha1.SecretReference{SecretReference: secret(bryggav1alpha1.EtcdCARole), DataKey: new(bryggav1alpha1.CACertKey)}
 	labels := map[string]string{bryggav1alpha1.ControlPlaneLabel: cp.Name}
 	etcd := &druidv1alpha1.Etcd{
 		TypeMeta: metav1.TypeMeta{APIVersion: druidv1alpha1.SchemeGroupVersion.String(), Kind: "Etcd"},

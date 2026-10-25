@@ -26,7 +26,7 @@ Rules:
   through its own condition. Blocked work is a condition with a reason, not a
   retry loop. An object one controller writes and another reads, a Secret
   PKI writes and Workloads mounts for instance, is named once, in
-  `api/v1alpha1/names.go`.
+  `api/v1alpha1/names.go`, with the keys of a Secret that its readers name.
 - The public address is known only once Workloads' Service has one (a load
   balancer's, a node's), so Workloads publishes `status.endpoint` from the
   Service, whole, before it waits on anything, and PKI, Tenant and Health

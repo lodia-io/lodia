@@ -25,6 +25,8 @@ import (
 )
 
 const (
+	// signingKeyFile is api/v1alpha1's SigningKeyKey, which a test pins: the
+	// sidecar does not import the API package.
 	signingKeyFile    = "signing.key"
 	verifyKeyPattern  = "verify-*.pub"
 	kubeletDataLink   = "..data"

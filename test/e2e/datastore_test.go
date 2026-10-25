@@ -130,7 +130,7 @@ func TestDatastoreOnKind(t *testing.T) {
 			if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: bryggav1alpha1.EtcdCertificateSecretName(controlPlane, bryggav1alpha1.EtcdCARole, 2)}, second); err != nil {
 				t.Fatal(err)
 			}
-			if !bytes.Equal(first.Data["ca.crt"], second.Data["ca.crt"]) {
+			if !bytes.Equal(first.Data[bryggav1alpha1.CACertKey], second.Data[bryggav1alpha1.CACertKey]) {
 				t.Fatalf("generation 2 is not under the CA of generation 1")
 			}
 			t.Logf("generation 2 is under the CA of generation 1")

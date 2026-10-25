@@ -42,7 +42,7 @@ var bindings = []struct {
 // failure is the tenant's refusal; once brygga:operator is forbidden, every
 // failure is.
 func (r *Reconciler) bind(ctx context.Context, t *tenant) (bool, error) {
-	cfg, err := clientcmd.RESTConfigFromKubeConfig(t.existing[t.secret(bryggav1alpha1.BryggaKubeconfigSecret)].Data[kubeconfigKey])
+	cfg, err := clientcmd.RESTConfigFromKubeConfig(t.existing[t.secret(bryggav1alpha1.BryggaKubeconfigSecret)].Data[bryggav1alpha1.KubeconfigKey])
 	if err != nil {
 		return false, err
 	}

@@ -514,9 +514,9 @@ func TestFinalizerAndEtcdFromClass(t *testing.T) {
 		{"placement.tolerations → spec.schedulingConstraints.tolerations", etcd.Spec.SchedulingConstraints.Tolerations,
 			[]corev1.Toleration{{Key: "control-planes", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule}}},
 		{"placement.priorityClassName → spec.priorityClassName", ptr.Deref(etcd.Spec.PriorityClassName, ""), "control-plane"},
-		{"generation 1 → spec.etcd.clientUrlTls", tls(etcd.Spec.Etcd.ClientUrlTLS), "ca dev-etcd-ca-1/ca.crt server dev-etcd-server-1 client dev-etcd-client-1"},
-		{"generation 1 → spec.etcd.peerUrlTls", peerTLS(etcd), "ca dev-etcd-ca-1/ca.crt server dev-etcd-peer-1 client "},
-		{"generation 1 → spec.backup.tls", tls(etcd.Spec.Backup.TLS), "ca dev-etcd-ca-1/ca.crt server dev-etcd-backup-restore-1 client dev-etcd-client-1"},
+		{"generation 1 → spec.etcd.clientUrlTls", tls(etcd.Spec.Etcd.ClientUrlTLS), "ca dev-etcd-ca-1/" + bryggav1alpha1.CACertKey + " server dev-etcd-server-1 client dev-etcd-client-1"},
+		{"generation 1 → spec.etcd.peerUrlTls", peerTLS(etcd), "ca dev-etcd-ca-1/" + bryggav1alpha1.CACertKey + " server dev-etcd-peer-1 client "},
+		{"generation 1 → spec.backup.tls", tls(etcd.Spec.Backup.TLS), "ca dev-etcd-ca-1/" + bryggav1alpha1.CACertKey + " server dev-etcd-backup-restore-1 client dev-etcd-client-1"},
 		{"the ControlPlane → metadata.labels", etcd.Labels[bryggav1alpha1.ControlPlaneLabel], "dev"},
 		{"the ControlPlane → spec.labels", etcd.Spec.Labels[bryggav1alpha1.ControlPlaneLabel], "dev"},
 		{"the ControlPlane → metadata.ownerReferences", etcd.OwnerReferences, []metav1.OwnerReference{{

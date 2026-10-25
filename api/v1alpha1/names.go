@@ -6,6 +6,8 @@ package v1alpha1
 import (
 	"strconv"
 	"strings"
+
+	corev1 "k8s.io/api/core/v1"
 )
 
 // The names of the objects in a tenant namespace that one controller writes
@@ -13,27 +15,60 @@ import (
 // writer uses stays in the writer's package.
 
 // Secret is a Secret one controller writes and others read, by its suffix.
+// Each group below is written by PKI, with the keys its readers name.
 type Secret string
 
-// Written by PKI.
+// The CA bundles: their CAs' PEM certificates under CACertKey.
 const (
-	CABundleSecret                    Secret = "ca-bundle"
-	ClientCASecret                    Secret = "client-ca"
-	FrontProxyCASecret                Secret = "front-proxy-ca"
-	EtcdCASecret                      Secret = "etcd-ca"
-	KubeletSignerSecret               Secret = "kubelet-signer"
-	APIServerServingSecret            Secret = "apiserver-serving"
-	APIServerKubeletClientSecret      Secret = "apiserver-kubelet-client"
-	APIServerEtcdClientSecret         Secret = "apiserver-etcd-client"
-	FrontProxyClientSecret            Secret = "front-proxy-client"
-	KonnectivityServerSecret          Secret = "konnectivity-server"
+	CABundleSecret     Secret = "ca-bundle"
+	ClientCASecret     Secret = "client-ca"
+	FrontProxyCASecret Secret = "front-proxy-ca"
+	EtcdCASecret       Secret = "etcd-ca"
+
+	CACertKey = "ca.crt"
+)
+
+// The certificates, kubernetes.io/tls Secrets: a PEM certificate under
+// TLSCertKey and its key under TLSPrivateKeyKey.
+const (
+	KubeletSignerSecret          Secret = "kubelet-signer"
+	APIServerServingSecret       Secret = "apiserver-serving"
+	APIServerKubeletClientSecret Secret = "apiserver-kubelet-client"
+	APIServerEtcdClientSecret    Secret = "apiserver-etcd-client"
+	FrontProxyClientSecret       Secret = "front-proxy-client"
+	KonnectivityServerSecret     Secret = "konnectivity-server"
+
+	TLSCertKey       = corev1.TLSCertKey
+	TLSPrivateKeyKey = corev1.TLSPrivateKeyKey
+)
+
+// The kubeconfigs, under KubeconfigKey. A component's names its certificate,
+// key and CA as the files TLSCertKey, TLSPrivateKeyKey and CACertKey beside
+// it in the same Secret, which is mounted whole; Brygga's and the admin's
+// embed them.
+const (
 	KonnectivityKubeconfigSecret      Secret = "konnectivity-kubeconfig"
 	ControllerManagerKubeconfigSecret Secret = "controller-manager-kubeconfig"
 	SchedulerKubeconfigSecret         Secret = "scheduler-kubeconfig"
 	BryggaKubeconfigSecret            Secret = "brygga-kubeconfig"
 	AdminKubeconfigSecret             Secret = "admin-kubeconfig"
-	ServiceAccountKeysSecret          Secret = "sa-keys"
-	EncryptionConfigSecret            Secret = "encryption-config"
+
+	KubeconfigKey = "kubeconfig"
+)
+
+// The ServiceAccount signing key, PEM under SigningKeyKey, which the
+// brygga-signer sidecar reads.
+const (
+	ServiceAccountKeysSecret Secret = "sa-keys"
+
+	SigningKeyKey = "signing.key"
+)
+
+// The API server's EncryptionConfiguration, under EncryptionConfigKey.
+const (
+	EncryptionConfigSecret Secret = "encryption-config"
+
+	EncryptionConfigKey = "encryption-config.yaml"
 )
 
 // Written by the Datastore controller.
@@ -55,7 +90,8 @@ func PKISecrets() []Secret {
 func (s Secret) Name(controlPlane string) string { return controlPlane + "-" + string(s) }
 
 // EtcdCertificateRole is a Secret of one generation of etcd certificates,
-// which PKI writes and the Datastore controller names in the Etcd.
+// which PKI writes and the Datastore controller names in the Etcd: the CA
+// under CACertKey, the others kubernetes.io/tls Secrets.
 type EtcdCertificateRole string
 
 const (

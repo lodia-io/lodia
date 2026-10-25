@@ -54,20 +54,20 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 	api.Authn = &tenantAuthn{
 		api:       api,
 		clientCA:  parseTLS(t, secrets["dev-cakey-client"]),
-		clusterCA: secrets["dev-ca-bundle"].Data["ca.crt"],
-		bundle:    file("dev-client-ca", "ca.crt"),
+		clusterCA: secrets["dev-ca-bundle"].Data[bryggav1alpha1.CACertKey],
+		bundle:    file("dev-client-ca", bryggav1alpha1.CACertKey),
 	}
-	saKey := file("dev-sa-keys", "signing.key")
+	saKey := file("dev-sa-keys", bryggav1alpha1.SigningKeyKey)
 	api.Configure().
-		Set("tls-cert-file", file("dev-apiserver-serving", "tls.crt")).
-		Set("tls-private-key-file", file("dev-apiserver-serving", "tls.key")).
-		Set("requestheader-client-ca-file", file("dev-front-proxy-ca", "ca.crt")).
+		Set("tls-cert-file", file("dev-apiserver-serving", bryggav1alpha1.TLSCertKey)).
+		Set("tls-private-key-file", file("dev-apiserver-serving", bryggav1alpha1.TLSPrivateKeyKey)).
+		Set("requestheader-client-ca-file", file("dev-front-proxy-ca", bryggav1alpha1.CACertKey)).
 		Set("requestheader-allowed-names", "front-proxy-client").
 		Set("requestheader-username-headers", "X-Remote-User").
 		Set("requestheader-group-headers", "X-Remote-Group").
 		Set("requestheader-extra-headers-prefix", "X-Remote-Extra-").
-		Set("proxy-client-cert-file", file("dev-front-proxy-client", "tls.crt")).
-		Set("proxy-client-key-file", file("dev-front-proxy-client", "tls.key")).
+		Set("proxy-client-cert-file", file("dev-front-proxy-client", bryggav1alpha1.TLSCertKey)).
+		Set("proxy-client-key-file", file("dev-front-proxy-client", bryggav1alpha1.TLSPrivateKeyKey)).
 		Set("service-account-signing-key-file", saKey).
 		Set("service-account-key-file", saKey)
 	tenantCfg, err := env.Start()
@@ -90,7 +90,7 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	kcmCfg, err := clientcmd.BuildConfigFromFlags(tenantCfg.Host, filepath.Join(kcmDir, "kubeconfig"))
+	kcmCfg, err := clientcmd.BuildConfigFromFlags(tenantCfg.Host, filepath.Join(kcmDir, bryggav1alpha1.KubeconfigKey))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 	if err := admin.RbacV1().ClusterRoleBindings().Delete(ctx, "brygga:operator", metav1.DeleteOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	bryggaCfg, err := clientcmd.RESTConfigFromKubeConfig(secrets["dev-brygga-kubeconfig"].Data["kubeconfig"])
+	bryggaCfg, err := clientcmd.RESTConfigFromKubeConfig(secrets["dev-brygga-kubeconfig"].Data[bryggav1alpha1.KubeconfigKey])
 	if err != nil {
 		t.Fatal(err)
 	}

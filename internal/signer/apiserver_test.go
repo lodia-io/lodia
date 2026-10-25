@@ -22,6 +22,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
+	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
 	"github.com/segla-io/brygga/internal/signer"
 )
 
@@ -39,7 +40,7 @@ func TestRotationUnderARunningAPIServer(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
 	socket := filepath.Join(socketDir, "s.sock")
 	keysDir := t.TempDir()
-	writeSecretVolume(t, keysDir, map[string][]byte{"signing.key": privatePEM(t, k1)})
+	writeSecretVolume(t, keysDir, map[string][]byte{bryggav1alpha1.SigningKeyKey: privatePEM(t, k1)})
 
 	s := signer.New(keysDir, 8760*time.Hour, refreshHint, slog.New(slog.NewTextHandler(t.Output(), nil)))
 	ctx, cancel := context.WithCancel(context.Background())
@@ -135,7 +136,7 @@ func TestRotationUnderARunningAPIServer(t *testing.T) {
 		t.Fatal("K1 token not authenticated")
 	}
 
-	writeSecretVolume(t, keysDir, map[string][]byte{"signing.key": privatePEM(t, k1), "verify-k2.pub": publicPEM(t, k2)})
+	writeSecretVolume(t, keysDir, map[string][]byte{bryggav1alpha1.SigningKeyKey: privatePEM(t, k1), "verify-k2.pub": publicPEM(t, k2)})
 	waitFor(t, 30*time.Second, func() bool { return slices.Equal(jwks(), sorted(kid(t, k1), kid(t, k2))) })
 	t1ForStage2, t1ForStage3 := token(), token()
 	for _, tok := range []string{t1ForStage2, t1ForStage3} {
@@ -144,7 +145,7 @@ func TestRotationUnderARunningAPIServer(t *testing.T) {
 		}
 	}
 
-	writeSecretVolume(t, keysDir, map[string][]byte{"signing.key": privatePEM(t, k2), "verify-k1.pub": publicPEM(t, k1)})
+	writeSecretVolume(t, keysDir, map[string][]byte{bryggav1alpha1.SigningKeyKey: privatePEM(t, k2), "verify-k1.pub": publicPEM(t, k1)})
 	var t2 string
 	waitFor(t, 30*time.Second, func() bool {
 		t2 = token()
@@ -161,7 +162,7 @@ func TestRotationUnderARunningAPIServer(t *testing.T) {
 		t.Fatal("stage 2: K2 token rejected")
 	}
 
-	writeSecretVolume(t, keysDir, map[string][]byte{"signing.key": privatePEM(t, k2)})
+	writeSecretVolume(t, keysDir, map[string][]byte{bryggav1alpha1.SigningKeyKey: privatePEM(t, k2)})
 	waitFor(t, 5*time.Second, func() bool { return slices.Equal(kids(fetch(t, s)), []string{kid(t, k2)}) })
 	time.Sleep(2 * refreshHint)
 	if authenticated(t1ForStage3) {

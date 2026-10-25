@@ -317,24 +317,24 @@ func TestEveryCertificateVerifiesAgainstItsCA(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := secrets[bundle.secret].Data["ca.crt"]; !bytes.Equal(got, want) {
+		if got := secrets[bundle.secret].Data[bryggav1alpha1.CACertKey]; !bytes.Equal(got, want) {
 			t.Errorf("%s is not the bundle of %v", bundle.secret, subjects(bundle.certs))
 		}
 	}
 
-	key, err := certs.ParseKey(secrets["dev-sa-keys"].Data["signing.key"])
+	key, err := certs.ParseKey(secrets["dev-sa-keys"].Data[bryggav1alpha1.SigningKeyKey])
 	if err != nil {
 		t.Fatal(err)
 	}
 	if rsaKey, ok := key.(*rsa.PrivateKey); !ok || rsaKey.N.BitLen() != 2048 {
 		t.Errorf("signing.key is %T, want RSA 2048", key)
 	}
-	if block, _ := pem.Decode(secrets["dev-sa-keys"].Data["signing.key"]); block == nil || block.Type != "PRIVATE KEY" {
+	if block, _ := pem.Decode(secrets["dev-sa-keys"].Data[bryggav1alpha1.SigningKeyKey]); block == nil || block.Type != "PRIVATE KEY" {
 		t.Error("signing.key is not PKCS#8")
 	}
 
 	var enc apiserverv1.EncryptionConfiguration
-	if err := yaml.Unmarshal(secrets["dev-encryption-config"].Data["encryption-config.yaml"], &enc); err != nil {
+	if err := yaml.Unmarshal(secrets["dev-encryption-config"].Data[bryggav1alpha1.EncryptionConfigKey], &enc); err != nil {
 		t.Fatal(err)
 	}
 	if len(enc.Resources) != 1 || !slices.Equal(enc.Resources[0].Resources, []string{"secrets"}) || len(enc.Resources[0].Providers) != 1 || enc.Resources[0].Providers[0].Secretbox == nil {
@@ -361,7 +361,7 @@ func TestEveryCertificateVerifiesAgainstItsCA(t *testing.T) {
 		{"dev-admin-kubeconfig", "https://" + endpointHost + ":443", "kubernetes-admin", true},
 	} {
 		s := secrets[k.secret]
-		raw, err := clientcmd.Load(s.Data["kubeconfig"])
+		raw, err := clientcmd.Load(s.Data[bryggav1alpha1.KubeconfigKey])
 		if err != nil {
 			t.Fatalf("%s: %v", k.secret, err)
 		}
@@ -379,10 +379,10 @@ func TestEveryCertificateVerifiesAgainstItsCA(t *testing.T) {
 			}
 			continue
 		}
-		if clusterInfo.CertificateAuthority != "ca.crt" || user.ClientCertificate != "tls.crt" || user.ClientKey != "tls.key" {
+		if clusterInfo.CertificateAuthority != bryggav1alpha1.CACertKey || user.ClientCertificate != bryggav1alpha1.TLSCertKey || user.ClientKey != bryggav1alpha1.TLSPrivateKeyKey {
 			t.Errorf("%s references %s, %s, %s", k.secret, clusterInfo.CertificateAuthority, user.ClientCertificate, user.ClientKey)
 		}
-		if !bytes.Equal(s.Data["ca.crt"], clusterPEM) {
+		if !bytes.Equal(s.Data[bryggav1alpha1.CACertKey], clusterPEM) {
 			t.Errorf("%s: ca.crt is not the cluster CA", k.secret)
 		}
 	}
@@ -502,7 +502,7 @@ func TestAMovedEndpointReissuesExactlyWhatNamesIt(t *testing.T) {
 			t.Errorf("%s does not name %s", name, moved)
 		}
 	}
-	raw, err := clientcmd.Load(secrets["dev-admin-kubeconfig"].Data["kubeconfig"])
+	raw, err := clientcmd.Load(secrets["dev-admin-kubeconfig"].Data[bryggav1alpha1.KubeconfigKey])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -565,7 +565,7 @@ func TestLeavesRenewAtTwoThirdsOfTheirLifetime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := after["dev-client-ca"].Data["ca.crt"]; !bytes.Equal(got, want) {
+	if got := after["dev-client-ca"].Data[bryggav1alpha1.CACertKey]; !bytes.Equal(got, want) {
 		bundle, _ := certs.ParseCerts(got)
 		t.Errorf("the client CA bundle holds %v, want the client CA, the new signer and the old one", subjects(bundle))
 	}
@@ -670,7 +670,7 @@ func TestALostCAIsNeverReplaced(t *testing.T) {
 	}
 
 	corrupt := secretsOf(t, cp)["dev-cakey-client"]
-	corrupt.Data["tls.key"] = []byte("not a key")
+	corrupt.Data[bryggav1alpha1.TLSPrivateKeyKey] = []byte("not a key")
 	if err := k8s.Update(ctx, corrupt); err != nil {
 		t.Fatal(err)
 	}
@@ -679,7 +679,7 @@ func TestALostCAIsNeverReplaced(t *testing.T) {
 	if c.Reason != bryggav1alpha1.ReasonCAMissing || !strings.Contains(c.Message, "cluster, client, etcd") {
 		t.Fatalf("CertificatesReady is %s: %s", c.Reason, c.Message)
 	}
-	if !bytes.Equal(secretsOf(t, cp)["dev-cakey-client"].Data["tls.key"], []byte("not a key")) {
+	if !bytes.Equal(secretsOf(t, cp)["dev-cakey-client"].Data[bryggav1alpha1.TLSPrivateKeyKey], []byte("not a key")) {
 		t.Fatal("the unreadable client CA key was overwritten")
 	}
 	_, versionBefore := resourceVersions(t, cp)
@@ -810,33 +810,33 @@ type secretRow struct {
 }
 
 func secretTable(cp string) []secretRow {
-	tls := []string{"tls.crt", "tls.key"}
-	files := []string{"ca.crt", "kubeconfig", "tls.crt", "tls.key"}
+	tls := []string{bryggav1alpha1.TLSCertKey, bryggav1alpha1.TLSPrivateKeyKey}
+	files := []string{bryggav1alpha1.CACertKey, bryggav1alpha1.KubeconfigKey, bryggav1alpha1.TLSCertKey, bryggav1alpha1.TLSPrivateKeyKey}
 	rows := []secretRow{
 		{cp + "-cakey-cluster", corev1.SecretTypeTLS, tls, nil, false},
 		{cp + "-cakey-client", corev1.SecretTypeTLS, tls, nil, false},
 		{cp + "-cakey-front-proxy", corev1.SecretTypeTLS, tls, nil, false},
 		{cp + "-cakey-etcd", corev1.SecretTypeTLS, tls, nil, false},
-		{cp + "-ca-bundle", corev1.SecretTypeOpaque, []string{"ca.crt"}, nil, false},
-		{cp + "-client-ca", corev1.SecretTypeOpaque, []string{"ca.crt"}, nil, false},
+		{cp + "-ca-bundle", corev1.SecretTypeOpaque, []string{bryggav1alpha1.CACertKey}, nil, false},
+		{cp + "-client-ca", corev1.SecretTypeOpaque, []string{bryggav1alpha1.CACertKey}, nil, false},
 		{cp + "-kubelet-signer", corev1.SecretTypeTLS, tls, nil, false},
 		{cp + "-apiserver-serving", corev1.SecretTypeTLS, tls, nil, false},
 		{cp + "-apiserver-kubelet-client", corev1.SecretTypeTLS, tls, nil, false},
-		{cp + "-front-proxy-ca", corev1.SecretTypeOpaque, []string{"ca.crt"}, nil, false},
+		{cp + "-front-proxy-ca", corev1.SecretTypeOpaque, []string{bryggav1alpha1.CACertKey}, nil, false},
 		{cp + "-front-proxy-client", corev1.SecretTypeTLS, tls, nil, false},
-		{cp + "-etcd-ca", corev1.SecretTypeOpaque, []string{"ca.crt"}, nil, false},
+		{cp + "-etcd-ca", corev1.SecretTypeOpaque, []string{bryggav1alpha1.CACertKey}, nil, false},
 		{cp + "-apiserver-etcd-client", corev1.SecretTypeTLS, tls, nil, false},
 		{cp + "-konnectivity-server", corev1.SecretTypeTLS, tls, nil, false},
 		{cp + "-konnectivity-kubeconfig", corev1.SecretTypeOpaque, files, nil, false},
 		{cp + "-controller-manager-kubeconfig", corev1.SecretTypeOpaque, files, nil, false},
 		{cp + "-scheduler-kubeconfig", corev1.SecretTypeOpaque, files, nil, false},
-		{cp + "-admin-kubeconfig", corev1.SecretTypeOpaque, []string{"kubeconfig"}, nil, false},
-		{cp + "-brygga-kubeconfig", corev1.SecretTypeOpaque, []string{"kubeconfig"}, nil, false},
-		{cp + "-sa-keys", corev1.SecretTypeOpaque, []string{"signing.key"}, nil, false},
-		{cp + "-encryption-config", corev1.SecretTypeOpaque, []string{"encryption-config.yaml"}, nil, false},
+		{cp + "-admin-kubeconfig", corev1.SecretTypeOpaque, []string{bryggav1alpha1.KubeconfigKey}, nil, false},
+		{cp + "-brygga-kubeconfig", corev1.SecretTypeOpaque, []string{bryggav1alpha1.KubeconfigKey}, nil, false},
+		{cp + "-sa-keys", corev1.SecretTypeOpaque, []string{bryggav1alpha1.SigningKeyKey}, nil, false},
+		{cp + "-encryption-config", corev1.SecretTypeOpaque, []string{bryggav1alpha1.EncryptionConfigKey}, nil, false},
 	}
 	generation := map[string]string{bryggav1alpha1.EtcdCertificatesLabel: "1"}
-	rows = append(rows, secretRow{cp + "-etcd-ca-1", corev1.SecretTypeOpaque, []string{"ca.crt"}, generation, true})
+	rows = append(rows, secretRow{cp + "-etcd-ca-1", corev1.SecretTypeOpaque, []string{bryggav1alpha1.CACertKey}, generation, true})
 	for _, role := range []string{"server", "client", "peer", "backup-restore"} {
 		rows = append(rows, secretRow{cp + "-etcd-" + role + "-1", corev1.SecretTypeTLS, tls, generation, true})
 	}
@@ -1013,7 +1013,7 @@ func parseTLS(t *testing.T, s *corev1.Secret) *certs.Certificate {
 	if s == nil {
 		t.Fatal("no Secret")
 	}
-	c, err := certs.Parse(s.Data["tls.crt"], s.Data["tls.key"])
+	c, err := certs.Parse(s.Data[bryggav1alpha1.TLSCertKey], s.Data[bryggav1alpha1.TLSPrivateKeyKey])
 	if err != nil {
 		t.Fatalf("%s: %v", s.Name, err)
 	}
@@ -1025,10 +1025,10 @@ func leafOf(t *testing.T, s *corev1.Secret) *certs.Certificate {
 	if s == nil {
 		t.Fatal("no Secret")
 	}
-	if s.Data["tls.crt"] != nil {
+	if s.Data[bryggav1alpha1.TLSCertKey] != nil {
 		return parseTLS(t, s)
 	}
-	cert, key, err := certs.Embedded(s.Data["kubeconfig"])
+	cert, key, err := certs.Embedded(s.Data[bryggav1alpha1.KubeconfigKey])
 	if err != nil {
 		t.Fatalf("%s: %v", s.Name, err)
 	}
@@ -1043,7 +1043,7 @@ func pemBlocks(t *testing.T, s *corev1.Secret) []*pem.Block {
 	t.Helper()
 	var raw [][]byte
 	for key, value := range s.Data {
-		if key != "kubeconfig" {
+		if key != bryggav1alpha1.KubeconfigKey {
 			raw = append(raw, value)
 			continue
 		}

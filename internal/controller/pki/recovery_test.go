@@ -37,7 +37,7 @@ func TestALeafEndingWithItsCAIsIssuedOnceAndAnExpiredCAWritesNothing(t *testing.
 	reconcile(t, r, cp)
 	clamped := secretsOf(t, cp)
 	for name, s := range clamped {
-		if s.Data["tls.crt"] == nil || strings.Contains(name, "-cakey-") || s.Labels[bryggav1alpha1.EtcdCertificatesLabel] == "1" {
+		if s.Data[bryggav1alpha1.TLSCertKey] == nil || strings.Contains(name, "-cakey-") || s.Labels[bryggav1alpha1.EtcdCertificatesLabel] == "1" {
 			continue
 		}
 		c := parseTLS(t, s).Cert
@@ -64,7 +64,7 @@ func TestALeafEndingWithItsCAIsIssuedOnceAndAnExpiredCAWritesNothing(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(secretsOf(t, cp)["dev-client-ca"].Data["ca.crt"], want) {
+	if !bytes.Equal(secretsOf(t, cp)["dev-client-ca"].Data[bryggav1alpha1.CACertKey], want) {
 		t.Error("the client CA bundle still holds the expired previous signer")
 	}
 	if result.RequeueAfter < time.Until(ca.NotAfter) || result.RequeueAfter > ca.NotAfter.Sub(start)+time.Second {
@@ -162,7 +162,7 @@ func TestAnUnlabelledCAKeyIsKeptNotReplaced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(after["dev-ca-bundle"].Data["ca.crt"], want) {
+	if !bytes.Equal(after["dev-ca-bundle"].Data[bryggav1alpha1.CACertKey], want) {
 		t.Error("the cluster CA bundle does not hold the restored CA")
 	}
 	if after["dev-apiserver-serving"].ResourceVersion != before["dev-apiserver-serving"].ResourceVersion {
@@ -248,7 +248,7 @@ func TestTheClientBundleTrustsASignerBeforeItIsWritten(t *testing.T) {
 	if renewed.Equal(signer) {
 		t.Fatal("the kubelet signer was not renewed")
 	}
-	bundle, err := certs.ParseCerts(after["dev-client-ca"].Data["ca.crt"])
+	bundle, err := certs.ParseCerts(after["dev-client-ca"].Data[bryggav1alpha1.CACertKey])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +278,7 @@ func TestAnImmutableSecretIsWrittenOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	encoded := map[string][]byte{"tls.crt": server.Data["tls.crt"], "tls.key": pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: sec1})}
+	encoded := map[string][]byte{bryggav1alpha1.TLSCertKey: server.Data[bryggav1alpha1.TLSCertKey], bryggav1alpha1.TLSPrivateKeyKey: pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: sec1})}
 	replaceSecret(t, server, encoded)
 	before, cpBefore := resourceVersions(t, cp)
 	reconcile(t, r, cp)

@@ -75,10 +75,6 @@ const (
 	// provider, so it is what a federation partner accepts.
 	serviceAccountKeyBits = 2048
 	encryptionKeyBytes    = 32
-	caKey                 = "ca.crt"
-	kubeconfigKey         = "kubeconfig"
-	signingKey            = "signing.key"
-	encryptionConfigKey   = "encryption-config.yaml"
 
 	providerNone      bryggav1alpha1.EncryptionProvider = "None"
 	providerSecretbox bryggav1alpha1.EncryptionProvider = "secretbox"
@@ -401,12 +397,12 @@ func (r *Reconciler) ca(ctx context.Context, t *tenant, name string, bundle bryg
 	}
 	t.cas[name] = c
 	r.notice(t, c.Cert)
-	r.applySecret(ctx, t, secret, corev1.SecretTypeTLS, map[string][]byte{corev1.TLSCertKey: key.Data[corev1.TLSCertKey], corev1.TLSPrivateKeyKey: key.Data[corev1.TLSPrivateKeyKey]}, nil, false)
+	r.applySecret(ctx, t, secret, corev1.SecretTypeTLS, map[string][]byte{bryggav1alpha1.TLSCertKey: key.Data[bryggav1alpha1.TLSCertKey], bryggav1alpha1.TLSPrivateKeyKey: key.Data[bryggav1alpha1.TLSPrivateKeyKey]}, nil, false)
 	return nil
 }
 
 func readCA(s *corev1.Secret) *certs.Certificate {
-	c, err := certs.Parse(data(s, corev1.TLSCertKey), data(s, corev1.TLSPrivateKeyKey))
+	c, err := certs.Parse(data(s, bryggav1alpha1.TLSCertKey), data(s, bryggav1alpha1.TLSPrivateKeyKey))
 	if err != nil || !c.Cert.IsCA || c.Cert.CheckSignatureFrom(c.Cert) != nil {
 		return nil
 	}
@@ -424,7 +420,7 @@ func (r *Reconciler) kubeletSigner(ctx context.Context, t *tenant) error {
 	name := t.secret(bryggav1alpha1.KubeletSignerSecret)
 	ca := t.cas[clientCA]
 	s := t.existing[name]
-	c, err := certs.Parse(data(s, corev1.TLSCertKey), data(s, corev1.TLSPrivateKeyKey))
+	c, err := certs.Parse(data(s, bryggav1alpha1.TLSCertKey), data(s, bryggav1alpha1.TLSPrivateKeyKey))
 	if err != nil || !c.Cert.MaxPathLenZero || !t.current(c, ca, certs.Profile{CommonName: c.Cert.Subject.CommonName, CA: true}) {
 		if c, err = ca.Issue(certs.Profile{CommonName: t.stamp("kubelet-signer"), CA: true}, t.now, r.LeafLifetime); err != nil {
 			return err
@@ -439,7 +435,7 @@ func (r *Reconciler) kubeletSigner(ctx context.Context, t *tenant) error {
 
 func (r *Reconciler) tls(ctx context.Context, t *tenant, name string, ca *certs.Certificate, p certs.Profile) error {
 	s := t.existing[name]
-	c, err := t.leaf(data(s, corev1.TLSCertKey), data(s, corev1.TLSPrivateKeyKey), ca, p, r.LeafLifetime)
+	c, err := t.leaf(data(s, bryggav1alpha1.TLSCertKey), data(s, bryggav1alpha1.TLSPrivateKeyKey), ca, p, r.LeafLifetime)
 	if err != nil {
 		return err
 	}
@@ -455,7 +451,7 @@ func (r *Reconciler) applyTLS(ctx context.Context, t *tenant, name string, c *ce
 	if err != nil {
 		return err
 	}
-	r.applySecret(ctx, t, name, corev1.SecretTypeTLS, map[string][]byte{corev1.TLSCertKey: cert, corev1.TLSPrivateKeyKey: key}, labels, immutable)
+	r.applySecret(ctx, t, name, corev1.SecretTypeTLS, map[string][]byte{bryggav1alpha1.TLSCertKey: cert, bryggav1alpha1.TLSPrivateKeyKey: key}, labels, immutable)
 	return nil
 }
 
@@ -464,7 +460,7 @@ func (r *Reconciler) bundle(ctx context.Context, t *tenant, name string, bundle 
 	if err != nil {
 		return err
 	}
-	r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, map[string][]byte{caKey: pem}, nil, false)
+	r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, map[string][]byte{bryggav1alpha1.CACertKey: pem}, nil, false)
 	return nil
 }
 
@@ -473,7 +469,7 @@ func (r *Reconciler) bundle(ctx context.Context, t *tenant, name string, bundle 
 func (t *tenant) clientBundle(signer *certs.Certificate) []*x509.Certificate {
 	ca := t.cas[clientCA].Cert
 	bundle := []*x509.Certificate{ca, signer.Cert}
-	previous, _ := certs.ParseCerts(data(t.existing[t.secret(bryggav1alpha1.ClientCASecret)], caKey))
+	previous, _ := certs.ParseCerts(data(t.existing[t.secret(bryggav1alpha1.ClientCASecret)], bryggav1alpha1.CACertKey))
 	replaced := signer.Cert.NotBefore.Add(certs.Backdate)
 	for _, c := range previous {
 		if c.IsCA && !c.Equal(ca) && certs.Verify(c, ca, t.now) == nil && t.now.Before(replaced.Add(signingDuration)) {
@@ -529,9 +525,9 @@ type kubeconfig struct {
 func (r *Reconciler) kubeconfig(ctx context.Context, t *tenant, k kubeconfig) error {
 	name := t.secret(k.secret)
 	s := t.existing[name]
-	certPEM, keyPEM := data(s, corev1.TLSCertKey), data(s, corev1.TLSPrivateKeyKey)
+	certPEM, keyPEM := data(s, bryggav1alpha1.TLSCertKey), data(s, bryggav1alpha1.TLSPrivateKeyKey)
 	if k.embed {
-		certPEM, keyPEM, _ = certs.Embedded(data(s, kubeconfigKey))
+		certPEM, keyPEM, _ = certs.Embedded(data(s, bryggav1alpha1.KubeconfigKey))
 	}
 	c, err := t.leaf(certPEM, keyPEM, t.cas[clientCA], certs.Profile{CommonName: k.user, Organizations: k.groups, Usages: clientAuth}, r.LeafLifetime)
 	if err != nil {
@@ -553,9 +549,9 @@ func (r *Reconciler) kubeconfig(ctx context.Context, t *tenant, k kubeconfig) er
 	if err != nil {
 		return err
 	}
-	content := map[string][]byte{kubeconfigKey: rendered}
+	content := map[string][]byte{bryggav1alpha1.KubeconfigKey: rendered}
 	if !k.embed {
-		content[caKey], content[corev1.TLSCertKey], content[corev1.TLSPrivateKeyKey] = ca, cert, key
+		content[bryggav1alpha1.CACertKey], content[bryggav1alpha1.TLSCertKey], content[bryggav1alpha1.TLSPrivateKeyKey] = ca, cert, key
 	}
 	r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, content, nil, false)
 	return nil
@@ -567,7 +563,7 @@ func (r *Reconciler) kubeconfig(ctx context.Context, t *tenant, k kubeconfig) er
 func (r *Reconciler) serviceAccountKey(ctx context.Context, t *tenant) error {
 	name := t.secret(bryggav1alpha1.ServiceAccountKeysSecret)
 	if s := t.existing[name]; s != nil {
-		if !isServiceAccountKey(s.Data[signingKey]) {
+		if !isServiceAccountKey(s.Data[bryggav1alpha1.SigningKeyKey]) {
 			t.unreadable = append(t.unreadable, name)
 			return nil
 		}
@@ -582,7 +578,7 @@ func (r *Reconciler) serviceAccountKey(ctx context.Context, t *tenant) error {
 	if err != nil {
 		return err
 	}
-	r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, map[string][]byte{signingKey: pem}, nil, false)
+	r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, map[string][]byte{bryggav1alpha1.SigningKeyKey: pem}, nil, false)
 	return nil
 }
 
@@ -608,13 +604,13 @@ func (r *Reconciler) encryptionConfig(ctx context.Context, t *tenant) error {
 	}
 	var providers []apiserverv1.ProviderConfiguration
 	if s := t.existing[name]; s != nil {
-		existing, ok := readEncryptionConfig(s.Data[encryptionConfigKey])
+		existing, ok := readEncryptionConfig(s.Data[bryggav1alpha1.EncryptionConfigKey])
 		if !ok {
 			t.unreadable = append(t.unreadable, name)
 			return nil
 		}
 		if providers = existing.Resources[0].Providers; providerOf(providers[0]) == want {
-			r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, map[string][]byte{encryptionConfigKey: s.Data[encryptionConfigKey]}, nil, false)
+			r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, map[string][]byte{bryggav1alpha1.EncryptionConfigKey: s.Data[bryggav1alpha1.EncryptionConfigKey]}, nil, false)
 			return nil
 		}
 	}
@@ -630,7 +626,7 @@ func (r *Reconciler) encryptionConfig(ctx context.Context, t *tenant) error {
 	if err != nil {
 		return err
 	}
-	r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, map[string][]byte{encryptionConfigKey: rendered}, nil, false)
+	r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, map[string][]byte{bryggav1alpha1.EncryptionConfigKey: rendered}, nil, false)
 	return nil
 }
 
@@ -753,7 +749,7 @@ func (r *Reconciler) issueEtcd(ctx context.Context, t *tenant, g int, ca *certs.
 		return err
 	}
 	labels := map[string]string{bryggav1alpha1.EtcdCertificatesLabel: strconv.Itoa(g)}
-	r.applySecret(ctx, t, t.etcdName(bryggav1alpha1.EtcdCARole, g), corev1.SecretTypeOpaque, map[string][]byte{caKey: caPEM}, labels, true)
+	r.applySecret(ctx, t, t.etcdName(bryggav1alpha1.EtcdCARole, g), corev1.SecretTypeOpaque, map[string][]byte{bryggav1alpha1.CACertKey: caPEM}, labels, true)
 	for _, p := range profiles {
 		c, err := ca.Issue(p.profile, t.now, r.LeafLifetime)
 		if err != nil {
@@ -781,13 +777,13 @@ func (t *tenant) etcdGeneration(g int, ca *certs.Certificate, profiles []etcdPro
 		return nil
 	}
 	s := t.existing[t.etcdName(bryggav1alpha1.EtcdCARole, g)]
-	if bundle, err := certs.ParseCerts(s.Data[caKey]); !isImmutable(s) || err != nil || len(bundle) != 1 || !bundle[0].Equal(ca.Cert) {
+	if bundle, err := certs.ParseCerts(s.Data[bryggav1alpha1.CACertKey]); !isImmutable(s) || err != nil || len(bundle) != 1 || !bundle[0].Equal(ca.Cert) {
 		return nil
 	}
 	kept := make(map[bryggav1alpha1.EtcdCertificateRole]*certs.Certificate, len(profiles))
 	for _, p := range profiles {
 		s := t.existing[t.etcdName(p.role, g)]
-		c, err := certs.Parse(s.Data[corev1.TLSCertKey], s.Data[corev1.TLSPrivateKeyKey])
+		c, err := certs.Parse(s.Data[bryggav1alpha1.TLSCertKey], s.Data[bryggav1alpha1.TLSPrivateKeyKey])
 		if !isImmutable(s) || err != nil || !t.current(c, ca, p.profile) {
 			return nil
 		}

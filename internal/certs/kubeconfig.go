@@ -8,6 +8,8 @@ import (
 
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
+
+	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
 )
 
 func Kubeconfig(cluster, server, user string, ca, cert, key []byte, embed bool) ([]byte, error) {
@@ -17,7 +19,7 @@ func Kubeconfig(cluster, server, user string, ca, cert, key []byte, embed bool) 
 	if embed {
 		c.CertificateAuthorityData, u.ClientCertificateData, u.ClientKeyData = ca, cert, key
 	} else {
-		c.CertificateAuthority, u.ClientCertificate, u.ClientKey = "ca.crt", "tls.crt", "tls.key"
+		c.CertificateAuthority, u.ClientCertificate, u.ClientKey = bryggav1alpha1.CACertKey, bryggav1alpha1.TLSCertKey, bryggav1alpha1.TLSPrivateKeyKey
 	}
 	context := user + "@" + cluster
 	cfg := clientcmdapi.NewConfig()
