@@ -33,6 +33,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
@@ -248,6 +249,7 @@ func manager(t *testing.T, cfg *rest.Config, scheme *runtime.Scheme) ctrl.Manage
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:  scheme,
 		Metrics: metricsserver.Options{BindAddress: "0"},
+		Controller: config.Controller{SkipNameValidation: new(true)},
 		Cache: cache.Options{
 			DefaultLabelSelector:        labels.NewSelector().Add(*labelled),
 			DefaultTransform:            cache.TransformStripManagedFields(),
