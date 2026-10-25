@@ -178,9 +178,11 @@ allowance for a verifier whose clock runs behind
 ([constants.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kubeadm/app/constants/constants.go#L45-L46)),
 and no longer than its CA; renewal comes two thirds of the way from issuance
 to expiry, except for a certificate that already ends with its CA, which a
-new one would not outlive. Each CA and kubelet signer carries the second of its issuance in
-its subject (`cluster-ca@1761350400`), so no bundle ever holds two
-certificates with one subject, and every bundle is a set: each certificate
+new one would not outlive. A pass issues and verifies every certificate at one
+time, the time it started. Each CA and kubelet signer carries the nanosecond
+of its issuance in its subject (`cluster-ca@1761350400123456789`), so no
+bundle ever holds two certificates with one subject, not even a signer issued
+again a moment after a write failed, and every bundle is a set: each certificate
 once, in DER order, as library-go writes its CA bundles
 ([cabundle.go](https://github.com/openshift/library-go/blob/9a2bc12675c2bb37d3799a30786ccee5fa545d57/pkg/operator/certrotation/cabundle.go#L134-L177)).
 

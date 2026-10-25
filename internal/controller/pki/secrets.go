@@ -120,7 +120,7 @@ func (t *tenant) name(suffix string) string {
 }
 
 func (t *tenant) stamp(prefix string) string {
-	return prefix + "@" + strconv.FormatInt(t.now.Unix(), 10)
+	return prefix + "@" + strconv.FormatInt(t.now.UnixNano(), 10)
 }
 
 func (t *tenant) wakeAt(at time.Time) {
@@ -137,12 +137,14 @@ func (t *tenant) renew(c, ca *x509.Certificate) {
 	}
 }
 
+// requeueAfter rounds up, so that no pass a deadline schedules starts before
+// it.
 func (t *tenant) requeueAfter() time.Duration {
 	after := bindingsPeriod
 	if !t.wake.IsZero() {
 		after = min(after, t.wake.Sub(t.now))
 	}
-	return max(after.Truncate(time.Second), time.Second)
+	return max((after + time.Second - 1).Truncate(time.Second), time.Second)
 }
 
 func (t *tenant) credentials() map[string]any {
@@ -167,14 +169,14 @@ func isImmutable(s *corev1.Secret) bool {
 }
 
 func (t *tenant) current(c, ca *certs.Certificate, p certs.Profile) bool {
-	return certs.Verify(c.Cert, ca.Cert) == nil && certs.Matches(c.Cert, p) &&
+	return certs.Verify(c.Cert, ca.Cert, t.now) == nil && certs.Matches(c.Cert, p) &&
 		(t.now.Before(certs.RenewalTime(c.Cert)) || !c.Cert.NotAfter.Before(ca.Cert.NotAfter))
 }
 
 func (t *tenant) leaf(certPEM, keyPEM []byte, ca *certs.Certificate, p certs.Profile, lifetime time.Duration) (*certs.Certificate, error) {
 	c, err := certs.Parse(certPEM, keyPEM)
 	if err != nil || !t.current(c, ca, p) {
-		if c, err = ca.Issue(p, lifetime); err != nil {
+		if c, err = ca.Issue(p, t.now, lifetime); err != nil {
 			return nil, err
 		}
 	}
@@ -291,7 +293,7 @@ func (r *Reconciler) ca(ctx context.Context, t *tenant, name, bundle string) err
 		if name == clusterCA {
 			lifetime = r.TrustAnchorLifetime
 		}
-		c, err := certs.NewCA(t.stamp(name+"-ca"), lifetime)
+		c, err := certs.NewCA(t.stamp(name+"-ca"), t.now, lifetime)
 		if err != nil {
 			return err
 		}
@@ -335,7 +337,7 @@ func (r *Reconciler) kubeletSigner(ctx context.Context, t *tenant) error {
 	s := t.existing[name]
 	c, err := certs.Parse(data(s, corev1.TLSCertKey), data(s, corev1.TLSPrivateKeyKey))
 	if err != nil || !c.Cert.MaxPathLenZero || !t.current(c, ca, certs.Profile{CommonName: c.Cert.Subject.CommonName, CA: true}) {
-		if c, err = ca.Issue(certs.Profile{CommonName: t.stamp("kubelet-signer"), CA: true}, r.LeafLifetime); err != nil {
+		if c, err = ca.Issue(certs.Profile{CommonName: t.stamp("kubelet-signer"), CA: true}, t.now, r.LeafLifetime); err != nil {
 			return err
 		}
 	}
@@ -383,7 +385,7 @@ func (t *tenant) clientBundle(signer *certs.Certificate) []*x509.Certificate {
 	previous, _ := certs.ParseCerts(data(t.existing[t.name("client-ca-bundle")], caKey))
 	replaced := signer.Cert.NotBefore.Add(certs.Backdate)
 	for _, c := range previous {
-		if c.IsCA && !c.Equal(ca) && certs.Verify(c, ca) == nil && t.now.Before(replaced.Add(signingDuration)) {
+		if c.IsCA && !c.Equal(ca) && certs.Verify(c, ca, t.now) == nil && t.now.Before(replaced.Add(signingDuration)) {
 			bundle = append(bundle, c)
 		}
 	}
@@ -627,7 +629,7 @@ func (r *Reconciler) issueEtcd(ctx context.Context, t *tenant, g int, ca *certs.
 		return err
 	}
 	for _, p := range profiles {
-		c, err := ca.Issue(p.profile, r.LeafLifetime)
+		c, err := ca.Issue(p.profile, t.now, r.LeafLifetime)
 		if err != nil {
 			return err
 		}

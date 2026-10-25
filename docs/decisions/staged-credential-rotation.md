@@ -184,11 +184,12 @@ first four.
   expiry; bundles as sets in DER order, as library-go writes them
   ([cabundle.go](https://github.com/openshift/library-go/blob/9a2bc12675c2bb37d3799a30786ccee5fa545d57/pkg/operator/certrotation/cabundle.go#L134-L177));
   PEM through client-go's `util/cert` and `util/keyutil`; kubeconfigs with
-  their certificates as files beside them or embedded. `certs_test.go` holds
-  the validity and the bundle order.
+  their certificates as files beside them or embedded; every time is the
+  caller's, so PKI issues and verifies a whole pass at the time it started.
+  `certs_test.go` holds the validity, that time and the bundle order.
 - `internal/controller/pki` — the controller. `secrets.go` is the Secret
   table above: the four `<cp>-cakey-*` key pairs that no pod mounts, each a
-  self-signed root with the second of its issuance in its subject; the
+  self-signed root with the nanosecond of its issuance in its subject; the
   kubelet signer, matched by its Secret rather than its subject, and the
   client CA bundle that keeps a replaced signer for one signing duration;
   the leaves and kubeconfigs; `<cp>-sa-keys` with its `signing.key`; the

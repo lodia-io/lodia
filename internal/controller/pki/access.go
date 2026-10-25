@@ -53,7 +53,7 @@ func (r *Reconciler) bind(ctx context.Context, t *tenant) error {
 	if ca == nil {
 		return errors.New("brygga:operator is forbidden and the client CA is missing or expired, so no bootstrap certificate can be issued")
 	}
-	bootstrap, err := ca.Issue(certs.Profile{CommonName: "brygga:bootstrap", Organizations: []string{"system:masters"}, Usages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}, bootstrapLifetime)
+	bootstrap, err := ca.Issue(certs.Profile{CommonName: "brygga:bootstrap", Organizations: []string{"system:masters"}, Usages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}, t.now, bootstrapLifetime)
 	if err != nil {
 		return err
 	}

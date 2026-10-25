@@ -52,6 +52,7 @@ func TestALeafEndingWithItsCAIsIssuedOnceAndAnExpiredCAWritesNothing(t *testing.
 
 	before, _ := resourceVersions(t, cp)
 	time.Sleep(time.Until(certs.RenewalTime(parseTLS(t, clamped["dev-apiserver-serving"]).Cert)) + 300*time.Millisecond)
+	start := time.Now()
 	result := reconcile(t, r, cp)
 	after, _ := resourceVersions(t, cp)
 	for name, version := range after {
@@ -67,7 +68,7 @@ func TestALeafEndingWithItsCAIsIssuedOnceAndAnExpiredCAWritesNothing(t *testing.
 	if !bytes.Equal(secretsOf(t, cp)["dev-client-ca-bundle"].Data["ca.crt"], want) {
 		t.Error("the client CA bundle still holds the expired previous signer")
 	}
-	if result.RequeueAfter > time.Until(ca.NotAfter)+time.Second {
+	if result.RequeueAfter < time.Until(ca.NotAfter) || result.RequeueAfter > ca.NotAfter.Sub(start)+time.Second {
 		t.Errorf("requeue after %s, want the CA's expiry in %s", result.RequeueAfter, time.Until(ca.NotAfter))
 	}
 	expectGenerations(t, cp, 1, 2)
@@ -194,11 +195,12 @@ func TestCAValidityIsAnnouncedOutsideReady(t *testing.T) {
 	r.CAExpiryNotice = time.Hour - 3*time.Second
 	cp := controlPlane(t, "pki-ca-notice")
 	publishEndpoint(t, cp)
+	start := time.Now()
 	result := reconcile(t, r, cp)
 	expectCondition(t, cp, bryggav1alpha1.ConditionCAValidityAcceptable, metav1.ConditionTrue, pki.ReasonValid)
 	secrets := secretsOf(t, cp)
 	crossing := parseTLS(t, secrets["dev-cakey-client"]).Cert.NotAfter.Add(-r.CAExpiryNotice)
-	if result.RequeueAfter > time.Until(crossing)+time.Second {
+	if result.RequeueAfter < time.Until(crossing) || result.RequeueAfter > crossing.Sub(start)+time.Second {
 		t.Errorf("requeue after %s, want when the client CA enters its notice in %s", result.RequeueAfter, time.Until(crossing))
 	}
 

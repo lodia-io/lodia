@@ -210,7 +210,7 @@ func (a *tenantAuthn) Stop() error {
 }
 
 func (a *tenantAuthn) AddUser(user envtest.User, base *rest.Config) (*rest.Config, error) {
-	c, err := a.clientCA.Issue(certs.Profile{CommonName: user.Name, Organizations: user.Groups, Usages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}, time.Hour)
+	c, err := a.clientCA.Issue(certs.Profile{CommonName: user.Name, Organizations: user.Groups, Usages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}, time.Now(), time.Hour)
 	if err != nil {
 		return nil, err
 	}
