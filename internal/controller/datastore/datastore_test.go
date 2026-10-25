@@ -595,6 +595,25 @@ func TestConditionsFromState(t *testing.T) {
 func TestEtcdRefused(t *testing.T) {
 	ns := namespace(t)
 	createClass(t, newClass("refused", "Retain"))
+	binding := refuseEtcds(t, ns)
+
+	create(t, controlPlane(ns, "dev", "refused"))
+	writeGeneration(t, ns, "dev", 1)
+	waitCondition(t, ns, "dev", metav1.ConditionFalse, bryggav1alpha1.ReasonEtcdRefused,
+		"the API server refuses Etcd dev-etcd on certificate generation 1 with the fields of DatastoreClass refused generation 1; the reason is in Brygga's log")
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev-etcd"}, &druidv1alpha1.Etcd{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("want no Etcd while the API server refuses it, got %v", err)
+	}
+
+	if err := k8s.Delete(t.Context(), binding); err != nil {
+		t.Fatal(err)
+	}
+	waitEtcd(t, ns, "dev", namesGeneration(1))
+	waitCondition(t, ns, "dev", metav1.ConditionFalse, bryggav1alpha1.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd dev-etcd")
+}
+
+func refuseEtcds(t *testing.T, ns string) *admissionregistrationv1.ValidatingAdmissionPolicyBinding {
+	t.Helper()
 	policy := &admissionregistrationv1.ValidatingAdmissionPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: "refuse-etcds-in-" + ns},
 		Spec: admissionregistrationv1.ValidatingAdmissionPolicySpec{
@@ -630,20 +649,7 @@ func TestEtcdRefused(t *testing.T) {
 		}
 		return nil
 	})
-
-	create(t, controlPlane(ns, "dev", "refused"))
-	writeGeneration(t, ns, "dev", 1)
-	waitCondition(t, ns, "dev", metav1.ConditionFalse, bryggav1alpha1.ReasonEtcdRefused,
-		"the API server refuses Etcd dev-etcd on certificate generation 1 with the fields of DatastoreClass refused generation 1; the reason is in Brygga's log")
-	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev-etcd"}, &druidv1alpha1.Etcd{}); !apierrors.IsNotFound(err) {
-		t.Fatalf("want no Etcd while the API server refuses it, got %v", err)
-	}
-
-	if err := k8s.Delete(t.Context(), binding); err != nil {
-		t.Fatal(err)
-	}
-	waitEtcd(t, ns, "dev", namesGeneration(1))
-	waitCondition(t, ns, "dev", metav1.ConditionFalse, bryggav1alpha1.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd dev-etcd")
+	return binding
 }
 
 func TestPaused(t *testing.T) {
@@ -1683,7 +1689,11 @@ func TestDeletionBeforeLabelling(t *testing.T) {
 	create(t, controlPlane(ns, "dev", "unlabelled"))
 	writeGeneration(t, ns, "dev", 1)
 	waitEtcd(t, ns, "dev", nil)
+	refuseEtcds(t, ns)
 	settle(t, ns, "dev")
+	if c := meta.FindStatusCondition(getControlPlane(t, ns, "dev").Status.Conditions, bryggav1alpha1.ConditionDatastoreReady); c.Reason != bryggav1alpha1.ReasonEtcdRefused {
+		t.Fatalf("DatastoreReady is %s, want %s: a pass whose apply is not refused labels the claim", c.Reason, bryggav1alpha1.ReasonEtcdRefused)
+	}
 
 	create(t, claim(ns, "dev-etcd-dev-etcd-0", druidv1alpha1.GetDefaultLabels(metav1.ObjectMeta{Name: "dev-etcd"})))
 	if pvc := getClaim(t, ns, "dev-etcd-dev-etcd-0"); pvc.Labels[bryggav1alpha1.ControlPlaneUIDLabel] != "" {
