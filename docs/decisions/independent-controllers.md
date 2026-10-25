@@ -122,15 +122,16 @@ flowchart LR
   labelled by controller and tenant.
 - A condition that waits on an object outside the cache comes with a bounded
   requeue, since no event reports that object's change; the condition still
-  says what it waits on. The Datastore controller has four: `VolumesExist`,
-  for claims, which nothing labels for the cache, and for an `Etcd` without
-  the control-plane label, and a class held because its credentials copy
-  cannot be made (the class's Secret, which belongs to the platform, is
-  missing, or another owner holds the copy, which may lack the label), both
-  after a minute; a StatefulSet that lags
-  etcd-druid's report, read uncached, after 15 seconds; and an `Etcd` being
-  deleted, which has left the cache if its label was removed, after 10
-  seconds.
+  says what it waits on. The Datastore controller's: `VolumesExist`, for
+  claims, which nothing labels for the cache, and for an `Etcd` without the
+  control-plane label; a class held because its credentials copy cannot be
+  made (the class's Secret, which belongs to the platform, is missing, or
+  another owner holds the copy, which may lack the label); and
+  `DatastoreClassNotFound` for a class the claims record, since deleting
+  them to start empty brings no event; all after a minute. A StatefulSet
+  that lags etcd-druid's report, read uncached, after 15 seconds; and an
+  `Etcd` being deleted, which has left the cache if its label was removed,
+  after 10 seconds.
 
 ## Code
 

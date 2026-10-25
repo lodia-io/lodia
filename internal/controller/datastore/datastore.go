@@ -177,14 +177,20 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 			return nil, metav1.Condition{}, 0, err
 		}
 	}
-	class, missing, err := r.class(ctx, cp, current, claims)
+	name, byClaims := className(cp, current, claims)
+	class, missing, err := r.class(ctx, name, byClaims)
 	if err != nil {
 		return nil, metav1.Condition{}, 0, err
 	}
 	// A recorded class that is gone stops only its own edits: the Etcd keeps
 	// what the class gave it and still takes new certificate generations.
+	// Claims are outside the cache, so deleting them brings no event.
 	if class == nil && current == nil {
-		return nil, newCondition(metav1.ConditionFalse, ReasonDatastoreClassNotFound, missing), 0, nil
+		var requeueAfter time.Duration
+		if byClaims {
+			requeueAfter = time.Minute
+		}
+		return nil, newCondition(metav1.ConditionFalse, ReasonDatastoreClassNotFound, missing), requeueAfter, nil
 	}
 	secrets, err := r.secrets(ctx, cp)
 	if err != nil {
@@ -313,22 +319,28 @@ func (r *Reconciler) currentEtcd(ctx context.Context, cp *bryggav1alpha1.Control
 // A class is resolved once and recorded on the Etcd, so a default that moves
 // changes no running etcd; this ControlPlane's claims record it too, so an
 // Etcd created again over them keeps it.
-func (r *Reconciler) class(ctx context.Context, cp *bryggav1alpha1.ControlPlane, current *druidv1alpha1.Etcd, claims []corev1.PersistentVolumeClaim) (*bryggav1alpha1.DatastoreClass, string, error) {
-	name, recordedBy := cp.Spec.Datastore.Dedicated.ClassName, ""
+func className(cp *bryggav1alpha1.ControlPlane, current *druidv1alpha1.Etcd, claims []corev1.PersistentVolumeClaim) (string, bool) {
 	if current != nil {
 		if recorded, ok := current.Annotations[ClassAnnotation]; ok {
-			name = recorded
+			return recorded, false
 		}
 	} else if i := slices.IndexFunc(claims, func(claim corev1.PersistentVolumeClaim) bool {
 		return claim.Labels[ControlPlaneUIDLabel] == string(cp.UID) && claim.Annotations[ClassAnnotation] != ""
 	}); i >= 0 {
-		name, recordedBy = claims[i].Annotations[ClassAnnotation], ", which the claims of this ControlPlane record,"
+		return claims[i].Annotations[ClassAnnotation], true
 	}
+	return cp.Spec.Datastore.Dedicated.ClassName, false
+}
+
+func (r *Reconciler) class(ctx context.Context, name string, byClaims bool) (*bryggav1alpha1.DatastoreClass, string, error) {
 	if name != "" {
 		class := &bryggav1alpha1.DatastoreClass{}
 		if err := r.Get(ctx, client.ObjectKey{Name: name}, class); err != nil {
+			if apierrors.IsNotFound(err) && byClaims {
+				return nil, "DatastoreClass " + name + ", which the claims of this ControlPlane record, does not exist", nil
+			}
 			if apierrors.IsNotFound(err) {
-				return nil, "DatastoreClass " + name + recordedBy + " does not exist", nil
+				return nil, "DatastoreClass " + name + " does not exist", nil
 			}
 			return nil, "", err
 		}

@@ -655,11 +655,6 @@ func TestEtcdRefused(t *testing.T) {
 	if err := k8s.Delete(t.Context(), binding); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, func() error {
-		probe := &druidv1alpha1.Etcd{ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: ns}, Spec: druidv1alpha1.EtcdSpec{Replicas: 1, Labels: map[string]string{"app": "etcd"}}}
-		return k8s.Create(t.Context(), probe, client.DryRunAll)
-	})
-	settle(t, ns, "dev")
 	waitEtcd(t, ns, "dev", namesGeneration(1))
 	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd dev-etcd")
 }
@@ -1001,6 +996,9 @@ func TestHeldClass(t *testing.T) {
 	readyOn(t, ns, cp, 2)
 	waitCondition(t, ns, cp, metav1.ConditionTrue, datastore.ReasonReady,
 		"ready on certificate generation 2, 1 of 1 replicas; DatastoreClass holding is held: its credentials Secret "+credentialsNamespace+"/s3 is missing")
+	if after := reconcileNow(t, ns, cp); after != time.Minute {
+		t.Errorf("a held class requeues after %s, want a minute: the class's Secret is outside the cache", after)
+	}
 
 	create(t, credentials(credentialsNamespace))
 	settle(t, ns, cp)
@@ -1545,6 +1543,15 @@ func TestRecordedClass(t *testing.T) {
 	untouched(t, ns, "dev-etcd-dev-etcd-0")
 }
 
+func reconcileNow(t *testing.T, ns, name string) time.Duration {
+	t.Helper()
+	result, err := (&datastore.Reconciler{Client: k8s, Reader: k8s}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result.RequeueAfter
+}
+
 func TestClassSurvivesTheEtcd(t *testing.T) {
 	ns := namespace(t)
 	first := newClass("survivor-first", "Retain")
@@ -1584,6 +1591,8 @@ func TestClassSurvivesTheEtcd(t *testing.T) {
 	if err := k8s.Delete(t.Context(), newClass("survivor-first", "")); err != nil {
 		t.Fatal(err)
 	}
+	create(t, controlPlane(ns, "probe", "survivor-first"))
+	waitCondition(t, ns, "probe", metav1.ConditionFalse, datastore.ReasonDatastoreClassNotFound, "DatastoreClass survivor-first does not exist")
 	if err := k8s.Delete(t.Context(), getEtcd(t, ns, "dev")); err != nil {
 		t.Fatal(err)
 	}
@@ -1591,6 +1600,9 @@ func TestClassSurvivesTheEtcd(t *testing.T) {
 		"DatastoreClass survivor-first, which the claims of this ControlPlane record, does not exist")
 	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev-etcd"}, &druidv1alpha1.Etcd{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("want no Etcd while the class its claims record is gone, got %v", err)
+	}
+	if after := reconcileNow(t, ns, "dev"); after != time.Minute {
+		t.Errorf("a class the claims record and that is gone requeues after %s, want a minute: the claims are outside the cache", after)
 	}
 
 	createClass(t, newClass("survivor-first", "Retain"))
