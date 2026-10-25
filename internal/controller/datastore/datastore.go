@@ -37,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
+	"github.com/segla-io/brygga/internal/apistatus"
 	"github.com/segla-io/brygga/internal/ownership"
 )
 
@@ -227,7 +228,7 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 	etcd, err := r.apply(ctx, rendered)
 	if err != nil {
 		err = fmt.Errorf("apply Etcd %s: %w", rendered.Name, err)
-		if refused(err) {
+		if apistatus.Refused(err) {
 			message := note(fmt.Sprintf("the API server refuses Etcd %s on certificate generation %d with the fields of DatastoreClass %s generation %s; the reason is in Brygga's log",
 				rendered.Name, generation, rendered.Annotations[bryggav1alpha1.DatastoreClassAnnotation], rendered.Annotations[bryggav1alpha1.DatastoreClassGenerationAnnotation]), held)
 			return current, newCondition(metav1.ConditionFalse, bryggav1alpha1.ReasonEtcdRefused, message), 0, errors.Join(err, refusal)
@@ -270,20 +271,6 @@ func foreignEtcd(etcd *druidv1alpha1.Etcd) string {
 	}
 	return fmt.Sprintf("Etcd %s is not this ControlPlane's, %s: delete it and its claims to start empty, or keep them, and this ControlPlane waits",
 		etcd.Name, owner)
-}
-
-// An admission webhook's denial without a code arrives as 400
-// (k8s.io/apiserver@v0.37.1 pkg/admission/plugin/webhook/errors/statuserror.go#L37-L39).
-func refused(err error) bool {
-	var status apierrors.APIStatus
-	if !errors.As(err, &status) {
-		return false
-	}
-	switch code := status.Status().Code; {
-	case code < 400 || code > 499, code == 404, code == 408, code == 409, code == 429:
-		return false
-	}
-	return !apierrors.HasStatusCause(err, corev1.NamespaceTerminatingCause)
 }
 
 // An Etcd without the control-plane label is outside the cache and still
@@ -551,7 +538,7 @@ func (r *Reconciler) copyCredentials(ctx context.Context, cp *bryggav1alpha1.Con
 		WithData(data)
 	if err := r.Apply(ctx, secret, client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
 		err = fmt.Errorf("apply Secret %s: %w", name, err)
-		if refused(err) {
+		if apistatus.Refused(err) {
 			return fmt.Sprintf("the API server refuses %s; the reason is in Brygga's log", name), err
 		}
 		return "", err

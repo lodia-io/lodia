@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 	"time"
 
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -21,6 +20,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
+	"github.com/segla-io/brygga/internal/apistatus"
 	"github.com/segla-io/brygga/internal/certs"
 )
 
@@ -51,7 +51,7 @@ func (r *Reconciler) bind(ctx context.Context, t *tenant) (bool, error) {
 	cfg.Dial = r.Dial
 	err = applyBindings(ctx, cfg)
 	if !apierrors.IsForbidden(err) {
-		return refusal(err), err
+		return apistatus.Refused(err), err
 	}
 	ca := t.cas[clientCA]
 	if ca == nil {
@@ -70,17 +70,6 @@ func (r *Reconciler) bind(ctx context.Context, t *tenant) (bool, error) {
 	}
 	err = applyBindings(ctx, asBootstrap)
 	return err != nil, err
-}
-
-// refusal is an answer from the tenant's API server: a 4xx other than those
-// that ask to retry.
-func refusal(err error) bool {
-	var status apierrors.APIStatus
-	if !errors.As(err, &status) {
-		return false
-	}
-	code := status.Status().Code
-	return code >= 400 && code < 500 && !slices.Contains([]int32{http.StatusRequestTimeout, http.StatusConflict, http.StatusTooManyRequests}, code)
 }
 
 func applyBindings(ctx context.Context, cfg *rest.Config) error {
