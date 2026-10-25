@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"time"
 
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -36,35 +37,49 @@ var bindings = []struct {
 
 // bind applies the bindings as brygga:operator and, when that is forbidden
 // (the first time, or after someone deleted its binding), with a
-// system:masters certificate that is never stored.
-func (r *Reconciler) bind(ctx context.Context, t *tenant) error {
+// system:masters certificate that is never stored. It reports whether a
+// failure is the tenant's refusal; once brygga:operator is forbidden, every
+// failure is.
+func (r *Reconciler) bind(ctx context.Context, t *tenant) (bool, error) {
 	cfg, err := clientcmd.RESTConfigFromKubeConfig(t.existing[t.name("brygga-kubeconfig")].Data[kubeconfigKey])
 	if err != nil {
-		return err
+		return false, err
 	}
 	// The in-namespace Service is never behind a proxy from the environment.
 	cfg.Proxy = http.ProxyURL(nil)
 	cfg.Dial = r.Dial
 	err = applyBindings(ctx, cfg)
 	if !apierrors.IsForbidden(err) {
-		return err
+		return refusal(err), err
 	}
 	ca := t.cas[clientCA]
 	if ca == nil {
-		return errors.New("brygga:operator is forbidden and the client CA is missing or expired, so no bootstrap certificate can be issued")
+		return true, errors.New("brygga:operator is forbidden and the client CA is missing or expired, so no bootstrap certificate can be issued")
 	}
-	bootstrap, err := ca.Issue(certs.Profile{CommonName: "brygga:bootstrap", Organizations: []string{"system:masters"}, Usages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}, bootstrapLifetime)
+	bootstrap, err := ca.Issue(certs.Profile{CommonName: "brygga:bootstrap", Organizations: []string{"system:masters"}, Usages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}, t.now, bootstrapLifetime)
 	if err != nil {
-		return err
+		return true, err
 	}
 	asBootstrap := rest.AnonymousClientConfig(cfg)
 	if asBootstrap.CertData, err = certs.CertPEM(bootstrap.Cert); err != nil {
-		return err
+		return true, err
 	}
 	if asBootstrap.KeyData, err = certs.KeyPEM(bootstrap.Key); err != nil {
-		return err
+		return true, err
 	}
-	return applyBindings(ctx, asBootstrap)
+	err = applyBindings(ctx, asBootstrap)
+	return err != nil, err
+}
+
+// refusal is an answer from the tenant's API server: a 4xx other than those
+// that ask to retry.
+func refusal(err error) bool {
+	var status apierrors.APIStatus
+	if !errors.As(err, &status) {
+		return false
+	}
+	code := status.Status().Code
+	return code >= 400 && code < 500 && !slices.Contains([]int32{http.StatusRequestTimeout, http.StatusConflict, http.StatusTooManyRequests}, code)
 }
 
 func applyBindings(ctx context.Context, cfg *rest.Config) error {

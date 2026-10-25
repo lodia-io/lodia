@@ -44,27 +44,27 @@ type Profile struct {
 	CA bool
 }
 
-func NewCA(commonName string, lifetime time.Duration) (*Certificate, error) {
+func NewCA(commonName string, now time.Time, lifetime time.Duration) (*Certificate, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err
 	}
-	tmpl, err := template(Profile{CommonName: commonName, CA: true}, lifetime)
+	tmpl, err := template(Profile{CommonName: commonName, CA: true}, now, lifetime)
 	if err != nil {
 		return nil, err
 	}
 	return create(tmpl, tmpl, key, key)
 }
 
-func (c *Certificate) Issue(p Profile, lifetime time.Duration) (*Certificate, error) {
-	if !time.Now().Before(c.Cert.NotAfter) {
+func (c *Certificate) Issue(p Profile, now time.Time, lifetime time.Duration) (*Certificate, error) {
+	if !now.Before(c.Cert.NotAfter) {
 		return nil, fmt.Errorf("the CA %s expired at %s", c.Cert.Subject.CommonName, c.Cert.NotAfter.UTC().Format(time.RFC3339))
 	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err
 	}
-	tmpl, err := template(p, lifetime)
+	tmpl, err := template(p, now, lifetime)
 	if err != nil {
 		return nil, err
 	}
@@ -75,12 +75,11 @@ func (c *Certificate) Issue(p Profile, lifetime time.Duration) (*Certificate, er
 	return create(tmpl, c.Cert, key, c.Key)
 }
 
-func template(p Profile, lifetime time.Duration) (*x509.Certificate, error) {
+func template(p Profile, now time.Time, lifetime time.Duration) (*x509.Certificate, error) {
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now()
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: p.CommonName, Organization: p.Organizations},
@@ -142,11 +141,11 @@ func RenewalTime(c *x509.Certificate) time.Time {
 	return issued.Add(c.NotAfter.Sub(issued) * 2 / 3)
 }
 
-// Verify checks that c chains to ca and is valid now.
-func Verify(c, ca *x509.Certificate) error {
+// Verify checks that c chains to ca and is valid at now.
+func Verify(c, ca *x509.Certificate, now time.Time) error {
 	roots := x509.NewCertPool()
 	roots.AddCert(ca)
-	_, err := c.Verify(x509.VerifyOptions{Roots: roots, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}})
+	_, err := c.Verify(x509.VerifyOptions{Roots: roots, CurrentTime: now, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}})
 	return err
 }
 

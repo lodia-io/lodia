@@ -52,10 +52,11 @@ func TestALeafEndingWithItsCAIsIssuedOnceAndAnExpiredCAWritesNothing(t *testing.
 
 	before, _ := resourceVersions(t, cp)
 	time.Sleep(time.Until(certs.RenewalTime(parseTLS(t, clamped["dev-apiserver-serving"]).Cert)) + 300*time.Millisecond)
+	start := time.Now()
 	result := reconcile(t, r, cp)
 	after, _ := resourceVersions(t, cp)
 	for name, version := range after {
-		if name != "dev-client-ca-bundle" && before[name] != version {
+		if name != "dev-client-ca" && before[name] != version {
 			t.Errorf("%s, which ends with its CA, was issued again", name)
 		}
 	}
@@ -64,10 +65,10 @@ func TestALeafEndingWithItsCAIsIssuedOnceAndAnExpiredCAWritesNothing(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(secretsOf(t, cp)["dev-client-ca-bundle"].Data["ca.crt"], want) {
+	if !bytes.Equal(secretsOf(t, cp)["dev-client-ca"].Data["ca.crt"], want) {
 		t.Error("the client CA bundle still holds the expired previous signer")
 	}
-	if result.RequeueAfter > time.Until(ca.NotAfter)+time.Second {
+	if result.RequeueAfter < time.Until(ca.NotAfter) || result.RequeueAfter > ca.NotAfter.Sub(start)+time.Second {
 		t.Errorf("requeue after %s, want the CA's expiry in %s", result.RequeueAfter, time.Until(ca.NotAfter))
 	}
 	expectGenerations(t, cp, 1, 2)
@@ -194,11 +195,12 @@ func TestCAValidityIsAnnouncedOutsideReady(t *testing.T) {
 	r.CAExpiryNotice = time.Hour - 3*time.Second
 	cp := controlPlane(t, "pki-ca-notice")
 	publishEndpoint(t, cp)
+	start := time.Now()
 	result := reconcile(t, r, cp)
 	expectCondition(t, cp, bryggav1alpha1.ConditionCAValidityAcceptable, metav1.ConditionTrue, pki.ReasonValid)
 	secrets := secretsOf(t, cp)
 	crossing := parseTLS(t, secrets["dev-cakey-client"]).Cert.NotAfter.Add(-r.CAExpiryNotice)
-	if result.RequeueAfter > time.Until(crossing)+time.Second {
+	if result.RequeueAfter < time.Until(crossing) || result.RequeueAfter > crossing.Sub(start)+time.Second {
 		t.Errorf("requeue after %s, want when the client CA enters its notice in %s", result.RequeueAfter, time.Until(crossing))
 	}
 
@@ -234,7 +236,7 @@ func TestTheClientBundleTrustsASignerBeforeItIsWritten(t *testing.T) {
 	signer := parseTLS(t, first["dev-kubelet-signer"]).Cert
 	time.Sleep(time.Until(certs.RenewalTime(signer)) + 300*time.Millisecond)
 
-	r.Client = failingApply{Client: k8s, secret: "dev-client-ca-bundle"}
+	r.Client = failingApply{Client: k8s, secret: "dev-client-ca"}
 	reconcileFails(t, r, cp)
 	if !maps.EqualFunc(secretsOf(t, cp)["dev-kubelet-signer"].Data, first["dev-kubelet-signer"].Data, bytes.Equal) {
 		t.Fatal("a new kubelet signer was written before the bundle that trusts it")
@@ -247,7 +249,7 @@ func TestTheClientBundleTrustsASignerBeforeItIsWritten(t *testing.T) {
 	if renewed.Equal(signer) {
 		t.Fatal("the kubelet signer was not renewed")
 	}
-	bundle, err := certs.ParseCerts(after["dev-client-ca-bundle"].Data["ca.crt"])
+	bundle, err := certs.ParseCerts(after["dev-client-ca"].Data["ca.crt"])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,4 +291,55 @@ func TestAnImmutableSecretIsWrittenOnce(t *testing.T) {
 	replaceSecret(t, secrets["dev-etcd-client-1"], secrets["dev-etcd-peer-1"].Data)
 	reconcile(t, r, cp)
 	expectGenerations(t, cp, 1, 2)
+}
+
+func TestARenewalNotWrittenIsIssuing(t *testing.T) {
+	t.Parallel()
+	r := newReconciler(6 * time.Second)
+	cp := controlPlane(t, "pki-renewal-unwritten")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	serving := parseTLS(t, secretsOf(t, cp)["dev-apiserver-serving"])
+	time.Sleep(time.Until(certs.RenewalTime(serving.Cert)) + 300*time.Millisecond)
+
+	r.Client = failingApply{Client: k8s, secret: "dev-apiserver-serving"}
+	reconcileFails(t, r, cp)
+	c := condition(t, cp, bryggav1alpha1.ConditionCertificatesReady)
+	if c.Status != metav1.ConditionFalse || c.Reason != pki.ReasonIssuing || !strings.Contains(c.Message, "dev-apiserver-serving") {
+		t.Fatalf("CertificatesReady is %s %s: %s", c.Status, c.Reason, c.Message)
+	}
+	if !serving.Cert.Equal(parseTLS(t, secretsOf(t, cp)["dev-apiserver-serving"]).Cert) {
+		t.Fatal("the serving certificate changed although its apply failed")
+	}
+
+	r.Client = k8s
+	reconcile(t, r, cp)
+	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, pki.ReasonIssued)
+}
+
+func TestAnAdoptionNotWrittenLeavesCertificatesReady(t *testing.T) {
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "pki-adoption-unwritten")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	s := secretsOf(t, cp)["dev-front-proxy-client"]
+	s.Labels = nil
+	if err := k8s.Update(t.Context(), s); err != nil {
+		t.Fatal(err)
+	}
+	r.Client = failingApply{Client: k8s, secret: "dev-front-proxy-client"}
+	reconcileFails(t, r, cp)
+	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, pki.ReasonIssued)
+}
+
+func TestACANotWrittenIsNotCounted(t *testing.T) {
+	r := newReconciler(time.Hour)
+	r.Client = failingApply{Client: k8s, secret: "dev-cakey-client"}
+	cp := controlPlane(t, "pki-ca-unwritten")
+	reconcileFails(t, r, cp)
+	expectCondition(t, cp, bryggav1alpha1.ConditionCAValidityAcceptable, metav1.ConditionUnknown, pki.ReasonReconciling)
+	c := condition(t, cp, bryggav1alpha1.ConditionCertificatesReady)
+	if c.Reason != pki.ReasonIssuing || !strings.Contains(c.Message, "dev-cakey-client") {
+		t.Fatalf("CertificatesReady is %s: %s", c.Reason, c.Message)
+	}
 }
