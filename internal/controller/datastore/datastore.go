@@ -131,7 +131,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, r.finalize(ctx, cp)
 	}
 	if !controllerutil.ContainsFinalizer(cp, Finalizer) {
-		if err := r.applyFinalizer(ctx, cp, true); err != nil {
+		if err := r.setFinalizer(ctx, cp, true); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -325,7 +325,7 @@ func (r *Reconciler) finalize(ctx context.Context, cp *bryggav1alpha1.ControlPla
 			return err
 		}
 	}
-	return r.applyFinalizer(ctx, cp, false)
+	return r.setFinalizer(ctx, cp, false)
 }
 
 // deleteClaims removes the PersistentVolumeClaims of the Etcd's StatefulSet,
@@ -349,19 +349,23 @@ func (r *Reconciler) deleteClaims(ctx context.Context, cp *bryggav1alpha1.Contro
 	return nil
 }
 
-// applyFinalizer holds or releases the finalizer through server-side apply,
-// so that other finalizers of the ControlPlane are left alone.
-func (r *Reconciler) applyFinalizer(ctx context.Context, cp *bryggav1alpha1.ControlPlane, held bool) error {
-	metadata := map[string]any{"name": cp.Name, "namespace": cp.Namespace}
+// setFinalizer holds or releases the finalizer with a patch locked on the
+// ControlPlane's resourceVersion, never with an apply: an apply would create
+// a ControlPlane the cache still showed after its deletion. A conflict means
+// the ControlPlane changed since it was read, and that change reconciles it
+// again; a ControlPlane that is gone stays gone.
+func (r *Reconciler) setFinalizer(ctx context.Context, cp *bryggav1alpha1.ControlPlane, held bool) error {
+	patch := client.MergeFromWithOptions(cp.DeepCopy(), client.MergeFromWithOptimisticLock{})
 	if held {
-		metadata["finalizers"] = []any{Finalizer}
+		controllerutil.AddFinalizer(cp, Finalizer)
+	} else {
+		controllerutil.RemoveFinalizer(cp, Finalizer)
 	}
-	controlPlane := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": bryggav1alpha1.GroupVersion.String(),
-		"kind":       "ControlPlane",
-		"metadata":   metadata,
-	}}
-	return r.Apply(ctx, client.ApplyConfigurationFromUnstructured(controlPlane), client.FieldOwner(FieldManager), client.ForceOwnership)
+	err := r.Patch(ctx, cp, patch, client.FieldOwner(FieldManager))
+	if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
+		return nil
+	}
+	return err
 }
 
 // applyStatus writes the condition and status.datastore through the status
