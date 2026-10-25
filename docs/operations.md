@@ -31,6 +31,7 @@ itself and the support policy. Installation is in
 |---|---|
 | `Ready=False`, reason `WaitingForDatastore` | `DatastoreReady` reason; the etcd resource's status; the etcd pods' logs (`etcdserver: request timed out`, `apply request took too long` mean slow disks) |
 | `DatastoreReady=False`, `DatastoreClassNotFound` | the `DatastoreClass` that `spec.datastore.dedicated.className` names is missing, or no class or more than one is annotated `brygga.segla.io/is-default-class: "true"`; the message names them |
+| `DatastoreReady=False`, `VolumesExist` | claims `<cp>-etcd-<cp>-etcd-<n>` of a previous `ControlPlane` of that name, without this one's `brygga.segla.io/control-plane-uid` label; delete them to start empty, or build the new cluster from a `Backup` with `restoreFrom` |
 | `DatastoreReady=False`, `Provisioning` for long | the message says what is awaited: a complete generation of the etcd certificates (PKI), the class's credentials Secret, or etcd-druid's report with its `lastErrors`; then the `Etcd`'s status and conditions, etcd-druid's log, and the tenant's `EtcdOpsTask`s, where a blocked operation shows ([etcd spike](etcd-spike-2026-10.md), finding 4) |
 | `DatastoreReady=False`, `QuorumLost` | fewer than two of three members up; the [lost quorum](#lost-etcd-quorum) runbook |
 | API calls fail with `etcdserver: mvcc: database space exceeded` | the [space quota](#etcd-space-quota) runbook; `status.datastore.dbSizeBytes` against the class quota |

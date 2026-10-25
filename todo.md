@@ -106,10 +106,11 @@ is a decision — a decision is a file in `docs/decisions/`.
 - The `DatastoreClass` schema checks `fullSnapshotSchedule` and
   `defragmentation.schedule` only for length; etcd-druid's CRD wants standard
   five-field cron, so a bad schedule fails the `Etcd` apply and shows as
-  `DatastoreReady=False`, `Provisioning` with the error. A changed
-  `storage.className` on a class in use fails the apply the same way, since
-  the `Etcd`'s field is immutable. A pattern on the class, or a reason of its
-  own.
+  `DatastoreReady=False`, `Provisioning` with the error. A pattern on the
+  class, or a reason of its own.
+- A class edit that reaches the `Etcd` rolls its members at once; the decision
+  wants it in the tenant's maintenance window, which Lifecycle gates in phase
+  2. The `Etcd` records the class generation it was rendered from for that.
 - `<cp>-etcd-backup` stays when a class drops its backup store; harmless, the
   `ControlPlane` garbage-collects it.
 - The e2e suite runs the Datastore controller in the test process and needs

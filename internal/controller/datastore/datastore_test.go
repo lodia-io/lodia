@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -417,7 +418,13 @@ func TestFinalizerAndEtcdFromClass(t *testing.T) {
 
 	writeGeneration(t, ns, "dev", 1)
 	etcd := waitEtcd(t, ns, "dev", namesGeneration(1))
-	cp := getControlPlane(t, ns, "dev")
+	var cp *bryggav1alpha1.ControlPlane
+	eventually(t, func() error {
+		if cp = getControlPlane(t, ns, "dev"); cp.Status.Datastore == nil {
+			return errors.New("status.datastore is not written yet")
+		}
+		return nil
+	})
 	store := ptr.Deref(etcd.Spec.Backup.Store, druidv1alpha1.StoreSpec{})
 	rows := []struct {
 		field     string
@@ -433,7 +440,7 @@ func TestFinalizerAndEtcdFromClass(t *testing.T) {
 		{"storage.size → spec.storageCapacity", quantity(etcd.Spec.StorageCapacity), "20Gi"},
 		{"backup.store.provider → spec.backup.store.provider", ptr.Deref(store.Provider, ""), druidv1alpha1.StorageProvider("S3")},
 		{"backup.store.bucket → spec.backup.store.container", ptr.Deref(store.Container, ""), "brygga-backups"},
-		{"backup.store.prefix → spec.backup.store.prefix, the tenant below the class's prefix", store.Prefix, "prod/" + ns + "/dev"},
+		{"backup.store.prefix → spec.backup.store.prefix, the tenant and its UID below the class's prefix", store.Prefix, "prod/" + ns + "/dev/" + string(cp.UID)},
 		{"backup.store.endpoint → spec.backup.store.endpointOverride", ptr.Deref(store.EndpointOverride, ""), "https://s3.example.test"},
 		{"backup.store.secretRef → spec.backup.store.secretRef, the copy in the namespace", ptr.Deref(store.SecretRef, corev1.SecretReference{}).Name, "dev-etcd-backup"},
 		{"backup.fullSnapshotSchedule → spec.backup.fullSnapshotSchedule", ptr.Deref(etcd.Spec.Backup.FullSnapshotSchedule, ""), "0 2 * * *"},
@@ -457,6 +464,8 @@ func TestFinalizerAndEtcdFromClass(t *testing.T) {
 			APIVersion: "brygga.segla.io/v1alpha1", Kind: "ControlPlane", Name: "dev", UID: cp.UID, Controller: new(true), BlockOwnerDeletion: new(true),
 		}}},
 		{"the Etcd → status.datastore", ptr.Deref(cp.Status.Datastore, bryggav1alpha1.DatastoreStatus{}), bryggav1alpha1.DatastoreStatus{Kind: "Dedicated", Name: "dev-etcd"}},
+		{"the class → metadata.annotations[" + datastore.ClassAnnotation + "]", etcd.Annotations[datastore.ClassAnnotation], "mapped"},
+		{"the class's generation → metadata.annotations[" + datastore.ClassGenerationAnnotation + "]", etcd.Annotations[datastore.ClassGenerationAnnotation], "1"},
 	}
 	for _, row := range rows {
 		t.Run(row.field, func(t *testing.T) {
@@ -629,55 +638,248 @@ func TestDatastoreReadyFollowsEtcdStatus(t *testing.T) {
 	}
 }
 
+func claim(ns, name string, labels map[string]string) *corev1.PersistentVolumeClaim {
+	return &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: labels},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources:   corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")}},
+		},
+	}
+}
+
+func getClaim(t *testing.T, ns, name string) *corev1.PersistentVolumeClaim {
+	t.Helper()
+	pvc := &corev1.PersistentVolumeClaim{}
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: name}, pvc); err != nil {
+		t.Fatal(err)
+	}
+	return pvc
+}
+
+func removeClaim(t *testing.T, ns, name string) {
+	t.Helper()
+	pvc := getClaim(t, ns, name)
+	if err := k8s.Delete(t.Context(), pvc); err != nil {
+		t.Fatal(err)
+	}
+	pvc = getClaim(t, ns, name)
+	patch := client.MergeFrom(pvc.DeepCopy())
+	pvc.Finalizers = nil
+	if err := k8s.Patch(t.Context(), pvc, patch); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() error {
+		return gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: name}, &corev1.PersistentVolumeClaim{}))
+	})
+}
+
+func gone(err error) error {
+	switch {
+	case err == nil:
+		return errors.New("still there")
+	case !apierrors.IsNotFound(err):
+		return err
+	}
+	return nil
+}
+
+func untouched(t *testing.T, ns, name string) {
+	t.Helper()
+	if pvc := getClaim(t, ns, name); !pvc.DeletionTimestamp.IsZero() {
+		t.Errorf("claim %s is being deleted", name)
+	}
+}
+
+func deleted(t *testing.T, ns, name string) {
+	t.Helper()
+	pvc := &corev1.PersistentVolumeClaim{}
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: name}, pvc); !apierrors.IsNotFound(err) && (err != nil || pvc.DeletionTimestamp.IsZero()) {
+		t.Errorf("want claim %s deleted, got %v, deletionTimestamp %v", name, err, pvc.DeletionTimestamp)
+	}
+}
+
+func TestVolumesExist(t *testing.T) {
+	ns := namespace(t)
+	createClass(t, newClass("reused", "Delete"))
+	etcdLabels := druidv1alpha1.GetDefaultLabels(metav1.ObjectMeta{Name: "dev-etcd"})
+	previous := maps.Clone(etcdLabels)
+	previous[datastore.ControlPlaneUIDLabel] = "11111111-2222-3333-4444-555555555555"
+	create(t, claim(ns, "dev-etcd-dev-etcd-0", etcdLabels))
+	create(t, claim(ns, "dev-etcd-dev-etcd-1", previous))
+	create(t, controlPlane(ns, "dev", "reused"))
+	writeGeneration(t, ns, "dev", 1)
+	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonVolumesExist, "dev-etcd-dev-etcd-0, dev-etcd-dev-etcd-1")
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev-etcd"}, &druidv1alpha1.Etcd{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("want no Etcd on another ControlPlane's claims, got %v", err)
+	}
+
+	removeClaim(t, ns, "dev-etcd-dev-etcd-0")
+	removeClaim(t, ns, "dev-etcd-dev-etcd-1")
+	settle(t, ns, "dev")
+	waitEtcd(t, ns, "dev", nil)
+	cp := getControlPlane(t, ns, "dev")
+
+	create(t, claim(ns, "dev-etcd-dev-etcd-0", etcdLabels))
+	settle(t, ns, "dev")
+	pvc := getClaim(t, ns, "dev-etcd-dev-etcd-0")
+	if pvc.Labels[datastore.ControlPlaneUIDLabel] != string(cp.UID) || pvc.Annotations[datastore.ClassAnnotation] != "reused" {
+		t.Errorf("the StatefulSet's claim carries labels %v and annotations %v, want the ControlPlane's UID %s and the class reused", pvc.Labels, pvc.Annotations, cp.UID)
+	}
+}
+
+func TestStorageAtCreation(t *testing.T) {
+	ns := namespace(t)
+	createClass(t, newClass("growing", "Retain"))
+	create(t, controlPlane(ns, "grown", "growing"))
+	writeGeneration(t, ns, "grown", 1)
+	waitEtcd(t, ns, "grown", nil)
+
+	class := &bryggav1alpha1.DatastoreClass{}
+	if err := k8s.Get(t.Context(), client.ObjectKey{Name: "growing"}, class); err != nil {
+		t.Fatal(err)
+	}
+	class.Spec.Storage = bryggav1alpha1.EtcdStorage{ClassName: "fast", Size: resource.MustParse("2Gi"), ReclaimPolicy: "Retain"}
+	class.Spec.Etcd = &bryggav1alpha1.EtcdSettings{QuotaBackendBytes: new(resource.MustParse("3Gi"))}
+	if err := k8s.Update(t.Context(), class); err != nil {
+		t.Fatal(err)
+	}
+	etcd := waitEtcd(t, ns, "grown", func(etcd *druidv1alpha1.Etcd) error {
+		if quota := quantity(etcd.Spec.Etcd.Quota); quota != "3Gi" {
+			return fmt.Errorf("quota %s, the class edit has not reached the Etcd", quota)
+		}
+		return nil
+	})
+	if etcd.Spec.StorageClass != nil || quantity(etcd.Spec.StorageCapacity) != "1Gi" {
+		t.Errorf("storageClass %v, storageCapacity %s: storage changed after creation", etcd.Spec.StorageClass, quantity(etcd.Spec.StorageCapacity))
+	}
+	if got := etcd.Annotations[datastore.ClassGenerationAnnotation]; got != "2" {
+		t.Errorf("class generation %s recorded, want 2", got)
+	}
+}
+
+func TestRecordedClass(t *testing.T) {
+	ns := namespace(t)
+	first := newClass("default-first", "Retain")
+	first.Annotations = map[string]string{datastore.DefaultClassAnnotation: "true"}
+	first.Spec.Storage.Size = resource.MustParse("3Gi")
+	createClass(t, first)
+	create(t, controlPlane(ns, "dev", ""))
+	writeGeneration(t, ns, "dev", 1)
+	etcd := waitEtcd(t, ns, "dev", nil)
+	if got := etcd.Annotations[datastore.ClassAnnotation]; got != "default-first" {
+		t.Fatalf("class %s recorded, want default-first", got)
+	}
+	create(t, claim(ns, "dev-etcd-dev-etcd-0", druidv1alpha1.GetDefaultLabels(etcd.ObjectMeta)))
+	settle(t, ns, "dev")
+
+	second := newClass("default-second", "Delete")
+	second.Annotations = map[string]string{datastore.DefaultClassAnnotation: "true"}
+	second.Spec.Storage.Size = resource.MustParse("5Gi")
+	createClass(t, second)
+	if err := k8s.Get(t.Context(), client.ObjectKey{Name: "default-first"}, first); err != nil {
+		t.Fatal(err)
+	}
+	delete(first.Annotations, datastore.DefaultClassAnnotation)
+	if err := k8s.Update(t.Context(), first); err != nil {
+		t.Fatal(err)
+	}
+	settle(t, ns, "dev")
+	etcd = getEtcd(t, ns, "dev")
+	if etcd.Annotations[datastore.ClassAnnotation] != "default-first" || quantity(etcd.Spec.StorageCapacity) != "3Gi" {
+		t.Errorf("the Etcd follows class %s with %s, want default-first with 3Gi after the default moved", etcd.Annotations[datastore.ClassAnnotation], quantity(etcd.Spec.StorageCapacity))
+	}
+	if pvc := getClaim(t, ns, "dev-etcd-dev-etcd-0"); pvc.Annotations[datastore.ClassAnnotation] != "default-first" {
+		t.Errorf("the claim records class %s, want default-first", pvc.Annotations[datastore.ClassAnnotation])
+	}
+
+	if err := k8s.Delete(t.Context(), getControlPlane(t, ns, "dev")); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() error {
+		return gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev"}, &bryggav1alpha1.ControlPlane{}))
+	})
+	untouched(t, ns, "dev-etcd-dev-etcd-0")
+
+	createClass(t, newClass("vanishing", "Delete"))
+	create(t, controlPlane(ns, "orphan", "vanishing"))
+	writeGeneration(t, ns, "orphan", 1)
+	etcd = waitEtcd(t, ns, "orphan", nil)
+	create(t, claim(ns, "orphan-etcd-orphan-etcd-0", druidv1alpha1.GetDefaultLabels(etcd.ObjectMeta)))
+	settle(t, ns, "orphan")
+	if err := k8s.Delete(t.Context(), newClass("vanishing", "")); err != nil {
+		t.Fatal(err)
+	}
+	waitCondition(t, ns, "orphan", metav1.ConditionFalse, datastore.ReasonDatastoreClassNotFound, "DatastoreClass vanishing does not exist")
+	if err := k8s.Delete(t.Context(), getControlPlane(t, ns, "orphan")); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() error {
+		return gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "orphan"}, &bryggav1alpha1.ControlPlane{}))
+	})
+	untouched(t, ns, "orphan-etcd-orphan-etcd-0")
+}
+
 func TestDeletion(t *testing.T) {
 	for _, policy := range []string{"Delete", "Retain"} {
 		t.Run(policy, func(t *testing.T) {
 			ns := namespace(t)
-			createClass(t, newClass("reclaim-"+strings.ToLower(policy), policy))
-			create(t, controlPlane(ns, "dev", "reclaim-"+strings.ToLower(policy)))
+			className := "reclaim-" + strings.ToLower(policy)
+			createClass(t, newClass(className, policy))
+			create(t, controlPlane(ns, "dev", className))
 			writeGeneration(t, ns, "dev", 1)
 			etcd := waitEtcd(t, ns, "dev", nil)
+			cp := getControlPlane(t, ns, "dev")
 
-			claim := func(name string, labels map[string]string) *corev1.PersistentVolumeClaim {
-				return &corev1.PersistentVolumeClaim{
-					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: labels},
-					Spec: corev1.PersistentVolumeClaimSpec{
-						AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-						Resources:   corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")}},
-					},
-				}
+			etcdLabels := druidv1alpha1.GetDefaultLabels(etcd.ObjectMeta)
+			previous := maps.Clone(etcdLabels)
+			previous[datastore.ControlPlaneUIDLabel] = "11111111-2222-3333-4444-555555555555"
+			create(t, claim(ns, "dev-etcd-dev-etcd-0", etcdLabels))
+			create(t, claim(ns, "dev-etcd-dev-etcd-1", previous))
+			create(t, claim(ns, "someone-elses", nil))
+			settle(t, ns, "dev")
+			if pvc := getClaim(t, ns, "dev-etcd-dev-etcd-0"); pvc.Labels[datastore.ControlPlaneUIDLabel] != string(cp.UID) || pvc.Annotations[datastore.ClassAnnotation] != className {
+				t.Fatalf("the StatefulSet's claim carries labels %v and annotations %v, want the ControlPlane's UID %s and the class %s", pvc.Labels, pvc.Annotations, cp.UID, className)
 			}
-			create(t, claim("dev-etcd-dev-etcd-0", druidv1alpha1.GetDefaultLabels(etcd.ObjectMeta)))
-			create(t, claim("someone-elses", nil))
 
-			if err := k8s.Delete(t.Context(), getControlPlane(t, ns, "dev")); err != nil {
+			held := client.MergeFrom(etcd.DeepCopy())
+			etcd.Finalizers = append(etcd.Finalizers, "brygga.segla.io/test")
+			if err := k8s.Patch(t.Context(), etcd, held); err != nil {
+				t.Fatal(err)
+			}
+			if err := k8s.Delete(t.Context(), cp); err != nil {
 				t.Fatal(err)
 			}
 			eventually(t, func() error {
-				err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev"}, &bryggav1alpha1.ControlPlane{})
-				switch {
-				case err == nil:
-					return errors.New("the ControlPlane is still there")
-				case !apierrors.IsNotFound(err):
-					return err
+				if etcd = getEtcd(t, ns, "dev"); etcd.DeletionTimestamp.IsZero() {
+					return errors.New("the Etcd is not being deleted")
 				}
 				return nil
 			})
-			if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev-etcd"}, &druidv1alpha1.Etcd{}); !apierrors.IsNotFound(err) {
-				t.Errorf("want the Etcd gone, got %v", err)
+			if !controllerutil.ContainsFinalizer(getControlPlane(t, ns, "dev"), datastore.Finalizer) {
+				t.Fatal("the finalizer left before the Etcd was gone")
 			}
-			members := &corev1.PersistentVolumeClaim{}
-			err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev-etcd-dev-etcd-0"}, members)
-			switch {
-			case policy == "Delete" && !apierrors.IsNotFound(err) && (err != nil || members.DeletionTimestamp.IsZero()):
-				t.Errorf("want the member's claim deleted, got %v, deletionTimestamp %v", err, members.DeletionTimestamp)
-			case policy == "Retain" && (err != nil || !members.DeletionTimestamp.IsZero()):
-				t.Errorf("want the member's claim kept, got %v, deletionTimestamp %v", err, members.DeletionTimestamp)
+			untouched(t, ns, "dev-etcd-dev-etcd-0")
+			untouched(t, ns, "dev-etcd-dev-etcd-1")
+
+			released := client.MergeFrom(etcd.DeepCopy())
+			etcd.Finalizers = nil
+			if err := k8s.Patch(t.Context(), etcd, released); err != nil {
+				t.Fatal(err)
 			}
-			other := &corev1.PersistentVolumeClaim{}
-			if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "someone-elses"}, other); err != nil || !other.DeletionTimestamp.IsZero() {
-				t.Errorf("want the unlabelled claim untouched, got %v, deletionTimestamp %v", err, other.DeletionTimestamp)
+			eventually(t, func() error {
+				return gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev"}, &bryggav1alpha1.ControlPlane{}))
+			})
+			if err := gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev-etcd"}, &druidv1alpha1.Etcd{})); err != nil {
+				t.Errorf("the Etcd: %v", err)
 			}
+			if policy == "Delete" {
+				deleted(t, ns, "dev-etcd-dev-etcd-0")
+			} else {
+				untouched(t, ns, "dev-etcd-dev-etcd-0")
+			}
+			untouched(t, ns, "dev-etcd-dev-etcd-1")
+			untouched(t, ns, "someone-elses")
 		})
 	}
 }

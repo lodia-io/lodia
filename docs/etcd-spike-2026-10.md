@@ -8,7 +8,8 @@ A working doc: the phase 0 spike of
 
 Moved on 2026-10-25, with the Datastore controller: the **DatastoreClass →
 Etcd** table into [`README.md`](README.md#a-tenant-namespace), where the code
-is checked against it; what findings 1, 3 and 6 made the controller do into
+is checked against it (the copy below stays as the spike's record); what
+findings 1, 3 and 6 made the controller do into
 [the decision](decisions/dedicated-etcd-by-default.md) and
 [`operations.md`](operations.md); installing etcd-druid from its chart at the
 tag, as **How to run it again** does, into the e2e suite

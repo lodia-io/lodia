@@ -57,11 +57,23 @@ const (
 	// certificates; the Etcd names the newest generation whose five Secrets
 	// all carry it.
 	CertificatesLabel = "brygga.segla.io/etcd-certificates"
+	// ControlPlaneUIDLabel marks the claims of a ControlPlane's etcd with its
+	// UID: a ControlPlane recreated under the same name never starts from them.
+	ControlPlaneUIDLabel = "brygga.segla.io/control-plane-uid"
+	// ClassAnnotation records on the Etcd, and on its claims, the
+	// DatastoreClass it was created under.
+	ClassAnnotation = "brygga.segla.io/datastore-class"
+	// ClassGenerationAnnotation records on the Etcd the generation of the
+	// class it was rendered from.
+	ClassGenerationAnnotation = "brygga.segla.io/datastore-class-generation"
 
 	// ReasonProvisioning says the certificates or etcd-druid's report are awaited.
 	ReasonProvisioning = "Provisioning"
 	// ReasonDatastoreClassNotFound says no class serves the ControlPlane.
 	ReasonDatastoreClassNotFound = "DatastoreClassNotFound"
+	// ReasonVolumesExist says claims of another ControlPlane stand where this
+	// one's etcd would be created.
+	ReasonVolumesExist = "VolumesExist"
 	// ReasonReady says etcd-druid reports the Etcd ready for its current generation.
 	ReasonReady = "Ready"
 )
@@ -128,7 +140,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, nil
 	}
 	if !cp.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, r.finalize(ctx, cp)
+		requeueAfter, err := r.finalize(ctx, cp)
+		return ctrl.Result{RequeueAfter: requeueAfter}, err
 	}
 	if !controllerutil.ContainsFinalizer(cp, Finalizer) {
 		err := r.setFinalizer(ctx, cp, true)
@@ -155,16 +168,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 }
 
 // reconcileEtcd applies the Etcd once the class and a complete certificate
-// generation exist, and says what DatastoreReady reports meanwhile.
+// generation exist and no other ControlPlane's claims stand in its way, and
+// says what DatastoreReady reports meanwhile.
 func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.ControlPlane) (*druidv1alpha1.Etcd, metav1.Condition, time.Duration, error) {
-	current := &druidv1alpha1.Etcd{}
-	if err := r.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: etcdName(cp.Name)}, current); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return nil, metav1.Condition{}, 0, err
-		}
-		current = nil
+	current, err := r.currentEtcd(ctx, cp)
+	if err != nil {
+		return nil, metav1.Condition{}, 0, err
 	}
-	class, err := r.class(ctx, cp)
+	class, err := r.class(ctx, cp, current)
 	if _, missing := errors.AsType[classNotFound](err); missing {
 		return current, newCondition(metav1.ConditionFalse, ReasonDatastoreClassNotFound, err.Error()), 0, nil
 	}
@@ -180,6 +191,17 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 			cp.Name, strings.Join(Certificates, ","), CertificatesLabel)
 		return current, newCondition(metav1.ConditionFalse, ReasonProvisioning, message), 0, nil
 	}
+	if current == nil {
+		foreign, err := r.foreignClaims(ctx, cp)
+		if err != nil {
+			return nil, metav1.Condition{}, 0, err
+		}
+		if len(foreign) > 0 {
+			message := fmt.Sprintf("claims of another ControlPlane stand where the etcd of %s would be created: %s; delete them to start empty, or restore from them on purpose",
+				cp.Name, strings.Join(foreign, ", "))
+			return nil, newCondition(metav1.ConditionFalse, ReasonVolumesExist, message), time.Minute, nil
+		}
+	}
 	if class.Spec.Backup != nil {
 		if err := r.copyCredentials(ctx, cp, class); err != nil {
 			if apierrors.IsNotFound(err) {
@@ -188,20 +210,50 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 			return current, metav1.Condition{}, 0, err
 		}
 	}
-	etcd, err := r.apply(ctx, render(cp, class, generation))
+	etcd, err := r.apply(ctx, render(cp, class, generation, current))
 	if err != nil {
 		return current, metav1.Condition{}, 0, fmt.Errorf("apply Etcd %s: %w", etcdName(cp.Name), err)
 	}
+	if err := r.labelClaims(ctx, cp, class.Name); err != nil {
+		return etcd, metav1.Condition{}, 0, err
+	}
 	return etcd, readiness(etcd), 0, nil
+}
+
+// currentEtcd reads the Etcd from the cache, and from the API server when the
+// cache has none: an Etcd that fell out of the label-filtered cache still runs.
+func (r *Reconciler) currentEtcd(ctx context.Context, cp *bryggav1alpha1.ControlPlane) (*druidv1alpha1.Etcd, error) {
+	etcd := &druidv1alpha1.Etcd{}
+	key := client.ObjectKey{Namespace: cp.Namespace, Name: etcdName(cp.Name)}
+	err := r.Get(ctx, key, etcd)
+	if apierrors.IsNotFound(err) {
+		err = r.Reader.Get(ctx, key, etcd)
+	}
+	switch {
+	case apierrors.IsNotFound(err):
+		return nil, nil
+	case err != nil:
+		return nil, err
+	}
+	return etcd, nil
 }
 
 type classNotFound string
 
 func (e classNotFound) Error() string { return string(e) }
 
-// class is the DatastoreClass the ControlPlane names, or the one default class.
-func (r *Reconciler) class(ctx context.Context, cp *bryggav1alpha1.ControlPlane) (*bryggav1alpha1.DatastoreClass, error) {
-	if name := cp.Spec.Datastore.Dedicated.ClassName; name != "" {
+// class is the DatastoreClass recorded on the Etcd or, before the Etcd
+// exists, the one the ControlPlane names or the one default class. A class is
+// resolved once, as a default StorageClass is written into a claim when the
+// claim is created, so a default that moves changes no running etcd.
+func (r *Reconciler) class(ctx context.Context, cp *bryggav1alpha1.ControlPlane, current *druidv1alpha1.Etcd) (*bryggav1alpha1.DatastoreClass, error) {
+	name := cp.Spec.Datastore.Dedicated.ClassName
+	if current != nil {
+		if recorded, ok := current.Annotations[ClassAnnotation]; ok {
+			name = recorded
+		}
+	}
+	if name != "" {
 		class := &bryggav1alpha1.DatastoreClass{}
 		if err := r.Get(ctx, client.ObjectKey{Name: name}, class); err != nil {
 			if apierrors.IsNotFound(err) {
@@ -238,7 +290,8 @@ func (r *Reconciler) class(ctx context.Context, cp *bryggav1alpha1.ControlPlane)
 }
 
 // newestCompleteGeneration lists the etcd certificate Secrets, metadata only,
-// and picks the newest generation whose five Secrets all carry its label.
+// and picks the newest generation whose five Secrets all carry its label and
+// none is being deleted.
 func (r *Reconciler) newestCompleteGeneration(ctx context.Context, cp *bryggav1alpha1.ControlPlane) (int, bool, error) {
 	secrets := &metav1.PartialObjectMetadataList{}
 	secrets.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("SecretList"))
@@ -271,6 +324,62 @@ func (r *Reconciler) newestCompleteGeneration(ctx context.Context, cp *bryggav1a
 	return newest, found, nil
 }
 
+// claims lists the PersistentVolumeClaims of the Etcd's StatefulSet, which
+// etcd-druid keeps past the Etcd, by the labels the StatefulSet controller
+// copies from the selector etcd-druid gives it
+// (kubernetes/kubernetes@v1.35.0 pkg/controller/statefulset/stateful_set_utils.go#L389-L407,
+// etcd-druid@v0.39.0 internal/component/statefulset/builder.go#L149-L151).
+func (r *Reconciler) claims(ctx context.Context, cp *bryggav1alpha1.ControlPlane, uid bool) (*corev1.PersistentVolumeClaimList, error) {
+	selector := druidv1alpha1.GetDefaultLabels(metav1.ObjectMeta{Name: etcdName(cp.Name)})
+	if uid {
+		selector[ControlPlaneUIDLabel] = string(cp.UID)
+	}
+	claims := &corev1.PersistentVolumeClaimList{}
+	err := r.Reader.List(ctx, claims, client.InNamespace(cp.Namespace), client.MatchingLabels(selector))
+	return claims, err
+}
+
+// foreignClaims names the claims of <cp>-etcd that are not this
+// ControlPlane's: unlabelled, or labelled with another UID. Starting an etcd
+// on them would be a restore of another tenant's data by name.
+func (r *Reconciler) foreignClaims(ctx context.Context, cp *bryggav1alpha1.ControlPlane) ([]string, error) {
+	claims, err := r.claims(ctx, cp, false)
+	if err != nil {
+		return nil, err
+	}
+	var foreign []string
+	for _, claim := range claims.Items {
+		if claim.Labels[ControlPlaneUIDLabel] != string(cp.UID) {
+			foreign = append(foreign, claim.Name)
+		}
+	}
+	slices.Sort(foreign)
+	return foreign, nil
+}
+
+// labelClaims marks the claims the StatefulSet created for this Etcd with the
+// ControlPlane's UID and the class it was created under, since they outlive
+// the Etcd: deletion reclaims only these, under that class's policy.
+func (r *Reconciler) labelClaims(ctx context.Context, cp *bryggav1alpha1.ControlPlane, class string) error {
+	claims, err := r.claims(ctx, cp, false)
+	if err != nil {
+		return err
+	}
+	for i := range claims.Items {
+		claim := &claims.Items[i]
+		if _, labelled := claim.Labels[ControlPlaneUIDLabel]; labelled {
+			continue
+		}
+		patch := client.MergeFrom(claim.DeepCopy())
+		metav1.SetMetaDataLabel(&claim.ObjectMeta, ControlPlaneUIDLabel, string(cp.UID))
+		metav1.SetMetaDataAnnotation(&claim.ObjectMeta, ClassAnnotation, class)
+		if err := client.IgnoreNotFound(r.Patch(ctx, claim, patch, client.FieldOwner(FieldManager))); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // copyCredentials copies the class's credentials Secret into the tenant's
 // namespace, where etcd-druid mounts it, with the class's region under the key
 // the backup-restore sidecar reads.
@@ -300,58 +409,60 @@ func (r *Reconciler) copyCredentials(ctx context.Context, cp *bryggav1alpha1.Con
 	return r.Apply(ctx, secret, client.FieldOwner(FieldManager), client.ForceOwnership)
 }
 
-// finalize deletes the Etcd, waits for etcd-druid to let it go, applies the
-// class's reclaim policy to the claims its StatefulSet left behind and
-// releases the finalizer.
-func (r *Reconciler) finalize(ctx context.Context, cp *bryggav1alpha1.ControlPlane) error {
+// finalize deletes the Etcd, waits for etcd-druid to let it go, reclaims the
+// claims it left behind and releases the finalizer.
+func (r *Reconciler) finalize(ctx context.Context, cp *bryggav1alpha1.ControlPlane) (time.Duration, error) {
 	if !controllerutil.ContainsFinalizer(cp, Finalizer) {
-		return nil
+		return 0, nil
 	}
-	log := logf.FromContext(ctx)
-	etcd := &druidv1alpha1.Etcd{}
-	err := r.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: etcdName(cp.Name)}, etcd)
+	etcd, err := r.currentEtcd(ctx, cp)
 	switch {
-	case err == nil && etcd.DeletionTimestamp.IsZero():
-		log.Info("deleting the Etcd", "etcd", etcd.Name)
-		return client.IgnoreNotFound(r.Delete(ctx, etcd))
-	case err == nil:
-		return nil
-	case !apierrors.IsNotFound(err):
-		return err
-	}
-	class, err := r.class(ctx, cp)
-	_, classMissing := errors.AsType[classNotFound](err)
-	switch {
-	case classMissing:
-		log.Info("keeping the claims, the class is gone", "reason", err.Error())
 	case err != nil:
-		return err
-	case class.Spec.Storage.ReclaimPolicy == "Delete":
-		if err := r.deleteClaims(ctx, cp); err != nil {
-			return err
-		}
+		return 0, err
+	case etcd != nil && etcd.DeletionTimestamp.IsZero():
+		logf.FromContext(ctx).Info("deleting the Etcd", "etcd", etcd.Name)
+		return 0, client.IgnoreNotFound(r.Delete(ctx, etcd))
+	case etcd != nil:
+		return 10 * time.Second, nil
+	}
+	if err := r.reclaimClaims(ctx, cp); err != nil {
+		return 0, err
 	}
 	if err := r.setFinalizer(ctx, cp, false); err != nil && !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
-		return err
+		return 0, err
 	}
-	return nil
+	return 0, nil
 }
 
-// deleteClaims removes the PersistentVolumeClaims of the Etcd's StatefulSet,
-// which etcd-druid keeps past the Etcd. The StatefulSet controller labels
-// them with the selector etcd-druid gives the StatefulSet
-// (kubernetes/kubernetes@v1.35.0 pkg/controller/statefulset/stateful_set_utils.go#L389-L407,
-// etcd-druid@v0.39.0 internal/component/statefulset/builder.go#L149-L151).
-func (r *Reconciler) deleteClaims(ctx context.Context, cp *bryggav1alpha1.ControlPlane) error {
+// reclaimClaims deletes the claims labelled with this ControlPlane's UID
+// whose recorded class says Delete; Retain, and a class that is gone, keep
+// them.
+func (r *Reconciler) reclaimClaims(ctx context.Context, cp *bryggav1alpha1.ControlPlane) error {
 	log := logf.FromContext(ctx)
-	claims := &corev1.PersistentVolumeClaimList{}
-	selector := druidv1alpha1.GetDefaultLabels(metav1.ObjectMeta{Name: etcdName(cp.Name)})
-	if err := r.Reader.List(ctx, claims, client.InNamespace(cp.Namespace), client.MatchingLabels(selector)); err != nil {
+	claims, err := r.claims(ctx, cp, true)
+	if err != nil {
 		return err
 	}
 	for i := range claims.Items {
-		log.Info("deleting the claim", "claim", claims.Items[i].Name)
-		if err := client.IgnoreNotFound(r.Delete(ctx, &claims.Items[i])); err != nil {
+		claim := &claims.Items[i]
+		class := &bryggav1alpha1.DatastoreClass{}
+		name := claim.Annotations[ClassAnnotation]
+		if name == "" {
+			log.Info("keeping the claim, it records no class", "claim", claim.Name)
+			continue
+		}
+		err := r.Get(ctx, client.ObjectKey{Name: name}, class)
+		switch {
+		case apierrors.IsNotFound(err):
+			log.Info("keeping the claim, its class is gone", "claim", claim.Name, "class", name)
+			continue
+		case err != nil:
+			return err
+		case class.Spec.Storage.ReclaimPolicy != "Delete":
+			continue
+		}
+		log.Info("deleting the claim", "claim", claim.Name, "class", name)
+		if err := client.IgnoreNotFound(r.Delete(ctx, claim)); err != nil {
 			return err
 		}
 	}

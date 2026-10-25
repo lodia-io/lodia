@@ -9,6 +9,7 @@ import (
 	"maps"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
@@ -40,8 +41,10 @@ func backupSecretName(cp string) string { return cp + "-etcd-backup" }
 // etcd-druid's defaults for everything the class does not set. TLS is set on
 // client, peer and backup-restore together: etcd-druid probes the members
 // over HTTPS only with backup.tls, while they serve HTTPS whenever client TLS
-// is on (docs/decisions/dedicated-etcd-by-default.md).
-func render(cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClass, generation int) *druidv1alpha1.Etcd {
+// is on (docs/decisions/dedicated-etcd-by-default.md). The storage class and
+// size come from the current Etcd once it exists: the first is immutable in
+// the Etcd, the second a StatefulSet field that cannot change in place.
+func render(cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClass, generation int, current *druidv1alpha1.Etcd) *druidv1alpha1.Etcd {
 	secret := func(certificate string) corev1.SecretReference {
 		return corev1.SecretReference{Name: SecretName(cp.Name, certificate, generation)}
 	}
@@ -55,9 +58,13 @@ func render(cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClas
 	etcd := &druidv1alpha1.Etcd{
 		TypeMeta: metav1.TypeMeta{APIVersion: druidv1alpha1.SchemeGroupVersion.String(), Kind: "Etcd"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:            etcdName(cp.Name),
-			Namespace:       cp.Namespace,
-			Labels:          labels,
+			Name:      etcdName(cp.Name),
+			Namespace: cp.Namespace,
+			Labels:    labels,
+			Annotations: map[string]string{
+				ClassAnnotation:           class.Name,
+				ClassGenerationAnnotation: strconv.FormatInt(class.Generation, 10),
+			},
 			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cp, bryggav1alpha1.GroupVersion.WithKind("ControlPlane"))},
 		},
 		Spec: druidv1alpha1.EtcdSpec{
@@ -75,6 +82,10 @@ func render(cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClas
 	}
 	if spec.Storage.ClassName != "" {
 		etcd.Spec.StorageClass = new(spec.Storage.ClassName)
+	}
+	if current != nil {
+		etcd.Spec.StorageClass = current.Spec.StorageClass
+		etcd.Spec.StorageCapacity = current.Spec.StorageCapacity
 	}
 	if settings := spec.Etcd; settings != nil {
 		etcd.Spec.Etcd.Quota = settings.QuotaBackendBytes
@@ -95,7 +106,7 @@ func render(cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClas
 		etcd.Spec.Backup.Store = &druidv1alpha1.StoreSpec{
 			Provider:  new(druidv1alpha1.StorageProvider(backup.Store.Provider)),
 			Container: new(backup.Store.Bucket),
-			Prefix:    path.Join(backup.Store.Prefix, cp.Namespace, cp.Name),
+			Prefix:    path.Join(backup.Store.Prefix, cp.Namespace, cp.Name, string(cp.UID)),
 			SecretRef: &corev1.SecretReference{Name: backupSecretName(cp.Name)},
 		}
 		if backup.Store.Endpoint != "" {

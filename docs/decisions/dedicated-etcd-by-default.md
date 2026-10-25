@@ -2,10 +2,12 @@
 
 Decided 2026-10-24. The phase 0 spike found etcd-druid fit
 ([etcd spike](../etcd-spike-2026-10.md)). The Datastore controller is built
-for the dedicated case with one member: the `Etcd` from the class and the
-newest certificate generation, the finalizer with the reclaim policy, and
-`DatastoreReady`; three members, hibernation, the final snapshot and the
-backups' retention after deletion, restore and the shared store are not.
+for the dedicated case with one member: the `Etcd` from the class recorded at
+creation and the newest certificate generation, the finalizer with the
+reclaim policy, `VolumesExist` and `DatastoreReady`; three members,
+hibernation, class edits held for the maintenance window, the final snapshot
+and the backups' retention after deletion, restore and the shared store are
+not.
 
 ## Decision
 
@@ -159,6 +161,17 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   immutable in the `Etcd`
   ([etcd.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/etcd.go#L627-L638)),
   the second a StatefulSet field that cannot change in place.
+- The class is resolved once, when the `Etcd` is created, and recorded on it
+  (`brygga.segla.io/datastore-class`, beside
+  `brygga.segla.io/datastore-class-generation`); from then on the `Etcd`
+  follows the recorded class, its `reclaimPolicy` included, the way a default
+  StorageClass is written into a claim when the claim is created
+  ([storage classes](https://kubernetes.io/docs/concepts/storage/storage-classes/#default-storageclass)).
+  A default that moves therefore re-renders no running etcd and never turns a
+  `Retain` into a `Delete`. The claims carry the `ControlPlane`'s UID as a
+  label and the class as an annotation, since they outlive the `Etcd`:
+  deletion reclaims only this `ControlPlane`'s claims, under the class each
+  records, and keeps them when that class is gone.
 - Snapshots hold the tenant's Secrets as the API server stored them, so
   encryption at rest is on by default (`secretbox`), and the encryption key is
   backed up next to the snapshots; bucket-side encryption is recommended on

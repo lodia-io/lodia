@@ -179,7 +179,14 @@ owned by the `Etcd`
 ([helper.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/helper.go)).
 With a backup store, the class's credentials Secret is copied into the
 namespace as `<cp>-etcd-backup`, since etcd-druid mounts it from the `Etcd`'s
-namespace. What each field of the class becomes
+namespace. The class is resolved once, when the `Etcd` is created, and
+recorded on it in `brygga.segla.io/datastore-class`, with the class
+generation it was rendered from in `brygga.segla.io/datastore-class-generation`;
+from then on the `Etcd` follows that class, its reclaim policy included, as a
+default StorageClass is written into a claim when the claim is created. The
+claims the StatefulSet creates are labelled with the `ControlPlane`'s UID
+(`brygga.segla.io/control-plane-uid`) and annotated with the class, since
+they outlive the `Etcd`. What each field of the class becomes
 ([etcd.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/etcd.go),
 [store.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/store.go));
 everything the class does not set is etcd-druid's default:
@@ -190,11 +197,11 @@ everything the class does not set is etcd-druid's default:
 | `etcd.autoCompaction.mode`, `.retention` | `spec.sharedConfig.autoCompactionMode`, `.autoCompactionRetention` | shared with the sidecar's embedded etcd |
 | `etcd.defragmentation.schedule` | `spec.etcd.defragmentationSchedule` | the sidecar defragments only above 3 GiB or with more than 1 GiB free ([etcd spike](etcd-spike-2026-10.md), finding 7) |
 | `etcd.resources` | `spec.etcd.resources` | the sidecar's `spec.backup.resources` stay etcd-druid's default: the class has no field for them |
-| `storage.className` | `spec.storageClass` | immutable in the `Etcd`: etcd-druid refuses a change, which shows in `DatastoreReady` |
-| `storage.size` | `spec.storageCapacity` | |
+| `storage.className` | `spec.storageClass` | when the `Etcd` is created and not after: the field is immutable in the `Etcd` |
+| `storage.size` | `spec.storageCapacity` | when the `Etcd` is created and not after: a StatefulSet field that cannot change in place |
 | `storage.reclaimPolicy` | — | on deletion, `Delete` removes the claims etcd-druid's StatefulSet created and `Retain` leaves them ([deletion](#deletion)) |
 | `backup.store.provider`, `.bucket`, `.endpoint` | `spec.backup.store.provider`, `.container`, `.endpointOverride` | Brygga's four providers are among etcd-druid's; most S3-compatible stores also want `s3ForcePathStyle: "true"` in the credentials Secret |
-| `backup.store.prefix` | `spec.backup.store.prefix` | `<class prefix>/<namespace>/<cp>`, so tenants of one class never share a prefix |
+| `backup.store.prefix` | `spec.backup.store.prefix` | `<class prefix>/<namespace>/<cp>/<uid>`: etcd-backup-restore restores an empty member from the newest snapshot under its prefix, so a `ControlPlane` recreated under the same name never restores the old one's |
 | `backup.store.region` | the key `region` of `<cp>-etcd-backup` | where the sidecar reads it |
 | `backup.store.secretRef` | `spec.backup.store.secretRef` | `<cp>-etcd-backup`, the copy, with the class Secret's data |
 | `backup.fullSnapshotSchedule`, `.deltaSnapshotPeriod` | `spec.backup.fullSnapshotSchedule`, `.deltaSnapshotPeriod` | the delta period bounds what a restore loses ([etcd spike](etcd-spike-2026-10.md), finding 5) |
@@ -208,8 +215,12 @@ everything the class does not set is etcd-druid's default:
 exists and etcd-druid reports the `Etcd` for its current generation
 (`status.observedGeneration`, `ready`, `readyReplicas`), with etcd-druid's
 `lastErrors` in the message; `DatastoreClassNotFound` when the class is
-missing or more than one class is the default; True once etcd-druid reports
-the members ready. `status.datastore` is `kind: Dedicated`, the `Etcd`'s
+missing or more than one class is the default; `VolumesExist` when claims of
+`<cp>-etcd` without this `ControlPlane`'s UID label stand where its first
+`Etcd` would be created, since a StatefulSet re-attaches a claim of that
+name and starting from another tenant's data is a restore, not a start —
+nothing is created until they are deleted; True once etcd-druid reports the
+members ready. `status.datastore` is `kind: Dedicated`, the `Etcd`'s
 name and its member count.
 
 Identities: no root CA key is mounted into a control plane pod; the
@@ -403,12 +414,13 @@ writes stop for the copy.
 
 The Datastore controller holds the `ControlPlane`'s finalizer
 `brygga.segla.io/controlplane`. On deletion it deletes the `Etcd` and waits
-for etcd-druid to let it go, then applies the class's `storage.reclaimPolicy`
-to the volumes, which etcd-druid keeps: `Delete` removes the
-PersistentVolumeClaims the StatefulSet created (`<cp>-etcd-<cp>-etcd-<n>`,
-found by the labels the StatefulSet controller copies from etcd-druid's
-selector), `Retain` leaves them, and a class that no longer exists leaves
-them too. Then the finalizer goes and the owner references garbage-collect
+for etcd-druid to let it go, then reclaims the volumes, which etcd-druid
+keeps: of the PersistentVolumeClaims the StatefulSet created
+(`<cp>-etcd-<cp>-etcd-<n>`, found by the labels the StatefulSet controller
+copies from etcd-druid's selector) those labelled with the `ControlPlane`'s
+UID are deleted when the class each records says `Delete`, and left when it
+says `Retain` or no longer exists; a claim of another `ControlPlane` is never
+touched. Then the finalizer goes and the owner references garbage-collect
 the rest of the namespace objects. The final snapshot when a backup store
 exists, and the snapshots' retention after deletion, come with backups in
 phase 2.
