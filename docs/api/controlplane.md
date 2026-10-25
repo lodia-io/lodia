@@ -46,7 +46,7 @@ Examples: [`examples/`](examples/).
 | `maintenance.autoUpdate.kubernetesPatch` | bool | `false` | newest patch of the running minor, applied in the window |
 | `hibernation.enabled` | bool | `false` | an explicit override of the schedules |
 | `hibernation.schedules[]` | `{start, end, timeZone}` | | cron expressions; `start` puts the control plane to sleep, `end` wakes it |
-| `restoreFrom.backupRef` | `{name, namespace?}` | | set only at creation (CEL: cannot be added or changed later); the datastore starts from that snapshot |
+| `restoreFrom.backupRef` | `{name, namespace?}` | | set only at creation (CEL: cannot be added or changed later); the datastore starts from that snapshot, from phase 2 on ([roadmap](../roadmap.md)): until then nothing reads it, and a `ControlPlane` created with it starts empty |
 | `health.holdControllerManager` | bool | `true` | hold the controller manager's leader lease while most nodes are silent ([controller-manager-hold](../decisions/controller-manager-hold.md)); `false` releases a hold in progress |
 | `paused` | bool | `false` | Brygga stops reconciling but keeps watching; `Progressing=False`, reason `Paused`; the finalizer stays, so a paused `ControlPlane`'s deletion waits until it is unpaused |
 

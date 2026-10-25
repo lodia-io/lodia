@@ -202,7 +202,7 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 	}
 	if current == nil {
 		if foreign := foreignClaims(cp, claims); len(foreign) > 0 {
-			message := fmt.Sprintf("the claims %s of another ControlPlane stand where the etcd of %s would be created: delete them to start empty; to keep their data, restore it from a Backup with restoreFrom once they are deleted",
+			message := fmt.Sprintf("the claims %s of another ControlPlane stand where the etcd of %s would be created: delete them to start empty, or keep them, and this ControlPlane waits",
 				strings.Join(foreign, ", "), cp.Name)
 			return nil, newCondition(metav1.ConditionFalse, ReasonVolumesExist, message), time.Minute, nil
 		}
@@ -272,7 +272,7 @@ func foreignEtcd(etcd *druidv1alpha1.Etcd) string {
 	if ref := metav1.GetControllerOfNoCopy(etcd); ref != nil {
 		owner = fmt.Sprintf("its controller is %s %s with UID %s", ref.Kind, ref.Name, ref.UID)
 	}
-	return fmt.Sprintf("Etcd %s is not this ControlPlane's, %s: delete it and its claims to start empty; to keep their data, restore it from a Backup with restoreFrom once they are deleted",
+	return fmt.Sprintf("Etcd %s is not this ControlPlane's, %s: delete it and its claims to start empty, or keep them, and this ControlPlane waits",
 		etcd.Name, owner)
 }
 

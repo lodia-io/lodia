@@ -86,6 +86,11 @@ is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the Datastore controller (2026-10-25)
 
+- Nothing reads `spec.restoreFrom` until restore is built in phase 2: a
+  `ControlPlane` created with it starts on an empty etcd. When restore lands,
+  test the `VolumesExist` remedy end to end: the claims kept, a `Backup` of
+  the old cluster, a new `ControlPlane` with `restoreFrom` that serves the old
+  data.
 - The finalizer `brygga.segla.io/controlplane` and the annotation
   `brygga.segla.io/is-default-class` are constants of
   `internal/controller/datastore`; move them to `api/v1alpha1` when Lifecycle

@@ -1376,7 +1376,8 @@ func TestVolumesExist(t *testing.T) {
 	create(t, claim(ns, "dev-etcd-scratch", etcdLabels))
 	create(t, controlPlane(ns, "dev", "reused"))
 	writeGeneration(t, ns, "dev", 1)
-	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonVolumesExist, "dev-etcd-dev-etcd-0, dev-etcd-dev-etcd-1 of another ControlPlane")
+	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonVolumesExist,
+		"dev-etcd-dev-etcd-0, dev-etcd-dev-etcd-1 of another ControlPlane stand where the etcd of dev would be created: delete them to start empty, or keep them, and this ControlPlane waits")
 	if condition := meta.FindStatusCondition(getControlPlane(t, ns, "dev").Status.Conditions, bryggav1alpha1.ConditionDatastoreReady); strings.Contains(condition.Message, "dev-etcd-scratch") {
 		t.Errorf("a claim the StatefulSet does not attach blocks the Etcd: %s", condition.Message)
 	}
@@ -1409,7 +1410,7 @@ func TestForeignEtcd(t *testing.T) {
 		owners   []metav1.OwnerReference
 		message  string
 	}{
-		{"no controller", "orphaned", nil, nil, "Etcd orphaned-etcd is not this ControlPlane's, it has no controller"},
+		{"no controller", "orphaned", nil, nil, "Etcd orphaned-etcd is not this ControlPlane's, it has no controller: delete it and its claims to start empty, or keep them, and this ControlPlane waits"},
 		{"another ControlPlane", "succeeded", map[string]string{bryggav1alpha1.ControlPlaneLabel: "succeeded"}, []metav1.OwnerReference{{
 			APIVersion: "brygga.segla.io/v1alpha1", Kind: "ControlPlane", Name: "succeeded", UID: "11111111-2222-3333-4444-555555555555",
 			Controller: new(true), BlockOwnerDeletion: new(true),
