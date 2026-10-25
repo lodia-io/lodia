@@ -853,6 +853,11 @@ func newReconciler(leafLifetime time.Duration) *pki.Reconciler {
 
 func controlPlane(t *testing.T, namespace string) *bryggav1alpha1.ControlPlane {
 	t.Helper()
+	return controlPlaneAt(t, namespace, bryggav1alpha1.Endpoint{LoadBalancer: &bryggav1alpha1.LoadBalancerEndpoint{}, CertSANs: []bryggav1alpha1.Hostname{certSAN}})
+}
+
+func controlPlaneAt(t *testing.T, namespace string, endpoint bryggav1alpha1.Endpoint) *bryggav1alpha1.ControlPlane {
+	t.Helper()
 	if err := k8s.Create(t.Context(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}); err != nil {
 		t.Fatal(err)
 	}
@@ -861,7 +866,7 @@ func controlPlane(t *testing.T, namespace string) *bryggav1alpha1.ControlPlane {
 		Spec: bryggav1alpha1.ControlPlaneSpec{
 			Version:   "v1.37.1",
 			Datastore: bryggav1alpha1.DatastoreChoice{Dedicated: &bryggav1alpha1.DedicatedDatastore{}},
-			Endpoint:  bryggav1alpha1.Endpoint{LoadBalancer: &bryggav1alpha1.LoadBalancerEndpoint{}, CertSANs: []bryggav1alpha1.Hostname{certSAN}},
+			Endpoint:  endpoint,
 			Network:   bryggav1alpha1.Network{ServiceCIDRs: []bryggav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []bryggav1alpha1.CIDR{"10.244.0.0/16"}},
 		},
 	}
@@ -911,6 +916,21 @@ func TestTheKonnectivityCertificateNamesTheKonnectivityHost(t *testing.T) {
 	}
 	if ips := parseTLS(t, secrets["dev-konnectivity-server"]).Cert.IPAddresses; slices.ContainsFunc(ips, func(ip net.IP) bool { return ip.String() == endpointHost }) {
 		t.Errorf("dev-konnectivity-server names the API server's host %s", endpointHost)
+	}
+}
+
+func TestAGatewayControlPlaneWaitsForItsEndpoint(t *testing.T) {
+	cp := controlPlaneAt(t, "pki-gateway", bryggav1alpha1.Endpoint{Gateway: &bryggav1alpha1.GatewayEndpoint{
+		ParentRef: bryggav1alpha1.ParentReference{Name: "edge", Namespace: "gateways"},
+		Hostnames: bryggav1alpha1.GatewayHostnames{APIServer: "api.dev.example.test", Konnectivity: "konnectivity.dev.example.test"},
+	}})
+	reconcile(t, newReconciler(time.Hour), cp)
+	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForEndpoint)
+	secrets := secretsOf(t, cp)
+	for _, name := range []string{"dev-apiserver-serving", "dev-konnectivity-server", "dev-admin-kubeconfig"} {
+		if secrets[name] != nil {
+			t.Errorf("%s issued from spec.endpoint.gateway before status.endpoint", name)
+		}
 	}
 }
 
