@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/selection"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	apiserverv1 "k8s.io/apiserver/pkg/apis/apiserver/v1"
+	corev1ac "k8s.io/client-go/applyconfigurations/core/v1"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -162,6 +163,7 @@ func TestALoadBalancerControlPlaneWaitsForItsEndpoint(t *testing.T) {
 	if ready.Reason != pki.ReasonIssued || ready.ObservedGeneration != fresh.Generation {
 		t.Errorf("CertificatesReady is %s at generation %d, want %s at %d", ready.Reason, ready.ObservedGeneration, pki.ReasonIssued, fresh.Generation)
 	}
+	expectCondition(t, cp, bryggav1alpha1.ConditionCAValidityAcceptable, metav1.ConditionTrue, pki.ReasonValid)
 	creds := fresh.Status.Credentials
 	if creds == nil || creds.AdminKubeconfigSecretRef == nil || creds.AdminKubeconfigSecretRef.Name != "dev-admin-kubeconfig" ||
 		creds.CABundleSecretRef == nil || creds.CABundleSecretRef.Name != "dev-ca-bundle" {
@@ -601,37 +603,33 @@ func TestAnIncompleteEtcdGenerationIsReplacedNotRepaired(t *testing.T) {
 		t.Fatal("the finalizer did not hold the member")
 	}
 	reconcile(t, r, cp)
-	expectGenerations(t, cp, 1, 2)
-	terminating := secretsOf(t, cp)["dev-etcd-server-1"]
+	secrets := secretsOf(t, cp)
+	terminating := secrets["dev-etcd-server-1"]
 	if terminating == nil || terminating.ResourceVersion != held.ResourceVersion {
 		t.Fatal("the member being deleted was touched instead of leaving generation 1 behind")
+	}
+	for _, role := range []string{"ca", "server", "client", "peer", "backup-restore"} {
+		if secrets["dev-etcd-"+role+"-2"] == nil {
+			t.Errorf("generation 2 lacks %s", role)
+		}
+		if role != "server" && secrets["dev-etcd-"+role+"-1"] != nil {
+			t.Errorf("the incomplete generation 1 still holds %s", role)
+		}
 	}
 	terminating.Finalizers = nil
 	if err := k8s.Update(ctx, terminating); err != nil {
 		t.Fatal(err)
 	}
+	expectGenerations(t, cp, 2)
 
-	if err := k8s.Delete(ctx, secretsOf(t, cp)["dev-etcd-client-2"]); err != nil {
+	if err := k8s.Delete(ctx, secrets["dev-etcd-client-2"]); err != nil {
 		t.Fatal(err)
 	}
 	reconcile(t, r, cp)
-	secrets := secretsOf(t, cp)
-	if secrets["dev-etcd-client-2"] != nil {
+	if secretsOf(t, cp)["dev-etcd-client-2"] != nil {
 		t.Error("the missing member of generation 2 was re-issued in place")
 	}
-	for _, role := range []string{"ca", "server", "client", "peer", "backup-restore"} {
-		if secrets["dev-etcd-"+role+"-3"] == nil {
-			t.Errorf("generation 3 lacks %s", role)
-		}
-		if secrets["dev-etcd-"+role+"-1"] != nil {
-			t.Errorf("generation 1 still holds %s", role)
-		}
-	}
-	for name, s := range secrets {
-		if s.Labels[bryggav1alpha1.EtcdCertificatesLabel] != "" && !immutable(s) {
-			t.Errorf("%s is not immutable", name)
-		}
-	}
+	expectGenerations(t, cp, 3)
 }
 
 func TestALostCAIsNeverReplaced(t *testing.T) {
@@ -709,7 +707,7 @@ func TestTheFirstVisitWritesUnknown(t *testing.T) {
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
 		t.Fatal("a pass with a failing reader succeeded")
 	}
-	for _, conditionType := range []string{bryggav1alpha1.ConditionCertificatesReady, bryggav1alpha1.ConditionAccessReady} {
+	for _, conditionType := range []string{bryggav1alpha1.ConditionCertificatesReady, bryggav1alpha1.ConditionCAValidityAcceptable, bryggav1alpha1.ConditionAccessReady} {
 		expectCondition(t, cp, conditionType, metav1.ConditionUnknown, pki.ReasonReconciling)
 	}
 	r.Reader = k8s
@@ -719,6 +717,41 @@ func TestTheFirstVisitWritesUnknown(t *testing.T) {
 
 type failingReader struct {
 	client.Reader
+}
+
+type failingApply struct {
+	client.Client
+	secret string
+}
+
+func (c failingApply) Apply(ctx context.Context, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+	if s, ok := obj.(*corev1ac.SecretApplyConfiguration); ok && *s.GetName() == c.secret {
+		return errors.New("the API server refused the apply")
+	}
+	return c.Client.Apply(ctx, obj, opts...)
+}
+
+func replaceSecret(t *testing.T, s *corev1.Secret, content map[string][]byte) {
+	t.Helper()
+	if err := k8s.Delete(t.Context(), s); err != nil {
+		t.Fatal(err)
+	}
+	fresh := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: s.Name, Namespace: s.Namespace, Labels: s.Labels, OwnerReferences: s.OwnerReferences},
+		Type:       s.Type,
+		Data:       content,
+		Immutable:  new(true),
+	}
+	if err := k8s.Create(t.Context(), fresh); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func reconcileFails(t *testing.T, r *pki.Reconciler, cp *bryggav1alpha1.ControlPlane) {
+	t.Helper()
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+		t.Fatal("the pass succeeded although an apply failed")
+	}
 }
 
 func (failingReader) List(context.Context, client.ObjectList, ...client.ListOption) error {
@@ -801,7 +834,7 @@ func immutable(s *corev1.Secret) bool {
 }
 
 func newReconciler(leafLifetime time.Duration) *pki.Reconciler {
-	return &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: leafLifetime, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour}
+	return &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: leafLifetime, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour}
 }
 
 func controlPlane(t *testing.T, namespace string) *bryggav1alpha1.ControlPlane {

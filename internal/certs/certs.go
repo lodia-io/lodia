@@ -61,8 +61,11 @@ func NewCA(commonName string, lifetime time.Duration) (*Certificate, error) {
 }
 
 // Issue signs a certificate for p under c, valid for lifetime or until c
-// expires, whichever is sooner.
+// expires, whichever is sooner; an expired c signs nothing.
 func (c *Certificate) Issue(p Profile, lifetime time.Duration) (*Certificate, error) {
+	if !time.Now().Before(c.Cert.NotAfter) {
+		return nil, fmt.Errorf("the CA %s expired at %s", c.Cert.Subject.CommonName, c.Cert.NotAfter.UTC().Format(time.RFC3339))
+	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err

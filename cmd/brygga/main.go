@@ -82,6 +82,7 @@ func main() {
 		LeafLifetime:        365 * 24 * time.Hour,
 		CALifetime:          5 * 365 * 24 * time.Hour,
 		TrustAnchorLifetime: 10 * 365 * 24 * time.Hour,
+		CAExpiryNotice:      365 * 24 * time.Hour,
 	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "set up the pki controller")
 		os.Exit(1)

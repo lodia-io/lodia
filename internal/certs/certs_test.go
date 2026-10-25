@@ -42,6 +42,16 @@ func TestALeafLivesWithinItsCAAndIsBackdated(t *testing.T) {
 	}
 }
 
+func TestAnExpiredCASignsNothing(t *testing.T) {
+	ca, err := certs.NewCA("cluster-ca@1", -time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ca.Issue(certs.Profile{CommonName: "kube-apiserver", Usages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}, time.Hour); err == nil {
+		t.Fatal("an expired CA issued a certificate")
+	}
+}
+
 func TestABundleDoesNotDependOnOrder(t *testing.T) {
 	var all []*x509.Certificate
 	for _, name := range []string{"a", "b", "c"} {

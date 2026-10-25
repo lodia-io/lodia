@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 	"time"
 
@@ -37,16 +38,19 @@ const (
 	bindingsPeriod = 10 * time.Minute
 )
 
-// The reasons of CertificatesReady and AccessReady. Each has one message,
-// which depends on the state alone, so a pass that changes nothing writes
-// nothing; the error behind Issuing and Binding is in the log.
+// The reasons of PKI's conditions. Each has one message, which depends on
+// the state alone, so a pass that changes nothing writes nothing; the error
+// behind Issuing and Binding is in the log.
 const (
 	ReasonReconciling                   = "Reconciling"
 	ReasonIssued                        = "Issued"
 	ReasonIssuing                       = "Issuing"
 	ReasonWaitingForEndpoint            = "WaitingForEndpoint"
 	ReasonCAMissing                     = "CAMissing"
+	ReasonCAExpired                     = "CAExpired"
 	ReasonEncryptionProviderUnsupported = "EncryptionProviderUnsupported"
+	ReasonValid                         = "Valid"
+	ReasonCAExpiring                    = "CAExpiring"
 	ReasonBound                         = "Bound"
 	ReasonBinding                       = "Binding"
 	ReasonWaitingForAPIServer           = "WaitingForAPIServer"
@@ -63,6 +67,9 @@ type Reconciler struct {
 	LeafLifetime        time.Duration
 	CALifetime          time.Duration
 	TrustAnchorLifetime time.Duration
+	// CAExpiryNotice is how long before a CA expires CAValidityAcceptable
+	// turns False.
+	CAExpiryNotice time.Duration
 	// Dial, when set, opens every connection to a tenant's API server; tests
 	// set it, since envtest has no DNS for the tenant's Service.
 	Dial func(ctx context.Context, network, address string) (net.Conn, error)
@@ -80,7 +87,8 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // Reconcile issues what the ControlPlane's namespace lacks, renews what is
 // due, binds the tenant's identities once its API server is ready, and
-// returns at the earliest renewal time or in ten minutes, whichever is first.
+// returns at the next moment a later pass has work, or in ten minutes,
+// whichever is first.
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	cp := &bryggav1alpha1.ControlPlane{}
 	if err := r.Get(ctx, req.NamespacedName, cp); err != nil {
@@ -90,9 +98,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, nil
 	}
 	now := time.Now()
-	if meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionCertificatesReady) == nil ||
-		meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionAccessReady) == nil {
-		if err := r.applyStatus(ctx, cp, now, nil, unknown(bryggav1alpha1.ConditionCertificatesReady), unknown(bryggav1alpha1.ConditionAccessReady)); err != nil {
+	owned := []string{bryggav1alpha1.ConditionCertificatesReady, bryggav1alpha1.ConditionCAValidityAcceptable, bryggav1alpha1.ConditionAccessReady}
+	if slices.ContainsFunc(owned, func(c string) bool { return meta.FindStatusCondition(cp.Status.Conditions, c) == nil }) {
+		conditions := make([]metav1.Condition, 0, len(owned))
+		for _, c := range owned {
+			conditions = append(conditions, previous(cp, c))
+		}
+		if err := r.applyStatus(ctx, cp, now, nil, conditions...); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -104,8 +116,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	issueErr := r.issue(ctx, t)
 	certificates := t.certificatesReady(issueErr)
+	validity, read := t.caValidity(r.CAExpiryNotice)
+	if !read {
+		validity = previous(cp, bryggav1alpha1.ConditionCAValidityAcceptable)
+	}
 	access, bindErr := r.access(ctx, t)
-	if err := r.applyStatus(ctx, cp, now, t.credentials(), certificates, access); err != nil {
+	if err := r.applyStatus(ctx, cp, now, t.credentials(), certificates, validity, access); err != nil {
 		return ctrl.Result{}, err
 	}
 	if err := errors.Join(issueErr, bindErr); err != nil {
@@ -114,8 +130,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	return ctrl.Result{RequeueAfter: t.requeueAfter()}, nil
 }
 
-func unknown(conditionType string) metav1.Condition {
+// previous is the condition as the ControlPlane has it, or Unknown on the
+// first visit.
+func previous(cp *bryggav1alpha1.ControlPlane, conditionType string) metav1.Condition {
+	if c := meta.FindStatusCondition(cp.Status.Conditions, conditionType); c != nil {
+		return *c
+	}
 	return metav1.Condition{Type: conditionType, Status: metav1.ConditionUnknown, Reason: ReasonReconciling, Message: "the first pass has not finished"}
+}
+
+func missingCAMessage(cas []string) string {
+	return "missing or unreadable CA key: " + strings.Join(cas, ", ") + "; restore it or rotate the CA, nothing it signs is written"
 }
 
 func (t *tenant) certificatesReady(err error) metav1.Condition {
@@ -124,7 +149,9 @@ func (t *tenant) certificatesReady(err error) metav1.Condition {
 	case err != nil:
 		c.Reason, c.Message = ReasonIssuing, "a Secret could not be written; the error is in the log"
 	case len(t.missingCAs) > 0:
-		c.Reason, c.Message = ReasonCAMissing, "the "+strings.Join(t.missingCAs, ", ")+" CA has a bundle but no readable key: restore it or rotate the CA; nothing it signs is written"
+		c.Reason, c.Message = ReasonCAMissing, missingCAMessage(t.missingCAs)
+	case len(t.expiredCAs) > 0:
+		c.Reason, c.Message = ReasonCAExpired, "expired CA: "+strings.Join(t.expiredCAs, ", ")+"; rotate it, nothing it signs is written"
 	case t.endpoint == nil:
 		c.Reason, c.Message = ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint"
 	case t.unsupportedProvider != "":
@@ -133,6 +160,27 @@ func (t *tenant) certificatesReady(err error) metav1.Condition {
 		c.Status, c.Reason, c.Message = metav1.ConditionTrue, ReasonIssued, "every certificate verifies and is valid beyond its renewal time"
 	}
 	return c
+}
+
+// caValidity is True while every CA is valid for longer than notice, False
+// with each CA that is not and its NotAfter, and Unknown while a CA's key
+// cannot be read. It reports whether every CA was read: a pass that failed
+// before keeps the condition it had.
+func (t *tenant) caValidity(notice time.Duration) (metav1.Condition, bool) {
+	c := metav1.Condition{Type: bryggav1alpha1.ConditionCAValidityAcceptable, Status: metav1.ConditionTrue, Reason: ReasonValid, Message: "no CA expires within " + notice.String()}
+	var expiring []string
+	for _, ca := range caBundles {
+		if cert := t.caCerts[ca.ca]; cert != nil && cert.NotAfter.Sub(t.now) <= notice {
+			expiring = append(expiring, ca.ca+" CA at "+cert.NotAfter.UTC().Format(time.RFC3339))
+		}
+	}
+	switch {
+	case len(expiring) > 0:
+		c.Status, c.Reason, c.Message = metav1.ConditionFalse, ReasonCAExpiring, "expiring within "+notice.String()+": "+strings.Join(expiring, ", ")+"; start its rotation"
+	case len(t.missingCAs) > 0:
+		c.Status, c.Reason, c.Message = metav1.ConditionUnknown, ReasonCAMissing, missingCAMessage(t.missingCAs)
+	}
+	return c, len(t.caCerts)+len(t.missingCAs) == len(caBundles)
 }
 
 // access binds the tenant's identities once APIServerReady is True for the
@@ -152,12 +200,27 @@ func (r *Reconciler) access(ctx context.Context, t *tenant) (metav1.Condition, e
 }
 
 // applyStatus applies PKI's conditions and credential references through the
-// status subresource, and only when one of them changed.
+// status subresource, and only when one of them changed. A condition that
+// already carries an observedGeneration was kept from an earlier pass, and
+// nil credentials keep the references the ControlPlane has: an apply that
+// left out a field PKI owns would remove it.
 func (r *Reconciler) applyStatus(ctx context.Context, cp *bryggav1alpha1.ControlPlane, now time.Time, credentials map[string]any, conditions ...metav1.Condition) error {
+	if credentials == nil {
+		credentials = map[string]any{}
+		if c := cp.Status.Credentials; c != nil {
+			for field, ref := range map[string]*bryggav1alpha1.LocalReference{"adminKubeconfigSecretRef": c.AdminKubeconfigSecretRef, "caBundleSecretRef": c.CABundleSecretRef} {
+				if ref != nil {
+					credentials[field] = map[string]any{"name": ref.Name}
+				}
+			}
+		}
+	}
 	changed := false
 	for i := range conditions {
 		c := &conditions[i]
-		c.ObservedGeneration = cp.Generation
+		if c.ObservedGeneration == 0 {
+			c.ObservedGeneration = cp.Generation
+		}
 		c.LastTransitionTime = metav1.NewTime(now)
 		prev := meta.FindStatusCondition(cp.Status.Conditions, c.Type)
 		if prev != nil && prev.Status == c.Status {
@@ -173,7 +236,7 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *bryggav1alpha1.Control
 	}
 	for field, ref := range map[string]*bryggav1alpha1.LocalReference{"adminKubeconfigSecretRef": prev.AdminKubeconfigSecretRef, "caBundleSecretRef": prev.CABundleSecretRef} {
 		want, _ := credentials[field].(map[string]any)
-		if credentials != nil && ((ref == nil) != (want == nil) || (ref != nil && ref.Name != want["name"])) {
+		if (ref == nil) != (want == nil) || (ref != nil && ref.Name != want["name"]) {
 			changed = true
 		}
 	}

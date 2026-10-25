@@ -12,6 +12,9 @@ const (
 	// ConditionAccessReady is PKI's: the tenant's bindings for Brygga, the
 	// admin group and the kubelet client exist.
 	ConditionAccessReady = "AccessReady"
+	// ConditionCAValidityAcceptable is PKI's and not part of Ready: every CA
+	// is valid for more than a year.
+	ConditionCAValidityAcceptable = "CAValidityAcceptable"
 	// ConditionAPIServerReady is Workloads': every API server replica answers.
 	ConditionAPIServerReady = "APIServerReady"
 )

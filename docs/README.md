@@ -62,7 +62,7 @@ in [`api/examples/`](api/examples/).
 
 | controller | writes | condition | needs |
 |---|---|---|---|
-| PKI | Secrets with certificates, keys and kubeconfigs; the tenant's bindings for Brygga, the admin group and the kubelet client | `CertificatesReady`, `AccessReady` | `status.endpoint`; `APIServerReady` for the bindings |
+| PKI | Secrets with certificates, keys and kubeconfigs; the tenant's bindings for Brygga, the admin group and the kubelet client | `CertificatesReady`, `AccessReady`; `CAValidityAcceptable` outside `Ready` | `status.endpoint`; `APIServerReady` for the bindings |
 | Datastore | the etcd resource (dedicated) or a user and role (shared); backups and defragmentation | `DatastoreReady` | — |
 | Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady` | `CertificatesReady`, `DatastoreReady` |
 | Tenant | objects inside the tenant cluster, with an inventory | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
@@ -142,7 +142,7 @@ ConfigMaps, who consumes them, and what a change does:
 
 | object | consumer | on renewal or change |
 |---|---|---|
-| `<cp>-cakey-cluster`, `-cakey-client`, `-cakey-front-proxy`, `-cakey-etcd` (`kubernetes.io/tls`: each CA's certificate and key) | PKI alone; never mounted | a CA is renewed only by a rotation; a lost or unreadable key is reported (`CertificatesReady` False, `CAMissing`) and nothing that CA signs is written until it is restored or rotated, since a new CA would cut every client or node off at once |
+| `<cp>-cakey-cluster`, `-cakey-client`, `-cakey-front-proxy`, `-cakey-etcd` (`kubernetes.io/tls`: each CA's certificate and key) | PKI alone; never mounted | a CA is renewed only by a rotation, announced a year ahead by `CAValidityAcceptable=False` (`CAExpiring`) outside `Ready`; a lost or unreadable key (`CAMissing`) or an expired CA (`CAExpired`) turns `CertificatesReady` False, and nothing that CA signs is written until it is restored or rotated, since a new CA would cut every client or node off at once; a key Secret restored without its labels is found by name and kept |
 | `<cp>-ca-bundle` (`ca.crt`: the cluster CA, two during a trust anchor rotation) | everything that verifies the API server: kubeconfigs, `cluster-info`, `kube-root-ca.crt` | kubeconfigs and `cluster-info` re-rendered; the controller manager restarts, because `--root-ca-file` is read once |
 | `<cp>-client-ca-bundle` (`ca.crt`: the client CA, the current kubelet signer, and a replaced signer for one signing duration, 30 days) | API server `--client-ca-file` | reloaded |
 | `<cp>-kubelet-signer` (`kubernetes.io/tls`: the intermediate under the client CA, `CA:TRUE`, path length 0) | controller manager, per-signer signing flags | reloaded |
@@ -177,7 +177,8 @@ A certificate is valid from five minutes before its issuance, kubeadm's
 allowance for a verifier whose clock runs behind
 ([constants.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kubeadm/app/constants/constants.go#L45-L46)),
 and no longer than its CA; renewal comes two thirds of the way from issuance
-to expiry. Each CA and kubelet signer carries the second of its issuance in
+to expiry, except for a certificate that already ends with its CA, which a
+new one would not outlive. Each CA and kubelet signer carries the second of its issuance in
 its subject (`cluster-ca@1761350400`), so no bundle ever holds two
 certificates with one subject, and every bundle is a set: each certificate
 once, in DER order, as library-go writes its CA bundles

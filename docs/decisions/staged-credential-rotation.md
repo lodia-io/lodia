@@ -122,9 +122,14 @@ first four.
   [encrypt data](https://kubernetes.io/docs/tasks/administer-cluster/encrypt-data/)).
   The ServiceAccount key was the exception — read once at startup, the reason
   KEP-740 exists — and the external signer removes it.
-- **The CA key out of the controller manager** narrows what a compromised
-  controller manager can sign to kubelet client certificates of a 30-day
-  intermediate, not arbitrary identities under the root.
+- **The root keys stay out of every pod.** The controller manager holds
+  only the kubelet signer, a one-year intermediate. That does not narrow
+  what it can sign: the API server accepts any certificate that chains to
+  its client bundle, with the user from its CN and the groups from its O
+  ([x509.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/authentication/request/x509/x509.go#L288-L310)),
+  so whoever holds the signer can sign any identity while it is in the
+  bundle, that is until it is replaced and its 30 days beside the new one
+  are over.
 - **Stages with both credentials valid** are how Gardener rotates without
   outage
   ([credentials rotation](https://github.com/gardener/gardener/blob/master/docs/usage/shoot-operations/shoot_credentials_rotation.md));
@@ -153,9 +158,11 @@ first four.
 - Kubelet serving certificates stay self-signed by default (no
   `serverTLSBootstrap`), so no CSR approver is needed in the tenant; turning
   it on is a later option with its own approver.
-- An expiring trust anchor is announced a year ahead through
-  `CertificatesReady` (`CAExpiring`) and an alert, because its rotation needs
-  people.
+- Every CA is announced a year before it expires, through
+  `CAValidityAcceptable=False` (`CAExpiring`) outside `Ready` and an alert,
+  as Gardener does
+  ([shoot status](https://github.com/gardener/gardener/blob/v1.154.0/docs/usage/shoot/shoot_status.md#L105-L109)),
+  because every CA rotation is started by someone.
 
 ## Code
 
@@ -186,18 +193,29 @@ first four.
   client CA bundle that keeps a replaced signer for one signing duration;
   the leaves and kubeconfigs; `<cp>-sa-keys` with its `signing.key`; the
   encryption configuration, written last so that a provider PKI cannot
-  render (`kms`) blocks nothing else; and the immutable etcd generations, a
-  generation with a member missing or being deleted replaced by the next and
-  the previous one kept. A CA is created only for a tenant that has neither
-  its key Secret nor its bundle; a lost or unreadable key is `CAMissing`, and
-  nothing that CA signs is written. `reconciler_test.go` proves each of
-  these against a running envtest API server: the subjects, usages, SANs and
-  validity; that no Secret but `<cp>-cakey-*` and `<cp>-kubelet-signer`
-  holds a CA's key; that a pass over an unchanged `ControlPlane` changes no
-  `resourceVersion` and a moved `status.endpoint` re-issues exactly the
-  serving certificate, the konnectivity server certificate and the admin
-  kubeconfig; the renewal at two thirds with the CA key pairs unchanged and
-  the old signer still in the bundle under its own subject; etcd generations
-  1, 2 and 3 with 1 deleted after the third, and a generation replaced, not
-  repaired, when a member is deleted or held by a finalizer; a lost CA left
-  in place; `kms` reported with everything else issued.
+  render (`kms`) blocks nothing else; and the immutable etcd generations,
+  each written once: a generation with a member missing, being deleted or
+  not holding what it needs is replaced by the next, and the newest complete
+  generation below it is kept. A certificate that already ends with its CA
+  is not renewed, since a new one would not outlive it; nothing is issued
+  under an expired CA (`CAExpired`); a new kubelet signer is written only
+  once the client CA bundle trusts it. A CA is created only for a tenant
+  that has neither its key Secret nor its bundle, read by name when the
+  labelled list lacks them, so a key restored without its labels is kept; a
+  lost or unreadable key is `CAMissing`, and nothing that CA signs is
+  written. `CAValidityAcceptable` announces a CA in its last year
+  (`CAExpiryNotice`, a year in `main.go`). `reconciler_test.go` and
+  `recovery_test.go` prove each of these against a running envtest API
+  server: the subjects, usages, SANs and validity; that no Secret but
+  `<cp>-cakey-*` and `<cp>-kubelet-signer` holds a CA's key; that a pass over
+  an unchanged `ControlPlane` changes no `resourceVersion` and a moved
+  `status.endpoint` re-issues exactly the serving certificate, the
+  konnectivity server certificate and the admin kubeconfig; the renewal at
+  two thirds with the CA key pairs unchanged and the old signer still in the
+  bundle under its own subject; a leaf clamped to its CA issued once, and
+  after the CA expires a pass that writes nothing; etcd generations 1, 2 and
+  3 with 1 deleted after the third, a generation replaced, not repaired,
+  when a member is deleted, held by a finalizer or foreign, and a partly
+  written generation deleted while the last complete one is kept; a lost CA
+  left in place and an unlabelled one kept; the client bundle written before
+  the signer; the notice; `kms` reported with everything else issued.

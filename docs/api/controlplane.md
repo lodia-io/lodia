@@ -55,7 +55,7 @@ Examples: [`examples/`](examples/).
 | field | written by | meaning |
 |---|---|---|
 | `observedGeneration` | Lifecycle | the last `metadata.generation` every controller has fully processed |
-| `conditions[]` | each controller its own | `CertificatesReady`, `DatastoreReady`, `APIServerReady`, `AccessReady`, `AddonsApplied`, `AddonsAvailable`, `Reachable`, `Progressing`, `Hibernated`, `Ready`; each with `reason`, `message`, `observedGeneration` |
+| `conditions[]` | each controller its own | `CertificatesReady`, `CAValidityAcceptable`, `DatastoreReady`, `APIServerReady`, `AccessReady`, `AddonsApplied`, `AddonsAvailable`, `Reachable`, `Progressing`, `Hibernated`, `Ready`; each with `reason`, `message`, `observedGeneration` |
 | `target.version` | Lifecycle | the Kubernetes version being rolled now; one minor at a time towards `spec.version` |
 | `target.operatorVersion` | Lifecycle | the Brygga version whose templates this tenant's pods are rendered with |
 | `target.hibernated` | Lifecycle | the desired sleep state |
@@ -77,13 +77,14 @@ Examples: [`examples/`](examples/).
 ## Conditions and their reasons
 
 A controller writes its conditions `Unknown` with reason `Reconciling` on its
-first visit, before its first pass; a reader counts a condition only while its
-`observedGeneration` is the object's generation
+first visit, at the start of its first pass; a reader counts a condition only
+while its `observedGeneration` is the object's generation
 ([independent-controllers](../decisions/independent-controllers.md)).
 
 | condition | True | False reasons |
 |---|---|---|
-| `CertificatesReady` | every certificate, key and kubeconfig exists and is valid for more than its renewal margin (`Issued`) | `Issuing`, `WaitingForEndpoint` (`loadBalancer` and `nodePort`, until Workloads publishes `status.endpoint`), `CAMissing` (a CA has its bundle but no readable key: nothing it signs is written until the key is restored or the CA rotated), `EncryptionProviderUnsupported` (`kms`), `RotationInProgress`, `CAExpiring` |
+| `CertificatesReady` | every certificate, key and kubeconfig exists, verifies, and is valid for more than its renewal margin or until its CA expires (`Issued`) | `Issuing`, `WaitingForEndpoint` (`loadBalancer` and `nodePort`, until Workloads publishes `status.endpoint`), `CAMissing` (a CA's key is missing or unreadable), `CAExpired` (a CA is past its `NotAfter`); in both, the message names the CA and nothing it signs is written until it is restored or rotated; `EncryptionProviderUnsupported` (`kms`) |
+| `CAValidityAcceptable` | every CA is valid for more than a year (`Valid`); not part of `Ready`, since a CA in its last year, or a rotation under way, leaves every certificate valid | `CAExpiring`, the message naming each CA and its `NotAfter`, as Gardener's `CACertificateValiditiesAcceptable` ([shoot status](https://github.com/gardener/gardener/blob/v1.154.0/docs/usage/shoot/shoot_status.md#L105-L109)); `Unknown`, `CAMissing`, while a CA's key cannot be read |
 | `DatastoreReady` | the etcd (or the tenant's prefix in a shared store) accepts writes | `Provisioning`, `QuorumLost`, `Restoring`, `DatastoreClassNotFound`, `DatastoreNotFound`, `VolumesExist`, `Hibernated` |
 | `APIServerReady` | all API server replicas answer `/readyz`; controller manager and scheduler have leaders | `WaitingForCertificates`, `WaitingForDatastore`, `RollingOut`, `Unhealthy`, `Hibernated` |
 | `AccessReady` | the tenant's ClusterRoleBindings for `brygga:operator`, `brygga:cluster-admins` and `brygga:kubelet-api-admins` exist, checked with `brygga:operator` (`Bound`) | `WaitingForAPIServer`, `Binding` |
