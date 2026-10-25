@@ -53,24 +53,23 @@ const (
 	ClassGenerationAnnotation = "brygga.segla.io/datastore-class-generation"
 )
 
-// Each message depends on the state alone, so a pass that changes nothing
-// writes nothing; an error of the API server goes to the log and leaves the
-// status as it was.
+// Messages are built from the state alone, never from an error, so a pass
+// that changes nothing writes nothing.
 const (
 	ReasonReconciling            = "Reconciling"
 	ReasonProvisioning           = "Provisioning"
 	ReasonDatastoreClassNotFound = "DatastoreClassNotFound"
 	ReasonVolumesExist           = "VolumesExist"
-	ReasonEtcdRefused            = "EtcdRefused"
-	ReasonDeleting               = "Deleting"
-	ReasonReady                  = "Ready"
+	// ReasonEtcdRefused is the one reason an error decides: the API server's
+	// refusal of the Etcd, which sending it again cannot change.
+	ReasonEtcdRefused = "EtcdRefused"
+	ReasonDeleting    = "Deleting"
+	ReasonReady       = "Ready"
 )
 
 type Reconciler struct {
 	client.Client
-	// Reader reads what the cache does not hold: the class's credentials
-	// Secret, the claims, the StatefulSet, and an Etcd without the
-	// control-plane label.
+	// Reader reads what the label-filtered cache does not hold.
 	Reader client.Reader
 }
 

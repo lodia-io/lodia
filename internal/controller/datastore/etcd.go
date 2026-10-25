@@ -264,9 +264,10 @@ func mounts(sts *appsv1.StatefulSet, cp string, generation int) bool {
 	return true
 }
 
-// etcd-druid refreshes every Etcd's status every 15 seconds with new
-// timestamps alone; only a change readiness or status.datastore reads gets a
-// pass.
+// etcd-druid refreshes every Etcd's status every 15 seconds
+// (etcd-druid@v0.39.0 api/config/v1alpha1/defaults.go#L104, charts/values.yaml#L63)
+// with new timestamps alone; only a change readiness or status.datastore reads
+// gets a pass.
 func etcdChanged() predicate.Funcs {
 	return predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool {
 		before, ok := e.ObjectOld.(*druidv1alpha1.Etcd)
