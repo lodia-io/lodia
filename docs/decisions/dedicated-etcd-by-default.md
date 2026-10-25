@@ -149,8 +149,9 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   The volumes keep their names (`<cp>-etcd-<cp>-etcd-<n>`) and a StatefulSet
   re-attaches a claim of that name
   ([stateful_pod_control.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/statefulset/stateful_pod_control.go#L381-L405)),
-  so when claims of a retained `<cp>-etcd` exist before a new `ControlPlane`'s
-  first `Etcd`, Datastore stops with `DatastoreReady=False`, `VolumesExist`,
+  whatever its labels, so when such claims of a retained `<cp>-etcd` exist
+  before a new `ControlPlane`'s first `Etcd`, Datastore stops with
+  `DatastoreReady=False`, `VolumesExist`,
   until someone deletes them; starting from old data is a restore. The same
   holds for an `Etcd` `<cp>-etcd` whose controller reference is not the
   `ControlPlane`'s UID, an orphan or a predecessor's not yet collected:
@@ -184,10 +185,12 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   StatefulSet retains its claims and nothing removes the prefix in the
   bucket ([etcd spike](../etcd-spike-2026-10.md), finding 6). Under
   `storage.reclaimPolicy: Delete` the Datastore controller deletes the claims
-  itself, finding them by the labels the StatefulSet controller copies from
-  the selector etcd-druid sets
-  ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L149-L151),
-  [stateful_set_utils.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/controller/statefulset/stateful_set_utils.go#L389-L407));
+  itself, finding them by the name the StatefulSet gives them,
+  `<template>-<StatefulSet>-<ordinal>` with the template named after the
+  `Etcd`
+  ([stateful_set_utils.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/controller/statefulset/stateful_set_utils.go#L116-L119),
+  [builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L233)),
+  not by the labels it copies onto them, which a claim made by hand lacks;
   the snapshots' retention after deletion is phase 2.
 - The `Etcd` names the CA's key, `dataKey: ca.crt`, on all three TLS blocks:
   etcd-druid defaults to `ca.crt` for the members and to `bundle.crt` for its

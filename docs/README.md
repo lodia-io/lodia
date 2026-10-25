@@ -184,7 +184,11 @@ recorded on it in `brygga.segla.io/datastore-class`, with the class
 generation it was rendered from in `brygga.segla.io/datastore-class-generation`;
 from then on the `Etcd` follows that class, its reclaim policy included, as a
 default StorageClass is written into a claim when the claim is created. The
-claims the StatefulSet creates are labelled with the `ControlPlane`'s UID
+claims the StatefulSet attaches are found by name, as the StatefulSet finds
+them: `<cp>-etcd-<cp>-etcd-<n>`, its claim template named after the `Etcd`
+([stateful_set_utils.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/controller/statefulset/stateful_set_utils.go#L116-L119),
+[builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L233)),
+whatever labels they carry. They are labelled with the `ControlPlane`'s UID
 (`brygga.segla.io/control-plane-uid`) and annotated with the class, since
 they outlive the `Etcd`. What each field of the class becomes
 ([etcd.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/etcd.go),
@@ -223,8 +227,8 @@ generation with every replica updated and ready, since etcd-druid computes
 `ready` from its cached StatefulSet before it stamps the observed generation
 and would otherwise report a generation switch ready before the member
 rolled. `DatastoreClassNotFound` when the class is
-missing or more than one class is the default; `VolumesExist` when claims of
-`<cp>-etcd` without this `ControlPlane`'s UID label stand where its first
+missing or more than one class is the default; `VolumesExist` when claims
+`<cp>-etcd-<cp>-etcd-<n>` without this `ControlPlane`'s UID label stand where its first
 `Etcd` would be created, since a StatefulSet re-attaches a claim of that
 name and starting from another tenant's data is a restore, not a start —
 nothing is created until they are deleted — and when an `Etcd` `<cp>-etcd`
@@ -431,9 +435,8 @@ The Datastore controller holds the `ControlPlane`'s finalizer
 nothing, so the deletion of a paused `ControlPlane` waits until it is
 unpaused. On deletion it deletes the `Etcd` and waits
 for etcd-druid to let it go, then reclaims the volumes, which etcd-druid
-keeps: of the PersistentVolumeClaims the StatefulSet created
-(`<cp>-etcd-<cp>-etcd-<n>`, found by the labels the StatefulSet controller
-copies from etcd-druid's selector) those labelled with the `ControlPlane`'s
+keeps: of the PersistentVolumeClaims named `<cp>-etcd-<cp>-etcd-<n>`, which
+the StatefulSet attaches by that name, those labelled with the `ControlPlane`'s
 UID are deleted when the class each records says `Delete`, and left when it
 says `Retain` or no longer exists; a claim of another `ControlPlane` is never
 touched, and neither is an `Etcd` `<cp>-etcd` this `ControlPlane` does not

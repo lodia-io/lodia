@@ -949,11 +949,15 @@ func TestVolumesExist(t *testing.T) {
 	etcdLabels := druidv1alpha1.GetDefaultLabels(metav1.ObjectMeta{Name: "dev-etcd"})
 	previous := maps.Clone(etcdLabels)
 	previous[datastore.ControlPlaneUIDLabel] = "11111111-2222-3333-4444-555555555555"
-	create(t, claim(ns, "dev-etcd-dev-etcd-0", etcdLabels))
+	create(t, claim(ns, "dev-etcd-dev-etcd-0", nil))
 	create(t, claim(ns, "dev-etcd-dev-etcd-1", previous))
+	create(t, claim(ns, "dev-etcd-scratch", etcdLabels))
 	create(t, controlPlane(ns, "dev", "reused"))
 	writeGeneration(t, ns, "dev", 1)
-	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonVolumesExist, "dev-etcd-dev-etcd-0, dev-etcd-dev-etcd-1")
+	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonVolumesExist, "dev-etcd-dev-etcd-0, dev-etcd-dev-etcd-1 of another ControlPlane")
+	if condition := meta.FindStatusCondition(getControlPlane(t, ns, "dev").Status.Conditions, datastore.ConditionType); strings.Contains(condition.Message, "dev-etcd-scratch") {
+		t.Errorf("a claim the StatefulSet does not attach blocks the Etcd: %s", condition.Message)
+	}
 	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev-etcd"}, &druidv1alpha1.Etcd{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("want no Etcd on another ControlPlane's claims, got %v", err)
 	}
@@ -964,11 +968,14 @@ func TestVolumesExist(t *testing.T) {
 	waitEtcd(t, ns, "dev", nil)
 	cp := getControlPlane(t, ns, "dev")
 
-	create(t, claim(ns, "dev-etcd-dev-etcd-0", etcdLabels))
+	create(t, claim(ns, "dev-etcd-dev-etcd-0", nil))
 	settle(t, ns, "dev")
 	pvc := getClaim(t, ns, "dev-etcd-dev-etcd-0")
 	if pvc.Labels[datastore.ControlPlaneUIDLabel] != string(cp.UID) || pvc.Annotations[datastore.ClassAnnotation] != "reused" {
 		t.Errorf("the StatefulSet's claim carries labels %v and annotations %v, want the ControlPlane's UID %s and the class reused", pvc.Labels, pvc.Annotations, cp.UID)
+	}
+	if pvc := getClaim(t, ns, "dev-etcd-scratch"); pvc.Labels[datastore.ControlPlaneUIDLabel] != "" {
+		t.Errorf("a claim the StatefulSet does not attach was labelled: %v", pvc.Labels)
 	}
 }
 

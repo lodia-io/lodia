@@ -211,8 +211,8 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 			return nil, metav1.Condition{}, 0, err
 		}
 		if len(foreign) > 0 {
-			message := fmt.Sprintf("claims of another ControlPlane stand where the etcd of %s would be created: %s; delete them to start empty, or restore from them on purpose",
-				cp.Name, strings.Join(foreign, ", "))
+			message := fmt.Sprintf("the claims %s of another ControlPlane stand where the etcd of %s would be created: delete them to start empty; to keep their data, restore it from a Backup with restoreFrom once they are deleted",
+				strings.Join(foreign, ", "), cp.Name)
 			return nil, newCondition(metav1.ConditionFalse, ReasonVolumesExist, message), time.Minute, nil
 		}
 	}
@@ -361,31 +361,39 @@ func (r *Reconciler) newestCompleteGeneration(ctx context.Context, cp *bryggav1a
 	return newest, found, nil
 }
 
-// claims lists the PersistentVolumeClaims of the Etcd's StatefulSet, which
-// etcd-druid keeps past the Etcd, by the labels the StatefulSet controller
-// copies from the selector etcd-druid gives it
-// (kubernetes/kubernetes@v1.35.0 pkg/controller/statefulset/stateful_set_utils.go#L389-L407,
-// etcd-druid@v0.39.0 internal/component/statefulset/builder.go#L149-L151).
-func (r *Reconciler) claims(ctx context.Context, cp *bryggav1alpha1.ControlPlane, uid bool) (*corev1.PersistentVolumeClaimList, error) {
-	selector := druidv1alpha1.GetDefaultLabels(metav1.ObjectMeta{Name: etcdName(cp.Name)})
-	if uid {
-		selector[ControlPlaneUIDLabel] = string(cp.UID)
+// claims lists the PersistentVolumeClaims the StatefulSet <cp>-etcd attaches,
+// which etcd-druid keeps past the Etcd. They are found by name, as the
+// StatefulSet finds them: <template>-<StatefulSet>-<ordinal>, with the
+// template named after the Etcd
+// (kubernetes/kubernetes@v1.35.0 pkg/controller/statefulset/stateful_set_utils.go#L116-L119,
+// etcd-druid@v0.39.0 internal/component/statefulset/builder.go#L233), whatever
+// labels they carry.
+func (r *Reconciler) claims(ctx context.Context, cp *bryggav1alpha1.ControlPlane) ([]corev1.PersistentVolumeClaim, error) {
+	list := &corev1.PersistentVolumeClaimList{}
+	if err := r.Reader.List(ctx, list, client.InNamespace(cp.Namespace)); err != nil {
+		return nil, err
 	}
-	claims := &corev1.PersistentVolumeClaimList{}
-	err := r.Reader.List(ctx, claims, client.InNamespace(cp.Namespace), client.MatchingLabels(selector))
-	return claims, err
+	prefix := etcdName(cp.Name) + "-" + etcdName(cp.Name) + "-"
+	var claims []corev1.PersistentVolumeClaim
+	for _, claim := range list.Items {
+		ordinal, named := strings.CutPrefix(claim.Name, prefix)
+		if n, err := strconv.Atoi(ordinal); named && err == nil && n >= 0 && strconv.Itoa(n) == ordinal {
+			claims = append(claims, claim)
+		}
+	}
+	return claims, nil
 }
 
 // foreignClaims names the claims of <cp>-etcd that are not this
 // ControlPlane's: unlabelled, or labelled with another UID. Starting an etcd
 // on them would be a restore of another tenant's data by name.
 func (r *Reconciler) foreignClaims(ctx context.Context, cp *bryggav1alpha1.ControlPlane) ([]string, error) {
-	claims, err := r.claims(ctx, cp, false)
+	claims, err := r.claims(ctx, cp)
 	if err != nil {
 		return nil, err
 	}
 	var foreign []string
-	for _, claim := range claims.Items {
+	for _, claim := range claims {
 		if claim.Labels[ControlPlaneUIDLabel] != string(cp.UID) {
 			foreign = append(foreign, claim.Name)
 		}
@@ -398,12 +406,12 @@ func (r *Reconciler) foreignClaims(ctx context.Context, cp *bryggav1alpha1.Contr
 // ControlPlane's UID and the class it was created under, since they outlive
 // the Etcd: deletion reclaims only these, under that class's policy.
 func (r *Reconciler) labelClaims(ctx context.Context, cp *bryggav1alpha1.ControlPlane, class string) error {
-	claims, err := r.claims(ctx, cp, false)
+	claims, err := r.claims(ctx, cp)
 	if err != nil {
 		return err
 	}
-	for i := range claims.Items {
-		claim := &claims.Items[i]
+	for i := range claims {
+		claim := &claims[i]
 		if _, labelled := claim.Labels[ControlPlaneUIDLabel]; labelled {
 			continue
 		}
@@ -493,12 +501,15 @@ func (r *Reconciler) finalize(ctx context.Context, cp *bryggav1alpha1.ControlPla
 // them.
 func (r *Reconciler) reclaimClaims(ctx context.Context, cp *bryggav1alpha1.ControlPlane) error {
 	log := logf.FromContext(ctx)
-	claims, err := r.claims(ctx, cp, true)
+	claims, err := r.claims(ctx, cp)
 	if err != nil {
 		return err
 	}
-	for i := range claims.Items {
-		claim := &claims.Items[i]
+	for i := range claims {
+		claim := &claims[i]
+		if claim.Labels[ControlPlaneUIDLabel] != string(cp.UID) {
+			continue
+		}
 		class := &bryggav1alpha1.DatastoreClass{}
 		name := claim.Annotations[ClassAnnotation]
 		if name == "" {
