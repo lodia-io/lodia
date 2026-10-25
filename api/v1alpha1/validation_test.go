@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -178,6 +179,18 @@ func TestControlPlaneValidation(t *testing.T) {
 		{"uppercase hostname", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, []any{"API.example.com"}, "spec", "endpoint", "certSANs")
 		}, "spec.endpoint.certSANs"},
+		{"a hostname label of 63 characters", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, []any{strings.Repeat("a", 63) + ".example.com"}, "spec", "endpoint", "certSANs")
+		}, ""},
+		{"a hostname label of 64 characters", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, []any{strings.Repeat("a", 64) + ".example.com"}, "spec", "endpoint", "certSANs")
+		}, "must be a lowercase DNS name"},
+		{"a hostname of 256.256.256.256", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, []any{"256.256.256.256"}, "spec", "endpoint", "certSANs")
+		}, "must be a lowercase DNS name"},
+		{"a hostname of 1.2.3", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, []any{"1.2.3"}, "spec", "endpoint", "certSANs")
+		}, "must be a lowercase DNS name"},
 		{"plain http issuer", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, "http://id.example.com", "spec", "serviceAccount", "issuer")
 		}, "must be an https URL"},
@@ -255,6 +268,10 @@ func TestEndpointStatus(t *testing.T) {
 		{"DNS names", map[string]any{"apiServer": address("api.example.test", 443), "konnectivity": address("konnectivity.example.test", 443)}, ""},
 		{"an IPv6 address in brackets", map[string]any{"apiServer": address("[2001:db8::1]", 443), "konnectivity": address("2001:db8::1", 8132)}, "must be an IP address or a lowercase DNS name"},
 		{"an uppercase name", map[string]any{"apiServer": address("API.example.test", 443), "konnectivity": address("api.example.test", 8132)}, "must be an IP address or a lowercase DNS name"},
+		{"a label of 63 characters", map[string]any{"apiServer": address(strings.Repeat("a", 63)+".example.test", 443), "konnectivity": address("api.example.test", 8132)}, ""},
+		{"a label of 64 characters", map[string]any{"apiServer": address(strings.Repeat("a", 64)+".example.test", 443), "konnectivity": address("api.example.test", 8132)}, "must be an IP address or a lowercase DNS name"},
+		{"256.256.256.256", map[string]any{"apiServer": address("256.256.256.256", 443), "konnectivity": address("203.0.113.10", 8132)}, "must be an IP address or a lowercase DNS name"},
+		{"1.2.3", map[string]any{"apiServer": address("1.2.3", 443), "konnectivity": address("203.0.113.10", 8132)}, "must be an IP address or a lowercase DNS name"},
 		{"port 0", map[string]any{"apiServer": address("203.0.113.10", 0), "konnectivity": address("203.0.113.10", 8132)}, "greater than or equal to 1"},
 		{"no konnectivity", map[string]any{"apiServer": address("203.0.113.10", 443)}, "konnectivity: Required value"},
 	}
@@ -264,6 +281,19 @@ func TestEndpointStatus(t *testing.T) {
 			set(t, written, tc.endpoint, "status", "endpoint")
 			expect(t, k8s.Status().Update(context.Background(), written, client.DryRunAll), tc.want)
 		})
+	}
+}
+
+func TestAHostTakesTheHostnameRule(t *testing.T) {
+	manifest, err := os.ReadFile(filepath.Join("..", "..", "config", "crd", "bases", "brygga.segla.io_controlplanes.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := crdSchema(t, manifest)
+	hostname := rules(at(t, schema, "spec.network.clusterDomain"))
+	host := rules(at(t, schema, "status.endpoint.apiServer.host"))
+	if len(hostname) != 1 || !slices.Equal(host, []string{"isIP(self) || " + hostname[0]}) {
+		t.Errorf("HostPort.host has the rules %q, want isIP(self) or the Hostname's %q", host, hostname)
 	}
 }
 

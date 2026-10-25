@@ -481,11 +481,16 @@ spec:
                     description: CertSANs are extra names on the API server's serving
                       certificate.
                     items:
-                      description: Hostname is a lowercase DNS name.
+                      description: |-
+                        Hostname is a lowercase DNS name: labels of at most 63 characters, and not
+                        digits and dots alone, which read as an IP address.
                       maxLength: 253
                       minLength: 1
-                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                       type: string
+                      x-kubernetes-validations:
+                      - message: must be a lowercase DNS name
+                        rule: self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$')
+                          && !self.matches('^[0-9.]+$')
                     maxItems: 16
                     type: array
                     x-kubernetes-list-type: set
@@ -501,23 +506,32 @@ spec:
                             description: APIServer is the public API hostname.
                             maxLength: 253
                             minLength: 1
-                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                             type: string
+                            x-kubernetes-validations:
+                            - message: must be a lowercase DNS name
+                              rule: self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$')
+                                && !self.matches('^[0-9.]+$')
                           konnectivity:
                             description: Konnectivity is where konnectivity agents
                               connect.
                             maxLength: 253
                             minLength: 1
-                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                             type: string
+                            x-kubernetes-validations:
+                            - message: must be a lowercase DNS name
+                              rule: self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$')
+                                && !self.matches('^[0-9.]+$')
                           tunnel:
                             description: |-
                               Tunnel is the hostname apiserver-proxy dials for in-cluster access;
                               empty means no in-cluster proxy.
                             maxLength: 253
                             minLength: 1
-                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                             type: string
+                            x-kubernetes-validations:
+                            - message: must be a lowercase DNS name
+                              rule: self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$')
+                                && !self.matches('^[0-9.]+$')
                         required:
                         - apiServer
                         - konnectivity
@@ -699,8 +713,11 @@ spec:
                     description: ClusterDomain is the cluster's DNS domain.
                     maxLength: 253
                     minLength: 1
-                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                     type: string
+                    x-kubernetes-validations:
+                    - message: must be a lowercase DNS name
+                      rule: self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$')
+                        && !self.matches('^[0-9.]+$')
                   podCIDRs:
                     description: PodCIDRs are the ranges node CIDRs are allocated
                       from.
@@ -1184,14 +1201,15 @@ spec:
                       properties:
                         host:
                           description: |-
-                            Host is a lowercase DNS name or an IP address, an IPv6 address without
-                            brackets.
+                            Host is an IP address, an IPv6 one without brackets, or a lowercase DNS
+                            name: labels of at most 63 characters, and not digits and dots alone.
                           maxLength: 253
                           minLength: 1
                           type: string
                           x-kubernetes-validations:
                           - message: must be an IP address or a lowercase DNS name
-                            rule: isIP(self) || !format.dns1123Subdomain().validate(self).hasValue()
+                            rule: isIP(self) || self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$')
+                              && !self.matches('^[0-9.]+$')
                         port:
                           description: Port is a TCP port.
                           format: int32
@@ -1233,14 +1251,15 @@ spec:
                     properties:
                       host:
                         description: |-
-                          Host is a lowercase DNS name or an IP address, an IPv6 address without
-                          brackets.
+                          Host is an IP address, an IPv6 one without brackets, or a lowercase DNS
+                          name: labels of at most 63 characters, and not digits and dots alone.
                         maxLength: 253
                         minLength: 1
                         type: string
                         x-kubernetes-validations:
                         - message: must be an IP address or a lowercase DNS name
-                          rule: isIP(self) || !format.dns1123Subdomain().validate(self).hasValue()
+                          rule: isIP(self) || self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$')
+                            && !self.matches('^[0-9.]+$')
                       port:
                         description: Port is a TCP port.
                         format: int32
@@ -1258,14 +1277,15 @@ spec:
                     properties:
                       host:
                         description: |-
-                          Host is a lowercase DNS name or an IP address, an IPv6 address without
-                          brackets.
+                          Host is an IP address, an IPv6 one without brackets, or a lowercase DNS
+                          name: labels of at most 63 characters, and not digits and dots alone.
                         maxLength: 253
                         minLength: 1
                         type: string
                         x-kubernetes-validations:
                         - message: must be an IP address or a lowercase DNS name
-                          rule: isIP(self) || !format.dns1123Subdomain().validate(self).hasValue()
+                          rule: isIP(self) || self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$')
+                            && !self.matches('^[0-9.]+$')
                       port:
                         description: Port is a TCP port.
                         format: int32

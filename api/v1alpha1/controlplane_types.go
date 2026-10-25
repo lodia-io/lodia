@@ -789,12 +789,12 @@ type EndpointStatus struct {
 
 // HostPort is a host and a port.
 type HostPort struct {
-	// Host is a lowercase DNS name or an IP address, an IPv6 address without
-	// brackets.
+	// Host is an IP address, an IPv6 one without brackets, or a lowercase DNS
+	// name: labels of at most 63 characters, and not digits and dots alone.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
-	// +kubebuilder:validation:XValidation:rule="isIP(self) || !format.dns1123Subdomain().validate(self).hasValue()",message="must be an IP address or a lowercase DNS name"
+	// +kubebuilder:validation:XValidation:rule="isIP(self) || self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$') && !self.matches('^[0-9.]+$')",message="must be an IP address or a lowercase DNS name"
 	Host string `json:"host"`
 
 	// Port is a TCP port.

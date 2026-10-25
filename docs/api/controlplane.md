@@ -21,10 +21,10 @@ Examples: [`examples/`](examples/).
 | `endpoint.gateway.hostnames.tunnel` | hostname | absent = no in-cluster proxy | the TLS-terminated tunnel that apiserver-proxy on nodes dials ([api-exposure](../decisions/api-exposure.md)) |
 | `endpoint.loadBalancer.{class, sourceRanges, annotations}` | | | a Service of type LoadBalancer with ports 443 and 6443 (API) and 8132 (konnectivity); 6443 is the `kubernetes` Service's endpoint inside the tenant ([api-exposure](../decisions/api-exposure.md)) |
 | `endpoint.nodePort` | `{}` | | a Service of type NodePort; the endpoint is the first management node address |
-| `endpoint.certSANs` | []string | | extra SANs on the API serving certificate |
+| `endpoint.certSANs` | []hostname | | extra names on the API serving certificate |
 | `network.serviceCIDRs` | []CIDR | required | immutable; the first address of the first CIDR is the `kubernetes` Service, the tenth is CoreDNS |
 | `network.podCIDRs` | []CIDR | required | immutable; the controller manager allocates node CIDRs from it |
-| `network.clusterDomain` | string | `cluster.local` | immutable |
+| `network.clusterDomain` | hostname | `cluster.local` | immutable |
 | `apiServer.replicas` | int | 1, or 2 with HA | ≥ 1; ≥ 2 with HA |
 | `apiServer.extraArgs` | map | | flags Brygga owns are rejected by CEL (`etcd-servers`, `service-account-*`, `client-ca-file`, `egress-selector-config-file`, …); the list is in the schema |
 | `apiServer.authentication` | object | no JWT | rendered into the structured `AuthenticationConfiguration`; `jwt[]` as upstream; the `anonymous` section is Brygga's (only `cluster-info` and the health paths) and cannot be set |
@@ -51,6 +51,9 @@ Examples: [`examples/`](examples/).
 | `health.holdControllerManager` | bool | `true` | hold the controller manager's leader lease while most nodes are silent ([controller-manager-hold](../decisions/controller-manager-hold.md)); `false` releases a hold in progress |
 | `paused` | bool | `false` | Brygga stops reconciling but keeps watching; `Progressing=False`, reason `Paused`; the finalizer stays, so a paused `ControlPlane`'s deletion waits until it is unpaused |
 
+A hostname is a lowercase DNS name whose labels are at most 63 characters,
+and not digits and dots alone, which read as an IP address.
+
 ## status
 
 | field | written by | meaning |
@@ -64,7 +67,7 @@ Examples: [`examples/`](examples/).
 | `target.reason`, `target.scheduledFor` | Lifecycle | why the target lags `spec`: `Unsupported` (a `spec.version` this release does not run, or a minor upgrade); `WaitingForWindow` until `scheduledFor`, `FleetLimit`, `Failed` (phase 2) |
 | `kubernetes.version` | Lifecycle | the version every component runs |
 | `kubernetes.upgrade.{from, to, step, startedAt, message}` | Lifecycle | present while an upgrade runs or is stuck |
-| `endpoint` | Workloads | written whole once the public address exists, absent until then; each address a host (a lowercase DNS name, or an IP address without brackets) and a port |
+| `endpoint` | Workloads | written whole once the public address exists, absent until then; each address a host (an IP address, an IPv6 one without brackets, or a hostname) and a port |
 | `endpoint.apiServer.{host, port}` | Workloads | the API server's public endpoint; PKI puts it into the serving certificate and the kubeconfigs, Tenant into `cluster-info`, `kubeadm-config` and kube-proxy's kubeconfig, and Health probes it |
 | `endpoint.konnectivity.{host, port}` | Workloads | where konnectivity agents reach the konnectivity server: the API server's host in `loadBalancer` and `nodePort` modes with its own port, `hostnames.konnectivity` in `gateway` mode; PKI names the host in the konnectivity server's certificate, and Tenant gives it to the agents |
 | `credentials.adminKubeconfigSecretRef` | PKI | `<name>-admin-kubeconfig` |
