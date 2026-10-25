@@ -71,6 +71,7 @@ const (
 const (
 	ReasonRollingOut                      = "RollingOut"
 	ReasonLoadBalancerHostnameUnsupported = "LoadBalancerHostnameUnsupported"
+	ReasonObjectsControlledElsewhere      = "ObjectsControlledElsewhere"
 )
 
 // AddonsApplied and AddonsAvailable.

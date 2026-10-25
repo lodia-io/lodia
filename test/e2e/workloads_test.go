@@ -25,13 +25,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
-	"github.com/segla-io/brygga/internal/controller/lifecycle"
-	"github.com/segla-io/brygga/internal/controller/workloads"
+	"github.com/segla-io/brygga/internal/operator"
 )
 
 const apiTenant = "team-api"
@@ -57,13 +57,7 @@ func TestAPIServerOnKind(t *testing.T) {
 			if k8s, err = client.New(cfg.Client().RESTConfig(), client.Options{Scheme: scheme}); err != nil {
 				t.Fatal(err)
 			}
-			mgr := manager(t, cfg.Client().RESTConfig(), scheme)
-			if err := (&lifecycle.Reconciler{Client: mgr.GetClient()}).SetupWithManager(mgr, 1); err != nil {
-				t.Fatal(err)
-			}
-			if err := (&workloads.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), SignerImage: signer, DruidNamespace: druidNamespace}).SetupWithManager(mgr, 1); err != nil {
-				t.Fatal(err)
-			}
+			mgr := manager(t, cfg.Client().RESTConfig(), scheme, func(mgr ctrl.Manager) error { return operator.Setup(mgr, signer) })
 			var run context.Context
 			run, stop = context.WithCancel(context.Background())
 			stopped = make(chan error, 1)
@@ -102,7 +96,7 @@ func TestAPIServerOnKind(t *testing.T) {
 				t.Fatal(err)
 			}
 			e := cp.Status.Endpoint
-			t.Logf("status.endpoint: API server %s:%d, konnectivity %s:%d, internal %s:%d", e.APIServer.Host, e.APIServer.Port, e.Konnectivity.Host, e.Konnectivity.Port, e.Internal.Host, e.Internal.Port)
+			t.Logf("status.endpoint: API server %s:%d, konnectivity %s:%d", e.APIServer.Host, e.APIServer.Port, e.Konnectivity.Host, e.Konnectivity.Port)
 			pods := &corev1.PodList{}
 			if err := k8s.List(ctx, pods, client.InNamespace(apiTenant)); err != nil {
 				t.Fatal(err)

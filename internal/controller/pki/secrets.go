@@ -67,10 +67,6 @@ var names = func() []string {
 }()
 
 const (
-	// signingDuration is how long the controller manager's kubelet client
-	// certificates live, and so how long a replaced kubelet signer stays in
-	// the client CA bundle.
-	signingDuration = 30 * 24 * time.Hour
 	// serviceAccountKeyBits is RSA 2048: OIDC makes RS256 mandatory for every
 	// provider, so it is what a federation partner accepts.
 	serviceAccountKeyBits = 2048
@@ -472,7 +468,7 @@ func (t *tenant) clientBundle(signer *certs.Certificate) []*x509.Certificate {
 	previous, _ := certs.ParseCerts(data(t.existing[t.secret(bryggav1alpha1.ClientCASecret)], bryggav1alpha1.CACertKey))
 	replaced := signer.Cert.NotBefore.Add(certs.Backdate)
 	for _, c := range previous {
-		if c.IsCA && !c.Equal(ca) && certs.Verify(c, ca, t.now) == nil && t.now.Before(replaced.Add(signingDuration)) {
+		if c.IsCA && !c.Equal(ca) && certs.Verify(c, ca, t.now) == nil && t.now.Before(replaced.Add(certs.KubeletClientLifetime)) {
 			bundle = append(bundle, c)
 		}
 	}

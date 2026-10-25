@@ -92,7 +92,7 @@ flowchart TB
 ## Code
 
 - `internal/controller/workloads` — `render.go` renders the three
-  Deployments, their restart hashes and the etcd NetworkPolicy;
+  Deployments, their restart hashes and a NetworkPolicy for each;
   `workloads.go` applies them once the certificates and the datastore are
   ready and reports `APIServerReady`. `test/e2e/workloads_test.go` runs a
   tenant API server on kind.

@@ -30,6 +30,7 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
@@ -70,7 +71,19 @@ func TestDatastoreOnKind(t *testing.T) {
 			if k8s, err = client.New(cfg.Client().RESTConfig(), client.Options{Scheme: scheme}); err != nil {
 				t.Fatal(err)
 			}
-			mgr := manager(t, cfg.Client().RESTConfig(), scheme)
+			mgr := manager(t, cfg.Client().RESTConfig(), scheme, func(mgr ctrl.Manager) error {
+				if err := (&pki.Reconciler{
+					Client:              mgr.GetClient(),
+					Reader:              mgr.GetAPIReader(),
+					LeafLifetime:        365 * 24 * time.Hour,
+					CALifetime:          5 * 365 * 24 * time.Hour,
+					TrustAnchorLifetime: 10 * 365 * 24 * time.Hour,
+					CAExpiryNotice:      365 * 24 * time.Hour,
+				}).SetupWithManager(mgr, 1); err != nil {
+					return err
+				}
+				return (&datastore.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader()}).SetupWithManager(mgr, 1)
+			})
 			var run context.Context
 			run, stop = context.WithCancel(context.Background())
 			stopped = make(chan error, 1)
@@ -235,7 +248,7 @@ func installEtcdDruid(t *testing.T, kubeconfig string) {
 	t.Logf("etcd-druid %s installed from its chart into namespace %s", druidVersion, druidNamespace)
 }
 
-func manager(t *testing.T, cfg *rest.Config, scheme *runtime.Scheme) ctrl.Manager {
+func manager(t *testing.T, cfg *rest.Config, scheme *runtime.Scheme, setup func(ctrl.Manager) error) ctrl.Manager {
 	t.Helper()
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
 	cache, err := operator.Cache()
@@ -243,21 +256,16 @@ func manager(t *testing.T, cfg *rest.Config, scheme *runtime.Scheme) ctrl.Manage
 		t.Fatal(err)
 	}
 	cache.ReaderFailOnMissingInformer = true
-	mgr, err := ctrl.NewManager(cfg, ctrl.Options{Scheme: scheme, Metrics: metricsserver.Options{BindAddress: "0"}, Cache: cache})
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+		Scheme:     scheme,
+		Metrics:    metricsserver.Options{BindAddress: "0"},
+		Controller: config.Controller{SkipNameValidation: new(true)},
+		Cache:      cache,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := (&pki.Reconciler{
-		Client:              mgr.GetClient(),
-		Reader:              mgr.GetAPIReader(),
-		LeafLifetime:        365 * 24 * time.Hour,
-		CALifetime:          5 * 365 * 24 * time.Hour,
-		TrustAnchorLifetime: 10 * 365 * 24 * time.Hour,
-		CAExpiryNotice:      365 * 24 * time.Hour,
-	}).SetupWithManager(mgr, 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := (&datastore.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader()}).SetupWithManager(mgr, 1); err != nil {
+	if err := setup(mgr); err != nil {
 		t.Fatal(err)
 	}
 	return mgr

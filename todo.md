@@ -86,11 +86,6 @@ is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the Datastore controller (2026-10-25)
 
-- PKI's `elsewhere` and the Datastore's `controlledElsewhere` are one
-  predicate, the rule of
-  [independent-controllers](docs/decisions/independent-controllers.md), in
-  two packages; move it where both import it before Workloads and Tenant
-  need it too.
 - Nothing reads `spec.restoreFrom` until restore is built in phase 2: a
   `ControlPlane` created with it starts on an empty etcd. When restore lands,
   test the `VolumesExist` remedy end to end: the claims kept, a `Backup` of
@@ -220,3 +215,20 @@ is a decision — a decision is a file in `docs/decisions/`.
   `rotation.ca` becomes `clusterCA`.
 - Phase 3: `Hibernated`, with Lifecycle as its writer, and the handled
   `brygga.segla.io/operation` value recorded in `status`.
+
+## From the Workloads controller (2026-10-25)
+
+- `highAvailability` (replicas, spread, PodDisruptionBudgets), JWT
+  authentication, an audit policy, an admission and a scheduler
+  configuration are not rendered: they turn `APIServerReady` False with
+  `Unsupported` until phase 2 builds them.
+- The NetworkPolicies isolate each component's ingress alone; the
+  default-deny set of the README's arrows comes with the Gateway mode, and
+  etcd's with the Datastore controller.
+- `--signer-image` is an operator flag until the operator configuration and
+  the chart render it.
+- Workloads finds another owner's objects under its names in the cache,
+  which holds only labelled ones: an unlabelled object that refers to
+  another `ControlPlane` without being its controller is applied over once,
+  and the API server refuses the apply over one with a controller; read them
+  uncached, as PKI does its Secrets, if that ever matters.

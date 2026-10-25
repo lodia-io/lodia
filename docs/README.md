@@ -73,11 +73,12 @@ Each controller has its own queue and field manager, reads `spec`,
 `status.target` and the endpoint Workloads publishes, and reports through its
 own condition; none calls another
 ([decision](decisions/independent-controllers.md)). The cache is scoped to
-labelled objects, with metadata only for Secrets. PKI, the Datastore
-controller, a first Lifecycle and Health's external probe are built
-(`internal/controller/pki`, `datastore`, `lifecycle` and `health`,
-registered under those names by `internal/operator`, whose manager
-`cmd/brygga` runs and the tests build); Workloads and Tenant are not.
+labelled objects, with metadata only for Secrets and ConfigMaps. PKI, the
+Datastore controller, a first Lifecycle, Health's external probe and
+Workloads are built (`internal/controller/pki`, `datastore`, `lifecycle`,
+`health` and `workloads`, registered under those names by
+`internal/operator`, whose manager `cmd/brygga` runs and the tests build);
+Tenant is not.
 
 ```mermaid
 sequenceDiagram
@@ -165,8 +166,8 @@ ConfigMaps are their writer's alone:
 | `Etcd` `<cp>-etcd` | Datastore | PKI, whose etcd certificates name its members and Services; etcd-druid | etcd-druid rolls the members |
 | `<cp>-etcd-backup` (the class's backup credentials, copied) | Datastore | etcd-druid, through the `Etcd`, for the backup sidecar | whether the sidecar reads new keys without a restart is open (`todo.md`) |
 | Service `<cp>-kube-apiserver` | Workloads | PKI, which names it in certificates and kubeconfigs | — |
-| ConfigMap `authentication-config` | Workloads | the API server | reloaded, except its anonymous section |
-| ConfigMaps `egress-selector`, `audit-policy`, `admission-config` / `scheduler-config` | Workloads | the API server / the scheduler | that component restarts |
+| ConfigMap `<cp>-authentication-config` (an `AuthenticationConfiguration` whose anonymous section admits only `cluster-info` and the health paths) | Workloads | the API server | reloaded, except its anonymous section |
+| ConfigMap `<cp>-egress-selector` (the cluster's traffic through konnectivity-server's socket); `audit-policy`, `admission-config` / `scheduler-config` from phase 2 | Workloads | the API server / the scheduler | that component restarts |
 
 Sources: the reload behaviour of each flag is in the
 [kube-apiserver](https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/)
@@ -240,6 +241,42 @@ The labels, annotations and the finalizer they share are defined in
 | annotation `brygga.segla.io/data-hash` | every Secret PKI writes | PKI: `DataHash` of the Secret's data, a SHA-256 that changes whenever the data does | Workloads, for the restart hashes of its pod templates |
 | annotation `brygga.segla.io/operation` | a `ControlPlane` | the platform | Lifecycle and PKI, with rotations in phase 3 |
 | finalizer `brygga.segla.io/datastore` | a `ControlPlane` | Datastore | the API server, which deletes the `ControlPlane` once it is gone |
+
+Workloads runs the three Deployments of
+[component-per-deployment](decisions/component-per-deployment.md) from the
+images of `status.target.version` and the flags of the [hard way](hard-way.md),
+once `CertificatesReady` and `DatastoreReady` are True for the generation and
+the Datastore controller has published `status.datastore.endpoints`, the API
+server's `--etcd-servers`; brygga-signer runs beside the API server as a
+native sidecar, its image a flag of the operator (`--signer-image`). One
+Service, `<cp>-kube-apiserver`, of the endpoint's type, takes 443 and 6443 to
+the API server and 8132 to konnectivity-server, and Workloads publishes
+`status.endpoint` from it before it waits on anything, whole once both
+addresses exist: the balancer's IP with 443 and 8132, or, for `nodePort`, the
+InternalIP of the first Ready management node by name with the node ports of
+6443 and 8132, checked every minute since no event reports a node. In
+`nodePort` mode the API server listens on that node port itself: it
+advertises its address and its own port into the tenant's `kubernetes`
+endpoints, which the tenant's nodes reach only through the node port. Each
+pod template carries a hash of the data hashes of what its component reads
+once (`brygga.segla.io/restart-hash`), so a renewal of a reloaded certificate
+rolls nothing. A NetworkPolicy per component, named as its Deployment,
+isolates the ingress of its pods: the API server takes its two ports from
+anywhere, since they are the public endpoint, and the controller manager and
+the scheduler take nothing; the kubelet's probes come from the node, which a
+NetworkPolicy does not block
+([network policies](https://kubernetes.io/docs/concepts/services-networking/network-policies/)).
+With one replica there is no PodDisruptionBudget. A `ControlPlane` that asks
+for what Workloads does not render yet — `endpoint.gateway`, the Compact
+layout, `highAvailability`, JWT authentication, an audit policy, an admission
+or a scheduler configuration — is `APIServerReady=False` (`Unsupported`)
+rather than run without it. An object under Workloads' names whose controller
+is not this `ControlPlane`, or that refers to another `ControlPlane`, is not
+written: while the Service is held Workloads writes nothing, and while a
+ConfigMap, NetworkPolicy or Deployment is, nothing but the Service
+(`APIServerReady=False`, `ObjectsControlledElsewhere`, naming each object and
+its owner); a predecessor's objects go with the garbage collector, any other
+owner's with a person.
 
 The dedicated etcd is etcd-druid's `Etcd` `<cp>-etcd`, which the Datastore
 controller renders from the `DatastoreClass` and the newest complete
@@ -741,6 +778,21 @@ Health reads `ControlPlane`s from the cache and the CA bundle from the API
 server, and applies `Reachable`: `list` and `watch` on `controlplanes`,
 `patch` on `controlplanes/status`, `get` on `secrets`; its envtest suite runs
 it as a user bound to exactly these rules.
+
+Workloads calls these verbs; its envtest suite runs it as a user bound to
+exactly them, with the `OwnerReferencesPermissionEnforcement` admission plugin
+on:
+
+| group | resource | verbs | for |
+|---|---|---|---|
+| `brygga.segla.io` | `controlplanes` | `list`, `watch` | the cache |
+| `brygga.segla.io` | `controlplanes/status` | `patch` | `APIServerReady` and `status.endpoint`, applied |
+| `brygga.segla.io` | `controlplanes/finalizers` | `update` | `blockOwnerDeletion` on the owner references of what it creates |
+| `apps` | `deployments` | `list`, `watch`, `create`, `patch` | the cache; the apply |
+| `""` | `services`, `configmaps` | `list`, `watch`, `create`, `patch` | the cache, metadata only for ConfigMaps; the apply |
+| `networking.k8s.io` | `networkpolicies` | `list`, `watch`, `create`, `patch` | the cache; the apply |
+| `""` | `secrets` | `list`, `watch` | the metadata of the restart-only Secrets in the cache: their data hash, and their events |
+| `""` | `nodes` | `list` | the management node a `nodePort` endpoint names, read uncached |
 
 ## Installation
 

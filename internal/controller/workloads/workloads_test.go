@@ -24,16 +24,12 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -42,14 +38,14 @@ import (
 
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
 	"github.com/segla-io/brygga/internal/controller/workloads"
+	"github.com/segla-io/brygga/internal/operator"
 	"github.com/segla-io/brygga/internal/versions"
 )
 
 const (
-	version        = "v1.37.1"
-	signerImage    = "registry.example/brygga-signer:test"
-	druidNamespace = "etcd-druid"
-	lbAddress      = "203.0.113.10"
+	version     = "v1.37.1"
+	signerImage = "registry.example/brygga-signer:test"
+	lbAddress   = "203.0.113.10"
 )
 
 var workloadsRules = []rbacv1.PolicyRule{
@@ -59,11 +55,14 @@ var workloadsRules = []rbacv1.PolicyRule{
 	{APIGroups: []string{"apps"}, Resources: []string{"deployments"}, Verbs: []string{"list", "watch", "create", "patch"}},
 	{APIGroups: []string{""}, Resources: []string{"services", "configmaps"}, Verbs: []string{"list", "watch", "create", "patch"}},
 	{APIGroups: []string{"networking.k8s.io"}, Resources: []string{"networkpolicies"}, Verbs: []string{"list", "watch", "create", "patch"}},
-	{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get", "list", "watch"}},
+	{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"list", "watch"}},
 	{APIGroups: []string{""}, Resources: []string{"nodes"}, Verbs: []string{"list"}},
 }
 
-var restartOnlySecrets = []string{"ca-bundle", "etcd-ca", "front-proxy-client", "konnectivity-kubeconfig", "konnectivity-server"}
+var restartOnlySecrets = []bryggav1alpha1.Secret{
+	bryggav1alpha1.CABundleSecret, bryggav1alpha1.EtcdCASecret, bryggav1alpha1.FrontProxyClientSecret,
+	bryggav1alpha1.KonnectivityKubeconfigSecret, bryggav1alpha1.KonnectivityServerSecret,
+}
 
 var k8s client.WithWatch
 
@@ -88,12 +87,7 @@ func TestMain(m *testing.M) {
 		_ = env.Stop()
 		os.Exit(1)
 	}
-	scheme := runtime.NewScheme()
-	for _, add := range []func(*runtime.Scheme) error{clientgoscheme.AddToScheme, bryggav1alpha1.AddToScheme} {
-		if err := add(scheme); err != nil {
-			stop("scheme", err)
-		}
-	}
+	scheme := operator.Scheme()
 	if k8s, err = client.NewWithWatch(cfg, client.Options{Scheme: scheme}); err != nil {
 		stop("client", err)
 	}
@@ -102,31 +96,16 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		stop("the controller's ClusterRole", err)
 	}
-	labelled, err := labels.NewRequirement(bryggav1alpha1.ControlPlaneLabel, selection.Exists, nil)
+	cache, err := operator.Cache()
 	if err != nil {
-		stop("label selector", err)
+		stop("cache", err)
 	}
-	everything := cache.ByObject{Label: labels.Everything()}
-	mgr, err := ctrl.NewManager(controller, ctrl.Options{
-		Scheme:  scheme,
-		Metrics: metricsserver.Options{BindAddress: "0"},
-		Cache: cache.Options{
-			DefaultLabelSelector:        labels.NewSelector().Add(*labelled),
-			DefaultTransform:            cache.TransformStripManagedFields(),
-			ReaderFailOnMissingInformer: true,
-			ByObject: map[client.Object]cache.ByObject{
-				&bryggav1alpha1.ControlPlane{}:      everything,
-				&bryggav1alpha1.DatastoreClass{}:    everything,
-				&bryggav1alpha1.Datastore{}:         everything,
-				&bryggav1alpha1.KubeconfigRequest{}: everything,
-				&bryggav1alpha1.Backup{}:            everything,
-			},
-		},
-	})
+	cache.ReaderFailOnMissingInformer = true
+	mgr, err := ctrl.NewManager(controller, ctrl.Options{Scheme: scheme, Metrics: metricsserver.Options{BindAddress: "0"}, Cache: cache})
 	if err != nil {
 		stop("manager", err)
 	}
-	reconciler := &workloads.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), SignerImage: signerImage, DruidNamespace: druidNamespace}
+	reconciler := &workloads.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), SignerImage: signerImage}
 	if err := reconciler.SetupWithManager(mgr, 1); err != nil {
 		stop("controller", err)
 	}
@@ -183,27 +162,34 @@ func TestTheEndpointIsPublishedBeforeAnythingWaits(t *testing.T) {
 		SourceRanges: []bryggav1alpha1.CIDR{"198.51.100.0/24"},
 		Annotations:  map[string]string{"example.com/tier": "control-plane"},
 	}})
-	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, workloads.ReasonWaitingForEndpoint) })
+	eventually(t, func() error {
+		return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForEndpoint)
+	})
 	svc := getService(t, cp)
 	if svc.Spec.Type != corev1.ServiceTypeLoadBalancer || *svc.Spec.LoadBalancerClass != "example.com/lb" ||
 		!slices.Equal(svc.Spec.LoadBalancerSourceRanges, []string{"198.51.100.0/24"}) || svc.Annotations["example.com/tier"] != "control-plane" {
 		t.Errorf("the Service is %s with class %v, ranges %v and annotations %v", svc.Spec.Type, svc.Spec.LoadBalancerClass, svc.Spec.LoadBalancerSourceRanges, svc.Annotations)
 	}
-	if e := get(t, cp).Status.Endpoint; e == nil || e.APIServer != nil || e.Konnectivity != nil ||
-		*e.Internal != (bryggav1alpha1.HostPort{Host: "dev-kube-apiserver." + cp.Namespace + ".svc", Port: 443}) {
-		t.Errorf("status.endpoint is %+v, want the in-namespace Service alone", e)
+	if e := get(t, cp).Status.Endpoint; e != nil {
+		t.Errorf("status.endpoint is %+v before the load balancer has an address", e)
 	}
 
 	setIngress(t, cp, corev1.LoadBalancerIngress{Hostname: "lb.example.com"})
 	eventually(t, func() error {
-		return expectCondition(cp, metav1.ConditionFalse, workloads.ReasonLoadBalancerHostnameUnsupported)
+		return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonLoadBalancerHostnameUnsupported)
 	})
+	if e := get(t, cp).Status.Endpoint; e != nil {
+		t.Errorf("status.endpoint is %+v while the load balancer has a host name alone", e)
+	}
 
 	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
-	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, workloads.ReasonWaitingForTarget) })
-	e := get(t, cp).Status.Endpoint
-	if *e.APIServer != (bryggav1alpha1.HostPort{Host: lbAddress, Port: 443}) || *e.Konnectivity != (bryggav1alpha1.HostPort{Host: lbAddress, Port: 8132}) {
-		t.Errorf("status.endpoint is %+v %+v, want %s:443 and %s:8132", *e.APIServer, *e.Konnectivity, lbAddress, lbAddress)
+	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForTarget) })
+	want := bryggav1alpha1.EndpointStatus{
+		APIServer:    bryggav1alpha1.HostPort{Host: lbAddress, Port: 443},
+		Konnectivity: bryggav1alpha1.HostPort{Host: lbAddress, Port: 8132},
+	}
+	if e := get(t, cp).Status.Endpoint; e == nil || *e != want {
+		t.Errorf("status.endpoint is %+v, want %+v", e, want)
 	}
 }
 
@@ -212,13 +198,16 @@ func TestANodePortControlPlaneListensOnItsNodePort(t *testing.T) {
 	createNode(t, "node-b", true, "192.0.2.11")
 	createNode(t, "node-c", true, "192.0.2.12")
 	cp := controlPlane(t, bryggav1alpha1.Endpoint{NodePort: &bryggav1alpha1.NodePortEndpoint{}})
-	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, workloads.ReasonWaitingForTarget) })
+	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForTarget) })
 	svc := getService(t, cp)
 	api, konnectivity := nodePort(svc, 6443), nodePort(svc, 8132)
 	e := get(t, cp).Status.Endpoint
-	if svc.Spec.Type != corev1.ServiceTypeNodePort || api == 0 || konnectivity == 0 ||
-		*e.APIServer != (bryggav1alpha1.HostPort{Host: "192.0.2.11", Port: api}) || *e.Konnectivity != (bryggav1alpha1.HostPort{Host: "192.0.2.11", Port: konnectivity}) {
-		t.Fatalf("Service %s with node ports %d and %d, status.endpoint %+v %+v", svc.Spec.Type, api, konnectivity, e.APIServer, e.Konnectivity)
+	want := bryggav1alpha1.EndpointStatus{
+		APIServer:    bryggav1alpha1.HostPort{Host: "192.0.2.11", Port: api},
+		Konnectivity: bryggav1alpha1.HostPort{Host: "192.0.2.11", Port: konnectivity},
+	}
+	if svc.Spec.Type != corev1.ServiceTypeNodePort || api == 0 || konnectivity == 0 || e == nil || *e != want {
+		t.Fatalf("Service %s with node ports %d and %d, status.endpoint %+v", svc.Spec.Type, api, konnectivity, e)
 	}
 
 	inputsReady(t, cp)
@@ -234,32 +223,48 @@ func TestANodePortControlPlaneListensOnItsNodePort(t *testing.T) {
 func TestAControlPlaneRollsOutOnceItsInputsAreReady(t *testing.T) {
 	cp := controlPlane(t, loadBalancer())
 	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
-	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, workloads.ReasonWaitingForTarget) })
+	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForTarget) })
 
 	setTarget(t, cp, version)
 	eventually(t, func() error {
-		return expectCondition(cp, metav1.ConditionFalse, workloads.ReasonWaitingForCertificates)
+		return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForCertificates)
 	})
 	setTrue(t, cp, bryggav1alpha1.ConditionCertificatesReady, "Issued")
-	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, workloads.ReasonWaitingForDatastore) })
+	eventually(t, func() error {
+		return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForDatastore)
+	})
 	setTrue(t, cp, bryggav1alpha1.ConditionDatastoreReady, "Ready")
 	eventually(t, func() error {
 		c := condition(t, cp)
-		if c == nil || c.Reason != workloads.ReasonWaitingForCertificates || !strings.Contains(c.Message, "dev-ca-bundle, dev-etcd-ca") {
+		if c == nil || c.Reason != bryggav1alpha1.ReasonWaitingForDatastore || !strings.Contains(c.Message, "status.datastore.endpoints") {
+			return fmt.Errorf("APIServerReady is %+v, want status.datastore.endpoints awaited", c)
+		}
+		return nil
+	})
+	setDatastore(t, cp, bryggav1alpha1.HostPort{Host: "etcd-0.dev.example", Port: 2379}, bryggav1alpha1.HostPort{Host: "2001:db8::5", Port: 12379})
+	unhashed := "dev-ca-bundle, dev-etcd-ca, dev-front-proxy-client, dev-konnectivity-kubeconfig, dev-konnectivity-server"
+	eventually(t, func() error {
+		c := condition(t, cp)
+		if c == nil || c.Reason != bryggav1alpha1.ReasonWaitingForCertificates || !strings.HasSuffix(c.Message, ": "+unhashed) {
 			return fmt.Errorf("APIServerReady is %+v, want the restart-only Secrets named", c)
 		}
 		return nil
 	})
+	createSecrets(t, cp, "")
+	reconcileNow(t, cp)
+	if c := condition(t, cp); c.Reason != bryggav1alpha1.ReasonWaitingForCertificates || !strings.HasSuffix(c.Message, ": "+unhashed) {
+		t.Errorf("APIServerReady is %s %q while no Secret carries its data hash", c.Reason, c.Message)
+	}
 	if deployments(t, cp) != 0 {
-		t.Fatal("a Deployment was created before the Secrets it mounts exist")
+		t.Fatal("a Deployment was created before PKI wrote the Secrets it reads once with their data hash")
 	}
 
 	createSecrets(t, cp, "one")
-	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, workloads.ReasonRollingOut) })
+	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonRollingOut) })
 	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
 		markAvailable(t, eventuallyDeployment(t, cp, component))
 	}
-	eventually(t, func() error { return expectCondition(cp, metav1.ConditionTrue, workloads.ReasonReady) })
+	eventually(t, func() error { return expectCondition(cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReady) })
 	if c := condition(t, cp); c.Message != "kube-apiserver, kube-controller-manager and kube-scheduler run "+version+", every replica updated and ready" {
 		t.Errorf("APIServerReady says %q", c.Message)
 	}
@@ -276,7 +281,7 @@ func TestAControlPlaneRollsOutOnceItsInputsAreReady(t *testing.T) {
 	expectFlags(t, pod.Containers[0].Command,
 		"--advertise-address="+lbAddress,
 		"--secure-port=6443",
-		"--etcd-servers=https://dev-etcd-client."+cp.Namespace+".svc:2379",
+		"--etcd-servers=https://etcd-0.dev.example:2379,https://[2001:db8::5]:12379",
 		"--service-account-signing-endpoint=/run/signer/signer.sock",
 		"--service-account-issuer=https://"+lbAddress,
 		"--client-ca-file=/etc/brygga/client-ca/ca.crt",
@@ -316,26 +321,30 @@ func TestAControlPlaneRollsOutOnceItsInputsAreReady(t *testing.T) {
 		t.Errorf("the authentication configuration does not let kubeadm join read cluster-info:\n%s", authn.Data["authentication-config.yaml"])
 	}
 
-	policy := &networkingv1.NetworkPolicy{}
-	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: cp.Namespace, Name: "dev-etcd"}, policy); err != nil {
+	policies := &networkingv1.NetworkPolicyList{}
+	if err := k8s.List(t.Context(), policies, client.InNamespace(cp.Namespace)); err != nil {
 		t.Fatal(err)
 	}
-	from := map[string][]int32{}
-	for _, rule := range policy.Spec.Ingress {
-		var ports []int32
-		for _, p := range rule.Ports {
-			ports = append(ports, p.Port.IntVal)
+	got := map[string]string{}
+	for _, p := range policies.Items {
+		var rules []string
+		for _, rule := range p.Spec.Ingress {
+			var ports []string
+			for _, port := range rule.Ports {
+				ports = append(ports, port.Port.String())
+			}
+			rules = append(rules, fmt.Sprintf("from %d peers to %v", len(rule.From), ports))
 		}
-		switch peer := rule.From[0]; {
-		case peer.NamespaceSelector != nil:
-			from["namespace "+peer.NamespaceSelector.MatchLabels[corev1.LabelMetadataName]] = ports
-		default:
-			from[peer.PodSelector.MatchLabels["app.kubernetes.io/name"]+peer.PodSelector.MatchLabels["app.kubernetes.io/part-of"]] = ports
-		}
+		selected := p.Spec.PodSelector.MatchLabels
+		got[p.Name] = fmt.Sprintf("%s/%s %v %v", selected[bryggav1alpha1.ControlPlaneLabel], selected["app.kubernetes.io/name"], p.Spec.PolicyTypes, rules)
 	}
-	want := map[string][]int32{"kube-apiserver": {2379}, "dev-etcd": {2379, 2380}, "namespace " + druidNamespace: {2379, 8080}}
-	if fmt.Sprint(from) != fmt.Sprint(want) || policy.Spec.PodSelector.MatchLabels["app.kubernetes.io/part-of"] != "dev-etcd" {
-		t.Errorf("the etcd NetworkPolicy selects %v and admits %v, want %v", policy.Spec.PodSelector.MatchLabels, from, want)
+	want := map[string]string{
+		"dev-kube-apiserver":          "dev/kube-apiserver [Ingress] [from 0 peers to [https konnectivity]]",
+		"dev-kube-controller-manager": "dev/kube-controller-manager [Ingress] []",
+		"dev-kube-scheduler":          "dev/kube-scheduler [Ingress] []",
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("the NetworkPolicies are %v, want %v", got, want)
 	}
 }
 
@@ -346,8 +355,8 @@ func TestOnlyARestartOnlyInputRollsItsComponent(t *testing.T) {
 		t.Fatalf("restart hashes %v", before)
 	}
 
-	setSecret(t, cp, "apiserver-serving", "renewed")
-	setSecret(t, cp, "front-proxy-client", "renewed")
+	setSecret(t, cp, bryggav1alpha1.APIServerServingSecret, "renewed")
+	setSecret(t, cp, bryggav1alpha1.FrontProxyClientSecret, "renewed")
 	eventually(t, func() error {
 		if after := hashes(t, cp); after["kube-apiserver"] == before["kube-apiserver"] || after["kube-controller-manager"] != before["kube-controller-manager"] {
 			return fmt.Errorf("restart hashes %v, then %v: want the API server's alone to change", before, after)
@@ -356,7 +365,7 @@ func TestOnlyARestartOnlyInputRollsItsComponent(t *testing.T) {
 	})
 
 	middle := hashes(t, cp)
-	setSecret(t, cp, "ca-bundle", "renewed")
+	setSecret(t, cp, bryggav1alpha1.CABundleSecret, "renewed")
 	eventually(t, func() error {
 		if after := hashes(t, cp); after["kube-controller-manager"] == middle["kube-controller-manager"] || after["kube-apiserver"] != middle["kube-apiserver"] {
 			return fmt.Errorf("restart hashes %v, then %v: want the controller manager's alone to change", middle, after)
@@ -404,20 +413,23 @@ func TestWhatIsNotBuiltYetIsSaid(t *testing.T) {
 		ParentRef: bryggav1alpha1.ParentReference{Name: "shared", Namespace: "gateways"},
 		Hostnames: bryggav1alpha1.GatewayHostnames{APIServer: "api.dev.example.com", Konnectivity: "konnectivity.dev.example.com"},
 	}})
-	eventually(t, func() error {
-		return expectCondition(gateway, metav1.ConditionFalse, workloads.ReasonGatewayUnsupported)
-	})
+	eventually(t, func() error { return expectCondition(gateway, metav1.ConditionFalse, bryggav1alpha1.ReasonUnsupported) })
+	if c := condition(t, gateway); c.Message != "not built yet: endpoint.gateway" {
+		t.Errorf("APIServerReady says %q", c.Message)
+	}
 
 	ha := controlPlane(t, loadBalancer(), func(spec *bryggav1alpha1.ControlPlaneSpec) {
 		spec.HighAvailability = &bryggav1alpha1.HighAvailability{FailureTolerance: "Node"}
 		spec.Scheduler = &bryggav1alpha1.Scheduler{ConfigRef: &bryggav1alpha1.LocalReference{Name: "profiles"}}
 	})
-	eventually(t, func() error { return expectCondition(ha, metav1.ConditionFalse, workloads.ReasonUnsupported) })
+	eventually(t, func() error { return expectCondition(ha, metav1.ConditionFalse, bryggav1alpha1.ReasonUnsupported) })
 	if c := condition(t, ha); c.Message != "not built yet: highAvailability, scheduler.configRef" {
 		t.Errorf("APIServerReady says %q", c.Message)
 	}
-	if getServiceOrNil(t, ha) != nil {
-		t.Error("a Service was created for a ControlPlane whose fields are not built yet")
+	for _, cp := range []*bryggav1alpha1.ControlPlane{gateway, ha} {
+		if getServiceOrNil(t, cp) != nil {
+			t.Errorf("a Service was created in %s for a ControlPlane whose fields are not built yet", cp.Namespace)
+		}
 	}
 }
 
@@ -440,10 +452,12 @@ func TestConditionsFromState(t *testing.T) {
 			t.Fatal("no APIServerReady condition was written")
 		}
 	}
-	if first.Status != metav1.ConditionUnknown || first.Reason != workloads.ReasonReconciling {
-		t.Errorf("the first APIServerReady is %s/%s %q, want Unknown/%s", first.Status, first.Reason, first.Message, workloads.ReasonReconciling)
+	if first.Status != metav1.ConditionUnknown || first.Reason != bryggav1alpha1.ReasonReconciling {
+		t.Errorf("the first APIServerReady is %s/%s %q, want Unknown/%s", first.Status, first.Reason, first.Message, bryggav1alpha1.ReasonReconciling)
 	}
-	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, workloads.ReasonWaitingForEndpoint) })
+	eventually(t, func() error {
+		return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForEndpoint)
+	})
 
 	before := get(t, cp).ResourceVersion
 	injected := errors.New("injected: the API server did not answer")
@@ -452,7 +466,7 @@ func TestConditionsFromState(t *testing.T) {
 			return injected
 		},
 	})
-	reconciler := &workloads.Reconciler{Client: failing, Reader: failing, SignerImage: signerImage, DruidNamespace: druidNamespace}
+	reconciler := &workloads.Reconciler{Client: failing, Reader: failing, SignerImage: signerImage}
 	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: cp.Namespace, Name: cp.Name}}); !errors.Is(err, injected) {
 		t.Fatalf("a pass whose Service apply fails returned %v, want the apply's error", err)
 	}
@@ -481,12 +495,116 @@ func TestAPassThatChangesNothingWritesNothing(t *testing.T) {
 		return out
 	}
 	before := versionsOf()
-	reconciler := &workloads.Reconciler{Client: k8s, Reader: k8s, SignerImage: signerImage, DruidNamespace: druidNamespace}
-	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: cp.Namespace, Name: cp.Name}}); err != nil {
-		t.Fatal(err)
-	}
+	reconcileNow(t, cp)
 	if after := versionsOf(); fmt.Sprint(after) != fmt.Sprint(before) {
 		t.Errorf("a pass over an unchanged ControlPlane wrote:\n%v\nthen\n%v", before, after)
+	}
+}
+
+func TestAPredecessorsServiceIsNotWrittenOver(t *testing.T) {
+	ns := namespace(t)
+	predecessor := types.UID("5d1e8a52-5f0e-4bd3-a1a8-0f3c0e6a8b11")
+	held := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      bryggav1alpha1.APIServerServiceName("dev"),
+			Namespace: ns,
+			Labels:    map[string]string{bryggav1alpha1.ControlPlaneLabel: "dev"},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: bryggav1alpha1.GroupVersion.String(), Kind: "ControlPlane", Name: "dev", UID: predecessor, Controller: new(true),
+			}},
+		},
+		Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{Name: "https", Port: 443}}},
+	}
+	if err := k8s.Create(t.Context(), held); err != nil {
+		t.Fatal(err)
+	}
+	cp := create(t, ns, loadBalancer())
+	eventually(t, func() error {
+		return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonObjectsControlledElsewhere)
+	})
+	if c := condition(t, cp); !strings.Contains(c.Message, "Service dev-kube-apiserver by ControlPlane dev (UID "+string(predecessor)+")") {
+		t.Errorf("APIServerReady says %q", c.Message)
+	}
+	if svc := getService(t, cp); svc.ResourceVersion != held.ResourceVersion {
+		t.Error("the predecessor's Service was written")
+	}
+	if e := get(t, cp).Status.Endpoint; e != nil {
+		t.Errorf("status.endpoint is %+v, from the predecessor's Service", e)
+	}
+	if result := reconcileNow(t, cp); result.RequeueAfter != 10*time.Second {
+		t.Errorf("requeue after %s, want 10s while the garbage collector deletes a predecessor's Service", result.RequeueAfter)
+	}
+
+	if err := k8s.Delete(t.Context(), held); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() error {
+		return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForEndpoint)
+	})
+	if svc := getService(t, cp); !metav1.IsControlledBy(svc, cp) || svc.Spec.Type != corev1.ServiceTypeLoadBalancer {
+		t.Errorf("the Service is %s, controlled by %v", svc.Spec.Type, metav1.GetControllerOf(svc))
+	}
+}
+
+func TestAnObjectAnotherControlPlaneKeepsHoldsEveryWorkload(t *testing.T) {
+	ns := namespace(t)
+	other := types.UID("8f0c6f2e-0d6e-4f4e-9e44-0d6a7c1b5a21")
+	pod := map[string]string{"app": "held"}
+	held := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "dev-kube-scheduler",
+			Namespace: ns,
+			Labels:    map[string]string{bryggav1alpha1.ControlPlaneLabel: "dev"},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: bryggav1alpha1.GroupVersion.String(), Kind: "ControlPlane", Name: "prod", UID: other, Controller: new(true),
+			}},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: pod},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: pod},
+				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "held", Image: "registry.example/held"}}},
+			},
+		},
+	}
+	if err := k8s.Create(t.Context(), held); err != nil {
+		t.Fatal(err)
+	}
+	cp := create(t, ns, loadBalancer())
+	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
+	inputsReady(t, cp)
+	eventually(t, func() error {
+		return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonObjectsControlledElsewhere)
+	})
+	if c := condition(t, cp); !strings.Contains(c.Message, "Deployment dev-kube-scheduler by ControlPlane prod (UID "+string(other)+")") {
+		t.Errorf("APIServerReady says %q", c.Message)
+	}
+	if result := reconcileNow(t, cp); result.RequeueAfter != time.Minute {
+		t.Errorf("requeue after %s, want a minute while another ControlPlane keeps a Deployment", result.RequeueAfter)
+	}
+	written := 0
+	for _, list := range []client.ObjectList{&appsv1.DeploymentList{}, &corev1.ConfigMapList{}, &networkingv1.NetworkPolicyList{}} {
+		if err := k8s.List(t.Context(), list, client.InNamespace(ns)); err != nil {
+			t.Fatal(err)
+		}
+		written += meta.LenList(list)
+	}
+	if fresh := deployment(t, cp, "kube-scheduler"); written != 1 || fresh.ResourceVersion != held.ResourceVersion {
+		t.Errorf("%d objects in the namespace, the held Deployment at resourceVersion %s: want the held one alone, unchanged", written, fresh.ResourceVersion)
+	}
+	if e := get(t, cp).Status.Endpoint; e == nil || e.APIServer.Host != lbAddress {
+		t.Errorf("status.endpoint is %+v, want it published from the ControlPlane's own Service", e)
+	}
+
+	if err := k8s.Delete(t.Context(), held); err != nil {
+		t.Fatal(err)
+	}
+	reconcileNow(t, cp)
+	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonRollingOut) })
+	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
+		if d := deployment(t, cp, component); !metav1.IsControlledBy(d, cp) {
+			t.Errorf("%s is controlled by %v", d.Name, metav1.GetControllerOf(d))
+		}
 	}
 }
 
@@ -537,7 +655,7 @@ func running(t *testing.T) *bryggav1alpha1.ControlPlane {
 	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
 		markAvailable(t, eventuallyDeployment(t, cp, component))
 	}
-	eventually(t, func() error { return expectCondition(cp, metav1.ConditionTrue, workloads.ReasonReady) })
+	eventually(t, func() error { return expectCondition(cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReady) })
 	return cp
 }
 
@@ -546,7 +664,18 @@ func inputsReady(t *testing.T, cp *bryggav1alpha1.ControlPlane) {
 	setTarget(t, cp, version)
 	setTrue(t, cp, bryggav1alpha1.ConditionCertificatesReady, "Issued")
 	setTrue(t, cp, bryggav1alpha1.ConditionDatastoreReady, "Ready")
+	setDatastore(t, cp, bryggav1alpha1.HostPort{Host: "dev-etcd-client." + cp.Namespace + ".svc", Port: 2379})
 	createSecrets(t, cp, "one")
+}
+
+func reconcileNow(t *testing.T, cp *bryggav1alpha1.ControlPlane) ctrl.Result {
+	t.Helper()
+	reconciler := &workloads.Reconciler{Client: k8s, Reader: k8s, SignerImage: signerImage}
+	result, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
 }
 
 func get(t *testing.T, cp *bryggav1alpha1.ControlPlane) *bryggav1alpha1.ControlPlane {
@@ -593,6 +722,18 @@ func setTarget(t *testing.T, cp *bryggav1alpha1.ControlPlane, version string) {
 	applyStatus(t, cp, "test/target", map[string]any{"target": map[string]any{"version": version}})
 }
 
+func setDatastore(t *testing.T, cp *bryggav1alpha1.ControlPlane, endpoints ...bryggav1alpha1.HostPort) {
+	t.Helper()
+	var list []any
+	for _, e := range endpoints {
+		list = append(list, map[string]any{"host": e.Host, "port": int64(e.Port)})
+	}
+	applyStatus(t, cp, "test/datastore", map[string]any{"datastore": map[string]any{
+		"endpoints": list,
+		"members":   map[string]any{"total": int64(1), "ready": int64(1)},
+	}})
+}
+
 func setTrue(t *testing.T, cp *bryggav1alpha1.ControlPlane, conditionType, reason string) {
 	t.Helper()
 	applyStatus(t, cp, "test/"+conditionType, map[string]any{"conditions": []any{map[string]any{
@@ -605,26 +746,32 @@ func setTrue(t *testing.T, cp *bryggav1alpha1.ControlPlane, conditionType, reaso
 	}}})
 }
 
-func createSecrets(t *testing.T, cp *bryggav1alpha1.ControlPlane, content string) {
+func createSecrets(t *testing.T, cp *bryggav1alpha1.ControlPlane, hash string) {
 	t.Helper()
-	for _, suffix := range restartOnlySecrets {
-		setSecret(t, cp, suffix, content)
+	for _, s := range restartOnlySecrets {
+		setSecret(t, cp, s, hash)
 	}
 }
 
-func setSecret(t *testing.T, cp *bryggav1alpha1.ControlPlane, suffix, content string) {
+func setSecret(t *testing.T, cp *bryggav1alpha1.ControlPlane, s bryggav1alpha1.Secret, hash string) {
 	t.Helper()
-	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: cp.Name + "-" + suffix, Namespace: cp.Namespace}}
-	if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(secret), secret); err == nil {
-		secret.Data = map[string][]byte{"content": []byte(content)}
-		if err := k8s.Update(t.Context(), secret); err != nil {
-			t.Fatal(err)
-		}
-		return
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: s.Name(cp.Name), Namespace: cp.Namespace}}
+	err := k8s.Get(t.Context(), client.ObjectKeyFromObject(secret), secret)
+	if client.IgnoreNotFound(err) != nil {
+		t.Fatal(err)
 	}
 	secret.Labels = map[string]string{bryggav1alpha1.ControlPlaneLabel: cp.Name}
-	secret.Data = map[string][]byte{"content": []byte(content)}
-	if err := k8s.Create(t.Context(), secret); err != nil {
+	secret.Annotations = map[string]string{bryggav1alpha1.DataHashAnnotation: hash}
+	if hash == "" {
+		secret.Annotations = nil
+	}
+	secret.Data = map[string][]byte{"content": []byte("the same data at every hash")}
+	if err == nil {
+		err = k8s.Update(t.Context(), secret)
+	} else {
+		err = k8s.Create(t.Context(), secret)
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 }
@@ -656,7 +803,7 @@ func getService(t *testing.T, cp *bryggav1alpha1.ControlPlane) *corev1.Service {
 func getServiceOrNil(t *testing.T, cp *bryggav1alpha1.ControlPlane) *corev1.Service {
 	t.Helper()
 	svc := &corev1.Service{}
-	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: cp.Namespace, Name: cp.Name + "-kube-apiserver"}, svc); err != nil {
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: cp.Namespace, Name: bryggav1alpha1.APIServerServiceName(cp.Name)}, svc); err != nil {
 		if client.IgnoreNotFound(err) != nil {
 			t.Fatal(err)
 		}

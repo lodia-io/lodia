@@ -4,8 +4,8 @@
 package workloads
 
 import (
-	"fmt"
 	"maps"
+	"net"
 	"slices"
 	"strconv"
 	"strings"
@@ -34,9 +34,6 @@ const (
 	apiPort          = 443
 	kubernetesPort   = 6443
 	konnectivityPort = 8132
-	druidClientPort  = 2379
-	druidPeerPort    = 2380
-	druidBackupPort  = 8080
 
 	restartHashAnnotation = "brygga.segla.io/restart-hash"
 	signerSocket          = "/run/signer/signer.sock"
@@ -45,12 +42,16 @@ const (
 	authenticationFile    = "authentication-config.yaml"
 )
 
-// restartOnly are the PKI Secrets each component reads once at start, by the
-// suffix of their name; it reloads the rest (docs/README.md, A tenant
-// namespace).
-var restartOnly = map[string][]string{
-	apiServer:         {"etcd-ca", "front-proxy-client", "konnectivity-server", "konnectivity-kubeconfig"},
-	controllerManager: {"ca-bundle"},
+var components = []string{apiServer, controllerManager, scheduler}
+
+// restartOnly are the PKI Secrets each component reads once at start; it
+// reloads the rest (docs/README.md, A tenant namespace).
+var restartOnly = map[string][]bryggav1alpha1.Secret{
+	apiServer: {
+		bryggav1alpha1.EtcdCASecret, bryggav1alpha1.FrontProxyClientSecret,
+		bryggav1alpha1.KonnectivityServerSecret, bryggav1alpha1.KonnectivityKubeconfigSecret,
+	},
+	controllerManager: {bryggav1alpha1.CABundleSecret},
 }
 
 // anonymousPaths are what kubeadm join reads before it has credentials, and
@@ -58,8 +59,6 @@ var restartOnly = map[string][]string{
 var anonymousPaths = []string{"/healthz", "/livez", "/readyz", "/api/v1/namespaces/kube-public/configmaps/cluster-info"}
 
 func deploymentName(cp, component string) string { return cp + "-" + component }
-
-func serviceName(cp string) string { return cp + "-kube-apiserver" }
 
 func podLabels(cp, component string) map[string]string {
 	return map[string]string{bryggav1alpha1.ControlPlaneLabel: cp, "app.kubernetes.io/name": component}
@@ -77,7 +76,7 @@ func objectMeta(cp *bryggav1alpha1.ControlPlane, name string) metav1.ObjectMeta 
 func service(cp *bryggav1alpha1.ControlPlane) *corev1.Service {
 	svc := &corev1.Service{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
-		ObjectMeta: objectMeta(cp, serviceName(cp.Name)),
+		ObjectMeta: objectMeta(cp, bryggav1alpha1.APIServerServiceName(cp.Name)),
 		Spec: corev1.ServiceSpec{
 			Type:     corev1.ServiceTypeNodePort,
 			Selector: podLabels(cp.Name, apiServer),
@@ -134,17 +133,14 @@ func configMap(cp *bryggav1alpha1.ControlPlane, suffix, key string, content []by
 	}
 }
 
-type endpointInputs struct {
-	advertise  string
-	securePort int32
-	issuer     string
-}
-
 type rendering struct {
 	cp          *bryggav1alpha1.ControlPlane
 	images      versions.Images
 	signerImage string
-	endpoint    endpointInputs
+	advertise   string
+	securePort  int32
+	issuer      string
+	etcd        []bryggav1alpha1.HostPort
 	hashes      map[string]string
 }
 
@@ -155,43 +151,47 @@ func (r rendering) deployments() []*appsv1.Deployment {
 func (r rendering) apiServer() *appsv1.Deployment {
 	cp := r.cp
 	settings := ptr.Deref(cp.Spec.APIServer, bryggav1alpha1.APIServer{})
+	etcd := make([]string, 0, len(r.etcd))
+	for _, e := range r.etcd {
+		etcd = append(etcd, "https://"+net.JoinHostPort(e.Host, strconv.Itoa(int(e.Port))))
+	}
 	flags := map[string]string{
-		"advertise-address":                           r.endpoint.advertise,
+		"advertise-address":                           r.advertise,
 		"allow-privileged":                            "true",
 		"authentication-config":                       "/etc/brygga/authentication/" + authenticationFile,
 		"authorization-mode":                          "Node,RBAC",
-		"client-ca-file":                              "/etc/brygga/client-ca/ca.crt",
+		"client-ca-file":                              "/etc/brygga/client-ca/" + bryggav1alpha1.CACertKey,
 		"egress-selector-config-file":                 "/etc/brygga/egress/" + egressFile,
 		"enable-admission-plugins":                    "NodeRestriction",
 		"enable-bootstrap-token-auth":                 "true",
-		"encryption-provider-config":                  "/etc/brygga/encryption/encryption-config.yaml",
+		"encryption-provider-config":                  "/etc/brygga/encryption/" + bryggav1alpha1.EncryptionConfigKey,
 		"encryption-provider-config-automatic-reload": "true",
-		"etcd-cafile":                                 "/etc/brygga/etcd-ca/ca.crt",
-		"etcd-certfile":                               "/etc/brygga/etcd-client/tls.crt",
-		"etcd-keyfile":                                "/etc/brygga/etcd-client/tls.key",
-		"etcd-servers":                                fmt.Sprintf("https://%s-etcd-client.%s.svc:%d", cp.Name, cp.Namespace, druidClientPort),
-		"kubelet-client-certificate":                  "/etc/brygga/kubelet-client/tls.crt",
-		"kubelet-client-key":                          "/etc/brygga/kubelet-client/tls.key",
+		"etcd-cafile":                                 "/etc/brygga/etcd-ca/" + bryggav1alpha1.CACertKey,
+		"etcd-certfile":                               "/etc/brygga/etcd-client/" + bryggav1alpha1.TLSCertKey,
+		"etcd-keyfile":                                "/etc/brygga/etcd-client/" + bryggav1alpha1.TLSPrivateKeyKey,
+		"etcd-servers":                                strings.Join(etcd, ","),
+		"kubelet-client-certificate":                  "/etc/brygga/kubelet-client/" + bryggav1alpha1.TLSCertKey,
+		"kubelet-client-key":                          "/etc/brygga/kubelet-client/" + bryggav1alpha1.TLSPrivateKeyKey,
 		"kubelet-preferred-address-types":             "InternalIP,ExternalIP,Hostname",
-		"proxy-client-cert-file":                      "/etc/brygga/front-proxy-client/tls.crt",
-		"proxy-client-key-file":                       "/etc/brygga/front-proxy-client/tls.key",
+		"proxy-client-cert-file":                      "/etc/brygga/front-proxy-client/" + bryggav1alpha1.TLSCertKey,
+		"proxy-client-key-file":                       "/etc/brygga/front-proxy-client/" + bryggav1alpha1.TLSPrivateKeyKey,
 		"requestheader-allowed-names":                 "front-proxy-client",
-		"requestheader-client-ca-file":                "/etc/brygga/front-proxy-ca/ca.crt",
+		"requestheader-client-ca-file":                "/etc/brygga/front-proxy-ca/" + bryggav1alpha1.CACertKey,
 		"requestheader-extra-headers-prefix":          "X-Remote-Extra-",
 		"requestheader-group-headers":                 "X-Remote-Group",
 		"requestheader-username-headers":              "X-Remote-User",
-		"secure-port":                                 strconv.Itoa(int(r.endpoint.securePort)),
-		"service-account-issuer":                      r.endpoint.issuer,
+		"secure-port":                                 strconv.Itoa(int(r.securePort)),
+		"service-account-issuer":                      r.issuer,
 		"service-account-signing-endpoint":            signerSocket,
 		"service-cluster-ip-range":                    joined(cp.Spec.Network.ServiceCIDRs),
-		"tls-cert-file":                               "/etc/brygga/serving/tls.crt",
-		"tls-private-key-file":                        "/etc/brygga/serving/tls.key",
+		"tls-cert-file":                               "/etc/brygga/serving/" + bryggav1alpha1.TLSCertKey,
+		"tls-private-key-file":                        "/etc/brygga/serving/" + bryggav1alpha1.TLSPrivateKeyKey,
 	}
 	container := corev1.Container{
 		Name:    apiServer,
 		Image:   r.images.APIServer,
 		Command: command(apiServer, flags, settings.ExtraArgs, settings.FeatureGates),
-		Ports:   []corev1.ContainerPort{{Name: "https", ContainerPort: r.endpoint.securePort, Protocol: corev1.ProtocolTCP}},
+		Ports:   []corev1.ContainerPort{{Name: "https", ContainerPort: r.securePort, Protocol: corev1.ProtocolTCP}},
 		ReadinessProbe: &corev1.Probe{
 			ProbeHandler:  httpsGet("/readyz", intstr.FromString("https")),
 			PeriodSeconds: 5,
@@ -223,9 +223,9 @@ func (r rendering) apiServer() *appsv1.Deployment {
 			"agent-port":               strconv.Itoa(konnectivityPort),
 			"admin-port":               "8133",
 			"health-port":              "8134",
-			"cluster-cert":             "/etc/brygga/konnectivity-server/tls.crt",
-			"cluster-key":              "/etc/brygga/konnectivity-server/tls.key",
-			"kubeconfig":               "/etc/brygga/konnectivity-kubeconfig/kubeconfig",
+			"cluster-cert":             "/etc/brygga/konnectivity-server/" + bryggav1alpha1.TLSCertKey,
+			"cluster-key":              "/etc/brygga/konnectivity-server/" + bryggav1alpha1.TLSPrivateKeyKey,
+			"kubeconfig":               "/etc/brygga/konnectivity-kubeconfig/" + bryggav1alpha1.KubeconfigKey,
 			"agent-namespace":          "kube-system",
 			"agent-service-account":    "konnectivity-agent",
 			"authentication-audience":  "system:konnectivity-server",
@@ -261,18 +261,18 @@ func (r rendering) apiServer() *appsv1.Deployment {
 			{Name: "sa-keys", MountPath: "/keys", ReadOnly: true},
 		},
 	}
-	volumes := append(secretVolumes(cp.Name, map[string]string{
-		"serving":                 "apiserver-serving",
-		"client-ca":               "client-ca",
-		"kubelet-client":          "apiserver-kubelet-client",
-		"front-proxy-ca":          "front-proxy-ca",
-		"front-proxy-client":      "front-proxy-client",
-		"etcd-ca":                 "etcd-ca",
-		"etcd-client":             "apiserver-etcd-client",
-		"encryption":              "encryption-config",
-		"konnectivity-server":     "konnectivity-server",
-		"konnectivity-kubeconfig": "konnectivity-kubeconfig",
-		"sa-keys":                 "sa-keys",
+	volumes := append(secretVolumes(cp.Name, map[string]bryggav1alpha1.Secret{
+		"serving":                 bryggav1alpha1.APIServerServingSecret,
+		"client-ca":               bryggav1alpha1.ClientCASecret,
+		"kubelet-client":          bryggav1alpha1.APIServerKubeletClientSecret,
+		"front-proxy-ca":          bryggav1alpha1.FrontProxyCASecret,
+		"front-proxy-client":      bryggav1alpha1.FrontProxyClientSecret,
+		"etcd-ca":                 bryggav1alpha1.EtcdCASecret,
+		"etcd-client":             bryggav1alpha1.APIServerEtcdClientSecret,
+		"encryption":              bryggav1alpha1.EncryptionConfigSecret,
+		"konnectivity-server":     bryggav1alpha1.KonnectivityServerSecret,
+		"konnectivity-kubeconfig": bryggav1alpha1.KonnectivityKubeconfigSecret,
+		"sa-keys":                 bryggav1alpha1.ServiceAccountKeysSecret,
 	}),
 		configMapVolume("authentication", cp.Name+"-authentication-config"),
 		configMapVolume("egress", cp.Name+"-egress-selector"),
@@ -297,23 +297,23 @@ func (r rendering) konnectivityImage() string {
 func (r rendering) controllerManager() *appsv1.Deployment {
 	cp := r.cp
 	settings := ptr.Deref(cp.Spec.ControllerManager, bryggav1alpha1.Component{})
-	kubeconfig := "/etc/brygga/kubeconfig/kubeconfig"
+	kubeconfig := "/etc/brygga/kubeconfig/" + bryggav1alpha1.KubeconfigKey
 	flags := map[string]string{
 		"allocate-node-cidrs":                      "true",
 		"authentication-kubeconfig":                kubeconfig,
 		"authorization-kubeconfig":                 kubeconfig,
 		"bind-address":                             "0.0.0.0",
-		"client-ca-file":                           "/etc/brygga/client-ca/ca.crt",
+		"client-ca-file":                           "/etc/brygga/client-ca/" + bryggav1alpha1.CACertKey,
 		"cluster-cidr":                             joined(cp.Spec.Network.PodCIDRs),
 		"cluster-name":                             cp.Name,
 		"cluster-signing-duration":                 certs.KubeletClientLifetime.String(),
-		"cluster-signing-kubelet-client-cert-file": "/etc/brygga/kubelet-signer/tls.crt",
-		"cluster-signing-kubelet-client-key-file":  "/etc/brygga/kubelet-signer/tls.key",
+		"cluster-signing-kubelet-client-cert-file": "/etc/brygga/kubelet-signer/" + bryggav1alpha1.TLSCertKey,
+		"cluster-signing-kubelet-client-key-file":  "/etc/brygga/kubelet-signer/" + bryggav1alpha1.TLSPrivateKeyKey,
 		"controllers":                              "*,bootstrap-signer-controller,token-cleaner-controller",
 		"kubeconfig":                               kubeconfig,
 		"leader-elect":                             "true",
-		"requestheader-client-ca-file":             "/etc/brygga/front-proxy-ca/ca.crt",
-		"root-ca-file":                             "/etc/brygga/ca-bundle/ca.crt",
+		"requestheader-client-ca-file":             "/etc/brygga/front-proxy-ca/" + bryggav1alpha1.CACertKey,
+		"root-ca-file":                             "/etc/brygga/ca-bundle/" + bryggav1alpha1.CACertKey,
 		"service-cluster-ip-range":                 joined(cp.Spec.Network.ServiceCIDRs),
 		"use-service-account-credentials":          "true",
 	}
@@ -328,12 +328,12 @@ func (r rendering) controllerManager() *appsv1.Deployment {
 	}
 	return r.deployment(controllerManager, 1, corev1.PodSpec{
 		Containers: []corev1.Container{container},
-		Volumes: secretVolumes(cp.Name, map[string]string{
-			"kubeconfig":     "controller-manager-kubeconfig",
-			"client-ca":      "client-ca",
-			"front-proxy-ca": "front-proxy-ca",
-			"kubelet-signer": "kubelet-signer",
-			"ca-bundle":      "ca-bundle",
+		Volumes: secretVolumes(cp.Name, map[string]bryggav1alpha1.Secret{
+			"kubeconfig":     bryggav1alpha1.ControllerManagerKubeconfigSecret,
+			"client-ca":      bryggav1alpha1.ClientCASecret,
+			"front-proxy-ca": bryggav1alpha1.FrontProxyCASecret,
+			"kubelet-signer": bryggav1alpha1.KubeletSignerSecret,
+			"ca-bundle":      bryggav1alpha1.CABundleSecret,
 		}),
 	})
 }
@@ -341,7 +341,7 @@ func (r rendering) controllerManager() *appsv1.Deployment {
 func (r rendering) scheduler() *appsv1.Deployment {
 	cp := r.cp
 	settings := ptr.Deref(cp.Spec.Scheduler, bryggav1alpha1.Scheduler{})
-	kubeconfig := "/etc/brygga/kubeconfig/kubeconfig"
+	kubeconfig := "/etc/brygga/kubeconfig/" + bryggav1alpha1.KubeconfigKey
 	flags := map[string]string{
 		"authentication-kubeconfig": kubeconfig,
 		"authorization-kubeconfig":  kubeconfig,
@@ -360,7 +360,7 @@ func (r rendering) scheduler() *appsv1.Deployment {
 	}
 	return r.deployment(scheduler, 1, corev1.PodSpec{
 		Containers: []corev1.Container{container},
-		Volumes:    secretVolumes(cp.Name, map[string]string{"kubeconfig": "scheduler-kubeconfig"}),
+		Volumes:    secretVolumes(cp.Name, map[string]bryggav1alpha1.Secret{"kubeconfig": bryggav1alpha1.SchedulerKubeconfigSecret}),
 	})
 }
 
@@ -391,32 +391,32 @@ func (r rendering) deployment(component string, replicas int32, pod corev1.PodSp
 	return d
 }
 
-// networkPolicy admits to the etcd members only this control plane's API
-// server, the members themselves and etcd-druid; the kubelet's probes come
-// from the node, which a NetworkPolicy cannot block
+// networkPolicies isolate the ingress of each component's pods: the API
+// server's two ports are the public endpoint, and the controllers take
+// nothing; the kubelet's probes come from the node, which a NetworkPolicy
+// does not block
 // (https://kubernetes.io/docs/concepts/services-networking/network-policies/).
-func networkPolicy(cp *bryggav1alpha1.ControlPlane, druidNamespace string) *networkingv1.NetworkPolicy {
-	members := map[string]string{"app.kubernetes.io/managed-by": "etcd-druid", "app.kubernetes.io/part-of": cp.Name + "-etcd"}
-	ports := func(numbers ...int32) []networkingv1.NetworkPolicyPort {
-		var out []networkingv1.NetworkPolicyPort
-		for _, n := range numbers {
-			out = append(out, networkingv1.NetworkPolicyPort{Protocol: new(corev1.ProtocolTCP), Port: new(intstr.FromInt32(n))})
-		}
-		return out
-	}
-	return &networkingv1.NetworkPolicy{
-		TypeMeta:   metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"},
-		ObjectMeta: objectMeta(cp, cp.Name+"-etcd"),
-		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{MatchLabels: members},
-			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
-			Ingress: []networkingv1.NetworkPolicyIngressRule{
-				{From: []networkingv1.NetworkPolicyPeer{{PodSelector: &metav1.LabelSelector{MatchLabels: podLabels(cp.Name, apiServer)}}}, Ports: ports(druidClientPort)},
-				{From: []networkingv1.NetworkPolicyPeer{{PodSelector: &metav1.LabelSelector{MatchLabels: members}}}, Ports: ports(druidClientPort, druidPeerPort)},
-				{From: []networkingv1.NetworkPolicyPeer{{NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{corev1.LabelMetadataName: druidNamespace}}}}, Ports: ports(druidClientPort, druidBackupPort)},
+func networkPolicies(cp *bryggav1alpha1.ControlPlane) []*networkingv1.NetworkPolicy {
+	var out []*networkingv1.NetworkPolicy
+	for _, component := range components {
+		p := &networkingv1.NetworkPolicy{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"},
+			ObjectMeta: objectMeta(cp, deploymentName(cp.Name, component)),
+			Spec: networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{MatchLabels: podLabels(cp.Name, component)},
+				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 			},
-		},
+		}
+		if component == apiServer {
+			var ports []networkingv1.NetworkPolicyPort
+			for _, name := range []string{"https", "konnectivity"} {
+				ports = append(ports, networkingv1.NetworkPolicyPort{Protocol: new(corev1.ProtocolTCP), Port: new(intstr.FromString(name))})
+			}
+			p.Spec.Ingress = []networkingv1.NetworkPolicyIngressRule{{Ports: ports}}
+		}
+		out = append(out, p)
 	}
+	return out
 }
 
 // command puts the flags Brygga sets and the tenant's extra ones in a fixed
@@ -460,10 +460,10 @@ func mounts(names ...string) []corev1.VolumeMount {
 	return out
 }
 
-func secretVolumes(cp string, bySuffix map[string]string) []corev1.Volume {
-	out := make([]corev1.Volume, 0, len(bySuffix))
-	for _, name := range slices.Sorted(maps.Keys(bySuffix)) {
-		out = append(out, corev1.Volume{Name: name, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: cp + "-" + bySuffix[name]}}})
+func secretVolumes(cp string, byVolume map[string]bryggav1alpha1.Secret) []corev1.Volume {
+	out := make([]corev1.Volume, 0, len(byVolume))
+	for _, name := range slices.Sorted(maps.Keys(byVolume)) {
+		out = append(out, corev1.Volume{Name: name, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: byVolume[name].Name(cp)}}})
 	}
 	return out
 }

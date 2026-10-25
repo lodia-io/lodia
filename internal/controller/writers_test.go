@@ -38,6 +38,7 @@ var conditionWriters = map[string]string{
 	bryggav1alpha1.ConditionCAValidityAcceptable: "brygga/pki",
 	bryggav1alpha1.ConditionAccessReady:          "brygga/pki",
 	bryggav1alpha1.ConditionDatastoreReady:       "brygga/datastore",
+	bryggav1alpha1.ConditionAPIServerReady:       "brygga/workloads",
 	bryggav1alpha1.ConditionReachable:            "brygga/health",
 	bryggav1alpha1.ConditionProgressing:          "brygga/lifecycle",
 	bryggav1alpha1.ConditionReady:                "brygga/lifecycle",
@@ -46,6 +47,7 @@ var conditionWriters = map[string]string{
 var fieldWriters = map[string]string{
 	"credentials":        "brygga/pki",
 	"datastore":          "brygga/datastore",
+	"endpoint":           "brygga/workloads",
 	"target":             "brygga/lifecycle",
 	"observedGeneration": "brygga/lifecycle",
 }
@@ -64,6 +66,15 @@ func TestEveryStatusFieldHasOneWriter(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer updates.Stop()
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "writers"}}
+	if err := k8s.Create(t.Context(), node); err != nil {
+		t.Fatal(err)
+	}
+	node.Status.Conditions = []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}
+	node.Status.Addresses = []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "192.0.2.10"}}
+	if err := k8s.Status().Update(t.Context(), node); err != nil {
+		t.Fatal(err)
+	}
 	class := &bryggav1alpha1.DatastoreClass{
 		ObjectMeta: metav1.ObjectMeta{Name: "writers", Annotations: map[string]string{bryggav1alpha1.DefaultClassAnnotation: "true"}},
 		Spec:       bryggav1alpha1.DatastoreClassSpec{Storage: bryggav1alpha1.EtcdStorage{Size: resource.MustParse("1Gi"), ReclaimPolicy: "Delete"}},
@@ -73,7 +84,7 @@ func TestEveryStatusFieldHasOneWriter(t *testing.T) {
 		Spec: bryggav1alpha1.ControlPlaneSpec{
 			Version:   "v1.35.0",
 			Datastore: bryggav1alpha1.DatastoreChoice{Dedicated: &bryggav1alpha1.DedicatedDatastore{}},
-			Endpoint:  bryggav1alpha1.Endpoint{LoadBalancer: &bryggav1alpha1.LoadBalancerEndpoint{}},
+			Endpoint:  bryggav1alpha1.Endpoint{NodePort: &bryggav1alpha1.NodePortEndpoint{}},
 			Network:   bryggav1alpha1.Network{ServiceCIDRs: []bryggav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []bryggav1alpha1.CIDR{"10.244.0.0/16"}},
 		},
 	}
@@ -131,7 +142,7 @@ watching:
 }
 
 func complete(cp *bryggav1alpha1.ControlPlane) bool {
-	if cp.Status.Datastore == nil || cp.Status.Credentials == nil || cp.Status.Target == nil {
+	if cp.Status.Datastore == nil || cp.Status.Credentials == nil || cp.Status.Target == nil || cp.Status.Endpoint == nil {
 		return false
 	}
 	for conditionType := range conditionWriters {
@@ -208,7 +219,7 @@ func start(t *testing.T) client.WithWatch {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := operator.Setup(mgr); err != nil {
+	if err := operator.Setup(mgr, "registry.example/brygga-signer:test"); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
