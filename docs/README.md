@@ -144,7 +144,7 @@ ConfigMaps, who consumes them, and what a change does:
 |---|---|---|
 | `<cp>-cakey-cluster`, `-cakey-client`, `-cakey-front-proxy`, `-cakey-etcd` (`kubernetes.io/tls`: each CA's certificate and key) | PKI alone; never mounted | a CA is renewed only by a rotation, announced a year ahead by `CAValidityAcceptable=False` (`CAExpiring`) outside `Ready`; a lost or unreadable key (`CAMissing`) or an expired CA (`CAExpired`) turns `CertificatesReady` False, and nothing that CA signs is written until it is restored or rotated, since a new CA would cut every client or node off at once; a key Secret restored without its labels is found by name and kept |
 | `<cp>-ca-bundle` (`ca.crt`: the cluster CA, two during a trust anchor rotation) | everything that verifies the API server: kubeconfigs, `cluster-info`, `kube-root-ca.crt` | kubeconfigs and `cluster-info` re-rendered; the controller manager restarts, because `--root-ca-file` is read once |
-| `<cp>-client-ca-bundle` (`ca.crt`: the client CA, the current kubelet signer, and a replaced signer for one signing duration, 30 days) | API server `--client-ca-file` | reloaded |
+| `<cp>-client-ca` (`ca.crt`: the client CA, the current kubelet signer, and a replaced signer for one signing duration, 30 days) | API server `--client-ca-file` | reloaded |
 | `<cp>-kubelet-signer` (`kubernetes.io/tls`: the intermediate under the client CA, `CA:TRUE`, path length 0) | controller manager, per-signer signing flags | reloaded |
 | `<cp>-apiserver-serving`, `<cp>-apiserver-kubelet-client` (`kubernetes.io/tls`) | API server | reloaded (the kubelet client certificate for new connections) |
 | `<cp>-front-proxy-ca` (`ca.crt`), `<cp>-front-proxy-client` (`kubernetes.io/tls`) | API server, aggregated APIs | the CA is reloaded; the client certificate restarts the API server until a reload is proven |
@@ -178,11 +178,39 @@ allowance for a verifier whose clock runs behind
 ([constants.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kubeadm/app/constants/constants.go#L45-L46)),
 and no longer than its CA; renewal comes two thirds of the way from issuance
 to expiry, except for a certificate that already ends with its CA, which a
-new one would not outlive. Each CA and kubelet signer carries the second of its issuance in
-its subject (`cluster-ca@1761350400`), so no bundle ever holds two
-certificates with one subject, and every bundle is a set: each certificate
+new one would not outlive. A pass issues and verifies every certificate at one
+time, the time it started. Each CA and kubelet signer carries the nanosecond
+of its issuance in its subject (`cluster-ca@1761350400123456789`), so no
+bundle ever holds two certificates with one subject, not even a signer issued
+again a moment after a write failed, and every bundle is a set: each certificate
 once, in DER order, as library-go writes its CA bundles
 ([cabundle.go](https://github.com/openshift/library-go/blob/9a2bc12675c2bb37d3799a30786ccee5fa545d57/pkg/operator/certrotation/cabundle.go#L134-L177)).
+
+PKI finds its Secrets by name, labelled or not, and the names above are its
+own in the namespace: a Secret under one of them without a controller is
+adopted, so a key restored from a backup without its labels is kept. Restore
+such Secrets without `metadata.ownerReferences`: a reference to the old
+`ControlPlane`'s UID makes the Secret that `ControlPlane`'s, and the garbage
+collector deletes it. A Secret under PKI's names whose controller is not this
+`ControlPlane`, or that refers to another `ControlPlane` at all, is neither
+read nor written, and while one exists PKI writes nothing
+(`CertificatesReady=False`, `SecretsControlledElsewhere`): a `ControlPlane`
+recreated under its predecessor's name waits for the garbage collector to
+remove the predecessor's Secrets instead of keeping its CA keys, which every
+old kubeconfig and node trusts. A `ControlPlane` deleted with
+`--cascade=orphan` leaves its Secrets without an owner, and one created under
+the name adopts them, keys included; delete them for fresh credentials. The
+etcd generations PKI keeps are adopted too, applied whole with their data
+unchanged, which an immutable Secret allows
+([validation.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/apis/core/validation/validation.go#L8164-L8182)),
+so none stays without the owner the garbage collector follows or the label
+the cache filters on. Key material PKI cannot read is never replaced: an
+encryption configuration that is missing from its Secret or that the API
+server's own validator refuses
+([validation_encryption.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/apis/apiserver/validation/validation_encryption.go#L64-L115)),
+and a ServiceAccount key that is not the RSA key PKI writes, turn
+`CertificatesReady` False with `SecretUnreadable`: a new key would leave what
+the old one encrypted unreadable, or every token it signed invalid.
 
 The dedicated etcd is etcd-druid's `Etcd` `<cp>-etcd`, which the Datastore
 controller renders from the `DatastoreClass` and the newest complete

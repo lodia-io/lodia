@@ -81,10 +81,11 @@ Brygga's own credential and the three bindings made with a ten-minute
   applied as `brygga:operator` on every pass and, when that is forbidden,
   with a `system:masters` certificate issued for ten minutes in memory;
   `AccessReady` is `WaitingForAPIServer` until `APIServerReady`, `Binding`
-  while an apply fails, `Bound` once the three exist.
+  while the tenant refuses the bindings or has not confirmed them, `Bound`
+  once the three exist, and a True stays while the tenant does not answer.
 - `internal/controller/pki/apiserver_test.go` — a kube-apiserver from the
   envtest binaries started with PKI's serving certificate, client CA bundle,
   front-proxy files and signing key: the controller manager's kubeconfig
   authenticates as `system:kube-controller-manager`; `AccessReady` turns True
-  with the three bindings; a deleted `brygga:operator` binding is restored on
-  the next pass.
+  with the three bindings and stays True through a pass that cannot reach the
+  tenant; a deleted `brygga:operator` binding is restored on the next pass.

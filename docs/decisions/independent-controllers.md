@@ -120,18 +120,28 @@ flowchart LR
   ([compact-layout](compact-layout.md)).
 - Metrics come per controller: queue depth, reconcile duration and errors,
   labelled by controller and tenant.
+- No controller uses the content of, or writes over, an object whose
+  controller is not its `ControlPlane`. A controller-less object is adopted,
+  except where adopting it would start a tenant on another's data (the
+  Datastore's `Etcd` and claims). A predecessor's objects, left when a
+  `ControlPlane` is recreated under the same name, are the garbage
+  collector's: the controller waits with a condition, PKI with
+  `SecretsControlledElsewhere`, the Datastore with `VolumesExist`.
 - A condition that waits on an object outside the cache comes with a bounded
   requeue, since no event reports that object's change; the condition still
-  says what it waits on. The Datastore controller's: `VolumesExist`, for
-  claims, which nothing labels for the cache, and for an `Etcd` without the
-  control-plane label; a class held because its credentials copy cannot be
-  made (the class's Secret, which belongs to the platform, is missing, or
-  another owner holds the copy, which may lack the label); and
-  `DatastoreClassNotFound` for a class the claims record, since deleting
-  them to start empty brings no event; all after a minute. A StatefulSet
-  that lags etcd-druid's report, read uncached, after 15 seconds; and an
-  `Etcd` being deleted, which has left the cache if its label was removed,
-  after 10 seconds.
+  says what it waits on. PKI has one: Secrets under its names that another
+  owner keeps, which the cache does not show when they are unlabelled, after
+  10 seconds while they are a previous `ControlPlane`'s, which the garbage
+  collector deletes, and after a minute otherwise. The Datastore
+  controller's: `VolumesExist`, for claims, which nothing labels for the
+  cache, and for an `Etcd` without the control-plane label; a class held
+  because its credentials copy cannot be made (the class's Secret, which
+  belongs to the platform, is missing, or another owner holds the copy, which
+  may lack the label); and `DatastoreClassNotFound` for a class the claims
+  record, since deleting them to start empty brings no event; all after a
+  minute. A StatefulSet that lags etcd-druid's report, read uncached, after
+  15 seconds; and an `Etcd` being deleted, which has left the cache if its
+  label was removed, after 10 seconds.
 
 ## Code
 
@@ -141,14 +151,18 @@ flowchart LR
 - `internal/controller/pki` — reads `spec` and `status.endpoint`, writes its
   Secrets with server-side apply as `brygga/pki`, applies `CertificatesReady`,
   `CAValidityAcceptable` and `AccessReady` alone through the status
-  subresource (`Unknown` at the start of its first visit, then with one fixed
-  message per reason, so a pass that changes nothing writes nothing), counts
+  subresource (`Unknown` at the start of its first visit, then with messages
+  from the state alone, so a pass that changes nothing writes nothing; a
+  failed read leaves them as they were, and a failed write stops the pass's
+  writes and reports what it had to change and could not write as
+  `Issuing`), counts
   `APIServerReady` only at the current generation, and requeues in whole
-  seconds at the earliest renewal, or when a CA enters its last year or
-  expires.
+  seconds, rounded up, at the earliest renewal, or when a CA enters its last
+  year or expires.
   `reconciler_test.go` runs it under a manager whose cache is the one
   `main.go` builds, with `ReaderFailOnMissingInformer`, and holds the first
-  visit and the stale `APIServerReady` cases.
+  visit and the stale `APIServerReady` cases; `ownership_test.go` holds the
+  Secrets another owner keeps and the reads that fail.
 - `internal/controller/datastore` — reads `spec`, writes the `Etcd` and the
   credentials copy with server-side apply as `brygga/datastore`, applies
   `DatastoreReady` alone through the status subresource (`Unknown` at the
