@@ -86,6 +86,11 @@ is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the Datastore controller (2026-10-25)
 
+- PKI's `elsewhere` and the Datastore's `controlledElsewhere` are one
+  predicate, the rule of
+  [independent-controllers](docs/decisions/independent-controllers.md), in
+  two packages; move it where both import it before Workloads and Tenant
+  need it too.
 - Nothing reads `spec.restoreFrom` until restore is built in phase 2: a
   `ControlPlane` created with it starts on an empty etcd. When restore lands,
   test the `VolumesExist` remedy end to end: the claims kept, a `Backup` of

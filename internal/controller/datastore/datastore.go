@@ -22,6 +22,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	corev1ac "k8s.io/client-go/applyconfigurations/core/v1"
 	metav1ac "k8s.io/client-go/applyconfigurations/meta/v1"
@@ -392,13 +393,18 @@ func (r *Reconciler) secret(ctx context.Context, cp *bryggav1alpha1.ControlPlane
 }
 
 func controlledElsewhere(obj metav1.Object, cp *bryggav1alpha1.ControlPlane) *metav1.OwnerReference {
-	for _, ref := range obj.GetOwnerReferences() {
-		if ref.UID != cp.UID && (ptr.Deref(ref.Controller, false) ||
-			ref.Kind == "ControlPlane" && strings.HasPrefix(ref.APIVersion, bryggav1alpha1.GroupVersion.Group+"/")) {
-			return &ref
+	refs := obj.GetOwnerReferences()
+	for i := range refs {
+		if refs[i].UID != cp.UID && (ptr.Deref(refs[i].Controller, false) || controlPlane(refs[i])) {
+			return &refs[i]
 		}
 	}
 	return nil
+}
+
+func controlPlane(ref metav1.OwnerReference) bool {
+	gv, err := schema.ParseGroupVersion(ref.APIVersion)
+	return err == nil && gv.Group == bryggav1alpha1.GroupVersion.Group && ref.Kind == "ControlPlane"
 }
 
 // A terminating Secret is still mounted: etcd-druid holds its finalizer on
