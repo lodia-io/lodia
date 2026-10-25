@@ -6,6 +6,7 @@ package datastore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -59,6 +60,7 @@ const (
 	ReasonProvisioning           = "Provisioning"
 	ReasonDatastoreClassNotFound = "DatastoreClassNotFound"
 	ReasonVolumesExist           = "VolumesExist"
+	ReasonEtcdRefused            = "EtcdRefused"
 	ReasonDeleting               = "Deleting"
 	ReasonReady                  = "Ready"
 )
@@ -144,11 +146,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 	}
 	etcd, condition, requeueAfter, err := r.reconcileEtcd(ctx, cp)
-	if err != nil {
+	if condition.Type == "" {
 		return ctrl.Result{}, err
 	}
-	if err := r.applyStatus(ctx, cp, datastoreStatus(etcd), condition); err != nil {
-		return ctrl.Result{}, err
+	if statusErr := r.applyStatus(ctx, cp, datastoreStatus(etcd), condition); statusErr != nil || err != nil {
+		return ctrl.Result{}, errors.Join(err, statusErr)
 	}
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
@@ -208,9 +210,16 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 			return current, newCondition(metav1.ConditionFalse, ReasonProvisioning, message), time.Minute, nil
 		}
 	}
-	etcd, err := r.apply(ctx, render(cp, class, generation, current))
+	rendered := render(cp, class, generation, current)
+	etcd, err := r.apply(ctx, rendered)
 	if err != nil {
-		return nil, metav1.Condition{}, 0, fmt.Errorf("apply Etcd %s: %w", etcdName(cp.Name), err)
+		err = fmt.Errorf("apply Etcd %s: %w", rendered.Name, err)
+		if refused(err) {
+			message := fmt.Sprintf("the API server refuses Etcd %s on certificate generation %d with the fields of DatastoreClass %s generation %s; the reason is in Brygga's log",
+				rendered.Name, generation, rendered.Annotations[ClassAnnotation], rendered.Annotations[ClassGenerationAnnotation])
+			return current, newCondition(metav1.ConditionFalse, ReasonEtcdRefused, message), 0, err
+		}
+		return nil, metav1.Condition{}, 0, err
 	}
 	if err := r.labelClaims(ctx, cp, etcd.Annotations[ClassAnnotation]); err != nil {
 		return nil, metav1.Condition{}, 0, err
@@ -236,6 +245,23 @@ func foreignEtcd(etcd *druidv1alpha1.Etcd) string {
 	}
 	return fmt.Sprintf("Etcd %s is not this ControlPlane's, %s: delete it and its claims to start empty; to keep their data, restore it from a Backup with restoreFrom once they are deleted",
 		etcd.Name, owner)
+}
+
+// refused tells the API server's verdict on an object, which sending it again
+// cannot change, from a failure to answer: every 4xx is one but a missing
+// object, a timeout, a conflict, throttling and a namespace being deleted.
+// An admission webhook's denial without a code arrives as 400
+// (k8s.io/apiserver@v0.37.1 pkg/admission/plugin/webhook/errors/statuserror.go#L37-L39).
+func refused(err error) bool {
+	var status apierrors.APIStatus
+	if !errors.As(err, &status) {
+		return false
+	}
+	switch code := status.Status().Code; {
+	case code < 400 || code > 499, code == 404, code == 408, code == 409, code == 429:
+		return false
+	}
+	return !apierrors.HasStatusCause(err, corev1.NamespaceTerminatingCause)
 }
 
 // An Etcd without the control-plane label is outside the cache and still

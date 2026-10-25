@@ -20,6 +20,7 @@ import (
 	druidapicommon "github.com/gardener/etcd-druid/api/common"
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	"github.com/gardener/etcd-druid/api/core/v1alpha1/crds"
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -602,6 +603,65 @@ func TestConditionsFromState(t *testing.T) {
 		t.Errorf("a pass whose Etcd read fails moved the ControlPlane from resourceVersion %s to %s: DatastoreReady %s/%s %q, status.datastore %+v",
 			before.ResourceVersion, after.ResourceVersion, condition.Status, condition.Reason, condition.Message, after.Status.Datastore)
 	}
+}
+
+func TestEtcdRefused(t *testing.T) {
+	ns := namespace(t)
+	createClass(t, newClass("refused", "Retain"))
+	policy := &admissionregistrationv1.ValidatingAdmissionPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "refuse-etcds-in-" + ns},
+		Spec: admissionregistrationv1.ValidatingAdmissionPolicySpec{
+			FailurePolicy: new(admissionregistrationv1.Fail),
+			MatchConstraints: &admissionregistrationv1.MatchResources{ResourceRules: []admissionregistrationv1.NamedRuleWithOperations{{
+				RuleWithOperations: admissionregistrationv1.RuleWithOperations{
+					Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+					Rule:       admissionregistrationv1.Rule{APIGroups: []string{druidv1alpha1.SchemeGroupVersion.Group}, APIVersions: []string{"v1alpha1"}, Resources: []string{"etcds"}},
+				},
+			}}},
+			Validations: []admissionregistrationv1.Validation{{Expression: "object.metadata.namespace != '" + ns + "'", Message: "no Etcd in " + ns}},
+		},
+	}
+	binding := &admissionregistrationv1.ValidatingAdmissionPolicyBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: policy.Name},
+		Spec: admissionregistrationv1.ValidatingAdmissionPolicyBindingSpec{
+			PolicyName:        policy.Name,
+			ValidationActions: []admissionregistrationv1.ValidationAction{admissionregistrationv1.Deny},
+		},
+	}
+	for _, obj := range []client.Object{policy, binding} {
+		create(t, obj)
+		t.Cleanup(func() {
+			if err := client.IgnoreNotFound(k8s.Delete(context.Background(), obj)); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	eventually(t, func() error {
+		probe := &druidv1alpha1.Etcd{ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: ns}, Spec: druidv1alpha1.EtcdSpec{Replicas: 1, Labels: map[string]string{"app": "etcd"}}}
+		if err := k8s.Create(t.Context(), probe, client.DryRunAll); err == nil {
+			return errors.New("the policy does not refuse Etcds yet")
+		}
+		return nil
+	})
+
+	create(t, controlPlane(ns, "dev", "refused"))
+	writeGeneration(t, ns, "dev", 1)
+	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonEtcdRefused,
+		"the API server refuses Etcd dev-etcd on certificate generation 1 with the fields of DatastoreClass refused generation 1; the reason is in Brygga's log")
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev-etcd"}, &druidv1alpha1.Etcd{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("want no Etcd while the API server refuses it, got %v", err)
+	}
+
+	if err := k8s.Delete(t.Context(), binding); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() error {
+		probe := &druidv1alpha1.Etcd{ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: ns}, Spec: druidv1alpha1.EtcdSpec{Replicas: 1, Labels: map[string]string{"app": "etcd"}}}
+		return k8s.Create(t.Context(), probe, client.DryRunAll)
+	})
+	settle(t, ns, "dev")
+	waitEtcd(t, ns, "dev", namesGeneration(1))
+	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd dev-etcd")
 }
 
 func TestPaused(t *testing.T) {

@@ -277,12 +277,24 @@ and starting from another tenant's data is a restore, not a start: nothing
 is created until they are deleted. `VolumesExist` too when an `Etcd`
 `<cp>-etcd` exists whose controller is not this `ControlPlane`, an orphan or
 a predecessor's the garbage collector has not removed yet: it is neither
-adopted nor written, and the message names it. `Deleting` while the
-`ControlPlane` is being deleted. `status.datastore` is `kind: Dedicated`, the
-`Etcd`'s name and its member count. Every message is built from the state
-alone, so a pass that changes nothing writes nothing; an error of the API
-server ends the pass, goes to the log and leaves the status as it was
-([independent-controllers](decisions/independent-controllers.md)).
+adopted nor written, and the message names it. `EtcdRefused` when the API
+server refuses the `Etcd` Brygga renders — an admission policy on `Etcd`s, a
+class stored before a rule it breaks (validation ratcheting keeps an
+unchanged field on update), an etcd-druid whose schema moved: the message
+names the `Etcd`, the certificate generation and the class generation, and
+the refusal is in Brygga's log. `Deleting` while the `ControlPlane` is being
+deleted. `status.datastore` is `kind: Dedicated`, the `Etcd`'s name and its
+member count. Every message is built from the state alone, so a pass that
+changes nothing writes nothing; an error of the API server ends the pass,
+goes to the log and leaves the status as it was
+([independent-controllers](decisions/independent-controllers.md)), unless it
+is the server's verdict on the object: any 4xx but a missing object, a
+timeout, a conflict, throttling and a namespace being deleted, since an
+admission webhook's denial without a code arrives as 400
+([statuserror.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/admission/plugin/webhook/errors/statuserror.go#L37-L39)).
+Sending the same `Etcd` again cannot change that verdict, and without the
+condition its certificate generations would stop with `DatastoreReady` still
+True.
 
 Identities: no root CA key is mounted into a control plane pod; the
 controller manager holds only the kubelet signer, an intermediate that signs

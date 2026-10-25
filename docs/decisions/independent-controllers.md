@@ -150,7 +150,8 @@ flowchart LR
   credentials copy with server-side apply as `brygga/datastore`, applies
   `DatastoreReady` alone through the status subresource (`Unknown` at the
   start of its first pass, messages from the state alone, an API error left
-  to the log), and stops for a paused `ControlPlane`. `datastore_test.go`
+  to the log unless the server refuses the `Etcd` it is sent, which is
+  `EtcdRefused`), and stops for a paused `ControlPlane`. `datastore_test.go`
   runs it under the same cache with `ReaderFailOnMissingInformer`, as a user
   bound to exactly its rules, and holds the first visit and the pass that
   leaves the status alone on an API error (`TestConditionsFromState`)

@@ -242,7 +242,8 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   `TestFinalizerAndEtcdFromClass` (the finalizer before the first `Etcd`, the
   mapping table, generation 1 in all three TLS blocks),
   `TestConditionsFromState` (Unknown on the first visit, an API error leaves
-  the status alone), `TestPaused`, `TestNewestCompleteGeneration`,
+  the status alone), `TestEtcdRefused` (an admission policy refuses the
+  `Etcd`), `TestPaused`, `TestNewestCompleteGeneration`,
   `TestGenerationsMoveForward`, `TestDatastoreClassNotFound`,
   `TestBackupCredentialsCopied`, `TestDatastoreReadyFollowsEtcdStatus`,
   `TestVolumesExist`, `TestForeignEtcd`, `TestStorageAtCreation`,
