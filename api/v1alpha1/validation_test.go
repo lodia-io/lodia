@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/robfig/cron/v3"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -289,4 +290,81 @@ func TestDatastoreEndpointsAreHTTPS(t *testing.T) {
 	obj := example(t, "datastore.yaml", "plain")
 	set(t, obj, []any{"http://etcd-0.pool-a.etcd.svc:2379"}, "spec", "endpoints")
 	expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), "must be an https URL")
+}
+
+func TestDatastoreClassValidation(t *testing.T) {
+	cases := []struct {
+		name  string
+		value any
+		path  []string
+		want  string
+	}{
+		{"delta snapshots every 30 days", "30d", []string{"spec", "backup", "deltaSnapshotPeriod"}, "must be a duration"},
+		{"delta snapshots beyond a Go duration", "2562048h", []string{"spec", "backup", "deltaSnapshotPeriod"}, "must be a duration"},
+		{"delta snapshots every 90 seconds", "1m30s", []string{"spec", "backup", "deltaSnapshotPeriod"}, ""},
+		{"snapshots kept 30 days after deletion", "30d", []string{"spec", "backup", "retention", "afterDelete"}, "must be a duration"},
+		{"snapshots kept beyond a Go duration", "2562048h", []string{"spec", "backup", "retention", "afterDelete"}, "must be a duration"},
+		{"snapshots kept a negative time", "-1h", []string{"spec", "backup", "retention", "afterDelete"}, "must be a duration"},
+		{"a two-letter bucket", "ab", []string{"spec", "backup", "store", "bucket"}, "should match"},
+		{"a bucket with a slash", "backups/prod", []string{"spec", "backup", "store", "bucket"}, "should match"},
+		{"a 64-letter bucket", strings.Repeat("b", 64), []string{"spec", "backup", "store", "bucket"}, "spec.backup.store.bucket"},
+		{"an endpoint that is no URL", "https://s3 example.com", []string{"spec", "backup", "store", "endpoint"}, "must be a URL"},
+		{"a zero quota", int64(0), []string{"spec", "etcd", "quotaBackendBytes"}, "must be greater than zero"},
+		{"a negative quota", "-1Gi", []string{"spec", "etcd", "quotaBackendBytes"}, "must be greater than zero"},
+		{"a quota in bytes", int64(4294967296), []string{"spec", "etcd", "quotaBackendBytes"}, ""},
+		{"periodic retention in hours", map[string]any{"mode": "periodic", "retention": "5"}, []string{"spec", "etcd", "autoCompaction"}, ""},
+		{"revision retention as a count", map[string]any{"mode": "revision", "retention": "1000"}, []string{"spec", "etcd", "autoCompaction"}, ""},
+		{"revision retention as a duration", map[string]any{"mode": "revision", "retention": "15m"}, []string{"spec", "etcd", "autoCompaction"}, "retention must be a number, or in periodic mode a duration"},
+		{"periodic retention in words", map[string]any{"mode": "periodic", "retention": "15 minutes"}, []string{"spec", "etcd", "autoCompaction"}, "retention must be a number, or in periodic mode a duration"},
+		{"negative periodic retention", map[string]any{"mode": "periodic", "retention": "-15m"}, []string{"spec", "etcd", "autoCompaction"}, "retention must be a number, or in periodic mode a duration"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			obj := example(t, "datastoreclass.yaml", "validation")
+			set(t, obj, c.value, c.path...)
+			expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), c.want)
+		})
+	}
+}
+
+var schedules = []struct {
+	schedule, want string
+	parses         bool
+}{
+	{"0 3 * * *", "", true},
+	{"*/15 * * * *", "", true},
+	{"0 */24 * * *", "", true},
+	{"0 3 1 */2 *", "", true},
+	{"0 3 * * 1-6", "", true},
+	{"0 3 * * */7", "", true},
+	{"0 3 * * 0", "should match", true},
+	{"0 3 * * MON", "should match", true},
+	{"0 3,15 * * *", "should match", true},
+	{"@daily", "should match", true},
+	{"0 3 * * 7", "the day of the week cannot be 7", false},
+	{"0 3 * * 1-7", "the day of the week cannot be 7", false},
+	{"0 23-20 * * *", "every range must ascend", false},
+	{"59-0 * * * *", "every range must ascend", false},
+	{"0  3 * * *", "must be five fields separated by single spaces", true},
+}
+
+func TestScheduleValidation(t *testing.T) {
+	for _, path := range [][]string{{"spec", "etcd", "defragmentation", "schedule"}, {"spec", "backup", "fullSnapshotSchedule"}} {
+		for _, c := range schedules {
+			t.Run(strings.Join(path[1:], ".")+"/"+c.schedule, func(t *testing.T) {
+				obj := example(t, "datastoreclass.yaml", "schedule")
+				set(t, obj, c.schedule, path...)
+				expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), c.want)
+			})
+		}
+	}
+}
+
+func TestTheBackupSidecarParsesEveryAcceptedSchedule(t *testing.T) {
+	for _, c := range schedules {
+		_, err := cron.ParseStandard(c.schedule)
+		if (err == nil) != c.parses || c.want == "" && err != nil {
+			t.Errorf("robfig/cron parses %q: %v, the table says %t", c.schedule, err, c.parses)
+		}
+	}
 }
