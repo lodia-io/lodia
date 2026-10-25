@@ -8,10 +8,11 @@ package v1alpha1
 // +kubebuilder:validation:XValidation:rule="isCIDR(self)",message="must be a network in CIDR notation"
 type CIDR string
 
-// Hostname is a lowercase DNS name.
+// Hostname is a lowercase DNS name: labels of at most 63 characters, and not
+// digits and dots alone, which read as an IP address.
 // +kubebuilder:validation:MinLength=1
 // +kubebuilder:validation:MaxLength=253
-// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+// +kubebuilder:validation:XValidation:rule="self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$') && !self.matches('^[0-9.]+$')",message="must be a lowercase DNS name"
 type Hostname string
 
 // LocalReference names an object in the same namespace.

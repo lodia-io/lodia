@@ -527,10 +527,11 @@ type KubeProxy struct {
 	// +kubebuilder:default=iptables
 	Mode ProxyMode `json:"mode,omitempty"`
 
-	// HealthzBindAddress opens kube-proxy's health port beyond loopback, for
-	// cloud load balancers; loopback by default.
+	// HealthzBindAddress is the IP address kube-proxy serves its health port,
+	// 10256, on: beyond loopback for cloud load balancers; loopback by default.
 	// +optional
-	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:MaxLength=45
+	// +kubebuilder:validation:XValidation:rule="isIP(self)",message="must be an IP address"
 	HealthzBindAddress string `json:"healthzBindAddress,omitempty"`
 }
 
@@ -610,7 +611,7 @@ type AutoUpdate struct {
 
 // Hibernation puts the control plane to sleep.
 type Hibernation struct {
-	// Enabled overrides the schedules.
+	// Enabled overrides the schedules; unset, the schedules decide.
 	// +optional
 	Enabled *bool `json:"enabled,omitempty"`
 
@@ -666,14 +667,16 @@ type ServiceAccount struct {
 
 // RestoreFrom names the Backup a new control plane starts from.
 type RestoreFrom struct {
-	// BackupRef names the Backup.
+	// BackupRef names a Backup in the ControlPlane's namespace, never another
+	// tenant's.
 	// +required
-	BackupRef NamespacedReference `json:"backupRef"`
+	BackupRef LocalReference `json:"backupRef"`
 }
 
 // ControlPlaneStatus is what Brygga observed and did.
 type ControlPlaneStatus struct {
-	// ObservedGeneration is the generation every controller fully processed.
+	// ObservedGeneration is the newest generation every readiness condition
+	// has been reported for.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
@@ -700,7 +703,7 @@ type ControlPlaneStatus struct {
 	// +optional
 	Credentials *CredentialsStatus `json:"credentials,omitempty"`
 
-	// Datastore is the store in use and its last backup.
+	// Datastore is the store in use.
 	// +optional
 	Datastore *DatastoreStatus `json:"datastore,omitempty"`
 
@@ -770,29 +773,28 @@ type UpgradeStatus struct {
 	Message string `json:"message,omitempty"`
 }
 
-// EndpointStatus is where the control plane is reachable.
+// EndpointStatus is where the control plane is reachable from outside the
+// management cluster. Workloads writes it whole once the public address
+// exists; until then it is absent.
 type EndpointStatus struct {
 	// APIServer is the API server's public endpoint.
-	// +optional
-	APIServer *HostPort `json:"apiServer,omitempty"`
+	// +required
+	APIServer HostPort `json:"apiServer"`
 
 	// Konnectivity is where konnectivity agents reach the konnectivity
 	// server.
-	// +optional
-	Konnectivity *HostPort `json:"konnectivity,omitempty"`
-
-	// Internal is the API server's in-namespace Service, for clients in the
-	// management cluster.
-	// +optional
-	Internal *HostPort `json:"internal,omitempty"`
+	// +required
+	Konnectivity HostPort `json:"konnectivity"`
 }
 
 // HostPort is a host and a port.
 type HostPort struct {
-	// Host is a DNS name or an IP address.
+	// Host is an IP address, an IPv6 one without brackets, or a lowercase DNS
+	// name: labels of at most 63 characters, and not digits and dots alone.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:XValidation:rule="isIP(self) || self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$') && !self.matches('^[0-9.]+$')",message="must be an IP address or a lowercase DNS name"
 	Host string `json:"host"`
 
 	// Port is a TCP port.
@@ -848,42 +850,53 @@ type RotationStatus struct {
 // +kubebuilder:validation:Enum=Idle;Preparing;Prepared;Completing
 type RotationPhase string
 
-// DatastoreStatus is the store in use.
+// DatastoreStatus is the store the API server uses. The Datastore
+// controller writes it whole once the store exists.
 type DatastoreStatus struct {
-	// Kind is Dedicated or Shared.
+	// Endpoints are where the API server reaches etcd.
+	// +required
+	// +listType=atomic
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=9
+	Endpoints []HostPort `json:"endpoints"`
+
+	// Class is the DatastoreClass a dedicated etcd was built from.
 	// +optional
-	// +kubebuilder:validation:Enum=Dedicated;Shared
-	Kind string `json:"kind,omitempty"`
-	// +optional
-	// +kubebuilder:validation:MaxLength=253
-	Name string `json:"name,omitempty"`
-	// +optional
-	Members int32 `json:"members,omitempty"`
-	// +optional
-	DBSizeBytes int64 `json:"dbSizeBytes,omitempty"`
-	// LastBackup is the newest snapshot.
-	// +optional
-	LastBackup *BackupMark `json:"lastBackup,omitempty"`
+	Class *DatastoreClassStatus `json:"class,omitempty"`
+
+	// Members counts the etcd members.
+	// +required
+	Members Count `json:"members"`
 }
 
-// BackupMark is one snapshot.
-type BackupMark struct {
-	// +optional
-	Time *metav1.Time `json:"time,omitempty"`
-	// Kind is Full or Delta.
-	// +optional
-	// +kubebuilder:validation:Enum=Full;Delta
-	Kind string `json:"kind,omitempty"`
-	// +optional
-	Revision int64 `json:"revision,omitempty"`
+// DatastoreClassStatus is a DatastoreClass at the generation an etcd was
+// built from.
+type DatastoreClassStatus struct {
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+
+	// +required
+	// +kubebuilder:validation:Minimum=1
+	Generation int64 `json:"generation"`
+}
+
+// Count is how many there are and how many of them are ready.
+type Count struct {
+	// +required
+	// +kubebuilder:validation:Minimum=0
+	Total int32 `json:"total"`
+
+	// +required
+	// +kubebuilder:validation:Minimum=0
+	Ready int32 `json:"ready"`
 }
 
 // NodesStatus summarises the tenant's nodes.
 type NodesStatus struct {
-	// +optional
-	Total int32 `json:"total,omitempty"`
-	// +optional
-	Ready int32 `json:"ready,omitempty"`
+	Count `json:",inline"`
+
 	// OutdatedKubelets run an older minor than the control plane.
 	// +optional
 	OutdatedKubelets int32 `json:"outdatedKubelets,omitempty"`

@@ -25,7 +25,6 @@ import (
 
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
 	"github.com/segla-io/brygga/internal/certs"
-	"github.com/segla-io/brygga/internal/controller/pki"
 )
 
 func TestAPredecessorsSecretsAreNeitherReadNorWritten(t *testing.T) {
@@ -52,7 +51,7 @@ func TestAPredecessorsSecretsAreNeitherReadNorWritten(t *testing.T) {
 	before := namespaceSecrets(t, cp.Namespace)
 	result := reconcile(t, r, successor)
 	c := condition(t, successor, bryggav1alpha1.ConditionCertificatesReady)
-	if c.Status != metav1.ConditionFalse || c.Reason != pki.ReasonSecretsControlledElsewhere || !strings.Contains(c.Message, "by ControlPlane dev (UID "+string(cp.UID)+")") {
+	if c.Status != metav1.ConditionFalse || c.Reason != bryggav1alpha1.ReasonSecretsControlledElsewhere || !strings.Contains(c.Message, "by ControlPlane dev (UID "+string(cp.UID)+")") {
 		t.Fatalf("CertificatesReady is %s %s: %s", c.Status, c.Reason, c.Message)
 	}
 	if after := namespaceSecrets(t, cp.Namespace); !maps.Equal(before, after) {
@@ -68,11 +67,11 @@ func TestAPredecessorsSecretsAreNeitherReadNorWritten(t *testing.T) {
 		}
 	}
 	reconcile(t, r, successor)
-	expectCondition(t, successor, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, pki.ReasonIssued)
+	expectCondition(t, successor, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, bryggav1alpha1.ReasonIssued)
 	fresh := secretsOf(t, successor)
 	for _, ca := range []string{"cluster", "client", "front-proxy", "etcd"} {
 		name := "dev-cakey-" + ca
-		if bytes.Equal(fresh[name].Data["tls.key"], predecessor[name].Data["tls.key"]) {
+		if bytes.Equal(fresh[name].Data[bryggav1alpha1.TLSPrivateKeyKey], predecessor[name].Data[bryggav1alpha1.TLSPrivateKeyKey]) {
 			t.Errorf("the successor keeps the predecessor's %s CA key", ca)
 		}
 		if !metav1.IsControlledBy(fresh[name], successor) {
@@ -118,7 +117,7 @@ func TestASecretAnotherOwnerKeepsBlocksEveryWrite(t *testing.T) {
 			before := namespaceSecrets(t, cp.Namespace)
 			result := reconcile(t, r, cp)
 			got := condition(t, cp, bryggav1alpha1.ConditionCertificatesReady)
-			if got.Reason != pki.ReasonSecretsControlledElsewhere || !strings.Contains(got.Message, c.secret+" by "+c.owner.Kind+" "+c.owner.Name) {
+			if got.Reason != bryggav1alpha1.ReasonSecretsControlledElsewhere || !strings.Contains(got.Message, c.secret+" by "+c.owner.Kind+" "+c.owner.Name) {
 				t.Fatalf("CertificatesReady is %s: %s", got.Reason, got.Message)
 			}
 			if after := namespaceSecrets(t, cp.Namespace); !maps.Equal(before, after) {
@@ -135,7 +134,7 @@ func TestASecretAnotherOwnerKeepsBlocksEveryWrite(t *testing.T) {
 				t.Fatal(err)
 			}
 			reconcile(t, r, cp)
-			expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, pki.ReasonIssued)
+			expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, bryggav1alpha1.ReasonIssued)
 			if s := secretsOf(t, cp)[c.secret]; s == nil || !metav1.IsControlledBy(s, cp) {
 				t.Errorf("%s was not written again once the other owner's was gone", c.secret)
 			}
@@ -148,7 +147,7 @@ func TestLeftoversUnderPKINames(t *testing.T) {
 	r := newReconciler(time.Hour)
 	cp := controlPlane(t, "pki-leftovers")
 	for _, name := range []string{"dev-etcd-ca-1", "dev-etcd-ca-01"} {
-		leftover := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cp.Namespace}, Data: map[string][]byte{"ca.crt": []byte("left over")}, Immutable: new(true)}
+		leftover := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cp.Namespace}, Data: map[string][]byte{bryggav1alpha1.CACertKey: []byte("left over")}, Immutable: new(true)}
 		if err := k8s.Create(ctx, leftover); err != nil {
 			t.Fatal(err)
 		}
@@ -187,7 +186,7 @@ func TestAnOldGenerationChangedSinceItWasReadIsKept(t *testing.T) {
 	ctx := t.Context()
 	r := newReconciler(time.Hour)
 	cp := controlPlane(t, "pki-delete-race")
-	leftover := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "dev-etcd-ca-1", Namespace: cp.Namespace}, Data: map[string][]byte{"ca.crt": []byte("left over")}, Immutable: new(true)}
+	leftover := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "dev-etcd-ca-1", Namespace: cp.Namespace}, Data: map[string][]byte{bryggav1alpha1.CACertKey: []byte("left over")}, Immutable: new(true)}
 	if err := k8s.Create(ctx, leftover); err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +247,7 @@ func TestKeptGenerationsAreAdopted(t *testing.T) {
 	}
 	r.Client = failingApply{Client: k8s, secret: "dev-etcd-backup-restore-1"}
 	reconcileFails(t, r, cp)
-	if c := condition(t, cp, bryggav1alpha1.ConditionCertificatesReady); c.Reason != pki.ReasonIssuing || c.Message != "not written yet: dev-etcd-backup-restore-1; the error is in the log" {
+	if c := condition(t, cp, bryggav1alpha1.ConditionCertificatesReady); c.Reason != bryggav1alpha1.ReasonIssuing || c.Message != "not written yet: dev-etcd-backup-restore-1; the error is in the log" {
 		t.Fatalf("CertificatesReady is %s while generation 1 cannot be adopted: %s", c.Reason, c.Message)
 	}
 	r.Client = k8s
@@ -278,12 +277,12 @@ func TestKeyMaterialPKICannotReadIsNeverReplaced(t *testing.T) {
 		name, secret string
 		data         map[string][]byte
 	}{
-		{"an encryption configuration that does not parse", "dev-encryption-config", map[string][]byte{"encryption-config.yaml": []byte("resources: [")}},
-		{"a key the API server would refuse", "dev-encryption-config", map[string][]byte{"encryption-config.yaml": []byte(
+		{"an encryption configuration that does not parse", "dev-encryption-config", map[string][]byte{bryggav1alpha1.EncryptionConfigKey: []byte("resources: [")}},
+		{"a key the API server would refuse", "dev-encryption-config", map[string][]byte{bryggav1alpha1.EncryptionConfigKey: []byte(
 			"apiVersion: apiserver.config.k8s.io/v1\nkind: EncryptionConfiguration\nresources:\n- resources: [secrets]\n  providers:\n  - secretbox:\n      keys:\n      - name: key1\n        secret: " + short + "\n")}},
 		{"no configuration in the Secret", "dev-encryption-config", map[string][]byte{"other": []byte("x")}},
-		{"a ServiceAccount key that does not parse", "dev-sa-keys", map[string][]byte{"signing.key": []byte("not a key")}},
-		{"an ECDSA ServiceAccount key", "dev-sa-keys", map[string][]byte{"signing.key": ecPEM}},
+		{"a ServiceAccount key that does not parse", "dev-sa-keys", map[string][]byte{bryggav1alpha1.SigningKeyKey: []byte("not a key")}},
+		{"an ECDSA ServiceAccount key", "dev-sa-keys", map[string][]byte{bryggav1alpha1.SigningKeyKey: ecPEM}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := newReconciler(time.Hour)
@@ -297,7 +296,7 @@ func TestKeyMaterialPKICannotReadIsNeverReplaced(t *testing.T) {
 			}
 			reconcile(t, r, cp)
 			got := condition(t, cp, bryggav1alpha1.ConditionCertificatesReady)
-			if got.Reason != pki.ReasonSecretUnreadable || !strings.Contains(got.Message, c.secret) {
+			if got.Reason != bryggav1alpha1.ReasonSecretUnreadable || !strings.Contains(got.Message, c.secret) {
 				t.Fatalf("CertificatesReady is %s: %s", got.Reason, got.Message)
 			}
 			if !maps.EqualFunc(secretsOf(t, cp)[c.secret].Data, c.data, bytes.Equal) {
@@ -334,7 +333,7 @@ func TestAFailedReadLeavesTheStatus(t *testing.T) {
 	}
 	r.Reader = k8s
 	reconcile(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, pki.ReasonCAMissing)
+	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, bryggav1alpha1.ReasonCAMissing)
 }
 
 type failingRead struct {

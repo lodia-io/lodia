@@ -15,7 +15,8 @@ Decided 2026-10-23.
 - **API group:** `brygga.segla.io`, first version `v1alpha1`. Labels,
   annotations and finalizers use the same prefix
   (`brygga.segla.io/control-plane`, `brygga.segla.io/operation`,
-  `brygga.segla.io/controlplane` as the finalizer).
+  `brygga.segla.io/datastore` as the finalizer, named after the controller
+  that holds it).
 - **Field managers:** `brygga/<controller>` (`brygga/pki`, `brygga/workloads`,
   …), one per controller, so server-side apply ownership shows who wrote a
   field.

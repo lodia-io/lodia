@@ -24,11 +24,6 @@ var (
 	AddToScheme = SchemeBuilder.AddToScheme
 )
 
-// ControlPlaneLabel marks every object Brygga creates for a control plane; its
-// value is the ControlPlane's name. The operator's cache holds only labelled
-// objects.
-const ControlPlaneLabel = "brygga.segla.io/control-plane"
-
 func addKnownTypes(s *runtime.Scheme) error {
 	s.AddKnownTypes(GroupVersion,
 		&ControlPlane{}, &ControlPlaneList{},

@@ -22,7 +22,8 @@ listener ([TLSRoute](https://gateway-api.sigs.k8s.io/reference/api-types/tlsrout
 The platform owns the Gateway: a `TLS` listener in `Passthrough` mode on 443
 for a wildcard hostname, routes allowed from tenant namespaces by label, and
 `allowedListeners` that admits tenant `ListenerSet`s. Brygga only attaches.
-Missing features turn `APIServerReady` False with reason `GatewayUnsupported`.
+Missing features turn `APIServerReady` False with reason `GatewayUnsupported`
+(phase 2).
 
 **In-cluster access (the `gateway` mode).** A connection from a pod to the
 `kubernetes` ClusterIP carries no SNI, and every tenant's
