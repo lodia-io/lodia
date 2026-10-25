@@ -539,7 +539,11 @@ func TestFinalizerAndEtcdFromClass(t *testing.T) {
 		{"the ControlPlane → metadata.ownerReferences", etcd.OwnerReferences, []metav1.OwnerReference{{
 			APIVersion: "brygga.segla.io/v1alpha1", Kind: "ControlPlane", Name: "dev", UID: cp.UID, Controller: new(true), BlockOwnerDeletion: new(true),
 		}}},
-		{"the Etcd → status.datastore", ptr.Deref(cp.Status.Datastore, bryggav1alpha1.DatastoreStatus{}), bryggav1alpha1.DatastoreStatus{Kind: "Dedicated", Name: "dev-etcd"}},
+		{"the Etcd → status.datastore", ptr.Deref(cp.Status.Datastore, bryggav1alpha1.DatastoreStatus{}), bryggav1alpha1.DatastoreStatus{
+			Endpoints: []bryggav1alpha1.HostPort{{Host: "dev-etcd-client." + ns + ".svc", Port: 2379}},
+			Class:     &bryggav1alpha1.DatastoreClassStatus{Name: "mapped", Generation: 1},
+			Members:   bryggav1alpha1.Count{Total: 1},
+		}},
 		{"the class → metadata.annotations[" + datastore.ClassAnnotation + "]", etcd.Annotations[datastore.ClassAnnotation], "mapped"},
 		{"the class's generation → metadata.annotations[" + datastore.ClassGenerationAnnotation + "]", etcd.Annotations[datastore.ClassGenerationAnnotation], "1"},
 	}
@@ -1246,7 +1250,11 @@ func TestDatastoreReadyFollowsEtcdStatus(t *testing.T) {
 	runStatefulSet(t, ns, cp, 1)
 	setEtcdStatus(t, ns, cp, nil)
 	waitCondition(t, ns, cp, metav1.ConditionTrue, datastore.ReasonReady, "etcd-druid reports Etcd reported-etcd ready on certificate generation 1, 1 of 1 replicas")
-	if got, want := ptr.Deref(getControlPlane(t, ns, cp).Status.Datastore, bryggav1alpha1.DatastoreStatus{}), (bryggav1alpha1.DatastoreStatus{Kind: "Dedicated", Name: "reported-etcd", Members: 1}); got != want {
+	if got, want := ptr.Deref(getControlPlane(t, ns, cp).Status.Datastore, bryggav1alpha1.DatastoreStatus{}), (bryggav1alpha1.DatastoreStatus{
+		Endpoints: []bryggav1alpha1.HostPort{{Host: "reported-etcd-client." + ns + ".svc", Port: 2379}},
+		Class:     &bryggav1alpha1.DatastoreClassStatus{Name: "reported", Generation: 1},
+		Members:   bryggav1alpha1.Count{Total: 1, Ready: 1},
+	}); !reflect.DeepEqual(got, want) {
 		t.Errorf("status.datastore %+v, want %+v", got, want)
 	}
 

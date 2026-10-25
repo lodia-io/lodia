@@ -69,8 +69,11 @@ Examples: [`examples/`](examples/).
 | `credentials.adminKubeconfigSecretRef` | PKI | `<name>-admin-kubeconfig` |
 | `credentials.caBundleSecretRef` | PKI | `<name>-ca-bundle`: the CAs a client must trust now (two during a rotation) |
 | `credentials.rotation.<credential>.{phase, lastInitiated, lastCompleted}` | PKI | the stages per credential (the same keys as `target.rotation`), as Gardener reports them |
-| `datastore.{kind, name, members, dbSizeBytes}` | Datastore | `Dedicated` or `Shared` |
-| `datastore.lastBackup.{time, kind, revision}` | Datastore | the newest full or delta snapshot |
+| `datastore` | Datastore | written whole once the store exists, absent until then |
+| `datastore.endpoints[].{host, port}` | Datastore | where the API server reaches etcd: for a dedicated etcd, etcd-druid's client Service; Workloads builds `--etcd-servers` from it |
+| `datastore.class.{name, generation}` | Datastore | the `DatastoreClass` a dedicated etcd was built from, and the generation of it the `Etcd` runs; Lifecycle reads it in phase 2 |
+| `datastore.members.{total, ready}` | Datastore | the members the `Etcd` asks for and those ready |
+| `datastore.dbSizeBytes`, `datastore.lastBackup.{time, kind, revision}` | Datastore | phase 2, with backups and metrics |
 | `components.{apiServer, controllerManager, scheduler}.{replicas, ready}` | Workloads | from the Deployments |
 | `nodes.{total, ready, outdatedKubelets, sampledAt}` | Health | from a periodic list of nodes and leases in the tenant |
 | `health.controllerManagerHold.{since, silentNodes, countedNodes, blockedBy}` | Health | present while Brygga holds the controller manager's leader lease; `blockedBy` names a foreign holder Brygga left alone |

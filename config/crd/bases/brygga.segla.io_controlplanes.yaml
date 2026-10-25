@@ -1159,37 +1159,69 @@ spec:
               datastore:
                 description: Datastore is the store in use and its last backup.
                 properties:
-                  dbSizeBytes:
-                    format: int64
-                    type: integer
-                  kind:
-                    description: Kind is Dedicated or Shared.
-                    enum:
-                    - Dedicated
-                    - Shared
-                    type: string
-                  lastBackup:
-                    description: LastBackup is the newest snapshot.
+                  class:
+                    description: Class is the DatastoreClass a dedicated etcd was
+                      built from.
                     properties:
-                      kind:
-                        description: Kind is Full or Delta.
-                        enum:
-                        - Full
-                        - Delta
-                        type: string
-                      revision:
+                      generation:
                         format: int64
+                        minimum: 1
                         type: integer
-                      time:
-                        format: date-time
+                      name:
+                        maxLength: 253
+                        minLength: 1
                         type: string
+                    required:
+                    - generation
+                    - name
                     type: object
+                  endpoints:
+                    description: Endpoints are where the API server reaches etcd.
+                    items:
+                      description: HostPort is a host and a port.
+                      properties:
+                        host:
+                          description: |-
+                            Host is a lowercase DNS name or an IP address, an IPv6 address without
+                            brackets.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                          x-kubernetes-validations:
+                          - message: must be an IP address or a lowercase DNS name
+                            rule: isIP(self) || !format.dns1123Subdomain().validate(self).hasValue()
+                        port:
+                          description: Port is a TCP port.
+                          format: int32
+                          maximum: 65535
+                          minimum: 1
+                          type: integer
+                      required:
+                      - host
+                      - port
+                      type: object
+                    maxItems: 9
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-type: atomic
                   members:
-                    format: int32
-                    type: integer
-                  name:
-                    maxLength: 253
-                    type: string
+                    description: Members counts the etcd members.
+                    properties:
+                      ready:
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      total:
+                        format: int32
+                        minimum: 0
+                        type: integer
+                    required:
+                    - ready
+                    - total
+                    type: object
+                required:
+                - endpoints
+                - members
                 type: object
               endpoint:
                 description: Endpoint is where the control plane is reachable.
@@ -1307,13 +1339,18 @@ spec:
                     type: integer
                   ready:
                     format: int32
+                    minimum: 0
                     type: integer
                   sampledAt:
                     format: date-time
                     type: string
                   total:
                     format: int32
+                    minimum: 0
                     type: integer
+                required:
+                - ready
+                - total
                 type: object
               observedGeneration:
                 description: ObservedGeneration is the generation every controller

@@ -847,42 +847,53 @@ type RotationStatus struct {
 // +kubebuilder:validation:Enum=Idle;Preparing;Prepared;Completing
 type RotationPhase string
 
-// DatastoreStatus is the store in use.
+// DatastoreStatus is the store the API server uses. The Datastore
+// controller writes it whole once the store exists.
 type DatastoreStatus struct {
-	// Kind is Dedicated or Shared.
+	// Endpoints are where the API server reaches etcd.
+	// +required
+	// +listType=atomic
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=9
+	Endpoints []HostPort `json:"endpoints"`
+
+	// Class is the DatastoreClass a dedicated etcd was built from.
 	// +optional
-	// +kubebuilder:validation:Enum=Dedicated;Shared
-	Kind string `json:"kind,omitempty"`
-	// +optional
-	// +kubebuilder:validation:MaxLength=253
-	Name string `json:"name,omitempty"`
-	// +optional
-	Members int32 `json:"members,omitempty"`
-	// +optional
-	DBSizeBytes int64 `json:"dbSizeBytes,omitempty"`
-	// LastBackup is the newest snapshot.
-	// +optional
-	LastBackup *BackupMark `json:"lastBackup,omitempty"`
+	Class *DatastoreClassStatus `json:"class,omitempty"`
+
+	// Members counts the etcd members.
+	// +required
+	Members Count `json:"members"`
 }
 
-// BackupMark is one snapshot.
-type BackupMark struct {
-	// +optional
-	Time *metav1.Time `json:"time,omitempty"`
-	// Kind is Full or Delta.
-	// +optional
-	// +kubebuilder:validation:Enum=Full;Delta
-	Kind string `json:"kind,omitempty"`
-	// +optional
-	Revision int64 `json:"revision,omitempty"`
+// DatastoreClassStatus is a DatastoreClass at the generation an etcd was
+// built from.
+type DatastoreClassStatus struct {
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+
+	// +required
+	// +kubebuilder:validation:Minimum=1
+	Generation int64 `json:"generation"`
+}
+
+// Count is how many there are and how many of them are ready.
+type Count struct {
+	// +required
+	// +kubebuilder:validation:Minimum=0
+	Total int32 `json:"total"`
+
+	// +required
+	// +kubebuilder:validation:Minimum=0
+	Ready int32 `json:"ready"`
 }
 
 // NodesStatus summarises the tenant's nodes.
 type NodesStatus struct {
-	// +optional
-	Total int32 `json:"total,omitempty"`
-	// +optional
-	Ready int32 `json:"ready,omitempty"`
+	Count `json:",inline"`
+
 	// OutdatedKubelets run an older minor than the control plane.
 	// +optional
 	OutdatedKubelets int32 `json:"outdatedKubelets,omitempty"`

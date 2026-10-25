@@ -388,8 +388,9 @@ unchanged field on update,
 an etcd-druid whose schema moved: the message
 names the `Etcd`, the certificate generation and the class generation, and
 the refusal is in Brygga's log. `Deleting` while the `ControlPlane` is being
-deleted. `status.datastore` is `kind: Dedicated`, the `Etcd`'s name and its
-member count. Every message is built from the state alone, so a pass that
+deleted. `status.datastore` says where the API server reaches etcd (the
+client Service, `<cp>-etcd-client.<ns>.svc:2379`), the class and the
+generation the `Etcd` was built from, and its members, total and ready. Every message is built from the state alone, so a pass that
 changes nothing writes nothing; an error of the API server ends the pass,
 goes to the log and leaves the status as it was
 ([independent-controllers](decisions/independent-controllers.md)), unless it

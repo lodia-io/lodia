@@ -17,6 +17,7 @@ import (
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -676,11 +677,24 @@ func (r *Reconciler) setFinalizer(ctx context.Context, cp *bryggav1alpha1.Contro
 	return r.Patch(ctx, cp, patch, client.FieldOwner(FieldManager))
 }
 
+// datastoreStatus says where the API server reaches the etcd: etcd-druid's
+// client Service (etcd-druid@v0.39.0 api/core/v1alpha1/helper.go#L27-L30).
 func datastoreStatus(etcd *druidv1alpha1.Etcd) *bryggav1alpha1.DatastoreStatus {
 	if etcd == nil {
 		return nil
 	}
-	return &bryggav1alpha1.DatastoreStatus{Kind: "Dedicated", Name: etcd.Name, Members: int32(len(etcd.Status.Members))}
+	status := &bryggav1alpha1.DatastoreStatus{
+		Endpoints: []bryggav1alpha1.HostPort{{
+			Host: druidv1alpha1.GetClientServiceName(etcd.ObjectMeta) + "." + etcd.Namespace + ".svc",
+			Port: druidv1alpha1.GetClientPort(etcd),
+		}},
+		Members: bryggav1alpha1.Count{Total: etcd.Spec.Replicas, Ready: etcd.Status.ReadyReplicas},
+	}
+	generation, err := strconv.ParseInt(etcd.Annotations[ClassGenerationAnnotation], 10, 64)
+	if name := etcd.Annotations[ClassAnnotation]; name != "" && err == nil {
+		status.Class = &bryggav1alpha1.DatastoreClassStatus{Name: name, Generation: generation}
+	}
+	return status
 }
 
 func (r *Reconciler) applyStatus(ctx context.Context, cp *bryggav1alpha1.ControlPlane, datastore *bryggav1alpha1.DatastoreStatus, condition metav1.Condition) error {
@@ -688,7 +702,7 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *bryggav1alpha1.Control
 	previous := meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionDatastoreReady)
 	unchanged := previous != nil && previous.Status == condition.Status && previous.Reason == condition.Reason &&
 		previous.Message == condition.Message && previous.ObservedGeneration == condition.ObservedGeneration
-	if unchanged && sameDatastore(cp.Status.Datastore, datastore) {
+	if unchanged && equality.Semantic.DeepEqual(cp.Status.Datastore, datastore) {
 		return nil
 	}
 	conditions := slices.Clone(cp.Status.Conditions)
@@ -699,7 +713,9 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *bryggav1alpha1.Control
 	}
 	status := map[string]any{"conditions": []any{current}}
 	if datastore != nil {
-		status["datastore"] = map[string]any{"kind": datastore.Kind, "name": datastore.Name, "members": int64(datastore.Members)}
+		if status["datastore"], err = runtime.DefaultUnstructuredConverter.ToUnstructured(datastore); err != nil {
+			return err
+		}
 	}
 	controlPlane := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": bryggav1alpha1.GroupVersion.String(),
@@ -708,13 +724,6 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *bryggav1alpha1.Control
 		"status":     status,
 	}}
 	return r.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(controlPlane), client.FieldOwner(FieldManager), client.ForceOwnership)
-}
-
-func sameDatastore(a, b *bryggav1alpha1.DatastoreStatus) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	return a.Kind == b.Kind && a.Name == b.Name && a.Members == b.Members
 }
 
 func newCondition(status metav1.ConditionStatus, reason, message string) metav1.Condition {
