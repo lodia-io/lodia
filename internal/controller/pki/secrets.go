@@ -753,7 +753,7 @@ func (r *Reconciler) issueEtcd(ctx context.Context, t *tenant, g int, ca *certs.
 		return err
 	}
 	labels := map[string]string{bryggav1alpha1.EtcdCertificatesLabel: strconv.Itoa(g)}
-	r.applySecret(ctx, t, t.etcdName("ca", g), corev1.SecretTypeOpaque, map[string][]byte{caKey: caPEM}, labels, true)
+	r.applySecret(ctx, t, t.etcdName(bryggav1alpha1.EtcdCARole, g), corev1.SecretTypeOpaque, map[string][]byte{caKey: caPEM}, labels, true)
 	for _, p := range profiles {
 		c, err := ca.Issue(p.profile, t.now, r.LeafLifetime)
 		if err != nil {
@@ -776,15 +776,15 @@ func (t *tenant) etcdComplete(g int) bool {
 	return true
 }
 
-func (t *tenant) etcdGeneration(g int, ca *certs.Certificate, profiles []etcdProfile) map[string]*certs.Certificate {
+func (t *tenant) etcdGeneration(g int, ca *certs.Certificate, profiles []etcdProfile) map[bryggav1alpha1.EtcdCertificateRole]*certs.Certificate {
 	if g == 0 || !t.etcdComplete(g) {
 		return nil
 	}
-	s := t.existing[t.etcdName("ca", g)]
+	s := t.existing[t.etcdName(bryggav1alpha1.EtcdCARole, g)]
 	if bundle, err := certs.ParseCerts(s.Data[caKey]); !isImmutable(s) || err != nil || len(bundle) != 1 || !bundle[0].Equal(ca.Cert) {
 		return nil
 	}
-	kept := make(map[string]*certs.Certificate, len(profiles))
+	kept := make(map[bryggav1alpha1.EtcdCertificateRole]*certs.Certificate, len(profiles))
 	for _, p := range profiles {
 		s := t.existing[t.etcdName(p.role, g)]
 		c, err := certs.Parse(s.Data[corev1.TLSCertKey], s.Data[corev1.TLSPrivateKeyKey])
@@ -796,7 +796,7 @@ func (t *tenant) etcdGeneration(g int, ca *certs.Certificate, profiles []etcdPro
 	return kept
 }
 
-func (t *tenant) etcdName(role string, generation int) string {
+func (t *tenant) etcdName(role bryggav1alpha1.EtcdCertificateRole, generation int) string {
 	return bryggav1alpha1.EtcdCertificateSecretName(t.cp.Name, role, generation)
 }
 
@@ -805,7 +805,7 @@ func (t *tenant) secret(s bryggav1alpha1.Secret) string {
 }
 
 type etcdProfile struct {
-	role    string
+	role    bryggav1alpha1.EtcdCertificateRole
 	profile certs.Profile
 }
 
@@ -823,10 +823,10 @@ func (t *tenant) etcdProfiles() []etcdProfile {
 	local := []string{n + "-local"}
 	loopback := []net.IP{net.ParseIP("127.0.0.1")}
 	return []etcdProfile{
-		{"server", certs.Profile{CommonName: n, Usages: serverClientAuth, DNSNames: slices.Concat(local, forms(n+"-client", "*."+n+"-peer"), []string{"localhost"}), IPAddresses: loopback}},
-		{"peer", certs.Profile{CommonName: n + "-peer", Usages: serverClientAuth, DNSNames: forms(n+"-peer", "*."+n+"-peer")}},
-		{"backup-restore", certs.Profile{CommonName: n + "-backup-restore", Usages: serverAuth, DNSNames: slices.Concat(local, forms(n+"-client"), []string{"localhost"}), IPAddresses: loopback}},
-		{"client", certs.Profile{CommonName: n + "-client", Usages: clientAuth}},
+		{bryggav1alpha1.EtcdServerRole, certs.Profile{CommonName: n, Usages: serverClientAuth, DNSNames: slices.Concat(local, forms(n+"-client", "*."+n+"-peer"), []string{"localhost"}), IPAddresses: loopback}},
+		{bryggav1alpha1.EtcdPeerRole, certs.Profile{CommonName: n + "-peer", Usages: serverClientAuth, DNSNames: forms(n+"-peer", "*."+n+"-peer")}},
+		{bryggav1alpha1.EtcdBackupRestoreRole, certs.Profile{CommonName: n + "-backup-restore", Usages: serverAuth, DNSNames: slices.Concat(local, forms(n+"-client"), []string{"localhost"}), IPAddresses: loopback}},
+		{bryggav1alpha1.EtcdClientRole, certs.Profile{CommonName: n + "-client", Usages: clientAuth}},
 	}
 }
 

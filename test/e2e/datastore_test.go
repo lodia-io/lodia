@@ -117,10 +117,10 @@ func TestDatastoreOnKind(t *testing.T) {
 		}).
 		Assess("a member Secret deleted, PKI issues generation 2 under the same CA and the member rolls onto it", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			first := &corev1.Secret{}
-			if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: bryggav1alpha1.EtcdCertificateSecretName(controlPlane, "ca", 1)}, first); err != nil {
+			if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: bryggav1alpha1.EtcdCertificateSecretName(controlPlane, bryggav1alpha1.EtcdCARole, 1)}, first); err != nil {
 				t.Fatal(err)
 			}
-			member := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: tenant, Name: bryggav1alpha1.EtcdCertificateSecretName(controlPlane, "client", 1)}}
+			member := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: tenant, Name: bryggav1alpha1.EtcdCertificateSecretName(controlPlane, bryggav1alpha1.EtcdClientRole, 1)}}
 			if err := k8s.Delete(ctx, member); err != nil {
 				t.Fatal(err)
 			}
@@ -129,7 +129,7 @@ func TestDatastoreOnKind(t *testing.T) {
 				return issued(ctx, k8s, 2)
 			})
 			second := &corev1.Secret{}
-			if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: bryggav1alpha1.EtcdCertificateSecretName(controlPlane, "ca", 2)}, second); err != nil {
+			if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: bryggav1alpha1.EtcdCertificateSecretName(controlPlane, bryggav1alpha1.EtcdCARole, 2)}, second); err != nil {
 				t.Fatal(err)
 			}
 			if !bytes.Equal(first.Data["ca.crt"], second.Data["ca.crt"]) {

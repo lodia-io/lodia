@@ -54,28 +54,38 @@ func PKISecrets() []Secret {
 // Name is the Secret's name for a ControlPlane.
 func (s Secret) Name(controlPlane string) string { return controlPlane + "-" + string(s) }
 
-// EtcdCertificateRoles are the Secrets of one generation of etcd
-// certificates, which PKI writes and the Datastore controller names in the
-// Etcd.
-func EtcdCertificateRoles() []string {
-	return []string{"ca", "server", "client", "peer", "backup-restore"}
+// EtcdCertificateRole is a Secret of one generation of etcd certificates,
+// which PKI writes and the Datastore controller names in the Etcd.
+type EtcdCertificateRole string
+
+const (
+	EtcdCARole            EtcdCertificateRole = "ca"
+	EtcdServerRole        EtcdCertificateRole = "server"
+	EtcdClientRole        EtcdCertificateRole = "client"
+	EtcdPeerRole          EtcdCertificateRole = "peer"
+	EtcdBackupRestoreRole EtcdCertificateRole = "backup-restore"
+)
+
+// EtcdCertificateRoles are the Secrets of one generation.
+func EtcdCertificateRoles() []EtcdCertificateRole {
+	return []EtcdCertificateRole{EtcdCARole, EtcdServerRole, EtcdClientRole, EtcdPeerRole, EtcdBackupRestoreRole}
 }
 
 // EtcdCertificateSecretName is "<ControlPlane>-etcd-<role>-<generation>".
-func EtcdCertificateSecretName(controlPlane, role string, generation int) string {
-	return controlPlane + "-etcd-" + role + "-" + strconv.Itoa(generation)
+func EtcdCertificateSecretName(controlPlane string, role EtcdCertificateRole, generation int) string {
+	return controlPlane + "-etcd-" + string(role) + "-" + strconv.Itoa(generation)
 }
 
 // ParseEtcdCertificateSecretName is the inverse of EtcdCertificateSecretName:
 // a name of the ControlPlane's etcd certificates, with a generation above
 // zero written without leading zeros, gives its role and generation.
-func ParseEtcdCertificateSecretName(controlPlane, name string) (string, int, bool) {
+func ParseEtcdCertificateSecretName(controlPlane, name string) (EtcdCertificateRole, int, bool) {
 	rest, ok := strings.CutPrefix(name, controlPlane+"-etcd-")
 	if !ok {
 		return "", 0, false
 	}
 	for _, role := range EtcdCertificateRoles() {
-		if n, ok := strings.CutPrefix(rest, role+"-"); ok {
+		if n, ok := strings.CutPrefix(rest, string(role)+"-"); ok {
 			if g, err := strconv.Atoi(n); err == nil && g > 0 && strconv.Itoa(g) == n {
 				return role, g, true
 			}

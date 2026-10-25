@@ -33,14 +33,14 @@ import (
 // immutable in the Etcd, the second a StatefulSet field that cannot change in
 // place. A nil class is a recorded class that is gone.
 func render(cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClass, generation int, current *druidv1alpha1.Etcd) *druidv1alpha1.Etcd {
-	secret := func(certificate string) corev1.SecretReference {
+	secret := func(certificate bryggav1alpha1.EtcdCertificateRole) corev1.SecretReference {
 		return corev1.SecretReference{Name: bryggav1alpha1.EtcdCertificateSecretName(cp.Name, certificate, generation)}
 	}
 	// etcd-druid reads the CA under ca.crt for the members and under
 	// bundle.crt for its own calls to the sidecar unless the key is named
 	// (etcd-druid@v0.39.0 internal/component/statefulset/builder.go#L468,
 	// internal/controller/compaction/snapshot.go#L87).
-	ca := druidv1alpha1.SecretReference{SecretReference: secret("ca"), DataKey: new("ca.crt")}
+	ca := druidv1alpha1.SecretReference{SecretReference: secret(bryggav1alpha1.EtcdCARole), DataKey: new("ca.crt")}
 	labels := map[string]string{bryggav1alpha1.ControlPlaneLabel: cp.Name}
 	etcd := &druidv1alpha1.Etcd{
 		TypeMeta: metav1.TypeMeta{APIVersion: druidv1alpha1.SchemeGroupVersion.String(), Kind: "Etcd"},
@@ -54,11 +54,11 @@ func render(cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClas
 			Replicas: 1,
 			Labels:   labels,
 			Etcd: druidv1alpha1.EtcdConfig{
-				ClientUrlTLS: &druidv1alpha1.TLSConfig{TLSCASecretRef: ca, ServerTLSSecretRef: secret("server"), ClientTLSSecretRef: secret("client")},
-				PeerUrlTLS:   &druidv1alpha1.PeerTLSConfig{TLSConfig: druidv1alpha1.TLSConfig{TLSCASecretRef: ca, ServerTLSSecretRef: secret("peer")}},
+				ClientUrlTLS: &druidv1alpha1.TLSConfig{TLSCASecretRef: ca, ServerTLSSecretRef: secret(bryggav1alpha1.EtcdServerRole), ClientTLSSecretRef: secret(bryggav1alpha1.EtcdClientRole)},
+				PeerUrlTLS:   &druidv1alpha1.PeerTLSConfig{TLSConfig: druidv1alpha1.TLSConfig{TLSCASecretRef: ca, ServerTLSSecretRef: secret(bryggav1alpha1.EtcdPeerRole)}},
 			},
 			Backup: druidv1alpha1.BackupSpec{
-				TLS: &druidv1alpha1.TLSConfig{TLSCASecretRef: ca, ServerTLSSecretRef: secret("backup-restore"), ClientTLSSecretRef: secret("client")},
+				TLS: &druidv1alpha1.TLSConfig{TLSCASecretRef: ca, ServerTLSSecretRef: secret(bryggav1alpha1.EtcdBackupRestoreRole), ClientTLSSecretRef: secret(bryggav1alpha1.EtcdClientRole)},
 			},
 		},
 	}

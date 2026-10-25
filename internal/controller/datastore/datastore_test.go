@@ -294,14 +294,14 @@ func credentials(ns string) *corev1.Secret {
 	}
 }
 
-func writeGeneration(t *testing.T, ns, cp string, generation int, only ...string) {
+func writeGeneration(t *testing.T, ns, cp string, generation int, only ...bryggav1alpha1.EtcdCertificateRole) {
 	t.Helper()
 	secrets, err := datastoretest.Generation(getControlPlane(t, ns, cp), generation)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, secret := range secrets {
-		if len(only) > 0 && !slices.ContainsFunc(only, func(certificate string) bool {
+		if len(only) > 0 && !slices.ContainsFunc(only, func(certificate bryggav1alpha1.EtcdCertificateRole) bool {
 			return secret.Name == bryggav1alpha1.EtcdCertificateSecretName(cp, certificate, generation)
 		}) {
 			continue
@@ -724,7 +724,7 @@ func TestNewestCompleteGeneration(t *testing.T) {
 	writeGeneration(t, ns, "dev", 1)
 	waitEtcd(t, ns, "dev", namesGeneration(1))
 
-	writeGeneration(t, ns, "dev", 2, "ca", "server", "peer", "backup-restore")
+	writeGeneration(t, ns, "dev", 2, bryggav1alpha1.EtcdCARole, bryggav1alpha1.EtcdServerRole, bryggav1alpha1.EtcdPeerRole, bryggav1alpha1.EtcdBackupRestoreRole)
 	settle(t, ns, "dev")
 	if err := namesGeneration(1)(getEtcd(t, ns, "dev")); err != nil {
 		t.Fatalf("four of five Secrets of generation 2: %v", err)
@@ -735,7 +735,7 @@ func TestNewestCompleteGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	terminating := secrets[slices.IndexFunc(secrets, func(s *corev1.Secret) bool {
-		return s.Name == bryggav1alpha1.EtcdCertificateSecretName("dev", "client", 2)
+		return s.Name == bryggav1alpha1.EtcdCertificateSecretName("dev", bryggav1alpha1.EtcdClientRole, 2)
 	})]
 	label := terminating.Labels[bryggav1alpha1.EtcdCertificatesLabel]
 	delete(terminating.Labels, bryggav1alpha1.EtcdCertificatesLabel)
@@ -772,7 +772,7 @@ func TestNewestCompleteGeneration(t *testing.T) {
 		return nil
 	})
 
-	writeGeneration(t, ns, "dev", 2, "client")
+	writeGeneration(t, ns, "dev", 2, bryggav1alpha1.EtcdClientRole)
 	etcd := waitEtcd(t, ns, "dev", namesGeneration(2))
 
 	settle(t, ns, "dev")
@@ -790,7 +790,7 @@ func TestGenerationsMoveForward(t *testing.T) {
 	waitEtcd(t, ns, "dev", namesGeneration(2))
 
 	held := &corev1.Secret{}
-	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: bryggav1alpha1.EtcdCertificateSecretName("dev", "client", 2)}, held); err != nil {
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: bryggav1alpha1.EtcdCertificateSecretName("dev", bryggav1alpha1.EtcdClientRole, 2)}, held); err != nil {
 		t.Fatal(err)
 	}
 	patch := client.MergeFrom(held.DeepCopy())
@@ -872,7 +872,7 @@ func TestMountedSecretsMustExist(t *testing.T) {
 	waitEtcd(t, ns, cp, namesGeneration(3))
 	readyOn(t, ns, cp, 3)
 	terminating := &corev1.Secret{}
-	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: bryggav1alpha1.EtcdCertificateSecretName(cp, "ca", 3)}, terminating); err != nil {
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: bryggav1alpha1.EtcdCertificateSecretName(cp, bryggav1alpha1.EtcdCARole, 3)}, terminating); err != nil {
 		t.Fatal(err)
 	}
 	held := client.MergeFrom(terminating.DeepCopy())
@@ -1164,7 +1164,7 @@ func getCopy(t *testing.T, ns, cp string) *corev1.Secret {
 func certificateVolumes(cp string, generation int) []corev1.Volume {
 	var volumes []corev1.Volume
 	for _, certificate := range bryggav1alpha1.EtcdCertificateRoles() {
-		volumes = append(volumes, corev1.Volume{Name: certificate, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: bryggav1alpha1.EtcdCertificateSecretName(cp, certificate, generation)}}})
+		volumes = append(volumes, corev1.Volume{Name: string(certificate), VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: bryggav1alpha1.EtcdCertificateSecretName(cp, certificate, generation)}}})
 	}
 	return volumes
 }

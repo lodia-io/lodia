@@ -25,7 +25,7 @@ func TestEtcdCertificateSecretNamesParseBack(t *testing.T) {
 	}
 	roles := bryggav1alpha1.EtcdCertificateRoles()
 	roles[0] = "changed"
-	if bryggav1alpha1.EtcdCertificateRoles()[0] != "ca" {
+	if bryggav1alpha1.EtcdCertificateRoles()[0] != bryggav1alpha1.EtcdCARole {
 		t.Error("an importer changed the etcd certificate roles")
 	}
 }
