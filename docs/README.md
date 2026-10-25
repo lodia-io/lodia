@@ -73,9 +73,10 @@ Each controller has its own queue and field manager, reads `spec`,
 `status.target` and the endpoint Workloads publishes, and reports through its
 own condition; none calls another
 ([decision](decisions/independent-controllers.md)). The cache is scoped to
-labelled objects, with metadata only for Secrets. PKI is built
-(`internal/controller/pki`, registered as `pki` in `cmd/brygga/main.go`); the
-other five are not.
+labelled objects, with metadata only for Secrets. PKI, the Datastore
+controller and a first Lifecycle are built (`internal/controller/pki`,
+`datastore` and `lifecycle`, registered under those names in
+`cmd/brygga/main.go`); Workloads, Tenant and Health are not.
 
 ```mermaid
 sequenceDiagram
@@ -510,6 +511,18 @@ v1.13.1 and etcd 3.6.6 for 1.35, CoreDNS v1.14.2 for 1.36, CoreDNS v1.14.6 for
 
 ## Lifecycle
 
+Built so far, for phase 1: Lifecycle sets `status.target.version` to
+`spec.version` when its minor is one Brygga runs — 1.35, 1.36 and 1.37, whose
+images are in `internal/versions` — and within that minor only, since a minor
+upgrade needs the order below, which phase 2 builds; otherwise the target
+stays and `Progressing` says why (`UnsupportedVersion`,
+`MinorUpgradeUnsupported`), else `Idle`, or `Paused`. `Ready` is True when
+the six readiness conditions are True at the current generation; otherwise it
+takes the status, reason and message of the first that is not, and is
+`Unknown`, `Reconciling`, while one is missing or reported for an older
+generation. `status.observedGeneration` follows once all six are reported for
+the current generation.
+
 ### Upgrades and windows
 
 One minor at a time, in the order the version skew policy allows: backup →
@@ -672,6 +685,10 @@ one, on by default since 1.35, and falls back to `list` where it does not
 | `""` | `secrets` | `get`, `list`, `watch`, `create`, `patch`, `delete` | the metadata of the certificate Secrets; the class's credentials Secret, read uncached in the namespace the class names; the copy `<cp>-etcd-backup`, applied; `delete` because that admission plugin lets only who may delete an object set an owner reference on it when it is updated, which adopting a copy with no owner does ([gc_admission.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/plugin/pkg/admission/gc/gc_admission.go#L103-L119)) |
 | `""` | `persistentvolumeclaims` | `list`, `patch`, `delete` | the claims of `<cp>-etcd`, listed in the tenant's namespace and matched by name; their UID label and class annotation; the reclaim |
 | `apps` | `statefulsets` | `get` | the readiness checks, read uncached |
+
+Lifecycle reads `ControlPlane`s from the cache and applies their status:
+`list` and `watch` on `controlplanes`, `patch` on `controlplanes/status`; its
+envtest suite runs it as a user bound to exactly these rules.
 
 ## Installation
 
