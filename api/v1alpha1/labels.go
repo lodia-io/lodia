@@ -37,10 +37,12 @@ const (
 	// DatastoreClass the default.
 	DefaultClassAnnotation = "brygga.segla.io/is-default-class"
 
-	// DatastoreClassAnnotation and DatastoreClassGenerationAnnotation, written
-	// by the Datastore controller on an Etcd and its claims, record the class
-	// and the generation of it the Etcd was rendered from.
-	DatastoreClassAnnotation           = "brygga.segla.io/datastore-class"
+	// DatastoreClassAnnotation, written by the Datastore controller on an
+	// Etcd and its claims, records the class the Etcd was rendered from.
+	DatastoreClassAnnotation = "brygga.segla.io/datastore-class"
+
+	// DatastoreClassGenerationAnnotation, written by the Datastore controller
+	// on an Etcd, records the generation of the class it was rendered from.
 	DatastoreClassGenerationAnnotation = "brygga.segla.io/datastore-class-generation"
 
 	// DataHashAnnotation, written by PKI on every Secret it writes, holds

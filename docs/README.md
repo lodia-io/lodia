@@ -239,7 +239,8 @@ The labels, annotations and the finalizer they share are defined in
 | label `brygga.segla.io/control-plane-uid` | the etcd claims | Datastore | Datastore, which reclaims and starts only on its own claims |
 | label `brygga.segla.io/etcd-certificates: <g>` | the etcd certificate Secrets | PKI | Datastore, which counts complete generations |
 | annotation `brygga.segla.io/is-default-class: "true"` | a `DatastoreClass` | the platform | Datastore |
-| annotations `brygga.segla.io/datastore-class`, `-datastore-class-generation` | the `Etcd` and its claims | Datastore | Datastore; the class reaches others through `status.datastore.class` |
+| annotation `brygga.segla.io/datastore-class` | the `Etcd` and its claims | Datastore | Datastore, which keeps the class an `Etcd` or its claims record; others read `status.datastore.class` |
+| annotation `brygga.segla.io/datastore-class-generation` | the `Etcd` | Datastore | Datastore, for `status.datastore.class` |
 | annotation `brygga.segla.io/data-hash` | every Secret PKI writes | PKI: `DataHash` of the Secret's data, a SHA-256 that changes whenever the data does | Workloads, for the restart hashes of its pod templates |
 | annotation `brygga.segla.io/operation` | a `ControlPlane` | the platform | Lifecycle and PKI, with rotations in phase 3 |
 | finalizer `brygga.segla.io/datastore` | a `ControlPlane` | Datastore | the API server, which deletes the `ControlPlane` once it is gone |
@@ -282,7 +283,8 @@ generation it was rendered from in `brygga.segla.io/datastore-class-generation`;
 from then on the `Etcd` follows that class, its reclaim policy included, as a
 default StorageClass is written into a claim when the claim is created
 ([storage classes](https://kubernetes.io/docs/concepts/storage/storage-classes/#default-storageclass)).
-The claims record it too, for their reclaim, so an `Etcd` created again over
+The claims record the class too, in `brygga.segla.io/datastore-class` alone,
+for their reclaim, so an `Etcd` created again over
 this `ControlPlane`'s claims, after someone deleted it, takes the class they
 record rather than `className` or the current default, which could give it
 another bucket and placement; while that class is gone, it is
