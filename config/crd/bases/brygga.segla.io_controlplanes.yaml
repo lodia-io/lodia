@@ -1213,9 +1213,25 @@ spec:
                     - port
                     type: object
                   internal:
-                    description: Internal is the in-namespace URL.
-                    maxLength: 512
-                    type: string
+                    description: |-
+                      Internal is the API server's in-namespace Service, for clients in the
+                      management cluster.
+                    properties:
+                      host:
+                        description: Host is a DNS name or an IP address.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      port:
+                        description: Port is a TCP port.
+                        format: int32
+                        maximum: 65535
+                        minimum: 1
+                        type: integer
+                    required:
+                    - host
+                    - port
+                    type: object
                   konnectivity:
                     description: |-
                       Konnectivity is where konnectivity agents reach the konnectivity
