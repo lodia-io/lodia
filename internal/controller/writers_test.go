@@ -120,8 +120,6 @@ func TestEveryStatusFieldHasOneWriter(t *testing.T) {
 	}
 }
 
-// statusOwners maps each condition type ("conditions/<type>") and each other
-// top-level status field to the field managers that own it.
 func statusOwners(cp *bryggav1alpha1.ControlPlane) (map[string][]string, error) {
 	owners := map[string][]string{}
 	for _, entry := range cp.ManagedFields {
