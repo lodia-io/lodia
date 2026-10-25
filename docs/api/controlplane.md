@@ -79,7 +79,7 @@ Examples: [`examples/`](examples/).
 | condition | True | False reasons |
 |---|---|---|
 | `CertificatesReady` | every certificate, key and kubeconfig exists and is valid for more than its renewal margin | `Issuing`, `RotationInProgress`, `CAExpiring` |
-| `DatastoreReady` | the etcd (or the tenant's prefix in a shared store) accepts writes | `Provisioning`, `QuorumLost`, `Restoring`, `DatastoreClassNotFound`, `DatastoreNotFound`, `Hibernated` |
+| `DatastoreReady` | the etcd (or the tenant's prefix in a shared store) accepts writes | `Provisioning`, `QuorumLost`, `Restoring`, `DatastoreClassNotFound`, `DatastoreNotFound`, `VolumesExist`, `Hibernated` |
 | `APIServerReady` | all API server replicas answer `/readyz`; controller manager and scheduler have leaders | `WaitingForCertificates`, `WaitingForDatastore`, `RollingOut`, `Unhealthy`, `Hibernated` |
 | `AccessReady` | the tenant's ClusterRoleBindings for `brygga:operator`, `brygga:cluster-admins` and `brygga:kubelet-api-admins` exist, checked with `brygga:operator` | `WaitingForAPIServer`, `Binding` |
 | `AddonsApplied` | the inventory is applied and pruned | `WaitingForAPIServer`, `Applying` |

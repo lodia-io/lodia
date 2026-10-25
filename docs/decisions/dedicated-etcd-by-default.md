@@ -139,6 +139,26 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   sidecar bump revisions itself is owed upstream work.
 - Permanent loss of quorum is recovered by hand
   ([runbook](../operations.md#lost-etcd-quorum)), as etcd-druid documents.
+- A tenant's data never outlives it into another `ControlPlane` by name. The
+  backup prefix is the class's prefix plus `<namespace>/<name>/<uid>`, because
+  etcd-backup-restore restores an empty member from the newest snapshot under
+  its prefix
+  ([design](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/docs/proposals/design.md#L27)).
+  The volumes keep their names (`<cp>-etcd-<cp>-etcd-<n>`) and a StatefulSet
+  re-attaches a claim of that name
+  ([stateful_pod_control.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/statefulset/stateful_pod_control.go#L381-L405)),
+  so when claims of a retained `<cp>-etcd` exist before a new `ControlPlane`'s
+  first `Etcd`, Datastore stops with `DatastoreReady=False`, `VolumesExist`,
+  until someone deletes them; starting from old data is a restore.
+- Every edit of a class that reaches the `Etcd` rolls its members, a single
+  member with an outage, so a class edit is a Brygga-initiated change for each
+  tenant on it and rolls in that tenant's maintenance window
+  ([upgrades-and-maintenance-windows](upgrades-and-maintenance-windows.md));
+  the `Etcd` records the class generation it was rendered from. The storage
+  class and size apply when the `Etcd` is created and not after: the first is
+  immutable in the `Etcd`
+  ([etcd.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/etcd.go#L627-L638)),
+  the second a StatefulSet field that cannot change in place.
 - Snapshots hold the tenant's Secrets as the API server stored them, so
   encryption at rest is on by default (`secretbox`), and the encryption key is
   backed up next to the snapshots; bucket-side encryption is recommended on

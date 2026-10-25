@@ -138,6 +138,38 @@ delta about 5 KB.
     `accessKeyID`, `secretAccessKey` and `region` from the Secret
     ([s3_snapstore.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapstore/s3_snapstore.go#L283-L310)).
 
+## DatastoreClass → Etcd
+
+Each field of [`DatastoreClassSpec`](../api/v1alpha1/datastore_types.go) and
+where the Datastore controller renders it in etcd-druid's `Etcd`
+([etcd.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/etcd.go),
+[store.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/store.go)):
+
+| DatastoreClass | Etcd | note |
+|---|---|---|
+| `etcd.quotaBackendBytes` | `spec.etcd.quota` | |
+| `etcd.autoCompaction.mode`, `.retention` | `spec.sharedConfig.autoCompactionMode`, `.autoCompactionRetention` | shared with the sidecar's embedded etcd |
+| `etcd.defragmentation.schedule` | `spec.etcd.defragmentationSchedule` | thresholds of finding 7; the order across members was not observed |
+| `etcd.resources` | `spec.etcd.resources` | the class has no field for the sidecar's `spec.backup.resources`; Brygga renders a default |
+| `storage.className` | `spec.storageClass` | immutable in the `Etcd` |
+| `storage.size` | `spec.storageCapacity` | at creation only: a StatefulSet field that cannot change in place |
+| `storage.reclaimPolicy` | — | `Delete` is Brygga deleting the claims (finding 6) |
+| `backup.store.provider` | `spec.backup.store.provider` | Brygga's four are among etcd-druid's |
+| `backup.store.bucket` | `spec.backup.store.container` | |
+| `backup.store.prefix` | `spec.backup.store.prefix` | required; Brygga adds `<namespace>/<name>/<uid>` below the class's prefix, so a `ControlPlane` recreated under the same name never restores the old one's snapshots |
+| `backup.store.region` | key `region` of the credentials Secret | |
+| `backup.store.endpoint` | `spec.backup.store.endpointOverride` | most S3-compatible stores also need `s3ForcePathStyle` in the Secret |
+| `backup.store.secretRef` | `spec.backup.store.secretRef` | mounted as a volume, so Brygga copies the class's Secret into the tenant's namespace |
+| `backup.fullSnapshotSchedule` | `spec.backup.fullSnapshotSchedule` | |
+| `backup.deltaSnapshotPeriod` | `spec.backup.deltaSnapshotPeriod` | bounds what a restore loses (finding 5) |
+| `backup.retention.days` | `spec.backup.garbageCollectionPolicy: LimitBased`, `maxBackupsLimitBasedGC` | counts full snapshots, one a day |
+| `backup.retention.afterDelete` | — | Brygga removes the prefix after the period (finding 6) |
+| `placement.nodeSelector` | `spec.schedulingConstraints.affinity` | as required node affinity; the `Etcd` has no node selector |
+| `placement.tolerations` | `spec.schedulingConstraints.tolerations` | |
+| `placement.priorityClassName` | `spec.priorityClassName` | |
+| `ControlPlane`'s availability | `spec.replicas` | 1, 3 with `highAvailability`, 0 while hibernating |
+| the PKI controller's Secrets | `spec.etcd.clientUrlTls`, `spec.etcd.peerUrlTls`, `spec.backup.tls` | all three (findings 1–3) |
+
 ## What assumes Gardener
 
 | what | where | what Brygga does |

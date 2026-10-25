@@ -60,7 +60,7 @@ func TestRotationUnderARunningAPIServer(t *testing.T) {
 	})
 	waitFor(t, 5*time.Second, s.Ready)
 
-	env := &envtest.Environment{}
+	env := &envtest.Environment{UseExistingCluster: new(false)}
 	env.ControlPlane.GetAPIServer().Configure().
 		Disable("service-account-key-file").
 		Disable("service-account-signing-key-file").
