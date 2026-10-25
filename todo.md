@@ -83,3 +83,30 @@ is a decision — a decision is a file in `docs/decisions/`.
   Flux reads the same through kstatus, where a permanently failing object
   stays InProgress until a timeout unless it reports `Stalled`
   ([kstatus](https://github.com/kubernetes-sigs/cli-utils/blob/v0.37.2/pkg/kstatus/status/status.go#L102-L183)).
+
+## From the PKI controller (2026-10-25)
+
+- A changed `apiServer.encryption.provider` puts the new provider first with
+  a new key and keeps the previous ones readable, but nothing rewrites the
+  stored Secrets or drops the old provider, and with two API server replicas
+  one may write with the new key before the other has reloaded the file (up
+  to a minute). That is the etcd encryption key rotation of
+  [staged-credential-rotation](docs/decisions/staged-credential-rotation.md);
+  until it is built, document the change as unsupported, or refuse it in the
+  schema.
+- `apiServer.encryption.provider: kms` is accepted by the schema; PKI issues
+  everything else and reports `CertificatesReady` False with
+  `EncryptionProviderUnsupported`. Refuse it in CEL until the provider is
+  built.
+- The kubelet signer narrows nothing: whoever holds it can sign any identity
+  the API server accepts. A signer outside the controller manager, serving
+  only kubelet CSRs (those for `kubernetes.io/kube-apiserver-client-kubelet`,
+  [types.go](https://github.com/kubernetes/api/blob/v0.37.1/certificates/v1/types.go#L155-L158)),
+  would make the narrowing true; decide before the client CA rotation is
+  built.
+- Brygga reaches a tenant's API server through its in-namespace Service and
+  ignores `HTTPS_PROXY` for that connection; the chart's documentation should
+  say so for sites that set a proxy on every pod.
+- The e2e suite installs the CRDs and applies the examples; nothing runs the
+  operator against kind yet. The phase 1 gate adds that, and with it a check
+  that a `ControlPlane` reaches `CertificatesReady` on a real cluster.

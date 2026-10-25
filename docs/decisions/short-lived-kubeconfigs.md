@@ -1,6 +1,9 @@
 # People get short-lived kubeconfigs through KubeconfigRequest; the standing admin credential belongs to a revocable group, not to system:masters
 
-Decided 2026-10-25. Not built.
+Decided 2026-10-25. The admin kubeconfig in `brygga:cluster-admins`,
+Brygga's own credential and the three bindings made with a ten-minute
+`system:masters` certificate are built in the PKI controller;
+`KubeconfigRequest` is not.
 
 ## Decision
 
@@ -70,4 +73,18 @@ Decided 2026-10-25. Not built.
 
 ## Code
 
-none yet.
+- `internal/controller/pki/secrets.go` — `<name>-admin-kubeconfig`
+  (`kubernetes-admin` in `brygga:cluster-admins`, the public endpoint, the
+  certificates embedded) and `<name>-brygga-kubeconfig` (`brygga:operator`,
+  the in-namespace Service).
+- `internal/controller/pki/access.go` — the three ClusterRoleBindings,
+  applied as `brygga:operator` on every pass and, when that is forbidden,
+  with a `system:masters` certificate issued for ten minutes in memory;
+  `AccessReady` is `WaitingForAPIServer` until `APIServerReady`, `Binding`
+  while an apply fails, `Bound` once the three exist.
+- `internal/controller/pki/apiserver_test.go` — a kube-apiserver from the
+  envtest binaries started with PKI's serving certificate, client CA bundle,
+  front-proxy files and signing key: the controller manager's kubeconfig
+  authenticates as `system:kube-controller-manager`; `AccessReady` turns True
+  with the three bindings; a deleted `brygga:operator` binding is restored on
+  the next pass.

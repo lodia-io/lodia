@@ -16,7 +16,7 @@ Examples: [`examples/`](examples/).
 | `datastore.shared.name` | string | | a `Datastore` |
 | `endpoint` | union | required | exactly one of `gateway`, `loadBalancer`, `nodePort`; immutable in v1alpha1 |
 | `endpoint.gateway.parentRef` | `{name, namespace, sectionName?}` | | the Gateway with a TLS passthrough listener |
-| `endpoint.gateway.hostnames.apiServer` | hostname | required with gateway | the public API hostname; the serving certificate's first SAN |
+| `endpoint.gateway.hostnames.apiServer` | hostname | required with gateway | the public API hostname; a SAN of the serving certificate |
 | `endpoint.gateway.hostnames.konnectivity` | hostname | required with gateway | where agents connect |
 | `endpoint.gateway.hostnames.tunnel` | hostname | absent = no in-cluster proxy | the TLS-terminated tunnel that apiserver-proxy on nodes dials ([api-exposure](../decisions/api-exposure.md)) |
 | `endpoint.loadBalancer.{class, sourceRanges, annotations}` | | | a Service of type LoadBalancer with ports 443 (API) and 8132 (konnectivity) |
@@ -55,7 +55,7 @@ Examples: [`examples/`](examples/).
 | field | written by | meaning |
 |---|---|---|
 | `observedGeneration` | Lifecycle | the last `metadata.generation` every controller has fully processed |
-| `conditions[]` | each controller its own | `CertificatesReady`, `DatastoreReady`, `APIServerReady`, `AccessReady`, `AddonsApplied`, `AddonsAvailable`, `Reachable`, `Progressing`, `Hibernated`, `Ready`; each with `reason`, `message`, `observedGeneration` |
+| `conditions[]` | each controller its own | `CertificatesReady`, `CAValidityAcceptable`, `DatastoreReady`, `APIServerReady`, `AccessReady`, `AddonsApplied`, `AddonsAvailable`, `Reachable`, `Progressing`, `Hibernated`, `Ready`; each with `reason`, `message`, `observedGeneration` |
 | `target.version` | Lifecycle | the Kubernetes version being rolled now; one minor at a time towards `spec.version` |
 | `target.operatorVersion` | Lifecycle | the Brygga version whose templates this tenant's pods are rendered with |
 | `target.hibernated` | Lifecycle | the desired sleep state |
@@ -76,12 +76,18 @@ Examples: [`examples/`](examples/).
 
 ## Conditions and their reasons
 
+A controller writes its conditions `Unknown` with reason `Reconciling` on its
+first visit, at the start of its first pass; a reader counts a condition only
+while its `observedGeneration` is the object's generation
+([independent-controllers](../decisions/independent-controllers.md)).
+
 | condition | True | False reasons |
 |---|---|---|
-| `CertificatesReady` | every certificate, key and kubeconfig exists and is valid for more than its renewal margin | `Issuing`, `RotationInProgress`, `CAExpiring` |
+| `CertificatesReady` | every certificate, key and kubeconfig exists, verifies, and is valid for more than its renewal margin or until its CA expires (`Issued`) | `Issuing`, `WaitingForEndpoint` (`loadBalancer` and `nodePort`, until Workloads publishes `status.endpoint`), `CAMissing` (a CA's key is missing or unreadable), `CAExpired` (a CA is past its `NotAfter`); in both, the message names the CA and nothing it signs is written until it is restored or rotated; `EncryptionProviderUnsupported` (`kms`) |
+| `CAValidityAcceptable` | every CA is valid for more than a year (`Valid`); not part of `Ready`, since a CA in its last year, or a rotation under way, leaves every certificate valid | `CAExpiring`, the message naming each CA and its `NotAfter`, as Gardener's `CACertificateValiditiesAcceptable` ([shoot status](https://github.com/gardener/gardener/blob/v1.154.0/docs/usage/shoot/shoot_status.md#L105-L109)); `Unknown`, `CAMissing`, while a CA's key cannot be read |
 | `DatastoreReady` | the etcd (or the tenant's prefix in a shared store) accepts writes | `Provisioning`, `QuorumLost`, `Restoring`, `DatastoreClassNotFound`, `DatastoreNotFound`, `VolumesExist`, `Hibernated` |
 | `APIServerReady` | all API server replicas answer `/readyz`; controller manager and scheduler have leaders | `WaitingForCertificates`, `WaitingForDatastore`, `RollingOut`, `Unhealthy`, `Hibernated` |
-| `AccessReady` | the tenant's ClusterRoleBindings for `brygga:operator`, `brygga:cluster-admins` and `brygga:kubelet-api-admins` exist, checked with `brygga:operator` | `WaitingForAPIServer`, `Binding` |
+| `AccessReady` | the tenant's ClusterRoleBindings for `brygga:operator`, `brygga:cluster-admins` and `brygga:kubelet-api-admins` exist, checked with `brygga:operator` (`Bound`) | `WaitingForAPIServer`, `Binding` |
 | `AddonsApplied` | the inventory is applied and pruned | `WaitingForAPIServer`, `Applying` |
 | `AddonsAvailable` | kube-proxy, CoreDNS and the agents report ready; not part of `Ready`, since their pods need the owner's nodes | `RolloutPending` |
 | `Reachable` | the public endpoint answers `/readyz` and nodes' leases are fresh | `ExternalProbeFailed`, `NodesSilent` (the controller manager is held), `HoldBlocked` (nodes silent, another holder keeps the lease), `Hibernated` |

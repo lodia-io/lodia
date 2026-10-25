@@ -1,6 +1,7 @@
 # Six controllers share one object and communicate only through status conditions
 
-Decided 2026-10-25. Not built.
+Decided 2026-10-25. The manager and PKI are built; the other five
+controllers are not.
 
 ## Decision
 
@@ -9,7 +10,7 @@ watch `ControlPlane`:
 
 | controller | owns | writes condition | waits on |
 |---|---|---|---|
-| **PKI** | CAs, leaf certificates, kubeconfigs, ServiceAccount keys, encryption keys; renewal and staged rotation; the tenant's bindings for Brygga, the admin group and the kubelet client | `CertificatesReady`, `AccessReady` | `status.endpoint`; `APIServerReady` for the bindings |
+| **PKI** | CAs, leaf certificates, kubeconfigs, ServiceAccount keys, encryption keys; renewal and staged rotation; the tenant's bindings for Brygga, the admin group and the kubelet client | `CertificatesReady`, `AccessReady`; `CAValidityAcceptable` outside `Ready` | `status.endpoint`; `APIServerReady` for the bindings |
 | **Datastore** | the tenant's etcd (dedicated through etcd-druid, or a user and prefix in a shared store), backups, defragmentation; the only controller that talks to etcd | `DatastoreReady` | nothing |
 | **Workloads** | Deployments, Services, PodDisruptionBudgets, NetworkPolicies, ConfigMaps, Gateway routes in the tenant namespace | `APIServerReady` | `CertificatesReady`, `DatastoreReady` |
 | **Tenant** | objects inside the tenant cluster: kubeadm bootstrap objects, kube-proxy, CoreDNS, konnectivity-agent, apiserver-proxy, RBAC | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
@@ -60,12 +61,14 @@ Rules:
   `CertificatesReady ∧ DatastoreReady ∧ APIServerReady ∧ AccessReady ∧ AddonsApplied ∧ Reachable`,
   and `Hibernated` when asleep. Nothing in it waits for the tenant's nodes:
   the owner joins them once the control plane is `Ready`, so
-  `AddonsAvailable`, the addons' pods on those nodes, is reported beside it.
+  `AddonsAvailable`, the addons' pods on those nodes, is reported beside it;
+  so is `CAValidityAcceptable`, a CA in its last year, since every
+  certificate is still valid then and its rotation is started by someone.
 
 ```mermaid
 flowchart LR
   CP[("ControlPlane<br/>spec · status")]
-  PKI -->|CertificatesReady, AccessReady| CP
+  PKI -->|CertificatesReady, AccessReady, CAValidityAcceptable| CP
   DS[Datastore] -->|DatastoreReady| CP
   WL[Workloads] -->|APIServerReady| CP
   TN[Tenant] -->|AddonsApplied, AddonsAvailable| CP
@@ -119,4 +122,16 @@ flowchart LR
 
 ## Code
 
-none yet.
+- `cmd/brygga/main.go` — the manager with the cache rules above, and PKI
+  registered as `pki` with ten workers.
+- `internal/controller/pki` — reads `spec` and `status.endpoint`, writes its
+  Secrets with server-side apply as `brygga/pki`, applies `CertificatesReady`,
+  `CAValidityAcceptable` and `AccessReady` alone through the status
+  subresource (`Unknown` at the start of its first visit, then with one fixed
+  message per reason, so a pass that changes nothing writes nothing), counts
+  `APIServerReady` only at the current generation, and requeues in whole
+  seconds at the earliest renewal, or when a CA enters its last year or
+  expires.
+  `reconciler_test.go` runs it under a manager whose cache is the one
+  `main.go` builds, with `ReaderFailOnMissingInformer`, and holds the first
+  visit and the stale `APIServerReady` cases.
