@@ -13,10 +13,15 @@ and a gate that fails after it passed is a regression, not a backlog item.
 | 3 · Parity | shared etcd, migration by snapshot, staged rotations, hibernation, `Backup`, write lock, the `Compact` layout, a Cluster API provider | rotation keeps nodes `Ready` and tokens valid; sleep and wake keep data; migration freezes writes for seconds, reads never; a `Compact` tenant is one pod |
 | 4 · Scale and community | hundreds of tenants per operator, zone spread, `v1beta1`, docs site, supply-chain badges | 200 tenants on one management cluster within the resource budget; OpenSSF Scorecard ≥ 8 |
 
-Segla's own cut-over (its `cluster` service rendering a `ControlPlane`
-instead of a Cluster API `Cluster`, its agent dropping its own API proxy,
-its regional watchdog stepping down for Brygga's controller manager hold)
-runs beside phases 1 and 2 and is tracked in Segla's repositories, not here.
+Segla moves to Brygga in phase 3, through Brygga's Cluster API provider.
+Segla keeps Cluster API for the worker pools it will create through it, and
+Cluster API's kubeadm bootstrap provider joins a worker only once a control
+plane provider reports the control plane initialized
+([kubeadmconfig_controller.go](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/bootstrap/kubeadm/reconcilers/kubeadmconfig/kubeadmconfig_controller.go#L351-L367)).
+Its `cluster` service then swaps the `KamajiControlPlane` for the
+provider's object, its agent drops its own API proxy, and its regional
+watchdog steps down for Brygga's controller manager hold. That work is
+tracked in Segla's repositories, not here.
 
 ## Phase 0 · Foundations
 
@@ -152,6 +157,9 @@ Gate:
 - e2e: a `Compact` `ControlPlane` on a shared `Datastore` runs as one pod; a
   node joins, the conformance smoke subset passes, and the controller manager
   hold works as in `Split` ([compact-layout](decisions/compact-layout.md)).
+- e2e: a Cluster API `Cluster` whose control plane is Brygga's provider
+  reaches `ControlPlaneInitialized`, and a `MachineDeployment` of Cluster
+  API's Docker machines joins it through the kubeadm bootstrap provider.
 
 ## Phase 4 · Scale and community
 
