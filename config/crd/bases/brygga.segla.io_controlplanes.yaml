@@ -26,7 +26,7 @@ spec:
     - jsonPath: .status.conditions[?(@.type=='Ready')].reason
       name: Reason
       type: string
-    - jsonPath: .status.endpoint.host
+    - jsonPath: .status.endpoint.apiServer.host
       name: Endpoint
       priority: 1
       type: string
@@ -120,10 +120,13 @@ spec:
                         type: boolean
                       healthzBindAddress:
                         description: |-
-                          HealthzBindAddress opens kube-proxy's health port beyond loopback, for
-                          cloud load balancers; loopback by default.
-                        maxLength: 64
+                          HealthzBindAddress is the IP address kube-proxy serves its health port,
+                          10256, on: beyond loopback for cloud load balancers; loopback by default.
+                        maxLength: 45
                         type: string
+                        x-kubernetes-validations:
+                        - message: must be an IP address
+                          rule: isIP(self)
                       mode:
                         default: iptables
                         description: Mode is iptables, nftables or ipvs.
@@ -478,11 +481,16 @@ spec:
                     description: CertSANs are extra names on the API server's serving
                       certificate.
                     items:
-                      description: Hostname is a lowercase DNS name.
+                      description: |-
+                        Hostname is a lowercase DNS name: labels of at most 63 characters, and not
+                        digits and dots alone, which read as an IP address.
                       maxLength: 253
                       minLength: 1
-                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                       type: string
+                      x-kubernetes-validations:
+                      - message: must be a lowercase DNS name
+                        rule: self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$')
+                          && !self.matches('^[0-9.]+$')
                     maxItems: 16
                     type: array
                     x-kubernetes-list-type: set
@@ -498,23 +506,32 @@ spec:
                             description: APIServer is the public API hostname.
                             maxLength: 253
                             minLength: 1
-                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                             type: string
+                            x-kubernetes-validations:
+                            - message: must be a lowercase DNS name
+                              rule: self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$')
+                                && !self.matches('^[0-9.]+$')
                           konnectivity:
                             description: Konnectivity is where konnectivity agents
                               connect.
                             maxLength: 253
                             minLength: 1
-                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                             type: string
+                            x-kubernetes-validations:
+                            - message: must be a lowercase DNS name
+                              rule: self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$')
+                                && !self.matches('^[0-9.]+$')
                           tunnel:
                             description: |-
                               Tunnel is the hostname apiserver-proxy dials for in-cluster access;
                               empty means no in-cluster proxy.
                             maxLength: 253
                             minLength: 1
-                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                             type: string
+                            x-kubernetes-validations:
+                            - message: must be a lowercase DNS name
+                              rule: self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$')
+                                && !self.matches('^[0-9.]+$')
                         required:
                         - apiServer
                         - konnectivity
@@ -598,7 +615,8 @@ spec:
                   its data.
                 properties:
                   enabled:
-                    description: Enabled overrides the schedules.
+                    description: Enabled overrides the schedules; unset, the schedules
+                      decide.
                     type: boolean
                   schedules:
                     description: Schedules put the control plane to sleep at Start
@@ -695,8 +713,11 @@ spec:
                     description: ClusterDomain is the cluster's DNS domain.
                     maxLength: 253
                     minLength: 1
-                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                     type: string
+                    x-kubernetes-validations:
+                    - message: must be a lowercase DNS name
+                      rule: self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$')
+                        && !self.matches('^[0-9.]+$')
                   podCIDRs:
                     description: PodCIDRs are the ranges node CIDRs are allocated
                       from.
@@ -797,16 +818,14 @@ spec:
                   at creation.
                 properties:
                   backupRef:
-                    description: BackupRef names the Backup.
+                    description: |-
+                      BackupRef names a Backup in the ControlPlane's namespace, never another
+                      tenant's.
                     properties:
                       name:
                         description: Name of the object.
                         maxLength: 253
                         minLength: 1
-                        type: string
-                      namespace:
-                        description: Namespace of the object.
-                        maxLength: 63
                         type: string
                     required:
                     - name
@@ -1157,55 +1176,129 @@ spec:
                     type: object
                 type: object
               datastore:
-                description: Datastore is the store in use and its last backup.
+                description: Datastore is the store in use.
                 properties:
-                  dbSizeBytes:
-                    format: int64
-                    type: integer
-                  kind:
-                    description: Kind is Dedicated or Shared.
-                    enum:
-                    - Dedicated
-                    - Shared
-                    type: string
-                  lastBackup:
-                    description: LastBackup is the newest snapshot.
+                  class:
+                    description: Class is the DatastoreClass a dedicated etcd was
+                      built from.
                     properties:
-                      kind:
-                        description: Kind is Full or Delta.
-                        enum:
-                        - Full
-                        - Delta
-                        type: string
-                      revision:
+                      generation:
                         format: int64
+                        minimum: 1
                         type: integer
-                      time:
-                        format: date-time
+                      name:
+                        maxLength: 253
+                        minLength: 1
                         type: string
+                    required:
+                    - generation
+                    - name
                     type: object
+                  endpoints:
+                    description: Endpoints are where the API server reaches etcd.
+                    items:
+                      description: HostPort is a host and a port.
+                      properties:
+                        host:
+                          description: |-
+                            Host is an IP address, an IPv6 one without brackets, or a lowercase DNS
+                            name: labels of at most 63 characters, and not digits and dots alone.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                          x-kubernetes-validations:
+                          - message: must be an IP address or a lowercase DNS name
+                            rule: isIP(self) || self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$')
+                              && !self.matches('^[0-9.]+$')
+                        port:
+                          description: Port is a TCP port.
+                          format: int32
+                          maximum: 65535
+                          minimum: 1
+                          type: integer
+                      required:
+                      - host
+                      - port
+                      type: object
+                    maxItems: 9
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-type: atomic
                   members:
-                    format: int32
-                    type: integer
-                  name:
-                    maxLength: 253
-                    type: string
+                    description: Members counts the etcd members.
+                    properties:
+                      ready:
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      total:
+                        format: int32
+                        minimum: 0
+                        type: integer
+                    required:
+                    - ready
+                    - total
+                    type: object
+                required:
+                - endpoints
+                - members
                 type: object
               endpoint:
-                description: Endpoint is where the API server is reachable.
+                description: Endpoint is where the control plane is reachable.
                 properties:
-                  host:
-                    description: Host of the public endpoint.
-                    maxLength: 253
-                    type: string
-                  internal:
-                    description: Internal is the in-namespace URL.
-                    maxLength: 512
-                    type: string
-                  port:
-                    description: Port of the public endpoint.
-                    format: int32
-                    type: integer
+                  apiServer:
+                    description: APIServer is the API server's public endpoint.
+                    properties:
+                      host:
+                        description: |-
+                          Host is an IP address, an IPv6 one without brackets, or a lowercase DNS
+                          name: labels of at most 63 characters, and not digits and dots alone.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                        x-kubernetes-validations:
+                        - message: must be an IP address or a lowercase DNS name
+                          rule: isIP(self) || self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$')
+                            && !self.matches('^[0-9.]+$')
+                      port:
+                        description: Port is a TCP port.
+                        format: int32
+                        maximum: 65535
+                        minimum: 1
+                        type: integer
+                    required:
+                    - host
+                    - port
+                    type: object
+                  konnectivity:
+                    description: |-
+                      Konnectivity is where konnectivity agents reach the konnectivity
+                      server.
+                    properties:
+                      host:
+                        description: |-
+                          Host is an IP address, an IPv6 one without brackets, or a lowercase DNS
+                          name: labels of at most 63 characters, and not digits and dots alone.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                        x-kubernetes-validations:
+                        - message: must be an IP address or a lowercase DNS name
+                          rule: isIP(self) || self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$')
+                            && !self.matches('^[0-9.]+$')
+                      port:
+                        description: Port is a TCP port.
+                        format: int32
+                        maximum: 65535
+                        minimum: 1
+                        type: integer
+                    required:
+                    - host
+                    - port
+                    type: object
+                required:
+                - apiServer
+                - konnectivity
                 type: object
               health:
                 description: Health is present while Brygga holds the controller manager.
@@ -1268,17 +1361,23 @@ spec:
                     type: integer
                   ready:
                     format: int32
+                    minimum: 0
                     type: integer
                   sampledAt:
                     format: date-time
                     type: string
                   total:
                     format: int32
+                    minimum: 0
                     type: integer
+                required:
+                - ready
+                - total
                 type: object
               observedGeneration:
-                description: ObservedGeneration is the generation every controller
-                  fully processed.
+                description: |-
+                  ObservedGeneration is the newest generation every readiness condition
+                  has been reported for.
                 format: int64
                 type: integer
               target:

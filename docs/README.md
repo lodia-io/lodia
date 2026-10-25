@@ -63,10 +63,10 @@ in [`api/examples/`](api/examples/).
 | controller | writes | condition | needs |
 |---|---|---|---|
 | PKI | Secrets with certificates, keys and kubeconfigs; the tenant's bindings for Brygga, the admin group and the kubelet client | `CertificatesReady`, `AccessReady`; `CAValidityAcceptable` outside `Ready` | `status.endpoint`; `APIServerReady` for the bindings |
-| Datastore | the `Etcd` of a dedicated etcd — built, for one member — or a user and role in a shared store; backups and defragmentation | `DatastoreReady` | — |
-| Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady` | `CertificatesReady`, `DatastoreReady` |
+| Datastore | the `Etcd` of a dedicated etcd — built, for one member — or a user and role in a shared store; backups and defragmentation | `DatastoreReady` | a complete generation of PKI's etcd certificates |
+| Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady` | `status.target`, `status.datastore`, `CertificatesReady`, `DatastoreReady` |
 | Tenant | objects inside the tenant cluster, with an inventory | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
-| Health | status, and the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable` | `AccessReady` |
+| Health | status, and from phase 2 the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable` | `status.endpoint` and the CA bundle; `AccessReady` from phase 2 |
 | Lifecycle | `status.target`, `Progressing`, `Ready`; the pre-upgrade `Backup` | `Progressing` | the others |
 
 Each controller has its own queue and field manager, reads `spec`,
@@ -76,8 +76,8 @@ own condition; none calls another
 labelled objects, with metadata only for Secrets. PKI, the Datastore
 controller, a first Lifecycle and the Tenant controller are built
 (`internal/controller/pki`, `datastore`, `lifecycle` and `tenant`,
-registered under those names in `cmd/brygga/main.go`); Workloads and Health
-are not.
+registered under those names by `internal/operator`, whose manager
+`cmd/brygga` runs and the tests build); Workloads and Health are not.
 
 ```mermaid
 sequenceDiagram
@@ -104,7 +104,7 @@ sequenceDiagram
 ```
 
 What each example of failure does: an etcd that loses quorum turns
-`DatastoreReady` False with `QuorumLost`; Workloads leaves the Deployments
+`DatastoreReady` False with `QuorumLost` (phase 2); Workloads leaves the Deployments
 alone and PKI keeps renewing certificates. A changed controller-manager flag
 rolls only its Deployment. A deleted CoreDNS Deployment inside the tenant
 returns at the next inventory apply.
@@ -139,27 +139,34 @@ flowchart TB
 Four pods for a single control plane, nine for HA
 ([decision](decisions/component-per-deployment.md)); the Compact layout puts
 the control plane into one pod, two with a dedicated etcd and one with a
-shared store ([compact-layout](decisions/compact-layout.md)). The Secrets and
-ConfigMaps, who consumes them, and what a change does:
+shared store ([compact-layout](decisions/compact-layout.md)). The objects of
+a tenant namespace, who writes and who reads each, and what a change does;
+the names one controller writes and another reads, and the keys of those
+Secrets that a reader names, are defined once, in `api/v1alpha1/names.go`,
+and every controller takes them from there, while the CA keys and the
+ConfigMaps are their writer's alone:
 
-| object | consumer | on renewal or change |
-|---|---|---|
-| `<cp>-cakey-cluster`, `-cakey-client`, `-cakey-front-proxy`, `-cakey-etcd` (`kubernetes.io/tls`: each CA's certificate and key) | PKI alone; never mounted | a CA is renewed only by a rotation, announced a year ahead by `CAValidityAcceptable=False` (`CAExpiring`) outside `Ready`; a lost or unreadable key (`CAMissing`) or an expired CA (`CAExpired`) turns `CertificatesReady` False, and nothing that CA signs is written until it is restored or rotated, since a new CA would cut every client or node off at once; a key Secret restored without its labels is found by name and kept |
-| `<cp>-ca-bundle` (`ca.crt`: the cluster CA, two during a trust anchor rotation) | everything that verifies the API server: kubeconfigs, `cluster-info`, `kube-root-ca.crt` | kubeconfigs and `cluster-info` re-rendered; the controller manager restarts, because `--root-ca-file` is read once |
-| `<cp>-client-ca` (`ca.crt`: the client CA, the current kubelet signer, and a replaced signer for one signing duration, 30 days) | API server `--client-ca-file` | reloaded |
-| `<cp>-kubelet-signer` (`kubernetes.io/tls`: the intermediate under the client CA, `CA:TRUE`, path length 0) | controller manager, per-signer signing flags | reloaded |
-| `<cp>-apiserver-serving`, `<cp>-apiserver-kubelet-client` (`kubernetes.io/tls`) | API server | reloaded (the kubelet client certificate for new connections) |
-| `<cp>-front-proxy-ca` (`ca.crt`), `<cp>-front-proxy-client` (`kubernetes.io/tls`) | API server, aggregated APIs | the CA is reloaded; the client certificate restarts the API server until a reload is proven |
-| `<cp>-etcd-ca` (`ca.crt`), `<cp>-apiserver-etcd-client` (`kubernetes.io/tls`) | API server | the client certificate is read per connection; a new etcd CA restarts the API server (`--etcd-cafile` is read once) |
-| `<cp>-etcd-{ca,server,client,peer,backup-restore}-<g>` (`ca.crt` for `ca`, `kubernetes.io/tls` for the rest, all immutable; the profiles of the `Etcd` named `<cp>-etcd`), one generation `g` per renewal, labelled `brygga.segla.io/etcd-certificates: "<g>"` | etcd, its backup-restore sidecar and etcd-druid's client, through the `Etcd`, which Datastore points at the newest complete generation | renewed as the next generation, since the sidecar keeps its first certificate and etcd-druid rolls the members only for a new name: no API outage with three members, about 20 s with one ([etcd spike](etcd-spike-2026-10.md)); a generation with a member missing or being deleted is replaced by the next, never repaired in place; PKI keeps the previous generation and deletes older ones |
-| `<cp>-sa-keys` (`signing.key`, a PKCS#8 RSA 2048 key, and the `verify-*.pub` keys published beside it during a rotation) | `brygga-signer` sidecar | reloaded by the sidecar; the API server fetches the keys again within the signer's refresh hint and does not restart |
-| `<cp>-encryption-config` (`encryption-config.yaml`: an `EncryptionConfiguration` for `secrets` with the provider of `apiServer.encryption.provider` and a random 32-byte key) | API server | reloaded every minute (automatic reload) |
-| `<cp>-konnectivity-server` (`kubernetes.io/tls`), `<cp>-konnectivity-kubeconfig` (`kubeconfig`, `tls.crt`, `tls.key`, `ca.crt`; server `https://127.0.0.1:6443`) | konnectivity-server | the API server pod rolls, in the maintenance window |
-| `<cp>-controller-manager-kubeconfig`, `<cp>-scheduler-kubeconfig` (`kubeconfig`, `tls.crt`, `tls.key`, `ca.crt`; server `https://<cp>-kube-apiserver.<ns>.svc:443`) | each its own; the kubeconfig names its certificates as files beside it | reloaded by client-go |
-| `<cp>-admin-kubeconfig` (`kubeconfig`, certificates embedded; server `status.endpoint`) | the platform; `brygga:cluster-admins` | nothing restarts |
-| `<cp>-brygga-kubeconfig` (`kubeconfig`, certificates embedded; `brygga:operator`, dialling the in-namespace Service) | Brygga's PKI, Tenant and Health inside the tenant | nothing restarts |
-| ConfigMap `authentication-config` | API server | reloaded, except its anonymous section |
-| ConfigMaps `egress-selector`, `audit-policy`, `admission-config` / `scheduler-config` | API server / scheduler | that component restarts |
+| object | writer | readers | on renewal or change |
+|---|---|---|---|
+| `<cp>-cakey-cluster`, `-cakey-client`, `-cakey-front-proxy`, `-cakey-etcd` (`kubernetes.io/tls`: each CA's certificate and key) | PKI | PKI alone; never mounted | a CA is renewed only by a rotation, announced a year ahead by `CAValidityAcceptable=False` (`CAExpiring`) outside `Ready`; a lost or unreadable key (`CAMissing`) or an expired CA (`CAExpired`) turns `CertificatesReady` False, and nothing that CA signs is written until it is restored or rotated, since a new CA would cut every client or node off at once; a key Secret restored without its labels is found by name and kept |
+| `<cp>-ca-bundle` (`ca.crt`: the cluster CA, two during a trust anchor rotation) | PKI | everything that verifies the API server: PKI, for the kubeconfigs; Workloads, for the controller manager's `--root-ca-file`, which publishes `kube-root-ca.crt`; Tenant, for `cluster-info`; Health, through `status.credentials.caBundleSecretRef` | kubeconfigs and `cluster-info` re-rendered; the controller manager restarts, because `--root-ca-file` is read once |
+| `<cp>-client-ca` (`ca.crt`: the client CA, the current kubelet signer, and a replaced signer for one signing duration, 30 days) | PKI | Workloads, for the API server's `--client-ca-file` | reloaded |
+| `<cp>-kubelet-signer` (`kubernetes.io/tls`: the intermediate under the client CA, `CA:TRUE`, path length 0) | PKI | Workloads, for the controller manager's per-signer signing flags | reloaded |
+| `<cp>-apiserver-serving`, `<cp>-apiserver-kubelet-client` (`kubernetes.io/tls`) | PKI | Workloads, for the API server | reloaded (the kubelet client certificate for new connections) |
+| `<cp>-front-proxy-ca` (`ca.crt`), `<cp>-front-proxy-client` (`kubernetes.io/tls`) | PKI | Workloads, for the API server and its aggregated APIs | the CA is reloaded; the client certificate restarts the API server until a reload is proven |
+| `<cp>-etcd-ca` (`ca.crt`), `<cp>-apiserver-etcd-client` (`kubernetes.io/tls`) | PKI | Workloads, for the API server | the client certificate is read per connection; a new etcd CA restarts the API server (`--etcd-cafile` is read once) |
+| `<cp>-etcd-{ca,server,client,peer,backup-restore}-<g>` (`ca.crt` for `ca`, `kubernetes.io/tls` for the rest, all immutable; the profiles of the `Etcd` named `<cp>-etcd`), one generation `g` per renewal, labelled `brygga.segla.io/etcd-certificates: "<g>"` | PKI | the Datastore controller, which names the newest complete generation in the `Etcd`; through the `Etcd`, etcd, its backup-restore sidecar and etcd-druid's client | renewed as the next generation, since the sidecar keeps its first certificate and etcd-druid rolls the members only for a new name: no API outage with three members, about 20 s with one ([etcd spike](etcd-spike-2026-10.md)); a generation with a member missing or being deleted is replaced by the next, never repaired in place; PKI keeps the previous generation and deletes older ones |
+| `<cp>-sa-keys` (`signing.key`, a PKCS#8 RSA 2048 key, and the `verify-*.pub` keys published beside it during a rotation) | PKI | Workloads, for the `brygga-signer` sidecar | reloaded by the sidecar; the API server fetches the keys again within the signer's refresh hint and does not restart |
+| `<cp>-encryption-config` (`encryption-config.yaml`: an `EncryptionConfiguration` for `secrets` with the provider of `apiServer.encryption.provider` and a random 32-byte key) | PKI | Workloads, for the API server | reloaded every minute (automatic reload) |
+| `<cp>-konnectivity-server` (`kubernetes.io/tls`), `<cp>-konnectivity-kubeconfig` (`kubeconfig`, `tls.crt`, `tls.key`, `ca.crt`; server `https://127.0.0.1:6443`) | PKI | Workloads, for konnectivity-server | the API server pod rolls, in the maintenance window |
+| `<cp>-controller-manager-kubeconfig`, `<cp>-scheduler-kubeconfig` (`kubeconfig`, `tls.crt`, `tls.key`, `ca.crt`; server `https://<cp>-kube-apiserver.<ns>.svc:443`) | PKI | Workloads, for each its own component; the kubeconfig names its certificates as files beside it | reloaded by client-go |
+| `<cp>-admin-kubeconfig` (`kubeconfig`, certificates embedded; server `status.endpoint.apiServer`) | PKI | the platform, through `status.credentials.adminKubeconfigSecretRef`, as `brygga:cluster-admins` | nothing restarts |
+| `<cp>-brygga-kubeconfig` (`kubeconfig`, certificates embedded; `brygga:operator`, dialling the in-namespace Service) | PKI | Brygga inside the tenant: PKI, for its bindings; Tenant; Health from phase 2 | nothing restarts |
+| `Etcd` `<cp>-etcd` | Datastore | PKI, whose etcd certificates name its members and Services; etcd-druid | etcd-druid rolls the members |
+| `<cp>-etcd-backup` (the class's backup credentials, copied) | Datastore | etcd-druid, through the `Etcd`, for the backup sidecar | whether the sidecar reads new keys without a restart is open (`todo.md`) |
+| Service `<cp>-kube-apiserver` | Workloads | PKI, which names it in certificates and kubeconfigs | — |
+| ConfigMap `authentication-config` | Workloads | the API server | reloaded, except its anonymous section |
+| ConfigMaps `egress-selector`, `audit-policy`, `admission-config` / `scheduler-config` | Workloads | the API server / the scheduler | that component restarts |
 
 Sources: the reload behaviour of each flag is in the
 [kube-apiserver](https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/)
@@ -171,10 +178,14 @@ Hashes of the restart-only objects sit in the pod template of the component
 that mounts them; nothing else does, so a routine renewal of a reloaded
 certificate rolls nothing
 ([staged-credential-rotation](decisions/staged-credential-rotation.md)).
-Every Secret above is PKI's, applied as `brygga/pki` with an owner reference
-to the `ControlPlane`; every key is ECDSA P-256 except the ServiceAccount
-signing key, and a pass over an unchanged `ControlPlane` writes nothing
-(`internal/controller/pki`, proven Secret by Secret in `reconciler_test.go`).
+PKI writes the hash of each Secret's data on the Secret, in the annotation
+`brygga.segla.io/data-hash`, so Workloads takes a restart-only Secret's hash
+from its metadata and never reads the keys it mounts.
+Every Secret above but `<cp>-etcd-backup` is PKI's, applied as `brygga/pki`
+with an owner reference to the `ControlPlane`; every key is ECDSA P-256
+except the ServiceAccount signing key, and a pass over an unchanged
+`ControlPlane` writes nothing (`internal/controller/pki`, proven Secret by
+Secret in `reconciler_test.go`).
 A certificate is valid from five minutes before its issuance, kubeadm's
 allowance for a verifier whose clock runs behind
 ([constants.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kubeadm/app/constants/constants.go#L45-L46)),
@@ -214,10 +225,26 @@ and a ServiceAccount key that is not the RSA key PKI writes, turn
 `CertificatesReady` False with `SecretUnreadable`: a new key would leave what
 the old one encrypted unreadable, or every token it signed invalid.
 
+The labels, annotations and the finalizer they share are defined in
+`api/v1alpha1/labels.go`:
+
+| key | on | writer | readers |
+|---|---|---|---|
+| label `brygga.segla.io/control-plane: <cp>` | every object Brygga creates for a `ControlPlane` | each controller, on its objects | the operator's cache, which holds only labelled objects |
+| label `app.kubernetes.io/managed-by: brygga` | every object Brygga writes inside a tenant cluster | PKI, on its bindings; Tenant, on its objects | none in Brygga: Tenant prunes by its inventory, never by the label |
+| label `brygga.segla.io/control-plane-uid` | the etcd claims | Datastore | Datastore, which reclaims and starts only on its own claims |
+| label `brygga.segla.io/etcd-certificates: <g>` | the etcd certificate Secrets | PKI | Datastore, which counts complete generations |
+| annotation `brygga.segla.io/is-default-class: "true"` | a `DatastoreClass` | the platform | Datastore |
+| annotation `brygga.segla.io/datastore-class` | the `Etcd` and its claims | Datastore | Datastore, which keeps the class an `Etcd` or its claims record; others read `status.datastore.class` |
+| annotation `brygga.segla.io/datastore-class-generation` | the `Etcd` | Datastore | Datastore, for `status.datastore.class` |
+| annotation `brygga.segla.io/data-hash` | every Secret PKI writes | PKI: `DataHash` of the Secret's data, a SHA-256 that changes whenever the data does | Workloads, for the restart hashes of its pod templates |
+| annotation `brygga.segla.io/operation` | a `ControlPlane` | the platform | Lifecycle and PKI, with rotations in phase 3 |
+| finalizer `brygga.segla.io/datastore` | a `ControlPlane` | Datastore | the API server, which deletes the `ControlPlane` once it is gone |
+
 The dedicated etcd is etcd-druid's `Etcd` `<cp>-etcd`, which the Datastore
 controller renders from the `DatastoreClass` and the newest complete
 generation of the etcd certificates, under the `ControlPlane`'s finalizer
-`brygga.segla.io/controlplane`, which it holds from before the first `Etcd`
+`brygga.segla.io/datastore`, which it holds from before the first `Etcd`
 exists. etcd-druid turns it into the StatefulSet `<cp>-etcd`, the client
 Service `<cp>-etcd-client` (`https://<cp>-etcd-client.<ns>.svc:2379`, the
 address Workloads gives the API server's `--etcd-servers`), the peer Service
@@ -252,7 +279,8 @@ generation it was rendered from in `brygga.segla.io/datastore-class-generation`;
 from then on the `Etcd` follows that class, its reclaim policy included, as a
 default StorageClass is written into a claim when the claim is created
 ([storage classes](https://kubernetes.io/docs/concepts/storage/storage-classes/#default-storageclass)).
-The claims record it too, for their reclaim, so an `Etcd` created again over
+The claims record the class too, in `brygga.segla.io/datastore-class` alone,
+for their reclaim, so an `Etcd` created again over
 this `ControlPlane`'s claims, after someone deleted it, takes the class they
 record rather than `className` or the current default, which could give it
 another bucket and placement; while that class is gone, it is
@@ -301,7 +329,7 @@ everything the class does not set is etcd-druid's default:
 | `backup.retention.days` | `spec.backup.garbageCollectionPolicy: LimitBased`, `.maxBackupsLimitBasedGC` | counts full snapshots, one a day |
 | `backup.retention.afterDelete` | — | phase 2, with the final snapshot |
 | `placement.nodeSelector`, `.tolerations`, `.priorityClassName` | `spec.schedulingConstraints.affinity` (as required node affinity), `.tolerations`, `spec.priorityClassName` | the `Etcd` has no node selector |
-| the `ControlPlane`'s availability | `spec.replicas` | 1 today; 3 with `highAvailability` and 0 while hibernating come with later phases |
+| the `ControlPlane`'s availability | `spec.replicas` | 1 today, and `DatastoreReady` is `Unsupported` with `highAvailability`; 3 with `highAvailability` and 0 while hibernating come with later phases |
 | the etcd certificates, generation `g` | `spec.etcd.clientUrlTls`, `spec.etcd.peerUrlTls`, `spec.backup.tls` | all three name one complete generation, with `dataKey: ca.crt` on the CA; a generation counts only while its five Secrets are this `ControlPlane`'s (its controller reference), so a predecessor's or an orphaned generation, which trusts another etcd CA, never starts an etcd before PKI has checked and adopted it; a newer complete generation is one update of the `Etcd`, so one roll of the members; the `Etcd` never moves below the generation it names: the newest complete one is older while a Secret of the named one is being deleted, and the older generation PKI keeps can have expired |
 
 A class is checked when it is written, since a value refused later stops
@@ -335,9 +363,12 @@ the manager with it
 `api/v1alpha1/durations_test.go` holds every duration of the API to that.
 
 `DatastoreReady` is `Unknown`, reason `Reconciling`, until the controller's
-first pass has finished, and `Provisioning` until a complete certificate
-generation exists and etcd-druid reports the `Etcd` ready for its current
-generation. Every Secret the `Etcd` mounts must exist — the five of its
+first pass has finished, `WaitingForCertificates` until a complete
+certificate generation this `ControlPlane` controls exists, and
+`Provisioning` until etcd-druid reports the `Etcd` ready for its current
+generation. A shared store is `Unsupported` until phase 3, and so is
+`highAvailability`, whose etcd runs one member: `DatastoreReady` is never
+True while it is set. Every Secret the `Etcd` mounts must exist — the five of its
 certificate generation and, with a store, `<cp>-etcd-backup` — or the next
 start of a member fails; a terminating one still counts, since etcd-druid
 holds its finalizer on every Secret an `Etcd` references until none does
@@ -372,7 +403,8 @@ so its report can call a generation switch ready before the member rolled.
 True once every check holds.
 
 The other reasons: `DatastoreClassNotFound`, before the `Etcd` exists, when
-the class is missing or more than one class is the default. `VolumesExist`
+the class is missing or no class is the default, and `DatastoreClassAmbiguous`
+when more than one is. `VolumesExist`
 when claims `<cp>-etcd-<cp>-etcd-<n>` without this `ControlPlane`'s UID label
 stand where its first `Etcd` would be created, since a StatefulSet
 re-attaches a claim of that name
@@ -389,8 +421,9 @@ unchanged field on update,
 an etcd-druid whose schema moved: the message
 names the `Etcd`, the certificate generation and the class generation, and
 the refusal is in Brygga's log. `Deleting` while the `ControlPlane` is being
-deleted. `status.datastore` is `kind: Dedicated`, the `Etcd`'s name and its
-member count. Every message is built from the state alone, so a pass that
+deleted. `status.datastore` says where the API server reaches etcd (the
+client Service, `<cp>-etcd-client.<ns>.svc:2379`), the class and the
+generation the `Etcd` was built from, and its members, total and ready. Every message is built from the state alone, so a pass that
 changes nothing writes nothing; an error of the API server ends the pass,
 goes to the log and leaves the status as it was
 ([independent-controllers](decisions/independent-controllers.md)), unless it
@@ -458,7 +491,7 @@ Three ways to expose a control plane
 | `spec.endpoint` | what Brygga creates | endpoint | in-cluster access |
 |---|---|---|---|
 | `gateway` | two TLS passthrough routes (API, konnectivity) on the platform's Gateway, and a `ListenerSet` with a terminating listener and route for the tunnel | `https://api.<cp>:443` | the API server advertises `172.20.0.1`, so the `kubernetes` Service's endpoint is `172.20.0.1:6443`; the apiserver-proxy DaemonSet owns that address on every node's loopback and wraps each connection in an outer TLS session with the tunnel's SNI, which the Gateway terminates and forwards to the API server untouched |
-| `loadBalancer` | one Service of type LoadBalancer with ports 443 and 8132 | the LB address | the API server advertises the LB address; `kubernetes` Endpoints point at it; no proxy |
+| `loadBalancer` | one Service of type LoadBalancer with ports 443 and 6443 (API) and 8132 (konnectivity) | the LB address | the API server advertises the LB address; `kubernetes` Endpoints point at it; no proxy |
 | `nodePort` | one Service of type NodePort | a management node address and port | as loadBalancer |
 
 The default is `gateway`: one address and one certificate story for a whole
@@ -531,12 +564,14 @@ Built so far, for phase 1: Lifecycle sets `status.target.version` to
 `spec.version` when its minor is one Brygga runs — 1.35, 1.36 and 1.37, whose
 images are in `internal/versions` — and within that minor only, since a minor
 upgrade needs the order below, which phase 2 builds; otherwise the target
-stays and `Progressing` says why (`UnsupportedVersion`,
-`MinorUpgradeUnsupported`), else `Idle`, or `Paused`. `Ready` is True when
-the six readiness conditions are True at the current generation; otherwise it
-takes the status, reason and message of the first that is not, and is
-`Unknown`, `Reconciling`, while one is missing or reported for an older
-generation. `status.observedGeneration` follows once all six are reported for
+stays and `Progressing` says why (`Unsupported`), else `Idle`, or `Paused`.
+`Ready` is True when the six readiness conditions are True at the current
+generation; otherwise it takes the status, reason and message of the first
+that is not, in the order `CertificatesReady`, `DatastoreReady`,
+`APIServerReady`, `AccessReady`, `AddonsApplied`, `Reachable`, and is
+`Unknown`, `LatestGenerationNotObserved`, while that one is missing or
+reported for an older generation; while the `ControlPlane` is being deleted it
+is False, `Deleting`. `status.observedGeneration` follows once all six are reported for
 the current generation.
 
 ### Upgrades and windows
@@ -620,7 +655,7 @@ writes stop for the copy.
 ### Deletion
 
 The Datastore controller holds the `ControlPlane`'s finalizer
-`brygga.segla.io/controlplane`; while `spec.paused` is true it touches
+`brygga.segla.io/datastore`; while `spec.paused` is true it touches
 nothing, so the deletion of a paused `ControlPlane` waits until it is
 unpaused. On deletion it deletes the `Etcd` and waits
 for etcd-druid to let it go, then reclaims the volumes, which etcd-druid
@@ -668,7 +703,9 @@ operator.
 - Every field Brygga writes has a field manager `brygga/<controller>`;
   another manager's fields on the same object are left alone.
 - Inside a tenant, Brygga is `brygga:operator`; its objects carry
-  `app.kubernetes.io/managed-by: brygga` and are listed in the inventory.
+  `app.kubernetes.io/managed-by: brygga`. Tenant's are listed in its
+  inventory, and its prune reads the inventory alone, never the label: PKI's
+  three bindings carry the label too, and PKI is their one writer.
 - No cross-tenant object: every Secret, Service and route is in the tenant's
   namespace, and NetworkPolicies keep its pods to their own arrows. A
   shared `Datastore` is the one deliberate exception, labelled as such.
@@ -767,7 +804,8 @@ off), capacity planning, the alert rules and what each means.
 - Names: `<cp>-<component>` for workloads and Services, `<cp>-<purpose>` for
   Secrets, `brygga.segla.io/*` for labels, annotations and the finalizer.
 - Every reconcile is idempotent and uses server-side apply; no controller
-  reads an object it did not render except through status.
+  reads an object it did not render except through status, or by a name in
+  `api/v1alpha1/names.go`.
 - Every claim about Kubernetes or a neighbour carries a source.
 
 ## Deliberately not offered — and owed

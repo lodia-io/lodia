@@ -20,6 +20,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
+	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
 	"github.com/segla-io/brygga/internal/certs"
 )
 
@@ -41,7 +42,7 @@ var bindings = []struct {
 // failure is the tenant's refusal; once brygga:operator is forbidden, every
 // failure is.
 func (r *Reconciler) bind(ctx context.Context, t *tenant) (bool, error) {
-	cfg, err := clientcmd.RESTConfigFromKubeConfig(t.existing[t.name("brygga-kubeconfig")].Data[kubeconfigKey])
+	cfg, err := clientcmd.RESTConfigFromKubeConfig(t.existing[t.secret(bryggav1alpha1.BryggaKubeconfigSecret)].Data[bryggav1alpha1.KubeconfigKey])
 	if err != nil {
 		return false, err
 	}
@@ -89,7 +90,7 @@ func applyBindings(ctx context.Context, cfg *rest.Config) error {
 	}
 	for _, b := range bindings {
 		binding := rbacv1ac.ClusterRoleBinding(b.name).
-			WithLabels(map[string]string{"app.kubernetes.io/managed-by": "brygga"}).
+			WithLabels(map[string]string{bryggav1alpha1.ManagedByLabel: bryggav1alpha1.ManagedBy}).
 			WithSubjects(rbacv1ac.Subject().WithKind(b.kind).WithAPIGroup(rbacv1.GroupName).WithName(b.name)).
 			WithRoleRef(rbacv1ac.RoleRef().WithAPIGroup(rbacv1.GroupName).WithKind("ClusterRole").WithName(b.role))
 		if _, err := k8s.RbacV1().ClusterRoleBindings().Apply(ctx, binding, metav1.ApplyOptions{FieldManager: fieldManager, Force: true}); err != nil {
