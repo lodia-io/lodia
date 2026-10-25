@@ -30,9 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
@@ -40,7 +38,6 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -52,6 +49,7 @@ import (
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
 	"github.com/segla-io/brygga/internal/controller/datastore"
 	"github.com/segla-io/brygga/internal/controller/datastore/datastoretest"
+	"github.com/segla-io/brygga/internal/operator"
 )
 
 var k8s client.WithWatch
@@ -108,27 +106,12 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		stop("the controller's ClusterRole", err)
 	}
-	labelled, err := labels.NewRequirement(bryggav1alpha1.ControlPlaneLabel, selection.Exists, nil)
+	cache, err := operator.Cache()
 	if err != nil {
-		stop("label selector", err)
+		stop("cache options", err)
 	}
-	everything := cache.ByObject{Label: labels.Everything()}
-	mgr, err := ctrl.NewManager(controller, ctrl.Options{
-		Scheme:  scheme,
-		Metrics: metricsserver.Options{BindAddress: "0"},
-		Cache: cache.Options{
-			DefaultLabelSelector:        labels.NewSelector().Add(*labelled),
-			DefaultTransform:            cache.TransformStripManagedFields(),
-			ReaderFailOnMissingInformer: true,
-			ByObject: map[client.Object]cache.ByObject{
-				&bryggav1alpha1.ControlPlane{}:      everything,
-				&bryggav1alpha1.DatastoreClass{}:    everything,
-				&bryggav1alpha1.Datastore{}:         everything,
-				&bryggav1alpha1.KubeconfigRequest{}: everything,
-				&bryggav1alpha1.Backup{}:            everything,
-			},
-		},
-	})
+	cache.ReaderFailOnMissingInformer = true
+	mgr, err := ctrl.NewManager(controller, ctrl.Options{Scheme: scheme, Metrics: metricsserver.Options{BindAddress: "0"}, Cache: cache})
 	if err != nil {
 		stop("manager", err)
 	}

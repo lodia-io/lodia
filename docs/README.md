@@ -75,8 +75,9 @@ own condition; none calls another
 ([decision](decisions/independent-controllers.md)). The cache is scoped to
 labelled objects, with metadata only for Secrets. PKI, the Datastore
 controller and a first Lifecycle are built (`internal/controller/pki`,
-`datastore` and `lifecycle`, registered under those names in
-`cmd/brygga/main.go`); Workloads, Tenant and Health are not.
+`datastore` and `lifecycle`, registered under those names by
+`internal/operator`, whose manager `cmd/brygga` runs and the tests build);
+Workloads, Tenant and Health are not.
 
 ```mermaid
 sequenceDiagram

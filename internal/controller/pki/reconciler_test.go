@@ -28,9 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/selection"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	apiserverv1 "k8s.io/apiserver/pkg/apis/apiserver/v1"
 	corev1ac "k8s.io/client-go/applyconfigurations/core/v1"
@@ -47,6 +45,7 @@ import (
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
 	"github.com/segla-io/brygga/internal/certs"
 	"github.com/segla-io/brygga/internal/controller/pki"
+	"github.com/segla-io/brygga/internal/operator"
 )
 
 const (
@@ -99,21 +98,17 @@ func TestMain(m *testing.M) {
 
 func TestALoadBalancerControlPlaneWaitsForItsEndpoint(t *testing.T) {
 	cp := controlPlane(t, "pki-manager")
-	labelled, err := labels.NewRequirement(bryggav1alpha1.ControlPlaneLabel, selection.Exists, nil)
+	options, err := operator.Cache()
 	if err != nil {
 		t.Fatal(err)
 	}
+	options.DefaultNamespaces = map[string]cache.Config{cp.Namespace: {}}
+	options.ReaderFailOnMissingInformer = true
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: "0"},
 		HealthProbeBindAddress: "0",
-		Cache: cache.Options{
-			DefaultNamespaces:           map[string]cache.Config{cp.Namespace: {}},
-			DefaultLabelSelector:        labels.NewSelector().Add(*labelled),
-			DefaultTransform:            cache.TransformStripManagedFields(),
-			ReaderFailOnMissingInformer: true,
-			ByObject:                    map[client.Object]cache.ByObject{&bryggav1alpha1.ControlPlane{}: {Label: labels.Everything()}},
-		},
+		Cache:                  options,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -15,45 +15,38 @@ import (
 	"testing"
 	"time"
 
-	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	"github.com/gardener/etcd-druid/api/core/v1alpha1/crds"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/selection"
-	"k8s.io/apimachinery/pkg/util/wait"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/apimachinery/pkg/watch"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/yaml"
 
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
-	"github.com/segla-io/brygga/internal/controller/datastore"
-	"github.com/segla-io/brygga/internal/controller/lifecycle"
-	"github.com/segla-io/brygga/internal/controller/pki"
+	"github.com/segla-io/brygga/internal/operator"
 )
 
 var conditionWriters = map[string]string{
 	bryggav1alpha1.ConditionCertificatesReady:    "brygga/pki",
 	bryggav1alpha1.ConditionCAValidityAcceptable: "brygga/pki",
 	bryggav1alpha1.ConditionAccessReady:          "brygga/pki",
-	bryggav1alpha1.ConditionDatastoreReady:       datastore.FieldManager,
-	bryggav1alpha1.ConditionProgressing:          lifecycle.FieldManager,
-	bryggav1alpha1.ConditionReady:                lifecycle.FieldManager,
+	bryggav1alpha1.ConditionDatastoreReady:       "brygga/datastore",
+	bryggav1alpha1.ConditionProgressing:          "brygga/lifecycle",
+	bryggav1alpha1.ConditionReady:                "brygga/lifecycle",
 }
 
 var fieldWriters = map[string]string{
 	"credentials":        "brygga/pki",
-	"datastore":          datastore.FieldManager,
-	"target":             lifecycle.FieldManager,
-	"observedGeneration": lifecycle.FieldManager,
+	"datastore":          "brygga/datastore",
+	"target":             "brygga/lifecycle",
+	"observedGeneration": "brygga/lifecycle",
 }
 
 func TestEveryStatusFieldHasOneWriter(t *testing.T) {
@@ -65,6 +58,11 @@ func TestEveryStatusFieldHasOneWriter(t *testing.T) {
 	if err := k8s.Create(t.Context(), ns); err != nil {
 		t.Fatal(err)
 	}
+	updates, err := k8s.Watch(t.Context(), &bryggav1alpha1.ControlPlaneList{}, client.InNamespace(ns.Name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer updates.Stop()
 	class := &bryggav1alpha1.DatastoreClass{
 		ObjectMeta: metav1.ObjectMeta{Name: "writers", Annotations: map[string]string{bryggav1alpha1.DefaultClassAnnotation: "true"}},
 		Spec:       bryggav1alpha1.DatastoreClassSpec{Storage: bryggav1alpha1.EtcdStorage{Size: resource.MustParse("1Gi"), ReclaimPolicy: "Delete"}},
@@ -84,27 +82,38 @@ func TestEveryStatusFieldHasOneWriter(t *testing.T) {
 		}
 	}
 
-	fresh := &bryggav1alpha1.ControlPlane{}
-	err := wait.PollUntilContextTimeout(t.Context(), 200*time.Millisecond, 60*time.Second, true, func(ctx context.Context) (bool, error) {
-		if err := k8s.Get(ctx, client.ObjectKeyFromObject(cp), fresh); err != nil {
-			return false, err
-		}
-		if fresh.Status.Datastore == nil || fresh.Status.Credentials == nil || fresh.Status.Target == nil {
-			return false, nil
-		}
-		for conditionType := range conditionWriters {
-			if meta.FindStatusCondition(fresh.Status.Conditions, conditionType) == nil {
-				return false, nil
+	owners := map[string][]string{}
+	deadline := time.After(time.Minute)
+	var settled <-chan time.Time
+	written := false
+watching:
+	for {
+		select {
+		case event, open := <-updates.ResultChan():
+			if !open {
+				t.Fatal("the watch of the ControlPlane ended")
 			}
+			if event.Type == watch.Error {
+				t.Fatalf("watch: %v", apierrors.FromObject(event.Object))
+			}
+			fresh := event.Object.(*bryggav1alpha1.ControlPlane)
+			current, err := statusOwners(fresh)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for key, managers := range current {
+				merged := slices.Concat(owners[key], managers)
+				slices.Sort(merged)
+				owners[key] = slices.Compact(merged)
+			}
+			if written = written || complete(fresh); written {
+				settled = time.After(2 * time.Second)
+			}
+		case <-settled:
+			break watching
+		case <-deadline:
+			t.Fatalf("the controllers did not write their status and stop within a minute: written %t", written)
 		}
-		return true, nil
-	})
-	if err != nil {
-		t.Fatalf("the controllers did not write their status: %v", err)
-	}
-	owners, err := statusOwners(fresh)
-	if err != nil {
-		t.Fatal(err)
 	}
 	for _, key := range slices.Sorted(maps.Keys(owners)) {
 		writer, known := conditionWriters[strings.TrimPrefix(key, "conditions/")]
@@ -118,6 +127,18 @@ func TestEveryStatusFieldHasOneWriter(t *testing.T) {
 			t.Errorf("status %s is written by %v, want %s alone", key, owners[key], writer)
 		}
 	}
+}
+
+func complete(cp *bryggav1alpha1.ControlPlane) bool {
+	if cp.Status.Datastore == nil || cp.Status.Credentials == nil || cp.Status.Target == nil {
+		return false
+	}
+	for conditionType := range conditionWriters {
+		if meta.FindStatusCondition(cp.Status.Conditions, conditionType) == nil {
+			return false
+		}
+	}
+	return true
 }
 
 func statusOwners(cp *bryggav1alpha1.ControlPlane) (map[string][]string, error) {
@@ -155,7 +176,7 @@ func statusOwners(cp *bryggav1alpha1.ControlPlane) (map[string][]string, error) 
 	return owners, nil
 }
 
-func start(t *testing.T) client.Client {
+func start(t *testing.T) client.WithWatch {
 	t.Helper()
 	druid, err := druidCRDs()
 	if err != nil {
@@ -172,52 +193,22 @@ func start(t *testing.T) client.Client {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = env.Stop() })
-	scheme := runtime.NewScheme()
-	for _, add := range []func(*runtime.Scheme) error{clientgoscheme.AddToScheme, bryggav1alpha1.AddToScheme, druidv1alpha1.AddToScheme} {
-		if err := add(scheme); err != nil {
-			t.Fatal(err)
-		}
-	}
-	k8s, err := client.New(cfg, client.Options{Scheme: scheme})
+	scheme := operator.Scheme()
+	k8s, err := client.NewWithWatch(cfg, client.Options{Scheme: scheme})
 	if err != nil {
 		t.Fatal(err)
 	}
-	labelled, err := labels.NewRequirement(bryggav1alpha1.ControlPlaneLabel, selection.Exists, nil)
+	cache, err := operator.Cache()
 	if err != nil {
 		t.Fatal(err)
 	}
-	everything := cache.ByObject{Label: labels.Everything()}
-	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
-		Scheme:  scheme,
-		Metrics: metricsserver.Options{BindAddress: "0"},
-		Cache: cache.Options{
-			DefaultLabelSelector:        labels.NewSelector().Add(*labelled),
-			DefaultTransform:            cache.TransformStripManagedFields(),
-			ReaderFailOnMissingInformer: true,
-			ByObject: map[client.Object]cache.ByObject{
-				&bryggav1alpha1.ControlPlane{}:      everything,
-				&bryggav1alpha1.DatastoreClass{}:    everything,
-				&bryggav1alpha1.Datastore{}:         everything,
-				&bryggav1alpha1.KubeconfigRequest{}: everything,
-				&bryggav1alpha1.Backup{}:            everything,
-			},
-		},
-	})
+	cache.ReaderFailOnMissingInformer = true
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{Scheme: scheme, Metrics: metricsserver.Options{BindAddress: "0"}, Cache: cache})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, setup := range map[string]func() error{
-		"pki": func() error {
-			return (&pki.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), LeafLifetime: 24 * time.Hour, CALifetime: 48 * time.Hour, TrustAnchorLifetime: 96 * time.Hour, CAExpiryNotice: time.Hour}).SetupWithManager(mgr, 1)
-		},
-		"datastore": func() error {
-			return (&datastore.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader()}).SetupWithManager(mgr, 1)
-		},
-		"lifecycle": func() error { return (&lifecycle.Reconciler{Client: mgr.GetClient()}).SetupWithManager(mgr, 1) },
-	} {
-		if err := setup(); err != nil {
-			t.Fatalf("set up %s: %v", name, err)
-		}
+	if err := operator.Setup(mgr); err != nil {
+		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	started := make(chan error, 1)

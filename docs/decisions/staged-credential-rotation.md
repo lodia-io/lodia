@@ -207,7 +207,7 @@ first four.
   generations it keeps; a lost or unreadable key is `CAMissing`, and nothing
   that CA signs is written; an encryption configuration or ServiceAccount
   key it cannot read is never replaced (`SecretUnreadable`). `CAValidityAcceptable` announces a CA in its last year
-  (`CAExpiryNotice`, a year in `main.go`). `reconciler_test.go` and
+  (`CAExpiryNotice`, a year in `internal/operator`). `reconciler_test.go` and
   `recovery_test.go` prove each of these against a running envtest API
   server: the subjects, usages, SANs and validity; that no Secret but
   `<cp>-cakey-*` and `<cp>-kubelet-signer` holds a CA's key; that a pass over

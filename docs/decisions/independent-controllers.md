@@ -48,12 +48,13 @@ Rules:
   applies only its own condition through the status subresource with its own
   field manager, so six writers never conflict on the list; one condition
   type, and one top-level status field, has exactly one writer.
-  `internal/controller/writers_test.go` runs every built controller in one
-  manager against one `ControlPlane` and checks, from its `managedFields`,
-  that each condition type and each status field has exactly the field
-  manager of the test's table, which the writer columns of
-  [`api/controlplane.md`](../api/controlplane.md) mirror; a controller that
-  lands adds its rows.
+  `internal/controller/writers_test.go` runs the controllers of
+  `internal/operator` in one manager against one `ControlPlane`, watches
+  every update of it, and checks, from the `managedFields` of each, that each
+  condition type and each status field has had exactly the field manager of
+  the test's table, so a second writer for a single update fails it too; the
+  writer columns of [`api/controlplane.md`](../api/controlplane.md) mirror
+  the table, and a controller that lands adds its rows.
 - A condition counts only while its `observedGeneration` is the object's
   generation; a controller waiting on an older one treats it as Unknown. Each
   controller applies every condition it owns on every generation, Unknown on
@@ -156,9 +157,11 @@ flowchart LR
 
 ## Code
 
-- `cmd/brygga/main.go` — the manager with the cache rules above, PKI
-  registered as `pki` with ten workers, and the Datastore controller as
-  `datastore` with ten.
+- `internal/operator` — the scheme, the cache rules above and the
+  controllers: PKI registered as `pki`, the Datastore controller as
+  `datastore` and Lifecycle as `lifecycle`, each with ten workers.
+  `cmd/brygga/main.go` runs them in one manager; every controller's tests
+  take the cache from it.
 - `internal/controller/pki` — reads `spec` and `status.endpoint`, writes its
   Secrets with server-side apply as `brygga/pki`, applies `CertificatesReady`,
   `CAValidityAcceptable` and `AccessReady` alone through the status
@@ -171,8 +174,8 @@ flowchart LR
   seconds, rounded up, at the earliest renewal, or when a CA enters its last
   year or expires.
   `reconciler_test.go` runs it under a manager whose cache is the one
-  `main.go` builds, with `ReaderFailOnMissingInformer`, and holds the first
-  visit and the stale `APIServerReady` cases; `ownership_test.go` holds the
+  `internal/operator` builds, with `ReaderFailOnMissingInformer`, and holds
+  the first visit and the stale `APIServerReady` cases; `ownership_test.go` holds the
   Secrets another owner keeps and the reads that fail.
 - `internal/controller/datastore` — reads `spec`, writes the `Etcd` and the
   credentials copy with server-side apply as `brygga/datastore`, applies
