@@ -8,6 +8,7 @@ package main
 import (
 	"flag"
 	"os"
+	"time"
 
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -23,6 +24,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
+	"github.com/segla-io/brygga/internal/controller/pki"
 )
 
 func main() {
@@ -72,6 +74,16 @@ func main() {
 	})
 	if err != nil {
 		log.Error(err, "create the manager")
+		os.Exit(1)
+	}
+	if err := (&pki.Reconciler{
+		Client:              mgr.GetClient(),
+		Reader:              mgr.GetAPIReader(),
+		LeafLifetime:        365 * 24 * time.Hour,
+		CALifetime:          5 * 365 * 24 * time.Hour,
+		TrustAnchorLifetime: 10 * 365 * 24 * time.Hour,
+	}).SetupWithManager(mgr); err != nil {
+		log.Error(err, "set up the pki controller")
 		os.Exit(1)
 	}
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

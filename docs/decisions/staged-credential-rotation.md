@@ -1,7 +1,10 @@
 # Credentials rotate in stages, and the routine ones never touch a node: the trust anchor is split from the client CA, and ServiceAccount tokens are signed by a sidecar
 
-Decided 2026-10-25. `brygga-signer` is built; the PKI and
-Workloads controllers and the rotation operations are not.
+Decided 2026-10-25. `brygga-signer` is built; the PKI controller issues the
+CA per purpose, the leaves, the kubeconfigs, the ServiceAccount key and the
+encryption configuration, renews leaves at two thirds and the etcd set as
+generations; the Workloads controller and the rotation operations are not
+built.
 
 ## Decision
 
@@ -164,3 +167,18 @@ first four.
   stages against one envtest kube-apiserver whose only signer it is.
 - [The hard way, spike d](../hard-way.md#d-spike-serviceaccount-tokens-from-an-external-signer)
   — the same rotation by hand in kind, with a pod calling the API throughout.
+- `internal/certs` — ECDSA P-256 CAs and leaves from `crypto/x509`, the
+  renewal time at two thirds of a certificate's lifetime, and kubeconfigs
+  with their certificates as files beside them or embedded.
+- `internal/controller/pki` — the controller. `secrets.go` is the Secret
+  table above: the four `<cp>-cakey-*` key pairs that no pod mounts, the
+  kubelet signer and the client CA bundle that keeps a replaced signer for
+  one signing duration, the leaves and kubeconfigs, `<cp>-sa-keys` with its
+  `signing.key`, the encryption configuration, and the etcd generations with
+  the previous one kept. `reconciler_test.go` proves each row against a
+  running envtest API server: the subjects, usages and SANs; that no Secret
+  but `<cp>-cakey-*` and `<cp>-kubelet-signer` holds a CA's key; that a pass
+  over an unchanged `ControlPlane` changes no `resourceVersion`; the renewal
+  at two thirds with the CA key pairs unchanged and the old signer still in
+  the bundle; and etcd generations 1, 2 and 3, with 1 deleted after the
+  third.

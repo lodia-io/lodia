@@ -1,6 +1,7 @@
 # Six controllers share one object and communicate only through status conditions
 
-Decided 2026-10-25. Not built.
+Decided 2026-10-25. The manager and PKI are built; the other five
+controllers are not.
 
 ## Decision
 
@@ -111,4 +112,10 @@ flowchart LR
 
 ## Code
 
-none yet.
+- `cmd/brygga/main.go` — the manager with the cache rules above, and PKI
+  registered as `pki` with ten workers.
+- `internal/controller/pki` — reads `spec` and `status.endpoint`, writes its
+  Secrets with server-side apply as `brygga/pki`, applies `CertificatesReady`
+  and `AccessReady` alone through the status subresource, and requeues at the
+  earliest renewal time. `reconciler_test.go` runs it under a manager whose
+  cache is the one `main.go` builds, with `ReaderFailOnMissingInformer`.

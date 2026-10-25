@@ -71,3 +71,28 @@ is a decision — a decision is a file in `docs/decisions/`.
   (AWS NLB and CLB): `--advertise-address` takes an IP, so the `kubernetes`
   endpoint needs another source there; decide before that mode is supported
   on such a provider.
+
+## From the PKI controller (2026-10-25)
+
+- A certificate is valid from the second it is issued; a node whose clock
+  runs behind refuses a freshly renewed serving certificate until it catches
+  up. kubeadm sets a leaf's `NotBefore` to its CA's
+  ([`NewSignedCert`](https://github.com/kubernetes/kubernetes/blob/v1.35.0/cmd/kubeadm/app/util/pkiutil/pki_helpers.go));
+  decide whether to backdate, and by how much, before nodes join.
+- A changed `apiServer.encryption.provider` puts the new provider first with
+  a new key and keeps the previous ones readable, but nothing rewrites the
+  stored Secrets or drops the old provider, and with two API server replicas
+  one may write with the new key before the other has reloaded the file (up
+  to a minute). That is the etcd encryption key rotation of
+  [staged-credential-rotation](docs/decisions/staged-credential-rotation.md);
+  until it is built, document the change as unsupported, or refuse it in the
+  schema.
+- `apiServer.encryption.provider: kms` is accepted by the schema and turns
+  `CertificatesReady` False with `Issuing` and a message; refuse it in CEL
+  until the provider is built.
+- Brygga reaches a tenant's API server through its in-namespace Service and
+  ignores `HTTPS_PROXY` for that connection; the chart's documentation should
+  say so for sites that set a proxy on every pod.
+- The e2e suite installs the CRDs and applies the examples; nothing runs the
+  operator against kind yet. The phase 1 gate adds that, and with it a check
+  that a `ControlPlane` reaches `CertificatesReady` on a real cluster.
