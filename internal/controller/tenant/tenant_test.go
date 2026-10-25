@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
+	rbacv1ac "k8s.io/client-go/applyconfigurations/rbac/v1"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -75,8 +76,7 @@ var (
 
 func TestMain(m *testing.M) {
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
-		fmt.Println("skipping the tenant controller tests: KUBEBUILDER_ASSETS is not set; run make test")
-		os.Exit(0)
+		os.Exit(m.Run())
 	}
 	env := &envtest.Environment{
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "config", "crd", "bases")},
@@ -450,13 +450,18 @@ func TestATenantThatNeverAnsweredIsApplying(t *testing.T) {
 	publish(t, cp)
 	reconcilePKI(t, &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour}, cp)
 	dial.Store(&unreachable)
+	eventually(t, 30*time.Second, func() error {
+		return expectCondition(t, cp, bryggav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForAccess)
+	})
 	setCondition(t, cp, bryggav1alpha1.ConditionAccessReady, bryggav1alpha1.ReasonBound)
 	eventually(t, 30*time.Second, func() error {
-		if err := expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, bryggav1alpha1.ReasonApplying); err != nil {
-			return err
-		}
-		if c := condition(t, cp, bryggav1alpha1.ConditionAddonsApplied); !strings.Contains(c.Message, "does not answer") {
-			return fmt.Errorf("AddonsApplied says %q", c.Message)
+		for _, conditionType := range []string{bryggav1alpha1.ConditionAddonsApplied, bryggav1alpha1.ConditionAddonsAvailable} {
+			if err := expectCondition(t, cp, conditionType, metav1.ConditionFalse, bryggav1alpha1.ReasonApplying); err != nil {
+				return err
+			}
+			if c := condition(t, cp, conditionType); !strings.Contains(c.Message, "does not answer") {
+				return fmt.Errorf("%s says %q", conditionType, c.Message)
+			}
 		}
 		return nil
 	})
@@ -465,14 +470,14 @@ func TestATenantThatNeverAnsweredIsApplying(t *testing.T) {
 func TestASecretAnotherOwnerKeepsIsNotUsed(t *testing.T) {
 	cp := controlPlane(t, "tenant-predecessor")
 	publish(t, cp)
-	bundle := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
-		Namespace: cp.Namespace,
-		Name:      "dev-ca-bundle",
-		OwnerReferences: []metav1.OwnerReference{{
-			APIVersion: bryggav1alpha1.GroupVersion.String(), Kind: "ControlPlane", Name: "dev", UID: "predecessor", Controller: new(true),
-		}},
+	reconcilePKI(t, &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour}, cp)
+	dial.Store(&unreachable)
+	bundle := get(t, k8s, &corev1.Secret{}, cp.Namespace, "dev-ca-bundle")
+	own := bundle.OwnerReferences
+	bundle.OwnerReferences = []metav1.OwnerReference{{
+		APIVersion: bryggav1alpha1.GroupVersion.String(), Kind: "ControlPlane", Name: "dev", UID: "predecessor", Controller: new(true),
 	}}
-	if err := k8s.Create(t.Context(), bundle); err != nil {
+	if err := k8s.Update(t.Context(), bundle); err != nil {
 		t.Fatal(err)
 	}
 	setCondition(t, cp, bryggav1alpha1.ConditionAccessReady, bryggav1alpha1.ReasonBound)
@@ -485,6 +490,159 @@ func TestASecretAnotherOwnerKeepsIsNotUsed(t *testing.T) {
 		}
 		return nil
 	})
+
+	bundle.OwnerReferences = own
+	if err := k8s.Update(t.Context(), bundle); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 30*time.Second, func() error {
+		return expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, bryggav1alpha1.ReasonApplying)
+	})
+}
+
+func TestThePruneDeletesOnlyWhatBryggaApplied(t *testing.T) {
+	ctx := t.Context()
+	cp, admin := servedTenant(t, "tenant-prune")
+	eventually(t, 30*time.Second, func() error {
+		return expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, bryggav1alpha1.ReasonApplied)
+	})
+	if err := admin.Create(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "precious"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := admin.Apply(ctx, rbacv1ac.ClusterRole("left-the-render").WithLabels(map[string]string{bryggav1alpha1.ManagedByLabel: bryggav1alpha1.ManagedBy}), client.FieldOwner(tenant.FieldManager)); err != nil {
+		t.Fatal(err)
+	}
+	var entries []map[string]string
+	if err := json.Unmarshal([]byte(get(t, admin, &corev1.ConfigMap{}, "kube-system", "brygga-inventory").Data["objects"]), &entries); err != nil {
+		t.Fatal(err)
+	}
+	added := []map[string]string{
+		{"group": "", "version": "v1", "kind": "ConfigMap", "namespace": "default", "name": "precious"},
+		{"group": "rbac.authorization.k8s.io", "version": "v1", "kind": "ClusterRoleBinding", "name": "brygga:cluster-admins"},
+		{"group": "rbac.authorization.k8s.io", "version": "v1beta1", "kind": "ClusterRole", "name": "left-the-render"},
+		{"group": "example.com", "version": "v1", "kind": "Widget", "namespace": "default", "name": "w"},
+	}
+	objects, err := json.Marshal(append(entries, added...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	setInventory(t, admin, string(objects))
+
+	eventually(t, 30*time.Second, func() error {
+		inventory := inventoryOf(t, admin)
+		for _, entry := range []string{"ConfigMap default/precious", "ClusterRoleBinding brygga:cluster-admins", "ClusterRole left-the-render", "Widget default/w"} {
+			if slices.Contains(inventory, entry) {
+				return fmt.Errorf("the inventory still lists %s", entry)
+			}
+		}
+		return nil
+	})
+	if exists(t, admin, "ClusterRole left-the-render") {
+		t.Error("ClusterRole left-the-render, applied by Brygga and listed at a version no longer served, survived the prune")
+	}
+	for _, kept := range []string{"ConfigMap default/precious", "ClusterRoleBinding brygga:cluster-admins"} {
+		if !exists(t, admin, kept) {
+			t.Errorf("%s, which Brygga never applied, was deleted", kept)
+		}
+	}
+	expectNow(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, bryggav1alpha1.ReasonApplied)
+}
+
+func TestAnotherOwnersObjectsAreNeitherAdoptedNorPruned(t *testing.T) {
+	ctx := t.Context()
+	cp, admin := servedTenant(t, "tenant-owners-dns")
+	setCoreDNS(t, cp, false)
+	eventually(t, 30*time.Second, func() error {
+		return expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, bryggav1alpha1.ReasonApplied)
+	})
+	corefile := ".:53 {\n    forward . 9.9.9.9\n}\n"
+	for _, obj := range []client.Object{
+		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "coredns"}, Data: map[string]string{"Corefile": corefile}},
+		&appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "coredns"},
+			Spec: appsv1.DeploymentSpec{
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "owners-dns"}},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "owners-dns"}},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "dns", Image: "owners/coredns"}}},
+				},
+			},
+		},
+	} {
+		if err := admin.Create(ctx, obj); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	setCoreDNS(t, cp, true)
+	eventually(t, 30*time.Second, func() error {
+		if err := expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, bryggav1alpha1.ReasonApplying); err != nil {
+			return err
+		}
+		if c := condition(t, cp, bryggav1alpha1.ConditionAddonsApplied); c.Message != "ConfigMap kube-system/coredns exists and is not Brygga's; delete it or disable the addon" {
+			return fmt.Errorf("AddonsApplied says %q", c.Message)
+		}
+		return nil
+	})
+	owners := []string{"ConfigMap kube-system/coredns", "Deployment kube-system/coredns"}
+	inventory := inventoryOf(t, admin)
+	for _, entry := range owners {
+		if slices.Contains(inventory, entry) {
+			t.Errorf("the inventory lists the owner's %s", entry)
+		}
+		if slices.ContainsFunc(objectOf(t, admin, entry).GetManagedFields(), func(f metav1.ManagedFieldsEntry) bool { return f.Manager == tenant.FieldManager }) {
+			t.Errorf("Brygga wrote the owner's %s", entry)
+		}
+	}
+	if got := get(t, admin, &corev1.ConfigMap{}, "kube-system", "coredns").Data["Corefile"]; got != corefile {
+		t.Errorf("the owner's Corefile is %q", got)
+	}
+	if !exists(t, admin, "Service kube-system/kube-dns") {
+		t.Error("Brygga's own CoreDNS objects were not applied beside the owner's")
+	}
+
+	setCoreDNS(t, cp, false)
+	eventually(t, 30*time.Second, func() error {
+		return expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, bryggav1alpha1.ReasonApplied)
+	})
+	for _, entry := range owners {
+		if !exists(t, admin, entry) {
+			t.Errorf("the owner's %s was deleted", entry)
+		}
+	}
+}
+
+func TestATenantThatRefusesTheInventoryIsApplying(t *testing.T) {
+	cp, admin := servedTenant(t, "tenant-refuses-inventory")
+	eventually(t, 30*time.Second, func() error {
+		return expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, bryggav1alpha1.ReasonApplied)
+	})
+	if err := admin.Delete(t.Context(), &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: "brygga:operator"}}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 30*time.Second, func() error {
+		if err := expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, bryggav1alpha1.ReasonApplying); err != nil {
+			return err
+		}
+		if c := condition(t, cp, bryggav1alpha1.ConditionAddonsApplied); !strings.HasPrefix(c.Message, "ConfigMap kube-system/brygga-inventory is refused by the tenant's API server") {
+			return fmt.Errorf("AddonsApplied says %q", c.Message)
+		}
+		return nil
+	})
+}
+
+func servedTenant(t *testing.T, namespace string) (*bryggav1alpha1.ControlPlane, *tenantClient) {
+	t.Helper()
+	cp := controlPlane(t, namespace)
+	publish(t, cp)
+	issuer := &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour}
+	reconcilePKI(t, issuer, cp)
+	admin := startTenant(t, cp)
+	setDial(t, admin.host)
+	issuer.Dial = *dial.Load()
+	setCondition(t, cp, bryggav1alpha1.ConditionAPIServerReady, "Ready")
+	reconcilePKI(t, issuer, cp)
+	return cp, admin
 }
 
 type tenantClient struct {
@@ -589,6 +747,9 @@ func setDial(t *testing.T, host string) {
 
 func controlPlane(t *testing.T, namespace string) *bryggav1alpha1.ControlPlane {
 	t.Helper()
+	if k8s == nil {
+		t.Skip("KUBEBUILDER_ASSETS is not set; run make test")
+	}
 	if err := k8s.Create(t.Context(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}); err != nil {
 		t.Fatal(err)
 	}

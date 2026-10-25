@@ -11,6 +11,8 @@ import (
 	"slices"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -18,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
+	"github.com/segla-io/brygga/internal/apistatus"
 )
 
 const (
@@ -51,12 +54,16 @@ func entryOf(obj *unstructured.Unstructured) entry {
 	return entry{Group: gvk.Group, Version: gvk.Version, Kind: gvk.Kind, Namespace: obj.GetNamespace(), Name: obj.GetName()}
 }
 
+func contains(entries []entry, e entry) bool {
+	return slices.ContainsFunc(entries, func(o entry) bool { return compareEntries(o, e) == 0 })
+}
+
 // union keeps the first of each object, sorted.
 func union(lists ...[]entry) []entry {
 	var out []entry
 	for _, list := range lists {
 		for _, e := range list {
-			if !slices.ContainsFunc(out, func(o entry) bool { return compareEntries(o, e) == 0 }) {
+			if !contains(out, e) {
 				out = append(out, e)
 			}
 		}
@@ -70,14 +77,22 @@ func union(lists ...[]entry) []entry {
 func stale(previous, desired []entry) []entry {
 	var out []entry
 	for _, e := range previous {
-		if !slices.ContainsFunc(desired, func(d entry) bool { return compareEntries(d, e) == 0 }) {
+		if !contains(desired, e) {
 			out = append(out, e)
 		}
 	}
 	return out
 }
 
-// failure is an object a pass could not write or read, and what the tenant
+// appliedByBrygga reads managedFields: the managed-by label is on PKI's
+// bindings in the tenant too.
+func appliedByBrygga(obj metav1.Object) bool {
+	return slices.ContainsFunc(obj.GetManagedFields(), func(f metav1.ManagedFieldsEntry) bool {
+		return f.Manager == FieldManager && f.Operation == metav1.ManagedFieldsOperationApply
+	})
+}
+
+// failure is an object a pass could not read or write, and what the tenant
 // answered, empty when it did not.
 type failure struct {
 	entry   entry
@@ -95,7 +110,7 @@ func (f *failure) Unwrap() error {
 
 func failed(e entry, err error) error {
 	f := &failure{entry: e, err: err}
-	if refused(err) {
+	if apistatus.Refused(err) {
 		f.verdict = "is refused by the tenant's API server"
 	}
 	return f
@@ -108,7 +123,10 @@ func inventoryEntry() entry {
 func readInventory(ctx context.Context, c client.Client) ([]entry, error) {
 	cm := &corev1.ConfigMap{}
 	if err := c.Get(ctx, client.ObjectKey{Namespace: metav1.NamespaceSystem, Name: inventoryName}, cm); err != nil {
-		return nil, client.IgnoreNotFound(err)
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, failed(inventoryEntry(), err)
 	}
 	var entries []entry
 	if err := json.Unmarshal([]byte(cm.Data[inventoryKey]), &entries); err != nil {
@@ -131,45 +149,101 @@ func writeInventory(ctx context.Context, c client.Client, entries []entry) error
 	return nil
 }
 
-// applyInventory applies the objects, then prunes what the previous
-// inventory lists and they do not. The inventory names an object before it
-// is first written, so a pass that stops anywhere leaves nothing a later
-// pass cannot prune.
-func applyInventory(ctx context.Context, c client.Client, objects []*unstructured.Unstructured) error {
+// foreign returns the objects of the render no inventory lists yet that
+// exist without Brygga's field manager: another owner's.
+func foreign(ctx context.Context, c client.Client, objects []*unstructured.Unstructured, previous []entry) ([]entry, error) {
+	var others []entry
+	for _, obj := range objects {
+		e := entryOf(obj)
+		if contains(previous, e) {
+			continue
+		}
+		existing := &unstructured.Unstructured{}
+		existing.SetGroupVersionKind(obj.GroupVersionKind())
+		err := c.Get(ctx, client.ObjectKey{Namespace: e.Namespace, Name: e.Name}, existing)
+		switch {
+		case apierrors.IsNotFound(err):
+		case err != nil:
+			return nil, failed(e, err)
+		case !appliedByBrygga(existing):
+			others = append(others, e)
+		}
+	}
+	slices.SortFunc(others, compareEntries)
+	return others, nil
+}
+
+// prune deletes an entry that left the render if Brygga wrote it, under the
+// UID and resourceVersion it read; an entry it did not write, or one gone or
+// of a kind no longer served, only leaves the inventory.
+func prune(ctx context.Context, c client.Client, e entry) error {
+	mapping, err := c.RESTMapper().RESTMapping(schema.GroupKind{Group: e.Group, Kind: e.Kind})
+	if meta.IsNoMatchError(err) {
+		return nil
+	}
+	if err != nil {
+		return failed(e, err)
+	}
+	existing := &unstructured.Unstructured{}
+	existing.SetGroupVersionKind(mapping.GroupVersionKind)
+	err = c.Get(ctx, client.ObjectKey{Namespace: e.Namespace, Name: e.Name}, existing)
+	switch {
+	case apierrors.IsNotFound(err):
+		return nil
+	case err != nil:
+		return failed(e, err)
+	case !appliedByBrygga(existing):
+		return nil
+	}
+	uid, version := existing.GetUID(), existing.GetResourceVersion()
+	err = c.Delete(ctx, existing, client.Preconditions{UID: &uid, ResourceVersion: &version}, client.PropagationPolicy(metav1.DeletePropagationBackground))
+	if client.IgnoreNotFound(err) != nil {
+		return failed(e, err)
+	}
+	return nil
+}
+
+// applyInventory applies the objects but another owner's, which it returns,
+// then prunes what the previous inventory lists and they do not. The
+// inventory names an object before Brygga first writes it, so a pass that
+// stops anywhere leaves nothing a later pass cannot prune.
+func applyInventory(ctx context.Context, c client.Client, objects []*unstructured.Unstructured) ([]entry, error) {
 	previous, err := readInventory(ctx, c)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	previous = union(previous)
-	desired := make([]entry, 0, len(objects))
+	others, err := foreign(ctx, c, objects, previous)
+	if err != nil {
+		return nil, err
+	}
+	var desired []entry
+	var writes []*unstructured.Unstructured
 	for _, obj := range objects {
-		desired = append(desired, entryOf(obj))
+		if e := entryOf(obj); !contains(others, e) {
+			desired, writes = append(desired, e), append(writes, obj)
+		}
 	}
 	desired = union(desired)
 	stored := previous
 	if both := union(desired, previous); !slices.Equal(both, previous) {
 		if err := writeInventory(ctx, c, both); err != nil {
-			return err
+			return nil, err
 		}
 		stored = both
 	}
-	for _, obj := range objects {
+	for _, obj := range writes {
 		if err := c.Apply(ctx, client.ApplyConfigurationFromUnstructured(obj), client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
-			return failed(entryOf(obj), err)
+			return nil, failed(entryOf(obj), err)
 		}
 	}
 	for _, e := range stale(previous, desired) {
-		obj := &unstructured.Unstructured{}
-		obj.SetGroupVersionKind(schema.GroupVersionKind{Group: e.Group, Version: e.Version, Kind: e.Kind})
-		obj.SetNamespace(e.Namespace)
-		obj.SetName(e.Name)
-		err := c.Delete(ctx, obj, client.PropagationPolicy(metav1.DeletePropagationBackground))
-		if client.IgnoreNotFound(err) != nil {
-			return failed(e, err)
+		if err := prune(ctx, c, e); err != nil {
+			return nil, err
 		}
 	}
 	if !slices.Equal(desired, stored) {
-		return writeInventory(ctx, c, desired)
+		return others, writeInventory(ctx, c, desired)
 	}
-	return nil
+	return others, nil
 }

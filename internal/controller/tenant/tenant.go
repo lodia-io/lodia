@@ -16,7 +16,6 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -39,9 +38,9 @@ const (
 	FieldManager = "brygga/" + Name
 )
 
-// rolloutPeriod is how often the addons' rollout is read while it is not
-// complete: their pods run on nodes, which no event reports.
-const rolloutPeriod = time.Minute
+// waitPeriod is how often a pass runs while it waits on what no event
+// reports: the addons' pods on the nodes, and a Secret another owner keeps.
+const waitPeriod = time.Minute
 
 type Reconciler struct {
 	client.Client
@@ -111,7 +110,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 	if keptElsewhere != "" {
-		return ctrl.Result{}, r.wait(ctx, cp, bryggav1alpha1.ReasonWaitingForAccess, keptElsewhere)
+		if err := r.wait(ctx, cp, bryggav1alpha1.ReasonWaitingForAccess, keptElsewhere); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: min(waitPeriod, r.ApplyPeriod)}, nil
 	}
 	v, reason, waitingFor, err := newValues(cp, clusterCA)
 	if err != nil {
@@ -129,30 +131,45 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 
-	syncErr := applyInventory(ctx, tenant, objects)
-	switch f, ok := errors.AsType[*failure](syncErr); {
+	others, syncErr := applyInventory(ctx, tenant, objects)
+	switch message, answered := outcome(syncErr); {
+	case syncErr == nil && len(others) > 0:
+		applied = newCondition(cp, applied.Type, metav1.ConditionFalse, bryggav1alpha1.ReasonApplying, others[0].String()+" exists and is not Brygga's; delete it or disable the addon")
 	case syncErr == nil:
 		applied = newCondition(cp, applied.Type, metav1.ConditionTrue, bryggav1alpha1.ReasonApplied, fmt.Sprintf("%d objects are applied and the inventory is pruned", len(objects)))
-	case ok && f.verdict != "":
-		applied = newCondition(cp, applied.Type, metav1.ConditionFalse, bryggav1alpha1.ReasonApplying, f.entry.String()+" "+f.verdict+"; the reason is in Brygga's log")
-	case applied.Status != metav1.ConditionTrue:
+	case answered || applied.Status != metav1.ConditionTrue:
 		// No answer is no observation: a True stays, anything else says so.
-		applied = newCondition(cp, applied.Type, metav1.ConditionFalse, bryggav1alpha1.ReasonApplying, "the tenant's API server does not answer; the error is in Brygga's log")
+		applied = newCondition(cp, applied.Type, metav1.ConditionFalse, bryggav1alpha1.ReasonApplying, message)
 	}
 	if syncErr == nil {
-		if c, err := rollout(ctx, tenant, cp, v); err == nil {
+		if c, err := rollout(ctx, tenant, cp, objects, others); err == nil {
 			available = c
 		} else {
 			syncErr = err
 		}
 	}
+	if syncErr != nil && available.Reason != bryggav1alpha1.ReasonAvailable && available.Reason != bryggav1alpha1.ReasonRolloutPending {
+		// A rollout read before stays while none can be read; until one is,
+		// what stopped the pass says why.
+		message, _ := outcome(syncErr)
+		available = newCondition(cp, available.Type, metav1.ConditionFalse, bryggav1alpha1.ReasonApplying, message)
+	}
 	if err := r.applyStatus(ctx, cp, applied, available); err != nil || syncErr != nil {
 		return ctrl.Result{}, errors.Join(syncErr, err)
 	}
 	if available.Status != metav1.ConditionTrue {
-		return ctrl.Result{RequeueAfter: min(rolloutPeriod, r.ApplyPeriod)}, nil
+		return ctrl.Result{RequeueAfter: min(waitPeriod, r.ApplyPeriod)}, nil
 	}
 	return ctrl.Result{RequeueAfter: r.ApplyPeriod}, nil
+}
+
+// outcome is what a pass that stopped on err reports, and whether the tenant
+// answered.
+func outcome(err error) (string, bool) {
+	if f, ok := errors.AsType[*failure](err); ok && f.verdict != "" {
+		return f.entry.String() + " " + f.verdict + "; the reason is in Brygga's log", true
+	}
+	return "the tenant's API server does not answer; the error is in Brygga's log", false
 }
 
 // wait says what both conditions wait for: neither can be observed yet.
@@ -192,37 +209,36 @@ func (r *Reconciler) tenantClient(kubeconfig []byte) (client.Client, error) {
 	return client.New(cfg, client.Options{Scheme: clientgoscheme.Scheme})
 }
 
-func rollout(ctx context.Context, c client.Client, cp *bryggav1alpha1.ControlPlane, v *values) (metav1.Condition, error) {
-	type workload struct {
-		name string
-		obj  client.Object
-	}
-	var workloads []workload
-	if v.kubeProxy {
-		workloads = append(workloads, workload{"kube-proxy", &appsv1.DaemonSet{}})
-	}
-	if v.coreDNS {
-		workloads = append(workloads, workload{"coredns", &appsv1.Deployment{}})
-	}
-	if v.AgentDeployment {
-		workloads = append(workloads, workload{"konnectivity-agent", &appsv1.Deployment{}})
-	} else {
-		workloads = append(workloads, workload{"konnectivity-agent", &appsv1.DaemonSet{}})
-	}
+// rollout reads the DaemonSets and Deployments of the render but another
+// owner's.
+func rollout(ctx context.Context, c client.Client, cp *bryggav1alpha1.ControlPlane, objects []*unstructured.Unstructured, others []entry) (metav1.Condition, error) {
 	var names, pending []string
-	for _, w := range workloads {
-		names = append(names, w.name)
-		if err := c.Get(ctx, client.ObjectKey{Namespace: metav1.NamespaceSystem, Name: w.name}, w.obj); err != nil {
-			return metav1.Condition{}, err
+	for _, obj := range objects {
+		e := entryOf(obj)
+		var workload client.Object
+		switch {
+		case e.Group != appsv1.GroupName || contains(others, e):
+			continue
+		case e.Kind == "DaemonSet":
+			workload = &appsv1.DaemonSet{}
+		case e.Kind == "Deployment":
+			workload = &appsv1.Deployment{}
+		default:
+			continue
 		}
-		if want, available, done := rolledOut(w.obj); !done {
-			pending = append(pending, fmt.Sprintf("%s %d of %d available", w.name, available, want))
+		names = append(names, e.Name)
+		if err := c.Get(ctx, client.ObjectKey{Namespace: e.Namespace, Name: e.Name}, workload); err != nil {
+			return metav1.Condition{}, failed(e, err)
+		}
+		if want, available, done := rolledOut(workload); !done {
+			pending = append(pending, fmt.Sprintf("%s %d of %d available", e.Name, available, want))
 		}
 	}
 	if len(pending) > 0 {
 		slices.Sort(pending)
 		return newCondition(cp, bryggav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, bryggav1alpha1.ReasonRolloutPending, strings.Join(pending, ", ")), nil
 	}
+	slices.Sort(names)
 	return newCondition(cp, bryggav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, bryggav1alpha1.ReasonAvailable, strings.Join(names, ", ")+" are rolled out"), nil
 }
 
@@ -240,17 +256,6 @@ func rolledOut(obj client.Object) (int32, int32, bool) {
 		return want, s.AvailableReplicas, s.ObservedGeneration >= w.Generation && s.UpdatedReplicas == want && s.AvailableReplicas == want
 	}
 	return 0, 0, false
-}
-
-// refused tells the tenant's answer from no answer: every 4xx is one but
-// those that ask to retry.
-func refused(err error) bool {
-	var status apierrors.APIStatus
-	if !errors.As(err, &status) {
-		return false
-	}
-	code := status.Status().Code
-	return code >= 400 && code < 500 && !slices.Contains([]int32{http.StatusRequestTimeout, http.StatusConflict, http.StatusTooManyRequests}, code)
 }
 
 func previous(cp *bryggav1alpha1.ControlPlane, conditionType string) metav1.Condition {
