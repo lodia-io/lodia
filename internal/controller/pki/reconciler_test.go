@@ -120,7 +120,7 @@ func TestALoadBalancerControlPlaneWaitsForItsEndpoint(t *testing.T) {
 	}
 	r := newReconciler(time.Hour)
 	r.Client, r.Reader = mgr.GetClient(), mgr.GetAPIReader()
-	if err := r.SetupWithManager(mgr); err != nil {
+	if err := r.SetupWithManager(mgr, 10); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())

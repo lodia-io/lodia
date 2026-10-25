@@ -8,6 +8,7 @@ const (
 	ConditionCertificatesReady    = "CertificatesReady"    // PKI
 	ConditionAccessReady          = "AccessReady"          // PKI
 	ConditionCAValidityAcceptable = "CAValidityAcceptable" // PKI
+	ConditionDatastoreReady       = "DatastoreReady"       // Datastore
 	ConditionAPIServerReady       = "APIServerReady"       // Workloads
 )
 

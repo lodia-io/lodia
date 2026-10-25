@@ -63,7 +63,7 @@ in [`api/examples/`](api/examples/).
 | controller | writes | condition | needs |
 |---|---|---|---|
 | PKI | Secrets with certificates, keys and kubeconfigs; the tenant's bindings for Brygga, the admin group and the kubelet client | `CertificatesReady`, `AccessReady`; `CAValidityAcceptable` outside `Ready` | `status.endpoint`; `APIServerReady` for the bindings |
-| Datastore | the etcd resource (dedicated) or a user and role (shared); backups and defragmentation | `DatastoreReady` | — |
+| Datastore | the `Etcd` of a dedicated etcd — built, for one member — or a user and role in a shared store; backups and defragmentation | `DatastoreReady` | — |
 | Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady` | `CertificatesReady`, `DatastoreReady` |
 | Tenant | objects inside the tenant cluster, with an inventory | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
 | Health | status, and the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable` | `AccessReady` |
@@ -183,6 +183,106 @@ its subject (`cluster-ca@1761350400`), so no bundle ever holds two
 certificates with one subject, and every bundle is a set: each certificate
 once, in DER order, as library-go writes its CA bundles
 ([cabundle.go](https://github.com/openshift/library-go/blob/9a2bc12675c2bb37d3799a30786ccee5fa545d57/pkg/operator/certrotation/cabundle.go#L134-L177)).
+
+The dedicated etcd is etcd-druid's `Etcd` `<cp>-etcd`, which the Datastore
+controller renders from the `DatastoreClass` and the newest complete
+generation of the etcd certificates, under the `ControlPlane`'s finalizer
+`brygga.segla.io/controlplane`, which it holds from before the first `Etcd`
+exists. etcd-druid turns it into the StatefulSet `<cp>-etcd`, the client
+Service `<cp>-etcd-client` (`https://<cp>-etcd-client.<ns>.svc:2379`, the
+address Workloads gives the API server's `--etcd-servers`), the peer Service
+`<cp>-etcd-peer`, a ConfigMap, member leases and a PodDisruptionBudget, all
+owned by the `Etcd`
+([helper.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/helper.go)).
+With a backup store, the class's credentials Secret is copied into the
+namespace as `<cp>-etcd-backup`, since etcd-druid mounts it from the `Etcd`'s
+namespace. A pass of the controller refreshes the copy, and nothing watches
+the class's Secret: an edit of the class reaches every tenant on it at once,
+while the Secret edited in place reaches a tenant only at its next pass, at
+worst the cache's resync, every 10 hours by default
+([cache.go](https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/cache/cache.go#L93-L97)).
+Credentials are therefore rotated with a new Secret that the class is
+pointed at ([operations](operations.md#everyday-tasks)).
+
+The class is resolved once, when the `Etcd` is created, and
+recorded on it in `brygga.segla.io/datastore-class`, with the class
+generation it was rendered from in `brygga.segla.io/datastore-class-generation`;
+from then on the `Etcd` follows that class, its reclaim policy included, as a
+default StorageClass is written into a claim when the claim is created
+([storage classes](https://kubernetes.io/docs/concepts/storage/storage-classes/#default-storageclass)).
+An edit of that class reaches the `Etcd` of every tenant on it at once and
+rolls their members, a single member with an outage, until Lifecycle holds
+class edits for each tenant's maintenance window in phase 2. A recorded
+class that is deleted stops only its own edits: the `Etcd` keeps every field
+the class gave it, still takes each new certificate generation and reports
+its readiness as before, and its claims are kept on deletion. The
+claims the StatefulSet attaches are found by name, as the StatefulSet finds
+them: `<cp>-etcd-<cp>-etcd-<n>`, its claim template named after the `Etcd`
+([stateful_set_utils.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/controller/statefulset/stateful_set_utils.go#L116-L119),
+[builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L233)),
+whatever labels they carry. They are labelled with the `ControlPlane`'s UID
+(`brygga.segla.io/control-plane-uid`) and annotated with the class, since
+they outlive the `Etcd`. What each field of the class becomes
+([etcd.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/etcd.go),
+[store.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/store.go));
+everything the class does not set is etcd-druid's default:
+
+| `DatastoreClass` | `Etcd` | note |
+|---|---|---|
+| `etcd.quotaBackendBytes` | `spec.etcd.quota` | |
+| `etcd.autoCompaction.mode`, `.retention` | `spec.sharedConfig.autoCompactionMode`, `.autoCompactionRetention` | shared with the sidecar's embedded etcd |
+| `etcd.defragmentation.schedule` | `spec.etcd.defragmentationSchedule` | the sidecar defragments only above 3 GiB or with more than 1 GiB free ([etcd spike](etcd-spike-2026-10.md), finding 7) |
+| `etcd.resources` | `spec.etcd.resources` | the sidecar's `spec.backup.resources` stay etcd-druid's default: the class has no field for them |
+| `storage.className` | `spec.storageClass` | when the `Etcd` is created and not after: the field is immutable in the `Etcd` ([etcd.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/etcd.go#L627-L638)) |
+| `storage.size` | `spec.storageCapacity` | when the `Etcd` is created and not after: it is the StatefulSet's volume claim template, which cannot change in place ([validation.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/apis/apps/validation/validation.go#L262)) |
+| `storage.reclaimPolicy` | — | on deletion, `Delete` removes the claims etcd-druid's StatefulSet created and `Retain` leaves them ([deletion](#deletion)) |
+| `backup.store.provider`, `.bucket`, `.endpoint` | `spec.backup.store.provider`, `.container`, `.endpointOverride` | Brygga's four providers are among etcd-druid's; most S3-compatible stores also want `s3ForcePathStyle: "true"` in the credentials Secret |
+| `backup.store.prefix` | `spec.backup.store.prefix` | `<class prefix>/<namespace>/<cp>/<uid>`: etcd-backup-restore restores an empty member from the newest snapshot under its prefix ([design](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/docs/proposals/design.md#L27)), so a `ControlPlane` recreated under the same name never restores the old one's |
+| `backup.store.region` | the key `region` of `<cp>-etcd-backup` | where the sidecar reads it |
+| `backup.store.secretRef` | `spec.backup.store.secretRef` | `<cp>-etcd-backup`, the copy, with the class Secret's data |
+| `backup.fullSnapshotSchedule`, `.deltaSnapshotPeriod` | `spec.backup.fullSnapshotSchedule`, `.deltaSnapshotPeriod` | the delta period bounds what a restore loses ([etcd spike](etcd-spike-2026-10.md), finding 5) |
+| `backup.retention.days` | `spec.backup.garbageCollectionPolicy: LimitBased`, `.maxBackupsLimitBasedGC` | counts full snapshots, one a day |
+| `backup.retention.afterDelete` | — | phase 2, with the final snapshot |
+| `placement.nodeSelector`, `.tolerations`, `.priorityClassName` | `spec.schedulingConstraints.affinity` (as required node affinity), `.tolerations`, `spec.priorityClassName` | the `Etcd` has no node selector |
+| the `ControlPlane`'s availability | `spec.replicas` | 1 today; 3 with `highAvailability` and 0 while hibernating come with later phases |
+| the etcd certificates, generation `g` | `spec.etcd.clientUrlTls`, `spec.etcd.peerUrlTls`, `spec.backup.tls` | all three name one complete generation, with `dataKey: ca.crt` on the CA; a newer complete generation is one update of the `Etcd`, so one roll of the members; the `Etcd` moves forward only, so while a Secret of the generation it names is being deleted it keeps that generation instead of rolling back to an older complete one and forward again |
+
+`DatastoreReady` is `Unknown`, reason `Reconciling`, until the controller's
+first pass has finished, and `Provisioning` until a complete certificate
+generation exists and etcd-druid reports the `Etcd` ready for its current
+generation. etcd-druid's report is read with the checks Gardener makes
+before it counts an `Etcd` ready
+([waiter.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/component/etcd/etcd/waiter.go#L49-L104)):
+no `lastErrors` (they go into the message), no deletion timestamp,
+`observedGeneration` current, `AllMembersUpdated` True, `ready`. Gardener
+checks `lastErrors` first; Datastore reports a deletion first. Then the
+StatefulSet itself, read from the API server, must mount the certificate
+generation, its controller must have observed its generation, and every
+replica must be updated and ready: etcd-druid syncs the StatefulSet, then
+computes `ready` from the StatefulSet its cache holds, and only then stamps
+`observedGeneration`
+([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcd/reconciler.go#L102-L148),
+[reconcile_status.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcd/reconcile_status.go#L57-L80),
+[reconcile_complete.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcd/reconcile_complete.go#L33-L42)),
+so its report can call a generation switch ready before the member rolled.
+True once every check holds.
+
+The other reasons: `DatastoreClassNotFound`, before the `Etcd` exists, when
+the class is missing or more than one class is the default. `VolumesExist`
+when claims `<cp>-etcd-<cp>-etcd-<n>` without this `ControlPlane`'s UID label
+stand where its first `Etcd` would be created, since a StatefulSet
+re-attaches a claim of that name
+([stateful_pod_control.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/statefulset/stateful_pod_control.go#L381-L405))
+and starting from another tenant's data is a restore, not a start: nothing
+is created until they are deleted. `VolumesExist` too when an `Etcd`
+`<cp>-etcd` exists whose controller is not this `ControlPlane`, an orphan or
+a predecessor's the garbage collector has not removed yet: it is neither
+adopted nor written, and the message names it. `Deleting` while the
+`ControlPlane` is being deleted. `status.datastore` is `kind: Dedicated`, the
+`Etcd`'s name and its member count. Every message is built from the state
+alone, so a pass that changes nothing writes nothing; an error of the API
+server ends the pass, goes to the log and leaves the status as it was
+([independent-controllers](decisions/independent-controllers.md)).
 
 Identities: no root CA key is mounted into a control plane pod; the
 controller manager holds only the kubelet signer, an intermediate that signs
@@ -373,10 +473,27 @@ writes stop for the copy.
 
 ### Deletion
 
-The Datastore controller's finalizer takes a final snapshot when a backup
-store exists, lets the owner references garbage-collect the namespace
-objects, and leaves volumes and snapshots to the class's reclaim and
-retention settings.
+The Datastore controller holds the `ControlPlane`'s finalizer
+`brygga.segla.io/controlplane`; while `spec.paused` is true it touches
+nothing, so the deletion of a paused `ControlPlane` waits until it is
+unpaused. On deletion it deletes the `Etcd` and waits
+for etcd-druid to let it go, then reclaims the volumes, which etcd-druid
+keeps: of the PersistentVolumeClaims named `<cp>-etcd-<cp>-etcd-<n>`, which
+the StatefulSet attaches by that name
+([stateful_pod_control.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/statefulset/stateful_pod_control.go#L381-L405)),
+those labelled with the `ControlPlane`'s
+UID are deleted when the class each records says `Delete`, and left when it
+says `Retain` or no longer exists. While the `Etcd` exists, each pass of the
+deletion first labels the claims no earlier pass has labelled, which can only
+be its own, since `VolumesExist` kept it from being created while anything
+else stood there; a claim that appears after the last such pass stays
+unlabelled and is kept. A claim of another `ControlPlane` is never
+touched, and neither is an `Etcd` `<cp>-etcd` this `ControlPlane` does not
+control, nor the claims its StatefulSet uses. Then the finalizer goes and the
+owner references garbage-collect the rest of the namespace objects. The
+final snapshot when a backup store
+exists, and the snapshots' retention after deletion, come with backups in
+phase 2.
 
 ## Health
 
@@ -399,7 +516,9 @@ operator.
 - A `ControlPlane` is namespaced; the platform's RBAC on the namespace
   decides who creates clusters and who reads their Secrets. Brygga's own
   ClusterRole is limited to its kinds, the workload kinds it renders, Secrets
-  and ConfigMaps by label, Gateway API routes and listener sets, and etcd-druid's `Etcd`.
+  and ConfigMaps by label, Gateway API routes and listener sets, etcd-druid's
+  `Etcd`, the StatefulSet etcd-druid runs for it and the claims of that
+  StatefulSet; the Datastore controller's share is the table below.
 - Every field Brygga writes has a field manager `brygga/<controller>`;
   another manager's fields on the same object are left alone.
 - Inside a tenant, Brygga is `brygga:operator`; its objects carry
@@ -407,6 +526,35 @@ operator.
 - No cross-tenant object: every Secret, Service and route is in the tenant's
   namespace, and NetworkPolicies keep its pods to their own arrows. A
   shared `Datastore` is the one deliberate exception, labelled as such.
+- A class's backup credentials reach every tenant's snapshots on that class:
+  `<cp>-etcd-backup` puts them into every tenant namespace, and they read
+  every tenant's prefix, the encryption keys backed up next to the snapshots
+  included. Whoever reads Secrets in one tenant namespace therefore reads
+  every tenant's snapshots on that class. Two rules bound it until the
+  credentials are scoped to one tenant's prefix: Secrets in tenant
+  namespaces are readable by Brygga and the platform's administrators only,
+  so automation gets `get` on `<cp>-admin-kubeconfig` by `resourceNames` and
+  never the namespace's Secrets; and a class per trust boundary.
+
+The Datastore controller calls exactly these verbs. Its envtest suite runs
+the controller as a user bound to these rules and nothing else, with the
+`OwnerReferencesPermissionEnforcement` admission plugin on, and leaving out
+any one verb fails a test, except `list` on the four kinds the cache holds:
+client-go fills the cache with a streaming watch where the API server offers
+one, on by default since 1.35, and falls back to `list` where it does not
+([known_features.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/client-go/features/known_features.go#L141-L144),
+[reflector.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/client-go/tools/cache/reflector.go#L470-L509)).
+
+| group | resource | verbs | for |
+|---|---|---|---|
+| `brygga.segla.io` | `controlplanes` | `list`, `watch`, `patch` | the cache; the finalizer, held and released with a patch |
+| `brygga.segla.io` | `controlplanes/status` | `patch` | `DatastoreReady` and `status.datastore`, applied |
+| `brygga.segla.io` | `controlplanes/finalizers` | `update` | `blockOwnerDeletion` on the owner references of the `Etcd` and of `<cp>-etcd-backup`, which that admission plugin allows only with `update` on the owner's `finalizers` ([gc_admission.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/plugin/pkg/admission/gc/gc_admission.go#L122-L152)) |
+| `brygga.segla.io` | `datastoreclasses` | `list`, `watch` | the cache |
+| `druid.gardener.cloud` | `etcds` | `get`, `list`, `watch`, `create`, `patch`, `delete` | the cache, and the API server for an `Etcd` without the label; the apply, which the API server also authorizes as `create` when it creates the object ([patch.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/staging/src/k8s.io/apiserver/pkg/endpoints/handlers/patch.go#L203-L232)); the deletion |
+| `""` | `secrets` | `get`, `list`, `watch`, `create`, `patch` | the metadata of the certificate Secrets; the class's credentials Secret, read uncached in the namespace the class names; the copy `<cp>-etcd-backup`, applied |
+| `""` | `persistentvolumeclaims` | `list`, `patch`, `delete` | the claims of `<cp>-etcd`, listed in the tenant's namespace and matched by name; their UID label and class annotation; the reclaim |
+| `apps` | `statefulsets` | `get` | the readiness checks, read uncached |
 
 ## Installation
 

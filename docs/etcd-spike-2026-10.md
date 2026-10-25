@@ -6,6 +6,16 @@ A working doc: the phase 0 spike of
 `docs/operations.md`; then this file is deleted. Its files are in
 [`hack/etcd-spike/`](../hack/etcd-spike/).
 
+Moved on 2026-10-25, with the Datastore controller: the **DatastoreClass →
+Etcd** table into [`README.md`](README.md#a-tenant-namespace), where the code
+is checked against it; what
+findings 1, 3 and 6 made the controller do into
+[the decision](decisions/dedicated-etcd-by-default.md) and
+[`operations.md`](operations.md); installing etcd-druid from its chart at the
+tag, as **How to run it again** does, into the e2e suite
+([`test/e2e`](../test/e2e/README.md)). The findings stay as the spike's
+record; the open questions stay open.
+
 ## For the decision
 
 etcd-druid v0.39.0 did everything the decision relies on (Results). The
@@ -131,35 +141,9 @@ delta about 5 KB.
 
 ## DatastoreClass → Etcd
 
-Each field of [`DatastoreClassSpec`](../api/v1alpha1/datastore_types.go) and
-where the Datastore controller renders it in etcd-druid's `Etcd`
-([etcd.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/etcd.go),
-[store.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/store.go)):
-
-| DatastoreClass | Etcd | note |
-|---|---|---|
-| `etcd.quotaBackendBytes` | `spec.etcd.quota` | |
-| `etcd.autoCompaction.mode`, `.retention` | `spec.sharedConfig.autoCompactionMode`, `.autoCompactionRetention` | shared with the sidecar's embedded etcd |
-| `etcd.defragmentation.schedule` | `spec.etcd.defragmentationSchedule` | thresholds of finding 7; the order across members was not observed |
-| `etcd.resources` | `spec.etcd.resources` | the class has no field for the sidecar's `spec.backup.resources`; Brygga renders a default |
-| `storage.className` | `spec.storageClass` | immutable in the `Etcd` |
-| `storage.size` | `spec.storageCapacity` | at creation only: a StatefulSet field that cannot change in place |
-| `storage.reclaimPolicy` | — | `Delete` is Brygga deleting the claims (finding 6) |
-| `backup.store.provider` | `spec.backup.store.provider` | Brygga's four are among etcd-druid's |
-| `backup.store.bucket` | `spec.backup.store.container` | |
-| `backup.store.prefix` | `spec.backup.store.prefix` | required; Brygga adds `<namespace>/<name>/<uid>` below the class's prefix, so a `ControlPlane` recreated under the same name never restores the old one's snapshots |
-| `backup.store.region` | key `region` of the credentials Secret | |
-| `backup.store.endpoint` | `spec.backup.store.endpointOverride` | most S3-compatible stores also need `s3ForcePathStyle` in the Secret |
-| `backup.store.secretRef` | `spec.backup.store.secretRef` | mounted as a volume, so Brygga copies the class's Secret into the tenant's namespace |
-| `backup.fullSnapshotSchedule` | `spec.backup.fullSnapshotSchedule` | |
-| `backup.deltaSnapshotPeriod` | `spec.backup.deltaSnapshotPeriod` | bounds what a restore loses (finding 5) |
-| `backup.retention.days` | `spec.backup.garbageCollectionPolicy: LimitBased`, `maxBackupsLimitBasedGC` | counts full snapshots, one a day |
-| `backup.retention.afterDelete` | — | Brygga removes the prefix after the period (finding 6) |
-| `placement.nodeSelector` | `spec.schedulingConstraints.affinity` | as required node affinity; the `Etcd` has no node selector |
-| `placement.tolerations` | `spec.schedulingConstraints.tolerations` | |
-| `placement.priorityClassName` | `spec.priorityClassName` | |
-| `ControlPlane`'s availability | `spec.replicas` | 1, 3 with `highAvailability`, 0 while hibernating |
-| the PKI controller's Secrets | `spec.etcd.clientUrlTls`, `spec.etcd.peerUrlTls`, `spec.backup.tls` | all three (findings 1–3) |
+What each field of the `DatastoreClass` becomes in the `Etcd` is the table in
+[`README.md`](README.md#a-tenant-namespace), where the Datastore controller's
+tests check it.
 
 ## What assumes Gardener
 

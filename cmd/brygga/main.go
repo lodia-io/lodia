@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 
+	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/selection"
@@ -24,8 +25,13 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
+	"github.com/segla-io/brygga/internal/controller/datastore"
 	"github.com/segla-io/brygga/internal/controller/pki"
 )
+
+// workers is the default of controllers.<name>.workers until the operator
+// configuration file is read (docs/README.md, Operator configuration).
+const workers = 10
 
 func main() {
 	var metricsAddr, probeAddr string
@@ -42,6 +48,7 @@ func main() {
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(bryggav1alpha1.AddToScheme(scheme))
+	utilruntime.Must(druidv1alpha1.AddToScheme(scheme))
 
 	labelled, err := labels.NewRequirement(bryggav1alpha1.ControlPlaneLabel, selection.Exists, nil)
 	if err != nil {
@@ -83,8 +90,12 @@ func main() {
 		CALifetime:          5 * 365 * 24 * time.Hour,
 		TrustAnchorLifetime: 10 * 365 * 24 * time.Hour,
 		CAExpiryNotice:      365 * 24 * time.Hour,
-	}).SetupWithManager(mgr); err != nil {
+	}).SetupWithManager(mgr, workers); err != nil {
 		log.Error(err, "set up the pki controller")
+		os.Exit(1)
+	}
+	if err := (&datastore.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader()}).SetupWithManager(mgr, workers); err != nil {
+		log.Error(err, "set up the datastore controller")
 		os.Exit(1)
 	}
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

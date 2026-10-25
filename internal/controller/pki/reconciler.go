@@ -68,12 +68,12 @@ type Reconciler struct {
 	Dial func(ctx context.Context, network, address string) (net.Conn, error)
 }
 
-func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("pki").
 		For(&bryggav1alpha1.ControlPlane{}).
 		Owns(&corev1.Secret{}, builder.OnlyMetadata).
-		WithOptions(controller.Options{MaxConcurrentReconciles: 10, ReconciliationTimeout: time.Minute}).
+		WithOptions(controller.Options{MaxConcurrentReconciles: workers, ReconciliationTimeout: time.Minute}).
 		Complete(r)
 }
 

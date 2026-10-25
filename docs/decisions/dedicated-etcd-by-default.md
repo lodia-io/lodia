@@ -1,7 +1,13 @@
 # Every tenant gets its own etcd, run by etcd-druid; a shared etcd is an opt-in for density
 
 Decided 2026-10-24. The phase 0 spike found etcd-druid fit
-([etcd spike](../etcd-spike-2026-10.md)). Not built.
+([etcd spike](../etcd-spike-2026-10.md)). The Datastore controller is built
+for the dedicated case with one member: the `Etcd` from the class recorded at
+creation and the newest certificate generation, the finalizer with the
+reclaim policy, `VolumesExist` and `DatastoreReady`; three members,
+hibernation, class edits held for the maintenance window, the final snapshot
+and the backups' retention after deletion, restore and the shared store are
+not.
 
 ## Decision
 
@@ -14,7 +20,9 @@ Decided 2026-10-24. The phase 0 spike found etcd-druid fit
   sidecar's serving certificate; etcd-druid takes them as Secrets, because it
   does not generate TLS itself
   ([securing etcd clusters](https://gardener.github.io/etcd-druid/usage/securing-etcd-clusters.html)),
-  and the `Etcd` names the newest complete generation of them
+  and the `Etcd` names the newest complete generation of them, never one
+  below the generation it already names, so a rotation is one roll of the
+  members
   ([staged-credential-rotation](staged-credential-rotation.md)).
   Client, peer and backup-restore TLS are set together, and the sidecar's
   certificate also names the client Service, through which etcd-druid calls
@@ -143,9 +151,14 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   The volumes keep their names (`<cp>-etcd-<cp>-etcd-<n>`) and a StatefulSet
   re-attaches a claim of that name
   ([stateful_pod_control.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/statefulset/stateful_pod_control.go#L381-L405)),
-  so when claims of a retained `<cp>-etcd` exist before a new `ControlPlane`'s
-  first `Etcd`, Datastore stops with `DatastoreReady=False`, `VolumesExist`,
-  until someone deletes them; starting from old data is a restore.
+  whatever its labels, so when such claims of a retained `<cp>-etcd` exist
+  before a new `ControlPlane`'s first `Etcd`, Datastore stops with
+  `DatastoreReady=False`, `VolumesExist`,
+  until someone deletes them; starting from old data is a restore. The same
+  holds for an `Etcd` `<cp>-etcd` whose controller reference is not the
+  `ControlPlane`'s UID, an orphan or a predecessor's not yet collected:
+  Datastore neither adopts it, which a server-side apply with
+  `ForceOwnership` would do, nor deletes it.
 - Every edit of a class that reaches the `Etcd` rolls its members, a single
   member with an outage, so a class edit is a Brygga-initiated change for each
   tenant on it and rolls in that tenant's maintenance window
@@ -154,14 +167,90 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   class and size apply when the `Etcd` is created and not after: the first is
   immutable in the `Etcd`
   ([etcd.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/etcd.go#L627-L638)),
-  the second a StatefulSet field that cannot change in place.
+  the second a StatefulSet field that cannot change in place
+  ([validation.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/apis/apps/validation/validation.go#L262)).
+- The class is resolved once, when the `Etcd` is created, and recorded on it
+  (`brygga.segla.io/datastore-class`, beside
+  `brygga.segla.io/datastore-class-generation`); from then on the `Etcd`
+  follows the recorded class, its `reclaimPolicy` included, the way a default
+  StorageClass is written into a claim when the claim is created
+  ([storage classes](https://kubernetes.io/docs/concepts/storage/storage-classes/#default-storageclass)).
+  A default that moves therefore re-renders no running etcd and never turns a
+  `Retain` into a `Delete`.
+- A recorded class that is deleted stops only its own edits. The `Etcd` keeps
+  every field the class gave it, the way a dynamically provisioned
+  PersistentVolume keeps in its own spec the reclaim policy and mount options
+  its StorageClass gave it
+  ([storage classes](https://kubernetes.io/docs/concepts/storage/storage-classes/#reclaim-policy)),
+  and it keeps following the certificate generations and reporting its
+  readiness: with the default `pki.leafLifetime` of a year
+  ([operator configuration](../README.md#installation)), PKI issues the next
+  generation after eight months, two thirds of it
+  ([staged-credential-rotation](staged-credential-rotation.md)), and the
+  current one expires at a year. `DatastoreClassNotFound` is therefore a
+  reason only before the `Etcd` exists.
+- The claims carry the `ControlPlane`'s UID as a label and the class as an
+  annotation, since they outlive the `Etcd`: deletion reclaims only this
+  `ControlPlane`'s claims, under the class each records, and keeps them when
+  that class is gone. While the `Etcd` exists, the deletion labels the claims
+  no pass has labelled yet, such as one the StatefulSet created seconds
+  before; they can only be its own, since `VolumesExist` kept the `Etcd` from
+  being created while anything else stood there. A claim that appears after
+  the last such pass stays unlabelled and is kept, the safe side.
 - Snapshots hold the tenant's Secrets as the API server stored them, so
   encryption at rest is on by default (`secretbox`), and the encryption key is
   backed up next to the snapshots; bucket-side encryption is recommended on
   top.
+- A class's credentials reach every tenant's prefix on that class, and
+  `<cp>-etcd-backup` puts them into every tenant namespace: whoever reads
+  Secrets in one tenant namespace reads every tenant's snapshots on the
+  class, and the encryption keys backed up next to them. Until the
+  credentials are scoped to one tenant's prefix, two rules bound it: Secrets
+  in tenant namespaces are readable by Brygga and the platform's
+  administrators only, and a class per trust boundary.
+- etcd-druid keeps the volumes and the snapshots of a deleted `Etcd`: the
+  StatefulSet retains its claims and nothing removes the prefix in the
+  bucket ([etcd spike](../etcd-spike-2026-10.md), finding 6). Under
+  `storage.reclaimPolicy: Delete` the Datastore controller deletes the claims
+  itself, finding them by the name the StatefulSet gives them,
+  `<template>-<StatefulSet>-<ordinal>` with the template named after the
+  `Etcd`
+  ([stateful_set_utils.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/controller/statefulset/stateful_set_utils.go#L116-L119),
+  [builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L233)),
+  not by the labels it copies onto them, which a claim made by hand lacks;
+  the snapshots' retention after deletion is phase 2.
+- The `Etcd` names the CA's key, `dataKey: ca.crt`, on all three TLS blocks:
+  etcd-druid defaults to `ca.crt` for the members and to `bundle.crt` for its
+  own calls to the backup-restore sidecar
+  ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L468),
+  [snapshot.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/compaction/snapshot.go#L87)).
 - The `Datastore` kind keeps a `driver` field reserved, so kine or another
   store can be added later without a new API version.
 
 ## Code
 
-none yet.
+- `internal/controller/datastore` — the controller: `datastore.go` holds the
+  reconcile, the class lookup, the newest complete certificate generation,
+  the claims, found by name, the credentials copy, the finalizer and the
+  status; `etcd.go` renders the `DatastoreClass` into the `Etcd`
+  ([the table](../README.md#a-tenant-namespace)), applies it and reads
+  etcd-druid's report. Registered as `datastore` in `cmd/brygga/main.go`.
+- `internal/controller/datastore/datastore_test.go` — envtest with
+  etcd-druid v0.39.0's CRDs from its `crds` package, the controller running
+  as a user bound to exactly the rules in
+  [Identity and tenancy](../README.md#identity-and-tenancy):
+  `TestFinalizerAndEtcdFromClass` (the finalizer before the first `Etcd`, the
+  mapping table, generation 1 in all three TLS blocks),
+  `TestConditionsFromState` (Unknown on the first visit, an API error leaves
+  the status alone), `TestPaused`, `TestNewestCompleteGeneration`,
+  `TestGenerationsMoveForward`, `TestDatastoreClassNotFound`,
+  `TestBackupCredentialsCopied`, `TestDatastoreReadyFollowsEtcdStatus`,
+  `TestVolumesExist`, `TestForeignEtcd`, `TestStorageAtCreation`,
+  `TestRecordedClass`, `TestClassGone`, `TestDeletionBeforeLabelling` and
+  `TestDeletion`. `datastoretest` stands in for PKI there.
+- `test/e2e/datastore_test.go` — `TestDatastoreOnKind`: etcd-druid v0.39.0
+  from its chart at the tag, the PKI and Datastore controllers in the test
+  process, a `ControlPlane` to `DatastoreReady=True` with the member running
+  on PKI's generation 1, a member Secret of generation 1 deleted and PKI's
+  generation 2, under the same CA, rolling the member, deletion under
+  `Delete`.

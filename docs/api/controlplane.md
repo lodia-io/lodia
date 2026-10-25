@@ -48,7 +48,7 @@ Examples: [`examples/`](examples/).
 | `hibernation.schedules[]` | `{start, end, timeZone}` | | cron expressions; `start` puts the control plane to sleep, `end` wakes it |
 | `restoreFrom.backupRef` | `{name, namespace?}` | | set only at creation (CEL: cannot be added or changed later); the datastore starts from that snapshot |
 | `health.holdControllerManager` | bool | `true` | hold the controller manager's leader lease while most nodes are silent ([controller-manager-hold](../decisions/controller-manager-hold.md)); `false` releases a hold in progress |
-| `paused` | bool | `false` | Brygga stops reconciling but keeps watching; `Progressing=False`, reason `Paused` |
+| `paused` | bool | `false` | Brygga stops reconciling but keeps watching; `Progressing=False`, reason `Paused`; the finalizer stays, so a paused `ControlPlane`'s deletion waits until it is unpaused |
 
 ## status
 
@@ -85,7 +85,7 @@ while its `observedGeneration` is the object's generation
 |---|---|---|
 | `CertificatesReady` | every certificate, key and kubeconfig exists, verifies, and is valid for more than its renewal margin or until its CA expires (`Issued`) | `Issuing`, `WaitingForEndpoint` (`loadBalancer` and `nodePort`, until Workloads publishes `status.endpoint`), `CAMissing` (a CA's key is missing or unreadable), `CAExpired` (a CA is past its `NotAfter`); in both, the message names the CA and nothing it signs is written until it is restored or rotated; `EncryptionProviderUnsupported` (`kms`) |
 | `CAValidityAcceptable` | every CA is valid for more than a year (`Valid`); not part of `Ready`, since a CA in its last year, or a rotation under way, leaves every certificate valid | `CAExpiring`, the message naming each CA and its `NotAfter`, as Gardener's `CACertificateValiditiesAcceptable` ([shoot status](https://github.com/gardener/gardener/blob/v1.154.0/docs/usage/shoot/shoot_status.md#L105-L109)); `Unknown`, `CAMissing`, while a CA's key cannot be read |
-| `DatastoreReady` | the etcd (or the tenant's prefix in a shared store) accepts writes | `Provisioning`, `QuorumLost`, `Restoring`, `DatastoreClassNotFound`, `DatastoreNotFound`, `VolumesExist`, `Hibernated` |
+| `DatastoreReady` | the etcd (or the tenant's prefix in a shared store) accepts writes | `Provisioning`, `QuorumLost`, `Restoring`, `DatastoreClassNotFound`, `DatastoreNotFound`, `VolumesExist`, `Deleting`, `Hibernated` |
 | `APIServerReady` | all API server replicas answer `/readyz`; controller manager and scheduler have leaders | `WaitingForCertificates`, `WaitingForDatastore`, `RollingOut`, `Unhealthy`, `Hibernated` |
 | `AccessReady` | the tenant's ClusterRoleBindings for `brygga:operator`, `brygga:cluster-admins` and `brygga:kubelet-api-admins` exist, checked with `brygga:operator` (`Bound`) | `WaitingForAPIServer`, `Binding` |
 | `AddonsApplied` | the inventory is applied and pruned | `WaitingForAPIServer`, `Applying` |

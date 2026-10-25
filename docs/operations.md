@@ -10,7 +10,7 @@ itself and the support policy. Installation is in
 | task | how |
 |---|---|
 | Get access as a person | create a `KubeconfigRequest` ([example](api/examples/kubeconfigrequest.yaml)); read the Secret named in its `status.secretRef`; it expires on its own |
-| Get access for automation | read the Secret `<cp>-admin-kubeconfig`; revoke every copy by deleting the ClusterRoleBinding `brygga:cluster-admins` in the tenant (Brygga recreates it on the next apply only if the `ControlPlane` still asks for it) |
+| Get access for automation | grant `get` on the Secret `<cp>-admin-kubeconfig` by `resourceNames`, never on the namespace's Secrets, which hold the class's backup credentials in `<cp>-etcd-backup`; read it; revoke every copy by deleting the ClusterRoleBinding `brygga:cluster-admins` in the tenant (Brygga recreates it on the next apply only if the `ControlPlane` still asks for it) |
 | Join a node | with an admin kubeconfig: `kubeadm token create --print-join-command --kubeconfig admin.kubeconfig`; run the printed `kubeadm join …` on the machine; it needs outbound 443 to the endpoint and nothing inbound |
 | Upgrade Kubernetes | set `spec.version`; watch `status.kubernetes.upgrade` and `Progressing`; Brygga goes one minor at a time; nodes follow at the owner's pace |
 | Get patch updates automatically | `spec.maintenance.autoUpdate.kubernetesPatch: true` and a `maintenance.window` |
@@ -21,15 +21,21 @@ itself and the support policy. Installation is in
 | Hibernate and wake | `spec.hibernation.enabled: true` / `false`, or `spec.hibernation.schedules` |
 | Take a snapshot now | create a `Backup` ([example](api/examples/backup.yaml)); its `status.location` is the object in the bucket |
 | Clone or recover a cluster | create a new `ControlPlane` with `spec.restoreFrom.backupRef`; nodes of the old cluster can join it with a new token |
-| Stop Brygga touching a cluster | `spec.paused: true`; everything keeps running, nothing is reconciled |
+| Stop Brygga touching a cluster | `spec.paused: true`; everything keeps running, nothing is reconciled; deleting a paused `ControlPlane` waits until it is unpaused |
 | Turn the controller manager hold off for a cluster | `spec.health.holdControllerManager: false`; a hold in progress is released at once |
-| Delete a cluster | delete the `ControlPlane`; the finalizer takes a last snapshot when a backup store exists; volumes and snapshots follow the class's reclaim and retention |
+| Change a `DatastoreClass` | edit it; the edit reaches the `Etcd` of every tenant on the class at once and rolls their members, a single member with an outage, until Lifecycle holds class edits for each tenant's maintenance window in phase 2; the storage class and size reach only `Etcd`s created afterwards |
+| Rotate a backup store's credentials | create a new Secret with the new keys and point the class's `backup.store.secretRef` at it: the class edit reaches every tenant on the class at once and rolls nothing, since the `Etcd` names the copy, whose name stays; once every tenant's `<cp>-etcd-backup` (labelled `brygga.segla.io/control-plane`) holds the new keys, revoke the old ones. Editing the class's Secret in place reaches each tenant only at its next pass, at worst 10 hours later. Whether the backup sidecar reads new keys without a restart is open (`todo.md`) |
+| Delete a cluster | delete the `ControlPlane`; its finalizer deletes the `Etcd`, then with `storage.reclaimPolicy: Delete` the claims `<cp>-etcd-<cp>-etcd-<n>`, with `Retain` keeps them (`kubectl get pvc -L brygga.segla.io/control-plane-uid` shows whose each is); the last snapshot and the snapshots' retention come with backups in phase 2 |
 
 ## What breaks, and how it shows
 
 | symptom | look at |
 |---|---|
 | `Ready=False`, reason `WaitingForDatastore` | `DatastoreReady` reason; the etcd resource's status; the etcd pods' logs (`etcdserver: request timed out`, `apply request took too long` mean slow disks) |
+| `DatastoreReady=False`, `DatastoreClassNotFound` | before the `Etcd` exists: the `DatastoreClass` that `spec.datastore.dedicated.className` names is missing, or no class or more than one is annotated `brygga.segla.io/is-default-class: "true"`; the message names them. Deleting a class that running `Etcd`s record never shows here: each keeps what the class gave it, keeps taking new certificate generations and keeps its claims on deletion; only its class edits stop |
+| `DatastoreReady=False`, `VolumesExist` | claims `<cp>-etcd-<cp>-etcd-<n>` of a previous `ControlPlane` of that name, without this one's `brygga.segla.io/control-plane-uid` label, or an `Etcd` `<cp>-etcd` that another `ControlPlane` or nobody controls; the message names them. Delete them to start empty; to keep their data, restore it once they are deleted: delete the `ControlPlane` and create it again with `spec.restoreFrom.backupRef` naming a `Backup` of the old cluster, since `restoreFrom` is set only at creation |
+| `DatastoreReady=Unknown`, `Reconciling`, or a `DatastoreReady` whose `observedGeneration` lags the `ControlPlane`'s generation | the Datastore controller's passes end in an error of the API server; the error is in Brygga's log (`controller="datastore"`), never in the condition |
+| `DatastoreReady=False`, `Provisioning` for long | the message says what is awaited: a complete generation of the etcd certificates (PKI), the class's credentials Secret, or etcd-druid's report with its `lastErrors`; then the `Etcd`'s status and conditions, etcd-druid's log, and the tenant's `EtcdOpsTask`s, where a blocked operation shows ([etcd spike](etcd-spike-2026-10.md), finding 4) |
 | `DatastoreReady=False`, `QuorumLost` | fewer than two of three members up; the [lost quorum](#lost-etcd-quorum) runbook |
 | API calls fail with `etcdserver: mvcc: database space exceeded` | the [space quota](#etcd-space-quota) runbook; `status.datastore.dbSizeBytes` against the class quota |
 | `APIServerReady=False`, `RollingOut` for long | the kube-apiserver Deployment's events; a new replica failing `/readyz` (often a flag in `extraArgs` that the new minor removed) |

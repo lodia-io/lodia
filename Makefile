@@ -31,10 +31,10 @@ verify: ## the check that says a change is done
 .PHONY: e2e
 e2e: ## the e2e suite against E2E_KUBECONFIG, else against a kind cluster of its own that it deletes afterwards
 ifdef E2E_KUBECONFIG
-	E2E_KUBECONFIG=$(abspath $(E2E_KUBECONFIG)) go test -tags e2e -count=1 ./test/e2e/...
+	E2E_KUBECONFIG=$(abspath $(E2E_KUBECONFIG)) go test -v -tags e2e -count=1 ./test/e2e/...
 else
 	mkdir -p $(E2E_DIR)
 	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig
-	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -tags e2e -count=1 ./test/e2e/...; status=$$?; \
+	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e -count=1 ./test/e2e/...; status=$$?; \
 	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
 endif

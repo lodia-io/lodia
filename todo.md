@@ -12,11 +12,11 @@ is a decision — a decision is a file in `docs/decisions/`.
 - Check whether kube-apiserver reloads `--proxy-client-cert-file` and whether
   konnectivity-server reloads `--cluster-cert`; each proven reload removes a
   rollout from certificate renewal.
-- Decide the deletion policy of a dedicated etcd's volumes (`Delete` or
-  `Retain`) and of its backups after a `ControlPlane` is deleted; Gardener
-  keeps backups for a configurable retention period. etcd-druid keeps both
-  when an `Etcd` is deleted, so either policy is Brygga's code (etcd spike,
-  finding 6).
+- Decide the deletion policy of a dedicated etcd's backups after a
+  `ControlPlane` is deleted; Gardener keeps backups for a configurable
+  retention period. etcd-druid keeps them when an `Etcd` is deleted, so the
+  policy is Brygga's code (etcd spike, finding 6). The volumes follow the
+  class's `storage.reclaimPolicy` since the Datastore controller (2026-10-25).
 - Measure, not assume, the idle footprint of one control plane in phase 1 and
   replace the planning numbers in `docs/operations.md`.
 - etcd-druid's restore keeps the snapshot's revisions (no
@@ -83,6 +83,57 @@ is a decision — a decision is a file in `docs/decisions/`.
   Flux reads the same through kstatus, where a permanently failing object
   stays InProgress until a timeout unless it reports `Stalled`
   ([kstatus](https://github.com/kubernetes-sigs/cli-utils/blob/v0.37.2/pkg/kstatus/status/status.go#L102-L183)).
+
+## From the Datastore controller (2026-10-25)
+
+- The finalizer `brygga.segla.io/controlplane` and the annotation
+  `brygga.segla.io/is-default-class` are constants of
+  `internal/controller/datastore`; move them to `api/v1alpha1` when Lifecycle
+  or another controller reads them, as `DatastoreReady` and
+  `brygga.segla.io/etcd-certificates` moved with PKI.
+- The backup-restore sidecar's `spec.backup.resources` have no field in the
+  `DatastoreClass` and stay etcd-druid's default (50m / 128Mi at v0.39.0);
+  the operator configuration's `defaults.resources` should cover them once
+  phase 1 measures.
+- The chart's ClusterRole takes the Datastore controller's rules from the
+  table in `docs/README.md` (Identity and tenancy), which `datastoreRules` in
+  `internal/controller/datastore/datastore_test.go` enforces; the chart and
+  the test should read one list.
+- The `DatastoreClass` schema checks `fullSnapshotSchedule` and
+  `defragmentation.schedule` only for length; etcd-druid's CRD wants standard
+  five-field cron, so a bad schedule fails the `Etcd` apply: the error is in
+  the controller's log and `DatastoreReady` keeps what it said before. A
+  pattern on the class, or a reason of its own.
+- A class edit that reaches the `Etcd` rolls its members at once; the decision
+  wants it in the tenant's maintenance window, which Lifecycle gates in phase
+  2. The `Etcd` records the class generation it was rendered from for that.
+- `<cp>-etcd-backup` stays when a class drops its backup store; harmless, the
+  `ControlPlane` garbage-collects it.
+- Whether etcd-backup-restore reads rotated store credentials without a
+  restart: etcd-druid mounts `<cp>-etcd-backup` and puts no checksum of it in
+  the pod template
+  ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L219-L226)),
+  so a new copy rolls nothing; the rotation in `docs/operations.md` revokes
+  the old keys once every copy holds the new ones, which is safe only if the
+  sidecar re-reads them.
+- Backup credentials scoped to one tenant's prefix, so a tenant namespace's
+  `<cp>-etcd-backup` reaches only that tenant's snapshots and not every
+  tenant's on the class (`docs/README.md`, Identity and tenancy).
+- The e2e suite runs the PKI and Datastore controllers in the test process
+  and needs `git` and `helm`; the suite against Brygga's image and chart comes with the
+  chart, and `make e2e` could check for the tools.
+- The cache keeps metadata only for Secrets because this controller watches
+  them as `PartialObjectMetadata`; nothing stops a future controller from
+  starting a typed Secret informer. A test or a cache transform should
+  enforce the rule.
+- PKI's `TestALeafEndingWithItsCAIsIssuedOnceAndAnExpiredCAWritesNothing`
+  sleeps until the cluster CA's `NotAfter` plus 300 ms and expects all four
+  CAs expired, but `NotAfter` is encoded to the second: when the four CAs'
+  issuance straddles a second boundary, the etcd CA, issued last, expires a
+  second later and the test fails. It passed 5 of 5 runs of `main`'s
+  `go test ./...` here, and failed 2 of 5 with the Datastore controller's
+  envtest suite running beside it, which slows the API server. Sleeping
+  until the latest of the four `NotAfter`s removes it.
 
 ## From the PKI controller (2026-10-25)
 

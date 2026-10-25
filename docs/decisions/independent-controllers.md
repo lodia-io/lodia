@@ -1,7 +1,8 @@
 # Six controllers share one object and communicate only through status conditions
 
-Decided 2026-10-25. The manager and PKI are built; the other five
-controllers are not.
+Decided 2026-10-25. The manager, PKI and the Datastore controller, for a
+dedicated etcd of one member, are built; the other four controllers are
+not.
 
 ## Decision
 
@@ -119,11 +120,21 @@ flowchart LR
   ([compact-layout](compact-layout.md)).
 - Metrics come per controller: queue depth, reconcile duration and errors,
   labelled by controller and tenant.
+- A condition that waits on an object outside the cache comes with a bounded
+  requeue, since no event reports that object's change; the condition still
+  says what it waits on. The Datastore controller has four: `VolumesExist`,
+  for claims, which nothing labels for the cache, and for an `Etcd` without
+  the control-plane label, and a missing credentials Secret of the class,
+  which belongs to the platform, both after a minute; a StatefulSet that lags
+  etcd-druid's report, read uncached, after 15 seconds; and an `Etcd` being
+  deleted, which has left the cache if its label was removed, after 10
+  seconds.
 
 ## Code
 
-- `cmd/brygga/main.go` — the manager with the cache rules above, and PKI
-  registered as `pki` with ten workers.
+- `cmd/brygga/main.go` — the manager with the cache rules above, PKI
+  registered as `pki` with ten workers, and the Datastore controller as
+  `datastore` with ten.
 - `internal/controller/pki` — reads `spec` and `status.endpoint`, writes its
   Secrets with server-side apply as `brygga/pki`, applies `CertificatesReady`,
   `CAValidityAcceptable` and `AccessReady` alone through the status
@@ -135,3 +146,12 @@ flowchart LR
   `reconciler_test.go` runs it under a manager whose cache is the one
   `main.go` builds, with `ReaderFailOnMissingInformer`, and holds the first
   visit and the stale `APIServerReady` cases.
+- `internal/controller/datastore` — reads `spec`, writes the `Etcd` and the
+  credentials copy with server-side apply as `brygga/datastore`, applies
+  `DatastoreReady` alone through the status subresource (`Unknown` at the
+  start of its first pass, messages from the state alone, an API error left
+  to the log), and stops for a paused `ControlPlane`. `datastore_test.go`
+  runs it under the same cache with `ReaderFailOnMissingInformer`, as a user
+  bound to exactly its rules, and holds the first visit and the pass that
+  leaves the status alone on an API error (`TestConditionsFromState`)
+  ([dedicated-etcd-by-default](dedicated-etcd-by-default.md)).
