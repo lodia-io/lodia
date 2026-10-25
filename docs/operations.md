@@ -39,7 +39,9 @@ itself and the support policy. Installation is in
 | `DatastoreReady=False`, `QuorumLost` | fewer than two of three members up; the [lost quorum](#lost-etcd-quorum) runbook |
 | API calls fail with `etcdserver: mvcc: database space exceeded` | the [space quota](#etcd-space-quota) runbook; `status.datastore.dbSizeBytes` against the class quota |
 | `APIServerReady=False`, `RollingOut` for long | the kube-apiserver Deployment's events; a new replica failing `/readyz` (often a flag in `extraArgs` that the new minor removed) |
-| `CertificatesReady=False`, `CAExpiring` | the CA is within its renewal margin; start a [CA rotation](#forced-ca-rotation) |
+| `CAValidityAcceptable=False`, `CAExpiring` | a CA expires within a year; the message names it and when; start a [CA rotation](#forced-ca-rotation). `Ready` stays True: every certificate is still valid |
+| `CertificatesReady=False`, `CAExpired` | a CA is past its `NotAfter`, and every certificate it signed with it; nothing is issued under it until a [CA rotation](#forced-ca-rotation) |
+| `CertificatesReady=False`, `CAMissing` | a CA's key Secret `<cp>-cakey-<ca>` is missing or unreadable while its bundle exists; restore it from a backup (it is found by name, labels or not) or rotate the CA; PKI never replaces it on its own |
 | `AccessReady=False`, `Binding` | a ClusterRoleBinding of Brygga, the admin group or the kubelet client is missing in the tenant; PKI recreates it with a ten-minute `system:masters` certificate on its next pass |
 | `Reachable=False`, `NodesSilent`; in the tenant, the Lease `kube-system/kube-controller-manager` held by `brygga` | most nodes cannot reach the API, so Health holds the controller manager; the [nodes cut off](#nodes-cut-off-from-the-control-plane) runbook |
 | `Reachable=False`, `HoldBlocked` | nodes are silent but another component holds the controller manager's lease (`status.health.controllerManagerHold.blockedBy`), for example a platform's own watchdog; run one of the two, not both |

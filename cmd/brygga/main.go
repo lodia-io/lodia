@@ -8,6 +8,7 @@ package main
 import (
 	"flag"
 	"os"
+	"time"
 
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -25,6 +26,7 @@ import (
 
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
 	"github.com/segla-io/brygga/internal/controller/datastore"
+	"github.com/segla-io/brygga/internal/controller/pki"
 )
 
 // workers is the default of controllers.<name>.workers until the operator
@@ -79,6 +81,17 @@ func main() {
 	})
 	if err != nil {
 		log.Error(err, "create the manager")
+		os.Exit(1)
+	}
+	if err := (&pki.Reconciler{
+		Client:              mgr.GetClient(),
+		Reader:              mgr.GetAPIReader(),
+		LeafLifetime:        365 * 24 * time.Hour,
+		CALifetime:          5 * 365 * 24 * time.Hour,
+		TrustAnchorLifetime: 10 * 365 * 24 * time.Hour,
+		CAExpiryNotice:      365 * 24 * time.Hour,
+	}).SetupWithManager(mgr); err != nil {
+		log.Error(err, "set up the pki controller")
 		os.Exit(1)
 	}
 	if err := (&datastore.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader()}).SetupWithManager(mgr, workers); err != nil {
