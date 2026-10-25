@@ -247,8 +247,8 @@ func manager(t *testing.T, cfg *rest.Config, scheme *runtime.Scheme) ctrl.Manage
 	}
 	everything := cache.ByObject{Label: labels.Everything()}
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
-		Scheme:  scheme,
-		Metrics: metricsserver.Options{BindAddress: "0"},
+		Scheme:     scheme,
+		Metrics:    metricsserver.Options{BindAddress: "0"},
 		Controller: config.Controller{SkipNameValidation: new(true)},
 		Cache: cache.Options{
 			DefaultLabelSelector:        labels.NewSelector().Add(*labelled),
