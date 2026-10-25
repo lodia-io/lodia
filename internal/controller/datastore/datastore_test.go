@@ -21,7 +21,9 @@ import (
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	"github.com/gardener/etcd-druid/api/core/v1alpha1/crds"
 	appsv1 "k8s.io/api/apps/v1"
+	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -34,6 +36,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -52,6 +55,17 @@ import (
 
 var k8s client.WithWatch
 
+var datastoreRules = []rbacv1.PolicyRule{
+	{APIGroups: []string{bryggav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes"}, Verbs: []string{"list", "watch", "patch"}},
+	{APIGroups: []string{bryggav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes/status"}, Verbs: []string{"patch"}},
+	{APIGroups: []string{bryggav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes/finalizers"}, Verbs: []string{"update"}},
+	{APIGroups: []string{bryggav1alpha1.GroupVersion.Group}, Resources: []string{"datastoreclasses"}, Verbs: []string{"list", "watch"}},
+	{APIGroups: []string{druidv1alpha1.SchemeGroupVersion.Group}, Resources: []string{"etcds"}, Verbs: []string{"get", "list", "watch", "create", "patch", "delete"}},
+	{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get", "list", "watch", "create", "patch"}},
+	{APIGroups: []string{""}, Resources: []string{"persistentvolumeclaims"}, Verbs: []string{"list", "patch", "delete"}},
+	{APIGroups: []string{appsv1.GroupName}, Resources: []string{"statefulsets"}, Verbs: []string{"get"}},
+}
+
 func TestMain(m *testing.M) {
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
 		fmt.Println("skipping the datastore controller tests: KUBEBUILDER_ASSETS is not set; run make test")
@@ -68,6 +82,7 @@ func TestMain(m *testing.M) {
 		CRDs:                  druidCRDs,
 		UseExistingCluster:    new(false),
 	}
+	env.ControlPlane.GetAPIServer().Configure().Append("enable-admission-plugins", "OwnerReferencesPermissionEnforcement")
 	cfg, err := env.Start()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "start envtest:", err)
@@ -88,12 +103,16 @@ func TestMain(m *testing.M) {
 		stop("client", err)
 	}
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
+	controller, err := asDatastoreController(cfg)
+	if err != nil {
+		stop("the controller's ClusterRole", err)
+	}
 	labelled, err := labels.NewRequirement(bryggav1alpha1.ControlPlaneLabel, selection.Exists, nil)
 	if err != nil {
 		stop("label selector", err)
 	}
 	everything := cache.ByObject{Label: labels.Everything()}
-	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+	mgr, err := ctrl.NewManager(controller, ctrl.Options{
 		Scheme:  scheme,
 		Metrics: metricsserver.Options{BindAddress: "0"},
 		Cache: cache.Options{
@@ -125,6 +144,38 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "stop envtest:", err)
 	}
 	os.Exit(code)
+}
+
+func asDatastoreController(cfg *rest.Config) (*rest.Config, error) {
+	const user = "brygga-datastore"
+	ctx := context.Background()
+	role := &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: user}, Rules: datastoreRules}
+	binding := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: user},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: role.Name},
+		Subjects:   []rbacv1.Subject{{APIGroup: rbacv1.GroupName, Kind: rbacv1.UserKind, Name: user}},
+	}
+	for _, obj := range []client.Object{role, binding} {
+		if err := k8s.Create(ctx, obj); err != nil {
+			return nil, err
+		}
+	}
+	err := wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (bool, error) {
+		review := &authorizationv1.SubjectAccessReview{Spec: authorizationv1.SubjectAccessReviewSpec{
+			User:               user,
+			ResourceAttributes: &authorizationv1.ResourceAttributes{Group: bryggav1alpha1.GroupVersion.Group, Resource: "controlplanes", Verb: "watch"},
+		}}
+		if err := k8s.Create(ctx, review); err != nil {
+			return false, err
+		}
+		return review.Status.Allowed, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	controller := rest.CopyConfig(cfg)
+	controller.Impersonate = rest.ImpersonationConfig{UserName: user}
+	return controller, nil
 }
 
 func druidCRDs() ([]*apiextensionsv1.CustomResourceDefinition, error) {

@@ -96,10 +96,10 @@ is a decision — a decision is a file in `docs/decisions/`.
   `DatastoreClass` and stay etcd-druid's default (50m / 128Mi at v0.39.0);
   the operator configuration's `defaults.resources` should cover them once
   phase 1 measures.
-- The chart's ClusterRole for the datastore controller: `Etcd` read and
-  write, Secrets (metadata list and watch, the credentials copy),
-  PersistentVolumeClaims list and delete, the `ControlPlane`'s status and
-  finalizers.
+- The chart's ClusterRole takes the Datastore controller's rules from the
+  table in `docs/README.md` (Identity and tenancy), which `datastoreRules` in
+  `internal/controller/datastore/datastore_test.go` enforces; the chart and
+  the test should read one list.
 - The `DatastoreClass` schema checks `fullSnapshotSchedule` and
   `defragmentation.schedule` only for length; etcd-druid's CRD wants standard
   five-field cron, so a bad schedule fails the `Etcd` apply: the error is in

@@ -485,7 +485,8 @@ operator.
   decides who creates clusters and who reads their Secrets. Brygga's own
   ClusterRole is limited to its kinds, the workload kinds it renders, Secrets
   and ConfigMaps by label, Gateway API routes and listener sets, etcd-druid's
-  `Etcd`, and the PersistentVolumeClaims of a deleted tenant's etcd.
+  `Etcd`, the StatefulSet etcd-druid runs for it and the claims of that
+  StatefulSet; the Datastore controller's share is the table below.
 - Every field Brygga writes has a field manager `brygga/<controller>`;
   another manager's fields on the same object are left alone.
 - Inside a tenant, Brygga is `brygga:operator`; its objects carry
@@ -493,6 +494,22 @@ operator.
 - No cross-tenant object: every Secret, Service and route is in the tenant's
   namespace, and NetworkPolicies keep its pods to their own arrows. A
   shared `Datastore` is the one deliberate exception, labelled as such.
+
+The Datastore controller calls exactly these verbs; its envtest suite runs
+the controller as a user bound to these rules and nothing else, with the
+`OwnerReferencesPermissionEnforcement` admission plugin on, and each rule
+left out fails a test:
+
+| group | resource | verbs | for |
+|---|---|---|---|
+| `brygga.segla.io` | `controlplanes` | `list`, `watch`, `patch` | the cache; the finalizer, held and released with a patch |
+| `brygga.segla.io` | `controlplanes/status` | `patch` | `DatastoreReady` and `status.datastore`, applied |
+| `brygga.segla.io` | `controlplanes/finalizers` | `update` | `blockOwnerDeletion` on the owner references of the `Etcd` and of `<cp>-etcd-backup`, which that admission plugin allows only with `update` on the owner's `finalizers` ([gc_admission.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/plugin/pkg/admission/gc/gc_admission.go#L122-L152)) |
+| `brygga.segla.io` | `datastoreclasses` | `list`, `watch` | the cache |
+| `druid.gardener.cloud` | `etcds` | `get`, `list`, `watch`, `create`, `patch`, `delete` | the cache, and the API server for an `Etcd` without the label; the apply, which the API server also authorizes as `create` when it creates the object ([patch.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/staging/src/k8s.io/apiserver/pkg/endpoints/handlers/patch.go#L203-L232)); the deletion |
+| `""` | `secrets` | `get`, `list`, `watch`, `create`, `patch` | the metadata of the certificate Secrets; the class's credentials Secret, read uncached in its own namespace; the copy `<cp>-etcd-backup`, applied |
+| `""` | `persistentvolumeclaims` | `list`, `patch`, `delete` | the claims of `<cp>-etcd`, listed in the tenant's namespace and matched by name; their UID label and class annotation; the reclaim |
+| `apps` | `statefulsets` | `get` | the readiness checks, read uncached |
 
 ## Installation
 
