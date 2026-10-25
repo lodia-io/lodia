@@ -26,6 +26,7 @@ import (
 
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
 	"github.com/segla-io/brygga/internal/controller/datastore"
+	"github.com/segla-io/brygga/internal/controller/health"
 	"github.com/segla-io/brygga/internal/controller/lifecycle"
 	"github.com/segla-io/brygga/internal/controller/pki"
 )
@@ -101,6 +102,10 @@ func main() {
 	}
 	if err := (&lifecycle.Reconciler{Client: mgr.GetClient()}).SetupWithManager(mgr, workers); err != nil {
 		log.Error(err, "set up the lifecycle controller")
+		os.Exit(1)
+	}
+	if err := (&health.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Period: 10 * time.Second, Timeout: 5 * time.Second}).SetupWithManager(mgr, workers); err != nil {
+		log.Error(err, "set up the health controller")
 		os.Exit(1)
 	}
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

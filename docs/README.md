@@ -74,9 +74,9 @@ Each controller has its own queue and field manager, reads `spec`,
 own condition; none calls another
 ([decision](decisions/independent-controllers.md)). The cache is scoped to
 labelled objects, with metadata only for Secrets. PKI, the Datastore
-controller and a first Lifecycle are built (`internal/controller/pki`,
-`datastore` and `lifecycle`, registered under those names in
-`cmd/brygga/main.go`); Workloads, Tenant and Health are not.
+controller, a first Lifecycle and Health's external probe are built
+(`internal/controller/pki`, `datastore`, `lifecycle` and `health`, registered
+under those names in `cmd/brygga/main.go`); Workloads and Tenant are not.
 
 ```mermaid
 sequenceDiagram
@@ -627,6 +627,16 @@ phase 2.
 
 ## Health
 
+Built so far, for phase 1: the probe through the public endpoint. Every 10
+seconds Health asks `https://<status.endpoint.apiServer>/readyz` without
+credentials, which the API server's authentication allows for its health
+paths, and verifies it against the bundle in
+`status.credentials.caBundleSecretRef`. `Reachable` is True on a 200 and
+False, `ExternalProbeFailed`, after three probes in a row that fail, so one
+blip does not drop `Ready`; before the endpoint and the bundle are published,
+it is False, `WaitingForEndpoint`. The rest of this section comes with phase
+2.
+
 Health probes `/readyz` through the public endpoint, the way a kubelet
 reaches it, and through the in-namespace Service, and every 5 seconds reads
 the tenant's nodes and their leases through that Service. When 60% or more of
@@ -689,6 +699,11 @@ one, on by default since 1.35, and falls back to `list` where it does not
 Lifecycle reads `ControlPlane`s from the cache and applies their status:
 `list` and `watch` on `controlplanes`, `patch` on `controlplanes/status`; its
 envtest suite runs it as a user bound to exactly these rules.
+
+Health reads `ControlPlane`s from the cache and the CA bundle from the API
+server, and applies `Reachable`: `list` and `watch` on `controlplanes`,
+`patch` on `controlplanes/status`, `get` on `secrets`; its envtest suite runs
+it as a user bound to exactly these rules.
 
 ## Installation
 

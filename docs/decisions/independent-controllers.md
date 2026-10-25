@@ -1,8 +1,9 @@
 # Six controllers share one object and communicate only through status conditions
 
 Decided 2026-10-25. The manager, PKI, the Datastore controller, for a
-dedicated etcd of one member, and Lifecycle, for the target within a minor
-and `Ready`, are built; Workloads, Tenant and Health are not.
+dedicated etcd of one member, Lifecycle, for the target within a minor and
+`Ready`, and Health, for the probe through the public endpoint, are built;
+Workloads and Tenant are not.
 
 ## Decision
 
@@ -184,3 +185,14 @@ flowchart LR
   one-minute reconcile timeout. `lifecycle_test.go` runs it under the same
   cache with `ReaderFailOnMissingInformer`, as a user bound to exactly its
   rules; `internal/versions` holds the minors it supports.
+- `internal/controller/health` — reads the `ControlPlane` from the cache and
+  its CA bundle uncached, probes the public endpoint every 10 seconds, and
+  applies `Reachable` as `brygga/health`, only on a change: `Unknown` at the
+  start of its first visit, a failed read leaving it as it was, False only
+  after three failed probes in a row, which it counts in memory, so a
+  restart counts afresh. Only a change of the endpoint, the bundle or the
+  generation brings a pass between the periodic ones, so the failures
+  counted are probes a period apart. Registered as `health` with ten workers
+  and a one-minute reconcile timeout. `health_test.go` runs it under the same
+  cache with `ReaderFailOnMissingInformer`, as a user bound to exactly its
+  rules.
