@@ -13,8 +13,9 @@ Decided 2026-10-25. Not built.
    `DatastoreClass` has no backup store, and said so in `status`).
 3. kube-apiserver rolls; the step is done when every replica is `Ready` and
    answers `/readyz` with the new version.
-4. kube-controller-manager and kube-scheduler roll; done when each has a
-   leader and answers its health endpoint.
+4. kube-controller-manager and kube-scheduler roll; done when each answers
+   its health endpoint and, as Health reports from inside the tenant, has a
+   leader.
 5. In the tenant: kube-proxy, CoreDNS and konnectivity-agent move to the
    versions of the new minor; done when they are applied. Their pods roll on
    the owner's nodes and are reported in `AddonsAvailable`, not awaited.

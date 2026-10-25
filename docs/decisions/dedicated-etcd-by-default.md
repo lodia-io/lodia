@@ -249,7 +249,7 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   the claims, found by name, the credentials copy, the finalizer and the
   status; `etcd.go` renders the `DatastoreClass` into the `Etcd`
   ([the table](../README.md#a-tenant-namespace)), applies it and reads
-  etcd-druid's report. Registered as `datastore` in `cmd/brygga/main.go`.
+  etcd-druid's report. Registered as `datastore` in `internal/operator`.
 - `internal/controller/datastore/datastore_test.go` — envtest with
   etcd-druid v0.39.0's CRDs from its `crds` package, the controller running
   as a user bound to exactly the rules in

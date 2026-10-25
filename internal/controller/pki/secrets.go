@@ -22,18 +22,17 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/apis/apiserver"
 	apiserverv1 "k8s.io/apiserver/pkg/apis/apiserver/v1"
 	"k8s.io/apiserver/pkg/apis/apiserver/validation"
 	corev1ac "k8s.io/client-go/applyconfigurations/core/v1"
 	metav1ac "k8s.io/client-go/applyconfigurations/meta/v1"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
 	"github.com/segla-io/brygga/internal/certs"
+	"github.com/segla-io/brygga/internal/ownership"
 )
 
 // The CAs, by the suffix of their <cp>-cakey-<ca> Secret.
@@ -47,25 +46,25 @@ const (
 // A CA's bundle proves the tenant had that CA, so a CA is created only when
 // neither the bundle nor its key Secret exists.
 var caBundles = []struct {
-	ca, bundle string
+	ca     string
+	bundle bryggav1alpha1.Secret
 }{
-	{clusterCA, "ca-bundle"},
-	{clientCA, "client-ca"},
-	{frontProxyCA, "front-proxy-ca"},
-	{etcdCA, "etcd-ca"},
+	{clusterCA, bryggav1alpha1.CABundleSecret},
+	{clientCA, bryggav1alpha1.ClientCASecret},
+	{frontProxyCA, bryggav1alpha1.FrontProxyCASecret},
+	{etcdCA, bryggav1alpha1.EtcdCASecret},
 }
 
 // names are PKI's Secrets, <cp>-<name>, beside the etcd generations
 // <cp>-etcd-<role>-<g>. They are reserved: PKI finds them by name, labelled or
 // not.
-var names = []string{
-	"cakey-cluster", "cakey-client", "cakey-front-proxy", "cakey-etcd",
-	"ca-bundle", "client-ca", "front-proxy-ca", "etcd-ca",
-	"kubelet-signer", "apiserver-serving", "apiserver-kubelet-client", "konnectivity-server",
-	"front-proxy-client", "apiserver-etcd-client",
-	"konnectivity-kubeconfig", "controller-manager-kubeconfig", "scheduler-kubeconfig", "brygga-kubeconfig", "admin-kubeconfig",
-	"sa-keys", "encryption-config",
-}
+var names = func() []string {
+	names := []string{"cakey-cluster", "cakey-client", "cakey-front-proxy", "cakey-etcd"}
+	for _, s := range bryggav1alpha1.PKISecrets() {
+		names = append(names, string(s))
+	}
+	return names
+}()
 
 const (
 	// signingDuration is how long the controller manager's kubelet client
@@ -76,10 +75,6 @@ const (
 	// provider, so it is what a federation partner accepts.
 	serviceAccountKeyBits = 2048
 	encryptionKeyBytes    = 32
-	caKey                 = "ca.crt"
-	kubeconfigKey         = "kubeconfig"
-	signingKey            = "signing.key"
-	encryptionConfigKey   = "encryption-config.yaml"
 
 	providerNone      bryggav1alpha1.EncryptionProvider = "None"
 	providerSecretbox bryggav1alpha1.EncryptionProvider = "secretbox"
@@ -90,7 +85,6 @@ var (
 	serverAuth       = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
 	clientAuth       = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
 	serverClientAuth = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}
-	etcdRoles        = []string{"ca", "server", "client", "peer", "backup-restore"}
 )
 
 type tenant struct {
@@ -111,6 +105,7 @@ type tenant struct {
 	unreadable          []string
 	unsupportedProvider bryggav1alpha1.EncryptionProvider
 	endpoint            *endpoint
+	konnectivityHost    string
 	// writeErr is the pass's first failed write. No write follows it, and
 	// pending names what the pass had to change but did not write.
 	writeErr error
@@ -133,13 +128,9 @@ func (e *endpoint) url() string {
 
 func newTenant(cp *bryggav1alpha1.ControlPlane, now time.Time) *tenant {
 	t := &tenant{cp: cp, existing: map[string]*corev1.Secret{}, generations: map[int]bool{}, now: now, cas: map[string]*certs.Certificate{}, caCerts: map[string]*x509.Certificate{}}
-	if e := cp.Status.Endpoint; e != nil && e.Host != "" {
-		t.endpoint = &endpoint{host: e.Host, port: e.Port}
-		if e.Port == 0 {
-			t.endpoint.port = 443
-		}
-	} else if gw := cp.Spec.Endpoint.Gateway; gw != nil {
-		t.endpoint = &endpoint{host: string(gw.Hostnames.APIServer), port: 443}
+	if e := cp.Status.Endpoint; e != nil {
+		t.endpoint = &endpoint{host: e.APIServer.Host, port: e.APIServer.Port}
+		t.konnectivityHost = e.Konnectivity.Host
 	}
 	return t
 }
@@ -158,33 +149,8 @@ func (t *tenant) reserved(name string) (int, bool) {
 	if slices.Contains(names, suffix) {
 		return 0, true
 	}
-	for _, role := range etcdRoles {
-		if n, ok := strings.CutPrefix(suffix, "etcd-"+role+"-"); ok {
-			if g, err := strconv.Atoi(n); err == nil && g > 0 && strconv.Itoa(g) == n {
-				return g, true
-			}
-			return 0, false
-		}
-	}
-	return 0, false
-}
-
-// elsewhere is the owner that keeps a Secret from this ControlPlane: a
-// controller with another UID, or any owner reference to another
-// ControlPlane.
-func (t *tenant) elsewhere(obj metav1.Object) *metav1.OwnerReference {
-	refs := obj.GetOwnerReferences()
-	for i := range refs {
-		if refs[i].UID != t.cp.UID && (ptr.Deref(refs[i].Controller, false) || controlPlane(refs[i])) {
-			return &refs[i]
-		}
-	}
-	return nil
-}
-
-func controlPlane(ref metav1.OwnerReference) bool {
-	gv, err := schema.ParseGroupVersion(ref.APIVersion)
-	return err == nil && gv.Group == bryggav1alpha1.GroupVersion.Group && ref.Kind == kind
+	_, g, ok := bryggav1alpha1.ParseEtcdCertificateSecretName(t.cp.Name, name)
+	return g, ok
 }
 
 // read takes the Secrets under PKI's names, labelled or not: the labelled ones
@@ -234,7 +200,7 @@ func (r *Reconciler) read(ctx context.Context, t *tenant) error {
 
 // held records a Secret another owner keeps.
 func (t *tenant) held(obj metav1.Object) bool {
-	owner := t.elsewhere(obj)
+	owner := ownership.ControlledElsewhere(obj, t.cp)
 	if owner != nil {
 		t.foreign = append(t.foreign, foreign{name: obj.GetName(), owner: *owner})
 	}
@@ -273,7 +239,7 @@ func (t *tenant) requeueAfter() time.Duration {
 // is a previous ControlPlane's of this name, and for a person otherwise.
 func (t *tenant) foreignRequeue() time.Duration {
 	for _, f := range t.foreign {
-		if !controlPlane(f.owner) || f.owner.Name != t.cp.Name {
+		if !ownership.IsControlPlane(f.owner) || f.owner.Name != t.cp.Name {
 			return time.Minute
 		}
 	}
@@ -282,7 +248,7 @@ func (t *tenant) foreignRequeue() time.Duration {
 
 func (t *tenant) credentials() map[string]any {
 	out := map[string]any{}
-	for field, secret := range map[string]string{"adminKubeconfigSecretRef": t.name("admin-kubeconfig"), "caBundleSecretRef": t.name("ca-bundle")} {
+	for field, secret := range map[string]string{"adminKubeconfigSecretRef": t.secret(bryggav1alpha1.AdminKubeconfigSecret), "caBundleSecretRef": t.secret(bryggav1alpha1.CABundleSecret)} {
 		if t.existing[secret] != nil {
 			out[field] = map[string]any{"name": secret}
 		}
@@ -328,17 +294,17 @@ func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 	cluster, cl, frontProxy, etcd := t.cas[clusterCA], t.cas[clientCA], t.cas[frontProxyCA], t.cas[etcdCA]
 
 	if cluster != nil {
-		if err := r.bundle(ctx, t, t.name("ca-bundle"), cluster.Cert); err != nil {
+		if err := r.bundle(ctx, t, t.secret(bryggav1alpha1.CABundleSecret), cluster.Cert); err != nil {
 			return err
 		}
-		if err := r.tls(ctx, t, t.name("apiserver-kubelet-client"), cluster, certs.Profile{CommonName: "kube-apiserver-kubelet-client", Organizations: []string{"brygga:kubelet-api-admins"}, Usages: clientAuth}); err != nil {
+		if err := r.tls(ctx, t, t.secret(bryggav1alpha1.APIServerKubeletClientSecret), cluster, certs.Profile{CommonName: "kube-apiserver-kubelet-client", Organizations: []string{"brygga:kubelet-api-admins"}, Usages: clientAuth}); err != nil {
 			return err
 		}
 		if t.endpoint != nil {
-			if err := r.tls(ctx, t, t.name("apiserver-serving"), cluster, t.servingProfile()); err != nil {
+			if err := r.tls(ctx, t, t.secret(bryggav1alpha1.APIServerServingSecret), cluster, t.servingProfile()); err != nil {
 				return err
 			}
-			if err := r.tls(ctx, t, t.name("konnectivity-server"), cluster, t.konnectivityProfile()); err != nil {
+			if err := r.tls(ctx, t, t.secret(bryggav1alpha1.KonnectivityServerSecret), cluster, t.konnectivityProfile()); err != nil {
 				return err
 			}
 		}
@@ -350,15 +316,15 @@ func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 		}
 	}
 	if cl != nil && cluster != nil {
-		internal := "https://" + t.name("kube-apiserver") + "." + t.cp.Namespace + ".svc:443"
+		internal := "https://" + bryggav1alpha1.APIServerServiceName(t.cp.Name) + "." + t.cp.Namespace + ".svc:443"
 		kubeconfigs := []kubeconfig{
-			{"konnectivity-kubeconfig", "system:konnectivity-server", nil, "https://127.0.0.1:6443", false},
-			{"controller-manager-kubeconfig", "system:kube-controller-manager", nil, internal, false},
-			{"scheduler-kubeconfig", "system:kube-scheduler", nil, internal, false},
-			{"brygga-kubeconfig", "brygga:operator", nil, internal, true},
+			{bryggav1alpha1.KonnectivityKubeconfigSecret, "system:konnectivity-server", nil, "https://127.0.0.1:6443", false},
+			{bryggav1alpha1.ControllerManagerKubeconfigSecret, "system:kube-controller-manager", nil, internal, false},
+			{bryggav1alpha1.SchedulerKubeconfigSecret, "system:kube-scheduler", nil, internal, false},
+			{bryggav1alpha1.BryggaKubeconfigSecret, "brygga:operator", nil, internal, true},
 		}
 		if t.endpoint != nil {
-			kubeconfigs = append(kubeconfigs, kubeconfig{"admin-kubeconfig", "kubernetes-admin", []string{"brygga:cluster-admins"}, t.endpoint.url(), true})
+			kubeconfigs = append(kubeconfigs, kubeconfig{bryggav1alpha1.AdminKubeconfigSecret, "kubernetes-admin", []string{"brygga:cluster-admins"}, t.endpoint.url(), true})
 		}
 		for _, k := range kubeconfigs {
 			if err := r.kubeconfig(ctx, t, k); err != nil {
@@ -368,19 +334,19 @@ func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 	}
 
 	if frontProxy != nil {
-		if err := r.bundle(ctx, t, t.name("front-proxy-ca"), frontProxy.Cert); err != nil {
+		if err := r.bundle(ctx, t, t.secret(bryggav1alpha1.FrontProxyCASecret), frontProxy.Cert); err != nil {
 			return err
 		}
-		if err := r.tls(ctx, t, t.name("front-proxy-client"), frontProxy, certs.Profile{CommonName: "front-proxy-client", Usages: clientAuth}); err != nil {
+		if err := r.tls(ctx, t, t.secret(bryggav1alpha1.FrontProxyClientSecret), frontProxy, certs.Profile{CommonName: "front-proxy-client", Usages: clientAuth}); err != nil {
 			return err
 		}
 	}
 
 	if etcd != nil {
-		if err := r.bundle(ctx, t, t.name("etcd-ca"), etcd.Cert); err != nil {
+		if err := r.bundle(ctx, t, t.secret(bryggav1alpha1.EtcdCASecret), etcd.Cert); err != nil {
 			return err
 		}
-		if err := r.tls(ctx, t, t.name("apiserver-etcd-client"), etcd, certs.Profile{CommonName: "kube-apiserver-etcd-client", Usages: clientAuth}); err != nil {
+		if err := r.tls(ctx, t, t.secret(bryggav1alpha1.APIServerEtcdClientSecret), etcd, certs.Profile{CommonName: "kube-apiserver-etcd-client", Usages: clientAuth}); err != nil {
 			return err
 		}
 		if err := r.etcd(ctx, t); err != nil {
@@ -397,9 +363,9 @@ func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 // ca creates a CA only for a tenant with neither its key Secret nor its
 // bundle: a new CA in place of a lost or expired one would cut every client
 // or node off at once.
-func (r *Reconciler) ca(ctx context.Context, t *tenant, name, bundle string) error {
+func (r *Reconciler) ca(ctx context.Context, t *tenant, name string, bundle bryggav1alpha1.Secret) error {
 	secret := t.name("cakey-" + name)
-	key, trusted := t.existing[secret], t.existing[t.name(bundle)]
+	key, trusted := t.existing[secret], t.existing[t.secret(bundle)]
 	if key == nil && trusted == nil {
 		lifetime := r.CALifetime
 		if name == clusterCA {
@@ -431,12 +397,12 @@ func (r *Reconciler) ca(ctx context.Context, t *tenant, name, bundle string) err
 	}
 	t.cas[name] = c
 	r.notice(t, c.Cert)
-	r.applySecret(ctx, t, secret, corev1.SecretTypeTLS, map[string][]byte{corev1.TLSCertKey: key.Data[corev1.TLSCertKey], corev1.TLSPrivateKeyKey: key.Data[corev1.TLSPrivateKeyKey]}, nil, false)
+	r.applySecret(ctx, t, secret, corev1.SecretTypeTLS, map[string][]byte{bryggav1alpha1.TLSCertKey: key.Data[bryggav1alpha1.TLSCertKey], bryggav1alpha1.TLSPrivateKeyKey: key.Data[bryggav1alpha1.TLSPrivateKeyKey]}, nil, false)
 	return nil
 }
 
 func readCA(s *corev1.Secret) *certs.Certificate {
-	c, err := certs.Parse(data(s, corev1.TLSCertKey), data(s, corev1.TLSPrivateKeyKey))
+	c, err := certs.Parse(data(s, bryggav1alpha1.TLSCertKey), data(s, bryggav1alpha1.TLSPrivateKeyKey))
 	if err != nil || !c.Cert.IsCA || c.Cert.CheckSignatureFrom(c.Cert) != nil {
 		return nil
 	}
@@ -451,17 +417,17 @@ func (r *Reconciler) notice(t *tenant, ca *x509.Certificate) {
 // kubeletSigner compares no subject, since every signer gets a new one, and
 // writes a new signer only after the client CA bundle that trusts it.
 func (r *Reconciler) kubeletSigner(ctx context.Context, t *tenant) error {
-	name := t.name("kubelet-signer")
+	name := t.secret(bryggav1alpha1.KubeletSignerSecret)
 	ca := t.cas[clientCA]
 	s := t.existing[name]
-	c, err := certs.Parse(data(s, corev1.TLSCertKey), data(s, corev1.TLSPrivateKeyKey))
+	c, err := certs.Parse(data(s, bryggav1alpha1.TLSCertKey), data(s, bryggav1alpha1.TLSPrivateKeyKey))
 	if err != nil || !c.Cert.MaxPathLenZero || !t.current(c, ca, certs.Profile{CommonName: c.Cert.Subject.CommonName, CA: true}) {
 		if c, err = ca.Issue(certs.Profile{CommonName: t.stamp("kubelet-signer"), CA: true}, t.now, r.LeafLifetime); err != nil {
 			return err
 		}
 	}
 	t.renew(c.Cert, ca.Cert)
-	if err := r.bundle(ctx, t, t.name("client-ca"), t.clientBundle(c)...); err != nil {
+	if err := r.bundle(ctx, t, t.secret(bryggav1alpha1.ClientCASecret), t.clientBundle(c)...); err != nil {
 		return err
 	}
 	return r.applyTLS(ctx, t, name, c, nil, false)
@@ -469,7 +435,7 @@ func (r *Reconciler) kubeletSigner(ctx context.Context, t *tenant) error {
 
 func (r *Reconciler) tls(ctx context.Context, t *tenant, name string, ca *certs.Certificate, p certs.Profile) error {
 	s := t.existing[name]
-	c, err := t.leaf(data(s, corev1.TLSCertKey), data(s, corev1.TLSPrivateKeyKey), ca, p, r.LeafLifetime)
+	c, err := t.leaf(data(s, bryggav1alpha1.TLSCertKey), data(s, bryggav1alpha1.TLSPrivateKeyKey), ca, p, r.LeafLifetime)
 	if err != nil {
 		return err
 	}
@@ -485,7 +451,7 @@ func (r *Reconciler) applyTLS(ctx context.Context, t *tenant, name string, c *ce
 	if err != nil {
 		return err
 	}
-	r.applySecret(ctx, t, name, corev1.SecretTypeTLS, map[string][]byte{corev1.TLSCertKey: cert, corev1.TLSPrivateKeyKey: key}, labels, immutable)
+	r.applySecret(ctx, t, name, corev1.SecretTypeTLS, map[string][]byte{bryggav1alpha1.TLSCertKey: cert, bryggav1alpha1.TLSPrivateKeyKey: key}, labels, immutable)
 	return nil
 }
 
@@ -494,7 +460,7 @@ func (r *Reconciler) bundle(ctx context.Context, t *tenant, name string, bundle 
 	if err != nil {
 		return err
 	}
-	r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, map[string][]byte{caKey: pem}, nil, false)
+	r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, map[string][]byte{bryggav1alpha1.CACertKey: pem}, nil, false)
 	return nil
 }
 
@@ -503,7 +469,7 @@ func (r *Reconciler) bundle(ctx context.Context, t *tenant, name string, bundle 
 func (t *tenant) clientBundle(signer *certs.Certificate) []*x509.Certificate {
 	ca := t.cas[clientCA].Cert
 	bundle := []*x509.Certificate{ca, signer.Cert}
-	previous, _ := certs.ParseCerts(data(t.existing[t.name("client-ca")], caKey))
+	previous, _ := certs.ParseCerts(data(t.existing[t.secret(bryggav1alpha1.ClientCASecret)], bryggav1alpha1.CACertKey))
 	replaced := signer.Cert.NotBefore.Add(certs.Backdate)
 	for _, c := range previous {
 		if c.IsCA && !c.Equal(ca) && certs.Verify(c, ca, t.now) == nil && t.now.Before(replaced.Add(signingDuration)) {
@@ -519,7 +485,7 @@ func (t *tenant) servingProfile() certs.Profile {
 	if domain == "" {
 		domain = "cluster.local"
 	}
-	api := t.name("kube-apiserver")
+	api := bryggav1alpha1.APIServerServiceName(t.cp.Name)
 	p := certs.Profile{CommonName: "kube-apiserver", Usages: serverAuth}
 	for _, name := range []string{"kubernetes", "kubernetes.default", "kubernetes.default.svc", "kubernetes.default.svc." + domain} {
 		p.SAN(name)
@@ -532,9 +498,6 @@ func (t *tenant) servingProfile() certs.Profile {
 	for _, name := range []string{api, api + "." + cp.Namespace, api + "." + cp.Namespace + ".svc", "localhost", "127.0.0.1", t.endpoint.host} {
 		p.SAN(name)
 	}
-	if gw := cp.Spec.Endpoint.Gateway; gw != nil {
-		p.SAN(string(gw.Hostnames.APIServer))
-	}
 	for _, san := range cp.Spec.Endpoint.CertSANs {
 		p.SAN(string(san))
 	}
@@ -543,17 +506,14 @@ func (t *tenant) servingProfile() certs.Profile {
 
 func (t *tenant) konnectivityProfile() certs.Profile {
 	p := certs.Profile{CommonName: "konnectivity-server", Usages: serverAuth}
-	for _, name := range []string{"localhost", "127.0.0.1", t.endpoint.host} {
+	for _, name := range []string{"localhost", "127.0.0.1", t.konnectivityHost} {
 		p.SAN(name)
-	}
-	if gw := t.cp.Spec.Endpoint.Gateway; gw != nil {
-		p.SAN(string(gw.Hostnames.Konnectivity))
 	}
 	return p
 }
 
 type kubeconfig struct {
-	suffix string
+	secret bryggav1alpha1.Secret
 	user   string
 	groups []string
 	server string
@@ -563,11 +523,11 @@ type kubeconfig struct {
 }
 
 func (r *Reconciler) kubeconfig(ctx context.Context, t *tenant, k kubeconfig) error {
-	name := t.name(k.suffix)
+	name := t.secret(k.secret)
 	s := t.existing[name]
-	certPEM, keyPEM := data(s, corev1.TLSCertKey), data(s, corev1.TLSPrivateKeyKey)
+	certPEM, keyPEM := data(s, bryggav1alpha1.TLSCertKey), data(s, bryggav1alpha1.TLSPrivateKeyKey)
 	if k.embed {
-		certPEM, keyPEM, _ = certs.Embedded(data(s, kubeconfigKey))
+		certPEM, keyPEM, _ = certs.Embedded(data(s, bryggav1alpha1.KubeconfigKey))
 	}
 	c, err := t.leaf(certPEM, keyPEM, t.cas[clientCA], certs.Profile{CommonName: k.user, Organizations: k.groups, Usages: clientAuth}, r.LeafLifetime)
 	if err != nil {
@@ -589,9 +549,9 @@ func (r *Reconciler) kubeconfig(ctx context.Context, t *tenant, k kubeconfig) er
 	if err != nil {
 		return err
 	}
-	content := map[string][]byte{kubeconfigKey: rendered}
+	content := map[string][]byte{bryggav1alpha1.KubeconfigKey: rendered}
 	if !k.embed {
-		content[caKey], content[corev1.TLSCertKey], content[corev1.TLSPrivateKeyKey] = ca, cert, key
+		content[bryggav1alpha1.CACertKey], content[bryggav1alpha1.TLSCertKey], content[bryggav1alpha1.TLSPrivateKeyKey] = ca, cert, key
 	}
 	r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, content, nil, false)
 	return nil
@@ -601,9 +561,9 @@ func (r *Reconciler) kubeconfig(ctx context.Context, t *tenant, k kubeconfig) er
 // it cannot read is never replaced: every token it signed would stop
 // verifying.
 func (r *Reconciler) serviceAccountKey(ctx context.Context, t *tenant) error {
-	name := t.name("sa-keys")
+	name := t.secret(bryggav1alpha1.ServiceAccountKeysSecret)
 	if s := t.existing[name]; s != nil {
-		if !isServiceAccountKey(s.Data[signingKey]) {
+		if !isServiceAccountKey(s.Data[bryggav1alpha1.SigningKeyKey]) {
 			t.unreadable = append(t.unreadable, name)
 			return nil
 		}
@@ -618,7 +578,7 @@ func (r *Reconciler) serviceAccountKey(ctx context.Context, t *tenant) error {
 	if err != nil {
 		return err
 	}
-	r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, map[string][]byte{signingKey: pem}, nil, false)
+	r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, map[string][]byte{bryggav1alpha1.SigningKeyKey: pem}, nil, false)
 	return nil
 }
 
@@ -633,7 +593,7 @@ func isServiceAccountKey(pem []byte) bool {
 // configuration it cannot read is never replaced: the data its keys
 // encrypted would be lost.
 func (r *Reconciler) encryptionConfig(ctx context.Context, t *tenant) error {
-	name := t.name("encryption-config")
+	name := t.secret(bryggav1alpha1.EncryptionConfigSecret)
 	want := providerSecretbox
 	if api := t.cp.Spec.APIServer; api != nil && api.Encryption != nil && api.Encryption.Provider != "" {
 		want = api.Encryption.Provider
@@ -644,13 +604,13 @@ func (r *Reconciler) encryptionConfig(ctx context.Context, t *tenant) error {
 	}
 	var providers []apiserverv1.ProviderConfiguration
 	if s := t.existing[name]; s != nil {
-		existing, ok := readEncryptionConfig(s.Data[encryptionConfigKey])
+		existing, ok := readEncryptionConfig(s.Data[bryggav1alpha1.EncryptionConfigKey])
 		if !ok {
 			t.unreadable = append(t.unreadable, name)
 			return nil
 		}
 		if providers = existing.Resources[0].Providers; providerOf(providers[0]) == want {
-			r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, map[string][]byte{encryptionConfigKey: s.Data[encryptionConfigKey]}, nil, false)
+			r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, map[string][]byte{bryggav1alpha1.EncryptionConfigKey: s.Data[bryggav1alpha1.EncryptionConfigKey]}, nil, false)
 			return nil
 		}
 	}
@@ -666,7 +626,7 @@ func (r *Reconciler) encryptionConfig(ctx context.Context, t *tenant) error {
 	if err != nil {
 		return err
 	}
-	r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, map[string][]byte{encryptionConfigKey: rendered}, nil, false)
+	r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, map[string][]byte{bryggav1alpha1.EncryptionConfigKey: rendered}, nil, false)
 	return nil
 }
 
@@ -753,7 +713,7 @@ func (r *Reconciler) etcd(ctx context.Context, t *tenant) error {
 		if g == current || g == previous {
 			continue
 		}
-		for _, role := range etcdRoles {
+		for _, role := range bryggav1alpha1.EtcdCertificateRoles() {
 			s := t.existing[t.etcdName(role, g)]
 			if s == nil || s.DeletionTimestamp != nil || t.writeErr != nil {
 				continue
@@ -774,7 +734,7 @@ func (r *Reconciler) etcd(ctx context.Context, t *tenant) error {
 // invisible to the label-filtered cache.
 func (r *Reconciler) adopt(ctx context.Context, t *tenant, g int) {
 	labels := map[string]string{bryggav1alpha1.EtcdCertificatesLabel: strconv.Itoa(g)}
-	for _, role := range etcdRoles {
+	for _, role := range bryggav1alpha1.EtcdCertificateRoles() {
 		if s := t.existing[t.etcdName(role, g)]; s != nil && s.DeletionTimestamp == nil {
 			r.applySecret(ctx, t, s.Name, s.Type, s.Data, labels, true)
 		}
@@ -789,7 +749,7 @@ func (r *Reconciler) issueEtcd(ctx context.Context, t *tenant, g int, ca *certs.
 		return err
 	}
 	labels := map[string]string{bryggav1alpha1.EtcdCertificatesLabel: strconv.Itoa(g)}
-	r.applySecret(ctx, t, t.etcdName("ca", g), corev1.SecretTypeOpaque, map[string][]byte{caKey: caPEM}, labels, true)
+	r.applySecret(ctx, t, t.etcdName(bryggav1alpha1.EtcdCARole, g), corev1.SecretTypeOpaque, map[string][]byte{bryggav1alpha1.CACertKey: caPEM}, labels, true)
 	for _, p := range profiles {
 		c, err := ca.Issue(p.profile, t.now, r.LeafLifetime)
 		if err != nil {
@@ -804,7 +764,7 @@ func (r *Reconciler) issueEtcd(ctx context.Context, t *tenant, g int, ca *certs.
 }
 
 func (t *tenant) etcdComplete(g int) bool {
-	for _, role := range etcdRoles {
+	for _, role := range bryggav1alpha1.EtcdCertificateRoles() {
 		if s := t.existing[t.etcdName(role, g)]; s == nil || s.DeletionTimestamp != nil {
 			return false
 		}
@@ -812,18 +772,18 @@ func (t *tenant) etcdComplete(g int) bool {
 	return true
 }
 
-func (t *tenant) etcdGeneration(g int, ca *certs.Certificate, profiles []etcdProfile) map[string]*certs.Certificate {
+func (t *tenant) etcdGeneration(g int, ca *certs.Certificate, profiles []etcdProfile) map[bryggav1alpha1.EtcdCertificateRole]*certs.Certificate {
 	if g == 0 || !t.etcdComplete(g) {
 		return nil
 	}
-	s := t.existing[t.etcdName("ca", g)]
-	if bundle, err := certs.ParseCerts(s.Data[caKey]); !isImmutable(s) || err != nil || len(bundle) != 1 || !bundle[0].Equal(ca.Cert) {
+	s := t.existing[t.etcdName(bryggav1alpha1.EtcdCARole, g)]
+	if bundle, err := certs.ParseCerts(s.Data[bryggav1alpha1.CACertKey]); !isImmutable(s) || err != nil || len(bundle) != 1 || !bundle[0].Equal(ca.Cert) {
 		return nil
 	}
-	kept := make(map[string]*certs.Certificate, len(profiles))
+	kept := make(map[bryggav1alpha1.EtcdCertificateRole]*certs.Certificate, len(profiles))
 	for _, p := range profiles {
 		s := t.existing[t.etcdName(p.role, g)]
-		c, err := certs.Parse(s.Data[corev1.TLSCertKey], s.Data[corev1.TLSPrivateKeyKey])
+		c, err := certs.Parse(s.Data[bryggav1alpha1.TLSCertKey], s.Data[bryggav1alpha1.TLSPrivateKeyKey])
 		if !isImmutable(s) || err != nil || !t.current(c, ca, p.profile) {
 			return nil
 		}
@@ -832,19 +792,23 @@ func (t *tenant) etcdGeneration(g int, ca *certs.Certificate, profiles []etcdPro
 	return kept
 }
 
-func (t *tenant) etcdName(role string, generation int) string {
-	return t.name("etcd-" + role + "-" + strconv.Itoa(generation))
+func (t *tenant) etcdName(role bryggav1alpha1.EtcdCertificateRole, generation int) string {
+	return bryggav1alpha1.EtcdCertificateSecretName(t.cp.Name, role, generation)
+}
+
+func (t *tenant) secret(s bryggav1alpha1.Secret) string {
+	return s.Name(t.cp.Name)
 }
 
 type etcdProfile struct {
-	role    string
+	role    bryggav1alpha1.EtcdCertificateRole
 	profile certs.Profile
 }
 
 // etcdProfiles are the certificates etcd-druid expects for the Etcd named
 // <cp>-etcd, as hack/etcd-spike/pki.sh issued them.
 func (t *tenant) etcdProfiles() []etcdProfile {
-	n := t.name("etcd")
+	n := bryggav1alpha1.EtcdName(t.cp.Name)
 	forms := func(names ...string) []string {
 		var out []string
 		for _, s := range names {
@@ -855,10 +819,10 @@ func (t *tenant) etcdProfiles() []etcdProfile {
 	local := []string{n + "-local"}
 	loopback := []net.IP{net.ParseIP("127.0.0.1")}
 	return []etcdProfile{
-		{"server", certs.Profile{CommonName: n, Usages: serverClientAuth, DNSNames: slices.Concat(local, forms(n+"-client", "*."+n+"-peer"), []string{"localhost"}), IPAddresses: loopback}},
-		{"peer", certs.Profile{CommonName: n + "-peer", Usages: serverClientAuth, DNSNames: forms(n+"-peer", "*."+n+"-peer")}},
-		{"backup-restore", certs.Profile{CommonName: n + "-backup-restore", Usages: serverAuth, DNSNames: slices.Concat(local, forms(n+"-client"), []string{"localhost"}), IPAddresses: loopback}},
-		{"client", certs.Profile{CommonName: n + "-client", Usages: clientAuth}},
+		{bryggav1alpha1.EtcdServerRole, certs.Profile{CommonName: n, Usages: serverClientAuth, DNSNames: slices.Concat(local, forms(n+"-client", "*."+n+"-peer"), []string{"localhost"}), IPAddresses: loopback}},
+		{bryggav1alpha1.EtcdPeerRole, certs.Profile{CommonName: n + "-peer", Usages: serverClientAuth, DNSNames: forms(n+"-peer", "*."+n+"-peer")}},
+		{bryggav1alpha1.EtcdBackupRestoreRole, certs.Profile{CommonName: n + "-backup-restore", Usages: serverAuth, DNSNames: slices.Concat(local, forms(n+"-client"), []string{"localhost"}), IPAddresses: loopback}},
+		{bryggav1alpha1.EtcdClientRole, certs.Profile{CommonName: n + "-client", Usages: clientAuth}},
 	}
 }
 
@@ -874,19 +838,20 @@ func (r *Reconciler) applySecret(ctx context.Context, t *tenant, name string, ty
 	}
 	labels[bryggav1alpha1.ControlPlaneLabel] = cp.Name
 	s := t.existing[name]
+	hash := bryggav1alpha1.DataHash(content)
 	changes := s == nil || s.Type != typ || !maps.EqualFunc(s.Data, content, bytes.Equal)
-	if !changes && t.owns(s) && hasLabels(s, labels) && (!immutable || isImmutable(s)) {
+	if !changes && t.owns(s) && hasLabels(s, labels) && s.Annotations[bryggav1alpha1.DataHashAnnotation] == hash && (!immutable || isImmutable(s)) {
 		return
 	}
 	if t.writeErr == nil {
-		t.writeErr = r.write(ctx, t, name, typ, content, labels, immutable)
+		t.writeErr = r.write(ctx, t, name, typ, content, labels, hash, immutable)
 	}
 	if t.writeErr != nil && (changes || labels[bryggav1alpha1.EtcdCertificatesLabel] != "") {
 		t.pending = append(t.pending, name)
 	}
 }
 
-func (r *Reconciler) write(ctx context.Context, t *tenant, name string, typ corev1.SecretType, content map[string][]byte, labels map[string]string, immutable bool) error {
+func (r *Reconciler) write(ctx context.Context, t *tenant, name string, typ corev1.SecretType, content map[string][]byte, labels map[string]string, hash string, immutable bool) error {
 	cp := t.cp
 	owner := metav1ac.OwnerReference().
 		WithAPIVersion(bryggav1alpha1.GroupVersion.String()).
@@ -895,7 +860,8 @@ func (r *Reconciler) write(ctx context.Context, t *tenant, name string, typ core
 		WithUID(cp.UID).
 		WithController(true).
 		WithBlockOwnerDeletion(true)
-	secret := corev1ac.Secret(name, cp.Namespace).WithLabels(labels).WithOwnerReferences(owner).WithType(typ).WithData(content)
+	annotations := map[string]string{bryggav1alpha1.DataHashAnnotation: hash}
+	secret := corev1ac.Secret(name, cp.Namespace).WithLabels(labels).WithAnnotations(annotations).WithOwnerReferences(owner).WithType(typ).WithData(content)
 	if immutable {
 		secret.WithImmutable(true)
 	}
@@ -903,7 +869,7 @@ func (r *Reconciler) write(ctx context.Context, t *tenant, name string, typ core
 		return fmt.Errorf("apply Secret %s: %w", name, err)
 	}
 	t.existing[name] = &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cp.Namespace, Labels: labels,
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cp.Namespace, Labels: labels, Annotations: annotations,
 			OwnerReferences: []metav1.OwnerReference{{APIVersion: *owner.APIVersion, Kind: kind, Name: cp.Name, UID: cp.UID, Controller: owner.Controller}}},
 		Type:      typ,
 		Data:      content,

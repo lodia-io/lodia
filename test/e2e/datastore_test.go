@@ -23,15 +23,12 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -42,6 +39,7 @@ import (
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
 	"github.com/segla-io/brygga/internal/controller/datastore"
 	"github.com/segla-io/brygga/internal/controller/pki"
+	"github.com/segla-io/brygga/internal/operator"
 )
 
 const (
@@ -99,7 +97,7 @@ func TestDatastoreOnKind(t *testing.T) {
 				return issued(ctx, k8s, 1)
 			})
 			until(ctx, t, 5*time.Minute, "DatastoreReady=True for generation 1", func(ctx context.Context) error {
-				return conditionIs(ctx, k8s, metav1.ConditionTrue, datastore.ReasonReady)
+				return conditionIs(ctx, k8s, metav1.ConditionTrue, bryggav1alpha1.ReasonReady)
 			})
 			pod := &corev1.Pod{}
 			if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: controlPlane + "-etcd-0"}, pod); err != nil {
@@ -117,10 +115,10 @@ func TestDatastoreOnKind(t *testing.T) {
 		}).
 		Assess("a member Secret deleted, PKI issues generation 2 under the same CA and the member rolls onto it", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			first := &corev1.Secret{}
-			if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: datastore.SecretName(controlPlane, "ca", 1)}, first); err != nil {
+			if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: bryggav1alpha1.EtcdCertificateSecretName(controlPlane, bryggav1alpha1.EtcdCARole, 1)}, first); err != nil {
 				t.Fatal(err)
 			}
-			member := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: tenant, Name: datastore.SecretName(controlPlane, "client", 1)}}
+			member := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: tenant, Name: bryggav1alpha1.EtcdCertificateSecretName(controlPlane, bryggav1alpha1.EtcdClientRole, 1)}}
 			if err := k8s.Delete(ctx, member); err != nil {
 				t.Fatal(err)
 			}
@@ -129,10 +127,10 @@ func TestDatastoreOnKind(t *testing.T) {
 				return issued(ctx, k8s, 2)
 			})
 			second := &corev1.Secret{}
-			if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: datastore.SecretName(controlPlane, "ca", 2)}, second); err != nil {
+			if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: bryggav1alpha1.EtcdCertificateSecretName(controlPlane, bryggav1alpha1.EtcdCARole, 2)}, second); err != nil {
 				t.Fatal(err)
 			}
-			if !bytes.Equal(first.Data["ca.crt"], second.Data["ca.crt"]) {
+			if !bytes.Equal(first.Data[bryggav1alpha1.CACertKey], second.Data[bryggav1alpha1.CACertKey]) {
 				t.Fatalf("generation 2 is not under the CA of generation 1")
 			}
 			t.Logf("generation 2 is under the CA of generation 1")
@@ -153,7 +151,7 @@ func TestDatastoreOnKind(t *testing.T) {
 				return nil
 			})
 			until(ctx, t, 2*time.Minute, "DatastoreReady leaves True for the roll", func(ctx context.Context) error {
-				return conditionIs(ctx, k8s, metav1.ConditionFalse, datastore.ReasonProvisioning)
+				return conditionIs(ctx, k8s, metav1.ConditionFalse, bryggav1alpha1.ReasonProvisioning)
 			})
 			until(ctx, t, 5*time.Minute, "the member runs with generation 2 mounted", func(ctx context.Context) error {
 				pod := &corev1.Pod{}
@@ -173,7 +171,7 @@ func TestDatastoreOnKind(t *testing.T) {
 				if ptr.Deref(etcd.Status.ObservedGeneration, 0) != etcd.Generation {
 					return fmt.Errorf("etcd-druid observed generation %d of %d", ptr.Deref(etcd.Status.ObservedGeneration, 0), etcd.Generation)
 				}
-				return conditionIs(ctx, k8s, metav1.ConditionTrue, datastore.ReasonReady)
+				return conditionIs(ctx, k8s, metav1.ConditionTrue, bryggav1alpha1.ReasonReady)
 			})
 			logEtcd(ctx, t, k8s)
 			return ctx
@@ -240,27 +238,12 @@ func installEtcdDruid(t *testing.T, kubeconfig string) {
 func manager(t *testing.T, cfg *rest.Config, scheme *runtime.Scheme) ctrl.Manager {
 	t.Helper()
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
-	labelled, err := labels.NewRequirement(bryggav1alpha1.ControlPlaneLabel, selection.Exists, nil)
+	cache, err := operator.Cache()
 	if err != nil {
 		t.Fatal(err)
 	}
-	everything := cache.ByObject{Label: labels.Everything()}
-	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
-		Scheme:  scheme,
-		Metrics: metricsserver.Options{BindAddress: "0"},
-		Cache: cache.Options{
-			DefaultLabelSelector:        labels.NewSelector().Add(*labelled),
-			DefaultTransform:            cache.TransformStripManagedFields(),
-			ReaderFailOnMissingInformer: true,
-			ByObject: map[client.Object]cache.ByObject{
-				&bryggav1alpha1.ControlPlane{}:      everything,
-				&bryggav1alpha1.DatastoreClass{}:    everything,
-				&bryggav1alpha1.Datastore{}:         everything,
-				&bryggav1alpha1.KubeconfigRequest{}: everything,
-				&bryggav1alpha1.Backup{}:            everything,
-			},
-		},
-	})
+	cache.ReaderFailOnMissingInformer = true
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{Scheme: scheme, Metrics: metricsserver.Options{BindAddress: "0"}, Cache: cache})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,8 +281,8 @@ func issued(ctx context.Context, k8s client.Client, generation int) error {
 			names = append(names, secret.Name)
 		}
 	}
-	for _, certificate := range datastore.Certificates {
-		if name := datastore.SecretName(controlPlane, certificate, generation); !slices.Contains(names, name) {
+	for _, certificate := range bryggav1alpha1.EtcdCertificateRoles() {
+		if name := bryggav1alpha1.EtcdCertificateSecretName(controlPlane, certificate, generation); !slices.Contains(names, name) {
 			return fmt.Errorf("%s is missing; generation %d holds %s", name, generation, strings.Join(names, ", "))
 		}
 	}
@@ -360,8 +343,8 @@ func secretVolumes(pod *corev1.Pod) []string {
 
 func mountsGeneration(pod *corev1.Pod, generation int) error {
 	mounted := secretVolumes(pod)
-	for _, certificate := range datastore.Certificates {
-		if name := datastore.SecretName(controlPlane, certificate, generation); !slices.Contains(mounted, name) {
+	for _, certificate := range bryggav1alpha1.EtcdCertificateRoles() {
+		if name := bryggav1alpha1.EtcdCertificateSecretName(controlPlane, certificate, generation); !slices.Contains(mounted, name) {
 			return fmt.Errorf("pod %s does not mount %s; it mounts %s", pod.Name, name, strings.Join(mounted, ", "))
 		}
 	}
