@@ -223,9 +223,20 @@ The claims record it too, for their reclaim, so an `Etcd` created again over
 this `ControlPlane`'s claims, after someone deleted it, takes the class they
 record rather than `className` or the current default, which could give it
 another bucket and placement; while that class is gone, it is
-`DatastoreClassNotFound` and nothing is created. An edit of that class reaches the `Etcd` of every tenant on it at once and
-rolls their members, a single member with an outage, until Lifecycle holds
-class edits for each tenant's maintenance window in phase 2. A recorded
+`DatastoreClassNotFound` and nothing is created. An edit of that class that
+changes the `Etcd`'s spec reaches the `Etcd` of every tenant on it at once
+and rolls their members, a single member with an outage, until Lifecycle
+holds class edits for each tenant's maintenance window in phase 2: etcd-druid
+carries every field Brygga renders from the class into the pod template
+([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L161-L203)), the backup sidecar's arguments
+([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L430-L601)) or the etcd ConfigMap, whose checksum is in
+the pod template ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L220-L227)), and updates the StatefulSet
+with `RollingUpdate` ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L57)). Edits that roll nothing:
+`storage.className` and `storage.size`, which reach only `Etcd`s created
+afterwards; `storage.reclaimPolicy` and `backup.retention.afterDelete`,
+which no `Etcd` field carries; `backup.store.secretRef` and `.region`,
+which change only the data of the copy `<cp>-etcd-backup`, whose name the
+`Etcd` keeps. A recorded
 class that is deleted stops only its own edits: the `Etcd` keeps every field
 the class gave it, still takes each new certificate generation and reports
 its readiness as before, and its claims are kept on deletion. The

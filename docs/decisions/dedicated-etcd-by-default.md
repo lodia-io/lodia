@@ -161,9 +161,15 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   `ControlPlane`'s UID, an orphan or a predecessor's not yet collected:
   Datastore neither adopts it, which a server-side apply with
   `ForceOwnership` would do, nor deletes it.
-- Every edit of a class that reaches the `Etcd` rolls its members, a single
-  member with an outage, so a class edit is a Brygga-initiated change for each
-  tenant on it and rolls in that tenant's maintenance window
+- Every edit of a class that changes the `Etcd`'s spec rolls its members, a
+  single member with an outage, since etcd-druid carries every field Brygga
+  renders from the class into the pod template, directly, through the
+  sidecar's arguments or through the checksum of its ConfigMap
+  ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L161-L227));
+  the storage fields, the reclaim policy, `retention.afterDelete`, the
+  credentials' `secretRef` and the region change no spec and roll nothing.
+  So a class edit is a Brygga-initiated change for each tenant on it and
+  rolls in that tenant's maintenance window
   ([upgrades-and-maintenance-windows](upgrades-and-maintenance-windows.md));
   the `Etcd` records the class generation it was rendered from. The storage
   class and size apply when the `Etcd` is created and not after: the first is
