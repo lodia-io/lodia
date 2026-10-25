@@ -204,14 +204,16 @@ func (r *Reconciler) apply(ctx context.Context, etcd *druidv1alpha1.Etcd) (*drui
 }
 
 // readiness is DatastoreReady from etcd-druid's report and the StatefulSet it
-// runs, in the order Gardener waits for an Etcd
-// (gardener/gardener@v1.154.0 pkg/component/etcd/etcd/waiter.go#L21-L97): not
-// being deleted, no last errors, the generation observed, every member
-// updated, ready. Then the StatefulSet itself, read from the API server, must
-// mount the certificate generation on every replica, since etcd-druid computes
-// ready from its cached StatefulSet before it stamps the observed generation.
-// The second result says the Etcd's report is complete and only the
-// StatefulSet lags, which nothing watched reports.
+// runs. The report is read with the checks Gardener makes before it counts an
+// Etcd ready (gardener/gardener@v1.154.0
+// pkg/component/etcd/etcd/waiter.go#L49-L104): no last errors, no deletion,
+// the generation observed, every member updated, ready; Gardener checks the
+// last errors first, a deletion is reported first here. Then the StatefulSet
+// itself, read from the API server, must mount the certificate generation on
+// every replica, since etcd-druid computes ready from its cached StatefulSet
+// before it stamps the observed generation. The second result says the
+// Etcd's report is complete and only the StatefulSet lags, which nothing
+// watched reports.
 func readiness(cp string, etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet, generation int) (metav1.Condition, bool) {
 	not := func(message string) (metav1.Condition, bool) {
 		return newCondition(metav1.ConditionFalse, ReasonProvisioning, message), false
@@ -248,8 +250,13 @@ func readiness(cp string, etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet, gen
 		condition, _ := not(fmt.Sprintf("StatefulSet %s does not mount certificate generation %d yet", sts.Name, generation))
 		return condition, true
 	}
+	if sts.Status.ObservedGeneration < sts.Generation {
+		condition, _ := not(fmt.Sprintf("the StatefulSet controller has not observed generation %d of StatefulSet %s, observedGeneration %d",
+			sts.Generation, sts.Name, sts.Status.ObservedGeneration))
+		return condition, true
+	}
 	replicas := ptr.Deref(sts.Spec.Replicas, 1)
-	if sts.Status.ObservedGeneration != sts.Generation || sts.Status.UpdatedReplicas != replicas || sts.Status.ReadyReplicas != replicas {
+	if sts.Status.UpdatedReplicas != replicas || sts.Status.ReadyReplicas != replicas {
 		condition, _ := not(fmt.Sprintf("StatefulSet %s: %d of %d replicas updated, %d ready", sts.Name, sts.Status.UpdatedReplicas, replicas, sts.Status.ReadyReplicas))
 		return condition, true
 	}

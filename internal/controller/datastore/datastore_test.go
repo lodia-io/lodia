@@ -890,6 +890,8 @@ func TestDatastoreReadyFollowsEtcdStatus(t *testing.T) {
 			"etcd-druid reports no AllMembersUpdated condition on Etcd reported-etcd"},
 		{"not ready", func(s *druidv1alpha1.EtcdStatus) { s.Ready, s.ReadyReplicas = new(false), 0 }, nil,
 			"etcd-druid reports Etcd reported-etcd not ready, 0 of 1 replicas"},
+		{"StatefulSet generation not observed", nil, func(s *appsv1.StatefulSetStatus) { s.ObservedGeneration-- },
+			"the StatefulSet controller has not observed generation 1 of StatefulSet reported-etcd, observedGeneration 0"},
 		{"StatefulSet not updated", nil, func(s *appsv1.StatefulSetStatus) { s.UpdatedReplicas = 0 },
 			"StatefulSet reported-etcd: 0 of 1 replicas updated, 1 ready"},
 		{"StatefulSet not ready", nil, func(s *appsv1.StatefulSetStatus) { s.ReadyReplicas = 0 },

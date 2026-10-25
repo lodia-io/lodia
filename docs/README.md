@@ -220,28 +220,39 @@ everything the class does not set is etcd-druid's default:
 
 `DatastoreReady` is `Unknown`, reason `Reconciling`, until the controller's
 first pass has finished, and `Provisioning` until a complete certificate
-generation exists and etcd-druid reports the `Etcd` for its current
-generation, checked in the order Gardener waits for an `Etcd`
-([waiter.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/component/etcd/etcd/waiter.go#L21-L97)):
-not being deleted, no `lastErrors` (they go into the message),
-`observedGeneration` current, `AllMembersUpdated` True, `ready`; then the
+generation exists and etcd-druid reports the `Etcd` ready for its current
+generation. etcd-druid's report is read with the checks Gardener makes
+before it counts an `Etcd` ready
+([waiter.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/component/etcd/etcd/waiter.go#L49-L104)):
+no `lastErrors` (they go into the message), no deletion timestamp,
+`observedGeneration` current, `AllMembersUpdated` True, `ready`. Gardener
+checks `lastErrors` first; Datastore reports a deletion first. Then the
 StatefulSet itself, read from the API server, must mount the certificate
-generation with every replica updated and ready, since etcd-druid computes
-`ready` from its cached StatefulSet before it stamps the observed generation
-and would otherwise report a generation switch ready before the member
-rolled. `DatastoreClassNotFound`, before the `Etcd` exists, when the class
-is missing or more than one class is the default; `VolumesExist` when claims
-`<cp>-etcd-<cp>-etcd-<n>` without this `ControlPlane`'s UID label stand where its first
-`Etcd` would be created, since a StatefulSet re-attaches a claim of that
-name and starting from another tenant's data is a restore, not a start —
-nothing is created until they are deleted — and when an `Etcd` `<cp>-etcd`
-exists whose controller is not this `ControlPlane` (an orphan, or a
-predecessor's the garbage collector has not removed yet): it is neither
-adopted nor written, and the message names it; `Deleting` while the
-`ControlPlane` is being deleted; True once every check above holds. `status.datastore` is `kind: Dedicated`, the `Etcd`'s
-name and its member count. Every message is built from the state alone, so
-a pass that changes nothing writes nothing; an error of the API server ends
-the pass, goes to the log and leaves the status as it was
+generation, its controller must have observed its generation, and every
+replica must be updated and ready: etcd-druid syncs the StatefulSet, then
+computes `ready` from the StatefulSet its cache holds, and only then stamps
+`observedGeneration`
+([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcd/reconciler.go#L102-L148),
+[reconcile_status.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcd/reconcile_status.go#L57-L80),
+[reconcile_complete.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcd/reconcile_complete.go#L33-L42)),
+so its report can call a generation switch ready before the member rolled.
+True once every check holds.
+
+The other reasons: `DatastoreClassNotFound`, before the `Etcd` exists, when
+the class is missing or more than one class is the default. `VolumesExist`
+when claims `<cp>-etcd-<cp>-etcd-<n>` without this `ControlPlane`'s UID label
+stand where its first `Etcd` would be created, since a StatefulSet
+re-attaches a claim of that name
+([stateful_pod_control.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/statefulset/stateful_pod_control.go#L381-L405))
+and starting from another tenant's data is a restore, not a start: nothing
+is created until they are deleted. `VolumesExist` too when an `Etcd`
+`<cp>-etcd` exists whose controller is not this `ControlPlane`, an orphan or
+a predecessor's the garbage collector has not removed yet: it is neither
+adopted nor written, and the message names it. `Deleting` while the
+`ControlPlane` is being deleted. `status.datastore` is `kind: Dedicated`, the
+`Etcd`'s name and its member count. Every message is built from the state
+alone, so a pass that changes nothing writes nothing; an error of the API
+server ends the pass, goes to the log and leaves the status as it was
 ([independent-controllers](decisions/independent-controllers.md)).
 
 Identities: no root CA key is mounted into a control plane pod; the
