@@ -239,6 +239,10 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 	if err := r.labelClaims(ctx, cp, etcd.Annotations[ClassAnnotation]); err != nil {
 		return nil, metav1.Condition{}, 0, err
 	}
+	absent, err := r.missingSecrets(ctx, cp, etcd, secrets)
+	if err != nil {
+		return nil, metav1.Condition{}, 0, err
+	}
 	sts := &appsv1.StatefulSet{}
 	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: etcdName(cp.Name)}, sts); err != nil {
 		if !apierrors.IsNotFound(err) {
@@ -246,7 +250,7 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 		}
 		sts = nil
 	}
-	condition, statefulSetLags := readiness(cp.Name, etcd, sts, generation)
+	condition, statefulSetLags := readiness(cp.Name, etcd, sts, generation, absent)
 	condition.Message = note(condition.Message, held)
 	if statefulSetLags {
 		return etcd, condition, 15 * time.Second, refusal
@@ -386,10 +390,44 @@ func controlledElsewhere(obj metav1.Object, cp *bryggav1alpha1.ControlPlane) *me
 	return nil
 }
 
+// A terminating Secret is still mounted: etcd-druid holds its finalizer on
+// every Secret an Etcd references until none does
+// (etcd-druid@v0.39.0 internal/controller/secret/reconciler.go#L44-L101).
+func (r *Reconciler) missingSecrets(ctx context.Context, cp *bryggav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, secrets []metav1.PartialObjectMetadata) ([]string, error) {
+	configs := []*druidv1alpha1.TLSConfig{etcd.Spec.Etcd.ClientUrlTLS, etcd.Spec.Backup.TLS}
+	if peer := etcd.Spec.Etcd.PeerUrlTLS; peer != nil {
+		configs = append(configs, &peer.TLSConfig)
+	}
+	var names []string
+	for _, tls := range configs {
+		if tls != nil {
+			names = append(names, tls.TLSCASecretRef.Name, tls.ServerTLSSecretRef.Name, tls.ClientTLSSecretRef.Name)
+		}
+	}
+	if store := etcd.Spec.Backup.Store; store != nil && store.SecretRef != nil {
+		names = append(names, store.SecretRef.Name)
+	}
+	slices.Sort(names)
+	var missing []string
+	for _, name := range slices.Compact(names) {
+		if name == "" {
+			continue
+		}
+		secret, err := r.secret(ctx, cp, name, secrets)
+		if err != nil {
+			return nil, err
+		}
+		if secret == nil {
+			missing = append(missing, name)
+		}
+	}
+	return missing, nil
+}
+
 func newestCompleteGeneration(cp *bryggav1alpha1.ControlPlane, secrets []metav1.PartialObjectMetadata) (int, bool) {
 	labelled := make(map[string]string, len(secrets))
 	for _, secret := range secrets {
-		if generation, ok := secret.Labels[bryggav1alpha1.EtcdCertificatesLabel]; ok && secret.DeletionTimestamp.IsZero() {
+		if generation, ok := secret.Labels[bryggav1alpha1.EtcdCertificatesLabel]; ok && secret.DeletionTimestamp.IsZero() && metav1.IsControlledBy(&secret, cp) {
 			labelled[secret.Name] = generation
 		}
 	}
@@ -413,10 +451,10 @@ func newestCompleteGeneration(cp *bryggav1alpha1.ControlPlane, secrets []metav1.
 	return newest, found
 }
 
-// The Etcd moves forward only: while a Secret of the generation it names is
-// being deleted the newest complete one can be older, and switching back to
-// it would roll the members twice, back and then forward to the generation
-// PKI issues next.
+// The Etcd never moves to a generation below the one it names: the newest
+// complete one is older while a Secret of the named one is being deleted, and
+// the older generation PKI keeps can have expired, as it has for the last
+// four months of its life with one-year leaves.
 func namedGeneration(cp string, etcd *druidv1alpha1.Etcd) (int, bool) {
 	if etcd == nil || etcd.Spec.Etcd.ClientUrlTLS == nil {
 		return 0, false

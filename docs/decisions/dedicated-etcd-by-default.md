@@ -20,10 +20,12 @@ not.
   sidecar's serving certificate; etcd-druid takes them as Secrets, because it
   does not generate TLS itself
   ([securing etcd clusters](https://gardener.github.io/etcd-druid/usage/securing-etcd-clusters.html)),
-  and the `Etcd` names the newest complete generation of them, never one
-  below the generation it already names, so a rotation is one roll of the
-  members
-  ([staged-credential-rotation](staged-credential-rotation.md)).
+  and the `Etcd` names the newest complete generation of them that the
+  `ControlPlane` controls, never one below the generation it already names,
+  so a rotation is one roll of the members
+  ([staged-credential-rotation](staged-credential-rotation.md)): a
+  predecessor's or an orphaned generation trusts another etcd CA, and the
+  older generation PKI keeps can have expired.
   Client, peer and backup-restore TLS are set together, and the sidecar's
   certificate also names the client Service, through which etcd-druid calls
   it ([etcd spike](../etcd-spike-2026-10.md), findings 1 and 2).
@@ -249,6 +251,7 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   `TestConditionsFromState` (Unknown on the first visit, an API error leaves
   the status alone), `TestEtcdRefused` (an admission policy refuses the
   `Etcd`), `TestPaused`, `TestNewestCompleteGeneration`,
+  `TestOnlyItsOwnGenerationsCount`, `TestMountedSecretsMustExist`,
   `TestGenerationsMoveForward`, `TestDatastoreClassNotFound`,
   `TestBackupCredentialsCopied`, `TestHeldClass`,
   `TestBackupCopyFollowsItsEvents`, `TestPredecessorsCopy`,

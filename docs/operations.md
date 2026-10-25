@@ -37,6 +37,7 @@ itself and the support policy. Installation is in
 | `DatastoreReady=False`, `EtcdRefused` | the API server refuses the `Etcd` Brygga renders; the refusal is in Brygga's log (`controller="datastore"`). An admission policy on `Etcd`s: let it admit Brygga's. An etcd-druid whose CRD moved: the version Brygga pins. A `DatastoreClass` stored before a rule one of its values breaks: validation ratcheting keeps an unchanged field on update, so such a class is refused only when an `Etcd` is rendered from it; after an upgrade of Brygga, check each class by creating a copy under another name with `--dry-run=server`, which validates every field, and fix what it refuses |
 | `DatastoreReady=Unknown`, `Reconciling`, or a `DatastoreReady` whose `observedGeneration` lags the `ControlPlane`'s generation | the Datastore controller's passes end in an error of the API server; the error is in Brygga's log (`controller="datastore"`), never in the condition |
 | `DatastoreReady`'s message ends with `DatastoreClass <c> is held:` | the class's credentials copy cannot be made, and the `Etcd` keeps the class fields it has while it still takes new certificate generations: restore the class's Secret the message names; or wait while the garbage collector removes a predecessor's `<cp>-etcd-backup`, which another owner controls, and delete it if its owner is something else; or read Brygga's log when the API server refuses the copy. A class edit made meanwhile applies once the copy can be made |
+| `DatastoreReady=False`, `Provisioning`, `Secrets Etcd <cp>-etcd mounts do not exist` | someone removed etcd-druid's finalizer from Secrets the `Etcd` names and deleted them; the members run on what they mounted until they restart: the [runbook](#a-secret-the-etcd-mounts-is-gone) |
 | `DatastoreReady=False`, `Provisioning` for long | the message says what is awaited: a complete generation of the etcd certificates (PKI), the class's credentials copy, or etcd-druid's report with its `lastErrors`; then the `Etcd`'s status and conditions, etcd-druid's log, and the tenant's `EtcdOpsTask`s, where a blocked operation shows ([etcd spike](etcd-spike-2026-10.md), finding 4) |
 | `DatastoreReady=False`, `QuorumLost` | fewer than two of three members up; the [lost quorum](#lost-etcd-quorum) runbook |
 | API calls fail with `etcdserver: mvcc: database space exceeded` | the [space quota](#etcd-space-quota) runbook; `status.datastore.dbSizeBytes` against the class quota |
@@ -76,6 +77,29 @@ itself and the support policy. Installation is in
    `Backup` and move the nodes (new token, `kubeadm join`).
 4. Afterwards: the API server rolls once (Datastore detects the restore);
    check `status.datastore.lastBackup` is moving again.
+
+### A Secret the Etcd mounts is gone
+
+etcd-druid holds its finalizer `druid.gardener.cloud/etcd-druid` on every
+Secret an `Etcd` references until none does
+([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/secret/reconciler.go#L44-L101)),
+so the certificate generation the `Etcd` names and `<cp>-etcd-backup` stay,
+terminating at worst, as long as it names them. Never remove that finalizer.
+If someone did and the Secrets are gone, a member runs on what it mounted
+until it restarts, and then cannot start:
+
+1. A gone `<cp>-etcd-backup` comes back at the next pass, from the class's
+   Secret; nothing else is needed.
+2. For a gone certificate generation, delete the `Etcd` `<cp>-etcd`, not the
+   `ControlPlane`: etcd-druid deletes the StatefulSet and keeps the claims,
+   the Datastore controller creates the `Etcd` again on the newest complete
+   generation, and the new StatefulSet re-attaches the claims
+   `<cp>-etcd-<cp>-etcd-<n>` by name, so the members start on their data and
+   fresh mounts. Do it even when `DatastoreReady` turns True again by itself:
+   PKI numbers generations from the Secrets present and may have issued the
+   gone number again with new content, which a running member never reads,
+   since the Secrets are immutable. A single member is down until it starts
+   again.
 
 ### etcd space quota
 

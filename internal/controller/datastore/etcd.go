@@ -199,12 +199,15 @@ func (r *Reconciler) apply(ctx context.Context, etcd *druidv1alpha1.Etcd) (*drui
 // the API server: etcd-druid computes ready from its cached StatefulSet before
 // it stamps the observed generation. The second result is a StatefulSet that
 // lags a complete report, which no watch brings back.
-func readiness(cp string, etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet, generation int) (metav1.Condition, bool) {
+func readiness(cp string, etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet, generation int, missing []string) (metav1.Condition, bool) {
 	not := func(message string) (metav1.Condition, bool) {
 		return newCondition(metav1.ConditionFalse, ReasonProvisioning, message), false
 	}
 	if !etcd.DeletionTimestamp.IsZero() {
 		return not(fmt.Sprintf("Etcd %s is being deleted", etcd.Name))
+	}
+	if len(missing) > 0 {
+		return not(fmt.Sprintf("Secrets Etcd %s mounts do not exist: %s", etcd.Name, strings.Join(missing, ", ")))
 	}
 	if len(etcd.Status.LastErrors) > 0 {
 		errs := make([]string, 0, len(etcd.Status.LastErrors))

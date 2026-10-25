@@ -296,7 +296,7 @@ func credentials(ns string) *corev1.Secret {
 
 func writeGeneration(t *testing.T, ns, cp string, generation int, only ...string) {
 	t.Helper()
-	secrets, err := datastoretest.Generation(ns, cp, generation)
+	secrets, err := datastoretest.Generation(getControlPlane(t, ns, cp), generation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -731,7 +731,7 @@ func TestNewestCompleteGeneration(t *testing.T) {
 		t.Fatalf("four of five Secrets of generation 2: %v", err)
 	}
 
-	secrets, err := datastoretest.Generation(ns, "dev", 2)
+	secrets, err := datastoretest.Generation(getControlPlane(t, ns, "dev"), 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -813,6 +813,80 @@ func TestGenerationsMoveForward(t *testing.T) {
 	patch = client.MergeFrom(held.DeepCopy())
 	held.Finalizers = nil
 	if err := k8s.Patch(t.Context(), held, patch); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOnlyItsOwnGenerationsCount(t *testing.T) {
+	ns := namespace(t)
+	createClass(t, newClass("owned", "Retain"))
+	create(t, controlPlane(ns, "dev", "owned"))
+	writeWith := func(generation int, owners []metav1.OwnerReference) {
+		secrets, err := datastoretest.Generation(getControlPlane(t, ns, "dev"), generation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, secret := range secrets {
+			secret.OwnerReferences = owners
+			create(t, secret)
+		}
+	}
+	writeWith(1, []metav1.OwnerReference{{
+		APIVersion: "brygga.segla.io/v1alpha1", Kind: "ControlPlane", Name: "dev", UID: "11111111-2222-3333-4444-555555555555",
+		Controller: new(true), BlockOwnerDeletion: new(true),
+	}})
+	writeWith(2, nil)
+	settle(t, ns, "dev")
+	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonProvisioning, "waiting for a complete generation of the etcd certificates")
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev-etcd"}, &druidv1alpha1.Etcd{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("want no Etcd on a predecessor's or an unowned generation, got %v", err)
+	}
+
+	writeGeneration(t, ns, "dev", 3)
+	waitEtcd(t, ns, "dev", namesGeneration(3))
+}
+
+func TestMountedSecretsMustExist(t *testing.T) {
+	ns := namespace(t)
+	const cp = "mounted"
+	createClass(t, newClass("mounting", "Retain"))
+	create(t, controlPlane(ns, cp, "mounting"))
+	writeGeneration(t, ns, cp, 1)
+	writeGeneration(t, ns, cp, 2)
+	waitEtcd(t, ns, cp, namesGeneration(2))
+	readyOn(t, ns, cp, 2)
+
+	for _, certificate := range datastore.Certificates {
+		if err := k8s.Delete(t.Context(), &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: datastore.SecretName(cp, certificate, 2)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitCondition(t, ns, cp, metav1.ConditionFalse, datastore.ReasonProvisioning,
+		"Secrets Etcd mounted-etcd mounts do not exist: mounted-etcd-backup-restore-2, mounted-etcd-ca-2, mounted-etcd-client-2, mounted-etcd-peer-2, mounted-etcd-server-2")
+	if err := namesGeneration(2)(getEtcd(t, ns, cp)); err != nil {
+		t.Fatalf("the Etcd left the generation it names for an older one: %v", err)
+	}
+
+	writeGeneration(t, ns, cp, 3)
+	waitEtcd(t, ns, cp, namesGeneration(3))
+	readyOn(t, ns, cp, 3)
+	terminating := &corev1.Secret{}
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: datastore.SecretName(cp, "ca", 3)}, terminating); err != nil {
+		t.Fatal(err)
+	}
+	held := client.MergeFrom(terminating.DeepCopy())
+	terminating.Finalizers = []string{"brygga.segla.io/test"}
+	if err := k8s.Patch(t.Context(), terminating, held); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Delete(t.Context(), terminating); err != nil {
+		t.Fatal(err)
+	}
+	settle(t, ns, cp)
+	waitCondition(t, ns, cp, metav1.ConditionTrue, datastore.ReasonReady, "ready on certificate generation 3")
+	released := client.MergeFrom(terminating.DeepCopy())
+	terminating.Finalizers = nil
+	if err := k8s.Patch(t.Context(), terminating, released); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -254,12 +254,19 @@ everything the class does not set is etcd-druid's default:
 | `backup.retention.afterDelete` | — | phase 2, with the final snapshot |
 | `placement.nodeSelector`, `.tolerations`, `.priorityClassName` | `spec.schedulingConstraints.affinity` (as required node affinity), `.tolerations`, `spec.priorityClassName` | the `Etcd` has no node selector |
 | the `ControlPlane`'s availability | `spec.replicas` | 1 today; 3 with `highAvailability` and 0 while hibernating come with later phases |
-| the etcd certificates, generation `g` | `spec.etcd.clientUrlTls`, `spec.etcd.peerUrlTls`, `spec.backup.tls` | all three name one complete generation, with `dataKey: ca.crt` on the CA; a newer complete generation is one update of the `Etcd`, so one roll of the members; the `Etcd` moves forward only, so while a Secret of the generation it names is being deleted it keeps that generation instead of rolling back to an older complete one and forward again |
+| the etcd certificates, generation `g` | `spec.etcd.clientUrlTls`, `spec.etcd.peerUrlTls`, `spec.backup.tls` | all three name one complete generation, with `dataKey: ca.crt` on the CA; a generation counts only while its five Secrets are this `ControlPlane`'s (its controller reference), so a predecessor's or an orphaned generation, which trusts another etcd CA, never starts an etcd before PKI has checked and adopted it; a newer complete generation is one update of the `Etcd`, so one roll of the members; the `Etcd` never moves below the generation it names: the newest complete one is older while a Secret of the named one is being deleted, and the older generation PKI keeps can have expired |
 
 `DatastoreReady` is `Unknown`, reason `Reconciling`, until the controller's
 first pass has finished, and `Provisioning` until a complete certificate
 generation exists and etcd-druid reports the `Etcd` ready for its current
-generation. etcd-druid's report is read with the checks Gardener makes
+generation. Every Secret the `Etcd` mounts must exist — the five of its
+certificate generation and, with a store, `<cp>-etcd-backup` — or the next
+start of a member fails; a terminating one still counts, since etcd-druid
+holds its finalizer on every Secret an `Etcd` references until none does
+([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/secret/reconciler.go#L44-L101)),
+so a Secret the `Etcd` names is gone only when someone removed that
+finalizer ([operations](operations.md#a-secret-the-etcd-mounts-is-gone)).
+etcd-druid's report is read with the checks Gardener makes
 before it counts an `Etcd` ready
 ([waiter.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/component/etcd/etcd/waiter.go#L49-L104)):
 no `lastErrors` (they go into the message), no deletion timestamp,
