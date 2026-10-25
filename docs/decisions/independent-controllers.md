@@ -47,7 +47,13 @@ Rules:
 - `status.conditions` is a map list keyed by `type`, and each controller
   applies only its own condition through the status subresource with its own
   field manager, so six writers never conflict on the list; one condition
-  type has exactly one writer, and an envtest case enforces it.
+  type, and one top-level status field, has exactly one writer.
+  `internal/controller/writers_test.go` runs every built controller in one
+  manager against one `ControlPlane` and checks, from its `managedFields`,
+  that each condition type and each status field has exactly the field
+  manager of the test's table, which the writer columns of
+  [`api/controlplane.md`](../api/controlplane.md) mirror; a controller that
+  lands adds its rows.
 - A condition counts only while its `observedGeneration` is the object's
   generation; a controller waiting on an older one treats it as Unknown. Each
   controller applies every condition it owns on every generation, Unknown on
