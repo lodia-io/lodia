@@ -26,12 +26,8 @@ import (
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
 )
 
-// Certificates are the five Secrets of a generation of the etcd certificates,
-// <cp>-etcd-<certificate>-<generation>: the CA under ca.crt, and the server,
-// client, peer and backup-restore certificates under tls.crt and tls.key.
 var Certificates = []string{"ca", "server", "client", "peer", "backup-restore"}
 
-// SecretName names one Secret of a certificate generation.
 func SecretName(cp, certificate string, generation int) string {
 	return fmt.Sprintf("%s-etcd-%s-%d", cp, certificate, generation)
 }
@@ -40,15 +36,12 @@ func etcdName(cp string) string { return cp + "-etcd" }
 
 func backupSecretName(cp string) string { return cp + "-etcd-backup" }
 
-// render builds the Etcd from the class and the certificate generation, with
-// etcd-druid's defaults for everything the class does not set. TLS is set on
-// client, peer and backup-restore together: etcd-druid probes the members
-// over HTTPS only with backup.tls, while they serve HTTPS whenever client TLS
-// is on (docs/decisions/dedicated-etcd-by-default.md). The storage class and
-// size come from the current Etcd once it exists: the first is immutable in
-// the Etcd, the second a StatefulSet field that cannot change in place. A nil
-// class is a recorded class that is gone: the current Etcd keeps every field
-// the class gave it.
+// TLS is set on client, peer and backup-restore together: etcd-druid probes
+// the members over HTTPS only with backup.tls, while they serve HTTPS whenever
+// client TLS is on (docs/decisions/dedicated-etcd-by-default.md). The storage
+// class and size come from the current Etcd once it exists: the first is
+// immutable in the Etcd, the second a StatefulSet field that cannot change in
+// place. A nil class is a recorded class that is gone.
 func render(cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClass, generation int, current *druidv1alpha1.Etcd) *druidv1alpha1.Etcd {
 	secret := func(certificate string) corev1.SecretReference {
 		return corev1.SecretReference{Name: SecretName(cp.Name, certificate, generation)}
@@ -142,8 +135,7 @@ func render(cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClas
 	return etcd
 }
 
-// keep copies from the current Etcd every field render takes from the class,
-// the recorded class and its generation included.
+// keep must copy every field render takes from the class.
 func keep(etcd, current *druidv1alpha1.Etcd) {
 	for _, key := range []string{ClassAnnotation, ClassGenerationAnnotation} {
 		if value, ok := current.Annotations[key]; ok {
@@ -167,8 +159,7 @@ func keep(etcd, current *druidv1alpha1.Etcd) {
 	etcd.Spec.PriorityClassName = current.Spec.PriorityClassName
 }
 
-// nodeAffinity is the node selector as the required node affinity the Etcd
-// takes instead.
+// The Etcd has no node selector; a required node affinity says the same.
 func nodeAffinity(nodeSelector map[string]string) *corev1.Affinity {
 	var requirements []corev1.NodeSelectorRequirement
 	for _, key := range slices.Sorted(maps.Keys(nodeSelector)) {
@@ -181,8 +172,6 @@ func nodeAffinity(nodeSelector map[string]string) *corev1.Affinity {
 	}}
 }
 
-// apply writes the Etcd with server-side apply and returns it as the API
-// server holds it, status included.
 func (r *Reconciler) apply(ctx context.Context, etcd *druidv1alpha1.Etcd) (*druidv1alpha1.Etcd, error) {
 	content, err := runtime.DefaultUnstructuredConverter.ToUnstructured(etcd)
 	if err != nil {
@@ -203,17 +192,13 @@ func (r *Reconciler) apply(ctx context.Context, etcd *druidv1alpha1.Etcd) (*drui
 	return result, nil
 }
 
-// readiness is DatastoreReady from etcd-druid's report and the StatefulSet it
-// runs. The report is read with the checks Gardener makes before it counts an
-// Etcd ready (gardener/gardener@v1.154.0
-// pkg/component/etcd/etcd/waiter.go#L49-L104): no last errors, no deletion,
-// the generation observed, every member updated, ready; Gardener checks the
-// last errors first, a deletion is reported first here. Then the StatefulSet
-// itself, read from the API server, must mount the certificate generation on
-// every replica, since etcd-druid computes ready from its cached StatefulSet
-// before it stamps the observed generation. The second result says the
-// Etcd's report is complete and only the StatefulSet lags, which nothing
-// watched reports.
+// etcd-druid's report is read with the checks Gardener makes before it counts
+// an Etcd ready (gardener/gardener@v1.154.0
+// pkg/component/etcd/etcd/waiter.go#L49-L104), a deletion reported first,
+// where Gardener checks the last errors first. Then the StatefulSet, read from
+// the API server: etcd-druid computes ready from its cached StatefulSet before
+// it stamps the observed generation. The second result is a StatefulSet that
+// lags a complete report, which no watch brings back.
 func readiness(cp string, etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet, generation int) (metav1.Condition, bool) {
 	not := func(message string) (metav1.Condition, bool) {
 		return newCondition(metav1.ConditionFalse, ReasonProvisioning, message), false
@@ -264,8 +249,6 @@ func readiness(cp string, etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet, gen
 		fmt.Sprintf("etcd-druid reports Etcd %s ready on certificate generation %d, %d of %d replicas", etcd.Name, generation, etcd.Status.ReadyReplicas, etcd.Spec.Replicas)), false
 }
 
-// mounts says whether the StatefulSet's pod template names every Secret of
-// the certificate generation.
 func mounts(sts *appsv1.StatefulSet, cp string, generation int) bool {
 	var mounted []string
 	for _, volume := range sts.Spec.Template.Spec.Volumes {
@@ -281,9 +264,9 @@ func mounts(sts *appsv1.StatefulSet, cp string, generation int) bool {
 	return true
 }
 
-// etcdChanged passes the Etcd events that can move DatastoreReady or
-// status.datastore and drops etcd-druid's status refresh every 15 seconds,
-// which moves timestamps alone.
+// etcd-druid refreshes every Etcd's status every 15 seconds with new
+// timestamps alone; only a change readiness or status.datastore reads gets a
+// pass.
 func etcdChanged() predicate.Funcs {
 	return predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool {
 		before, ok := e.ObjectOld.(*druidv1alpha1.Etcd)

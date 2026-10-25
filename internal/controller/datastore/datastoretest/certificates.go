@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package datastoretest stands in for the PKI controller in the Datastore
-// controller's tests: it issues a generation of the etcd certificates to the
-// profiles of hack/etcd-spike/pki.sh.
+// controller's envtest suite.
 package datastoretest
 
 import (
@@ -26,9 +25,6 @@ import (
 	"github.com/segla-io/brygga/internal/controller/datastore"
 )
 
-// Generation issues generation g of the etcd certificates of the ControlPlane
-// cp in namespace: the five Secrets, labelled with the ControlPlane and the
-// generation, as PKI will write them.
 func Generation(namespace, cp string, g int) ([]*corev1.Secret, error) {
 	ca, caKey, caPEM, err := certificateAuthority()
 	if err != nil {
@@ -55,7 +51,7 @@ func Generation(namespace, cp string, g int) ([]*corev1.Secret, error) {
 		{"backup-restore", etcd + "-backup-restore", []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, append(append([]string{etcd + "-local"}, service(etcd+"-client")...), "localhost"), loopback},
 		{"client", etcd + "-client", []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, nil, nil},
 	}
-	labels := map[string]string{bryggav1alpha1.ControlPlaneLabel: cp, datastore.CertificatesLabel: strconv.Itoa(g)}
+	labels := map[string]string{bryggav1alpha1.ControlPlaneLabel: cp, bryggav1alpha1.EtcdCertificatesLabel: strconv.Itoa(g)}
 	secrets := []*corev1.Secret{{
 		ObjectMeta: metav1.ObjectMeta{Name: datastore.SecretName(cp, "ca", g), Namespace: namespace, Labels: maps.Clone(labels)},
 		Type:       corev1.SecretTypeOpaque,

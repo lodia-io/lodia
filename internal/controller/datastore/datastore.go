@@ -1,10 +1,7 @@
 // Copyright 2026 The Brygga Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package datastore is the Datastore controller for the dedicated case: one
-// etcd-druid Etcd per ControlPlane, built from its DatastoreClass and the
-// newest complete generation of the etcd certificates, held by the
-// ControlPlane's finalizer and reported through DatastoreReady.
+// Package datastore is the Datastore controller.
 package datastore
 
 import (
@@ -41,60 +38,42 @@ import (
 )
 
 const (
-	// Name is the controller's name; its field manager is brygga/datastore.
-	Name = "datastore"
-	// FieldManager owns every field this controller writes.
-	FieldManager = "brygga/" + Name
-	// Finalizer is the ControlPlane's one finalizer, which this controller
-	// holds until the Etcd is gone and the class's reclaim policy applied.
-	Finalizer = "brygga.segla.io/controlplane"
-	// ConditionType is the one condition this controller writes.
-	ConditionType = "DatastoreReady"
-	// DefaultClassAnnotation marks the DatastoreClass that serves ControlPlanes
-	// naming none.
+	Name                   = "datastore"
+	FieldManager           = "brygga/" + Name
+	Finalizer              = "brygga.segla.io/controlplane"
 	DefaultClassAnnotation = "brygga.segla.io/is-default-class"
-	// CertificatesLabel carries the generation of a Secret of the etcd
-	// certificates; the Etcd names the newest generation whose five Secrets
-	// all carry it.
-	CertificatesLabel = "brygga.segla.io/etcd-certificates"
-	// ControlPlaneUIDLabel marks the claims of a ControlPlane's etcd with its
-	// UID: a ControlPlane recreated under the same name never starts from them.
+	// ControlPlaneUIDLabel on a claim keeps a ControlPlane recreated under the
+	// same name from starting on the old one's data.
 	ControlPlaneUIDLabel = "brygga.segla.io/control-plane-uid"
-	// ClassAnnotation records on the Etcd, and on its claims, the
-	// DatastoreClass it was created under.
-	ClassAnnotation = "brygga.segla.io/datastore-class"
-	// ClassGenerationAnnotation records on the Etcd the generation of the
-	// class it was rendered from.
+	ClassAnnotation      = "brygga.segla.io/datastore-class"
+	// ClassGenerationAnnotation is for Lifecycle, which will hold a class
+	// edit for each tenant's maintenance window.
 	ClassGenerationAnnotation = "brygga.segla.io/datastore-class-generation"
-
-	// ReasonReconciling is DatastoreReady's reason, Unknown, until the first
-	// pass has finished.
-	ReasonReconciling = "Reconciling"
-	// ReasonProvisioning says the certificates or etcd-druid's report are awaited.
-	ReasonProvisioning = "Provisioning"
-	// ReasonDatastoreClassNotFound says no class serves the ControlPlane.
-	ReasonDatastoreClassNotFound = "DatastoreClassNotFound"
-	// ReasonVolumesExist says an Etcd or claims of another ControlPlane stand
-	// where this one's etcd would be.
-	ReasonVolumesExist = "VolumesExist"
-	// ReasonDeleting says the ControlPlane is being deleted.
-	ReasonDeleting = "Deleting"
-	// ReasonReady says etcd-druid reports the Etcd ready for its current generation.
-	ReasonReady = "Ready"
 )
 
-// Reconciler keeps the Etcd of every ControlPlane with a dedicated datastore.
+// Each message depends on the state alone, so a pass that changes nothing
+// writes nothing; an error of the API server goes to the log and leaves the
+// status as it was.
+const (
+	ReasonReconciling            = "Reconciling"
+	ReasonProvisioning           = "Provisioning"
+	ReasonDatastoreClassNotFound = "DatastoreClassNotFound"
+	ReasonVolumesExist           = "VolumesExist"
+	ReasonDeleting               = "Deleting"
+	ReasonReady                  = "Ready"
+)
+
 type Reconciler struct {
 	client.Client
-	// Reader reads uncached what someone else created for a tenant: the
-	// class's credentials Secret and the claims of etcd-druid's StatefulSet.
+	// Reader reads what the cache does not hold: the class's credentials
+	// Secret, the claims, the StatefulSet, and an Etcd without the
+	// control-plane label.
 	Reader client.Reader
 }
 
-// SetupWithManager registers the controller with workers concurrent reconciles.
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 	certificates, err := predicate.LabelSelectorPredicate(metav1.LabelSelector{
-		MatchExpressions: []metav1.LabelSelectorRequirement{{Key: CertificatesLabel, Operator: metav1.LabelSelectorOpExists}},
+		MatchExpressions: []metav1.LabelSelectorRequirement{{Key: bryggav1alpha1.EtcdCertificatesLabel, Operator: metav1.LabelSelectorOpExists}},
 	})
 	if err != nil {
 		return err
@@ -117,8 +96,8 @@ func controlPlaneOf(_ context.Context, secret client.Object) []reconcile.Request
 	return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: secret.GetNamespace(), Name: name}}}
 }
 
-// controlPlanesUsing enqueues the ControlPlanes that name the class and those
-// that name none, since the default may have moved.
+// The ControlPlanes that name no class are enqueued too: the default may have
+// moved.
 func (r *Reconciler) controlPlanesUsing(ctx context.Context, class client.Object) []reconcile.Request {
 	controlPlanes := &bryggav1alpha1.ControlPlaneList{}
 	if err := r.List(ctx, controlPlanes); err != nil {
@@ -135,9 +114,6 @@ func (r *Reconciler) controlPlanesUsing(ctx context.Context, class client.Object
 	return requests
 }
 
-// Reconcile holds the finalizer, keeps the Etcd and reports DatastoreReady.
-// A paused ControlPlane is left as it is, its deletion included, until it is
-// unpaused.
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	cp := &bryggav1alpha1.ControlPlane{}
 	if err := r.Get(ctx, req.NamespacedName, cp); err != nil {
@@ -161,7 +137,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			return ctrl.Result{}, err
 		}
 	}
-	if meta.FindStatusCondition(cp.Status.Conditions, ConditionType) == nil {
+	if meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionDatastoreReady) == nil {
 		first := newCondition(metav1.ConditionUnknown, ReasonReconciling, "the first pass has not finished")
 		if err := r.applyStatus(ctx, cp, cp.Status.Datastore, first); err != nil {
 			return ctrl.Result{}, err
@@ -177,18 +153,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
-// reconcileEtcd applies the Etcd once the class and a complete certificate
-// generation exist and no other ControlPlane's Etcd or claims stand in its
-// way, and says what DatastoreReady reports meanwhile. Once the Etcd exists,
-// a recorded class that is gone stops only its own edits: the Etcd keeps
-// what the class gave it and still follows the certificate generations. An
-// error is the API server's: the pass ends with it and leaves the status as
-// it is.
 func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.ControlPlane) (*druidv1alpha1.Etcd, metav1.Condition, time.Duration, error) {
 	current, err := r.currentEtcd(ctx, cp)
 	if err != nil {
 		return nil, metav1.Condition{}, 0, err
 	}
+	// An Etcd another ControlPlane or nobody controls, an orphan or a
+	// predecessor's the garbage collector has not removed yet, is never
+	// applied: the apply would take it over, and this ControlPlane would start
+	// on another tenant's data.
 	if current != nil && !metav1.IsControlledBy(current, cp) {
 		return nil, newCondition(metav1.ConditionFalse, ReasonVolumesExist, foreignEtcd(current)), time.Minute, nil
 	}
@@ -196,6 +169,8 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 	if err != nil {
 		return nil, metav1.Condition{}, 0, err
 	}
+	// A recorded class that is gone stops only its own edits: the Etcd keeps
+	// what the class gave it and still takes new certificate generations.
 	if class == nil && current == nil {
 		return nil, newCondition(metav1.ConditionFalse, ReasonDatastoreClassNotFound, missing), 0, nil
 	}
@@ -208,7 +183,7 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 	}
 	if !found {
 		message := fmt.Sprintf("waiting for a complete generation of the etcd certificates: the Secrets %s-etcd-{%s}-<g> labelled %s=<g>",
-			cp.Name, strings.Join(Certificates, ","), CertificatesLabel)
+			cp.Name, strings.Join(Certificates, ","), bryggav1alpha1.EtcdCertificatesLabel)
 		return current, newCondition(metav1.ConditionFalse, ReasonProvisioning, message), 0, nil
 	}
 	if current == nil {
@@ -254,9 +229,6 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 	return etcd, condition, 0, nil
 }
 
-// foreignEtcd says whose the Etcd is when it is not this ControlPlane's: an
-// orphan, or a predecessor's the garbage collector has not removed yet.
-// Adopting it would start this ControlPlane on another tenant's data.
 func foreignEtcd(etcd *druidv1alpha1.Etcd) string {
 	owner := "it has no controller"
 	if ref := metav1.GetControllerOfNoCopy(etcd); ref != nil {
@@ -266,8 +238,8 @@ func foreignEtcd(etcd *druidv1alpha1.Etcd) string {
 		etcd.Name, owner)
 }
 
-// currentEtcd reads the Etcd from the cache, and from the API server when the
-// cache has none: an Etcd that fell out of the label-filtered cache still runs.
+// An Etcd without the control-plane label is outside the cache and still
+// runs.
 func (r *Reconciler) currentEtcd(ctx context.Context, cp *bryggav1alpha1.ControlPlane) (*druidv1alpha1.Etcd, error) {
 	etcd := &druidv1alpha1.Etcd{}
 	key := client.ObjectKey{Namespace: cp.Namespace, Name: etcdName(cp.Name)}
@@ -284,11 +256,8 @@ func (r *Reconciler) currentEtcd(ctx context.Context, cp *bryggav1alpha1.Control
 	return etcd, nil
 }
 
-// class is the DatastoreClass recorded on the Etcd or, before the Etcd
-// exists, the one the ControlPlane names or the one default class. A class is
-// resolved once, as a default StorageClass is written into a claim when the
-// claim is created, so a default that moves changes no running etcd. When no
-// class serves, the class is nil and the message says what is missing.
+// A class is resolved once and recorded on the Etcd, so a default that moves
+// changes no running etcd.
 func (r *Reconciler) class(ctx context.Context, cp *bryggav1alpha1.ControlPlane, current *druidv1alpha1.Etcd) (*bryggav1alpha1.DatastoreClass, string, error) {
 	name := cp.Spec.Datastore.Dedicated.ClassName
 	if current != nil {
@@ -332,9 +301,6 @@ func (r *Reconciler) class(ctx context.Context, cp *bryggav1alpha1.ControlPlane,
 	}
 }
 
-// newestCompleteGeneration lists the etcd certificate Secrets, metadata only,
-// and picks the newest generation whose five Secrets all carry its label and
-// none is being deleted.
 func (r *Reconciler) newestCompleteGeneration(ctx context.Context, cp *bryggav1alpha1.ControlPlane) (int, bool, error) {
 	secrets := &metav1.PartialObjectMetadataList{}
 	secrets.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("SecretList"))
@@ -343,7 +309,7 @@ func (r *Reconciler) newestCompleteGeneration(ctx context.Context, cp *bryggav1a
 	}
 	labelled := make(map[string]string, len(secrets.Items))
 	for _, secret := range secrets.Items {
-		if generation, ok := secret.Labels[CertificatesLabel]; ok && secret.DeletionTimestamp.IsZero() {
+		if generation, ok := secret.Labels[bryggav1alpha1.EtcdCertificatesLabel]; ok && secret.DeletionTimestamp.IsZero() {
 			labelled[secret.Name] = generation
 		}
 	}
@@ -367,10 +333,10 @@ func (r *Reconciler) newestCompleteGeneration(ctx context.Context, cp *bryggav1a
 	return newest, found, nil
 }
 
-// namedGeneration is the certificate generation the Etcd names. The Etcd
-// moves forward only: when a Secret of that generation is being deleted, the
-// newest complete one can be older, and switching back to it would roll the
-// members twice, back and then forward to the generation PKI issues next.
+// The Etcd moves forward only: while a Secret of the generation it names is
+// being deleted the newest complete one can be older, and switching back to
+// it would roll the members twice, back and then forward to the generation
+// PKI issues next.
 func namedGeneration(cp string, etcd *druidv1alpha1.Etcd) (int, bool) {
 	if etcd == nil || etcd.Spec.Etcd.ClientUrlTLS == nil {
 		return 0, false
@@ -380,13 +346,11 @@ func namedGeneration(cp string, etcd *druidv1alpha1.Etcd) (int, bool) {
 	return generation, ok && err == nil
 }
 
-// claims lists the PersistentVolumeClaims the StatefulSet <cp>-etcd attaches,
-// which etcd-druid keeps past the Etcd. They are found by name, as the
-// StatefulSet finds them: <template>-<StatefulSet>-<ordinal>, with the
-// template named after the Etcd
+// Claims are matched by the name the StatefulSet attaches them by,
+// <template>-<StatefulSet>-<ordinal> with the template named after the Etcd
 // (kubernetes/kubernetes@v1.35.0 pkg/controller/statefulset/stateful_set_utils.go#L116-L119,
-// etcd-druid@v0.39.0 internal/component/statefulset/builder.go#L233), whatever
-// labels they carry.
+// etcd-druid@v0.39.0 internal/component/statefulset/builder.go#L233), not by
+// labels, which a claim made by hand lacks.
 func (r *Reconciler) claims(ctx context.Context, cp *bryggav1alpha1.ControlPlane) ([]corev1.PersistentVolumeClaim, error) {
 	list := &corev1.PersistentVolumeClaimList{}
 	if err := r.Reader.List(ctx, list, client.InNamespace(cp.Namespace)); err != nil {
@@ -403,9 +367,8 @@ func (r *Reconciler) claims(ctx context.Context, cp *bryggav1alpha1.ControlPlane
 	return claims, nil
 }
 
-// foreignClaims names the claims of <cp>-etcd that are not this
-// ControlPlane's: unlabelled, or labelled with another UID. Starting an etcd
-// on them would be a restore of another tenant's data by name.
+// Starting an etcd on a claim without this ControlPlane's UID would be a
+// restore of another tenant's data by name.
 func (r *Reconciler) foreignClaims(ctx context.Context, cp *bryggav1alpha1.ControlPlane) ([]string, error) {
 	claims, err := r.claims(ctx, cp)
 	if err != nil {
@@ -421,9 +384,8 @@ func (r *Reconciler) foreignClaims(ctx context.Context, cp *bryggav1alpha1.Contr
 	return foreign, nil
 }
 
-// labelClaims marks the claims the StatefulSet created for this Etcd with the
-// ControlPlane's UID and the class it was created under, since they outlive
-// the Etcd: deletion reclaims only these, under that class's policy.
+// The claims outlive the Etcd, so they carry the UID and the class their
+// reclaim goes by.
 func (r *Reconciler) labelClaims(ctx context.Context, cp *bryggav1alpha1.ControlPlane, class string) error {
 	claims, err := r.claims(ctx, cp)
 	if err != nil {
@@ -444,10 +406,8 @@ func (r *Reconciler) labelClaims(ctx context.Context, cp *bryggav1alpha1.Control
 	return nil
 }
 
-// copyCredentials copies the class's credentials Secret into the tenant's
-// namespace, where etcd-druid mounts it, with the class's region under the key
-// the backup-restore sidecar reads. It copies nothing while the class's
-// Secret does not exist.
+// etcd-druid mounts the store's Secret from the Etcd's namespace, and the
+// backup-restore sidecar reads the region from it.
 func (r *Reconciler) copyCredentials(ctx context.Context, cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClass) (bool, error) {
 	store := class.Spec.Backup.Store
 	source := &corev1.Secret{}
@@ -477,12 +437,6 @@ func (r *Reconciler) copyCredentials(ctx context.Context, cp *bryggav1alpha1.Con
 	return true, r.Apply(ctx, secret, client.FieldOwner(FieldManager), client.ForceOwnership)
 }
 
-// finalize deletes the Etcd, waits for etcd-druid to let it go, reclaims the
-// claims it left behind and releases the finalizer. While the Etcd exists,
-// each pass first labels the claims no pass has labelled yet: they can only
-// be its own, since VolumesExist kept it from being created while anything
-// else stood there. An Etcd this ControlPlane does not control is left
-// alone, with the claims its StatefulSet uses.
 func (r *Reconciler) finalize(ctx context.Context, cp *bryggav1alpha1.ControlPlane) (time.Duration, error) {
 	if !controllerutil.ContainsFinalizer(cp, Finalizer) {
 		return 0, nil
@@ -499,6 +453,8 @@ func (r *Reconciler) finalize(ctx context.Context, cp *bryggav1alpha1.ControlPla
 	if err := r.applyStatus(ctx, cp, datastoreStatus(etcd), deleting); err != nil {
 		return 0, err
 	}
+	// A claim no pass has labelled yet can only be this Etcd's: VolumesExist
+	// kept it from being created while anything else stood there.
 	if etcd != nil {
 		if err := r.labelClaims(ctx, cp, etcd.Annotations[ClassAnnotation]); err != nil {
 			return 0, err
@@ -511,7 +467,7 @@ func (r *Reconciler) finalize(ctx context.Context, cp *bryggav1alpha1.ControlPla
 	case etcd != nil:
 		return 10 * time.Second, nil
 	case foreign:
-		logf.FromContext(ctx).Info("leaving the Etcd and its claims alone, the ControlPlane does not control it", "etcd", etcdName(cp.Name))
+		logf.FromContext(ctx).Info("leaving the Etcd and the claims its StatefulSet uses alone, the ControlPlane does not control it", "etcd", etcdName(cp.Name))
 	default:
 		if err := r.reclaimClaims(ctx, cp); err != nil {
 			return 0, err
@@ -523,9 +479,6 @@ func (r *Reconciler) finalize(ctx context.Context, cp *bryggav1alpha1.ControlPla
 	return 0, nil
 }
 
-// reclaimClaims deletes the claims labelled with this ControlPlane's UID
-// whose recorded class says Delete; Retain, and a class that is gone, keep
-// them.
 func (r *Reconciler) reclaimClaims(ctx context.Context, cp *bryggav1alpha1.ControlPlane) error {
 	log := logf.FromContext(ctx)
 	claims, err := r.claims(ctx, cp)
@@ -561,11 +514,9 @@ func (r *Reconciler) reclaimClaims(ctx context.Context, cp *bryggav1alpha1.Contr
 	return nil
 }
 
-// setFinalizer adds or removes the finalizer with a patch locked on the
-// ControlPlane's resourceVersion, never with an apply: an apply would create
-// a ControlPlane the cache still showed after its deletion. A conflict is a
-// ControlPlane that changed since it was read, and that change reconciles it
-// again.
+// The finalizer goes through a patch locked on the resourceVersion, never an
+// apply, which would create a ControlPlane the cache still showed after its
+// deletion. A conflict is a change since the read, which reconciles it again.
 func (r *Reconciler) setFinalizer(ctx context.Context, cp *bryggav1alpha1.ControlPlane, held bool) error {
 	patch := client.MergeFromWithOptions(cp.DeepCopy(), client.MergeFromWithOptimisticLock{})
 	if held {
@@ -576,7 +527,6 @@ func (r *Reconciler) setFinalizer(ctx context.Context, cp *bryggav1alpha1.Contro
 	return r.Patch(ctx, cp, patch, client.FieldOwner(FieldManager))
 }
 
-// datastoreStatus is status.datastore for the Etcd, nil while there is none.
 func datastoreStatus(etcd *druidv1alpha1.Etcd) *bryggav1alpha1.DatastoreStatus {
 	if etcd == nil {
 		return nil
@@ -584,12 +534,9 @@ func datastoreStatus(etcd *druidv1alpha1.Etcd) *bryggav1alpha1.DatastoreStatus {
 	return &bryggav1alpha1.DatastoreStatus{Kind: "Dedicated", Name: etcd.Name, Members: int32(len(etcd.Status.Members))}
 }
 
-// applyStatus writes the condition and status.datastore through the status
-// subresource, the only fields of the ControlPlane's status this controller
-// owns, and only when one of them changed.
 func (r *Reconciler) applyStatus(ctx context.Context, cp *bryggav1alpha1.ControlPlane, datastore *bryggav1alpha1.DatastoreStatus, condition metav1.Condition) error {
 	condition.ObservedGeneration = cp.Generation
-	previous := meta.FindStatusCondition(cp.Status.Conditions, ConditionType)
+	previous := meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionDatastoreReady)
 	unchanged := previous != nil && previous.Status == condition.Status && previous.Reason == condition.Reason &&
 		previous.Message == condition.Message && previous.ObservedGeneration == condition.ObservedGeneration
 	if unchanged && sameDatastore(cp.Status.Datastore, datastore) {
@@ -597,7 +544,7 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *bryggav1alpha1.Control
 	}
 	conditions := slices.Clone(cp.Status.Conditions)
 	meta.SetStatusCondition(&conditions, condition)
-	current, err := runtime.DefaultUnstructuredConverter.ToUnstructured(meta.FindStatusCondition(conditions, ConditionType))
+	current, err := runtime.DefaultUnstructuredConverter.ToUnstructured(meta.FindStatusCondition(conditions, bryggav1alpha1.ConditionDatastoreReady))
 	if err != nil {
 		return err
 	}
@@ -622,5 +569,5 @@ func sameDatastore(a, b *bryggav1alpha1.DatastoreStatus) bool {
 }
 
 func newCondition(status metav1.ConditionStatus, reason, message string) metav1.Condition {
-	return metav1.Condition{Type: ConditionType, Status: status, Reason: reason, Message: message}
+	return metav1.Condition{Type: bryggav1alpha1.ConditionDatastoreReady, Status: status, Reason: reason, Message: message}
 }

@@ -260,7 +260,7 @@ func writeGeneration(ctx context.Context, t *testing.T, k8s client.Client, gener
 	for _, secret := range secrets {
 		create(ctx, t, k8s, secret)
 	}
-	t.Logf("generation %d of the etcd certificates written: %d Secrets labelled %s=%d", generation, len(secrets), datastore.CertificatesLabel, generation)
+	t.Logf("generation %d of the etcd certificates written: %d Secrets labelled %s=%d", generation, len(secrets), bryggav1alpha1.EtcdCertificatesLabel, generation)
 }
 
 func until(ctx context.Context, t *testing.T, timeout time.Duration, what string, check func(context.Context) error) {
@@ -282,9 +282,9 @@ func conditionIs(ctx context.Context, k8s client.Client, status metav1.Condition
 	if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: controlPlane}, cp); err != nil {
 		return err
 	}
-	condition := meta.FindStatusCondition(cp.Status.Conditions, datastore.ConditionType)
+	condition := meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionDatastoreReady)
 	if condition == nil {
-		return fmt.Errorf("no %s condition yet", datastore.ConditionType)
+		return fmt.Errorf("no %s condition yet", bryggav1alpha1.ConditionDatastoreReady)
 	}
 	if condition.Status != status || condition.Reason != reason || condition.ObservedGeneration != cp.Generation {
 		return fmt.Errorf("%s=%s (%s, generation %d of %d): %s", condition.Type, condition.Status, condition.Reason, condition.ObservedGeneration, cp.Generation, condition.Message)

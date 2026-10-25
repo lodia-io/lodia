@@ -120,8 +120,11 @@ func TestMain(m *testing.M) {
 			DefaultTransform:            cache.TransformStripManagedFields(),
 			ReaderFailOnMissingInformer: true,
 			ByObject: map[client.Object]cache.ByObject{
-				&bryggav1alpha1.ControlPlane{}:   everything,
-				&bryggav1alpha1.DatastoreClass{}: everything,
+				&bryggav1alpha1.ControlPlane{}:      everything,
+				&bryggav1alpha1.DatastoreClass{}:    everything,
+				&bryggav1alpha1.Datastore{}:         everything,
+				&bryggav1alpha1.KubeconfigRequest{}: everything,
+				&bryggav1alpha1.Backup{}:            everything,
 			},
 		},
 	})
@@ -341,10 +344,10 @@ func waitCondition(t *testing.T, ns, name string, status metav1.ConditionStatus,
 		if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: name}, cp); err != nil {
 			return err
 		}
-		condition := meta.FindStatusCondition(cp.Status.Conditions, datastore.ConditionType)
+		condition := meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionDatastoreReady)
 		switch {
 		case condition == nil:
-			return fmt.Errorf("no %s condition", datastore.ConditionType)
+			return fmt.Errorf("no %s condition", bryggav1alpha1.ConditionDatastoreReady)
 		case condition.Status != status || condition.Reason != reason || !strings.Contains(condition.Message, message):
 			return fmt.Errorf("want %s/%s with %q, got %s/%s %q", status, reason, message, condition.Status, condition.Reason, condition.Message)
 		case condition.ObservedGeneration != cp.Generation:
@@ -435,7 +438,7 @@ func settle(t *testing.T, ns, name string) {
 	}
 	eventually(t, func() error {
 		current := getControlPlane(t, ns, name)
-		condition := meta.FindStatusCondition(current.Status.Conditions, datastore.ConditionType)
+		condition := meta.FindStatusCondition(current.Status.Conditions, bryggav1alpha1.ConditionDatastoreReady)
 		if condition == nil || condition.ObservedGeneration != cp.Generation {
 			return fmt.Errorf("generation %d not yet reported: %+v", cp.Generation, condition)
 		}
@@ -562,7 +565,7 @@ func TestConditionsFromState(t *testing.T) {
 		select {
 		case event := <-events.ResultChan():
 			if cp, ok := event.Object.(*bryggav1alpha1.ControlPlane); ok && event.Type == watch.Modified {
-				first = meta.FindStatusCondition(cp.Status.Conditions, datastore.ConditionType)
+				first = meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionDatastoreReady)
 			}
 		case <-time.After(30 * time.Second):
 			t.Fatal("no DatastoreReady condition was written")
@@ -595,7 +598,7 @@ func TestConditionsFromState(t *testing.T) {
 		t.Fatalf("a pass whose Etcd read fails returned %v, want the read's error", err)
 	}
 	if after := getControlPlane(t, ns, "dev"); after.ResourceVersion != before.ResourceVersion {
-		condition := meta.FindStatusCondition(after.Status.Conditions, datastore.ConditionType)
+		condition := meta.FindStatusCondition(after.Status.Conditions, bryggav1alpha1.ConditionDatastoreReady)
 		t.Errorf("a pass whose Etcd read fails moved the ControlPlane from resourceVersion %s to %s: DatastoreReady %s/%s %q, status.datastore %+v",
 			before.ResourceVersion, after.ResourceVersion, condition.Status, condition.Reason, condition.Message, after.Status.Datastore)
 	}
@@ -610,7 +613,7 @@ func TestPaused(t *testing.T) {
 	writeGeneration(t, ns, "dev", 1)
 	consistently(t, func() error {
 		cp := getControlPlane(t, ns, "dev")
-		if controllerutil.ContainsFinalizer(cp, datastore.Finalizer) || meta.FindStatusCondition(cp.Status.Conditions, datastore.ConditionType) != nil {
+		if controllerutil.ContainsFinalizer(cp, datastore.Finalizer) || meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionDatastoreReady) != nil {
 			return fmt.Errorf("a paused ControlPlane was reconciled: finalizers %v, conditions %+v", cp.Finalizers, cp.Status.Conditions)
 		}
 		if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev-etcd"}, &druidv1alpha1.Etcd{}); !apierrors.IsNotFound(err) {
@@ -636,7 +639,7 @@ func TestPaused(t *testing.T) {
 		if !controllerutil.ContainsFinalizer(cp, datastore.Finalizer) {
 			return errors.New("the finalizer of a paused ControlPlane was released")
 		}
-		if condition := meta.FindStatusCondition(cp.Status.Conditions, datastore.ConditionType); condition.Reason == datastore.ReasonDeleting {
+		if condition := meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionDatastoreReady); condition.Reason == datastore.ReasonDeleting {
 			return errors.New("a paused ControlPlane reports Deleting")
 		}
 		etcd := getEtcd(t, ns, "dev")
@@ -673,8 +676,8 @@ func TestNewestCompleteGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	terminating := secrets[slices.IndexFunc(secrets, func(s *corev1.Secret) bool { return s.Name == datastore.SecretName("dev", "client", 2) })]
-	label := terminating.Labels[datastore.CertificatesLabel]
-	delete(terminating.Labels, datastore.CertificatesLabel)
+	label := terminating.Labels[bryggav1alpha1.EtcdCertificatesLabel]
+	delete(terminating.Labels, bryggav1alpha1.EtcdCertificatesLabel)
 	terminating.Finalizers = []string{"brygga.segla.io/test"}
 	create(t, terminating)
 	if err := k8s.Delete(t.Context(), terminating); err != nil {
@@ -684,7 +687,7 @@ func TestNewestCompleteGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	patch := client.MergeFrom(terminating.DeepCopy())
-	terminating.Labels[datastore.CertificatesLabel] = label
+	terminating.Labels[bryggav1alpha1.EtcdCertificatesLabel] = label
 	if err := k8s.Patch(t.Context(), terminating, patch); err != nil {
 		t.Fatal(err)
 	}
@@ -1066,7 +1069,7 @@ func TestVolumesExist(t *testing.T) {
 	create(t, controlPlane(ns, "dev", "reused"))
 	writeGeneration(t, ns, "dev", 1)
 	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonVolumesExist, "dev-etcd-dev-etcd-0, dev-etcd-dev-etcd-1 of another ControlPlane")
-	if condition := meta.FindStatusCondition(getControlPlane(t, ns, "dev").Status.Conditions, datastore.ConditionType); strings.Contains(condition.Message, "dev-etcd-scratch") {
+	if condition := meta.FindStatusCondition(getControlPlane(t, ns, "dev").Status.Conditions, bryggav1alpha1.ConditionDatastoreReady); strings.Contains(condition.Message, "dev-etcd-scratch") {
 		t.Errorf("a claim the StatefulSet does not attach blocks the Etcd: %s", condition.Message)
 	}
 	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev-etcd"}, &druidv1alpha1.Etcd{}); !apierrors.IsNotFound(err) {

@@ -90,7 +90,7 @@ func main() {
 		CALifetime:          5 * 365 * 24 * time.Hour,
 		TrustAnchorLifetime: 10 * 365 * 24 * time.Hour,
 		CAExpiryNotice:      365 * 24 * time.Hour,
-	}).SetupWithManager(mgr); err != nil {
+	}).SetupWithManager(mgr, workers); err != nil {
 		log.Error(err, "set up the pki controller")
 		os.Exit(1)
 	}
