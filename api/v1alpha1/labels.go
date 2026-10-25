@@ -19,6 +19,11 @@ const (
 	// on its objects; the operator's cache holds only labelled objects.
 	ControlPlaneLabel = "brygga.segla.io/control-plane"
 
+	// ManagedByLabel: ManagedBy marks every object Brygga writes inside a
+	// tenant cluster.
+	ManagedByLabel = "app.kubernetes.io/managed-by"
+	ManagedBy      = "brygga"
+
 	// ControlPlaneUIDLabel on an etcd claim, written by the Datastore
 	// controller, keeps a ControlPlane recreated under the same name from
 	// starting on the old one's data.

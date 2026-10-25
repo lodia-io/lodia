@@ -46,12 +46,13 @@ const (
 // A CA's bundle proves the tenant had that CA, so a CA is created only when
 // neither the bundle nor its key Secret exists.
 var caBundles = []struct {
-	ca, bundle string
+	ca     string
+	bundle bryggav1alpha1.Secret
 }{
-	{clusterCA, "ca-bundle"},
-	{clientCA, "client-ca"},
-	{frontProxyCA, "front-proxy-ca"},
-	{etcdCA, "etcd-ca"},
+	{clusterCA, bryggav1alpha1.CABundleSecret},
+	{clientCA, bryggav1alpha1.ClientCASecret},
+	{frontProxyCA, bryggav1alpha1.FrontProxyCASecret},
+	{etcdCA, bryggav1alpha1.EtcdCASecret},
 }
 
 // names are PKI's Secrets, <cp>-<name>, beside the etcd generations
@@ -59,7 +60,7 @@ var caBundles = []struct {
 // not.
 var names = func() []string {
 	names := []string{"cakey-cluster", "cakey-client", "cakey-front-proxy", "cakey-etcd"}
-	for _, s := range bryggav1alpha1.PKISecrets {
+	for _, s := range bryggav1alpha1.PKISecrets() {
 		names = append(names, string(s))
 	}
 	return names
@@ -152,15 +153,8 @@ func (t *tenant) reserved(name string) (int, bool) {
 	if slices.Contains(names, suffix) {
 		return 0, true
 	}
-	for _, role := range bryggav1alpha1.EtcdCertificateRoles {
-		if n, ok := strings.CutPrefix(suffix, "etcd-"+role+"-"); ok {
-			if g, err := strconv.Atoi(n); err == nil && g > 0 && strconv.Itoa(g) == n {
-				return g, true
-			}
-			return 0, false
-		}
-	}
-	return 0, false
+	_, g, ok := bryggav1alpha1.ParseEtcdCertificateSecretName(t.cp.Name, name)
+	return g, ok
 }
 
 // read takes the Secrets under PKI's names, labelled or not: the labelled ones
@@ -326,15 +320,15 @@ func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 		}
 	}
 	if cl != nil && cluster != nil {
-		internal := "https://" + bryggav1alpha1.APIServerName(t.cp.Name) + "." + t.cp.Namespace + ".svc:443"
+		internal := "https://" + bryggav1alpha1.APIServerServiceName(t.cp.Name) + "." + t.cp.Namespace + ".svc:443"
 		kubeconfigs := []kubeconfig{
-			{"konnectivity-kubeconfig", "system:konnectivity-server", nil, "https://127.0.0.1:6443", false},
-			{"controller-manager-kubeconfig", "system:kube-controller-manager", nil, internal, false},
-			{"scheduler-kubeconfig", "system:kube-scheduler", nil, internal, false},
-			{"brygga-kubeconfig", "brygga:operator", nil, internal, true},
+			{bryggav1alpha1.KonnectivityKubeconfigSecret, "system:konnectivity-server", nil, "https://127.0.0.1:6443", false},
+			{bryggav1alpha1.ControllerManagerKubeconfigSecret, "system:kube-controller-manager", nil, internal, false},
+			{bryggav1alpha1.SchedulerKubeconfigSecret, "system:kube-scheduler", nil, internal, false},
+			{bryggav1alpha1.BryggaKubeconfigSecret, "brygga:operator", nil, internal, true},
 		}
 		if t.endpoint != nil {
-			kubeconfigs = append(kubeconfigs, kubeconfig{"admin-kubeconfig", "kubernetes-admin", []string{"brygga:cluster-admins"}, t.endpoint.url(), true})
+			kubeconfigs = append(kubeconfigs, kubeconfig{bryggav1alpha1.AdminKubeconfigSecret, "kubernetes-admin", []string{"brygga:cluster-admins"}, t.endpoint.url(), true})
 		}
 		for _, k := range kubeconfigs {
 			if err := r.kubeconfig(ctx, t, k); err != nil {
@@ -373,9 +367,9 @@ func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 // ca creates a CA only for a tenant with neither its key Secret nor its
 // bundle: a new CA in place of a lost or expired one would cut every client
 // or node off at once.
-func (r *Reconciler) ca(ctx context.Context, t *tenant, name, bundle string) error {
+func (r *Reconciler) ca(ctx context.Context, t *tenant, name string, bundle bryggav1alpha1.Secret) error {
 	secret := t.name("cakey-" + name)
-	key, trusted := t.existing[secret], t.existing[t.name(bundle)]
+	key, trusted := t.existing[secret], t.existing[t.secret(bundle)]
 	if key == nil && trusted == nil {
 		lifetime := r.CALifetime
 		if name == clusterCA {
@@ -495,7 +489,7 @@ func (t *tenant) servingProfile() certs.Profile {
 	if domain == "" {
 		domain = "cluster.local"
 	}
-	api := bryggav1alpha1.APIServerName(t.cp.Name)
+	api := bryggav1alpha1.APIServerServiceName(t.cp.Name)
 	p := certs.Profile{CommonName: "kube-apiserver", Usages: serverAuth}
 	for _, name := range []string{"kubernetes", "kubernetes.default", "kubernetes.default.svc", "kubernetes.default.svc." + domain} {
 		p.SAN(name)
@@ -523,7 +517,7 @@ func (t *tenant) konnectivityProfile() certs.Profile {
 }
 
 type kubeconfig struct {
-	suffix string
+	secret bryggav1alpha1.Secret
 	user   string
 	groups []string
 	server string
@@ -533,7 +527,7 @@ type kubeconfig struct {
 }
 
 func (r *Reconciler) kubeconfig(ctx context.Context, t *tenant, k kubeconfig) error {
-	name := t.name(k.suffix)
+	name := t.secret(k.secret)
 	s := t.existing[name]
 	certPEM, keyPEM := data(s, corev1.TLSCertKey), data(s, corev1.TLSPrivateKeyKey)
 	if k.embed {
@@ -723,7 +717,7 @@ func (r *Reconciler) etcd(ctx context.Context, t *tenant) error {
 		if g == current || g == previous {
 			continue
 		}
-		for _, role := range bryggav1alpha1.EtcdCertificateRoles {
+		for _, role := range bryggav1alpha1.EtcdCertificateRoles() {
 			s := t.existing[t.etcdName(role, g)]
 			if s == nil || s.DeletionTimestamp != nil || t.writeErr != nil {
 				continue
@@ -744,7 +738,7 @@ func (r *Reconciler) etcd(ctx context.Context, t *tenant) error {
 // invisible to the label-filtered cache.
 func (r *Reconciler) adopt(ctx context.Context, t *tenant, g int) {
 	labels := map[string]string{bryggav1alpha1.EtcdCertificatesLabel: strconv.Itoa(g)}
-	for _, role := range bryggav1alpha1.EtcdCertificateRoles {
+	for _, role := range bryggav1alpha1.EtcdCertificateRoles() {
 		if s := t.existing[t.etcdName(role, g)]; s != nil && s.DeletionTimestamp == nil {
 			r.applySecret(ctx, t, s.Name, s.Type, s.Data, labels, true)
 		}
@@ -774,7 +768,7 @@ func (r *Reconciler) issueEtcd(ctx context.Context, t *tenant, g int, ca *certs.
 }
 
 func (t *tenant) etcdComplete(g int) bool {
-	for _, role := range bryggav1alpha1.EtcdCertificateRoles {
+	for _, role := range bryggav1alpha1.EtcdCertificateRoles() {
 		if s := t.existing[t.etcdName(role, g)]; s == nil || s.DeletionTimestamp != nil {
 			return false
 		}

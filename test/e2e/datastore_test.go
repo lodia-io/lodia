@@ -298,7 +298,7 @@ func issued(ctx context.Context, k8s client.Client, generation int) error {
 			names = append(names, secret.Name)
 		}
 	}
-	for _, certificate := range bryggav1alpha1.EtcdCertificateRoles {
+	for _, certificate := range bryggav1alpha1.EtcdCertificateRoles() {
 		if name := bryggav1alpha1.EtcdCertificateSecretName(controlPlane, certificate, generation); !slices.Contains(names, name) {
 			return fmt.Errorf("%s is missing; generation %d holds %s", name, generation, strings.Join(names, ", "))
 		}
@@ -360,7 +360,7 @@ func secretVolumes(pod *corev1.Pod) []string {
 
 func mountsGeneration(pod *corev1.Pod, generation int) error {
 	mounted := secretVolumes(pod)
-	for _, certificate := range bryggav1alpha1.EtcdCertificateRoles {
+	for _, certificate := range bryggav1alpha1.EtcdCertificateRoles() {
 		if name := bryggav1alpha1.EtcdCertificateSecretName(controlPlane, certificate, generation); !slices.Contains(mounted, name) {
 			return fmt.Errorf("pod %s does not mount %s; it mounts %s", pod.Name, name, strings.Join(mounted, ", "))
 		}

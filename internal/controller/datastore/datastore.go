@@ -189,7 +189,7 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 	}
 	if !found {
 		message := fmt.Sprintf("waiting for a complete generation of the etcd certificates that this ControlPlane controls: the Secrets %s-etcd-{%s}-<g> labelled %s=<g>",
-			cp.Name, strings.Join(bryggav1alpha1.EtcdCertificateRoles, ","), bryggav1alpha1.EtcdCertificatesLabel)
+			cp.Name, strings.Join(bryggav1alpha1.EtcdCertificateRoles(), ","), bryggav1alpha1.EtcdCertificatesLabel)
 		return current, newCondition(metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForCertificates, message), 0, nil
 	}
 	if current == nil {
@@ -425,7 +425,7 @@ func newestCompleteGeneration(cp *bryggav1alpha1.ControlPlane, secrets []metav1.
 			continue
 		}
 		complete := true
-		for _, certificate := range bryggav1alpha1.EtcdCertificateRoles {
+		for _, certificate := range bryggav1alpha1.EtcdCertificateRoles() {
 			if labelled[bryggav1alpha1.EtcdCertificateSecretName(cp.Name, certificate, generation)] != label {
 				complete = false
 				break
@@ -446,9 +446,8 @@ func namedGeneration(cp string, etcd *druidv1alpha1.Etcd) (int, bool) {
 	if etcd == nil || etcd.Spec.Etcd.ClientUrlTLS == nil {
 		return 0, false
 	}
-	suffix, ok := strings.CutPrefix(etcd.Spec.Etcd.ClientUrlTLS.ServerTLSSecretRef.Name, bryggav1alpha1.EtcdName(cp)+"-server-")
-	generation, err := strconv.Atoi(suffix)
-	return generation, ok && err == nil
+	role, generation, ok := bryggav1alpha1.ParseEtcdCertificateSecretName(cp, etcd.Spec.Etcd.ClientUrlTLS.ServerTLSSecretRef.Name)
+	return generation, ok && role == "server"
 }
 
 // Claims are matched by the name the StatefulSet attaches them by,

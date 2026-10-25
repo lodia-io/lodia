@@ -652,18 +652,25 @@ func TestALostCAIsNeverReplaced(t *testing.T) {
 	reconcile(t, r, cp)
 	before, _ := resourceVersions(t, cp)
 
-	if err := k8s.Delete(ctx, secretsOf(t, cp)["dev-cakey-etcd"]); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"dev-cakey-cluster", "dev-cakey-etcd"} {
+		if err := k8s.Delete(ctx, secretsOf(t, cp)[name]); err != nil {
+			t.Fatal(err)
+		}
 	}
 	reconcile(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, bryggav1alpha1.ReasonCAMissing)
+	c := condition(t, cp, bryggav1alpha1.ConditionCertificatesReady)
+	if c.Reason != bryggav1alpha1.ReasonCAMissing || !strings.Contains(c.Message, "cluster, etcd") {
+		t.Fatalf("CertificatesReady is %s: %s", c.Reason, c.Message)
+	}
 	after, _ := resourceVersions(t, cp)
-	if _, replaced := after["dev-cakey-etcd"]; replaced {
-		t.Fatal("the lost etcd CA was replaced")
+	for _, name := range []string{"dev-cakey-cluster", "dev-cakey-etcd"} {
+		if _, replaced := after[name]; replaced {
+			t.Errorf("the lost CA %s was replaced", name)
+		}
 	}
 	for name, version := range after {
 		if before[name] != version {
-			t.Errorf("%s was written while the etcd CA is lost", name)
+			t.Errorf("%s was written while the cluster and etcd CAs are lost", name)
 		}
 	}
 
@@ -673,8 +680,8 @@ func TestALostCAIsNeverReplaced(t *testing.T) {
 		t.Fatal(err)
 	}
 	reconcile(t, r, cp)
-	c := condition(t, cp, bryggav1alpha1.ConditionCertificatesReady)
-	if c.Reason != bryggav1alpha1.ReasonCAMissing || !strings.Contains(c.Message, "client, etcd") {
+	c = condition(t, cp, bryggav1alpha1.ConditionCertificatesReady)
+	if c.Reason != bryggav1alpha1.ReasonCAMissing || !strings.Contains(c.Message, "cluster, client, etcd") {
 		t.Fatalf("CertificatesReady is %s: %s", c.Reason, c.Message)
 	}
 	if !bytes.Equal(secretsOf(t, cp)["dev-cakey-client"].Data["tls.key"], []byte("not a key")) {

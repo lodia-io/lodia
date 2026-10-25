@@ -857,7 +857,7 @@ func TestMountedSecretsMustExist(t *testing.T) {
 	waitEtcd(t, ns, cp, namesGeneration(2))
 	readyOn(t, ns, cp, 2)
 
-	for _, certificate := range bryggav1alpha1.EtcdCertificateRoles {
+	for _, certificate := range bryggav1alpha1.EtcdCertificateRoles() {
 		if err := k8s.Delete(t.Context(), &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: bryggav1alpha1.EtcdCertificateSecretName(cp, certificate, 2)}}); err != nil {
 			t.Fatal(err)
 		}
@@ -1163,7 +1163,7 @@ func getCopy(t *testing.T, ns, cp string) *corev1.Secret {
 
 func certificateVolumes(cp string, generation int) []corev1.Volume {
 	var volumes []corev1.Volume
-	for _, certificate := range bryggav1alpha1.EtcdCertificateRoles {
+	for _, certificate := range bryggav1alpha1.EtcdCertificateRoles() {
 		volumes = append(volumes, corev1.Volume{Name: certificate, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: bryggav1alpha1.EtcdCertificateSecretName(cp, certificate, generation)}}})
 	}
 	return volumes

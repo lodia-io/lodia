@@ -90,7 +90,7 @@ func applyBindings(ctx context.Context, cfg *rest.Config) error {
 	}
 	for _, b := range bindings {
 		binding := rbacv1ac.ClusterRoleBinding(b.name).
-			WithLabels(map[string]string{"app.kubernetes.io/managed-by": "brygga"}).
+			WithLabels(map[string]string{bryggav1alpha1.ManagedByLabel: bryggav1alpha1.ManagedBy}).
 			WithSubjects(rbacv1ac.Subject().WithKind(b.kind).WithAPIGroup(rbacv1.GroupName).WithName(b.name)).
 			WithRoleRef(rbacv1ac.RoleRef().WithAPIGroup(rbacv1.GroupName).WithKind("ClusterRole").WithName(b.role))
 		if _, err := k8s.RbacV1().ClusterRoleBindings().Apply(ctx, binding, metav1.ApplyOptions{FieldManager: fieldManager, Force: true}); err != nil {

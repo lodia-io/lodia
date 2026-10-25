@@ -246,7 +246,7 @@ func mounts(sts *appsv1.StatefulSet, cp string, generation int) bool {
 			mounted = append(mounted, volume.Secret.SecretName)
 		}
 	}
-	for _, certificate := range bryggav1alpha1.EtcdCertificateRoles {
+	for _, certificate := range bryggav1alpha1.EtcdCertificateRoles() {
 		if !slices.Contains(mounted, bryggav1alpha1.EtcdCertificateSecretName(cp, certificate, generation)) {
 			return false
 		}
