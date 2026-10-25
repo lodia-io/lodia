@@ -292,3 +292,54 @@ func TestAnImmutableSecretIsWrittenOnce(t *testing.T) {
 	reconcile(t, r, cp)
 	expectGenerations(t, cp, 1, 2)
 }
+
+func TestARenewalNotWrittenIsIssuing(t *testing.T) {
+	t.Parallel()
+	r := newReconciler(6 * time.Second)
+	cp := controlPlane(t, "pki-renewal-unwritten")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	serving := parseTLS(t, secretsOf(t, cp)["dev-apiserver-serving"])
+	time.Sleep(time.Until(certs.RenewalTime(serving.Cert)) + 300*time.Millisecond)
+
+	r.Client = failingApply{Client: k8s, secret: "dev-apiserver-serving"}
+	reconcileFails(t, r, cp)
+	c := condition(t, cp, bryggav1alpha1.ConditionCertificatesReady)
+	if c.Status != metav1.ConditionFalse || c.Reason != pki.ReasonIssuing || !strings.Contains(c.Message, "dev-apiserver-serving") {
+		t.Fatalf("CertificatesReady is %s %s: %s", c.Status, c.Reason, c.Message)
+	}
+	if !serving.Cert.Equal(parseTLS(t, secretsOf(t, cp)["dev-apiserver-serving"]).Cert) {
+		t.Fatal("the serving certificate changed although its apply failed")
+	}
+
+	r.Client = k8s
+	reconcile(t, r, cp)
+	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, pki.ReasonIssued)
+}
+
+func TestAnAdoptionNotWrittenLeavesCertificatesReady(t *testing.T) {
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "pki-adoption-unwritten")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	s := secretsOf(t, cp)["dev-front-proxy-client"]
+	s.Labels = nil
+	if err := k8s.Update(t.Context(), s); err != nil {
+		t.Fatal(err)
+	}
+	r.Client = failingApply{Client: k8s, secret: "dev-front-proxy-client"}
+	reconcileFails(t, r, cp)
+	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, pki.ReasonIssued)
+}
+
+func TestACANotWrittenIsNotCounted(t *testing.T) {
+	r := newReconciler(time.Hour)
+	r.Client = failingApply{Client: k8s, secret: "dev-cakey-client"}
+	cp := controlPlane(t, "pki-ca-unwritten")
+	reconcileFails(t, r, cp)
+	expectCondition(t, cp, bryggav1alpha1.ConditionCAValidityAcceptable, metav1.ConditionUnknown, pki.ReasonReconciling)
+	c := condition(t, cp, bryggav1alpha1.ConditionCertificatesReady)
+	if c.Reason != pki.ReasonIssuing || !strings.Contains(c.Message, "dev-cakey-client") {
+		t.Fatalf("CertificatesReady is %s: %s", c.Reason, c.Message)
+	}
+}

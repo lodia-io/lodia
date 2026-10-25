@@ -186,6 +186,32 @@ again a moment after a write failed, and every bundle is a set: each certificate
 once, in DER order, as library-go writes its CA bundles
 ([cabundle.go](https://github.com/openshift/library-go/blob/9a2bc12675c2bb37d3799a30786ccee5fa545d57/pkg/operator/certrotation/cabundle.go#L134-L177)).
 
+PKI finds its Secrets by name, labelled or not, and the names above are its
+own in the namespace: a Secret under one of them without a controller is
+adopted, so a key restored from a backup without its labels is kept. Restore
+such Secrets without `metadata.ownerReferences`: a reference to the old
+`ControlPlane`'s UID makes the Secret that `ControlPlane`'s, and the garbage
+collector deletes it. A Secret under PKI's names whose controller is not this
+`ControlPlane`, or that refers to another `ControlPlane` at all, is neither
+read nor written, and while one exists PKI writes nothing
+(`CertificatesReady=False`, `SecretsControlledElsewhere`): a `ControlPlane`
+recreated under its predecessor's name waits for the garbage collector to
+remove the predecessor's Secrets instead of keeping its CA keys, which every
+old kubeconfig and node trusts. A `ControlPlane` deleted with
+`--cascade=orphan` leaves its Secrets without an owner, and one created under
+the name adopts them, keys included; delete them for fresh credentials. The
+etcd generations PKI keeps are adopted too, applied whole with their data
+unchanged, which an immutable Secret allows
+([validation.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/apis/core/validation/validation.go#L8164-L8182)),
+so none stays without the owner the garbage collector follows or the label
+the cache filters on. Key material PKI cannot read is never replaced: an
+encryption configuration that is missing from its Secret or that the API
+server's own validator refuses
+([validation_encryption.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/apis/apiserver/validation/validation_encryption.go#L64-L115)),
+and a ServiceAccount key that is not the RSA key PKI writes, turn
+`CertificatesReady` False with `SecretUnreadable`: a new key would leave what
+the old one encrypted unreadable, or every token it signed invalid.
+
 The dedicated etcd is etcd-druid's `Etcd` `<cp>-etcd`, which the Datastore
 controller renders from the `DatastoreClass` and the newest complete
 generation of the etcd certificates, under the `ControlPlane`'s finalizer

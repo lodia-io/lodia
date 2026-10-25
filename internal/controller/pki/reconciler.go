@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,9 +34,8 @@ const (
 	bindingsPeriod = 10 * time.Minute
 )
 
-// Each reason has one message, which depends on the state alone, so a pass
-// that changes nothing writes nothing; the errors behind Issuing and Binding
-// go to the log.
+// A message depends on the state alone, so a pass that changes nothing writes
+// nothing; the errors behind Issuing and Binding go to the log.
 const (
 	ReasonReconciling                   = "Reconciling"
 	ReasonIssued                        = "Issued"
@@ -43,6 +43,8 @@ const (
 	ReasonWaitingForEndpoint            = "WaitingForEndpoint"
 	ReasonCAMissing                     = "CAMissing"
 	ReasonCAExpired                     = "CAExpired"
+	ReasonSecretsControlledElsewhere    = "SecretsControlledElsewhere"
+	ReasonSecretUnreadable              = "SecretUnreadable"
 	ReasonEncryptionProviderUnsupported = "EncryptionProviderUnsupported"
 	ReasonValid                         = "Valid"
 	ReasonCAExpiring                    = "CAExpiring"
@@ -96,14 +98,22 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			return ctrl.Result{}, err
 		}
 	}
-	var secrets corev1.SecretList
-	if err := r.Reader.List(ctx, &secrets, client.InNamespace(cp.Namespace), client.MatchingLabels{bryggav1alpha1.ControlPlaneLabel: cp.Name}); err != nil {
+	t := newTenant(cp, now)
+	if err := r.read(ctx, t); err != nil {
 		return ctrl.Result{}, err
 	}
-	t := newTenant(cp, secrets.Items, now)
+	if len(t.foreign) > 0 {
+		access, bindErr := r.access(ctx, t)
+		if err := r.applyStatus(ctx, cp, now, nil, t.controlledElsewhere(), previous(cp, bryggav1alpha1.ConditionCAValidityAcceptable), access); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: t.foreignRequeue()}, bindErr
+	}
 
-	issueErr := r.issue(ctx, t)
-	certificates := t.certificatesReady(issueErr)
+	if err := r.issue(ctx, t); err != nil {
+		return ctrl.Result{}, err
+	}
+	certificates := t.certificatesReady()
 	validity, read := t.caValidity(r.CAExpiryNotice)
 	if !read {
 		validity = previous(cp, bryggav1alpha1.ConditionCAValidityAcceptable)
@@ -112,7 +122,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.applyStatus(ctx, cp, now, t.credentials(), certificates, validity, access); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := errors.Join(issueErr, bindErr); err != nil {
+	if err := errors.Join(t.writeErr, bindErr); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: t.requeueAfter()}, nil
@@ -129,15 +139,19 @@ func missingCAMessage(cas []string) string {
 	return "missing or unreadable CA key: " + strings.Join(cas, ", ") + "; restore it or rotate the CA, nothing it signs is written"
 }
 
-func (t *tenant) certificatesReady(err error) metav1.Condition {
+// certificatesReady reads the state the pass leaves: a write that failed
+// counts as what it would have changed, never as the error.
+func (t *tenant) certificatesReady() metav1.Condition {
 	c := metav1.Condition{Type: bryggav1alpha1.ConditionCertificatesReady, Status: metav1.ConditionFalse}
 	switch {
-	case err != nil:
-		c.Reason, c.Message = ReasonIssuing, "a Secret could not be written; the error is in the log"
 	case len(t.missingCAs) > 0:
 		c.Reason, c.Message = ReasonCAMissing, missingCAMessage(t.missingCAs)
 	case len(t.expiredCAs) > 0:
 		c.Reason, c.Message = ReasonCAExpired, "expired CA: "+strings.Join(t.expiredCAs, ", ")+"; rotate it, nothing it signs is written"
+	case len(t.unreadable) > 0:
+		c.Reason, c.Message = ReasonSecretUnreadable, "unreadable: "+strings.Join(t.unreadable, ", ")+"; restore it, PKI never replaces a key it cannot read"
+	case len(t.pending) > 0:
+		c.Reason, c.Message = ReasonIssuing, "not written yet: "+listed(t.pending)+"; the error is in the log"
 	case t.endpoint == nil:
 		c.Reason, c.Message = ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint"
 	case t.unsupportedProvider != "":
@@ -167,18 +181,46 @@ func (t *tenant) caValidity(notice time.Duration) (metav1.Condition, bool) {
 	return c, len(t.caCerts)+len(t.missingCAs) == len(caBundles)
 }
 
+func (t *tenant) controlledElsewhere() metav1.Condition {
+	held := make([]string, 0, len(t.foreign))
+	for _, f := range t.foreign {
+		held = append(held, fmt.Sprintf("%s by %s %s (UID %s)", f.name, f.owner.Kind, f.owner.Name, f.owner.UID))
+	}
+	return metav1.Condition{
+		Type:    bryggav1alpha1.ConditionCertificatesReady,
+		Status:  metav1.ConditionFalse,
+		Reason:  ReasonSecretsControlledElsewhere,
+		Message: "another owner keeps " + listed(held) + "; nothing is written until they are gone: the garbage collector deletes a previous ControlPlane's, any other owner's need a person",
+	}
+}
+
+func listed(items []string) string {
+	items = slices.Sorted(slices.Values(items))
+	if len(items) <= 5 {
+		return strings.Join(items, ", ")
+	}
+	return strings.Join(items[:5], ", ") + " and " + strconv.Itoa(len(items)-5) + " more"
+}
+
+// access counts a refusal from the tenant as an answer, which turns
+// AccessReady False; no answer keeps a True, since whether the tenant can be
+// reached is Health's to report.
 func (r *Reconciler) access(ctx context.Context, t *tenant) (metav1.Condition, error) {
 	c := metav1.Condition{Type: bryggav1alpha1.ConditionAccessReady, Status: metav1.ConditionFalse, Reason: ReasonWaitingForAPIServer, Message: "APIServerReady is not True for this generation"}
 	ready := meta.FindStatusCondition(t.cp.Status.Conditions, bryggav1alpha1.ConditionAPIServerReady)
 	if ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != t.cp.Generation || t.existing[t.name("brygga-kubeconfig")] == nil {
 		return c, nil
 	}
-	if err := r.bind(ctx, t); err != nil {
-		c.Reason, c.Message = ReasonBinding, "the bindings could not be applied; the error is in the log"
-		return c, err
+	refused, err := r.bind(ctx, t)
+	if err == nil {
+		c.Status, c.Reason, c.Message = metav1.ConditionTrue, ReasonBound, "brygga:operator, brygga:cluster-admins and brygga:kubelet-api-admins are bound"
+		return c, nil
 	}
-	c.Status, c.Reason, c.Message = metav1.ConditionTrue, ReasonBound, "brygga:operator, brygga:cluster-admins and brygga:kubelet-api-admins are bound"
-	return c, nil
+	if prev := meta.FindStatusCondition(t.cp.Status.Conditions, bryggav1alpha1.ConditionAccessReady); !refused && prev != nil && prev.Status == metav1.ConditionTrue {
+		return *prev, err
+	}
+	c.Reason, c.Message = ReasonBinding, "the tenant refused the bindings, or has not confirmed them since its API server became ready; the error is in the log"
+	return c, err
 }
 
 // applyStatus writes only on a change. Nil credentials keep the

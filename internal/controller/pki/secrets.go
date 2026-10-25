@@ -16,13 +16,19 @@ import (
 	"net/netip"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apiserver/pkg/apis/apiserver"
 	apiserverv1 "k8s.io/apiserver/pkg/apis/apiserver/v1"
+	"k8s.io/apiserver/pkg/apis/apiserver/validation"
 	corev1ac "k8s.io/client-go/applyconfigurations/core/v1"
 	metav1ac "k8s.io/client-go/applyconfigurations/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
@@ -47,6 +53,18 @@ var caBundles = []struct {
 	{clientCA, "client-ca"},
 	{frontProxyCA, "front-proxy-ca"},
 	{etcdCA, "etcd-ca"},
+}
+
+// names are PKI's Secrets, <cp>-<name>, beside the etcd generations
+// <cp>-etcd-<role>-<g>. They are reserved: PKI finds them by name, labelled or
+// not.
+var names = []string{
+	"cakey-cluster", "cakey-client", "cakey-front-proxy", "cakey-etcd",
+	"ca-bundle", "client-ca", "front-proxy-ca", "etcd-ca",
+	"kubelet-signer", "apiserver-serving", "apiserver-kubelet-client", "konnectivity-server",
+	"front-proxy-client", "apiserver-etcd-client",
+	"konnectivity-kubeconfig", "controller-manager-kubeconfig", "scheduler-kubeconfig", "brygga-kubeconfig", "admin-kubeconfig",
+	"sa-keys", "encryption-config",
 }
 
 const (
@@ -76,18 +94,32 @@ var (
 )
 
 type tenant struct {
-	cp       *bryggav1alpha1.ControlPlane
-	existing map[string]*corev1.Secret
-	now      time.Time
+	cp *bryggav1alpha1.ControlPlane
+	// existing holds PKI's Secrets that this ControlPlane or nobody controls;
+	// foreign, those another owner keeps.
+	existing    map[string]*corev1.Secret
+	foreign     []foreign
+	generations map[int]bool
+	now         time.Time
 	// wake is the earliest renewal, CA notice or CA expiry still ahead.
 	wake time.Time
-	// cas sign; caCerts holds every CA read, expired ones included.
+	// cas sign; caCerts holds every CA on the server, expired ones included.
 	cas                 map[string]*certs.Certificate
 	caCerts             map[string]*x509.Certificate
 	missingCAs          []string
 	expiredCAs          []string
+	unreadable          []string
 	unsupportedProvider bryggav1alpha1.EncryptionProvider
 	endpoint            *endpoint
+	// writeErr is the pass's first failed write. No write follows it, and
+	// pending names what the pass had to change but did not write.
+	writeErr error
+	pending  []string
+}
+
+type foreign struct {
+	name  string
+	owner metav1.OwnerReference
 }
 
 type endpoint struct {
@@ -99,11 +131,8 @@ func (e *endpoint) url() string {
 	return "https://" + net.JoinHostPort(e.host, strconv.Itoa(int(e.port)))
 }
 
-func newTenant(cp *bryggav1alpha1.ControlPlane, secrets []corev1.Secret, now time.Time) *tenant {
-	t := &tenant{cp: cp, existing: make(map[string]*corev1.Secret, len(secrets)), now: now, cas: map[string]*certs.Certificate{}, caCerts: map[string]*x509.Certificate{}}
-	for i := range secrets {
-		t.existing[secrets[i].Name] = &secrets[i]
-	}
+func newTenant(cp *bryggav1alpha1.ControlPlane, now time.Time) *tenant {
+	t := &tenant{cp: cp, existing: map[string]*corev1.Secret{}, generations: map[int]bool{}, now: now, cas: map[string]*certs.Certificate{}, caCerts: map[string]*x509.Certificate{}}
 	if e := cp.Status.Endpoint; e != nil && e.Host != "" {
 		t.endpoint = &endpoint{host: e.Host, port: e.Port}
 		if e.Port == 0 {
@@ -117,6 +146,99 @@ func newTenant(cp *bryggav1alpha1.ControlPlane, secrets []corev1.Secret, now tim
 
 func (t *tenant) name(suffix string) string {
 	return t.cp.Name + "-" + suffix
+}
+
+// reserved reports whether name is one of PKI's, and the etcd generation it
+// belongs to, if any.
+func (t *tenant) reserved(name string) (int, bool) {
+	suffix, ok := strings.CutPrefix(name, t.cp.Name+"-")
+	if !ok {
+		return 0, false
+	}
+	if slices.Contains(names, suffix) {
+		return 0, true
+	}
+	for _, role := range etcdRoles {
+		if n, ok := strings.CutPrefix(suffix, "etcd-"+role+"-"); ok {
+			if g, err := strconv.Atoi(n); err == nil && g > 0 && strconv.Itoa(g) == n {
+				return g, true
+			}
+			return 0, false
+		}
+	}
+	return 0, false
+}
+
+// elsewhere is the owner that keeps a Secret from this ControlPlane: a
+// controller with another UID, or any owner reference to another
+// ControlPlane.
+func (t *tenant) elsewhere(obj metav1.Object) *metav1.OwnerReference {
+	refs := obj.GetOwnerReferences()
+	for i := range refs {
+		if refs[i].UID != t.cp.UID && (ptr.Deref(refs[i].Controller, false) || controlPlane(refs[i])) {
+			return &refs[i]
+		}
+	}
+	return nil
+}
+
+func controlPlane(ref metav1.OwnerReference) bool {
+	gv, err := schema.ParseGroupVersion(ref.APIVersion)
+	return err == nil && gv.Group == bryggav1alpha1.GroupVersion.Group && ref.Kind == kind
+}
+
+// read takes the Secrets under PKI's names, labelled or not: the labelled ones
+// whole, and the namespace's metadata to find the others, so that no list
+// carries the data of every Secret in the namespace.
+func (r *Reconciler) read(ctx context.Context, t *tenant) error {
+	ns := t.cp.Namespace
+	var labelled corev1.SecretList
+	if err := r.Reader.List(ctx, &labelled, client.InNamespace(ns), client.MatchingLabels{bryggav1alpha1.ControlPlaneLabel: t.cp.Name}); err != nil {
+		return err
+	}
+	all := &metav1.PartialObjectMetadataList{}
+	all.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("SecretList"))
+	if err := r.Reader.List(ctx, all, client.InNamespace(ns)); err != nil {
+		return err
+	}
+	whole := make(map[string]*corev1.Secret, len(labelled.Items))
+	for i := range labelled.Items {
+		whole[labelled.Items[i].Name] = &labelled.Items[i]
+	}
+	for i := range all.Items {
+		m := &all.Items[i]
+		g, ok := t.reserved(m.Name)
+		if !ok || t.held(m) {
+			continue
+		}
+		s := whole[m.Name]
+		if s == nil {
+			s = &corev1.Secret{}
+			if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: ns, Name: m.Name}, s); err != nil {
+				if apierrors.IsNotFound(err) {
+					continue
+				}
+				return err
+			}
+		}
+		if t.held(s) {
+			continue
+		}
+		t.existing[s.Name] = s
+		if g > 0 {
+			t.generations[g] = true
+		}
+	}
+	return nil
+}
+
+// held records a Secret another owner keeps.
+func (t *tenant) held(obj metav1.Object) bool {
+	owner := t.elsewhere(obj)
+	if owner != nil {
+		t.foreign = append(t.foreign, foreign{name: obj.GetName(), owner: *owner})
+	}
+	return owner != nil
 }
 
 func (t *tenant) stamp(prefix string) string {
@@ -145,6 +267,17 @@ func (t *tenant) requeueAfter() time.Duration {
 		after = min(after, t.wake.Sub(t.now))
 	}
 	return max((after + time.Second - 1).Truncate(time.Second), time.Second)
+}
+
+// foreignRequeue waits for the garbage collector when every foreign Secret
+// is a previous ControlPlane's of this name, and for a person otherwise.
+func (t *tenant) foreignRequeue() time.Duration {
+	for _, f := range t.foreign {
+		if !controlPlane(f.owner) || f.owner.Name != t.cp.Name {
+			return time.Minute
+		}
+	}
+	return 10 * time.Second
 }
 
 func (t *tenant) credentials() map[string]any {
@@ -261,33 +394,12 @@ func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 	return r.encryptionConfig(ctx, t)
 }
 
-// lookup reads a Secret the labelled list lacks by name, so one restored
-// without its labels is used, not replaced.
-func (r *Reconciler) lookup(ctx context.Context, t *tenant, name string) (*corev1.Secret, error) {
-	if s := t.existing[name]; s != nil {
-		return s, nil
-	}
-	s := &corev1.Secret{}
-	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: t.cp.Namespace, Name: name}, s); err != nil {
-		return nil, client.IgnoreNotFound(err)
-	}
-	t.existing[name] = s
-	return s, nil
-}
-
 // ca creates a CA only for a tenant with neither its key Secret nor its
 // bundle: a new CA in place of a lost or expired one would cut every client
 // or node off at once.
 func (r *Reconciler) ca(ctx context.Context, t *tenant, name, bundle string) error {
 	secret := t.name("cakey-" + name)
-	key, err := r.lookup(ctx, t, secret)
-	if err != nil {
-		return err
-	}
-	trusted, err := r.lookup(ctx, t, t.name(bundle))
-	if err != nil {
-		return err
-	}
+	key, trusted := t.existing[secret], t.existing[t.name(bundle)]
 	if key == nil && trusted == nil {
 		lifetime := r.CALifetime
 		if name == clusterCA {
@@ -297,9 +409,15 @@ func (r *Reconciler) ca(ctx context.Context, t *tenant, name, bundle string) err
 		if err != nil {
 			return err
 		}
-		t.cas[name], t.caCerts[name] = c, c.Cert
+		t.cas[name] = c
 		r.notice(t, c.Cert)
-		return r.applyTLS(ctx, t, secret, c, nil, false)
+		if err := r.applyTLS(ctx, t, secret, c, nil, false); err != nil {
+			return err
+		}
+		if t.existing[secret] != nil {
+			t.caCerts[name] = c.Cert
+		}
+		return nil
 	}
 	c := readCA(key)
 	if c == nil {
@@ -313,7 +431,8 @@ func (r *Reconciler) ca(ctx context.Context, t *tenant, name, bundle string) err
 	}
 	t.cas[name] = c
 	r.notice(t, c.Cert)
-	return r.applySecret(ctx, t, secret, corev1.SecretTypeTLS, map[string][]byte{corev1.TLSCertKey: key.Data[corev1.TLSCertKey], corev1.TLSPrivateKeyKey: key.Data[corev1.TLSPrivateKeyKey]}, nil, false)
+	r.applySecret(ctx, t, secret, corev1.SecretTypeTLS, map[string][]byte{corev1.TLSCertKey: key.Data[corev1.TLSCertKey], corev1.TLSPrivateKeyKey: key.Data[corev1.TLSPrivateKeyKey]}, nil, false)
+	return nil
 }
 
 func readCA(s *corev1.Secret) *certs.Certificate {
@@ -366,7 +485,8 @@ func (r *Reconciler) applyTLS(ctx context.Context, t *tenant, name string, c *ce
 	if err != nil {
 		return err
 	}
-	return r.applySecret(ctx, t, name, corev1.SecretTypeTLS, map[string][]byte{corev1.TLSCertKey: cert, corev1.TLSPrivateKeyKey: key}, labels, immutable)
+	r.applySecret(ctx, t, name, corev1.SecretTypeTLS, map[string][]byte{corev1.TLSCertKey: cert, corev1.TLSPrivateKeyKey: key}, labels, immutable)
+	return nil
 }
 
 func (r *Reconciler) bundle(ctx context.Context, t *tenant, name string, bundle ...*x509.Certificate) error {
@@ -374,7 +494,8 @@ func (r *Reconciler) bundle(ctx context.Context, t *tenant, name string, bundle 
 	if err != nil {
 		return err
 	}
-	return r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, map[string][]byte{caKey: pem}, nil, false)
+	r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, map[string][]byte{caKey: pem}, nil, false)
+	return nil
 }
 
 // clientBundle keeps each replaced signer for one signing duration, since
@@ -472,38 +593,47 @@ func (r *Reconciler) kubeconfig(ctx context.Context, t *tenant, k kubeconfig) er
 	if !k.embed {
 		content[caKey], content[corev1.TLSCertKey], content[corev1.TLSPrivateKeyKey] = ca, cert, key
 	}
-	return r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, content, nil, false)
+	r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, content, nil, false)
+	return nil
 }
 
-// serviceAccountKey keeps <cp>-sa-keys, brygga-signer's file contract.
+// serviceAccountKey keeps <cp>-sa-keys, brygga-signer's file contract. A key
+// it cannot read is never replaced: every token it signed would stop
+// verifying.
 func (r *Reconciler) serviceAccountKey(ctx context.Context, t *tenant) error {
 	name := t.name("sa-keys")
-	content := map[string][]byte{}
 	if s := t.existing[name]; s != nil {
-		maps.Copy(content, s.Data)
-	}
-	if key, err := certs.ParseKey(content[signingKey]); err != nil || !isServiceAccountKey(key) {
-		key, err := rsa.GenerateKey(rand.Reader, serviceAccountKeyBits)
-		if err != nil {
-			return err
+		if !isServiceAccountKey(s.Data[signingKey]) {
+			t.unreadable = append(t.unreadable, name)
+			return nil
 		}
-		if content[signingKey], err = certs.KeyPEM(key); err != nil {
-			return err
-		}
+		r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, maps.Clone(s.Data), nil, false)
+		return nil
 	}
-	return r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, content, nil, false)
+	key, err := rsa.GenerateKey(rand.Reader, serviceAccountKeyBits)
+	if err != nil {
+		return err
+	}
+	pem, err := certs.KeyPEM(key)
+	if err != nil {
+		return err
+	}
+	r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, map[string][]byte{signingKey: pem}, nil, false)
+	return nil
 }
 
-func isServiceAccountKey(key any) bool {
+func isServiceAccountKey(pem []byte) bool {
+	key, err := certs.ParseKey(pem)
 	rsaKey, ok := key.(*rsa.PrivateKey)
-	return ok && rsaKey.N.BitLen() >= serviceAccountKeyBits
+	return err == nil && ok && rsaKey.N.BitLen() >= serviceAccountKeyBits
 }
 
 // encryptionConfig puts a changed provider first with a new key, and keeps
-// the previous providers so that what they encrypted stays readable.
+// the previous providers so that what they encrypted stays readable. A
+// configuration it cannot read is never replaced: the data its keys
+// encrypted would be lost.
 func (r *Reconciler) encryptionConfig(ctx context.Context, t *tenant) error {
 	name := t.name("encryption-config")
-	existing := data(t.existing[name], encryptionConfigKey)
 	want := providerSecretbox
 	if api := t.cp.Spec.APIServer; api != nil && api.Encryption != nil && api.Encryption.Provider != "" {
 		want = api.Encryption.Provider
@@ -512,19 +642,23 @@ func (r *Reconciler) encryptionConfig(ctx context.Context, t *tenant) error {
 		t.unsupportedProvider = want
 		return nil
 	}
-	var cfg apiserverv1.EncryptionConfiguration
 	var providers []apiserverv1.ProviderConfiguration
-	if err := yaml.Unmarshal(existing, &cfg); err == nil && len(cfg.Resources) == 1 {
-		providers = cfg.Resources[0].Providers
-	}
-	if len(providers) > 0 && providerOf(providers[0]) == want {
-		return r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, map[string][]byte{encryptionConfigKey: existing}, nil, false)
+	if s := t.existing[name]; s != nil {
+		existing, ok := readEncryptionConfig(s.Data[encryptionConfigKey])
+		if !ok {
+			t.unreadable = append(t.unreadable, name)
+			return nil
+		}
+		if providers = existing.Resources[0].Providers; providerOf(providers[0]) == want {
+			r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, map[string][]byte{encryptionConfigKey: s.Data[encryptionConfigKey]}, nil, false)
+			return nil
+		}
 	}
 	first, err := newProvider(want)
 	if err != nil {
 		return err
 	}
-	cfg = apiserverv1.EncryptionConfiguration{
+	cfg := apiserverv1.EncryptionConfiguration{
 		TypeMeta:  metav1.TypeMeta{APIVersion: apiserverv1.SchemeGroupVersion.String(), Kind: "EncryptionConfiguration"},
 		Resources: []apiserverv1.ResourceConfiguration{{Resources: []string{"secrets"}, Providers: append([]apiserverv1.ProviderConfiguration{first}, providers...)}},
 	}
@@ -532,7 +666,24 @@ func (r *Reconciler) encryptionConfig(ctx context.Context, t *tenant) error {
 	if err != nil {
 		return err
 	}
-	return r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, map[string][]byte{encryptionConfigKey: rendered}, nil, false)
+	r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, map[string][]byte{encryptionConfigKey: rendered}, nil, false)
+	return nil
+}
+
+// readEncryptionConfig accepts what the API server's own validator accepts
+// and PKI writes: one resource entry, for secrets. Reload is on, as the API
+// server Brygga runs reloads the file.
+func readEncryptionConfig(content []byte) (*apiserverv1.EncryptionConfiguration, bool) {
+	cfg := &apiserverv1.EncryptionConfiguration{}
+	if err := yaml.Unmarshal(content, cfg); err != nil || cfg.APIVersion != apiserverv1.SchemeGroupVersion.String() || cfg.Kind != "EncryptionConfiguration" ||
+		len(cfg.Resources) != 1 || !slices.Equal(cfg.Resources[0].Resources, []string{"secrets"}) {
+		return nil, false
+	}
+	internal := &apiserver.EncryptionConfiguration{}
+	if err := apiserverv1.Convert_v1_EncryptionConfiguration_To_apiserver_EncryptionConfiguration(cfg, internal, nil); err != nil {
+		return nil, false
+	}
+	return cfg, len(validation.ValidateEncryptionConfiguration(internal, true)) == 0
 }
 
 func providerOf(p apiserverv1.ProviderConfiguration) bryggav1alpha1.EncryptionProvider {
@@ -568,17 +719,13 @@ func newProvider(provider bryggav1alpha1.EncryptionProvider) (apiserverv1.Provid
 }
 
 // etcd keeps the current generation and the newest complete one below it,
-// which the Etcd may still run on, and deletes every other.
+// which the Etcd may still run on, and deletes every other. A new generation
+// is numbered above every one present, labelled or not, so it never takes a
+// name a leftover holds.
 func (r *Reconciler) etcd(ctx context.Context, t *tenant) error {
 	ca := t.cas[etcdCA]
 	profiles := t.etcdProfiles()
-	var generations []int
-	for _, s := range t.existing {
-		if g, err := strconv.Atoi(s.Labels[bryggav1alpha1.EtcdCertificatesLabel]); err == nil && !slices.Contains(generations, g) {
-			generations = append(generations, g)
-		}
-	}
-	slices.Sort(generations)
+	generations := slices.Sorted(maps.Keys(t.generations))
 	current := 0
 	if len(generations) > 0 {
 		current = generations[len(generations)-1]
@@ -599,22 +746,39 @@ func (r *Reconciler) etcd(ctx context.Context, t *tenant) error {
 			previous = g
 		}
 	}
+	for _, g := range []int{current, previous} {
+		r.adopt(ctx, t, g)
+	}
 	for _, g := range generations {
 		if g == current || g == previous {
 			continue
 		}
 		for _, role := range etcdRoles {
-			name := t.etcdName(role, g)
-			if s := t.existing[name]; s == nil || s.DeletionTimestamp != nil {
+			s := t.existing[t.etcdName(role, g)]
+			if s == nil || s.DeletionTimestamp != nil || t.writeErr != nil {
 				continue
 			}
-			err := r.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: t.cp.Namespace}})
+			err := r.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: s.Name, Namespace: s.Namespace}},
+				client.Preconditions{UID: &s.UID, ResourceVersion: &s.ResourceVersion})
 			if client.IgnoreNotFound(err) != nil {
-				return fmt.Errorf("delete Secret %s: %w", name, err)
+				t.writeErr = fmt.Errorf("delete Secret %s: %w", s.Name, err)
 			}
 		}
 	}
 	return nil
+}
+
+// adopt applies a kept generation whole, its data unchanged, wherever it
+// lacks this ControlPlane's labels or owner reference: an orphaned generation
+// would outlive its ControlPlane with its keys, and one without its label is
+// invisible to the label-filtered cache.
+func (r *Reconciler) adopt(ctx context.Context, t *tenant, g int) {
+	labels := map[string]string{bryggav1alpha1.EtcdCertificatesLabel: strconv.Itoa(g)}
+	for _, role := range etcdRoles {
+		if s := t.existing[t.etcdName(role, g)]; s != nil && s.DeletionTimestamp == nil {
+			r.applySecret(ctx, t, s.Name, s.Type, s.Data, labels, true)
+		}
+	}
 }
 
 // issueEtcd writes generation g whole and immutable: etcd-druid rolls the
@@ -625,9 +789,7 @@ func (r *Reconciler) issueEtcd(ctx context.Context, t *tenant, g int, ca *certs.
 		return err
 	}
 	labels := map[string]string{bryggav1alpha1.EtcdCertificatesLabel: strconv.Itoa(g)}
-	if err := r.applySecret(ctx, t, t.etcdName("ca", g), corev1.SecretTypeOpaque, map[string][]byte{caKey: caPEM}, labels, true); err != nil {
-		return err
-	}
+	r.applySecret(ctx, t, t.etcdName("ca", g), corev1.SecretTypeOpaque, map[string][]byte{caKey: caPEM}, labels, true)
 	for _, p := range profiles {
 		c, err := ca.Issue(p.profile, t.now, r.LeafLifetime)
 		if err != nil {
@@ -700,17 +862,32 @@ func (t *tenant) etcdProfiles() []etcdProfile {
 	}
 }
 
-func (r *Reconciler) applySecret(ctx context.Context, t *tenant, name string, typ corev1.SecretType, content map[string][]byte, labels map[string]string, immutable bool) error {
+// applySecret writes a Secret unless it already holds what PKI writes. After
+// the pass's first failed write it writes nothing, and records a Secret whose
+// type or data had to change, or a generation whose labels or owner had to:
+// the Datastore sees a generation by them.
+func (r *Reconciler) applySecret(ctx context.Context, t *tenant, name string, typ corev1.SecretType, content map[string][]byte, labels map[string]string, immutable bool) {
 	cp := t.cp
 	labels = maps.Clone(labels)
 	if labels == nil {
 		labels = map[string]string{}
 	}
 	labels[bryggav1alpha1.ControlPlaneLabel] = cp.Name
-	if s := t.existing[name]; s != nil && (immutable && isImmutable(s) ||
-		s.Type == typ && maps.EqualFunc(s.Data, content, bytes.Equal) && t.owns(s) && hasLabels(s, labels)) {
-		return nil
+	s := t.existing[name]
+	changes := s == nil || s.Type != typ || !maps.EqualFunc(s.Data, content, bytes.Equal)
+	if !changes && t.owns(s) && hasLabels(s, labels) && (!immutable || isImmutable(s)) {
+		return
 	}
+	if t.writeErr == nil {
+		t.writeErr = r.write(ctx, t, name, typ, content, labels, immutable)
+	}
+	if t.writeErr != nil && (changes || labels[bryggav1alpha1.EtcdCertificatesLabel] != "") {
+		t.pending = append(t.pending, name)
+	}
+}
+
+func (r *Reconciler) write(ctx context.Context, t *tenant, name string, typ corev1.SecretType, content map[string][]byte, labels map[string]string, immutable bool) error {
+	cp := t.cp
 	owner := metav1ac.OwnerReference().
 		WithAPIVersion(bryggav1alpha1.GroupVersion.String()).
 		WithKind(kind).

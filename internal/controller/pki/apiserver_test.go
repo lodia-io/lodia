@@ -22,6 +22,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
@@ -110,6 +111,12 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 	r.Dial = dialer(t, tenantCfg.Host)
 	reconcile(t, r, cp)
 	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionTrue, pki.ReasonBound)
+	r.Dial = unreachable
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+		t.Fatal("a pass that could not reach the tenant succeeded")
+	}
+	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionTrue, pki.ReasonBound)
+	r.Dial = dialer(t, tenantCfg.Host)
 	for _, b := range []struct {
 		name, kind, role string
 	}{
@@ -175,6 +182,23 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 	r.Dial = dialer(t, tenantCfg.Host)
 	reconcile(t, r, cp)
 	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionTrue, pki.ReasonBound)
+}
+
+func TestAccessReadyIsBindingUntilTheTenantAnswers(t *testing.T) {
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "pki-access-unanswered")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	setAPIServerReady(t, cp)
+	r.Dial = unreachable
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+		t.Fatal("a pass that could not reach the tenant succeeded")
+	}
+	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionFalse, pki.ReasonBinding)
+}
+
+func unreachable(context.Context, string, string) (net.Conn, error) {
+	return nil, errors.New("connection refused")
 }
 
 func dialer(t *testing.T, host string) func(ctx context.Context, network, address string) (net.Conn, error) {

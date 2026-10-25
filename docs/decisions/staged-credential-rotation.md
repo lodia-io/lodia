@@ -201,10 +201,12 @@ first four.
   is not renewed, since a new one would not outlive it; nothing is issued
   under an expired CA (`CAExpired`); a new kubelet signer is written only
   once the client CA bundle trusts it. A CA is created only for a tenant
-  that has neither its key Secret nor its bundle, read by name when the
-  labelled list lacks them, so a key restored without its labels is kept; a
-  lost or unreadable key is `CAMissing`, and nothing that CA signs is
-  written. `CAValidityAcceptable` announces a CA in its last year
+  that has neither its key Secret nor its bundle. PKI finds its Secrets by
+  name, labelled or not, so a key restored without its labels is kept,
+  never uses or writes one another owner keeps, and adopts the etcd
+  generations it keeps; a lost or unreadable key is `CAMissing`, and nothing
+  that CA signs is written; an encryption configuration or ServiceAccount
+  key it cannot read is never replaced (`SecretUnreadable`). `CAValidityAcceptable` announces a CA in its last year
   (`CAExpiryNotice`, a year in `main.go`). `reconciler_test.go` and
   `recovery_test.go` prove each of these against a running envtest API
   server: the subjects, usages, SANs and validity; that no Secret but
@@ -219,4 +221,8 @@ first four.
   when a member is deleted, held by a finalizer or foreign, and a partly
   written generation deleted while the last complete one is kept; a lost CA
   left in place and an unlabelled one kept; the client bundle written before
-  the signer; the notice; `kms` reported with everything else issued.
+  the signer; the notice; `kms` reported with everything else issued; a
+  renewal or an adoption that could not be written. `ownership_test.go`
+  holds a predecessor's Secrets and other owners' left alone, leftovers
+  under PKI's names, adopted generations, unreadable key material kept, and
+  failed reads that leave the status.
