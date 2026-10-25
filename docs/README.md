@@ -424,7 +424,9 @@ writes stop for the copy.
 ### Deletion
 
 The Datastore controller holds the `ControlPlane`'s finalizer
-`brygga.segla.io/controlplane`. On deletion it deletes the `Etcd` and waits
+`brygga.segla.io/controlplane`; while `spec.paused` is true it touches
+nothing, so the deletion of a paused `ControlPlane` waits until it is
+unpaused. On deletion it deletes the `Etcd` and waits
 for etcd-druid to let it go, then reclaims the volumes, which etcd-druid
 keeps: of the PersistentVolumeClaims the StatefulSet created
 (`<cp>-etcd-<cp>-etcd-<n>`, found by the labels the StatefulSet controller

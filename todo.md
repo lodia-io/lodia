@@ -100,9 +100,6 @@ is a decision — a decision is a file in `docs/decisions/`.
   write, Secrets (metadata list and watch, the credentials copy),
   PersistentVolumeClaims list and delete, the `ControlPlane`'s status and
   finalizers.
-- `spec.paused`: which controllers stop, and whether the finalizer still runs
-  on a paused `ControlPlane`; the Datastore controller ignores it until that
-  is decided.
 - The `DatastoreClass` schema checks `fullSnapshotSchedule` and
   `defragmentation.schedule` only for length; etcd-druid's CRD wants standard
   five-field cron, so a bad schedule fails the `Etcd` apply: the error is in

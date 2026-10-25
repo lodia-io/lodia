@@ -136,12 +136,14 @@ func (r *Reconciler) controlPlanesUsing(ctx context.Context, class client.Object
 }
 
 // Reconcile holds the finalizer, keeps the Etcd and reports DatastoreReady.
+// A paused ControlPlane is left as it is, its deletion included, until it is
+// unpaused.
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	cp := &bryggav1alpha1.ControlPlane{}
 	if err := r.Get(ctx, req.NamespacedName, cp); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if cp.Spec.Datastore.Dedicated == nil {
+	if cp.Spec.Datastore.Dedicated == nil || cp.Spec.Paused {
 		return ctrl.Result{}, nil
 	}
 	if !cp.DeletionTimestamp.IsZero() {

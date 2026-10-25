@@ -264,6 +264,25 @@ func getControlPlane(t *testing.T, ns, name string) *bryggav1alpha1.ControlPlane
 	return cp
 }
 
+func consistently(t *testing.T, check func() error) {
+	t.Helper()
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		if err := check(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func setPaused(t *testing.T, ns, name string, paused bool) {
+	t.Helper()
+	cp := getControlPlane(t, ns, name)
+	patch := client.MergeFrom(cp.DeepCopy())
+	cp.Spec.Paused = paused
+	if err := k8s.Patch(t.Context(), cp, patch); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func waitCondition(t *testing.T, ns, name string, status metav1.ConditionStatus, reason, message string) {
 	t.Helper()
 	eventually(t, func() error {
@@ -528,6 +547,60 @@ func TestConditionsFromState(t *testing.T) {
 		condition := meta.FindStatusCondition(after.Status.Conditions, datastore.ConditionType)
 		t.Errorf("a pass whose Etcd read fails moved the ControlPlane from resourceVersion %s to %s: DatastoreReady %s/%s %q, status.datastore %+v",
 			before.ResourceVersion, after.ResourceVersion, condition.Status, condition.Reason, condition.Message, after.Status.Datastore)
+	}
+}
+
+func TestPaused(t *testing.T) {
+	ns := namespace(t)
+	createClass(t, newClass("paused", "Delete"))
+	paused := controlPlane(ns, "dev", "paused")
+	paused.Spec.Paused = true
+	create(t, paused)
+	writeGeneration(t, ns, "dev", 1)
+	consistently(t, func() error {
+		cp := getControlPlane(t, ns, "dev")
+		if controllerutil.ContainsFinalizer(cp, datastore.Finalizer) || meta.FindStatusCondition(cp.Status.Conditions, datastore.ConditionType) != nil {
+			return fmt.Errorf("a paused ControlPlane was reconciled: finalizers %v, conditions %+v", cp.Finalizers, cp.Status.Conditions)
+		}
+		if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev-etcd"}, &druidv1alpha1.Etcd{}); !apierrors.IsNotFound(err) {
+			return fmt.Errorf("want no Etcd for a paused ControlPlane, got %w", err)
+		}
+		return nil
+	})
+
+	setPaused(t, ns, "dev", false)
+	waitEtcd(t, ns, "dev", namesGeneration(1))
+	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd dev-etcd")
+	if !controllerutil.ContainsFinalizer(getControlPlane(t, ns, "dev"), datastore.Finalizer) {
+		t.Fatal("the finalizer is not on the unpaused ControlPlane")
+	}
+
+	setPaused(t, ns, "dev", true)
+	writeGeneration(t, ns, "dev", 2)
+	if err := k8s.Delete(t.Context(), getControlPlane(t, ns, "dev")); err != nil {
+		t.Fatal(err)
+	}
+	consistently(t, func() error {
+		cp := getControlPlane(t, ns, "dev")
+		if !controllerutil.ContainsFinalizer(cp, datastore.Finalizer) {
+			return errors.New("the finalizer of a paused ControlPlane was released")
+		}
+		if condition := meta.FindStatusCondition(cp.Status.Conditions, datastore.ConditionType); condition.Reason == datastore.ReasonDeleting {
+			return errors.New("a paused ControlPlane reports Deleting")
+		}
+		etcd := getEtcd(t, ns, "dev")
+		if !etcd.DeletionTimestamp.IsZero() {
+			return errors.New("the Etcd of a paused ControlPlane is being deleted")
+		}
+		return namesGeneration(1)(etcd)
+	})
+
+	setPaused(t, ns, "dev", false)
+	eventually(t, func() error {
+		return gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev"}, &bryggav1alpha1.ControlPlane{}))
+	})
+	if err := gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev-etcd"}, &druidv1alpha1.Etcd{})); err != nil {
+		t.Errorf("the Etcd: %v", err)
 	}
 }
 
