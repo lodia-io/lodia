@@ -527,10 +527,11 @@ type KubeProxy struct {
 	// +kubebuilder:default=iptables
 	Mode ProxyMode `json:"mode,omitempty"`
 
-	// HealthzBindAddress opens kube-proxy's health port beyond loopback, for
-	// cloud load balancers; loopback by default.
+	// HealthzBindAddress is the IP address kube-proxy serves its health port,
+	// 10256, on: beyond loopback for cloud load balancers; loopback by default.
 	// +optional
-	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:MaxLength=45
+	// +kubebuilder:validation:XValidation:rule="isIP(self)",message="must be an IP address"
 	HealthzBindAddress string `json:"healthzBindAddress,omitempty"`
 }
 
@@ -610,7 +611,7 @@ type AutoUpdate struct {
 
 // Hibernation puts the control plane to sleep.
 type Hibernation struct {
-	// Enabled overrides the schedules.
+	// Enabled overrides the schedules; unset, the schedules decide.
 	// +optional
 	Enabled *bool `json:"enabled,omitempty"`
 
@@ -666,14 +667,16 @@ type ServiceAccount struct {
 
 // RestoreFrom names the Backup a new control plane starts from.
 type RestoreFrom struct {
-	// BackupRef names the Backup.
+	// BackupRef names a Backup in the ControlPlane's namespace, never another
+	// tenant's.
 	// +required
-	BackupRef NamespacedReference `json:"backupRef"`
+	BackupRef LocalReference `json:"backupRef"`
 }
 
 // ControlPlaneStatus is what Brygga observed and did.
 type ControlPlaneStatus struct {
-	// ObservedGeneration is the generation every controller fully processed.
+	// ObservedGeneration is the newest generation every readiness condition
+	// has been reported for.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 

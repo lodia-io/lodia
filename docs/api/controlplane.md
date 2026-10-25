@@ -40,13 +40,14 @@ Examples: [`examples/`](examples/).
 | `addons.konnectivity.version` | string | from the version table | pin only to hold a version across a Kubernetes upgrade |
 | `addons.konnectivity.agent.mode` | `DaemonSet` \| `Deployment` | `DaemonSet` | `Deployment` takes `replicas`; `hostNetwork` defaults false |
 | `addons.kubeProxy.{enabled, mode}` | | `true`, `iptables` | `enabled: false` for CNIs that replace kube-proxy |
+| `addons.kubeProxy.healthzBindAddress` | IP address | loopback | where kube-proxy serves its health port, 10256, which Tenant appends; beyond loopback for cloud load balancers |
 | `addons.coreDNS.{enabled, replicas}` | | `true`, 2 | |
 | `placement.{nodeSelector, tolerations, priorityClassName}` | | operator defaults | applies to every control plane pod of this tenant; etcd placement comes from the `DatastoreClass` |
 | `maintenance.window.{begin, end, timeZone}` | `HH:MM`, `HH:MM`, IANA zone | absent = any time | end may be before begin (crosses midnight) |
 | `maintenance.autoUpdate.kubernetesPatch` | bool | `false` | newest patch of the running minor, applied in the window |
-| `hibernation.enabled` | bool | `false` | an explicit override of the schedules |
+| `hibernation.enabled` | bool | unset, the schedules decide | an explicit override of the schedules |
 | `hibernation.schedules[]` | `{start, end, timeZone}` | | cron expressions; `start` puts the control plane to sleep, `end` wakes it |
-| `restoreFrom.backupRef` | `{name, namespace?}` | | set only at creation (CEL: cannot be added or changed later); the datastore starts from that snapshot, from phase 2 on ([roadmap](../roadmap.md)): until then nothing reads it, and a `ControlPlane` created with it starts empty |
+| `restoreFrom.backupRef` | `{name}` | | set only at creation (CEL: cannot be added or changed later); the datastore starts from that snapshot, from phase 2 on ([roadmap](../roadmap.md)): until then nothing reads it, and a `ControlPlane` created with it starts empty |
 | `health.holdControllerManager` | bool | `true` | hold the controller manager's leader lease while most nodes are silent ([controller-manager-hold](../decisions/controller-manager-hold.md)); `false` releases a hold in progress |
 | `paused` | bool | `false` | Brygga stops reconciling but keeps watching; `Progressing=False`, reason `Paused`; the finalizer stays, so a paused `ControlPlane`'s deletion waits until it is unpaused |
 
@@ -54,7 +55,7 @@ Examples: [`examples/`](examples/).
 
 | field | written by | meaning |
 |---|---|---|
-| `observedGeneration` | Lifecycle | the last `metadata.generation` every controller has fully processed |
+| `observedGeneration` | Lifecycle | the newest `metadata.generation` that every readiness condition (`CertificatesReady`, `DatastoreReady`, `APIServerReady`, `AccessReady`, `AddonsApplied`, `Reachable`) has been reported for |
 | `conditions[]` | each controller its own | `CertificatesReady`, `CAValidityAcceptable`, `DatastoreReady`, `APIServerReady`, `AccessReady`, `AddonsApplied`, `AddonsAvailable`, `Reachable`, `Progressing`, `Hibernated`, `Ready`; each with `reason`, `message`, `observedGeneration` |
 | `target.version` | Lifecycle | the Kubernetes version being rolled now; one minor at a time towards `spec.version`; until upgrades are built (phase 2) it follows `spec.version` within its minor only |
 | `target.operatorVersion` | Lifecycle | the Brygga version whose templates this tenant's pods are rendered with |
@@ -74,7 +75,6 @@ Examples: [`examples/`](examples/).
 | `datastore.class.{name, generation}` | Datastore | the `DatastoreClass` a dedicated etcd was built from, and the generation of it the `Etcd` runs; Lifecycle reads it in phase 2 |
 | `datastore.members.{total, ready}` | Datastore | the members the `Etcd` asks for and those ready |
 | `datastore.dbSizeBytes`, `datastore.lastBackup.{time, kind, revision}` | Datastore | phase 2, with backups and metrics |
-| `components.{apiServer, controllerManager, scheduler}.{replicas, ready}` | Workloads | from the Deployments |
 | `nodes.{total, ready, outdatedKubelets, sampledAt}` | Health | from a periodic list of nodes and leases in the tenant |
 | `health.controllerManagerHold.{since, silentNodes, countedNodes, blockedBy}` | Health | present while Brygga holds the controller manager's leader lease; `blockedBy` names a foreign holder Brygga left alone |
 

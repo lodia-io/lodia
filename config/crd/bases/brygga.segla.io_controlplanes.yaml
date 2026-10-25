@@ -120,10 +120,13 @@ spec:
                         type: boolean
                       healthzBindAddress:
                         description: |-
-                          HealthzBindAddress opens kube-proxy's health port beyond loopback, for
-                          cloud load balancers; loopback by default.
-                        maxLength: 64
+                          HealthzBindAddress is the IP address kube-proxy serves its health port,
+                          10256, on: beyond loopback for cloud load balancers; loopback by default.
+                        maxLength: 45
                         type: string
+                        x-kubernetes-validations:
+                        - message: must be an IP address
+                          rule: isIP(self)
                       mode:
                         default: iptables
                         description: Mode is iptables, nftables or ipvs.
@@ -598,7 +601,8 @@ spec:
                   its data.
                 properties:
                   enabled:
-                    description: Enabled overrides the schedules.
+                    description: Enabled overrides the schedules; unset, the schedules
+                      decide.
                     type: boolean
                   schedules:
                     description: Schedules put the control plane to sleep at Start
@@ -797,16 +801,14 @@ spec:
                   at creation.
                 properties:
                   backupRef:
-                    description: BackupRef names the Backup.
+                    description: |-
+                      BackupRef names a Backup in the ControlPlane's namespace, never another
+                      tenant's.
                     properties:
                       name:
                         description: Name of the object.
                         maxLength: 253
                         minLength: 1
-                        type: string
-                      namespace:
-                        description: Namespace of the object.
-                        maxLength: 63
                         type: string
                     required:
                     - name
@@ -1353,8 +1355,9 @@ spec:
                 - total
                 type: object
               observedGeneration:
-                description: ObservedGeneration is the generation every controller
-                  fully processed.
+                description: |-
+                  ObservedGeneration is the newest generation every readiness condition
+                  has been reported for.
                 format: int64
                 type: integer
               target:

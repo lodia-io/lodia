@@ -267,6 +267,39 @@ func TestEndpointStatus(t *testing.T) {
 	}
 }
 
+func TestSmallerShapes(t *testing.T) {
+	ensureNamespaces(t, "team-a")
+	cases := []struct {
+		name   string
+		mutate func(*testing.T, *unstructured.Unstructured)
+		want   string
+	}{
+		{"kube-proxy's health address an IP", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "0.0.0.0", "spec", "addons", "kubeProxy", "healthzBindAddress")
+		}, ""},
+		{"kube-proxy's health address with a port", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "0.0.0.0:10256", "spec", "addons", "kubeProxy", "healthzBindAddress")
+		}, "must be an IP address"},
+		{"a Backup in another namespace", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, map[string]any{"backupRef": map[string]any{"name": "nightly", "namespace": "team-b"}}, "spec", "restoreFrom")
+		}, `unknown field "spec.restoreFrom.backupRef.namespace"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			obj := example(t, "controlplane-single.yaml", "shapes")
+			tc.mutate(t, obj)
+			err := k8s.Create(context.Background(), obj, client.DryRunAll, client.FieldValidation("Strict"))
+			if tc.want == "" || !strings.Contains(tc.want, "unknown field") {
+				expect(t, err, tc.want)
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
 func TestKubeconfigRequestValidation(t *testing.T) {
 	ensureNamespaces(t, "team-a")
 	cases := []struct {
