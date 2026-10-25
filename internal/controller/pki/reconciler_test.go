@@ -359,7 +359,7 @@ func TestEveryCertificateVerifiesAgainstItsCA(t *testing.T) {
 		secret, server, user string
 		embed                bool
 	}{
-		{"dev-konnectivity-kubeconfig", "https://127.0.0.1:6443", "system:konnectivity-server", false},
+		{"dev-konnectivity-kubeconfig", internal, "system:konnectivity-server", false},
 		{"dev-controller-manager-kubeconfig", internal, "system:kube-controller-manager", false},
 		{"dev-scheduler-kubeconfig", internal, "system:kube-scheduler", false},
 		{"dev-brygga-kubeconfig", internal, "brygga:operator", true},

@@ -353,7 +353,7 @@ func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 	if cl != nil && cluster != nil {
 		internal := "https://" + t.name("kube-apiserver") + "." + t.cp.Namespace + ".svc:443"
 		kubeconfigs := []kubeconfig{
-			{"konnectivity-kubeconfig", "system:konnectivity-server", nil, "https://127.0.0.1:6443", false},
+			{"konnectivity-kubeconfig", "system:konnectivity-server", nil, internal, false},
 			{"controller-manager-kubeconfig", "system:kube-controller-manager", nil, internal, false},
 			{"scheduler-kubeconfig", "system:kube-scheduler", nil, internal, false},
 			{"brygga-kubeconfig", "brygga:operator", nil, internal, true},
