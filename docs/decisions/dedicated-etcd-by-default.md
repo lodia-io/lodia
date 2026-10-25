@@ -1,7 +1,11 @@
 # Every tenant gets its own etcd, run by etcd-druid; a shared etcd is an opt-in for density
 
 Decided 2026-10-24. The phase 0 spike found etcd-druid fit
-([etcd spike](../etcd-spike-2026-10.md)). Not built.
+([etcd spike](../etcd-spike-2026-10.md)). The Datastore controller is built
+for the dedicated case with one member: the `Etcd` from the class and the
+newest certificate generation, the finalizer with the reclaim policy, and
+`DatastoreReady`; three members, hibernation, the final snapshot and the
+backups' retention after deletion, restore and the shared store are not.
 
 ## Decision
 
@@ -139,9 +143,39 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   encryption at rest is on by default (`secretbox`), and the encryption key is
   backed up next to the snapshots; bucket-side encryption is recommended on
   top.
+- etcd-druid keeps the volumes and the snapshots of a deleted `Etcd`: the
+  StatefulSet retains its claims and nothing removes the prefix in the
+  bucket ([etcd spike](../etcd-spike-2026-10.md), finding 6). Under
+  `storage.reclaimPolicy: Delete` the Datastore controller deletes the claims
+  itself, finding them by the labels the StatefulSet controller copies from
+  the selector etcd-druid sets
+  ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L149-L151),
+  [stateful_set_utils.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/controller/statefulset/stateful_set_utils.go#L389-L407));
+  the snapshots' retention after deletion is phase 2.
+- The `Etcd` names the CA's key, `dataKey: ca.crt`, on all three TLS blocks:
+  etcd-druid defaults to `ca.crt` for the members and to `bundle.crt` for its
+  own calls to the backup-restore sidecar
+  ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L468),
+  [snapshot.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/compaction/snapshot.go#L87)).
 - The `Datastore` kind keeps a `driver` field reserved, so kine or another
   store can be added later without a new API version.
 
 ## Code
 
-none yet.
+- `internal/controller/datastore` — the controller: `datastore.go` holds the
+  reconcile, the class lookup, the newest complete certificate generation,
+  the credentials copy, the finalizer and the status; `etcd.go` renders the
+  `DatastoreClass` into the `Etcd` ([the table](../README.md#a-tenant-namespace)),
+  applies it and reads etcd-druid's report. Registered as `datastore` in
+  `cmd/brygga/main.go`.
+- `internal/controller/datastore/datastore_test.go` — envtest with
+  etcd-druid v0.39.0's CRDs from its `crds` package:
+  `TestFinalizerAndEtcdFromClass` (the finalizer before the first `Etcd`, the
+  mapping table, generation 1 in all three TLS blocks),
+  `TestNewestCompleteGeneration`, `TestDatastoreClassNotFound`,
+  `TestBackupCredentialsCopied`, `TestDatastoreReadyFollowsEtcdStatus` and
+  `TestDeletion`. `datastoretest` issues the certificate generations PKI will.
+- `test/e2e/datastore_test.go` — `TestDatastoreOnKind`: etcd-druid v0.39.0
+  from its chart at the tag, a `ControlPlane` to `DatastoreReady=True` with
+  the member running, generation 2 rolling the member, deletion under
+  `Delete`.

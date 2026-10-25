@@ -6,6 +6,7 @@ toolchain go1.26.10
 
 require (
 	github.com/fsnotify/fsnotify v1.9.0
+	github.com/gardener/etcd-druid/api v0.39.0
 	github.com/go-jose/go-jose/v4 v4.1.6
 	golang.org/x/sync v0.23.0
 	google.golang.org/grpc v1.83.2

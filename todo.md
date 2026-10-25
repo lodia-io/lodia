@@ -12,11 +12,11 @@ is a decision — a decision is a file in `docs/decisions/`.
 - Check whether kube-apiserver reloads `--proxy-client-cert-file` and whether
   konnectivity-server reloads `--cluster-cert`; each proven reload removes a
   rollout from certificate renewal.
-- Decide the deletion policy of a dedicated etcd's volumes (`Delete` or
-  `Retain`) and of its backups after a `ControlPlane` is deleted; Gardener
-  keeps backups for a configurable retention period. etcd-druid keeps both
-  when an `Etcd` is deleted, so either policy is Brygga's code (etcd spike,
-  finding 6).
+- Decide the deletion policy of a dedicated etcd's backups after a
+  `ControlPlane` is deleted; Gardener keeps backups for a configurable
+  retention period. etcd-druid keeps them when an `Etcd` is deleted, so the
+  policy is Brygga's code (etcd spike, finding 6). The volumes follow the
+  class's `storage.reclaimPolicy` since the Datastore controller (2026-10-25).
 - Measure, not assume, the idle footprint of one control plane in phase 1 and
   replace the planning numbers in `docs/operations.md`.
 - etcd-druid's restore keeps the snapshot's revisions (no
@@ -71,3 +71,39 @@ is a decision — a decision is a file in `docs/decisions/`.
   (AWS NLB and CLB): `--advertise-address` takes an IP, so the `kubernetes`
   endpoint needs another source there; decide before that mode is supported
   on such a provider.
+
+## From the Datastore controller (2026-10-25)
+
+- The names the controllers share — the finalizer
+  `brygga.segla.io/controlplane`, the condition `DatastoreReady`, the label
+  `brygga.segla.io/etcd-certificates` and the annotation
+  `brygga.segla.io/is-default-class` — are constants of
+  `internal/controller/datastore`; move them to `api/v1alpha1` when PKI and
+  Lifecycle need them.
+- The backup-restore sidecar's `spec.backup.resources` have no field in the
+  `DatastoreClass` and stay etcd-druid's default (50m / 128Mi at v0.39.0);
+  the operator configuration's `defaults.resources` should cover them once
+  phase 1 measures.
+- The chart's ClusterRole for the datastore controller: `Etcd` read and
+  write, Secrets (metadata list and watch, the credentials copy),
+  PersistentVolumeClaims list and delete, the `ControlPlane`'s status and
+  finalizers.
+- `spec.paused`: which controllers stop, and whether the finalizer still runs
+  on a paused `ControlPlane`; the Datastore controller ignores it until that
+  is decided.
+- The `DatastoreClass` schema checks `fullSnapshotSchedule` and
+  `defragmentation.schedule` only for length; etcd-druid's CRD wants standard
+  five-field cron, so a bad schedule fails the `Etcd` apply and shows as
+  `DatastoreReady=False`, `Provisioning` with the error. A changed
+  `storage.className` on a class in use fails the apply the same way, since
+  the `Etcd`'s field is immutable. A pattern on the class, or a reason of its
+  own.
+- `<cp>-etcd-backup` stays when a class drops its backup store; harmless, the
+  `ControlPlane` garbage-collects it.
+- The e2e suite runs the Datastore controller in the test process and needs
+  `git` and `helm`; the suite against Brygga's image and chart comes with the
+  chart, and `make e2e` could check for the tools.
+- The cache keeps metadata only for Secrets because this controller watches
+  them as `PartialObjectMetadata`; nothing stops a future controller from
+  starting a typed Secret informer. A test or a cache transform should
+  enforce the rule.
