@@ -16,6 +16,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	corev1ac "k8s.io/client-go/applyconfigurations/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
 )
 
 const (
@@ -121,7 +123,7 @@ func writeInventory(ctx context.Context, c client.Client, entries []entry) error
 		return err
 	}
 	cm := corev1ac.ConfigMap(inventoryName, metav1.NamespaceSystem).
-		WithLabels(map[string]string{managedByLabel: managedBy}).
+		WithLabels(map[string]string{bryggav1alpha1.ManagedByLabel: bryggav1alpha1.ManagedBy}).
 		WithData(map[string]string{inventoryKey: string(data)})
 	if err := c.Apply(ctx, cm, client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
 		return failed(inventoryEntry(), err)

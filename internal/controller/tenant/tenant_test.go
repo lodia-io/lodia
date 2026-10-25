@@ -29,15 +29,12 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -48,6 +45,7 @@ import (
 	"github.com/segla-io/brygga/internal/certs"
 	"github.com/segla-io/brygga/internal/controller/pki"
 	"github.com/segla-io/brygga/internal/controller/tenant"
+	"github.com/segla-io/brygga/internal/operator"
 )
 
 const (
@@ -108,27 +106,12 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		stop("the controller's ClusterRole", err)
 	}
-	labelled, err := labels.NewRequirement(bryggav1alpha1.ControlPlaneLabel, selection.Exists, nil)
+	cache, err := operator.Cache()
 	if err != nil {
-		stop("label selector", err)
+		stop("cache options", err)
 	}
-	everything := cache.ByObject{Label: labels.Everything()}
-	mgr, err := ctrl.NewManager(controller, ctrl.Options{
-		Scheme:  scheme,
-		Metrics: metricsserver.Options{BindAddress: "0"},
-		Cache: cache.Options{
-			DefaultLabelSelector:        labels.NewSelector().Add(*labelled),
-			DefaultTransform:            cache.TransformStripManagedFields(),
-			ReaderFailOnMissingInformer: true,
-			ByObject: map[client.Object]cache.ByObject{
-				&bryggav1alpha1.ControlPlane{}:      everything,
-				&bryggav1alpha1.DatastoreClass{}:    everything,
-				&bryggav1alpha1.Datastore{}:         everything,
-				&bryggav1alpha1.KubeconfigRequest{}: everything,
-				&bryggav1alpha1.Backup{}:            everything,
-			},
-		},
-	})
+	cache.ReaderFailOnMissingInformer = true
+	mgr, err := ctrl.NewManager(controller, ctrl.Options{Scheme: scheme, Metrics: metricsserver.Options{BindAddress: "0"}, Cache: cache})
 	if err != nil {
 		stop("manager", err)
 	}
@@ -194,10 +177,10 @@ func asTenantController(cfg *rest.Config) (*rest.Config, error) {
 func TestTheFirstVisitWaitsForAccess(t *testing.T) {
 	cp := controlPlane(t, "tenant-first-visit")
 	eventually(t, 10*time.Second, func() error {
-		if err := expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, tenant.ReasonWaitingForAPIServer); err != nil {
+		if err := expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForAccess); err != nil {
 			return err
 		}
-		return expectCondition(t, cp, bryggav1alpha1.ConditionAddonsAvailable, metav1.ConditionUnknown, tenant.ReasonReconciling)
+		return expectCondition(t, cp, bryggav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForAccess)
 	})
 }
 
@@ -212,12 +195,12 @@ func TestTheTenantGetsItsObjects(t *testing.T) {
 	issuer.Dial = *dial.Load()
 	setCondition(t, cp, bryggav1alpha1.ConditionAPIServerReady, "Ready")
 	reconcilePKI(t, issuer, cp)
-	expectNow(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionTrue, pki.ReasonBound)
+	expectNow(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionTrue, bryggav1alpha1.ReasonBound)
 
 	eventually(t, 30*time.Second, func() error {
-		return expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, tenant.ReasonApplied)
+		return expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, bryggav1alpha1.ReasonApplied)
 	})
-	expectNow(t, cp, bryggav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, tenant.ReasonRolloutPending)
+	expectNow(t, cp, bryggav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, bryggav1alpha1.ReasonRolloutPending)
 
 	info := get(t, admin, &corev1.ConfigMap{}, "kube-public", "cluster-info")
 	kubeconfig, err := clientcmd.Load([]byte(info.Data["kubeconfig"]))
@@ -312,12 +295,12 @@ func TestTheTenantGetsItsObjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, 30*time.Second, func() error {
-		return expectCondition(t, cp, bryggav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, tenant.ReasonAvailable)
+		return expectCondition(t, cp, bryggav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, bryggav1alpha1.ReasonAvailable)
 	})
 
 	setInventory(t, admin, "not a list")
 	eventually(t, 30*time.Second, func() error {
-		if err := expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, tenant.ReasonApplying); err != nil {
+		if err := expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, bryggav1alpha1.ReasonApplying); err != nil {
 			return err
 		}
 		if c := condition(t, cp, bryggav1alpha1.ConditionAddonsApplied); !strings.Contains(c.Message, "ConfigMap kube-system/brygga-inventory cannot be read") {
@@ -329,7 +312,7 @@ func TestTheTenantGetsItsObjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, 30*time.Second, func() error {
-		return expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, tenant.ReasonApplied)
+		return expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, bryggav1alpha1.ReasonApplied)
 	})
 }
 
@@ -354,9 +337,9 @@ func TestAnObjectTheTenantRefusesIsReportedAndNeverLeaks(t *testing.T) {
 	setCondition(t, cp, bryggav1alpha1.ConditionAPIServerReady, "Ready")
 	reconcilePKI(t, issuer, cp)
 	setCoreDNS(t, cp, false)
-	setCondition(t, cp, bryggav1alpha1.ConditionAccessReady, pki.ReasonBound)
+	setCondition(t, cp, bryggav1alpha1.ConditionAccessReady, bryggav1alpha1.ReasonBound)
 	eventually(t, 30*time.Second, func() error {
-		return expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, tenant.ReasonApplied)
+		return expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, bryggav1alpha1.ReasonApplied)
 	})
 
 	policy := &admissionregistrationv1.ValidatingAdmissionPolicy{
@@ -401,9 +384,9 @@ func TestAnObjectTheTenantRefusesIsReportedAndNeverLeaks(t *testing.T) {
 	})
 
 	setCoreDNS(t, cp, true)
-	setCondition(t, cp, bryggav1alpha1.ConditionAccessReady, pki.ReasonBound)
+	setCondition(t, cp, bryggav1alpha1.ConditionAccessReady, bryggav1alpha1.ReasonBound)
 	eventually(t, 30*time.Second, func() error {
-		if err := expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, tenant.ReasonApplying); err != nil {
+		if err := expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, bryggav1alpha1.ReasonApplying); err != nil {
 			return err
 		}
 		if c := condition(t, cp, bryggav1alpha1.ConditionAddonsApplied); !strings.Contains(c.Message, "Deployment kube-system/coredns is refused") {
@@ -416,9 +399,9 @@ func TestAnObjectTheTenantRefusesIsReportedAndNeverLeaks(t *testing.T) {
 	}
 
 	setCoreDNS(t, cp, false)
-	setCondition(t, cp, bryggav1alpha1.ConditionAccessReady, pki.ReasonBound)
+	setCondition(t, cp, bryggav1alpha1.ConditionAccessReady, bryggav1alpha1.ReasonBound)
 	eventually(t, 30*time.Second, func() error {
-		return expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, tenant.ReasonApplied)
+		return expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, bryggav1alpha1.ReasonApplied)
 	})
 	for _, gone := range []string{"ConfigMap kube-system/coredns", "ServiceAccount kube-system/coredns", "ClusterRole system:coredns"} {
 		if exists(t, admin, gone) {
@@ -438,7 +421,7 @@ func TestATenantThatDoesNotAnswerKeepsATrueAddonsApplied(t *testing.T) {
 	setCondition(t, cp, bryggav1alpha1.ConditionAPIServerReady, "Ready")
 	reconcilePKI(t, issuer, cp)
 	eventually(t, 30*time.Second, func() error {
-		return expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, tenant.ReasonApplied)
+		return expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, bryggav1alpha1.ReasonApplied)
 	})
 	before := condition(t, cp, bryggav1alpha1.ConditionAddonsApplied)
 
@@ -450,9 +433,9 @@ func TestATenantThatDoesNotAnswerKeepsATrueAddonsApplied(t *testing.T) {
 
 	setDial(t, admin.host)
 	setReplicas(t, cp, 3)
-	setCondition(t, cp, bryggav1alpha1.ConditionAccessReady, pki.ReasonBound)
+	setCondition(t, cp, bryggav1alpha1.ConditionAccessReady, bryggav1alpha1.ReasonBound)
 	eventually(t, 30*time.Second, func() error {
-		if err := expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, tenant.ReasonApplied); err != nil {
+		if err := expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, bryggav1alpha1.ReasonApplied); err != nil {
 			return err
 		}
 		if replicas := get(t, admin, &appsv1.Deployment{}, "kube-system", "coredns").Spec.Replicas; replicas == nil || *replicas != 3 {
@@ -467,9 +450,9 @@ func TestATenantThatNeverAnsweredIsApplying(t *testing.T) {
 	publish(t, cp)
 	reconcilePKI(t, &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour}, cp)
 	dial.Store(&unreachable)
-	setCondition(t, cp, bryggav1alpha1.ConditionAccessReady, pki.ReasonBound)
+	setCondition(t, cp, bryggav1alpha1.ConditionAccessReady, bryggav1alpha1.ReasonBound)
 	eventually(t, 30*time.Second, func() error {
-		if err := expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, tenant.ReasonApplying); err != nil {
+		if err := expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, bryggav1alpha1.ReasonApplying); err != nil {
 			return err
 		}
 		if c := condition(t, cp, bryggav1alpha1.ConditionAddonsApplied); !strings.Contains(c.Message, "does not answer") {
@@ -653,7 +636,7 @@ func setCoreDNS(t *testing.T, cp *bryggav1alpha1.ControlPlane, enabled bool) {
 		}
 		cp.Spec.Addons.CoreDNS.Enabled = &enabled
 	})
-	setCondition(t, cp, bryggav1alpha1.ConditionAccessReady, pki.ReasonBound)
+	setCondition(t, cp, bryggav1alpha1.ConditionAccessReady, bryggav1alpha1.ReasonBound)
 }
 
 func setReplicas(t *testing.T, cp *bryggav1alpha1.ControlPlane, replicas int32) {

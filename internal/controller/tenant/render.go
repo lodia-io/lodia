@@ -59,20 +59,19 @@ type values struct {
 	kubeProxy, coreDNS       bool
 }
 
-// newValues also returns what a render still waits for, empty when nothing.
-func newValues(cp *bryggav1alpha1.ControlPlane, clusterCA []byte) (*values, string, error) {
+// newValues also returns the reason and the message of what a render still
+// waits for, empty when nothing.
+func newValues(cp *bryggav1alpha1.ControlPlane, clusterCA []byte) (*values, string, string, error) {
 	endpoint := cp.Status.Endpoint
 	switch {
 	case cp.Status.Target == nil || cp.Status.Target.Version == "":
-		return nil, "status.target has no version", nil
-	case endpoint == nil || endpoint.APIServer == nil:
-		return nil, "status.endpoint.apiServer is not published", nil
-	case endpoint.Konnectivity == nil:
-		return nil, "status.endpoint.konnectivity is not published", nil
+		return nil, bryggav1alpha1.ReasonWaitingForTarget, "status.target has no version", nil
+	case endpoint == nil:
+		return nil, bryggav1alpha1.ReasonWaitingForEndpoint, "status.endpoint is not published", nil
 	}
 	images, ok := versions.For(cp.Status.Target.Version)
 	if !ok {
-		return nil, "Brygga does not run Kubernetes " + cp.Status.Target.Version, nil
+		return nil, "", "", fmt.Errorf("the version table has no minor of Kubernetes %s", cp.Status.Target.Version)
 	}
 	v := &values{
 		Name:             cp.Name,
@@ -105,7 +104,7 @@ func newValues(cp *bryggav1alpha1.ControlPlane, clusterCA []byte) (*values, stri
 	v.ServiceSubnet, v.PodSubnet = strings.Join(services, ","), strings.Join(pods, ",")
 	dns, err := tenthAddress(services[0])
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 	v.DNSIP = dns.String()
 	if addons := cp.Spec.Addons; addons != nil {
@@ -115,7 +114,7 @@ func newValues(cp *bryggav1alpha1.ControlPlane, clusterCA []byte) (*values, stri
 				v.ProxyMode = string(p.Mode)
 			}
 			if p.HealthzBindAddress != "" {
-				v.ProxyHealthz = p.HealthzBindAddress
+				v.ProxyHealthz = net.JoinHostPort(p.HealthzBindAddress, "10256")
 			}
 		}
 		if d := addons.CoreDNS; d != nil {
@@ -138,10 +137,10 @@ func newValues(cp *bryggav1alpha1.ControlPlane, clusterCA []byte) (*values, stri
 	}
 	info, err := clientcmd.Write(clientcmdapi.Config{Clusters: map[string]*clientcmdapi.Cluster{"": {Server: v.Server, CertificateAuthorityData: clusterCA}}})
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 	v.ClusterInfo = string(info)
-	return v, "", nil
+	return v, "", "", nil
 }
 
 // tenthAddress is CoreDNS's ClusterIP, as kubeadm takes it (kubernetes@v1.35.0
@@ -195,7 +194,7 @@ func render(v *values) ([]*unstructured.Unstructured, error) {
 			if labels == nil {
 				labels = map[string]string{}
 			}
-			labels[managedByLabel] = managedBy
+			labels[bryggav1alpha1.ManagedByLabel] = bryggav1alpha1.ManagedBy
 			obj.SetLabels(labels)
 			objects = append(objects, obj)
 		}

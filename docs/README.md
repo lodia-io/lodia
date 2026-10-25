@@ -548,7 +548,9 @@ Built for phase 1, without `apiserver-proxy` and the write lock
 kubeadm v1.35.0 and the hard way). Once `AccessReady` is True for the
 generation, the controller applies every object as `brygga/tenant` through
 `<cp>-brygga-kubeconfig`, on a change of the inputs it reads and every 10
-minutes. The inventory names an object before it is first written, and is
+minutes; until then both conditions are `WaitingForAccess`, and it uses
+`<cp>-brygga-kubeconfig` and `<cp>-ca-bundle` only while no other owner
+keeps them. The inventory names an object before it is first written, and is
 rewritten to what the render holds once the objects that left it are
 deleted, so a pass that stops anywhere leaves nothing to leak; an object at
 another API version is the same entry. `AddonsApplied` is True once every

@@ -162,7 +162,8 @@ flowchart LR
 
 - `internal/operator` — the scheme, the cache rules above and the
   controllers: PKI registered as `pki`, the Datastore controller as
-  `datastore` and Lifecycle as `lifecycle`, each with ten workers.
+  `datastore`, Lifecycle as `lifecycle` and Tenant as `tenant`, each with
+  ten workers.
   `cmd/brygga/main.go` runs them in one manager; every controller's tests
   take the cache from it.
 - `internal/controller/pki` — reads `spec` and `status.endpoint`, writes its

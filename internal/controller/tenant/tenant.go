@@ -31,22 +31,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
+	"github.com/segla-io/brygga/internal/ownership"
 )
 
 const (
-	Name           = "tenant"
-	FieldManager   = "brygga/" + Name
-	managedByLabel = "app.kubernetes.io/managed-by"
-	managedBy      = "brygga"
-)
-
-const (
-	ReasonReconciling         = "Reconciling"
-	ReasonWaitingForAPIServer = "WaitingForAPIServer"
-	ReasonApplying            = "Applying"
-	ReasonApplied             = "Applied"
-	ReasonRolloutPending      = "RolloutPending"
-	ReasonAvailable           = "Available"
+	Name         = "tenant"
+	FieldManager = "brygga/" + Name
 )
 
 // rolloutPeriod is how often the addons' rollout is read while it is not
@@ -90,11 +80,7 @@ func inputs(cp *bryggav1alpha1.ControlPlane) string {
 		fmt.Fprintf(&b, " target=%s", t.Version)
 	}
 	if e := cp.Status.Endpoint; e != nil {
-		for _, hp := range []*bryggav1alpha1.HostPort{e.APIServer, e.Konnectivity} {
-			if hp != nil {
-				fmt.Fprintf(&b, " %s:%d", hp.Host, hp.Port)
-			}
-		}
+		fmt.Fprintf(&b, " %s:%d %s:%d", e.APIServer.Host, e.APIServer.Port, e.Konnectivity.Host, e.Konnectivity.Port)
 	}
 	if c := meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionAccessReady); c != nil {
 		fmt.Fprintf(&b, " %s/%d", c.Status, c.ObservedGeneration)
@@ -118,20 +104,21 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	access := meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionAccessReady)
 	if access == nil || access.Status != metav1.ConditionTrue || access.ObservedGeneration != cp.Generation {
-		waiting := newCondition(cp, applied.Type, metav1.ConditionFalse, ReasonWaitingForAPIServer, "AccessReady is not True for this generation")
-		return ctrl.Result{}, r.applyStatus(ctx, cp, waiting, available)
+		return ctrl.Result{}, r.wait(ctx, cp, bryggav1alpha1.ReasonWaitingForAccess, "AccessReady is not True for this generation")
 	}
-	clusterCA, kubeconfig, err := r.credentials(ctx, cp)
+	clusterCA, kubeconfig, keptElsewhere, err := r.credentials(ctx, cp)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	v, waitingFor, err := newValues(cp, clusterCA)
+	if keptElsewhere != "" {
+		return ctrl.Result{}, r.wait(ctx, cp, bryggav1alpha1.ReasonWaitingForAccess, keptElsewhere)
+	}
+	v, reason, waitingFor, err := newValues(cp, clusterCA)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if waitingFor != "" {
-		waiting := newCondition(cp, applied.Type, metav1.ConditionFalse, ReasonWaitingForAPIServer, waitingFor)
-		return ctrl.Result{}, r.applyStatus(ctx, cp, waiting, available)
+		return ctrl.Result{}, r.wait(ctx, cp, reason, waitingFor)
 	}
 	objects, err := render(v)
 	if err != nil {
@@ -145,12 +132,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	syncErr := applyInventory(ctx, tenant, objects)
 	switch f, ok := errors.AsType[*failure](syncErr); {
 	case syncErr == nil:
-		applied = newCondition(cp, applied.Type, metav1.ConditionTrue, ReasonApplied, fmt.Sprintf("%d objects are applied and the inventory is pruned", len(objects)))
+		applied = newCondition(cp, applied.Type, metav1.ConditionTrue, bryggav1alpha1.ReasonApplied, fmt.Sprintf("%d objects are applied and the inventory is pruned", len(objects)))
 	case ok && f.verdict != "":
-		applied = newCondition(cp, applied.Type, metav1.ConditionFalse, ReasonApplying, f.entry.String()+" "+f.verdict+"; the reason is in Brygga's log")
+		applied = newCondition(cp, applied.Type, metav1.ConditionFalse, bryggav1alpha1.ReasonApplying, f.entry.String()+" "+f.verdict+"; the reason is in Brygga's log")
 	case applied.Status != metav1.ConditionTrue:
 		// No answer is no observation: a True stays, anything else says so.
-		applied = newCondition(cp, applied.Type, metav1.ConditionFalse, ReasonApplying, "the tenant's API server does not answer; the error is in Brygga's log")
+		applied = newCondition(cp, applied.Type, metav1.ConditionFalse, bryggav1alpha1.ReasonApplying, "the tenant's API server does not answer; the error is in Brygga's log")
 	}
 	if syncErr == nil {
 		if c, err := rollout(ctx, tenant, cp, v); err == nil {
@@ -168,15 +155,30 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	return ctrl.Result{RequeueAfter: r.ApplyPeriod}, nil
 }
 
-func (r *Reconciler) credentials(ctx context.Context, cp *bryggav1alpha1.ControlPlane) ([]byte, []byte, error) {
+// wait says what both conditions wait for: neither can be observed yet.
+func (r *Reconciler) wait(ctx context.Context, cp *bryggav1alpha1.ControlPlane, reason, message string) error {
+	return r.applyStatus(ctx, cp,
+		newCondition(cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, reason, message),
+		newCondition(cp, bryggav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, reason, message))
+}
+
+// credentials also returns, when one of the two Secrets is another owner's,
+// which; its content is not used.
+func (r *Reconciler) credentials(ctx context.Context, cp *bryggav1alpha1.ControlPlane) ([]byte, []byte, string, error) {
 	bundle, kubeconfig := &corev1.Secret{}, &corev1.Secret{}
-	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: cp.Name + "-ca-bundle"}, bundle); err != nil {
-		return nil, nil, err
+	for _, read := range []struct {
+		secret bryggav1alpha1.Secret
+		obj    *corev1.Secret
+	}{{bryggav1alpha1.CABundleSecret, bundle}, {bryggav1alpha1.BryggaKubeconfigSecret, kubeconfig}} {
+		obj := read.obj
+		if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: read.secret.Name(cp.Name)}, obj); err != nil {
+			return nil, nil, "", err
+		}
+		if ref := ownership.ControlledElsewhere(obj, cp); ref != nil {
+			return nil, nil, fmt.Sprintf("Secret %s is kept by %s %s with UID %s", obj.Name, ref.Kind, ref.Name, ref.UID), nil
+		}
 	}
-	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: cp.Name + "-brygga-kubeconfig"}, kubeconfig); err != nil {
-		return nil, nil, err
-	}
-	return bundle.Data["ca.crt"], kubeconfig.Data["kubeconfig"], nil
+	return bundle.Data[bryggav1alpha1.CACertKey], kubeconfig.Data[bryggav1alpha1.KubeconfigKey], "", nil
 }
 
 func (r *Reconciler) tenantClient(kubeconfig []byte) (client.Client, error) {
@@ -219,9 +221,9 @@ func rollout(ctx context.Context, c client.Client, cp *bryggav1alpha1.ControlPla
 	}
 	if len(pending) > 0 {
 		slices.Sort(pending)
-		return newCondition(cp, bryggav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, ReasonRolloutPending, strings.Join(pending, ", ")), nil
+		return newCondition(cp, bryggav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, bryggav1alpha1.ReasonRolloutPending, strings.Join(pending, ", ")), nil
 	}
-	return newCondition(cp, bryggav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, ReasonAvailable, strings.Join(names, ", ")+" are rolled out"), nil
+	return newCondition(cp, bryggav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, bryggav1alpha1.ReasonAvailable, strings.Join(names, ", ")+" are rolled out"), nil
 }
 
 func rolledOut(obj client.Object) (int32, int32, bool) {
@@ -255,7 +257,7 @@ func previous(cp *bryggav1alpha1.ControlPlane, conditionType string) metav1.Cond
 	if c := meta.FindStatusCondition(cp.Status.Conditions, conditionType); c != nil {
 		return *c
 	}
-	return newCondition(cp, conditionType, metav1.ConditionUnknown, ReasonReconciling, "the first pass has not finished")
+	return newCondition(cp, conditionType, metav1.ConditionUnknown, bryggav1alpha1.ReasonReconciling, "the first pass has not finished")
 }
 
 func newCondition(cp *bryggav1alpha1.ControlPlane, conditionType string, status metav1.ConditionStatus, reason, message string) metav1.Condition {
