@@ -203,6 +203,9 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 	if err != nil {
 		return nil, metav1.Condition{}, 0, err
 	}
+	if named, ok := namedGeneration(cp.Name, current); ok && (!found || named > generation) {
+		generation, found = named, true
+	}
 	if !found {
 		message := fmt.Sprintf("waiting for a complete generation of the etcd certificates: the Secrets %s-etcd-{%s}-<g> labelled %s=<g>",
 			cp.Name, strings.Join(Certificates, ","), CertificatesLabel)
@@ -362,6 +365,19 @@ func (r *Reconciler) newestCompleteGeneration(ctx context.Context, cp *bryggav1a
 		}
 	}
 	return newest, found, nil
+}
+
+// namedGeneration is the certificate generation the Etcd names. The Etcd
+// moves forward only: when a Secret of that generation is being deleted, the
+// newest complete one can be older, and switching back to it would roll the
+// members twice, back and then forward to the generation PKI issues next.
+func namedGeneration(cp string, etcd *druidv1alpha1.Etcd) (int, bool) {
+	if etcd == nil || etcd.Spec.Etcd.ClientUrlTLS == nil {
+		return 0, false
+	}
+	suffix, ok := strings.CutPrefix(etcd.Spec.Etcd.ClientUrlTLS.ServerTLSSecretRef.Name, etcdName(cp)+"-server-")
+	generation, err := strconv.Atoi(suffix)
+	return generation, ok && err == nil
 }
 
 // claims lists the PersistentVolumeClaims the StatefulSet <cp>-etcd attaches,

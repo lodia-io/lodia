@@ -20,7 +20,9 @@ not.
   sidecar's serving certificate; etcd-druid takes them as Secrets, because it
   does not generate TLS itself
   ([securing etcd clusters](https://gardener.github.io/etcd-druid/usage/securing-etcd-clusters.html)),
-  and the `Etcd` names the newest complete generation of them
+  and the `Etcd` names the newest complete generation of them, never one
+  below the generation it already names, so a rotation is one roll of the
+  members
   ([staged-credential-rotation](staged-credential-rotation.md)).
   Client, peer and backup-restore TLS are set together, and the sidecar's
   certificate also names the client Service, through which etcd-druid calls

@@ -216,7 +216,7 @@ everything the class does not set is etcd-druid's default:
 | `backup.retention.afterDelete` | — | phase 2, with the final snapshot |
 | `placement.nodeSelector`, `.tolerations`, `.priorityClassName` | `spec.schedulingConstraints.affinity` (as required node affinity), `.tolerations`, `spec.priorityClassName` | the `Etcd` has no node selector |
 | the `ControlPlane`'s availability | `spec.replicas` | 1 today; 3 with `highAvailability` and 0 while hibernating come with later phases |
-| the etcd certificates, generation `g` | `spec.etcd.clientUrlTls`, `spec.etcd.peerUrlTls`, `spec.backup.tls` | all three name one complete generation, with `dataKey: ca.crt` on the CA; a newer complete generation is one update of the `Etcd`, so one roll of the members |
+| the etcd certificates, generation `g` | `spec.etcd.clientUrlTls`, `spec.etcd.peerUrlTls`, `spec.backup.tls` | all three name one complete generation, with `dataKey: ca.crt` on the CA; a newer complete generation is one update of the `Etcd`, so one roll of the members; the `Etcd` moves forward only, so while a Secret of the generation it names is being deleted it keeps that generation instead of rolling back to an older complete one and forward again |
 
 `DatastoreReady` is `Unknown`, reason `Reconciling`, until the controller's
 first pass has finished, and `Provisioning` until a complete certificate

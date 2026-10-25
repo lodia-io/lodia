@@ -622,16 +622,26 @@ func TestNewestCompleteGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	terminating := secrets[slices.IndexFunc(secrets, func(s *corev1.Secret) bool { return s.Name == datastore.SecretName("dev", "client", 2) })]
+	label := terminating.Labels[datastore.CertificatesLabel]
+	delete(terminating.Labels, datastore.CertificatesLabel)
 	terminating.Finalizers = []string{"brygga.segla.io/test"}
 	create(t, terminating)
 	if err := k8s.Delete(t.Context(), terminating); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(terminating), terminating); err != nil {
+		t.Fatal(err)
+	}
+	patch := client.MergeFrom(terminating.DeepCopy())
+	terminating.Labels[datastore.CertificatesLabel] = label
+	if err := k8s.Patch(t.Context(), terminating, patch); err != nil {
 		t.Fatal(err)
 	}
 	settle(t, ns, "dev")
 	if err := namesGeneration(1)(getEtcd(t, ns, "dev")); err != nil {
 		t.Fatalf("the fifth Secret of generation 2 being deleted: %v", err)
 	}
-	patch := client.MergeFrom(terminating.DeepCopy())
+	patch = client.MergeFrom(terminating.DeepCopy())
 	terminating.Finalizers = nil
 	if err := k8s.Patch(t.Context(), terminating, patch); err != nil {
 		t.Fatal(err)
@@ -653,6 +663,43 @@ func TestNewestCompleteGeneration(t *testing.T) {
 	settle(t, ns, "dev")
 	if again := getEtcd(t, ns, "dev"); again.ResourceVersion != etcd.ResourceVersion {
 		t.Fatalf("a further reconcile moved the Etcd from resourceVersion %s to %s", etcd.ResourceVersion, again.ResourceVersion)
+	}
+}
+
+func TestGenerationsMoveForward(t *testing.T) {
+	ns := namespace(t)
+	createClass(t, newClass("forward", "Retain"))
+	create(t, controlPlane(ns, "dev", "forward"))
+	writeGeneration(t, ns, "dev", 1)
+	writeGeneration(t, ns, "dev", 2)
+	waitEtcd(t, ns, "dev", namesGeneration(2))
+
+	held := &corev1.Secret{}
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: datastore.SecretName("dev", "client", 2)}, held); err != nil {
+		t.Fatal(err)
+	}
+	patch := client.MergeFrom(held.DeepCopy())
+	held.Finalizers = []string{"brygga.segla.io/test"}
+	if err := k8s.Patch(t.Context(), held, patch); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Delete(t.Context(), held); err != nil {
+		t.Fatal(err)
+	}
+	settle(t, ns, "dev")
+	if err := namesGeneration(2)(getEtcd(t, ns, "dev")); err != nil {
+		t.Fatalf("a Secret of generation 2 being deleted, generation 1 the newest complete: %v", err)
+	}
+
+	writeGeneration(t, ns, "dev", 3)
+	waitEtcd(t, ns, "dev", namesGeneration(3))
+	if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(held), held); err != nil {
+		t.Fatal(err)
+	}
+	patch = client.MergeFrom(held.DeepCopy())
+	held.Finalizers = nil
+	if err := k8s.Patch(t.Context(), held, patch); err != nil {
+		t.Fatal(err)
 	}
 }
 
