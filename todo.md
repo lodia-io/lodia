@@ -126,6 +126,14 @@ is a decision — a decision is a file in `docs/decisions/`.
   them as `PartialObjectMetadata`; nothing stops a future controller from
   starting a typed Secret informer. A test or a cache transform should
   enforce the rule.
+- PKI's `TestALeafEndingWithItsCAIsIssuedOnceAndAnExpiredCAWritesNothing`
+  sleeps until the cluster CA's `NotAfter` plus 300 ms and expects all four
+  CAs expired, but `NotAfter` is encoded to the second: when the four CAs'
+  issuance straddles a second boundary, the etcd CA, issued last, expires a
+  second later and the test fails. It passed 5 of 5 runs of `main`'s
+  `go test ./...` here, and failed 2 of 5 with the Datastore controller's
+  envtest suite running beside it, which slows the API server. Sleeping
+  until the latest of the four `NotAfter`s removes it.
 
 ## From the PKI controller (2026-10-25)
 
