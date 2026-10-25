@@ -21,4 +21,14 @@ go tool kind delete cluster --name brygga-e2e-dev --kubeconfig work/e2e/dev.kube
 
 `--kubeconfig` makes kind write that file alone and leave `~/.kube/config`
 untouched. `go test` runs in the package directory, so it needs an absolute
-`E2E_KUBECONFIG`; `make e2e` resolves a relative one.
+`E2E_KUBECONFIG`; `make e2e` resolves a relative one, and runs `go test -v`
+so that each scenario's lines are in the log.
+
+`TestDatastoreOnKind` needs `git` and `helm` on the `PATH`: it installs
+etcd-druid v0.39.0 from its chart at the tag (the chart is not released) into
+the namespace `etcd-druid` with
+[`hack/etcd-spike/druid-values.yaml`](../../hack/etcd-spike/druid-values.yaml),
+the way the [etcd spike](../../docs/etcd-spike-2026-10.md) ran it, and leaves
+it installed. It runs the Datastore controller inside the test process
+against the cluster, with the cache rules of `cmd/brygga`; the suite against
+Brygga's own image and chart comes with the chart.
