@@ -237,6 +237,36 @@ func TestRestoreFromAtCreation(t *testing.T) {
 	expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), "")
 }
 
+func TestEndpointStatus(t *testing.T) {
+	ensureNamespaces(t, "team-a")
+	obj := example(t, "controlplane-single.yaml", "endpoint-status")
+	if err := k8s.Create(context.Background(), obj); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = k8s.Delete(context.Background(), obj) })
+	address := func(host string, port int64) map[string]any { return map[string]any{"host": host, "port": port} }
+	cases := []struct {
+		name     string
+		endpoint map[string]any
+		want     string
+	}{
+		{"an IPv4 address", map[string]any{"apiServer": address("203.0.113.10", 443), "konnectivity": address("203.0.113.10", 8132)}, ""},
+		{"an IPv6 address", map[string]any{"apiServer": address("2001:db8::1", 443), "konnectivity": address("2001:db8::1", 8132)}, ""},
+		{"DNS names", map[string]any{"apiServer": address("api.example.test", 443), "konnectivity": address("konnectivity.example.test", 443)}, ""},
+		{"an IPv6 address in brackets", map[string]any{"apiServer": address("[2001:db8::1]", 443), "konnectivity": address("2001:db8::1", 8132)}, "must be an IP address or a lowercase DNS name"},
+		{"an uppercase name", map[string]any{"apiServer": address("API.example.test", 443), "konnectivity": address("api.example.test", 8132)}, "must be an IP address or a lowercase DNS name"},
+		{"port 0", map[string]any{"apiServer": address("203.0.113.10", 0), "konnectivity": address("203.0.113.10", 8132)}, "greater than or equal to 1"},
+		{"no konnectivity", map[string]any{"apiServer": address("203.0.113.10", 443)}, "konnectivity: Required value"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			written := obj.DeepCopy()
+			set(t, written, tc.endpoint, "status", "endpoint")
+			expect(t, k8s.Status().Update(context.Background(), written, client.DryRunAll), tc.want)
+		})
+	}
+}
+
 func TestKubeconfigRequestValidation(t *testing.T) {
 	ensureNamespaces(t, "team-a")
 	cases := []struct {

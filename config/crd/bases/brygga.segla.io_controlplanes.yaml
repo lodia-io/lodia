@@ -1198,30 +1198,15 @@ spec:
                     description: APIServer is the API server's public endpoint.
                     properties:
                       host:
-                        description: Host is a DNS name or an IP address.
+                        description: |-
+                          Host is a lowercase DNS name or an IP address, an IPv6 address without
+                          brackets.
                         maxLength: 253
                         minLength: 1
                         type: string
-                      port:
-                        description: Port is a TCP port.
-                        format: int32
-                        maximum: 65535
-                        minimum: 1
-                        type: integer
-                    required:
-                    - host
-                    - port
-                    type: object
-                  internal:
-                    description: |-
-                      Internal is the API server's in-namespace Service, for clients in the
-                      management cluster.
-                    properties:
-                      host:
-                        description: Host is a DNS name or an IP address.
-                        maxLength: 253
-                        minLength: 1
-                        type: string
+                        x-kubernetes-validations:
+                        - message: must be an IP address or a lowercase DNS name
+                          rule: isIP(self) || !format.dns1123Subdomain().validate(self).hasValue()
                       port:
                         description: Port is a TCP port.
                         format: int32
@@ -1238,10 +1223,15 @@ spec:
                       server.
                     properties:
                       host:
-                        description: Host is a DNS name or an IP address.
+                        description: |-
+                          Host is a lowercase DNS name or an IP address, an IPv6 address without
+                          brackets.
                         maxLength: 253
                         minLength: 1
                         type: string
+                        x-kubernetes-validations:
+                        - message: must be an IP address or a lowercase DNS name
+                          rule: isIP(self) || !format.dns1123Subdomain().validate(self).hasValue()
                       port:
                         description: Port is a TCP port.
                         format: int32
@@ -1252,6 +1242,9 @@ spec:
                     - host
                     - port
                     type: object
+                required:
+                - apiServer
+                - konnectivity
                 type: object
               health:
                 description: Health is present while Brygga holds the controller manager.

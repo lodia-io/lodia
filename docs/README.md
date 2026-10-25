@@ -457,7 +457,7 @@ Three ways to expose a control plane
 | `spec.endpoint` | what Brygga creates | endpoint | in-cluster access |
 |---|---|---|---|
 | `gateway` | two TLS passthrough routes (API, konnectivity) on the platform's Gateway, and a `ListenerSet` with a terminating listener and route for the tunnel | `https://api.<cp>:443` | the API server advertises `172.20.0.1`, so the `kubernetes` Service's endpoint is `172.20.0.1:6443`; the apiserver-proxy DaemonSet owns that address on every node's loopback and wraps each connection in an outer TLS session with the tunnel's SNI, which the Gateway terminates and forwards to the API server untouched |
-| `loadBalancer` | one Service of type LoadBalancer with ports 443 and 8132 | the LB address | the API server advertises the LB address; `kubernetes` Endpoints point at it; no proxy |
+| `loadBalancer` | one Service of type LoadBalancer with ports 443 and 6443 (API) and 8132 (konnectivity) | the LB address | the API server advertises the LB address; `kubernetes` Endpoints point at it; no proxy |
 | `nodePort` | one Service of type NodePort | a management node address and port | as loadBalancer |
 
 The default is `gateway`: one address and one certificate story for a whole

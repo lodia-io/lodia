@@ -27,8 +27,9 @@ Rules:
   retry loop.
 - The public address is known only once Workloads' Service has one (a load
   balancer's, a node's), so Workloads publishes `status.endpoint` from the
-  Service before it waits on anything, and PKI and Tenant read it: the
-  serving certificate's addresses, the kubeconfigs' server, `cluster-info`.
+  Service, whole, before it waits on anything, and PKI, Tenant and Health
+  read it: the serving certificate's addresses, the kubeconfigs' server,
+  `cluster-info`, the agents' server, the external probe.
 - Each controller has its own work queue, worker count and rate limiter; a
   failure in one tenant's datastore does not delay certificate renewal in
   another.

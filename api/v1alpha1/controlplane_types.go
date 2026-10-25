@@ -770,29 +770,28 @@ type UpgradeStatus struct {
 	Message string `json:"message,omitempty"`
 }
 
-// EndpointStatus is where the control plane is reachable.
+// EndpointStatus is where the control plane is reachable from outside the
+// management cluster. Workloads writes it whole once the public address
+// exists; until then it is absent.
 type EndpointStatus struct {
 	// APIServer is the API server's public endpoint.
-	// +optional
-	APIServer *HostPort `json:"apiServer,omitempty"`
+	// +required
+	APIServer HostPort `json:"apiServer"`
 
 	// Konnectivity is where konnectivity agents reach the konnectivity
 	// server.
-	// +optional
-	Konnectivity *HostPort `json:"konnectivity,omitempty"`
-
-	// Internal is the API server's in-namespace Service, for clients in the
-	// management cluster.
-	// +optional
-	Internal *HostPort `json:"internal,omitempty"`
+	// +required
+	Konnectivity HostPort `json:"konnectivity"`
 }
 
 // HostPort is a host and a port.
 type HostPort struct {
-	// Host is a DNS name or an IP address.
+	// Host is a lowercase DNS name or an IP address, an IPv6 address without
+	// brackets.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:XValidation:rule="isIP(self) || !format.dns1123Subdomain().validate(self).hasValue()",message="must be an IP address or a lowercase DNS name"
 	Host string `json:"host"`
 
 	// Port is a TCP port.

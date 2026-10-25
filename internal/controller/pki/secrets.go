@@ -134,13 +134,9 @@ func (e *endpoint) url() string {
 
 func newTenant(cp *bryggav1alpha1.ControlPlane, now time.Time) *tenant {
 	t := &tenant{cp: cp, existing: map[string]*corev1.Secret{}, generations: map[int]bool{}, now: now, cas: map[string]*certs.Certificate{}, caCerts: map[string]*x509.Certificate{}}
-	if e := cp.Status.Endpoint; e != nil && e.APIServer != nil {
+	if e := cp.Status.Endpoint; e != nil {
 		t.endpoint = &endpoint{host: e.APIServer.Host, port: e.APIServer.Port}
-		if e.Konnectivity != nil {
-			t.konnectivityHost = e.Konnectivity.Host
-		}
-	} else if gw := cp.Spec.Endpoint.Gateway; gw != nil {
-		t.endpoint = &endpoint{host: string(gw.Hostnames.APIServer), port: 443}
+		t.konnectivityHost = e.Konnectivity.Host
 	}
 	return t
 }
@@ -533,9 +529,6 @@ func (t *tenant) servingProfile() certs.Profile {
 	for _, name := range []string{api, api + "." + cp.Namespace, api + "." + cp.Namespace + ".svc", "localhost", "127.0.0.1", t.endpoint.host} {
 		p.SAN(name)
 	}
-	if gw := cp.Spec.Endpoint.Gateway; gw != nil {
-		p.SAN(string(gw.Hostnames.APIServer))
-	}
 	for _, san := range cp.Spec.Endpoint.CertSANs {
 		p.SAN(string(san))
 	}
@@ -544,15 +537,8 @@ func (t *tenant) servingProfile() certs.Profile {
 
 func (t *tenant) konnectivityProfile() certs.Profile {
 	p := certs.Profile{CommonName: "konnectivity-server", Usages: serverAuth}
-	host := t.konnectivityHost
-	if host == "" {
-		host = t.endpoint.host
-	}
-	for _, name := range []string{"localhost", "127.0.0.1", host} {
+	for _, name := range []string{"localhost", "127.0.0.1", t.konnectivityHost} {
 		p.SAN(name)
-	}
-	if gw := t.cp.Spec.Endpoint.Gateway; gw != nil {
-		p.SAN(string(gw.Hostnames.Konnectivity))
 	}
 	return p
 }
