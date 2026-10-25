@@ -60,8 +60,9 @@ const (
 	ReasonProvisioning           = "Provisioning"
 	ReasonDatastoreClassNotFound = "DatastoreClassNotFound"
 	ReasonVolumesExist           = "VolumesExist"
-	// ReasonEtcdRefused is the one reason an error decides: the API server's
-	// refusal of the Etcd, which sending it again cannot change.
+	// A refusal, the API server's verdict on an object that sending it again
+	// cannot change, decides EtcdRefused and the note of a class held for a
+	// refused copy; no other error decides anything.
 	ReasonEtcdRefused = "EtcdRefused"
 	ReasonDeleting    = "Deleting"
 	ReasonReady       = "Ready"
@@ -201,7 +202,7 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 		generation, found = named, true
 	}
 	if !found {
-		message := fmt.Sprintf("waiting for a complete generation of the etcd certificates: the Secrets %s-etcd-{%s}-<g> labelled %s=<g>",
+		message := fmt.Sprintf("waiting for a complete generation of the etcd certificates that this ControlPlane controls: the Secrets %s-etcd-{%s}-<g> labelled %s=<g>",
 			cp.Name, strings.Join(Certificates, ","), bryggav1alpha1.EtcdCertificatesLabel)
 		return current, newCondition(metav1.ConditionFalse, ReasonProvisioning, message), 0, nil
 	}
@@ -281,9 +282,6 @@ func foreignEtcd(etcd *druidv1alpha1.Etcd) string {
 		etcd.Name, owner)
 }
 
-// refused tells the API server's verdict on an object, which sending it again
-// cannot change, from a failure to answer: every 4xx is one but a missing
-// object, a timeout, a conflict, throttling and a namespace being deleted.
 // An admission webhook's denial without a code arrives as 400
 // (k8s.io/apiserver@v0.37.1 pkg/admission/plugin/webhook/errors/statuserror.go#L37-L39).
 func refused(err error) bool {
@@ -381,8 +379,6 @@ func (r *Reconciler) secrets(ctx context.Context, cp *bryggav1alpha1.ControlPlan
 	return secrets.Items, nil
 }
 
-// secret finds a Secret's metadata in the cache, and on the API server when
-// the cache does not hold it; nil when it does not exist.
 func (r *Reconciler) secret(ctx context.Context, cp *bryggav1alpha1.ControlPlane, name string, secrets []metav1.PartialObjectMetadata) (*metav1.PartialObjectMetadata, error) {
 	if i := slices.IndexFunc(secrets, func(s metav1.PartialObjectMetadata) bool { return s.Name == name }); i >= 0 {
 		return &secrets[i], nil
@@ -395,9 +391,6 @@ func (r *Reconciler) secret(ctx context.Context, cp *bryggav1alpha1.ControlPlane
 	return secret, nil
 }
 
-// controlledElsewhere returns the owner reference that makes an object
-// another owner's: a controller that is not this ControlPlane, or any
-// reference to another ControlPlane.
 func controlledElsewhere(obj metav1.Object, cp *bryggav1alpha1.ControlPlane) *metav1.OwnerReference {
 	for _, ref := range obj.GetOwnerReferences() {
 		if ref.UID != cp.UID && (ptr.Deref(ref.Controller, false) ||

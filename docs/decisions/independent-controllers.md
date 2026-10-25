@@ -137,7 +137,7 @@ flowchart LR
 
 - `cmd/brygga/main.go` — the manager with the cache rules above, PKI
   registered as `pki` with ten workers, and the Datastore controller as
-  `datastore` with ten; each sets a reconcile timeout of a minute.
+  `datastore` with ten.
 - `internal/controller/pki` — reads `spec` and `status.endpoint`, writes its
   Secrets with server-side apply as `brygga/pki`, applies `CertificatesReady`,
   `CAValidityAcceptable` and `AccessReady` alone through the status
@@ -153,8 +153,10 @@ flowchart LR
   credentials copy with server-side apply as `brygga/datastore`, applies
   `DatastoreReady` alone through the status subresource (`Unknown` at the
   start of its first pass, messages from the state alone, an API error left
-  to the log unless the server refuses the `Etcd` it is sent, which is
-  `EtcdRefused`), and stops for a paused `ControlPlane`. `datastore_test.go`
+  to the log unless the server refuses an object it is sent: the `Etcd`,
+  which is `EtcdRefused`, or the credentials copy, which holds the class),
+  sets a reconcile timeout of a minute, and stops for a paused
+  `ControlPlane`. `datastore_test.go`
   runs it under the same cache with `ReaderFailOnMissingInformer`, as a user
   bound to exactly its rules, and holds the first visit and the pass that
   leaves the status alone on an API error (`TestConditionsFromState`)
