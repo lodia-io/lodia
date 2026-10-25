@@ -314,7 +314,7 @@ func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 	if cl != nil && cluster != nil {
 		internal := "https://" + bryggav1alpha1.APIServerServiceName(t.cp.Name) + "." + t.cp.Namespace + ".svc:443"
 		kubeconfigs := []kubeconfig{
-			{bryggav1alpha1.KonnectivityKubeconfigSecret, "system:konnectivity-server", nil, "https://127.0.0.1:6443", false},
+			{bryggav1alpha1.KonnectivityKubeconfigSecret, "system:konnectivity-server", nil, internal, false},
 			{bryggav1alpha1.ControllerManagerKubeconfigSecret, "system:kube-controller-manager", nil, internal, false},
 			{bryggav1alpha1.SchedulerKubeconfigSecret, "system:kube-scheduler", nil, internal, false},
 			{bryggav1alpha1.BryggaKubeconfigSecret, "brygga:operator", nil, internal, true},
