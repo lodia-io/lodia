@@ -17,7 +17,7 @@ import (
 // +kubebuilder:printcolumn:name="Version",type=string,JSONPath=".spec.version"
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].reason"
-// +kubebuilder:printcolumn:name="Endpoint",type=string,JSONPath=".status.endpoint.host",priority=1
+// +kubebuilder:printcolumn:name="Endpoint",type=string,JSONPath=".status.endpoint.apiServer.host",priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 type ControlPlane struct {
 	metav1.TypeMeta `json:",inline"`
@@ -692,7 +692,7 @@ type ControlPlaneStatus struct {
 	// +optional
 	Kubernetes *KubernetesStatus `json:"kubernetes,omitempty"`
 
-	// Endpoint is where the API server is reachable.
+	// Endpoint is where the control plane is reachable.
 	// +optional
 	Endpoint *EndpointStatus `json:"endpoint,omitempty"`
 
@@ -770,21 +770,36 @@ type UpgradeStatus struct {
 	Message string `json:"message,omitempty"`
 }
 
-// EndpointStatus is where the API server is reachable.
+// EndpointStatus is where the control plane is reachable.
 type EndpointStatus struct {
-	// Host of the public endpoint.
+	// APIServer is the API server's public endpoint.
 	// +optional
-	// +kubebuilder:validation:MaxLength=253
-	Host string `json:"host,omitempty"`
+	APIServer *HostPort `json:"apiServer,omitempty"`
 
-	// Port of the public endpoint.
+	// Konnectivity is where konnectivity agents reach the konnectivity
+	// server.
 	// +optional
-	Port int32 `json:"port,omitempty"`
+	Konnectivity *HostPort `json:"konnectivity,omitempty"`
 
 	// Internal is the in-namespace URL.
 	// +optional
 	// +kubebuilder:validation:MaxLength=512
 	Internal string `json:"internal,omitempty"`
+}
+
+// HostPort is a host and a port.
+type HostPort struct {
+	// Host is a DNS name or an IP address.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Host string `json:"host"`
+
+	// Port is a TCP port.
+	// +required
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	Port int32 `json:"port"`
 }
 
 // CredentialsStatus names the Secrets clients need and tracks rotations.

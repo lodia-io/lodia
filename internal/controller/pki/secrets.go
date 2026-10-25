@@ -111,6 +111,7 @@ type tenant struct {
 	unreadable          []string
 	unsupportedProvider bryggav1alpha1.EncryptionProvider
 	endpoint            *endpoint
+	konnectivityHost    string
 	// writeErr is the pass's first failed write. No write follows it, and
 	// pending names what the pass had to change but did not write.
 	writeErr error
@@ -133,10 +134,10 @@ func (e *endpoint) url() string {
 
 func newTenant(cp *bryggav1alpha1.ControlPlane, now time.Time) *tenant {
 	t := &tenant{cp: cp, existing: map[string]*corev1.Secret{}, generations: map[int]bool{}, now: now, cas: map[string]*certs.Certificate{}, caCerts: map[string]*x509.Certificate{}}
-	if e := cp.Status.Endpoint; e != nil && e.Host != "" {
-		t.endpoint = &endpoint{host: e.Host, port: e.Port}
-		if e.Port == 0 {
-			t.endpoint.port = 443
+	if e := cp.Status.Endpoint; e != nil && e.APIServer != nil {
+		t.endpoint = &endpoint{host: e.APIServer.Host, port: e.APIServer.Port}
+		if e.Konnectivity != nil {
+			t.konnectivityHost = e.Konnectivity.Host
 		}
 	} else if gw := cp.Spec.Endpoint.Gateway; gw != nil {
 		t.endpoint = &endpoint{host: string(gw.Hostnames.APIServer), port: 443}
@@ -543,7 +544,11 @@ func (t *tenant) servingProfile() certs.Profile {
 
 func (t *tenant) konnectivityProfile() certs.Profile {
 	p := certs.Profile{CommonName: "konnectivity-server", Usages: serverAuth}
-	for _, name := range []string{"localhost", "127.0.0.1", t.endpoint.host} {
+	host := t.konnectivityHost
+	if host == "" {
+		host = t.endpoint.host
+	}
+	for _, name := range []string{"localhost", "127.0.0.1", host} {
 		p.SAN(name)
 	}
 	if gw := t.cp.Spec.Endpoint.Gateway; gw != nil {
