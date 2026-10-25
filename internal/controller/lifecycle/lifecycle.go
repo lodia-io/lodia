@@ -28,15 +28,6 @@ const (
 	FieldManager = "brygga/" + Name
 )
 
-const (
-	ReasonIdle                    = "Idle"
-	ReasonUnsupportedVersion      = "UnsupportedVersion"
-	ReasonMinorUpgradeUnsupported = "MinorUpgradeUnsupported"
-	ReasonPaused                  = "Paused"
-	ReasonReconciling             = "Reconciling"
-	ReasonReady                   = "Ready"
-)
-
 // readiness is what Ready is made of, in the order its reason is taken from.
 var readiness = []string{
 	bryggav1alpha1.ConditionCertificatesReady,
@@ -70,19 +61,20 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.Get(ctx, req.NamespacedName, cp); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if !cp.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, nil
-	}
 	next := owned{
+		progressing:        meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionProgressing),
 		ready:              meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionReady),
 		observedGeneration: cp.Status.ObservedGeneration,
 	}
 	if cp.Status.Target != nil {
 		next.target = bryggav1alpha1.Target{Version: cp.Status.Target.Version, Reason: cp.Status.Target.Reason}
 	}
-	if cp.Spec.Paused {
-		next.progressing = newCondition(cp, bryggav1alpha1.ConditionProgressing, metav1.ConditionFalse, ReasonPaused, "spec.paused is true: Brygga reconciles nothing")
-	} else {
+	switch {
+	case !cp.DeletionTimestamp.IsZero():
+		next.ready = newCondition(cp, bryggav1alpha1.ConditionReady, metav1.ConditionFalse, bryggav1alpha1.ReasonDeleting, "the ControlPlane is being deleted")
+	case cp.Spec.Paused:
+		next.progressing = newCondition(cp, bryggav1alpha1.ConditionProgressing, metav1.ConditionFalse, bryggav1alpha1.ReasonPaused, "spec.paused is true: Brygga reconciles nothing")
+	default:
 		next.target, next.progressing = target(cp, next.target.Version)
 		next.ready = ready(cp)
 		if observed(cp) {
@@ -99,17 +91,17 @@ func target(cp *bryggav1alpha1.ControlPlane, current string) (bryggav1alpha1.Tar
 	want := cp.Spec.Version
 	if _, ok := versions.For(want); !ok {
 		message := fmt.Sprintf("Kubernetes %s is not of a minor Brygga runs: %s", want, strings.Join(versions.Minors(), ", "))
-		return bryggav1alpha1.Target{Version: current, Reason: ReasonUnsupportedVersion},
-			newCondition(cp, bryggav1alpha1.ConditionProgressing, metav1.ConditionFalse, ReasonUnsupportedVersion, message)
+		return bryggav1alpha1.Target{Version: current, Reason: bryggav1alpha1.ReasonUnsupported},
+			newCondition(cp, bryggav1alpha1.ConditionProgressing, metav1.ConditionFalse, bryggav1alpha1.ReasonUnsupported, message)
 	}
 	wantMinor, _ := versions.Minor(want)
 	if currentMinor, ok := versions.Minor(current); ok && currentMinor != wantMinor {
 		message := fmt.Sprintf("an upgrade from %s to %s changes the minor, which is not supported yet; the target stays %s", current, want, current)
-		return bryggav1alpha1.Target{Version: current, Reason: ReasonMinorUpgradeUnsupported},
-			newCondition(cp, bryggav1alpha1.ConditionProgressing, metav1.ConditionFalse, ReasonMinorUpgradeUnsupported, message)
+		return bryggav1alpha1.Target{Version: current, Reason: bryggav1alpha1.ReasonUnsupported},
+			newCondition(cp, bryggav1alpha1.ConditionProgressing, metav1.ConditionFalse, bryggav1alpha1.ReasonUnsupported, message)
 	}
 	return bryggav1alpha1.Target{Version: want},
-		newCondition(cp, bryggav1alpha1.ConditionProgressing, metav1.ConditionFalse, ReasonIdle, "no upgrade, rotation or hibernation is running")
+		newCondition(cp, bryggav1alpha1.ConditionProgressing, metav1.ConditionFalse, bryggav1alpha1.ReasonIdle, "no upgrade, rotation or hibernation is running")
 }
 
 func ready(cp *bryggav1alpha1.ControlPlane) *metav1.Condition {
@@ -117,7 +109,7 @@ func ready(cp *bryggav1alpha1.ControlPlane) *metav1.Condition {
 		c := meta.FindStatusCondition(cp.Status.Conditions, conditionType)
 		switch {
 		case c == nil || c.ObservedGeneration != cp.Generation:
-			return newCondition(cp, bryggav1alpha1.ConditionReady, metav1.ConditionUnknown, ReasonReconciling,
+			return newCondition(cp, bryggav1alpha1.ConditionReady, metav1.ConditionUnknown, bryggav1alpha1.ReasonLatestGenerationNotObserved,
 				fmt.Sprintf("%s is not reported for generation %d", conditionType, cp.Generation))
 		case c.Status != metav1.ConditionTrue:
 			message := conditionType
@@ -127,7 +119,7 @@ func ready(cp *bryggav1alpha1.ControlPlane) *metav1.Condition {
 			return newCondition(cp, bryggav1alpha1.ConditionReady, c.Status, c.Reason, message)
 		}
 	}
-	return newCondition(cp, bryggav1alpha1.ConditionReady, metav1.ConditionTrue, ReasonReady,
+	return newCondition(cp, bryggav1alpha1.ConditionReady, metav1.ConditionTrue, bryggav1alpha1.ReasonReady,
 		strings.Join(readiness[:len(readiness)-1], ", ")+" and "+readiness[len(readiness)-1]+" are True")
 }
 

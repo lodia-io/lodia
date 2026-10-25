@@ -162,19 +162,19 @@ func asLifecycleController(cfg *rest.Config) (*rest.Config, error) {
 
 func TestTheTargetFollowsTheVersionWithinAMinor(t *testing.T) {
 	cp := controlPlane(t, "v1.35.0")
-	eventually(t, func() error { return expect(t, cp, "v1.35.0", "", lifecycle.ReasonIdle) })
+	eventually(t, func() error { return expect(t, cp, "v1.35.0", "", bryggav1alpha1.ReasonIdle) })
 
 	setVersion(t, cp, "v1.35.1")
-	eventually(t, func() error { return expect(t, cp, "v1.35.1", "", lifecycle.ReasonIdle) })
+	eventually(t, func() error { return expect(t, cp, "v1.35.1", "", bryggav1alpha1.ReasonIdle) })
 
 	setVersion(t, cp, "v1.36.0")
 	eventually(t, func() error {
-		return expect(t, cp, "v1.35.1", lifecycle.ReasonMinorUpgradeUnsupported, lifecycle.ReasonMinorUpgradeUnsupported)
+		return expect(t, cp, "v1.35.1", bryggav1alpha1.ReasonUnsupported, bryggav1alpha1.ReasonUnsupported)
 	})
 
 	setVersion(t, cp, "v1.38.0")
 	eventually(t, func() error {
-		return expect(t, cp, "v1.35.1", lifecycle.ReasonUnsupportedVersion, lifecycle.ReasonUnsupportedVersion)
+		return expect(t, cp, "v1.35.1", bryggav1alpha1.ReasonUnsupported, bryggav1alpha1.ReasonUnsupported)
 	})
 	if c := condition(t, cp, bryggav1alpha1.ConditionProgressing); !strings.Contains(c.Message, "1.35, 1.36, 1.37") {
 		t.Errorf("Progressing does not name the minors Brygga runs: %s", c.Message)
@@ -184,24 +184,24 @@ func TestTheTargetFollowsTheVersionWithinAMinor(t *testing.T) {
 func TestAnUnsupportedMinorGetsNoTarget(t *testing.T) {
 	cp := controlPlane(t, "v1.34.2")
 	eventually(t, func() error {
-		return expect(t, cp, "", lifecycle.ReasonUnsupportedVersion, lifecycle.ReasonUnsupportedVersion)
+		return expect(t, cp, "", bryggav1alpha1.ReasonUnsupported, bryggav1alpha1.ReasonUnsupported)
 	})
 
 	setVersion(t, cp, "v1.35.0")
-	eventually(t, func() error { return expect(t, cp, "v1.35.0", "", lifecycle.ReasonIdle) })
+	eventually(t, func() error { return expect(t, cp, "v1.35.0", "", bryggav1alpha1.ReasonIdle) })
 }
 
 func TestReadyFollowsTheReadinessConditions(t *testing.T) {
 	cp := controlPlane(t, "v1.37.1")
 	eventually(t, func() error {
-		return expectReady(t, cp, metav1.ConditionUnknown, lifecycle.ReasonReconciling, "CertificatesReady is not reported for generation 1", 0)
+		return expectReady(t, cp, metav1.ConditionUnknown, bryggav1alpha1.ReasonLatestGenerationNotObserved, "CertificatesReady is not reported for generation 1", 0)
 	})
 
 	for _, conditionType := range readiness {
 		setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
 	}
 	eventually(t, func() error {
-		return expectReady(t, cp, metav1.ConditionTrue, lifecycle.ReasonReady,
+		return expectReady(t, cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReady,
 			"CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied and Reachable are True", 1)
 	})
 
@@ -217,22 +217,56 @@ func TestReadyFollowsTheReadinessConditions(t *testing.T) {
 
 	setVersion(t, cp, "v1.37.2")
 	eventually(t, func() error {
-		return expectReady(t, cp, metav1.ConditionUnknown, lifecycle.ReasonReconciling, "CertificatesReady is not reported for generation 2", 1)
+		return expectReady(t, cp, metav1.ConditionUnknown, bryggav1alpha1.ReasonLatestGenerationNotObserved, "CertificatesReady is not reported for generation 2", 1)
 	})
 }
 
 func TestAPausedControlPlaneKeepsItsTarget(t *testing.T) {
 	cp := controlPlane(t, "v1.35.0")
-	eventually(t, func() error { return expect(t, cp, "v1.35.0", "", lifecycle.ReasonIdle) })
+	eventually(t, func() error { return expect(t, cp, "v1.35.0", "", bryggav1alpha1.ReasonIdle) })
 
 	update(t, cp, func(cp *bryggav1alpha1.ControlPlane) {
 		cp.Spec.Paused = true
 		cp.Spec.Version = "v1.35.1"
 	})
-	eventually(t, func() error { return expect(t, cp, "v1.35.0", "", lifecycle.ReasonPaused) })
+	eventually(t, func() error { return expect(t, cp, "v1.35.0", "", bryggav1alpha1.ReasonPaused) })
 
 	update(t, cp, func(cp *bryggav1alpha1.ControlPlane) { cp.Spec.Paused = false })
-	eventually(t, func() error { return expect(t, cp, "v1.35.1", "", lifecycle.ReasonIdle) })
+	eventually(t, func() error { return expect(t, cp, "v1.35.1", "", bryggav1alpha1.ReasonIdle) })
+}
+
+func TestReadyDuringDeletion(t *testing.T) {
+	cp := controlPlane(t, "v1.35.0")
+	setFinalizers(t, cp, "test.brygga.segla.io/hold")
+	for _, conditionType := range readiness {
+		setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
+	}
+	eventually(t, func() error {
+		return expectReady(t, cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReady,
+			"CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied and Reachable are True", 1)
+	})
+
+	if err := k8s.Delete(t.Context(), get(t, cp)); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() error {
+		c := condition(t, cp, bryggav1alpha1.ConditionReady)
+		if c == nil || c.Status != metav1.ConditionFalse || c.Reason != bryggav1alpha1.ReasonDeleting {
+			return fmt.Errorf("Ready is %+v, want False %s", c, bryggav1alpha1.ReasonDeleting)
+		}
+		return nil
+	})
+	setFinalizers(t, cp)
+}
+
+func setFinalizers(t *testing.T, cp *bryggav1alpha1.ControlPlane, finalizers ...string) {
+	t.Helper()
+	fresh := get(t, cp)
+	patch := client.MergeFrom(fresh.DeepCopy())
+	fresh.Finalizers = finalizers
+	if err := k8s.Patch(t.Context(), fresh, patch); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestAPassThatChangesNothingWritesNothing(t *testing.T) {

@@ -135,9 +135,9 @@ func TestALoadBalancerControlPlaneWaitsForItsEndpoint(t *testing.T) {
 
 	waitFor(t, 30*time.Second, func() bool {
 		c := condition(t, cp, bryggav1alpha1.ConditionCertificatesReady)
-		return c != nil && c.Status == metav1.ConditionFalse && c.Reason == pki.ReasonWaitingForEndpoint
+		return c != nil && c.Status == metav1.ConditionFalse && c.Reason == bryggav1alpha1.ReasonWaitingForEndpoint
 	})
-	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionFalse, pki.ReasonWaitingForAPIServer)
+	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForAPIServer)
 	secrets := secretsOf(t, cp)
 	for _, name := range []string{"dev-apiserver-serving", "dev-konnectivity-server", "dev-admin-kubeconfig"} {
 		if secrets[name] != nil {
@@ -160,10 +160,10 @@ func TestALoadBalancerControlPlaneWaitsForItsEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	ready := meta.FindStatusCondition(fresh.Status.Conditions, bryggav1alpha1.ConditionCertificatesReady)
-	if ready.Reason != pki.ReasonIssued || ready.ObservedGeneration != fresh.Generation {
-		t.Errorf("CertificatesReady is %s at generation %d, want %s at %d", ready.Reason, ready.ObservedGeneration, pki.ReasonIssued, fresh.Generation)
+	if ready.Reason != bryggav1alpha1.ReasonIssued || ready.ObservedGeneration != fresh.Generation {
+		t.Errorf("CertificatesReady is %s at generation %d, want %s at %d", ready.Reason, ready.ObservedGeneration, bryggav1alpha1.ReasonIssued, fresh.Generation)
 	}
-	expectCondition(t, cp, bryggav1alpha1.ConditionCAValidityAcceptable, metav1.ConditionTrue, pki.ReasonValid)
+	expectCondition(t, cp, bryggav1alpha1.ConditionCAValidityAcceptable, metav1.ConditionTrue, bryggav1alpha1.ReasonValid)
 	creds := fresh.Status.Credentials
 	if creds == nil || creds.AdminKubeconfigSecretRef == nil || creds.AdminKubeconfigSecretRef.Name != "dev-admin-kubeconfig" ||
 		creds.CABundleSecretRef == nil || creds.CABundleSecretRef.Name != "dev-ca-bundle" {
@@ -644,7 +644,7 @@ func TestALostCAIsNeverReplaced(t *testing.T) {
 		t.Fatal(err)
 	}
 	reconcile(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, pki.ReasonCAMissing)
+	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, bryggav1alpha1.ReasonCAMissing)
 	after, _ := resourceVersions(t, cp)
 	if _, replaced := after["dev-cakey-etcd"]; replaced {
 		t.Fatal("the lost etcd CA was replaced")
@@ -662,7 +662,7 @@ func TestALostCAIsNeverReplaced(t *testing.T) {
 	}
 	reconcile(t, r, cp)
 	c := condition(t, cp, bryggav1alpha1.ConditionCertificatesReady)
-	if c.Reason != pki.ReasonCAMissing || !strings.Contains(c.Message, "client, etcd") {
+	if c.Reason != bryggav1alpha1.ReasonCAMissing || !strings.Contains(c.Message, "client, etcd") {
 		t.Fatalf("CertificatesReady is %s: %s", c.Reason, c.Message)
 	}
 	if !bytes.Equal(secretsOf(t, cp)["dev-cakey-client"].Data["tls.key"], []byte("not a key")) {
@@ -684,7 +684,7 @@ func TestAnUnsupportedEncryptionProviderBlocksNothingElse(t *testing.T) {
 	}
 	publishEndpoint(t, cp)
 	reconcile(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, pki.ReasonEncryptionProviderUnsupported)
+	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, bryggav1alpha1.ReasonUnsupported)
 	secrets := secretsOf(t, cp)
 	if secrets["dev-encryption-config"] != nil {
 		t.Error("an encryption configuration was written for kms")
@@ -708,11 +708,11 @@ func TestTheFirstVisitWritesUnknown(t *testing.T) {
 		t.Fatal("a pass with a failing reader succeeded")
 	}
 	for _, conditionType := range []string{bryggav1alpha1.ConditionCertificatesReady, bryggav1alpha1.ConditionCAValidityAcceptable, bryggav1alpha1.ConditionAccessReady} {
-		expectCondition(t, cp, conditionType, metav1.ConditionUnknown, pki.ReasonReconciling)
+		expectCondition(t, cp, conditionType, metav1.ConditionUnknown, bryggav1alpha1.ReasonReconciling)
 	}
 	r.Reader = k8s
 	reconcile(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, pki.ReasonWaitingForEndpoint)
+	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForEndpoint)
 }
 
 type failingReader struct {

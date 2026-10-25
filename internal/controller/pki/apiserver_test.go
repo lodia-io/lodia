@@ -28,7 +28,6 @@ import (
 
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
 	"github.com/segla-io/brygga/internal/certs"
-	"github.com/segla-io/brygga/internal/controller/pki"
 )
 
 func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
@@ -37,8 +36,8 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 	cp := controlPlane(t, "pki-apiserver")
 	publishEndpoint(t, cp)
 	reconcile(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, pki.ReasonIssued)
-	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionFalse, pki.ReasonWaitingForAPIServer)
+	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, bryggav1alpha1.ReasonIssued)
+	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForAPIServer)
 	secrets := secretsOf(t, cp)
 
 	dir := t.TempDir()
@@ -110,12 +109,12 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 	setAPIServerReady(t, cp)
 	r.Dial = dialer(t, tenantCfg.Host)
 	reconcile(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionTrue, pki.ReasonBound)
+	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionTrue, bryggav1alpha1.ReasonBound)
 	r.Dial = unreachable
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
 		t.Fatal("a pass that could not reach the tenant succeeded")
 	}
-	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionTrue, pki.ReasonBound)
+	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionTrue, bryggav1alpha1.ReasonBound)
 	r.Dial = dialer(t, tenantCfg.Host)
 	for _, b := range []struct {
 		name, kind, role string
@@ -152,7 +151,7 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 	})
 
 	reconcile(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionTrue, pki.ReasonBound)
+	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionTrue, bryggav1alpha1.ReasonBound)
 	if _, err := admin.RbacV1().ClusterRoleBindings().Get(ctx, "brygga:operator", metav1.GetOptions{}); err != nil {
 		t.Fatalf("brygga:operator's binding was not restored: %v", err)
 	}
@@ -177,11 +176,11 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 		return nil, errors.New("not dialed")
 	}
 	reconcile(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionFalse, pki.ReasonWaitingForAPIServer)
+	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForAPIServer)
 	setAPIServerReady(t, cp)
 	r.Dial = dialer(t, tenantCfg.Host)
 	reconcile(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionTrue, pki.ReasonBound)
+	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionTrue, bryggav1alpha1.ReasonBound)
 }
 
 func TestAccessReadyIsBindingUntilTheTenantAnswers(t *testing.T) {
@@ -194,7 +193,7 @@ func TestAccessReadyIsBindingUntilTheTenantAnswers(t *testing.T) {
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
 		t.Fatal("a pass that could not reach the tenant succeeded")
 	}
-	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionFalse, pki.ReasonBinding)
+	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionFalse, bryggav1alpha1.ReasonBinding)
 }
 
 func unreachable(context.Context, string, string) (net.Conn, error) {

@@ -195,7 +195,7 @@ func (r *Reconciler) apply(ctx context.Context, etcd *druidv1alpha1.Etcd) (*drui
 // StatefulSet that lags a complete report, which no watch brings back.
 func readiness(cp string, etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet, generation int, missing []string) (metav1.Condition, bool) {
 	not := func(message string) (metav1.Condition, bool) {
-		return newCondition(metav1.ConditionFalse, ReasonProvisioning, message), false
+		return newCondition(metav1.ConditionFalse, bryggav1alpha1.ReasonProvisioning, message), false
 	}
 	if !etcd.DeletionTimestamp.IsZero() {
 		return not(fmt.Sprintf("Etcd %s is being deleted", etcd.Name))
@@ -235,7 +235,7 @@ func readiness(cp string, etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet, gen
 		condition, _ := not(fmt.Sprintf("StatefulSet %s: %d of %d replicas updated, %d ready", sts.Name, sts.Status.UpdatedReplicas, replicas, sts.Status.ReadyReplicas))
 		return condition, true
 	}
-	return newCondition(metav1.ConditionTrue, ReasonReady,
+	return newCondition(metav1.ConditionTrue, bryggav1alpha1.ReasonReady,
 		fmt.Sprintf("etcd-druid reports Etcd %s ready on certificate generation %d, %d of %d replicas", etcd.Name, generation, etcd.Status.ReadyReplicas, etcd.Spec.Replicas)), false
 }
 

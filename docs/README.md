@@ -314,7 +314,7 @@ everything the class does not set is etcd-druid's default:
 | `backup.retention.days` | `spec.backup.garbageCollectionPolicy: LimitBased`, `.maxBackupsLimitBasedGC` | counts full snapshots, one a day |
 | `backup.retention.afterDelete` | — | phase 2, with the final snapshot |
 | `placement.nodeSelector`, `.tolerations`, `.priorityClassName` | `spec.schedulingConstraints.affinity` (as required node affinity), `.tolerations`, `spec.priorityClassName` | the `Etcd` has no node selector |
-| the `ControlPlane`'s availability | `spec.replicas` | 1 today; 3 with `highAvailability` and 0 while hibernating come with later phases |
+| the `ControlPlane`'s availability | `spec.replicas` | 1 today, and `DatastoreReady` is `Unsupported` with `highAvailability`; 3 with `highAvailability` and 0 while hibernating come with later phases |
 | the etcd certificates, generation `g` | `spec.etcd.clientUrlTls`, `spec.etcd.peerUrlTls`, `spec.backup.tls` | all three name one complete generation, with `dataKey: ca.crt` on the CA; a generation counts only while its five Secrets are this `ControlPlane`'s (its controller reference), so a predecessor's or an orphaned generation, which trusts another etcd CA, never starts an etcd before PKI has checked and adopted it; a newer complete generation is one update of the `Etcd`, so one roll of the members; the `Etcd` never moves below the generation it names: the newest complete one is older while a Secret of the named one is being deleted, and the older generation PKI keeps can have expired |
 
 A class is checked when it is written, since a value refused later stops
@@ -348,9 +348,12 @@ the manager with it
 `api/v1alpha1/durations_test.go` holds every duration of the API to that.
 
 `DatastoreReady` is `Unknown`, reason `Reconciling`, until the controller's
-first pass has finished, and `Provisioning` until a complete certificate
-generation exists and etcd-druid reports the `Etcd` ready for its current
-generation. Every Secret the `Etcd` mounts must exist — the five of its
+first pass has finished, `WaitingForCertificates` until a complete
+certificate generation this `ControlPlane` controls exists, and
+`Provisioning` until etcd-druid reports the `Etcd` ready for its current
+generation. A shared store is `Unsupported` until phase 3, and so is
+`highAvailability`, whose etcd runs one member: `DatastoreReady` is never
+True while it is set. Every Secret the `Etcd` mounts must exist — the five of its
 certificate generation and, with a store, `<cp>-etcd-backup` — or the next
 start of a member fails; a terminating one still counts, since etcd-druid
 holds its finalizer on every Secret an `Etcd` references until none does
@@ -530,12 +533,14 @@ Built so far, for phase 1: Lifecycle sets `status.target.version` to
 `spec.version` when its minor is one Brygga runs — 1.35, 1.36 and 1.37, whose
 images are in `internal/versions` — and within that minor only, since a minor
 upgrade needs the order below, which phase 2 builds; otherwise the target
-stays and `Progressing` says why (`UnsupportedVersion`,
-`MinorUpgradeUnsupported`), else `Idle`, or `Paused`. `Ready` is True when
-the six readiness conditions are True at the current generation; otherwise it
-takes the status, reason and message of the first that is not, and is
-`Unknown`, `Reconciling`, while one is missing or reported for an older
-generation. `status.observedGeneration` follows once all six are reported for
+stays and `Progressing` says why (`Unsupported`), else `Idle`, or `Paused`.
+`Ready` is True when the six readiness conditions are True at the current
+generation; otherwise it takes the status, reason and message of the first
+that is not, in the order `CertificatesReady`, `DatastoreReady`,
+`APIServerReady`, `AccessReady`, `AddonsApplied`, `Reachable`, and is
+`Unknown`, `LatestGenerationNotObserved`, while that one is missing or
+reported for an older generation; while the `ControlPlane` is being deleted it
+is False, `Deleting`. `status.observedGeneration` follows once all six are reported for
 the current generation.
 
 ### Upgrades and windows

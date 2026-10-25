@@ -55,21 +55,6 @@ const (
 	ClassGenerationAnnotation = "brygga.segla.io/datastore-class-generation"
 )
 
-// Messages are built from the state alone, never from an error, so a pass
-// that changes nothing writes nothing.
-const (
-	ReasonReconciling            = "Reconciling"
-	ReasonProvisioning           = "Provisioning"
-	ReasonDatastoreClassNotFound = "DatastoreClassNotFound"
-	ReasonVolumesExist           = "VolumesExist"
-	// A refusal, the API server's verdict on an object that sending it again
-	// cannot change, decides EtcdRefused and the note of a class held for a
-	// refused copy; no other error decides anything.
-	ReasonEtcdRefused = "EtcdRefused"
-	ReasonDeleting    = "Deleting"
-	ReasonReady       = "Ready"
-)
-
 type Reconciler struct {
 	client.Client
 	// Reader reads what the label-filtered cache does not hold.
@@ -128,8 +113,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.Get(ctx, req.NamespacedName, cp); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if cp.Spec.Datastore.Dedicated == nil || cp.Spec.Paused {
+	if cp.Spec.Paused {
 		return ctrl.Result{}, nil
+	}
+	if cp.Spec.Datastore.Dedicated == nil {
+		if !cp.DeletionTimestamp.IsZero() {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, r.applyStatus(ctx, cp, nil, newCondition(metav1.ConditionFalse, bryggav1alpha1.ReasonUnsupported, "spec.datastore.shared is not supported yet"))
 	}
 	if !cp.DeletionTimestamp.IsZero() {
 		requeueAfter, err := r.finalize(ctx, cp)
@@ -147,7 +138,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 	}
 	if meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionDatastoreReady) == nil {
-		first := newCondition(metav1.ConditionUnknown, ReasonReconciling, "the first pass has not finished")
+		first := newCondition(metav1.ConditionUnknown, bryggav1alpha1.ReasonReconciling, "the first pass has not finished")
 		if err := r.applyStatus(ctx, cp, cp.Status.Datastore, first); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -155,6 +146,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	etcd, condition, requeueAfter, err := r.reconcileEtcd(ctx, cp)
 	if condition.Type == "" {
 		return ctrl.Result{}, err
+	}
+	if cp.Spec.HighAvailability != nil && condition.Status == metav1.ConditionTrue {
+		condition = newCondition(metav1.ConditionFalse, bryggav1alpha1.ReasonUnsupported, "spec.highAvailability is not supported yet: the etcd runs one member")
 	}
 	if statusErr := r.applyStatus(ctx, cp, datastoreStatus(etcd), condition); statusErr != nil || err != nil {
 		return ctrl.Result{}, errors.Join(err, statusErr)
@@ -172,7 +166,7 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 	// applied: the apply would take it over, and this ControlPlane would start
 	// on another tenant's data.
 	if current != nil && !metav1.IsControlledBy(current, cp) {
-		return nil, newCondition(metav1.ConditionFalse, ReasonVolumesExist, foreignEtcd(current)), time.Minute, nil
+		return nil, newCondition(metav1.ConditionFalse, bryggav1alpha1.ReasonVolumesExist, foreignEtcd(current)), time.Minute, nil
 	}
 	var claims []corev1.PersistentVolumeClaim
 	if current == nil {
@@ -193,7 +187,7 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 		if byClaims {
 			requeueAfter = time.Minute
 		}
-		return nil, newCondition(metav1.ConditionFalse, ReasonDatastoreClassNotFound, missing), requeueAfter, nil
+		return nil, newCondition(metav1.ConditionFalse, bryggav1alpha1.ReasonDatastoreClassNotFound, missing), requeueAfter, nil
 	}
 	secrets, err := r.secrets(ctx, cp)
 	if err != nil {
@@ -206,13 +200,13 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 	if !found {
 		message := fmt.Sprintf("waiting for a complete generation of the etcd certificates that this ControlPlane controls: the Secrets %s-etcd-{%s}-<g> labelled %s=<g>",
 			cp.Name, strings.Join(bryggav1alpha1.EtcdCertificateRoles, ","), bryggav1alpha1.EtcdCertificatesLabel)
-		return current, newCondition(metav1.ConditionFalse, ReasonProvisioning, message), 0, nil
+		return current, newCondition(metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForCertificates, message), 0, nil
 	}
 	if current == nil {
 		if foreign := foreignClaims(cp, claims); len(foreign) > 0 {
 			message := fmt.Sprintf("the claims %s of another ControlPlane stand where the etcd of %s would be created: delete them to start empty, or keep them, and this ControlPlane waits",
 				strings.Join(foreign, ", "), cp.Name)
-			return nil, newCondition(metav1.ConditionFalse, ReasonVolumesExist, message), time.Minute, nil
+			return nil, newCondition(metav1.ConditionFalse, bryggav1alpha1.ReasonVolumesExist, message), time.Minute, nil
 		}
 	}
 	var held string
@@ -226,7 +220,7 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 		refusal = err
 		if blocked != "" && current == nil {
 			message := fmt.Sprintf("DatastoreClass %s cannot be applied yet: %s", class.Name, blocked)
-			return nil, newCondition(metav1.ConditionFalse, ReasonProvisioning, message), time.Minute, refusal
+			return nil, newCondition(metav1.ConditionFalse, bryggav1alpha1.ReasonProvisioning, message), time.Minute, refusal
 		}
 		// A class is held whole: applying the rest of an edit could add a store
 		// whose copy cannot be made, and the certificate generations still move.
@@ -242,7 +236,7 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 		if refused(err) {
 			message := note(fmt.Sprintf("the API server refuses Etcd %s on certificate generation %d with the fields of DatastoreClass %s generation %s; the reason is in Brygga's log",
 				rendered.Name, generation, rendered.Annotations[ClassAnnotation], rendered.Annotations[ClassGenerationAnnotation]), held)
-			return current, newCondition(metav1.ConditionFalse, ReasonEtcdRefused, message), 0, errors.Join(err, refusal)
+			return current, newCondition(metav1.ConditionFalse, bryggav1alpha1.ReasonEtcdRefused, message), 0, errors.Join(err, refusal)
 		}
 		return nil, metav1.Condition{}, 0, err
 	}
@@ -599,7 +593,7 @@ func (r *Reconciler) finalize(ctx context.Context, cp *bryggav1alpha1.ControlPla
 	if foreign {
 		etcd = nil
 	}
-	deleting := newCondition(metav1.ConditionFalse, ReasonDeleting, "the ControlPlane is being deleted: the Etcd goes first, then its claims as the class says")
+	deleting := newCondition(metav1.ConditionFalse, bryggav1alpha1.ReasonDeleting, "the ControlPlane is being deleted: the Etcd goes first, then its claims as the class says")
 	if err := r.applyStatus(ctx, cp, datastoreStatus(etcd), deleting); err != nil {
 		return 0, err
 	}

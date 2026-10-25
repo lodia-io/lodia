@@ -99,7 +99,7 @@ func TestDatastoreOnKind(t *testing.T) {
 				return issued(ctx, k8s, 1)
 			})
 			until(ctx, t, 5*time.Minute, "DatastoreReady=True for generation 1", func(ctx context.Context) error {
-				return conditionIs(ctx, k8s, metav1.ConditionTrue, datastore.ReasonReady)
+				return conditionIs(ctx, k8s, metav1.ConditionTrue, bryggav1alpha1.ReasonReady)
 			})
 			pod := &corev1.Pod{}
 			if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: controlPlane + "-etcd-0"}, pod); err != nil {
@@ -153,7 +153,7 @@ func TestDatastoreOnKind(t *testing.T) {
 				return nil
 			})
 			until(ctx, t, 2*time.Minute, "DatastoreReady leaves True for the roll", func(ctx context.Context) error {
-				return conditionIs(ctx, k8s, metav1.ConditionFalse, datastore.ReasonProvisioning)
+				return conditionIs(ctx, k8s, metav1.ConditionFalse, bryggav1alpha1.ReasonProvisioning)
 			})
 			until(ctx, t, 5*time.Minute, "the member runs with generation 2 mounted", func(ctx context.Context) error {
 				pod := &corev1.Pod{}
@@ -173,7 +173,7 @@ func TestDatastoreOnKind(t *testing.T) {
 				if ptr.Deref(etcd.Status.ObservedGeneration, 0) != etcd.Generation {
 					return fmt.Errorf("etcd-druid observed generation %d of %d", ptr.Deref(etcd.Status.ObservedGeneration, 0), etcd.Generation)
 				}
-				return conditionIs(ctx, k8s, metav1.ConditionTrue, datastore.ReasonReady)
+				return conditionIs(ctx, k8s, metav1.ConditionTrue, bryggav1alpha1.ReasonReady)
 			})
 			logEtcd(ctx, t, k8s)
 			return ctx

@@ -17,7 +17,6 @@ import (
 
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
 	"github.com/segla-io/brygga/internal/certs"
-	"github.com/segla-io/brygga/internal/controller/pki"
 )
 
 func TestALeafEndingWithItsCAIsIssuedOnceAndAnExpiredCAWritesNothing(t *testing.T) {
@@ -48,7 +47,7 @@ func TestALeafEndingWithItsCAIsIssuedOnceAndAnExpiredCAWritesNothing(t *testing.
 		}
 	}
 	expectGenerations(t, cp, 1, 2)
-	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, pki.ReasonIssued)
+	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, bryggav1alpha1.ReasonIssued)
 
 	before, _ := resourceVersions(t, cp)
 	time.Sleep(time.Until(certs.RenewalTime(parseTLS(t, clamped["dev-apiserver-serving"]).Cert)) + 300*time.Millisecond)
@@ -77,7 +76,7 @@ func TestALeafEndingWithItsCAIsIssuedOnceAndAnExpiredCAWritesNothing(t *testing.
 	before, _ = resourceVersions(t, cp)
 	result = reconcile(t, r, cp)
 	c := condition(t, cp, bryggav1alpha1.ConditionCertificatesReady)
-	if c.Status != metav1.ConditionFalse || c.Reason != pki.ReasonCAExpired || !strings.Contains(c.Message, "cluster, client, front-proxy, etcd") {
+	if c.Status != metav1.ConditionFalse || c.Reason != bryggav1alpha1.ReasonCAExpired || !strings.Contains(c.Message, "cluster, client, front-proxy, etcd") {
 		t.Fatalf("CertificatesReady is %s %s: %s", c.Status, c.Reason, c.Message)
 	}
 	after, cpBefore := resourceVersions(t, cp)
@@ -147,7 +146,7 @@ func TestAnUnlabelledCAKeyIsKeptNotReplaced(t *testing.T) {
 	}
 
 	reconcile(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, pki.ReasonIssued)
+	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, bryggav1alpha1.ReasonIssued)
 	after := secretsOf(t, cp)
 	kept := after["dev-cakey-cluster"]
 	if kept == nil {
@@ -180,7 +179,7 @@ func TestAnUnlabelledCAKeyIsKeptNotReplaced(t *testing.T) {
 	}
 	reconcile(t, r, cp)
 	c := condition(t, cp, bryggav1alpha1.ConditionCertificatesReady)
-	if c.Reason != pki.ReasonCAMissing || !strings.Contains(c.Message, "front-proxy") {
+	if c.Reason != bryggav1alpha1.ReasonCAMissing || !strings.Contains(c.Message, "front-proxy") {
 		t.Fatalf("CertificatesReady is %s: %s", c.Reason, c.Message)
 	}
 	if secretsOf(t, cp)["dev-cakey-front-proxy"] != nil {
@@ -197,7 +196,7 @@ func TestCAValidityIsAnnouncedOutsideReady(t *testing.T) {
 	publishEndpoint(t, cp)
 	start := time.Now()
 	result := reconcile(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionCAValidityAcceptable, metav1.ConditionTrue, pki.ReasonValid)
+	expectCondition(t, cp, bryggav1alpha1.ConditionCAValidityAcceptable, metav1.ConditionTrue, bryggav1alpha1.ReasonValid)
 	secrets := secretsOf(t, cp)
 	crossing := parseTLS(t, secrets["dev-cakey-client"]).Cert.NotAfter.Add(-r.CAExpiryNotice)
 	if result.RequeueAfter < time.Until(crossing) || result.RequeueAfter > crossing.Sub(start)+time.Second {
@@ -207,7 +206,7 @@ func TestCAValidityIsAnnouncedOutsideReady(t *testing.T) {
 	time.Sleep(time.Until(crossing) + 300*time.Millisecond)
 	reconcile(t, r, cp)
 	c := condition(t, cp, bryggav1alpha1.ConditionCAValidityAcceptable)
-	if c.Status != metav1.ConditionFalse || c.Reason != pki.ReasonCAExpiring {
+	if c.Status != metav1.ConditionFalse || c.Reason != bryggav1alpha1.ReasonCAExpiring {
 		t.Fatalf("CAValidityAcceptable is %s %s", c.Status, c.Reason)
 	}
 	for _, name := range []string{"client", "front-proxy", "etcd"} {
@@ -219,7 +218,7 @@ func TestCAValidityIsAnnouncedOutsideReady(t *testing.T) {
 	if strings.Contains(c.Message, "cluster CA") {
 		t.Errorf("the message %q names the cluster CA, valid beyond the notice", c.Message)
 	}
-	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, pki.ReasonIssued)
+	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, bryggav1alpha1.ReasonIssued)
 	_, before := resourceVersions(t, cp)
 	reconcile(t, r, cp)
 	if _, after := resourceVersions(t, cp); after != before {
@@ -305,7 +304,7 @@ func TestARenewalNotWrittenIsIssuing(t *testing.T) {
 	r.Client = failingApply{Client: k8s, secret: "dev-apiserver-serving"}
 	reconcileFails(t, r, cp)
 	c := condition(t, cp, bryggav1alpha1.ConditionCertificatesReady)
-	if c.Status != metav1.ConditionFalse || c.Reason != pki.ReasonIssuing || !strings.Contains(c.Message, "dev-apiserver-serving") {
+	if c.Status != metav1.ConditionFalse || c.Reason != bryggav1alpha1.ReasonIssuing || !strings.Contains(c.Message, "dev-apiserver-serving") {
 		t.Fatalf("CertificatesReady is %s %s: %s", c.Status, c.Reason, c.Message)
 	}
 	if !serving.Cert.Equal(parseTLS(t, secretsOf(t, cp)["dev-apiserver-serving"]).Cert) {
@@ -314,7 +313,7 @@ func TestARenewalNotWrittenIsIssuing(t *testing.T) {
 
 	r.Client = k8s
 	reconcile(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, pki.ReasonIssued)
+	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, bryggav1alpha1.ReasonIssued)
 }
 
 func TestAnAdoptionNotWrittenLeavesCertificatesReady(t *testing.T) {
@@ -329,7 +328,7 @@ func TestAnAdoptionNotWrittenLeavesCertificatesReady(t *testing.T) {
 	}
 	r.Client = failingApply{Client: k8s, secret: "dev-front-proxy-client"}
 	reconcileFails(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, pki.ReasonIssued)
+	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, bryggav1alpha1.ReasonIssued)
 }
 
 func TestACANotWrittenIsNotCounted(t *testing.T) {
@@ -337,9 +336,9 @@ func TestACANotWrittenIsNotCounted(t *testing.T) {
 	r.Client = failingApply{Client: k8s, secret: "dev-cakey-client"}
 	cp := controlPlane(t, "pki-ca-unwritten")
 	reconcileFails(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionCAValidityAcceptable, metav1.ConditionUnknown, pki.ReasonReconciling)
+	expectCondition(t, cp, bryggav1alpha1.ConditionCAValidityAcceptable, metav1.ConditionUnknown, bryggav1alpha1.ReasonReconciling)
 	c := condition(t, cp, bryggav1alpha1.ConditionCertificatesReady)
-	if c.Reason != pki.ReasonIssuing || !strings.Contains(c.Message, "dev-cakey-client") {
+	if c.Reason != bryggav1alpha1.ReasonIssuing || !strings.Contains(c.Message, "dev-cakey-client") {
 		t.Fatalf("CertificatesReady is %s: %s", c.Reason, c.Message)
 	}
 }

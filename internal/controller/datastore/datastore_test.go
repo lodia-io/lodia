@@ -487,7 +487,7 @@ func TestFinalizerAndEtcdFromClass(t *testing.T) {
 		}
 		return nil
 	})
-	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonProvisioning, "waiting for a complete generation of the etcd certificates")
+	waitCondition(t, ns, "dev", metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForCertificates, "waiting for a complete generation of the etcd certificates")
 	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev-etcd"}, &druidv1alpha1.Etcd{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("want no Etcd before the first certificate generation, got %v", err)
 	}
@@ -576,12 +576,12 @@ func TestConditionsFromState(t *testing.T) {
 			t.Fatal("no DatastoreReady condition was written")
 		}
 	}
-	if first.Status != metav1.ConditionUnknown || first.Reason != datastore.ReasonReconciling {
-		t.Errorf("the first DatastoreReady is %s/%s %q, want Unknown/%s", first.Status, first.Reason, first.Message, datastore.ReasonReconciling)
+	if first.Status != metav1.ConditionUnknown || first.Reason != bryggav1alpha1.ReasonReconciling {
+		t.Errorf("the first DatastoreReady is %s/%s %q, want Unknown/%s", first.Status, first.Reason, first.Message, bryggav1alpha1.ReasonReconciling)
 	}
 
 	writeGeneration(t, ns, "dev", 1)
-	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd dev-etcd")
+	waitCondition(t, ns, "dev", metav1.ConditionFalse, bryggav1alpha1.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd dev-etcd")
 	var before *bryggav1alpha1.ControlPlane
 	eventually(t, func() error {
 		if before = getControlPlane(t, ns, "dev"); before.Status.Datastore == nil {
@@ -650,7 +650,7 @@ func TestEtcdRefused(t *testing.T) {
 
 	create(t, controlPlane(ns, "dev", "refused"))
 	writeGeneration(t, ns, "dev", 1)
-	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonEtcdRefused,
+	waitCondition(t, ns, "dev", metav1.ConditionFalse, bryggav1alpha1.ReasonEtcdRefused,
 		"the API server refuses Etcd dev-etcd on certificate generation 1 with the fields of DatastoreClass refused generation 1; the reason is in Brygga's log")
 	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev-etcd"}, &druidv1alpha1.Etcd{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("want no Etcd while the API server refuses it, got %v", err)
@@ -660,7 +660,7 @@ func TestEtcdRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitEtcd(t, ns, "dev", namesGeneration(1))
-	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd dev-etcd")
+	waitCondition(t, ns, "dev", metav1.ConditionFalse, bryggav1alpha1.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd dev-etcd")
 }
 
 func TestPaused(t *testing.T) {
@@ -683,7 +683,7 @@ func TestPaused(t *testing.T) {
 
 	setPaused(t, ns, "dev", false)
 	waitEtcd(t, ns, "dev", namesGeneration(1))
-	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd dev-etcd")
+	waitCondition(t, ns, "dev", metav1.ConditionFalse, bryggav1alpha1.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd dev-etcd")
 	if !controllerutil.ContainsFinalizer(getControlPlane(t, ns, "dev"), datastore.Finalizer) {
 		t.Fatal("the finalizer is not on the unpaused ControlPlane")
 	}
@@ -698,7 +698,7 @@ func TestPaused(t *testing.T) {
 		if !controllerutil.ContainsFinalizer(cp, datastore.Finalizer) {
 			return errors.New("the finalizer of a paused ControlPlane was released")
 		}
-		if condition := meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionDatastoreReady); condition.Reason == datastore.ReasonDeleting {
+		if condition := meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionDatastoreReady); condition.Reason == bryggav1alpha1.ReasonDeleting {
 			return errors.New("a paused ControlPlane reports Deleting")
 		}
 		etcd := getEtcd(t, ns, "dev")
@@ -838,7 +838,7 @@ func TestOnlyItsOwnGenerationsCount(t *testing.T) {
 	}})
 	writeWith(2, nil)
 	settle(t, ns, "dev")
-	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonProvisioning, "waiting for a complete generation of the etcd certificates")
+	waitCondition(t, ns, "dev", metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForCertificates, "waiting for a complete generation of the etcd certificates")
 	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev-etcd"}, &druidv1alpha1.Etcd{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("want no Etcd on a predecessor's or an unowned generation, got %v", err)
 	}
@@ -862,7 +862,7 @@ func TestMountedSecretsMustExist(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	waitCondition(t, ns, cp, metav1.ConditionFalse, datastore.ReasonProvisioning,
+	waitCondition(t, ns, cp, metav1.ConditionFalse, bryggav1alpha1.ReasonProvisioning,
 		"Secrets Etcd mounted-etcd mounts do not exist: mounted-etcd-backup-restore-2, mounted-etcd-ca-2, mounted-etcd-client-2, mounted-etcd-peer-2, mounted-etcd-server-2")
 	if err := namesGeneration(2)(getEtcd(t, ns, cp)); err != nil {
 		t.Fatalf("the Etcd left the generation it names for an older one: %v", err)
@@ -884,7 +884,7 @@ func TestMountedSecretsMustExist(t *testing.T) {
 		t.Fatal(err)
 	}
 	settle(t, ns, cp)
-	waitCondition(t, ns, cp, metav1.ConditionTrue, datastore.ReasonReady, "ready on certificate generation 3")
+	waitCondition(t, ns, cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReady, "ready on certificate generation 3")
 	released := client.MergeFrom(terminating.DeepCopy())
 	terminating.Finalizers = nil
 	if err := k8s.Patch(t.Context(), terminating, released); err != nil {
@@ -895,10 +895,10 @@ func TestMountedSecretsMustExist(t *testing.T) {
 func TestDatastoreClassNotFound(t *testing.T) {
 	ns := namespace(t)
 	create(t, controlPlane(ns, "named", "absent"))
-	waitCondition(t, ns, "named", metav1.ConditionFalse, datastore.ReasonDatastoreClassNotFound, "DatastoreClass absent does not exist")
+	waitCondition(t, ns, "named", metav1.ConditionFalse, bryggav1alpha1.ReasonDatastoreClassNotFound, "DatastoreClass absent does not exist")
 
 	create(t, controlPlane(ns, "unnamed", ""))
-	waitCondition(t, ns, "unnamed", metav1.ConditionFalse, datastore.ReasonDatastoreClassNotFound, "no DatastoreClass is annotated")
+	waitCondition(t, ns, "unnamed", metav1.ConditionFalse, bryggav1alpha1.ReasonDatastoreClassNotFound, "no DatastoreClass is annotated")
 
 	for _, name := range []string{"default-a", "default-b"} {
 		class := newClass(name, "Retain")
@@ -906,12 +906,12 @@ func TestDatastoreClassNotFound(t *testing.T) {
 		class.Spec.Storage.Size = resource.MustParse("3Gi")
 		createClass(t, class)
 	}
-	waitCondition(t, ns, "unnamed", metav1.ConditionFalse, datastore.ReasonDatastoreClassNotFound, "2 DatastoreClasses are annotated")
+	waitCondition(t, ns, "unnamed", metav1.ConditionFalse, bryggav1alpha1.ReasonDatastoreClassNotFound, "2 DatastoreClasses are annotated")
 
 	if err := k8s.Delete(t.Context(), newClass("default-b", "")); err != nil {
 		t.Fatal(err)
 	}
-	waitCondition(t, ns, "unnamed", metav1.ConditionFalse, datastore.ReasonProvisioning, "waiting for a complete generation")
+	waitCondition(t, ns, "unnamed", metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForCertificates, "waiting for a complete generation")
 	writeGeneration(t, ns, "unnamed", 1)
 	waitEtcd(t, ns, "unnamed", func(etcd *druidv1alpha1.Etcd) error {
 		if size := quantity(etcd.Spec.StorageCapacity); size != "3Gi" {
@@ -926,7 +926,7 @@ func TestBackupCredentialsCopied(t *testing.T) {
 	createClass(t, fullClass("backed-up", credentialsNamespace))
 	create(t, controlPlane(ns, "backed", "backed-up"))
 	writeGeneration(t, ns, "backed", 1)
-	waitCondition(t, ns, "backed", metav1.ConditionFalse, datastore.ReasonProvisioning, "DatastoreClass backed-up cannot be applied yet: its credentials Secret "+credentialsNamespace+"/s3 is missing")
+	waitCondition(t, ns, "backed", metav1.ConditionFalse, bryggav1alpha1.ReasonProvisioning, "DatastoreClass backed-up cannot be applied yet: its credentials Secret "+credentialsNamespace+"/s3 is missing")
 
 	source := credentials(credentialsNamespace)
 	create(t, source)
@@ -970,7 +970,7 @@ func readyOn(t *testing.T, ns, cp string, generation int) {
 	t.Helper()
 	runStatefulSet(t, ns, cp, generation)
 	setEtcdStatus(t, ns, cp, nil)
-	waitCondition(t, ns, cp, metav1.ConditionTrue, datastore.ReasonReady, fmt.Sprintf("ready on certificate generation %d", generation))
+	waitCondition(t, ns, cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReady, fmt.Sprintf("ready on certificate generation %d", generation))
 }
 
 func TestHeldClass(t *testing.T) {
@@ -1000,7 +1000,7 @@ func TestHeldClass(t *testing.T) {
 		t.Errorf("quota %s from class generation %s: the held class's edit reached the Etcd", quota, recorded)
 	}
 	readyOn(t, ns, cp, 2)
-	waitCondition(t, ns, cp, metav1.ConditionTrue, datastore.ReasonReady,
+	waitCondition(t, ns, cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReady,
 		"ready on certificate generation 2, 1 of 1 replicas; DatastoreClass holding is held: its credentials Secret "+credentialsNamespace+"/s3 is missing")
 	if after := reconcileNow(t, ns, cp); after != time.Minute {
 		t.Errorf("a held class requeues after %s, want a minute: the class's Secret is outside the cache", after)
@@ -1015,7 +1015,7 @@ func TestHeldClass(t *testing.T) {
 		return nil
 	})
 	setEtcdStatus(t, ns, cp, nil)
-	waitCondition(t, ns, cp, metav1.ConditionTrue, datastore.ReasonReady, "ready on certificate generation 2, 1 of 1 replicas")
+	waitCondition(t, ns, cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReady, "ready on certificate generation 2, 1 of 1 replicas")
 	if c := meta.FindStatusCondition(getControlPlane(t, ns, cp).Status.Conditions, bryggav1alpha1.ConditionDatastoreReady); strings.Contains(c.Message, "is held") {
 		t.Errorf("the class is still reported held: %s", c.Message)
 	}
@@ -1069,7 +1069,7 @@ func TestBackupCopyFollowsItsEvents(t *testing.T) {
 		}
 		return nil
 	})
-	waitCondition(t, ns, cp, metav1.ConditionTrue, datastore.ReasonReady, "ready on certificate generation 1, 1 of 1 replicas")
+	waitCondition(t, ns, cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReady, "ready on certificate generation 1, 1 of 1 replicas")
 	released := client.MergeFrom(copied.DeepCopy())
 	copied.Finalizers = nil
 	if err := k8s.Patch(t.Context(), copied, released); err != nil {
@@ -1099,7 +1099,7 @@ func TestPredecessorsCopy(t *testing.T) {
 	create(t, controlPlane(ns, cp, "succeeding"))
 	writeGeneration(t, ns, cp, 1)
 	const controlledBy = "successor-etcd-backup is controlled by ControlPlane successor with UID 11111111-2222-3333-4444-555555555555"
-	waitCondition(t, ns, cp, metav1.ConditionFalse, datastore.ReasonProvisioning, "DatastoreClass succeeding cannot be applied yet: "+controlledBy)
+	waitCondition(t, ns, cp, metav1.ConditionFalse, bryggav1alpha1.ReasonProvisioning, "DatastoreClass succeeding cannot be applied yet: "+controlledBy)
 	settle(t, ns, cp)
 	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: cp + "-etcd"}, &druidv1alpha1.Etcd{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("want no Etcd while a predecessor's copy stands, got %v", err)
@@ -1126,7 +1126,7 @@ func TestPredecessorsCopy(t *testing.T) {
 	predecessors = leftover()
 	create(t, predecessors)
 	setPaused(t, ns, cp, false)
-	waitCondition(t, ns, cp, metav1.ConditionFalse, datastore.ReasonProvisioning, "; DatastoreClass succeeding is held: "+controlledBy)
+	waitCondition(t, ns, cp, metav1.ConditionFalse, bryggav1alpha1.ReasonProvisioning, "; DatastoreClass succeeding is held: "+controlledBy)
 	writeGeneration(t, ns, cp, 2)
 	waitEtcd(t, ns, cp, namesGeneration(2))
 	if again := getCopy(t, ns, cp); again.ResourceVersion != predecessors.ResourceVersion {
@@ -1240,6 +1240,24 @@ func setEtcdStatus(t *testing.T, ns, cp string, mutate func(*druidv1alpha1.EtcdS
 	}
 }
 
+func TestUnsupported(t *testing.T) {
+	ns := namespace(t)
+	shared := controlPlane(ns, "shared", "")
+	shared.Spec.Datastore = bryggav1alpha1.DatastoreChoice{Shared: &bryggav1alpha1.SharedDatastore{Name: "pool"}}
+	create(t, shared)
+	waitCondition(t, ns, "shared", metav1.ConditionFalse, bryggav1alpha1.ReasonUnsupported, "spec.datastore.shared is not supported yet")
+
+	createClass(t, newClass("unsupported", "Retain"))
+	ha := controlPlane(ns, "ha", "unsupported")
+	ha.Spec.HighAvailability = &bryggav1alpha1.HighAvailability{FailureTolerance: "Node"}
+	create(t, ha)
+	writeGeneration(t, ns, "ha", 1)
+	waitEtcd(t, ns, "ha", nil)
+	runStatefulSet(t, ns, "ha", 1)
+	setEtcdStatus(t, ns, "ha", nil)
+	waitCondition(t, ns, "ha", metav1.ConditionFalse, bryggav1alpha1.ReasonUnsupported, "spec.highAvailability is not supported yet: the etcd runs one member")
+}
+
 func TestDatastoreReadyFollowsEtcdStatus(t *testing.T) {
 	ns := namespace(t)
 	const cp = "reported"
@@ -1247,11 +1265,11 @@ func TestDatastoreReadyFollowsEtcdStatus(t *testing.T) {
 	create(t, controlPlane(ns, cp, "reported"))
 	writeGeneration(t, ns, cp, 1)
 	waitEtcd(t, ns, cp, nil)
-	waitCondition(t, ns, cp, metav1.ConditionFalse, datastore.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd reported-etcd, observedGeneration 0")
+	waitCondition(t, ns, cp, metav1.ConditionFalse, bryggav1alpha1.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd reported-etcd, observedGeneration 0")
 
 	runStatefulSet(t, ns, cp, 1)
 	setEtcdStatus(t, ns, cp, nil)
-	waitCondition(t, ns, cp, metav1.ConditionTrue, datastore.ReasonReady, "etcd-druid reports Etcd reported-etcd ready on certificate generation 1, 1 of 1 replicas")
+	waitCondition(t, ns, cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReady, "etcd-druid reports Etcd reported-etcd ready on certificate generation 1, 1 of 1 replicas")
 	if got, want := ptr.Deref(getControlPlane(t, ns, cp).Status.Datastore, bryggav1alpha1.DatastoreStatus{}), (bryggav1alpha1.DatastoreStatus{
 		Endpoints: []bryggav1alpha1.HostPort{{Host: "reported-etcd-client." + ns + ".svc", Port: 2379}},
 		Class:     &bryggav1alpha1.DatastoreClassStatus{Name: "reported", Generation: 1},
@@ -1287,11 +1305,11 @@ func TestDatastoreReadyFollowsEtcdStatus(t *testing.T) {
 			setEtcdStatus(t, ns, cp, row.etcd)
 			setStatefulSetStatus(t, ns, cp, row.sts)
 			settle(t, ns, cp)
-			waitCondition(t, ns, cp, metav1.ConditionFalse, datastore.ReasonProvisioning, row.message)
+			waitCondition(t, ns, cp, metav1.ConditionFalse, bryggav1alpha1.ReasonProvisioning, row.message)
 			setEtcdStatus(t, ns, cp, nil)
 			setStatefulSetStatus(t, ns, cp, nil)
 			settle(t, ns, cp)
-			waitCondition(t, ns, cp, metav1.ConditionTrue, datastore.ReasonReady, "ready on certificate generation 1")
+			waitCondition(t, ns, cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReady, "ready on certificate generation 1")
 		})
 	}
 	t.Run("last errors alone", func(t *testing.T) {
@@ -1299,7 +1317,7 @@ func TestDatastoreReadyFollowsEtcdStatus(t *testing.T) {
 			s.LastErrors = []druidapicommon.LastError{{Code: "ERR_SYNC_CLIENT_SERVICE", Description: "the server could not answer", ObservedAt: metav1.Now()}}
 		})
 		settle(t, ns, cp)
-		waitCondition(t, ns, cp, metav1.ConditionTrue, datastore.ReasonReady, "ready on certificate generation 1")
+		waitCondition(t, ns, cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReady, "ready on certificate generation 1")
 		setEtcdStatus(t, ns, cp, nil)
 	})
 
@@ -1307,16 +1325,16 @@ func TestDatastoreReadyFollowsEtcdStatus(t *testing.T) {
 	waitEtcd(t, ns, cp, namesGeneration(2))
 	setEtcdStatus(t, ns, cp, nil)
 	settle(t, ns, cp)
-	waitCondition(t, ns, cp, metav1.ConditionFalse, datastore.ReasonProvisioning, "StatefulSet reported-etcd does not mount certificate generation 2 yet")
+	waitCondition(t, ns, cp, metav1.ConditionFalse, bryggav1alpha1.ReasonProvisioning, "StatefulSet reported-etcd does not mount certificate generation 2 yet")
 	runStatefulSet(t, ns, cp, 2)
 	settle(t, ns, cp)
-	waitCondition(t, ns, cp, metav1.ConditionTrue, datastore.ReasonReady, "etcd-druid reports Etcd reported-etcd ready on certificate generation 2, 1 of 1 replicas")
+	waitCondition(t, ns, cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReady, "etcd-druid reports Etcd reported-etcd ready on certificate generation 2, 1 of 1 replicas")
 
 	if err := k8s.Delete(t.Context(), &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: cp + "-etcd"}}); err != nil {
 		t.Fatal(err)
 	}
 	settle(t, ns, cp)
-	waitCondition(t, ns, cp, metav1.ConditionFalse, datastore.ReasonProvisioning, "StatefulSet reported-etcd does not exist")
+	waitCondition(t, ns, cp, metav1.ConditionFalse, bryggav1alpha1.ReasonProvisioning, "StatefulSet reported-etcd does not exist")
 
 	etcd := getEtcd(t, ns, cp)
 	held := client.MergeFrom(etcd.DeepCopy())
@@ -1327,7 +1345,7 @@ func TestDatastoreReadyFollowsEtcdStatus(t *testing.T) {
 	if err := k8s.Delete(t.Context(), etcd); err != nil {
 		t.Fatal(err)
 	}
-	waitCondition(t, ns, cp, metav1.ConditionFalse, datastore.ReasonProvisioning, "Etcd reported-etcd is being deleted")
+	waitCondition(t, ns, cp, metav1.ConditionFalse, bryggav1alpha1.ReasonProvisioning, "Etcd reported-etcd is being deleted")
 	released := client.MergeFrom(etcd.DeepCopy())
 	etcd.Finalizers = nil
 	if err := k8s.Patch(t.Context(), etcd, released); err != nil {
@@ -1407,7 +1425,7 @@ func TestVolumesExist(t *testing.T) {
 	create(t, claim(ns, "dev-etcd-scratch", etcdLabels))
 	create(t, controlPlane(ns, "dev", "reused"))
 	writeGeneration(t, ns, "dev", 1)
-	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonVolumesExist,
+	waitCondition(t, ns, "dev", metav1.ConditionFalse, bryggav1alpha1.ReasonVolumesExist,
 		"dev-etcd-dev-etcd-0, dev-etcd-dev-etcd-1 of another ControlPlane stand where the etcd of dev would be created: delete them to start empty, or keep them, and this ControlPlane waits")
 	if condition := meta.FindStatusCondition(getControlPlane(t, ns, "dev").Status.Conditions, bryggav1alpha1.ConditionDatastoreReady); strings.Contains(condition.Message, "dev-etcd-scratch") {
 		t.Errorf("a claim the StatefulSet does not attach blocks the Etcd: %s", condition.Message)
@@ -1457,7 +1475,7 @@ func TestForeignEtcd(t *testing.T) {
 			create(t, etcd)
 			create(t, controlPlane(ns, row.cp, "foreign"))
 			writeGeneration(t, ns, row.cp, 1)
-			waitCondition(t, ns, row.cp, metav1.ConditionFalse, datastore.ReasonVolumesExist, row.message)
+			waitCondition(t, ns, row.cp, metav1.ConditionFalse, bryggav1alpha1.ReasonVolumesExist, row.message)
 			settle(t, ns, row.cp)
 			if datastore := getControlPlane(t, ns, row.cp).Status.Datastore; datastore != nil {
 				t.Errorf("status.datastore %+v describes an Etcd of another ControlPlane", datastore)
@@ -1602,11 +1620,11 @@ func TestClassSurvivesTheEtcd(t *testing.T) {
 		t.Fatal(err)
 	}
 	create(t, controlPlane(ns, "probe", "survivor-first"))
-	waitCondition(t, ns, "probe", metav1.ConditionFalse, datastore.ReasonDatastoreClassNotFound, "DatastoreClass survivor-first does not exist")
+	waitCondition(t, ns, "probe", metav1.ConditionFalse, bryggav1alpha1.ReasonDatastoreClassNotFound, "DatastoreClass survivor-first does not exist")
 	if err := k8s.Delete(t.Context(), getEtcd(t, ns, "dev")); err != nil {
 		t.Fatal(err)
 	}
-	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonDatastoreClassNotFound,
+	waitCondition(t, ns, "dev", metav1.ConditionFalse, bryggav1alpha1.ReasonDatastoreClassNotFound,
 		"DatastoreClass survivor-first, which the claims of this ControlPlane record, does not exist")
 	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev-etcd"}, &druidv1alpha1.Etcd{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("want no Etcd while the class its claims record is gone, got %v", err)
@@ -1642,7 +1660,7 @@ func TestClassGone(t *testing.T) {
 	waitEtcd(t, ns, cp, namesGeneration(1))
 	runStatefulSet(t, ns, cp, 1)
 	setEtcdStatus(t, ns, cp, nil)
-	waitCondition(t, ns, cp, metav1.ConditionTrue, datastore.ReasonReady, "ready on certificate generation 1")
+	waitCondition(t, ns, cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReady, "ready on certificate generation 1")
 	create(t, claim(ns, "kept-etcd-kept-etcd-0", nil))
 	settle(t, ns, cp)
 	before := getEtcd(t, ns, cp)
@@ -1651,7 +1669,7 @@ func TestClassGone(t *testing.T) {
 		t.Fatal(err)
 	}
 	settle(t, ns, cp)
-	waitCondition(t, ns, cp, metav1.ConditionTrue, datastore.ReasonReady, "ready on certificate generation 1")
+	waitCondition(t, ns, cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReady, "ready on certificate generation 1")
 
 	writeGeneration(t, ns, cp, 2)
 	after := waitEtcd(t, ns, cp, namesGeneration(2))
@@ -1665,7 +1683,7 @@ func TestClassGone(t *testing.T) {
 	}
 	runStatefulSet(t, ns, cp, 2)
 	setEtcdStatus(t, ns, cp, nil)
-	waitCondition(t, ns, cp, metav1.ConditionTrue, datastore.ReasonReady, "etcd-druid reports Etcd kept-etcd ready on certificate generation 2")
+	waitCondition(t, ns, cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReady, "etcd-druid reports Etcd kept-etcd ready on certificate generation 2")
 
 	if err := k8s.Delete(t.Context(), getControlPlane(t, ns, cp)); err != nil {
 		t.Fatal(err)
@@ -1736,7 +1754,7 @@ func TestDeletion(t *testing.T) {
 			if !controllerutil.ContainsFinalizer(getControlPlane(t, ns, "dev"), datastore.Finalizer) {
 				t.Fatal("the finalizer left before the Etcd was gone")
 			}
-			waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonDeleting, "the ControlPlane is being deleted")
+			waitCondition(t, ns, "dev", metav1.ConditionFalse, bryggav1alpha1.ReasonDeleting, "the ControlPlane is being deleted")
 			untouched(t, ns, "dev-etcd-dev-etcd-0")
 			untouched(t, ns, "dev-etcd-dev-etcd-1")
 
