@@ -215,9 +215,6 @@ is a decision — a decision is a file in `docs/decisions/`.
   `Backup` reports conditions instead of a `phase`.
 - Phase 2: the default `advertiseAddress`, `172.20.0.1`, becomes a constant
   that Workloads and Tenant both read.
-- Phase 2: PKI's etcd certificates name etcd-druid's Services
-  (`<etcd>-client`, `-peer`, `-local`) from literals of its own; take them
-  from one place when three members come.
 - Phase 3: `target.rotation.*`, which `Target` lacks, gets a stage enum of
   its own instead of sharing PKI's observed `RotationPhase`, and
   `rotation.ca` becomes `clusterCA`.
