@@ -33,6 +33,7 @@ step and the error; the upgrade resumes when the cause is gone, and a
 | the user edits `spec` | now |
 | `maintenance.autoUpdate.kubernetesPatch` finds a newer patch | in the window |
 | a new Brygga release renders a different pod template | in the window |
+| an edit of the tenant's `DatastoreClass` that reaches its `Etcd` | in the window: a class is shared, and the edit rolls every member on it |
 | a certificate renewal that needs a restart | in the window, or now if the certificate expires before the next window |
 | a credential rotation the user started | now; the stages wait for the user |
 

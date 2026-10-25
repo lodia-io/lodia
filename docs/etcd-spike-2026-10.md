@@ -143,11 +143,11 @@ where the Datastore controller renders it in etcd-druid's `Etcd`
 | `etcd.defragmentation.schedule` | `spec.etcd.defragmentationSchedule` | thresholds of finding 7; the order across members was not observed |
 | `etcd.resources` | `spec.etcd.resources` | the class has no field for the sidecar's `spec.backup.resources`; Brygga renders a default |
 | `storage.className` | `spec.storageClass` | immutable in the `Etcd` |
-| `storage.size` | `spec.storageCapacity` | |
+| `storage.size` | `spec.storageCapacity` | at creation only: a StatefulSet field that cannot change in place |
 | `storage.reclaimPolicy` | — | `Delete` is Brygga deleting the claims (finding 6) |
 | `backup.store.provider` | `spec.backup.store.provider` | Brygga's four are among etcd-druid's |
 | `backup.store.bucket` | `spec.backup.store.container` | |
-| `backup.store.prefix` | `spec.backup.store.prefix` | required; Brygga adds the tenant below the class's prefix |
+| `backup.store.prefix` | `spec.backup.store.prefix` | required; Brygga adds `<namespace>/<name>/<uid>` below the class's prefix, so a `ControlPlane` recreated under the same name never restores the old one's snapshots |
 | `backup.store.region` | key `region` of the credentials Secret | |
 | `backup.store.endpoint` | `spec.backup.store.endpointOverride` | most S3-compatible stores also need `s3ForcePathStyle` in the Secret |
 | `backup.store.secretRef` | `spec.backup.store.secretRef` | mounted as a volume, so Brygga copies the class's Secret into the tenant's namespace |

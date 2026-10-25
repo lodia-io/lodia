@@ -71,6 +71,18 @@ is a decision — a decision is a file in `docs/decisions/`.
   (AWS NLB and CLB): `--advertise-address` takes an IP, so the `kubernetes`
   endpoint needs another source there; decide before that mode is supported
   on such a provider.
+- client-go reloads a kubeconfig's CA file only with `ClientsAllowCARotation`,
+  on by default since 1.36
+  ([known_features.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/client-go/features/known_features.go#L115-L117)):
+  on 1.35 a trust anchor rotation restarts every component whose kubeconfig
+  names the CA file; plan it into the phase 3 rotation.
+- Argo CD has no generic health check for custom resources: the chart ships
+  a Lua health check for `ControlPlane` that reads `status.observedGeneration`
+  and `Ready`
+  ([health checks](https://github.com/argoproj/argo-cd/blob/v3.5.6/docs/operator-manual/health.md#L61-L83));
+  Flux reads the same through kstatus, where a permanently failing object
+  stays InProgress until a timeout unless it reports `Stalled`
+  ([kstatus](https://github.com/kubernetes-sigs/cli-utils/blob/v0.37.2/pkg/kstatus/status/status.go#L102-L183)).
 
 ## From the PKI controller (2026-10-25)
 

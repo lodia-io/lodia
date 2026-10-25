@@ -8,7 +8,10 @@ built.
 
 ## Decision
 
-**A CA per purpose.** Each tenant has:
+**A CA per purpose**, each a self-signed root: a CA signed by another would let
+every bundle that trusts the other accept its certificates
+([CA reuse](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/tasks/extend-kubernetes/configure-aggregation-layer.md#L300-L307)).
+Each tenant has:
 
 | CA | signs | who must trust it | lifetime |
 |---|---|---|---|

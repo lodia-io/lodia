@@ -44,6 +44,14 @@ Rules:
   applies only its own condition through the status subresource with its own
   field manager, so six writers never conflict on the list; one condition
   type has exactly one writer, and an envtest case enforces it.
+- A condition counts only while its `observedGeneration` is the object's
+  generation; a controller waiting on an older one treats it as Unknown. Each
+  controller applies every condition it owns on every generation, Unknown on
+  its first visit, as the API conventions ask
+  ([conventions](https://github.com/kubernetes/community/blob/a434040a92edf60f10a29879026845d0ed891c9a/contributors/devel/sig-architecture/api-conventions.md#L378-L386)),
+  with `lastTransitionTime` moving only when the status does and a message
+  that depends on nothing but the state, so a pass that changes nothing
+  writes nothing.
 - Each controller is registered under its own name (`pki`, `datastore`, …)
   with its own `MaxConcurrentReconciles` and a reconcile timeout; the
   priority queue that controller-runtime enables by default puts resyncs
