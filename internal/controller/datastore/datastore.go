@@ -131,7 +131,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, r.finalize(ctx, cp)
 	}
 	if !controllerutil.ContainsFinalizer(cp, Finalizer) {
-		if err := r.setFinalizer(ctx, cp, true); err != nil {
+		err := r.setFinalizer(ctx, cp, true)
+		switch {
+		case apierrors.IsNotFound(err):
+			return ctrl.Result{}, nil
+		case apierrors.IsConflict(err):
+			return ctrl.Result{RequeueAfter: time.Second}, nil
+		case err != nil:
 			return ctrl.Result{}, err
 		}
 	}
@@ -241,7 +247,7 @@ func (r *Reconciler) newestCompleteGeneration(ctx context.Context, cp *bryggav1a
 	}
 	labelled := make(map[string]string, len(secrets.Items))
 	for _, secret := range secrets.Items {
-		if generation, ok := secret.Labels[CertificatesLabel]; ok {
+		if generation, ok := secret.Labels[CertificatesLabel]; ok && secret.DeletionTimestamp.IsZero() {
 			labelled[secret.Name] = generation
 		}
 	}
@@ -325,7 +331,10 @@ func (r *Reconciler) finalize(ctx context.Context, cp *bryggav1alpha1.ControlPla
 			return err
 		}
 	}
-	return r.setFinalizer(ctx, cp, false)
+	if err := r.setFinalizer(ctx, cp, false); err != nil && !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
+		return err
+	}
+	return nil
 }
 
 // deleteClaims removes the PersistentVolumeClaims of the Etcd's StatefulSet,
@@ -349,11 +358,11 @@ func (r *Reconciler) deleteClaims(ctx context.Context, cp *bryggav1alpha1.Contro
 	return nil
 }
 
-// setFinalizer holds or releases the finalizer with a patch locked on the
+// setFinalizer adds or removes the finalizer with a patch locked on the
 // ControlPlane's resourceVersion, never with an apply: an apply would create
-// a ControlPlane the cache still showed after its deletion. A conflict means
-// the ControlPlane changed since it was read, and that change reconciles it
-// again; a ControlPlane that is gone stays gone.
+// a ControlPlane the cache still showed after its deletion. A conflict is a
+// ControlPlane that changed since it was read, and that change reconciles it
+// again.
 func (r *Reconciler) setFinalizer(ctx context.Context, cp *bryggav1alpha1.ControlPlane, held bool) error {
 	patch := client.MergeFromWithOptions(cp.DeepCopy(), client.MergeFromWithOptimisticLock{})
 	if held {
@@ -361,11 +370,7 @@ func (r *Reconciler) setFinalizer(ctx context.Context, cp *bryggav1alpha1.Contro
 	} else {
 		controllerutil.RemoveFinalizer(cp, Finalizer)
 	}
-	err := r.Patch(ctx, cp, patch, client.FieldOwner(FieldManager))
-	if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
-		return nil
-	}
-	return err
+	return r.Patch(ctx, cp, patch, client.FieldOwner(FieldManager))
 }
 
 // applyStatus writes the condition and status.datastore through the status

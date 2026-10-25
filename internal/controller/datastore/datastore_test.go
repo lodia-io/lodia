@@ -61,6 +61,7 @@ func TestMain(m *testing.M) {
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "config", "crd", "bases")},
 		ErrorIfCRDPathMissing: true,
 		CRDs:                  druidCRDs,
+		UseExistingCluster:    new(false),
 	}
 	cfg, err := env.Start()
 	if err != nil {
@@ -479,6 +480,36 @@ func TestNewestCompleteGeneration(t *testing.T) {
 		t.Fatalf("four of five Secrets of generation 2: %v", err)
 	}
 
+	secrets, err := datastoretest.Generation(ns, "dev", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminating := secrets[slices.IndexFunc(secrets, func(s *corev1.Secret) bool { return s.Name == datastore.SecretName("dev", "client", 2) })]
+	terminating.Finalizers = []string{"brygga.segla.io/test"}
+	create(t, terminating)
+	if err := k8s.Delete(t.Context(), terminating); err != nil {
+		t.Fatal(err)
+	}
+	settle(t, ns, "dev")
+	if err := namesGeneration(1)(getEtcd(t, ns, "dev")); err != nil {
+		t.Fatalf("the fifth Secret of generation 2 being deleted: %v", err)
+	}
+	patch := client.MergeFrom(terminating.DeepCopy())
+	terminating.Finalizers = nil
+	if err := k8s.Patch(t.Context(), terminating, patch); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() error {
+		err := k8s.Get(t.Context(), client.ObjectKeyFromObject(terminating), &corev1.Secret{})
+		switch {
+		case err == nil:
+			return errors.New("the terminating Secret is still there")
+		case !apierrors.IsNotFound(err):
+			return err
+		}
+		return nil
+	})
+
 	writeGeneration(t, ns, "dev", 2, "client")
 	etcd := waitEtcd(t, ns, "dev", namesGeneration(2))
 
@@ -520,22 +551,22 @@ func TestDatastoreClassNotFound(t *testing.T) {
 func TestBackupCredentialsCopied(t *testing.T) {
 	ns, credentialsNamespace := namespace(t), namespace(t)
 	createClass(t, fullClass("backed-up", credentialsNamespace))
-	create(t, controlPlane(ns, "dev", "backed-up"))
-	writeGeneration(t, ns, "dev", 1)
-	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonProvisioning, "read the credentials Secret "+credentialsNamespace+"/s3 of DatastoreClass backed-up")
+	create(t, controlPlane(ns, "backed", "backed-up"))
+	writeGeneration(t, ns, "backed", 1)
+	waitCondition(t, ns, "backed", metav1.ConditionFalse, datastore.ReasonProvisioning, "read the credentials Secret "+credentialsNamespace+"/s3 of DatastoreClass backed-up")
 
 	source := credentials(credentialsNamespace)
 	create(t, source)
-	settle(t, ns, "dev")
-	waitEtcd(t, ns, "dev", func(etcd *druidv1alpha1.Etcd) error {
-		if etcd.Spec.Backup.Store == nil || ptr.Deref(etcd.Spec.Backup.Store.SecretRef, corev1.SecretReference{}).Name != "dev-etcd-backup" {
+	settle(t, ns, "backed")
+	waitEtcd(t, ns, "backed", func(etcd *druidv1alpha1.Etcd) error {
+		if etcd.Spec.Backup.Store == nil || ptr.Deref(etcd.Spec.Backup.Store.SecretRef, corev1.SecretReference{}).Name != "backed-etcd-backup" {
 			return fmt.Errorf("the store does not name the copy: %+v", etcd.Spec.Backup.Store)
 		}
 		return nil
 	})
-	cp := getControlPlane(t, ns, "dev")
+	cp := getControlPlane(t, ns, "backed")
 	copied := &corev1.Secret{}
-	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev-etcd-backup"}, copied); err != nil {
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "backed-etcd-backup"}, copied); err != nil {
 		t.Fatal(err)
 	}
 	want := source.Data
@@ -543,7 +574,7 @@ func TestBackupCredentialsCopied(t *testing.T) {
 	if !reflect.DeepEqual(copied.Data, want) {
 		t.Errorf("data %q, want the class Secret's data with the region: %q", copied.Data, want)
 	}
-	if copied.Labels[bryggav1alpha1.ControlPlaneLabel] != "dev" {
+	if copied.Labels[bryggav1alpha1.ControlPlaneLabel] != "backed" {
 		t.Errorf("labels %v lack %s=dev", copied.Labels, bryggav1alpha1.ControlPlaneLabel)
 	}
 	if len(copied.OwnerReferences) != 1 || copied.OwnerReferences[0].UID != cp.UID || !ptr.Deref(copied.OwnerReferences[0].Controller, false) {
@@ -565,35 +596,35 @@ func TestBackupCredentialsCopied(t *testing.T) {
 func TestDatastoreReadyFollowsEtcdStatus(t *testing.T) {
 	ns := namespace(t)
 	createClass(t, newClass("reported", "Retain"))
-	create(t, controlPlane(ns, "dev", "reported"))
-	writeGeneration(t, ns, "dev", 1)
-	etcd := waitEtcd(t, ns, "dev", nil)
-	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonProvisioning, "etcd-druid has not reported Etcd dev-etcd ready for generation 1")
+	create(t, controlPlane(ns, "reported", "reported"))
+	writeGeneration(t, ns, "reported", 1)
+	etcd := waitEtcd(t, ns, "reported", nil)
+	waitCondition(t, ns, "reported", metav1.ConditionFalse, datastore.ReasonProvisioning, "etcd-druid has not reported Etcd reported-etcd ready for generation 1")
 
 	etcd.Status = druidv1alpha1.EtcdStatus{
 		ObservedGeneration: new(etcd.Generation),
 		Ready:              new(false),
 		Replicas:           1,
-		LastErrors:         []druidapicommon.LastError{{Code: "ERR_SYNC_STATEFULSET", Description: "pod dev-etcd-0 is not ready", ObservedAt: metav1.Now()}},
+		LastErrors:         []druidapicommon.LastError{{Code: "ERR_SYNC_STATEFULSET", Description: "pod reported-etcd-0 is not ready", ObservedAt: metav1.Now()}},
 	}
 	if err := k8s.Status().Update(t.Context(), etcd); err != nil {
 		t.Fatal(err)
 	}
-	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonProvisioning, "last errors: ERR_SYNC_STATEFULSET: pod dev-etcd-0 is not ready")
+	waitCondition(t, ns, "reported", metav1.ConditionFalse, datastore.ReasonProvisioning, "last errors: ERR_SYNC_STATEFULSET: pod reported-etcd-0 is not ready")
 
-	etcd = getEtcd(t, ns, "dev")
+	etcd = getEtcd(t, ns, "reported")
 	etcd.Status.Ready = new(true)
 	etcd.Status.ReadyReplicas = 1
 	etcd.Status.LastErrors = nil
 	etcd.Status.Members = []druidv1alpha1.EtcdMemberStatus{{
-		Name: "dev-etcd-0", ID: new("8e9e05c52164694d"), Role: new(druidv1alpha1.EtcdRoleLeader),
+		Name: "reported-etcd-0", ID: new("8e9e05c52164694d"), Role: new(druidv1alpha1.EtcdRoleLeader),
 		Status: druidv1alpha1.EtcdMemberStatusReady, Reason: "LeaseSucceeded", LastTransitionTime: metav1.Now(),
 	}}
 	if err := k8s.Status().Update(t.Context(), etcd); err != nil {
 		t.Fatal(err)
 	}
-	waitCondition(t, ns, "dev", metav1.ConditionTrue, datastore.ReasonReady, "etcd-druid reports Etcd dev-etcd ready, 1 of 1 replicas")
-	if got, want := ptr.Deref(getControlPlane(t, ns, "dev").Status.Datastore, bryggav1alpha1.DatastoreStatus{}), (bryggav1alpha1.DatastoreStatus{Kind: "Dedicated", Name: "dev-etcd", Members: 1}); got != want {
+	waitCondition(t, ns, "reported", metav1.ConditionTrue, datastore.ReasonReady, "etcd-druid reports Etcd reported-etcd ready, 1 of 1 replicas")
+	if got, want := ptr.Deref(getControlPlane(t, ns, "reported").Status.Datastore, bryggav1alpha1.DatastoreStatus{}), (bryggav1alpha1.DatastoreStatus{Kind: "Dedicated", Name: "reported-etcd", Members: 1}); got != want {
 		t.Errorf("status.datastore %+v, want %+v", got, want)
 	}
 }
