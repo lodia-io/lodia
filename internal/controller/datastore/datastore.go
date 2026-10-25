@@ -487,7 +487,7 @@ func (r *Reconciler) reclaimClaims(ctx context.Context, cp *bryggav1alpha1.Contr
 	}
 	for i := range claims {
 		claim := &claims[i]
-		if claim.Labels[ControlPlaneUIDLabel] != string(cp.UID) {
+		if claim.Labels[ControlPlaneUIDLabel] != string(cp.UID) || !claim.DeletionTimestamp.IsZero() {
 			continue
 		}
 		class := &bryggav1alpha1.DatastoreClass{}
