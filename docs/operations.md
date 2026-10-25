@@ -20,11 +20,11 @@ itself and the support policy. Installation is in
 | Rotate the trust anchor (the cluster CA) | `…=rotate-ca-start`; when the phase is `Prepared`, add the new bundle (`<cp>-ca-bundle`) to every node's `/etc/kubernetes/pki/ca.crt` and kubelet kubeconfig, then `…=rotate-ca-complete` |
 | Hibernate and wake | `spec.hibernation.enabled: true` / `false`, or `spec.hibernation.schedules` |
 | Take a snapshot now | create a `Backup` ([example](api/examples/backup.yaml)); its `status.location` is the object in the bucket |
-| Clone or recover a cluster | create a new `ControlPlane` with `spec.restoreFrom.backupRef`; nodes of the old cluster can join it with a new token |
+| Clone or recover a cluster | create a new `ControlPlane` with `spec.restoreFrom.backupRef`; nodes of the old cluster can join it with a new token. Restore is built in phase 2 ([roadmap](roadmap.md)): until then nothing reads `restoreFrom`, and the `ControlPlane` starts empty |
 | Stop Brygga touching a cluster | `spec.paused: true`; everything keeps running, nothing is reconciled; deleting a paused `ControlPlane` waits until it is unpaused |
 | Turn the controller manager hold off for a cluster | `spec.health.holdControllerManager: false`; a hold in progress is released at once |
-| Change a `DatastoreClass` | edit it; a value etcd-druid or the backup sidecar would refuse is refused when the class is written ([the rules](README.md#a-tenant-namespace)); the edit reaches the `Etcd` of every tenant on the class at once and rolls their members, a single member with an outage, until Lifecycle holds class edits for each tenant's maintenance window in phase 2; the storage class and size reach only `Etcd`s created afterwards |
-| Rotate a backup store's credentials | create a new Secret with the new keys and point the class's `backup.store.secretRef` at it: the class edit reaches every tenant on the class at once and rolls nothing, since the `Etcd` names the copy, whose name stays; once every tenant's `<cp>-etcd-backup` (labelled `brygga.segla.io/control-plane`) holds the new keys, revoke the old ones. Editing the class's Secret in place reaches each tenant only at its next pass, at worst 10 hours later. Whether the backup sidecar reads new keys without a restart is open (`todo.md`) |
+| Change a `DatastoreClass` | edit it; a value etcd-druid or the backup sidecar would refuse is refused when the class is written ([the rules](README.md#a-tenant-namespace)); an edit that changes the `Etcd`'s spec reaches the `Etcd` of every tenant on the class at once and rolls their members, a single member with an outage, until Lifecycle holds class edits for each tenant's maintenance window in phase 2; the storage class and size reach only `Etcd`s created afterwards, and the reclaim policy, `retention.afterDelete`, the credentials' `secretRef` and the region roll nothing |
+| Rotate a backup store's credentials | create a new Secret with the new keys and point the class's `backup.store.secretRef` at it: the class edit reaches every tenant on the class at once and rolls nothing, since the `Etcd` names the copy, whose name stays; once every tenant's `<cp>-etcd-backup` (labelled `brygga.segla.io/control-plane`) holds the new keys, revoke the old ones. Editing the class's Secret in place reaches each tenant only at its next pass, at worst 10 hours later. A class pointed at a Secret that does not exist yet, or whose old Secret is deleted first, is held until the Secret exists: the copies keep their last keys and the certificates keep moving. Whether the backup sidecar reads new keys without a restart is open (`todo.md`) |
 | Delete a cluster | delete the `ControlPlane`; its finalizer deletes the `Etcd`, then with `storage.reclaimPolicy: Delete` the claims `<cp>-etcd-<cp>-etcd-<n>`, with `Retain` keeps them (`kubectl get pvc -L brygga.segla.io/control-plane-uid` shows whose each is); the last snapshot and the snapshots' retention come with backups in phase 2 |
 
 ## What breaks, and how it shows
@@ -33,9 +33,12 @@ itself and the support policy. Installation is in
 |---|---|
 | `Ready=False`, reason `WaitingForDatastore` | `DatastoreReady` reason; the etcd resource's status; the etcd pods' logs (`etcdserver: request timed out`, `apply request took too long` mean slow disks) |
 | `DatastoreReady=False`, `DatastoreClassNotFound` | before the `Etcd` exists: the `DatastoreClass` that `spec.datastore.dedicated.className` names is missing, or no class or more than one is annotated `brygga.segla.io/is-default-class: "true"`; the message names them. Deleting a class that running `Etcd`s record never shows here: each keeps what the class gave it, keeps taking new certificate generations and keeps its claims on deletion; only its class edits stop |
-| `DatastoreReady=False`, `VolumesExist` | claims `<cp>-etcd-<cp>-etcd-<n>` of a previous `ControlPlane` of that name, without this one's `brygga.segla.io/control-plane-uid` label, or an `Etcd` `<cp>-etcd` that another `ControlPlane` or nobody controls; the message names them. Delete them to start empty; to keep their data, restore it once they are deleted: delete the `ControlPlane` and create it again with `spec.restoreFrom.backupRef` naming a `Backup` of the old cluster, since `restoreFrom` is set only at creation |
+| `DatastoreReady=False`, `VolumesExist` | claims `<cp>-etcd-<cp>-etcd-<n>` of a previous `ControlPlane` of that name, without this one's `brygga.segla.io/control-plane-uid` label, or an `Etcd` `<cp>-etcd` that another `ControlPlane` or nobody controls; the message names them. To start empty, delete them (an `Etcd` with its claims); to keep the data, keep them, and this `ControlPlane` waits. Recovering the old cluster's data into a new `ControlPlane` is `restoreFrom` with a `Backup` of it, built in phase 2 ([roadmap](roadmap.md)); until then nothing reads `restoreFrom`, and a `ControlPlane` created with it starts empty |
+| `DatastoreReady=False`, `EtcdRefused` | the API server refuses the `Etcd` Brygga renders; the refusal is in Brygga's log (`controller="datastore"`). An admission policy on `Etcd`s: let it admit Brygga's. An etcd-druid whose CRD moved: the version Brygga pins. A `DatastoreClass` stored before a rule one of its values breaks: validation ratcheting keeps an unchanged field on update ([ratcheting](https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/#validation-ratcheting)), so a value the `Etcd` API refuses shows here, while one only the backup sidecar refuses (a day of week 7, a descending range, a zero quota) is accepted and fails the member at its next roll. After an upgrade of Brygga, check each class by creating a copy under another name with `--dry-run=server`: a create is validated whole, ratcheting being for updates, and a dry run goes through validation and admission without being stored ([dry run](https://kubernetes.io/docs/reference/using-api/api-concepts/#dry-run)); fix what it refuses |
 | `DatastoreReady=Unknown`, `Reconciling`, or a `DatastoreReady` whose `observedGeneration` lags the `ControlPlane`'s generation | the Datastore controller's passes end in an error of the API server; the error is in Brygga's log (`controller="datastore"`), never in the condition |
-| `DatastoreReady=False`, `Provisioning` for long | the message says what is awaited: a complete generation of the etcd certificates (PKI), the class's credentials Secret, or etcd-druid's report with its `lastErrors`; then the `Etcd`'s status and conditions, etcd-druid's log, and the tenant's `EtcdOpsTask`s, where a blocked operation shows ([etcd spike](etcd-spike-2026-10.md), finding 4) |
+| `DatastoreReady`'s message ends with `DatastoreClass <c> is held:` | the class's credentials copy cannot be made, and the `Etcd` keeps the class fields it has while it still takes new certificate generations: restore the class's Secret the message names; or wait while the garbage collector removes a predecessor's `<cp>-etcd-backup`, which another owner controls, and delete it if its owner is something else; or read Brygga's log when the API server refuses the copy. A class edit made meanwhile applies once the copy can be made |
+| `DatastoreReady=False`, `Provisioning`, `Secrets Etcd <cp>-etcd mounts do not exist` | someone removed etcd-druid's finalizer from Secrets the `Etcd` names and deleted them; the members run on what they mounted until they restart: the [runbook](#a-secret-the-etcd-mounts-is-gone) |
+| `DatastoreReady=False`, `Provisioning` for long | the message says what is awaited: a complete generation of the etcd certificates that this `ControlPlane` controls (PKI; one another `ControlPlane` controls never counts), the class's credentials copy, or etcd-druid's report; then the `Etcd`'s status — its `lastErrors`, which `DatastoreReady` does not read, are the only place a persistent failure of etcd-druid's other objects (the client Service, the ConfigMap, the leases) shows at a generation it has observed — its conditions, etcd-druid's log, and the tenant's `EtcdOpsTask`s, where a blocked operation shows ([etcd spike](etcd-spike-2026-10.md), finding 4) |
 | An etcd member that does not come back after a roll: `DatastoreReady=False`, the StatefulSet's pod missing | the StatefulSet's events (`kubectl describe statefulset <cp>-etcd`): `FailedCreate` means pod admission refused the new pod after the old one was deleted, for a `priorityClassName` that names no PriorityClass (or one deleted since) or a LimitRange or ResourceQuota in the namespace, which no schema can check; with one member it is an outage until fixed, and every certificate generation rolls the member |
 | `DatastoreReady=False`, `QuorumLost` | fewer than two of three members up; the [lost quorum](#lost-etcd-quorum) runbook |
 | API calls fail with `etcdserver: mvcc: database space exceeded` | the [space quota](#etcd-space-quota) runbook; `status.datastore.dbSizeBytes` against the class quota |
@@ -78,6 +81,40 @@ itself and the support policy. Installation is in
    `Backup` and move the nodes (new token, `kubeadm join`).
 4. Afterwards: the API server rolls once (Datastore detects the restore);
    check `status.datastore.lastBackup` is moving again.
+
+### A Secret the Etcd mounts is gone
+
+etcd-druid holds its finalizer `druid.gardener.cloud/etcd-druid` on every
+Secret an `Etcd` references until none does
+([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/secret/reconciler.go#L44-L101)),
+so the certificate generation the `Etcd` names and `<cp>-etcd-backup` stay,
+terminating at worst, as long as it names them. Never remove that finalizer.
+If someone did and the Secrets are gone, a member that starts again cannot:
+the kubelet retries until the Secrets exist
+([secrets](https://kubernetes.io/docs/concepts/configuration/secret/#using-a-secret)).
+
+1. A gone `<cp>-etcd-backup` comes back at the next pass, from the class's
+   Secret, while the class and its Secret exist: recreate a deleted class,
+   and restore its Secret if it is missing (until then the class is held and
+   the copy is not made).
+2. For a gone certificate generation, delete the `Etcd` `<cp>-etcd`, not the
+   `ControlPlane`. etcd-druid deletes the StatefulSet alone
+   ([statefulset.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/statefulset.go#L347-L363); it deletes claims
+   only on a scale-in, [pvccleanup.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/pvccleanup.go#L22-L58)), and
+   a StatefulSet keeps its claims by default
+   ([claim retention](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#persistentvolumeclaim-retention)). The Datastore controller creates the
+   `Etcd` again on the newest complete generation and the class the claims
+   record, and the new StatefulSet re-attaches the claims
+   `<cp>-etcd-<cp>-etcd-<n>` by name, so the members start on their data and
+   fresh mounts. Until then the condition says what is missing: a recorded
+   class that was deleted is `DatastoreClassNotFound` (recreate it), and a
+   class whose Secret is missing is `Provisioning`, `cannot be applied yet`
+   (restore it). Do it even when `DatastoreReady` turns True again by itself:
+   PKI numbers generations from the Secrets present and may have issued the
+   gone number again with new content, and the kubelet does not watch an
+   immutable Secret ([immutable Secrets](https://kubernetes.io/docs/concepts/configuration/secret/#secret-immutable)), so a running member
+   keeps the files it mounted. A single member is down until it starts
+   again.
 
 ### etcd space quota
 

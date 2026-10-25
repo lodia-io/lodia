@@ -25,7 +25,8 @@ import (
 	"github.com/segla-io/brygga/internal/controller/datastore"
 )
 
-func Generation(namespace, cp string, g int) ([]*corev1.Secret, error) {
+func Generation(controlPlane *bryggav1alpha1.ControlPlane, g int) ([]*corev1.Secret, error) {
+	namespace, cp := controlPlane.Namespace, controlPlane.Name
 	ca, caKey, caPEM, err := certificateAuthority()
 	if err != nil {
 		return nil, err
@@ -52,8 +53,9 @@ func Generation(namespace, cp string, g int) ([]*corev1.Secret, error) {
 		{"client", etcd + "-client", []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, nil, nil},
 	}
 	labels := map[string]string{bryggav1alpha1.ControlPlaneLabel: cp, bryggav1alpha1.EtcdCertificatesLabel: strconv.Itoa(g)}
+	owner := metav1.NewControllerRef(controlPlane, bryggav1alpha1.GroupVersion.WithKind("ControlPlane"))
 	secrets := []*corev1.Secret{{
-		ObjectMeta: metav1.ObjectMeta{Name: datastore.SecretName(cp, "ca", g), Namespace: namespace, Labels: maps.Clone(labels)},
+		ObjectMeta: metav1.ObjectMeta{Name: datastore.SecretName(cp, "ca", g), Namespace: namespace, Labels: maps.Clone(labels), OwnerReferences: []metav1.OwnerReference{*owner}},
 		Type:       corev1.SecretTypeOpaque,
 		Data:       map[string][]byte{"ca.crt": caPEM},
 	}}
@@ -63,7 +65,7 @@ func Generation(namespace, cp string, g int) ([]*corev1.Secret, error) {
 			return nil, fmt.Errorf("issue the %s certificate: %w", l.name, err)
 		}
 		secrets = append(secrets, &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: datastore.SecretName(cp, l.name, g), Namespace: namespace, Labels: maps.Clone(labels)},
+			ObjectMeta: metav1.ObjectMeta{Name: datastore.SecretName(cp, l.name, g), Namespace: namespace, Labels: maps.Clone(labels), OwnerReferences: []metav1.OwnerReference{*owner}},
 			Type:       corev1.SecretTypeTLS,
 			Data:       map[string][]byte{"tls.crt": cert, "tls.key": key},
 		})

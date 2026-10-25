@@ -20,10 +20,12 @@ not.
   sidecar's serving certificate; etcd-druid takes them as Secrets, because it
   does not generate TLS itself
   ([securing etcd clusters](https://gardener.github.io/etcd-druid/usage/securing-etcd-clusters.html)),
-  and the `Etcd` names the newest complete generation of them, never one
-  below the generation it already names, so a rotation is one roll of the
-  members
-  ([staged-credential-rotation](staged-credential-rotation.md)).
+  and the `Etcd` names the newest complete generation of them that the
+  `ControlPlane` controls, never one below the generation it already names,
+  so a rotation is one roll of the members
+  ([staged-credential-rotation](staged-credential-rotation.md)): a
+  predecessor's or an orphaned generation trusts another etcd CA, and the
+  older generation PKI keeps can have expired.
   Client, peer and backup-restore TLS are set together, and the sidecar's
   certificate also names the client Service, through which etcd-druid calls
   it ([etcd spike](../etcd-spike-2026-10.md), findings 1 and 2).
@@ -159,9 +161,15 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   `ControlPlane`'s UID, an orphan or a predecessor's not yet collected:
   Datastore neither adopts it, which a server-side apply with
   `ForceOwnership` would do, nor deletes it.
-- Every edit of a class that reaches the `Etcd` rolls its members, a single
-  member with an outage, so a class edit is a Brygga-initiated change for each
-  tenant on it and rolls in that tenant's maintenance window
+- Every edit of a class that changes the `Etcd`'s spec rolls its members, a
+  single member with an outage, since etcd-druid carries every field Brygga
+  renders from the class into the pod template, directly, through the
+  sidecar's arguments or through the checksum of its ConfigMap
+  ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L161-L227));
+  the storage fields, the reclaim policy, `retention.afterDelete`, the
+  credentials' `secretRef` and the region change no spec and roll nothing.
+  So a class edit is a Brygga-initiated change for each tenant on it and
+  rolls in that tenant's maintenance window
   ([upgrades-and-maintenance-windows](upgrades-and-maintenance-windows.md));
   the `Etcd` records the class generation it was rendered from. The storage
   class and size apply when the `Etcd` is created and not after: the first is
@@ -176,7 +184,9 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   StorageClass is written into a claim when the claim is created
   ([storage classes](https://kubernetes.io/docs/concepts/storage/storage-classes/#default-storageclass)).
   A default that moves therefore re-renders no running etcd and never turns a
-  `Retain` into a `Delete`.
+  `Retain` into a `Delete`. The claims record the class too, for their
+  reclaim, and an `Etcd` created again over this `ControlPlane`'s claims takes
+  the class they record, not the current default.
 - A recorded class that is deleted stops only its own edits. The `Etcd` keeps
   every field the class gave it, the way a dynamically provisioned
   PersistentVolume keeps in its own spec the reclaim policy and mount options
@@ -188,7 +198,12 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   generation after eight months, two thirds of it
   ([staged-credential-rotation](staged-credential-rotation.md)), and the
   current one expires at a year. `DatastoreClassNotFound` is therefore a
-  reason only before the `Etcd` exists.
+  reason only before the `Etcd` exists. A class whose credentials copy
+  cannot be made — its Secret missing, another owner holding
+  `<cp>-etcd-backup`, the API server refusing the copy — is held the same
+  way, whole, with a note in `DatastoreReady`'s message, since the rest of an
+  edit could add a store whose copy does not exist; only the copy stops, never
+  the certificate generations.
 - The claims carry the `ControlPlane`'s UID as a label and the class as an
   annotation, since they outlive the `Etcd`: deletion reclaims only this
   `ControlPlane`'s claims, under the class each records, and keeps them when
@@ -242,11 +257,16 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   `TestFinalizerAndEtcdFromClass` (the finalizer before the first `Etcd`, the
   mapping table, generation 1 in all three TLS blocks),
   `TestConditionsFromState` (Unknown on the first visit, an API error leaves
-  the status alone), `TestPaused`, `TestNewestCompleteGeneration`,
+  the status alone), `TestEtcdRefused` (an admission policy refuses the
+  `Etcd`), `TestPaused`, `TestNewestCompleteGeneration`,
+  `TestOnlyItsOwnGenerationsCount`, `TestMountedSecretsMustExist`,
   `TestGenerationsMoveForward`, `TestDatastoreClassNotFound`,
-  `TestBackupCredentialsCopied`, `TestDatastoreReadyFollowsEtcdStatus`,
+  `TestBackupCredentialsCopied`, `TestHeldClass`,
+  `TestBackupCopyFollowsItsEvents`, `TestPredecessorsCopy`,
+  `TestOwnerlessCopyIsAdopted`,
+  `TestDatastoreReadyFollowsEtcdStatus`,
   `TestVolumesExist`, `TestForeignEtcd`, `TestStorageAtCreation`,
-  `TestRecordedClass`, `TestClassGone`, `TestDeletionBeforeLabelling` and
+  `TestRecordedClass`, `TestClassSurvivesTheEtcd`, `TestClassGone`, `TestDeletionBeforeLabelling` and
   `TestDeletion`. `datastoretest` stands in for PKI there.
 - `test/e2e/datastore_test.go` — `TestDatastoreOnKind`: etcd-druid v0.39.0
   from its chart at the tag, the PKI and Datastore controllers in the test

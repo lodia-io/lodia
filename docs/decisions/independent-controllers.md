@@ -132,14 +132,16 @@ flowchart LR
   says what it waits on. PKI has one: Secrets under its names that another
   owner keeps, which the cache does not show when they are unlabelled, after
   10 seconds while they are a previous `ControlPlane`'s, which the garbage
-  collector deletes, and after a minute otherwise. The Datastore controller
-  has four: `VolumesExist`,
-  for claims, which nothing labels for the cache, and for an `Etcd` without
-  the control-plane label, and a missing credentials Secret of the class,
-  which belongs to the platform, both after a minute; a StatefulSet that lags
-  etcd-druid's report, read uncached, after 15 seconds; and an `Etcd` being
-  deleted, which has left the cache if its label was removed, after 10
-  seconds.
+  collector deletes, and after a minute otherwise. The Datastore
+  controller's: `VolumesExist`, for claims, which nothing labels for the
+  cache, and for an `Etcd` without the control-plane label; a class held
+  because its credentials copy cannot be made (the class's Secret, which
+  belongs to the platform, is missing, or another owner holds the copy, which
+  may lack the label); and `DatastoreClassNotFound` for a class the claims
+  record, since deleting them to start empty brings no event; all after a
+  minute. A StatefulSet that lags etcd-druid's report, read uncached, after
+  15 seconds; and an `Etcd` being deleted, which has left the cache if its
+  label was removed, after 10 seconds.
 
 ## Code
 
@@ -165,7 +167,10 @@ flowchart LR
   credentials copy with server-side apply as `brygga/datastore`, applies
   `DatastoreReady` alone through the status subresource (`Unknown` at the
   start of its first pass, messages from the state alone, an API error left
-  to the log), and stops for a paused `ControlPlane`. `datastore_test.go`
+  to the log unless the server refuses an object it is sent: the `Etcd`,
+  which is `EtcdRefused`, or the credentials copy, which holds the class),
+  sets a reconcile timeout of a minute, and stops for a paused
+  `ControlPlane`. `datastore_test.go`
   runs it under the same cache with `ReaderFailOnMissingInformer`, as a user
   bound to exactly its rules, and holds the first visit and the pass that
   leaves the status alone on an API error (`TestConditionsFromState`)
