@@ -21,10 +21,12 @@ Brygga's own credential and the three bindings made with a ten-minute
   the tenant's namespace, which is how the platform decides who may ask.
 - Every `ControlPlane` also gets `<name>-admin-kubeconfig`: a client
   certificate in the group `brygga:cluster-admins`, bound to `cluster-admin`
-  by a ClusterRoleBinding the Tenant controller maintains. Removing that
-  binding revokes every admin kubeconfig at once. Platforms on top use this
-  credential for automation (registering the cluster in Argo CD, Sveltos or
-  their own services); people use requests.
+  by a ClusterRoleBinding PKI maintains, the one writer of that binding.
+  Deleting the binding revokes nothing for long: PKI applies it again on its
+  next pass; every admin kubeconfig is revoked by the client CA rotation
+  (phase 3). Platforms on top use this credential for automation
+  (registering the cluster in Argo CD, Sveltos or their own services);
+  people use requests.
 - No stored certificate carries `system:masters`. The API server's kubelet
   client certificate is in `brygga:kubelet-api-admins`, bound to the built-in
   `system:kubelet-api-admin` role. The ClusterRoleBindings for Brygga, the

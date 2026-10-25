@@ -689,7 +689,9 @@ operator.
 - Every field Brygga writes has a field manager `brygga/<controller>`;
   another manager's fields on the same object are left alone.
 - Inside a tenant, Brygga is `brygga:operator`; its objects carry
-  `app.kubernetes.io/managed-by: brygga` and are listed in the inventory.
+  `app.kubernetes.io/managed-by: brygga`. Tenant's are listed in its
+  inventory, and its prune reads the inventory alone, never the label: PKI's
+  three bindings carry the label too, and PKI is their one writer.
 - No cross-tenant object: every Secret, Service and route is in the tenant's
   namespace, and NetworkPolicies keep its pods to their own arrows. A
   shared `Datastore` is the one deliberate exception, labelled as such.
