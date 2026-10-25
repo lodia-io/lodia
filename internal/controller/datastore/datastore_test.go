@@ -906,7 +906,7 @@ func TestDatastoreClassNotFound(t *testing.T) {
 		class.Spec.Storage.Size = resource.MustParse("3Gi")
 		createClass(t, class)
 	}
-	waitCondition(t, ns, "unnamed", metav1.ConditionFalse, bryggav1alpha1.ReasonDatastoreClassNotFound, "2 DatastoreClasses are annotated")
+	waitCondition(t, ns, "unnamed", metav1.ConditionFalse, bryggav1alpha1.ReasonDatastoreClassAmbiguous, "2 DatastoreClasses are annotated")
 
 	if err := k8s.Delete(t.Context(), newClass("default-b", "")); err != nil {
 		t.Fatal(err)

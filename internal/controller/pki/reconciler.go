@@ -136,7 +136,7 @@ func (t *tenant) certificatesReady() metav1.Condition {
 	case t.endpoint == nil:
 		c.Reason, c.Message = bryggav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint"
 	case t.unsupportedProvider != "":
-		c.Reason, c.Message = bryggav1alpha1.ReasonUnsupported, "apiServer.encryption.provider "+string(t.unsupportedProvider)+" is not supported yet"
+		c.Reason, c.Message = bryggav1alpha1.ReasonUnsupported, "spec.apiServer.encryption.provider "+string(t.unsupportedProvider)+" is not supported yet"
 	default:
 		c.Status, c.Reason, c.Message = metav1.ConditionTrue, bryggav1alpha1.ReasonIssued, "every certificate verifies and is valid beyond its renewal time"
 	}

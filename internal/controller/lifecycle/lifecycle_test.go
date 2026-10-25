@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -171,13 +170,16 @@ func TestTheTargetFollowsTheVersionWithinAMinor(t *testing.T) {
 	eventually(t, func() error {
 		return expect(t, cp, "v1.35.1", bryggav1alpha1.ReasonUnsupported, bryggav1alpha1.ReasonUnsupported)
 	})
+	if c := condition(t, cp, bryggav1alpha1.ConditionProgressing); c.Message != "spec.version v1.36.0 is another minor than the target v1.35.1, which stays until minor upgrades are supported" {
+		t.Errorf("Progressing says %q", c.Message)
+	}
 
 	setVersion(t, cp, "v1.38.0")
 	eventually(t, func() error {
 		return expect(t, cp, "v1.35.1", bryggav1alpha1.ReasonUnsupported, bryggav1alpha1.ReasonUnsupported)
 	})
-	if c := condition(t, cp, bryggav1alpha1.ConditionProgressing); !strings.Contains(c.Message, "1.35, 1.36, 1.37") {
-		t.Errorf("Progressing does not name the minors Brygga runs: %s", c.Message)
+	if c := condition(t, cp, bryggav1alpha1.ConditionProgressing); c.Message != "spec.version v1.38.0 is not of a minor Brygga runs: 1.35, 1.36, 1.37" {
+		t.Errorf("Progressing says %q", c.Message)
 	}
 }
 
@@ -205,14 +207,14 @@ func TestReadyFollowsTheReadinessConditions(t *testing.T) {
 			"CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied and Reachable are True", 1)
 	})
 
-	setCondition(t, cp, bryggav1alpha1.ConditionAPIServerReady, metav1.ConditionFalse, "RollingOut", "0 of 1 replicas updated")
+	setCondition(t, cp, bryggav1alpha1.ConditionAPIServerReady, metav1.ConditionFalse, bryggav1alpha1.ReasonRollingOut, "0 of 1 replicas updated")
 	eventually(t, func() error {
-		return expectReady(t, cp, metav1.ConditionFalse, "RollingOut", "APIServerReady: 0 of 1 replicas updated", 1)
+		return expectReady(t, cp, metav1.ConditionFalse, bryggav1alpha1.ReasonRollingOut, "APIServerReady: 0 of 1 replicas updated", 1)
 	})
 
-	setCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, "Issuing", "dev-ca-bundle is not written yet")
+	setCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, bryggav1alpha1.ReasonIssuing, "dev-ca-bundle is not written yet")
 	eventually(t, func() error {
-		return expectReady(t, cp, metav1.ConditionFalse, "Issuing", "CertificatesReady: dev-ca-bundle is not written yet", 1)
+		return expectReady(t, cp, metav1.ConditionFalse, bryggav1alpha1.ReasonIssuing, "CertificatesReady: dev-ca-bundle is not written yet", 1)
 	})
 
 	setVersion(t, cp, "v1.37.2")

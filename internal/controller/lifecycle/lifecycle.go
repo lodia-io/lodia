@@ -90,13 +90,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 func target(cp *bryggav1alpha1.ControlPlane, current string) (bryggav1alpha1.Target, *metav1.Condition) {
 	want := cp.Spec.Version
 	if _, ok := versions.For(want); !ok {
-		message := fmt.Sprintf("Kubernetes %s is not of a minor Brygga runs: %s", want, strings.Join(versions.Minors(), ", "))
+		message := fmt.Sprintf("spec.version %s is not of a minor Brygga runs: %s", want, strings.Join(versions.Minors(), ", "))
 		return bryggav1alpha1.Target{Version: current, Reason: bryggav1alpha1.ReasonUnsupported},
 			newCondition(cp, bryggav1alpha1.ConditionProgressing, metav1.ConditionFalse, bryggav1alpha1.ReasonUnsupported, message)
 	}
 	wantMinor, _ := versions.Minor(want)
 	if currentMinor, ok := versions.Minor(current); ok && currentMinor != wantMinor {
-		message := fmt.Sprintf("an upgrade from %s to %s changes the minor, which is not supported yet; the target stays %s", current, want, current)
+		message := fmt.Sprintf("spec.version %s is another minor than the target %s, which stays until minor upgrades are supported", want, current)
 		return bryggav1alpha1.Target{Version: current, Reason: bryggav1alpha1.ReasonUnsupported},
 			newCondition(cp, bryggav1alpha1.ConditionProgressing, metav1.ConditionFalse, bryggav1alpha1.ReasonUnsupported, message)
 	}

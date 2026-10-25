@@ -236,6 +236,7 @@ The labels, annotations and the finalizer they share are defined in
 | key | on | writer | readers |
 |---|---|---|---|
 | label `brygga.segla.io/control-plane: <cp>` | every object Brygga creates for a `ControlPlane` | each controller, on its objects | the operator's cache, which holds only labelled objects |
+| label `app.kubernetes.io/managed-by: brygga` | every object Brygga writes inside a tenant cluster | PKI, on its bindings; Tenant, on its objects | none in Brygga: Tenant prunes by its inventory, never by the label |
 | label `brygga.segla.io/control-plane-uid` | the etcd claims | Datastore | Datastore, which reclaims and starts only on its own claims |
 | label `brygga.segla.io/etcd-certificates: <g>` | the etcd certificate Secrets | PKI | Datastore, which counts complete generations |
 | annotation `brygga.segla.io/is-default-class: "true"` | a `DatastoreClass` | the platform | Datastore |
@@ -407,7 +408,8 @@ so its report can call a generation switch ready before the member rolled.
 True once every check holds.
 
 The other reasons: `DatastoreClassNotFound`, before the `Etcd` exists, when
-the class is missing or more than one class is the default. `VolumesExist`
+the class is missing or no class is the default, and `DatastoreClassAmbiguous`
+when more than one is. `VolumesExist`
 when claims `<cp>-etcd-<cp>-etcd-<n>` without this `ControlPlane`'s UID label
 stand where its first `Etcd` would be created, since a StatefulSet
 re-attaches a claim of that name

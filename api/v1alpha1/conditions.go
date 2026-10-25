@@ -60,10 +60,11 @@ const (
 
 // DatastoreReady.
 const (
-	ReasonProvisioning           = "Provisioning"
-	ReasonDatastoreClassNotFound = "DatastoreClassNotFound"
-	ReasonVolumesExist           = "VolumesExist"
-	ReasonEtcdRefused            = "EtcdRefused"
+	ReasonProvisioning            = "Provisioning"
+	ReasonDatastoreClassNotFound  = "DatastoreClassNotFound"
+	ReasonDatastoreClassAmbiguous = "DatastoreClassAmbiguous"
+	ReasonVolumesExist            = "VolumesExist"
+	ReasonEtcdRefused             = "EtcdRefused"
 )
 
 // APIServerReady.

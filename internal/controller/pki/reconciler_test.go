@@ -937,7 +937,7 @@ func setAPIServerReady(t *testing.T, cp *bryggav1alpha1.ControlPlane) {
 	applyStatus(t, cp, map[string]any{"conditions": []any{map[string]any{
 		"type":               bryggav1alpha1.ConditionAPIServerReady,
 		"status":             string(metav1.ConditionTrue),
-		"reason":             "Ready",
+		"reason":             bryggav1alpha1.ReasonReady,
 		"message":            "",
 		"observedGeneration": cp.Generation,
 		"lastTransitionTime": time.Now().UTC().Format(time.RFC3339),

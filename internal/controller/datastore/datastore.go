@@ -165,7 +165,7 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 		}
 	}
 	name, byClaims := className(cp, current, claims)
-	class, missing, err := r.class(ctx, name, byClaims)
+	class, unresolved, err := r.class(ctx, name, byClaims)
 	if err != nil {
 		return nil, metav1.Condition{}, 0, err
 	}
@@ -177,7 +177,7 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 		if byClaims {
 			requeueAfter = time.Minute
 		}
-		return nil, newCondition(metav1.ConditionFalse, bryggav1alpha1.ReasonDatastoreClassNotFound, missing), requeueAfter, nil
+		return nil, unresolved, requeueAfter, nil
 	}
 	secrets, err := r.secrets(ctx, cp)
 	if err != nil {
@@ -320,23 +320,23 @@ func className(cp *bryggav1alpha1.ControlPlane, current *druidv1alpha1.Etcd, cla
 	return cp.Spec.Datastore.Dedicated.ClassName, false
 }
 
-func (r *Reconciler) class(ctx context.Context, name string, byClaims bool) (*bryggav1alpha1.DatastoreClass, string, error) {
+func (r *Reconciler) class(ctx context.Context, name string, byClaims bool) (*bryggav1alpha1.DatastoreClass, metav1.Condition, error) {
 	if name != "" {
 		class := &bryggav1alpha1.DatastoreClass{}
 		if err := r.Get(ctx, client.ObjectKey{Name: name}, class); err != nil {
 			if apierrors.IsNotFound(err) && byClaims {
-				return nil, "DatastoreClass " + name + ", which the claims of this ControlPlane record, does not exist", nil
+				return nil, newCondition(metav1.ConditionFalse, bryggav1alpha1.ReasonDatastoreClassNotFound, "DatastoreClass "+name+", which the claims of this ControlPlane record, does not exist"), nil
 			}
 			if apierrors.IsNotFound(err) {
-				return nil, "DatastoreClass " + name + " does not exist", nil
+				return nil, newCondition(metav1.ConditionFalse, bryggav1alpha1.ReasonDatastoreClassNotFound, "DatastoreClass "+name+" does not exist"), nil
 			}
-			return nil, "", err
+			return nil, metav1.Condition{}, err
 		}
-		return class, "", nil
+		return class, metav1.Condition{}, nil
 	}
 	classes := &bryggav1alpha1.DatastoreClassList{}
 	if err := r.List(ctx, classes); err != nil {
-		return nil, "", err
+		return nil, metav1.Condition{}, err
 	}
 	var defaults []*bryggav1alpha1.DatastoreClass
 	for i := range classes.Items {
@@ -346,17 +346,17 @@ func (r *Reconciler) class(ctx context.Context, name string, byClaims bool) (*br
 	}
 	switch len(defaults) {
 	case 1:
-		return defaults[0], "", nil
+		return defaults[0], metav1.Condition{}, nil
 	case 0:
-		return nil, "no DatastoreClass is annotated " + bryggav1alpha1.DefaultClassAnnotation + `: "true"`, nil
+		return nil, newCondition(metav1.ConditionFalse, bryggav1alpha1.ReasonDatastoreClassNotFound, "no DatastoreClass is annotated "+bryggav1alpha1.DefaultClassAnnotation+`: "true"`), nil
 	default:
 		names := make([]string, 0, len(defaults))
 		for _, class := range defaults {
 			names = append(names, class.Name)
 		}
 		slices.Sort(names)
-		return nil, fmt.Sprintf("%d DatastoreClasses are annotated %s: %q, exactly one may be: %s",
-			len(defaults), bryggav1alpha1.DefaultClassAnnotation, "true", strings.Join(names, ", ")), nil
+		return nil, newCondition(metav1.ConditionFalse, bryggav1alpha1.ReasonDatastoreClassAmbiguous, fmt.Sprintf("%d DatastoreClasses are annotated %s: %q, exactly one may be: %s",
+			len(defaults), bryggav1alpha1.DefaultClassAnnotation, "true", strings.Join(names, ", "))), nil
 	}
 }
 
