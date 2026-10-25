@@ -61,7 +61,7 @@ var datastoreRules = []rbacv1.PolicyRule{
 	{APIGroups: []string{bryggav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes/status"}, Verbs: []string{"patch"}},
 	{APIGroups: []string{bryggav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes/finalizers"}, Verbs: []string{"update"}},
 	{APIGroups: []string{bryggav1alpha1.GroupVersion.Group}, Resources: []string{"datastoreclasses"}, Verbs: []string{"list", "watch"}},
-	{APIGroups: []string{druidv1alpha1.SchemeGroupVersion.Group}, Resources: []string{"etcds"}, Verbs: []string{"get", "list", "watch", "create", "patch"}},
+	{APIGroups: []string{druidv1alpha1.SchemeGroupVersion.Group}, Resources: []string{"etcds"}, Verbs: []string{"get", "list", "watch", "create", "patch", "delete"}},
 	{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get", "list", "watch", "create", "patch", "delete"}},
 	{APIGroups: []string{""}, Resources: []string{"persistentvolumeclaims"}, Verbs: []string{"list", "patch", "delete"}},
 	{APIGroups: []string{appsv1.GroupName}, Resources: []string{"statefulsets"}, Verbs: []string{"get"}},
