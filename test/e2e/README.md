@@ -35,3 +35,11 @@ the etcd certificate generations, and generation 2 is the one it issues under
 the same CA once a member Secret of generation 1 is deleted, the roll a
 tenant sees in production. The suite against Brygga's own image and chart
 comes with the chart.
+
+`TestAPIServerOnKind` also needs Docker: it builds brygga-signer's image
+with ko straight into the kind cluster (`KO_DOCKER_REPO=kind.local`, as the
+hard way does), then runs the PKI, Datastore, Lifecycle and Workloads
+controllers in the test process until a `ControlPlane` in `nodePort` mode
+reports `APIServerReady=True`: a real kube-apiserver, controller manager
+and scheduler on PKI's certificates and the Datastore's etcd. `make e2e`
+gives the suite 30 minutes.
