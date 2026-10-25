@@ -233,3 +233,15 @@ is a decision — a decision is a file in `docs/decisions/`.
   bring a Tenant pass.
 - `addons.konnectivity.version` pins the agents' image here; the server's
   is Workloads'.
+- A tenant's own admission webhook that fails with a 5xx counts as no
+  answer, so a True `AddonsApplied` stays while it keeps an object out.
+- The one-minute requeue while the rollout is pending runs the full apply,
+  not only the rollout read.
+- Every pass builds a new tenant client, transport and RESTMapper.
+- `--agent-identifiers=ipv4=$(HOST_IP)` names an agent by its node's IPv4
+  address only; IPv6 and dual-stack nodes need `ipv6=`.
+- `AddonsAvailable` is not read again while applies are refused: the
+  rollout read before stays.
+- `--count-server-leases` on the agents is proven only by the wave 3 e2e.
+- CoreDNS's replicas are Brygga's: an autoscaler is set back on every
+  apply; a later phase lets one own them.

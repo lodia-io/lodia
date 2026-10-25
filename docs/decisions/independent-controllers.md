@@ -139,7 +139,12 @@ flowchart LR
   Datastore's `Etcd` and claims). A predecessor's objects, left when a
   `ControlPlane` is recreated under the same name, are the garbage
   collector's: the controller waits with a condition, PKI with
-  `SecretsControlledElsewhere`, the Datastore with `VolumesExist`.
+  `SecretsControlledElsewhere`, the Datastore with `VolumesExist`. Inside a
+  tenant cluster, where no object has a `ControlPlane` for controller, the
+  Tenant controller carries the rule over with `managedFields` as the
+  signal: it reads an object before its first apply and leaves another
+  owner's as it is, and deletes only what `brygga/tenant` has applied
+  ([tenant-resources-by-inventory](tenant-resources-by-inventory.md)).
 - A condition that waits on an object outside the cache comes with a bounded
   requeue, since no event reports that object's change; the condition still
   says what it waits on. PKI has one: Secrets under its names that another
@@ -156,7 +161,8 @@ flowchart LR
   15 seconds; and an `Etcd` being deleted, which has left the cache if its
   label was removed, after 10 seconds. The Tenant controller's: the addons'
   rollout in the tenant, which Brygga does not watch, every minute until it
-  is complete.
+  is complete, and `<cp>-ca-bundle` or `<cp>-brygga-kubeconfig` while
+  another owner keeps it, every minute.
 
 ## Code
 

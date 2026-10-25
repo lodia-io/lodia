@@ -7,8 +7,20 @@ Decided 2026-10-25. Built for phase 1, without the apiserver-proxy.
 - The Tenant controller applies its objects to a tenant cluster with
   server-side apply under the field manager `brygga/tenant`, records their
   identities in an inventory ConfigMap
-  (`kube-system/brygga-inventory`), and deletes anything in the previous
-  inventory that the current render no longer contains.
+  (`kube-system/brygga-inventory`), and deletes what the previous inventory
+  names and the current render no longer contains, when Brygga applied it.
+- Brygga leaves another owner's objects as they are: the rule of
+  [independent-controllers](independent-controllers.md) carried into the
+  tenant, where no object has a `ControlPlane` for controller, with
+  `managedFields` as the signal. Before its first apply of an object no
+  inventory names, the controller reads it; one that exists without
+  `brygga/tenant` among its managers is another owner's, stays as it is, and
+  `AddonsApplied` names it: delete it, or disable the addon. The prune reads
+  an entry that left the render by group and kind, at the version the tenant
+  serves, and deletes it under the UID and resourceVersion it read only when
+  `brygga/tenant` applied it; any other entry, and one already gone or of a
+  kind no longer served, only leaves the inventory. The label
+  `app.kubernetes.io/managed-by` is no signal: PKI's bindings carry it too.
 - It applies on every change of the `ControlPlane` or of `status.target`, and
   again on a timer (every 10 minutes by default), so a deleted or hand-edited
   object comes back within that period.
@@ -19,9 +31,12 @@ Decided 2026-10-25. Built for phase 1, without the apiserver-proxy.
   pods need the owner's nodes and CNI, which a new cluster does not have yet.
 - Brygga opens no watch into a tenant cluster. The only long-lived
   connections into tenants are the konnectivity tunnels the API servers own.
-- Fields a tenant may legitimately set on Brygga's objects (replica counts of
-  CoreDNS by an autoscaler, for instance) are left to their owners: Brygga
-  applies only the fields it renders, and server-side apply keeps the rest.
+- Fields a tenant's own tools add to Brygga's objects (labels and
+  annotations, for instance) are left to their owners: Brygga applies only
+  the fields it renders, and server-side apply keeps the rest. A field Brygga
+  renders stays Brygga's: CoreDNS's replica count is
+  `addons.coreDNS.replicas`, and an autoscaler that changes it is set back
+  on the next apply.
 
 ## Why
 
@@ -36,6 +51,10 @@ Decided 2026-10-25. Built for phase 1, without the apiserver-proxy.
   objects behind forever.
 - Server-side apply gives one owner per field, so a tenant's own tooling and
   Brygga stop overwriting each other.
+- A hand-edited inventory, or an owner's own CoreDNS under kubeadm's names,
+  must not make Brygga delete or take over what it never wrote; the tenant's
+  objects carry no owner reference Brygga could ask, and `managedFields`
+  record who applied each one.
 
 ## Rejected
 
@@ -54,6 +73,9 @@ Decided 2026-10-25. Built for phase 1, without the apiserver-proxy.
 - The inventory is the contract for prune: an object applied by Brygga
   without an inventory entry would leak, so the entry is written in the same
   pass as the object.
+- Another owner's object under a name Brygga renders keeps that object out
+  until the owner deletes it, after which Brygga applies its own within the
+  apply period, or disables the addon.
 
 ## Code
 
@@ -61,10 +83,14 @@ Decided 2026-10-25. Built for phase 1, without the apiserver-proxy.
   object is named in it before its first write and the entries that left
   the render are pruned before it is rewritten, so a pass that stops
   anywhere leaks nothing; an object at another API version is the same
-  entry; an inventory it cannot read stops the pass with `AddonsApplied`
-  False until someone deletes it. `tenant.go` holds the pass and the
-  conditions, `render.go` and `manifests/` the objects.
+  entry; `foreign` finds another owner's objects before the first apply and
+  `prune` deletes only what `brygga/tenant` applied; an inventory it cannot
+  read stops the pass with `AddonsApplied` False until someone deletes it.
+  `tenant.go` holds the pass and the conditions, `render.go` and
+  `manifests/` the objects.
 - `internal/controller/tenant/tenant_test.go` — the objects on a tenant
   kube-apiserver, prune and restore of CoreDNS, a deleted DaemonSet coming
   back, an object the tenant refuses that leaks nothing, a tenant that does
-  not answer.
+  not answer, a prune that deletes only what Brygga applied, another owner's
+  CoreDNS neither taken over nor pruned, an inventory read the tenant
+  refuses.

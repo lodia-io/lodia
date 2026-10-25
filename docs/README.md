@@ -498,8 +498,9 @@ The default is `gateway`: one address and one certificate story for a whole
 fleet, and nothing per tenant on the load balancer. A node needs outbound
 443 and nothing inbound: the API server reaches kubelets, and the webhooks
 and aggregated APIs that run in the tenant, through the konnectivity tunnel
-the agent opens from inside. On the node, the kubelet binds its node IP,
-and the agents' health and admin endpoints bind loopback.
+the agent opens from inside. On the node, the kubelet binds its node IP;
+the agents' admin endpoint binds loopback, and their health endpoint the pod
+IP.
 
 Inside the tenant, the `kubernetes` Service keeps its ClusterIP (the first
 address of the service CIDR), CoreDNS gets the tenth, and the controller
@@ -540,25 +541,37 @@ provider
 [bootstrap tokens](https://kubernetes.io/docs/reference/access-authn-authz/bootstrap-tokens/)).
 The pinned component versions per minor are those kubeadm pins: CoreDNS
 v1.13.1 and etcd 3.6.6 for 1.35, CoreDNS v1.14.2 for 1.36, CoreDNS v1.14.6 for
-1.37, and konnectivity 0.NN for Kubernetes 1.NN
-([kubeadm constants](https://github.com/kubernetes/kubernetes/blob/release-1.37/cmd/kubeadm/app/constants/constants.go)).
+1.37, and konnectivity 0.NN for Kubernetes 1.NN (kubeadm's constants at
+[v1.35.0](https://github.com/kubernetes/kubernetes/blob/v1.35.0/cmd/kubeadm/app/constants/constants.go),
+[v1.36.0](https://github.com/kubernetes/kubernetes/blob/v1.36.0/cmd/kubeadm/app/constants/constants.go)
+and
+[v1.37.1](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kubeadm/app/constants/constants.go)).
 
 Built for phase 1, without `apiserver-proxy` and the write lock
 (`internal/controller/tenant`, the templates in its `manifests/`, taken from
-kubeadm v1.35.0 and the hard way). Once `AccessReady` is True for the
+[kubeadm v1.35.0](https://github.com/kubernetes/kubernetes/tree/v1.35.0/cmd/kubeadm/app/phases)
+and [the hard way](hard-way.md)). Once `AccessReady` is True for the
 generation, the controller applies every object as `brygga/tenant` through
 `<cp>-brygga-kubeconfig`, on a change of the inputs it reads and every 10
 minutes; until then both conditions are `WaitingForAccess`, and it uses
 `<cp>-brygga-kubeconfig` and `<cp>-ca-bundle` only while no other owner
-keeps them. The inventory names an object before it is first written, and is
-rewritten to what the render holds once the objects that left it are
+keeps them, looking again every minute. It leaves another owner's objects
+as they are: an object no inventory names yet is read before its first
+apply and left alone when it exists without `brygga/tenant` among its field
+managers, and the prune deletes an entry that left the render only when
+`brygga/tenant` applied it, under the UID and resourceVersion it read, and
+otherwise drops the entry. The inventory names an object before it is first written,
+and is rewritten to what the render holds once the objects that left it are
 deleted, so a pass that stops anywhere leaves nothing to leak; an object at
-another API version is the same entry. `AddonsApplied` is True once every
-object is applied and pruned; False with `Applying` names the object the
-tenant refused, an inventory it cannot read, or a tenant that never
-answered, while a tenant that stops answering leaves a True as it was.
-`AddonsAvailable` reads the kube-proxy and agent DaemonSets and the CoreDNS
-Deployment, every minute until they are rolled out.
+another API version is the same entry, pruned at the version the tenant
+serves, and one of a kind it no longer serves is gone. `AddonsApplied` is
+True once every object is applied and pruned; False with `Applying` names
+another owner's object, the object or the inventory the tenant refused, an
+inventory it cannot read, or a tenant that never answered, while a tenant
+that stops answering leaves a True as it was. `AddonsAvailable` reads the
+DaemonSets and Deployments Brygga applied, every minute until they are
+rolled out; it keeps a rollout it read before while none can be read, and
+until one is, says what stopped the pass.
 
 ## Lifecycle
 

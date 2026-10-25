@@ -70,5 +70,7 @@ with the phase 1 gate.
 
 - `internal/controller/tenant/manifests/bootstrap.yaml` — `cluster-info`,
   `kubeadm-config`, `kubelet-config` and the bootstrap RBAC, named and
-  shaped as kubeadm v1.35.0 writes them; `kube-proxy.yaml` and
+  shaped as
+  [kubeadm v1.35.0](https://github.com/kubernetes/kubernetes/tree/v1.35.0/cmd/kubeadm/app/phases)
+  writes them; `kube-proxy.yaml` and
   `coredns.yaml` are kubeadm's addons.
