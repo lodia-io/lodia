@@ -61,8 +61,8 @@ var datastoreRules = []rbacv1.PolicyRule{
 	{APIGroups: []string{bryggav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes/status"}, Verbs: []string{"patch"}},
 	{APIGroups: []string{bryggav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes/finalizers"}, Verbs: []string{"update"}},
 	{APIGroups: []string{bryggav1alpha1.GroupVersion.Group}, Resources: []string{"datastoreclasses"}, Verbs: []string{"list", "watch"}},
-	{APIGroups: []string{druidv1alpha1.SchemeGroupVersion.Group}, Resources: []string{"etcds"}, Verbs: []string{"get", "list", "watch", "create", "patch", "delete"}},
-	{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get", "list", "watch", "create", "patch"}},
+	{APIGroups: []string{druidv1alpha1.SchemeGroupVersion.Group}, Resources: []string{"etcds"}, Verbs: []string{"get", "list", "watch", "create", "patch"}},
+	{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get", "list", "watch", "create", "patch", "delete"}},
 	{APIGroups: []string{""}, Resources: []string{"persistentvolumeclaims"}, Verbs: []string{"list", "patch", "delete"}},
 	{APIGroups: []string{appsv1.GroupName}, Resources: []string{"statefulsets"}, Verbs: []string{"get"}},
 }
@@ -1127,6 +1127,24 @@ func TestPredecessorsCopy(t *testing.T) {
 	waitEtcd(t, ns, cp, namesGeneration(2))
 	if again := getCopy(t, ns, cp); again.ResourceVersion != predecessors.ResourceVersion {
 		t.Errorf("the predecessor's copy moved from resourceVersion %s to %s", predecessors.ResourceVersion, again.ResourceVersion)
+	}
+}
+
+func TestOwnerlessCopyIsAdopted(t *testing.T) {
+	ns, credentialsNamespace := namespace(t), namespace(t)
+	const cp = "adopter"
+	create(t, credentials(credentialsNamespace))
+	createClass(t, fullClass("adopting", credentialsNamespace))
+	create(t, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: cp + "-etcd-backup", Namespace: ns, Labels: map[string]string{bryggav1alpha1.ControlPlaneLabel: cp}}})
+	create(t, controlPlane(ns, cp, "adopting"))
+	writeGeneration(t, ns, cp, 1)
+	waitEtcd(t, ns, cp, namesGeneration(1))
+	copied := getCopy(t, ns, cp)
+	if owners := copied.OwnerReferences; len(owners) != 1 || owners[0].UID != getControlPlane(t, ns, cp).UID || !ptr.Deref(owners[0].Controller, false) {
+		t.Errorf("the copy's owners are %+v, want the ControlPlane as its controller", owners)
+	}
+	if got := string(copied.Data["secretAccessKey"]); got != "spike-secret-key" {
+		t.Errorf("the adopted copy holds secretAccessKey %q, want the class Secret's", got)
 	}
 }
 

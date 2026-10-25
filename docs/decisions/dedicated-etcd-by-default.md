@@ -263,6 +263,7 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   `TestGenerationsMoveForward`, `TestDatastoreClassNotFound`,
   `TestBackupCredentialsCopied`, `TestHeldClass`,
   `TestBackupCopyFollowsItsEvents`, `TestPredecessorsCopy`,
+  `TestOwnerlessCopyIsAdopted`,
   `TestDatastoreReadyFollowsEtcdStatus`,
   `TestVolumesExist`, `TestForeignEtcd`, `TestStorageAtCreation`,
   `TestRecordedClass`, `TestClassSurvivesTheEtcd`, `TestClassGone`, `TestDeletionBeforeLabelling` and
