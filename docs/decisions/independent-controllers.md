@@ -1,8 +1,8 @@
 # Six controllers share one object and communicate only through status conditions
 
-Decided 2026-10-25. The manager, PKI and the Datastore controller, for a
-dedicated etcd of one member, are built; the other four controllers are
-not.
+Decided 2026-10-25. The manager, PKI, the Datastore controller, for a
+dedicated etcd of one member, and Lifecycle, for the target within a minor
+and `Ready`, are built; Workloads, Tenant and Health are not.
 
 ## Decision
 
@@ -155,3 +155,12 @@ flowchart LR
   bound to exactly its rules, and holds the first visit and the pass that
   leaves the status alone on an API error (`TestConditionsFromState`)
   ([dedicated-etcd-by-default](dedicated-etcd-by-default.md)).
+- `internal/controller/lifecycle` — reads the `ControlPlane` alone and
+  applies `status.target` (`version`, `reason`), `Progressing`, `Ready` and
+  `status.observedGeneration` as `brygga/lifecycle`, all of them on every
+  write and only on a change; its pass reads nothing that can fail midway,
+  so its first visit writes the conditions it computes rather than a
+  separate `Unknown`. Registered as `lifecycle` with ten workers and a
+  one-minute reconcile timeout. `lifecycle_test.go` runs it under the same
+  cache with `ReaderFailOnMissingInformer`, as a user bound to exactly its
+  rules; `internal/versions` holds the minors it supports.

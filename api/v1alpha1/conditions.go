@@ -3,13 +3,17 @@
 
 package v1alpha1
 
-// Condition types more than one controller reads, each with its one writer.
+// Condition types, each with its one writer.
 const (
 	ConditionCertificatesReady    = "CertificatesReady"    // PKI
 	ConditionAccessReady          = "AccessReady"          // PKI
 	ConditionCAValidityAcceptable = "CAValidityAcceptable" // PKI
 	ConditionDatastoreReady       = "DatastoreReady"       // Datastore
 	ConditionAPIServerReady       = "APIServerReady"       // Workloads
+	ConditionAddonsApplied        = "AddonsApplied"        // Tenant
+	ConditionReachable            = "Reachable"            // Health
+	ConditionProgressing          = "Progressing"          // Lifecycle
+	ConditionReady                = "Ready"                // Lifecycle
 )
 
 // EtcdCertificatesLabel's value is the generation of the etcd certificate
