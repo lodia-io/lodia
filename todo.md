@@ -71,3 +71,8 @@ is a decision — a decision is a file in `docs/decisions/`.
   (AWS NLB and CLB): `--advertise-address` takes an IP, so the `kubernetes`
   endpoint needs another source there; decide before that mode is supported
   on such a provider.
+- client-go reloads a kubeconfig's CA file only with `ClientsAllowCARotation`,
+  on by default since 1.36
+  ([known_features.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/client-go/features/known_features.go#L115-L117)):
+  on 1.35 a trust anchor rotation restarts every component whose kubeconfig
+  names the CA file; plan it into the phase 3 rotation.
