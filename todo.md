@@ -110,6 +110,16 @@ is a decision — a decision is a file in `docs/decisions/`.
   2. The `Etcd` records the class generation it was rendered from for that.
 - `<cp>-etcd-backup` stays when a class drops its backup store; harmless, the
   `ControlPlane` garbage-collects it.
+- Whether etcd-backup-restore reads rotated store credentials without a
+  restart: etcd-druid mounts `<cp>-etcd-backup` and puts no checksum of it in
+  the pod template
+  ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L219-L226)),
+  so a new copy rolls nothing; the rotation in `docs/operations.md` revokes
+  the old keys once every copy holds the new ones, which is safe only if the
+  sidecar re-reads them.
+- Backup credentials scoped to one tenant's prefix, so a tenant namespace's
+  `<cp>-etcd-backup` reaches only that tenant's snapshots and not every
+  tenant's on the class (`docs/README.md`, Identity and tenancy).
 - The e2e suite runs the Datastore controller in the test process and needs
   `git` and `helm`; the suite against Brygga's image and chart comes with the
   chart, and `make e2e` could check for the tools.

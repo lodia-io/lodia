@@ -116,6 +116,15 @@ flowchart LR
   ([compact-layout](compact-layout.md)).
 - Metrics come per controller: queue depth, reconcile duration and errors,
   labelled by controller and tenant.
+- A condition that waits on an object outside the cache comes with a bounded
+  requeue, since no event reports that object's change; the condition still
+  says what it waits on. The Datastore controller has four: `VolumesExist`,
+  for claims, which nothing labels for the cache, and for an `Etcd` without
+  the control-plane label, and a missing credentials Secret of the class,
+  which belongs to the platform, both after a minute; a StatefulSet that lags
+  etcd-druid's report, read uncached, after 15 seconds; and an `Etcd` being
+  deleted, which has left the cache if its label was removed, after 10
+  seconds.
 
 ## Code
 

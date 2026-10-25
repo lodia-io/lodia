@@ -167,7 +167,8 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   class and size apply when the `Etcd` is created and not after: the first is
   immutable in the `Etcd`
   ([etcd.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/etcd.go#L627-L638)),
-  the second a StatefulSet field that cannot change in place.
+  the second a StatefulSet field that cannot change in place
+  ([validation.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/apis/apps/validation/validation.go#L262)).
 - The class is resolved once, when the `Etcd` is created, and recorded on it
   (`brygga.segla.io/datastore-class`, beside
   `brygga.segla.io/datastore-class-generation`); from then on the `Etcd`
@@ -200,6 +201,13 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   encryption at rest is on by default (`secretbox`), and the encryption key is
   backed up next to the snapshots; bucket-side encryption is recommended on
   top.
+- A class's credentials reach every tenant's prefix on that class, and
+  `<cp>-etcd-backup` puts them into every tenant namespace: whoever reads
+  Secrets in one tenant namespace reads every tenant's snapshots on the
+  class, and the encryption keys backed up next to them. Until the
+  credentials are scoped to one tenant's prefix, two rules bound it: Secrets
+  in tenant namespaces are readable by Brygga and the platform's
+  administrators only, and a class per trust boundary.
 - etcd-druid keeps the volumes and the snapshots of a deleted `Etcd`: the
   StatefulSet retains its claims and nothing removes the prefix in the
   bucket ([etcd spike](../etcd-spike-2026-10.md), finding 6). Under
@@ -223,16 +231,22 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
 
 - `internal/controller/datastore` — the controller: `datastore.go` holds the
   reconcile, the class lookup, the newest complete certificate generation,
-  the credentials copy, the finalizer and the status; `etcd.go` renders the
-  `DatastoreClass` into the `Etcd` ([the table](../README.md#a-tenant-namespace)),
-  applies it and reads etcd-druid's report. Registered as `datastore` in
-  `cmd/brygga/main.go`.
+  the claims, found by name, the credentials copy, the finalizer and the
+  status; `etcd.go` renders the `DatastoreClass` into the `Etcd`
+  ([the table](../README.md#a-tenant-namespace)), applies it and reads
+  etcd-druid's report. Registered as `datastore` in `cmd/brygga/main.go`.
 - `internal/controller/datastore/datastore_test.go` — envtest with
-  etcd-druid v0.39.0's CRDs from its `crds` package:
+  etcd-druid v0.39.0's CRDs from its `crds` package, the controller running
+  as a user bound to exactly the rules in
+  [Identity and tenancy](../README.md#identity-and-tenancy):
   `TestFinalizerAndEtcdFromClass` (the finalizer before the first `Etcd`, the
   mapping table, generation 1 in all three TLS blocks),
-  `TestNewestCompleteGeneration`, `TestDatastoreClassNotFound`,
-  `TestBackupCredentialsCopied`, `TestDatastoreReadyFollowsEtcdStatus` and
+  `TestConditionsFromState` (Unknown on the first visit, an API error leaves
+  the status alone), `TestPaused`, `TestNewestCompleteGeneration`,
+  `TestGenerationsMoveForward`, `TestDatastoreClassNotFound`,
+  `TestBackupCredentialsCopied`, `TestDatastoreReadyFollowsEtcdStatus`,
+  `TestVolumesExist`, `TestForeignEtcd`, `TestStorageAtCreation`,
+  `TestRecordedClass`, `TestClassGone`, `TestDeletionBeforeLabelling` and
   `TestDeletion`. `datastoretest` issues the certificate generations PKI will.
 - `test/e2e/datastore_test.go` — `TestDatastoreOnKind`: etcd-druid v0.39.0
   from its chart at the tag, a `ControlPlane` to `DatastoreReady=True` with

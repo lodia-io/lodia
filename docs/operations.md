@@ -10,7 +10,7 @@ itself and the support policy. Installation is in
 | task | how |
 |---|---|
 | Get access as a person | create a `KubeconfigRequest` ([example](api/examples/kubeconfigrequest.yaml)); read the Secret named in its `status.secretRef`; it expires on its own |
-| Get access for automation | read the Secret `<cp>-admin-kubeconfig`; revoke every copy by deleting the ClusterRoleBinding `brygga:cluster-admins` in the tenant (Brygga recreates it on the next apply only if the `ControlPlane` still asks for it) |
+| Get access for automation | grant `get` on the Secret `<cp>-admin-kubeconfig` by `resourceNames`, never on the namespace's Secrets, which hold the class's backup credentials in `<cp>-etcd-backup`; read it; revoke every copy by deleting the ClusterRoleBinding `brygga:cluster-admins` in the tenant (Brygga recreates it on the next apply only if the `ControlPlane` still asks for it) |
 | Join a node | with an admin kubeconfig: `kubeadm token create --print-join-command --kubeconfig admin.kubeconfig`; run the printed `kubeadm join …` on the machine; it needs outbound 443 to the endpoint and nothing inbound |
 | Upgrade Kubernetes | set `spec.version`; watch `status.kubernetes.upgrade` and `Progressing`; Brygga goes one minor at a time; nodes follow at the owner's pace |
 | Get patch updates automatically | `spec.maintenance.autoUpdate.kubernetesPatch: true` and a `maintenance.window` |
@@ -23,6 +23,8 @@ itself and the support policy. Installation is in
 | Clone or recover a cluster | create a new `ControlPlane` with `spec.restoreFrom.backupRef`; nodes of the old cluster can join it with a new token |
 | Stop Brygga touching a cluster | `spec.paused: true`; everything keeps running, nothing is reconciled; deleting a paused `ControlPlane` waits until it is unpaused |
 | Turn the controller manager hold off for a cluster | `spec.health.holdControllerManager: false`; a hold in progress is released at once |
+| Change a `DatastoreClass` | edit it; the edit reaches the `Etcd` of every tenant on the class at once and rolls their members, a single member with an outage, until Lifecycle holds class edits for each tenant's maintenance window in phase 2; the storage class and size reach only `Etcd`s created afterwards |
+| Rotate a backup store's credentials | create a new Secret with the new keys and point the class's `backup.store.secretRef` at it: the class edit reaches every tenant on the class at once and rolls nothing, since the `Etcd` names the copy, whose name stays; once every tenant's `<cp>-etcd-backup` (labelled `brygga.segla.io/control-plane`) holds the new keys, revoke the old ones. Editing the class's Secret in place reaches each tenant only at its next pass, at worst 10 hours later. Whether the backup sidecar reads new keys without a restart is open (`todo.md`) |
 | Delete a cluster | delete the `ControlPlane`; its finalizer deletes the `Etcd`, then with `storage.reclaimPolicy: Delete` the claims `<cp>-etcd-<cp>-etcd-<n>`, with `Retain` keeps them (`kubectl get pvc -L brygga.segla.io/control-plane-uid` shows whose each is); the last snapshot and the snapshots' retention come with backups in phase 2 |
 
 ## What breaks, and how it shows

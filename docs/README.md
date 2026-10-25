@@ -179,14 +179,26 @@ owned by the `Etcd`
 ([helper.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/helper.go)).
 With a backup store, the class's credentials Secret is copied into the
 namespace as `<cp>-etcd-backup`, since etcd-druid mounts it from the `Etcd`'s
-namespace. The class is resolved once, when the `Etcd` is created, and
+namespace. A pass of the controller refreshes the copy, and nothing watches
+the class's Secret: an edit of the class reaches every tenant on it at once,
+while the Secret edited in place reaches a tenant only at its next pass, at
+worst the cache's resync, every 10 hours by default
+([cache.go](https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/cache/cache.go#L93-L97)).
+Credentials are therefore rotated with a new Secret that the class is
+pointed at ([operations](operations.md#everyday-tasks)).
+
+The class is resolved once, when the `Etcd` is created, and
 recorded on it in `brygga.segla.io/datastore-class`, with the class
 generation it was rendered from in `brygga.segla.io/datastore-class-generation`;
 from then on the `Etcd` follows that class, its reclaim policy included, as a
-default StorageClass is written into a claim when the claim is created. A
-recorded class that is deleted stops only its own edits: the `Etcd` keeps
-every field the class gave it, still takes each new certificate generation
-and reports its readiness as before, and its claims are kept on deletion. The
+default StorageClass is written into a claim when the claim is created
+([storage classes](https://kubernetes.io/docs/concepts/storage/storage-classes/#default-storageclass)).
+An edit of that class reaches the `Etcd` of every tenant on it at once and
+rolls their members, a single member with an outage, until Lifecycle holds
+class edits for each tenant's maintenance window in phase 2. A recorded
+class that is deleted stops only its own edits: the `Etcd` keeps every field
+the class gave it, still takes each new certificate generation and reports
+its readiness as before, and its claims are kept on deletion. The
 claims the StatefulSet attaches are found by name, as the StatefulSet finds
 them: `<cp>-etcd-<cp>-etcd-<n>`, its claim template named after the `Etcd`
 ([stateful_set_utils.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/controller/statefulset/stateful_set_utils.go#L116-L119),
@@ -204,11 +216,11 @@ everything the class does not set is etcd-druid's default:
 | `etcd.autoCompaction.mode`, `.retention` | `spec.sharedConfig.autoCompactionMode`, `.autoCompactionRetention` | shared with the sidecar's embedded etcd |
 | `etcd.defragmentation.schedule` | `spec.etcd.defragmentationSchedule` | the sidecar defragments only above 3 GiB or with more than 1 GiB free ([etcd spike](etcd-spike-2026-10.md), finding 7) |
 | `etcd.resources` | `spec.etcd.resources` | the sidecar's `spec.backup.resources` stay etcd-druid's default: the class has no field for them |
-| `storage.className` | `spec.storageClass` | when the `Etcd` is created and not after: the field is immutable in the `Etcd` |
-| `storage.size` | `spec.storageCapacity` | when the `Etcd` is created and not after: a StatefulSet field that cannot change in place |
+| `storage.className` | `spec.storageClass` | when the `Etcd` is created and not after: the field is immutable in the `Etcd` ([etcd.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/etcd.go#L627-L638)) |
+| `storage.size` | `spec.storageCapacity` | when the `Etcd` is created and not after: it is the StatefulSet's volume claim template, which cannot change in place ([validation.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/apis/apps/validation/validation.go#L262)) |
 | `storage.reclaimPolicy` | — | on deletion, `Delete` removes the claims etcd-druid's StatefulSet created and `Retain` leaves them ([deletion](#deletion)) |
 | `backup.store.provider`, `.bucket`, `.endpoint` | `spec.backup.store.provider`, `.container`, `.endpointOverride` | Brygga's four providers are among etcd-druid's; most S3-compatible stores also want `s3ForcePathStyle: "true"` in the credentials Secret |
-| `backup.store.prefix` | `spec.backup.store.prefix` | `<class prefix>/<namespace>/<cp>/<uid>`: etcd-backup-restore restores an empty member from the newest snapshot under its prefix, so a `ControlPlane` recreated under the same name never restores the old one's |
+| `backup.store.prefix` | `spec.backup.store.prefix` | `<class prefix>/<namespace>/<cp>/<uid>`: etcd-backup-restore restores an empty member from the newest snapshot under its prefix ([design](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/docs/proposals/design.md#L27)), so a `ControlPlane` recreated under the same name never restores the old one's |
 | `backup.store.region` | the key `region` of `<cp>-etcd-backup` | where the sidecar reads it |
 | `backup.store.secretRef` | `spec.backup.store.secretRef` | `<cp>-etcd-backup`, the copy, with the class Secret's data |
 | `backup.fullSnapshotSchedule`, `.deltaSnapshotPeriod` | `spec.backup.fullSnapshotSchedule`, `.deltaSnapshotPeriod` | the delta period bounds what a restore loses ([etcd spike](etcd-spike-2026-10.md), finding 5) |
@@ -450,7 +462,9 @@ nothing, so the deletion of a paused `ControlPlane` waits until it is
 unpaused. On deletion it deletes the `Etcd` and waits
 for etcd-druid to let it go, then reclaims the volumes, which etcd-druid
 keeps: of the PersistentVolumeClaims named `<cp>-etcd-<cp>-etcd-<n>`, which
-the StatefulSet attaches by that name, those labelled with the `ControlPlane`'s
+the StatefulSet attaches by that name
+([stateful_pod_control.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/statefulset/stateful_pod_control.go#L381-L405)),
+those labelled with the `ControlPlane`'s
 UID are deleted when the class each records says `Delete`, and left when it
 says `Retain` or no longer exists. While the `Etcd` exists, each pass of the
 deletion first labels the claims no earlier pass has labelled, which can only
@@ -458,8 +472,9 @@ be its own, since `VolumesExist` kept it from being created while anything
 else stood there; a claim that appears after the last such pass stays
 unlabelled and is kept. A claim of another `ControlPlane` is never
 touched, and neither is an `Etcd` `<cp>-etcd` this `ControlPlane` does not
-control, nor the claims its StatefulSet uses. Then the finalizer goes and the owner references garbage-collect
-the rest of the namespace objects. The final snapshot when a backup store
+control, nor the claims its StatefulSet uses. Then the finalizer goes and the
+owner references garbage-collect the rest of the namespace objects. The
+final snapshot when a backup store
 exists, and the snapshots' retention after deletion, come with backups in
 phase 2.
 
@@ -494,11 +509,24 @@ operator.
 - No cross-tenant object: every Secret, Service and route is in the tenant's
   namespace, and NetworkPolicies keep its pods to their own arrows. A
   shared `Datastore` is the one deliberate exception, labelled as such.
+- A class's backup credentials reach every tenant's snapshots on that class:
+  `<cp>-etcd-backup` puts them into every tenant namespace, and they read
+  every tenant's prefix, the encryption keys backed up next to the snapshots
+  included. Whoever reads Secrets in one tenant namespace therefore reads
+  every tenant's snapshots on that class. Two rules bound it until the
+  credentials are scoped to one tenant's prefix: Secrets in tenant
+  namespaces are readable by Brygga and the platform's administrators only,
+  so automation gets `get` on `<cp>-admin-kubeconfig` by `resourceNames` and
+  never the namespace's Secrets; and a class per trust boundary.
 
-The Datastore controller calls exactly these verbs; its envtest suite runs
+The Datastore controller calls exactly these verbs. Its envtest suite runs
 the controller as a user bound to these rules and nothing else, with the
-`OwnerReferencesPermissionEnforcement` admission plugin on, and each rule
-left out fails a test:
+`OwnerReferencesPermissionEnforcement` admission plugin on, and leaving out
+any one verb fails a test, except `list` on the four kinds the cache holds:
+client-go fills the cache with a streaming watch where the API server offers
+one, on by default since 1.35, and falls back to `list` where it does not
+([known_features.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/client-go/features/known_features.go#L141-L144),
+[reflector.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/client-go/tools/cache/reflector.go#L470-L509)).
 
 | group | resource | verbs | for |
 |---|---|---|---|
@@ -507,7 +535,7 @@ left out fails a test:
 | `brygga.segla.io` | `controlplanes/finalizers` | `update` | `blockOwnerDeletion` on the owner references of the `Etcd` and of `<cp>-etcd-backup`, which that admission plugin allows only with `update` on the owner's `finalizers` ([gc_admission.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/plugin/pkg/admission/gc/gc_admission.go#L122-L152)) |
 | `brygga.segla.io` | `datastoreclasses` | `list`, `watch` | the cache |
 | `druid.gardener.cloud` | `etcds` | `get`, `list`, `watch`, `create`, `patch`, `delete` | the cache, and the API server for an `Etcd` without the label; the apply, which the API server also authorizes as `create` when it creates the object ([patch.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/staging/src/k8s.io/apiserver/pkg/endpoints/handlers/patch.go#L203-L232)); the deletion |
-| `""` | `secrets` | `get`, `list`, `watch`, `create`, `patch` | the metadata of the certificate Secrets; the class's credentials Secret, read uncached in its own namespace; the copy `<cp>-etcd-backup`, applied |
+| `""` | `secrets` | `get`, `list`, `watch`, `create`, `patch` | the metadata of the certificate Secrets; the class's credentials Secret, read uncached in the namespace the class names; the copy `<cp>-etcd-backup`, applied |
 | `""` | `persistentvolumeclaims` | `list`, `patch`, `delete` | the claims of `<cp>-etcd`, listed in the tenant's namespace and matched by name; their UID label and class annotation; the reclaim |
 | `apps` | `statefulsets` | `get` | the readiness checks, read uncached |
 
