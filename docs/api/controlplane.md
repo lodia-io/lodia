@@ -65,7 +65,7 @@ Examples: [`examples/`](examples/).
 | `kubernetes.upgrade.{from, to, step, startedAt, message}` | Lifecycle | present while an upgrade runs or is stuck |
 | `endpoint.apiServer.{host, port}` | Workloads | the API server's public endpoint, published as soon as the Service has an address; PKI puts it into the serving certificate and the kubeconfigs, Tenant into `cluster-info`, `kubeadm-config` and kube-proxy's kubeconfig, and Health probes it |
 | `endpoint.konnectivity.{host, port}` | Workloads | where konnectivity agents reach the konnectivity server: the API server's host in `loadBalancer` and `nodePort` modes with its own port, `hostnames.konnectivity` in `gateway` mode; PKI names the host in the konnectivity server's certificate, and Tenant gives it to the agents |
-| `endpoint.internal` | Workloads | the in-namespace Service, `https://<name>-kube-apiserver.<ns>.svc:443` |
+| `endpoint.internal.{host, port}` | Workloads | the API server's in-namespace Service, `<name>-kube-apiserver.<ns>.svc` and 443, for clients in the management cluster |
 | `credentials.adminKubeconfigSecretRef` | PKI | `<name>-admin-kubeconfig` |
 | `credentials.caBundleSecretRef` | PKI | `<name>-ca-bundle`: the CAs a client must trust now (two during a rotation) |
 | `credentials.rotation.<credential>.{phase, lastInitiated, lastCompleted}` | PKI | the stages per credential (the same keys as `target.rotation`), as Gardener reports them |

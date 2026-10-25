@@ -781,10 +781,10 @@ type EndpointStatus struct {
 	// +optional
 	Konnectivity *HostPort `json:"konnectivity,omitempty"`
 
-	// Internal is the in-namespace URL.
+	// Internal is the API server's in-namespace Service, for clients in the
+	// management cluster.
 	// +optional
-	// +kubebuilder:validation:MaxLength=512
-	Internal string `json:"internal,omitempty"`
+	Internal *HostPort `json:"internal,omitempty"`
 }
 
 // HostPort is a host and a port.
