@@ -28,6 +28,7 @@ import (
 	"github.com/segla-io/brygga/internal/controller/datastore"
 	"github.com/segla-io/brygga/internal/controller/lifecycle"
 	"github.com/segla-io/brygga/internal/controller/pki"
+	"github.com/segla-io/brygga/internal/controller/workloads"
 )
 
 // workers is the default of controllers.<name>.workers until the operator
@@ -35,16 +36,22 @@ import (
 const workers = 10
 
 func main() {
-	var metricsAddr, probeAddr string
+	var metricsAddr, probeAddr, signerImage, druidNamespace string
 	var leaderElect bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "Address of the metrics endpoint, served over HTTPS behind authentication and authorization.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Address of the health and readiness probes.")
 	flag.BoolVar(&leaderElect, "leader-elect", true, "Run controllers only in the replica that holds the leader lease.")
+	flag.StringVar(&signerImage, "signer-image", "", "Image of brygga-signer, the API server's ServiceAccount token signer; required.")
+	flag.StringVar(&druidNamespace, "etcd-druid-namespace", "etcd-druid", "Namespace etcd-druid runs in, which the etcd NetworkPolicy admits.")
 	opts := zap.Options{}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 	log := ctrl.Log.WithName("setup")
+	if signerImage == "" {
+		log.Error(nil, "--signer-image is required")
+		os.Exit(1)
+	}
 
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -101,6 +108,15 @@ func main() {
 	}
 	if err := (&lifecycle.Reconciler{Client: mgr.GetClient()}).SetupWithManager(mgr, workers); err != nil {
 		log.Error(err, "set up the lifecycle controller")
+		os.Exit(1)
+	}
+	if err := (&workloads.Reconciler{
+		Client:         mgr.GetClient(),
+		Reader:         mgr.GetAPIReader(),
+		SignerImage:    signerImage,
+		DruidNamespace: druidNamespace,
+	}).SetupWithManager(mgr, workers); err != nil {
+		log.Error(err, "set up the workloads controller")
 		os.Exit(1)
 	}
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

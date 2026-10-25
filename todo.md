@@ -200,3 +200,19 @@ is a decision — a decision is a file in `docs/decisions/`.
 - The previous etcd generation is kept and adopted on completeness alone,
   even when it does not chain to the current etcd CA (a restored
   predecessor's generation, for instance); keep it only if it chains.
+
+## From the Workloads controller (2026-10-25)
+
+- `highAvailability` (replicas, spread, PodDisruptionBudgets), JWT
+  authentication, an audit policy, an admission and a scheduler
+  configuration are not rendered: they turn `APIServerReady` False with
+  `Unsupported` until phase 2 builds them.
+- Only etcd has a NetworkPolicy; the default-deny set of the README's arrows
+  comes with the Gateway mode.
+- `--signer-image` and `--etcd-druid-namespace` are operator flags until the
+  operator configuration and the chart render them.
+- Workloads applies over whatever stands under its names. Its Deployments
+  wait for `CertificatesReady`, which PKI holds while a predecessor's Secrets
+  exist, but the Service is applied before any wait; report objects another
+  owner controls as PKI and the Datastore do, if a predecessor's Service ever
+  matters.

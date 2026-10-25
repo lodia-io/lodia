@@ -29,6 +29,11 @@ import (
 // a new certificate.
 const Backdate = 5 * time.Minute
 
+// KubeletClientLifetime is how long the controller manager signs kubelet
+// client certificates for, and so how long a replaced kubelet signer stays in
+// the client CA bundle.
+const KubeletClientLifetime = 30 * 24 * time.Hour
+
 type Certificate struct {
 	Cert *x509.Certificate
 	Key  *ecdsa.PrivateKey

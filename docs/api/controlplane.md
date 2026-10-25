@@ -10,7 +10,7 @@ Examples: [`examples/`](examples/).
 |---|---|---|---|
 | `version` | string | required | `v<major>.<minor>.<patch>`; the minor never decreases (CEL transition rule); the patch may |
 | `layout` | `Split` \| `Compact` | `Split` | immutable; `Compact` puts every control plane component in one pod and excludes `highAvailability` and `apiServer.replicas` above 1 ([compact-layout](../decisions/compact-layout.md)) |
-| `highAvailability.failureTolerance` | `Node` \| `Zone` | absent = single | sets replicas (2/2/2, etcd 3) and the spread topology key (`kubernetes.io/hostname` or `topology.kubernetes.io/zone`) |
+| `highAvailability.failureTolerance` | `Node` \| `Zone` | absent = single | sets replicas (2/2/2, etcd 3) and the spread topology key (`kubernetes.io/hostname` or `topology.kubernetes.io/zone`); phase 2 (until then `APIServerReady=False`, `Unsupported`) |
 | `datastore` | union | required | exactly one of `dedicated`, `shared`; immutable in v1alpha1 (migration is a later operation) |
 | `datastore.dedicated.className` | string | the default `DatastoreClass` | |
 | `datastore.shared.name` | string | | a `Datastore` |
@@ -27,16 +27,16 @@ Examples: [`examples/`](examples/).
 | `network.clusterDomain` | string | `cluster.local` | immutable |
 | `apiServer.replicas` | int | 1, or 2 with HA | ≥ 1; ≥ 2 with HA |
 | `apiServer.extraArgs` | map | | flags Brygga owns are rejected by CEL (`etcd-servers`, `service-account-*`, `client-ca-file`, `egress-selector-config-file`, …); the list is in the schema |
-| `apiServer.authentication` | object | no JWT | rendered into the structured `AuthenticationConfiguration`; `jwt[]` as upstream; the `anonymous` section is Brygga's (only `cluster-info` and the health paths) and cannot be set |
+| `apiServer.authentication` | object | no JWT | rendered into the structured `AuthenticationConfiguration`; `jwt[]` as upstream (from phase 2; until then `APIServerReady=False`, `Unsupported`); the `anonymous` section is Brygga's (only `cluster-info` and the health paths) and cannot be set |
 | `apiServer.advertiseAddress` | IP | `172.20.0.1` | gateway mode only; the address `apiserver-proxy` owns on every node; must not overlap the tenant's node, pod or service ranges |
 | `serviceAccount.issuer` | URL | `https://<public API host>` | the tokens' issuer and OIDC discovery URL; `serviceAccount.publicDiscovery: true` binds discovery to unauthenticated users for federation |
-| `apiServer.audit.policyRef` | `{name}` | none | a ConfigMap in the namespace, key `policy.yaml`; the log goes to the pod's stdout unless `audit.webhookRef` names a Secret with a kubeconfig |
+| `apiServer.audit.policyRef` | `{name}` | none | a ConfigMap in the namespace, key `policy.yaml`; the log goes to the pod's stdout unless `audit.webhookRef` names a Secret with a kubeconfig; from phase 2 (until then `Unsupported`) |
 | `apiServer.encryption.provider` | `None` \| `secretbox` \| `aescbc` \| `kms` | `secretbox` | keys are generated and rotated by PKI; `kms` takes `kms.endpoint` and `kms.name` |
-| `apiServer.admission.configRef` | `{name}` | none | a ConfigMap with an `AdmissionConfiguration` |
+| `apiServer.admission.configRef` | `{name}` | none | a ConfigMap with an `AdmissionConfiguration`; from phase 2 (until then `Unsupported`) |
 | `apiServer.featureGates` | map | | |
 | `apiServer.resources` | ResourceRequirements | operator defaults | |
 | `controllerManager.{extraArgs, featureGates, resources}` | | | same rules; `cluster-cidr`, `service-cluster-ip-range`, signing and SA flags are Brygga's |
-| `scheduler.{extraArgs, featureGates, resources, configRef}` | | | `configRef` names a ConfigMap with a `KubeSchedulerConfiguration` whose client connection Brygga overrides |
+| `scheduler.{extraArgs, featureGates, resources, configRef}` | | | `configRef` names a ConfigMap with a `KubeSchedulerConfiguration` whose client connection Brygga overrides; from phase 2 (until then `Unsupported`) |
 | `addons.konnectivity.version` | string | from the version table | pin only to hold a version across a Kubernetes upgrade |
 | `addons.konnectivity.agent.mode` | `DaemonSet` \| `Deployment` | `DaemonSet` | `Deployment` takes `replicas`; `hostNetwork` defaults false |
 | `addons.kubeProxy.{enabled, mode}` | | `true`, `iptables` | `enabled: false` for CNIs that replace kube-proxy |
@@ -87,7 +87,7 @@ while its `observedGeneration` is the object's generation
 | `CertificatesReady` | every certificate, key and kubeconfig exists, verifies, and is valid for more than its renewal margin or until its CA expires (`Issued`) | `Issuing` (a Secret PKI has to change is not written yet: the message names it, the error is in Brygga's log), `WaitingForEndpoint` (`loadBalancer` and `nodePort`, until Workloads publishes `status.endpoint`), `CAMissing` (a CA's key is missing or unreadable), `CAExpired` (a CA is past its `NotAfter`); in both, the message names the CA and nothing it signs is written until it is restored or rotated; `SecretsControlledElsewhere` (a Secret under one of PKI's names has another owner, which the message names: a previous `ControlPlane` of the same name until the garbage collector deletes it, anything else until a person releases it; PKI writes no Secret meanwhile); `SecretUnreadable` (the encryption configuration or the ServiceAccount key cannot be read, and PKI never replaces it); `EncryptionProviderUnsupported` (`kms`) |
 | `CAValidityAcceptable` | every CA is valid for more than a year (`Valid`); not part of `Ready`, since a CA in its last year, or a rotation under way, leaves every certificate valid | `CAExpiring`, the message naming each CA and its `NotAfter`, as Gardener's `CACertificateValiditiesAcceptable` ([shoot status](https://github.com/gardener/gardener/blob/v1.154.0/docs/usage/shoot/shoot_status.md#L105-L109)); `Unknown`, `CAMissing`, while a CA's key cannot be read |
 | `DatastoreReady` | the etcd (or the tenant's prefix in a shared store) accepts writes | `Provisioning`, `QuorumLost`, `Restoring`, `DatastoreClassNotFound`, `DatastoreNotFound`, `VolumesExist`, `EtcdRefused` (the API server refuses the `Etcd` Brygga renders), `Deleting`, `Hibernated` |
-| `APIServerReady` | all API server replicas answer `/readyz`; controller manager and scheduler have leaders | `WaitingForCertificates`, `WaitingForDatastore`, `RollingOut`, `Unhealthy`, `Hibernated` |
+| `APIServerReady` | every replica of the API server, controller manager and scheduler Deployments is updated and ready: the API server answers `/readyz`, the two controllers their secure health endpoints (`Ready`); leader election is checked by Health from phase 2 | `WaitingForEndpoint` (the load balancer has no address yet, or no management node is Ready), `LoadBalancerHostnameUnsupported` (a load balancer with a host name and no IP), `WaitingForTarget`, `WaitingForCertificates` (also while a Secret a component reads once does not exist), `WaitingForDatastore`, `RollingOut`, `GatewayUnsupported`, `Unsupported` (a field phase 1 does not render, named in the message), `Unhealthy`, `Hibernated` |
 | `AccessReady` | the tenant's ClusterRoleBindings for `brygga:operator`, `brygga:cluster-admins` and `brygga:kubelet-api-admins` exist, checked with `brygga:operator` (`Bound`) | `WaitingForAPIServer`, `Binding` (the tenant refused the bindings, or has not confirmed them since its API server became ready; while it does not answer, a True stays, since reaching it is `Reachable`'s to report) |
 | `AddonsApplied` | the inventory is applied and pruned | `WaitingForAPIServer`, `Applying` |
 | `AddonsAvailable` | kube-proxy, CoreDNS and the agents report ready; not part of `Ready`, since their pods need the owner's nodes | `RolloutPending` |

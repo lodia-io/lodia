@@ -74,9 +74,10 @@ Each controller has its own queue and field manager, reads `spec`,
 own condition; none calls another
 ([decision](decisions/independent-controllers.md)). The cache is scoped to
 labelled objects, with metadata only for Secrets. PKI, the Datastore
-controller and a first Lifecycle are built (`internal/controller/pki`,
-`datastore` and `lifecycle`, registered under those names in
-`cmd/brygga/main.go`); Workloads, Tenant and Health are not.
+controller, a first Lifecycle and Workloads are built
+(`internal/controller/pki`, `datastore`, `lifecycle` and `workloads`,
+registered under those names in `cmd/brygga/main.go`); Tenant and Health
+are not.
 
 ```mermaid
 sequenceDiagram
@@ -157,8 +158,8 @@ ConfigMaps, who consumes them, and what a change does:
 | `<cp>-controller-manager-kubeconfig`, `<cp>-scheduler-kubeconfig` (`kubeconfig`, `tls.crt`, `tls.key`, `ca.crt`; server `https://<cp>-kube-apiserver.<ns>.svc:443`) | each its own; the kubeconfig names its certificates as files beside it | reloaded by client-go |
 | `<cp>-admin-kubeconfig` (`kubeconfig`, certificates embedded; server `status.endpoint.apiServer`) | the platform; `brygga:cluster-admins` | nothing restarts |
 | `<cp>-brygga-kubeconfig` (`kubeconfig`, certificates embedded; `brygga:operator`, dialling the in-namespace Service) | Brygga's PKI, Tenant and Health inside the tenant | nothing restarts |
-| ConfigMap `authentication-config` | API server | reloaded, except its anonymous section |
-| ConfigMaps `egress-selector`, `audit-policy`, `admission-config` / `scheduler-config` | API server / scheduler | that component restarts |
+| ConfigMap `<cp>-authentication-config` (an `AuthenticationConfiguration` whose anonymous section admits only `cluster-info` and the health paths) | API server | reloaded, except its anonymous section |
+| ConfigMap `<cp>-egress-selector` (cluster traffic through konnectivity-server's socket); an audit policy, an admission or a scheduler configuration the tenant names | API server / scheduler | that component restarts |
 
 Sources: the reload behaviour of each flag is in the
 [kube-apiserver](https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/)
@@ -212,6 +213,33 @@ server's own validator refuses
 and a ServiceAccount key that is not the RSA key PKI writes, turn
 `CertificatesReady` False with `SecretUnreadable`: a new key would leave what
 the old one encrypted unreadable, or every token it signed invalid.
+
+Workloads runs the three Deployments of
+[component-per-deployment](decisions/component-per-deployment.md) from the
+images of `status.target.version` and the flags of the [hard way](hard-way.md),
+once `CertificatesReady` and `DatastoreReady` are True for the generation;
+brygga-signer runs beside the API server as a native sidecar, its image a
+flag of the operator (`--signer-image`). One Service, `<cp>-kube-apiserver`,
+of the endpoint's type, takes 443 and 6443 to the API server and 8132 to
+konnectivity-server, and Workloads publishes `status.endpoint` from it before
+it waits on anything: the balancer's IP with 443 and 8132, or, for
+`nodePort`, the InternalIP of the first Ready management node by name with
+the node ports of 6443 and 8132, checked every minute since no event reports
+a node. In `nodePort` mode the API server listens on that node port itself:
+it advertises its address and its own port into the tenant's `kubernetes`
+endpoints, which the tenant's nodes reach only through the node port. Each
+pod template carries a hash of what its component reads once
+(`brygga.segla.io/restart-hash`), so a renewal of a reloaded certificate rolls
+nothing. One NetworkPolicy, `<cp>-etcd`, admits to the etcd members only this
+control plane's API server, the members and etcd-druid's namespace
+(`--etcd-druid-namespace`); the kubelet's probes come from the node, which a
+NetworkPolicy cannot block
+([network policies](https://kubernetes.io/docs/concepts/services-networking/network-policies/)).
+With one replica there is no PodDisruptionBudget. A `ControlPlane` that asks
+for what Workloads does not render yet — `endpoint.gateway`, the Compact
+layout, `highAvailability`, JWT authentication, an audit policy, an
+admission or a scheduler configuration — is `APIServerReady=False`
+(`GatewayUnsupported`, `Unsupported`) rather than run without it.
 
 The dedicated etcd is etcd-druid's `Etcd` `<cp>-etcd`, which the Datastore
 controller renders from the `DatastoreClass` and the newest complete
@@ -689,6 +717,20 @@ one, on by default since 1.35, and falls back to `list` where it does not
 Lifecycle reads `ControlPlane`s from the cache and applies their status:
 `list` and `watch` on `controlplanes`, `patch` on `controlplanes/status`; its
 envtest suite runs it as a user bound to exactly these rules.
+
+Workloads calls these verbs; its envtest suite runs it as a user bound to
+exactly them, with the admission plugin on:
+
+| group | resource | verbs | for |
+|---|---|---|---|
+| `brygga.segla.io` | `controlplanes` | `list`, `watch` | the cache |
+| `brygga.segla.io` | `controlplanes/status` | `patch` | `APIServerReady` and `status.endpoint`, applied |
+| `brygga.segla.io` | `controlplanes/finalizers` | `update` | `blockOwnerDeletion` on the owner references of what it creates |
+| `apps` | `deployments` | `list`, `watch`, `create`, `patch` | the cache; the apply |
+| `""` | `services`, `configmaps` | `list`, `watch`, `create`, `patch` | the cache, metadata only for ConfigMaps; the apply |
+| `networking.k8s.io` | `networkpolicies` | `list`, `watch`, `create`, `patch` | the cache; the apply |
+| `""` | `secrets` | `get`, `list`, `watch` | the restart-only Secrets, read uncached for their hash, and their metadata in the cache for the events |
+| `""` | `nodes` | `list` | the management node a `nodePort` endpoint names, read uncached |
 
 ## Installation
 

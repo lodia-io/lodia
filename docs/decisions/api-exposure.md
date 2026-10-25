@@ -1,6 +1,7 @@
 # Control planes are exposed through a shared Gateway by SNI; pods reach their API through a node-local proxy and a fixed advertise address
 
-Decided 2026-10-25. Not built.
+Decided 2026-10-25. The `loadBalancer` and `nodePort` modes are built;
+`gateway`, the in-cluster `apiserver-proxy` and the tunnel are not.
 
 ## Decision
 
@@ -141,4 +142,6 @@ a node flag (`--address`, `--node-ip`), which the node's owner passes through
 
 ## Code
 
-none yet.
+- `internal/controller/workloads` — the Service of the `loadBalancer` and
+  `nodePort` modes, `status.endpoint`, the API server's advertise address
+  and secure port, and konnectivity-server beside it on a Unix socket.

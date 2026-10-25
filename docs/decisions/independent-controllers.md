@@ -1,8 +1,9 @@
 # Six controllers share one object and communicate only through status conditions
 
 Decided 2026-10-25. The manager, PKI, the Datastore controller, for a
-dedicated etcd of one member, and Lifecycle, for the target within a minor
-and `Ready`, are built; Workloads, Tenant and Health are not.
+dedicated etcd of one member, Lifecycle, for the target within a minor and
+`Ready`, and Workloads, for one replica behind a `loadBalancer` or `nodePort`
+endpoint, are built; Tenant and Health are not.
 
 ## Decision
 
@@ -141,7 +142,8 @@ flowchart LR
   record, since deleting them to start empty brings no event; all after a
   minute. A StatefulSet that lags etcd-druid's report, read uncached, after
   15 seconds; and an `Etcd` being deleted, which has left the cache if its
-  label was removed, after 10 seconds.
+  label was removed, after 10 seconds. Workloads checks a `nodePort`
+  endpoint's management node every minute, since no event reports a node.
 
 ## Code
 
@@ -184,3 +186,12 @@ flowchart LR
   one-minute reconcile timeout. `lifecycle_test.go` runs it under the same
   cache with `ReaderFailOnMissingInformer`, as a user bound to exactly its
   rules; `internal/versions` holds the minors it supports.
+- `internal/controller/workloads` — reads `spec`, `status.target` and the
+  conditions it waits on, and the restart-only Secrets uncached; writes the
+  Service, the ConfigMaps, the Deployments and the etcd NetworkPolicy with
+  server-side apply as `brygga/workloads`, and applies `APIServerReady` and
+  `status.endpoint` through the status subresource (`Unknown` at the start
+  of its first visit, messages from the state alone, an API error left to the
+  log). Registered as `workloads` with ten workers and a one-minute
+  reconcile timeout. `workloads_test.go` runs it under the same cache with
+  `ReaderFailOnMissingInformer`, as a user bound to exactly its rules.
