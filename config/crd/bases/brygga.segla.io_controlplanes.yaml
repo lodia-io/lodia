@@ -1176,7 +1176,7 @@ spec:
                     type: object
                 type: object
               datastore:
-                description: Datastore is the store in use and its last backup.
+                description: Datastore is the store in use.
                 properties:
                   class:
                     description: Class is the DatastoreClass a dedicated etcd was

@@ -703,7 +703,7 @@ type ControlPlaneStatus struct {
 	// +optional
 	Credentials *CredentialsStatus `json:"credentials,omitempty"`
 
-	// Datastore is the store in use and its last backup.
+	// Datastore is the store in use.
 	// +optional
 	Datastore *DatastoreStatus `json:"datastore,omitempty"`
 

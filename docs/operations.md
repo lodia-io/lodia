@@ -40,8 +40,8 @@ itself and the support policy. Installation is in
 | `DatastoreReady=False`, `Provisioning`, `Secrets Etcd <cp>-etcd mounts do not exist` | someone removed etcd-druid's finalizer from Secrets the `Etcd` names and deleted them; the members run on what they mounted until they restart: the [runbook](#a-secret-the-etcd-mounts-is-gone) |
 | `DatastoreReady=False`, `Provisioning` for long | the message says what is awaited: a complete generation of the etcd certificates that this `ControlPlane` controls (PKI; one another `ControlPlane` controls never counts), the class's credentials copy, or etcd-druid's report; then the `Etcd`'s status — its `lastErrors`, which `DatastoreReady` does not read, are the only place a persistent failure of etcd-druid's other objects (the client Service, the ConfigMap, the leases) shows at a generation it has observed — its conditions, etcd-druid's log, and the tenant's `EtcdOpsTask`s, where a blocked operation shows ([etcd spike](etcd-spike-2026-10.md), finding 4) |
 | An etcd member that does not come back after a roll: `DatastoreReady=False`, the StatefulSet's pod missing | the StatefulSet's events (`kubectl describe statefulset <cp>-etcd`): `FailedCreate` means pod admission refused the new pod after the old one was deleted, for a `priorityClassName` that names no PriorityClass (or one deleted since) or a LimitRange or ResourceQuota in the namespace, which no schema can check; with one member it is an outage until fixed, and every certificate generation rolls the member |
-| `DatastoreReady=False`, `QuorumLost` | fewer than two of three members up; the [lost quorum](#lost-etcd-quorum) runbook |
-| API calls fail with `etcdserver: mvcc: database space exceeded` | the [space quota](#etcd-space-quota) runbook; `status.datastore.dbSizeBytes` against the class quota |
+| `DatastoreReady=False`, `QuorumLost` (phase 2) | fewer than two of three members up; the [lost quorum](#lost-etcd-quorum) runbook |
+| API calls fail with `etcdserver: mvcc: database space exceeded` | the [space quota](#etcd-space-quota) runbook; `status.datastore.dbSizeBytes` (phase 2) against the class quota |
 | `APIServerReady=False`, `RollingOut` for long | the kube-apiserver Deployment's events; a new replica failing `/readyz` (often a flag in `extraArgs` that the new minor removed) |
 | `CAValidityAcceptable=False`, `CAExpiring` | a CA expires within a year; the message names it and when; start a [CA rotation](#forced-ca-rotation). `Ready` stays True: every certificate is still valid |
 | `CertificatesReady=False`, `CAExpired` | a CA is past its `NotAfter`, and every certificate it signed with it; nothing is issued under it until a [CA rotation](#forced-ca-rotation) |
@@ -50,21 +50,21 @@ itself and the support policy. Installation is in
 | `CertificatesReady=False`, `SecretUnreadable` | `<cp>-encryption-config` or `<cp>-sa-keys` cannot be read; restore it from a backup. PKI never replaces it: a new encryption key would leave what the old one encrypted unreadable, a new signing key every token invalid |
 | `CertificatesReady=False`, `Issuing` | a Secret PKI has to change could not be written; the message names it and Brygga's log (`controller="pki"`) has the error; PKI retries with backoff |
 | `AccessReady=False`, `Binding` | the tenant refused a ClusterRoleBinding of Brygga, the admin group or the kubelet client, or has not confirmed them since its API server became ready; Brygga's log has the answer. PKI recreates a missing binding with a ten-minute `system:masters` certificate on its next pass. While the tenant does not answer, a True stays: `Reachable` reports that |
-| `Reachable=False`, `NodesSilent`; in the tenant, the Lease `kube-system/kube-controller-manager` held by `brygga` | most nodes cannot reach the API, so Health holds the controller manager; the [nodes cut off](#nodes-cut-off-from-the-control-plane) runbook |
-| `Reachable=False`, `HoldBlocked` | nodes are silent but another component holds the controller manager's lease (`status.health.controllerManagerHold.blockedBy`), for example a platform's own watchdog; run one of the two, not both |
+| `Reachable=False`, `NodesSilent` (phase 2); in the tenant, the Lease `kube-system/kube-controller-manager` held by `brygga` | most nodes cannot reach the API, so Health holds the controller manager; the [nodes cut off](#nodes-cut-off-from-the-control-plane) runbook |
+| `Reachable=False`, `HoldBlocked` (phase 2) | nodes are silent but another component holds the controller manager's lease (`status.health.controllerManagerHold.blockedBy`), for example a platform's own watchdog; run one of the two, not both |
 | `Reachable=False`, `ExternalProbeFailed`, nodes fine | the public endpoint from the management cluster's side: Gateway listener, route status, certificate SANs |
 | `AddonsAvailable=False`, `RolloutPending` | the DaemonSet or Deployment inside the tenant; a node that cannot pull images; a CNI missing (pods of CoreDNS stay Pending until a CNI is installed) |
 | `kubectl logs` / `exec` hang, everything else works | the konnectivity path: agents connected to every server (`konnectivity_network_proxy_server_ready_backend_connections`), the agent's DaemonSet, outbound 443 for the konnectivity hostname |
-| `Progressing=False`, `WaitingForWindow` for long | expected outside the window; `status.target.scheduledFor` says when |
-| `Progressing=False`, `FleetLimit` | other tenants are rolling; the operator's `fleet.maxConcurrentRollouts` |
-| `Progressing=False`, `Failed` | `status.kubernetes.upgrade.step` and `message`; the [stuck upgrade](#stuck-upgrade) runbook |
+| `Progressing=False`, `WaitingForWindow` (phase 2) for long | expected outside the window; `status.target.scheduledFor` says when |
+| `Progressing=False`, `FleetLimit` (phase 2) | other tenants are rolling; the operator's `fleet.maxConcurrentRollouts` |
+| `Progressing=False`, `Failed` (phase 2) | `status.kubernetes.upgrade.step` and `message`; the [stuck upgrade](#stuck-upgrade) runbook |
 | Nothing changes after editing `spec` | `metadata.generation` against `status.observedGeneration`; `spec.paused`; the operator's leader and its logs |
 
 ## Runbooks
 
 ### Lost etcd quorum
 
-1. Confirm: `DatastoreReady=False`, reason `QuorumLost`; fewer than two
+1. Confirm: `DatastoreReady=False`, reason `QuorumLost` (phase 2); fewer than two
    members `Ready`.
 2. If members are down because of their node: bring the node back, or delete
    the pod so the StatefulSet reschedules it with its volume; quorum returns
@@ -80,7 +80,7 @@ itself and the support policy. Installation is in
    Alternatively, create a new `ControlPlane` with `restoreFrom` the latest
    `Backup` and move the nodes (new token, `kubeadm join`).
 4. Afterwards: the API server rolls once (Datastore detects the restore);
-   check `status.datastore.lastBackup` is moving again.
+   check `status.datastore.lastBackup` (phase 2) is moving again.
 
 ### A Secret the Etcd mounts is gone
 
@@ -172,7 +172,7 @@ scheduler.
 
 ### Nodes cut off from the control plane
 
-1. Confirm: `Reachable=False`, reason `NodesSilent`;
+1. Confirm: `Reachable=False`, reason `NodesSilent` (phase 2);
    `status.health.controllerManagerHold` says since when and how many nodes
    are silent. Workloads on the nodes keep running; the tenant's controllers do
    not (no new ReplicaSets, no node IPAM) until the hold ends.
@@ -205,7 +205,7 @@ back. Renewal and backups pause; the `BryggaOperatorDown` alert fires first.
 | `BryggaEtcdSpaceNearQuota` | the database above 80% of the quota | compaction is not keeping up, or the tenant writes too much |
 | `BryggaEtcdNoLeader` | a dedicated etcd without a leader for 1 m | quorum or network inside the management cluster |
 | `BryggaControllerManagerHeld` | the hold active for 15 m | most nodes cannot reach the control plane; the tenant's workloads run, its controllers wait |
-| `BryggaUpgradeFailed` | `Progressing=False`, reason `Failed` | the stuck upgrade runbook |
+| `BryggaUpgradeFailed` | `Progressing=False`, reason `Failed` (phase 2) | the stuck upgrade runbook |
 | `BryggaReconcileErrors` | a controller's error rate above 5% for 15 m | the operator logs, by controller |
 
 Every alert links to its runbook section here.

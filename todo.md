@@ -156,9 +156,8 @@ is a decision — a decision is a file in `docs/decisions/`.
   until it is built, document the change as unsupported, or refuse it in the
   schema.
 - `apiServer.encryption.provider: kms` is accepted by the schema; PKI issues
-  everything else and reports `CertificatesReady` False with
-  `EncryptionProviderUnsupported`. Refuse it in CEL until the provider is
-  built.
+  everything else and reports `CertificatesReady` False with `Unsupported`.
+  Refuse it in CEL until the provider is built.
 - The kubelet signer narrows nothing: whoever holds it can sign any identity
   the API server accepts. A signer outside the controller manager, serving
   only kubelet CSRs (those for `kubernetes.io/kube-apiserver-client-kubelet`,
