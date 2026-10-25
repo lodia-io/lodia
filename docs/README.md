@@ -247,6 +247,36 @@ everything the class does not set is etcd-druid's default:
 | the `ControlPlane`'s availability | `spec.replicas` | 1 today; 3 with `highAvailability` and 0 while hibernating come with later phases |
 | the etcd certificates, generation `g` | `spec.etcd.clientUrlTls`, `spec.etcd.peerUrlTls`, `spec.backup.tls` | all three name one complete generation, with `dataKey: ca.crt` on the CA; a newer complete generation is one update of the `Etcd`, so one roll of the members; the `Etcd` moves forward only, so while a Secret of the generation it names is being deleted it keeps that generation instead of rolling back to an older complete one and forward again |
 
+A class is checked when it is written, since a value refused later stops
+more than its own edit: an `Etcd` the API server refuses stops taking
+certificate generations, and a backup sidecar that refuses its flags exits at
+start, which takes a single member down at its next roll. The fields that
+reach the `Etcd` carry the patterns and rules of etcd-druid's CRD, and
+`api/v1alpha1/etcddruid_test.go` fails when an etcd-druid release changes
+them. The rest is what the processes accept. The sidecar etcd-druid v0.39.0
+runs, etcd-backup-restore v0.41.2
+([images.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/images/images.yaml#L14-L19)),
+parses both schedules with robfig/cron v3.0.1 and exits on an error
+([snapshotter.go](https://github.com/gardener/etcd-backup-restore/blob/v0.41.2/pkg/types/snapshotter.go#L68),
+[init.go](https://github.com/gardener/etcd-backup-restore/blob/v0.41.2/pkg/server/init.go#L78),
+[server.go](https://github.com/gardener/etcd-backup-restore/blob/v0.41.2/cmd/server.go#L29-L32)):
+a schedule is five fields separated by single spaces, without lists, its
+ranges ascend
+([parser.go](https://github.com/robfig/cron/blob/v3.0.1/parser.go#L310-L312)),
+and its days of the week run from 1 to 6, since etcd-druid refuses 0 and the
+parser 7 ([spec.go](https://github.com/robfig/cron/blob/v3.0.1/spec.go#L40));
+`*/7` selects Sunday. The quota is above zero
+([restorer.go](https://github.com/gardener/etcd-backup-restore/blob/v0.41.2/pkg/types/restorer.go#L124-L126)),
+the compaction retention a number, or in periodic mode a duration
+([etcd.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/embed/etcd.go#L939-L956)),
+and every duration one Go parses
+([duration.go](https://github.com/kubernetes/apimachinery/blob/v0.37.1/pkg/apis/meta/v1/duration.go#L32-L42)):
+the operator decodes classes into Go types, and one it cannot decode fails
+the list its cache syncs from, so the Datastore controller fails to start and
+the manager with it
+([controller.go](https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/internal/controller/controller.go#L363-L386));
+`api/v1alpha1/durations_test.go` holds every duration of the API to that.
+
 `DatastoreReady` is `Unknown`, reason `Reconciling`, until the controller's
 first pass has finished, and `Provisioning` until a complete certificate
 generation exists and etcd-druid reports the `Etcd` ready for its current

@@ -56,9 +56,11 @@ type DatastoreClassSpec struct {
 
 // EtcdSettings configure etcd members.
 type EtcdSettings struct {
-	// QuotaBackendBytes is the database size limit.
+	// QuotaBackendBytes is the database size limit, above zero: the backup
+	// sidecar refuses to start with zero or less.
 	// +optional
 	// +kubebuilder:default="4Gi"
+	// +kubebuilder:validation:XValidation:rule="quantity(string(self)).isGreaterThan(quantity('0'))",message="must be greater than zero"
 	QuotaBackendBytes *resource.Quantity `json:"quotaBackendBytes,omitempty"`
 
 	// AutoCompaction is etcd's own compaction.
@@ -75,6 +77,7 @@ type EtcdSettings struct {
 }
 
 // AutoCompaction is etcd's compaction mode and retention.
+// +kubebuilder:validation:XValidation:rule="!has(self.retention) || self.retention.matches('^[0-9]+$') || ((!has(self.mode) || self.mode == 'periodic') && duration(self.retention) >= duration('0s'))",message="retention must be a number, or in periodic mode a duration"
 type AutoCompaction struct {
 	// Mode is periodic or revision.
 	// +optional
@@ -82,7 +85,9 @@ type AutoCompaction struct {
 	// +kubebuilder:validation:Enum=periodic;revision
 	Mode string `json:"mode,omitempty"`
 
-	// Retention is a duration in periodic mode, a revision count in revision mode.
+	// Retention is a number of hours or a duration in periodic mode, a
+	// revision count in revision mode; etcd refuses to start with anything
+	// else.
 	// +optional
 	// +kubebuilder:default="15m"
 	// +kubebuilder:validation:MaxLength=32
@@ -91,12 +96,22 @@ type AutoCompaction struct {
 
 // Defragmentation is a cron schedule.
 type Defragmentation struct {
-	// Schedule is a cron expression.
+	// Schedule is a cron expression of five fields separated by single
+	// spaces, without lists, whose ranges ascend and whose days of the week
+	// run from 1 to 6, since etcd-druid refuses 0 and the backup sidecar 7;
+	// */7 selects Sunday.
 	// +required
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=64
-	Schedule string `json:"schedule"`
+	Schedule CronSchedule `json:"schedule"`
 }
+
+// CronSchedule is a cron expression both etcd-druid and the backup sidecar
+// accept.
+// +kubebuilder:validation:MaxLength=64
+// +kubebuilder:validation:Pattern=`^(\*|[1-5]?[0-9]|[1-5]?[0-9]-[1-5]?[0-9]|(?:[1-9]|[1-4][0-9]|5[0-9])\/(?:[1-9]|[1-4][0-9]|5[0-9]|60)|\*\/(?:[1-9]|[1-4][0-9]|5[0-9]|60))\s+(\*|[0-9]|1[0-9]|2[0-3]|[0-9]-(?:[0-9]|1[0-9]|2[0-3])|1[0-9]-(?:1[0-9]|2[0-3])|2[0-3]-2[0-3]|(?:[1-9]|1[0-9]|2[0-3])\/(?:[1-9]|1[0-9]|2[0-4])|\*\/(?:[1-9]|1[0-9]|2[0-4]))\s+(\*|[1-9]|[12][0-9]|3[01]|[1-9]-(?:[1-9]|[12][0-9]|3[01])|[12][0-9]-(?:[12][0-9]|3[01])|3[01]-3[01]|(?:[1-9]|[12][0-9]|30)\/(?:[1-9]|[12][0-9]|3[01])|\*\/(?:[1-9]|[12][0-9]|3[01]))\s+(\*|[1-9]|1[0-2]|[1-9]-(?:[1-9]|1[0-2])|1[0-2]-1[0-2]|(?:[1-9]|1[0-2])\/(?:[1-9]|1[0-2])|\*\/(?:[1-9]|1[0-2]))\s+(\*|[1-7]|[1-6]-[1-7]|[1-6]\/[1-7]|\*\/[1-7])$`
+// +kubebuilder:validation:XValidation:rule="self.matches('^[^ ]+ [^ ]+ [^ ]+ [^ ]+ [^ ]+$')",message="must be five fields separated by single spaces"
+// +kubebuilder:validation:XValidation:rule="self.split(' ').all(f, !f.split('/')[0].matches('^[0-9]+-[0-9]+$') || int(f.split('/')[0].split('-')[0]) <= int(f.split('/')[0].split('-')[1]))",message="every range must ascend"
+// +kubebuilder:validation:XValidation:rule="self.split(' ').size() != 5 || !self.split(' ')[4].matches('^(7|[1-6]-7)$')",message="the day of the week cannot be 7"
+type CronSchedule string
 
 // EtcdStorage is the members' persistent volumes.
 type EtcdStorage struct {
@@ -122,16 +137,18 @@ type EtcdBackup struct {
 	// +required
 	Store BackupStore `json:"store"`
 
-	// FullSnapshotSchedule is a cron expression; the hour moves into the
-	// tenant's maintenance window.
+	// FullSnapshotSchedule is a cron expression as defragmentation.schedule
+	// takes it; the hour moves into the tenant's maintenance window.
 	// +optional
 	// +kubebuilder:default="0 0 * * *"
-	// +kubebuilder:validation:MaxLength=64
-	FullSnapshotSchedule string `json:"fullSnapshotSchedule,omitempty"`
+	FullSnapshotSchedule CronSchedule `json:"fullSnapshotSchedule,omitempty"`
 
 	// DeltaSnapshotPeriod is how often a delta snapshot is taken.
 	// +optional
 	// +kubebuilder:default="5m"
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('0s')",message="must be a duration"
 	DeltaSnapshotPeriod *metav1.Duration `json:"deltaSnapshotPeriod,omitempty"`
 
 	// Retention is how long snapshots are kept.
@@ -148,8 +165,8 @@ type BackupStore struct {
 
 	// Bucket name.
 	// +required
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9][a-zA-Z0-9._-]{1,61}[a-zA-Z0-9]$`
 	Bucket string `json:"bucket"`
 
 	// Prefix inside the bucket.
@@ -166,6 +183,7 @@ type BackupStore struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=512
 	// +kubebuilder:validation:XValidation:rule="self.startsWith('https://') || self.startsWith('http://')",message="must be a URL"
+	// +kubebuilder:validation:XValidation:rule="isURL(self)",message="must be a URL"
 	Endpoint string `json:"endpoint,omitempty"`
 
 	// SecretRef names the credentials.
@@ -184,6 +202,7 @@ type BackupRetention struct {
 
 	// AfterDelete is how long snapshots outlive their ControlPlane.
 	// +optional
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('0s')",message="must be a duration"
 	AfterDelete *metav1.Duration `json:"afterDelete,omitempty"`
 }
 

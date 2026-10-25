@@ -99,11 +99,24 @@ is a decision — a decision is a file in `docs/decisions/`.
   table in `docs/README.md` (Identity and tenancy), which `datastoreRules` in
   `internal/controller/datastore/datastore_test.go` enforces; the chart and
   the test should read one list.
-- The `DatastoreClass` schema checks `fullSnapshotSchedule` and
-  `defragmentation.schedule` only for length; etcd-druid's CRD wants standard
-  five-field cron, so a bad schedule fails the `Etcd` apply: the error is in
-  the controller's log and `DatastoreReady` keeps what it said before. A
-  pattern on the class, or a reason of its own.
+- The shared `Placement` and `resources` types get the rules of pod
+  validation with Workloads, which renders them for the `ControlPlane` in
+  phase 1: the class's `placement` and `etcd.resources` have none yet. Until
+  then a class value the apps API refuses in etcd-druid's StatefulSet shows as
+  `DatastoreReady=False`, since etcd-druid returns before it stamps
+  `observedGeneration`
+  ([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcd/reconciler.go#L127-L144)):
+  the running member stays, later certificate generations stop reaching it
+  until the class is fixed, and the reason is in the `Etcd`'s
+  `status.lastErrors`.
+- No schema can check what pod admission refuses in a pod the StatefulSet
+  API accepted: a `priorityClassName` that names no PriorityClass, or one
+  deleted later, and a LimitRange or ResourceQuota in the tenant namespace.
+  The rolling update deletes the old pod first and then cannot create the new
+  one
+  ([stateful_set_control.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/statefulset/stateful_set_control.go#L748-L760)),
+  so a single member goes down at its next roll, and every certificate
+  generation is a roll. `docs/operations.md` names the symptom.
 - A class edit that reaches the `Etcd` rolls its members at once; the decision
   wants it in the tenant's maintenance window, which Lifecycle gates in phase
   2. The `Etcd` records the class generation it was rendered from for that.
