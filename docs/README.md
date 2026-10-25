@@ -74,10 +74,10 @@ Each controller has its own queue and field manager, reads `spec`,
 own condition; none calls another
 ([decision](decisions/independent-controllers.md)). The cache is scoped to
 labelled objects, with metadata only for Secrets. PKI, the Datastore
-controller, a first Lifecycle and the Tenant controller are built
-(`internal/controller/pki`, `datastore`, `lifecycle` and `tenant`,
-registered under those names by `internal/operator`, whose manager
-`cmd/brygga` runs and the tests build); Workloads and Health are not.
+controller, a first Lifecycle, the Tenant controller and Health's external
+probe are built (`internal/controller/pki`, `datastore`, `lifecycle`,
+`tenant` and `health`, registered under those names by `internal/operator`,
+whose manager `cmd/brygga` runs and the tests build); Workloads is not.
 
 ```mermaid
 sequenceDiagram
@@ -149,7 +149,7 @@ ConfigMaps are their writer's alone:
 | object | writer | readers | on renewal or change |
 |---|---|---|---|
 | `<cp>-cakey-cluster`, `-cakey-client`, `-cakey-front-proxy`, `-cakey-etcd` (`kubernetes.io/tls`: each CA's certificate and key) | PKI | PKI alone; never mounted | a CA is renewed only by a rotation, announced a year ahead by `CAValidityAcceptable=False` (`CAExpiring`) outside `Ready`; a lost or unreadable key (`CAMissing`) or an expired CA (`CAExpired`) turns `CertificatesReady` False, and nothing that CA signs is written until it is restored or rotated, since a new CA would cut every client or node off at once; a key Secret restored without its labels is found by name and kept |
-| `<cp>-ca-bundle` (`ca.crt`: the cluster CA, two during a trust anchor rotation) | PKI | everything that verifies the API server: PKI, for the kubeconfigs; Workloads, for the controller manager's `--root-ca-file`, which publishes `kube-root-ca.crt`; Tenant, for `cluster-info`; Health, through `status.credentials.caBundleSecretRef` | kubeconfigs and `cluster-info` re-rendered; the controller manager restarts, because `--root-ca-file` is read once |
+| `<cp>-ca-bundle` (`ca.crt`: the cluster CA, two during a trust anchor rotation) | PKI | everything that verifies the API server: PKI, for the kubeconfigs; Workloads, for the controller manager's `--root-ca-file`, which publishes `kube-root-ca.crt`; Tenant, for `cluster-info`; Health, for its probe of the public endpoint | kubeconfigs and `cluster-info` re-rendered; the controller manager restarts, because `--root-ca-file` is read once |
 | `<cp>-client-ca` (`ca.crt`: the client CA, the current kubelet signer, and a replaced signer for one signing duration, 30 days) | PKI | Workloads, for the API server's `--client-ca-file` | reloaded |
 | `<cp>-kubelet-signer` (`kubernetes.io/tls`: the intermediate under the client CA, `CA:TRUE`, path length 0) | PKI | Workloads, for the controller manager's per-signer signing flags | reloaded |
 | `<cp>-apiserver-serving`, `<cp>-apiserver-kubelet-client` (`kubernetes.io/tls`) | PKI | Workloads, for the API server | reloaded (the kubelet client certificate for new connections) |
@@ -680,6 +680,15 @@ phase 2.
 
 ## Health
 
+Built so far, for phase 1: the probe through the public endpoint. Every 10
+seconds Health asks `https://<status.endpoint.apiServer>/readyz` without
+credentials, which the API server's authentication allows for its health
+paths, and verifies it against `<cp>-ca-bundle`. `Reachable` is True on a 200
+and False, `ExternalProbeFailed`, after three probes in a row that fail, so
+one blip does not drop `Ready`; before the endpoint is published it is
+False, `WaitingForEndpoint`, and before the bundle is written,
+`WaitingForCertificates`. The rest of this section comes with phase 2.
+
 Health probes `/readyz` through the public endpoint, the way a kubelet
 reaches it, and through the in-namespace Service, and every 5 seconds reads
 the tenant's nodes and their leases through that Service. When 60% or more of
@@ -747,6 +756,11 @@ envtest suite runs it as a user bound to exactly these rules. The Tenant
 controller needs the same and `get` on `secrets`, for `<cp>-brygga-kubeconfig`
 and `<cp>-ca-bundle`, read uncached; inside the tenant it is
 `brygga:operator`.
+
+Health reads `ControlPlane`s from the cache and the CA bundle from the API
+server, and applies `Reachable`: `list` and `watch` on `controlplanes`,
+`patch` on `controlplanes/status`, `get` on `secrets`; its envtest suite runs
+it as a user bound to exactly these rules.
 
 ## Installation
 

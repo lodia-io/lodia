@@ -22,6 +22,7 @@ import (
 
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
 	"github.com/segla-io/brygga/internal/controller/datastore"
+	"github.com/segla-io/brygga/internal/controller/health"
 	"github.com/segla-io/brygga/internal/controller/lifecycle"
 	"github.com/segla-io/brygga/internal/controller/pki"
 	"github.com/segla-io/brygga/internal/controller/tenant"
@@ -81,6 +82,9 @@ func Setup(mgr ctrl.Manager) error {
 	}
 	if err := (&tenant.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), ApplyPeriod: 10 * time.Minute}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the tenant controller: %w", err)
+	}
+	if err := (&health.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Period: 10 * time.Second, Timeout: 5 * time.Second}).SetupWithManager(mgr, workers); err != nil {
+		return fmt.Errorf("set up the health controller: %w", err)
 	}
 	return nil
 }

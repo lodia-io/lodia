@@ -40,6 +40,7 @@ var conditionWriters = map[string]string{
 	bryggav1alpha1.ConditionDatastoreReady:       "brygga/datastore",
 	bryggav1alpha1.ConditionAddonsApplied:        "brygga/tenant",
 	bryggav1alpha1.ConditionAddonsAvailable:      "brygga/tenant",
+	bryggav1alpha1.ConditionReachable:            "brygga/health",
 	bryggav1alpha1.ConditionProgressing:          "brygga/lifecycle",
 	bryggav1alpha1.ConditionReady:                "brygga/lifecycle",
 }
