@@ -136,7 +136,7 @@ flowchart LR
 
 - `cmd/brygga/main.go` — the manager with the cache rules above, PKI
   registered as `pki` with ten workers, and the Datastore controller as
-  `datastore` with ten.
+  `datastore` with ten; each sets a reconcile timeout of a minute.
 - `internal/controller/pki` — reads `spec` and `status.endpoint`, writes its
   Secrets with server-side apply as `brygga/pki`, applies `CertificatesReady`,
   `CAValidityAcceptable` and `AccessReady` alone through the status

@@ -194,11 +194,15 @@ func (r *Reconciler) apply(ctx context.Context, etcd *druidv1alpha1.Etcd) (*drui
 
 // etcd-druid's report is read with the checks Gardener makes before it counts
 // an Etcd ready (gardener/gardener@v1.154.0
-// pkg/component/etcd/etcd/waiter.go#L49-L104), a deletion reported first,
-// where Gardener checks the last errors first. Then the StatefulSet, read from
-// the API server: etcd-druid computes ready from its cached StatefulSet before
-// it stamps the observed generation. The second result is a StatefulSet that
-// lags a complete report, which no watch brings back.
+// pkg/component/etcd/etcd/waiter.go#L49-L104) but the last errors: Gardener's
+// one-shot wait retries on them, while etcd-druid clears them at the start of
+// every spec reconcile, every 15 seconds, and sets them again on a failure
+// (etcd-druid@v0.39.0 internal/controller/utils/etcdstatus.go#L45-L93), so a
+// condition would flip with them; a failed sync shows anyway, since etcd-druid
+// stamps the observed generation only after it. Then the StatefulSet, read
+// from the API server: etcd-druid computes ready from its cached StatefulSet
+// before it stamps the observed generation. The second result is a
+// StatefulSet that lags a complete report, which no watch brings back.
 func readiness(cp string, etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet, generation int, missing []string) (metav1.Condition, bool) {
 	not := func(message string) (metav1.Condition, bool) {
 		return newCondition(metav1.ConditionFalse, ReasonProvisioning, message), false
@@ -208,13 +212,6 @@ func readiness(cp string, etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet, gen
 	}
 	if len(missing) > 0 {
 		return not(fmt.Sprintf("Secrets Etcd %s mounts do not exist: %s", etcd.Name, strings.Join(missing, ", ")))
-	}
-	if len(etcd.Status.LastErrors) > 0 {
-		errs := make([]string, 0, len(etcd.Status.LastErrors))
-		for _, lastError := range etcd.Status.LastErrors {
-			errs = append(errs, string(lastError.Code)+": "+lastError.Description)
-		}
-		return not(fmt.Sprintf("etcd-druid reports errors on Etcd %s: %s", etcd.Name, strings.Join(errs, "; ")))
 	}
 	if observed := ptr.Deref(etcd.Status.ObservedGeneration, 0); observed != etcd.Generation {
 		return not(fmt.Sprintf("etcd-druid has not observed generation %d of Etcd %s, observedGeneration %d", etcd.Generation, etcd.Name, observed))
@@ -282,9 +279,6 @@ func readinessInput(etcd *druidv1alpha1.Etcd) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d %t %d %t %d/%d %d;", etcd.Generation, !etcd.DeletionTimestamp.IsZero(), ptr.Deref(etcd.Status.ObservedGeneration, 0),
 		ptr.Deref(etcd.Status.Ready, false), etcd.Status.ReadyReplicas, etcd.Spec.Replicas, len(etcd.Status.Members))
-	for _, lastError := range etcd.Status.LastErrors {
-		fmt.Fprintf(&b, "%s:%s;", lastError.Code, lastError.Description)
-	}
 	for _, c := range etcd.Status.Conditions {
 		fmt.Fprintf(&b, "%s=%s/%s;", c.Type, c.Status, c.Reason)
 	}

@@ -1240,9 +1240,6 @@ func TestDatastoreReadyFollowsEtcdStatus(t *testing.T) {
 		sts     func(*appsv1.StatefulSetStatus)
 		message string
 	}{
-		{"last errors", func(s *druidv1alpha1.EtcdStatus) {
-			s.LastErrors = []druidapicommon.LastError{{Code: "ERR_SYNC_STATEFULSET", Description: "pod reported-etcd-0 is not ready", ObservedAt: metav1.Now()}}
-		}, nil, "etcd-druid reports errors on Etcd reported-etcd: ERR_SYNC_STATEFULSET: pod reported-etcd-0 is not ready"},
 		{"generation not observed", func(s *druidv1alpha1.EtcdStatus) { s.ObservedGeneration = new(*s.ObservedGeneration - 1) }, nil,
 			"etcd-druid has not observed generation"},
 		{"AllMembersUpdated False", func(s *druidv1alpha1.EtcdStatus) {
@@ -1271,6 +1268,14 @@ func TestDatastoreReadyFollowsEtcdStatus(t *testing.T) {
 			waitCondition(t, ns, cp, metav1.ConditionTrue, datastore.ReasonReady, "ready on certificate generation 1")
 		})
 	}
+	t.Run("last errors alone", func(t *testing.T) {
+		setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) {
+			s.LastErrors = []druidapicommon.LastError{{Code: "ERR_SYNC_CLIENT_SERVICE", Description: "the server could not answer", ObservedAt: metav1.Now()}}
+		})
+		settle(t, ns, cp)
+		waitCondition(t, ns, cp, metav1.ConditionTrue, datastore.ReasonReady, "ready on certificate generation 1")
+		setEtcdStatus(t, ns, cp, nil)
+	})
 
 	writeGeneration(t, ns, cp, 2)
 	waitEtcd(t, ns, cp, namesGeneration(2))

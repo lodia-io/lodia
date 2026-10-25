@@ -303,9 +303,19 @@ finalizer ([operations](operations.md#a-secret-the-etcd-mounts-is-gone)).
 etcd-druid's report is read with the checks Gardener makes
 before it counts an `Etcd` ready
 ([waiter.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/component/etcd/etcd/waiter.go#L49-L104)):
-no `lastErrors` (they go into the message), no deletion timestamp,
-`observedGeneration` current, `AllMembersUpdated` True, `ready`. Gardener
-checks `lastErrors` first; Datastore reports a deletion first. Then the
+no deletion timestamp, `observedGeneration` current, `AllMembersUpdated`
+True, `ready`. Gardener's waiter, a one-shot wait, also retries while there
+are `lastErrors`; Datastore does not read them, since etcd-druid clears them
+at the start of every spec reconcile, every 15 seconds, and sets them again
+on a failure
+([etcdstatus.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/utils/etcdstatus.go#L45-L93)),
+so a persistent error would flip the condition, while a failed StatefulSet
+sync at a new generation shows anyway: etcd-druid returns before it stamps
+`observedGeneration`
+([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcd/reconciler.go#L127-L144)).
+A persistent failure of etcd-druid's other objects (the client Service, the
+ConfigMap, the leases) at a generation it has observed shows only in
+`lastErrors` ([operations](operations.md#what-breaks-and-how-it-shows)). Then the
 StatefulSet itself, read from the API server, must mount the certificate
 generation, its controller must have observed its generation, and every
 replica must be updated and ready: etcd-druid syncs the StatefulSet, then

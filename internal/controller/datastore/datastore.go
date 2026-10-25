@@ -87,7 +87,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 	})
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(Name).
-		WithOptions(controller.Options{MaxConcurrentReconciles: workers}).
+		WithOptions(controller.Options{MaxConcurrentReconciles: workers, ReconciliationTimeout: time.Minute}).
 		For(&bryggav1alpha1.ControlPlane{}).
 		Owns(&druidv1alpha1.Etcd{}, builder.WithPredicates(etcdChanged())).
 		WatchesMetadata(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(controlPlaneOf), builder.WithPredicates(predicate.Or(certificates, backupCopy))).
