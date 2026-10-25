@@ -6,6 +6,7 @@
 package certs
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -20,7 +21,14 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"k8s.io/client-go/util/cert"
+	"k8s.io/client-go/util/keyutil"
 )
+
+// Backdate is how far before its issuance a certificate is valid, so a
+// verifier whose clock runs behind accepts it; kubeadm's offset.
+const Backdate = 5 * time.Minute
 
 // Certificate is a certificate with its private key.
 type Certificate struct {
@@ -39,7 +47,7 @@ type Profile struct {
 	CA bool
 }
 
-// NewCA returns a self-signed CA valid from now for lifetime.
+// NewCA returns a self-signed CA valid for lifetime.
 func NewCA(commonName string, lifetime time.Duration) (*Certificate, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -52,7 +60,8 @@ func NewCA(commonName string, lifetime time.Duration) (*Certificate, error) {
 	return create(tmpl, tmpl, key, key)
 }
 
-// Issue signs a certificate for p under c, valid from now for lifetime.
+// Issue signs a certificate for p under c, valid for lifetime or until c
+// expires, whichever is sooner.
 func (c *Certificate) Issue(p Profile, lifetime time.Duration) (*Certificate, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -61,6 +70,9 @@ func (c *Certificate) Issue(p Profile, lifetime time.Duration) (*Certificate, er
 	tmpl, err := template(p, lifetime)
 	if err != nil {
 		return nil, err
+	}
+	if tmpl.NotAfter.After(c.Cert.NotAfter) {
+		tmpl.NotAfter = c.Cert.NotAfter
 	}
 	tmpl.MaxPathLenZero = p.CA
 	return create(tmpl, c.Cert, key, c.Key)
@@ -77,7 +89,7 @@ func template(p Profile, lifetime time.Duration) (*x509.Certificate, error) {
 		Subject:               pkix.Name{CommonName: p.CommonName, Organization: p.Organizations},
 		DNSNames:              p.DNSNames,
 		IPAddresses:           p.IPAddresses,
-		NotBefore:             now,
+		NotBefore:             now.Add(-Backdate),
 		NotAfter:              now.Add(lifetime),
 		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           p.Usages,
@@ -95,22 +107,22 @@ func create(tmpl, parent *x509.Certificate, key, signer *ecdsa.PrivateKey) (*Cer
 	if err != nil {
 		return nil, err
 	}
-	cert, err := x509.ParseCertificate(der)
+	parsed, err := x509.ParseCertificate(der)
 	if err != nil {
 		return nil, err
 	}
-	return &Certificate{Cert: cert, Key: key}, nil
+	return &Certificate{Cert: parsed, Key: key}, nil
 }
 
 // Matches reports whether cert says what p says: subject, names, usages and
 // whether it is a CA.
-func Matches(cert *x509.Certificate, p Profile) bool {
-	return cert.Subject.CommonName == p.CommonName &&
-		slices.Equal(cert.Subject.Organization, p.Organizations) &&
-		sameSet(cert.DNSNames, p.DNSNames) &&
-		sameSet(ipStrings(cert.IPAddresses), ipStrings(p.IPAddresses)) &&
-		slices.Equal(cert.ExtKeyUsage, p.Usages) &&
-		cert.IsCA == p.CA
+func Matches(c *x509.Certificate, p Profile) bool {
+	return c.Subject.CommonName == p.CommonName &&
+		slices.Equal(c.Subject.Organization, p.Organizations) &&
+		sameSet(c.DNSNames, p.DNSNames) &&
+		sameSet(ipStrings(c.IPAddresses), ipStrings(p.IPAddresses)) &&
+		slices.Equal(c.ExtKeyUsage, p.Usages) &&
+		c.IsCA == p.CA
 }
 
 func sameSet(a, b []string) bool {
@@ -125,26 +137,35 @@ func ipStrings(ips []net.IP) []string {
 	return out
 }
 
-// RenewalTime is two thirds into cert's lifetime.
-func RenewalTime(cert *x509.Certificate) time.Time {
-	return cert.NotBefore.Add(cert.NotAfter.Sub(cert.NotBefore) * 2 / 3)
+// RenewalTime is two thirds of the way from a certificate's issuance (its
+// NotBefore plus the Backdate) to its NotAfter.
+func RenewalTime(c *x509.Certificate) time.Time {
+	issued := c.NotBefore.Add(Backdate)
+	if issued.After(c.NotAfter) {
+		issued = c.NotBefore
+	}
+	return issued.Add(c.NotAfter.Sub(issued) * 2 / 3)
 }
 
-// Verify checks that cert chains to ca and is valid now.
-func Verify(cert, ca *x509.Certificate) error {
+// Verify checks that c chains to ca and is valid now.
+func Verify(c, ca *x509.Certificate) error {
 	roots := x509.NewCertPool()
 	roots.AddCert(ca)
-	_, err := cert.Verify(x509.VerifyOptions{Roots: roots, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}})
+	_, err := c.Verify(x509.VerifyOptions{Roots: roots, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}})
 	return err
 }
 
-// CertPEM encodes certs, one PEM block each.
-func CertPEM(certs ...*x509.Certificate) []byte {
-	var out []byte
-	for _, c := range certs {
-		out = append(out, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.Raw})...)
-	}
-	return out
+// CertPEM encodes one certificate.
+func CertPEM(c *x509.Certificate) ([]byte, error) {
+	return cert.EncodeCertificates(c)
+}
+
+// Bundle encodes a set of certificates: each once, in DER order, so the
+// bytes do not depend on the order given.
+func Bundle(certs ...*x509.Certificate) ([]byte, error) {
+	set := slices.Clone(certs)
+	slices.SortFunc(set, func(a, b *x509.Certificate) int { return bytes.Compare(a.Raw, b.Raw) })
+	return cert.EncodeCertificates(slices.CompactFunc(set, (*x509.Certificate).Equal)...)
 }
 
 // KeyPEM encodes key as PKCS#8.
@@ -153,55 +174,37 @@ func KeyPEM(key crypto.PrivateKey) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), nil
+	return pem.EncodeToMemory(&pem.Block{Type: keyutil.PrivateKeyBlockType, Bytes: der}), nil
 }
 
 // ParseCerts decodes every certificate in data.
 func ParseCerts(data []byte) ([]*x509.Certificate, error) {
-	var certs []*x509.Certificate
-	for block, rest := pem.Decode(data); block != nil; block, rest = pem.Decode(rest) {
-		if block.Type != "CERTIFICATE" {
-			return nil, fmt.Errorf("PEM block %q is not a certificate", block.Type)
-		}
-		cert, err := x509.ParseCertificate(block.Bytes)
-		if err != nil {
-			return nil, err
-		}
-		certs = append(certs, cert)
-	}
-	if len(certs) == 0 {
-		return nil, errors.New("no certificate")
-	}
-	return certs, nil
+	return cert.ParseCertsPEM(data)
 }
 
-// ParseKey decodes a PKCS#8 private key.
+// ParseKey decodes a PEM private key.
 func ParseKey(data []byte) (crypto.PrivateKey, error) {
-	block, _ := pem.Decode(data)
-	if block == nil || block.Type != "PRIVATE KEY" {
-		return nil, errors.New("no PKCS#8 private key")
-	}
-	return x509.ParsePKCS8PrivateKey(block.Bytes)
+	return keyutil.ParsePrivateKeyPEM(data)
 }
 
 // Parse decodes one certificate and its P-256 key.
 func Parse(certPEM, keyPEM []byte) (*Certificate, error) {
-	certs, err := ParseCerts(certPEM)
+	parsed, err := ParseCerts(certPEM)
 	if err != nil {
 		return nil, err
 	}
-	if len(certs) != 1 {
-		return nil, fmt.Errorf("%d certificates, want one", len(certs))
+	if len(parsed) != 1 {
+		return nil, fmt.Errorf("%d certificates, want one", len(parsed))
 	}
 	key, err := ParseKey(keyPEM)
 	if err != nil {
 		return nil, err
 	}
 	ec, ok := key.(*ecdsa.PrivateKey)
-	if !ok || ec.Curve != elliptic.P256() || !ec.PublicKey.Equal(certs[0].PublicKey) {
+	if !ok || ec.Curve != elliptic.P256() || !ec.PublicKey.Equal(parsed[0].PublicKey) {
 		return nil, errors.New("the key is not the certificate's P-256 key")
 	}
-	return &Certificate{Cert: certs[0], Key: ec}, nil
+	return &Certificate{Cert: parsed[0], Key: ec}, nil
 }
 
 // SAN appends host to p as an IP address or as a DNS name, once.

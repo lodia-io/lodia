@@ -142,14 +142,14 @@ ConfigMaps, who consumes them, and what a change does:
 
 | object | consumer | on renewal or change |
 |---|---|---|
-| `<cp>-cakey-cluster`, `-cakey-client`, `-cakey-front-proxy`, `-cakey-etcd` (`kubernetes.io/tls`: each CA's certificate and key) | PKI alone; never mounted | a CA is renewed only by a rotation |
+| `<cp>-cakey-cluster`, `-cakey-client`, `-cakey-front-proxy`, `-cakey-etcd` (`kubernetes.io/tls`: each CA's certificate and key) | PKI alone; never mounted | a CA is renewed only by a rotation; a lost or unreadable key is reported (`CertificatesReady` False, `CAMissing`) and nothing that CA signs is written until it is restored or rotated, since a new CA would cut every client or node off at once |
 | `<cp>-ca-bundle` (`ca.crt`: the cluster CA, two during a trust anchor rotation) | everything that verifies the API server: kubeconfigs, `cluster-info`, `kube-root-ca.crt` | kubeconfigs and `cluster-info` re-rendered; the controller manager restarts, because `--root-ca-file` is read once |
 | `<cp>-client-ca-bundle` (`ca.crt`: the client CA, the current kubelet signer, and a replaced signer for one signing duration, 30 days) | API server `--client-ca-file` | reloaded |
 | `<cp>-kubelet-signer` (`kubernetes.io/tls`: the intermediate under the client CA, `CA:TRUE`, path length 0) | controller manager, per-signer signing flags | reloaded |
 | `<cp>-apiserver-serving`, `<cp>-apiserver-kubelet-client` (`kubernetes.io/tls`) | API server | reloaded (the kubelet client certificate for new connections) |
 | `<cp>-front-proxy-ca` (`ca.crt`), `<cp>-front-proxy-client` (`kubernetes.io/tls`) | API server, aggregated APIs | the CA is reloaded; the client certificate restarts the API server until a reload is proven |
 | `<cp>-etcd-ca` (`ca.crt`), `<cp>-apiserver-etcd-client` (`kubernetes.io/tls`) | API server | the client certificate is read per connection; a new etcd CA restarts the API server (`--etcd-cafile` is read once) |
-| `<cp>-etcd-{ca,server,client,peer,backup-restore}-<g>` (`ca.crt` for `ca`, `kubernetes.io/tls` for the rest; the profiles of the `Etcd` named `<cp>-etcd`), one generation `g` per renewal, labelled `brygga.segla.io/etcd-certificates: "<g>"` | etcd, its backup-restore sidecar and etcd-druid's client, through the `Etcd`, which Datastore points at the newest complete generation | renewed as the next generation, since the sidecar keeps its first certificate and etcd-druid rolls the members only for a new name: no API outage with three members, about 20 s with one ([etcd spike](etcd-spike-2026-10.md)); PKI keeps the previous generation and deletes older ones |
+| `<cp>-etcd-{ca,server,client,peer,backup-restore}-<g>` (`ca.crt` for `ca`, `kubernetes.io/tls` for the rest, all immutable; the profiles of the `Etcd` named `<cp>-etcd`), one generation `g` per renewal, labelled `brygga.segla.io/etcd-certificates: "<g>"` | etcd, its backup-restore sidecar and etcd-druid's client, through the `Etcd`, which Datastore points at the newest complete generation | renewed as the next generation, since the sidecar keeps its first certificate and etcd-druid rolls the members only for a new name: no API outage with three members, about 20 s with one ([etcd spike](etcd-spike-2026-10.md)); a generation with a member missing or being deleted is replaced by the next, never repaired in place; PKI keeps the previous generation and deletes older ones |
 | `<cp>-sa-keys` (`signing.key`, a PKCS#8 RSA 2048 key, and the `verify-*.pub` keys published beside it during a rotation) | `brygga-signer` sidecar | reloaded by the sidecar; the API server fetches the keys again within the signer's refresh hint and does not restart |
 | `<cp>-encryption-config` (`encryption-config.yaml`: an `EncryptionConfiguration` for `secrets` with the provider of `apiServer.encryption.provider` and a random 32-byte key) | API server | reloaded every minute (automatic reload) |
 | `<cp>-konnectivity-server` (`kubernetes.io/tls`), `<cp>-konnectivity-kubeconfig` (`kubeconfig`, `tls.crt`, `tls.key`, `ca.crt`; server `https://127.0.0.1:6443`) | konnectivity-server | the API server pod rolls, in the maintenance window |
@@ -173,6 +173,15 @@ Every Secret above is PKI's, applied as `brygga/pki` with an owner reference
 to the `ControlPlane`; every key is ECDSA P-256 except the ServiceAccount
 signing key, and a pass over an unchanged `ControlPlane` writes nothing
 (`internal/controller/pki`, proven Secret by Secret in `reconciler_test.go`).
+A certificate is valid from five minutes before its issuance, kubeadm's
+allowance for a verifier whose clock runs behind
+([constants.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kubeadm/app/constants/constants.go#L45-L46)),
+and no longer than its CA; renewal comes two thirds of the way from issuance
+to expiry. Each CA and kubelet signer carries the second of its issuance in
+its subject (`cluster-ca@1761350400`), so no bundle ever holds two
+certificates with one subject, and every bundle is a set: each certificate
+once, in DER order, as library-go writes its CA bundles
+([cabundle.go](https://github.com/openshift/library-go/blob/9a2bc12675c2bb37d3799a30786ccee5fa545d57/pkg/operator/certrotation/cabundle.go#L134-L177)).
 
 Identities: no root CA key is mounted into a control plane pod; the
 controller manager holds only the kubelet signer, an intermediate that signs

@@ -86,11 +86,6 @@ is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the PKI controller (2026-10-25)
 
-- A certificate is valid from the second it is issued; a node whose clock
-  runs behind refuses a freshly renewed serving certificate until it catches
-  up. kubeadm sets a leaf's `NotBefore` to its CA's
-  ([`NewSignedCert`](https://github.com/kubernetes/kubernetes/blob/v1.35.0/cmd/kubeadm/app/util/pkiutil/pki_helpers.go));
-  decide whether to backdate, and by how much, before nodes join.
 - A changed `apiServer.encryption.provider` puts the new provider first with
   a new key and keeps the previous ones readable, but nothing rewrites the
   stored Secrets or drops the old provider, and with two API server replicas
@@ -99,9 +94,10 @@ is a decision — a decision is a file in `docs/decisions/`.
   [staged-credential-rotation](docs/decisions/staged-credential-rotation.md);
   until it is built, document the change as unsupported, or refuse it in the
   schema.
-- `apiServer.encryption.provider: kms` is accepted by the schema and turns
-  `CertificatesReady` False with `Issuing` and a message; refuse it in CEL
-  until the provider is built.
+- `apiServer.encryption.provider: kms` is accepted by the schema; PKI issues
+  everything else and reports `CertificatesReady` False with
+  `EncryptionProviderUnsupported`. Refuse it in CEL until the provider is
+  built.
 - Brygga reaches a tenant's API server through its in-namespace Service and
   ignores `HTTPS_PROXY` for that connection; the chart's documentation should
   say so for sites that set a proxy on every pod.

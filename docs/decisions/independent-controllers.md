@@ -124,6 +124,10 @@ flowchart LR
   registered as `pki` with ten workers.
 - `internal/controller/pki` — reads `spec` and `status.endpoint`, writes its
   Secrets with server-side apply as `brygga/pki`, applies `CertificatesReady`
-  and `AccessReady` alone through the status subresource, and requeues at the
-  earliest renewal time. `reconciler_test.go` runs it under a manager whose
-  cache is the one `main.go` builds, with `ReaderFailOnMissingInformer`.
+  and `AccessReady` alone through the status subresource (`Unknown` on its
+  first visit, then with one fixed message per reason, so a pass that changes
+  nothing writes nothing), counts `APIServerReady` only at the current
+  generation, and requeues at the earliest renewal time in whole seconds.
+  `reconciler_test.go` runs it under a manager whose cache is the one
+  `main.go` builds, with `ReaderFailOnMissingInformer`, and holds the first
+  visit and the stale `APIServerReady` cases.

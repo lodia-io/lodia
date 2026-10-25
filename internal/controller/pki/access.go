@@ -6,6 +6,7 @@ package pki
 import (
 	"context"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -39,7 +40,7 @@ var bindings = []struct {
 // (the first time, or after someone deleted its binding), with a
 // system:masters certificate that is never stored.
 func (r *Reconciler) bind(ctx context.Context, t *tenant) error {
-	cfg, err := clientcmd.RESTConfigFromKubeConfig(t.existing[t.name("brygga-kubeconfig")].Data["kubeconfig"])
+	cfg, err := clientcmd.RESTConfigFromKubeConfig(t.existing[t.name("brygga-kubeconfig")].Data[kubeconfigKey])
 	if err != nil {
 		return err
 	}
@@ -50,12 +51,18 @@ func (r *Reconciler) bind(ctx context.Context, t *tenant) error {
 	if !apierrors.IsForbidden(err) {
 		return err
 	}
-	bootstrap, err := t.cas[clientCA].Issue(certs.Profile{CommonName: "brygga:bootstrap", Organizations: []string{"system:masters"}, Usages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}, bootstrapLifetime)
+	ca := t.cas[clientCA]
+	if ca == nil {
+		return errors.New("brygga:operator is forbidden and the client CA has no key to issue a bootstrap certificate")
+	}
+	bootstrap, err := ca.Issue(certs.Profile{CommonName: "brygga:bootstrap", Organizations: []string{"system:masters"}, Usages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}, bootstrapLifetime)
 	if err != nil {
 		return err
 	}
 	asBootstrap := rest.AnonymousClientConfig(cfg)
-	asBootstrap.CertData = certs.CertPEM(bootstrap.Cert)
+	if asBootstrap.CertData, err = certs.CertPEM(bootstrap.Cert); err != nil {
+		return err
+	}
 	if asBootstrap.KeyData, err = certs.KeyPEM(bootstrap.Key); err != nil {
 		return err
 	}

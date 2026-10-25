@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -36,14 +37,19 @@ const (
 	bindingsPeriod = 10 * time.Minute
 )
 
-// The reasons of CertificatesReady and AccessReady.
+// The reasons of CertificatesReady and AccessReady. Each has one message,
+// which depends on the state alone, so a pass that changes nothing writes
+// nothing; the error behind Issuing and Binding is in the log.
 const (
-	ReasonIssued              = "Issued"
-	ReasonIssuing             = "Issuing"
-	ReasonWaitingForEndpoint  = "WaitingForEndpoint"
-	ReasonBound               = "Bound"
-	ReasonBinding             = "Binding"
-	ReasonWaitingForAPIServer = "WaitingForAPIServer"
+	ReasonReconciling                   = "Reconciling"
+	ReasonIssued                        = "Issued"
+	ReasonIssuing                       = "Issuing"
+	ReasonWaitingForEndpoint            = "WaitingForEndpoint"
+	ReasonCAMissing                     = "CAMissing"
+	ReasonEncryptionProviderUnsupported = "EncryptionProviderUnsupported"
+	ReasonBound                         = "Bound"
+	ReasonBinding                       = "Binding"
+	ReasonWaitingForAPIServer           = "WaitingForAPIServer"
 )
 
 // Reconciler is the PKI controller.
@@ -83,33 +89,23 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if cp.DeletionTimestamp != nil || cp.Spec.Paused {
 		return ctrl.Result{}, nil
 	}
+	now := time.Now()
+	if meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionCertificatesReady) == nil ||
+		meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionAccessReady) == nil {
+		if err := r.applyStatus(ctx, cp, now, nil, unknown(bryggav1alpha1.ConditionCertificatesReady), unknown(bryggav1alpha1.ConditionAccessReady)); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	var secrets corev1.SecretList
 	if err := r.Reader.List(ctx, &secrets, client.InNamespace(cp.Namespace), client.MatchingLabels{bryggav1alpha1.ControlPlaneLabel: cp.Name}); err != nil {
 		return ctrl.Result{}, err
 	}
-	t := newTenant(cp, secrets.Items)
+	t := newTenant(cp, secrets.Items, now)
 
 	issueErr := r.issue(ctx, t)
-	certificates := metav1.Condition{Type: bryggav1alpha1.ConditionCertificatesReady, Status: metav1.ConditionTrue, Reason: ReasonIssued,
-		Message: "every certificate verifies; the next renewal is at " + t.renewal.UTC().Format(time.RFC3339)}
-	switch {
-	case issueErr != nil:
-		certificates.Status, certificates.Reason, certificates.Message = metav1.ConditionFalse, ReasonIssuing, issueErr.Error()
-	case t.endpoint == nil:
-		certificates.Status, certificates.Reason, certificates.Message = metav1.ConditionFalse, ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint"
-	}
-
-	var bindErr error
-	access := metav1.Condition{Type: bryggav1alpha1.ConditionAccessReady, Status: metav1.ConditionFalse, Reason: ReasonWaitingForAPIServer, Message: "APIServerReady is not True"}
-	if meta.IsStatusConditionTrue(cp.Status.Conditions, bryggav1alpha1.ConditionAPIServerReady) && t.existing[t.name("brygga-kubeconfig")] != nil {
-		if bindErr = r.bind(ctx, t); bindErr != nil {
-			access.Reason, access.Message = ReasonBinding, bindErr.Error()
-		} else {
-			access.Status, access.Reason, access.Message = metav1.ConditionTrue, ReasonBound, "brygga:operator, brygga:cluster-admins and brygga:kubelet-api-admins are bound"
-		}
-	}
-
-	if err := r.writeStatus(ctx, t, certificates, access); err != nil {
+	certificates := t.certificatesReady(issueErr)
+	access, bindErr := r.access(ctx, t)
+	if err := r.applyStatus(ctx, cp, now, t.credentials(), certificates, access); err != nil {
 		return ctrl.Result{}, err
 	}
 	if err := errors.Join(issueErr, bindErr); err != nil {
@@ -118,15 +114,51 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	return ctrl.Result{RequeueAfter: t.requeueAfter()}, nil
 }
 
-// writeStatus applies PKI's conditions and credential references through the
+func unknown(conditionType string) metav1.Condition {
+	return metav1.Condition{Type: conditionType, Status: metav1.ConditionUnknown, Reason: ReasonReconciling, Message: "the first pass has not finished"}
+}
+
+func (t *tenant) certificatesReady(err error) metav1.Condition {
+	c := metav1.Condition{Type: bryggav1alpha1.ConditionCertificatesReady, Status: metav1.ConditionFalse}
+	switch {
+	case err != nil:
+		c.Reason, c.Message = ReasonIssuing, "a Secret could not be written; the error is in the log"
+	case len(t.missingCAs) > 0:
+		c.Reason, c.Message = ReasonCAMissing, "the "+strings.Join(t.missingCAs, ", ")+" CA has a bundle but no readable key: restore it or rotate the CA; nothing it signs is written"
+	case t.endpoint == nil:
+		c.Reason, c.Message = ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint"
+	case t.unsupportedProvider != "":
+		c.Reason, c.Message = ReasonEncryptionProviderUnsupported, "apiServer.encryption.provider "+string(t.unsupportedProvider)+" is not supported yet"
+	default:
+		c.Status, c.Reason, c.Message = metav1.ConditionTrue, ReasonIssued, "every certificate verifies and is valid beyond its renewal time"
+	}
+	return c
+}
+
+// access binds the tenant's identities once APIServerReady is True for the
+// current generation; an older True counts as Unknown.
+func (r *Reconciler) access(ctx context.Context, t *tenant) (metav1.Condition, error) {
+	c := metav1.Condition{Type: bryggav1alpha1.ConditionAccessReady, Status: metav1.ConditionFalse, Reason: ReasonWaitingForAPIServer, Message: "APIServerReady is not True for this generation"}
+	ready := meta.FindStatusCondition(t.cp.Status.Conditions, bryggav1alpha1.ConditionAPIServerReady)
+	if ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != t.cp.Generation || t.existing[t.name("brygga-kubeconfig")] == nil {
+		return c, nil
+	}
+	if err := r.bind(ctx, t); err != nil {
+		c.Reason, c.Message = ReasonBinding, "the bindings could not be applied; the error is in the log"
+		return c, err
+	}
+	c.Status, c.Reason, c.Message = metav1.ConditionTrue, ReasonBound, "brygga:operator, brygga:cluster-admins and brygga:kubelet-api-admins are bound"
+	return c, nil
+}
+
+// applyStatus applies PKI's conditions and credential references through the
 // status subresource, and only when one of them changed.
-func (r *Reconciler) writeStatus(ctx context.Context, t *tenant, conditions ...metav1.Condition) error {
-	cp := t.cp
+func (r *Reconciler) applyStatus(ctx context.Context, cp *bryggav1alpha1.ControlPlane, now time.Time, credentials map[string]any, conditions ...metav1.Condition) error {
 	changed := false
 	for i := range conditions {
 		c := &conditions[i]
 		c.ObservedGeneration = cp.Generation
-		c.LastTransitionTime = metav1.NewTime(t.now)
+		c.LastTransitionTime = metav1.NewTime(now)
 		prev := meta.FindStatusCondition(cp.Status.Conditions, c.Type)
 		if prev != nil && prev.Status == c.Status {
 			c.LastTransitionTime = prev.LastTransitionTime
@@ -135,24 +167,13 @@ func (r *Reconciler) writeStatus(ctx context.Context, t *tenant, conditions ...m
 			changed = true
 		}
 	}
-	credentials := map[string]any{}
 	prev := cp.Status.Credentials
 	if prev == nil {
 		prev = &bryggav1alpha1.CredentialsStatus{}
 	}
-	for _, ref := range []struct {
-		field  string
-		secret string
-		prev   *bryggav1alpha1.LocalReference
-	}{
-		{"adminKubeconfigSecretRef", t.name("admin-kubeconfig"), prev.AdminKubeconfigSecretRef},
-		{"caBundleSecretRef", t.name("ca-bundle"), prev.CABundleSecretRef},
-	} {
-		if t.existing[ref.secret] == nil {
-			continue
-		}
-		credentials[ref.field] = map[string]any{"name": ref.secret}
-		if ref.prev == nil || ref.prev.Name != ref.secret {
+	for field, ref := range map[string]*bryggav1alpha1.LocalReference{"adminKubeconfigSecretRef": prev.AdminKubeconfigSecretRef, "caBundleSecretRef": prev.CABundleSecretRef} {
+		want, _ := credentials[field].(map[string]any)
+		if credentials != nil && ((ref == nil) != (want == nil) || (ref != nil && ref.Name != want["name"])) {
 			changed = true
 		}
 	}
@@ -168,13 +189,17 @@ func (r *Reconciler) writeStatus(ctx context.Context, t *tenant, conditions ...m
 		}
 		list = append(list, c)
 	}
-	status := &unstructured.Unstructured{Object: map[string]any{
+	status := map[string]any{"conditions": list}
+	if len(credentials) > 0 {
+		status["credentials"] = credentials
+	}
+	u := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": bryggav1alpha1.GroupVersion.String(),
 		"kind":       kind,
 		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
-		"status":     map[string]any{"conditions": list, "credentials": credentials},
+		"status":     status,
 	}}
-	if err := r.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(status), client.FieldOwner(fieldManager), client.ForceOwnership); err != nil {
+	if err := r.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(u), client.FieldOwner(fieldManager), client.ForceOwnership); err != nil {
 		return fmt.Errorf("apply the status of %s: %w", cp.Name, err)
 	}
 	return nil

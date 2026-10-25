@@ -76,9 +76,14 @@ Examples: [`examples/`](examples/).
 
 ## Conditions and their reasons
 
+A controller writes its conditions `Unknown` with reason `Reconciling` on its
+first visit, before its first pass; a reader counts a condition only while its
+`observedGeneration` is the object's generation
+([independent-controllers](../decisions/independent-controllers.md)).
+
 | condition | True | False reasons |
 |---|---|---|
-| `CertificatesReady` | every certificate, key and kubeconfig exists and is valid for more than its renewal margin (`Issued`) | `Issuing`, `WaitingForEndpoint` (`loadBalancer` and `nodePort`, until Workloads publishes `status.endpoint`), `RotationInProgress`, `CAExpiring` |
+| `CertificatesReady` | every certificate, key and kubeconfig exists and is valid for more than its renewal margin (`Issued`) | `Issuing`, `WaitingForEndpoint` (`loadBalancer` and `nodePort`, until Workloads publishes `status.endpoint`), `CAMissing` (a CA has its bundle but no readable key: nothing it signs is written until the key is restored or the CA rotated), `EncryptionProviderUnsupported` (`kms`), `RotationInProgress`, `CAExpiring` |
 | `DatastoreReady` | the etcd (or the tenant's prefix in a shared store) accepts writes | `Provisioning`, `QuorumLost`, `Restoring`, `DatastoreClassNotFound`, `DatastoreNotFound`, `VolumesExist`, `Hibernated` |
 | `APIServerReady` | all API server replicas answer `/readyz`; controller manager and scheduler have leaders | `WaitingForCertificates`, `WaitingForDatastore`, `RollingOut`, `Unhealthy`, `Hibernated` |
 | `AccessReady` | the tenant's ClusterRoleBindings for `brygga:operator`, `brygga:cluster-admins` and `brygga:kubelet-api-admins` exist, checked with `brygga:operator` (`Bound`) | `WaitingForAPIServer`, `Binding` |

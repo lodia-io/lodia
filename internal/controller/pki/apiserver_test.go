@@ -6,6 +6,7 @@ package pki_test
 import (
 	"context"
 	"crypto/x509"
+	"errors"
 	"net"
 	"net/http"
 	"net/url"
@@ -21,6 +22,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
@@ -151,6 +153,28 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 		_, err := brygga.RbacV1().ClusterRoleBindings().Get(ctx, "brygga:cluster-admins", metav1.GetOptions{})
 		return err == nil
 	})
+
+	if err := k8s.Get(ctx, client.ObjectKeyFromObject(cp), cp); err != nil {
+		t.Fatal(err)
+	}
+	stale := cp.Generation
+	cp.Spec.Placement = &bryggav1alpha1.Placement{PriorityClassName: "system-cluster-critical"}
+	if err := k8s.Update(ctx, cp); err != nil {
+		t.Fatal(err)
+	}
+	if cp.Generation == stale {
+		t.Fatal("the generation did not move")
+	}
+	r.Dial = func(context.Context, string, string) (net.Conn, error) {
+		t.Error("the tenant was dialed on an APIServerReady of an older generation")
+		return nil, errors.New("not dialed")
+	}
+	reconcile(t, r, cp)
+	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionFalse, pki.ReasonWaitingForAPIServer)
+	setAPIServerReady(t, cp)
+	r.Dial = dialer(t, tenantCfg.Host)
+	reconcile(t, r, cp)
+	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionTrue, pki.ReasonBound)
 }
 
 func dialer(t *testing.T, host string) func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -191,7 +215,9 @@ func (a *tenantAuthn) AddUser(user envtest.User, base *rest.Config) (*rest.Confi
 		return nil, err
 	}
 	out := rest.CopyConfig(base)
-	out.CertData = certs.CertPEM(c.Cert)
+	if out.CertData, err = certs.CertPEM(c.Cert); err != nil {
+		return nil, err
+	}
 	out.KeyData, err = certs.KeyPEM(c.Key)
 	return out, err
 }
