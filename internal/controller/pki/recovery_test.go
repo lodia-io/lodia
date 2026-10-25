@@ -56,7 +56,7 @@ func TestALeafEndingWithItsCAIsIssuedOnceAndAnExpiredCAWritesNothing(t *testing.
 	result := reconcile(t, r, cp)
 	after, _ := resourceVersions(t, cp)
 	for name, version := range after {
-		if name != "dev-client-ca-bundle" && before[name] != version {
+		if name != "dev-client-ca" && before[name] != version {
 			t.Errorf("%s, which ends with its CA, was issued again", name)
 		}
 	}
@@ -65,7 +65,7 @@ func TestALeafEndingWithItsCAIsIssuedOnceAndAnExpiredCAWritesNothing(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(secretsOf(t, cp)["dev-client-ca-bundle"].Data["ca.crt"], want) {
+	if !bytes.Equal(secretsOf(t, cp)["dev-client-ca"].Data["ca.crt"], want) {
 		t.Error("the client CA bundle still holds the expired previous signer")
 	}
 	if result.RequeueAfter < time.Until(ca.NotAfter) || result.RequeueAfter > ca.NotAfter.Sub(start)+time.Second {
@@ -236,7 +236,7 @@ func TestTheClientBundleTrustsASignerBeforeItIsWritten(t *testing.T) {
 	signer := parseTLS(t, first["dev-kubelet-signer"]).Cert
 	time.Sleep(time.Until(certs.RenewalTime(signer)) + 300*time.Millisecond)
 
-	r.Client = failingApply{Client: k8s, secret: "dev-client-ca-bundle"}
+	r.Client = failingApply{Client: k8s, secret: "dev-client-ca"}
 	reconcileFails(t, r, cp)
 	if !maps.EqualFunc(secretsOf(t, cp)["dev-kubelet-signer"].Data, first["dev-kubelet-signer"].Data, bytes.Equal) {
 		t.Fatal("a new kubelet signer was written before the bundle that trusts it")
@@ -249,7 +249,7 @@ func TestTheClientBundleTrustsASignerBeforeItIsWritten(t *testing.T) {
 	if renewed.Equal(signer) {
 		t.Fatal("the kubelet signer was not renewed")
 	}
-	bundle, err := certs.ParseCerts(after["dev-client-ca-bundle"].Data["ca.crt"])
+	bundle, err := certs.ParseCerts(after["dev-client-ca"].Data["ca.crt"])
 	if err != nil {
 		t.Fatal(err)
 	}

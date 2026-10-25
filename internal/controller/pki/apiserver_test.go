@@ -55,7 +55,7 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 		api:       api,
 		clientCA:  parseTLS(t, secrets["dev-cakey-client"]),
 		clusterCA: secrets["dev-ca-bundle"].Data["ca.crt"],
-		bundle:    file("dev-client-ca-bundle", "ca.crt"),
+		bundle:    file("dev-client-ca", "ca.crt"),
 	}
 	saKey := file("dev-sa-keys", "signing.key")
 	api.Configure().

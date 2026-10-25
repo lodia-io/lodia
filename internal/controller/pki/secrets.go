@@ -44,7 +44,7 @@ var caBundles = []struct {
 	ca, bundle string
 }{
 	{clusterCA, "ca-bundle"},
-	{clientCA, "client-ca-bundle"},
+	{clientCA, "client-ca"},
 	{frontProxyCA, "front-proxy-ca"},
 	{etcdCA, "etcd-ca"},
 }
@@ -342,7 +342,7 @@ func (r *Reconciler) kubeletSigner(ctx context.Context, t *tenant) error {
 		}
 	}
 	t.renew(c.Cert, ca.Cert)
-	if err := r.bundle(ctx, t, t.name("client-ca-bundle"), t.clientBundle(c)...); err != nil {
+	if err := r.bundle(ctx, t, t.name("client-ca"), t.clientBundle(c)...); err != nil {
 		return err
 	}
 	return r.applyTLS(ctx, t, name, c, nil, false)
@@ -382,7 +382,7 @@ func (r *Reconciler) bundle(ctx context.Context, t *tenant, name string, bundle 
 func (t *tenant) clientBundle(signer *certs.Certificate) []*x509.Certificate {
 	ca := t.cas[clientCA].Cert
 	bundle := []*x509.Certificate{ca, signer.Cert}
-	previous, _ := certs.ParseCerts(data(t.existing[t.name("client-ca-bundle")], caKey))
+	previous, _ := certs.ParseCerts(data(t.existing[t.name("client-ca")], caKey))
 	replaced := signer.Cert.NotBefore.Add(certs.Backdate)
 	for _, c := range previous {
 		if c.IsCA && !c.Equal(ca) && certs.Verify(c, ca, t.now) == nil && t.now.Before(replaced.Add(signingDuration)) {
