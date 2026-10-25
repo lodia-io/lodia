@@ -93,7 +93,7 @@ func render(cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClas
 		etcd.Spec.Etcd.Quota = settings.QuotaBackendBytes
 		etcd.Spec.Etcd.Resources = settings.Resources
 		if settings.Defragmentation != nil {
-			etcd.Spec.Etcd.DefragmentationSchedule = new(settings.Defragmentation.Schedule)
+			etcd.Spec.Etcd.DefragmentationSchedule = new(string(settings.Defragmentation.Schedule))
 		}
 		if compaction := settings.AutoCompaction; compaction != nil {
 			if compaction.Mode != "" {
@@ -115,7 +115,7 @@ func render(cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClas
 			etcd.Spec.Backup.Store.EndpointOverride = new(backup.Store.Endpoint)
 		}
 		if backup.FullSnapshotSchedule != "" {
-			etcd.Spec.Backup.FullSnapshotSchedule = new(backup.FullSnapshotSchedule)
+			etcd.Spec.Backup.FullSnapshotSchedule = new(string(backup.FullSnapshotSchedule))
 		}
 		etcd.Spec.Backup.DeltaSnapshotPeriod = backup.DeltaSnapshotPeriod
 		if backup.Retention != nil {
