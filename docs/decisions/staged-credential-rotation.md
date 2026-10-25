@@ -126,7 +126,7 @@ first four.
   only the kubelet signer, a one-year intermediate. That does not narrow
   what it can sign: the API server accepts any certificate that chains to
   its client bundle, with the user from its CN and the groups from its O
-  ([x509.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/authentication/request/x509/x509.go#L288-L310)),
+  ([x509.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/authentication/request/x509/x509.go#L288-L310)),
   so whoever holds the signer can sign any identity while it is in the
   bundle, that is until it is replaced and its 30 days beside the new one
   are over.
@@ -184,11 +184,12 @@ first four.
   expiry; bundles as sets in DER order, as library-go writes them
   ([cabundle.go](https://github.com/openshift/library-go/blob/9a2bc12675c2bb37d3799a30786ccee5fa545d57/pkg/operator/certrotation/cabundle.go#L134-L177));
   PEM through client-go's `util/cert` and `util/keyutil`; kubeconfigs with
-  their certificates as files beside them or embedded. `certs_test.go` holds
-  the validity and the bundle order.
+  their certificates as files beside them or embedded; every time is the
+  caller's, so PKI issues and verifies a whole pass at the time it started.
+  `certs_test.go` holds the validity, that time and the bundle order.
 - `internal/controller/pki` — the controller. `secrets.go` is the Secret
   table above: the four `<cp>-cakey-*` key pairs that no pod mounts, each a
-  self-signed root with the second of its issuance in its subject; the
+  self-signed root with the nanosecond of its issuance in its subject; the
   kubelet signer, matched by its Secret rather than its subject, and the
   client CA bundle that keeps a replaced signer for one signing duration;
   the leaves and kubeconfigs; `<cp>-sa-keys` with its `signing.key`; the
@@ -200,10 +201,12 @@ first four.
   is not renewed, since a new one would not outlive it; nothing is issued
   under an expired CA (`CAExpired`); a new kubelet signer is written only
   once the client CA bundle trusts it. A CA is created only for a tenant
-  that has neither its key Secret nor its bundle, read by name when the
-  labelled list lacks them, so a key restored without its labels is kept; a
-  lost or unreadable key is `CAMissing`, and nothing that CA signs is
-  written. `CAValidityAcceptable` announces a CA in its last year
+  that has neither its key Secret nor its bundle. PKI finds its Secrets by
+  name, labelled or not, so a key restored without its labels is kept,
+  never uses or writes one another owner keeps, and adopts the etcd
+  generations it keeps; a lost or unreadable key is `CAMissing`, and nothing
+  that CA signs is written; an encryption configuration or ServiceAccount
+  key it cannot read is never replaced (`SecretUnreadable`). `CAValidityAcceptable` announces a CA in its last year
   (`CAExpiryNotice`, a year in `main.go`). `reconciler_test.go` and
   `recovery_test.go` prove each of these against a running envtest API
   server: the subjects, usages, SANs and validity; that no Secret but
@@ -218,4 +221,8 @@ first four.
   when a member is deleted, held by a finalizer or foreign, and a partly
   written generation deleted while the last complete one is kept; a lost CA
   left in place and an unlabelled one kept; the client bundle written before
-  the signer; the notice; `kms` reported with everything else issued.
+  the signer; the notice; `kms` reported with everything else issued; a
+  renewal or an adoption that could not be written. `ownership_test.go`
+  holds a predecessor's Secrets and other owners' left alone, leftovers
+  under PKI's names, adopted generations, unreadable key material kept, and
+  failed reads that leave the status.

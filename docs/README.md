@@ -145,7 +145,7 @@ ConfigMaps, who consumes them, and what a change does:
 |---|---|---|
 | `<cp>-cakey-cluster`, `-cakey-client`, `-cakey-front-proxy`, `-cakey-etcd` (`kubernetes.io/tls`: each CA's certificate and key) | PKI alone; never mounted | a CA is renewed only by a rotation, announced a year ahead by `CAValidityAcceptable=False` (`CAExpiring`) outside `Ready`; a lost or unreadable key (`CAMissing`) or an expired CA (`CAExpired`) turns `CertificatesReady` False, and nothing that CA signs is written until it is restored or rotated, since a new CA would cut every client or node off at once; a key Secret restored without its labels is found by name and kept |
 | `<cp>-ca-bundle` (`ca.crt`: the cluster CA, two during a trust anchor rotation) | everything that verifies the API server: kubeconfigs, `cluster-info`, `kube-root-ca.crt` | kubeconfigs and `cluster-info` re-rendered; the controller manager restarts, because `--root-ca-file` is read once |
-| `<cp>-client-ca-bundle` (`ca.crt`: the client CA, the current kubelet signer, and a replaced signer for one signing duration, 30 days) | API server `--client-ca-file` | reloaded |
+| `<cp>-client-ca` (`ca.crt`: the client CA, the current kubelet signer, and a replaced signer for one signing duration, 30 days) | API server `--client-ca-file` | reloaded |
 | `<cp>-kubelet-signer` (`kubernetes.io/tls`: the intermediate under the client CA, `CA:TRUE`, path length 0) | controller manager, per-signer signing flags | reloaded |
 | `<cp>-apiserver-serving`, `<cp>-apiserver-kubelet-client` (`kubernetes.io/tls`) | API server | reloaded (the kubelet client certificate for new connections) |
 | `<cp>-front-proxy-ca` (`ca.crt`), `<cp>-front-proxy-client` (`kubernetes.io/tls`) | API server, aggregated APIs | the CA is reloaded; the client certificate restarts the API server until a reload is proven |
@@ -179,11 +179,39 @@ allowance for a verifier whose clock runs behind
 ([constants.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kubeadm/app/constants/constants.go#L45-L46)),
 and no longer than its CA; renewal comes two thirds of the way from issuance
 to expiry, except for a certificate that already ends with its CA, which a
-new one would not outlive. Each CA and kubelet signer carries the second of its issuance in
-its subject (`cluster-ca@1761350400`), so no bundle ever holds two
-certificates with one subject, and every bundle is a set: each certificate
+new one would not outlive. A pass issues and verifies every certificate at one
+time, the time it started. Each CA and kubelet signer carries the nanosecond
+of its issuance in its subject (`cluster-ca@1761350400123456789`), so no
+bundle ever holds two certificates with one subject, not even a signer issued
+again a moment after a write failed, and every bundle is a set: each certificate
 once, in DER order, as library-go writes its CA bundles
 ([cabundle.go](https://github.com/openshift/library-go/blob/9a2bc12675c2bb37d3799a30786ccee5fa545d57/pkg/operator/certrotation/cabundle.go#L134-L177)).
+
+PKI finds its Secrets by name, labelled or not, and the names above are its
+own in the namespace: a Secret under one of them without a controller is
+adopted, so a key restored from a backup without its labels is kept. Restore
+such Secrets without `metadata.ownerReferences`: a reference to the old
+`ControlPlane`'s UID makes the Secret that `ControlPlane`'s, and the garbage
+collector deletes it. A Secret under PKI's names whose controller is not this
+`ControlPlane`, or that refers to another `ControlPlane` at all, is neither
+read nor written, and while one exists PKI writes nothing
+(`CertificatesReady=False`, `SecretsControlledElsewhere`): a `ControlPlane`
+recreated under its predecessor's name waits for the garbage collector to
+remove the predecessor's Secrets instead of keeping its CA keys, which every
+old kubeconfig and node trusts. A `ControlPlane` deleted with
+`--cascade=orphan` leaves its Secrets without an owner, and one created under
+the name adopts them, keys included; delete them for fresh credentials. The
+etcd generations PKI keeps are adopted too, applied whole with their data
+unchanged, which an immutable Secret allows
+([validation.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/apis/core/validation/validation.go#L8164-L8182)),
+so none stays without the owner the garbage collector follows or the label
+the cache filters on. Key material PKI cannot read is never replaced: an
+encryption configuration that is missing from its Secret or that the API
+server's own validator refuses
+([validation_encryption.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/apis/apiserver/validation/validation_encryption.go#L64-L115)),
+and a ServiceAccount key that is not the RSA key PKI writes, turn
+`CertificatesReady` False with `SecretUnreadable`: a new key would leave what
+the old one encrypted unreadable, or every token it signed invalid.
 
 The dedicated etcd is etcd-druid's `Etcd` `<cp>-etcd`, which the Datastore
 controller renders from the `DatastoreClass` and the newest complete
@@ -197,13 +225,25 @@ owned by the `Etcd`
 ([helper.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/helper.go)).
 With a backup store, the class's credentials Secret is copied into the
 namespace as `<cp>-etcd-backup`, since etcd-druid mounts it from the `Etcd`'s
-namespace. A pass of the controller refreshes the copy, and nothing watches
-the class's Secret: an edit of the class reaches every tenant on it at once,
-while the Secret edited in place reaches a tenant only at its next pass, at
-worst the cache's resync, every 10 hours by default
+namespace. A pass of the controller refreshes the copy, and a deletion or edit
+of the copy brings a pass; nothing watches the class's Secret: an edit of the
+class reaches every tenant on it at once, while the Secret edited in place
+reaches a tenant only at its next pass, at worst the cache's resync, every 10
+hours by default
 ([cache.go](https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/cache/cache.go#L93-L97)).
 Credentials are therefore rotated with a new Secret that the class is
-pointed at ([operations](operations.md#everyday-tasks)).
+pointed at ([operations](operations.md#everyday-tasks)). When the copy cannot
+be made — the class's Secret is missing, another owner controls
+`<cp>-etcd-backup` (a predecessor's the garbage collector has not removed
+yet), or the API server refuses the copy — the class is held whole: the
+`Etcd` keeps the class fields it has and still takes each new certificate
+generation, and `DatastoreReady`'s message ends with `DatastoreClass <c> is
+held:` and the cause. A missing Secret or a copy another owner holds is
+checked again after a minute; a refused copy is retried with
+controller-runtime's backoff, since the refusal is returned as the pass's
+error. Held whole, since the rest
+of an edit could add a store whose copy cannot be made; before the first
+`Etcd` exists, the same cause is `Provisioning`, and nothing is created.
 
 The class is resolved once, when the `Etcd` is created, and
 recorded on it in `brygga.segla.io/datastore-class`, with the class
@@ -211,9 +251,24 @@ generation it was rendered from in `brygga.segla.io/datastore-class-generation`;
 from then on the `Etcd` follows that class, its reclaim policy included, as a
 default StorageClass is written into a claim when the claim is created
 ([storage classes](https://kubernetes.io/docs/concepts/storage/storage-classes/#default-storageclass)).
-An edit of that class reaches the `Etcd` of every tenant on it at once and
-rolls their members, a single member with an outage, until Lifecycle holds
-class edits for each tenant's maintenance window in phase 2. A recorded
+The claims record it too, for their reclaim, so an `Etcd` created again over
+this `ControlPlane`'s claims, after someone deleted it, takes the class they
+record rather than `className` or the current default, which could give it
+another bucket and placement; while that class is gone, it is
+`DatastoreClassNotFound` and nothing is created. An edit of that class that
+changes the `Etcd`'s spec reaches the `Etcd` of every tenant on it at once
+and rolls their members, a single member with an outage, until Lifecycle
+holds class edits for each tenant's maintenance window in phase 2: etcd-druid
+carries every field Brygga renders from the class into the pod template
+([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L161-L203)), the backup sidecar's arguments
+([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L430-L601)) or the etcd ConfigMap, whose checksum is in
+the pod template ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L220-L227)), and updates the StatefulSet
+with `RollingUpdate` ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L57)). Edits that roll nothing:
+`storage.className` and `storage.size`, which reach only `Etcd`s created
+afterwards; `storage.reclaimPolicy` and `backup.retention.afterDelete`,
+which no `Etcd` field carries; `backup.store.secretRef` and `.region`,
+which change only the data of the copy `<cp>-etcd-backup`, whose name the
+`Etcd` keeps. A recorded
 class that is deleted stops only its own edits: the `Etcd` keeps every field
 the class gave it, still takes each new certificate generation and reports
 its readiness as before, and its claims are kept on deletion. The
@@ -246,7 +301,7 @@ everything the class does not set is etcd-druid's default:
 | `backup.retention.afterDelete` | — | phase 2, with the final snapshot |
 | `placement.nodeSelector`, `.tolerations`, `.priorityClassName` | `spec.schedulingConstraints.affinity` (as required node affinity), `.tolerations`, `spec.priorityClassName` | the `Etcd` has no node selector |
 | the `ControlPlane`'s availability | `spec.replicas` | 1 today; 3 with `highAvailability` and 0 while hibernating come with later phases |
-| the etcd certificates, generation `g` | `spec.etcd.clientUrlTls`, `spec.etcd.peerUrlTls`, `spec.backup.tls` | all three name one complete generation, with `dataKey: ca.crt` on the CA; a newer complete generation is one update of the `Etcd`, so one roll of the members; the `Etcd` moves forward only, so while a Secret of the generation it names is being deleted it keeps that generation instead of rolling back to an older complete one and forward again |
+| the etcd certificates, generation `g` | `spec.etcd.clientUrlTls`, `spec.etcd.peerUrlTls`, `spec.backup.tls` | all three name one complete generation, with `dataKey: ca.crt` on the CA; a generation counts only while its five Secrets are this `ControlPlane`'s (its controller reference), so a predecessor's or an orphaned generation, which trusts another etcd CA, never starts an etcd before PKI has checked and adopted it; a newer complete generation is one update of the `Etcd`, so one roll of the members; the `Etcd` never moves below the generation it names: the newest complete one is older while a Secret of the named one is being deleted, and the older generation PKI keeps can have expired |
 
 A class is checked when it is written, since a value refused later stops
 more than its own edit: an `Etcd` the API server refuses stops taking
@@ -281,12 +336,29 @@ the manager with it
 `DatastoreReady` is `Unknown`, reason `Reconciling`, until the controller's
 first pass has finished, and `Provisioning` until a complete certificate
 generation exists and etcd-druid reports the `Etcd` ready for its current
-generation. etcd-druid's report is read with the checks Gardener makes
+generation. Every Secret the `Etcd` mounts must exist — the five of its
+certificate generation and, with a store, `<cp>-etcd-backup` — or the next
+start of a member fails; a terminating one still counts, since etcd-druid
+holds its finalizer on every Secret an `Etcd` references until none does
+([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/secret/reconciler.go#L44-L101)),
+so a Secret the `Etcd` names is gone only when someone removed that
+finalizer ([operations](operations.md#a-secret-the-etcd-mounts-is-gone)).
+etcd-druid's report is read with the checks Gardener makes
 before it counts an `Etcd` ready
 ([waiter.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/component/etcd/etcd/waiter.go#L49-L104)):
-no `lastErrors` (they go into the message), no deletion timestamp,
-`observedGeneration` current, `AllMembersUpdated` True, `ready`. Gardener
-checks `lastErrors` first; Datastore reports a deletion first. Then the
+no deletion timestamp, `observedGeneration` current, `AllMembersUpdated`
+True, `ready`. Gardener's waiter, a one-shot wait, also retries while there
+are `lastErrors`; Datastore does not read them, since etcd-druid clears them
+at the start of every spec reconcile, every 15 seconds, and sets them again
+on a failure
+([etcdstatus.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/utils/etcdstatus.go#L45-L93)),
+so a persistent error would flip the condition, while a failed StatefulSet
+sync at a new generation shows anyway: etcd-druid returns before it stamps
+`observedGeneration`
+([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcd/reconciler.go#L127-L144)).
+A persistent failure of etcd-druid's other objects (the client Service, the
+ConfigMap, the leases) at a generation it has observed shows only in
+`lastErrors` ([operations](operations.md#what-breaks-and-how-it-shows)). Then the
 StatefulSet itself, read from the API server, must mount the certificate
 generation, its controller must have observed its generation, and every
 replica must be updated and ready: etcd-druid syncs the StatefulSet, then
@@ -308,12 +380,27 @@ and starting from another tenant's data is a restore, not a start: nothing
 is created until they are deleted. `VolumesExist` too when an `Etcd`
 `<cp>-etcd` exists whose controller is not this `ControlPlane`, an orphan or
 a predecessor's the garbage collector has not removed yet: it is neither
-adopted nor written, and the message names it. `Deleting` while the
-`ControlPlane` is being deleted. `status.datastore` is `kind: Dedicated`, the
-`Etcd`'s name and its member count. Every message is built from the state
-alone, so a pass that changes nothing writes nothing; an error of the API
-server ends the pass, goes to the log and leaves the status as it was
-([independent-controllers](decisions/independent-controllers.md)).
+adopted nor written, and the message names it. `EtcdRefused` when the API
+server refuses the `Etcd` Brygga renders — an admission policy on `Etcd`s, a
+class stored before a rule it breaks (validation ratcheting keeps an
+unchanged field on update,
+[ratcheting](https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/#validation-ratcheting)),
+an etcd-druid whose schema moved: the message
+names the `Etcd`, the certificate generation and the class generation, and
+the refusal is in Brygga's log. `Deleting` while the `ControlPlane` is being
+deleted. `status.datastore` is `kind: Dedicated`, the `Etcd`'s name and its
+member count. Every message is built from the state alone, so a pass that
+changes nothing writes nothing; an error of the API server ends the pass,
+goes to the log and leaves the status as it was
+([independent-controllers](decisions/independent-controllers.md)), unless it
+is the server's verdict on the object: any 4xx but a missing object, a
+timeout, a conflict, throttling and a namespace being deleted, since an
+admission webhook's denial without a code arrives as 400
+([statuserror.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/admission/plugin/webhook/errors/statuserror.go#L37-L39)).
+Sending the same `Etcd` again cannot change that verdict, and without the
+condition its certificate generations would stop with `DatastoreReady` still
+True; the refusal is returned as the pass's error too, so the next attempt
+follows controller-runtime's backoff.
 
 Identities: no root CA key is mounted into a control plane pod; the
 controller manager holds only the kubelet signer, an intermediate that signs
@@ -595,7 +682,7 @@ one, on by default since 1.35, and falls back to `list` where it does not
 | `brygga.segla.io` | `controlplanes/finalizers` | `update` | `blockOwnerDeletion` on the owner references of the `Etcd` and of `<cp>-etcd-backup`, which that admission plugin allows only with `update` on the owner's `finalizers` ([gc_admission.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/plugin/pkg/admission/gc/gc_admission.go#L122-L152)) |
 | `brygga.segla.io` | `datastoreclasses` | `list`, `watch` | the cache |
 | `druid.gardener.cloud` | `etcds` | `get`, `list`, `watch`, `create`, `patch`, `delete` | the cache, and the API server for an `Etcd` without the label; the apply, which the API server also authorizes as `create` when it creates the object ([patch.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/staging/src/k8s.io/apiserver/pkg/endpoints/handlers/patch.go#L203-L232)); the deletion |
-| `""` | `secrets` | `get`, `list`, `watch`, `create`, `patch` | the metadata of the certificate Secrets; the class's credentials Secret, read uncached in the namespace the class names; the copy `<cp>-etcd-backup`, applied |
+| `""` | `secrets` | `get`, `list`, `watch`, `create`, `patch`, `delete` | the metadata of the certificate Secrets; the class's credentials Secret, read uncached in the namespace the class names; the copy `<cp>-etcd-backup`, applied; `delete` because that admission plugin lets only who may delete an object set an owner reference on it when it is updated, which adopting a copy with no owner does ([gc_admission.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/plugin/pkg/admission/gc/gc_admission.go#L103-L119)) |
 | `""` | `persistentvolumeclaims` | `list`, `patch`, `delete` | the claims of `<cp>-etcd`, listed in the tenant's namespace and matched by name; their UID label and class annotation; the reclaim |
 | `apps` | `statefulsets` | `get` | the readiness checks, read uncached |
 

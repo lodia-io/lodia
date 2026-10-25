@@ -86,6 +86,16 @@ is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the Datastore controller (2026-10-25)
 
+- PKI's `elsewhere` and the Datastore's `controlledElsewhere` are one
+  predicate, the rule of
+  [independent-controllers](docs/decisions/independent-controllers.md), in
+  two packages; move it where both import it before Workloads and Tenant
+  need it too.
+- Nothing reads `spec.restoreFrom` until restore is built in phase 2: a
+  `ControlPlane` created with it starts on an empty etcd. When restore lands,
+  test the `VolumesExist` remedy end to end: the claims kept, a `Backup` of
+  the old cluster, a new `ControlPlane` with `restoreFrom` that serves the old
+  data.
 - The finalizer `brygga.segla.io/controlplane` and the annotation
   `brygga.segla.io/is-default-class` are constants of
   `internal/controller/datastore`; move them to `api/v1alpha1` when Lifecycle
@@ -139,14 +149,6 @@ is a decision — a decision is a file in `docs/decisions/`.
   them as `PartialObjectMetadata`; nothing stops a future controller from
   starting a typed Secret informer. A test or a cache transform should
   enforce the rule.
-- PKI's `TestALeafEndingWithItsCAIsIssuedOnceAndAnExpiredCAWritesNothing`
-  sleeps until the cluster CA's `NotAfter` plus 300 ms and expects all four
-  CAs expired, but `NotAfter` is encoded to the second: when the four CAs'
-  issuance straddles a second boundary, the etcd CA, issued last, expires a
-  second later and the test fails. It passed 5 of 5 runs of `main`'s
-  `go test ./...` here, and failed 2 of 5 with the Datastore controller's
-  envtest suite running beside it, which slows the API server. Sleeping
-  until the latest of the four `NotAfter`s removes it.
 
 ## From the PKI controller (2026-10-25)
 
@@ -174,3 +176,27 @@ is a decision — a decision is a file in `docs/decisions/`.
 - The e2e suite installs the CRDs and applies the examples; nothing runs the
   operator against kind yet. The phase 1 gate adds that, and with it a check
   that a `ControlPlane` reaches `CertificatesReady` on a real cluster.
+
+## From the PKI review (2026-10-25)
+
+- No PKI-level test pins one clock per pass: `leaf()` issuing at
+  `time.Now()` passes the whole suite; a test that delays one apply past a
+  second boundary would pin it.
+- `TestAPredecessorsSecretsAreNeitherReadNorWritten` passes with the
+  metadata lookup disabled, since the labelled predecessor Secrets mask its
+  unlabelled CA key; give that path its own case.
+- In a blocked pass the CAs are never loaded: a forbidden `brygga:operator`
+  then reports "client CA missing", and the bind error replaces the bounded
+  requeue with exponential backoff. With `APIServerReady` True and
+  `<cp>-brygga-kubeconfig` missing or foreign, `AccessReady` says
+  "APIServerReady is not True for this generation", which the state
+  contradicts.
+- `readEncryptionConfig` decodes leniently, while kube-apiserver decodes
+  strictly and with defaults
+  ([config.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/server/options/encryptionconfig/config.go#L140-L146),
+  [loadConfig](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/server/options/encryptionconfig/config.go#L519-L536));
+  with `kms` requested, an unreadable configuration is reported as
+  `EncryptionProviderUnsupported`, not `SecretUnreadable`.
+- The previous etcd generation is kept and adopted on completeness alone,
+  even when it does not chain to the current etcd CA (a restored
+  predecessor's generation, for instance); keep it only if it chains.

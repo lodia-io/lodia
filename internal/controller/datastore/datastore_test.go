@@ -20,6 +20,7 @@ import (
 	druidapicommon "github.com/gardener/etcd-druid/api/common"
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	"github.com/gardener/etcd-druid/api/core/v1alpha1/crds"
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -61,7 +62,7 @@ var datastoreRules = []rbacv1.PolicyRule{
 	{APIGroups: []string{bryggav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes/finalizers"}, Verbs: []string{"update"}},
 	{APIGroups: []string{bryggav1alpha1.GroupVersion.Group}, Resources: []string{"datastoreclasses"}, Verbs: []string{"list", "watch"}},
 	{APIGroups: []string{druidv1alpha1.SchemeGroupVersion.Group}, Resources: []string{"etcds"}, Verbs: []string{"get", "list", "watch", "create", "patch", "delete"}},
-	{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get", "list", "watch", "create", "patch"}},
+	{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get", "list", "watch", "create", "patch", "delete"}},
 	{APIGroups: []string{""}, Resources: []string{"persistentvolumeclaims"}, Verbs: []string{"list", "patch", "delete"}},
 	{APIGroups: []string{appsv1.GroupName}, Resources: []string{"statefulsets"}, Verbs: []string{"get"}},
 }
@@ -295,7 +296,7 @@ func credentials(ns string) *corev1.Secret {
 
 func writeGeneration(t *testing.T, ns, cp string, generation int, only ...string) {
 	t.Helper()
-	secrets, err := datastoretest.Generation(ns, cp, generation)
+	secrets, err := datastoretest.Generation(getControlPlane(t, ns, cp), generation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -604,6 +605,60 @@ func TestConditionsFromState(t *testing.T) {
 	}
 }
 
+func TestEtcdRefused(t *testing.T) {
+	ns := namespace(t)
+	createClass(t, newClass("refused", "Retain"))
+	policy := &admissionregistrationv1.ValidatingAdmissionPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "refuse-etcds-in-" + ns},
+		Spec: admissionregistrationv1.ValidatingAdmissionPolicySpec{
+			FailurePolicy: new(admissionregistrationv1.Fail),
+			MatchConstraints: &admissionregistrationv1.MatchResources{ResourceRules: []admissionregistrationv1.NamedRuleWithOperations{{
+				RuleWithOperations: admissionregistrationv1.RuleWithOperations{
+					Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+					Rule:       admissionregistrationv1.Rule{APIGroups: []string{druidv1alpha1.SchemeGroupVersion.Group}, APIVersions: []string{"v1alpha1"}, Resources: []string{"etcds"}},
+				},
+			}}},
+			Validations: []admissionregistrationv1.Validation{{Expression: "object.metadata.namespace != '" + ns + "'", Message: "no Etcd in " + ns}},
+		},
+	}
+	binding := &admissionregistrationv1.ValidatingAdmissionPolicyBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: policy.Name},
+		Spec: admissionregistrationv1.ValidatingAdmissionPolicyBindingSpec{
+			PolicyName:        policy.Name,
+			ValidationActions: []admissionregistrationv1.ValidationAction{admissionregistrationv1.Deny},
+		},
+	}
+	for _, obj := range []client.Object{policy, binding} {
+		create(t, obj)
+		t.Cleanup(func() {
+			if err := client.IgnoreNotFound(k8s.Delete(context.Background(), obj)); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	eventually(t, func() error {
+		probe := &druidv1alpha1.Etcd{ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: ns}, Spec: druidv1alpha1.EtcdSpec{Replicas: 1, Labels: map[string]string{"app": "etcd"}}}
+		if err := k8s.Create(t.Context(), probe, client.DryRunAll); err == nil {
+			return errors.New("the policy does not refuse Etcds yet")
+		}
+		return nil
+	})
+
+	create(t, controlPlane(ns, "dev", "refused"))
+	writeGeneration(t, ns, "dev", 1)
+	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonEtcdRefused,
+		"the API server refuses Etcd dev-etcd on certificate generation 1 with the fields of DatastoreClass refused generation 1; the reason is in Brygga's log")
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev-etcd"}, &druidv1alpha1.Etcd{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("want no Etcd while the API server refuses it, got %v", err)
+	}
+
+	if err := k8s.Delete(t.Context(), binding); err != nil {
+		t.Fatal(err)
+	}
+	waitEtcd(t, ns, "dev", namesGeneration(1))
+	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd dev-etcd")
+}
+
 func TestPaused(t *testing.T) {
 	ns := namespace(t)
 	createClass(t, newClass("paused", "Delete"))
@@ -671,7 +726,7 @@ func TestNewestCompleteGeneration(t *testing.T) {
 		t.Fatalf("four of five Secrets of generation 2: %v", err)
 	}
 
-	secrets, err := datastoretest.Generation(ns, "dev", 2)
+	secrets, err := datastoretest.Generation(getControlPlane(t, ns, "dev"), 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -757,6 +812,80 @@ func TestGenerationsMoveForward(t *testing.T) {
 	}
 }
 
+func TestOnlyItsOwnGenerationsCount(t *testing.T) {
+	ns := namespace(t)
+	createClass(t, newClass("owned", "Retain"))
+	create(t, controlPlane(ns, "dev", "owned"))
+	writeWith := func(generation int, owners []metav1.OwnerReference) {
+		secrets, err := datastoretest.Generation(getControlPlane(t, ns, "dev"), generation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, secret := range secrets {
+			secret.OwnerReferences = owners
+			create(t, secret)
+		}
+	}
+	writeWith(1, []metav1.OwnerReference{{
+		APIVersion: "brygga.segla.io/v1alpha1", Kind: "ControlPlane", Name: "dev", UID: "11111111-2222-3333-4444-555555555555",
+		Controller: new(true), BlockOwnerDeletion: new(true),
+	}})
+	writeWith(2, nil)
+	settle(t, ns, "dev")
+	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonProvisioning, "waiting for a complete generation of the etcd certificates")
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev-etcd"}, &druidv1alpha1.Etcd{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("want no Etcd on a predecessor's or an unowned generation, got %v", err)
+	}
+
+	writeGeneration(t, ns, "dev", 3)
+	waitEtcd(t, ns, "dev", namesGeneration(3))
+}
+
+func TestMountedSecretsMustExist(t *testing.T) {
+	ns := namespace(t)
+	const cp = "mounted"
+	createClass(t, newClass("mounting", "Retain"))
+	create(t, controlPlane(ns, cp, "mounting"))
+	writeGeneration(t, ns, cp, 1)
+	writeGeneration(t, ns, cp, 2)
+	waitEtcd(t, ns, cp, namesGeneration(2))
+	readyOn(t, ns, cp, 2)
+
+	for _, certificate := range datastore.Certificates {
+		if err := k8s.Delete(t.Context(), &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: datastore.SecretName(cp, certificate, 2)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitCondition(t, ns, cp, metav1.ConditionFalse, datastore.ReasonProvisioning,
+		"Secrets Etcd mounted-etcd mounts do not exist: mounted-etcd-backup-restore-2, mounted-etcd-ca-2, mounted-etcd-client-2, mounted-etcd-peer-2, mounted-etcd-server-2")
+	if err := namesGeneration(2)(getEtcd(t, ns, cp)); err != nil {
+		t.Fatalf("the Etcd left the generation it names for an older one: %v", err)
+	}
+
+	writeGeneration(t, ns, cp, 3)
+	waitEtcd(t, ns, cp, namesGeneration(3))
+	readyOn(t, ns, cp, 3)
+	terminating := &corev1.Secret{}
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: datastore.SecretName(cp, "ca", 3)}, terminating); err != nil {
+		t.Fatal(err)
+	}
+	held := client.MergeFrom(terminating.DeepCopy())
+	terminating.Finalizers = []string{"brygga.segla.io/test"}
+	if err := k8s.Patch(t.Context(), terminating, held); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Delete(t.Context(), terminating); err != nil {
+		t.Fatal(err)
+	}
+	settle(t, ns, cp)
+	waitCondition(t, ns, cp, metav1.ConditionTrue, datastore.ReasonReady, "ready on certificate generation 3")
+	released := client.MergeFrom(terminating.DeepCopy())
+	terminating.Finalizers = nil
+	if err := k8s.Patch(t.Context(), terminating, released); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDatastoreClassNotFound(t *testing.T) {
 	ns := namespace(t)
 	create(t, controlPlane(ns, "named", "absent"))
@@ -791,7 +920,7 @@ func TestBackupCredentialsCopied(t *testing.T) {
 	createClass(t, fullClass("backed-up", credentialsNamespace))
 	create(t, controlPlane(ns, "backed", "backed-up"))
 	writeGeneration(t, ns, "backed", 1)
-	waitCondition(t, ns, "backed", metav1.ConditionFalse, datastore.ReasonProvisioning, "waiting for the credentials Secret "+credentialsNamespace+"/s3 of DatastoreClass backed-up")
+	waitCondition(t, ns, "backed", metav1.ConditionFalse, datastore.ReasonProvisioning, "DatastoreClass backed-up cannot be applied yet: its credentials Secret "+credentialsNamespace+"/s3 is missing")
 
 	source := credentials(credentialsNamespace)
 	create(t, source)
@@ -829,6 +958,201 @@ func TestBackupCredentialsCopied(t *testing.T) {
 	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "plain-etcd-backup"}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
 		t.Errorf("want no credentials copy without a store, got %v", err)
 	}
+}
+
+func readyOn(t *testing.T, ns, cp string, generation int) {
+	t.Helper()
+	runStatefulSet(t, ns, cp, generation)
+	setEtcdStatus(t, ns, cp, nil)
+	waitCondition(t, ns, cp, metav1.ConditionTrue, datastore.ReasonReady, fmt.Sprintf("ready on certificate generation %d", generation))
+}
+
+func TestHeldClass(t *testing.T) {
+	ns, credentialsNamespace := namespace(t), namespace(t)
+	const cp = "held"
+	create(t, credentials(credentialsNamespace))
+	createClass(t, fullClass("holding", credentialsNamespace))
+	create(t, controlPlane(ns, cp, "holding"))
+	writeGeneration(t, ns, cp, 1)
+	waitEtcd(t, ns, cp, namesGeneration(1))
+	readyOn(t, ns, cp, 1)
+
+	if err := k8s.Delete(t.Context(), credentials(credentialsNamespace)); err != nil {
+		t.Fatal(err)
+	}
+	class := &bryggav1alpha1.DatastoreClass{}
+	if err := k8s.Get(t.Context(), client.ObjectKey{Name: "holding"}, class); err != nil {
+		t.Fatal(err)
+	}
+	class.Spec.Etcd.QuotaBackendBytes = new(resource.MustParse("3Gi"))
+	if err := k8s.Update(t.Context(), class); err != nil {
+		t.Fatal(err)
+	}
+	writeGeneration(t, ns, cp, 2)
+	etcd := waitEtcd(t, ns, cp, namesGeneration(2))
+	if quota, recorded := quantity(etcd.Spec.Etcd.Quota), etcd.Annotations[datastore.ClassGenerationAnnotation]; quota != "2Gi" || recorded != "1" {
+		t.Errorf("quota %s from class generation %s: the held class's edit reached the Etcd", quota, recorded)
+	}
+	readyOn(t, ns, cp, 2)
+	waitCondition(t, ns, cp, metav1.ConditionTrue, datastore.ReasonReady,
+		"ready on certificate generation 2, 1 of 1 replicas; DatastoreClass holding is held: its credentials Secret "+credentialsNamespace+"/s3 is missing")
+	if after := reconcileNow(t, ns, cp); after != time.Minute {
+		t.Errorf("a held class requeues after %s, want a minute: the class's Secret is outside the cache", after)
+	}
+
+	create(t, credentials(credentialsNamespace))
+	settle(t, ns, cp)
+	waitEtcd(t, ns, cp, func(etcd *druidv1alpha1.Etcd) error {
+		if quota := quantity(etcd.Spec.Etcd.Quota); quota != "3Gi" {
+			return fmt.Errorf("quota %s: the class edit has not been applied since its Secret is back", quota)
+		}
+		return nil
+	})
+	setEtcdStatus(t, ns, cp, nil)
+	waitCondition(t, ns, cp, metav1.ConditionTrue, datastore.ReasonReady, "ready on certificate generation 2, 1 of 1 replicas")
+	if c := meta.FindStatusCondition(getControlPlane(t, ns, cp).Status.Conditions, bryggav1alpha1.ConditionDatastoreReady); strings.Contains(c.Message, "is held") {
+		t.Errorf("the class is still reported held: %s", c.Message)
+	}
+}
+
+func TestBackupCopyFollowsItsEvents(t *testing.T) {
+	ns, credentialsNamespace := namespace(t), namespace(t)
+	const cp = "copied"
+	source := credentials(credentialsNamespace)
+	create(t, source)
+	createClass(t, fullClass("copying", credentialsNamespace))
+	create(t, controlPlane(ns, cp, "copying"))
+	writeGeneration(t, ns, cp, 1)
+	waitEtcd(t, ns, cp, namesGeneration(1))
+	readyOn(t, ns, cp, 1)
+	key := client.ObjectKey{Namespace: ns, Name: cp + "-etcd-backup"}
+
+	first := getCopy(t, ns, cp)
+	if err := k8s.Delete(t.Context(), first); err != nil {
+		t.Fatal(err)
+	}
+	copied := &corev1.Secret{}
+	eventually(t, func() error {
+		if err := k8s.Get(t.Context(), key, copied); err != nil {
+			return err
+		}
+		if copied.UID == first.UID {
+			return errors.New("the deleted copy is still there")
+		}
+		return nil
+	})
+
+	held := client.MergeFrom(copied.DeepCopy())
+	copied.Finalizers = []string{"brygga.segla.io/test"}
+	if err := k8s.Patch(t.Context(), copied, held); err != nil {
+		t.Fatal(err)
+	}
+	source.Data["secretAccessKey"] = []byte("rotated")
+	if err := k8s.Update(t.Context(), source); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Delete(t.Context(), copied); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() error {
+		if err := k8s.Get(t.Context(), key, copied); err != nil {
+			return err
+		}
+		if copied.DeletionTimestamp.IsZero() || string(copied.Data["secretAccessKey"]) != "rotated" {
+			return fmt.Errorf("the terminating copy holds %q, deletionTimestamp %v", copied.Data["secretAccessKey"], copied.DeletionTimestamp)
+		}
+		return nil
+	})
+	waitCondition(t, ns, cp, metav1.ConditionTrue, datastore.ReasonReady, "ready on certificate generation 1, 1 of 1 replicas")
+	released := client.MergeFrom(copied.DeepCopy())
+	copied.Finalizers = nil
+	if err := k8s.Patch(t.Context(), copied, released); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPredecessorsCopy(t *testing.T) {
+	ns, credentialsNamespace := namespace(t), namespace(t)
+	const cp = "successor"
+	create(t, credentials(credentialsNamespace))
+	createClass(t, fullClass("succeeding", credentialsNamespace))
+	leftover := func() *corev1.Secret {
+		return &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: cp + "-etcd-backup", Namespace: ns, Labels: map[string]string{bryggav1alpha1.ControlPlaneLabel: cp},
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: "brygga.segla.io/v1alpha1", Kind: "ControlPlane", Name: cp, UID: "11111111-2222-3333-4444-555555555555",
+					Controller: new(true), BlockOwnerDeletion: new(true),
+				}},
+			},
+			Data: map[string][]byte{"accessKeyID": []byte("the predecessor's")},
+		}
+	}
+	predecessors := leftover()
+	create(t, predecessors)
+	create(t, controlPlane(ns, cp, "succeeding"))
+	writeGeneration(t, ns, cp, 1)
+	const controlledBy = "successor-etcd-backup is controlled by ControlPlane successor with UID 11111111-2222-3333-4444-555555555555"
+	waitCondition(t, ns, cp, metav1.ConditionFalse, datastore.ReasonProvisioning, "DatastoreClass succeeding cannot be applied yet: "+controlledBy)
+	settle(t, ns, cp)
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: cp + "-etcd"}, &druidv1alpha1.Etcd{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("want no Etcd while a predecessor's copy stands, got %v", err)
+	}
+	if again := getCopy(t, ns, cp); again.ResourceVersion != predecessors.ResourceVersion {
+		t.Fatalf("the predecessor's copy moved from resourceVersion %s to %s", predecessors.ResourceVersion, again.ResourceVersion)
+	}
+
+	if err := k8s.Delete(t.Context(), predecessors); err != nil {
+		t.Fatal(err)
+	}
+	waitEtcd(t, ns, cp, namesGeneration(1))
+	if owners := getCopy(t, ns, cp).OwnerReferences; len(owners) != 1 || owners[0].UID != getControlPlane(t, ns, cp).UID {
+		t.Fatalf("the copy's owners are %+v, want the ControlPlane", owners)
+	}
+
+	setPaused(t, ns, cp, true)
+	if err := k8s.Delete(t.Context(), getCopy(t, ns, cp)); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() error {
+		return gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: cp + "-etcd-backup"}, &corev1.Secret{}))
+	})
+	predecessors = leftover()
+	create(t, predecessors)
+	setPaused(t, ns, cp, false)
+	waitCondition(t, ns, cp, metav1.ConditionFalse, datastore.ReasonProvisioning, "; DatastoreClass succeeding is held: "+controlledBy)
+	writeGeneration(t, ns, cp, 2)
+	waitEtcd(t, ns, cp, namesGeneration(2))
+	if again := getCopy(t, ns, cp); again.ResourceVersion != predecessors.ResourceVersion {
+		t.Errorf("the predecessor's copy moved from resourceVersion %s to %s", predecessors.ResourceVersion, again.ResourceVersion)
+	}
+}
+
+func TestOwnerlessCopyIsAdopted(t *testing.T) {
+	ns, credentialsNamespace := namespace(t), namespace(t)
+	const cp = "adopter"
+	create(t, credentials(credentialsNamespace))
+	createClass(t, fullClass("adopting", credentialsNamespace))
+	create(t, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: cp + "-etcd-backup", Namespace: ns, Labels: map[string]string{bryggav1alpha1.ControlPlaneLabel: cp}}})
+	create(t, controlPlane(ns, cp, "adopting"))
+	writeGeneration(t, ns, cp, 1)
+	waitEtcd(t, ns, cp, namesGeneration(1))
+	copied := getCopy(t, ns, cp)
+	if owners := copied.OwnerReferences; len(owners) != 1 || owners[0].UID != getControlPlane(t, ns, cp).UID || !ptr.Deref(owners[0].Controller, false) {
+		t.Errorf("the copy's owners are %+v, want the ControlPlane as its controller", owners)
+	}
+	if got := string(copied.Data["secretAccessKey"]); got != "spike-secret-key" {
+		t.Errorf("the adopted copy holds secretAccessKey %q, want the class Secret's", got)
+	}
+}
+
+func getCopy(t *testing.T, ns, cp string) *corev1.Secret {
+	t.Helper()
+	secret := &corev1.Secret{}
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: cp + "-etcd-backup"}, secret); err != nil {
+		t.Fatal(err)
+	}
+	return secret
 }
 
 func certificateVolumes(cp string, generation int) []corev1.Volume {
@@ -932,9 +1256,6 @@ func TestDatastoreReadyFollowsEtcdStatus(t *testing.T) {
 		sts     func(*appsv1.StatefulSetStatus)
 		message string
 	}{
-		{"last errors", func(s *druidv1alpha1.EtcdStatus) {
-			s.LastErrors = []druidapicommon.LastError{{Code: "ERR_SYNC_STATEFULSET", Description: "pod reported-etcd-0 is not ready", ObservedAt: metav1.Now()}}
-		}, nil, "etcd-druid reports errors on Etcd reported-etcd: ERR_SYNC_STATEFULSET: pod reported-etcd-0 is not ready"},
 		{"generation not observed", func(s *druidv1alpha1.EtcdStatus) { s.ObservedGeneration = new(*s.ObservedGeneration - 1) }, nil,
 			"etcd-druid has not observed generation"},
 		{"AllMembersUpdated False", func(s *druidv1alpha1.EtcdStatus) {
@@ -963,6 +1284,14 @@ func TestDatastoreReadyFollowsEtcdStatus(t *testing.T) {
 			waitCondition(t, ns, cp, metav1.ConditionTrue, datastore.ReasonReady, "ready on certificate generation 1")
 		})
 	}
+	t.Run("last errors alone", func(t *testing.T) {
+		setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) {
+			s.LastErrors = []druidapicommon.LastError{{Code: "ERR_SYNC_CLIENT_SERVICE", Description: "the server could not answer", ObservedAt: metav1.Now()}}
+		})
+		settle(t, ns, cp)
+		waitCondition(t, ns, cp, metav1.ConditionTrue, datastore.ReasonReady, "ready on certificate generation 1")
+		setEtcdStatus(t, ns, cp, nil)
+	})
 
 	writeGeneration(t, ns, cp, 2)
 	waitEtcd(t, ns, cp, namesGeneration(2))
@@ -1068,7 +1397,8 @@ func TestVolumesExist(t *testing.T) {
 	create(t, claim(ns, "dev-etcd-scratch", etcdLabels))
 	create(t, controlPlane(ns, "dev", "reused"))
 	writeGeneration(t, ns, "dev", 1)
-	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonVolumesExist, "dev-etcd-dev-etcd-0, dev-etcd-dev-etcd-1 of another ControlPlane")
+	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonVolumesExist,
+		"dev-etcd-dev-etcd-0, dev-etcd-dev-etcd-1 of another ControlPlane stand where the etcd of dev would be created: delete them to start empty, or keep them, and this ControlPlane waits")
 	if condition := meta.FindStatusCondition(getControlPlane(t, ns, "dev").Status.Conditions, bryggav1alpha1.ConditionDatastoreReady); strings.Contains(condition.Message, "dev-etcd-scratch") {
 		t.Errorf("a claim the StatefulSet does not attach blocks the Etcd: %s", condition.Message)
 	}
@@ -1101,7 +1431,7 @@ func TestForeignEtcd(t *testing.T) {
 		owners   []metav1.OwnerReference
 		message  string
 	}{
-		{"no controller", "orphaned", nil, nil, "Etcd orphaned-etcd is not this ControlPlane's, it has no controller"},
+		{"no controller", "orphaned", nil, nil, "Etcd orphaned-etcd is not this ControlPlane's, it has no controller: delete it and its claims to start empty, or keep them, and this ControlPlane waits"},
 		{"another ControlPlane", "succeeded", map[string]string{bryggav1alpha1.ControlPlaneLabel: "succeeded"}, []metav1.OwnerReference{{
 			APIVersion: "brygga.segla.io/v1alpha1", Kind: "ControlPlane", Name: "succeeded", UID: "11111111-2222-3333-4444-555555555555",
 			Controller: new(true), BlockOwnerDeletion: new(true),
@@ -1211,6 +1541,77 @@ func TestRecordedClass(t *testing.T) {
 		return gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev"}, &bryggav1alpha1.ControlPlane{}))
 	})
 	untouched(t, ns, "dev-etcd-dev-etcd-0")
+}
+
+func reconcileNow(t *testing.T, ns, name string) time.Duration {
+	t.Helper()
+	result, err := (&datastore.Reconciler{Client: k8s, Reader: k8s}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result.RequeueAfter
+}
+
+func TestClassSurvivesTheEtcd(t *testing.T) {
+	ns := namespace(t)
+	first := newClass("survivor-first", "Retain")
+	first.Annotations = map[string]string{datastore.DefaultClassAnnotation: "true"}
+	first.Spec.Storage.Size = resource.MustParse("3Gi")
+	createClass(t, first)
+	create(t, controlPlane(ns, "dev", ""))
+	writeGeneration(t, ns, "dev", 1)
+	etcd := waitEtcd(t, ns, "dev", nil)
+	create(t, claim(ns, "dev-etcd-dev-etcd-0", druidv1alpha1.GetDefaultLabels(etcd.ObjectMeta)))
+	settle(t, ns, "dev")
+
+	second := newClass("survivor-second", "Delete")
+	second.Annotations = map[string]string{datastore.DefaultClassAnnotation: "true"}
+	second.Spec.Storage.Size = resource.MustParse("5Gi")
+	createClass(t, second)
+	if err := k8s.Get(t.Context(), client.ObjectKey{Name: "survivor-first"}, first); err != nil {
+		t.Fatal(err)
+	}
+	delete(first.Annotations, datastore.DefaultClassAnnotation)
+	if err := k8s.Update(t.Context(), first); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Delete(t.Context(), etcd); err != nil {
+		t.Fatal(err)
+	}
+	waitEtcd(t, ns, "dev", func(again *druidv1alpha1.Etcd) error {
+		if again.UID == etcd.UID {
+			return errors.New("the Etcd has not been created again yet")
+		}
+		if class, size := again.Annotations[datastore.ClassAnnotation], quantity(again.Spec.StorageCapacity); class != "survivor-first" || size != "3Gi" {
+			return fmt.Errorf("the Etcd created again follows class %s with %s, want survivor-first, which its claims record, with 3Gi", class, size)
+		}
+		return nil
+	})
+
+	if err := k8s.Delete(t.Context(), newClass("survivor-first", "")); err != nil {
+		t.Fatal(err)
+	}
+	create(t, controlPlane(ns, "probe", "survivor-first"))
+	waitCondition(t, ns, "probe", metav1.ConditionFalse, datastore.ReasonDatastoreClassNotFound, "DatastoreClass survivor-first does not exist")
+	if err := k8s.Delete(t.Context(), getEtcd(t, ns, "dev")); err != nil {
+		t.Fatal(err)
+	}
+	waitCondition(t, ns, "dev", metav1.ConditionFalse, datastore.ReasonDatastoreClassNotFound,
+		"DatastoreClass survivor-first, which the claims of this ControlPlane record, does not exist")
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev-etcd"}, &druidv1alpha1.Etcd{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("want no Etcd while the class its claims record is gone, got %v", err)
+	}
+	if after := reconcileNow(t, ns, "dev"); after != time.Minute {
+		t.Errorf("a class the claims record and that is gone requeues after %s, want a minute: the claims are outside the cache", after)
+	}
+
+	createClass(t, newClass("survivor-first", "Retain"))
+	waitEtcd(t, ns, "dev", func(again *druidv1alpha1.Etcd) error {
+		if class := again.Annotations[datastore.ClassAnnotation]; class != "survivor-first" {
+			return fmt.Errorf("the Etcd follows class %s, want survivor-first", class)
+		}
+		return nil
+	})
 }
 
 func withoutTLS(etcd *druidv1alpha1.Etcd) druidv1alpha1.EtcdSpec {

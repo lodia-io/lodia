@@ -217,7 +217,7 @@ func TestEveryCertificateVerifiesAgainstItsCA(t *testing.T) {
 		t.Helper()
 		c := parseTLS(t, secrets["dev-cakey-"+suffix]).Cert
 		if !strings.HasPrefix(c.Subject.CommonName, suffix+"-ca@") || !stamped.MatchString(c.Subject.CommonName) {
-			t.Errorf("the %s CA is %q, want %s-ca@<unix seconds>", suffix, c.Subject.CommonName, suffix)
+			t.Errorf("the %s CA is %q, want %s-ca@<unix nanoseconds>", suffix, c.Subject.CommonName, suffix)
 		}
 		if c.CheckSignatureFrom(c) != nil || !c.IsCA {
 			t.Errorf("the %s CA is not a self-signed root", suffix)
@@ -265,7 +265,7 @@ func TestEveryCertificateVerifiesAgainstItsCA(t *testing.T) {
 	for _, row := range rows {
 		t.Run(row.secret, func(t *testing.T) {
 			c := leafOf(t, secrets[row.secret])
-			if err := certs.Verify(c.Cert, row.ca); err != nil {
+			if err := certs.Verify(c.Cert, row.ca, time.Now()); err != nil {
 				t.Fatal(err)
 			}
 			if cn := c.Cert.Subject.CommonName; cn != row.cn && (!row.isCA || !strings.HasPrefix(cn, row.cn) || !stamped.MatchString(cn)) {
@@ -313,7 +313,7 @@ func TestEveryCertificateVerifiesAgainstItsCA(t *testing.T) {
 		certs  []*x509.Certificate
 	}{
 		{"dev-ca-bundle", []*x509.Certificate{cluster}},
-		{"dev-client-ca-bundle", []*x509.Certificate{signer, clientCA}},
+		{"dev-client-ca", []*x509.Certificate{signer, clientCA}},
 		{"dev-front-proxy-ca", []*x509.Certificate{frontProxy}},
 		{"dev-etcd-ca", []*x509.Certificate{etcd}},
 		{"dev-etcd-ca-1", []*x509.Certificate{etcd}},
@@ -534,7 +534,7 @@ func TestLeavesRenewAtTwoThirdsOfTheirLifetime(t *testing.T) {
 			if !generation {
 				t.Errorf("%s appeared at a leaf renewal", name)
 			}
-		case name == "dev-client-ca-bundle":
+		case name == "dev-client-ca":
 		case unchanged:
 			if !maps.EqualFunc(prev.Data, s.Data, bytes.Equal) {
 				t.Errorf("%s changed at a leaf renewal", name)
@@ -558,7 +558,7 @@ func TestLeavesRenewAtTwoThirdsOfTheirLifetime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := after["dev-client-ca-bundle"].Data["ca.crt"]; !bytes.Equal(got, want) {
+	if got := after["dev-client-ca"].Data["ca.crt"]; !bytes.Equal(got, want) {
 		bundle, _ := certs.ParseCerts(got)
 		t.Errorf("the client CA bundle holds %v, want the client CA, the new signer and the old one", subjects(bundle))
 	}
@@ -804,7 +804,7 @@ func secretTable(cp string) []secretRow {
 		{cp + "-cakey-front-proxy", corev1.SecretTypeTLS, tls, nil, false},
 		{cp + "-cakey-etcd", corev1.SecretTypeTLS, tls, nil, false},
 		{cp + "-ca-bundle", corev1.SecretTypeOpaque, []string{"ca.crt"}, nil, false},
-		{cp + "-client-ca-bundle", corev1.SecretTypeOpaque, []string{"ca.crt"}, nil, false},
+		{cp + "-client-ca", corev1.SecretTypeOpaque, []string{"ca.crt"}, nil, false},
 		{cp + "-kubelet-signer", corev1.SecretTypeTLS, tls, nil, false},
 		{cp + "-apiserver-serving", corev1.SecretTypeTLS, tls, nil, false},
 		{cp + "-apiserver-kubelet-client", corev1.SecretTypeTLS, tls, nil, false},
