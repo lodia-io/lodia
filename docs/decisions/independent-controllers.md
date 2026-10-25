@@ -1,7 +1,8 @@
 # Six controllers share one object and communicate only through status conditions
 
-Decided 2026-10-25. The manager and PKI are built; the other five
-controllers are not.
+Decided 2026-10-25. The manager, PKI and the Datastore controller, for a
+dedicated etcd of one member, are built; the other four controllers are
+not.
 
 ## Decision
 
@@ -131,8 +132,9 @@ flowchart LR
 
 ## Code
 
-- `cmd/brygga/main.go` — the manager with the cache rules above, and PKI
-  registered as `pki` with ten workers.
+- `cmd/brygga/main.go` — the manager with the cache rules above, PKI
+  registered as `pki` with ten workers, and the Datastore controller as
+  `datastore` with ten.
 - `internal/controller/pki` — reads `spec` and `status.endpoint`, writes its
   Secrets with server-side apply as `brygga/pki`, applies `CertificatesReady`,
   `CAValidityAcceptable` and `AccessReady` alone through the status
@@ -144,3 +146,12 @@ flowchart LR
   `reconciler_test.go` runs it under a manager whose cache is the one
   `main.go` builds, with `ReaderFailOnMissingInformer`, and holds the first
   visit and the stale `APIServerReady` cases.
+- `internal/controller/datastore` — reads `spec`, writes the `Etcd` and the
+  credentials copy with server-side apply as `brygga/datastore`, applies
+  `DatastoreReady` alone through the status subresource (`Unknown` at the
+  start of its first pass, messages from the state alone, an API error left
+  to the log), and stops for a paused `ControlPlane`. `datastore_test.go`
+  runs it under the same cache with `ReaderFailOnMissingInformer`, as a user
+  bound to exactly its rules, and holds the first visit and the pass that
+  leaves the status alone on an API error (`TestConditionsFromState`)
+  ([dedicated-etcd-by-default](dedicated-etcd-by-default.md)).
