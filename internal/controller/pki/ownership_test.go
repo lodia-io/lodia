@@ -249,7 +249,7 @@ func TestKeptGenerationsAreAdopted(t *testing.T) {
 	r.Client = failingApply{Client: k8s, secret: "dev-etcd-backup-restore-1"}
 	reconcileFails(t, r, cp)
 	if c := condition(t, cp, bryggav1alpha1.ConditionCertificatesReady); c.Reason != pki.ReasonIssuing || c.Message != "not written yet: dev-etcd-backup-restore-1; the error is in the log" {
-		t.Fatalf("CertificatesReady is %s while generation 2 cannot be adopted: %s", c.Reason, c.Message)
+		t.Fatalf("CertificatesReady is %s while generation 1 cannot be adopted: %s", c.Reason, c.Message)
 	}
 	r.Client = k8s
 	reconcile(t, r, cp)

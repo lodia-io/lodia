@@ -166,3 +166,27 @@ is a decision — a decision is a file in `docs/decisions/`.
 - The e2e suite installs the CRDs and applies the examples; nothing runs the
   operator against kind yet. The phase 1 gate adds that, and with it a check
   that a `ControlPlane` reaches `CertificatesReady` on a real cluster.
+
+## From the PKI review (2026-10-25)
+
+- No PKI-level test pins one clock per pass: `leaf()` issuing at
+  `time.Now()` passes the whole suite; a test that delays one apply past a
+  second boundary would pin it.
+- `TestAPredecessorsSecretsAreNeitherReadNorWritten` passes with the
+  metadata lookup disabled, since the labelled predecessor Secrets mask its
+  unlabelled CA key; give that path its own case.
+- In a blocked pass the CAs are never loaded: a forbidden `brygga:operator`
+  then reports "client CA missing", and the bind error replaces the bounded
+  requeue with exponential backoff. With `APIServerReady` True and
+  `<cp>-brygga-kubeconfig` missing or foreign, `AccessReady` says
+  "APIServerReady is not True for this generation", which the state
+  contradicts.
+- `readEncryptionConfig` decodes leniently, while kube-apiserver decodes
+  strictly and with defaults
+  ([config.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/server/options/encryptionconfig/config.go#L140-L146),
+  [loadConfig](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/server/options/encryptionconfig/config.go#L519-L536));
+  with `kms` requested, an unreadable configuration is reported as
+  `EncryptionProviderUnsupported`, not `SecretUnreadable`.
+- The previous etcd generation is kept and adopted on completeness alone,
+  even when it does not chain to the current etcd CA (a restored
+  predecessor's generation, for instance); keep it only if it chains.

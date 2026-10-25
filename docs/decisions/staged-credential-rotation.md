@@ -126,7 +126,7 @@ first four.
   only the kubelet signer, a one-year intermediate. That does not narrow
   what it can sign: the API server accepts any certificate that chains to
   its client bundle, with the user from its CN and the groups from its O
-  ([x509.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/authentication/request/x509/x509.go#L288-L310)),
+  ([x509.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/authentication/request/x509/x509.go#L288-L310)),
   so whoever holds the signer can sign any identity while it is in the
   bundle, that is until it is replaced and its 30 days beside the new one
   are over.

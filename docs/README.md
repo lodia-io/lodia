@@ -207,7 +207,7 @@ so none stays without the owner the garbage collector follows or the label
 the cache filters on. Key material PKI cannot read is never replaced: an
 encryption configuration that is missing from its Secret or that the API
 server's own validator refuses
-([validation_encryption.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/apis/apiserver/validation/validation_encryption.go#L64-L115)),
+([validation_encryption.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/apis/apiserver/validation/validation_encryption.go#L64-L115)),
 and a ServiceAccount key that is not the RSA key PKI writes, turn
 `CertificatesReady` False with `SecretUnreadable`: a new key would leave what
 the old one encrypted unreadable, or every token it signed invalid.

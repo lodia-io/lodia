@@ -152,7 +152,8 @@ flowchart LR
   subresource (`Unknown` at the start of its first visit, then with messages
   from the state alone, so a pass that changes nothing writes nothing; a
   failed read leaves them as they were, and a failed write stops the pass's
-  writes and reports what it did not write as `Issuing`), counts
+  writes and reports what it had to change and could not write as
+  `Issuing`), counts
   `APIServerReady` only at the current generation, and requeues in whole
   seconds, rounded up, at the earliest renewal, or when a CA enters its last
   year or expires.
