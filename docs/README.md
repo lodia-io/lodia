@@ -209,7 +209,10 @@ be made — the class's Secret is missing, another owner controls
 yet), or the API server refuses the copy — the class is held whole: the
 `Etcd` keeps the class fields it has and still takes each new certificate
 generation, and `DatastoreReady`'s message ends with `DatastoreClass <c> is
-held:` and the cause, checked again every minute. Held whole, since the rest
+held:` and the cause. A missing Secret or a copy another owner holds is
+checked again after a minute; a refused copy is retried with
+controller-runtime's backoff, since the refusal is returned as the pass's
+error. Held whole, since the rest
 of an edit could add a store whose copy cannot be made; before the first
 `Etcd` exists, the same cause is `Provisioning`, and nothing is created.
 
@@ -351,7 +354,9 @@ a predecessor's the garbage collector has not removed yet: it is neither
 adopted nor written, and the message names it. `EtcdRefused` when the API
 server refuses the `Etcd` Brygga renders — an admission policy on `Etcd`s, a
 class stored before a rule it breaks (validation ratcheting keeps an
-unchanged field on update), an etcd-druid whose schema moved: the message
+unchanged field on update,
+[ratcheting](https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/#validation-ratcheting)),
+an etcd-druid whose schema moved: the message
 names the `Etcd`, the certificate generation and the class generation, and
 the refusal is in Brygga's log. `Deleting` while the `ControlPlane` is being
 deleted. `status.datastore` is `kind: Dedicated`, the `Etcd`'s name and its
@@ -365,7 +370,8 @@ admission webhook's denial without a code arrives as 400
 ([statuserror.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/admission/plugin/webhook/errors/statuserror.go#L37-L39)).
 Sending the same `Etcd` again cannot change that verdict, and without the
 condition its certificate generations would stop with `DatastoreReady` still
-True.
+True; the refusal is returned as the pass's error too, so the next attempt
+follows controller-runtime's backoff.
 
 Identities: no root CA key is mounted into a control plane pod; the
 controller manager holds only the kubelet signer, an intermediate that signs
