@@ -25,7 +25,7 @@ func main() {
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Address of the health and readiness probes.")
 	flag.BoolVar(&leaderElect, "leader-elect", true, "Run controllers only in the replica that holds the leader lease.")
 	flag.StringVar(&signerImage, "signer-image", "", "Image of lodia-signer, the API server's ServiceAccount token signer; required.")
-	flag.StringVar(&etcdDruidNamespace, "etcd-druid-namespace", "etcd-druid", "Namespace etcd-druid runs in; each etcd's NetworkPolicy admits its pods to the backup-restore sidecar.")
+	flag.StringVar(&etcdDruidNamespace, "etcd-druid-namespace", "", "Namespace etcd-druid runs in, whose pods each etcd's NetworkPolicy admits to the backup-restore sidecar; required.")
 	opts := zap.Options{}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -36,7 +36,7 @@ func main() {
 		os.Exit(1)
 	}
 	if etcdDruidNamespace == "" {
-		log.Error(nil, "--etcd-druid-namespace must not be empty")
+		log.Error(nil, "--etcd-druid-namespace is required")
 		os.Exit(1)
 	}
 

@@ -1,0 +1,132 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
+  name: datastores.lodia.io
+spec:
+  group: lodia.io
+  names:
+    kind: Datastore
+    listKind: DatastoreList
+    plural: datastores
+    shortNames:
+    - ds
+    singular: datastore
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.driver
+      name: Driver
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Datastore is an etcd several tenants share by key prefix. There is no quota
+          per tenant in a shared store, and one tenant's load is its neighbours'.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: DatastoreSpec is how to reach the shared store and administer
+              it.
+            properties:
+              driver:
+                default: etcd
+                description: Driver is etcd; the field leaves room for other stores
+                  later.
+                enum:
+                - etcd
+                type: string
+              endpoints:
+                description: Endpoints of the members.
+                items:
+                  maxLength: 512
+                  type: string
+                  x-kubernetes-validations:
+                  - message: must be an https URL
+                    rule: self.startsWith('https://')
+                maxItems: 9
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: set
+              prefix:
+                default: /lodia
+                description: Prefix under which every tenant gets its own prefix.
+                maxLength: 64
+                pattern: ^/[a-z0-9/-]*$
+                type: string
+              tls:
+                description: TLS is the store's CA and the root client Lodia creates
+                  tenants with.
+                properties:
+                  caSecretRef:
+                    description: CASecretRef holds ca.crt.
+                    properties:
+                      name:
+                        description: Name of the Secret.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      namespace:
+                        description: Namespace of the Secret.
+                        maxLength: 63
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    - namespace
+                    type: object
+                  rootClientSecretRef:
+                    description: |-
+                      RootClientSecretRef holds tls.crt and tls.key of a client allowed to
+                      manage users and roles.
+                    properties:
+                      name:
+                        description: Name of the Secret.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      namespace:
+                        description: Namespace of the Secret.
+                        maxLength: 63
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    - namespace
+                    type: object
+                required:
+                - caSecretRef
+                - rootClientSecretRef
+                type: object
+            required:
+            - endpoints
+            - tls
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources: {}

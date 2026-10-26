@@ -9,8 +9,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"os/exec"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -24,72 +22,25 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/rest"
 	"k8s.io/utils/ptr"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/config"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
-	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
-	"sigs.k8s.io/e2e-framework/third_party/helm"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
-	"go.lodia.io/lodia/internal/controller/datastore"
-	"go.lodia.io/lodia/internal/controller/pki"
-	"go.lodia.io/lodia/internal/operator"
 )
 
 const (
-	druidVersion   = "v0.39.0"
-	druidNamespace = "etcd-druid"
-	tenant         = "team-e2e"
-	controlPlane   = "dev"
+	tenant       = "team-e2e"
+	controlPlane = "dev"
 )
 
-var druidValues = filepath.Join("..", "..", "hack", "etcd-spike", "druid-values.yaml")
-
 func TestDatastoreOnKind(t *testing.T) {
-	var (
-		k8s     client.Client
-		stop    context.CancelFunc
-		stopped chan error
-	)
-	f := features.New("the PKI and Datastore controllers with etcd-druid "+druidVersion).
+	var k8s client.Client
+	f := features.New("the PKI and Datastore controllers with etcd-druid").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			installEtcdDruid(t, cfg.KubeconfigFile())
-			scheme := runtime.NewScheme()
-			for _, add := range []func(*runtime.Scheme) error{clientgoscheme.AddToScheme, lodiav1alpha1.AddToScheme, druidv1alpha1.AddToScheme} {
-				if err := add(scheme); err != nil {
-					t.Fatal(err)
-				}
-			}
-			var err error
-			if k8s, err = client.New(cfg.Client().RESTConfig(), client.Options{Scheme: scheme}); err != nil {
-				t.Fatal(err)
-			}
-			mgr := manager(t, cfg.Client().RESTConfig(), scheme, func(mgr ctrl.Manager) error {
-				if err := (&pki.Reconciler{
-					Client:              mgr.GetClient(),
-					Reader:              mgr.GetAPIReader(),
-					LeafLifetime:        365 * 24 * time.Hour,
-					CALifetime:          5 * 365 * 24 * time.Hour,
-					TrustAnchorLifetime: 10 * 365 * 24 * time.Hour,
-					CAExpiryNotice:      365 * 24 * time.Hour,
-				}).SetupWithManager(mgr, 1); err != nil {
-					return err
-				}
-				return (&datastore.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdDruidNamespace: druidNamespace}).SetupWithManager(mgr, 1)
-			})
-			var run context.Context
-			run, stop = context.WithCancel(context.Background())
-			stopped = make(chan error, 1)
-			go func() { stopped <- mgr.Start(run) }()
-
+			k8s = newClient(t, cfg)
 			create(ctx, t, k8s, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: tenant}})
 			create(ctx, t, k8s, &lodiav1alpha1.DatastoreClass{
 				ObjectMeta: metav1.ObjectMeta{Name: "e2e"},
@@ -213,12 +164,6 @@ func TestDatastoreOnKind(t *testing.T) {
 			return ctx
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			if stop != nil {
-				stop()
-				if err := <-stopped; err != nil {
-					t.Error(err)
-				}
-			}
 			if k8s != nil {
 				for _, obj := range []client.Object{
 					&lodiav1alpha1.DatastoreClass{ObjectMeta: metav1.ObjectMeta{Name: "e2e"}},
@@ -233,49 +178,6 @@ func TestDatastoreOnKind(t *testing.T) {
 		}).
 		Feature()
 	testenv.Test(t, f)
-}
-
-func installEtcdDruid(t *testing.T, kubeconfig string) {
-	t.Helper()
-	dir := t.TempDir()
-	clone := exec.CommandContext(t.Context(), "git", "clone", "--quiet", "--depth", "1", "--branch", druidVersion, "https://github.com/gardener/etcd-druid", dir)
-	if out, err := clone.CombinedOutput(); err != nil {
-		t.Fatalf("clone etcd-druid %s: %v\n%s", druidVersion, err, out)
-	}
-	values, err := filepath.Abs(druidValues)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = helm.New(kubeconfig).RunUpgrade(
-		helm.WithName("etcd-druid"), helm.WithChart(filepath.Join(dir, "charts")), helm.WithNamespace(druidNamespace),
-		helm.WithArgs("--install", "--create-namespace", "--values", values), helm.WithWait(), helm.WithTimeout("5m"))
-	if err != nil {
-		t.Fatalf("install etcd-druid %s: %v", druidVersion, err)
-	}
-	t.Logf("etcd-druid %s installed from its chart into namespace %s", druidVersion, druidNamespace)
-}
-
-func manager(t *testing.T, cfg *rest.Config, scheme *runtime.Scheme, setup func(ctrl.Manager) error) ctrl.Manager {
-	t.Helper()
-	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
-	cache, err := operator.Cache()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cache.ReaderFailOnMissingInformer = true
-	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
-		Scheme:     scheme,
-		Metrics:    metricsserver.Options{BindAddress: "0"},
-		Controller: config.Controller{SkipNameValidation: new(true)},
-		Cache:      cache,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := setup(mgr); err != nil {
-		t.Fatal(err)
-	}
-	return mgr
 }
 
 func create(ctx context.Context, t *testing.T, k8s client.Client, obj client.Object) {

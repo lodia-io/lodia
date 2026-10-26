@@ -97,10 +97,6 @@ is a decision — a decision is a file in `docs/decisions/`.
   `DatastoreClass` and stay etcd-druid's default (50m / 128Mi at v0.39.0);
   the operator configuration's `defaults.resources` should cover them once
   phase 1 measures.
-- The chart's ClusterRole takes the Datastore controller's rules from the
-  table in `docs/README.md` (Identity and tenancy), which `datastoreRules` in
-  `internal/controller/datastore/datastore_test.go` enforces; the chart and
-  the test should read one list.
 - The shared `Placement` and `resources` types get the rules of pod
   validation with Workloads, which renders them for the `ControlPlane` in
   phase 1: the class's `placement` and `etcd.resources` have none yet. Until
@@ -134,9 +130,8 @@ is a decision — a decision is a file in `docs/decisions/`.
 - Backup credentials scoped to one tenant's prefix, so a tenant namespace's
   `<cp>-etcd-backup` reaches only that tenant's snapshots and not every
   tenant's on the class (`docs/README.md`, Identity and tenancy).
-- The e2e suite runs the PKI and Datastore controllers in the test process
-  and needs `git` and `helm`; the suite against Lodia's image and chart comes with the
-  chart, and `make e2e` could check for the tools.
+- `make e2e` could check for Docker and `helm` before it creates its
+  cluster.
 - The cache keeps metadata only for Secrets because this controller watches
   them as `PartialObjectMetadata`; nothing stops a future controller from
   starting a typed Secret informer. A test or a cache transform should
@@ -164,9 +159,6 @@ is a decision — a decision is a file in `docs/decisions/`.
 - Lodia reaches a tenant's API server through its in-namespace Service and
   ignores `HTTPS_PROXY` for that connection; the chart's documentation should
   say so for sites that set a proxy on every pod.
-- The e2e suite installs the CRDs and applies the examples; nothing runs the
-  operator against kind yet. The phase 1 gate adds that, and with it a check
-  that a `ControlPlane` reaches `CertificatesReady` on a real cluster.
 
 ## From the PKI review (2026-10-25)
 
@@ -250,8 +242,6 @@ is a decision — a decision is a file in `docs/decisions/`.
   turn `APIServerReady` False with `Unsupported` until phase 2 builds them.
 - The NetworkPolicies isolate each component's ingress alone; the
   default-deny set and egress, the README's arrows, come in phase 2.
-- `--signer-image` is an operator flag until the operator configuration and
-  the chart render it.
 - The control plane pods set no securityContext: give them one that passes
   Pod Security `restricted`, the API server and the signer under one user
   (From lodia-signer, above).
@@ -264,8 +254,6 @@ is a decision — a decision is a file in `docs/decisions/`.
   in-namespace clients use the cluster IP.
 - Wave 3's gate checks the tenant API from inside the cluster with a token:
   anonymous requests reach only the health paths and `cluster-info`.
-- The e2e asserts `APIServerReady` alone, with the operator in the test
-  process outside kind; wave 3 runs it in the cluster.
 - Workloads finds another owner's objects under its names in the cache,
   which holds only labelled ones. An unlabelled object it applied for a
   predecessor is taken over silently, with the
@@ -288,9 +276,6 @@ is a decision — a decision is a file in `docs/decisions/`.
   ([httpAPI.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/server/httpAPI.go#L281-L288)),
   which Gardener opens between members for the same reason
   ([etcd.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/component/etcd/etcd/etcd.go#L404-L411)).
-- `--etcd-druid-namespace` is an operator flag, `etcd-druid` by default,
-  the namespace the e2e installs etcd-druid into; the chart sets it to the
-  namespace it installs etcd-druid in.
 - The etcd's policy admits no metrics scraper, as the controller manager's
   and the scheduler's do not: a ServiceMonitor for the etcd and sidecar
   metrics needs its scraper admitted, the phase 2 arrow from the metrics
@@ -308,3 +293,12 @@ is a decision — a decision is a file in `docs/decisions/`.
   the gap, a second in envtest, where a test that compared the
   ControlPlane's resourceVersion right after a transition to True caught it
   once in fifteen runs.
+
+## From the chart (2026-10-26)
+
+- etcd-druid's CRDs come from its chart's `crds/` directory, which Helm
+  applies only when it installs a release (`docs/README.md`, Installation):
+  a bump of the dependency needs its CRDs applied by hand first; decide
+  whether the chart templates them or the release notes carry the step.
+- The operator's pods set no requests or limits until the operator is
+  measured.

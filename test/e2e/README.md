@@ -24,22 +24,26 @@ untouched. `go test` runs in the package directory, so it needs an absolute
 `E2E_KUBECONFIG`; `make e2e` resolves a relative one, and runs `go test -v`
 so that each scenario's lines are in the log.
 
-`TestDatastoreOnKind` needs `git` and `helm` on the `PATH`: it installs
-etcd-druid v0.39.0 from its chart at the tag (the chart is not released) into
-the namespace `etcd-druid` with
-[`hack/etcd-spike/druid-values.yaml`](../../hack/etcd-spike/druid-values.yaml),
-the way the [etcd spike](../../docs/etcd-spike-2026-10.md) ran it, and leaves
-it installed. It runs the PKI and Datastore controllers inside the test
-process against the cluster, with the cache of `internal/operator`: PKI issues
-the etcd certificate generations, and generation 2 is the one it issues under
-the same CA once a member Secret of generation 1 is deleted, the roll a
-tenant sees in production. The suite against Lodia's own image and chart
-comes with the chart.
+Before the first test, the suite installs Lodia as a user does, and needs
+Docker and `helm` on the `PATH` for it: it builds `cmd/lodia` and
+`cmd/lodia-signer` with ko straight into the kind cluster
+(`KO_DOCKER_REPO=kind.local`, as the hard way does), then runs
+`helm dependency build` and installs [`charts/lodia`](../../charts/lodia)
+into `lodia-system` with those two images. The chart brings the CRDs and
+etcd-druid v0.39.0, its dependency; the operator runs in the cluster under
+the chart's RBAC, and every test asserts against it. The suite leaves the
+chart installed.
 
-`TestAPIServerOnKind` also needs Docker: it builds lodia-signer's image
-with ko straight into the kind cluster (`KO_DOCKER_REPO=kind.local`, as the
-hard way does), then runs the controllers `internal/operator` registers in
-the test process until a `ControlPlane` in `nodePort` mode reports
-`APIServerReady=True`: a real kube-apiserver, controller manager and
-scheduler on PKI's certificates and the Datastore's etcd. `make e2e` gives
-the suite 30 minutes.
+- `TestDatastoreOnKind`: PKI issues the etcd certificate generations, and
+  generation 2 is the one it issues under the same CA once a member Secret
+  of generation 1 is deleted, the roll a tenant sees in production.
+- `TestOperatorFromTheChart`: the operator's Deployment is Available, a
+  running replica holds the leader Lease `lodia.io`, and a namespace that
+  enforces Pod Security `restricted` admits the operator's pod in a dry run.
+- `TestExamplesOnAKindCluster`: the CRDs the chart installed accept every
+  example in [`docs/api/examples`](../../docs/api/examples).
+- `TestAPIServerOnKind`: a `ControlPlane` in `nodePort` mode reports
+  `APIServerReady=True`: a real kube-apiserver, controller manager and
+  scheduler on PKI's certificates and the Datastore's etcd.
+
+`make e2e` gives the suite 30 minutes.

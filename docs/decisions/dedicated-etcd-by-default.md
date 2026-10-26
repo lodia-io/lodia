@@ -30,8 +30,10 @@ not.
   certificate also names the client Service, through which etcd-druid calls
   it ([etcd spike](../etcd-spike-2026-10.md), findings 1 and 2).
 - **The engine is etcd-druid**, installed beside Lodia (Lodia's chart
-  vendors etcd-druid's at a tag, since it is not released as a versioned
-  chart), run with `enableEtcdSpecAutoReconcile: true` so a spec
+  depends on etcd-druid's, which etcd-druid's release workflow publishes as
+  a versioned OCI chart,
+  [base.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/.github/workflows/base.yaml#L60-L84)),
+  run with `enableEtcdSpecAutoReconcile: true` so a spec
   change reconciles without an annotation, and with its optional components
   webhook off ([configuration](https://gardener.github.io/etcd-druid/deployment/configure-etcd-druid.html)).
   What Lodia gets from it, per tenant:
@@ -256,8 +258,9 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   NetworkPolicy. Registered as `datastore` in `internal/operator`.
 - `internal/controller/datastore/datastore_test.go` — envtest with
   etcd-druid v0.39.0's CRDs from its `crds` package, the controller running
-  as a user bound to exactly the rules in
-  [Identity and tenancy](../README.md#identity-and-tenancy):
+  as a user bound to exactly its generated ClusterRole,
+  [`datastore.yaml`](../../charts/lodia/files/rbac/datastore.yaml)
+  ([Identity and tenancy](../README.md#identity-and-tenancy)):
   `TestFinalizerAndEtcdFromClass` (the finalizer before the first `Etcd`, the
   mapping table, generation 1 in all three TLS blocks),
   `TestConditionsFromState` (Unknown on the first visit, an API error leaves
@@ -275,10 +278,13 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   `TestOwnerlessNetworkPolicyIsAdopted`, `TestNetworkPolicyRefused` and
   `TestAFailedNetworkPolicyCallLeavesTheStatus`. `datastoretest` stands in
   for PKI there.
-- `test/e2e/datastore_test.go` — `TestDatastoreOnKind`: etcd-druid v0.39.0
-  from its chart at the tag, the PKI and Datastore controllers in the test
-  process, a `ControlPlane` to `DatastoreReady=True` with the member running
-  on PKI's generation 1, a member Secret of generation 1 deleted and PKI's
-  generation 2, under the same CA, rolling the member, deletion under
-  `Delete`, which the garbage collector carries to the etcd's
-  NetworkPolicy.
+- `charts/lodia` — etcd-druid v0.39.0 as a dependency behind
+  `etcdDruid.enabled`, with `enableEtcdSpecAutoReconcile` on and the
+  components webhook left off, its default; the operator gets the
+  namespace etcd-druid runs in as `--etcd-druid-namespace`.
+- `test/e2e/datastore_test.go` — `TestDatastoreOnKind`: the operator and
+  etcd-druid v0.39.0 from Lodia's chart, a `ControlPlane` to
+  `DatastoreReady=True` with the member running on PKI's generation 1, a
+  member Secret of generation 1 deleted and PKI's generation 2, under the
+  same CA, rolling the member, deletion under `Delete`, which the garbage
+  collector carries to the etcd's NetworkPolicy.

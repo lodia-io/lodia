@@ -109,6 +109,16 @@ func (r *Reconciler) controlPlanesUsing(ctx context.Context, class client.Object
 	return requests
 }
 
+// +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=list;watch;patch
+// +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/status,verbs=patch
+// +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/finalizers,verbs=update
+// +kubebuilder:rbac:groups=lodia.io,resources=datastoreclasses,verbs=list;watch
+// +kubebuilder:rbac:groups=druid.gardener.cloud,resources=etcds,verbs=get;list;watch;create;patch;delete
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;patch;delete
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=list;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;patch;delete
+
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	cp := &lodiav1alpha1.ControlPlane{}
 	if err := r.Get(ctx, req.NamespacedName, cp); err != nil {

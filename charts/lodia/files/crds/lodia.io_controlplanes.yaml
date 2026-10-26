@@ -1,0 +1,1429 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
+  name: controlplanes.lodia.io
+spec:
+  group: lodia.io
+  names:
+    kind: ControlPlane
+    listKind: ControlPlaneList
+    plural: controlplanes
+    shortNames:
+    - cp
+    singular: controlplane
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.version
+      name: Version
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].reason
+      name: Reason
+      type: string
+    - jsonPath: .status.endpoint.apiServer.host
+      name: Endpoint
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ControlPlane is one tenant cluster's control plane: an API server with its
+          konnectivity server, a controller manager, a scheduler and a datastore,
+          running as pods in this namespace.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ControlPlaneSpec is what the owner of the cluster wants.
+            properties:
+              addons:
+                description: Addons configures what Lodia runs inside the tenant cluster.
+                properties:
+                  coreDNS:
+                    description: CoreDNS configures cluster DNS.
+                    properties:
+                      enabled:
+                        default: true
+                        description: Enabled is false when the tenant brings its own
+                          DNS.
+                        type: boolean
+                      replicas:
+                        default: 2
+                        description: Replicas of CoreDNS.
+                        format: int32
+                        maximum: 10
+                        minimum: 1
+                        type: integer
+                    type: object
+                  konnectivity:
+                    description: Konnectivity configures the tunnel between the control
+                      plane and the nodes.
+                    properties:
+                      agent:
+                        description: Agent configures the agents in the tenant.
+                        properties:
+                          mode:
+                            default: DaemonSet
+                            description: Mode is DaemonSet, an agent per node, or
+                              Deployment.
+                            enum:
+                            - DaemonSet
+                            - Deployment
+                            type: string
+                          replicas:
+                            description: Replicas of the Deployment mode.
+                            format: int32
+                            maximum: 10
+                            minimum: 1
+                            type: integer
+                        type: object
+                      version:
+                        description: |-
+                          Version pins the konnectivity version across a Kubernetes upgrade;
+                          empty follows the version table.
+                        maxLength: 16
+                        pattern: ^v0\.[0-9]+\.[0-9]+$
+                        type: string
+                    type: object
+                  kubeProxy:
+                    description: KubeProxy configures kube-proxy.
+                    properties:
+                      enabled:
+                        default: true
+                        description: Enabled is false for CNIs that replace kube-proxy.
+                        type: boolean
+                      healthzBindAddress:
+                        description: |-
+                          HealthzBindAddress is the IP address kube-proxy serves its health port,
+                          10256, on: beyond loopback for cloud load balancers; loopback by default.
+                        maxLength: 45
+                        type: string
+                        x-kubernetes-validations:
+                        - message: must be an IP address
+                          rule: isIP(self)
+                      mode:
+                        default: iptables
+                        description: Mode is iptables, nftables or ipvs.
+                        enum:
+                        - iptables
+                        - nftables
+                        - ipvs
+                        type: string
+                    type: object
+                type: object
+              apiServer:
+                description: APIServer configures kube-apiserver.
+                properties:
+                  admission:
+                    description: Admission names a ConfigMap with an AdmissionConfiguration.
+                    properties:
+                      configRef:
+                        description: ConfigRef names a ConfigMap with an AdmissionConfiguration.
+                        properties:
+                          name:
+                            description: Name of the object.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        type: object
+                    required:
+                    - configRef
+                    type: object
+                  advertiseAddress:
+                    description: |-
+                      AdvertiseAddress is the address apiserver-proxy owns on every node in
+                      gateway mode; 172.20.0.1 by default.
+                    maxLength: 45
+                    type: string
+                    x-kubernetes-validations:
+                    - message: must be an IP address
+                      rule: isIP(self)
+                  audit:
+                    description: Audit configures audit logging.
+                    properties:
+                      policyRef:
+                        description: PolicyRef names a ConfigMap with key policy.yaml.
+                        properties:
+                          name:
+                            description: Name of the object.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        type: object
+                    required:
+                    - policyRef
+                    type: object
+                  authentication:
+                    description: |-
+                      Authentication configures structured authentication; the anonymous
+                      section is Lodia's.
+                    properties:
+                      jwt:
+                        description: JWT authenticators, such as OIDC providers.
+                        items:
+                          description: JWTAuthenticator accepts tokens from one issuer.
+                          properties:
+                            claimMappings:
+                              description: ClaimMappings say which claims become the
+                                user name and groups.
+                              properties:
+                                groups:
+                                  description: Groups is the claim for the groups.
+                                  properties:
+                                    claim:
+                                      description: Claim is the JWT claim.
+                                      maxLength: 253
+                                      minLength: 1
+                                      type: string
+                                    prefix:
+                                      description: Prefix is added to the claim's
+                                        value.
+                                      maxLength: 64
+                                      type: string
+                                  required:
+                                  - claim
+                                  type: object
+                                username:
+                                  description: Username is the claim for the user
+                                    name.
+                                  properties:
+                                    claim:
+                                      description: Claim is the JWT claim.
+                                      maxLength: 253
+                                      minLength: 1
+                                      type: string
+                                    prefix:
+                                      description: Prefix is added to the claim's
+                                        value.
+                                      maxLength: 64
+                                      type: string
+                                  required:
+                                  - claim
+                                  type: object
+                              type: object
+                            issuer:
+                              description: Issuer is the token issuer.
+                              properties:
+                                audiences:
+                                  description: Audiences accepted in the tokens.
+                                  items:
+                                    maxLength: 253
+                                    type: string
+                                  maxItems: 8
+                                  minItems: 1
+                                  type: array
+                                  x-kubernetes-list-type: set
+                                url:
+                                  description: URL is the issuer's https URL.
+                                  maxLength: 512
+                                  type: string
+                                  x-kubernetes-validations:
+                                  - message: must be an https URL
+                                    rule: self.startsWith('https://')
+                              required:
+                              - audiences
+                              - url
+                              type: object
+                          required:
+                          - issuer
+                          type: object
+                        maxItems: 8
+                        type: array
+                        x-kubernetes-list-type: atomic
+                    type: object
+                  encryption:
+                    description: Encryption configures encryption of Secrets at rest.
+                    properties:
+                      provider:
+                        default: secretbox
+                        description: Provider is None, secretbox, aescbc or kms.
+                        enum:
+                        - None
+                        - secretbox
+                        - aescbc
+                        - kms
+                        type: string
+                    type: object
+                  extraArgs:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      ExtraArgs are flags passed to kube-apiserver. The flags Lodia sets are
+                      refused, but for enable-admission-plugins, whose entries follow
+                      Lodia's; featureGates sets feature-gates.
+                    maxProperties: 64
+                    type: object
+                    x-kubernetes-validations:
+                    - message: Lodia sets this flag
+                      rule: '!self.exists(k, k in [''advertise-address'', ''allow-privileged'',
+                        ''anonymous-auth'', ''authentication-config'', ''authorization-mode'',
+                        ''client-ca-file'', ''egress-selector-config-file'', ''enable-bootstrap-token-auth'',
+                        ''encryption-provider-config'', ''encryption-provider-config-automatic-reload'',
+                        ''etcd-cafile'', ''etcd-certfile'', ''etcd-keyfile'', ''etcd-servers'',
+                        ''feature-gates'', ''kubelet-client-certificate'', ''kubelet-client-key'',
+                        ''kubelet-preferred-address-types'', ''proxy-client-cert-file'',
+                        ''proxy-client-key-file'', ''requestheader-allowed-names'',
+                        ''requestheader-client-ca-file'', ''requestheader-extra-headers-prefix'',
+                        ''requestheader-group-headers'', ''requestheader-username-headers'',
+                        ''secure-port'', ''service-account-issuer'', ''service-account-key-file'',
+                        ''service-account-signing-endpoint'', ''service-account-signing-key-file'',
+                        ''service-cluster-ip-range'', ''tls-cert-file'', ''tls-private-key-file''])'
+                  featureGates:
+                    additionalProperties:
+                      type: boolean
+                    description: FeatureGates are passed to kube-apiserver.
+                    maxProperties: 64
+                    type: object
+                  replicas:
+                    description: Replicas of the API server; 1 by default, 2 with
+                      high availability.
+                    format: int32
+                    maximum: 5
+                    minimum: 1
+                    type: integer
+                  resources:
+                    description: Resources override the operator's defaults.
+                    properties:
+                      claims:
+                        description: |-
+                          Claims lists the names of resources, defined in spec.resourceClaims,
+                          that are used by this container.
+
+                          This field depends on the
+                          DynamicResourceAllocation feature gate.
+
+                          This field is immutable. It can only be set for containers.
+                        items:
+                          description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                          properties:
+                            name:
+                              description: |-
+                                Name must match the name of one entry in pod.spec.resourceClaims of
+                                the Pod where this field is used. It makes that resource available
+                                inside a container.
+                              type: string
+                            request:
+                              description: |-
+                                Request is the name chosen for a request in the referenced claim.
+                                If empty, everything from the claim is made available, otherwise
+                                only the result of this request.
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                      limits:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Limits describes the maximum amount of compute resources allowed.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                      requests:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Requests describes the minimum amount of compute resources required.
+                          If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                          otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                    type: object
+                type: object
+              controllerManager:
+                description: ControllerManager configures kube-controller-manager.
+                properties:
+                  extraArgs:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      ExtraArgs are flags passed to the component. The flags Lodia sets are
+                      refused, but for controllers, whose entries follow Lodia's;
+                      featureGates sets feature-gates.
+                    maxProperties: 64
+                    type: object
+                    x-kubernetes-validations:
+                    - message: Lodia sets this flag
+                      rule: '!self.exists(k, k in [''allocate-node-cidrs'', ''authentication-kubeconfig'',
+                        ''authorization-kubeconfig'', ''bind-address'', ''client-ca-file'',
+                        ''cluster-cidr'', ''cluster-name'', ''cluster-signing-cert-file'',
+                        ''cluster-signing-duration'', ''cluster-signing-key-file'',
+                        ''cluster-signing-kubelet-client-cert-file'', ''cluster-signing-kubelet-client-key-file'',
+                        ''feature-gates'', ''kubeconfig'', ''leader-elect'', ''requestheader-client-ca-file'',
+                        ''root-ca-file'', ''service-account-private-key-file'', ''service-cluster-ip-range'',
+                        ''use-service-account-credentials''])'
+                  featureGates:
+                    additionalProperties:
+                      type: boolean
+                    description: FeatureGates are passed to the component.
+                    maxProperties: 64
+                    type: object
+                  resources:
+                    description: Resources override the operator's defaults.
+                    properties:
+                      claims:
+                        description: |-
+                          Claims lists the names of resources, defined in spec.resourceClaims,
+                          that are used by this container.
+
+                          This field depends on the
+                          DynamicResourceAllocation feature gate.
+
+                          This field is immutable. It can only be set for containers.
+                        items:
+                          description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                          properties:
+                            name:
+                              description: |-
+                                Name must match the name of one entry in pod.spec.resourceClaims of
+                                the Pod where this field is used. It makes that resource available
+                                inside a container.
+                              type: string
+                            request:
+                              description: |-
+                                Request is the name chosen for a request in the referenced claim.
+                                If empty, everything from the claim is made available, otherwise
+                                only the result of this request.
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                      limits:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Limits describes the maximum amount of compute resources allowed.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                      requests:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Requests describes the minimum amount of compute resources required.
+                          If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                          otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                    type: object
+                type: object
+              datastore:
+                description: Datastore is where the cluster's data lives.
+                properties:
+                  dedicated:
+                    description: Dedicated is an etcd of the tenant's own.
+                    properties:
+                      className:
+                        description: ClassName names a DatastoreClass; empty means
+                          the default class.
+                        maxLength: 253
+                        type: string
+                    type: object
+                  shared:
+                    description: Shared is a prefix in an etcd several tenants share.
+                    properties:
+                      name:
+                        description: Name of the Datastore.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                type: object
+                x-kubernetes-validations:
+                - message: datastore is immutable in v1alpha1
+                  rule: self == oldSelf
+                - message: set exactly one of dedicated and shared
+                  rule: has(self.dedicated) != has(self.shared)
+              endpoint:
+                description: Endpoint is how nodes, people and pods reach the API
+                  server.
+                properties:
+                  certSANs:
+                    description: CertSANs are extra names on the API server's serving
+                      certificate.
+                    items:
+                      description: |-
+                        Hostname is a lowercase DNS name: labels of at most 63 characters, and not
+                        digits and dots alone, which read as an IP address.
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                      x-kubernetes-validations:
+                      - message: must be a lowercase DNS name
+                        rule: self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$')
+                          && !self.matches('^[0-9.]+$')
+                    maxItems: 16
+                    type: array
+                    x-kubernetes-list-type: set
+                  gateway:
+                    description: Gateway attaches routes to a shared Gateway that
+                      routes by SNI.
+                    properties:
+                      hostnames:
+                        description: Hostnames are the names routed to this control
+                          plane.
+                        properties:
+                          apiServer:
+                            description: APIServer is the public API hostname.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                            x-kubernetes-validations:
+                            - message: must be a lowercase DNS name
+                              rule: self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$')
+                                && !self.matches('^[0-9.]+$')
+                          konnectivity:
+                            description: Konnectivity is where konnectivity agents
+                              connect.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                            x-kubernetes-validations:
+                            - message: must be a lowercase DNS name
+                              rule: self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$')
+                                && !self.matches('^[0-9.]+$')
+                          tunnel:
+                            description: |-
+                              Tunnel is the hostname apiserver-proxy dials for in-cluster access;
+                              empty means no in-cluster proxy.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                            x-kubernetes-validations:
+                            - message: must be a lowercase DNS name
+                              rule: self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$')
+                                && !self.matches('^[0-9.]+$')
+                        required:
+                        - apiServer
+                        - konnectivity
+                        type: object
+                      parentRef:
+                        description: ParentRef is the Gateway with a TLS passthrough
+                          listener.
+                        properties:
+                          name:
+                            description: Name of the Gateway.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                          namespace:
+                            description: Namespace of the Gateway.
+                            maxLength: 63
+                            minLength: 1
+                            type: string
+                          sectionName:
+                            description: SectionName is the listener's name.
+                            maxLength: 253
+                            type: string
+                        required:
+                        - name
+                        - namespace
+                        type: object
+                    required:
+                    - hostnames
+                    - parentRef
+                    type: object
+                  loadBalancer:
+                    description: LoadBalancer creates a Service of type LoadBalancer
+                      for this control plane.
+                    properties:
+                      annotations:
+                        additionalProperties:
+                          type: string
+                        description: Annotations are added to the Service.
+                        maxProperties: 32
+                        type: object
+                      class:
+                        description: Class is the Service's loadBalancerClass.
+                        maxLength: 253
+                        type: string
+                      sourceRanges:
+                        description: SourceRanges limit who may connect.
+                        items:
+                          description: CIDR is an IPv4 or IPv6 network in CIDR notation.
+                          maxLength: 43
+                          type: string
+                          x-kubernetes-validations:
+                          - message: must be a network in CIDR notation
+                            rule: isCIDR(self)
+                        maxItems: 32
+                        type: array
+                        x-kubernetes-list-type: set
+                    type: object
+                  nodePort:
+                    description: NodePort creates a Service of type NodePort; for
+                      development.
+                    type: object
+                type: object
+                x-kubernetes-validations:
+                - message: endpoint is immutable in v1alpha1
+                  rule: self == oldSelf
+                - message: set exactly one of gateway, loadBalancer and nodePort
+                  rule: '[has(self.gateway), has(self.loadBalancer), has(self.nodePort)].filter(x,
+                    x).size() == 1'
+              health:
+                description: Health configures how Lodia protects the tenant's workloads.
+                properties:
+                  holdControllerManager:
+                    default: true
+                    description: |-
+                      HoldControllerManager holds the controller manager's leader lease while
+                      most nodes cannot reach the API, so nothing evicts their pods.
+                    type: boolean
+                type: object
+              hibernation:
+                description: Hibernation puts the control plane to sleep, keeping
+                  its data.
+                properties:
+                  enabled:
+                    description: Enabled overrides the schedules; unset, the schedules
+                      decide.
+                    type: boolean
+                  schedules:
+                    description: Schedules put the control plane to sleep at Start
+                      and wake it at End.
+                    items:
+                      description: HibernationSchedule is a pair of cron expressions.
+                      properties:
+                        end:
+                          description: End is a cron expression for waking up.
+                          maxLength: 64
+                          type: string
+                        start:
+                          description: Start is a cron expression for falling asleep.
+                          maxLength: 64
+                          type: string
+                        timeZone:
+                          description: TimeZone is an IANA time zone; UTC by default.
+                          maxLength: 64
+                          type: string
+                      type: object
+                      x-kubernetes-validations:
+                      - message: set start, end or both
+                        rule: has(self.start) || has(self.end)
+                    maxItems: 8
+                    type: array
+                    x-kubernetes-list-type: atomic
+                type: object
+              highAvailability:
+                description: |-
+                  HighAvailability runs every component with more than one replica,
+                  spread by FailureTolerance, and etcd with three members.
+                properties:
+                  failureTolerance:
+                    description: |-
+                      FailureTolerance is Node (replicas on different nodes) or Zone
+                      (replicas in different zones).
+                    enum:
+                    - Node
+                    - Zone
+                    type: string
+                required:
+                - failureTolerance
+                type: object
+              layout:
+                default: Split
+                description: |-
+                  Layout is Split, a Deployment per component, or Compact, every
+                  component in one pod.
+                enum:
+                - Split
+                - Compact
+                type: string
+                x-kubernetes-validations:
+                - message: layout is immutable
+                  rule: self == oldSelf
+              maintenance:
+                description: Maintenance is when Lodia may roll changes it initiates.
+                properties:
+                  autoUpdate:
+                    description: AutoUpdate opts into updates Lodia applies in the
+                      window.
+                    properties:
+                      kubernetesPatch:
+                        description: KubernetesPatch moves to the newest patch of
+                          the running minor.
+                        type: boolean
+                    type: object
+                  window:
+                    description: Window is the daily maintenance window; without one,
+                      any time.
+                    properties:
+                      begin:
+                        description: Begin is HH:MM.
+                        pattern: ^([01][0-9]|2[0-3]):[0-5][0-9]$
+                        type: string
+                      end:
+                        description: End is HH:MM.
+                        pattern: ^([01][0-9]|2[0-3]):[0-5][0-9]$
+                        type: string
+                      timeZone:
+                        description: TimeZone is an IANA time zone; UTC by default.
+                        maxLength: 64
+                        type: string
+                    required:
+                    - begin
+                    - end
+                    type: object
+                type: object
+              network:
+                description: Network holds the tenant cluster's address ranges.
+                properties:
+                  clusterDomain:
+                    default: cluster.local
+                    description: ClusterDomain is the cluster's DNS domain.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                    x-kubernetes-validations:
+                    - message: must be a lowercase DNS name
+                      rule: self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$')
+                        && !self.matches('^[0-9.]+$')
+                  podCIDRs:
+                    description: PodCIDRs are the ranges node CIDRs are allocated
+                      from.
+                    items:
+                      description: CIDR is an IPv4 or IPv6 network in CIDR notation.
+                      maxLength: 43
+                      type: string
+                      x-kubernetes-validations:
+                      - message: must be a network in CIDR notation
+                        rule: isCIDR(self)
+                    maxItems: 2
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  serviceCIDRs:
+                    description: |-
+                      ServiceCIDRs are the ranges Services get addresses from; the first
+                      address of the first range is the kubernetes Service, the tenth CoreDNS.
+                    items:
+                      description: CIDR is an IPv4 or IPv6 network in CIDR notation.
+                      maxLength: 43
+                      type: string
+                      x-kubernetes-validations:
+                      - message: must be a network in CIDR notation
+                        rule: isCIDR(self)
+                    maxItems: 2
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-type: atomic
+                required:
+                - podCIDRs
+                - serviceCIDRs
+                type: object
+                x-kubernetes-validations:
+                - message: network is immutable
+                  rule: self == oldSelf
+              paused:
+                description: Paused stops reconciliation; everything keeps running.
+                type: boolean
+              placement:
+                description: Placement says where this control plane's pods run.
+                properties:
+                  nodeSelector:
+                    additionalProperties:
+                      type: string
+                    description: NodeSelector for every control plane pod.
+                    maxProperties: 16
+                    type: object
+                  priorityClassName:
+                    description: PriorityClassName for every control plane pod.
+                    maxLength: 253
+                    type: string
+                  tolerations:
+                    description: Tolerations for every control plane pod.
+                    items:
+                      description: |-
+                        The pod this Toleration is attached to tolerates any taint that matches
+                        the triple <key,value,effect> using the matching operator <operator>.
+                      properties:
+                        effect:
+                          description: |-
+                            Effect indicates the taint effect to match. Empty means match all taint effects.
+                            When specified, allowed values are NoSchedule, PreferNoSchedule and NoExecute.
+                          type: string
+                        key:
+                          description: |-
+                            Key is the taint key that the toleration applies to. Empty means match all taint keys.
+                            If the key is empty, operator must be Exists; this combination means to match all values and all keys.
+                          type: string
+                        operator:
+                          description: |-
+                            Operator represents a key's relationship to the value.
+                            Valid operators are Exists, Equal, Lt, and Gt. Defaults to Equal.
+                            Exists is equivalent to wildcard for value, so that a pod can
+                            tolerate all taints of a particular category.
+                            Lt and Gt perform numeric comparisons (requires feature gate TaintTolerationComparisonOperators).
+                          type: string
+                        tolerationSeconds:
+                          description: |-
+                            TolerationSeconds represents the period of time the toleration (which must be
+                            of effect NoExecute, otherwise this field is ignored) tolerates the taint. By default,
+                            it is not set, which means tolerate the taint forever (do not evict). Zero and
+                            negative values will be treated as 0 (evict immediately) by the system.
+                          format: int64
+                          type: integer
+                        value:
+                          description: |-
+                            Value is the taint value the toleration matches to.
+                            If the operator is Exists, the value should be empty, otherwise just a regular string.
+                          type: string
+                      type: object
+                    maxItems: 16
+                    type: array
+                    x-kubernetes-list-type: atomic
+                type: object
+              restoreFrom:
+                description: RestoreFrom starts the datastore from a Backup; set only
+                  at creation.
+                properties:
+                  backupRef:
+                    description: |-
+                      BackupRef names a Backup in the ControlPlane's namespace, never another
+                      tenant's.
+                    properties:
+                      name:
+                        description: Name of the object.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                required:
+                - backupRef
+                type: object
+              scheduler:
+                description: Scheduler configures kube-scheduler.
+                properties:
+                  configRef:
+                    description: |-
+                      ConfigRef names a ConfigMap with a KubeSchedulerConfiguration; Lodia
+                      overrides its client connection.
+                    properties:
+                      name:
+                        description: Name of the object.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  extraArgs:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      ExtraArgs are flags passed to kube-scheduler; the flags Lodia sets are
+                      refused, and featureGates sets feature-gates.
+                    maxProperties: 64
+                    type: object
+                    x-kubernetes-validations:
+                    - message: Lodia sets this flag
+                      rule: '!self.exists(k, k in [''authentication-kubeconfig'',
+                        ''authorization-kubeconfig'', ''bind-address'', ''config'',
+                        ''feature-gates'', ''kubeconfig'', ''leader-elect''])'
+                  featureGates:
+                    additionalProperties:
+                      type: boolean
+                    description: FeatureGates are passed to kube-scheduler.
+                    maxProperties: 64
+                    type: object
+                  resources:
+                    description: Resources override the operator's defaults.
+                    properties:
+                      claims:
+                        description: |-
+                          Claims lists the names of resources, defined in spec.resourceClaims,
+                          that are used by this container.
+
+                          This field depends on the
+                          DynamicResourceAllocation feature gate.
+
+                          This field is immutable. It can only be set for containers.
+                        items:
+                          description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                          properties:
+                            name:
+                              description: |-
+                                Name must match the name of one entry in pod.spec.resourceClaims of
+                                the Pod where this field is used. It makes that resource available
+                                inside a container.
+                              type: string
+                            request:
+                              description: |-
+                                Request is the name chosen for a request in the referenced claim.
+                                If empty, everything from the claim is made available, otherwise
+                                only the result of this request.
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                      limits:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Limits describes the maximum amount of compute resources allowed.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                      requests:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Requests describes the minimum amount of compute resources required.
+                          If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                          otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                    type: object
+                type: object
+              serviceAccount:
+                description: ServiceAccount configures the tokens the API server issues.
+                properties:
+                  issuer:
+                    description: |-
+                      Issuer is the tokens' issuer and the OIDC discovery URL; the public API
+                      URL by default.
+                    maxLength: 512
+                    type: string
+                    x-kubernetes-validations:
+                    - message: must be an https URL
+                      rule: self.startsWith('https://')
+                  publicDiscovery:
+                    description: |-
+                      PublicDiscovery lets unauthenticated clients read the discovery
+                      documents, for federation.
+                    type: boolean
+                type: object
+              version:
+                description: |-
+                  Version is the Kubernetes version, vMAJOR.MINOR.PATCH. The minor never
+                  decreases; Lodia upgrades one minor at a time towards it.
+                maxLength: 16
+                pattern: ^v1\.[0-9]+\.[0-9]+$
+                type: string
+                x-kubernetes-validations:
+                - message: the Kubernetes minor version cannot decrease
+                  rule: int(self.split('.')[1]) >= int(oldSelf.split('.')[1])
+            required:
+            - datastore
+            - endpoint
+            - network
+            - version
+            type: object
+            x-kubernetes-validations:
+            - message: 'the Compact layout runs one replica of everything: remove
+                highAvailability'
+              rule: self.layout != 'Compact' || !has(self.highAvailability)
+            - message: the Compact layout runs one API server
+              rule: self.layout != 'Compact' || !has(self.apiServer) || !has(self.apiServer.replicas)
+                || self.apiServer.replicas == 1
+            - message: restoreFrom can only be set when the ControlPlane is created
+              rule: '!has(self.restoreFrom) || (has(oldSelf.restoreFrom) && oldSelf.restoreFrom
+                == self.restoreFrom)'
+          status:
+            description: ControlPlaneStatus is what Lodia observed and did.
+            properties:
+              conditions:
+                description: Conditions, one per controller, plus Progressing, Hibernated
+                  and Ready.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                maxItems: 16
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              credentials:
+                description: Credentials are the Secrets clients need and the rotations.
+                properties:
+                  adminKubeconfigSecretRef:
+                    description: AdminKubeconfigSecretRef names the admin kubeconfig
+                      Secret.
+                    properties:
+                      name:
+                        description: Name of the object.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  caBundleSecretRef:
+                    description: CABundleSecretRef names the CAs a client must trust
+                      now.
+                    properties:
+                      name:
+                        description: Name of the object.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  rotation:
+                    description: Rotation is the state of each credential's rotation.
+                    properties:
+                      ca:
+                        description: RotationStatus is one credential's rotation.
+                        properties:
+                          lastCompleted:
+                            format: date-time
+                            type: string
+                          lastInitiated:
+                            format: date-time
+                            type: string
+                          phase:
+                            description: Phase of the rotation.
+                            enum:
+                            - Idle
+                            - Preparing
+                            - Prepared
+                            - Completing
+                            type: string
+                        type: object
+                      clientCA:
+                        description: RotationStatus is one credential's rotation.
+                        properties:
+                          lastCompleted:
+                            format: date-time
+                            type: string
+                          lastInitiated:
+                            format: date-time
+                            type: string
+                          phase:
+                            description: Phase of the rotation.
+                            enum:
+                            - Idle
+                            - Preparing
+                            - Prepared
+                            - Completing
+                            type: string
+                        type: object
+                      etcdCA:
+                        description: RotationStatus is one credential's rotation.
+                        properties:
+                          lastCompleted:
+                            format: date-time
+                            type: string
+                          lastInitiated:
+                            format: date-time
+                            type: string
+                          phase:
+                            description: Phase of the rotation.
+                            enum:
+                            - Idle
+                            - Preparing
+                            - Prepared
+                            - Completing
+                            type: string
+                        type: object
+                      etcdEncryptionKey:
+                        description: RotationStatus is one credential's rotation.
+                        properties:
+                          lastCompleted:
+                            format: date-time
+                            type: string
+                          lastInitiated:
+                            format: date-time
+                            type: string
+                          phase:
+                            description: Phase of the rotation.
+                            enum:
+                            - Idle
+                            - Preparing
+                            - Prepared
+                            - Completing
+                            type: string
+                        type: object
+                      frontProxyCA:
+                        description: RotationStatus is one credential's rotation.
+                        properties:
+                          lastCompleted:
+                            format: date-time
+                            type: string
+                          lastInitiated:
+                            format: date-time
+                            type: string
+                          phase:
+                            description: Phase of the rotation.
+                            enum:
+                            - Idle
+                            - Preparing
+                            - Prepared
+                            - Completing
+                            type: string
+                        type: object
+                      serviceAccountKey:
+                        description: RotationStatus is one credential's rotation.
+                        properties:
+                          lastCompleted:
+                            format: date-time
+                            type: string
+                          lastInitiated:
+                            format: date-time
+                            type: string
+                          phase:
+                            description: Phase of the rotation.
+                            enum:
+                            - Idle
+                            - Preparing
+                            - Prepared
+                            - Completing
+                            type: string
+                        type: object
+                    type: object
+                type: object
+              datastore:
+                description: Datastore is the store in use.
+                properties:
+                  class:
+                    description: Class is the DatastoreClass a dedicated etcd was
+                      built from.
+                    properties:
+                      generation:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      name:
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                    required:
+                    - generation
+                    - name
+                    type: object
+                  endpoints:
+                    description: Endpoints are where the API server reaches etcd.
+                    items:
+                      description: HostPort is a host and a port.
+                      properties:
+                        host:
+                          description: |-
+                            Host is an IP address, an IPv6 one without brackets, or a lowercase DNS
+                            name: labels of at most 63 characters, and not digits and dots alone.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                          x-kubernetes-validations:
+                          - message: must be an IP address or a lowercase DNS name
+                            rule: isIP(self) || self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$')
+                              && !self.matches('^[0-9.]+$')
+                        port:
+                          description: Port is a TCP port.
+                          format: int32
+                          maximum: 65535
+                          minimum: 1
+                          type: integer
+                      required:
+                      - host
+                      - port
+                      type: object
+                    maxItems: 9
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  members:
+                    description: Members counts the etcd members.
+                    properties:
+                      ready:
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      total:
+                        format: int32
+                        minimum: 0
+                        type: integer
+                    required:
+                    - ready
+                    - total
+                    type: object
+                required:
+                - endpoints
+                - members
+                type: object
+              endpoint:
+                description: Endpoint is where the control plane is reachable.
+                properties:
+                  apiServer:
+                    description: APIServer is the API server's public endpoint.
+                    properties:
+                      host:
+                        description: |-
+                          Host is an IP address, an IPv6 one without brackets, or a lowercase DNS
+                          name: labels of at most 63 characters, and not digits and dots alone.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                        x-kubernetes-validations:
+                        - message: must be an IP address or a lowercase DNS name
+                          rule: isIP(self) || self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$')
+                            && !self.matches('^[0-9.]+$')
+                      port:
+                        description: Port is a TCP port.
+                        format: int32
+                        maximum: 65535
+                        minimum: 1
+                        type: integer
+                    required:
+                    - host
+                    - port
+                    type: object
+                  konnectivity:
+                    description: |-
+                      Konnectivity is where konnectivity agents reach the konnectivity
+                      server.
+                    properties:
+                      host:
+                        description: |-
+                          Host is an IP address, an IPv6 one without brackets, or a lowercase DNS
+                          name: labels of at most 63 characters, and not digits and dots alone.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                        x-kubernetes-validations:
+                        - message: must be an IP address or a lowercase DNS name
+                          rule: isIP(self) || self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$')
+                            && !self.matches('^[0-9.]+$')
+                      port:
+                        description: Port is a TCP port.
+                        format: int32
+                        maximum: 65535
+                        minimum: 1
+                        type: integer
+                    required:
+                    - host
+                    - port
+                    type: object
+                required:
+                - apiServer
+                - konnectivity
+                type: object
+              health:
+                description: Health is present while Lodia holds the controller manager.
+                properties:
+                  controllerManagerHold:
+                    description: ControllerManagerHold is present while the hold lasts.
+                    properties:
+                      countedNodes:
+                        format: int32
+                        type: integer
+                      silentNodes:
+                        format: int32
+                        type: integer
+                      since:
+                        format: date-time
+                        type: string
+                    type: object
+                type: object
+              kubernetes:
+                description: Kubernetes is the version every component runs and the
+                  upgrade in progress.
+                properties:
+                  upgrade:
+                    description: Upgrade is present while an upgrade runs or is stuck.
+                    properties:
+                      from:
+                        maxLength: 16
+                        type: string
+                      message:
+                        maxLength: 1024
+                        type: string
+                      startedAt:
+                        format: date-time
+                        type: string
+                      step:
+                        description: Step is the step running or failed.
+                        maxLength: 64
+                        type: string
+                      to:
+                        maxLength: 16
+                        type: string
+                    type: object
+                  version:
+                    description: Version every component runs.
+                    maxLength: 16
+                    type: string
+                type: object
+              nodes:
+                description: Nodes summarise the tenant's nodes.
+                properties:
+                  outdatedKubelets:
+                    description: OutdatedKubelets run an older minor than the control
+                      plane.
+                    format: int32
+                    type: integer
+                  ready:
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  sampledAt:
+                    format: date-time
+                    type: string
+                  total:
+                    format: int32
+                    minimum: 0
+                    type: integer
+                required:
+                - ready
+                - total
+                type: object
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the newest generation every readiness condition
+                  has been reported for.
+                format: int64
+                type: integer
+              target:
+                description: Target is what Lifecycle rolls now.
+                properties:
+                  hibernated:
+                    description: Hibernated is the desired sleep state.
+                    type: boolean
+                  operatorVersion:
+                    description: OperatorVersion is the Lodia version this tenant's
+                      pods are rendered with.
+                    maxLength: 64
+                    type: string
+                  reason:
+                    description: Reason says why the target lags the spec.
+                    maxLength: 64
+                    type: string
+                  scheduledFor:
+                    description: ScheduledFor is when a deferred change rolls.
+                    format: date-time
+                    type: string
+                  version:
+                    description: Version is the Kubernetes version being rolled, one
+                      minor at a time.
+                    maxLength: 16
+                    type: string
+                type: object
+            type: object
+        required:
+        - spec
+        type: object
+        x-kubernetes-validations:
+        - message: the name must be a DNS-1035 label of at most 32 characters
+          rule: self.metadata.name.size() <= 32 && self.metadata.name.matches('^[a-z]([-a-z0-9]*[a-z0-9])?$')
+    served: true
+    storage: true
+    subresources:
+      status: {}

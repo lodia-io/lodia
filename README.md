@@ -12,8 +12,9 @@ workloads alive when the path to its nodes breaks.
 Kyivan Rus': the vessel beside Segla, which is Swedish for sailing.
 
 **Status: phase 1 of the [roadmap](docs/roadmap.md).** The six controllers
-are built for a control plane with one replica; the Helm chart and the e2e
-gate, where a node joins and runs a pod, come next. The documents below are
+are built for a control plane with one replica, and the Helm chart in
+[`charts/lodia`](charts/lodia) installs them; the e2e gate, where a node
+joins and runs a pod, comes next. The documents below are
 the design, the reasons behind it, and what the code does.
 
 - [`docs/README.md`](docs/README.md) — what Lodia is: the objects, the

@@ -190,12 +190,12 @@ func TestAnOldGenerationChangedSinceItWasReadIsKept(t *testing.T) {
 	if err := k8s.Create(ctx, leftover); err != nil {
 		t.Fatal(err)
 	}
-	r.Client = changedBeforeDelete{Client: k8s}
+	r.Client = changedBeforeDelete{Client: controller}
 	reconcileFails(t, r, cp)
 	if _, kept := namespaceSecrets(t, cp.Namespace)["dev-etcd-ca-1"]; !kept {
 		t.Fatal("a Secret changed after PKI read it was deleted")
 	}
-	r.Client = k8s
+	r.Client = controller
 	reconcile(t, r, cp)
 	if _, kept := namespaceSecrets(t, cp.Namespace)["dev-etcd-ca-1"]; kept {
 		t.Error("the old generation was kept once PKI had read it as it is")
@@ -208,11 +208,11 @@ type changedBeforeDelete struct {
 
 func (c changedBeforeDelete) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
 	changed := &corev1.Secret{}
-	if err := c.Get(ctx, client.ObjectKeyFromObject(obj), changed); err != nil {
+	if err := k8s.Get(ctx, client.ObjectKeyFromObject(obj), changed); err != nil {
 		return err
 	}
 	changed.Annotations = map[string]string{"changed": "after PKI read it"}
-	if err := c.Update(ctx, changed); err != nil {
+	if err := k8s.Update(ctx, changed); err != nil {
 		return err
 	}
 	return c.Client.Delete(ctx, obj, opts...)
@@ -245,12 +245,12 @@ func TestKeptGenerationsAreAdopted(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	r.Client = failingApply{Client: k8s, secret: "dev-etcd-backup-restore-1"}
+	r.Client = failingApply{Client: controller, secret: "dev-etcd-backup-restore-1"}
 	reconcileFails(t, r, cp)
 	if c := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady); c.Reason != lodiav1alpha1.ReasonIssuing || c.Message != "not written yet: dev-etcd-backup-restore-1; the error is in the log" {
 		t.Fatalf("CertificatesReady is %s while generation 1 cannot be adopted: %s", c.Reason, c.Message)
 	}
-	r.Client = k8s
+	r.Client = controller
 	reconcile(t, r, cp)
 	expectGenerations(t, cp, 1, 2)
 	for name, s := range secretsOf(t, cp) {
@@ -323,7 +323,7 @@ func TestAFailedReadLeavesTheStatus(t *testing.T) {
 	}
 	_, before := resourceVersions(t, cp)
 	for _, read := range []string{"the labelled Secrets", "the namespace's metadata", "a Secret by name"} {
-		r.Reader = failingRead{Reader: k8s, read: read}
+		r.Reader = failingRead{Reader: apiReader, read: read}
 		if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
 			t.Fatalf("a pass that could not read %s succeeded", read)
 		}
@@ -331,7 +331,7 @@ func TestAFailedReadLeavesTheStatus(t *testing.T) {
 			t.Fatalf("a pass that could not read %s wrote the status", read)
 		}
 	}
-	r.Reader = k8s
+	r.Reader = apiReader
 	reconcile(t, r, cp)
 	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, lodiav1alpha1.ReasonCAMissing)
 }
