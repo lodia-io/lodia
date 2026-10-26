@@ -130,9 +130,8 @@ is a decision — a decision is a file in `docs/decisions/`.
 - Backup credentials scoped to one tenant's prefix, so a tenant namespace's
   `<cp>-etcd-backup` reaches only that tenant's snapshots and not every
   tenant's on the class (`docs/README.md`, Identity and tenancy).
-- The e2e suite runs the PKI and Datastore controllers in the test process
-  and needs `git` and `helm`; the suite against Lodia's image and chart comes with the
-  chart, and `make e2e` could check for the tools.
+- `make e2e` could check for Docker and `helm` before it creates its
+  cluster.
 - The cache keeps metadata only for Secrets because this controller watches
   them as `PartialObjectMetadata`; nothing stops a future controller from
   starting a typed Secret informer. A test or a cache transform should
@@ -160,9 +159,6 @@ is a decision — a decision is a file in `docs/decisions/`.
 - Lodia reaches a tenant's API server through its in-namespace Service and
   ignores `HTTPS_PROXY` for that connection; the chart's documentation should
   say so for sites that set a proxy on every pod.
-- The e2e suite installs the CRDs and applies the examples; nothing runs the
-  operator against kind yet. The phase 1 gate adds that, and with it a check
-  that a `ControlPlane` reaches `CertificatesReady` on a real cluster.
 
 ## From the PKI review (2026-10-25)
 
@@ -264,8 +260,6 @@ is a decision — a decision is a file in `docs/decisions/`.
   in-namespace clients use the cluster IP.
 - Wave 3's gate checks the tenant API from inside the cluster with a token:
   anonymous requests reach only the health paths and `cluster-info`.
-- The e2e asserts `APIServerReady` alone, with the operator in the test
-  process outside kind; wave 3 runs it in the cluster.
 - Workloads finds another owner's objects under its names in the cache,
   which holds only labelled ones. An unlabelled object it applied for a
   predecessor is taken over silently, with the

@@ -6,63 +6,30 @@
 package e2e
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
-	goruntime "runtime"
-	"strings"
 	"testing"
 	"time"
 
-	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/tools/clientcmd"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
-	"go.lodia.io/lodia/internal/operator"
 )
 
 const apiTenant = "team-api"
 
 func TestAPIServerOnKind(t *testing.T) {
-	var (
-		k8s     client.Client
-		stop    context.CancelFunc
-		stopped chan error
-	)
+	var k8s client.Client
 	key := client.ObjectKey{Namespace: apiTenant, Name: controlPlane}
 	f := features.New("the PKI, Datastore, Lifecycle and Workloads controllers run a tenant API server on a node port").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			installEtcdDruid(t, cfg.KubeconfigFile())
-			signer := buildSigner(t, cfg.KubeconfigFile())
-			scheme := runtime.NewScheme()
-			for _, add := range []func(*runtime.Scheme) error{clientgoscheme.AddToScheme, lodiav1alpha1.AddToScheme, druidv1alpha1.AddToScheme} {
-				if err := add(scheme); err != nil {
-					t.Fatal(err)
-				}
-			}
-			var err error
-			if k8s, err = client.New(cfg.Client().RESTConfig(), client.Options{Scheme: scheme}); err != nil {
-				t.Fatal(err)
-			}
-			mgr := manager(t, cfg.Client().RESTConfig(), scheme, func(mgr ctrl.Manager) error { return operator.Setup(mgr, signer) })
-			var run context.Context
-			run, stop = context.WithCancel(context.Background())
-			stopped = make(chan error, 1)
-			go func() { stopped <- mgr.Start(run) }()
-
+			k8s = newClient(t, cfg)
 			create(ctx, t, k8s, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: apiTenant}})
 			create(ctx, t, k8s, &lodiav1alpha1.DatastoreClass{
 				ObjectMeta: metav1.ObjectMeta{Name: "e2e-api"},
@@ -114,14 +81,6 @@ func TestAPIServerOnKind(t *testing.T) {
 				until(ctx, t, 3*time.Minute, "the ControlPlane is gone", func(ctx context.Context) error {
 					return gone(k8s.Get(ctx, key, &lodiav1alpha1.ControlPlane{}))
 				})
-			}
-			if stop != nil {
-				stop()
-				if err := <-stopped; err != nil {
-					t.Error(err)
-				}
-			}
-			if k8s != nil {
 				for _, obj := range []client.Object{
 					&lodiav1alpha1.DatastoreClass{ObjectMeta: metav1.ObjectMeta{Name: "e2e-api"}},
 					&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: apiTenant}},
@@ -135,27 +94,4 @@ func TestAPIServerOnKind(t *testing.T) {
 		}).
 		Feature()
 	testenv.Test(t, f)
-}
-
-// buildSigner builds lodia-signer's image with ko straight into the kind
-// cluster, as the hard way does.
-func buildSigner(t *testing.T, kubeconfig string) string {
-	t.Helper()
-	cfg, err := clientcmd.LoadFromFile(kubeconfig)
-	if err != nil {
-		t.Fatal(err)
-	}
-	build := exec.CommandContext(t.Context(), "go", "run", "github.com/google/ko@v0.19.1", "build",
-		"--base-import-paths", "--platform=linux/"+goruntime.GOARCH, "./cmd/lodia-signer")
-	build.Dir = filepath.Join("..", "..")
-	build.Env = append(os.Environ(), "KO_DOCKER_REPO=kind.local", "KIND_CLUSTER_NAME="+strings.TrimPrefix(cfg.CurrentContext, "kind-"))
-	var stderr bytes.Buffer
-	build.Stderr = &stderr
-	out, err := build.Output()
-	if err != nil {
-		t.Fatalf("build lodia-signer into kind: %v\n%s", err, stderr.String())
-	}
-	image := strings.TrimSpace(string(out))
-	t.Logf("lodia-signer built into kind as %s", image)
-	return image
 }

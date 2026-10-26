@@ -274,9 +274,8 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
 - `charts/lodia` — etcd-druid v0.39.0 as a dependency behind
   `etcdDruid.enabled`, with `enableEtcdSpecAutoReconcile` on and the
   components webhook left off, its default.
-- `test/e2e/datastore_test.go` — `TestDatastoreOnKind`: etcd-druid v0.39.0
-  from its chart at the tag, the PKI and Datastore controllers in the test
-  process, a `ControlPlane` to `DatastoreReady=True` with the member running
-  on PKI's generation 1, a member Secret of generation 1 deleted and PKI's
-  generation 2, under the same CA, rolling the member, deletion under
-  `Delete`.
+- `test/e2e/datastore_test.go` — `TestDatastoreOnKind`: the operator and
+  etcd-druid v0.39.0 from Lodia's chart, a `ControlPlane` to
+  `DatastoreReady=True` with the member running on PKI's generation 1, a
+  member Secret of generation 1 deleted and PKI's generation 2, under the
+  same CA, rolling the member, deletion under `Delete`.
