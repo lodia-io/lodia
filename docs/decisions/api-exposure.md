@@ -167,8 +167,18 @@ a node flag (`--address`, `--node-ip`), which the node's owner passes through
   [lease.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controlplane/reconcilers/lease.go#L227-L234),
   [L334-L344](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controlplane/reconcilers/lease.go#L334-L344));
   a survivor writes them again at its next pass, up to 10 seconds later
-  ([instance.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controlplane/instance.go#L115-L117)),
-  and every rollout stops a replica, a single one included.
+  ([instance.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controlplane/instance.go#L115-L117)).
+  Every rollout stops a replica, a single one included: rolled on kind with
+  the lease reconciler and no shutdown delay, a tenant's `kubernetes`
+  EndpointSlice was empty for 3 seconds and pods inside it were refused,
+  while with `none` and the endpoints Tenant writes it never was
+  (the rollout check of `TestPhase1Gate`, [test/e2e](../../test/e2e/README.md)).
+- **A rollout loses no request.** Rolled on kind under 20 requests a second
+  from outside the tenant and 20 from inside it, half on new connections,
+  half on reused ones, with clients that retry nothing, the API server lost
+  none with the flags above; with `--shutdown-send-retry-after` too, each
+  reused connection took one `429`, and without the shutdown delay requests
+  were refused and timed out.
 - **TLS inside TLS needs no gateway extensions.** Gardener's proxy adds a
   PROXY protocol header or HTTP CONNECT and needs filters on its Istio
   gateway ([GEP-30](https://github.com/gardener/enhancements/blob/main/geps/0030-apiserver-proxy/README.md));
@@ -230,4 +240,5 @@ a node flag (`--address`, `--node-ip`), which the node's owner passes through
   in `manifests/endpoints.yaml`, taken over from any writer before
   (`kubernetesEndpoints` in `inventory.go`), and the agents' flags in
   `manifests/konnectivity.yaml`; `render_test.go` and `tenant_test.go` hold
-  the objects and the takeover.
+  the objects and the takeover, and `TestPhase1Gate` in `test/e2e` rolls the
+  API server under requests from outside and inside the tenant.

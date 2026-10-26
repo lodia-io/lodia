@@ -71,7 +71,26 @@ chart installed.
   tunnel
   ([exec](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/registry/core/pod/rest/subresources.go#L208-L230),
   [port-forward](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/registry/core/pod/rest/subresources.go#L293-L306)),
-  so the dial count covers it too. Disabling `addons.coreDNS` removes
+  so the dial count covers it too. An API server rollout then loses no
+  request, from outside the tenant or from inside it: two loops of
+  [`test/apiloop`](../apiloop) run through a rollout that a new
+  `apiServer.extraArgs` entry starts, one in a pod in the management cluster
+  that dials `status.endpoint.apiServer`, the other in a pod on the joined
+  node that dials `https://kubernetes.default`. The suite builds the loop
+  with ko as it builds the operator, and copies its image from a node of the
+  kind cluster into the joined node's containerd with `ctr`. Each loop reads
+  the tenant's `kubernetes` EndpointSlice ten times a second on new
+  connections and ten times a second on reused ones, with plain HTTP clients
+  that retry nothing and give up after 5 seconds, since client-go would
+  retry a GET whose connection broke and any request answered with
+  `Retry-After`
+  ([request.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/request.go#L1066-L1078),
+  [with_retry.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/with_retry.go#L308-L318)),
+  and prints each failure and, every second, its counts. Between the counts
+  before the change and those once the old pod is gone and 5 seconds more
+  have passed, the suite wants no request failed, no answer with an empty
+  slice, and answers to at least 95% of the requests the rate sends.
+  Disabling `addons.coreDNS` removes
   CoreDNS's objects from the tenant and from the inventory, and enabling it
   brings them back.
   Deleting the `ControlPlane` leaves in its namespace, of every namespaced
