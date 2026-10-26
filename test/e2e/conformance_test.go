@@ -127,7 +127,7 @@ func TestConformance(t *testing.T) {
 				t.Fatal(err)
 			}
 			args := []string{"run", hydrophone, "--kubeconfig", kubeconfig, "--conformance-image", "registry.k8s.io/conformance:" + version,
-				"--output-dir", artifacts, "--disable-progress-status"}
+				"--output-dir", artifacts, "--parallel", "4", "--disable-progress-status"}
 			if focus := os.Getenv("CONFORMANCE_FOCUS"); focus != "" {
 				args = append(args, "--focus", focus)
 			} else {

@@ -183,6 +183,24 @@ runs the suite in the tenant, as `go run sigs.k8s.io/hydrophone@v0.8.0`: as a
   every conformance test runs, none is skipped, retried or focused away;
   `CONFORMANCE_FOCUS` replaces it with `--focus`;
 - `--conformance-image registry.k8s.io/conformance:<the tenant's version>`;
+- `--parallel 4`, four Ginkgo processes
+  ([flags.go](https://github.com/kubernetes-sigs/hydrophone/blob/v0.8.0/pkg/types/flags.go#L32),
+  [deploy.go](https://github.com/kubernetes-sigs/hydrophone/blob/v0.8.0/pkg/conformance/deploy.go#L125-L127)),
+  with no skip added
+  ([cmd.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/test/conformance/image/go-runner/cmd.go#L33-L40)):
+  the specs marked `Serial` still run alone, on the first process once the
+  others have finished
+  ([ordering.go](https://github.com/onsi/ginkgo/blob/v2.32.0/internal/ordering.go#L174-L192),
+  [suite.go](https://github.com/onsi/ginkgo/blob/v2.32.0/internal/suite.go#L505-L511),
+  [ginkgowrapper.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/test/e2e/framework/ginkgowrapper.go#L396-L398);
+  Ginkgo v2.32.0 is the version Kubernetes v1.37.0 builds the conformance
+  image with). Kind's own parallel conformance jobs run 25 processes on 4
+  CPUs and skip the serial specs instead
+  ([kind-presubmits.yaml](https://github.com/kubernetes/test-infra/blob/9b2551f8f32815d93a471123109af4ed36ce827a/config/jobs/kubernetes-sigs/kind/kind-presubmits.yaml#L78-L120),
+  [e2e-k8s.sh](https://github.com/kubernetes-sigs/kind/blob/v0.33.0/hack/ci/e2e-k8s.sh#L253-L261),
+  [ginkgo-e2e.sh](https://github.com/kubernetes/kubernetes/blob/v1.37.0/hack/ginkgo-e2e.sh#L181-L193)).
+  The suite waits far more than it computes: with one process, the kind
+  containers kept a third of a CPU busy on a 16-CPU workstation;
 - `--kubeconfig`, the admin kubeconfig with the forwarded address, so that
   hydrophone reaches the tenant as the suite does; the conformance pod in
   the tenant uses its in-cluster configuration;
