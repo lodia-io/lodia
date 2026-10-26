@@ -306,7 +306,7 @@ func (r *Reconciler) endpoint(ctx context.Context, cp *bryggav1alpha1.ControlPla
 		return nil, &waiting, 0, nil
 	}
 	return &bryggav1alpha1.EndpointStatus{
-		APIServer:    bryggav1alpha1.HostPort{Host: ingress[i].IP, Port: apiPort},
+		APIServer:    bryggav1alpha1.HostPort{Host: ingress[i].IP, Port: bryggav1alpha1.APIServerServicePort},
 		Konnectivity: bryggav1alpha1.HostPort{Host: ingress[i].IP, Port: konnectivityPort},
 	}, nil, 0, nil
 }
@@ -350,7 +350,7 @@ func issuer(cp *bryggav1alpha1.ControlPlane, api bryggav1alpha1.HostPort) string
 	if sa := cp.Spec.ServiceAccount; sa != nil && sa.Issuer != "" {
 		return sa.Issuer
 	}
-	return "https://" + strings.TrimSuffix(net.JoinHostPort(api.Host, strconv.Itoa(int(api.Port))), ":"+strconv.Itoa(apiPort))
+	return "https://" + strings.TrimSuffix(net.JoinHostPort(api.Host, strconv.Itoa(int(api.Port))), ":"+strconv.Itoa(bryggav1alpha1.APIServerServicePort))
 }
 
 // hashes are the restart-only inputs of each component, the Secrets by the

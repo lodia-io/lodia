@@ -138,3 +138,20 @@ func EtcdName(controlPlane string) string { return controlPlane + "-etcd" }
 // APIServerServiceName is the API server's in-namespace Service, which
 // Workloads writes and PKI names in certificates and kubeconfigs.
 func APIServerServiceName(controlPlane string) string { return controlPlane + "-kube-apiserver" }
+
+// The values beside the names that one controller renders and another relies
+// on.
+const (
+	// APIServerServicePort is APIServerServiceName's port for the API server,
+	// which PKI's kubeconfigs dial.
+	APIServerServicePort = 443
+
+	// FrontProxyClientCommonName is the common name of the front-proxy client
+	// certificate PKI issues, which the API server allows to set request
+	// headers.
+	FrontProxyClientCommonName = "front-proxy-client"
+
+	// APIServerReadyzPath is the API server's readiness endpoint, which Health
+	// probes and Workloads lets anonymous requests read.
+	APIServerReadyzPath = "/readyz"
+)

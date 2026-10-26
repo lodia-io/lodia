@@ -185,7 +185,7 @@ func endpoint(cp *bryggav1alpha1.ControlPlane) string {
 		return ""
 	}
 	api := cp.Status.Endpoint.APIServer
-	return "https://" + net.JoinHostPort(api.Host, strconv.Itoa(int(api.Port))) + "/readyz"
+	return "https://" + net.JoinHostPort(api.Host, strconv.Itoa(int(api.Port))) + bryggav1alpha1.APIServerReadyzPath
 }
 
 func newCondition(cp *bryggav1alpha1.ControlPlane, status metav1.ConditionStatus, reason, message string) *metav1.Condition {

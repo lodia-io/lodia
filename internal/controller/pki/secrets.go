@@ -312,7 +312,7 @@ func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 		}
 	}
 	if cl != nil && cluster != nil {
-		internal := "https://" + bryggav1alpha1.APIServerServiceName(t.cp.Name) + "." + t.cp.Namespace + ".svc:443"
+		internal := "https://" + bryggav1alpha1.APIServerServiceName(t.cp.Name) + "." + t.cp.Namespace + ".svc:" + strconv.Itoa(bryggav1alpha1.APIServerServicePort)
 		kubeconfigs := []kubeconfig{
 			{bryggav1alpha1.KonnectivityKubeconfigSecret, "system:konnectivity-server", nil, internal, false},
 			{bryggav1alpha1.ControllerManagerKubeconfigSecret, "system:kube-controller-manager", nil, internal, false},
@@ -333,7 +333,7 @@ func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 		if err := r.bundle(ctx, t, t.secret(bryggav1alpha1.FrontProxyCASecret), frontProxy.Cert); err != nil {
 			return err
 		}
-		if err := r.tls(ctx, t, t.secret(bryggav1alpha1.FrontProxyClientSecret), frontProxy, certs.Profile{CommonName: "front-proxy-client", Usages: clientAuth}); err != nil {
+		if err := r.tls(ctx, t, t.secret(bryggav1alpha1.FrontProxyClientSecret), frontProxy, certs.Profile{CommonName: bryggav1alpha1.FrontProxyClientCommonName, Usages: clientAuth}); err != nil {
 			return err
 		}
 	}

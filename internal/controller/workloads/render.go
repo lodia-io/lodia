@@ -31,7 +31,6 @@ const (
 	controllerManager = "kube-controller-manager"
 	scheduler         = "kube-scheduler"
 
-	apiPort          = 443
 	kubernetesPort   = 6443
 	konnectivityPort = 8132
 
@@ -56,7 +55,7 @@ var restartOnly = map[string][]bryggav1alpha1.Secret{
 
 // anonymousPaths are what kubeadm join reads before it has credentials, and
 // the health paths.
-var anonymousPaths = []string{"/healthz", "/livez", "/readyz", "/api/v1/namespaces/kube-public/configmaps/cluster-info"}
+var anonymousPaths = []string{"/healthz", "/livez", bryggav1alpha1.APIServerReadyzPath, "/api/v1/namespaces/kube-public/configmaps/cluster-info"}
 
 func deploymentName(cp, component string) string { return cp + "-" + component }
 
@@ -81,7 +80,7 @@ func service(cp *bryggav1alpha1.ControlPlane) *corev1.Service {
 			Type:     corev1.ServiceTypeNodePort,
 			Selector: podLabels(cp.Name, apiServer),
 			Ports: []corev1.ServicePort{
-				{Name: "https", Protocol: corev1.ProtocolTCP, Port: apiPort, TargetPort: intstr.FromString("https")},
+				{Name: "https", Protocol: corev1.ProtocolTCP, Port: bryggav1alpha1.APIServerServicePort, TargetPort: intstr.FromString("https")},
 				{Name: "kubernetes", Protocol: corev1.ProtocolTCP, Port: kubernetesPort, TargetPort: intstr.FromString("https")},
 				{Name: "konnectivity", Protocol: corev1.ProtocolTCP, Port: konnectivityPort, TargetPort: intstr.FromString("konnectivity")},
 			},
@@ -175,7 +174,7 @@ func (r rendering) apiServer() *appsv1.Deployment {
 		"kubelet-preferred-address-types":             "InternalIP,ExternalIP,Hostname",
 		"proxy-client-cert-file":                      "/etc/brygga/front-proxy-client/" + bryggav1alpha1.TLSCertKey,
 		"proxy-client-key-file":                       "/etc/brygga/front-proxy-client/" + bryggav1alpha1.TLSPrivateKeyKey,
-		"requestheader-allowed-names":                 "front-proxy-client",
+		"requestheader-allowed-names":                 bryggav1alpha1.FrontProxyClientCommonName,
 		"requestheader-client-ca-file":                "/etc/brygga/front-proxy-ca/" + bryggav1alpha1.CACertKey,
 		"requestheader-extra-headers-prefix":          "X-Remote-Extra-",
 		"requestheader-group-headers":                 "X-Remote-Group",
