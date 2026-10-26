@@ -66,7 +66,7 @@ in [`api/examples/`](api/examples/).
 | Datastore | the `Etcd` of a dedicated etcd — built, for one member — or a user and role in a shared store; backups and defragmentation | `DatastoreReady` | a complete generation of PKI's etcd certificates |
 | Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady` | `status.target`, `status.datastore`, `CertificatesReady`, `DatastoreReady` |
 | Tenant | objects inside the tenant cluster, with an inventory | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
-| Health | status, and from phase 2 the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable` | `status.endpoint` and the CA bundle; `AccessReady` from phase 2 |
+| Health | status, and from phase 2 the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable`; `ControllerManagerHeld` outside `Ready` from phase 2 | `status.endpoint` and the CA bundle; `AccessReady` from phase 2 |
 | Lifecycle | `status.target`, `Progressing`, `Ready`; the pre-upgrade `Backup` | `Progressing` | the others |
 
 Each controller has its own queue and field manager, reads `spec`,
@@ -770,7 +770,9 @@ lease go. It works the same in both layouts, rolls nothing, and never takes a
 lease another component holds
 ([controller-manager-hold](decisions/controller-manager-hold.md)). This is
 what Gardener's dependency-watchdog does for its clusters, built into the
-operator.
+operator. Health reports a hold in `ControllerManagerHeld`, outside `Ready`:
+the nodes are cut off, not the control plane, and `Reachable` stays about
+the API.
 
 ## Identity and tenancy
 

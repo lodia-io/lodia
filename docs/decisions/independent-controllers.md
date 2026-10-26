@@ -17,7 +17,7 @@ watch `ControlPlane`:
 | **Datastore** | the tenant's etcd (dedicated through etcd-druid, or a user and prefix in a shared store), backups, defragmentation; the only controller that talks to etcd | `DatastoreReady` | nothing |
 | **Workloads** | Deployments, Services, PodDisruptionBudgets, NetworkPolicies, ConfigMaps, Gateway routes in the tenant namespace | `APIServerReady` | `CertificatesReady`, `DatastoreReady` |
 | **Tenant** | objects inside the tenant cluster: kubeadm bootstrap objects, kube-proxy, CoreDNS, konnectivity-agent, apiserver-proxy, RBAC | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
-| **Health** | probes the API from outside and inside, samples node leases; holds the controller manager's leader lease inside the tenant while most nodes cannot reach the API ([controller-manager-hold](controller-manager-hold.md)) | `Reachable` | `AccessReady` |
+| **Health** | probes the API from outside and inside, samples node leases; holds the controller manager's leader lease inside the tenant while most nodes cannot reach the API ([controller-manager-hold](controller-manager-hold.md)) | `Reachable`; `ControllerManagerHeld` outside `Ready` | `AccessReady` |
 | **Lifecycle** | the pace: which version to run now, whether to hibernate, which rotation stage is active, when a tenant's maintenance window is open and how many tenants roll at once | `status.target` and `Progressing` | the others' conditions |
 
 Rules:
@@ -74,9 +74,11 @@ Rules:
   `CertificatesReady ∧ DatastoreReady ∧ APIServerReady ∧ AccessReady ∧ AddonsApplied ∧ Reachable`,
   and `Hibernated` when asleep. Nothing in it waits for the tenant's nodes:
   the owner joins them once the control plane is `Ready`, so
-  `AddonsAvailable`, the addons' pods on those nodes, is reported beside it;
-  so is `CAValidityAcceptable`, a CA in its last year, since every
-  certificate is still valid then and its rotation is started by someone.
+  `AddonsAvailable`, the addons' pods on those nodes, is reported beside it,
+  and so is `ControllerManagerHeld`, Health's hold while most nodes cannot
+  reach an API that answers; so is `CAValidityAcceptable`, a CA in its last
+  year, since every certificate is still valid then and its rotation is
+  started by someone.
 
 ```mermaid
 flowchart LR

@@ -14,6 +14,7 @@ import (
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=cp
+// +kubebuilder:validation:XValidation:rule="self.metadata.name.size() <= 32 && self.metadata.name.matches('^[a-z]([-a-z0-9]*[a-z0-9])?$')",message="the name must be a DNS-1035 label of at most 32 characters"
 // +kubebuilder:printcolumn:name="Version",type=string,JSONPath=".spec.version"
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].reason"
@@ -924,8 +925,4 @@ type ControllerManagerHold struct {
 	SilentNodes int32 `json:"silentNodes,omitempty"`
 	// +optional
 	CountedNodes int32 `json:"countedNodes,omitempty"`
-	// BlockedBy names another holder of the lease Lodia left alone.
-	// +optional
-	// +kubebuilder:validation:MaxLength=253
-	BlockedBy string `json:"blockedBy,omitempty"`
 }

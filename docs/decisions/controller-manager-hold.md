@@ -35,7 +35,7 @@ the control plane and its nodes:
   when its holder's identity starts with the name of a pod Lodia runs for
   that controller manager (a leader's identity is `<pod name>_<uuid>`). Any
   other holder, such as a platform's own watchdog, is left alone and named in
-  `status.health.controllerManagerHold.blockedBy`.
+  the message of `ControllerManagerHeld=False`, reason `HoldBlocked`.
 - **It fails safe.** A Lodia that stops renewing gives the lease back after
   60 seconds, to upstream behaviour; a Lodia that restarts keeps a hold it
   finds with holder `lodia`.
@@ -96,9 +96,10 @@ are evicted as upstream does.
   tenant: no new ReplicaSets, no garbage collection, no node IPAM; changes wait
   for the release (on Segla's platform, a Deployment created during a hold got
   its ReplicaSet 5 seconds after the release).
-- `Reachable=False` with reason `NodesSilent`, `status.health.controllerManagerHold`
-  says since when and how many nodes, and the alert `LodiaControllerManagerHeld`
-  fires after 15 minutes.
+- `ControllerManagerHeld=True` with reason `NodesSilent`, outside `Ready`
+  since the API answers; `status.health.controllerManagerHold` says since
+  when and how many nodes, and the alert `LodiaControllerManagerHeld` fires
+  after 15 minutes.
 - A platform that already runs such a watchdog turns it off before relying on
   Lodia's; Segla's bosun steps down when Segla moves to Lodia.
 - The phase 2 gate cuts both workers of a tenant from the control plane and

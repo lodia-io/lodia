@@ -216,6 +216,21 @@ func TestControlPlaneValidation(t *testing.T) {
 	}
 }
 
+func TestControlPlaneNames(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	for _, c := range []struct{ name, want string }{
+		{strings.Repeat("a", 32), ""},
+		{strings.Repeat("a", 33), "at most 32 characters"},
+		{"1a", "at most 32 characters"},
+		{"a.b", "at most 32 characters"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			expect(t, k8s.Create(context.Background(), example(t, "controlplane-single.yaml", c.name), client.DryRunAll), c.want)
+		})
+	}
+}
+
 func TestControlPlaneTransitions(t *testing.T) {
 	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")

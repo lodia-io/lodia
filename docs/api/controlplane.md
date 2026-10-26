@@ -4,6 +4,17 @@
 Go types will be generated from this reference, and the two change together.
 Examples: [`examples/`](examples/).
 
+The name is a DNS-1035 label of at most 32 characters (CEL), since every
+object Lodia and etcd-druid create for a `ControlPlane` starts with it. The
+longest is etcd-druid's label on the etcd's Role,
+`druid.gardener.cloud-etcd-<name>-etcd`
+([role.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/role/role.go#L154)),
+and a label value holds at most 63 characters
+([syntax](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#syntax-and-character-set));
+the Service `<name>-kube-apiserver` needs a name that starts with a letter on
+management clusters before 1.36
+([RelaxedServiceNameValidation](https://github.com/kubernetes/kubernetes/blob/v1.36.0/pkg/features/kube_features.go#L1881-L1884)).
+
 ## spec
 
 | field | type | default | rules |
@@ -59,7 +70,7 @@ and not digits and dots alone, which read as an IP address.
 | field | written by | meaning |
 |---|---|---|
 | `observedGeneration` | Lifecycle | the newest `metadata.generation` that every readiness condition (`CertificatesReady`, `DatastoreReady`, `APIServerReady`, `AccessReady`, `AddonsApplied`, `Reachable`) has been reported for |
-| `conditions[]` | each controller its own | `CertificatesReady`, `CAValidityAcceptable`, `DatastoreReady`, `APIServerReady`, `AccessReady`, `AddonsApplied`, `AddonsAvailable`, `Reachable`, `Progressing`, `Hibernated`, `Ready`; each with `reason`, `message`, `observedGeneration` |
+| `conditions[]` | each controller its own | `CertificatesReady`, `CAValidityAcceptable`, `DatastoreReady`, `APIServerReady`, `AccessReady`, `AddonsApplied`, `AddonsAvailable`, `Reachable`, `ControllerManagerHeld`, `Progressing`, `Hibernated`, `Ready`; each with `reason`, `message`, `observedGeneration` |
 | `target.version` | Lifecycle | the Kubernetes version being rolled now; one minor at a time towards `spec.version`; until upgrades are built (phase 2) it follows `spec.version` within its minor only |
 | `target.operatorVersion` | Lifecycle | the Lodia version whose templates this tenant's pods are rendered with |
 | `target.hibernated` | Lifecycle | the desired sleep state |
@@ -79,7 +90,7 @@ and not digits and dots alone, which read as an IP address.
 | `datastore.members.{total, ready}` | Datastore | the members the `Etcd` asks for and those ready |
 | `datastore.dbSizeBytes`, `datastore.lastBackup.{time, kind, revision}` | Datastore | phase 2, with backups and metrics |
 | `nodes.{total, ready, outdatedKubelets, sampledAt}` | Health | from a periodic list of nodes and leases in the tenant |
-| `health.controllerManagerHold.{since, silentNodes, countedNodes, blockedBy}` | Health | present while Lodia holds the controller manager's leader lease; `blockedBy` names a foreign holder Lodia left alone |
+| `health.controllerManagerHold.{since, silentNodes, countedNodes}` | Health | present while Lodia holds the controller manager's leader lease (`ControllerManagerHeld`) |
 
 ## Conditions and their reasons
 
@@ -105,7 +116,8 @@ reason with a phase beside it is not written before that phase.
 | `APIServerReady` | Workloads | each of the three Deployments has observed its generation and has every replica updated and ready (`Ready`) | `Reconciling`; `WaitingForEndpoint` (the load balancer has no address yet, or no management node is Ready); `WaitingForTarget`; `WaitingForCertificates` (also while a Secret a component reads once lacks PKI's data hash); `WaitingForDatastore` (also until `status.datastore.endpoints` exists); `RollingOut`; `Unsupported` (a field this release does not render, named in the message: `endpoint.gateway` until phase 2, the `Compact` layout, `highAvailability`, `apiServer.replicas` above 1, `apiServer.advertiseAddress` outside gateway mode, JWT authentication, an audit policy, an admission or a scheduler configuration, `serviceAccount.publicDiscovery`; the endpoint stays published but in gateway mode); `GatewayUnsupported` (phase 2: the Gateway lacks a feature the mode needs, [api-exposure](../decisions/api-exposure.md)); `LoadBalancerHostnameUnsupported` (a load balancer that reports a host name only); `Refused` (the management API server refuses one of Workloads' objects, which the message names: a quota on load balancers, an admission policy; the pass is retried with backoff); `ObjectsControlledElsewhere` (an object under one of Workloads' names has another owner, which the message names: a previous `ControlPlane` of the same name until the garbage collector deletes it, anything else until a person releases it; Workloads writes no Deployment, ConfigMap or NetworkPolicy meanwhile, nor the Service when it is the one held); `Hibernated` (phase 3) |
 | `AddonsApplied` | Tenant | the inventory is applied and pruned for this generation (`Applied`) | `Reconciling`; `WaitingForAccess`, `WaitingForTarget`, `WaitingForEndpoint`; `Refused` (the tenant refuses an object, or the read of the inventory, which the message names); `Applying` (an apply not finished: the message names an object that exists and is not Lodia's, an inventory that cannot be read, or a tenant that never answered) |
 | `AddonsAvailable` | Tenant | kube-proxy, CoreDNS and the agents report ready (`Available`); not part of `Ready`, since their pods need the owner's nodes | `Reconciling`; `WaitingForAccess`, `WaitingForTarget`, `WaitingForEndpoint`; `RolloutPending`; `Applying`, `Refused` (no rollout read yet: the reason and the message of what stopped the pass) |
-| `Reachable` | Health | the public endpoint answers `/readyz` (`Reachable`); phase 2 adds the internal probe, node leases and the controller manager's and the scheduler's leaders | `Reconciling`; `WaitingForEndpoint`; `WaitingForCertificates` (`<cp>-ca-bundle` is not written yet); `ExternalProbeFailed` (three probes in a row); `NodesSilent` (the controller manager is held), `HoldBlocked` (nodes silent, another holder keeps the lease) (phase 2); `Hibernated` (phase 3) |
+| `Reachable` | Health | the public endpoint answers `/readyz` (`Reachable`); phase 2 adds the internal probe and the controller manager's and the scheduler's leaders, a hold of Lodia's counting as the controller manager's | `Reconciling`; `WaitingForEndpoint`; `WaitingForCertificates` (`<cp>-ca-bundle` is not written yet); `ExternalProbeFailed` (three probes in a row); `Hibernated` (phase 3) |
+| `ControllerManagerHeld` | Health, phase 2 | Lodia holds the controller manager's leader lease while most nodes are silent and the API answers (`NodesSilent`); not part of `Ready`, since the nodes are cut off, not the control plane | `NotHeld`; `HoldBlocked` (most nodes are silent and another holder keeps the lease, named in the message) |
 | `Progressing` | Lifecycle | an upgrade, rotation stage, hibernation transition or deferred rollout is running (phase 2) | `Idle`; `Paused`; `Unsupported` (the minor of `spec.version` is not one Lodia runs, or `spec.version` changes the minor, until upgrades are built; the target stays); `WaitingForWindow`, `FleetLimit`, `Failed` (phase 2) |
 | `Hibernated` | Lifecycle, phase 3 | every component is scaled to zero and the data is kept | `Awake`, `FallingAsleep`, `WakingUp` |
 | `Ready` | Lifecycle | `CertificatesReady`, `DatastoreReady`, `APIServerReady`, `AccessReady`, `AddonsApplied` and `Reachable` are True for this generation (`Ready`) | `Deleting` while the `ControlPlane` is being deleted; otherwise the status, reason and message of the first of the six, in that order, that is not True, or `Unknown`, `LatestGenerationNotObserved` (kstatus's reason for it, [generic.go](https://github.com/kubernetes-sigs/cli-utils/blob/v0.37.2/pkg/kstatus/status/generic.go#L89-L94)) while that one is missing or reported for an older generation |

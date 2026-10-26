@@ -202,13 +202,15 @@ is a decision — a decision is a file in `docs/decisions/`.
   Workloads.
 - Phase 2: one `status.target.version` cannot order an upgrade's steps,
   since Workloads and Tenant both render from it; a target per step, decided
-  with a status field that says which version each component runs.
+  with a status field that says which version each component runs, and
+  `status.kubernetes.version` written from it: Cluster API creates no worker
+  while a control plane reports no version
+  ([preflight](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/core/reconcilers/machineset/machineset_preflight.go#L170-L190)).
 - Phase 2: `status.endpoint.tunnel`, the tunnel listener's host and port in
   gateway mode, absent without a tunnel, for Tenant's apiserver-proxy and
   PKI's certificate.
-- Phase 2: `status.health` is present only while Lodia holds the controller
-  manager; a blocked hold is reported in `HoldBlocked`'s message, and
-  `nodes.outdatedKubelets` compares against the tenant's own `/version`.
+- Phase 2: `nodes.outdatedKubelets` compares against the tenant's own
+  `/version`.
 - Phase 2: `Backup` and `KubeconfigRequest` get a named status writer, and
   `Backup` reports conditions instead of a `phase`.
 - Phase 2: the default `advertiseAddress`, `172.20.0.1`, becomes a constant
