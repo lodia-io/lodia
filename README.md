@@ -9,7 +9,7 @@ certified, stored, running, reachable and up to date, and keep the tenant's
 workloads alive when the path to its nodes breaks.
 
 *Lodia*, from Ukrainian «лодія», is an old word for a boat from the time of
-Kyivan Rus', the vessel beside Segla, which is Swedish for sailing.
+Kyivan Rus': the vessel beside Segla, which is Swedish for sailing.
 
 **Status: phase 1 of the [roadmap](docs/roadmap.md).** The six controllers
 are built for a control plane with one replica; the Helm chart and the e2e
