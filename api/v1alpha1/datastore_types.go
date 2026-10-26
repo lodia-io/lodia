@@ -169,9 +169,14 @@ type BackupStore struct {
 	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9][a-zA-Z0-9._-]{1,61}[a-zA-Z0-9]$`
 	Bucket string `json:"bucket"`
 
-	// Prefix inside the bucket.
+	// @todo: refuses what etcd-backup-restore's parser misreads; remove with todo.md's v1/ prefix item.
+
+	// Prefix inside the bucket; each ControlPlane's snapshots go under
+	// <prefix>/<namespace UID>/controlplanes/<ControlPlane UID>. It neither
+	// contains v1/ nor ends in v1, which etcd-backup-restore would misread.
 	// +optional
 	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:XValidation:rule="!(self + '/').contains('v1/')",message="must neither contain v1/ nor end in v1: etcd-backup-restore's snapshot parser takes the last v1/ in a key for its layout and would ignore every snapshot under this prefix"
 	Prefix string `json:"prefix,omitempty"`
 
 	// Region of the bucket.

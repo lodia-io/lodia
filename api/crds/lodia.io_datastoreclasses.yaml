@@ -120,9 +120,17 @@ spec:
                         - message: must be a URL
                           rule: isURL(self)
                       prefix:
-                        description: Prefix inside the bucket.
+                        description: |-
+                          Prefix inside the bucket; each ControlPlane's snapshots go under
+                          <prefix>/<namespace UID>/controlplanes/<ControlPlane UID>. It neither
+                          contains v1/ nor ends in v1, which etcd-backup-restore would misread.
                         maxLength: 253
                         type: string
+                        x-kubernetes-validations:
+                        - message: 'must neither contain v1/ nor end in v1: etcd-backup-restore''s
+                            snapshot parser takes the last v1/ in a key for its layout
+                            and would ignore every snapshot under this prefix'
+                          rule: '!(self + ''/'').contains(''v1/'')'
                       provider:
                         description: Provider is S3, GCS, ABS or Swift.
                         enum:

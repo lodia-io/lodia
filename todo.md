@@ -325,6 +325,21 @@ is a decision — a decision is a file in `docs/decisions/`.
 - Measure a highly available control plane's idle footprint; phase 2's
   scope and gate do not list it.
 
+## From the backup prefix (2026-10-26)
+
+- `docs/api/examples/datastore.yaml` puts a tenant of a shared etcd under
+  `/lodia/<namespace>/<name>/`, while dedicated-etcd-by-default grants each
+  tenant `/<prefix>/<uid>/`; the example should say the decision's prefix
+  when the shared `Datastore` is built.
+- The `v1/` prefix rule: the schema refuses a `DatastoreClass` backup prefix
+  that contains `v1/` or ends in `v1` (the `@todo` in
+  `api/v1alpha1/datastore_types.go`), since etcd-backup-restore v0.45.1 takes
+  the last `v1/` anywhere in a key for its layout
+  ([snapshot.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapstore/snapshot.go#L39-L59)).
+  Remove the rule, its cases in `test/api/validation_test.go` and its
+  mentions in the docs once the sidecar of the etcd-druid release Lodia pins
+  reads a key relative to its store prefix.
+
 ## From the lossless rollouts (2026-10-27)
 
 - A tenant created before `--endpoint-reconciler-type=none` loses its

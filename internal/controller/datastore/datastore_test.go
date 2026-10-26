@@ -486,6 +486,10 @@ func TestFinalizerAndEtcdFromClass(t *testing.T) {
 		}
 		return nil
 	})
+	tenantNamespace := &corev1.Namespace{}
+	if err := k8s.Get(t.Context(), client.ObjectKey{Name: ns}, tenantNamespace); err != nil {
+		t.Fatal(err)
+	}
 	store := ptr.Deref(etcd.Spec.Backup.Store, druidv1alpha1.StoreSpec{})
 	rows := []struct {
 		field     string
@@ -501,7 +505,7 @@ func TestFinalizerAndEtcdFromClass(t *testing.T) {
 		{"storage.size → spec.storageCapacity", quantity(etcd.Spec.StorageCapacity), "20Gi"},
 		{"backup.store.provider → spec.backup.store.provider", ptr.Deref(store.Provider, ""), druidv1alpha1.StorageProvider("S3")},
 		{"backup.store.bucket → spec.backup.store.container", ptr.Deref(store.Container, ""), "lodia-backups"},
-		{"backup.store.prefix → spec.backup.store.prefix, the tenant and its UID below the class's prefix", store.Prefix, "prod/" + ns + "/dev/" + string(cp.UID)},
+		{"backup.store.prefix → spec.backup.store.prefix, the namespace's and the ControlPlane's UIDs below the class's prefix", store.Prefix, "prod/" + string(tenantNamespace.UID) + "/controlplanes/" + string(cp.UID)},
 		{"backup.store.endpoint → spec.backup.store.endpointOverride", ptr.Deref(store.EndpointOverride, ""), "https://s3.example.test"},
 		{"backup.store.secretRef → spec.backup.store.secretRef, the copy in the namespace", ptr.Deref(store.SecretRef, corev1.SecretReference{}).Name, "dev-etcd-backup"},
 		{"backup.fullSnapshotSchedule → spec.backup.fullSnapshotSchedule", ptr.Deref(etcd.Spec.Backup.FullSnapshotSchedule, ""), "0 2 * * *"},
@@ -961,6 +965,60 @@ func TestBackupCredentialsCopied(t *testing.T) {
 	}
 	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "plain-etcd-backup"}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
 		t.Errorf("want no credentials copy without a store, got %v", err)
+	}
+}
+
+const snapshotParser = "https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapstore/snapshot.go#L34-L59"
+
+func snapshotPrefix(key string) string {
+	for _, version := range []string{"v1/", "v2/"} {
+		if i := strings.LastIndex(key, version); i >= 0 {
+			return key[:i+len(version)]
+		}
+	}
+	return ""
+}
+
+func TestBackupPrefixHoldsNoName(t *testing.T) {
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-v1"}}
+	create(t, ns)
+	credentialsNamespace := namespace(t)
+	create(t, credentials(credentialsNamespace))
+	createClass(t, fullClass("nameless", credentialsNamespace))
+	create(t, controlPlane(ns.Name, "v1", "nameless"))
+	writeGeneration(t, ns.Name, "v1", 1)
+	store := ptr.Deref(waitEtcd(t, ns.Name, "v1", nil).Spec.Backup.Store, druidv1alpha1.StoreSpec{})
+	cp := getControlPlane(t, ns.Name, "v1")
+	if want := "prod/" + string(ns.UID) + "/controlplanes/" + string(cp.UID); store.Prefix != want {
+		t.Fatalf("ControlPlane v1 in namespace team-v1 has the backup prefix %q, want %q", store.Prefix, want)
+	}
+	for _, c := range []struct{ key, prefix string }{
+		{store.Prefix + "/v2/Full-00000000-00000052-1761500000.gz", store.Prefix + "/v2/"},
+		{store.Prefix + "/v2/Incr-00000053-00000071-1761500010.gz", store.Prefix + "/v2/"},
+		{"prod/team-v1/v1/" + string(cp.UID) + "/v2/Full-00000000-00000052-1761500000.gz", "prod/team-v1/v1/"},
+	} {
+		if got := snapshotPrefix(c.key); got != c.prefix {
+			t.Errorf("etcd-backup-restore v0.45.1 reads %s under %q, want %q (%s)", c.key, got, c.prefix, snapshotParser)
+		}
+	}
+
+	settle(t, ns.Name, "v1")
+	before := getControlPlane(t, ns.Name, "v1")
+	injected := errors.New("injected: the API server did not answer")
+	failing := interceptor.NewClient(k8s, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*corev1.Namespace); ok {
+				return injected
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	reconciler := &datastore.Reconciler{Client: failing, Reader: failing, EtcdDruidNamespace: druidNamespace}
+	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns.Name, Name: "v1"}}); !errors.Is(err, injected) {
+		t.Fatalf("a pass whose Namespace read fails returned %v, want the read's error", err)
+	}
+	if after := getControlPlane(t, ns.Name, "v1"); after.ResourceVersion != before.ResourceVersion {
+		t.Errorf("a pass whose Namespace read fails moved the ControlPlane from resourceVersion %s to %s", before.ResourceVersion, after.ResourceVersion)
 	}
 }
 
