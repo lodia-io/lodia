@@ -55,7 +55,7 @@ func TestMain(m *testing.M) {
 	}
 	testenv = env.NewWithConfig(envconf.NewWithKubeConfig(path))
 	testenv.Setup(installLodia)
-	testenv.Finish(removeNode)
+	testenv.Finish(removeNodes)
 	os.Exit(testenv.Run(m))
 }
 

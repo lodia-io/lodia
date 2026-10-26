@@ -216,18 +216,47 @@ Every alert links to its runbook section here.
 
 ## Capacity
 
-Lodia's targets, to be replaced by measurements in phase 1
-([roadmap](roadmap.md)): a single idle control plane within 1 GiB of memory
-requests and 0.5 CPU, a highly available one within 2.5 GiB and 1.5 CPU,
-etcd included. No primary source publishes the idle footprint of a small
-etcd member; Gardener's requests for a shoot's etcd (30m / 150M, sidecar
-10m / 40Mi) are the starting point, and etcd 3.6 roughly halved memory under
-load compared with 3.5
-([Gardener's etcd component](https://raw.githubusercontent.com/gardener/gardener/master/pkg/component/etcd/etcd/etcd.go),
-[etcd 3.6](https://etcd.io/blog/2025/announcing-etcd-3.6/)). A management cluster sized for N tenants needs the sum of
-their requests on its control plane nodes, plus room to roll one
-Deployment of every tenant (the fleet limit bounds how many roll at once),
-plus etcd volumes with low fsync latency.
+One idle control plane, as the nightly conformance run measures it before
+the suite starts
+([`TestConformance`](../test/e2e/README.md#nightly-conformance-and-the-idle-control-plane)):
+a `ControlPlane` of one replica at Kubernetes v1.37.0 with a dedicated etcd
+of one member, two nodes joined, the konnectivity agents and CoreDNS
+running and no workload, idle for 3 minutes. CPU is the rate of the
+kubelet's `container_cpu_usage_seconds_total` over the next 5 minutes and
+memory its `container_memory_working_set_bytes` at their end, both from the
+management kubelet's `/metrics/resource`
+([resource_metrics.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/kubelet/metrics/collectors/resource_metrics.go#L51-L63)).
+Measured on 2026-10-26 by nightly run
+[40360016124](https://github.com/lodia-io/lodia/actions/runs/40360016124)
+at e5686f8, on GitHub's `ubuntu-24.04` runner for private repositories
+([runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)):
+amd64, 2 CPUs and 7.8 GiB, kernel 6.17.0-1022-azure, in kind v0.33.0
+with its node image v1.37.0 (containerd 2.3.4) and etcd-druid v0.39.0.
+
+| pod | container | CPU (millicores) | memory (MiB) |
+|---|---|---:|---:|
+| API server | `kube-apiserver` | 25.9 | 227.7 |
+| | `konnectivity-server` | 5.6 | 11.5 |
+| | `lodia-signer` | 0.1 | 10.2 |
+| controller manager | `kube-controller-manager` | 9.3 | 55.4 |
+| scheduler | `kube-scheduler` | 6.3 | 23.9 |
+| etcd | `etcd` | 13.3 | 37.5 |
+| | `backup-restore` | 1.8 | 26.2 |
+| sum | | 62.3 | 392.5 |
+
+It idles at 62.3 millicores and 392.5 MiB, against phase 0's target for a
+single idle control plane of 0.5 CPU and 1 GiB with etcd; these numbers
+replace that target. CPU varies between runs more than memory: run
+[40334709578](https://github.com/lodia-io/lodia/actions/runs/40334709578)
+on the same runner measured 43.3 millicores and 387.7 MiB. The nightly now
+runs on the public runner, 4 CPUs and 15.6 GiB, where run
+[40371428547](https://github.com/lodia-io/lodia/actions/runs/40371428547)
+measured 55.4 millicores and 422.9 MiB; the table stays run 40360016124's.
+A highly available control plane's target stays 1.5 CPU and 2.5 GiB. A
+management cluster sized for N tenants needs the sum of their requests on
+its control plane nodes, plus room to roll one Deployment of every tenant
+(the fleet limit bounds how many roll at once), plus etcd volumes with low
+fsync latency.
 
 The operator: two replicas; memory grows with the number of tenants it
 caches (label-scoped, metadata-only for Secrets); the phase 4 gate is 200
