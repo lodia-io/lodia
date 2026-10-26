@@ -33,10 +33,11 @@ the same change.
 
 ## Commands
 
-- `make generate` — deepcopy functions and CRDs from `api/`; commit the
-  result.
+- `make generate` — deepcopy functions and the CRDs in `api/crds/` from
+  `api/`; commit the result.
 - `make verify` — the one check whose exit code says a change is done:
-  generated files current, golangci-lint (installed on its own), unit and
+  generated files current, both modules tidy (`.` and `api/`, which is
+  `go.lodia.io/lodia/api`), golangci-lint (installed on its own), unit and
   envtest tests. CI runs it on every pull request.
 - `make e2e` — the suite in `test/e2e` against `E2E_KUBECONFIG`, or against a
   kind cluster of its own that it deletes afterwards; it refuses any other

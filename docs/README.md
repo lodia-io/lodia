@@ -390,7 +390,7 @@ more than its own edit: an `Etcd` the API server refuses stops taking
 certificate generations, and a backup sidecar that refuses its flags exits at
 start, which takes a single member down at its next roll. The fields that
 reach the `Etcd` carry the patterns and rules of etcd-druid's CRD, and
-`api/v1alpha1/etcddruid_test.go` fails when an etcd-druid release changes
+`test/api/etcddruid_test.go` fails when an etcd-druid release changes
 them. The rest is what the processes accept. The sidecar etcd-druid v0.39.0
 runs, etcd-backup-restore v0.41.2
 ([images.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/images/images.yaml#L14-L19)),
@@ -413,7 +413,7 @@ the operator decodes classes into Go types, and one it cannot decode fails
 the list its cache syncs from, so the Datastore controller fails to start and
 the manager with it
 ([controller.go](https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/internal/controller/controller.go#L363-L386));
-`api/v1alpha1/durations_test.go` holds every duration of the API to that.
+`test/api/durations_test.go` holds every duration of the API to that.
 
 `DatastoreReady` is `Unknown`, reason `Reconciling`, until the controller's
 first pass has finished, `WaitingForCertificates` until a complete

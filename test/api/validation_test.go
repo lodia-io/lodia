@@ -1,7 +1,7 @@
 // Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-package v1alpha1_test
+package api
 
 import (
 	"context"
@@ -29,7 +29,7 @@ func TestMain(m *testing.M) {
 		os.Exit(m.Run())
 	}
 	env := &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
+		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "api", "crds")},
 		ErrorIfCRDPathMissing: true,
 		UseExistingCluster:    new(false),
 	}
@@ -312,7 +312,7 @@ func TestEndpointStatus(t *testing.T) {
 }
 
 func TestAHostTakesTheHostnameRule(t *testing.T) {
-	manifest, err := os.ReadFile(filepath.Join("..", "..", "config", "crd", "bases", "lodia.io_controlplanes.yaml"))
+	manifest, err := os.ReadFile(filepath.Join("..", "..", "api", "crds", "lodia.io_controlplanes.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}

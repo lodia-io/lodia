@@ -1,7 +1,7 @@
 // Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-package v1alpha1_test
+package api
 
 import (
 	"os"
@@ -26,7 +26,7 @@ func TestEveryDurationIsOneGoCanParse(t *testing.T) {
 	if err := lodiav1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	files, err := filepath.Glob(filepath.Join("..", "..", "config", "crd", "bases", "*.yaml"))
+	files, err := filepath.Glob(filepath.Join("..", "..", "api", "crds", "*.yaml"))
 	if err != nil || len(files) == 0 {
 		t.Fatalf("no CRDs found: %v", err)
 	}

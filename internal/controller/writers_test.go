@@ -197,7 +197,7 @@ func start(t *testing.T) client.WithWatch {
 		t.Fatal(err)
 	}
 	env := &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
+		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "api", "crds")},
 		ErrorIfCRDPathMissing: true,
 		CRDs:                  druid,
 		UseExistingCluster:    new(false),
