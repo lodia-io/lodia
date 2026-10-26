@@ -6,8 +6,8 @@ it.
 
 ## Decision
 
-- **Name:** Lodia, from the Ukrainian «лодія», an old word for a boat from
-  the time of Kyivan Rus': the vessel beside Segla, which is Swedish for
+- **Name:** Lodia, from Ukrainian «лодія», an old word for a boat from the
+  time of Kyivan Rus': the vessel beside Segla, which is Swedish for
   sailing.
 - **Home:** the repository is `github.com/segla-io/brygga` for now and moves
   to the `lodia-io` organization. Issues, discussions and pull requests live
