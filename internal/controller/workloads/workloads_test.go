@@ -296,8 +296,8 @@ func TestAControlPlaneRollsOutOnceItsInputsAreReady(t *testing.T) {
 	if pod.AutomountServiceAccountToken == nil || *pod.AutomountServiceAccountToken {
 		t.Error("the API server pod mounts a ServiceAccount token of the management cluster")
 	}
-	if len(pod.Containers) != 2 || pod.Containers[0].Image != images.APIServer || pod.Containers[1].Image != images.KonnectivityServer {
-		t.Fatalf("the API server pod runs %+v", pod.Containers)
+	if len(pod.Containers) != 1 || pod.Containers[0].Image != images.APIServer || len(pod.InitContainers) != 2 || pod.InitContainers[1].Image != images.KonnectivityServer {
+		t.Fatalf("the API server pod runs %+v and %+v", pod.InitContainers, pod.Containers)
 	}
 	expectFlags(t, pod.Containers[0].Command,
 		"--advertise-address="+lbAddress,
@@ -315,9 +315,9 @@ func TestAControlPlaneRollsOutOnceItsInputsAreReady(t *testing.T) {
 			t.Errorf("the API server runs with %s, which the signer endpoint and the authentication configuration exclude", flag)
 		}
 	}
-	expectFlags(t, pod.Containers[1].Command, "--kubeconfig=/etc/lodia/konnectivity-kubeconfig/kubeconfig", "--uds-name=/run/konnectivity/konnectivity-server.socket", "--agent-port=8132")
-	if len(pod.InitContainers) != 1 || pod.InitContainers[0].Image != signerImage || pod.InitContainers[0].RestartPolicy == nil || *pod.InitContainers[0].RestartPolicy != corev1.ContainerRestartPolicyAlways {
-		t.Errorf("the signer is %+v, want a native sidecar of %s", pod.InitContainers, signerImage)
+	expectFlags(t, pod.InitContainers[1].Command, "--kubeconfig=/etc/lodia/konnectivity-kubeconfig/kubeconfig", "--uds-name=/run/konnectivity/konnectivity-server.socket", "--agent-port=8132")
+	if pod.InitContainers[0].Image != signerImage || pod.InitContainers[0].RestartPolicy == nil || *pod.InitContainers[0].RestartPolicy != corev1.ContainerRestartPolicyAlways {
+		t.Errorf("the signer is %+v, want a native sidecar of %s", pod.InitContainers[0], signerImage)
 	}
 
 	kcm := deployment(t, cp, "kube-controller-manager").Spec.Template.Spec.Containers[0]
@@ -360,7 +360,7 @@ func TestAControlPlaneRollsOutOnceItsInputsAreReady(t *testing.T) {
 		got[p.Name] = fmt.Sprintf("%s/%s %v %v", selected[lodiav1alpha1.ControlPlaneLabel], selected["app.kubernetes.io/name"], p.Spec.PolicyTypes, rules)
 	}
 	want := map[string]string{
-		"dev-kube-apiserver":          "dev/kube-apiserver [Ingress] [from 0 peers to [https konnectivity]]",
+		"dev-kube-apiserver":          "dev/kube-apiserver [Ingress] [from 0 peers to [6443 8132]]",
 		"dev-kube-controller-manager": "dev/kube-controller-manager [Ingress] []",
 		"dev-kube-scheduler":          "dev/kube-scheduler [Ingress] []",
 	}
@@ -423,8 +423,8 @@ func TestTheSpecIsRendered(t *testing.T) {
 	pod := api.Spec.Template.Spec
 	expectFlags(t, pod.Containers[0].Command, "--audit-log-maxage=7", "--feature-gates=A=true,B=false", "--service-account-issuer=https://issuer.example.com",
 		"--enable-admission-plugins=NodeRestriction,PodSecurity")
-	if pod.Containers[0].Resources.Requests.Memory().String() != "1Gi" || !strings.HasSuffix(pod.Containers[1].Image, ":v0.37.2") {
-		t.Errorf("the API server requests %v, konnectivity %s", pod.Containers[0].Resources.Requests, pod.Containers[1].Image)
+	if pod.Containers[0].Resources.Requests.Memory().String() != "1Gi" || !strings.HasSuffix(pod.InitContainers[1].Image, ":v0.37.2") {
+		t.Errorf("the API server requests %v, konnectivity %s", pod.Containers[0].Resources.Requests, pod.InitContainers[1].Image)
 	}
 	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
 		pod := eventuallyDeployment(t, cp, component).Spec.Template.Spec
@@ -496,7 +496,7 @@ func TestEveryFlagLodiaRendersIsRefusedOrMerged(t *testing.T) {
 		alsoRefused []string
 		set         func(*lodiav1alpha1.ControlPlaneSpec, map[string]string)
 	}{
-		"kube-apiserver": {[]string{"anonymous-auth", "feature-gates", "service-account-key-file", "service-account-signing-key-file"},
+		"kube-apiserver": {[]string{"anonymous-auth", "feature-gates", "service-account-key-file", "service-account-signing-key-file", "shutdown-send-retry-after"},
 			func(spec *lodiav1alpha1.ControlPlaneSpec, args map[string]string) {
 				spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: args}
 			}},
@@ -544,6 +544,39 @@ func TestTheProbesAreKubeadms(t *testing.T) {
 		if got := [3]string{describe(c.LivenessProbe), describe(c.ReadinessProbe), describe(c.StartupProbe)}; got != want {
 			t.Errorf("%s probes liveness, readiness and startup with %q, want kubeadm's %q", component, got, want)
 		}
+	}
+}
+
+func TestARolloutSurgesAndTheOldAPIServerDrains(t *testing.T) {
+	cp := running(t)
+	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
+		d := deployment(t, cp, component)
+		s := d.Spec.Strategy
+		if s.Type != appsv1.RollingUpdateDeploymentStrategyType || s.RollingUpdate == nil || s.RollingUpdate.MaxSurge.String() != "100%" || s.RollingUpdate.MaxUnavailable.String() != "0" {
+			t.Errorf("%s rolls with %+v, want a surge of 100%% and none unavailable", component, s)
+		}
+		if want := map[string]int32{"kube-apiserver": 10}[component]; d.Spec.MinReadySeconds != want {
+			t.Errorf("%s counts a pod available after %ds ready, want %d", component, d.Spec.MinReadySeconds, want)
+		}
+	}
+	api := deployment(t, cp, "kube-apiserver").Spec.Template.Spec
+	expectFlags(t, api.Containers[0].Command, "--endpoint-reconciler-type=none", "--shutdown-delay-duration=15s", "--shutdown-watch-termination-grace-period=10s")
+	if grace := api.TerminationGracePeriodSeconds; grace == nil || *grace != 90 {
+		t.Errorf("the API server pod has a termination grace period of %v, want 90", grace)
+	}
+	var sidecars []string
+	for _, c := range api.InitContainers {
+		if c.RestartPolicy != nil && *c.RestartPolicy == corev1.ContainerRestartPolicyAlways {
+			sidecars = append(sidecars, c.Name)
+		}
+	}
+	if !slices.Equal(sidecars, []string{"lodia-signer", "konnectivity-server"}) || len(api.InitContainers) != 2 {
+		t.Fatalf("the API server pod starts %+v, want the signer and then konnectivity-server as native sidecars", api.InitContainers)
+	}
+	konnectivity := api.InitContainers[1]
+	expectFlags(t, konnectivity.Command, "--graceful-shutdown-timeout=10s", "--health-port=8134")
+	if p := konnectivity.StartupProbe; p == nil || p.HTTPGet == nil || p.HTTPGet.Path != "/healthz" || p.HTTPGet.Port.IntValue() != 8134 {
+		t.Errorf("konnectivity-server's startup probe is %+v, want /healthz on its health port", p)
 	}
 }
 

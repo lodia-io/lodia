@@ -39,6 +39,25 @@ They belong to the control plane in every cluster, so Tenant takes them over
 from whoever wrote them, such as the lease reconciler of an API server that
 ran before `none`.
 
+**Rollouts.** Every endpoint above reaches the API server through something
+that follows its pods' readiness, so a stopping replica keeps serving while
+it leaves them: it fails `/readyz` at once and serves for 15 more seconds
+(`--shutdown-delay-duration=15s`), then shuts its HTTP server down and drains
+its watches for up to 10 seconds
+(`--shutdown-watch-termination-grace-period=10s`), as Gardener runs it
+([deployment.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/component/apiserver/deployment.go#L51-L52)).
+Shutting down sends each HTTP/2 client a GOAWAY, and Go's client moves the
+requests the server has not taken to a new connection
+([h2_bundle.go](https://github.com/golang/go/blob/go1.26.8/src/net/http/h2_bundle.go#L4245),
+[L5448-L5478](https://github.com/golang/go/blob/go1.26.8/src/net/http/h2_bundle.go#L5448-L5478),
+[L8198-L8231](https://github.com/golang/go/blob/go1.26.8/src/net/http/h2_bundle.go#L8198-L8231);
+Go 1.26.8 builds kube-apiserver v1.37.1). `--shutdown-send-retry-after` stays
+off, and `apiServer.extraArgs` refuses it: it keeps the server listening
+after the delay and answers every request on an open connection with `429`
+and `Retry-After`
+([with_retry_after.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/server/filters/with_retry_after.go#L55-L105)),
+which only a client that retries gets through.
+
 **Gateway prerequisites.** Gateway API ≥ 1.5, where `TLSRoute` and
 `ListenerSet` are in the Standard channel; an implementation that reports
 `TLSRoute` (passthrough) and, for the tunnel, `TLSRouteModeTerminate`, plus
@@ -83,9 +102,10 @@ endpoint; nothing on the node rewrites packets. Kubelets and kube-proxy
 themselves use the public endpoint by name, so they never need the proxy.
 
 **Konnectivity.** One `konnectivity-server` per API server replica, beside
-it in the pod, in gRPC mode on a Unix socket (`--uds-name`,
-`--server-port=0`), the egress selector sending only `cluster` traffic
-through it; agents authenticate with a projected ServiceAccount token
+it in the pod as a native sidecar that stops only after the API server, in
+gRPC mode on a Unix socket (`--uds-name`, `--server-port=0`), the egress
+selector sending only `cluster` traffic through it; agents authenticate with
+a projected ServiceAccount token
 (`--agent-namespace`, `--agent-service-account`, `--authentication-audience`),
 which the server checks with TokenReviews as `system:konnectivity-server`
 bound to `system:auth-delegator` and to lease verbs in `kube-system`; the
@@ -189,7 +209,7 @@ a node flag (`--address`, `--node-ip`), which the node's owner passes through
 - `internal/controller/workloads` — the Service of the `loadBalancer` and
   `nodePort` modes, `status.endpoint` with `inCluster`, the API server's
   advertise address and `--endpoint-reconciler-type=none`, and
-  konnectivity-server beside it on a Unix socket.
+  konnectivity-server beside it as a native sidecar on a Unix socket.
 - `internal/controller/tenant` — the `kubernetes` Endpoints and EndpointSlice
   in `manifests/endpoints.yaml`, taken over from any writer before
   (`kubernetesEndpoints` in `inventory.go`); `render_test.go` and

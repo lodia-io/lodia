@@ -248,9 +248,12 @@ Workloads runs the three Deployments of
 images of `status.target.version` and the flags of the [hard way](hard-way.md),
 once `CertificatesReady` and `DatastoreReady` are True for the generation and
 the Datastore controller has published `status.datastore.endpoints`, the API
-server's `--etcd-servers`; lodia-signer runs beside the API server as a
-native sidecar, its image a flag of the operator (`--signer-image`), which
-the chart sets from `signerImage`. One
+server's `--etcd-servers`; lodia-signer and then konnectivity-server run
+beside the API server as native sidecars, which start before it and stop
+after it
+([sidecar containers](https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/)),
+the signer's image a flag of the operator (`--signer-image`), which the
+chart sets from `signerImage`. One
 Service, `<cp>-kube-apiserver`, of the endpoint's type, takes 443 and 6443 to
 the API server and 8132 to konnectivity-server, and Workloads publishes
 `status.endpoint` from it before it waits on anything, whole once both
@@ -274,7 +277,31 @@ only at start
 a renewal of a reloaded certificate rolls nothing. The probes are kubeadm's,
 startup probes included
 ([utils.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kubeadm/app/util/staticpod/utils.go#L255-L296),
-[manifests.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kubeadm/app/phases/controlplane/manifests.go#L67-L107)).
+[manifests.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kubeadm/app/phases/controlplane/manifests.go#L67-L107));
+konnectivity-server's startup probe is its health port, so the API server
+starts once its tunnels can. A rollout loses no request. Each Deployment
+starts a full set of new pods before it stops an old one (`maxSurge: 100%`,
+`maxUnavailable: 0`), the API server's once they have been ready for 10
+seconds (`minReadySeconds`), time for the konnectivity agents to reach the
+new servers. A stopping pod's endpoint is not ready at once, and kube-proxy
+sends new connections to it only while no other is ready
+([utils.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/endpointslice/utils.go#L38-L44),
+[topology.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/proxy/topology.go#L57-L81));
+the API server serves on for 15 seconds while that spreads, then shuts its
+HTTP server down, which sends each HTTP/2 client a GOAWAY that moves the
+requests the server has not taken to a new connection, and drains its
+requests and, for up to 10 seconds, its watches
+(`--shutdown-delay-duration=15s`,
+`--shutdown-watch-termination-grace-period=10s`,
+[server_run_options.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/server/options/server_run_options.go#L387-L399)),
+within a grace period of 90 seconds: the delay, a minute for a request under
+the default `--request-timeout`, the watches, and 5 seconds. Then
+konnectivity-server stops, gracefully within 10 seconds
+(`--graceful-shutdown-timeout`). `--shutdown-send-retry-after` stays off,
+and `apiServer.extraArgs` refuses it with the other shutdown flags: it would
+answer the requests that still arrive on open connections with `429` and
+`Retry-After`, which only a client that retries gets through
+([api-exposure](decisions/api-exposure.md)).
 A NetworkPolicy per component, named as its Deployment,
 isolates the ingress of its pods: the API server takes its two ports from
 anywhere, since they are the public endpoint, and the controller manager and

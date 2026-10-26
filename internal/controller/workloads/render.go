@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/distribution/reference"
 	appsv1 "k8s.io/api/apps/v1"
@@ -34,6 +35,12 @@ const (
 
 	kubernetesPort   = 6443
 	konnectivityPort = 8132
+
+	shutdownDelay = 15 * time.Second
+	watchGrace    = 10 * time.Second
+	// requestTimeout is kube-apiserver's default --request-timeout
+	// (https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/server/config.go#L453).
+	requestTimeout = time.Minute
 
 	restartHashAnnotation = "lodia.io/restart-hash"
 	signerSocket          = "/run/signer/signer.sock"
@@ -199,6 +206,8 @@ func (r rendering) apiServer() *appsv1.Deployment {
 		"service-account-issuer":                      r.issuer,
 		"service-account-signing-endpoint":            signerSocket,
 		"service-cluster-ip-range":                    joined(cp.Spec.Network.ServiceCIDRs),
+		"shutdown-delay-duration":                     shutdownDelay.String(),
+		"shutdown-watch-termination-grace-period":     watchGrace.String(),
 		"tls-cert-file":                               "/etc/lodia/serving/" + lodiav1alpha1.TLSCertKey,
 		"tls-private-key-file":                        "/etc/lodia/serving/" + lodiav1alpha1.TLSPrivateKeyKey,
 	}
@@ -221,26 +230,33 @@ func (r rendering) apiServer() *appsv1.Deployment {
 		corev1.VolumeMount{Name: "signer-socket", MountPath: "/run/signer"},
 	)
 	konnectivity := corev1.Container{
-		Name:  "konnectivity-server",
-		Image: r.images.KonnectivityServer,
+		Name:          "konnectivity-server",
+		Image:         r.images.KonnectivityServer,
+		RestartPolicy: new(corev1.ContainerRestartPolicyAlways),
 		Command: command("/proxy-server", map[string]string{
-			"uds-name":                 konnectivitySocket,
-			"delete-existing-uds-file": "true",
-			"server-port":              "0",
-			"mode":                     "grpc",
-			"agent-port":               strconv.Itoa(konnectivityPort),
-			"admin-port":               "8133",
-			"health-port":              "8134",
-			"cluster-cert":             "/etc/lodia/konnectivity-server/" + lodiav1alpha1.TLSCertKey,
-			"cluster-key":              "/etc/lodia/konnectivity-server/" + lodiav1alpha1.TLSPrivateKeyKey,
-			"kubeconfig":               "/etc/lodia/konnectivity-kubeconfig/" + lodiav1alpha1.KubeconfigKey,
-			"agent-namespace":          "kube-system",
-			"agent-service-account":    "konnectivity-agent",
-			"authentication-audience":  "system:konnectivity-server",
-			"proxy-strategies":         "destHost,default",
-			"enable-lease-controller":  "true",
+			"uds-name":                  konnectivitySocket,
+			"delete-existing-uds-file":  "true",
+			"server-port":               "0",
+			"mode":                      "grpc",
+			"agent-port":                strconv.Itoa(konnectivityPort),
+			"admin-port":                "8133",
+			"health-port":               "8134",
+			"cluster-cert":              "/etc/lodia/konnectivity-server/" + lodiav1alpha1.TLSCertKey,
+			"cluster-key":               "/etc/lodia/konnectivity-server/" + lodiav1alpha1.TLSPrivateKeyKey,
+			"kubeconfig":                "/etc/lodia/konnectivity-kubeconfig/" + lodiav1alpha1.KubeconfigKey,
+			"agent-namespace":           "kube-system",
+			"agent-service-account":     "konnectivity-agent",
+			"authentication-audience":   "system:konnectivity-server",
+			"proxy-strategies":          "destHost,default",
+			"enable-lease-controller":   "true",
+			"graceful-shutdown-timeout": "10s",
 		}, nil, nil),
 		Ports: []corev1.ContainerPort{{Name: "konnectivity", ContainerPort: konnectivityPort, Protocol: corev1.ProtocolTCP}},
+		StartupProbe: &corev1.Probe{
+			ProbeHandler:     corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt32(8134)}},
+			PeriodSeconds:    1,
+			FailureThreshold: 30,
+		},
 		LivenessProbe: &corev1.Probe{
 			ProbeHandler:        corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt32(8134)}},
 			InitialDelaySeconds: 10,
@@ -287,11 +303,14 @@ func (r rendering) apiServer() *appsv1.Deployment {
 		corev1.Volume{Name: "konnectivity-socket", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		corev1.Volume{Name: "signer-socket", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 	)
-	return r.deployment(apiServer, ptr.Deref(settings.Replicas, 1), corev1.PodSpec{
-		InitContainers: []corev1.Container{signer},
-		Containers:     []corev1.Container{container, konnectivity},
-		Volumes:        volumes,
+	d := r.deployment(apiServer, ptr.Deref(settings.Replicas, 1), corev1.PodSpec{
+		InitContainers:                []corev1.Container{signer, konnectivity},
+		Containers:                    []corev1.Container{container},
+		Volumes:                       volumes,
+		TerminationGracePeriodSeconds: new(int64((shutdownDelay + requestTimeout + watchGrace + 5*time.Second) / time.Second)),
 	})
+	d.Spec.MinReadySeconds = 10
+	return d
 }
 
 // konnectivityImage is the version table's konnectivity-server image, with the
@@ -404,6 +423,10 @@ func (r rendering) deployment(component string, replicas int32, pod corev1.PodSp
 			Replicas: new(replicas),
 			Selector: &metav1.LabelSelector{MatchLabels: labels},
 			Template: template,
+			Strategy: appsv1.DeploymentStrategy{
+				Type:          appsv1.RollingUpdateDeploymentStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateDeployment{MaxSurge: new(intstr.FromString("100%")), MaxUnavailable: new(intstr.FromInt32(0))},
+			},
 		},
 	}
 	maps.Copy(d.Labels, map[string]string{lodiav1alpha1.ComponentLabel: component})
@@ -415,6 +438,10 @@ func (r rendering) deployment(component string, replicas int32, pod corev1.PodSp
 // nothing; the kubelet's probes come from the node, which a NetworkPolicy
 // does not block
 // (https://kubernetes.io/docs/concepts/services-networking/network-policies/).
+// The ports go by number: implementations such as kube-network-policies, which
+// kind's kindnetd runs, resolve a named port in the main containers alone, not
+// in a native sidecar such as konnectivity-server
+// (https://github.com/kubernetes-sigs/kube-network-policies/blob/f67f0fb35e2b/pkg/api/helper.go#L17-L26).
 func networkPolicies(cp *lodiav1alpha1.ControlPlane) []*networkingv1.NetworkPolicy {
 	var out []*networkingv1.NetworkPolicy
 	for _, component := range components {
@@ -428,8 +455,8 @@ func networkPolicies(cp *lodiav1alpha1.ControlPlane) []*networkingv1.NetworkPoli
 		}
 		if component == apiServer {
 			var ports []networkingv1.NetworkPolicyPort
-			for _, name := range []string{"https", "konnectivity"} {
-				ports = append(ports, networkingv1.NetworkPolicyPort{Protocol: new(corev1.ProtocolTCP), Port: new(intstr.FromString(name))})
+			for _, port := range []int32{kubernetesPort, konnectivityPort} {
+				ports = append(ports, networkingv1.NetworkPolicyPort{Protocol: new(corev1.ProtocolTCP), Port: new(intstr.FromInt32(port))})
 			}
 			p.Spec.Ingress = []networkingv1.NetworkPolicyIngressRule{{Ports: ports}}
 		}
