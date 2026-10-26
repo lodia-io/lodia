@@ -199,8 +199,10 @@ runs the suite in the tenant, as `go run sigs.k8s.io/hydrophone@v0.8.0`: as a
   ([kind-presubmits.yaml](https://github.com/kubernetes/test-infra/blob/9b2551f8f32815d93a471123109af4ed36ce827a/config/jobs/kubernetes-sigs/kind/kind-presubmits.yaml#L78-L120),
   [e2e-k8s.sh](https://github.com/kubernetes-sigs/kind/blob/v0.33.0/hack/ci/e2e-k8s.sh#L253-L261),
   [ginkgo-e2e.sh](https://github.com/kubernetes/kubernetes/blob/v1.37.0/hack/ginkgo-e2e.sh#L181-L193)).
-  The suite waits far more than it computes: with one process, the kind
-  containers kept a third of a CPU busy on a 16-CPU workstation;
+  The suite waits far more than it computes: with one process it took 1h57m
+  on a 16-CPU workstation, where the kind containers kept a third of a CPU
+  busy; with four it took 44 minutes on GitHub's runner of 2 CPUs, and the
+  nightly job 65;
 - `--kubeconfig`, the admin kubeconfig with the forwarded address, so that
   hydrophone reaches the tenant as the suite does; the conformance pod in
   the tenant uses its in-cluster configuration;
@@ -220,4 +222,5 @@ which the image's runner sets to 1 when Ginkgo fails
 [Wait](https://github.com/kubernetes/kubernetes/blob/v1.37.0/test/conformance/image/go-runner/main.go#L84-L87)),
 and with 1 on an error of its own
 ([main.go](https://github.com/kubernetes-sigs/hydrophone/blob/v0.8.0/main.go#L27-L29));
-the test passes only on 0. `make conformance` gives the test 270 minutes.
+the test passes only on 0. `make conformance` gives the test 110 minutes,
+and the nightly job has 120.

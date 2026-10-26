@@ -63,6 +63,6 @@ endif
 conformance: ## the Kubernetes conformance suite through hydrophone against a tenant with two nodes, on a kind cluster of its own that it deletes afterwards; results in $(E2E_DIR)/_artifacts; CONFORMANCE_FOCUS=<regexp> runs only the tests it matches
 	mkdir -p $(E2E_DIR)
 	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig
-	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,conformance -count=1 -timeout 270m -run '^TestConformance$$' -artifacts -outputdir $(E2E_DIR) ./test/e2e/...; status=$$?; \
+	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,conformance -count=1 -timeout 110m -run '^TestConformance$$' -artifacts -outputdir $(E2E_DIR) ./test/e2e/...; status=$$?; \
 	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 $(E2E_CLUSTER)-tenant-node-2 || status=1; \
 	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status

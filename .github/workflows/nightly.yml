@@ -15,7 +15,7 @@ permissions:
 jobs:
   conformance:
     runs-on: ubuntu-24.04
-    timeout-minutes: 300
+    timeout-minutes: 120
     steps:
       # @todo: frees the runner's disk for the kind nodes' image stores; remove with todo.md's runner disk item.
       - name: Reclaim disk space
