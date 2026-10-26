@@ -216,6 +216,31 @@ is a decision — a decision is a file in `docs/decisions/`.
 - Phase 3: `Hibernated`, with Lifecycle as its writer, and the handled
   `brygga.segla.io/operation` value recorded in `status`.
 
+## From the Tenant controller (2026-10-25)
+
+- A kind node container needs kubelet settings a real node does not
+  (`cgroupRoot: /kubelet`, `failSwapOn: false`, eviction thresholds at 0%),
+  and kube-proxy in a container cannot raise `nf_conntrack_max`, which the
+  hard way avoided with `conntrack.maxPerCore: 0`; the phase 1 gate joins
+  with kubeadm's kubelet patches and decides kube-proxy's conntrack setting.
+- Nothing watches `<cp>-ca-bundle`: a rotated cluster CA reaches
+  `cluster-info` within the apply period; the CA rotation of phase 3 should
+  bring a Tenant pass.
+- `addons.konnectivity.version` pins the agents' image here; the server's
+  is Workloads'.
+- A tenant's own admission webhook that fails with a 5xx counts as no
+  answer, so a True `AddonsApplied` stays while it keeps an object out.
+- The one-minute requeue while the rollout is pending runs the full apply,
+  not only the rollout read.
+- Every pass builds a new tenant client, transport and RESTMapper.
+- `--agent-identifiers=ipv4=$(HOST_IP)` names an agent by its node's IPv4
+  address only; IPv6 and dual-stack nodes need `ipv6=`.
+- `AddonsAvailable` is not read again while applies are refused: the
+  rollout read before stays.
+- `--count-server-leases` on the agents is proven only by the wave 3 e2e.
+- CoreDNS's replicas are Brygga's: an autoscaler is set back on every
+  apply; a later phase lets one own them.
+
 ## From the Workloads controller (2026-10-25)
 
 - `highAvailability` (replicas, spread, PodDisruptionBudgets), more than one

@@ -26,8 +26,7 @@ var k8s client.Client
 
 func TestMain(m *testing.M) {
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
-		fmt.Println("skipping CRD validation: KUBEBUILDER_ASSETS is not set; run make test")
-		os.Exit(0)
+		os.Exit(m.Run())
 	}
 	env := &envtest.Environment{
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
@@ -96,6 +95,13 @@ func set(t *testing.T, obj *unstructured.Unstructured, value any, path ...string
 	}
 }
 
+func needsEnvtest(t *testing.T) {
+	t.Helper()
+	if k8s == nil {
+		t.Skip("KUBEBUILDER_ASSETS is not set; run make test")
+	}
+}
+
 func ensureNamespaces(t *testing.T, names ...string) {
 	t.Helper()
 	for _, n := range names {
@@ -121,6 +127,7 @@ func expect(t *testing.T, err error, want string) {
 }
 
 func TestExamplesAreAccepted(t *testing.T) {
+	needsEnvtest(t)
 	ensureNamespaces(t, "team-a", "team-b")
 	for _, obj := range examples(t) {
 		t.Run(obj.GetKind()+"/"+obj.GetName(), func(t *testing.T) {
@@ -130,6 +137,7 @@ func TestExamplesAreAccepted(t *testing.T) {
 }
 
 func TestControlPlaneDefaults(t *testing.T) {
+	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")
 	obj := example(t, "controlplane-single.yaml", "defaults")
 	expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), "")
@@ -142,6 +150,7 @@ func TestControlPlaneDefaults(t *testing.T) {
 }
 
 func TestControlPlaneValidation(t *testing.T) {
+	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")
 	cases := []struct {
 		name   string
@@ -208,6 +217,7 @@ func TestControlPlaneValidation(t *testing.T) {
 }
 
 func TestControlPlaneTransitions(t *testing.T) {
+	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")
 	cases := []struct {
 		name   string
@@ -244,6 +254,7 @@ func TestControlPlaneTransitions(t *testing.T) {
 }
 
 func TestRestoreFromAtCreation(t *testing.T) {
+	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")
 	obj := example(t, "controlplane-single.yaml", "restored")
 	set(t, obj, map[string]any{"backupRef": map[string]any{"name": "nightly"}}, "spec", "restoreFrom")
@@ -251,6 +262,7 @@ func TestRestoreFromAtCreation(t *testing.T) {
 }
 
 func TestEndpointStatus(t *testing.T) {
+	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")
 	obj := example(t, "controlplane-single.yaml", "endpoint-status")
 	if err := k8s.Create(context.Background(), obj); err != nil {
@@ -298,6 +310,7 @@ func TestAHostTakesTheHostnameRule(t *testing.T) {
 }
 
 func TestSmallerShapes(t *testing.T) {
+	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")
 	cases := []struct {
 		name   string
@@ -331,6 +344,7 @@ func TestSmallerShapes(t *testing.T) {
 }
 
 func TestKubeconfigRequestValidation(t *testing.T) {
+	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")
 	cases := []struct {
 		name   string
@@ -357,6 +371,7 @@ func TestKubeconfigRequestValidation(t *testing.T) {
 }
 
 func TestRequestsAndBackupsCannotChange(t *testing.T) {
+	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")
 	cases := []struct {
 		file, want string
@@ -380,12 +395,14 @@ func TestRequestsAndBackupsCannotChange(t *testing.T) {
 }
 
 func TestDatastoreEndpointsAreHTTPS(t *testing.T) {
+	needsEnvtest(t)
 	obj := example(t, "datastore.yaml", "plain")
 	set(t, obj, []any{"http://etcd-0.pool-a.etcd.svc:2379"}, "spec", "endpoints")
 	expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), "must be an https URL")
 }
 
 func TestDatastoreClassValidation(t *testing.T) {
+	needsEnvtest(t)
 	cases := []struct {
 		name  string
 		value any
@@ -442,6 +459,7 @@ var schedules = []struct {
 }
 
 func TestScheduleValidation(t *testing.T) {
+	needsEnvtest(t)
 	for _, path := range [][]string{{"spec", "etcd", "defragmentation", "schedule"}, {"spec", "backup", "fullSnapshotSchedule"}} {
 		for _, c := range schedules {
 			t.Run(strings.Join(path[1:], ".")+"/"+c.schedule, func(t *testing.T) {

@@ -1,12 +1,13 @@
 // Copyright 2026 The Brygga Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-package datastore
+package apistatus_test
 
 import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -14,15 +15,18 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+
+	"github.com/segla-io/brygga/internal/apistatus"
 )
 
 func TestRefused(t *testing.T) {
 	etcds := schema.GroupResource{Group: "druid.gardener.cloud", Resource: "etcds"}
+	bindings := schema.GroupResource{Group: "rbac.authorization.k8s.io", Resource: "clusterrolebindings"}
 	invalid := apierrors.NewInvalid(schema.GroupKind{Group: etcds.Group, Kind: "Etcd"}, "dev-etcd",
 		field.ErrorList{field.Invalid(field.NewPath("spec", "etcd", "defragmentationSchedule"), "0 3 * * 0", "does not match")})
 	terminating := apierrors.NewForbidden(etcds, "dev-etcd", errors.New("unable to create new content in namespace team-a because it is being terminated"))
 	terminating.ErrStatus.Details.Causes = []metav1.StatusCause{{Type: corev1.NamespaceTerminatingCause}}
-	rows := []struct {
+	for _, row := range []struct {
 		name string
 		err  error
 		want bool
@@ -31,6 +35,7 @@ func TestRefused(t *testing.T) {
 		{"wrapped", fmt.Errorf("apply Etcd dev-etcd: %w", invalid), true},
 		{"a webhook's denial without a code", apierrors.NewBadRequest("admission webhook denied the request"), true},
 		{"forbidden by a policy", apierrors.NewForbidden(etcds, "dev-etcd", errors.New("denied by a policy")), true},
+		{"forbidden to brygga:operator", apierrors.NewForbidden(bindings, "brygga:operator", errors.New("denied")), true},
 		{"unauthorized", apierrors.NewUnauthorized("denied by a policy"), true},
 		{"too large", apierrors.NewRequestEntityTooLargeError("limit is 3145728"), true},
 		{"not found", apierrors.NewNotFound(etcds, "dev-etcd"), false},
@@ -39,13 +44,13 @@ func TestRefused(t *testing.T) {
 		{"throttled", apierrors.NewTooManyRequests("slow down", 1), false},
 		{"a namespace being deleted", terminating, false},
 		{"internal", apierrors.NewInternalError(errors.New(".spec.foo: field not declared in schema")), false},
+		{"service unavailable", apierrors.NewServiceUnavailable("starting"), false},
 		{"gateway timeout", apierrors.NewTimeoutError("the server was unable to return a response in the time allotted", 1), false},
-		{"no answer", errors.New("dial tcp 10.96.0.1:443: connect: connection refused"), false},
-	}
-	for _, row := range rows {
+		{"no answer", &url.Error{Op: "Post", URL: "https://dev-kube-apiserver:443", Err: errors.New("connection refused")}, false},
+	} {
 		t.Run(row.name, func(t *testing.T) {
-			if got := refused(row.err); got != row.want {
-				t.Errorf("refused(%v) = %t, want %t", row.err, got, row.want)
+			if got := apistatus.Refused(row.err); got != row.want {
+				t.Errorf("Refused(%v) = %t, want %t", row.err, got, row.want)
 			}
 		})
 	}

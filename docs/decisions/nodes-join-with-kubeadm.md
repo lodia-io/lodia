@@ -1,6 +1,7 @@
 # Nodes join with `kubeadm join`; Brygga writes the bootstrap objects itself and never imports k8s.io/kubernetes
 
-Decided 2026-10-25. Not built.
+Decided 2026-10-25. The bootstrap objects are built; the e2e join comes
+with the phase 1 gate.
 
 ## Decision
 
@@ -67,4 +68,9 @@ Decided 2026-10-25. Not built.
 
 ## Code
 
-none yet.
+- `internal/controller/tenant/manifests/bootstrap.yaml` — `cluster-info`,
+  `kubeadm-config`, `kubelet-config` and the bootstrap RBAC, named and
+  shaped as
+  [kubeadm v1.35.0](https://github.com/kubernetes/kubernetes/tree/v1.35.0/cmd/kubeadm/app/phases)
+  writes them; `kube-proxy.yaml` and
+  `coredns.yaml` are kubeadm's addons.
