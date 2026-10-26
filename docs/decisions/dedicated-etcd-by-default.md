@@ -178,11 +178,16 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   `<class prefix>/<namespace UID>/backups/<Backup UID>`, where the `Backup`
   reconciler to come puts its sealed copies, out of every member's listing.
   Phase 1 has no users, so nothing migrates: an `Etcd` rendered under the
-  previous `<namespace>/<name>/<uid>` moves to the new prefix when the
-  operator is upgraded, which rolls its member once, since the prefix is an
-  argument of the sidecar
+  previous `<namespace>/<name>/<uid>` moves to the new prefix when Lodia
+  next renders it from its class, which rolls its member once, since the
+  prefix is an argument of the sidecar
   ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L544)),
-  and its old snapshots stay where they are.
+  and its old snapshots stay where they are; one whose class is held or
+  gone keeps its prefix, with every other field the class gave it. A class
+  stored before the schema refused a `v1/` keeps its prefix through CRD
+  validation ratcheting, GA and locked on since 1.33
+  ([kube_features.go](https://github.com/kubernetes/apiextensions-apiserver/blob/v0.37.0/pkg/features/kube_features.go#L70-L74)),
+  and Lodia renders it as it is.
   The volumes keep their names (`<cp>-etcd-<cp>-etcd-<n>`) and a StatefulSet
   re-attaches a claim of that name
   ([stateful_pod_control.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/statefulset/stateful_pod_control.go#L381-L405)),
