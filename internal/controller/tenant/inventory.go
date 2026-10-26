@@ -92,12 +92,12 @@ func appliedByBrygga(obj metav1.Object) bool {
 	})
 }
 
-// failure is an object a pass could not read or write, and what the tenant
-// answered, empty when it did not.
+// failure is an object a pass could not read or write, with the reason and
+// the verdict to report, empty when the tenant did not answer.
 type failure struct {
-	entry   entry
-	verdict string
-	err     error
+	entry           entry
+	reason, verdict string
+	err             error
 }
 
 func (f *failure) Error() string {
@@ -111,7 +111,7 @@ func (f *failure) Unwrap() error {
 func failed(e entry, err error) error {
 	f := &failure{entry: e, err: err}
 	if apistatus.Refused(err) {
-		f.verdict = "is refused by the tenant's API server"
+		f.reason, f.verdict = bryggav1alpha1.ReasonRefused, "is refused by the tenant's API server"
 	}
 	return f
 }
@@ -130,7 +130,7 @@ func readInventory(ctx context.Context, c client.Client) ([]entry, error) {
 	}
 	var entries []entry
 	if err := json.Unmarshal([]byte(cm.Data[inventoryKey]), &entries); err != nil {
-		return nil, &failure{entry: inventoryEntry(), verdict: "cannot be read: delete it, and every object is applied again", err: err}
+		return nil, &failure{entry: inventoryEntry(), reason: bryggav1alpha1.ReasonApplying, verdict: "cannot be read: delete it, and every object is applied again", err: err}
 	}
 	return entries, nil
 }

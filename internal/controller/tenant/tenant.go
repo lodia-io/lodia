@@ -132,14 +132,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 
 	others, syncErr := applyInventory(ctx, tenant, objects)
-	switch message, answered := outcome(syncErr); {
+	switch reason, message, answered := outcome(syncErr); {
 	case syncErr == nil && len(others) > 0:
 		applied = newCondition(cp, applied.Type, metav1.ConditionFalse, bryggav1alpha1.ReasonApplying, others[0].String()+" exists and is not Brygga's; delete it or disable the addon")
 	case syncErr == nil:
 		applied = newCondition(cp, applied.Type, metav1.ConditionTrue, bryggav1alpha1.ReasonApplied, fmt.Sprintf("%d objects are applied and the inventory is pruned", len(objects)))
 	case answered || applied.Status != metav1.ConditionTrue:
 		// No answer is no observation: a True stays, anything else says so.
-		applied = newCondition(cp, applied.Type, metav1.ConditionFalse, bryggav1alpha1.ReasonApplying, message)
+		applied = newCondition(cp, applied.Type, metav1.ConditionFalse, reason, message)
 	}
 	if syncErr == nil {
 		if c, err := rollout(ctx, tenant, cp, objects, others); err == nil {
@@ -151,8 +151,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if syncErr != nil && available.Reason != bryggav1alpha1.ReasonAvailable && available.Reason != bryggav1alpha1.ReasonRolloutPending {
 		// A rollout read before stays while none can be read; until one is,
 		// what stopped the pass says why.
-		message, _ := outcome(syncErr)
-		available = newCondition(cp, available.Type, metav1.ConditionFalse, bryggav1alpha1.ReasonApplying, message)
+		reason, message, _ := outcome(syncErr)
+		available = newCondition(cp, available.Type, metav1.ConditionFalse, reason, message)
 	}
 	if err := r.applyStatus(ctx, cp, applied, available); err != nil || syncErr != nil {
 		return ctrl.Result{}, errors.Join(syncErr, err)
@@ -163,13 +163,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	return ctrl.Result{RequeueAfter: r.ApplyPeriod}, nil
 }
 
-// outcome is what a pass that stopped on err reports, and whether the tenant
-// answered.
-func outcome(err error) (string, bool) {
+// outcome is the reason and the message a pass that stopped on err reports,
+// and whether the tenant answered.
+func outcome(err error) (string, string, bool) {
 	if f, ok := errors.AsType[*failure](err); ok && f.verdict != "" {
-		return f.entry.String() + " " + f.verdict + "; the reason is in Brygga's log", true
+		return f.reason, f.entry.String() + " " + f.verdict + "; the reason is in Brygga's log", true
 	}
-	return "the tenant's API server does not answer; the error is in Brygga's log", false
+	return bryggav1alpha1.ReasonApplying, "the tenant's API server does not answer; the error is in Brygga's log", false
 }
 
 // wait says what both conditions wait for: neither can be observed yet.

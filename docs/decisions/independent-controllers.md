@@ -192,7 +192,7 @@ flowchart LR
   `DatastoreReady` alone through the status subresource (`Unknown` at the
   start of its first pass, messages from the state alone, an API error left
   to the log unless the server refuses an object it is sent: the `Etcd`,
-  which is `EtcdRefused`, or the credentials copy, which holds the class),
+  which is `Refused`, or the credentials copy, which holds the class),
   sets a reconcile timeout of a minute, and stops for a paused
   `ControlPlane`. `datastore_test.go`
   runs it under the same cache with `ReaderFailOnMissingInformer`, as a user

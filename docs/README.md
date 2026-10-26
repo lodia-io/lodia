@@ -413,7 +413,7 @@ and starting from another tenant's data is a restore, not a start: nothing
 is created until they are deleted. `VolumesExist` too when an `Etcd`
 `<cp>-etcd` exists whose controller is not this `ControlPlane`, an orphan or
 a predecessor's the garbage collector has not removed yet: it is neither
-adopted nor written, and the message names it. `EtcdRefused` when the API
+adopted nor written, and the message names it. `Refused` when the API
 server refuses the `Etcd` Brygga renders — an admission policy on `Etcd`s, a
 class stored before a rule it breaks (validation ratcheting keeps an
 unchanged field on update,
@@ -565,10 +565,10 @@ and is rewritten to what the render holds once the objects that left it are
 deleted, so a pass that stops anywhere leaves nothing to leak; an object at
 another API version is the same entry, pruned at the version the tenant
 serves, and one of a kind it no longer serves is gone. `AddonsApplied` is
-True once every object is applied and pruned; False with `Applying` names
-another owner's object, the object or the inventory the tenant refused, an
-inventory it cannot read, or a tenant that never answered, while a tenant
-that stops answering leaves a True as it was. `AddonsAvailable` reads the
+True once every object is applied and pruned; False with `Refused` names
+the object, or the inventory read, the tenant refused, and with `Applying`
+another owner's object, an inventory it cannot read, or a tenant that never
+answered, while a tenant that stops answering leaves a True as it was. `AddonsAvailable` reads the
 DaemonSets and Deployments Brygga applied, every minute until they are
 rolled out; it keeps a rollout it read before while none can be read, and
 until one is, says what stopped the pass.

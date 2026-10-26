@@ -231,7 +231,7 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *bryggav1alpha1.Contr
 		if apistatus.Refused(err) {
 			message := note(fmt.Sprintf("the API server refuses Etcd %s on certificate generation %d with the fields of DatastoreClass %s generation %s; the reason is in Brygga's log",
 				rendered.Name, generation, rendered.Annotations[bryggav1alpha1.DatastoreClassAnnotation], rendered.Annotations[bryggav1alpha1.DatastoreClassGenerationAnnotation]), held)
-			return current, newCondition(metav1.ConditionFalse, bryggav1alpha1.ReasonEtcdRefused, message), 0, errors.Join(err, refusal)
+			return current, newCondition(metav1.ConditionFalse, bryggav1alpha1.ReasonRefused, message), 0, errors.Join(err, refusal)
 		}
 		return nil, metav1.Condition{}, 0, err
 	}

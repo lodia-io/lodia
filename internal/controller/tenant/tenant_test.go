@@ -386,7 +386,7 @@ func TestAnObjectTheTenantRefusesIsReportedAndNeverLeaks(t *testing.T) {
 	setCoreDNS(t, cp, true)
 	setCondition(t, cp, bryggav1alpha1.ConditionAccessReady, bryggav1alpha1.ReasonBound)
 	eventually(t, 30*time.Second, func() error {
-		if err := expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, bryggav1alpha1.ReasonApplying); err != nil {
+		if err := expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, bryggav1alpha1.ReasonRefused); err != nil {
 			return err
 		}
 		if c := condition(t, cp, bryggav1alpha1.ConditionAddonsApplied); !strings.Contains(c.Message, "Deployment kube-system/coredns is refused") {
@@ -612,7 +612,7 @@ func TestAnotherOwnersObjectsAreNeitherAdoptedNorPruned(t *testing.T) {
 	}
 }
 
-func TestATenantThatRefusesTheInventoryIsApplying(t *testing.T) {
+func TestAnInventoryReadTheTenantRefusesIsReported(t *testing.T) {
 	cp, admin := servedTenant(t, "tenant-refuses-inventory")
 	eventually(t, 30*time.Second, func() error {
 		return expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, bryggav1alpha1.ReasonApplied)
@@ -621,7 +621,7 @@ func TestATenantThatRefusesTheInventoryIsApplying(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, 30*time.Second, func() error {
-		if err := expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, bryggav1alpha1.ReasonApplying); err != nil {
+		if err := expectCondition(t, cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, bryggav1alpha1.ReasonRefused); err != nil {
 			return err
 		}
 		if c := condition(t, cp, bryggav1alpha1.ConditionAddonsApplied); !strings.HasPrefix(c.Message, "ConfigMap kube-system/brygga-inventory is refused by the tenant's API server") {

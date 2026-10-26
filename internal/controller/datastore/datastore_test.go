@@ -599,7 +599,7 @@ func TestEtcdRefused(t *testing.T) {
 
 	create(t, controlPlane(ns, "dev", "refused"))
 	writeGeneration(t, ns, "dev", 1)
-	waitCondition(t, ns, "dev", metav1.ConditionFalse, bryggav1alpha1.ReasonEtcdRefused,
+	waitCondition(t, ns, "dev", metav1.ConditionFalse, bryggav1alpha1.ReasonRefused,
 		"the API server refuses Etcd dev-etcd on certificate generation 1 with the fields of DatastoreClass refused generation 1; the reason is in Brygga's log")
 	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev-etcd"}, &druidv1alpha1.Etcd{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("want no Etcd while the API server refuses it, got %v", err)
@@ -1691,8 +1691,8 @@ func TestDeletionBeforeLabelling(t *testing.T) {
 	waitEtcd(t, ns, "dev", nil)
 	refuseEtcds(t, ns)
 	settle(t, ns, "dev")
-	if c := meta.FindStatusCondition(getControlPlane(t, ns, "dev").Status.Conditions, bryggav1alpha1.ConditionDatastoreReady); c.Reason != bryggav1alpha1.ReasonEtcdRefused {
-		t.Fatalf("DatastoreReady is %s, want %s: a pass whose apply is not refused labels the claim", c.Reason, bryggav1alpha1.ReasonEtcdRefused)
+	if c := meta.FindStatusCondition(getControlPlane(t, ns, "dev").Status.Conditions, bryggav1alpha1.ConditionDatastoreReady); c.Reason != bryggav1alpha1.ReasonRefused {
+		t.Fatalf("DatastoreReady is %s, want %s: a pass whose apply is not refused labels the claim", c.Reason, bryggav1alpha1.ReasonRefused)
 	}
 
 	create(t, claim(ns, "dev-etcd-dev-etcd-0", druidv1alpha1.GetDefaultLabels(metav1.ObjectMeta{Name: "dev-etcd"})))
