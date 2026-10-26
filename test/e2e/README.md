@@ -125,26 +125,33 @@ as well, since a `go test` timeout or a panic never reaches the suite's end.
 
 ## Nightly: conformance and the idle control plane
 
-`TestConformance` checks the last two items of the
-[phase 1 gate](../../docs/roadmap.md#phase-1--walking-skeleton). It sits
-behind a build tag of its own, `conformance` with `e2e`, so the
+`TestConformance` checks the conformance item of the
+[phase 1 gate](../../docs/roadmap.md#phase-1--walking-skeleton), and
+records the idle footprint its last item measured without asserting it. It
+sits behind a build tag of its own, `conformance` with `e2e`, so the
 per-pull-request suite never builds it;
 [`nightly.yml`](../../.github/workflows/nightly.yml) runs it every night, on
 demand, and on a pull request that changes the workflow or the test.
 `make conformance` runs it as `make e2e` runs the suite: a kind cluster of
 its own (`E2E_CLUSTER`), the suite's setup with the operator from the chart,
 `TestConformance` alone, then the node containers and the cluster removed.
-`CONFORMANCE_FOCUS`, a regular expression, runs only the conformance tests
-it matches, to check the plumbing in a quarter of an hour:
+`CONFORMANCE_FOCUS`, a regular expression, takes the place of the focus
+`\[Conformance\]` and runs the e2e tests it matches, conformance or not
+([root.go](https://github.com/kubernetes-sigs/hydrophone/blob/v0.8.0/cmd/root.go#L147-L149),
+[deploy.go](https://github.com/kubernetes-sigs/hydrophone/blob/v0.8.0/pkg/conformance/deploy.go#L97-L100)),
+to check the plumbing in a quarter of an hour:
 
 ```sh
 make conformance E2E_CLUSTER=lodia-e2e-conformance
 make conformance E2E_CLUSTER=lodia-e2e-conformance CONFORMANCE_FOCUS='Pods should support retrieving logs from the container over websockets'
 ```
 
-`go test -artifacts` keeps what the test writes in
-`work/e2e/_artifacts/test/e2e/TestConformance/<n>/`
-([ArtifactDir](https://github.com/golang/go/blob/go1.26.0/src/testing/testing.go#L1325-L1342)):
+`go test -artifacts` keeps what the test writes in a directory under
+`work/e2e/_artifacts/`, which the log's `=== ARTIFACTS TestConformance`
+line names
+([ArtifactDir](https://github.com/golang/go/blob/go1.26.0/src/testing/testing.go#L1325-L1342);
+Go 1.26 leaves the test's name out of it,
+[testing.go](https://github.com/golang/go/blob/go1.26.0/src/testing/testing.go#L1380-L1387)):
 the table of the idle control plane, `idle-control-plane.txt`, and
 hydrophone's `e2e.log` and `junit_01.xml`; the workflow uploads them.
 

@@ -83,9 +83,10 @@ exposure through `loadBalancer` and `nodePort`.
 - Helm chart, images by digest, `lodia-system` namespace.
 
 Gate (the e2e suite in [`test/e2e`](../test/e2e/README.md): the first four
-are checked on every pull request by `TestPhase1Gate`, the last two every
-night by `TestConformance`, which the
-[`nightly`](../.github/workflows/nightly.yml) workflow runs):
+are checked on every pull request by `TestPhase1Gate`, the fifth every night
+by `TestConformance`, which the
+[`nightly`](../.github/workflows/nightly.yml) workflow runs; the last was
+measured once, and the nightly records it again without asserting it):
 
 - A `ControlPlane` reaches `Ready` in under 3 minutes on kind.
 - A container running the kind node image joins with

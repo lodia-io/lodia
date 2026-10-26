@@ -248,12 +248,15 @@ It idles at 62.3 millicores and 392.5 MiB, against phase 0's target for a
 single idle control plane of 0.5 CPU and 1 GiB with etcd; these numbers
 replace that target. CPU varies between runs more than memory: run
 [40334709578](https://github.com/lodia-io/lodia/actions/runs/40334709578)
-on the same runner measured 43.3 millicores and 387.7 MiB. A highly
-available control plane is measured with phase 2; its target stays 1.5 CPU
-and 2.5 GiB until then. A management cluster sized for N tenants needs the
-sum of their requests on its control plane nodes, plus room to roll one
-Deployment of every tenant (the fleet limit bounds how many roll at once),
-plus etcd volumes with low fsync latency.
+on the same runner measured 43.3 millicores and 387.7 MiB. The nightly now
+runs on the public runner, 4 CPUs and 15.6 GiB, where run
+[40371428547](https://github.com/lodia-io/lodia/actions/runs/40371428547)
+measured 55.4 millicores and 422.9 MiB; the table stays run 40360016124's.
+A highly available control plane's target stays 1.5 CPU and 2.5 GiB. A
+management cluster sized for N tenants needs the sum of their requests on
+its control plane nodes, plus room to roll one Deployment of every tenant
+(the fleet limit bounds how many roll at once), plus etcd volumes with low
+fsync latency.
 
 The operator: two replicas; memory grows with the number of tenants it
 caches (label-scoped, metadata-only for Secrets); the phase 4 gate is 200
