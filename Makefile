@@ -23,6 +23,7 @@ generate: ## regenerate deepcopy functions and CRDs from api/, the chart's copy 
 lint:
 	golangci-lint run ./...
 	golangci-lint run --build-tags e2e ./test/e2e/...
+	golangci-lint run --build-tags e2e,conformance ./test/e2e/...
 	cd api && golangci-lint run ./...
 
 .PHONY: test
@@ -57,3 +58,11 @@ else
 	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 || status=1; \
 	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
 endif
+
+.PHONY: conformance
+conformance: ## the Kubernetes conformance suite through hydrophone against a tenant with two nodes, on a kind cluster of its own that it deletes afterwards; results in $(E2E_DIR)/_artifacts; CONFORMANCE_FOCUS=<regexp> runs only the tests it matches
+	mkdir -p $(E2E_DIR)
+	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig
+	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,conformance -count=1 -timeout 270m -run '^TestConformance$$' -artifacts -outputdir $(E2E_DIR) ./test/e2e/...; status=$$?; \
+	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 $(E2E_CLUSTER)-tenant-node-2 || status=1; \
+	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status

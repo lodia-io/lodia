@@ -1,8 +1,8 @@
 # End-to-end tests run only against a cluster named on the command line, and never the current kube context
 
-Decided 2026-10-25. The refusal, `make e2e` and a kubeadm worker are
-built; nightly conformance comes with phase 1's last pull request, and
-upgrade tests with phase 2.
+Decided 2026-10-25. The refusal, `make e2e`, kubeadm workers and the
+nightly conformance run are built; the focused conformance subset on every
+pull request is not, and upgrade tests come with phase 2.
 
 ## Decision
 
@@ -26,7 +26,7 @@ upgrade tests with phase 2.
   cluster with two joined workers: a focused subset in parallel on every pull
   request, the full `--conformance` run nightly; a release is cut only from a
   commit whose nightly conformance passed
-  ([hydrophone flags](https://github.com/kubernetes-sigs/hydrophone/blob/main/docs/flags-cli-ref.md),
+  ([hydrophone flags](https://github.com/kubernetes-sigs/hydrophone/blob/v0.8.0/docs/flags-cli-ref.md),
   [conformance tests](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/conformance-tests.md)).
 - `go test ./...` from the repository root runs unit and envtest tests only;
   e2e lives under `test/e2e` behind a build tag.
@@ -69,4 +69,10 @@ upgrade tests with phase 2.
 - `test/e2e/gate_test.go` — the phase 1 gate: a container of kind's node
   image joins a `ControlPlane` with `kubeadm join`, and the suite removes
   the containers it started when it ends, pass or fail.
-- `Makefile` — the `e2e` target.
+- `test/e2e/conformance_test.go` — the nightly run, behind the
+  `conformance` build tag with `e2e`: a tenant of the gate's shape with two
+  joined nodes, the idle control plane's CPU and memory, then the
+  conformance suite through hydrophone.
+- `.github/workflows/nightly.yml` — runs it every night, on demand, and on a
+  pull request that changes the workflow or the test.
+- `Makefile` — the `e2e` and `conformance` targets.

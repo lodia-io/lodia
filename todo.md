@@ -17,8 +17,6 @@ is a decision — a decision is a file in `docs/decisions/`.
   retention period. etcd-druid keeps them when an `Etcd` is deleted, so the
   policy is Lodia's code (etcd spike, finding 6). The volumes follow the
   class's `storage.reclaimPolicy` since the Datastore controller (2026-10-25).
-- Measure, not assume, the idle footprint of one control plane in phase 1 and
-  replace the planning numbers in `docs/operations.md`.
 - etcd-druid's restore keeps the snapshot's revisions (no
   `--bump-revision`); propose the bump upstream in etcd-backup-restore, and
   until then roll the tenant's API server after any restore Lodia detects.

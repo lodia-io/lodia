@@ -111,7 +111,88 @@ the finest grain kubeadm ignores by
 The CNI is kindnet from the node image's manifest, with the tenant's pod
 range.
 The suite removes the containers it started when it ends, pass or fail, and
-each one before it starts it; `make e2e` removes them as well, since a
-`go test` timeout or a panic never reaches the suite's end.
+each one before it starts it; `make e2e` and `make conformance` remove them
+as well, since a `go test` timeout or a panic never reaches the suite's end.
 
 `make e2e` gives the suite 30 minutes.
+
+## Nightly: conformance and the idle control plane
+
+`TestConformance` checks the last two items of the
+[phase 1 gate](../../docs/roadmap.md#phase-1--walking-skeleton). It sits
+behind a build tag of its own, `conformance` with `e2e`, so the
+per-pull-request suite never builds it;
+[`nightly.yml`](../../.github/workflows/nightly.yml) runs it every night, on
+demand, and on a pull request that changes the workflow or the test.
+`make conformance` runs it as `make e2e` runs the suite: a kind cluster of
+its own (`E2E_CLUSTER`), the suite's setup with the operator from the chart,
+`TestConformance` alone, then the node containers and the cluster removed.
+`CONFORMANCE_FOCUS`, a regular expression, runs only the conformance tests
+it matches, to check the plumbing in a quarter of an hour:
+
+```sh
+make conformance E2E_CLUSTER=lodia-e2e-conformance
+make conformance E2E_CLUSTER=lodia-e2e-conformance CONFORMANCE_FOCUS='Pods should support retrieving logs from the container over websockets'
+```
+
+`go test -artifacts` keeps what the test writes in
+`work/e2e/_artifacts/test/e2e/TestConformance/<n>/`
+([ArtifactDir](https://github.com/golang/go/blob/go1.26.0/src/testing/testing.go#L1325-L1342)):
+the table of the idle control plane, `idle-control-plane.txt`, and
+hydrophone's `e2e.log` and `junit_01.xml`; the workflow uploads them.
+
+The tenant has the gate's shape, and two containers of kind's node image,
+`<cluster>-tenant-node-1` and `-2`, join it as the gate's one does. Once the
+`ControlPlane` is `Ready`, both nodes are `Ready` with a ready konnectivity
+agent and CoreDNS is available, the test leaves the tenant idle for 3
+minutes, then reads the resource metrics of the management kubelets,
+`/metrics/resource`, through the management API server's node proxy, twice,
+5 minutes apart, for every container of the control plane's pods: the API
+server, konnectivity-server and the signer, the controller manager, the
+scheduler, etcd and its backup-restore sidecar. CPU is the rate of
+`container_cpu_usage_seconds_total`, the container's cumulative CPU time in
+core-seconds, between the two samples' timestamps; memory is
+`container_memory_working_set_bytes` at the second, the working set:
+recently accessed, dirty and kernel memory
+([resource_metrics.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/kubelet/metrics/collectors/resource_metrics.go#L51-L63),
+[collected](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/kubelet/metrics/collectors/resource_metrics.go#L228-L246),
+[types.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/kubelet/pkg/apis/stats/v1alpha1/types.go#L234-L256),
+at v1.37.0, the version of kind's node image the management cluster runs).
+The table, per container and summed, goes to the test log and the
+artifacts; [Capacity](../../docs/operations.md#capacity) states it.
+
+Then hydrophone v0.8.0, one of the two runners the CNCF names for
+conformance
+([instructions.md](https://github.com/cncf/k8s-conformance/blob/e40cba7bf280b59739c51e314e77b2fb28c6e1d9/instructions.md#L11-L13)),
+runs the suite in the tenant, as `go run sigs.k8s.io/hydrophone@v0.8.0`: as a
+`go tool` it would raise `k8s.io/utils` and `k8s.io/kube-openapi` in
+`go.mod`. Its flags:
+
+- `--conformance`, the focus `\[Conformance\]` with no skip
+  ([root.go](https://github.com/kubernetes-sigs/hydrophone/blob/v0.8.0/cmd/root.go#L145-L149),
+  [deploy.go](https://github.com/kubernetes-sigs/hydrophone/blob/v0.8.0/pkg/conformance/deploy.go#L96-L104)),
+  what a certification run takes
+  ([instructions.md](https://github.com/cncf/k8s-conformance/blob/e40cba7bf280b59739c51e314e77b2fb28c6e1d9/instructions.md#L32)):
+  every conformance test runs, none is skipped, retried or focused away;
+  `CONFORMANCE_FOCUS` replaces it with `--focus`;
+- `--conformance-image registry.k8s.io/conformance:<the tenant's version>`;
+- `--kubeconfig`, the admin kubeconfig with the forwarded address, so that
+  hydrophone reaches the tenant as the suite does; the conformance pod in
+  the tenant uses its in-cluster configuration;
+- `--output-dir`, the test's artifact directory, where it downloads
+  `e2e.log` and `junit_01.xml` from the pod by exec
+  ([download.go](https://github.com/kubernetes-sigs/hydrophone/blob/v0.8.0/pkg/conformance/client/download.go#L38-L50));
+- `--disable-progress-status`: the progress report execs into the pod every
+  30 seconds and stops hydrophone when the log it reads lacks the spec count
+  ([logs.go](https://github.com/kubernetes-sigs/hydrophone/blob/v0.8.0/pkg/conformance/client/logs.go#L218-L221),
+  [stops](https://github.com/kubernetes-sigs/hydrophone/blob/v0.8.0/pkg/conformance/client/logs.go#L80-L81));
+  the streamed log shows the progress.
+
+Hydrophone exits with the conformance container's exit code
+([root.go](https://github.com/kubernetes-sigs/hydrophone/blob/v0.8.0/cmd/root.go#L185-L199)),
+which the image's runner sets to 1 when Ginkgo fails
+([main.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/test/conformance/image/go-runner/main.go#L43-L45),
+[Wait](https://github.com/kubernetes/kubernetes/blob/v1.37.0/test/conformance/image/go-runner/main.go#L84-L87)),
+and with 1 on an error of its own
+([main.go](https://github.com/kubernetes-sigs/hydrophone/blob/v0.8.0/main.go#L27-L29));
+the test passes only on 0. `make conformance` gives the test 270 minutes.
