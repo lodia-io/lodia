@@ -24,7 +24,7 @@ import (
 
 var (
 	testenv  env.Environment
-	crds     = filepath.Join("..", "..", "config", "crd", "bases")
+	crds     = filepath.Join("..", "..", "api", "crds")
 	examples = filepath.Join("..", "..", "docs", "api", "examples")
 )
 

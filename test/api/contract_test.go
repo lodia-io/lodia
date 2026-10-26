@@ -1,7 +1,7 @@
 // Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-package v1alpha1_test
+package api
 
 import (
 	"go/ast"
@@ -21,7 +21,7 @@ type constant struct {
 
 func constants(t *testing.T, file string) []constant {
 	t.Helper()
-	f, err := parser.ParseFile(token.NewFileSet(), file, nil, parser.ParseComments)
+	f, err := parser.ParseFile(token.NewFileSet(), filepath.Join("..", "..", "api", "v1alpha1", file), nil, parser.ParseComments)
 	if err != nil {
 		t.Fatal(err)
 	}

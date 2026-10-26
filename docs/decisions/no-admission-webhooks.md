@@ -56,6 +56,6 @@ built; the conditions and the tenant write lock come with their controllers.
 
 - `api/v1alpha1/*_types.go` — every rule and default as a
   `+kubebuilder:validation` or `+kubebuilder:default` marker;
-  `config/crd/bases/` is generated from them.
-- `api/v1alpha1/validation_test.go` — the envtest table of accepted and
+  `api/crds/` is generated from them.
+- `test/api/validation_test.go` — the envtest table of accepted and
   rejected manifests.

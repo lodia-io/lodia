@@ -10,6 +10,7 @@ require (
 	github.com/gardener/etcd-druid/api v0.39.0
 	github.com/go-jose/go-jose/v4 v4.1.6
 	github.com/robfig/cron/v3 v3.0.1
+	go.lodia.io/lodia/api v0.0.0-00010101000000-000000000000
 	golang.org/x/sync v0.23.0
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
@@ -131,3 +132,5 @@ tool (
 	sigs.k8s.io/controller-tools/cmd/controller-gen
 	sigs.k8s.io/kind
 )
+
+replace go.lodia.io/lodia/api => ./api

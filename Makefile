@@ -1,31 +1,34 @@
 # Every tool runs through `go tool` (see the tool block in go.mod), except
 # golangci-lint, which is installed on its own, and ko, which runs as
 # `go run github.com/google/ko@<version>`: their dependency graphs would move
-# the operator's own dependencies, and those of every module that imports
-# api/v1alpha1.
+# the operator's own dependencies.
 
 ENVTEST_K8S_VERSION ?= 1.35.0
 E2E_CLUSTER ?= lodia-e2e-local
 E2E_DIR ?= $(CURDIR)/work/e2e
-GENERATED = api/v1alpha1/zz_generated.deepcopy.go config/crd/bases/*.yaml
+GENERATED = api/v1alpha1/zz_generated.deepcopy.go api/crds/*.yaml
 
 .PHONY: generate
 generate: ## regenerate deepcopy functions and CRDs from api/
 	go tool controller-gen object:headerFile=hack/boilerplate.go.txt paths=./api/...
-	go tool controller-gen crd paths=./api/... output:crd:artifacts:config=config/crd/bases
+	go tool controller-gen crd paths=./api/... output:crd:artifacts:config=api/crds
 
 .PHONY: lint
 lint:
 	golangci-lint run ./...
+	cd api && golangci-lint run ./...
 
 .PHONY: test
 test: ## unit and envtest tests; envtest runs a real API server and etcd
 	KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test ./...
+	cd api && go test ./...
 
 .PHONY: verify
 verify: ## the check that says a change is done
 	@before="$$(cat $(GENERATED) | cksum)"; $(MAKE) --no-print-directory generate; \
 	[ "$$before" = "$$(cat $(GENERATED) | cksum)" ] || { echo "make generate changed the generated files: review and commit them"; exit 1; }
+	go mod tidy -diff
+	cd api && go mod tidy -diff
 	$(MAKE) --no-print-directory lint test
 
 .PHONY: e2e

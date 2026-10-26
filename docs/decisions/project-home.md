@@ -11,10 +11,18 @@ organization on 2026-10-26, before any cluster ran it.
   sailing.
 - **Home:** `github.com/lodia-io/lodia`. Issues, discussions and pull
   requests live there; CI runs on GitHub Actions.
-- **Go module:** `go.lodia.io/lodia`, a path of the project's own domain, so
+- **Go modules:** `go.lodia.io/lodia`, a path of the project's own domain, so
   it stays when the repository moves; `go.lodia.io` serves the `go-import`
   page that points it at the repository
   ([remote import paths](https://pkg.go.dev/cmd/go#hdr-Remote_import_paths)).
+  The API is a module of its own in `api/`, `go.lodia.io/lodia/api`: the types
+  and the CRDs generated from them, which a Cluster API provider or a
+  platform imports without the operator's dependencies, as Cluster API ships
+  `sigs.k8s.io/cluster-api/api`
+  ([go.mod](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/api/go.mod))
+  and etcd-druid `github.com/gardener/etcd-druid/api`
+  ([go.mod](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/go.mod)).
+  The operator requires it through `replace go.lodia.io/lodia/api => ./api`.
 - **License:** Apache License 2.0, the license of the Kubernetes ecosystem
   and of every neighbour project we studied. Contributions are accepted under
   the Developer Certificate of Origin (DCO sign-off), not a CLA.

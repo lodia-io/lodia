@@ -34,6 +34,9 @@ Decided 2026-10-25. Not built.
 
 - Lodia follows semver, independent of the API version. Until 1.0, the
   latest minor gets fixes; from 1.0, the two latest minors.
+- A release tags the API module at the same commit and version,
+  `api/v<version>`, the tag form Go reads for a module in a subdirectory
+  ([version tags](https://go.dev/ref/mod#vcs-version)).
 - A release ships a version table: for each Kubernetes minor it supports,
   the images of kube-apiserver, kube-controller-manager, kube-scheduler,
   kube-proxy, CoreDNS, konnectivity and etcd. It supports the minors the

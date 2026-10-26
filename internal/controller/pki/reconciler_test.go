@@ -73,7 +73,7 @@ func TestMain(m *testing.M) {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(lodiav1alpha1.AddToScheme(scheme))
 	env := &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "config", "crd", "bases")},
+		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "api", "crds")},
 		ErrorIfCRDPathMissing: true,
 		UseExistingCluster:    new(false),
 	}

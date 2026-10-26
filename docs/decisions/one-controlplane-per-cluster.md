@@ -79,5 +79,4 @@ examples are in [`docs/api/examples/`](../api/examples/).
 ## Code
 
 - `api/v1alpha1/controlplane_types.go`, `datastore_types.go` and
-  `access_types.go` — the five kinds; `config/crd/bases/` is generated from
-  them.
+  `access_types.go` — the five kinds; `api/crds/` is generated from them.

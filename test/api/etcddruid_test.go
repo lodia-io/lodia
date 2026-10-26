@@ -1,7 +1,7 @@
 // Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-package v1alpha1_test
+package api
 
 import (
 	"bytes"
@@ -87,7 +87,7 @@ func TestDatastoreClassMirrorsEtcdDruid(t *testing.T) {
 		t.Fatal(err)
 	}
 	etcd := crdSchema(t, []byte(manifests[crds.ResourceNameEtcd]))
-	raw, err := os.ReadFile(filepath.Join("..", "..", "config", "crd", "bases", "lodia.io_datastoreclasses.yaml"))
+	raw, err := os.ReadFile(filepath.Join("..", "..", "api", "crds", "lodia.io_datastoreclasses.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
