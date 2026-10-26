@@ -49,6 +49,7 @@ type values struct {
 	DNSIP                    string
 	KubeProxyImage           string
 	ProxyMode, ProxyHealthz  string
+	ConntrackMaxPerCore      *int32
 	CoreDNSImage             string
 	CoreDNSReplicas          int32
 	AgentImage               string
@@ -115,6 +116,9 @@ func newValues(cp *lodiav1alpha1.ControlPlane, clusterCA []byte) (*values, strin
 			}
 			if p.HealthzBindAddress != "" {
 				v.ProxyHealthz = net.JoinHostPort(p.HealthzBindAddress, "10256")
+			}
+			if p.Conntrack != nil {
+				v.ConntrackMaxPerCore = p.Conntrack.MaxPerCore
 			}
 		}
 		if d := addons.CoreDNS; d != nil {

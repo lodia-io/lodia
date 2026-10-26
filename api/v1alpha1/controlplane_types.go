@@ -539,6 +539,20 @@ type KubeProxy struct {
 	// +kubebuilder:validation:MaxLength=45
 	// +kubebuilder:validation:XValidation:rule="isIP(self)",message="must be an IP address"
 	HealthzBindAddress string `json:"healthzBindAddress,omitempty"`
+
+	// Conntrack configures kube-proxy's connection tracking.
+	// +optional
+	Conntrack *KubeProxyConntrack `json:"conntrack,omitempty"`
+}
+
+// KubeProxyConntrack is kube-proxy's conntrack configuration.
+type KubeProxyConntrack struct {
+	// MaxPerCore is kube-proxy's conntrack.maxPerCore, the connections tracked
+	// per CPU core; 0 leaves the node's nf_conntrack_max as it is. Unset
+	// means kube-proxy's default.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	MaxPerCore *int32 `json:"maxPerCore,omitempty"`
 }
 
 // ProxyMode is kube-proxy's mode.

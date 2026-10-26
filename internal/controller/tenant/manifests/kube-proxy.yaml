@@ -67,6 +67,10 @@ data:
     clientConnection:
       kubeconfig: /var/lib/kube-proxy/kubeconfig.conf
     clusterCIDR: {{ quote .PodSubnet }}
+{{- with .ConntrackMaxPerCore }}
+    conntrack:
+      maxPerCore: {{ . }}
+{{- end }}
     healthzBindAddress: {{ quote .ProxyHealthz }}
     metricsBindAddress: 127.0.0.1:10249
     mode: {{ quote .ProxyMode }}
