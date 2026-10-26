@@ -9,6 +9,7 @@ require (
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/gardener/etcd-druid/api v0.39.0
 	github.com/go-jose/go-jose/v4 v4.1.6
+	github.com/prometheus/common v0.70.0
 	github.com/robfig/cron/v3 v3.0.1
 	go.lodia.io/lodia/api v0.0.0-00010101000000-000000000000
 	golang.org/x/sync v0.23.0
@@ -19,10 +20,12 @@ require (
 	k8s.io/apimachinery v0.37.1
 	k8s.io/apiserver v0.37.0
 	k8s.io/client-go v0.37.1
+	k8s.io/cluster-bootstrap v0.37.1
 	k8s.io/externaljwt v0.37.1
 	k8s.io/utils v0.0.0-20260626114624-be93311217bd
 	sigs.k8s.io/controller-runtime v0.25.2
 	sigs.k8s.io/e2e-framework v0.7.0
+	sigs.k8s.io/kind v0.33.0
 	sigs.k8s.io/yaml v1.6.0
 )
 
@@ -78,7 +81,6 @@ require (
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/prometheus/client_golang v1.24.0 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
-	github.com/prometheus/common v0.70.0 // indirect
 	github.com/prometheus/procfs v0.21.1 // indirect
 	github.com/spf13/afero v1.12.0 // indirect
 	github.com/spf13/cobra v1.10.2 // indirect
@@ -122,7 +124,6 @@ require (
 	sigs.k8s.io/controller-runtime/tools/setup-envtest v0.25.3-0.20261012174806-32759fab3119 // indirect
 	sigs.k8s.io/controller-tools v0.23.0 // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
-	sigs.k8s.io/kind v0.33.0 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
 )

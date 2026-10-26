@@ -210,11 +210,6 @@ is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the Tenant controller (2026-10-25)
 
-- A kind node container needs kubelet settings a real node does not
-  (`cgroupRoot: /kubelet`, `failSwapOn: false`, eviction thresholds at 0%),
-  and kube-proxy in a container cannot raise `nf_conntrack_max`, which the
-  hard way avoided with `conntrack.maxPerCore: 0`; the phase 1 gate joins
-  with kubeadm's kubelet patches and decides kube-proxy's conntrack setting.
 - Nothing watches `<cp>-ca-bundle`: a rotated cluster CA reaches
   `cluster-info` within the apply period; the CA rotation of phase 3 should
   bring a Tenant pass.
@@ -229,7 +224,6 @@ is a decision — a decision is a file in `docs/decisions/`.
   address only; IPv6 and dual-stack nodes need `ipv6=`.
 - `AddonsAvailable` is not read again while applies are refused: the
   rollout read before stays.
-- `--count-server-leases` on the agents is proven only by the wave 3 e2e.
 - CoreDNS's replicas are Lodia's: an autoscaler is set back on every
   apply; a later phase lets one own them.
 
@@ -252,8 +246,6 @@ is a decision — a decision is a file in `docs/decisions/`.
 - In `nodePort` mode the Service takes a node port for 443 as well, which
   nothing dials: the endpoint names the node ports of 6443 and 8132, and
   in-namespace clients use the cluster IP.
-- Wave 3's gate checks the tenant API from inside the cluster with a token:
-  anonymous requests reach only the health paths and `cluster-info`.
 - Workloads finds another owner's objects under its names in the cache,
   which holds only labelled ones. An unlabelled object it applied for a
   predecessor is taken over silently, with the
@@ -302,3 +294,12 @@ is a decision — a decision is a file in `docs/decisions/`.
   whether the chart templates them or the release notes carry the step.
 - The operator's pods set no requests or limits until the operator is
   measured.
+
+## From the phase 1 gate (2026-10-26)
+
+- The gate reaches the tenant through one client-go port-forward, which
+  client-go v0.37.1 closes entirely on the first forwarding error
+  ([portforward.go](https://github.com/kubernetes/client-go/blob/v0.37.1/tools/portforward/portforward.go#L545-L550)):
+  a WebSocket exec through it ended the forward in a review run. A forward
+  per call, or one reopened on `ErrLostConnectionToPod`, would keep one
+  error from failing every later step.

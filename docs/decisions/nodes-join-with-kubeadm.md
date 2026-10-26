@@ -1,7 +1,7 @@
 # Nodes join with `kubeadm join`; Lodia writes the bootstrap objects itself and never imports k8s.io/kubernetes
 
-Decided 2026-10-25. The bootstrap objects are built; the e2e join comes
-with the phase 1 gate.
+Decided 2026-10-25. The bootstrap objects are built, and the e2e suite
+joins a node with them on every pull request.
 
 ## Decision
 
@@ -74,3 +74,6 @@ with the phase 1 gate.
   [kubeadm v1.35.0](https://github.com/kubernetes/kubernetes/tree/v1.35.0/cmd/kubeadm/app/phases)
   writes them; `kube-proxy.yaml` and
   `coredns.yaml` are kubeadm's addons.
+- `test/e2e/gate_test.go` — `TestPhase1Gate`: a container of kind's node
+  image joins with `kubeadm join --token …` and a bootstrap token the suite
+  creates as the platform, through the admin kubeconfig.

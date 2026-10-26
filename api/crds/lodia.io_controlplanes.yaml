@@ -113,6 +113,19 @@ spec:
                   kubeProxy:
                     description: KubeProxy configures kube-proxy.
                     properties:
+                      conntrack:
+                        description: Conntrack configures kube-proxy's connection
+                          tracking.
+                        properties:
+                          maxPerCore:
+                            description: |-
+                              MaxPerCore is kube-proxy's conntrack.maxPerCore, the connections tracked
+                              per CPU core; 0 leaves the node's nf_conntrack_max as it is. Unset
+                              means kube-proxy's default.
+                            format: int32
+                            minimum: 0
+                            type: integer
+                        type: object
                       enabled:
                         default: true
                         description: Enabled is false for CNIs that replace kube-proxy.

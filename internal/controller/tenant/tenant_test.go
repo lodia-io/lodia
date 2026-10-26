@@ -326,6 +326,43 @@ func setInventory(t *testing.T, c client.Client, objects string) {
 	}
 }
 
+func TestKubeProxyTakesConntrackMaxPerCore(t *testing.T) {
+	cp, admin := servedTenant(t, "tenant-conntrack")
+	eventually(t, 30*time.Second, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
+	})
+	if conntrack := kubeProxyConfig(t, admin).Conntrack; conntrack != nil {
+		t.Errorf("kube-proxy's configuration sets conntrack %+v without addons.kubeProxy.conntrack", *conntrack)
+	}
+
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) {
+		cp.Spec.Addons = &lodiav1alpha1.Addons{KubeProxy: &lodiav1alpha1.KubeProxy{Conntrack: &lodiav1alpha1.KubeProxyConntrack{MaxPerCore: new(int32(0))}}}
+	})
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	eventually(t, 30*time.Second, func() error {
+		conntrack := kubeProxyConfig(t, admin).Conntrack
+		if conntrack == nil || conntrack.MaxPerCore == nil || *conntrack.MaxPerCore != 0 {
+			return fmt.Errorf("kube-proxy's configuration sets conntrack %+v, want maxPerCore 0", conntrack)
+		}
+		return nil
+	})
+}
+
+type kubeProxyConfiguration struct {
+	Conntrack *struct {
+		MaxPerCore *int32 `json:"maxPerCore"`
+	} `json:"conntrack"`
+}
+
+func kubeProxyConfig(t *testing.T, c client.Client) kubeProxyConfiguration {
+	t.Helper()
+	var config kubeProxyConfiguration
+	if err := yaml.Unmarshal([]byte(get(t, c, &corev1.ConfigMap{}, "kube-system", "kube-proxy").Data["config.conf"]), &config); err != nil {
+		t.Fatal(err)
+	}
+	return config
+}
+
 func TestAnObjectTheTenantRefusesIsReportedAndNeverLeaks(t *testing.T) {
 	ctx := t.Context()
 	cp := controlPlane(t, "tenant-refused")

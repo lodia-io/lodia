@@ -52,6 +52,7 @@ management clusters before 1.36
 | `addons.konnectivity.agent.mode` | `DaemonSet` \| `Deployment` | `DaemonSet` | `Deployment` takes `replicas`; `hostNetwork` defaults false |
 | `addons.kubeProxy.{enabled, mode}` | | `true`, `iptables` | `enabled: false` for CNIs that replace kube-proxy |
 | `addons.kubeProxy.healthzBindAddress` | IP address | loopback | where kube-proxy serves its health port, 10256, which Tenant appends; beyond loopback for cloud load balancers |
+| `addons.kubeProxy.conntrack.maxPerCore` | int ≥ 0 | kube-proxy's, 32768 ([defaults.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/proxy/apis/config/v1alpha1/defaults.go#L81-L83)) | kube-proxy's `conntrack.maxPerCore`, the connections tracked per CPU core; 0 leaves the node's `nf_conntrack_max` as it is ([types.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/kube-proxy/config/v1alpha1/types.go#L101-L104)), which a node in a container needs: kind sets 0 for its nodes, since `nf_conntrack_max` is global and affects other network namespaces ([config.go](https://github.com/kubernetes-sigs/kind/blob/v0.33.0/pkg/cluster/internal/kubeadm/config.go#L633-L636)) |
 | `addons.coreDNS.{enabled, replicas}` | | `true`, 2 | |
 | `placement.{nodeSelector, tolerations, priorityClassName}` | | operator defaults | applies to every control plane pod of this tenant; etcd placement comes from the `DatastoreClass` |
 | `maintenance.window.{begin, end, timeZone}` | `HH:MM`, `HH:MM`, IANA zone | absent = any time | end may be before begin (crosses midnight) |

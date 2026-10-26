@@ -338,6 +338,12 @@ func TestSmallerShapes(t *testing.T) {
 		{"kube-proxy's health address with a port", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, "0.0.0.0:10256", "spec", "addons", "kubeProxy", "healthzBindAddress")
 		}, "must be an IP address"},
+		{"kube-proxy's conntrack.maxPerCore 0", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, int64(0), "spec", "addons", "kubeProxy", "conntrack", "maxPerCore")
+		}, ""},
+		{"kube-proxy's conntrack.maxPerCore -1", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, int64(-1), "spec", "addons", "kubeProxy", "conntrack", "maxPerCore")
+		}, "spec.addons.kubeProxy.conntrack.maxPerCore in body should be greater than or equal to 0"},
 		{"a Backup in another namespace", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, map[string]any{"backupRef": map[string]any{"name": "nightly", "namespace": "team-b"}}, "spec", "restoreFrom")
 		}, `unknown field "spec.restoreFrom.backupRef.namespace"`},
