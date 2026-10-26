@@ -163,7 +163,10 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   [s3_snapstore.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapstore/s3_snapstore.go#L714-L735),
   [initializer.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/initializer/initializer.go#L221-L226)),
   so a namespace `team-v1` or a `ControlPlane` `v1` in the key would hide
-  every snapshot of that tenant. A UID is a UUID of 36 characters
+  every snapshot of that tenant. For the same parser the schema refuses a
+  class prefix that contains `v1/` or ends in `v1`, until etcd-backup-restore
+  reads a key relative to its prefix (`todo.md`). A UID is a UUID of 36
+  characters
   ([meta.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/registry/rest/meta.go#L39-L42),
   [uuid.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apimachinery/pkg/util/uuid/uuid.go#L25-L27),
   [google/uuid](https://github.com/google/uuid/blob/v1.6.0/uuid.go#L244-L248)),
