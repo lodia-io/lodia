@@ -125,7 +125,6 @@ func authentication() ([]byte, error) {
 	})
 }
 
-// configMaps are the API server's configuration files Workloads renders.
 func configMaps(cp *bryggav1alpha1.ControlPlane) ([]*corev1.ConfigMap, error) {
 	egress, err := egressSelector()
 	if err != nil {
@@ -450,7 +449,7 @@ func command(binary string, flags, extra map[string]string, gates map[string]boo
 	for name, value := range extra {
 		if own, ok := flags[name]; ok && slices.Contains(merged, name) {
 			entries := strings.Split(own, ",")
-			for _, entry := range strings.Split(value, ",") {
+			for entry := range strings.SplitSeq(value, ",") {
 				if entry != "" && !slices.Contains(entries, entry) {
 					entries = append(entries, entry)
 				}
