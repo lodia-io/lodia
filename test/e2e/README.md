@@ -68,8 +68,10 @@ chart installed.
   least three. Disabling `addons.coreDNS` removes CoreDNS's objects from the
   tenant and from the inventory, and enabling it brings them back.
   Deleting the `ControlPlane` leaves in its namespace, of every namespaced
-  kind Lodia and etcd-druid create, only the etcd's claim, which the class's
-  `Retain` keeps.
+  kind the API server serves, Events aside, which outlive their objects,
+  only the etcd's claim, which the class's `Retain` keeps, and what every
+  namespace holds: the ConfigMap `kube-root-ca.crt` and the ServiceAccount
+  `default`.
 
 A node joins as in [the hard way](../../docs/hard-way.md#11-join-a-node).
 The suite reaches the tenant's API server through a port-forward to the API

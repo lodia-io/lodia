@@ -29,21 +29,20 @@ import (
 	"time"
 
 	"github.com/distribution/reference"
-	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	"github.com/prometheus/common/expfmt"
 	"github.com/prometheus/common/model"
 	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
-	networkingv1 "k8s.io/api/networking/v1"
-	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/metadata"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/portforward"
@@ -80,22 +79,6 @@ var coreDNSObjects = map[string]client.Object{
 	"Deployment kube-system/coredns":     &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Namespace: metav1.NamespaceSystem, Name: "coredns"}},
 	"Service kube-system/kube-dns":       &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: metav1.NamespaceSystem, Name: "kube-dns"}},
 	"ServiceAccount kube-system/coredns": &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Namespace: metav1.NamespaceSystem, Name: "coredns"}},
-}
-
-var lodiaAndDruidKinds = []schema.GroupVersionKind{
-	corev1.SchemeGroupVersion.WithKind("ConfigMap"),
-	corev1.SchemeGroupVersion.WithKind("PersistentVolumeClaim"),
-	corev1.SchemeGroupVersion.WithKind("Secret"),
-	corev1.SchemeGroupVersion.WithKind("Service"),
-	corev1.SchemeGroupVersion.WithKind("ServiceAccount"),
-	appsv1.SchemeGroupVersion.WithKind("Deployment"),
-	appsv1.SchemeGroupVersion.WithKind("StatefulSet"),
-	coordinationv1.SchemeGroupVersion.WithKind("Lease"),
-	networkingv1.SchemeGroupVersion.WithKind("NetworkPolicy"),
-	policyv1.SchemeGroupVersion.WithKind("PodDisruptionBudget"),
-	rbacv1.SchemeGroupVersion.WithKind("Role"),
-	rbacv1.SchemeGroupVersion.WithKind("RoleBinding"),
-	druidv1alpha1.SchemeGroupVersion.WithKind("Etcd"),
 }
 
 var everyNamespaceHolds = []string{"ConfigMap kube-root-ca.crt", "ServiceAccount default"}
@@ -302,8 +285,16 @@ func TestPhase1Gate(t *testing.T) {
 			})
 			etcd := lodiav1alpha1.EtcdName(controlPlane)
 			kept := []string{"PersistentVolumeClaim " + etcd + "-" + etcd + "-0"}
+			served, err := discovery.NewDiscoveryClientForConfig(cfg.Client().RESTConfig())
+			if err != nil {
+				t.Fatal(err)
+			}
+			objects, err := metadata.NewForConfig(cfg.Client().RESTConfig())
+			if err != nil {
+				t.Fatal(err)
+			}
 			until(ctx, t, 3*time.Minute, "the namespace holds only what the class's reclaim policy keeps", func(ctx context.Context) error {
-				left, err := leftovers(ctx, k8s)
+				left, err := leftovers(ctx, served, objects)
 				if err != nil {
 					return err
 				}
@@ -610,17 +601,29 @@ func coreDNSApplied(ctx context.Context, c client.Client, enabled bool) error {
 	return nil
 }
 
-func leftovers(ctx context.Context, k8s client.Client) ([]string, error) {
+func leftovers(ctx context.Context, served *discovery.DiscoveryClient, objects metadata.Interface) ([]string, error) {
+	namespaced, err := served.ServerPreferredNamespacedResourcesWithContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	var left []string
-	for _, gvk := range lodiaAndDruidKinds {
-		list := &metav1.PartialObjectMetadataList{}
-		list.SetGroupVersionKind(gvk.GroupVersion().WithKind(gvk.Kind + "List"))
-		if err := k8s.List(ctx, list, client.InNamespace(gateTenant)); err != nil {
+	for _, resources := range discovery.FilteredBy(discovery.SupportsAllVerbs{Verbs: []string{"list"}}, namespaced) {
+		gv, err := schema.ParseGroupVersion(resources.GroupVersion)
+		if err != nil {
 			return nil, err
 		}
-		for _, item := range list.Items {
-			if entry := gvk.Kind + " " + item.Name; !slices.Contains(everyNamespaceHolds, entry) {
-				left = append(left, entry)
+		for _, r := range resources.APIResources {
+			if r.Name == "events" {
+				continue
+			}
+			list, err := objects.Resource(gv.WithResource(r.Name)).Namespace(gateTenant).List(ctx, metav1.ListOptions{})
+			if err != nil {
+				return nil, err
+			}
+			for _, item := range list.Items {
+				if entry := r.Kind + " " + item.Name; !slices.Contains(everyNamespaceHolds, entry) {
+					left = append(left, entry)
+				}
 			}
 		}
 	}
