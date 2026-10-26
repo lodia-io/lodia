@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package certs issues ECDSA P-256 CAs, leaf certificates and kubeconfigs.

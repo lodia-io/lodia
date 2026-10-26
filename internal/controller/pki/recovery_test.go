@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package pki_test
@@ -15,8 +15,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
-	"github.com/segla-io/brygga/internal/certs"
+	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/certs"
 )
 
 func TestALeafEndingWithItsCAIsIssuedOnceAndAnExpiredCAWritesNothing(t *testing.T) {
@@ -37,7 +37,7 @@ func TestALeafEndingWithItsCAIsIssuedOnceAndAnExpiredCAWritesNothing(t *testing.
 	reconcile(t, r, cp)
 	clamped := secretsOf(t, cp)
 	for name, s := range clamped {
-		if s.Data[bryggav1alpha1.TLSCertKey] == nil || strings.Contains(name, "-cakey-") || s.Labels[bryggav1alpha1.EtcdCertificatesLabel] == "1" {
+		if s.Data[lodiav1alpha1.TLSCertKey] == nil || strings.Contains(name, "-cakey-") || s.Labels[lodiav1alpha1.EtcdCertificatesLabel] == "1" {
 			continue
 		}
 		c := parseTLS(t, s).Cert
@@ -47,7 +47,7 @@ func TestALeafEndingWithItsCAIsIssuedOnceAndAnExpiredCAWritesNothing(t *testing.
 		}
 	}
 	expectGenerations(t, cp, 1, 2)
-	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, bryggav1alpha1.ReasonIssued)
+	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
 
 	before, _ := resourceVersions(t, cp)
 	time.Sleep(time.Until(certs.RenewalTime(parseTLS(t, clamped["dev-apiserver-serving"]).Cert)) + 300*time.Millisecond)
@@ -64,7 +64,7 @@ func TestALeafEndingWithItsCAIsIssuedOnceAndAnExpiredCAWritesNothing(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(secretsOf(t, cp)["dev-client-ca"].Data[bryggav1alpha1.CACertKey], want) {
+	if !bytes.Equal(secretsOf(t, cp)["dev-client-ca"].Data[lodiav1alpha1.CACertKey], want) {
 		t.Error("the client CA bundle still holds the expired previous signer")
 	}
 	if result.RequeueAfter < time.Until(ca.NotAfter) || result.RequeueAfter > ca.NotAfter.Sub(start)+time.Second {
@@ -75,8 +75,8 @@ func TestALeafEndingWithItsCAIsIssuedOnceAndAnExpiredCAWritesNothing(t *testing.
 	time.Sleep(time.Until(ca.NotAfter) + 300*time.Millisecond)
 	before, _ = resourceVersions(t, cp)
 	result = reconcile(t, r, cp)
-	c := condition(t, cp, bryggav1alpha1.ConditionCertificatesReady)
-	if c.Status != metav1.ConditionFalse || c.Reason != bryggav1alpha1.ReasonCAExpired || !strings.Contains(c.Message, "cluster, client, front-proxy, etcd") {
+	c := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady)
+	if c.Status != metav1.ConditionFalse || c.Reason != lodiav1alpha1.ReasonCAExpired || !strings.Contains(c.Message, "cluster, client, front-proxy, etcd") {
 		t.Fatalf("CertificatesReady is %s %s: %s", c.Status, c.Reason, c.Message)
 	}
 	after, cpBefore := resourceVersions(t, cp)
@@ -146,7 +146,7 @@ func TestAnUnlabelledCAKeyIsKeptNotReplaced(t *testing.T) {
 	}
 
 	reconcile(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, bryggav1alpha1.ReasonIssued)
+	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
 	after := secretsOf(t, cp)
 	kept := after["dev-cakey-cluster"]
 	if kept == nil {
@@ -162,7 +162,7 @@ func TestAnUnlabelledCAKeyIsKeptNotReplaced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(after["dev-ca-bundle"].Data[bryggav1alpha1.CACertKey], want) {
+	if !bytes.Equal(after["dev-ca-bundle"].Data[lodiav1alpha1.CACertKey], want) {
 		t.Error("the cluster CA bundle does not hold the restored CA")
 	}
 	if after["dev-apiserver-serving"].ResourceVersion != before["dev-apiserver-serving"].ResourceVersion {
@@ -178,8 +178,8 @@ func TestAnUnlabelledCAKeyIsKeptNotReplaced(t *testing.T) {
 		t.Fatal(err)
 	}
 	reconcile(t, r, cp)
-	c := condition(t, cp, bryggav1alpha1.ConditionCertificatesReady)
-	if c.Reason != bryggav1alpha1.ReasonCAMissing || !strings.Contains(c.Message, "front-proxy") {
+	c := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady)
+	if c.Reason != lodiav1alpha1.ReasonCAMissing || !strings.Contains(c.Message, "front-proxy") {
 		t.Fatalf("CertificatesReady is %s: %s", c.Reason, c.Message)
 	}
 	if secretsOf(t, cp)["dev-cakey-front-proxy"] != nil {
@@ -196,7 +196,7 @@ func TestCAValidityIsAnnouncedOutsideReady(t *testing.T) {
 	publishEndpoint(t, cp)
 	start := time.Now()
 	result := reconcile(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionCAValidityAcceptable, metav1.ConditionTrue, bryggav1alpha1.ReasonValid)
+	expectCondition(t, cp, lodiav1alpha1.ConditionCAValidityAcceptable, metav1.ConditionTrue, lodiav1alpha1.ReasonValid)
 	secrets := secretsOf(t, cp)
 	crossing := parseTLS(t, secrets["dev-cakey-client"]).Cert.NotAfter.Add(-r.CAExpiryNotice)
 	if result.RequeueAfter < time.Until(crossing) || result.RequeueAfter > crossing.Sub(start)+time.Second {
@@ -205,8 +205,8 @@ func TestCAValidityIsAnnouncedOutsideReady(t *testing.T) {
 
 	time.Sleep(time.Until(crossing) + 300*time.Millisecond)
 	reconcile(t, r, cp)
-	c := condition(t, cp, bryggav1alpha1.ConditionCAValidityAcceptable)
-	if c.Status != metav1.ConditionFalse || c.Reason != bryggav1alpha1.ReasonCAExpiring {
+	c := condition(t, cp, lodiav1alpha1.ConditionCAValidityAcceptable)
+	if c.Status != metav1.ConditionFalse || c.Reason != lodiav1alpha1.ReasonCAExpiring {
 		t.Fatalf("CAValidityAcceptable is %s %s", c.Status, c.Reason)
 	}
 	for _, name := range []string{"client", "front-proxy", "etcd"} {
@@ -218,7 +218,7 @@ func TestCAValidityIsAnnouncedOutsideReady(t *testing.T) {
 	if strings.Contains(c.Message, "cluster CA") {
 		t.Errorf("the message %q names the cluster CA, valid beyond the notice", c.Message)
 	}
-	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, bryggav1alpha1.ReasonIssued)
+	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
 	_, before := resourceVersions(t, cp)
 	reconcile(t, r, cp)
 	if _, after := resourceVersions(t, cp); after != before {
@@ -248,7 +248,7 @@ func TestTheClientBundleTrustsASignerBeforeItIsWritten(t *testing.T) {
 	if renewed.Equal(signer) {
 		t.Fatal("the kubelet signer was not renewed")
 	}
-	bundle, err := certs.ParseCerts(after["dev-client-ca"].Data[bryggav1alpha1.CACertKey])
+	bundle, err := certs.ParseCerts(after["dev-client-ca"].Data[lodiav1alpha1.CACertKey])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +278,7 @@ func TestAnImmutableSecretIsWrittenOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	encoded := map[string][]byte{bryggav1alpha1.TLSCertKey: server.Data[bryggav1alpha1.TLSCertKey], bryggav1alpha1.TLSPrivateKeyKey: pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: sec1})}
+	encoded := map[string][]byte{lodiav1alpha1.TLSCertKey: server.Data[lodiav1alpha1.TLSCertKey], lodiav1alpha1.TLSPrivateKeyKey: pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: sec1})}
 	replaceSecret(t, server, encoded)
 	before, cpBefore := resourceVersions(t, cp)
 	reconcile(t, r, cp)
@@ -317,8 +317,8 @@ func TestARenewalNotWrittenIsIssuing(t *testing.T) {
 
 	r.Client = failingApply{Client: k8s, secret: "dev-apiserver-serving"}
 	reconcileFails(t, r, cp)
-	c := condition(t, cp, bryggav1alpha1.ConditionCertificatesReady)
-	if c.Status != metav1.ConditionFalse || c.Reason != bryggav1alpha1.ReasonIssuing || !strings.Contains(c.Message, "dev-apiserver-serving") {
+	c := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady)
+	if c.Status != metav1.ConditionFalse || c.Reason != lodiav1alpha1.ReasonIssuing || !strings.Contains(c.Message, "dev-apiserver-serving") {
 		t.Fatalf("CertificatesReady is %s %s: %s", c.Status, c.Reason, c.Message)
 	}
 	if !serving.Cert.Equal(parseTLS(t, secretsOf(t, cp)["dev-apiserver-serving"]).Cert) {
@@ -327,7 +327,7 @@ func TestARenewalNotWrittenIsIssuing(t *testing.T) {
 
 	r.Client = k8s
 	reconcile(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, bryggav1alpha1.ReasonIssued)
+	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
 }
 
 func TestAnAdoptionNotWrittenLeavesCertificatesReady(t *testing.T) {
@@ -342,7 +342,7 @@ func TestAnAdoptionNotWrittenLeavesCertificatesReady(t *testing.T) {
 	}
 	r.Client = failingApply{Client: k8s, secret: "dev-front-proxy-client"}
 	reconcileFails(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, bryggav1alpha1.ReasonIssued)
+	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
 }
 
 func TestACANotWrittenIsNotCounted(t *testing.T) {
@@ -350,9 +350,9 @@ func TestACANotWrittenIsNotCounted(t *testing.T) {
 	r.Client = failingApply{Client: k8s, secret: "dev-cakey-client"}
 	cp := controlPlane(t, "pki-ca-unwritten")
 	reconcileFails(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionCAValidityAcceptable, metav1.ConditionUnknown, bryggav1alpha1.ReasonReconciling)
-	c := condition(t, cp, bryggav1alpha1.ConditionCertificatesReady)
-	if c.Reason != bryggav1alpha1.ReasonIssuing || !strings.Contains(c.Message, "dev-cakey-client") {
+	expectCondition(t, cp, lodiav1alpha1.ConditionCAValidityAcceptable, metav1.ConditionUnknown, lodiav1alpha1.ReasonReconciling)
+	c := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady)
+	if c.Reason != lodiav1alpha1.ReasonIssuing || !strings.Contains(c.Message, "dev-cakey-client") {
 		t.Fatalf("CertificatesReady is %s: %s", c.Reason, c.Message)
 	}
 }

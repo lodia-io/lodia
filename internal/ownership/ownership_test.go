@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package ownership_test
@@ -8,16 +8,16 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
-	"github.com/segla-io/brygga/internal/ownership"
+	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/ownership"
 )
 
 func TestControlledElsewhere(t *testing.T) {
-	cp := &bryggav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "dev", UID: "self"}}
+	cp := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "dev", UID: "self"}}
 	ref := func(apiVersion, kind string, controller bool) metav1.OwnerReference {
 		return metav1.OwnerReference{APIVersion: apiVersion, Kind: kind, Name: "dev", UID: "other", Controller: new(controller)}
 	}
-	own := metav1.OwnerReference{APIVersion: "brygga.segla.io/v1alpha1", Kind: "ControlPlane", Name: "dev", UID: "self", Controller: new(true)}
+	own := metav1.OwnerReference{APIVersion: "lodia.io/v1alpha1", Kind: "ControlPlane", Name: "dev", UID: "self", Controller: new(true)}
 	for _, c := range []struct {
 		name      string
 		refs      []metav1.OwnerReference
@@ -25,8 +25,8 @@ func TestControlledElsewhere(t *testing.T) {
 	}{
 		{"no owner", nil, false},
 		{"this ControlPlane", []metav1.OwnerReference{own}, false},
-		{"another ControlPlane as controller", []metav1.OwnerReference{ref("brygga.segla.io/v1alpha1", "ControlPlane", true)}, true},
-		{"another ControlPlane, not as controller", []metav1.OwnerReference{own, ref("brygga.segla.io/v1alpha1", "ControlPlane", false)}, true},
+		{"another ControlPlane as controller", []metav1.OwnerReference{ref("lodia.io/v1alpha1", "ControlPlane", true)}, true},
+		{"another ControlPlane, not as controller", []metav1.OwnerReference{own, ref("lodia.io/v1alpha1", "ControlPlane", false)}, true},
 		{"a controller of another kind", []metav1.OwnerReference{ref("external-secrets.io/v1", "ExternalSecret", true)}, true},
 		{"another kind, not as controller", []metav1.OwnerReference{own, ref("apps/v1", "Deployment", false)}, false},
 		{"a ControlPlane of another group, not as controller", []metav1.OwnerReference{ref("example.com/v1", "ControlPlane", false)}, false},

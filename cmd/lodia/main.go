@@ -1,8 +1,8 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Command brygga runs the operator: one manager, leader-elected, whose cache
-// holds Brygga's own kinds and only the objects it labels.
+// Command lodia runs the operator: one manager, leader-elected, whose cache
+// holds Lodia's own kinds and only the objects it labels.
 package main
 
 import (
@@ -15,7 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	"github.com/segla-io/brygga/internal/operator"
+	"go.lodia.io/lodia/internal/operator"
 )
 
 func main() {
@@ -24,7 +24,7 @@ func main() {
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "Address of the metrics endpoint, served over HTTPS behind authentication and authorization.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Address of the health and readiness probes.")
 	flag.BoolVar(&leaderElect, "leader-elect", true, "Run controllers only in the replica that holds the leader lease.")
-	flag.StringVar(&signerImage, "signer-image", "", "Image of brygga-signer, the API server's ServiceAccount token signer; required.")
+	flag.StringVar(&signerImage, "signer-image", "", "Image of lodia-signer, the API server's ServiceAccount token signer; required.")
 	opts := zap.Options{}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -49,7 +49,7 @@ func main() {
 		},
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         leaderElect,
-		LeaderElectionID:       "brygga.segla.io",
+		LeaderElectionID:       "lodia.io",
 		Cache:                  cache,
 	})
 	if err != nil {

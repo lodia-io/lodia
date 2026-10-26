@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package health_test
@@ -39,14 +39,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
-	"github.com/segla-io/brygga/internal/certs"
-	"github.com/segla-io/brygga/internal/controller/health"
+	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/certs"
+	"go.lodia.io/lodia/internal/controller/health"
 )
 
 var healthRules = []rbacv1.PolicyRule{
-	{APIGroups: []string{bryggav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes"}, Verbs: []string{"list", "watch"}},
-	{APIGroups: []string{bryggav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes/status"}, Verbs: []string{"patch"}},
+	{APIGroups: []string{lodiav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes"}, Verbs: []string{"list", "watch"}},
+	{APIGroups: []string{lodiav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes/status"}, Verbs: []string{"patch"}},
 	{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get"}},
 }
 
@@ -73,7 +73,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	scheme := runtime.NewScheme()
-	for _, add := range []func(*runtime.Scheme) error{clientgoscheme.AddToScheme, bryggav1alpha1.AddToScheme} {
+	for _, add := range []func(*runtime.Scheme) error{clientgoscheme.AddToScheme, lodiav1alpha1.AddToScheme} {
 		if err := add(scheme); err != nil {
 			stop("scheme", err)
 		}
@@ -86,7 +86,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		stop("the controller's ClusterRole", err)
 	}
-	labelled, err := labels.NewRequirement(bryggav1alpha1.ControlPlaneLabel, selection.Exists, nil)
+	labelled, err := labels.NewRequirement(lodiav1alpha1.ControlPlaneLabel, selection.Exists, nil)
 	if err != nil {
 		stop("label selector", err)
 	}
@@ -99,11 +99,11 @@ func TestMain(m *testing.M) {
 			DefaultTransform:            cache.TransformStripManagedFields(),
 			ReaderFailOnMissingInformer: true,
 			ByObject: map[client.Object]cache.ByObject{
-				&bryggav1alpha1.ControlPlane{}:      everything,
-				&bryggav1alpha1.DatastoreClass{}:    everything,
-				&bryggav1alpha1.Datastore{}:         everything,
-				&bryggav1alpha1.KubeconfigRequest{}: everything,
-				&bryggav1alpha1.Backup{}:            everything,
+				&lodiav1alpha1.ControlPlane{}:      everything,
+				&lodiav1alpha1.DatastoreClass{}:    everything,
+				&lodiav1alpha1.Datastore{}:         everything,
+				&lodiav1alpha1.KubeconfigRequest{}: everything,
+				&lodiav1alpha1.Backup{}:            everything,
 			},
 		},
 	})
@@ -129,7 +129,7 @@ func TestMain(m *testing.M) {
 }
 
 func asHealthController(cfg *rest.Config) (*rest.Config, error) {
-	const user = "brygga-health"
+	const user = "lodia-health"
 	ctx := context.Background()
 	role := &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: user}, Rules: healthRules}
 	binding := &rbacv1.ClusterRoleBinding{
@@ -163,37 +163,37 @@ func asHealthController(cfg *rest.Config) (*rest.Config, error) {
 func TestReachableFollowsTheProbe(t *testing.T) {
 	cp := controlPlane(t)
 	eventually(t, func() error {
-		return expect(t, cp, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint")
+		return expect(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint")
 	})
 
 	e := serve(t)
 	publish(t, cp, e)
 	eventually(t, func() error {
-		return expect(t, cp, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the CA bundle dev-ca-bundle")
+		return expect(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the CA bundle dev-ca-bundle")
 	})
 
 	probe := &health.Reconciler{Client: k8s, Reader: k8s, Period: time.Hour, Timeout: 300 * time.Millisecond}
 	writeBundle(t, cp, e)
 	reconcile(t, probe, cp)
-	if err := expect(t, cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
+	if err := expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
 		t.Fatal(err)
 	}
 
 	e.code.Store(http.StatusServiceUnavailable)
 	for failed := 1; failed < health.FailuresBeforeFalse; failed++ {
 		reconcile(t, probe, cp)
-		if err := expect(t, cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
+		if err := expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
 			t.Fatalf("after %d failed probes: %v", failed, err)
 		}
 	}
 	reconcile(t, probe, cp)
-	if err := expect(t, cp, metav1.ConditionFalse, bryggav1alpha1.ReasonExternalProbeFailed, e.url+" answered 503"); err != nil {
+	if err := expect(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonExternalProbeFailed, e.url+" answered 503"); err != nil {
 		t.Fatal(err)
 	}
 
 	e.code.Store(http.StatusOK)
 	reconcile(t, probe, cp)
-	if err := expect(t, cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
+	if err := expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -201,7 +201,7 @@ func TestReachableFollowsTheProbe(t *testing.T) {
 	for range health.FailuresBeforeFalse {
 		reconcile(t, probe, cp)
 	}
-	if err := expect(t, cp, metav1.ConditionFalse, bryggav1alpha1.ReasonExternalProbeFailed, e.url+" did not answer"); err != nil {
+	if err := expect(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonExternalProbeFailed, e.url+" did not answer"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -212,7 +212,7 @@ func TestAPassThatChangesNothingWritesNothing(t *testing.T) {
 	writeBundle(t, cp, e)
 	publish(t, cp, e)
 	eventually(t, func() error {
-		return expect(t, cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReachable, e.url+" answered 200")
+		return expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200")
 	})
 
 	applies := 0
@@ -235,7 +235,7 @@ func TestAFailedReadLeavesTheStatus(t *testing.T) {
 	writeBundle(t, cp, e)
 	publish(t, cp, e)
 	eventually(t, func() error {
-		return expect(t, cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReachable, e.url+" answered 200")
+		return expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200")
 	})
 
 	e.code.Store(http.StatusServiceUnavailable)
@@ -313,18 +313,18 @@ func serve(t *testing.T) *endpoint {
 	return e
 }
 
-func writeBundle(t *testing.T, cp *bryggav1alpha1.ControlPlane, e *endpoint) {
+func writeBundle(t *testing.T, cp *lodiav1alpha1.ControlPlane, e *endpoint) {
 	t.Helper()
 	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: bryggav1alpha1.CABundleSecret.Name(cp.Name), Namespace: cp.Namespace},
-		Data:       map[string][]byte{bryggav1alpha1.CACertKey: e.bundle},
+		ObjectMeta: metav1.ObjectMeta{Name: lodiav1alpha1.CABundleSecret.Name(cp.Name), Namespace: cp.Namespace},
+		Data:       map[string][]byte{lodiav1alpha1.CACertKey: e.bundle},
 	}
 	if err := k8s.Create(t.Context(), secret); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func publish(t *testing.T, cp *bryggav1alpha1.ControlPlane, e *endpoint) {
+func publish(t *testing.T, cp *lodiav1alpha1.ControlPlane, e *endpoint) {
 	t.Helper()
 	host, port, err := net.SplitHostPort(e.Listener.Addr().String())
 	if err != nil {
@@ -336,7 +336,7 @@ func publish(t *testing.T, cp *bryggav1alpha1.ControlPlane, e *endpoint) {
 	}
 	address := map[string]any{"host": host, "port": int64(p)}
 	u := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": bryggav1alpha1.GroupVersion.String(),
+		"apiVersion": lodiav1alpha1.GroupVersion.String(),
 		"kind":       "ControlPlane",
 		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
 		"status":     map[string]any{"endpoint": map[string]any{"apiServer": address, "konnectivity": address}},
@@ -346,19 +346,19 @@ func publish(t *testing.T, cp *bryggav1alpha1.ControlPlane, e *endpoint) {
 	}
 }
 
-func controlPlane(t *testing.T) *bryggav1alpha1.ControlPlane {
+func controlPlane(t *testing.T) *lodiav1alpha1.ControlPlane {
 	t.Helper()
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "health-"}}
 	if err := k8s.Create(t.Context(), ns); err != nil {
 		t.Fatal(err)
 	}
-	cp := &bryggav1alpha1.ControlPlane{
+	cp := &lodiav1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: ns.Name},
-		Spec: bryggav1alpha1.ControlPlaneSpec{
+		Spec: lodiav1alpha1.ControlPlaneSpec{
 			Version:   "v1.35.0",
-			Datastore: bryggav1alpha1.DatastoreChoice{Dedicated: &bryggav1alpha1.DedicatedDatastore{}},
-			Endpoint:  bryggav1alpha1.Endpoint{LoadBalancer: &bryggav1alpha1.LoadBalancerEndpoint{}},
-			Network:   bryggav1alpha1.Network{ServiceCIDRs: []bryggav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []bryggav1alpha1.CIDR{"10.244.0.0/16"}},
+			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{}},
+			Endpoint:  lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}},
+			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
 		},
 	}
 	if err := k8s.Create(t.Context(), cp); err != nil {
@@ -367,7 +367,7 @@ func controlPlane(t *testing.T) *bryggav1alpha1.ControlPlane {
 	return cp
 }
 
-func reconcile(t *testing.T, r *health.Reconciler, cp *bryggav1alpha1.ControlPlane) {
+func reconcile(t *testing.T, r *health.Reconciler, cp *lodiav1alpha1.ControlPlane) {
 	t.Helper()
 	result, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 	if err != nil {
@@ -378,19 +378,19 @@ func reconcile(t *testing.T, r *health.Reconciler, cp *bryggav1alpha1.ControlPla
 	}
 }
 
-func get(t *testing.T, cp *bryggav1alpha1.ControlPlane) *bryggav1alpha1.ControlPlane {
+func get(t *testing.T, cp *lodiav1alpha1.ControlPlane) *lodiav1alpha1.ControlPlane {
 	t.Helper()
-	fresh := &bryggav1alpha1.ControlPlane{}
+	fresh := &lodiav1alpha1.ControlPlane{}
 	if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(cp), fresh); err != nil {
 		t.Fatal(err)
 	}
 	return fresh
 }
 
-func expect(t *testing.T, cp *bryggav1alpha1.ControlPlane, status metav1.ConditionStatus, reason, message string) error {
+func expect(t *testing.T, cp *lodiav1alpha1.ControlPlane, status metav1.ConditionStatus, reason, message string) error {
 	t.Helper()
 	fresh := get(t, cp)
-	c := meta.FindStatusCondition(fresh.Status.Conditions, bryggav1alpha1.ConditionReachable)
+	c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionReachable)
 	if c == nil || c.Status != status || c.Reason != reason || c.Message != message || c.ObservedGeneration != fresh.Generation {
 		return fmt.Errorf("Reachable is %+v, want %s %s %q at generation %d", c, status, reason, message, fresh.Generation)
 	}

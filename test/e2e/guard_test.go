@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package e2e
@@ -34,11 +34,11 @@ func TestRequireNamedCluster(t *testing.T) {
 	}{
 		{"no kubeconfig", "", "E2E_KUBECONFIG is not set"},
 		{"missing file", filepath.Join(t.TempDir(), "absent"), "read "},
-		{"two contexts", kubeconfig(t, "kind-brygga-e2e-local", "kind-brygga-e2e-local", "segla-wg"), "needs exactly one"},
+		{"two contexts", kubeconfig(t, "kind-lodia-e2e-local", "kind-lodia-e2e-local", "segla-wg"), "needs exactly one"},
 		{"someone's cluster", kubeconfig(t, "segla-wg", "segla-wg"), "does not start with"},
-		{"another kind cluster", kubeconfig(t, "kind-brygga-hardway", "kind-brygga-hardway"), "does not start with"},
-		{"current context absent", kubeconfig(t, "kind-brygga-e2e-x", "kind-brygga-e2e-y"), "does not exist"},
-		{"the e2e cluster", kubeconfig(t, "kind-brygga-e2e-local", "kind-brygga-e2e-local"), ""},
+		{"another kind cluster", kubeconfig(t, "kind-lodia-hardway", "kind-lodia-hardway"), "does not start with"},
+		{"current context absent", kubeconfig(t, "kind-lodia-e2e-x", "kind-lodia-e2e-y"), "does not exist"},
+		{"the e2e cluster", kubeconfig(t, "kind-lodia-e2e-local", "kind-lodia-e2e-local"), ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

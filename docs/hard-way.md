@@ -2,8 +2,8 @@
 
 Phase 0 of the [roadmap](roadmap.md): build one tenant control plane in a kind
 cluster with nothing but openssl, kubectl and stock images, join a real node to
-it, and watch every piece work. Each step is something Brygga will automate;
-the callouts say which controller, and what Brygga will do differently. What
+it, and watch every piece work. Each step is something Lodia will automate;
+the callouts say which controller, and what Lodia will do differently. What
 surprises us goes into [What we learned](#what-we-learned) and, from there,
 into decisions.
 
@@ -11,7 +11,7 @@ Time: about two hours. Files: [`hack/hard-way/`](../hack/hard-way/).
 
 ```mermaid
 flowchart LR
-  subgraph mgmt["kind cluster brygga-hardway (the management cluster)"]
+  subgraph mgmt["kind cluster lodia-hardway (the management cluster)"]
     subgraph ns["namespace tenant-a"]
       etcd[("etcd-0<br/>StatefulSet")]
       subgraph api["Deployment tenant-a-apiserver"]
@@ -38,7 +38,7 @@ flowchart LR
   kas -. "logs, exec: through the tunnel" .-> agent
 ```
 
-| step | what you build | Brygga's controller |
+| step | what you build | Lodia's controller |
 |---|---|---|
 | 3, 4 | certificates, keys, kubeconfigs | PKI |
 | 5 | the tenant's etcd | Datastore |
@@ -103,7 +103,7 @@ Three CAs and the certificates under them, named as kubeadm names them:
 
 Look at one: `openssl x509 -in "$PKI/apiserver.crt" -noout -text | less`.
 
-> **Brygga (PKI controller):** the same files, plus a CA per purpose: a client
+> **Lodia (PKI controller):** the same files, plus a CA per purpose: a client
 > CA only the API server trusts, so rotating identities never touches nodes;
 > the controller manager gets an intermediate instead of `ca.key`; tokens are
 > signed by a sidecar instead of `sa.key`
@@ -139,7 +139,7 @@ mk -n "$CP" exec "$CP-etcd-0" -- etcdctl --endpoints=https://127.0.0.1:2379 \
 One member, client TLS with its own CA, data on a PVC from kind's default
 StorageClass, a 2 GiB quota, periodic compaction.
 
-> **Brygga (Datastore):** an `Etcd` resource for etcd-druid instead of this
+> **Lodia (Datastore):** an `Etcd` resource for etcd-druid instead of this
 > StatefulSet, with continuous snapshots and the peer TLS three members need
 > ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)).
 
@@ -161,7 +161,7 @@ the NodePort. Read the flags in
 egress selector sends only `cluster` traffic (kubelets, pods, webhooks)
 through the konnectivity socket; etcd is dialled directly.
 
-> **Brygga (Workloads):** the same pod plus the `brygga-signer` sidecar; in
+> **Lodia (Workloads):** the same pod plus the `lodia-signer` sidecar; in
 > gateway mode the advertise address is `172.20.0.1`, served on every node by
 > apiserver-proxy ([api-exposure](decisions/api-exposure.md)).
 
@@ -225,7 +225,7 @@ The `jws-kubeconfig-…` key appears only once the controller manager's bootstra
 signer has signed `cluster-info` with the token: that signature is how a
 joining node knows the CA it downloaded came from someone holding the token.
 
-> **Brygga (Tenant):** the same objects, rendered from its own templates
+> **Lodia (Tenant):** the same objects, rendered from its own templates
 > (no `k8s.io/kubernetes` import), applied with an inventory and pruned
 > ([nodes-join-with-kubeadm](decisions/nodes-join-with-kubeadm.md)).
 
@@ -324,7 +324,7 @@ by hand:
 
 ```bash
 hold() { tk -n kube-system patch lease kube-controller-manager --type merge \
-  -p "{\"spec\":{\"holderIdentity\":\"brygga\",\"leaseDurationSeconds\":60,\"renewTime\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000000Z)\"}}" >/dev/null; }
+  -p "{\"spec\":{\"holderIdentity\":\"lodia\",\"leaseDurationSeconds\":60,\"renewTime\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000000Z)\"}}" >/dev/null; }
 hold
 mk -n "$CP" get pods -l app="$CP-controller-manager" -w   # it restarts within ~15 s; Ctrl-C
 while true; do hold; sleep 20; done &                       # keep holding
@@ -355,14 +355,14 @@ sleep 5; docker logs sni-logger
 ```
 
 `sni="konnectivity.tenant-a.example"` means the agent sends SNI; `sni=""`
-means it does not, and Brygga needs a dedicated konnectivity port on the
+means it does not, and Lodia needs a dedicated konnectivity port on the
 Gateway. Put the agent back with `tk -n kube-system delete daemonset
 konnectivity-agent` and step 10.
 
 ### d. Spike: ServiceAccount tokens from an external signer
 
 [staged-credential-rotation](decisions/staged-credential-rotation.md) signs
-ServiceAccount tokens with `brygga-signer`, a sidecar that implements
+ServiceAccount tokens with `lodia-signer`, a sidecar that implements
 kube-apiserver's external signer API on a Unix socket
 ([KEP-740](https://github.com/kubernetes/enhancements/blob/master/keps/sig-auth/740-service-account-external-signing/README.md)),
 so the signing key can rotate in three stages while the API server keeps
@@ -389,8 +389,8 @@ kid "$WORK/sa-k2.key"                                      # K₂: ES256 this ti
 **Build the image into the management cluster** and remember its name:
 
 ```bash
-export SIGNER_IMAGE="$(KO_DOCKER_REPO=kind.local KIND_CLUSTER_NAME="$MGMT" go run github.com/google/ko@v0.19.1 build --base-import-paths --platform="linux/$(go env GOARCH)" ./cmd/brygga-signer)"
-echo "$SIGNER_IMAGE"                                       # kind.local/brygga-signer:<digest>
+export SIGNER_IMAGE="$(KO_DOCKER_REPO=kind.local KIND_CLUSTER_NAME="$MGMT" go run github.com/google/ko@v0.19.1 build --base-import-paths --platform="linux/$(go env GOARCH)" ./cmd/lodia-signer)"
+echo "$SIGNER_IMAGE"                                       # kind.local/lodia-signer:<digest>
 ```
 
 **A token from the static key**, minted before the switch, must stay valid
@@ -417,7 +417,7 @@ with `--service-account-signing-endpoint=/run/signer/signer.sock`
 mk -n "$CP" create secret generic "$CP-sa-keys" --from-file=signing.key="$PKI/sa.key"
 mk -n "$CP" patch deployment "$CP-apiserver" --type json -p "$(render "$HW/management/50-signer-patch.yaml")"
 mk -n "$CP" rollout status deployment/"$CP-apiserver"
-mk -n "$CP" logs deploy/"$CP-apiserver" -c brygga-signer   # "key set loaded", signing = K₁
+mk -n "$CP" logs deploy/"$CP-apiserver" -c lodia-signer   # "key set loaded", signing = K₁
 tk get --raw /openid/v1/jwks; echo                         # one key, K₁'s kid
 satk "$WORK/static.token"                                  # still the ServiceAccount
 ```
@@ -452,7 +452,7 @@ tk -n default exec token-caller -- cat /var/run/secrets/tokens/token > "$WORK/ca
 jwt 1 < "$WORK/captured.token"                             # the pod's token of now: K₁
 ```
 
-**Stage 2 — K₂ signs.** Brygga does this only once every API server replica
+**Stage 2 — K₂ signs.** Lodia does this only once every API server replica
 serves K₂; with one replica, the `jwks` above is that proof.
 
 ```bash
@@ -488,7 +488,7 @@ satk "$WORK/static.token"                                  # the same
 kill %1
 tk -n default logs token-caller | grep -c FAIL             # 0
 apiserver                                                  # the same pod, every count still 0
-mk -n "$CP" logs deploy/"$CP-apiserver" -c brygga-signer | grep 'key set loaded'   # four sets: K₁; K₁+K₂; K₂ signs; K₂
+mk -n "$CP" logs deploy/"$CP-apiserver" -c lodia-signer | grep 'key set loaded'   # four sets: K₁; K₁+K₂; K₂ signs; K₂
 ```
 
 The API server caches a successful token authentication for ten seconds
@@ -525,7 +525,7 @@ rm -rf "$WORK"
 Filled in while doing it; each line that changes the design becomes a
 decision or a `todo.md` entry.
 
-| step | what happened | what it means for Brygga |
+| step | what happened | what it means for Lodia |
 |---|---|---|
 | 11 | The joined node's kubelet exited at start: `unable to load client CA file /work/pki/ca.crt`. kubeadm derives the kubelet's `authentication.x509.clientCAFile` from `certificatesDir` when it is unset ([kubelet.go](https://github.com/kubernetes/kubernetes/blob/v1.35.8/cmd/kubeadm/app/componentconfigs/kubelet.go#L144-L150)), here the kubeadm container's `/work/pki`; `kubeadm.yaml` now sets it to `/etc/kubernetes/pki/ca.crt`, where `kubeadm join` writes the CA ([`caCertPath`](https://kubernetes.io/docs/reference/config-api/kubeadm-config.v1beta4/#kubeadm-k8s-io-v1beta4-JoinConfiguration)) | the Tenant controller writes node paths into `kubelet-config`, never paths of its own: `clientCAFile` is `/etc/kubernetes/pki/ca.crt` |
 | 14a | The serving certificate's serial changed 81 s after the Secret did; every restart count stayed 0 | as expected |

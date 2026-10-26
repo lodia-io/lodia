@@ -1,7 +1,7 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package e2e is Brygga's end-to-end suite. It runs only against a kind
+// Package e2e is Lodia's end-to-end suite. It runs only against a kind
 // cluster named on the command line (docs/decisions/e2e-on-a-named-cluster.md);
 // the suite itself is behind the e2e build tag.
 package e2e
@@ -16,8 +16,8 @@ import (
 
 // ContextPrefix starts the name of every context the suite agrees to use:
 // kind names a cluster's context kind-<name>, and make e2e names clusters
-// brygga-e2e-<something>.
-const ContextPrefix = "kind-brygga-e2e"
+// lodia-e2e-<something>.
+const ContextPrefix = "kind-lodia-e2e"
 
 // RequireNamedCluster refuses any kubeconfig but one with a single context
 // whose name starts with ContextPrefix, so the suite never reaches a cluster

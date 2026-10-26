@@ -1,24 +1,24 @@
-# Objects inside a tenant cluster are applied with an inventory and pruned; Brygga keeps no informers in tenant clusters
+# Objects inside a tenant cluster are applied with an inventory and pruned; Lodia keeps no informers in tenant clusters
 
 Decided 2026-10-25. Built for phase 1, without the apiserver-proxy.
 
 ## Decision
 
 - The Tenant controller applies its objects to a tenant cluster with
-  server-side apply under the field manager `brygga/tenant`, records their
+  server-side apply under the field manager `lodia/tenant`, records their
   identities in an inventory ConfigMap
-  (`kube-system/brygga-inventory`), and deletes what the previous inventory
-  names and the current render no longer contains, when Brygga applied it.
-- Brygga leaves another owner's objects as they are: the rule of
+  (`kube-system/lodia-inventory`), and deletes what the previous inventory
+  names and the current render no longer contains, when Lodia applied it.
+- Lodia leaves another owner's objects as they are: the rule of
   [independent-controllers](independent-controllers.md) carried into the
   tenant, where no object has a `ControlPlane` for controller, with
   `managedFields` as the signal. Before its first apply of an object no
   inventory names, the controller reads it; one that exists without
-  `brygga/tenant` among its managers is another owner's, stays as it is, and
+  `lodia/tenant` among its managers is another owner's, stays as it is, and
   `AddonsApplied` names it: delete it, or disable the addon. The prune reads
   an entry that left the render by group and kind, at the version the tenant
   serves, and deletes it under the UID and resourceVersion it read only when
-  `brygga/tenant` applied it; any other entry, and one already gone or of a
+  `lodia/tenant` applied it; any other entry, and one already gone or of a
   kind no longer served, only leaves the inventory. The label
   `app.kubernetes.io/managed-by` is no signal: PKI's bindings carry it too.
 - It applies on every change of the `ControlPlane` or of `status.target`, and
@@ -29,12 +29,12 @@ Decided 2026-10-25. Built for phase 1, without the apiserver-proxy.
   apiserver-proxy) is read with direct GETs at apply time and on the timer,
   and reported in `AddonsAvailable`, which `Ready` does not wait for: their
   pods need the owner's nodes and CNI, which a new cluster does not have yet.
-- Brygga opens no watch into a tenant cluster. The only long-lived
+- Lodia opens no watch into a tenant cluster. The only long-lived
   connections into tenants are the konnectivity tunnels the API servers own.
-- Fields a tenant's own tools add to Brygga's objects (labels and
-  annotations, for instance) are left to their owners: Brygga applies only
-  the fields it renders, and server-side apply keeps the rest. A field Brygga
-  renders stays Brygga's: CoreDNS's replica count is
+- Fields a tenant's own tools add to Lodia's objects (labels and
+  annotations, for instance) are left to their owners: Lodia applies only
+  the fields it renders, and server-side apply keeps the rest. A field Lodia
+  renders stays Lodia's: CoreDNS's replica count is
   `addons.coreDNS.replicas`, and an autoscaler that changes it is set back
   on the next apply.
 
@@ -50,10 +50,10 @@ Decided 2026-10-25. Built for phase 1, without the apiserver-proxy.
   remove what a render dropped; without it, disabling an addon leaves its
   objects behind forever.
 - Server-side apply gives one owner per field, so a tenant's own tooling and
-  Brygga stop overwriting each other.
+  Lodia stop overwriting each other.
 - A hand-edited inventory, or an owner's own CoreDNS under kubeadm's names,
-  must not make Brygga delete or take over what it never wrote; the tenant's
-  objects carry no owner reference Brygga could ask, and `managedFields`
+  must not make Lodia delete or take over what it never wrote; the tenant's
+  objects carry no owner reference Lodia could ask, and `managedFields`
   record who applied each one.
 
 ## Rejected
@@ -70,11 +70,11 @@ Decided 2026-10-25. Built for phase 1, without the apiserver-proxy.
 - Drift repair is not instant: a deleted CoreDNS Deployment returns within
   the apply period, not within seconds. The period is configurable per
   operator; a platform that needs faster repair runs its own agent.
-- The inventory is the contract for prune: an object applied by Brygga
+- The inventory is the contract for prune: an object applied by Lodia
   without an inventory entry would leak, so the entry is written in the same
   pass as the object.
-- Another owner's object under a name Brygga renders keeps that object out
-  until the owner deletes it, after which Brygga applies its own within the
+- Another owner's object under a name Lodia renders keeps that object out
+  until the owner deletes it, after which Lodia applies its own within the
   apply period, or disables the addon.
 
 ## Code
@@ -84,13 +84,13 @@ Decided 2026-10-25. Built for phase 1, without the apiserver-proxy.
   the render are pruned before it is rewritten, so a pass that stops
   anywhere leaks nothing; an object at another API version is the same
   entry; `foreign` finds another owner's objects before the first apply and
-  `prune` deletes only what `brygga/tenant` applied; an inventory it cannot
+  `prune` deletes only what `lodia/tenant` applied; an inventory it cannot
   read stops the pass with `AddonsApplied` False until someone deletes it.
   `tenant.go` holds the pass and the conditions, `render.go` and
   `manifests/` the objects.
 - `internal/controller/tenant/tenant_test.go` — the objects on a tenant
   kube-apiserver, prune and restore of CoreDNS, a deleted DaemonSet coming
   back, an object the tenant refuses that leaks nothing, a tenant that does
-  not answer, a prune that deletes only what Brygga applied, another owner's
+  not answer, a prune that deletes only what Lodia applied, another owner's
   CoreDNS neither taken over nor pruned, an inventory read the tenant
   refuses.

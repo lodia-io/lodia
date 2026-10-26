@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package versions_test
@@ -7,7 +7,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/segla-io/brygga/internal/versions"
+	"go.lodia.io/lodia/internal/versions"
 )
 
 func TestImagesOfASupportedVersion(t *testing.T) {

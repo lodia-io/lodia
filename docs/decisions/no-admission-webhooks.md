@@ -1,11 +1,11 @@
-# Brygga runs no admission webhooks: validation and defaults live in the CRD schema
+# Lodia runs no admission webhooks: validation and defaults live in the CRD schema
 
 Decided 2026-10-25. The schema rules and defaults are
 built; the conditions and the tenant write lock come with their controllers.
 
 ## Decision
 
-- Every validation of a Brygga object is a CEL rule
+- Every validation of a Lodia object is a CEL rule
   (`x-kubernetes-validations`) or an OpenAPI constraint in the CRD schema:
   formats, enums, unions ("exactly one of `dedicated` and `shared`"),
   immutability (`self == oldSelf`), and transitions such as "the Kubernetes

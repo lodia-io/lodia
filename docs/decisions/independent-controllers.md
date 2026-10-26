@@ -13,7 +13,7 @@ watch `ControlPlane`:
 
 | controller | owns | writes condition | waits on |
 |---|---|---|---|
-| **PKI** | CAs, leaf certificates, kubeconfigs, ServiceAccount keys, encryption keys; renewal and staged rotation; the tenant's bindings for Brygga, the admin group and the kubelet client | `CertificatesReady`, `AccessReady`; `CAValidityAcceptable` outside `Ready` | `status.endpoint`; `APIServerReady` for the bindings |
+| **PKI** | CAs, leaf certificates, kubeconfigs, ServiceAccount keys, encryption keys; renewal and staged rotation; the tenant's bindings for Lodia, the admin group and the kubelet client | `CertificatesReady`, `AccessReady`; `CAValidityAcceptable` outside `Ready` | `status.endpoint`; `APIServerReady` for the bindings |
 | **Datastore** | the tenant's etcd (dedicated through etcd-druid, or a user and prefix in a shared store), backups, defragmentation; the only controller that talks to etcd | `DatastoreReady` | nothing |
 | **Workloads** | Deployments, Services, PodDisruptionBudgets, NetworkPolicies, ConfigMaps, Gateway routes in the tenant namespace | `APIServerReady` | `CertificatesReady`, `DatastoreReady` |
 | **Tenant** | objects inside the tenant cluster: kubeadm bootstrap objects, kube-proxy, CoreDNS, konnectivity-agent, apiserver-proxy, RBAC | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
@@ -37,8 +37,8 @@ Rules:
 - Each controller has its own work queue, worker count and rate limiter; a
   failure in one tenant's datastore does not delay certificate renewal in
   another.
-- The cache holds Brygga's own kinds and, of every other kind, only objects
-  with the label `brygga.segla.io/control-plane` (a default label selector);
+- The cache holds Lodia's own kinds and, of every other kind, only objects
+  with the label `lodia.io/control-plane` (a default label selector);
   it strips `managedFields` and keeps metadata only for Secrets and
   ConfigMaps; a controller reads a payload, or an object someone else created
   for a tenant, with the uncached
@@ -145,7 +145,7 @@ flowchart LR
   has a `ControlPlane` for controller, the Tenant controller carries the rule
   over with `managedFields` as the signal: it reads an object before its
   first apply and leaves another owner's as it is, and deletes only what
-  `brygga/tenant` has applied
+  `lodia/tenant` has applied
   ([tenant-resources-by-inventory](tenant-resources-by-inventory.md)).
 - A condition that waits on an object outside the cache comes with a bounded
   requeue, since no event reports that object's change; the condition still
@@ -162,8 +162,8 @@ flowchart LR
   minute. A StatefulSet that lags etcd-druid's report, read uncached, after
   15 seconds; and an `Etcd` being deleted, which has left the cache if its
   label was removed, after 10 seconds. The Tenant controller's: the addons'
-  rollout in the tenant, which Brygga does not watch, every minute until it
-  is complete, and `<cp>-ca-bundle` or `<cp>-brygga-kubeconfig` while
+  rollout in the tenant, which Lodia does not watch, every minute until it
+  is complete, and `<cp>-ca-bundle` or `<cp>-lodia-kubeconfig` while
   another owner keeps it, every minute. Workloads': a `nodePort` endpoint's
   management node, which no event reports, every minute; and an object under
   its names that another owner keeps, whose deletion reaches this
@@ -177,10 +177,10 @@ flowchart LR
   controllers: PKI registered as `pki`, the Datastore controller as
   `datastore`, Lifecycle as `lifecycle`, Tenant as `tenant`, Health as
   `health` and Workloads as `workloads`, each with ten workers.
-  `cmd/brygga/main.go` runs them in one manager; every controller's tests
+  `cmd/lodia/main.go` runs them in one manager; every controller's tests
   take the cache from it.
 - `internal/controller/pki` — reads `spec` and `status.endpoint`, writes its
-  Secrets with server-side apply as `brygga/pki`, applies `CertificatesReady`,
+  Secrets with server-side apply as `lodia/pki`, applies `CertificatesReady`,
   `CAValidityAcceptable` and `AccessReady` alone through the status
   subresource (`Unknown` at the start of its first visit, then with messages
   from the state alone, so a pass that changes nothing writes nothing; a
@@ -195,7 +195,7 @@ flowchart LR
   the first visit and the stale `APIServerReady` cases; `ownership_test.go` holds the
   Secrets another owner keeps and the reads that fail.
 - `internal/controller/datastore` — reads `spec`, writes the `Etcd` and the
-  credentials copy with server-side apply as `brygga/datastore`, applies
+  credentials copy with server-side apply as `lodia/datastore`, applies
   `DatastoreReady` alone through the status subresource (`Unknown` at the
   start of its first pass, messages from the state alone, an API error left
   to the log unless the server refuses an object it is sent: the `Etcd`,
@@ -208,7 +208,7 @@ flowchart LR
   ([dedicated-etcd-by-default](dedicated-etcd-by-default.md)).
 - `internal/controller/lifecycle` — reads the `ControlPlane` alone and
   applies `status.target` (`version`, `reason`), `Progressing`, `Ready` and
-  `status.observedGeneration` as `brygga/lifecycle`, all of them on every
+  `status.observedGeneration` as `lodia/lifecycle`, all of them on every
   write and only on a change; its pass reads nothing that can fail midway,
   so its first visit writes the conditions it computes rather than a
   separate `Unknown`. Registered as `lifecycle` with ten workers and a
@@ -216,7 +216,7 @@ flowchart LR
   cache with `ReaderFailOnMissingInformer`, as a user bound to exactly its
   rules; `internal/versions` holds the minors it supports.
 - `internal/controller/tenant` — waits on `AccessReady` at the current
-  generation, applies the tenant's objects as `brygga/tenant` with the
+  generation, applies the tenant's objects as `lodia/tenant` with the
   inventory in the tenant, and applies `AddonsApplied` and
   `AddonsAvailable` (`Unknown` on the first visit, messages from the state,
   a tenant that does not answer leaving a True as it was); a pass runs only
@@ -228,7 +228,7 @@ flowchart LR
   ([tenant-resources-by-inventory](tenant-resources-by-inventory.md)).
 - `internal/controller/health` — reads the `ControlPlane` from the cache and
   `<cp>-ca-bundle` uncached, probes the public endpoint every 10 seconds, and
-  applies `Reachable` as `brygga/health`, only on a change: `Unknown` at the
+  applies `Reachable` as `lodia/health`, only on a change: `Unknown` at the
   start of its first visit, a failed read leaving it as it was, False only
   after three failed probes in a row, which it counts in memory, so a
   restart counts afresh. Only a change of the endpoint, the bundle or the
@@ -242,7 +242,7 @@ flowchart LR
   of each restart-only Secret from its metadata in the cache, and a
   `nodePort` endpoint's nodes uncached; writes the Service, the ConfigMaps,
   the NetworkPolicies and the Deployments with server-side apply as
-  `brygga/workloads`, none over an object another owner keeps, and applies
+  `lodia/workloads`, none over an object another owner keeps, and applies
   `APIServerReady` and `status.endpoint` through the status subresource
   (`Unknown` at the start of its first visit, messages from the state alone,
   an API error left to the log unless the server refuses an object it is

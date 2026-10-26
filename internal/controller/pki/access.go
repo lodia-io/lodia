@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package pki
@@ -19,9 +19,9 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
-	"github.com/segla-io/brygga/internal/apistatus"
-	"github.com/segla-io/brygga/internal/certs"
+	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/apistatus"
+	"go.lodia.io/lodia/internal/certs"
 )
 
 // bootstrapLifetime is how long the system:masters certificate that makes the
@@ -31,18 +31,18 @@ const bootstrapLifetime = 10 * time.Minute
 var bindings = []struct {
 	name, kind, role string
 }{
-	{"brygga:operator", rbacv1.UserKind, "cluster-admin"},
-	{"brygga:cluster-admins", rbacv1.GroupKind, "cluster-admin"},
-	{"brygga:kubelet-api-admins", rbacv1.GroupKind, "system:kubelet-api-admin"},
+	{"lodia:operator", rbacv1.UserKind, "cluster-admin"},
+	{"lodia:cluster-admins", rbacv1.GroupKind, "cluster-admin"},
+	{"lodia:kubelet-api-admins", rbacv1.GroupKind, "system:kubelet-api-admin"},
 }
 
-// bind applies the bindings as brygga:operator and, when that is forbidden
+// bind applies the bindings as lodia:operator and, when that is forbidden
 // (the first time, or after someone deleted its binding), with a
 // system:masters certificate that is never stored. It returns the binding
 // the tenant refused, empty when a failure is not a refusal; once
-// brygga:operator is forbidden, every failure is one.
+// lodia:operator is forbidden, every failure is one.
 func (r *Reconciler) bind(ctx context.Context, t *tenant) (string, error) {
-	cfg, err := clientcmd.RESTConfigFromKubeConfig(t.existing[t.secret(bryggav1alpha1.BryggaKubeconfigSecret)].Data[bryggav1alpha1.KubeconfigKey])
+	cfg, err := clientcmd.RESTConfigFromKubeConfig(t.existing[t.secret(lodiav1alpha1.LodiaKubeconfigSecret)].Data[lodiav1alpha1.KubeconfigKey])
 	if err != nil {
 		return "", err
 	}
@@ -58,9 +58,9 @@ func (r *Reconciler) bind(ctx context.Context, t *tenant) (string, error) {
 	}
 	ca := t.cas[clientCA]
 	if ca == nil {
-		return refused, errors.New("brygga:operator is forbidden and the client CA is missing or expired, so no bootstrap certificate can be issued")
+		return refused, errors.New("lodia:operator is forbidden and the client CA is missing or expired, so no bootstrap certificate can be issued")
 	}
-	bootstrap, err := ca.Issue(certs.Profile{CommonName: "brygga:bootstrap", Organizations: []string{"system:masters"}, Usages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}, t.now, bootstrapLifetime)
+	bootstrap, err := ca.Issue(certs.Profile{CommonName: "lodia:bootstrap", Organizations: []string{"system:masters"}, Usages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}, t.now, bootstrapLifetime)
 	if err != nil {
 		return refused, err
 	}
@@ -88,7 +88,7 @@ func applyBindings(ctx context.Context, cfg *rest.Config) (string, error) {
 	}
 	for _, b := range bindings {
 		binding := rbacv1ac.ClusterRoleBinding(b.name).
-			WithLabels(map[string]string{bryggav1alpha1.ManagedByLabel: bryggav1alpha1.ManagedBy}).
+			WithLabels(map[string]string{lodiav1alpha1.ManagedByLabel: lodiav1alpha1.ManagedBy}).
 			WithSubjects(rbacv1ac.Subject().WithKind(b.kind).WithAPIGroup(rbacv1.GroupName).WithName(b.name)).
 			WithRoleRef(rbacv1ac.RoleRef().WithAPIGroup(rbacv1.GroupName).WithKind("ClusterRole").WithName(b.role))
 		if _, err := k8s.RbacV1().ClusterRoleBindings().Apply(ctx, binding, metav1.ApplyOptions{FieldManager: fieldManager, Force: true}); err != nil {

@@ -1,7 +1,7 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package operator assembles the manager cmd/brygga runs, and the tests run
+// Package operator assembles the manager cmd/lodia runs, and the tests run
 // the same one: its scheme, the cache every controller reads through, and the
 // controllers.
 package operator
@@ -20,13 +20,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
-	"github.com/segla-io/brygga/internal/controller/datastore"
-	"github.com/segla-io/brygga/internal/controller/health"
-	"github.com/segla-io/brygga/internal/controller/lifecycle"
-	"github.com/segla-io/brygga/internal/controller/pki"
-	"github.com/segla-io/brygga/internal/controller/tenant"
-	"github.com/segla-io/brygga/internal/controller/workloads"
+	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/controller/datastore"
+	"go.lodia.io/lodia/internal/controller/health"
+	"go.lodia.io/lodia/internal/controller/lifecycle"
+	"go.lodia.io/lodia/internal/controller/pki"
+	"go.lodia.io/lodia/internal/controller/tenant"
+	"go.lodia.io/lodia/internal/controller/workloads"
 )
 
 // workers is the default of controllers.<name>.workers until the operator
@@ -37,15 +37,15 @@ const workers = 10
 func Scheme() *runtime.Scheme {
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(bryggav1alpha1.AddToScheme(scheme))
+	utilruntime.Must(lodiav1alpha1.AddToScheme(scheme))
 	utilruntime.Must(druidv1alpha1.AddToScheme(scheme))
 	return scheme
 }
 
-// Cache holds Brygga's own kinds whole, and of every other kind only the
+// Cache holds Lodia's own kinds whole, and of every other kind only the
 // objects labelled with their ControlPlane, without their managed fields.
 func Cache() (cache.Options, error) {
-	labelled, err := labels.NewRequirement(bryggav1alpha1.ControlPlaneLabel, selection.Exists, nil)
+	labelled, err := labels.NewRequirement(lodiav1alpha1.ControlPlaneLabel, selection.Exists, nil)
 	if err != nil {
 		return cache.Options{}, err
 	}
@@ -54,17 +54,17 @@ func Cache() (cache.Options, error) {
 		DefaultLabelSelector: labels.NewSelector().Add(*labelled),
 		DefaultTransform:     cache.TransformStripManagedFields(),
 		ByObject: map[client.Object]cache.ByObject{
-			&bryggav1alpha1.ControlPlane{}:      everything,
-			&bryggav1alpha1.DatastoreClass{}:    everything,
-			&bryggav1alpha1.Datastore{}:         everything,
-			&bryggav1alpha1.KubeconfigRequest{}: everything,
-			&bryggav1alpha1.Backup{}:            everything,
+			&lodiav1alpha1.ControlPlane{}:      everything,
+			&lodiav1alpha1.DatastoreClass{}:    everything,
+			&lodiav1alpha1.Datastore{}:         everything,
+			&lodiav1alpha1.KubeconfigRequest{}: everything,
+			&lodiav1alpha1.Backup{}:            everything,
 		},
 	}, nil
 }
 
 // Setup registers every controller with the manager; signerImage is
-// brygga-signer's, which runs beside each API server.
+// lodia-signer's, which runs beside each API server.
 func Setup(mgr ctrl.Manager, signerImage string) error {
 	if err := (&pki.Reconciler{
 		Client:              mgr.GetClient(),

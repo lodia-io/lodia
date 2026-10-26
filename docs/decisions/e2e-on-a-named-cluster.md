@@ -6,10 +6,10 @@ kubeadm workers, upgrade tests and conformance come with phase 1.
 ## Decision
 
 - `make e2e` runs against `E2E_KUBECONFIG=<path>`, or creates its own kind
-  cluster (`brygga-e2e-local`, or the name in `E2E_CLUSTER`) and deletes it
+  cluster (`lodia-e2e-local`, or the name in `E2E_CLUSTER`) and deletes it
   afterwards. The suite refuses to start when the variable is unset, when the
   kubeconfig has more than one context, or when the context name does not
-  start with `kind-brygga-e2e`.
+  start with `kind-lodia-e2e`.
 - Unit tests use fakes; controller tests use envtest (a real API server and
   etcd, no kubelet, so no garbage collection) for every controller and every
   CEL rule; e2e uses kind with real `kubeadm join` workers, written with

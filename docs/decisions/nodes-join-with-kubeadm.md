@@ -1,13 +1,13 @@
-# Nodes join with `kubeadm join`; Brygga writes the bootstrap objects itself and never imports k8s.io/kubernetes
+# Nodes join with `kubeadm join`; Lodia writes the bootstrap objects itself and never imports k8s.io/kubernetes
 
 Decided 2026-10-25. The bootstrap objects are built; the e2e join comes
 with the phase 1 gate.
 
 ## Decision
 
-- A worker joins a Brygga control plane with the standard
+- A worker joins a Lodia control plane with the standard
   `kubeadm join <endpoint> --token … --discovery-token-ca-cert-hash sha256:…`.
-  Nothing Brygga-specific runs on the node; the node needs outbound TCP 443
+  Nothing Lodia-specific runs on the node; the node needs outbound TCP 443
   to the control plane endpoint and nothing inbound.
 - The Tenant controller creates in the tenant cluster everything `kubeadm
   join` reads and every permission it needs: the `cluster-info` ConfigMap in
@@ -26,12 +26,12 @@ with the phase 1 gate.
   [kubeadm join implementation](https://kubernetes.io/docs/reference/setup-tools/kubeadm/implementation-details/)).
 - Bootstrap tokens are created by the cluster's owner with an admin
   kubeconfig (`kubeadm token create --print-join-command`), by a platform on
-  top, or by hand; Brygga does not mint them.
-- These objects are rendered from Brygga's own templates of the
-  `ClusterConfiguration` and `KubeletConfiguration` documents. Brygga does not
+  top, or by hand; Lodia does not mint them.
+- These objects are rendered from Lodia's own templates of the
+  `ClusterConfiguration` and `KubeletConfiguration` documents. Lodia does not
   import `k8s.io/kubernetes` (where kubeadm's types live); the documents are
   small, versioned YAML.
-- Brygga does not manage machines. A Cluster API provider that creates a
+- Lodia does not manage machines. A Cluster API provider that creates a
   `ControlPlane` and uses its kubeconfig is a separate project in the roadmap.
 
 ## Why
@@ -49,7 +49,7 @@ with the phase 1 gate.
 
 ## Rejected
 
-- A Brygga node agent — one more thing to install and trust on a node; the
+- A Lodia node agent — one more thing to install and trust on a node; the
   kubelet's TLS bootstrap already covers identity.
 - Ignition or image-based joins — tied to one OS family.
 
@@ -63,7 +63,7 @@ with the phase 1 gate.
   ([staged-credential-rotation](staged-credential-rotation.md)); kubelet
   serving certificates stay self-signed unless `serverTLSBootstrap` is turned
   on later together with an approver.
-- Brygga's e2e suite joins real kubeadm nodes, so a regression in the
+- Lodia's e2e suite joins real kubeadm nodes, so a regression in the
   bootstrap objects fails the gate.
 
 ## Code

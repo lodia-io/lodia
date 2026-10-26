@@ -1,6 +1,6 @@
 # The densest ControlPlane: every component in one pod, the data in a shared
 # etcd. For development clusters and free tiers; no high availability.
-apiVersion: brygga.segla.io/v1alpha1
+apiVersion: lodia.io/v1alpha1
 kind: ControlPlane
 metadata:
   name: sandbox

@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package lifecycle is the Lifecycle controller.
@@ -19,23 +19,23 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 
-	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
-	"github.com/segla-io/brygga/internal/versions"
+	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/versions"
 )
 
 const (
 	Name         = "lifecycle"
-	FieldManager = "brygga/" + Name
+	FieldManager = "lodia/" + Name
 )
 
 // readiness is what Ready is made of, in the order its reason is taken from.
 var readiness = []string{
-	bryggav1alpha1.ConditionCertificatesReady,
-	bryggav1alpha1.ConditionDatastoreReady,
-	bryggav1alpha1.ConditionAPIServerReady,
-	bryggav1alpha1.ConditionAccessReady,
-	bryggav1alpha1.ConditionAddonsApplied,
-	bryggav1alpha1.ConditionReachable,
+	lodiav1alpha1.ConditionCertificatesReady,
+	lodiav1alpha1.ConditionDatastoreReady,
+	lodiav1alpha1.ConditionAPIServerReady,
+	lodiav1alpha1.ConditionAccessReady,
+	lodiav1alpha1.ConditionAddonsApplied,
+	lodiav1alpha1.ConditionReachable,
 }
 
 type Reconciler struct {
@@ -46,34 +46,34 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(Name).
 		WithOptions(controller.Options{MaxConcurrentReconciles: workers, ReconciliationTimeout: time.Minute}).
-		For(&bryggav1alpha1.ControlPlane{}).
+		For(&lodiav1alpha1.ControlPlane{}).
 		Complete(r)
 }
 
 type owned struct {
 	progressing, ready *metav1.Condition
-	target             bryggav1alpha1.Target
+	target             lodiav1alpha1.Target
 	observedGeneration int64
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	cp := &bryggav1alpha1.ControlPlane{}
+	cp := &lodiav1alpha1.ControlPlane{}
 	if err := r.Get(ctx, req.NamespacedName, cp); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	next := owned{
-		progressing:        meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionProgressing),
-		ready:              meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionReady),
+		progressing:        meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionProgressing),
+		ready:              meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionReady),
 		observedGeneration: cp.Status.ObservedGeneration,
 	}
 	if cp.Status.Target != nil {
-		next.target = bryggav1alpha1.Target{Version: cp.Status.Target.Version, Reason: cp.Status.Target.Reason}
+		next.target = lodiav1alpha1.Target{Version: cp.Status.Target.Version, Reason: cp.Status.Target.Reason}
 	}
 	switch {
 	case !cp.DeletionTimestamp.IsZero():
-		next.ready = newCondition(cp, bryggav1alpha1.ConditionReady, metav1.ConditionFalse, bryggav1alpha1.ReasonDeleting, "the ControlPlane is being deleted")
+		next.ready = newCondition(cp, lodiav1alpha1.ConditionReady, metav1.ConditionFalse, lodiav1alpha1.ReasonDeleting, "the ControlPlane is being deleted")
 	case cp.Spec.Paused:
-		next.progressing = newCondition(cp, bryggav1alpha1.ConditionProgressing, metav1.ConditionFalse, bryggav1alpha1.ReasonPaused, "spec.paused is true: Brygga reconciles nothing")
+		next.progressing = newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonPaused, "spec.paused is true: Lodia reconciles nothing")
 	default:
 		next.target, next.progressing = target(cp, next.target.Version)
 		next.ready = ready(cp)
@@ -87,59 +87,59 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 // target moves within a minor only: a minor upgrade needs the documented
 // order, the API server before the controller manager and the scheduler,
 // which phase 2 builds (docs/decisions/upgrades-and-maintenance-windows.md).
-func target(cp *bryggav1alpha1.ControlPlane, current string) (bryggav1alpha1.Target, *metav1.Condition) {
+func target(cp *lodiav1alpha1.ControlPlane, current string) (lodiav1alpha1.Target, *metav1.Condition) {
 	want := cp.Spec.Version
 	if _, ok := versions.For(want); !ok {
-		message := fmt.Sprintf("spec.version %s is not of a minor Brygga runs: %s", want, strings.Join(versions.Minors(), ", "))
-		return bryggav1alpha1.Target{Version: current, Reason: bryggav1alpha1.ReasonUnsupported},
-			newCondition(cp, bryggav1alpha1.ConditionProgressing, metav1.ConditionFalse, bryggav1alpha1.ReasonUnsupported, message)
+		message := fmt.Sprintf("spec.version %s is not of a minor Lodia runs: %s", want, strings.Join(versions.Minors(), ", "))
+		return lodiav1alpha1.Target{Version: current, Reason: lodiav1alpha1.ReasonUnsupported},
+			newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, message)
 	}
 	wantMinor, _ := versions.Minor(want)
 	if currentMinor, ok := versions.Minor(current); ok && currentMinor != wantMinor {
 		message := fmt.Sprintf("spec.version %s is another minor than the target %s, which stays until minor upgrades are supported", want, current)
-		return bryggav1alpha1.Target{Version: current, Reason: bryggav1alpha1.ReasonUnsupported},
-			newCondition(cp, bryggav1alpha1.ConditionProgressing, metav1.ConditionFalse, bryggav1alpha1.ReasonUnsupported, message)
+		return lodiav1alpha1.Target{Version: current, Reason: lodiav1alpha1.ReasonUnsupported},
+			newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, message)
 	}
-	return bryggav1alpha1.Target{Version: want},
-		newCondition(cp, bryggav1alpha1.ConditionProgressing, metav1.ConditionFalse, bryggav1alpha1.ReasonIdle, "no upgrade, rotation or hibernation is running")
+	return lodiav1alpha1.Target{Version: want},
+		newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonIdle, "no upgrade, rotation or hibernation is running")
 }
 
-func ready(cp *bryggav1alpha1.ControlPlane) *metav1.Condition {
+func ready(cp *lodiav1alpha1.ControlPlane) *metav1.Condition {
 	for _, conditionType := range readiness {
 		c := meta.FindStatusCondition(cp.Status.Conditions, conditionType)
 		switch {
 		case c == nil || c.ObservedGeneration != cp.Generation:
-			return newCondition(cp, bryggav1alpha1.ConditionReady, metav1.ConditionUnknown, bryggav1alpha1.ReasonLatestGenerationNotObserved,
+			return newCondition(cp, lodiav1alpha1.ConditionReady, metav1.ConditionUnknown, lodiav1alpha1.ReasonLatestGenerationNotObserved,
 				fmt.Sprintf("%s is not reported for generation %d", conditionType, cp.Generation))
 		case c.Status != metav1.ConditionTrue:
 			message := conditionType
 			if c.Message != "" {
 				message += ": " + c.Message
 			}
-			return newCondition(cp, bryggav1alpha1.ConditionReady, c.Status, c.Reason, message)
+			return newCondition(cp, lodiav1alpha1.ConditionReady, c.Status, c.Reason, message)
 		}
 	}
-	return newCondition(cp, bryggav1alpha1.ConditionReady, metav1.ConditionTrue, bryggav1alpha1.ReasonReady,
+	return newCondition(cp, lodiav1alpha1.ConditionReady, metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
 		strings.Join(readiness[:len(readiness)-1], ", ")+" and "+readiness[len(readiness)-1]+" are True")
 }
 
-func observed(cp *bryggav1alpha1.ControlPlane) bool {
+func observed(cp *lodiav1alpha1.ControlPlane) bool {
 	return !slices.ContainsFunc(readiness, func(conditionType string) bool {
 		c := meta.FindStatusCondition(cp.Status.Conditions, conditionType)
 		return c == nil || c.ObservedGeneration != cp.Generation
 	})
 }
 
-func newCondition(cp *bryggav1alpha1.ControlPlane, conditionType string, status metav1.ConditionStatus, reason, message string) *metav1.Condition {
+func newCondition(cp *lodiav1alpha1.ControlPlane, conditionType string, status metav1.ConditionStatus, reason, message string) *metav1.Condition {
 	return &metav1.Condition{Type: conditionType, Status: status, Reason: reason, Message: message, ObservedGeneration: cp.Generation}
 }
 
 // apply writes only on a change, and always every field Lifecycle owns: an
 // apply that leaves one out removes it.
-func (r *Reconciler) apply(ctx context.Context, cp *bryggav1alpha1.ControlPlane, next owned) error {
-	previousTarget := bryggav1alpha1.Target{}
+func (r *Reconciler) apply(ctx context.Context, cp *lodiav1alpha1.ControlPlane, next owned) error {
+	previousTarget := lodiav1alpha1.Target{}
 	if cp.Status.Target != nil {
-		previousTarget = bryggav1alpha1.Target{Version: cp.Status.Target.Version, Reason: cp.Status.Target.Reason}
+		previousTarget = lodiav1alpha1.Target{Version: cp.Status.Target.Version, Reason: cp.Status.Target.Reason}
 	}
 	changed := next.target != previousTarget || next.observedGeneration != cp.Status.ObservedGeneration
 	conditions := slices.Clone(cp.Status.Conditions)
@@ -177,7 +177,7 @@ func (r *Reconciler) apply(ctx context.Context, cp *bryggav1alpha1.ControlPlane,
 		fields["observedGeneration"] = next.observedGeneration
 	}
 	u := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": bryggav1alpha1.GroupVersion.String(),
+		"apiVersion": lodiav1alpha1.GroupVersion.String(),
 		"kind":       "ControlPlane",
 		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
 		"status":     fields,

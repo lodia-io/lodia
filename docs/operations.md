@@ -1,7 +1,7 @@
 # Operations
 
-How Brygga is run once installed: everyday tasks for a tenant, what breaks
-and how it shows, the runbooks, the alerts, capacity, upgrades of Brygga
+How Lodia is run once installed: everyday tasks for a tenant, what breaks
+and how it shows, the runbooks, the alerts, capacity, upgrades of Lodia
 itself and the support policy. Installation is in
 [`README.md`](README.md#installation).
 
@@ -10,33 +10,33 @@ itself and the support policy. Installation is in
 | task | how |
 |---|---|
 | Get access as a person | create a `KubeconfigRequest` ([example](api/examples/kubeconfigrequest.yaml)); read the Secret named in its `status.secretRef`; it expires on its own |
-| Get access for automation | grant `get` on the Secret `<cp>-admin-kubeconfig` by `resourceNames`, never on the namespace's Secrets, which hold the class's backup credentials in `<cp>-etcd-backup`; read it; every copy is revoked by the client CA rotation (phase 3), not by deleting the ClusterRoleBinding `brygga:cluster-admins` in the tenant, which PKI applies again on its next pass |
+| Get access for automation | grant `get` on the Secret `<cp>-admin-kubeconfig` by `resourceNames`, never on the namespace's Secrets, which hold the class's backup credentials in `<cp>-etcd-backup`; read it; every copy is revoked by the client CA rotation (phase 3), not by deleting the ClusterRoleBinding `lodia:cluster-admins` in the tenant, which PKI applies again on its next pass |
 | Join a node | with an admin kubeconfig: `kubeadm token create --print-join-command --kubeconfig admin.kubeconfig`; run the printed `kubeadm join …` on the machine; it needs outbound 443 to the endpoint and nothing inbound |
-| Upgrade Kubernetes | set `spec.version`; watch `status.kubernetes.upgrade` and `Progressing`; Brygga goes one minor at a time; nodes follow at the owner's pace |
+| Upgrade Kubernetes | set `spec.version`; watch `status.kubernetes.upgrade` and `Progressing`; Lodia goes one minor at a time; nodes follow at the owner's pace |
 | Get patch updates automatically | `spec.maintenance.autoUpdate.kubernetesPatch: true` and a `maintenance.window` |
-| Rotate client identities (yearly, or after a leaked kubeconfig) | `kubectl annotate controlplane <cp> brygga.segla.io/operation=rotate-client-ca-start`; it completes on its own after one kubelet signing duration (30 days), nodes untouched |
+| Rotate client identities (yearly, or after a leaked kubeconfig) | `kubectl annotate controlplane <cp> lodia.io/operation=rotate-client-ca-start`; it completes on its own after one kubelet signing duration (30 days), nodes untouched |
 | Rotate the ServiceAccount key | `…=rotate-serviceaccount-key-start`; when `status.credentials.rotation.serviceAccountKey.phase` is `Prepared` and no client holds an old token, `…=rotate-serviceaccount-key-complete` |
 | Rotate the etcd encryption key, the etcd CA, the front-proxy CA | `…=rotate-etcd-encryption-key-start`, `…=rotate-etcd-ca-start`, `…=rotate-front-proxy-ca-start`; each completes on its own |
 | Rotate the trust anchor (the cluster CA) | `…=rotate-ca-start`; when the phase is `Prepared`, add the new bundle (`<cp>-ca-bundle`) to every node's `/etc/kubernetes/pki/ca.crt` and kubelet kubeconfig, then `…=rotate-ca-complete` |
 | Hibernate and wake | `spec.hibernation.enabled: true` / `false`, or `spec.hibernation.schedules` |
 | Take a snapshot now | create a `Backup` ([example](api/examples/backup.yaml)); its `status.location` is the object in the bucket |
 | Clone or recover a cluster | create a new `ControlPlane` with `spec.restoreFrom.backupRef`; nodes of the old cluster can join it with a new token. Restore is built in phase 2 ([roadmap](roadmap.md)): until then nothing reads `restoreFrom`, and the `ControlPlane` starts empty |
-| Stop Brygga touching a cluster | `spec.paused: true`; everything keeps running, nothing is reconciled; deleting a paused `ControlPlane` waits until it is unpaused |
+| Stop Lodia touching a cluster | `spec.paused: true`; everything keeps running, nothing is reconciled; deleting a paused `ControlPlane` waits until it is unpaused |
 | Turn the controller manager hold off for a cluster | `spec.health.holdControllerManager: false`; a hold in progress is released at once |
 | Change a `DatastoreClass` | edit it; a value etcd-druid or the backup sidecar would refuse is refused when the class is written ([the rules](README.md#a-tenant-namespace)); an edit that changes the `Etcd`'s spec reaches the `Etcd` of every tenant on the class at once and rolls their members, a single member with an outage, until Lifecycle holds class edits for each tenant's maintenance window in phase 2; the storage class and size reach only `Etcd`s created afterwards, and the reclaim policy, `retention.afterDelete`, the credentials' `secretRef` and the region roll nothing |
-| Rotate a backup store's credentials | create a new Secret with the new keys and point the class's `backup.store.secretRef` at it: the class edit reaches every tenant on the class at once and rolls nothing, since the `Etcd` names the copy, whose name stays; once every tenant's `<cp>-etcd-backup` (labelled `brygga.segla.io/control-plane`) holds the new keys, revoke the old ones. Editing the class's Secret in place reaches each tenant only at its next pass, at worst 10 hours later. A class pointed at a Secret that does not exist yet, or whose old Secret is deleted first, is held until the Secret exists: the copies keep their last keys and the certificates keep moving. Whether the backup sidecar reads new keys without a restart is open (`todo.md`) |
-| Delete a cluster | delete the `ControlPlane`; its finalizer deletes the `Etcd`, then with `storage.reclaimPolicy: Delete` the claims `<cp>-etcd-<cp>-etcd-<n>`, with `Retain` keeps them (`kubectl get pvc -L brygga.segla.io/control-plane-uid` shows whose each is); the last snapshot and the snapshots' retention come with backups in phase 2 |
+| Rotate a backup store's credentials | create a new Secret with the new keys and point the class's `backup.store.secretRef` at it: the class edit reaches every tenant on the class at once and rolls nothing, since the `Etcd` names the copy, whose name stays; once every tenant's `<cp>-etcd-backup` (labelled `lodia.io/control-plane`) holds the new keys, revoke the old ones. Editing the class's Secret in place reaches each tenant only at its next pass, at worst 10 hours later. A class pointed at a Secret that does not exist yet, or whose old Secret is deleted first, is held until the Secret exists: the copies keep their last keys and the certificates keep moving. Whether the backup sidecar reads new keys without a restart is open (`todo.md`) |
+| Delete a cluster | delete the `ControlPlane`; its finalizer deletes the `Etcd`, then with `storage.reclaimPolicy: Delete` the claims `<cp>-etcd-<cp>-etcd-<n>`, with `Retain` keeps them (`kubectl get pvc -L lodia.io/control-plane-uid` shows whose each is); the last snapshot and the snapshots' retention come with backups in phase 2 |
 
 ## What breaks, and how it shows
 
 | symptom | look at |
 |---|---|
-| `DatastoreReady=False`, `DatastoreClassNotFound` | before the `Etcd` exists: the `DatastoreClass` that `spec.datastore.dedicated.className` names, or that the claims of a previous `Etcd` record, is missing, or no class is annotated `brygga.segla.io/is-default-class: "true"`; the message says which. Deleting a class that running `Etcd`s record never shows here: each keeps what the class gave it, keeps taking new certificate generations and keeps its claims on deletion; only its class edits stop |
-| `DatastoreReady=False`, `DatastoreClassAmbiguous` | before the `Etcd` exists, without `className`: more than one class is annotated `brygga.segla.io/is-default-class: "true"`; the message names them. Remove the annotation from all but one |
-| `DatastoreReady=False`, `VolumesExist` | claims `<cp>-etcd-<cp>-etcd-<n>` of a previous `ControlPlane` of that name, without this one's `brygga.segla.io/control-plane-uid` label, or an `Etcd` `<cp>-etcd` that another `ControlPlane` or nobody controls; the message names them. To start empty, delete them (an `Etcd` with its claims); to keep the data, keep them, and this `ControlPlane` waits. Recovering the old cluster's data into a new `ControlPlane` is `restoreFrom` with a `Backup` of it, built in phase 2 ([roadmap](roadmap.md)); until then nothing reads `restoreFrom`, and a `ControlPlane` created with it starts empty |
-| `DatastoreReady=False`, `Refused` | the API server refuses the `Etcd` Brygga renders; the refusal is in Brygga's log (`controller="datastore"`). An admission policy on `Etcd`s: let it admit Brygga's. An etcd-druid whose CRD moved: the version Brygga pins. A `DatastoreClass` stored before a rule one of its values breaks: validation ratcheting keeps an unchanged field on update ([ratcheting](https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/#validation-ratcheting)), so a value the `Etcd` API refuses shows here, while one only the backup sidecar refuses (a day of week 7, a descending range, a zero quota) is accepted and fails the member at its next roll. After an upgrade of Brygga, check each class by creating a copy under another name with `--dry-run=server`: a create is validated whole, ratcheting being for updates, and a dry run goes through validation and admission without being stored ([dry run](https://kubernetes.io/docs/reference/using-api/api-concepts/#dry-run)); fix what it refuses |
-| `DatastoreReady=Unknown`, `Reconciling`, or a `DatastoreReady` whose `observedGeneration` lags the `ControlPlane`'s generation | the Datastore controller's passes end in an error of the API server; the error is in Brygga's log (`controller="datastore"`), never in the condition |
-| `DatastoreReady`'s message ends with `DatastoreClass <c> is held:` | the class's credentials copy cannot be made, and the `Etcd` keeps the class fields it has while it still takes new certificate generations: restore the class's Secret the message names; or wait while the garbage collector removes a predecessor's `<cp>-etcd-backup`, which another owner controls, and delete it if its owner is something else; or read Brygga's log when the API server refuses the copy. A class edit made meanwhile applies once the copy can be made |
+| `DatastoreReady=False`, `DatastoreClassNotFound` | before the `Etcd` exists: the `DatastoreClass` that `spec.datastore.dedicated.className` names, or that the claims of a previous `Etcd` record, is missing, or no class is annotated `lodia.io/is-default-class: "true"`; the message says which. Deleting a class that running `Etcd`s record never shows here: each keeps what the class gave it, keeps taking new certificate generations and keeps its claims on deletion; only its class edits stop |
+| `DatastoreReady=False`, `DatastoreClassAmbiguous` | before the `Etcd` exists, without `className`: more than one class is annotated `lodia.io/is-default-class: "true"`; the message names them. Remove the annotation from all but one |
+| `DatastoreReady=False`, `VolumesExist` | claims `<cp>-etcd-<cp>-etcd-<n>` of a previous `ControlPlane` of that name, without this one's `lodia.io/control-plane-uid` label, or an `Etcd` `<cp>-etcd` that another `ControlPlane` or nobody controls; the message names them. To start empty, delete them (an `Etcd` with its claims); to keep the data, keep them, and this `ControlPlane` waits. Recovering the old cluster's data into a new `ControlPlane` is `restoreFrom` with a `Backup` of it, built in phase 2 ([roadmap](roadmap.md)); until then nothing reads `restoreFrom`, and a `ControlPlane` created with it starts empty |
+| `DatastoreReady=False`, `Refused` | the API server refuses the `Etcd` Lodia renders; the refusal is in Lodia's log (`controller="datastore"`). An admission policy on `Etcd`s: let it admit Lodia's. An etcd-druid whose CRD moved: the version Lodia pins. A `DatastoreClass` stored before a rule one of its values breaks: validation ratcheting keeps an unchanged field on update ([ratcheting](https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/#validation-ratcheting)), so a value the `Etcd` API refuses shows here, while one only the backup sidecar refuses (a day of week 7, a descending range, a zero quota) is accepted and fails the member at its next roll. After an upgrade of Lodia, check each class by creating a copy under another name with `--dry-run=server`: a create is validated whole, ratcheting being for updates, and a dry run goes through validation and admission without being stored ([dry run](https://kubernetes.io/docs/reference/using-api/api-concepts/#dry-run)); fix what it refuses |
+| `DatastoreReady=Unknown`, `Reconciling`, or a `DatastoreReady` whose `observedGeneration` lags the `ControlPlane`'s generation | the Datastore controller's passes end in an error of the API server; the error is in Lodia's log (`controller="datastore"`), never in the condition |
+| `DatastoreReady`'s message ends with `DatastoreClass <c> is held:` | the class's credentials copy cannot be made, and the `Etcd` keeps the class fields it has while it still takes new certificate generations: restore the class's Secret the message names; or wait while the garbage collector removes a predecessor's `<cp>-etcd-backup`, which another owner controls, and delete it if its owner is something else; or read Lodia's log when the API server refuses the copy. A class edit made meanwhile applies once the copy can be made |
 | `DatastoreReady=False`, `Provisioning`, `Secrets Etcd <cp>-etcd mounts do not exist` | someone removed etcd-druid's finalizer from Secrets the `Etcd` names and deleted them; the members run on what they mounted until they restart: the [runbook](#a-secret-the-etcd-mounts-is-gone) |
 | `DatastoreReady=False`, `Provisioning` for long | the message says what is awaited: a complete generation of the etcd certificates that this `ControlPlane` controls (PKI; one another `ControlPlane` controls never counts), the class's credentials copy, or etcd-druid's report; then the `Etcd`'s status — its `lastErrors`, which `DatastoreReady` does not read, are the only place a persistent failure of etcd-druid's other objects (the client Service, the ConfigMap, the leases) shows at a generation it has observed — its conditions, etcd-druid's log, and the tenant's `EtcdOpsTask`s, where a blocked operation shows ([etcd spike](etcd-spike-2026-10.md), finding 4) |
 | An etcd member that does not come back after a roll: `DatastoreReady=False`, the StatefulSet's pod missing | the StatefulSet's events (`kubectl describe statefulset <cp>-etcd`): `FailedCreate` means pod admission refused the new pod after the old one was deleted, for a `priorityClassName` that names no PriorityClass (or one deleted since) or a LimitRange or ResourceQuota in the namespace, which no schema can check; with one member it is an outage until fixed, and every certificate generation rolls the member |
@@ -48,14 +48,14 @@ itself and the support policy. Installation is in
 | `CertificatesReady=False`, `CAMissing` | a CA's key Secret `<cp>-cakey-<ca>` is missing or unreadable while its bundle exists; restore it from a backup without its `metadata.ownerReferences` (it is found by name, labels or not) or rotate the CA; PKI never replaces it on its own |
 | `CertificatesReady=False`, `SecretsControlledElsewhere` | the message names each Secret under PKI's names that another owner keeps, and the owner; PKI writes no Secret until they are gone. A previous `ControlPlane` of the same name: the garbage collector deletes its Secrets, except those an `Etcd` still references, on which etcd-druid holds its finalizer `druid.gardener.cloud/etcd-druid` until no `Etcd` does ([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/secret/reconciler.go#L44-L100)). Any other owner: release the Secret or delete it; PKI's names are its own |
 | `CertificatesReady=False`, `SecretUnreadable` | `<cp>-encryption-config` or `<cp>-sa-keys` cannot be read; restore it from a backup. PKI never replaces it: a new encryption key would leave what the old one encrypted unreadable, a new signing key every token invalid |
-| `CertificatesReady=False`, `Issuing` | a Secret PKI has to change could not be written; the message names it and Brygga's log (`controller="pki"`) has the error; PKI retries with backoff |
-| `AccessReady=False`, `Refused` | the tenant refuses the ClusterRoleBinding the message names, of Brygga, the admin group or the kubelet client: an admission policy in the tenant; Brygga's log (`controller="pki"`) has the answer |
-| `AccessReady=False`, `Binding` | the tenant has not confirmed the bindings since its API server became ready; Brygga's log has the error. PKI recreates a missing binding with a ten-minute `system:masters` certificate on its next pass. While the tenant does not answer, a True stays: `Reachable` reports that |
-| `Reachable=False`, `NodesSilent` (phase 2); in the tenant, the Lease `kube-system/kube-controller-manager` held by `brygga` | most nodes cannot reach the API, so Health holds the controller manager; the [nodes cut off](#nodes-cut-off-from-the-control-plane) runbook |
+| `CertificatesReady=False`, `Issuing` | a Secret PKI has to change could not be written; the message names it and Lodia's log (`controller="pki"`) has the error; PKI retries with backoff |
+| `AccessReady=False`, `Refused` | the tenant refuses the ClusterRoleBinding the message names, of Lodia, the admin group or the kubelet client: an admission policy in the tenant; Lodia's log (`controller="pki"`) has the answer |
+| `AccessReady=False`, `Binding` | the tenant has not confirmed the bindings since its API server became ready; Lodia's log has the error. PKI recreates a missing binding with a ten-minute `system:masters` certificate on its next pass. While the tenant does not answer, a True stays: `Reachable` reports that |
+| `Reachable=False`, `NodesSilent` (phase 2); in the tenant, the Lease `kube-system/kube-controller-manager` held by `lodia` | most nodes cannot reach the API, so Health holds the controller manager; the [nodes cut off](#nodes-cut-off-from-the-control-plane) runbook |
 | `Reachable=False`, `HoldBlocked` (phase 2) | nodes are silent but another component holds the controller manager's lease (`status.health.controllerManagerHold.blockedBy`), for example a platform's own watchdog; run one of the two, not both |
 | `Reachable=False`, `ExternalProbeFailed`, nodes fine | the public endpoint from the management cluster's side: Gateway listener, route status, certificate SANs |
-| `AddonsApplied=False`, `Refused` | the tenant refuses the object the message names: an admission policy in the tenant, or `brygga:operator` without access there (`AccessReady`), which the inventory `kube-system/brygga-inventory` shows first; Brygga's log (`controller="tenant"`) has the answer |
-| `AddonsApplied=False`, `Applying` | the message names it: an object that exists and is not Brygga's, another owner's under a name Brygga renders, such as one's own CoreDNS (delete it, and Brygga applies its own within the apply period, or disable the addon), an inventory `kube-system/brygga-inventory` that cannot be read (delete it, and every object is applied again), or a tenant that has not answered yet; Brygga's log (`controller="tenant"`) has the answer |
+| `AddonsApplied=False`, `Refused` | the tenant refuses the object the message names: an admission policy in the tenant, or `lodia:operator` without access there (`AccessReady`), which the inventory `kube-system/lodia-inventory` shows first; Lodia's log (`controller="tenant"`) has the answer |
+| `AddonsApplied=False`, `Applying` | the message names it: an object that exists and is not Lodia's, another owner's under a name Lodia renders, such as one's own CoreDNS (delete it, and Lodia applies its own within the apply period, or disable the addon), an inventory `kube-system/lodia-inventory` that cannot be read (delete it, and every object is applied again), or a tenant that has not answered yet; Lodia's log (`controller="tenant"`) has the answer |
 | `AddonsAvailable=False`, `RolloutPending` | the DaemonSet or Deployment inside the tenant; a node that cannot pull images; a CNI missing (pods of CoreDNS stay Pending until a CNI is installed) |
 | `kubectl logs` / `exec` hang, everything else works | the konnectivity path: agents connected to every server (`konnectivity_network_proxy_server_ready_backend_connections`), the agent's DaemonSet, outbound 443 for the konnectivity hostname |
 | `Progressing=False`, `WaitingForWindow` (phase 2) for long | expected outside the window; `status.target.scheduledFor` says when |
@@ -78,7 +78,7 @@ itself and the support policy. Installation is in
    manual procedure: suspend its reconciliation with the annotations it
    documents, scale the StatefulSet to 0, delete the PVCs and member leases,
    set the cluster to one member, scale to 1 so it restores from the newest
-   snapshots, re-enable reconciliation, and let Brygga scale back to 3
+   snapshots, re-enable reconciliation, and let Lodia scale back to 3
    ([recovering etcd clusters](https://gardener.github.io/etcd-druid/usage/recovering-etcd-clusters.html)).
    Alternatively, create a new `ControlPlane` with `restoreFrom` the latest
    `Backup` and move the nodes (new token, `kubeadm join`).
@@ -140,11 +140,11 @@ Restoring in place under a running cluster follows the Kubernetes order:
 stop every API server, restore every etcd member from the same snapshot,
 start the API servers, then restart the controller manager and scheduler
 ([operating etcd](https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/)).
-With Brygga: set `spec.paused: true`, scale the API server Deployment to 0,
+With Lodia: set `spec.paused: true`, scale the API server Deployment to 0,
 restore with `etcdutl snapshot restore --bump-revision 1000000000
 --mark-compacted` so revisions keep moving forward and every watch ends and
 relists ([recovery](https://etcd.io/docs/v3.6/op-guide/recovery/)), then
-unpause; Brygga rolls the API server, the controller manager and the
+unpause; Lodia rolls the API server, the controller manager and the
 scheduler.
 
 ### Stuck upgrade
@@ -162,7 +162,7 @@ scheduler.
 
 - **A kubeconfig or client certificate leaked:** rotate the client CA and
   complete it at once (`rotate-client-ca-start`, then
-  `rotate-client-ca-complete`); every client certificate Brygga holds is
+  `rotate-client-ca-complete`); every client certificate Lodia holds is
   already re-issued, and kubelets whose certificates are still under the old
   CA re-bootstrap with a new token (`kubeadm token create`, then on the node
   `kubeadm reset` and `kubeadm join`), or wait for the automatic completion
@@ -193,29 +193,29 @@ scheduler.
 ### Operator down
 
 Tenants keep running: their pods, their certificates (valid for a year) and
-their etcds do not depend on Brygga being up. Changes to `ControlPlane`
-objects are accepted by the API (no webhooks) and applied when Brygga is
-back. Renewal and backups pause; the `BryggaOperatorDown` alert fires first.
+their etcds do not depend on Lodia being up. Changes to `ControlPlane`
+objects are accepted by the API (no webhooks) and applied when Lodia is
+back. Renewal and backups pause; the `LodiaOperatorDown` alert fires first.
 
 ## Alerts shipped in the chart
 
 | alert | fires when | means |
 |---|---|---|
-| `BryggaOperatorDown` | no ready operator replica for 5 m | nothing is reconciled; tenants keep running |
-| `BryggaControlPlaneNotReady` | `Ready=False` for 10 m, not hibernated | a tenant's API or a part of it is down; the reason names which |
-| `BryggaCertificateExpiring` | any certificate within 14 days of expiry | renewal failed; look at `CertificatesReady` |
-| `BryggaBackupStale` | the newest snapshot older than two periods | the backup sidecar or the bucket credentials |
-| `BryggaEtcdSpaceNearQuota` | the database above 80% of the quota | compaction is not keeping up, or the tenant writes too much |
-| `BryggaEtcdNoLeader` | a dedicated etcd without a leader for 1 m | quorum or network inside the management cluster |
-| `BryggaControllerManagerHeld` | the hold active for 15 m | most nodes cannot reach the control plane; the tenant's workloads run, its controllers wait |
-| `BryggaUpgradeFailed` | `Progressing=False`, reason `Failed` (phase 2) | the stuck upgrade runbook |
-| `BryggaReconcileErrors` | a controller's error rate above 5% for 15 m | the operator logs, by controller |
+| `LodiaOperatorDown` | no ready operator replica for 5 m | nothing is reconciled; tenants keep running |
+| `LodiaControlPlaneNotReady` | `Ready=False` for 10 m, not hibernated | a tenant's API or a part of it is down; the reason names which |
+| `LodiaCertificateExpiring` | any certificate within 14 days of expiry | renewal failed; look at `CertificatesReady` |
+| `LodiaBackupStale` | the newest snapshot older than two periods | the backup sidecar or the bucket credentials |
+| `LodiaEtcdSpaceNearQuota` | the database above 80% of the quota | compaction is not keeping up, or the tenant writes too much |
+| `LodiaEtcdNoLeader` | a dedicated etcd without a leader for 1 m | quorum or network inside the management cluster |
+| `LodiaControllerManagerHeld` | the hold active for 15 m | most nodes cannot reach the control plane; the tenant's workloads run, its controllers wait |
+| `LodiaUpgradeFailed` | `Progressing=False`, reason `Failed` (phase 2) | the stuck upgrade runbook |
+| `LodiaReconcileErrors` | a controller's error rate above 5% for 15 m | the operator logs, by controller |
 
 Every alert links to its runbook section here.
 
 ## Capacity
 
-Brygga's targets, to be replaced by measurements in phase 1
+Lodia's targets, to be replaced by measurements in phase 1
 ([roadmap](roadmap.md)): a single idle control plane within 1 GiB of memory
 requests and 0.5 CPU, a highly available one within 2.5 GiB and 1.5 CPU,
 etcd included. No primary source publishes the idle footprint of a small
@@ -232,7 +232,7 @@ The operator: two replicas; memory grows with the number of tenants it
 caches (label-scoped, metadata-only for Secrets); the phase 4 gate is 200
 tenants under 2 GiB.
 
-## Upgrading Brygga
+## Upgrading Lodia
 
 `helm upgrade`. The chart upgrades the CRDs first (served versions are only
 added, never removed, within a major), then the operator. New pod templates
@@ -244,7 +244,7 @@ the CRDs did not add a stored version.
 
 | what | supported |
 |---|---|
-| Tenant Kubernetes versions | the minors the Kubernetes project maintains, today 1.35, 1.36 and 1.37; a minor leaves Brygga's version table one release after it leaves upstream support |
+| Tenant Kubernetes versions | the minors the Kubernetes project maintains, today 1.35, 1.36 and 1.37; a minor leaves Lodia's version table one release after it leaves upstream support |
 | Management cluster | a maintained minor with the CEL features the CRDs use: 1.35 or newer today |
-| Brygga versions | until 1.0, the latest minor gets fixes; from 1.0, the two latest minors |
+| Lodia versions | until 1.0, the latest minor gets fixes; from 1.0, the two latest minors |
 | API versions | `v1alpha1` may change between minors until `v1beta1`; from `v1beta1`, changes are additive and conversion needs no webhook |

@@ -5,7 +5,7 @@
 # api/v1alpha1.
 
 ENVTEST_K8S_VERSION ?= 1.35.0
-E2E_CLUSTER ?= brygga-e2e-local
+E2E_CLUSTER ?= lodia-e2e-local
 E2E_DIR ?= $(CURDIR)/work/e2e
 GENERATED = api/v1alpha1/zz_generated.deepcopy.go config/crd/bases/*.yaml
 

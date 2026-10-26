@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.23.0
-  name: datastoreclasses.brygga.segla.io
+  name: datastoreclasses.lodia.io
 spec:
-  group: brygga.segla.io
+  group: lodia.io
   names:
     kind: DatastoreClass
     listKind: DatastoreClassList
@@ -31,7 +31,7 @@ spec:
       openAPIV3Schema:
         description: |-
           DatastoreClass is how a dedicated etcd is built. The class annotated
-          brygga.segla.io/is-default-class: "true" serves ControlPlanes that name none.
+          lodia.io/is-default-class: "true" serves ControlPlanes that name none.
         properties:
           apiVersion:
             description: |-

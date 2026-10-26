@@ -1,7 +1,7 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Command brygga-signer signs the ServiceAccount tokens of the kube-apiserver
+// Command lodia-signer signs the ServiceAccount tokens of the kube-apiserver
 // in its pod, over a Unix socket, with the keys of the Secret <cp>-sa-keys.
 package main
 
@@ -19,7 +19,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/segla-io/brygga/internal/signer"
+	"go.lodia.io/lodia/internal/signer"
 )
 
 func main() {

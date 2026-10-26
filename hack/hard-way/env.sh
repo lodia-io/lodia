@@ -8,7 +8,7 @@ export ETCD_IMAGE=registry.k8s.io/etcd:3.6.6-0
 export KONNECTIVITY_VERSION=v0.35.0
 export METRICS_SERVER_VERSION=v0.9.0
 
-export MGMT=brygga-hardway      # the kind management cluster
+export MGMT=lodia-hardway      # the kind management cluster
 export CP=tenant-a              # the tenant control plane; also its namespace
 export NODE=tenant-a-node-1     # the tenant's worker: a kind node container
 

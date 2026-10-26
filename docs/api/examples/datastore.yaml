@@ -1,7 +1,7 @@
 # A shared etcd several ControlPlanes use by key prefix: for development
 # fleets and density. There is no quota per tenant in a shared store, and a
 # slow tenant slows its neighbours; the Datastore says so in its description.
-apiVersion: brygga.segla.io/v1alpha1
+apiVersion: lodia.io/v1alpha1
 kind: Datastore
 metadata:
   name: pool-a
@@ -12,5 +12,5 @@ spec:
     - https://etcd-2.pool-a.etcd.svc:2379
   tls:
     caSecretRef: {name: pool-a-ca, namespace: etcd}
-    rootClientSecretRef: {name: pool-a-root, namespace: etcd}   # Brygga creates a user and a role per tenant with it
-  prefix: /brygga                     # a tenant lives under /brygga/<namespace>/<name>/
+    rootClientSecretRef: {name: pool-a-root, namespace: etcd}   # Lodia creates a user and a role per tenant with it
+  prefix: /lodia                     # a tenant lives under /lodia/<namespace>/<name>/

@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package v1alpha1_test
@@ -16,14 +16,14 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/yaml"
 
-	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
+	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 )
 
 const durationRule = "duration(self) >= duration('0s')"
 
 func TestEveryDurationIsOneGoCanParse(t *testing.T) {
 	scheme := runtime.NewScheme()
-	if err := bryggav1alpha1.AddToScheme(scheme); err != nil {
+	if err := lodiav1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
 	files, err := filepath.Glob(filepath.Join("..", "..", "config", "crd", "bases", "*.yaml"))
@@ -39,7 +39,7 @@ func TestEveryDurationIsOneGoCanParse(t *testing.T) {
 		if err := yaml.Unmarshal(raw, crd); err != nil {
 			t.Fatal(err)
 		}
-		obj, err := scheme.New(bryggav1alpha1.GroupVersion.WithKind(crd.Spec.Names.Kind))
+		obj, err := scheme.New(lodiav1alpha1.GroupVersion.WithKind(crd.Spec.Names.Kind))
 		if err != nil {
 			t.Fatal(err)
 		}

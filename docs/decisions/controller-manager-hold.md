@@ -1,4 +1,4 @@
-# While most of a tenant's nodes are silent, Brygga holds its controller manager's leader lease
+# While most of a tenant's nodes are silent, Lodia holds its controller manager's leader lease
 
 Decided 2026-10-25. Not built.
 
@@ -22,7 +22,7 @@ the control plane and its nodes:
   counted node is never held: its silence cannot be told from a dead machine.
 - **The hold.** When 60% or more of the counted nodes are silent and the API
   server answers, Health writes the Lease `kube-system/kube-controller-manager`
-  inside the tenant with holder `brygga` and a 60-second duration, and renews
+  inside the tenant with holder `lodia` and a 60-second duration, and renews
   it every round. The controller manager's leader fails its next renewal,
   gives up within its renew deadline (10 seconds) and exits; restarted, it
   waits on a lease that keeps being renewed. Nothing marks the nodes, nothing
@@ -32,13 +32,13 @@ the control plane and its nodes:
   1-second duration); the controller manager takes it within seconds and
   starts afresh, counting its grace periods from its own start.
 - **It never fights.** Health takes the lease only when it has expired or
-  when its holder's identity starts with the name of a pod Brygga runs for
+  when its holder's identity starts with the name of a pod Lodia runs for
   that controller manager (a leader's identity is `<pod name>_<uuid>`). Any
   other holder, such as a platform's own watchdog, is left alone and named in
   `status.health.controllerManagerHold.blockedBy`.
-- **It fails safe.** A Brygga that stops renewing gives the lease back after
-  60 seconds, to upstream behaviour; a Brygga that restarts keeps a hold it
-  finds with holder `brygga`.
+- **It fails safe.** A Lodia that stops renewing gives the lease back after
+  60 seconds, to upstream behaviour; a Lodia that restarts keeps a hold it
+  finds with holder `lodia`.
 - **Settings.** On by default; `spec.health.holdControllerManager: false`
   turns it off for one `ControlPlane` and releases a hold in progress. The
   thresholds (20 s, 60%, 2 min) are operator configuration.
@@ -97,10 +97,10 @@ are evicted as upstream does.
   for the release (on Segla's platform, a Deployment created during a hold got
   its ReplicaSet 5 seconds after the release).
 - `Reachable=False` with reason `NodesSilent`, `status.health.controllerManagerHold`
-  says since when and how many nodes, and the alert `BryggaControllerManagerHeld`
+  says since when and how many nodes, and the alert `LodiaControllerManagerHeld`
   fires after 15 minutes.
 - A platform that already runs such a watchdog turns it off before relying on
-  Brygga's; Segla's bosun steps down when Segla moves to Brygga.
+  Lodia's; Segla's bosun steps down when Segla moves to Lodia.
 - The phase 2 gate cuts both workers of a tenant from the control plane and
   checks that no node is tainted and no pod is replaced
   ([roadmap](../roadmap.md)).

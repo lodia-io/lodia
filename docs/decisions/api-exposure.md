@@ -7,7 +7,7 @@ Decided 2026-10-25. The `loadBalancer` and `nodePort` modes are built;
 
 **Three ways out, one default.** `spec.endpoint` is one of:
 
-| mode | what Brygga creates | public endpoint | in-cluster `kubernetes` Service |
+| mode | what Lodia creates | public endpoint | in-cluster `kubernetes` Service |
 |---|---|---|---|
 | `gateway` (default) | `TLSRoute`s on the platform's Gateway: passthrough for `hostnames.apiServer` → the API Service and `hostnames.konnectivity` → the konnectivity Service; with `hostnames.tunnel`, a `ListenerSet` with a terminating TLS listener and a `TLSRoute` → the API Service | `https://<hostnames.apiServer>:443` | endpoints `172.20.0.1:6443`, served on every node by `apiserver-proxy` |
 | `loadBalancer` | one Service of type LoadBalancer: 443 and 6443 → the API server, 8132 → konnectivity | `https://<LB address>:443` | endpoints `<LB address>:6443`, no proxy |
@@ -21,14 +21,14 @@ listener ([TLSRoute](https://gateway-api.sigs.k8s.io/reference/api-types/tlsrout
 [ListenerSet](https://gateway-api.sigs.k8s.io/reference/api-types/listenerset/)).
 The platform owns the Gateway: a `TLS` listener in `Passthrough` mode on 443
 for a wildcard hostname, routes allowed from tenant namespaces by label, and
-`allowedListeners` that admits tenant `ListenerSet`s. Brygga only attaches.
+`allowedListeners` that admits tenant `ListenerSet`s. Lodia only attaches.
 Missing features turn `APIServerReady` False with reason `GatewayUnsupported`
 (phase 2).
 
 **In-cluster access (the `gateway` mode).** A connection from a pod to the
 `kubernetes` ClusterIP carries no SNI, and every tenant's
 `kubernetes.default.svc` looks the same, so the shared Gateway cannot route
-it. Brygga uses the shape HyperShift ships, with the outer hop Segla's agent
+it. Lodia uses the shape HyperShift ships, with the outer hop Segla's agent
 already runs in production:
 
 1. The API server runs with `--advertise-address=172.20.0.1` (configurable
@@ -76,7 +76,7 @@ The konnectivity version follows the Kubernetes minor (proxy 0.NN for
 Kubernetes 1.NN, [README](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/README.md#L37-L40)).
 
 **Nothing inbound on a node.** The API server reaches kubelets, webhooks and
-aggregated APIs through the agents' tunnels. Brygga's defaults bind what it
+aggregated APIs through the agents' tunnels. Lodia's defaults bind what it
 configures to the smallest address that works: kubelet health on
 `127.0.0.1:10248`, no read-only port, anonymous kubelet access off;
 kube-proxy metrics and health on loopback (the health port can be opened for
@@ -131,7 +131,7 @@ a node flag (`--address`, `--node-ip`), which the node's owner passes through
   Go sends no SNI for an IP address
   ([`hostnameInSNI`](https://github.com/golang/go/blob/go1.26.10/src/crypto/tls/handshake_client.go#L1305-L1315)),
   so agents dial `konnectivity.<cp>` by name.
-- `apiserver-proxy` is a Brygga image (a small Go binary) that runs
+- `apiserver-proxy` is a Lodia image (a small Go binary) that runs
   privileged on every node (`NET_ADMIN` for the address); its scope is
   exactly one address and one listener, and it is in the inventory like
   every other in-tenant object.

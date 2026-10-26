@@ -1,6 +1,6 @@
 # What we learned from existing solutions
 
-Before designing Brygga we studied how the projects that run Kubernetes
+Before designing Lodia we studied how the projects that run Kubernetes
 control planes as a service do it: what they host where, how they store,
 back up, rotate, upgrade and expose control planes, and what their users run
 into. This page is the summary; every statement links the project's own
@@ -157,9 +157,9 @@ toggle of that add-on does the same.
 | footprint transparency | HyperShift publishes per-control-plane sizing; k0smotron publishes a 100-control-plane benchmark |
 | project governance | Cluster API: SIG governance and a published version support policy |
 
-## What Brygga does about it
+## What Lodia does about it
 
-| we found | Brygga | decision |
+| we found | Lodia | decision |
 |---|---|---|
 | a secret change restarts everything | a Deployment per component; reloadable files are not hashed into pod templates, restart-only files roll only their consumer | [component-per-deployment](decisions/component-per-deployment.md) |
 | CA rotation is manual and touches nodes | staged rotation of CA, ServiceAccount key and encryption key, with the old and new valid together | [staged-credential-rotation](decisions/staged-credential-rotation.md) |
@@ -170,7 +170,7 @@ toggle of that add-on does the same.
 | one LB per control plane | a shared Gateway by SNI; in-cluster access through apiserver-proxy | [api-exposure](decisions/api-exposure.md) |
 | node listeners bind wide | nothing inbound on nodes; agents bind loopback, the kubelet its node IP | [api-exposure](decisions/api-exposure.md) |
 | upgrade order left to the user | the skew-policy order enforced step by step | [upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md) |
-| operator releases roll the fleet | Brygga-initiated changes roll in each tenant's window, N at a time | [upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md) |
+| operator releases roll the fleet | Lodia-initiated changes roll in each tenant's window, N at a time | [upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md) |
 | hibernation is uneven | hibernation with schedules, etcd included | [one-controlplane-per-cluster](decisions/one-controlplane-per-cluster.md) |
 | an outage between control plane and nodes evicts healthy pods | Health holds the controller manager's leader lease while most nodes are silent | [controller-manager-hold](decisions/controller-manager-hold.md) |
 | separate pods per component cost density | an optional `Compact` layout: one pod per tenant with a shared store | [compact-layout](decisions/compact-layout.md) |
@@ -189,7 +189,7 @@ toggle of that add-on does the same.
 - **HyperShift:** a Deployment per component, its tenancy invariants, a
   documented PKI and sizing.
 - **KKP:** declarative backup schedules and restores as objects.
-- **Cluster API:** a published support policy; the provider contract Brygga's
+- **Cluster API:** a published support policy; the provider contract Lodia's
   own Cluster API provider will implement.
 - **Talos Omni:** nodes that need egress only.
 

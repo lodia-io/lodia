@@ -1,6 +1,6 @@
-# Brygga docs
+# Lodia docs
 
-Brygga is an operator that runs Kubernetes control planes as pods on a
+Lodia is an operator that runs Kubernetes control planes as pods on a
 management cluster, one `ControlPlane` object per tenant cluster. A control
 plane is a kube-apiserver with a konnectivity-server at its side, a
 kube-controller-manager, a kube-scheduler, each in its own Deployment (or all
@@ -10,7 +10,7 @@ and join with `kubeadm join`. Six independent controllers keep every
 control plane certified, stored, running, reachable and up to date, and talk
 to each other only through status conditions.
 
-Go, controller-runtime; runs as a Deployment (`brygga-system`, two replicas,
+Go, controller-runtime; runs as a Deployment (`lodia-system`, two replicas,
 leader election) on a management cluster with a maintained Kubernetes minor
 (1.35 or newer today). Dedicated etcd
 clusters are managed through etcd-druid
@@ -27,7 +27,7 @@ S3-compatible object storage.
 | `ControlPlane` | the desired and observed state of one tenant control plane ([field reference](api/controlplane.md)) |
 | `DatastoreClass`, `Datastore` | how a dedicated etcd is built; a shared etcd several tenants use by prefix |
 | `KubeconfigRequest`, `Backup` | a short-lived credential for a person; an on-demand snapshot |
-| the tenant namespace's control plane objects | Deployments, Services, PodDisruptionBudgets, NetworkPolicies, Gateway routes, Secrets, ConfigMaps, the etcd resource; all owned by the `ControlPlane` and labelled `brygga.segla.io/control-plane` |
+| the tenant namespace's control plane objects | Deployments, Services, PodDisruptionBudgets, NetworkPolicies, Gateway routes, Secrets, ConfigMaps, the etcd resource; all owned by the `ControlPlane` and labelled `lodia.io/control-plane` |
 | the PKI of every tenant | CAs, leaf certificates, kubeconfigs, ServiceAccount keys, encryption keys, their renewal and staged rotation |
 | the bootstrap of the tenant cluster | what `kubeadm join` reads and the RBAC it needs, kube-proxy, CoreDNS, konnectivity-agent, apiserver-proxy, the admin group's binding |
 | the pace | upgrades in order, maintenance windows, the fleet limit, hibernation |
@@ -35,8 +35,8 @@ S3-compatible object storage.
 
 And deliberately not: machines and their operating systems (a Cluster API
 provider or a node agent on top), the CNI and every other addon the tenant
-chooses, the Gateway itself (the platform installs it; Brygga attaches
-routes), the object storage bucket, the monitoring stack (Brygga exposes
+chooses, the Gateway itself (the platform installs it; Lodia attaches
+routes), the object storage bucket, the monitoring stack (Lodia exposes
 metrics), and bootstrap tokens (`kubeadm token create` with the admin
 kubeconfig).
 
@@ -62,7 +62,7 @@ in [`api/examples/`](api/examples/).
 
 | controller | writes | condition | needs |
 |---|---|---|---|
-| PKI | Secrets with certificates, keys and kubeconfigs; the tenant's bindings for Brygga, the admin group and the kubelet client | `CertificatesReady`, `AccessReady`; `CAValidityAcceptable` outside `Ready` | `status.endpoint`; `APIServerReady` for the bindings |
+| PKI | Secrets with certificates, keys and kubeconfigs; the tenant's bindings for Lodia, the admin group and the kubelet client | `CertificatesReady`, `AccessReady`; `CAValidityAcceptable` outside `Ready` | `status.endpoint`; `APIServerReady` for the bindings |
 | Datastore | the `Etcd` of a dedicated etcd — built, for one member — or a user and role in a shared store; backups and defragmentation | `DatastoreReady` | a complete generation of PKI's etcd certificates |
 | Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady` | `status.target`, `status.datastore`, `CertificatesReady`, `DatastoreReady` |
 | Tenant | objects inside the tenant cluster, with an inventory | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
@@ -77,7 +77,7 @@ labelled objects, with metadata only for Secrets and ConfigMaps. PKI, the
 Datastore controller, a first Lifecycle, the Tenant controller, Health's
 external probe and Workloads are built (`internal/controller/pki`,
 `datastore`, `lifecycle`, `tenant`, `health` and `workloads`, registered
-under those names by `internal/operator`, whose manager `cmd/brygga` runs and
+under those names by `internal/operator`, whose manager `cmd/lodia` runs and
 the tests build).
 
 ```mermaid
@@ -118,7 +118,7 @@ flowchart TB
     direction LR
     subgraph kas["Deployment kube-apiserver ×2 · PDB · spread"]
       a["kube-apiserver :6443"] ---|UDS| k["konnectivity-server :8132"]
-      a ---|UDS| sg["brygga-signer<br/>ServiceAccount tokens"]
+      a ---|UDS| sg["lodia-signer<br/>ServiceAccount tokens"]
     end
     kcm["Deployment kube-controller-manager ×2"]
     sch["Deployment kube-scheduler ×2"]
@@ -132,7 +132,7 @@ flowchart TB
     etcd -->|snapshots| s3[(object storage)]
   end
   ep["load balancer, node port<br/>or Gateway :443 by SNI"] --> svc
-  op["Brygga"] --> svc
+  op["Lodia"] --> svc
   druid["etcd-druid"] -->|:2379 :8080| etcd
 ```
 
@@ -155,13 +155,13 @@ ConfigMaps are their writer's alone:
 | `<cp>-apiserver-serving`, `<cp>-apiserver-kubelet-client` (`kubernetes.io/tls`) | PKI | Workloads, for the API server | reloaded (the kubelet client certificate for new connections) |
 | `<cp>-front-proxy-ca` (`ca.crt`), `<cp>-front-proxy-client` (`kubernetes.io/tls`) | PKI | Workloads, for the API server and its aggregated APIs | the CA is reloaded; the client certificate restarts the API server until a reload is proven |
 | `<cp>-etcd-ca` (`ca.crt`), `<cp>-apiserver-etcd-client` (`kubernetes.io/tls`) | PKI | Workloads, for the API server | the client certificate is read per connection; a new etcd CA restarts the API server (`--etcd-cafile` is read once) |
-| `<cp>-etcd-{ca,server,client,peer,backup-restore}-<g>` (`ca.crt` for `ca`, `kubernetes.io/tls` for the rest, all immutable; the profiles of the `Etcd` named `<cp>-etcd`), one generation `g` per renewal, labelled `brygga.segla.io/etcd-certificates: "<g>"` | PKI | the Datastore controller, which names the newest complete generation in the `Etcd`; through the `Etcd`, etcd, its backup-restore sidecar and etcd-druid's client | renewed as the next generation, since the sidecar keeps its first certificate and etcd-druid rolls the members only for a new name: no API outage with three members, about 20 s with one ([etcd spike](etcd-spike-2026-10.md)); a generation with a member missing or being deleted is replaced by the next, never repaired in place; PKI keeps the previous generation and deletes older ones |
-| `<cp>-sa-keys` (`signing.key`, a PKCS#8 RSA 2048 key, and the `verify-*.pub` keys published beside it during a rotation) | PKI | Workloads, for the `brygga-signer` sidecar | reloaded by the sidecar; the API server fetches the keys again within the signer's refresh hint and does not restart |
+| `<cp>-etcd-{ca,server,client,peer,backup-restore}-<g>` (`ca.crt` for `ca`, `kubernetes.io/tls` for the rest, all immutable; the profiles of the `Etcd` named `<cp>-etcd`), one generation `g` per renewal, labelled `lodia.io/etcd-certificates: "<g>"` | PKI | the Datastore controller, which names the newest complete generation in the `Etcd`; through the `Etcd`, etcd, its backup-restore sidecar and etcd-druid's client | renewed as the next generation, since the sidecar keeps its first certificate and etcd-druid rolls the members only for a new name: no API outage with three members, about 20 s with one ([etcd spike](etcd-spike-2026-10.md)); a generation with a member missing or being deleted is replaced by the next, never repaired in place; PKI keeps the previous generation and deletes older ones |
+| `<cp>-sa-keys` (`signing.key`, a PKCS#8 RSA 2048 key, and the `verify-*.pub` keys published beside it during a rotation) | PKI | Workloads, for the `lodia-signer` sidecar | reloaded by the sidecar; the API server fetches the keys again within the signer's refresh hint and does not restart |
 | `<cp>-encryption-config` (`encryption-config.yaml`: an `EncryptionConfiguration` for `secrets` with the provider of `apiServer.encryption.provider` and a random 32-byte key) | PKI | Workloads, for the API server | reloaded every minute (automatic reload) |
 | `<cp>-konnectivity-server` (`kubernetes.io/tls`), `<cp>-konnectivity-kubeconfig` (`kubeconfig`, `tls.crt`, `tls.key`, `ca.crt`; server `https://<cp>-kube-apiserver.<ns>.svc:443`) | PKI | Workloads, for konnectivity-server | the API server pod rolls, in the maintenance window |
 | `<cp>-controller-manager-kubeconfig`, `<cp>-scheduler-kubeconfig` (`kubeconfig`, `tls.crt`, `tls.key`, `ca.crt`; server `https://<cp>-kube-apiserver.<ns>.svc:443`) | PKI | Workloads, for each its own component; the kubeconfig names its certificates as files beside it | reloaded by client-go |
-| `<cp>-admin-kubeconfig` (`kubeconfig`, certificates embedded; server `status.endpoint.apiServer`) | PKI | the platform, through `status.credentials.adminKubeconfigSecretRef`, as `brygga:cluster-admins` | nothing restarts |
-| `<cp>-brygga-kubeconfig` (`kubeconfig`, certificates embedded; `brygga:operator`, dialling the in-namespace Service) | PKI | Brygga inside the tenant: PKI, for its bindings; Tenant; Health from phase 2 | nothing restarts |
+| `<cp>-admin-kubeconfig` (`kubeconfig`, certificates embedded; server `status.endpoint.apiServer`) | PKI | the platform, through `status.credentials.adminKubeconfigSecretRef`, as `lodia:cluster-admins` | nothing restarts |
+| `<cp>-lodia-kubeconfig` (`kubeconfig`, certificates embedded; `lodia:operator`, dialling the in-namespace Service) | PKI | Lodia inside the tenant: PKI, for its bindings; Tenant; Health from phase 2 | nothing restarts |
 | `Etcd` `<cp>-etcd` | Datastore | PKI, whose etcd certificates name its members and Services; etcd-druid | etcd-druid rolls the members |
 | `<cp>-etcd-backup` (the class's backup credentials, copied) | Datastore | etcd-druid, through the `Etcd`, for the backup sidecar | whether the sidecar reads new keys without a restart is open (`todo.md`) |
 | Service `<cp>-kube-apiserver` | Workloads | PKI, which names it in certificates and kubeconfigs | — |
@@ -179,9 +179,9 @@ that mounts them; nothing else does, so a routine renewal of a reloaded
 certificate rolls nothing
 ([staged-credential-rotation](decisions/staged-credential-rotation.md)).
 PKI writes the hash of each Secret's data on the Secret, in the annotation
-`brygga.segla.io/data-hash`, so Workloads takes a restart-only Secret's hash
+`lodia.io/data-hash`, so Workloads takes a restart-only Secret's hash
 from its metadata and never reads the keys it mounts.
-Every Secret above but `<cp>-etcd-backup` is PKI's, applied as `brygga/pki`
+Every Secret above but `<cp>-etcd-backup` is PKI's, applied as `lodia/pki`
 with an owner reference to the `ControlPlane`; every key is ECDSA P-256
 except the ServiceAccount signing key, and a pass over an unchanged
 `ControlPlane` writes nothing (`internal/controller/pki`, proven Secret by
@@ -230,23 +230,23 @@ The labels, annotations and the finalizer they share are defined in
 
 | key | on | writer | readers |
 |---|---|---|---|
-| label `brygga.segla.io/control-plane: <cp>` | every object Brygga creates for a `ControlPlane` | each controller, on its objects | the operator's cache, which holds only labelled objects |
-| label `app.kubernetes.io/managed-by: brygga` | every object Brygga writes inside a tenant cluster | PKI, on its bindings; Tenant, on its objects | none in Brygga: Tenant prunes by its inventory, never by the label |
-| label `brygga.segla.io/control-plane-uid` | the etcd claims | Datastore | Datastore, which reclaims and starts only on its own claims |
-| label `brygga.segla.io/etcd-certificates: <g>` | the etcd certificate Secrets | PKI | Datastore, which counts complete generations |
-| annotation `brygga.segla.io/is-default-class: "true"` | a `DatastoreClass` | the platform | Datastore |
-| annotation `brygga.segla.io/datastore-class` | the `Etcd` and its claims | Datastore | Datastore, which keeps the class an `Etcd` or its claims record; others read `status.datastore.class` |
-| annotation `brygga.segla.io/datastore-class-generation` | the `Etcd` | Datastore | Datastore, for `status.datastore.class` |
-| annotation `brygga.segla.io/data-hash` | every Secret PKI writes | PKI: `DataHash` of the Secret's data, a SHA-256 that changes whenever the data does | Workloads, for the restart hashes of its pod templates |
-| annotation `brygga.segla.io/operation` | a `ControlPlane` | the platform | Lifecycle and PKI, with rotations in phase 3 |
-| finalizer `brygga.segla.io/datastore` | a `ControlPlane` | Datastore | the API server, which deletes the `ControlPlane` once it is gone |
+| label `lodia.io/control-plane: <cp>` | every object Lodia creates for a `ControlPlane` | each controller, on its objects | the operator's cache, which holds only labelled objects |
+| label `app.kubernetes.io/managed-by: lodia` | every object Lodia writes inside a tenant cluster | PKI, on its bindings; Tenant, on its objects | none in Lodia: Tenant prunes by its inventory, never by the label |
+| label `lodia.io/control-plane-uid` | the etcd claims | Datastore | Datastore, which reclaims and starts only on its own claims |
+| label `lodia.io/etcd-certificates: <g>` | the etcd certificate Secrets | PKI | Datastore, which counts complete generations |
+| annotation `lodia.io/is-default-class: "true"` | a `DatastoreClass` | the platform | Datastore |
+| annotation `lodia.io/datastore-class` | the `Etcd` and its claims | Datastore | Datastore, which keeps the class an `Etcd` or its claims record; others read `status.datastore.class` |
+| annotation `lodia.io/datastore-class-generation` | the `Etcd` | Datastore | Datastore, for `status.datastore.class` |
+| annotation `lodia.io/data-hash` | every Secret PKI writes | PKI: `DataHash` of the Secret's data, a SHA-256 that changes whenever the data does | Workloads, for the restart hashes of its pod templates |
+| annotation `lodia.io/operation` | a `ControlPlane` | the platform | Lifecycle and PKI, with rotations in phase 3 |
+| finalizer `lodia.io/datastore` | a `ControlPlane` | Datastore | the API server, which deletes the `ControlPlane` once it is gone |
 
 Workloads runs the three Deployments of
 [component-per-deployment](decisions/component-per-deployment.md) from the
 images of `status.target.version` and the flags of the [hard way](hard-way.md),
 once `CertificatesReady` and `DatastoreReady` are True for the generation and
 the Datastore controller has published `status.datastore.endpoints`, the API
-server's `--etcd-servers`; brygga-signer runs beside the API server as a
+server's `--etcd-servers`; lodia-signer runs beside the API server as a
 native sidecar, its image a flag of the operator (`--signer-image`). One
 Service, `<cp>-kube-apiserver`, of the endpoint's type, takes 443 and 6443 to
 the API server and 8132 to konnectivity-server, and Workloads publishes
@@ -261,7 +261,7 @@ node. In `nodePort` mode the API server listens on that node port itself: it
 advertises its address and its own port into the tenant's `kubernetes`
 endpoints, which the tenant's nodes reach only through the node port. Each
 pod template carries a hash of what its component reads once
-(`brygga.segla.io/restart-hash`): the data hashes of its restart-only Secrets
+(`lodia.io/restart-hash`): the data hashes of its restart-only Secrets
 and, for the API server, its two ConfigMaps, since it reads the egress
 selector, and the anonymous section of the authentication configuration,
 only at start
@@ -297,7 +297,7 @@ with `Refused`, the message naming it, and the pass is retried with backoff.
 The dedicated etcd is etcd-druid's `Etcd` `<cp>-etcd`, which the Datastore
 controller renders from the `DatastoreClass` and the newest complete
 generation of the etcd certificates, under the `ControlPlane`'s finalizer
-`brygga.segla.io/datastore`, which it holds from before the first `Etcd`
+`lodia.io/datastore`, which it holds from before the first `Etcd`
 exists. etcd-druid turns it into the StatefulSet `<cp>-etcd`, the client
 Service `<cp>-etcd-client` (`https://<cp>-etcd-client.<ns>.svc:2379`, the
 address Workloads gives the API server's `--etcd-servers`), the peer Service
@@ -327,12 +327,12 @@ of an edit could add a store whose copy cannot be made; before the first
 `Etcd` exists, the same cause is `Provisioning`, and nothing is created.
 
 The class is resolved once, when the `Etcd` is created, and
-recorded on it in `brygga.segla.io/datastore-class`, with the class
-generation it was rendered from in `brygga.segla.io/datastore-class-generation`;
+recorded on it in `lodia.io/datastore-class`, with the class
+generation it was rendered from in `lodia.io/datastore-class-generation`;
 from then on the `Etcd` follows that class, its reclaim policy included, as a
 default StorageClass is written into a claim when the claim is created
 ([storage classes](https://kubernetes.io/docs/concepts/storage/storage-classes/#default-storageclass)).
-The claims record the class too, in `brygga.segla.io/datastore-class` alone,
+The claims record the class too, in `lodia.io/datastore-class` alone,
 for their reclaim, so an `Etcd` created again over
 this `ControlPlane`'s claims, after someone deleted it, takes the class they
 record rather than `className` or the current default, which could give it
@@ -341,7 +341,7 @@ another bucket and placement; while that class is gone, it is
 changes the `Etcd`'s spec reaches the `Etcd` of every tenant on it at once
 and rolls their members, a single member with an outage, until Lifecycle
 holds class edits for each tenant's maintenance window in phase 2: etcd-druid
-carries every field Brygga renders from the class into the pod template
+carries every field Lodia renders from the class into the pod template
 ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L161-L203)), the backup sidecar's arguments
 ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L430-L601)) or the etcd ConfigMap, whose checksum is in
 the pod template ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L220-L227)), and updates the StatefulSet
@@ -359,7 +359,7 @@ them: `<cp>-etcd-<cp>-etcd-<n>`, its claim template named after the `Etcd`
 ([stateful_set_utils.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/controller/statefulset/stateful_set_utils.go#L116-L119),
 [builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L233)),
 whatever labels they carry. They are labelled with the `ControlPlane`'s UID
-(`brygga.segla.io/control-plane-uid`) and annotated with the class, since
+(`lodia.io/control-plane-uid`) and annotated with the class, since
 they outlive the `Etcd`. What each field of the class becomes
 ([etcd.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/etcd.go),
 [store.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/store.go));
@@ -374,7 +374,7 @@ everything the class does not set is etcd-druid's default:
 | `storage.className` | `spec.storageClass` | when the `Etcd` is created and not after: the field is immutable in the `Etcd` ([etcd.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/etcd.go#L627-L638)) |
 | `storage.size` | `spec.storageCapacity` | when the `Etcd` is created and not after: it is the StatefulSet's volume claim template, which cannot change in place ([validation.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/apis/apps/validation/validation.go#L262)) |
 | `storage.reclaimPolicy` | — | on deletion, `Delete` removes the claims etcd-druid's StatefulSet created and `Retain` leaves them ([deletion](#deletion)) |
-| `backup.store.provider`, `.bucket`, `.endpoint` | `spec.backup.store.provider`, `.container`, `.endpointOverride` | Brygga's four providers are among etcd-druid's; most S3-compatible stores also want `s3ForcePathStyle: "true"` in the credentials Secret |
+| `backup.store.provider`, `.bucket`, `.endpoint` | `spec.backup.store.provider`, `.container`, `.endpointOverride` | Lodia's four providers are among etcd-druid's; most S3-compatible stores also want `s3ForcePathStyle: "true"` in the credentials Secret |
 | `backup.store.prefix` | `spec.backup.store.prefix` | `<class prefix>/<namespace>/<cp>/<uid>`: etcd-backup-restore restores an empty member from the newest snapshot under its prefix ([design](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/docs/proposals/design.md#L27)), so a `ControlPlane` recreated under the same name never restores the old one's |
 | `backup.store.region` | the key `region` of `<cp>-etcd-backup` | where the sidecar reads it |
 | `backup.store.secretRef` | `spec.backup.store.secretRef` | `<cp>-etcd-backup`, the copy, with the class Secret's data |
@@ -467,13 +467,13 @@ is created until they are deleted. `VolumesExist` too when an `Etcd`
 `<cp>-etcd` exists whose controller is not this `ControlPlane`, an orphan or
 a predecessor's the garbage collector has not removed yet: it is neither
 adopted nor written, and the message names it. `Refused` when the API
-server refuses the `Etcd` Brygga renders — an admission policy on `Etcd`s, a
+server refuses the `Etcd` Lodia renders — an admission policy on `Etcd`s, a
 class stored before a rule it breaks (validation ratcheting keeps an
 unchanged field on update,
 [ratcheting](https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/#validation-ratcheting)),
 an etcd-druid whose schema moved: the message
 names the `Etcd`, the certificate generation and the class generation, and
-the refusal is in Brygga's log. `Deleting` while the `ControlPlane` is being
+the refusal is in Lodia's log. `Deleting` while the `ControlPlane` is being
 deleted. `status.datastore` says where the API server reaches etcd (the
 client Service, `<cp>-etcd-client.<ns>.svc:2379`), the class and the
 generation the `Etcd` was built from, and its members, total and ready. Every message is built from the state alone, so a pass that
@@ -494,12 +494,12 @@ controller manager holds only the kubelet signer, an intermediate that signs
 kubelet client certificates for 30 days. No long-lived certificate carries
 `system:masters`. The API server's kubelet client is
 `kube-apiserver-kubelet-client` in the group
-`brygga:kubelet-api-admins`, bound to the built-in `system:kubelet-api-admin`
+`lodia:kubelet-api-admins`, bound to the built-in `system:kubelet-api-admin`
 role, the less privileged option the
 [certificate best practices](https://kubernetes.io/docs/setup/best-practices/certificates/)
 recommend; konnectivity-server runs as `system:konnectivity-server`, allowed
 to create TokenReviews and nothing else; the controller manager and scheduler
-use their standard identities; Brygga reaches the tenant as `brygga:operator`,
+use their standard identities; Lodia reaches the tenant as `lodia:operator`,
 bound to `cluster-admin` because it manages RBAC; people and platforms use the
 admin group or a `KubeconfigRequest`
 ([decision](decisions/short-lived-kubeconfigs.md)). The bindings themselves
@@ -512,7 +512,7 @@ API server's two ports are open to all, since they are the public endpoint,
 and nothing reaches the controller manager or the scheduler but the kubelet's
 probes, which come from the node. Phase 2 default-denies the namespace,
 egress included, and allows exactly the arrows above: the endpoint → API
-server and konnectivity-server, controller manager and scheduler and Brygga
+server and konnectivity-server, controller manager and scheduler and Lodia
 → the API Service, API server → etcd, etcd ↔ etcd, etcd-druid → etcd and its
 backup-restore sidecar, etcd and its compaction Jobs → object storage,
 metrics scrapers → the health ports, and every pod → the cluster DNS.
@@ -544,7 +544,7 @@ flowchart LR
 Three ways to expose a control plane
 ([decision](decisions/api-exposure.md)):
 
-| `spec.endpoint` | what Brygga creates | endpoint | in-cluster access |
+| `spec.endpoint` | what Lodia creates | endpoint | in-cluster access |
 |---|---|---|---|
 | `gateway` | two TLS passthrough routes (API, konnectivity) on the platform's Gateway, and a `ListenerSet` with a terminating listener and route for the tunnel | `https://api.<cp>:443` | the API server advertises `172.20.0.1`, so the `kubernetes` Service's endpoint is `172.20.0.1:6443`; the apiserver-proxy DaemonSet owns that address on every node's loopback and wraps each connection in an outer TLS session with the tunnel's SNI, which the Gateway terminates and forwards to the API server untouched |
 | `loadBalancer` | one Service of type LoadBalancer with ports 443 and 6443 (API) and 8132 (konnectivity) | the LB address | the API server advertises the LB address; `kubernetes` Endpoints point at it; no proxy |
@@ -580,9 +580,9 @@ The kubeadm objects use kubeadm's own names, so `kubeadm join` and
 | CoreDNS: ServiceAccount, ClusterRole and binding, ConfigMap, Deployment, Service `kube-dns` at the tenth service address | cluster DNS, the version kubeadm pins for the minor |
 | konnectivity-agent: ServiceAccount, DaemonSet, Role to list and watch server leases in `kube-system` | the tunnel to every API server replica |
 | `apiserver-proxy` DaemonSet | in-cluster API access in `gateway` mode ([api-exposure](decisions/api-exposure.md)) |
-| ClusterRoleBinding for `system:konnectivity-server` (→ `system:auth-delegator`) with its lease Role; the bindings of `brygga:operator` and `brygga:cluster-admins` (→ `cluster-admin`) and `brygga:kubelet-api-admins` (→ `system:kubelet-api-admin`) are PKI's, since nothing can apply them before they exist (`AccessReady`) | the identities above |
-| `ValidatingAdmissionPolicy` and binding `brygga-write-lock`, only while a lock is requested | refusing writes during a migration, without a webhook |
-| ConfigMap `kube-system/brygga-inventory` | what to prune next time |
+| ClusterRoleBinding for `system:konnectivity-server` (→ `system:auth-delegator`) with its lease Role; the bindings of `lodia:operator` and `lodia:cluster-admins` (→ `cluster-admin`) and `lodia:kubelet-api-admins` (→ `system:kubelet-api-admin`) are PKI's, since nothing can apply them before they exist (`AccessReady`) | the identities above |
+| `ValidatingAdmissionPolicy` and binding `lodia-write-lock`, only while a lock is requested | refusing writes during a migration, without a webhook |
+| ConfigMap `kube-system/lodia-inventory` | what to prune next time |
 
 The control plane side of the same contract: the API server runs with
 `--enable-bootstrap-token-auth` and a structured authentication
@@ -607,15 +607,15 @@ Built for phase 1, without `apiserver-proxy` and the write lock
 (`internal/controller/tenant`, the templates in its `manifests/`, taken from
 [kubeadm v1.35.0](https://github.com/kubernetes/kubernetes/tree/v1.35.0/cmd/kubeadm/app/phases)
 and [the hard way](hard-way.md)). Once `AccessReady` is True for the
-generation, the controller applies every object as `brygga/tenant` through
-`<cp>-brygga-kubeconfig`, on a change of the inputs it reads and every 10
+generation, the controller applies every object as `lodia/tenant` through
+`<cp>-lodia-kubeconfig`, on a change of the inputs it reads and every 10
 minutes; until then both conditions are `WaitingForAccess`, and it uses
-`<cp>-brygga-kubeconfig` and `<cp>-ca-bundle` only while no other owner
+`<cp>-lodia-kubeconfig` and `<cp>-ca-bundle` only while no other owner
 keeps them, looking again every minute. It leaves another owner's objects
 as they are: an object no inventory names yet is read before its first
-apply and left alone when it exists without `brygga/tenant` among its field
+apply and left alone when it exists without `lodia/tenant` among its field
 managers, and the prune deletes an entry that left the render only when
-`brygga/tenant` applied it, under the UID and resourceVersion it read, and
+`lodia/tenant` applied it, under the UID and resourceVersion it read, and
 otherwise drops the entry. The inventory names an object before it is first written,
 and is rewritten to what the render holds once the objects that left it are
 deleted, so a pass that stops anywhere leaves nothing to leak; an object at
@@ -625,14 +625,14 @@ True once every object is applied and pruned; False with `Refused` names
 the object, or the inventory read, the tenant refused, and with `Applying`
 another owner's object, an inventory it cannot read, or a tenant that never
 answered, while a tenant that stops answering leaves a True as it was. `AddonsAvailable` reads the
-DaemonSets and Deployments Brygga applied, every minute until they are
+DaemonSets and Deployments Lodia applied, every minute until they are
 rolled out; it keeps a rollout it read before while none can be read, and
 until one is, says what stopped the pass.
 
 ## Lifecycle
 
 Built so far, for phase 1: Lifecycle sets `status.target.version` to
-`spec.version` when its minor is one Brygga runs — 1.35, 1.36 and 1.37, whose
+`spec.version` when its minor is one Lodia runs — 1.35, 1.36 and 1.37, whose
 images are in `internal/versions` — and within that minor only, since a minor
 upgrade needs the order below, which phase 2 builds; otherwise the target
 stays and `Progressing` says why (`Unsupported`), else `Idle`, or `Paused`.
@@ -649,8 +649,8 @@ the current generation.
 
 One minor at a time, in the order the version skew policy allows: backup →
 API server → controller manager and scheduler → in-tenant components →
-nodes by their owner. User changes roll now; changes Brygga initiates
-(patch updates, a new Brygga release, a restart-only renewal) wait for the
+nodes by their owner. User changes roll now; changes Lodia initiates
+(patch updates, a new Lodia release, a restart-only renewal) wait for the
 tenant's maintenance window and the fleet limit
 ([decision](decisions/upgrades-and-maintenance-windows.md)).
 
@@ -671,7 +671,7 @@ stateDiagram-v2
 
 Volumes stay; snapshots continue to exist; rotations and patch updates wait
 until the control plane is awake and say so in `status.target.reason`.
-Nodes are not Brygga's to stop; their owner scales them down or lets them
+Nodes are not Lodia's to stop; their owner scales them down or lets them
 sit (kubelets retry the API without harm).
 
 ### Credential rotation
@@ -682,13 +682,13 @@ etcd CA. Credentials rotate in stages, the old and the new valid together
 between stages, as Gardener does
 ([shoot credentials rotation](https://github.com/gardener/gardener/blob/master/docs/usage/shoot-operations/shoot_credentials_rotation.md)),
 and the routine rotations never touch a node: the client CA, the
-ServiceAccount key (signed by the `brygga-signer` sidecar, so the API server
+ServiceAccount key (signed by the `lodia-signer` sidecar, so the API server
 does not restart), the etcd encryption key, the etcd and front-proxy CAs.
 Only the trust anchor, the cluster CA, waits for node owners. The
 ServiceAccount key rotates through three states of `<cp>-sa-keys`: K₂
 published beside K₁, then K₂ signing with K₁ still published, then K₁ dropped
 once the owner confirms that no client holds a K₁ token. Started and
-completed through the `brygga.segla.io/operation` annotation; the phases are
+completed through the `lodia.io/operation` annotation; the phases are
 in `status.credentials.rotation`
 ([decision](decisions/staged-credential-rotation.md)).
 
@@ -726,7 +726,7 @@ writes stop for the copy.
 ### Deletion
 
 The Datastore controller holds the `ControlPlane`'s finalizer
-`brygga.segla.io/datastore`; while `spec.paused` is true it touches
+`lodia.io/datastore`; while `spec.paused` is true it touches
 nothing, so the deletion of a paused `ControlPlane` waits until it is
 unpaused. On deletion it deletes the `Etcd` and waits
 for etcd-druid to let it go, then reclaims the volumes, which etcd-druid
@@ -775,15 +775,15 @@ operator.
 ## Identity and tenancy
 
 - A `ControlPlane` is namespaced; the platform's RBAC on the namespace
-  decides who creates clusters and who reads their Secrets. Brygga's own
+  decides who creates clusters and who reads their Secrets. Lodia's own
   ClusterRole is limited to its kinds, the workload kinds it renders, Secrets
   and ConfigMaps by label, Gateway API routes and listener sets, etcd-druid's
   `Etcd`, the StatefulSet etcd-druid runs for it and the claims of that
   StatefulSet; the Datastore controller's share is the table below.
-- Every field Brygga writes has a field manager `brygga/<controller>`;
+- Every field Lodia writes has a field manager `lodia/<controller>`;
   another manager's fields on the same object are left alone.
-- Inside a tenant, Brygga is `brygga:operator`; its objects carry
-  `app.kubernetes.io/managed-by: brygga`. Tenant's are listed in its
+- Inside a tenant, Lodia is `lodia:operator`; its objects carry
+  `app.kubernetes.io/managed-by: lodia`. Tenant's are listed in its
   inventory, and its prune reads the inventory alone, never the label: PKI's
   three bindings carry the label too, and PKI is their one writer.
 - No cross-tenant object: every Secret, Service and route is in the tenant's
@@ -795,7 +795,7 @@ operator.
   included. Whoever reads Secrets in one tenant namespace therefore reads
   every tenant's snapshots on that class. Two rules bound it until the
   credentials are scoped to one tenant's prefix: Secrets in tenant
-  namespaces are readable by Brygga and the platform's administrators only,
+  namespaces are readable by Lodia and the platform's administrators only,
   so automation gets `get` on `<cp>-admin-kubeconfig` by `resourceNames` and
   never the namespace's Secrets; and a class per trust boundary.
 
@@ -810,10 +810,10 @@ one, on by default since 1.35, and falls back to `list` where it does not
 
 | group | resource | verbs | for |
 |---|---|---|---|
-| `brygga.segla.io` | `controlplanes` | `list`, `watch`, `patch` | the cache; the finalizer, held and released with a patch |
-| `brygga.segla.io` | `controlplanes/status` | `patch` | `DatastoreReady` and `status.datastore`, applied |
-| `brygga.segla.io` | `controlplanes/finalizers` | `update` | `blockOwnerDeletion` on the owner references of the `Etcd` and of `<cp>-etcd-backup`, which that admission plugin allows only with `update` on the owner's `finalizers` ([gc_admission.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/plugin/pkg/admission/gc/gc_admission.go#L122-L152)) |
-| `brygga.segla.io` | `datastoreclasses` | `list`, `watch` | the cache |
+| `lodia.io` | `controlplanes` | `list`, `watch`, `patch` | the cache; the finalizer, held and released with a patch |
+| `lodia.io` | `controlplanes/status` | `patch` | `DatastoreReady` and `status.datastore`, applied |
+| `lodia.io` | `controlplanes/finalizers` | `update` | `blockOwnerDeletion` on the owner references of the `Etcd` and of `<cp>-etcd-backup`, which that admission plugin allows only with `update` on the owner's `finalizers` ([gc_admission.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/plugin/pkg/admission/gc/gc_admission.go#L122-L152)) |
+| `lodia.io` | `datastoreclasses` | `list`, `watch` | the cache |
 | `druid.gardener.cloud` | `etcds` | `get`, `list`, `watch`, `create`, `patch`, `delete` | the cache, and the API server for an `Etcd` without the label; the apply, which the API server also authorizes as `create` when it creates the object ([patch.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/staging/src/k8s.io/apiserver/pkg/endpoints/handlers/patch.go#L203-L232)); the deletion |
 | `""` | `secrets` | `get`, `list`, `watch`, `create`, `patch`, `delete` | the metadata of the certificate Secrets; the class's credentials Secret, read uncached in the namespace the class names; the copy `<cp>-etcd-backup`, applied; `delete` because that admission plugin lets only who may delete an object set an owner reference on it when it is updated, which adopting a copy with no owner does ([gc_admission.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/plugin/pkg/admission/gc/gc_admission.go#L103-L119)) |
 | `""` | `persistentvolumeclaims` | `list`, `patch`, `delete` | the claims of `<cp>-etcd`, listed in the tenant's namespace and matched by name; their UID label and class annotation; the reclaim |
@@ -822,9 +822,9 @@ one, on by default since 1.35, and falls back to `list` where it does not
 Lifecycle reads `ControlPlane`s from the cache and applies their status:
 `list` and `watch` on `controlplanes`, `patch` on `controlplanes/status`; its
 envtest suite runs it as a user bound to exactly these rules. The Tenant
-controller needs the same and `get` on `secrets`, for `<cp>-brygga-kubeconfig`
+controller needs the same and `get` on `secrets`, for `<cp>-lodia-kubeconfig`
 and `<cp>-ca-bundle`, read uncached; inside the tenant it is
-`brygga:operator`.
+`lodia:operator`.
 
 Health reads `ControlPlane`s from the cache and the CA bundle from the API
 server, and applies `Reachable`: `list` and `watch` on `controlplanes`,
@@ -837,9 +837,9 @@ on:
 
 | group | resource | verbs | for |
 |---|---|---|---|
-| `brygga.segla.io` | `controlplanes` | `list`, `watch` | the cache |
-| `brygga.segla.io` | `controlplanes/status` | `patch` | `APIServerReady` and `status.endpoint`, applied |
-| `brygga.segla.io` | `controlplanes/finalizers` | `update` | `blockOwnerDeletion` on the owner references of what it creates |
+| `lodia.io` | `controlplanes` | `list`, `watch` | the cache |
+| `lodia.io` | `controlplanes/status` | `patch` | `APIServerReady` and `status.endpoint`, applied |
+| `lodia.io` | `controlplanes/finalizers` | `update` | `blockOwnerDeletion` on the owner references of what it creates |
 | `apps` | `deployments` | `list`, `watch`, `create`, `patch`, `delete` | the cache; the apply; `delete` because the admission plugin lets only who may delete an object set an owner reference on it when it is updated, which adopting an orphan does ([gc_admission.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/plugin/pkg/admission/gc/gc_admission.go#L103-L119)) |
 | `""` | `services`, `configmaps` | `list`, `watch`, `create`, `patch`, `delete` | the cache, metadata only for ConfigMaps; the apply; `delete` for the adoption |
 | `networking.k8s.io` | `networkpolicies` | `list`, `watch`, `create`, `patch`, `delete` | the cache; the apply; `delete` for the adoption |
@@ -859,8 +859,8 @@ Prerequisites on the management cluster:
 | an S3-compatible bucket and credentials | backups, strongly recommended |
 | a metrics stack | optional: the chart ships ServiceMonitors, a dashboard and alert rules |
 
-Install: `helm install brygga oci://ghcr.io/segla-io/charts/brygga -n
-brygga-system --create-namespace`. The chart installs etcd-druid as a
+Install: `helm install lodia oci://ghcr.io/lodia-io/charts/lodia -n
+lodia-system --create-namespace`. The chart installs etcd-druid as a
 dependency (or skips it when `etcdDruid.enabled=false` because it is already
 there), the CRDs (upgraded with the chart, kept on uninstall), the operator
 with two replicas, leader election, a PodDisruptionBudget with
@@ -877,17 +877,17 @@ it from values):
 
 | key | meaning | default |
 |---|---|---|
-| `versions` | the Kubernetes versions Brygga runs and, per minor, the images of kube-apiserver, controller manager, scheduler, kube-proxy, CoreDNS, konnectivity, etcd; each with an end-of-support date | the table shipped with the release |
+| `versions` | the Kubernetes versions Lodia runs and, per minor, the images of kube-apiserver, controller manager, scheduler, kube-proxy, CoreDNS, konnectivity, etcd; each with an end-of-support date | the table shipped with the release |
 | `registry` | a mirror prefix for every image, for air-gapped sites | `registry.k8s.io` |
 | `controllers.<name>.workers` | concurrent reconciles per controller | 10 |
-| `fleet.maxConcurrentRollouts` | tenants rolling Brygga-initiated changes at once | 5 |
+| `fleet.maxConcurrentRollouts` | tenants rolling Lodia-initiated changes at once | 5 |
 | `tenant.applyInterval` | the inventory re-apply period | 10m |
 | `health.silentAfter`, `health.holdFraction`, `health.releaseAfter` | when a node counts as silent, the share of silent nodes that starts the hold, how long the nodes must be back before it ends | 20s, 0.6, 2m |
 | `pki.leafLifetime`, `pki.caLifetime`, `pki.trustAnchorLifetime` | leaf certificates and the kubelet signer; every CA but the cluster CA; the cluster CA ([staged-credential-rotation](decisions/staged-credential-rotation.md)) | 1 year, 5 years, 10 years |
 | `kubeconfigRequests.maxExpiration` | | 24h |
 | `defaults.resources.<component>` | requests and limits per component | measured in phase 1 |
 
-Upgrading Brygga: `helm upgrade`; CRDs upgrade with the chart; tenants'
+Upgrading Lodia: `helm upgrade`; CRDs upgrade with the chart; tenants'
 pod templates re-render in their windows, the release notes say what changes
 ([decision](decisions/upgrades-and-maintenance-windows.md)).
 
@@ -902,7 +902,7 @@ off), capacity planning, the alert rules and what each means.
 - Decisions in [`decisions/`](decisions/) in the handbook format; a
   behaviour change updates this file and the decision in the same commit.
 - Names: `<cp>-<component>` for workloads and Services, `<cp>-<purpose>` for
-  Secrets, `brygga.segla.io/*` for labels, annotations and the finalizer.
+  Secrets, `lodia.io/*` for labels, annotations and the finalizer.
 - Every reconcile is idempotent and uses server-side apply; no controller
   reads an object it did not render except through status, or by a name in
   `api/v1alpha1/names.go`.
@@ -918,12 +918,12 @@ off), capacity planning, the alert rules and what each means.
   `kubernetes.io/kubelet-serving`
   ([certificates.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kube-controller-manager/app/certificates.go#L74-L86)),
   so a kubelet with `serverTLSBootstrap: true` never gets one.
-- No legacy ServiceAccount token Secrets: brygga-signer holds the
+- No legacy ServiceAccount token Secrets: lodia-signer holds the
   ServiceAccount key, and the controller manager's token controller does not
   start without one
   ([service_accounts.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kube-controller-manager/app/service_accounts.go#L49-L52)),
   so a Secret of type `kubernetes.io/service-account-token` stays empty.
-- No multi-cluster operator: one Brygga per management cluster; sharding
+- No multi-cluster operator: one Lodia per management cluster; sharding
   across replicas is phase 4.
 - Owed before phase 2: the reclaim and retention defaults; measured
   resource defaults; whether konnectivity agents can share the passthrough
@@ -931,18 +931,18 @@ off), capacity planning, the alert rules and what each means.
 
 ## Decisions
 
-- [project-home](decisions/project-home.md) — Brygga, Apache-2.0, `github.com/segla-io/brygga`, API group `brygga.segla.io`.
+- [project-home](decisions/project-home.md) — Lodia, Apache-2.0, `go.lodia.io/lodia`, API group `lodia.io`.
 - [one-controlplane-per-cluster](decisions/one-controlplane-per-cluster.md) — five kinds; `ControlPlane` is the whole cluster; operations through an annotation.
 - [independent-controllers](decisions/independent-controllers.md) — six controllers, one object, conditions as the only coupling.
 - [component-per-deployment](decisions/component-per-deployment.md) — a Deployment per component, konnectivity as the API server's sidecar, 4 or 9 pods.
 - [compact-layout](decisions/compact-layout.md) — every component in one pod for development and free tiers; one pod per tenant with a shared store.
 - [dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md) — an etcd per tenant through etcd-druid; a shared store as an option.
 - [no-admission-webhooks](decisions/no-admission-webhooks.md) — CEL in the schema; conditions for what a schema cannot check.
-- [nodes-join-with-kubeadm](decisions/nodes-join-with-kubeadm.md) — `kubeadm join`; Brygga writes the bootstrap objects; no `k8s.io/kubernetes` import.
+- [nodes-join-with-kubeadm](decisions/nodes-join-with-kubeadm.md) — `kubeadm join`; Lodia writes the bootstrap objects; no `k8s.io/kubernetes` import.
 - [tenant-resources-by-inventory](decisions/tenant-resources-by-inventory.md) — apply with inventory and prune; no informers in tenants.
 - [api-exposure](decisions/api-exposure.md) — Gateway by SNI as the default; in-cluster access through apiserver-proxy.
 - [staged-credential-rotation](decisions/staged-credential-rotation.md) — a CA per purpose and a signer sidecar, so routine rotations never touch a node.
-- [upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md) — the upgrade order; Brygga-initiated changes roll in windows, N tenants at a time.
+- [upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md) — the upgrade order; Lodia-initiated changes roll in windows, N tenants at a time.
 - [controller-manager-hold](decisions/controller-manager-hold.md) — while most nodes are silent, Health holds the controller manager's leader lease, so an outage evicts nothing.
 - [short-lived-kubeconfigs](decisions/short-lived-kubeconfigs.md) — `KubeconfigRequest`; the admin group is revocable.
 - [e2e-on-a-named-cluster](decisions/e2e-on-a-named-cluster.md) — e2e refuses the current context; conformance nightly.

@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package v1alpha1
@@ -11,52 +11,52 @@ import (
 	"slices"
 )
 
-// The labels, annotations and finalizer Brygga's controllers and its users
+// The labels, annotations and finalizer Lodia's controllers and its users
 // share, each with its writer.
 const (
-	// ControlPlaneLabel marks every object Brygga creates for a control
+	// ControlPlaneLabel marks every object Lodia creates for a control
 	// plane; its value is the ControlPlane's name. Every controller writes it
 	// on its objects; the operator's cache holds only labelled objects.
-	ControlPlaneLabel = "brygga.segla.io/control-plane"
+	ControlPlaneLabel = "lodia.io/control-plane"
 
-	// ManagedByLabel: ManagedBy marks every object Brygga writes inside a
+	// ManagedByLabel: ManagedBy marks every object Lodia writes inside a
 	// tenant cluster.
 	ManagedByLabel = "app.kubernetes.io/managed-by"
-	ManagedBy      = "brygga"
+	ManagedBy      = "lodia"
 
 	// ControlPlaneUIDLabel on an etcd claim, written by the Datastore
 	// controller, keeps a ControlPlane recreated under the same name from
 	// starting on the old one's data.
-	ControlPlaneUIDLabel = "brygga.segla.io/control-plane-uid"
+	ControlPlaneUIDLabel = "lodia.io/control-plane-uid"
 
 	// EtcdCertificatesLabel, written by PKI, marks an etcd certificate
 	// Secret with its generation, which the Datastore controller counts.
-	EtcdCertificatesLabel = "brygga.segla.io/etcd-certificates"
+	EtcdCertificatesLabel = "lodia.io/etcd-certificates"
 
 	// DefaultClassAnnotation "true", set by the platform, makes a
 	// DatastoreClass the default.
-	DefaultClassAnnotation = "brygga.segla.io/is-default-class"
+	DefaultClassAnnotation = "lodia.io/is-default-class"
 
 	// DatastoreClassAnnotation, written by the Datastore controller on an
 	// Etcd and its claims, records the class the Etcd was rendered from.
-	DatastoreClassAnnotation = "brygga.segla.io/datastore-class"
+	DatastoreClassAnnotation = "lodia.io/datastore-class"
 
 	// DatastoreClassGenerationAnnotation, written by the Datastore controller
 	// on an Etcd, records the generation of the class it was rendered from.
-	DatastoreClassGenerationAnnotation = "brygga.segla.io/datastore-class-generation"
+	DatastoreClassGenerationAnnotation = "lodia.io/datastore-class-generation"
 
 	// DataHashAnnotation, written by PKI on every Secret it writes, holds
 	// DataHash of the Secret's data, so that Workloads hashes a restart-only
 	// Secret into a pod template from its metadata alone.
-	DataHashAnnotation = "brygga.segla.io/data-hash"
+	DataHashAnnotation = "lodia.io/data-hash"
 
 	// OperationAnnotation, set by the platform, requests an operation such
 	// as a rotation (docs/decisions/one-controlplane-per-cluster.md).
-	OperationAnnotation = "brygga.segla.io/operation"
+	OperationAnnotation = "lodia.io/operation"
 
 	// DatastoreFinalizer, held by the Datastore controller, keeps a
 	// ControlPlane until its etcd is deleted and its claims reclaimed.
-	DatastoreFinalizer = "brygga.segla.io/datastore"
+	DatastoreFinalizer = "lodia.io/datastore"
 )
 
 // DataHash is the hex SHA-256 over a Secret's keys in order, each key and

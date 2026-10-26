@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.23.0
-  name: backups.brygga.segla.io
+  name: backups.lodia.io
 spec:
-  group: brygga.segla.io
+  group: lodia.io
   names:
     kind: Backup
     listKind: BackupList

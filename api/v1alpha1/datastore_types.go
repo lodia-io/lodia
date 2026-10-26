@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package v1alpha1
@@ -10,7 +10,7 @@ import (
 )
 
 // DatastoreClass is how a dedicated etcd is built. The class annotated
-// brygga.segla.io/is-default-class: "true" serves ControlPlanes that name none.
+// lodia.io/is-default-class: "true" serves ControlPlanes that name none.
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:scope=Cluster,shortName=dsc
 // +kubebuilder:printcolumn:name="Storage",type=string,JSONPath=".spec.storage.className"
@@ -247,13 +247,13 @@ type DatastoreSpec struct {
 	// +kubebuilder:validation:items:XValidation:rule="self.startsWith('https://')",message="must be an https URL"
 	Endpoints []string `json:"endpoints"`
 
-	// TLS is the store's CA and the root client Brygga creates tenants with.
+	// TLS is the store's CA and the root client Lodia creates tenants with.
 	// +required
 	TLS DatastoreTLS `json:"tls"`
 
 	// Prefix under which every tenant gets its own prefix.
 	// +optional
-	// +kubebuilder:default="/brygga"
+	// +kubebuilder:default="/lodia"
 	// +kubebuilder:validation:MaxLength=64
 	// +kubebuilder:validation:Pattern=`^/[a-z0-9/-]*$`
 	Prefix string `json:"prefix,omitempty"`

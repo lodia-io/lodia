@@ -1,4 +1,4 @@
-# Brygga's default DatastoreClass rendered, with schedules short enough to
+# Lodia's default DatastoreClass rendered, with schedules short enough to
 # watch. backup.tls is required once clientUrlTls is set: etcd-druid probes
 # the etcd-wrapper over HTTPS only with backup.tls, while the wrapper serves
 # HTTPS whenever client TLS is on.

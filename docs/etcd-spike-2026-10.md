@@ -102,19 +102,19 @@ delta about 5 KB.
    scale-in deletes the removed members' claims
    ([scale-in proposal](https://github.com/gardener/etcd-druid/blob/v0.39.0/docs/proposals/08-scale-in.md)).
    `reclaimPolicy: Delete` and `retention.afterDelete` of a `DatastoreClass`
-   are Brygga's code.
+   are Lodia's code.
 7. **Scheduled defragmentation skips small databases.** The sidecar
    defragments only above 3 GiB or with more than 1 GiB free
    ([constant](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/etcdutil/etcdutil.go#L34-L35),
    [check](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/etcdutil/etcdutil.go#L460)),
-   so under the 4 GiB quota Brygga ships a scheduled run happens near the
+   so under the 4 GiB quota Lodia ships a scheduled run happens near the
    quota or after a large delete.
 8. **The chart installs with plain helm from the tag but is not released.**
    At v0.39.0 `charts/` already holds the CRDs (the copy step in
    [prepare-helm-charts](https://github.com/gardener/etcd-druid/blob/v0.39.0/docs/deployment/prepare-helm-charts.md)
    is for the development tree), and the webhook's PKI is needed only with
    the webhook on. The chart's version is `0.1.0` and it is published
-   nowhere, so Brygga vendors it at a tag.
+   nowhere, so Lodia vendors it at a tag.
 9. **etcd-druid runs etcd 3.5.27.** The `UpgradeEtcdVersion` gate, beta and
    on since v0.39, selects etcd-wrapper v0.8.2 and etcd-backup-restore
    v0.45.1, both on etcd 3.5.27
@@ -126,7 +126,7 @@ delta about 5 KB.
    [1.37](https://github.com/kubernetes/kubernetes/blob/v1.37.0/cmd/kubeadm/app/constants/constants.go#L326-L330));
    etcd's latest are 3.5.35, 3.6.16 and 3.7.3, from 2026-10-22
    ([releases](https://github.com/etcd-io/etcd/releases)).
-   `spec.etcd.image` and `spec.backup.image` let Brygga's version table pin
+   `spec.etcd.image` and `spec.backup.image` let Lodia's version table pin
    newer builds.
 10. **The object store.** MinIO's repository is archived and its community
     edition ships as source only
@@ -147,7 +147,7 @@ tests check it.
 
 ## What assumes Gardener
 
-| what | where | what Brygga does |
+| what | where | what Lodia does |
 |---|---|---|
 | every line TLS or none | finding 1 | sets all three TLS blocks |
 | certificates renewed under new names: Gardener's secrets manager writes immutable Secrets named after a checksum of their config ([manager.go](https://github.com/gardener/gardener/blob/2a9e7795749d1122a171caf69aabd6426db10777/pkg/utils/secrets/manager/manager.go#L405), [generate.go](https://github.com/gardener/gardener/blob/ac0343dcd77a3c14635bb9006f276ffc2cc30906/pkg/utils/secrets/manager/generate.go#L343)) | finding 3 | renews the same way |

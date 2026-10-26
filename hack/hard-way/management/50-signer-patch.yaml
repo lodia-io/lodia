@@ -1,5 +1,5 @@
 # Spike d: a JSON patch for the API server Deployment of 20-apiserver.yaml.
-# brygga-signer joins the pod as a native sidecar (an init container that keeps
+# lodia-signer joins the pod as a native sidecar (an init container that keeps
 # running), which the kubelet starts first and reports started only once
 # /readyz says a key set has loaded; the API server then replaces its two
 # static key flags with the signer's socket on a shared emptyDir. The test ops
@@ -14,7 +14,7 @@
 - op: add
   path: /spec/template/spec/initContainers
   value:
-    - name: brygga-signer
+    - name: lodia-signer
       image: ${SIGNER_IMAGE}
       imagePullPolicy: Never
       restartPolicy: Always

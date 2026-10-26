@@ -1,4 +1,4 @@
-# Upgrades follow the version skew policy step by step; changes Brygga initiates roll in each tenant's maintenance window, a bounded number of tenants at a time
+# Upgrades follow the version skew policy step by step; changes Lodia initiates roll in each tenant's maintenance window, a bounded number of tenants at a time
 
 Decided 2026-10-25. Not built.
 
@@ -33,19 +33,19 @@ step and the error; the upgrade resumes when the cause is gone, and a
 |---|---|
 | the user edits `spec` | now |
 | `maintenance.autoUpdate.kubernetesPatch` finds a newer patch | in the window |
-| a new Brygga release renders a different pod template | in the window |
+| a new Lodia release renders a different pod template | in the window |
 | an edit of the tenant's `DatastoreClass` that reaches its `Etcd` | in the window: a class is shared, and the edit rolls every member on it |
 | a certificate renewal that needs a restart | in the window, or now if the certificate expires before the next window |
 | a credential rotation the user started | now; the stages wait for the user |
 
 A window is `spec.maintenance.window` (`begin`, `end`, `timeZone`); a
-`ControlPlane` without one rolls Brygga-initiated changes at any time. Across
+`ControlPlane` without one rolls Lodia-initiated changes at any time. Across
 all tenants, Lifecycle lets at most N (operator configuration, default 5)
-tenants roll Brygga-initiated changes at once, oldest pending first; a tenant
+tenants roll Lodia-initiated changes at once, oldest pending first; a tenant
 that waits says so in `status.target.reason`.
 
 **Mechanism:** Workloads renders with the running operator but does not
-change a pod template whose `brygga.segla.io/operator-version` annotation is
+change a pod template whose `lodia.io/operator-version` annotation is
 older until Lifecycle advances `status.target.operatorVersion` for that
 tenant; a user's `spec` change advances it at once, so the user's rollout also
 carries the pending template changes.
@@ -81,7 +81,7 @@ carries the pending template changes.
 ## Consequences
 
 - Lifecycle is the only controller that knows the time and the fleet; it
-  counts the tenants rolling a Brygga-initiated change from their `status`
+  counts the tenants rolling a Lodia-initiated change from their `status`
   (`Progressing`), not in memory, so a restarted operator neither forgets nor
   double-counts a rollout in progress.
 - In the `Compact` layout steps 3 and 4 are one rollout of the single pod:
