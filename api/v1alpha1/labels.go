@@ -24,6 +24,10 @@ const (
 	ManagedByLabel = "app.kubernetes.io/managed-by"
 	ManagedBy      = "lodia"
 
+	// ComponentLabel, written by Workloads on the control plane's pods,
+	// names their component.
+	ComponentLabel = "app.kubernetes.io/name"
+
 	// ControlPlaneUIDLabel on an etcd claim, written by the Datastore
 	// controller, keeps a ControlPlane recreated under the same name from
 	// starting on the old one's data.
