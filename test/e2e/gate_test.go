@@ -178,7 +178,7 @@ func TestPhase1Gate(t *testing.T) {
 			}
 			endpoint := net.JoinHostPort(cp.Status.Endpoint.APIServer.Host, strconv.Itoa(int(cp.Status.Endpoint.APIServer.Port)))
 			node = startNode(ctx, t, cfg.KubeconfigFile())
-			join := []string{"exec", node, "kubeadm", "join", endpoint, "--token", token, "--patches", nodePatches}
+			join := []string{"exec", node, "kubeadm", "join", endpoint, "--token", token, "--patches", nodePatches, "--ignore-preflight-errors=SystemVerification"}
 			cas, err := certutil.ParseCertsPEM(access.cfg.CAData)
 			if err != nil {
 				t.Fatal(err)

@@ -90,8 +90,13 @@ cluster's
 [--patches](https://github.com/kubernetes/kubernetes/blob/v1.37.0/cmd/kubeadm/app/cmd/options/generic.go#L104-L114)),
 carries the kubelet settings kind gives its nodes
 ([config.go](https://github.com/kubernetes-sigs/kind/blob/v0.33.0/pkg/cluster/internal/kubeadm/config.go#L596-L615)),
-and the `ControlPlane` sets `addons.kubeProxy.conntrack.maxPerCore: 0`. The
-CNI is kindnet from the node image's manifest, with the tenant's pod range.
+and the `ControlPlane` sets `addons.kubeProxy.conntrack.maxPerCore: 0`.
+`--ignore-preflight-errors` names the one check a container fails,
+`SystemVerification`: on GitHub's runners it finds the host kernel's
+configuration in none of the places it looks, and `modprobe configs` fails
+([kernel_validator.go](https://github.com/kubernetes/system-validators/blob/v1.12.1/validators/kernel_validator.go#L191-L245),
+the version kubeadm v1.37.0 uses). The CNI is kindnet from the node image's
+manifest, with the tenant's pod range.
 The suite removes the container when it ends, pass or fail, and before it
 starts one, in case an interrupted run left it.
 
