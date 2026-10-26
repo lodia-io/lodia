@@ -150,11 +150,36 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   sidecar bump revisions itself is owed upstream work.
 - Permanent loss of quorum is recovered by hand
   ([runbook](../operations.md#lost-etcd-quorum)), as etcd-druid documents.
-- A tenant's data never outlives it into another `ControlPlane` by name. The
-  backup prefix is the class's prefix plus `<namespace>/<name>/<uid>`, because
-  etcd-backup-restore restores an empty member from the newest snapshot under
-  its prefix
-  ([design](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/docs/proposals/design.md#L27)).
+- A tenant's data never outlives it into another `ControlPlane` by name, and
+  no name reaches a snapshot's key. The backup prefix is
+  `<class prefix>/<namespace UID>/controlplanes/<ControlPlane UID>`:
+  etcd-backup-restore restores an empty member from the newest snapshot
+  under its prefix
+  ([design](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/docs/proposals/design.md#L27)),
+  and it takes the last `v1/` anywhere in a key for its layout, ignores a
+  snapshot it misreads, and with none left restores a member that lost its
+  volume empty
+  ([snapshot.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapstore/snapshot.go#L39-L59),
+  [s3_snapstore.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapstore/s3_snapstore.go#L714-L735),
+  [initializer.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/initializer/initializer.go#L221-L226)),
+  so a namespace `team-v1` or a `ControlPlane` `v1` in the key would hide
+  every snapshot of that tenant. A UID is a UUID of 36 characters
+  ([meta.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/registry/rest/meta.go#L39-L42),
+  [uuid.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apimachinery/pkg/util/uuid/uuid.go#L25-L27),
+  [google/uuid](https://github.com/google/uuid/blob/v1.6.0/uuid.go#L244-L248)),
+  so no tenant's prefix begins another's, which the sidecar needs, since it
+  lists its prefix without a trailing slash
+  ([s3_snapstore.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapstore/s3_snapstore.go#L590-L596));
+  the namespace's UID gives credentials scoped to one namespace a prefix to
+  name (`todo.md`); and `controlplanes/` keeps the layout's second branch,
+  `<class prefix>/<namespace UID>/backups/<Backup UID>`, where the `Backup`
+  reconciler to come puts its sealed copies, out of every member's listing.
+  Phase 1 has no users, so nothing migrates: an `Etcd` rendered under the
+  previous `<namespace>/<name>/<uid>` moves to the new prefix when the
+  operator is upgraded, which rolls its member once, since the prefix is an
+  argument of the sidecar
+  ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L544)),
+  and its old snapshots stay where they are.
   The volumes keep their names (`<cp>-etcd-<cp>-etcd-<n>`) and a StatefulSet
   re-attaches a claim of that name
   ([stateful_pod_control.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/statefulset/stateful_pod_control.go#L381-L405)),
@@ -251,7 +276,8 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
 
 - `internal/controller/datastore` — the controller: `datastore.go` holds the
   reconcile, the class lookup, the newest complete certificate generation,
-  the claims, found by name, the credentials copy, the finalizer and the
+  the claims, found by name, the credentials copy, the namespace's UID for
+  the backup prefix, read uncached, the finalizer and the
   status; `etcd.go` renders the `DatastoreClass` into the `Etcd`
   ([the table](../README.md#a-tenant-namespace)), applies it and reads
   etcd-druid's report; `networkpolicy.go` renders and applies the etcd's
@@ -268,7 +294,11 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   `Etcd`), `TestPaused`, `TestNewestCompleteGeneration`,
   `TestOnlyItsOwnGenerationsCount`, `TestMountedSecretsMustExist`,
   `TestGenerationsMoveForward`, `TestDatastoreClassNotFound`,
-  `TestBackupCredentialsCopied`, `TestHeldClass`,
+  `TestBackupCredentialsCopied`, `TestBackupPrefixHoldsNoName` (the prefix
+  of a `ControlPlane` `v1` in the namespace `team-v1`, its keys read by
+  etcd-backup-restore v0.45.1's rule, which the test restates since
+  importing the parser would move the module's dependencies, and a failed
+  Namespace read that leaves the status), `TestHeldClass`,
   `TestBackupCopyFollowsItsEvents`, `TestPredecessorsCopy`,
   `TestOwnerlessCopyIsAdopted`,
   `TestDatastoreReadyFollowsEtcdStatus`,

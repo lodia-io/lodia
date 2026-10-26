@@ -324,3 +324,10 @@ is a decision — a decision is a file in `docs/decisions/`.
   spec passed with the images pulled beforehand and in CI.
 - Measure a highly available control plane's idle footprint; phase 2's
   scope and gate do not list it.
+
+## From the backup prefix (2026-10-26)
+
+- `docs/api/examples/datastore.yaml` puts a tenant of a shared etcd under
+  `/lodia/<namespace>/<name>/`, while dedicated-etcd-by-default grants each
+  tenant `/<prefix>/<uid>/`; the example should say the decision's prefix
+  when the shared `Datastore` is built.
