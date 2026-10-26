@@ -82,7 +82,8 @@ exposure through `loadBalancer` and `nodePort`.
 - Health: the external probe only.
 - Helm chart, images by digest, `lodia-system` namespace.
 
-Gate (the e2e suite, per pull request):
+Gate (the e2e suite, per pull request; the first four are checked by
+`TestPhase1Gate` in [`test/e2e`](../test/e2e/README.md)):
 
 - A `ControlPlane` reaches `Ready` in under 3 minutes on kind.
 - A container running the kind node image joins with

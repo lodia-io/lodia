@@ -55,6 +55,7 @@ func TestMain(m *testing.M) {
 	}
 	testenv = env.NewWithConfig(envconf.NewWithKubeConfig(path))
 	testenv.Setup(installLodia)
+	testenv.Finish(removeNode)
 	os.Exit(testenv.Run(m))
 }
 
@@ -85,14 +86,14 @@ func installLodia(ctx context.Context, cfg *envconf.Config) (context.Context, er
 }
 
 func build(ctx context.Context, kubeconfig, command string) (reference.NamedTagged, error) {
-	cfg, err := clientcmd.LoadFromFile(kubeconfig)
+	cluster, err := kindCluster(kubeconfig)
 	if err != nil {
 		return nil, err
 	}
 	ko := exec.CommandContext(ctx, "go", "run", "github.com/google/ko@v0.19.1", "build",
 		"--base-import-paths", "--platform=linux/"+goruntime.GOARCH, command)
 	ko.Dir = root
-	ko.Env = append(os.Environ(), "KO_DOCKER_REPO=kind.local", "KIND_CLUSTER_NAME="+strings.TrimPrefix(cfg.CurrentContext, "kind-"))
+	ko.Env = append(os.Environ(), "KO_DOCKER_REPO=kind.local", "KIND_CLUSTER_NAME="+cluster)
 	var stderr bytes.Buffer
 	ko.Stderr = &stderr
 	out, err := ko.Output()
@@ -108,6 +109,14 @@ func build(ctx context.Context, kubeconfig, command string) (reference.NamedTagg
 		return nil, fmt.Errorf("ko named %s without a tag", named)
 	}
 	return tagged, nil
+}
+
+func kindCluster(kubeconfig string) (string, error) {
+	cfg, err := clientcmd.LoadFromFile(kubeconfig)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimPrefix(cfg.CurrentContext, "kind-"), nil
 }
 
 func newClient(t *testing.T, cfg *envconf.Config) client.Client {

@@ -1,7 +1,7 @@
 # End-to-end tests run only against a cluster named on the command line, and never the current kube context
 
-Decided 2026-10-25. The refusal and `make e2e` are built;
-kubeadm workers, upgrade tests and conformance come with phase 1.
+Decided 2026-10-25. The refusal, `make e2e` and a kubeadm worker are
+built; upgrade tests and conformance come with phase 1.
 
 ## Decision
 
@@ -65,4 +65,7 @@ kubeadm workers, upgrade tests and conformance come with phase 1.
 - `test/e2e/operator_test.go` — the operator from the chart: Available, a
   running replica holding the leader lease, its pod admitted where Pod
   Security `restricted` is enforced.
+- `test/e2e/gate_test.go` — the phase 1 gate: a container of kind's node
+  image joins a `ControlPlane` with `kubeadm join`, and the suite removes
+  the container when it ends, pass or fail.
 - `Makefile` — the `e2e` target.
