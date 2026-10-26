@@ -45,6 +45,7 @@ import (
 	"k8s.io/client-go/metadata"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"k8s.io/client-go/tools/portforward"
 	"k8s.io/client-go/transport/spdy"
 	certutil "k8s.io/client-go/util/cert"
@@ -93,40 +94,13 @@ func TestPhase1Gate(t *testing.T) {
 	f := features.New("the phase 1 gate on kind").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			k8s = newClient(t, cfg)
-			image, err := reference.ParseNormalizedNamed(defaults.Image)
-			tagged, ok := image.(reference.Tagged)
-			if err != nil || !ok {
-				t.Fatalf("kind's node image %s has no version: %v", defaults.Image, err)
-			}
-			version := tagged.Tag()
-			create(ctx, t, k8s, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: gateTenant}})
-			create(ctx, t, k8s, &lodiav1alpha1.DatastoreClass{
-				ObjectMeta: metav1.ObjectMeta{Name: gateClass},
-				Spec:       lodiav1alpha1.DatastoreClassSpec{Storage: lodiav1alpha1.EtcdStorage{Size: resource.MustParse("1Gi"), ReclaimPolicy: "Retain"}},
-			})
-			create(ctx, t, k8s, &lodiav1alpha1.ControlPlane{
-				ObjectMeta: metav1.ObjectMeta{Name: controlPlane, Namespace: gateTenant},
-				Spec: lodiav1alpha1.ControlPlaneSpec{
-					Version:   version,
-					Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{ClassName: gateClass}},
-					Endpoint:  lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}},
-					Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.32.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{gatePodCIDR}},
-					Addons:    &lodiav1alpha1.Addons{KubeProxy: &lodiav1alpha1.KubeProxy{Conntrack: &lodiav1alpha1.KubeProxyConntrack{MaxPerCore: new(int32(0))}}},
-				},
-			})
-			t.Logf("ControlPlane %s/%s created at %s, the version of kind's node image %s", gateTenant, controlPlane, version, defaults.Image)
+			createTenant(ctx, t, k8s, key, gateClass)
 			return ctx
 		}).
 		Assess("Ready in under 3 minutes from the ControlPlane's creation", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			cp := &lodiav1alpha1.ControlPlane{}
 			until(ctx, t, 3*time.Minute, "Ready=True", func(ctx context.Context) error {
-				if err := k8s.Get(ctx, key, cp); err != nil {
-					return err
-				}
-				if c := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionReady); c == nil || c.Status != metav1.ConditionTrue || c.ObservedGeneration != cp.Generation {
-					return fmt.Errorf("Ready is %+v at generation %d", c, cp.Generation)
-				}
-				return nil
+				return controlPlaneReady(ctx, k8s, key, cp)
 			})
 			ready := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionReady)
 			took := ready.LastTransitionTime.Sub(cp.CreationTimestamp.Time)
@@ -137,7 +111,7 @@ func TestPhase1Gate(t *testing.T) {
 			return ctx
 		}).
 		Assess("anonymous requests reach the tenant's health paths and cluster-info, nothing else", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			access = openTenant(ctx, t, k8s, cfg.Client().RESTConfig())
+			access = openTenant(ctx, t, k8s, cfg.Client().RESTConfig(), key)
 			anonymous, err := rest.HTTPClientFor(rest.AnonymousClientConfig(access.cfg))
 			if err != nil {
 				t.Fatal(err)
@@ -154,53 +128,7 @@ func TestPhase1Gate(t *testing.T) {
 			return ctx
 		}).
 		Assess("a container of kind's node image joins with kubeadm join --token and its node turns Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			token := bootstrapToken(ctx, t, access.client)
-			cp := &lodiav1alpha1.ControlPlane{}
-			if err := k8s.Get(ctx, key, cp); err != nil {
-				t.Fatal(err)
-			}
-			endpoint := net.JoinHostPort(cp.Status.Endpoint.APIServer.Host, strconv.Itoa(int(cp.Status.Endpoint.APIServer.Port)))
-			node = startNode(ctx, t, cfg.KubeconfigFile())
-			join := []string{"exec", node, "kubeadm", "join", endpoint, "--token", token, "--patches", nodePatches, "--ignore-preflight-errors=SystemVerification"}
-			cas, err := certutil.ParseCertsPEM(access.cfg.CAData)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, ca := range cas {
-				hash := sha256.Sum256(ca.RawSubjectPublicKeyInfo)
-				join = append(join, "--discovery-token-ca-cert-hash", "sha256:"+hex.EncodeToString(hash[:]))
-			}
-			out, err := docker(ctx, join...)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Logf("kubeadm join %s:\n%s", endpoint, out)
-			until(ctx, t, time.Minute, "node "+node+" is registered", func(ctx context.Context) error {
-				return access.client.Get(ctx, client.ObjectKey{Name: node}, &corev1.Node{})
-			})
-			installCNI(ctx, t, access, node)
-			until(ctx, t, 3*time.Minute, "node "+node+" is Ready", func(ctx context.Context) error {
-				joined := &corev1.Node{}
-				if err := access.client.Get(ctx, client.ObjectKey{Name: node}, joined); err != nil {
-					return err
-				}
-				for _, c := range joined.Status.Conditions {
-					if c.Type == corev1.NodeReady && c.Status == corev1.ConditionTrue {
-						return nil
-					}
-				}
-				return fmt.Errorf("node %s is not Ready: %+v", node, joined.Status.Conditions)
-			})
-			until(ctx, t, 3*time.Minute, "the konnectivity agent on the node is ready", func(ctx context.Context) error {
-				agents := &appsv1.DaemonSet{}
-				if err := access.client.Get(ctx, client.ObjectKey{Namespace: metav1.NamespaceSystem, Name: "konnectivity-agent"}, agents); err != nil {
-					return err
-				}
-				if s := agents.Status; s.DesiredNumberScheduled != 1 || s.NumberReady != 1 {
-					return fmt.Errorf("%d of %d agents ready", s.NumberReady, s.DesiredNumberScheduled)
-				}
-				return nil
-			})
+			node = joinNodes(ctx, t, cfg, k8s, key, access, 1)[0]
 			return ctx
 		}).
 		Assess("a pod runs on the node, and logs, exec and port-forward reach it through the konnectivity tunnel", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
@@ -232,7 +160,7 @@ func TestPhase1Gate(t *testing.T) {
 				return running(web)
 			})
 
-			metrics, stopMetrics := forward(t, cfg.Client().RESTConfig(), apiServerPod(ctx, t, k8s), konnectivityMetricsPort)
+			metrics, stopMetrics := forward(t, cfg.Client().RESTConfig(), apiServerPod(ctx, t, k8s, key), konnectivityMetricsPort)
 			defer stopMetrics()
 			count := dials(ctx, t, metrics)
 			oneDial := func(call string) {
@@ -313,43 +241,87 @@ func TestPhase1Gate(t *testing.T) {
 			return ctx
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			if access != nil {
-				access.stop()
-			}
-			if k8s != nil {
-				for _, obj := range []client.Object{
-					&lodiav1alpha1.DatastoreClass{ObjectMeta: metav1.ObjectMeta{Name: gateClass}},
-					&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: gateTenant}},
-				} {
-					if err := client.IgnoreNotFound(k8s.Delete(ctx, obj)); err != nil {
-						t.Error(err)
-					}
-				}
-			}
+			closeTenant(ctx, t, k8s, access, key, gateClass)
 			return ctx
 		}).
 		Feature()
 	testenv.Test(t, f)
 }
 
-type tenantAccess struct {
-	cfg       *rest.Config
-	client    client.Client
-	resources *resources.Resources
-	stop      func()
+func createTenant(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey, class string) string {
+	t.Helper()
+	image, err := reference.ParseNormalizedNamed(defaults.Image)
+	tagged, ok := image.(reference.Tagged)
+	if err != nil || !ok {
+		t.Fatalf("kind's node image %s has no version: %v", defaults.Image, err)
+	}
+	version := tagged.Tag()
+	create(ctx, t, k8s, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: key.Namespace}})
+	create(ctx, t, k8s, &lodiav1alpha1.DatastoreClass{
+		ObjectMeta: metav1.ObjectMeta{Name: class},
+		Spec:       lodiav1alpha1.DatastoreClassSpec{Storage: lodiav1alpha1.EtcdStorage{Size: resource.MustParse("1Gi"), ReclaimPolicy: "Retain"}},
+	})
+	create(ctx, t, k8s, &lodiav1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
+		Spec: lodiav1alpha1.ControlPlaneSpec{
+			Version:   version,
+			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{ClassName: class}},
+			Endpoint:  lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}},
+			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.32.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{gatePodCIDR}},
+			Addons:    &lodiav1alpha1.Addons{KubeProxy: &lodiav1alpha1.KubeProxy{Conntrack: &lodiav1alpha1.KubeProxyConntrack{MaxPerCore: new(int32(0))}}},
+		},
+	})
+	t.Logf("ControlPlane %s created at %s, the version of kind's node image %s", key, version, defaults.Image)
+	return version
 }
 
-func openTenant(ctx context.Context, t *testing.T, k8s client.Client, management *rest.Config) *tenantAccess {
+func closeTenant(ctx context.Context, t *testing.T, k8s client.Client, access *tenantAccess, key client.ObjectKey, class string) {
+	t.Helper()
+	if access != nil {
+		access.stop()
+	}
+	if k8s == nil {
+		return
+	}
+	for _, obj := range []client.Object{
+		&lodiav1alpha1.DatastoreClass{ObjectMeta: metav1.ObjectMeta{Name: class}},
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: key.Namespace}},
+	} {
+		if err := client.IgnoreNotFound(k8s.Delete(ctx, obj)); err != nil {
+			t.Error(err)
+		}
+	}
+}
+
+func controlPlaneReady(ctx context.Context, k8s client.Client, key client.ObjectKey, cp *lodiav1alpha1.ControlPlane) error {
+	if err := k8s.Get(ctx, key, cp); err != nil {
+		return err
+	}
+	if c := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionReady); c == nil || c.Status != metav1.ConditionTrue || c.ObservedGeneration != cp.Generation {
+		return fmt.Errorf("Ready is %+v at generation %d", c, cp.Generation)
+	}
+	return nil
+}
+
+type tenantAccess struct {
+	cfg        *rest.Config
+	kubeconfig clientcmdapi.Config
+	client     client.Client
+	resources  *resources.Resources
+	stop       func()
+}
+
+func openTenant(ctx context.Context, t *testing.T, k8s client.Client, management *rest.Config, key client.ObjectKey) *tenantAccess {
 	t.Helper()
 	secret := &corev1.Secret{}
-	if err := k8s.Get(ctx, client.ObjectKey{Namespace: gateTenant, Name: lodiav1alpha1.AdminKubeconfigSecret.Name(controlPlane)}, secret); err != nil {
+	if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: lodiav1alpha1.AdminKubeconfigSecret.Name(key.Name)}, secret); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := clientcmd.RESTConfigFromKubeConfig(secret.Data[lodiav1alpha1.KubeconfigKey])
+	kubeconfig, err := clientcmd.Load(secret.Data[lodiav1alpha1.KubeconfigKey])
 	if err != nil {
 		t.Fatal(err)
 	}
-	pod := apiServerPod(ctx, t, k8s)
+	pod := apiServerPod(ctx, t, k8s, key)
 	var port int32
 	for _, container := range pod.Spec.Containers {
 		for _, p := range container.Ports {
@@ -359,7 +331,13 @@ func openTenant(ctx context.Context, t *testing.T, k8s client.Client, management
 		}
 	}
 	address, stop := forward(t, management, pod, port)
-	cfg.Host = "https://" + address
+	for _, cluster := range kubeconfig.Clusters {
+		cluster.Server = "https://" + address
+	}
+	cfg, err := clientcmd.NewDefaultClientConfig(*kubeconfig, nil).ClientConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
 	c, err := client.New(cfg, client.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -369,14 +347,14 @@ func openTenant(ctx context.Context, t *testing.T, k8s client.Client, management
 		t.Fatal(err)
 	}
 	t.Logf("the tenant's API server %s is reached through a port-forward to pod %s, as %s", cfg.Host, pod.Name, secret.Name)
-	return &tenantAccess{cfg: cfg, client: c, resources: r, stop: stop}
+	return &tenantAccess{cfg: cfg, kubeconfig: *kubeconfig, client: c, resources: r, stop: stop}
 }
 
-func apiServerPod(ctx context.Context, t *testing.T, k8s client.Client) *corev1.Pod {
+func apiServerPod(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey) *corev1.Pod {
 	t.Helper()
 	pods := &corev1.PodList{}
-	if err := k8s.List(ctx, pods, client.InNamespace(gateTenant), client.MatchingLabels{
-		lodiav1alpha1.ControlPlaneLabel: controlPlane, lodiav1alpha1.ComponentLabel: lodiav1alpha1.APIServerComponent,
+	if err := k8s.List(ctx, pods, client.InNamespace(key.Namespace), client.MatchingLabels{
+		lodiav1alpha1.ControlPlaneLabel: key.Name, lodiav1alpha1.ComponentLabel: lodiav1alpha1.APIServerComponent,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -453,19 +431,75 @@ func bootstrapToken(ctx context.Context, t *testing.T, c client.Client) string {
 	return token
 }
 
-func nodeContainer(kubeconfig string) (string, error) {
-	cluster, err := kindCluster(kubeconfig)
-	if err != nil {
-		return "", err
-	}
-	return cluster + "-tenant-node", nil
-}
-
-func startNode(ctx context.Context, t *testing.T, kubeconfig string) string {
+func joinNodes(ctx context.Context, t *testing.T, cfg *envconf.Config, k8s client.Client, key client.ObjectKey, access *tenantAccess, count int) []string {
 	t.Helper()
-	name, err := nodeContainer(kubeconfig)
+	token := bootstrapToken(ctx, t, access.client)
+	cp := &lodiav1alpha1.ControlPlane{}
+	if err := k8s.Get(ctx, key, cp); err != nil {
+		t.Fatal(err)
+	}
+	endpoint := net.JoinHostPort(cp.Status.Endpoint.APIServer.Host, strconv.Itoa(int(cp.Status.Endpoint.APIServer.Port)))
+	cas, err := certutil.ParseCertsPEM(access.cfg.CAData)
 	if err != nil {
 		t.Fatal(err)
+	}
+	nodes := make([]string, 0, count)
+	for i := 1; i <= count; i++ {
+		node := startNode(ctx, t, cfg.KubeconfigFile(), i)
+		join := []string{"exec", node, "kubeadm", "join", endpoint, "--token", token, "--patches", nodePatches, "--ignore-preflight-errors=SystemVerification"}
+		for _, ca := range cas {
+			hash := sha256.Sum256(ca.RawSubjectPublicKeyInfo)
+			join = append(join, "--discovery-token-ca-cert-hash", "sha256:"+hex.EncodeToString(hash[:]))
+		}
+		out, err := docker(ctx, join...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("kubeadm join %s:\n%s", endpoint, out)
+		until(ctx, t, time.Minute, "node "+node+" is registered", func(ctx context.Context) error {
+			return access.client.Get(ctx, client.ObjectKey{Name: node}, &corev1.Node{})
+		})
+		nodes = append(nodes, node)
+	}
+	installCNI(ctx, t, access, nodes[0])
+	for _, node := range nodes {
+		until(ctx, t, 3*time.Minute, "node "+node+" is Ready", func(ctx context.Context) error {
+			joined := &corev1.Node{}
+			if err := access.client.Get(ctx, client.ObjectKey{Name: node}, joined); err != nil {
+				return err
+			}
+			for _, c := range joined.Status.Conditions {
+				if c.Type == corev1.NodeReady && c.Status == corev1.ConditionTrue {
+					return nil
+				}
+			}
+			return fmt.Errorf("node %s is not Ready: %+v", node, joined.Status.Conditions)
+		})
+	}
+	until(ctx, t, 3*time.Minute, fmt.Sprintf("the konnectivity agents on the %d nodes are ready", count), func(ctx context.Context) error {
+		agents := &appsv1.DaemonSet{}
+		if err := access.client.Get(ctx, client.ObjectKey{Namespace: metav1.NamespaceSystem, Name: "konnectivity-agent"}, agents); err != nil {
+			return err
+		}
+		if s := agents.Status; s.DesiredNumberScheduled != int32(count) || s.NumberReady != int32(count) {
+			return fmt.Errorf("%d of %d agents ready", s.NumberReady, s.DesiredNumberScheduled)
+		}
+		return nil
+	})
+	return nodes
+}
+
+var startedNodes []string
+
+func startNode(ctx context.Context, t *testing.T, kubeconfig string, i int) string {
+	t.Helper()
+	cluster, err := kindCluster(kubeconfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := cluster + "-tenant-node-" + strconv.Itoa(i)
+	if !slices.Contains(startedNodes, name) {
+		startedNodes = append(startedNodes, name)
 	}
 	if _, err := docker(ctx, "rm", "--force", "--volumes", name); err != nil {
 		t.Fatal(err)
@@ -492,13 +526,13 @@ func startNode(ctx context.Context, t *testing.T, kubeconfig string) string {
 	return name
 }
 
-func removeNode(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
-	name, err := nodeContainer(cfg.KubeconfigFile())
-	if err == nil {
-		_, err = docker(ctx, "rm", "--force", "--volumes", name)
+func removeNodes(ctx context.Context, _ *envconf.Config) (context.Context, error) {
+	if len(startedNodes) == 0 {
+		return ctx, nil
 	}
+	_, err := docker(ctx, append([]string{"rm", "--force", "--volumes"}, startedNodes...)...)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "remove the node container:", err)
+		fmt.Fprintln(os.Stderr, "remove the node containers:", err)
 	}
 	return ctx, err
 }

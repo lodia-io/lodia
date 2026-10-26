@@ -85,9 +85,9 @@ server pod's secure port, as `<cp>-admin-kubeconfig` with its server set to
 the forwarded address, which the serving certificate names (`127.0.0.1`),
 and, as the platform, creates a bootstrap token Secret there
 ([nodes-join-with-kubeadm](../../docs/decisions/nodes-join-with-kubeadm.md)).
-It starts a container of kind's node image, `<cluster>-tenant-node`, on the
-docker network `kind`, waits for its entrypoint to report the boot as kind
-does
+It starts a container of kind's node image, `<cluster>-tenant-node-1`, on
+the docker network `kind`, waits for its entrypoint to report the boot as
+kind does
 ([cgroups.go](https://github.com/kubernetes-sigs/kind/blob/v0.33.0/pkg/cluster/internal/providers/common/cgroups.go#L33-L47)),
 and runs `kubeadm join <status.endpoint.apiServer> --token …
 --discovery-token-ca-cert-hash sha256:…` in it. `--patches` names
@@ -110,8 +110,8 @@ the finest grain kubeadm ignores by
 [checks_linux.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/cmd/kubeadm/app/preflight/checks_linux.go#L48-L54)).
 The CNI is kindnet from the node image's manifest, with the tenant's pod
 range.
-The suite removes the container when it ends, pass or fail, and before it
-starts one; `make e2e` removes it as well, since a `go test` timeout or a
-panic never reaches the suite's end.
+The suite removes the containers it started when it ends, pass or fail, and
+each one before it starts it; `make e2e` removes them as well, since a
+`go test` timeout or a panic never reaches the suite's end.
 
 `make e2e` gives the suite 30 minutes.

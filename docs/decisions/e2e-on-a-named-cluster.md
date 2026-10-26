@@ -68,5 +68,5 @@ upgrade tests with phase 2.
   Security `restricted` is enforced.
 - `test/e2e/gate_test.go` — the phase 1 gate: a container of kind's node
   image joins a `ControlPlane` with `kubeadm join`, and the suite removes
-  the container when it ends, pass or fail.
+  the containers it started when it ends, pass or fail.
 - `Makefile` — the `e2e` target.
