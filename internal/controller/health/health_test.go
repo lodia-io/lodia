@@ -341,7 +341,7 @@ func publish(t *testing.T, cp *lodiav1alpha1.ControlPlane, e *endpoint) {
 		"apiVersion": lodiav1alpha1.GroupVersion.String(),
 		"kind":       "ControlPlane",
 		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
-		"status":     map[string]any{"endpoint": map[string]any{"apiServer": address, "konnectivity": address}},
+		"status":     map[string]any{"endpoint": map[string]any{"apiServer": address, "konnectivity": address, "inCluster": address}},
 	}}
 	if err := k8s.Status().Apply(t.Context(), client.ApplyConfigurationFromUnstructured(u), client.FieldOwner("test/endpoint"), client.ForceOwnership); err != nil {
 		t.Fatal(err)

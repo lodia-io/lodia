@@ -187,13 +187,14 @@ func TestTheEndpointIsPublishedBeforeAnythingWaits(t *testing.T) {
 	want := lodiav1alpha1.EndpointStatus{
 		APIServer:    lodiav1alpha1.HostPort{Host: lbAddress, Port: 443},
 		Konnectivity: lodiav1alpha1.HostPort{Host: lbAddress, Port: 8132},
+		InCluster:    lodiav1alpha1.HostPort{Host: lbAddress, Port: 6443},
 	}
 	if e := get(t, cp).Status.Endpoint; e == nil || *e != want {
 		t.Errorf("status.endpoint is %+v, want %+v", e, want)
 	}
 }
 
-func TestANodePortControlPlaneListensOnItsNodePort(t *testing.T) {
+func TestANodePortControlPlanePublishesItsNodePorts(t *testing.T) {
 	createNode(t, "node-a", false, "192.0.2.10")
 	createNode(t, "node-b", true, "192.0.2.11")
 	createNode(t, "node-c", true, "192.0.2.12")
@@ -205,6 +206,7 @@ func TestANodePortControlPlaneListensOnItsNodePort(t *testing.T) {
 	want := lodiav1alpha1.EndpointStatus{
 		APIServer:    lodiav1alpha1.HostPort{Host: "192.0.2.11", Port: api},
 		Konnectivity: lodiav1alpha1.HostPort{Host: "192.0.2.11", Port: konnectivity},
+		InCluster:    lodiav1alpha1.HostPort{Host: "192.0.2.11", Port: api},
 	}
 	if svc.Spec.Type != corev1.ServiceTypeNodePort || api == 0 || konnectivity == 0 || e == nil || *e != want {
 		t.Fatalf("Service %s with node ports %d and %d, status.endpoint %+v", svc.Spec.Type, api, konnectivity, e)
@@ -214,9 +216,9 @@ func TestANodePortControlPlaneListensOnItsNodePort(t *testing.T) {
 	deployment := eventuallyDeployment(t, cp, "kube-apiserver")
 	port := strconv.Itoa(int(api))
 	expectFlags(t, deployment.Spec.Template.Spec.Containers[0].Command,
-		"--advertise-address=192.0.2.11", "--secure-port="+port, "--service-account-issuer=https://192.0.2.11:"+port)
-	if p := deployment.Spec.Template.Spec.Containers[0].Ports; len(p) != 1 || p[0].Name != "https" || p[0].ContainerPort != api {
-		t.Errorf("the API server listens on %+v, want its node port %d", p, api)
+		"--advertise-address=192.0.2.11", "--secure-port=6443", "--service-account-issuer=https://192.0.2.11:"+port)
+	if p := deployment.Spec.Template.Spec.Containers[0].Ports; len(p) != 1 || p[0].Name != "https" || p[0].ContainerPort != 6443 {
+		t.Errorf("the API server listens on %+v, want 6443", p)
 	}
 
 	setReady(t, "node-b", false)
@@ -233,7 +235,7 @@ func TestANodePortControlPlaneListensOnItsNodePort(t *testing.T) {
 		t.Fatal(err)
 	}
 	reconcileNow(t, cp)
-	want.APIServer.Host, want.Konnectivity.Host = "192.0.2.9", "192.0.2.9"
+	want.APIServer.Host, want.Konnectivity.Host, want.InCluster.Host = "192.0.2.9", "192.0.2.9", "192.0.2.9"
 	if e := get(t, cp).Status.Endpoint; e == nil || *e != want {
 		t.Errorf("status.endpoint is %+v once node-b is gone, want %+v", e, want)
 	}

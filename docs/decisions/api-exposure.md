@@ -13,6 +13,32 @@ Decided 2026-10-25. The `loadBalancer` and `nodePort` modes are built;
 | `loadBalancer` | one Service of type LoadBalancer: 443 and 6443 → the API server, 8132 → konnectivity | `https://<LB address>:443` | endpoints `<LB address>:6443`, no proxy |
 | `nodePort` | one Service of type NodePort with the same ports | `https://<a management node>:<port>` | endpoints `<node>:<port>`; development only |
 
+**The `kubernetes` Service's endpoints.** In every mode the API server runs
+with `--endpoint-reconciler-type=none` and writes neither the `kubernetes`
+Endpoints nor its EndpointSlice
+([none.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controlplane/reconcilers/none.go#L26-L53)).
+Workloads publishes the endpoint of the table's last column as
+`status.endpoint.inCluster`, and the Tenant controller writes both objects
+from it with the port name `https`: the Endpoints labelled
+`endpointslice.kubernetes.io/skip-mirror: "true"`, the EndpointSlice
+`kubernetes` labelled `kubernetes.io/service-name: kubernetes` and
+`endpointslice.kubernetes.io/managed-by: lodia.io`, as HyperShift writes them
+([config.go](https://github.com/openshift/hypershift/blob/v0.1.86/control-plane-operator/controllers/hostedcontrolplane/v2/kas/config.go#L211),
+[reconcile.go](https://github.com/openshift/hypershift/blob/v0.1.86/control-plane-operator/hostedclusterconfigoperator/controllers/resources/kas/reconcile.go#L11-L54)).
+Every API server replica serves that address, so no rollout and no stopping
+replica changes them. Nothing else rewrites them: the EndpointSlice mirroring
+controller leaves Endpoints labelled `skip-mirror` alone and deletes only the
+slices it manages
+([endpointslicemirroring_controller.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/endpointslicemirroring/endpointslicemirroring_controller.go#L314-L318),
+[L545-L551](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/endpointslicemirroring/endpointslicemirroring_controller.go#L545-L551)),
+and the EndpointSlice and Endpoints controllers skip a Service without a
+selector
+([endpointslice_controller.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/endpointslice/endpointslice_controller.go#L398-L402),
+[endpoints_controller.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/endpoint/endpoints_controller.go#L385-L389)).
+They belong to the control plane in every cluster, so Tenant takes them over
+from whoever wrote them, such as the lease reconciler of an API server that
+ran before `none`.
+
 **Gateway prerequisites.** Gateway API ≥ 1.5, where `TLSRoute` and
 `ListenerSet` are in the Standard channel; an implementation that reports
 `TLSRoute` (passthrough) and, for the tunnel, `TLSRouteModeTerminate`, plus
@@ -33,7 +59,7 @@ already runs in production:
 
 1. The API server runs with `--advertise-address=172.20.0.1` (configurable
    per `ControlPlane`, never inside the tenant's node, pod or service
-   ranges); the default `lease` endpoint reconciler publishes it, so the
+   ranges), which Workloads publishes as `status.endpoint.inCluster`, so the
    `kubernetes` Service's endpoint is `172.20.0.1:6443`. EndpointSlices reject
    loopback and link-local addresses, which is why the address is a private
    one and not `127.x` or `169.254.x`.
@@ -99,6 +125,20 @@ a node flag (`--address`, `--node-ip`), which the node's owner passes through
   the CNI is up
   ([HyperShift haproxy](https://github.com/openshift/hypershift/blob/main/hypershift-operator/controllers/nodepool/apiserver-haproxy/haproxy.go),
   [Gardener apiserver-proxy](https://github.com/gardener/gardener/blob/master/pkg/component/networking/apiserverproxy/apiserver_proxy.go)).
+- **Endpoints a rollout cannot empty.** The default `lease` reconciler keeps
+  one record per advertise address
+  ([lease.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controlplane/reconcilers/lease.go#L96-L128)),
+  and every replica of a Lodia control plane advertises the same one, in
+  every mode. A stopping replica deletes that record at the very start of
+  its shutdown and rewrites the endpoints from the records left, which are
+  none
+  ([instance.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controlplane/instance.go#L373-L376),
+  [genericapiserver.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/server/genericapiserver.go#L719-L727),
+  [lease.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controlplane/reconcilers/lease.go#L227-L234),
+  [L334-L344](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controlplane/reconcilers/lease.go#L334-L344));
+  a survivor writes them again at its next pass, up to 10 seconds later
+  ([instance.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controlplane/instance.go#L115-L117)),
+  and every rollout stops a replica, a single one included.
 - **TLS inside TLS needs no gateway extensions.** Gardener's proxy adds a
   PROXY protocol header or HTTP CONNECT and needs filters on its Istio
   gateway ([GEP-30](https://github.com/gardener/enhancements/blob/main/geps/0030-apiserver-proxy/README.md));
@@ -114,9 +154,9 @@ a node flag (`--address`, `--node-ip`), which the node's owner passes through
   few tenants, the cost driver at hundreds; kept as `loadBalancer`.
 - A port per tenant on a shared address — not 443, and every node network
   needs a firewall rule per tenant.
-- Rewriting the `kubernetes` Service with `--endpoint-reconciler-type=none`
-  and hand-written EndpointSlices — the advertise address gives the same
-  result with the default reconciler.
+- The default `lease` endpoint reconciler — every replica advertises the
+  same address, so a stopping replica empties the `kubernetes` endpoints
+  until a survivor's next pass (Why).
 - Injecting `KUBERNETES_SERVICE_HOST` into pods with a mutating webhook — a
   webhook in every tenant, and clients that dial the ClusterIP still need the
   proxy.
@@ -140,9 +180,17 @@ a node flag (`--address`, `--node-ip`), which the node's owner passes through
   overhead.
 - Changing `spec.endpoint` after creation is not supported in `v1alpha1`;
   moving between modes changes the address in every kubeconfig and node.
+- A `kubernetes` Endpoints or EndpointSlice edited or deleted inside the
+  tenant comes back within Tenant's apply period, not within the lease
+  reconciler's 10 seconds.
 
 ## Code
 
 - `internal/controller/workloads` — the Service of the `loadBalancer` and
-  `nodePort` modes, `status.endpoint`, the API server's advertise address
-  and secure port, and konnectivity-server beside it on a Unix socket.
+  `nodePort` modes, `status.endpoint` with `inCluster`, the API server's
+  advertise address and `--endpoint-reconciler-type=none`, and
+  konnectivity-server beside it on a Unix socket.
+- `internal/controller/tenant` — the `kubernetes` Endpoints and EndpointSlice
+  in `manifests/endpoints.yaml`, taken over from any writer before
+  (`kubernetesEndpoints` in `inventory.go`); `render_test.go` and
+  `tenant_test.go` hold the objects and the takeover.

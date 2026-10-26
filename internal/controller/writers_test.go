@@ -47,11 +47,13 @@ var conditionWriters = map[string]string{
 }
 
 var fieldWriters = map[string]string{
-	"credentials":        "lodia/pki",
-	"datastore":          "lodia/datastore",
-	"endpoint":           "lodia/workloads",
-	"target":             "lodia/lifecycle",
-	"observedGeneration": "lodia/lifecycle",
+	"credentials":           "lodia/pki",
+	"datastore":             "lodia/datastore",
+	"endpoint.apiServer":    "lodia/workloads",
+	"endpoint.konnectivity": "lodia/workloads",
+	"endpoint.inCluster":    "lodia/workloads",
+	"target":                "lodia/lifecycle",
+	"observedGeneration":    "lodia/lifecycle",
 }
 
 func TestEveryStatusFieldHasOneWriter(t *testing.T) {
@@ -167,20 +169,31 @@ func statusOwners(cp *lodiav1alpha1.ControlPlane) (map[string][]string, error) {
 		}
 		for field, raw := range fields["f:status"] {
 			name := strings.TrimPrefix(field, "f:")
-			if name != "conditions" {
-				owners[name] = append(owners[name], entry.Manager)
-				continue
-			}
-			var conditions map[string]json.RawMessage
-			if err := json.Unmarshal(raw, &conditions); err != nil {
-				return nil, err
-			}
-			for key := range conditions {
-				var condition struct{ Type string }
-				if !strings.HasPrefix(key, "k:") || json.Unmarshal([]byte(strings.TrimPrefix(key, "k:")), &condition) != nil {
-					continue
+			switch name {
+			case "conditions":
+				var conditions map[string]json.RawMessage
+				if err := json.Unmarshal(raw, &conditions); err != nil {
+					return nil, err
 				}
-				owners["conditions/"+condition.Type] = append(owners["conditions/"+condition.Type], entry.Manager)
+				for key := range conditions {
+					var condition struct{ Type string }
+					if !strings.HasPrefix(key, "k:") || json.Unmarshal([]byte(strings.TrimPrefix(key, "k:")), &condition) != nil {
+						continue
+					}
+					owners["conditions/"+condition.Type] = append(owners["conditions/"+condition.Type], entry.Manager)
+				}
+			case "endpoint":
+				var addresses map[string]json.RawMessage
+				if err := json.Unmarshal(raw, &addresses); err != nil {
+					return nil, err
+				}
+				for key := range addresses {
+					if address, ok := strings.CutPrefix(key, "f:"); ok {
+						owners["endpoint."+address] = append(owners["endpoint."+address], entry.Manager)
+					}
+				}
+			default:
+				owners[name] = append(owners[name], entry.Manager)
 			}
 		}
 	}

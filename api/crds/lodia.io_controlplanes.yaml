@@ -301,10 +301,10 @@ spec:
                         ''anonymous-auth'', ''authentication-config'', ''authorization-mode'',
                         ''client-ca-file'', ''egress-selector-config-file'', ''enable-bootstrap-token-auth'',
                         ''encryption-provider-config'', ''encryption-provider-config-automatic-reload'',
-                        ''etcd-cafile'', ''etcd-certfile'', ''etcd-keyfile'', ''etcd-servers'',
-                        ''feature-gates'', ''kubelet-client-certificate'', ''kubelet-client-key'',
-                        ''kubelet-preferred-address-types'', ''proxy-client-cert-file'',
-                        ''proxy-client-key-file'', ''requestheader-allowed-names'',
+                        ''endpoint-reconciler-type'', ''etcd-cafile'', ''etcd-certfile'',
+                        ''etcd-keyfile'', ''etcd-servers'', ''feature-gates'', ''kubelet-client-certificate'',
+                        ''kubelet-client-key'', ''kubelet-preferred-address-types'',
+                        ''proxy-client-cert-file'', ''proxy-client-key-file'', ''requestheader-allowed-names'',
                         ''requestheader-client-ca-file'', ''requestheader-extra-headers-prefix'',
                         ''requestheader-group-headers'', ''requestheader-username-headers'',
                         ''secure-port'', ''service-account-issuer'', ''service-account-key-file'',
@@ -1299,6 +1299,35 @@ spec:
                     - host
                     - port
                     type: object
+                  inCluster:
+                    description: |-
+                      InCluster is where the tenant's pods reach the API server: the
+                      endpoint of its kubernetes Service, which Tenant writes.
+                    properties:
+                      host:
+                        description: |-
+                          Host is an IP address, an IPv6 one without brackets, or a lowercase DNS
+                          name: labels of at most 63 characters, and not digits and dots alone.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                        x-kubernetes-validations:
+                        - message: must be an IP address or a lowercase DNS name
+                          rule: isIP(self) || self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$')
+                            && !self.matches('^[0-9.]+$')
+                      port:
+                        description: Port is a TCP port.
+                        format: int32
+                        maximum: 65535
+                        minimum: 1
+                        type: integer
+                    required:
+                    - host
+                    - port
+                    type: object
+                    x-kubernetes-validations:
+                    - message: must be an IP address
+                      rule: isIP(self.host)
                   konnectivity:
                     description: |-
                       Konnectivity is where konnectivity agents reach the konnectivity
@@ -1327,6 +1356,7 @@ spec:
                     type: object
                 required:
                 - apiServer
+                - inCluster
                 - konnectivity
                 type: object
               health:

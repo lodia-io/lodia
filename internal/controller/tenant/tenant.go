@@ -79,7 +79,7 @@ func inputs(cp *lodiav1alpha1.ControlPlane) string {
 		fmt.Fprintf(&b, " target=%s", t.Version)
 	}
 	if e := cp.Status.Endpoint; e != nil {
-		fmt.Fprintf(&b, " %s:%d %s:%d", e.APIServer.Host, e.APIServer.Port, e.Konnectivity.Host, e.Konnectivity.Port)
+		fmt.Fprintf(&b, " %s:%d %s:%d %s:%d", e.APIServer.Host, e.APIServer.Port, e.Konnectivity.Host, e.Konnectivity.Port, e.InCluster.Host, e.InCluster.Port)
 	}
 	if c := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAccessReady); c != nil {
 		fmt.Fprintf(&b, " %s/%d", c.Status, c.ObservedGeneration)

@@ -24,6 +24,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -54,6 +55,7 @@ const (
 	endpointHost     = "203.0.113.10"
 	apiServerPort    = 443
 	konnectivityPort = 8132
+	inClusterPort    = 6443
 )
 
 type dialFunc = func(ctx context.Context, network, address string) (net.Conn, error)
@@ -324,6 +326,103 @@ func setInventory(t *testing.T, c client.Client, objects string) {
 	if err := c.Update(t.Context(), inventory); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestTheKubernetesEndpointsAreTheInClusterEndpoint(t *testing.T) {
+	cp, admin := servedTenant(t, "tenant-endpoints")
+	eventually(t, 30*time.Second, func() error {
+		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied); err != nil {
+			return err
+		}
+		return kubernetesEndpoints(t, admin, endpointHost, inClusterPort)
+	})
+	inventory := inventoryOf(t, admin)
+	for _, entry := range []string{"Endpoints default/kubernetes", "EndpointSlice default/kubernetes"} {
+		if !slices.Contains(inventory, entry) {
+			t.Errorf("the inventory does not list %s: %v", entry, inventory)
+		}
+	}
+
+	applyStatus(t, cp, "test/endpoint", map[string]any{"endpoint": map[string]any{
+		"apiServer":    map[string]any{"host": endpointHost, "port": int64(apiServerPort)},
+		"konnectivity": map[string]any{"host": endpointHost, "port": int64(konnectivityPort)},
+		"inCluster":    map[string]any{"host": endpointHost, "port": int64(31443)},
+	}})
+	eventually(t, 30*time.Second, func() error {
+		return kubernetesEndpoints(t, admin, endpointHost, 31443)
+	})
+}
+
+func TestTheLeaseReconcilersEndpointsAreTakenOver(t *testing.T) {
+	cp := controlPlane(t, "tenant-lease-endpoints")
+	publish(t, cp)
+	issuer := &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour}
+	reconcilePKI(t, issuer, cp)
+	admin := startTenant(t, cp)
+	for _, obj := range []client.Object{
+		&unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "v1",
+			"kind":       "Endpoints",
+			"metadata":   map[string]any{"namespace": "default", "name": "kubernetes", "labels": map[string]any{discoveryv1.LabelSkipMirror: "true"}},
+			"subsets": []any{map[string]any{
+				"addresses": []any{map[string]any{"ip": "192.0.2.99"}},
+				"ports":     []any{map[string]any{"name": "https", "port": int64(443), "protocol": "TCP"}},
+			}},
+		}},
+		&discoveryv1.EndpointSlice{
+			ObjectMeta:  metav1.ObjectMeta{Namespace: "default", Name: "kubernetes", Labels: map[string]string{discoveryv1.LabelServiceName: "kubernetes"}},
+			AddressType: discoveryv1.AddressTypeIPv4,
+			Endpoints:   []discoveryv1.Endpoint{{Addresses: []string{"192.0.2.99"}, Conditions: discoveryv1.EndpointConditions{Ready: new(true)}}},
+			Ports:       []discoveryv1.EndpointPort{{Name: new("https"), Port: new(int32(443)), Protocol: new(corev1.ProtocolTCP)}},
+		},
+	} {
+		if err := admin.Create(t.Context(), obj, client.FieldOwner("kube-apiserver")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setDial(t, admin.host)
+	issuer.Dial = *dial.Load()
+	setCondition(t, cp, lodiav1alpha1.ConditionAPIServerReady, "Ready")
+	reconcilePKI(t, issuer, cp)
+	eventually(t, 30*time.Second, func() error {
+		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied); err != nil {
+			return err
+		}
+		return kubernetesEndpoints(t, admin, endpointHost, inClusterPort)
+	})
+}
+
+func kubernetesEndpoints(t *testing.T, c client.Client, host string, port int32) error {
+	t.Helper()
+	key := client.ObjectKey{Namespace: "default", Name: "kubernetes"}
+	endpoints, slice := &unstructured.Unstructured{}, &discoveryv1.EndpointSlice{}
+	endpoints.SetAPIVersion("v1")
+	endpoints.SetKind("Endpoints")
+	if err := c.Get(t.Context(), key, endpoints); err != nil {
+		return err
+	}
+	if err := c.Get(t.Context(), key, slice); err != nil {
+		return err
+	}
+	for _, obj := range []client.Object{endpoints, slice} {
+		if !slices.ContainsFunc(obj.GetManagedFields(), func(f metav1.ManagedFieldsEntry) bool {
+			return f.Manager == tenant.FieldManager && f.Operation == metav1.ManagedFieldsOperationApply
+		}) {
+			return fmt.Errorf("%T default/kubernetes is not applied as %s", obj, tenant.FieldManager)
+		}
+	}
+	subsets, err := json.Marshal(endpoints.Object["subsets"])
+	if want := fmt.Sprintf(`[{"addresses":[{"ip":%q}],"ports":[{"name":"https","port":%d,"protocol":"TCP"}]}]`, host, port); err != nil || string(subsets) != want ||
+		endpoints.GetLabels()[discoveryv1.LabelSkipMirror] != "true" {
+		return fmt.Errorf("the Endpoints' subsets are %s labelled %v, want %s labelled %s", subsets, endpoints.GetLabels(), want, discoveryv1.LabelSkipMirror)
+	}
+	if len(slice.Endpoints) != 1 || !slices.Equal(slice.Endpoints[0].Addresses, []string{host}) || slice.Endpoints[0].Conditions.Ready == nil || !*slice.Endpoints[0].Conditions.Ready ||
+		len(slice.Ports) != 1 || *slice.Ports[0].Name != "https" || *slice.Ports[0].Port != port || *slice.Ports[0].Protocol != corev1.ProtocolTCP ||
+		slice.AddressType != discoveryv1.AddressTypeIPv4 ||
+		slice.Labels[discoveryv1.LabelServiceName] != "kubernetes" || slice.Labels[discoveryv1.LabelManagedBy] != "lodia.io" {
+		return fmt.Errorf("the EndpointSlice is %s %+v %+v labelled %v, want %s:%d named https, managed by lodia.io", slice.AddressType, slice.Endpoints, slice.Ports, slice.Labels, host, port)
+	}
+	return nil
 }
 
 func TestKubeProxyTakesConntrackMaxPerCore(t *testing.T) {
@@ -720,7 +819,8 @@ func startTenant(t *testing.T, cp *lodiav1alpha1.ControlPlane) *tenantClient {
 		Set("tls-private-key-file", file("dev-apiserver-serving", "tls.key")).
 		Set("service-account-signing-key-file", saKey).
 		Set("service-account-key-file", saKey).
-		Set("service-cluster-ip-range", string(cp.Spec.Network.ServiceCIDRs[0]))
+		Set("service-cluster-ip-range", string(cp.Spec.Network.ServiceCIDRs[0])).
+		Set("endpoint-reconciler-type", "none")
 	cfg, err := env.Start()
 	if err != nil {
 		t.Fatal(err)
@@ -833,6 +933,7 @@ func publish(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 	applyStatus(t, cp, "test/endpoint", map[string]any{"endpoint": map[string]any{
 		"apiServer":    map[string]any{"host": endpointHost, "port": int64(apiServerPort)},
 		"konnectivity": map[string]any{"host": endpointHost, "port": int64(konnectivityPort)},
+		"inCluster":    map[string]any{"host": endpointHost, "port": int64(inClusterPort)},
 	}})
 }
 
@@ -967,8 +1068,8 @@ func inventoryOf(t *testing.T, c client.Client) []string {
 }
 
 var kinds = map[string]string{
-	"ConfigMap": "v1", "ServiceAccount": "v1", "Service": "v1",
-	"Deployment": "apps/v1", "DaemonSet": "apps/v1",
+	"ConfigMap": "v1", "ServiceAccount": "v1", "Service": "v1", "Endpoints": "v1",
+	"Deployment": "apps/v1", "DaemonSet": "apps/v1", "EndpointSlice": "discovery.k8s.io/v1",
 	"ClusterRole": "rbac.authorization.k8s.io/v1", "ClusterRoleBinding": "rbac.authorization.k8s.io/v1",
 	"Role": "rbac.authorization.k8s.io/v1", "RoleBinding": "rbac.authorization.k8s.io/v1",
 }

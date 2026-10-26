@@ -324,3 +324,11 @@ is a decision — a decision is a file in `docs/decisions/`.
   spec passed with the images pulled beforehand and in CI.
 - Measure a highly available control plane's idle footprint; phase 2's
   scope and gate do not list it.
+
+## From the lossless rollouts (2026-10-27)
+
+- A tenant created before `--endpoint-reconciler-type=none` loses its
+  `kubernetes` endpoints once, in the roll that brings `none`: the old
+  replica's lease reconciler empties them as it stops, after Tenant took
+  them over, until Tenant's next pass writes them back, within a minute
+  while the agents roll and within the apply period otherwise.

@@ -15,7 +15,12 @@ Decided 2026-10-25. Built for phase 1, without the apiserver-proxy.
   `managedFields` as the signal. Before its first apply of an object no
   inventory names, the controller reads it; one that exists without
   `lodia/tenant` among its managers is another owner's, stays as it is, and
-  `AddonsApplied` names it: delete it, or disable the addon. The prune reads
+  `AddonsApplied` names it: delete it, or disable the addon. The `kubernetes`
+  Service's Endpoints and EndpointSlice have no other owner: they belong to
+  the control plane in every cluster, and the controller takes them over
+  from whoever wrote them, such as the lease reconciler of an API server
+  that ran before `--endpoint-reconciler-type=none`
+  ([api-exposure](api-exposure.md)). The prune reads
   an entry that left the render by group and kind, at the version the tenant
   serves, and deletes it under the UID and resourceVersion it read only when
   `lodia/tenant` applied it; any other entry, and one already gone or of a
@@ -83,7 +88,8 @@ Decided 2026-10-25. Built for phase 1, without the apiserver-proxy.
   object is named in it before its first write and the entries that left
   the render are pruned before it is rewritten, so a pass that stops
   anywhere leaks nothing; an object at another API version is the same
-  entry; `foreign` finds another owner's objects before the first apply and
+  entry; `foreign` finds another owner's objects before the first apply, the
+  `kubernetes` Service's endpoints aside (`kubernetesEndpoints`), and
   `prune` deletes only what `lodia/tenant` applied; an inventory it cannot
   read stops the pass with `AddonsApplied` False until someone deletes it.
   `tenant.go` holds the pass and the conditions, `render.go` and
@@ -92,5 +98,5 @@ Decided 2026-10-25. Built for phase 1, without the apiserver-proxy.
   kube-apiserver, prune and restore of CoreDNS, a deleted DaemonSet coming
   back, an object the tenant refuses that leaks nothing, a tenant that does
   not answer, a prune that deletes only what Lodia applied, another owner's
-  CoreDNS neither taken over nor pruned, an inventory read the tenant
-  refuses.
+  CoreDNS neither taken over nor pruned, the `kubernetes` endpoints taken
+  over from the lease reconciler, an inventory read the tenant refuses.

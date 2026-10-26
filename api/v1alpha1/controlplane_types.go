@@ -329,7 +329,7 @@ type APIServer struct {
 	// Lodia's; featureGates sets feature-gates.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
-	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['advertise-address', 'allow-privileged', 'anonymous-auth', 'authentication-config', 'authorization-mode', 'client-ca-file', 'egress-selector-config-file', 'enable-bootstrap-token-auth', 'encryption-provider-config', 'encryption-provider-config-automatic-reload', 'etcd-cafile', 'etcd-certfile', 'etcd-keyfile', 'etcd-servers', 'feature-gates', 'kubelet-client-certificate', 'kubelet-client-key', 'kubelet-preferred-address-types', 'proxy-client-cert-file', 'proxy-client-key-file', 'requestheader-allowed-names', 'requestheader-client-ca-file', 'requestheader-extra-headers-prefix', 'requestheader-group-headers', 'requestheader-username-headers', 'secure-port', 'service-account-issuer', 'service-account-key-file', 'service-account-signing-endpoint', 'service-account-signing-key-file', 'service-cluster-ip-range', 'tls-cert-file', 'tls-private-key-file'])",message="Lodia sets this flag"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['advertise-address', 'allow-privileged', 'anonymous-auth', 'authentication-config', 'authorization-mode', 'client-ca-file', 'egress-selector-config-file', 'enable-bootstrap-token-auth', 'encryption-provider-config', 'encryption-provider-config-automatic-reload', 'endpoint-reconciler-type', 'etcd-cafile', 'etcd-certfile', 'etcd-keyfile', 'etcd-servers', 'feature-gates', 'kubelet-client-certificate', 'kubelet-client-key', 'kubelet-preferred-address-types', 'proxy-client-cert-file', 'proxy-client-key-file', 'requestheader-allowed-names', 'requestheader-client-ca-file', 'requestheader-extra-headers-prefix', 'requestheader-group-headers', 'requestheader-username-headers', 'secure-port', 'service-account-issuer', 'service-account-key-file', 'service-account-signing-endpoint', 'service-account-signing-key-file', 'service-cluster-ip-range', 'tls-cert-file', 'tls-private-key-file'])",message="Lodia sets this flag"
 	ExtraArgs map[string]string `json:"extraArgs,omitempty"`
 
 	// FeatureGates are passed to kube-apiserver.
@@ -794,8 +794,8 @@ type UpgradeStatus struct {
 }
 
 // EndpointStatus is where the control plane is reachable from outside the
-// management cluster. Workloads writes it whole once the public address
-// exists; until then it is absent.
+// management cluster and from the tenant's pods. Workloads writes it whole
+// once the public address exists; until then it is absent.
 type EndpointStatus struct {
 	// APIServer is the API server's public endpoint.
 	// +required
@@ -805,6 +805,12 @@ type EndpointStatus struct {
 	// server.
 	// +required
 	Konnectivity HostPort `json:"konnectivity"`
+
+	// InCluster is where the tenant's pods reach the API server: the
+	// endpoint of its kubernetes Service, which Tenant writes.
+	// +required
+	// +kubebuilder:validation:XValidation:rule="isIP(self.host)",message="must be an IP address"
+	InCluster HostPort `json:"inCluster"`
 }
 
 // HostPort is a host and a port.

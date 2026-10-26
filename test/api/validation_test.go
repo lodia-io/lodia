@@ -285,22 +285,26 @@ func TestEndpointStatus(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = k8s.Delete(context.Background(), obj) })
 	address := func(host string, port int64) map[string]any { return map[string]any{"host": host, "port": port} }
+	inCluster := address("203.0.113.10", 6443)
 	cases := []struct {
 		name     string
 		endpoint map[string]any
 		want     string
 	}{
-		{"an IPv4 address", map[string]any{"apiServer": address("203.0.113.10", 443), "konnectivity": address("203.0.113.10", 8132)}, ""},
-		{"an IPv6 address", map[string]any{"apiServer": address("2001:db8::1", 443), "konnectivity": address("2001:db8::1", 8132)}, ""},
-		{"DNS names", map[string]any{"apiServer": address("api.example.test", 443), "konnectivity": address("konnectivity.example.test", 443)}, ""},
-		{"an IPv6 address in brackets", map[string]any{"apiServer": address("[2001:db8::1]", 443), "konnectivity": address("2001:db8::1", 8132)}, "must be an IP address or a lowercase DNS name"},
-		{"an uppercase name", map[string]any{"apiServer": address("API.example.test", 443), "konnectivity": address("api.example.test", 8132)}, "must be an IP address or a lowercase DNS name"},
-		{"a label of 63 characters", map[string]any{"apiServer": address(strings.Repeat("a", 63)+".example.test", 443), "konnectivity": address("api.example.test", 8132)}, ""},
-		{"a label of 64 characters", map[string]any{"apiServer": address(strings.Repeat("a", 64)+".example.test", 443), "konnectivity": address("api.example.test", 8132)}, "must be an IP address or a lowercase DNS name"},
-		{"256.256.256.256", map[string]any{"apiServer": address("256.256.256.256", 443), "konnectivity": address("203.0.113.10", 8132)}, "must be an IP address or a lowercase DNS name"},
-		{"1.2.3", map[string]any{"apiServer": address("1.2.3", 443), "konnectivity": address("203.0.113.10", 8132)}, "must be an IP address or a lowercase DNS name"},
-		{"port 0", map[string]any{"apiServer": address("203.0.113.10", 0), "konnectivity": address("203.0.113.10", 8132)}, "greater than or equal to 1"},
-		{"no konnectivity", map[string]any{"apiServer": address("203.0.113.10", 443)}, "konnectivity: Required value"},
+		{"an IPv4 address", map[string]any{"apiServer": address("203.0.113.10", 443), "konnectivity": address("203.0.113.10", 8132), "inCluster": inCluster}, ""},
+		{"an IPv6 address", map[string]any{"apiServer": address("2001:db8::1", 443), "konnectivity": address("2001:db8::1", 8132), "inCluster": inCluster}, ""},
+		{"DNS names", map[string]any{"apiServer": address("api.example.test", 443), "konnectivity": address("konnectivity.example.test", 443), "inCluster": inCluster}, ""},
+		{"an IPv6 address in brackets", map[string]any{"apiServer": address("[2001:db8::1]", 443), "konnectivity": address("2001:db8::1", 8132), "inCluster": inCluster}, "must be an IP address or a lowercase DNS name"},
+		{"an uppercase name", map[string]any{"apiServer": address("API.example.test", 443), "konnectivity": address("api.example.test", 8132), "inCluster": inCluster}, "must be an IP address or a lowercase DNS name"},
+		{"a label of 63 characters", map[string]any{"apiServer": address(strings.Repeat("a", 63)+".example.test", 443), "konnectivity": address("api.example.test", 8132), "inCluster": inCluster}, ""},
+		{"a label of 64 characters", map[string]any{"apiServer": address(strings.Repeat("a", 64)+".example.test", 443), "konnectivity": address("api.example.test", 8132), "inCluster": inCluster}, "must be an IP address or a lowercase DNS name"},
+		{"256.256.256.256", map[string]any{"apiServer": address("256.256.256.256", 443), "konnectivity": address("203.0.113.10", 8132), "inCluster": inCluster}, "must be an IP address or a lowercase DNS name"},
+		{"1.2.3", map[string]any{"apiServer": address("1.2.3", 443), "konnectivity": address("203.0.113.10", 8132), "inCluster": inCluster}, "must be an IP address or a lowercase DNS name"},
+		{"port 0", map[string]any{"apiServer": address("203.0.113.10", 0), "konnectivity": address("203.0.113.10", 8132), "inCluster": inCluster}, "greater than or equal to 1"},
+		{"no konnectivity", map[string]any{"apiServer": address("203.0.113.10", 443), "inCluster": inCluster}, "konnectivity: Required value"},
+		{"no inCluster", map[string]any{"apiServer": address("203.0.113.10", 443), "konnectivity": address("203.0.113.10", 8132)}, "inCluster: Required value"},
+		{"an IPv6 inCluster", map[string]any{"apiServer": address("api.example.test", 443), "konnectivity": address("api.example.test", 443), "inCluster": address("2001:db8::1", 6443)}, ""},
+		{"an inCluster DNS name", map[string]any{"apiServer": address("api.example.test", 443), "konnectivity": address("api.example.test", 443), "inCluster": address("api.example.test", 6443)}, "status.endpoint.inCluster: Invalid value"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

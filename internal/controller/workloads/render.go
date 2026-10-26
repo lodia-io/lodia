@@ -153,7 +153,6 @@ type rendering struct {
 	images      versions.Images
 	signerImage string
 	advertise   string
-	securePort  int32
 	issuer      string
 	etcd        []lodiav1alpha1.HostPort
 	hashes      map[string]string
@@ -181,6 +180,7 @@ func (r rendering) apiServer() *appsv1.Deployment {
 		"enable-bootstrap-token-auth":                 "true",
 		"encryption-provider-config":                  "/etc/lodia/encryption/" + lodiav1alpha1.EncryptionConfigKey,
 		"encryption-provider-config-automatic-reload": "true",
+		"endpoint-reconciler-type":                    "none",
 		"etcd-cafile":                                 "/etc/lodia/etcd-ca/" + lodiav1alpha1.CACertKey,
 		"etcd-certfile":                               "/etc/lodia/etcd-client/" + lodiav1alpha1.TLSCertKey,
 		"etcd-keyfile":                                "/etc/lodia/etcd-client/" + lodiav1alpha1.TLSPrivateKeyKey,
@@ -195,7 +195,7 @@ func (r rendering) apiServer() *appsv1.Deployment {
 		"requestheader-extra-headers-prefix":          "X-Remote-Extra-",
 		"requestheader-group-headers":                 "X-Remote-Group",
 		"requestheader-username-headers":              "X-Remote-User",
-		"secure-port":                                 strconv.Itoa(int(r.securePort)),
+		"secure-port":                                 strconv.Itoa(kubernetesPort),
 		"service-account-issuer":                      r.issuer,
 		"service-account-signing-endpoint":            signerSocket,
 		"service-cluster-ip-range":                    joined(cp.Spec.Network.ServiceCIDRs),
@@ -206,7 +206,7 @@ func (r rendering) apiServer() *appsv1.Deployment {
 		Name:           apiServer,
 		Image:          r.images.APIServer,
 		Command:        command(apiServer, flags, settings.ExtraArgs, settings.FeatureGates),
-		Ports:          []corev1.ContainerPort{{Name: "https", ContainerPort: r.securePort, Protocol: corev1.ProtocolTCP}},
+		Ports:          []corev1.ContainerPort{{Name: "https", ContainerPort: kubernetesPort, Protocol: corev1.ProtocolTCP}},
 		ReadinessProbe: readinessProbe(lodiav1alpha1.APIServerReadyzPath, intstr.FromString("https")),
 		LivenessProbe:  livenessProbe("/livez", intstr.FromString("https")),
 		StartupProbe:   startupProbe("/livez", intstr.FromString("https")),

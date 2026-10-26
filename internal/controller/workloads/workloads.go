@@ -193,7 +193,6 @@ func (r *Reconciler) reconcile(ctx context.Context, cp *lodiav1alpha1.ControlPla
 		images:      images,
 		signerImage: r.SignerImage,
 		advertise:   endpoint.APIServer.Host,
-		securePort:  securePort(cp, svc),
 		issuer:      issuer(cp, endpoint.APIServer),
 		etcd:        cp.Status.Datastore.Endpoints,
 		hashes:      hashes,
@@ -340,6 +339,7 @@ func (r *Reconciler) endpoint(ctx context.Context, cp *lodiav1alpha1.ControlPlan
 		return &lodiav1alpha1.EndpointStatus{
 			APIServer:    lodiav1alpha1.HostPort{Host: host, Port: nodePort(svc, kubernetesPort)},
 			Konnectivity: lodiav1alpha1.HostPort{Host: host, Port: nodePort(svc, konnectivityPort)},
+			InCluster:    lodiav1alpha1.HostPort{Host: host, Port: nodePort(svc, kubernetesPort)},
 		}, nil, time.Minute, nil
 	}
 	ingress := svc.Status.LoadBalancer.Ingress
@@ -356,6 +356,7 @@ func (r *Reconciler) endpoint(ctx context.Context, cp *lodiav1alpha1.ControlPlan
 	return &lodiav1alpha1.EndpointStatus{
 		APIServer:    lodiav1alpha1.HostPort{Host: ingress[i].IP, Port: lodiav1alpha1.APIServerServicePort},
 		Konnectivity: lodiav1alpha1.HostPort{Host: ingress[i].IP, Port: konnectivityPort},
+		InCluster:    lodiav1alpha1.HostPort{Host: ingress[i].IP, Port: kubernetesPort},
 	}, nil, 0, nil
 }
 
@@ -391,17 +392,6 @@ func nodePort(svc *corev1.Service, port int32) int32 {
 		return svc.Spec.Ports[i].NodePort
 	}
 	return 0
-}
-
-// securePort is the node port of 6443 in nodePort mode: the API server
-// advertises the node's address and its own port into the kubernetes
-// Service's endpoints, which the tenant's nodes reach only through the node
-// port.
-func securePort(cp *lodiav1alpha1.ControlPlane, svc *corev1.Service) int32 {
-	if cp.Spec.Endpoint.NodePort != nil {
-		return nodePort(svc, kubernetesPort)
-	}
-	return kubernetesPort
 }
 
 func issuer(cp *lodiav1alpha1.ControlPlane, api lodiav1alpha1.HostPort) string {

@@ -255,14 +255,16 @@ Service, `<cp>-kube-apiserver`, of the endpoint's type, takes 443 and 6443 to
 the API server and 8132 to konnectivity-server, and Workloads publishes
 `status.endpoint` from it before it waits on anything, whole once both
 addresses exist: the balancer's IP with 443 and 8132, or, for `nodePort`, a
-management node's InternalIP with the node ports of 6443 and 8132. That
+management node's InternalIP with the node ports of 6443 and 8132; and, as
+`inCluster`, where the tenant's pods reach the API server: the balancer's IP
+with 6443, or the node's address with the node port of 6443. That
 address is the first Ready node's by name when none is published, and then
 stays for as long as any node still reports it, Ready or not, since the
 serving certificate, the kubeconfigs, the ServiceAccount issuer and every
 joined kubelet name it; it is checked every minute, since no event reports a
-node. In `nodePort` mode the API server listens on that node port itself: it
-advertises its address and its own port into the tenant's `kubernetes`
-endpoints, which the tenant's nodes reach only through the node port. Each
+node. The API server writes no `kubernetes` endpoints
+(`--endpoint-reconciler-type=none`): Tenant writes them from `inCluster`
+(Networking). Each
 pod template carries a hash of what its component reads once
 (`lodia.io/restart-hash`): the data hashes of its restart-only Secrets
 and, for the API server, its two ConfigMaps, since it reads the egress
@@ -598,9 +600,9 @@ Three ways to expose a control plane
 
 | `spec.endpoint` | what Lodia creates | endpoint | in-cluster access |
 |---|---|---|---|
-| `gateway` | two TLS passthrough routes (API, konnectivity) on the platform's Gateway, and a `ListenerSet` with a terminating listener and route for the tunnel | `https://api.<cp>:443` | the API server advertises `172.20.0.1`, so the `kubernetes` Service's endpoint is `172.20.0.1:6443`; the apiserver-proxy DaemonSet owns that address on every node's loopback and wraps each connection in an outer TLS session with the tunnel's SNI, which the Gateway terminates and forwards to the API server untouched |
-| `loadBalancer` | one Service of type LoadBalancer with ports 443 and 6443 (API) and 8132 (konnectivity) | the LB address | the API server advertises the LB address; `kubernetes` Endpoints point at it; no proxy |
-| `nodePort` | one Service of type NodePort | a management node address and port | as loadBalancer |
+| `gateway` | two TLS passthrough routes (API, konnectivity) on the platform's Gateway, and a `ListenerSet` with a terminating listener and route for the tunnel | `https://api.<cp>:443` | the `kubernetes` Service's endpoint is the API server's advertise address, `172.20.0.1:6443`; the apiserver-proxy DaemonSet owns that address on every node's loopback and wraps each connection in an outer TLS session with the tunnel's SNI, which the Gateway terminates and forwards to the API server untouched |
+| `loadBalancer` | one Service of type LoadBalancer with ports 443 and 6443 (API) and 8132 (konnectivity) | the LB address | the `kubernetes` Service's endpoint is the LB address and 6443; no proxy |
+| `nodePort` | one Service of type NodePort | a management node address and port | the `kubernetes` Service's endpoint is the node's address and the node port of 6443; no proxy |
 
 The default is `gateway`: one address and one certificate story for a whole
 fleet, and nothing per tenant on the load balancer. A node needs outbound
@@ -612,7 +614,14 @@ IP.
 
 Inside the tenant, the `kubernetes` Service keeps its ClusterIP (the first
 address of the service CIDR), CoreDNS gets the tenth, and the controller
-manager allocates pod CIDRs per node from `network.podCIDRs`.
+manager allocates pod CIDRs per node from `network.podCIDRs`. The API server
+runs with `--endpoint-reconciler-type=none`: Workloads publishes the
+`kubernetes` Service's endpoint as `status.endpoint.inCluster`, and Tenant
+writes it into the tenant (Inside the tenant). Every API server replica
+serves that address, so a rollout never empties the endpoints, which the
+API server's own reconciler did whenever a replica stopped, since every
+replica advertises the same address
+([api-exposure](decisions/api-exposure.md)).
 
 ## Inside the tenant
 
@@ -631,6 +640,7 @@ The kubeadm objects use kubeadm's own names, so `kubeadm join` and
 | kube-proxy: ServiceAccount, ConfigMap `kube-proxy` (kubeconfig to the public endpoint, mode, metrics and health on loopback, `conntrack.maxPerCore` when `addons.kubeProxy.conntrack.maxPerCore` is set), DaemonSet, ClusterRoleBinding `kubeadm:node-proxier`, Role and RoleBinding `kube-proxy` | Services on nodes; off with `addons.kubeProxy.enabled: false` |
 | CoreDNS: ServiceAccount, ClusterRole and binding, ConfigMap, Deployment, Service `kube-dns` at the tenth service address | cluster DNS, the version kubeadm pins for the minor |
 | konnectivity-agent: ServiceAccount, DaemonSet, Role to list and watch server leases in `kube-system` | the tunnel to every API server replica |
+| Endpoints and EndpointSlice `default/kubernetes` (`status.endpoint.inCluster`, port `https`; the Endpoints labelled `endpointslice.kubernetes.io/skip-mirror: "true"`, the slice `kubernetes.io/service-name: kubernetes` and `endpointslice.kubernetes.io/managed-by: lodia.io`) | the `kubernetes` Service's endpoint, which the API server leaves alone (`--endpoint-reconciler-type=none`) |
 | `apiserver-proxy` DaemonSet | in-cluster API access in `gateway` mode ([api-exposure](decisions/api-exposure.md)) |
 | ClusterRoleBinding for `system:konnectivity-server` (→ `system:auth-delegator`) with its lease Role; the bindings of `lodia:operator` and `lodia:cluster-admins` (→ `cluster-admin`) and `lodia:kubelet-api-admins` (→ `system:kubelet-api-admin`) are PKI's, since nothing can apply them before they exist (`AccessReady`) | the identities above |
 | `ValidatingAdmissionPolicy` and binding `lodia-write-lock`, only while a lock is requested | refusing writes during a migration, without a webhook |
@@ -666,7 +676,11 @@ minutes; until then both conditions are `WaitingForAccess`, and it uses
 keeps them, looking again every minute. It leaves another owner's objects
 as they are: an object no inventory names yet is read before its first
 apply and left alone when it exists without `lodia/tenant` among its field
-managers, and the prune deletes an entry that left the render only when
+managers, but for the `kubernetes` Service's Endpoints and EndpointSlice,
+which belong to the control plane in every cluster and which Tenant takes
+over from any writer, such as the lease reconciler of an API server that
+ran before `--endpoint-reconciler-type=none`; and the prune deletes an
+entry that left the render only when
 `lodia/tenant` applied it, under the UID and resourceVersion it read, and
 otherwise drops the entry. The inventory names an object before it is first written,
 and is rewritten to what the render holds once the objects that left it are

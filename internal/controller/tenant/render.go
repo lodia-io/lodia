@@ -17,6 +17,7 @@ import (
 	"strings"
 	"text/template"
 
+	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/tools/clientcmd"
@@ -55,6 +56,9 @@ type values struct {
 	AgentImage               string
 	KonnectivityHost         string
 	KonnectivityPort         int32
+	InClusterHost            string
+	InClusterPort            int32
+	AddressType              string
 	AgentDeployment          bool
 	AgentReplicas            int32
 	kubeProxy, coreDNS       bool
@@ -74,6 +78,14 @@ func newValues(cp *lodiav1alpha1.ControlPlane, clusterCA []byte) (*values, strin
 	if !ok {
 		return nil, "", "", fmt.Errorf("the version table has no minor of Kubernetes %s", cp.Status.Target.Version)
 	}
+	inCluster, err := netip.ParseAddr(endpoint.InCluster.Host)
+	if err != nil {
+		return nil, "", "", err
+	}
+	addressType := discoveryv1.AddressTypeIPv4
+	if inCluster.Is6() {
+		addressType = discoveryv1.AddressTypeIPv6
+	}
 	v := &values{
 		Name:             cp.Name,
 		Version:          cp.Status.Target.Version,
@@ -81,6 +93,9 @@ func newValues(cp *lodiav1alpha1.ControlPlane, clusterCA []byte) (*values, strin
 		Endpoint:         net.JoinHostPort(endpoint.APIServer.Host, strconv.Itoa(int(endpoint.APIServer.Port))),
 		KonnectivityHost: endpoint.Konnectivity.Host,
 		KonnectivityPort: endpoint.Konnectivity.Port,
+		InClusterHost:    inCluster.String(),
+		InClusterPort:    endpoint.InCluster.Port,
+		AddressType:      string(addressType),
 		KubeProxyImage:   images.KubeProxy,
 		ProxyMode:        "iptables",
 		ProxyHealthz:     "127.0.0.1:10256",
@@ -165,7 +180,7 @@ func tenthAddress(cidr string) (netip.Addr, error) {
 }
 
 func render(v *values) ([]*unstructured.Unstructured, error) {
-	files := []string{"bootstrap.yaml", "konnectivity.yaml"}
+	files := []string{"bootstrap.yaml", "endpoints.yaml", "konnectivity.yaml"}
 	if v.kubeProxy {
 		files = append(files, "kube-proxy.yaml")
 	}

@@ -967,6 +967,7 @@ func TestTheKonnectivityCertificateNamesTheKonnectivityHost(t *testing.T) {
 	applyStatus(t, cp, map[string]any{"endpoint": map[string]any{
 		"apiServer":    map[string]any{"host": endpointHost, "port": int64(endpointPort)},
 		"konnectivity": map[string]any{"host": konnectivity, "port": int64(8132)},
+		"inCluster":    map[string]any{"host": endpointHost, "port": int64(6443)},
 	}})
 	reconcile(t, r, cp)
 	secrets := secretsOf(t, cp)
@@ -1006,6 +1007,7 @@ func publishEndpointAt(t *testing.T, cp *lodiav1alpha1.ControlPlane, host string
 	applyStatus(t, cp, map[string]any{"endpoint": map[string]any{
 		"apiServer":    map[string]any{"host": host, "port": int64(endpointPort)},
 		"konnectivity": map[string]any{"host": host, "port": int64(8132)},
+		"inCluster":    map[string]any{"host": host, "port": int64(6443)},
 	}})
 }
 
