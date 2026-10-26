@@ -574,7 +574,7 @@ func TestARolloutSurgesAndTheOldAPIServerDrains(t *testing.T) {
 		t.Fatalf("the API server pod starts %+v, want the signer and then konnectivity-server as native sidecars", api.InitContainers)
 	}
 	konnectivity := api.InitContainers[1]
-	expectFlags(t, konnectivity.Command, "--graceful-shutdown-timeout=10s", "--health-port=8134")
+	expectFlags(t, konnectivity.Command, "--graceful-shutdown-timeout=10s", "--keepalive-time=30s", "--health-port=8134")
 	if p := konnectivity.StartupProbe; p == nil || p.HTTPGet == nil || p.HTTPGet.Path != "/healthz" || p.HTTPGet.Port.IntValue() != 8134 {
 		t.Errorf("konnectivity-server's startup probe is %+v, want /healthz on its health port", p)
 	}

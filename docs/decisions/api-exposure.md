@@ -110,8 +110,18 @@ a projected ServiceAccount token
 which the server checks with TokenReviews as `system:konnectivity-server`
 bound to `system:auth-delegator` and to lease verbs in `kube-system`; the
 server's lease controller is on and agents count servers from leases
-(`--count-server-leases`, `--sync-forever`), so agents hold a tunnel to every
-replica without a static count. Agents run as a DaemonSet on the pod network
+(`--count-server-leases`), so agents hold a tunnel to every replica without a
+static count, and dial only while they hold fewer tunnels than there are
+leases
+([clientset.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/pkg/agent/clientset.go#L268-L271)).
+Both ends send a keepalive after 30 seconds without traffic
+(`--keepalive-time=30s`) instead of their default hour
+([agent](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/cmd/agent/app/options/options.go#L285),
+[server](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/cmd/server/app/options/options.go#L409)),
+so that no idle timeout on the way cuts an idle tunnel; 30 seconds is as
+often as the server lets an agent ping
+([server.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/cmd/server/app/server.go#L511-L515)).
+Agents run as a DaemonSet on the pod network
 with `--agent-identifiers=ipv4=$(HOST_IP)` and the server tries `destHost`
 before `default`, so traffic for a kubelet goes through the agent on its own
 node
@@ -177,6 +187,12 @@ a node flag (`--address`, `--node-ip`), which the node's owner passes through
 - The default `lease` endpoint reconciler — every replica advertises the
   same address, so a stopping replica empties the `kubernetes` endpoints
   until a survivor's next pass (Why).
+- Agents with `--sync-forever` — a dial that reaches a server an agent
+  already holds resets its backoff, so every agent dials, and is
+  authenticated with a TokenReview, every second for as long as it runs
+  ([clientset.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/pkg/agent/clientset.go#L227-L236),
+  [server.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/pkg/server/server.go#L887-L892));
+  counting leases dials only for a server it lacks.
 - Injecting `KUBERNETES_SERVICE_HOST` into pods with a mutating webhook — a
   webhook in every tenant, and clients that dial the ClusterIP still need the
   proxy.
@@ -212,5 +228,6 @@ a node flag (`--address`, `--node-ip`), which the node's owner passes through
   konnectivity-server beside it as a native sidecar on a Unix socket.
 - `internal/controller/tenant` — the `kubernetes` Endpoints and EndpointSlice
   in `manifests/endpoints.yaml`, taken over from any writer before
-  (`kubernetesEndpoints` in `inventory.go`); `render_test.go` and
-  `tenant_test.go` hold the objects and the takeover.
+  (`kubernetesEndpoints` in `inventory.go`), and the agents' flags in
+  `manifests/konnectivity.yaml`; `render_test.go` and `tenant_test.go` hold
+  the objects and the takeover.

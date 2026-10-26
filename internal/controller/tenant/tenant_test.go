@@ -237,10 +237,13 @@ func TestTheTenantGetsItsObjects(t *testing.T) {
 		t.Errorf("kube-proxy runs %s", image)
 	}
 	agent := get(t, admin, &appsv1.DaemonSet{}, "kube-system", "konnectivity-agent").Spec.Template.Spec.Containers[0]
-	for _, arg := range []string{"--proxy-server-host=203.0.113.10", "--proxy-server-port=8132", "--count-server-leases", "--agent-identifiers=ipv4=$(HOST_IP)"} {
+	for _, arg := range []string{"--proxy-server-host=203.0.113.10", "--proxy-server-port=8132", "--count-server-leases", "--keepalive-time=30s", "--agent-identifiers=ipv4=$(HOST_IP)"} {
 		if !slices.Contains(agent.Command, arg) {
 			t.Errorf("the konnectivity agent runs without %s: %v", arg, agent.Command)
 		}
+	}
+	if slices.Contains(agent.Command, "--sync-forever") {
+		t.Errorf("the konnectivity agent dials on every sync: %v", agent.Command)
 	}
 	inventory := inventoryOf(t, admin)
 	if !slices.Contains(inventory, "ConfigMap kube-public/cluster-info") || !slices.Contains(inventory, "Deployment kube-system/coredns") {

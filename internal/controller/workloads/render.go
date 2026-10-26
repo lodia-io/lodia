@@ -250,6 +250,7 @@ func (r rendering) apiServer() *appsv1.Deployment {
 			"proxy-strategies":          "destHost,default",
 			"enable-lease-controller":   "true",
 			"graceful-shutdown-timeout": "10s",
+			"keepalive-time":            "30s",
 		}, nil, nil),
 		Ports: []corev1.ContainerPort{{Name: "konnectivity", ContainerPort: konnectivityPort, Protocol: corev1.ProtocolTCP}},
 		StartupProbe: &corev1.Probe{
