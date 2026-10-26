@@ -55,10 +55,20 @@ signs, attests and publishes the images and the chart is not.
 
 **Engineering baseline**
 
-- One Go module, kubebuilder v4 layout, controller-runtime v0.25 and
-  `k8s.io/*` v0.37 on Go 1.26 at the start
+- Two Go modules. The operator: kubebuilder v4 layout, controller-runtime
+  v0.25 and `k8s.io/*` v0.37 on Go 1.26 at the start
   ([controller-runtime releases](https://github.com/kubernetes-sigs/controller-runtime/releases),
   [kubebuilder v4.16.0](https://github.com/kubernetes-sigs/kubebuilder/releases/tag/v4.16.0)).
+  The API, `go.lodia.io/lodia/api`: it requires `k8s.io/api` and
+  `k8s.io/apimachinery` of the oldest Kubernetes minor Lodia supports,
+  v0.35.0 today, and `make test` builds and tests it there. A module that
+  imports the types keeps its own `client-go`: Go builds with the highest
+  version any module requires
+  ([minimal version selection](https://go.dev/ref/mod#minimal-version-selection)),
+  and `k8s.io/api` of a newer minor breaks an older `client-go`, as v0.37
+  dropped `scheduling/v1alpha2`, which client-go v0.36's scheme imports
+  ([register.go](https://github.com/kubernetes/client-go/blob/v0.36.3/kubernetes/scheme/register.go#L69)).
+  The floor moves when its minor leaves support, never with Renovate.
 - golangci-lint v2 with Segla's shared configuration plus kube-api-linter
   for the API types ([kube-api-linter](https://github.com/kubernetes-sigs/kube-api-linter)).
 - The community files of the CNCF project template (CONTRIBUTING,
