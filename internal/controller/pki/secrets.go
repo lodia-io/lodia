@@ -585,9 +585,11 @@ func isServiceAccountKey(pem []byte) bool {
 }
 
 // encryptionConfig puts a changed provider first with a new key, and keeps
-// the previous providers so that what they encrypted stays readable. A
-// configuration it cannot read is never replaced: the data its keys
-// encrypted would be lost.
+// the previous providers so that what they encrypted stays readable, their
+// keys under the names the API server wrote into every value they encrypted
+// (kubernetes@v1.37.0 staging/src/k8s.io/apiserver/pkg/server/options/encryptionconfig/config.go#L645-L661,
+// #L695-L711). A configuration it cannot read is never replaced: the data its
+// keys encrypted would be lost.
 func (r *Reconciler) encryptionConfig(ctx context.Context, t *tenant) error {
 	name := t.secret(lodiav1alpha1.EncryptionConfigSecret)
 	want := providerSecretbox
@@ -610,7 +612,7 @@ func (r *Reconciler) encryptionConfig(ctx context.Context, t *tenant) error {
 			return nil
 		}
 	}
-	first, err := newProvider(want)
+	first, err := newProvider(want, t.now)
 	if err != nil {
 		return err
 	}
@@ -655,7 +657,14 @@ func providerOf(p apiserverv1.ProviderConfiguration) lodiav1alpha1.EncryptionPro
 	}
 }
 
-func newProvider(provider lodiav1alpha1.EncryptionProvider) (apiserverv1.ProviderConfiguration, error) {
+// newProvider names its key after the nanosecond of the pass, so no two keys
+// of a tenant share a name, not even when a provider comes back: the API
+// server reads a value with every key whose provider and name prefix it, and
+// AES-CBC tells a wrong key only by its padding, which passes about once in
+// 256 reads (kubernetes@v1.37.0
+// staging/src/k8s.io/apiserver/pkg/storage/value/transformer.go#L102-L169,
+// encrypt/aes/aes.go#L224-L254).
+func newProvider(provider lodiav1alpha1.EncryptionProvider, now time.Time) (apiserverv1.ProviderConfiguration, error) {
 	if provider == providerNone {
 		return apiserverv1.ProviderConfiguration{Identity: &apiserverv1.IdentityConfiguration{}}, nil
 	}
@@ -663,7 +672,7 @@ func newProvider(provider lodiav1alpha1.EncryptionProvider) (apiserverv1.Provide
 	if _, err := rand.Read(secret); err != nil {
 		return apiserverv1.ProviderConfiguration{}, err
 	}
-	keys := []apiserverv1.Key{{Name: "key1", Secret: base64.StdEncoding.EncodeToString(secret)}}
+	keys := []apiserverv1.Key{{Name: "key-" + strconv.FormatInt(now.UnixNano(), 10), Secret: base64.StdEncoding.EncodeToString(secret)}}
 	switch provider {
 	case providerSecretbox:
 		return apiserverv1.ProviderConfiguration{Secretbox: &apiserverv1.SecretboxConfiguration{Keys: keys}}, nil

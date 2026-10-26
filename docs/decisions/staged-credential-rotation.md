@@ -194,7 +194,9 @@ first four.
   client CA bundle that keeps a replaced signer for one signing duration;
   the leaves and kubeconfigs; `<cp>-sa-keys` with its `signing.key`; the
   encryption configuration, written last so that a provider PKI cannot
-  render (`kms`) blocks nothing else; and the immutable etcd generations,
+  render (`kms`) blocks nothing else, each new key named after the
+  nanosecond of its pass and every existing one kept under its name; and
+  the immutable etcd generations,
   each written once: a generation with a member missing, being deleted or
   not holding what it needs is replaced by the next, and the newest complete
   generation below it is kept. A certificate that already ends with its CA
@@ -225,4 +227,6 @@ first four.
   renewal or an adoption that could not be written. `ownership_test.go`
   holds a predecessor's Secrets and other owners' left alone, leftovers
   under PKI's names, adopted generations, unreadable key material kept, and
-  failed reads that leave the status.
+  failed reads that leave the status. `encryption_test.go` holds a new key's
+  name, `key-<unix nanoseconds>` of its pass; a provider changed back that
+  gets a key name of its own; and an existing `key1` kept as it is.
