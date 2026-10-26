@@ -39,7 +39,8 @@ is a decision — a decision is a file in `docs/decisions/`.
   `go.lodia.io/lodia?go-get=1` (GitHub Pages in `lodia-io`, a CNAME for
   `go.lodia.io`).
 - The workflow's actions are pinned by commit with nothing to bump them;
-  Dependabot or Renovate for `github-actions` and `gomod`.
+  Dependabot or Renovate for `github-actions` and `gomod`, leaving the API
+  module's `k8s.io` floor alone (releases-and-support).
 
 ## From lodia-signer (2026-10-23)
 
