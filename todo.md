@@ -304,3 +304,13 @@ is a decision — a decision is a file in `docs/decisions/`.
   once the suite's tenant clients run where the endpoint is routable: on
   Linux CI it already is; on macOS, from a container on kind's network, for
   instance.
+
+## From the nightly conformance run (2026-10-26)
+
+- The nightly job deletes the runner image's .NET, Android, GHCup and
+  CodeQL directories before it starts, only because the image stores of
+  three kind nodes and the conformance images outgrow the 14 GB of disk
+  GitHub's standard runners give a job: in run 40342223835 a DNS spec's
+  image pull on a tenant node failed with `no space left on device`. Remove
+  the step once the nightly runs where the disk suffices, a larger runner
+  for instance, or once the nodes no longer keep an image store each.
