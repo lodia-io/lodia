@@ -192,8 +192,10 @@ flowchart LR
   `APIServerReady` only at the current generation, and requeues in whole
   seconds, rounded up, at the earliest renewal, or when a CA enters its last
   year or expires.
-  `reconciler_test.go` runs it under a manager whose cache is the one
-  `internal/operator` builds, with `ReaderFailOnMissingInformer`, and holds
+  `reconciler_test.go` runs it as a user bound to exactly its rules, with the
+  `OwnerReferencesPermissionEnforcement` admission plugin on, once under a
+  manager whose cache is the one `internal/operator` builds, with
+  `ReaderFailOnMissingInformer`, and holds
   the first visit and the stale `APIServerReady` cases; `ownership_test.go` holds the
   Secrets another owner keeps and the reads that fail.
 - `internal/controller/datastore` — reads `spec`, writes the `Etcd` and the

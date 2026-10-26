@@ -6,12 +6,16 @@
 ENVTEST_K8S_VERSION ?= 1.35.0
 E2E_CLUSTER ?= lodia-e2e-local
 E2E_DIR ?= $(CURDIR)/work/e2e
-GENERATED = api/v1alpha1/zz_generated.deepcopy.go api/crds/*.yaml
+CHART = charts/lodia
+CONTROLLERS = datastore health lifecycle pki tenant workloads
+GENERATED = api/v1alpha1/zz_generated.deepcopy.go api/crds/*.yaml $(CHART)/files/rbac/*.yaml
 
 .PHONY: generate
-generate: ## regenerate deepcopy functions and CRDs from api/
+generate: ## regenerate deepcopy functions and CRDs from api/, and each controller's ClusterRole from its RBAC markers
 	go tool controller-gen object:headerFile=hack/boilerplate.go.txt paths=./api/...
 	go tool controller-gen crd paths=./api/... output:crd:artifacts:config=api/crds
+	rm -f $(CHART)/files/rbac/*.yaml
+	for c in $(CONTROLLERS); do go tool controller-gen rbac:roleName=lodia-$$c,fileName=$$c.yaml paths=./internal/controller/$$c output:rbac:artifacts:config=$(CHART)/files/rbac || exit 1; done
 
 .PHONY: lint
 lint:

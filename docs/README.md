@@ -777,11 +777,12 @@ the control plane.
 ## Identity and tenancy
 
 - A `ControlPlane` is namespaced; the platform's RBAC on the namespace
-  decides who creates clusters and who reads their Secrets. Lodia's own
-  ClusterRole is limited to its kinds, the workload kinds it renders, Secrets
-  and ConfigMaps by label, Gateway API routes and listener sets, etcd-druid's
-  `Etcd`, the StatefulSet etcd-druid runs for it and the claims of that
-  StatefulSet; the Datastore controller's share is the table below.
+  decides who creates clusters and who reads their Secrets. Lodia's
+  ClusterRoles, one per controller, are limited to its kinds, the workload
+  kinds it renders, Secrets and ConfigMaps, the management nodes, Gateway API
+  routes and listener sets, etcd-druid's `Etcd`, the StatefulSet etcd-druid
+  runs for it and the claims of that StatefulSet; where they come from is
+  below.
 - Every field Lodia writes has a field manager `lodia/<controller>`;
   another manager's fields on the same object are left alone.
 - Inside a tenant, Lodia is `lodia:operator`; its objects carry
@@ -801,52 +802,35 @@ the control plane.
   so automation gets `get` on `<cp>-admin-kubeconfig` by `resourceNames` and
   never the namespace's Secrets; and a class per trust boundary.
 
-The Datastore controller calls exactly these verbs. Its envtest suite runs
-the controller as a user bound to these rules and nothing else, with the
-`OwnerReferencesPermissionEnforcement` admission plugin on, and leaving out
-any one verb fails a test, except `list` on the four kinds the cache holds:
-client-go fills the cache with a streaming watch where the API server offers
-one, on by default since 1.35, and falls back to `list` where it does not
+Each controller declares the verbs it calls with `+kubebuilder:rbac` markers
+in its package; `make generate` writes them into one ClusterRole per
+controller in [`charts/lodia/files/rbac/`](../charts/lodia/files/rbac/). Each
+controller's envtest suite runs it as a user bound to its generated
+ClusterRole and nothing else, with the `OwnerReferencesPermissionEnforcement`
+admission plugin on for PKI, the Datastore controller and Workloads. For the
+Datastore controller, leaving out any one verb fails a test, except `list` on
+the four kinds the cache holds: client-go fills the cache with a streaming
+watch where the API server offers one, on by default since 1.35, and falls
+back to `list` where it does not
 ([known_features.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/client-go/features/known_features.go#L141-L144),
 [reflector.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/client-go/tools/cache/reflector.go#L470-L509)).
 
-| group | resource | verbs | for |
-|---|---|---|---|
-| `lodia.io` | `controlplanes` | `list`, `watch`, `patch` | the cache; the finalizer, held and released with a patch |
-| `lodia.io` | `controlplanes/status` | `patch` | `DatastoreReady` and `status.datastore`, applied |
-| `lodia.io` | `controlplanes/finalizers` | `update` | `blockOwnerDeletion` on the owner references of the `Etcd` and of `<cp>-etcd-backup`, which that admission plugin allows only with `update` on the owner's `finalizers` ([gc_admission.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/plugin/pkg/admission/gc/gc_admission.go#L122-L152)) |
-| `lodia.io` | `datastoreclasses` | `list`, `watch` | the cache |
-| `druid.gardener.cloud` | `etcds` | `get`, `list`, `watch`, `create`, `patch`, `delete` | the cache, and the API server for an `Etcd` without the label; the apply, which the API server also authorizes as `create` when it creates the object ([patch.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/staging/src/k8s.io/apiserver/pkg/endpoints/handlers/patch.go#L203-L232)); the deletion |
-| `""` | `secrets` | `get`, `list`, `watch`, `create`, `patch`, `delete` | the metadata of the certificate Secrets; the class's credentials Secret, read uncached in the namespace the class names; the copy `<cp>-etcd-backup`, applied; `delete` because that admission plugin lets only who may delete an object set an owner reference on it when it is updated, which adopting a copy with no owner does ([gc_admission.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/plugin/pkg/admission/gc/gc_admission.go#L103-L119)) |
-| `""` | `persistentvolumeclaims` | `list`, `patch`, `delete` | the claims of `<cp>-etcd`, listed in the tenant's namespace and matched by name; their UID label and class annotation; the reclaim |
-| `apps` | `statefulsets` | `get` | the readiness checks, read uncached |
+The verbs nobody would guess from the calls:
 
-Lifecycle reads `ControlPlane`s from the cache and applies their status:
-`list` and `watch` on `controlplanes`, `patch` on `controlplanes/status`; its
-envtest suite runs it as a user bound to exactly these rules. The Tenant
-controller needs the same and `get` on `secrets`, for `<cp>-lodia-kubeconfig`
-and `<cp>-ca-bundle`, read uncached; inside the tenant it is
-`lodia:operator`.
-
-Health reads `ControlPlane`s from the cache and the CA bundle from the API
-server, and applies `Reachable`: `list` and `watch` on `controlplanes`,
-`patch` on `controlplanes/status`, `get` on `secrets`; its envtest suite runs
-it as a user bound to exactly these rules.
-
-Workloads calls these verbs; its envtest suite runs it as a user bound to
-exactly them, with the `OwnerReferencesPermissionEnforcement` admission plugin
-on:
-
-| group | resource | verbs | for |
-|---|---|---|---|
-| `lodia.io` | `controlplanes` | `list`, `watch` | the cache |
-| `lodia.io` | `controlplanes/status` | `patch` | `APIServerReady` and `status.endpoint`, applied |
-| `lodia.io` | `controlplanes/finalizers` | `update` | `blockOwnerDeletion` on the owner references of what it creates |
-| `apps` | `deployments` | `list`, `watch`, `create`, `patch`, `delete` | the cache; the apply; `delete` because the admission plugin lets only who may delete an object set an owner reference on it when it is updated, which adopting an orphan does ([gc_admission.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/plugin/pkg/admission/gc/gc_admission.go#L103-L119)) |
-| `""` | `services`, `configmaps` | `list`, `watch`, `create`, `patch`, `delete` | the cache, metadata only for ConfigMaps; the apply; `delete` for the adoption |
-| `networking.k8s.io` | `networkpolicies` | `list`, `watch`, `create`, `patch`, `delete` | the cache; the apply; `delete` for the adoption |
-| `""` | `secrets` | `list`, `watch` | the metadata of the restart-only Secrets in the cache: their data hash, and their events |
-| `""` | `nodes` | `list` | the management node a `nodePort` endpoint names, read uncached |
+- `create` beside `patch` wherever a controller applies: the API server
+  authorizes an apply that creates the object as `create`
+  ([patch.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/staging/src/k8s.io/apiserver/pkg/endpoints/handlers/patch.go#L203-L232)).
+- `update` on `controlplanes/finalizers` for PKI, the Datastore controller and
+  Workloads: they set `blockOwnerDeletion` on the owner references of what
+  they create, which that admission plugin allows only with `update` on the
+  owner's `finalizers`
+  ([gc_admission.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/plugin/pkg/admission/gc/gc_admission.go#L122-L152)).
+- `delete` on every kind a controller adopts: that plugin lets only who may
+  delete an object set an owner reference on it when it is updated, which
+  adopting an object with no owner does
+  ([gc_admission.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/plugin/pkg/admission/gc/gc_admission.go#L103-L119)).
+- `patch` on `controlplanes` for the Datastore controller: its finalizer,
+  held and released with a patch.
 
 ## Installation
 

@@ -87,6 +87,15 @@ func restartOnlyNames(cp string) []string {
 	return names
 }
 
+// +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=list;watch
+// +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/status,verbs=patch
+// +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/finalizers,verbs=update
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=list;watch;create;patch;delete
+// +kubebuilder:rbac:groups="",resources=services;configmaps,verbs=list;watch;create;patch;delete
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=list;watch;create;patch;delete
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=list;watch
+// +kubebuilder:rbac:groups="",resources=nodes,verbs=list
+
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	cp := &lodiav1alpha1.ControlPlane{}
 	if err := r.Get(ctx, req.NamespacedName, cp); err != nil {

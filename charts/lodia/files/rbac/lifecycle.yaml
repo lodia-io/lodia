@@ -1,0 +1,19 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: lodia-lifecycle
+rules:
+- apiGroups:
+  - lodia.io
+  resources:
+  - controlplanes
+  verbs:
+  - list
+  - watch
+- apiGroups:
+  - lodia.io
+  resources:
+  - controlplanes/status
+  verbs:
+  - patch

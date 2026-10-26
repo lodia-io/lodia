@@ -37,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	"sigs.k8s.io/yaml"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/apistatus"
@@ -50,17 +51,6 @@ const (
 	signerImage = "registry.example/lodia-signer:test"
 	lbAddress   = "203.0.113.10"
 )
-
-var workloadsRules = []rbacv1.PolicyRule{
-	{APIGroups: []string{lodiav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes"}, Verbs: []string{"list", "watch"}},
-	{APIGroups: []string{lodiav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes/status"}, Verbs: []string{"patch"}},
-	{APIGroups: []string{lodiav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes/finalizers"}, Verbs: []string{"update"}},
-	{APIGroups: []string{"apps"}, Resources: []string{"deployments"}, Verbs: []string{"list", "watch", "create", "patch", "delete"}},
-	{APIGroups: []string{""}, Resources: []string{"services", "configmaps"}, Verbs: []string{"list", "watch", "create", "patch", "delete"}},
-	{APIGroups: []string{"networking.k8s.io"}, Resources: []string{"networkpolicies"}, Verbs: []string{"list", "watch", "create", "patch", "delete"}},
-	{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"list", "watch"}},
-	{APIGroups: []string{""}, Resources: []string{"nodes"}, Verbs: []string{"list"}},
-}
 
 var restartOnlySecrets = []lodiav1alpha1.Secret{
 	lodiav1alpha1.CABundleSecret, lodiav1alpha1.EtcdCASecret, lodiav1alpha1.FrontProxyClientSecret,
@@ -130,7 +120,14 @@ func TestMain(m *testing.M) {
 func asWorkloadsController(cfg *rest.Config) (*rest.Config, error) {
 	const user = "lodia-workloads"
 	ctx := context.Background()
-	role := &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: user}, Rules: workloadsRules}
+	manifest, err := os.ReadFile(filepath.Join("..", "..", "..", "charts", "lodia", "files", "rbac", "workloads.yaml"))
+	if err != nil {
+		return nil, err
+	}
+	role := &rbacv1.ClusterRole{}
+	if err := yaml.UnmarshalStrict(manifest, role); err != nil {
+		return nil, err
+	}
 	binding := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: user},
 		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: role.Name},
@@ -141,7 +138,7 @@ func asWorkloadsController(cfg *rest.Config) (*rest.Config, error) {
 			return nil, err
 		}
 	}
-	err := wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (bool, error) {
+	err = wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (bool, error) {
 		review := &authorizationv1.SubjectAccessReview{Spec: authorizationv1.SubjectAccessReviewSpec{
 			User:               user,
 			ResourceAttributes: &authorizationv1.ResourceAttributes{Resource: "nodes", Verb: "list"},

@@ -54,17 +54,6 @@ import (
 
 var k8s client.WithWatch
 
-var datastoreRules = []rbacv1.PolicyRule{
-	{APIGroups: []string{lodiav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes"}, Verbs: []string{"list", "watch", "patch"}},
-	{APIGroups: []string{lodiav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes/status"}, Verbs: []string{"patch"}},
-	{APIGroups: []string{lodiav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes/finalizers"}, Verbs: []string{"update"}},
-	{APIGroups: []string{lodiav1alpha1.GroupVersion.Group}, Resources: []string{"datastoreclasses"}, Verbs: []string{"list", "watch"}},
-	{APIGroups: []string{druidv1alpha1.SchemeGroupVersion.Group}, Resources: []string{"etcds"}, Verbs: []string{"get", "list", "watch", "create", "patch", "delete"}},
-	{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get", "list", "watch", "create", "patch", "delete"}},
-	{APIGroups: []string{""}, Resources: []string{"persistentvolumeclaims"}, Verbs: []string{"list", "patch", "delete"}},
-	{APIGroups: []string{appsv1.GroupName}, Resources: []string{"statefulsets"}, Verbs: []string{"get"}},
-}
-
 func TestMain(m *testing.M) {
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
 		fmt.Println("skipping the datastore controller tests: KUBEBUILDER_ASSETS is not set; run make test")
@@ -136,7 +125,14 @@ func TestMain(m *testing.M) {
 func asDatastoreController(cfg *rest.Config) (*rest.Config, error) {
 	const user = "lodia-datastore"
 	ctx := context.Background()
-	role := &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: user}, Rules: datastoreRules}
+	manifest, err := os.ReadFile(filepath.Join("..", "..", "..", "charts", "lodia", "files", "rbac", "datastore.yaml"))
+	if err != nil {
+		return nil, err
+	}
+	role := &rbacv1.ClusterRole{}
+	if err := yaml.UnmarshalStrict(manifest, role); err != nil {
+		return nil, err
+	}
 	binding := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: user},
 		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: role.Name},
@@ -147,7 +143,7 @@ func asDatastoreController(cfg *rest.Config) (*rest.Config, error) {
 			return nil, err
 		}
 	}
-	err := wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (bool, error) {
+	err = wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (bool, error) {
 		review := &authorizationv1.SubjectAccessReview{Spec: authorizationv1.SubjectAccessReviewSpec{
 			User:               user,
 			ResourceAttributes: &authorizationv1.ResourceAttributes{Group: lodiav1alpha1.GroupVersion.Group, Resource: "controlplanes", Verb: "watch"},

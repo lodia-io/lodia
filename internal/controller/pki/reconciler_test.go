@@ -24,12 +24,15 @@ import (
 	"testing"
 	"time"
 
+	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/wait"
 	apiserverv1 "k8s.io/apiserver/pkg/apis/apiserver/v1"
 	corev1ac "k8s.io/client-go/applyconfigurations/core/v1"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -55,9 +58,11 @@ const (
 )
 
 var (
-	cfg    *rest.Config
-	k8s    client.Client
-	scheme = runtime.NewScheme()
+	k8s           client.Client
+	controller    client.Client
+	apiReader     client.Reader
+	controllerCfg *rest.Config
+	scheme        = runtime.NewScheme()
 
 	serverAuth       = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
 	clientAuth       = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
@@ -77,8 +82,8 @@ func TestMain(m *testing.M) {
 		ErrorIfCRDPathMissing: true,
 		UseExistingCluster:    new(false),
 	}
-	var err error
-	cfg, err = env.Start()
+	env.ControlPlane.GetAPIServer().Configure().Append("enable-admission-plugins", "OwnerReferencesPermissionEnforcement")
+	cfg, err := env.Start()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "start envtest:", err)
 		os.Exit(1)
@@ -89,11 +94,68 @@ func TestMain(m *testing.M) {
 		_ = env.Stop()
 		os.Exit(1)
 	}
+	controllerCfg, err = asPKIController(cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "the controller's ClusterRole:", err)
+		_ = env.Stop()
+		os.Exit(1)
+	}
+	controller, err = client.New(controllerCfg, client.Options{Scheme: scheme, Cache: &client.CacheOptions{Reader: k8s}})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "the controller's client:", err)
+		_ = env.Stop()
+		os.Exit(1)
+	}
+	apiReader, err = client.New(controllerCfg, client.Options{Scheme: scheme})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "the controller's reader:", err)
+		_ = env.Stop()
+		os.Exit(1)
+	}
 	code := m.Run()
 	if err := env.Stop(); err != nil {
 		fmt.Fprintln(os.Stderr, "stop envtest:", err)
 	}
 	os.Exit(code)
+}
+
+func asPKIController(cfg *rest.Config) (*rest.Config, error) {
+	const user = "lodia-pki"
+	ctx := context.Background()
+	manifest, err := os.ReadFile(filepath.Join("..", "..", "..", "charts", "lodia", "files", "rbac", "pki.yaml"))
+	if err != nil {
+		return nil, err
+	}
+	role := &rbacv1.ClusterRole{}
+	if err := yaml.UnmarshalStrict(manifest, role); err != nil {
+		return nil, err
+	}
+	binding := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: user},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: role.Name},
+		Subjects:   []rbacv1.Subject{{APIGroup: rbacv1.GroupName, Kind: rbacv1.UserKind, Name: user}},
+	}
+	for _, obj := range []client.Object{role, binding} {
+		if err := k8s.Create(ctx, obj); err != nil {
+			return nil, err
+		}
+	}
+	err = wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (bool, error) {
+		review := &authorizationv1.SubjectAccessReview{Spec: authorizationv1.SubjectAccessReviewSpec{
+			User:               user,
+			ResourceAttributes: &authorizationv1.ResourceAttributes{Group: lodiav1alpha1.GroupVersion.Group, Resource: "controlplanes", Verb: "watch"},
+		}}
+		if err := k8s.Create(ctx, review); err != nil {
+			return false, err
+		}
+		return review.Status.Allowed, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	controller := rest.CopyConfig(cfg)
+	controller.Impersonate = rest.ImpersonationConfig{UserName: user}
+	return controller, nil
 }
 
 func TestALoadBalancerControlPlaneWaitsForItsEndpoint(t *testing.T) {
@@ -104,7 +166,7 @@ func TestALoadBalancerControlPlaneWaitsForItsEndpoint(t *testing.T) {
 	}
 	options.DefaultNamespaces = map[string]cache.Config{cp.Namespace: {}}
 	options.ReaderFailOnMissingInformer = true
-	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+	mgr, err := ctrl.NewManager(controllerCfg, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: "0"},
 		HealthProbeBindAddress: "0",
@@ -717,14 +779,14 @@ func TestAnUnsupportedEncryptionProviderBlocksNothingElse(t *testing.T) {
 func TestTheFirstVisitWritesUnknown(t *testing.T) {
 	cp := controlPlane(t, "pki-first-visit")
 	r := newReconciler(time.Hour)
-	r.Reader = failingReader{k8s}
+	r.Reader = failingReader{apiReader}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
 		t.Fatal("a pass with a failing reader succeeded")
 	}
 	for _, conditionType := range []string{lodiav1alpha1.ConditionCertificatesReady, lodiav1alpha1.ConditionCAValidityAcceptable, lodiav1alpha1.ConditionAccessReady} {
 		expectCondition(t, cp, conditionType, metav1.ConditionUnknown, lodiav1alpha1.ReasonReconciling)
 	}
-	r.Reader = k8s
+	r.Reader = apiReader
 	reconcile(t, r, cp)
 	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint)
 }
@@ -848,7 +910,7 @@ func immutable(s *corev1.Secret) bool {
 }
 
 func newReconciler(leafLifetime time.Duration) *pki.Reconciler {
-	return &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: leafLifetime, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour}
+	return &pki.Reconciler{Client: controller, Reader: apiReader, LeafLifetime: leafLifetime, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour}
 }
 
 func controlPlane(t *testing.T, namespace string) *lodiav1alpha1.ControlPlane {

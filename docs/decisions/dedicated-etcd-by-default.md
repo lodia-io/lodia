@@ -252,8 +252,9 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   etcd-druid's report. Registered as `datastore` in `internal/operator`.
 - `internal/controller/datastore/datastore_test.go` — envtest with
   etcd-druid v0.39.0's CRDs from its `crds` package, the controller running
-  as a user bound to exactly the rules in
-  [Identity and tenancy](../README.md#identity-and-tenancy):
+  as a user bound to exactly its generated ClusterRole,
+  [`datastore.yaml`](../../charts/lodia/files/rbac/datastore.yaml)
+  ([Identity and tenancy](../README.md#identity-and-tenancy)):
   `TestFinalizerAndEtcdFromClass` (the finalizer before the first `Etcd`, the
   mapping table, generation 1 in all three TLS blocks),
   `TestConditionsFromState` (Unknown on the first visit, an API error leaves

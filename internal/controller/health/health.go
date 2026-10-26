@@ -72,6 +72,10 @@ func endpointChanged() predicate.Funcs {
 	}}
 }
 
+// +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=list;watch
+// +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/status,verbs=patch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
+
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	cp := &lodiav1alpha1.ControlPlane{}
 	if err := r.Get(ctx, req.NamespacedName, cp); err != nil {

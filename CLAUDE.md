@@ -34,7 +34,8 @@ the same change.
 ## Commands
 
 - `make generate` — deepcopy functions and the CRDs in `api/crds/` from
-  `api/`; commit the result.
+  `api/`, and each controller's ClusterRole in `charts/lodia/files/rbac/`
+  from the `+kubebuilder:rbac` markers in its package; commit the result.
 - `make verify` — the one check whose exit code says a change is done:
   generated files current, both modules tidy (`.` and `api/`, which is
   `go.lodia.io/lodia/api`), golangci-lint (installed on its own), unit and

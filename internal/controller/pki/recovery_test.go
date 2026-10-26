@@ -116,14 +116,14 @@ func TestEtcdGenerationsAreKeptByCompleteness(t *testing.T) {
 	server := parseTLS(t, secretsOf(t, cp)["dev-etcd-server-1"])
 	time.Sleep(time.Until(certs.RenewalTime(server.Cert)) + 300*time.Millisecond)
 
-	r.Client = failingApply{Client: k8s, secret: "dev-etcd-peer-2"}
+	r.Client = failingApply{Client: controller, secret: "dev-etcd-peer-2"}
 	reconcileFails(t, r, cp)
 	partial := secretsOf(t, cp)
 	if partial["dev-etcd-server-2"] == nil || partial["dev-etcd-peer-2"] != nil {
 		t.Fatal("generation 2 was not left incomplete")
 	}
 
-	r.Client = k8s
+	r.Client = controller
 	reconcile(t, r, cp)
 	expectGenerations(t, cp, 1, 3)
 }
@@ -235,13 +235,13 @@ func TestTheClientBundleTrustsASignerBeforeItIsWritten(t *testing.T) {
 	signer := parseTLS(t, first["dev-kubelet-signer"]).Cert
 	time.Sleep(time.Until(certs.RenewalTime(signer)) + 300*time.Millisecond)
 
-	r.Client = failingApply{Client: k8s, secret: "dev-client-ca"}
+	r.Client = failingApply{Client: controller, secret: "dev-client-ca"}
 	reconcileFails(t, r, cp)
 	if !maps.EqualFunc(secretsOf(t, cp)["dev-kubelet-signer"].Data, first["dev-kubelet-signer"].Data, bytes.Equal) {
 		t.Fatal("a new kubelet signer was written before the bundle that trusts it")
 	}
 
-	r.Client = k8s
+	r.Client = controller
 	reconcile(t, r, cp)
 	after := secretsOf(t, cp)
 	renewed := parseTLS(t, after["dev-kubelet-signer"]).Cert
@@ -315,7 +315,7 @@ func TestARenewalNotWrittenIsIssuing(t *testing.T) {
 	serving := parseTLS(t, secretsOf(t, cp)["dev-apiserver-serving"])
 	time.Sleep(time.Until(certs.RenewalTime(serving.Cert)) + 300*time.Millisecond)
 
-	r.Client = failingApply{Client: k8s, secret: "dev-apiserver-serving"}
+	r.Client = failingApply{Client: controller, secret: "dev-apiserver-serving"}
 	reconcileFails(t, r, cp)
 	c := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady)
 	if c.Status != metav1.ConditionFalse || c.Reason != lodiav1alpha1.ReasonIssuing || !strings.Contains(c.Message, "dev-apiserver-serving") {
@@ -325,7 +325,7 @@ func TestARenewalNotWrittenIsIssuing(t *testing.T) {
 		t.Fatal("the serving certificate changed although its apply failed")
 	}
 
-	r.Client = k8s
+	r.Client = controller
 	reconcile(t, r, cp)
 	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
 }
@@ -340,14 +340,14 @@ func TestAnAdoptionNotWrittenLeavesCertificatesReady(t *testing.T) {
 	if err := k8s.Update(t.Context(), s); err != nil {
 		t.Fatal(err)
 	}
-	r.Client = failingApply{Client: k8s, secret: "dev-front-proxy-client"}
+	r.Client = failingApply{Client: controller, secret: "dev-front-proxy-client"}
 	reconcileFails(t, r, cp)
 	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
 }
 
 func TestACANotWrittenIsNotCounted(t *testing.T) {
 	r := newReconciler(time.Hour)
-	r.Client = failingApply{Client: k8s, secret: "dev-cakey-client"}
+	r.Client = failingApply{Client: controller, secret: "dev-cakey-client"}
 	cp := controlPlane(t, "pki-ca-unwritten")
 	reconcileFails(t, r, cp)
 	expectCondition(t, cp, lodiav1alpha1.ConditionCAValidityAcceptable, metav1.ConditionUnknown, lodiav1alpha1.ReasonReconciling)
