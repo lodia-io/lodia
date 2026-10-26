@@ -194,11 +194,6 @@ is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the contracts audit (2026-10-25)
 
-- Phase 1, wave 3: the etcd NetworkPolicy belongs to the Datastore
-  controller, which knows etcd-druid's labels and ports: it admits the API
-  server's pods by Workloads' pod label, defined in `api/v1alpha1`, and
-  etcd-druid's namespace is a setting of the Datastore controller, not of
-  Workloads.
 - Phase 2: one `status.target.version` cannot order an upgrade's steps,
   since Workloads and Tenant both render from it; a target per step, decided
   with a status field that says which version each component runs, and
@@ -254,8 +249,7 @@ is a decision — a decision is a file in `docs/decisions/`.
   `apiServer.advertiseAddress` outside gateway mode are not rendered: they
   turn `APIServerReady` False with `Unsupported` until phase 2 builds them.
 - The NetworkPolicies isolate each component's ingress alone; the
-  default-deny set and egress, the README's arrows, come in phase 2, and
-  etcd's with the Datastore controller.
+  default-deny set and egress, the README's arrows, come in phase 2.
 - `--signer-image` is an operator flag until the operator configuration and
   the chart render it.
 - The control plane pods set no securityContext: give them one that passes
@@ -281,3 +275,31 @@ is a decision — a decision is a file in `docs/decisions/`.
   with another controller is refused by validation, which `APIServerReady`
   reports as `Refused`. Reading the targets uncached, as PKI reads its
   Secrets, would see them all.
+
+## From the etcd NetworkPolicy (2026-10-26)
+
+- Phase 2, with three members: etcd-druid removes a member in a scale-in
+  through the client Service
+  ([memberremoval.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/memberremoval.go#L31-L39),
+  [client.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/client/etcd/client.go#L82-L95)),
+  so the etcd's policy admits etcd-druid's namespace to the client port then.
+- `--etcd-druid-namespace` is an operator flag, `etcd-druid` by default,
+  the namespace the e2e installs etcd-druid into; the chart sets it to the
+  namespace it installs etcd-druid in.
+- The etcd's policy admits no metrics scraper, as the controller manager's
+  and the scheduler's do not: a ServiceMonitor for the etcd and sidecar
+  metrics needs its scraper admitted, the phase 2 arrow from the metrics
+  scrapers to the health ports.
+- The README's paragraph on what the processes accept names
+  etcd-backup-restore v0.41.2 as the sidecar etcd-druid v0.39.0 runs; with
+  the `UpgradeEtcdVersion` gate, beta, on by default and set in etcd-druid's
+  chart too, it runs etcd-wrapper v0.8.2 and etcd-backup-restore v0.45.1
+  ([image.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/utils/image.go#L39-L44),
+  [values.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/charts/values.yaml#L22-L24),
+  the etcd spike's finding 9): its sources should be read again at v0.45.1.
+- The Datastore controller reads its previous `DatastoreReady` from the
+  cache: a pass that starts before the cache holds the previous pass's
+  write applies a transition a second time, moving `lastTransitionTime` by
+  the gap, a second in envtest, where a test that compared the
+  ControlPlane's resourceVersion right after a transition to True caught it
+  once in fifteen runs.

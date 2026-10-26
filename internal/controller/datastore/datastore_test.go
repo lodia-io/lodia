@@ -4,6 +4,7 @@
 package datastore_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -32,8 +34,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
+	networkingv1ac "k8s.io/client-go/applyconfigurations/networking/v1"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/utils/ptr"
@@ -54,6 +58,8 @@ import (
 
 var k8s client.WithWatch
 
+const druidNamespace = "druid-system"
+
 var datastoreRules = []rbacv1.PolicyRule{
 	{APIGroups: []string{lodiav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes"}, Verbs: []string{"list", "watch", "patch"}},
 	{APIGroups: []string{lodiav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes/status"}, Verbs: []string{"patch"}},
@@ -63,6 +69,7 @@ var datastoreRules = []rbacv1.PolicyRule{
 	{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get", "list", "watch", "create", "patch", "delete"}},
 	{APIGroups: []string{""}, Resources: []string{"persistentvolumeclaims"}, Verbs: []string{"list", "patch", "delete"}},
 	{APIGroups: []string{appsv1.GroupName}, Resources: []string{"statefulsets"}, Verbs: []string{"get"}},
+	{APIGroups: []string{networkingv1.GroupName}, Resources: []string{"networkpolicies"}, Verbs: []string{"get", "list", "watch", "create", "patch", "delete"}},
 }
 
 func TestMain(m *testing.M) {
@@ -115,7 +122,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		stop("manager", err)
 	}
-	if err := (&datastore.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader()}).SetupWithManager(mgr, 1); err != nil {
+	if err := (&datastore.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdDruidNamespace: druidNamespace}).SetupWithManager(mgr, 1); err != nil {
 		stop("controller", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -614,17 +621,25 @@ func TestEtcdRefused(t *testing.T) {
 
 func refuseEtcds(t *testing.T, ns string) *admissionregistrationv1.ValidatingAdmissionPolicyBinding {
 	t.Helper()
+	return refuse(t, ns, admissionregistrationv1.Rule{APIGroups: []string{druidv1alpha1.SchemeGroupVersion.Group}, APIVersions: []string{"v1alpha1"}, Resources: []string{"etcds"}}, func() client.Object {
+		return &druidv1alpha1.Etcd{ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: ns}, Spec: druidv1alpha1.EtcdSpec{Replicas: 1, Labels: map[string]string{"app": "etcd"}}}
+	})
+}
+
+func refuse(t *testing.T, ns string, rule admissionregistrationv1.Rule, probe func() client.Object) *admissionregistrationv1.ValidatingAdmissionPolicyBinding {
+	t.Helper()
+	resource := rule.Resources[0]
 	policy := &admissionregistrationv1.ValidatingAdmissionPolicy{
-		ObjectMeta: metav1.ObjectMeta{Name: "refuse-etcds-in-" + ns},
+		ObjectMeta: metav1.ObjectMeta{Name: "refuse-" + resource + "-in-" + ns},
 		Spec: admissionregistrationv1.ValidatingAdmissionPolicySpec{
 			FailurePolicy: new(admissionregistrationv1.Fail),
 			MatchConstraints: &admissionregistrationv1.MatchResources{ResourceRules: []admissionregistrationv1.NamedRuleWithOperations{{
 				RuleWithOperations: admissionregistrationv1.RuleWithOperations{
 					Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
-					Rule:       admissionregistrationv1.Rule{APIGroups: []string{druidv1alpha1.SchemeGroupVersion.Group}, APIVersions: []string{"v1alpha1"}, Resources: []string{"etcds"}},
+					Rule:       rule,
 				},
 			}}},
-			Validations: []admissionregistrationv1.Validation{{Expression: "object.metadata.namespace != '" + ns + "'", Message: "no Etcd in " + ns}},
+			Validations: []admissionregistrationv1.Validation{{Expression: "object.metadata.namespace != '" + ns + "'", Message: "no " + resource + " in " + ns}},
 		},
 	}
 	binding := &admissionregistrationv1.ValidatingAdmissionPolicyBinding{
@@ -643,9 +658,8 @@ func refuseEtcds(t *testing.T, ns string) *admissionregistrationv1.ValidatingAdm
 		})
 	}
 	eventually(t, func() error {
-		probe := &druidv1alpha1.Etcd{ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: ns}, Spec: druidv1alpha1.EtcdSpec{Replicas: 1, Labels: map[string]string{"app": "etcd"}}}
-		if err := k8s.Create(t.Context(), probe, client.DryRunAll); err == nil {
-			return errors.New("the policy does not refuse Etcds yet")
+		if err := k8s.Create(t.Context(), probe(), client.DryRunAll); err == nil {
+			return errors.New("the policy does not refuse " + resource + " yet")
 		}
 		return nil
 	})
@@ -1235,6 +1249,9 @@ func TestUnsupported(t *testing.T) {
 	shared.Spec.Datastore = lodiav1alpha1.DatastoreChoice{Shared: &lodiav1alpha1.SharedDatastore{Name: "pool"}}
 	create(t, shared)
 	waitCondition(t, ns, "shared", metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, "spec.datastore.shared is not supported yet")
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "shared-etcd"}, &networkingv1.NetworkPolicy{}); !apierrors.IsNotFound(err) {
+		t.Errorf("want no NetworkPolicy for a shared store, got %v", err)
+	}
 
 	createClass(t, newClass("unsupported", "Retain"))
 	ha := controlPlane(ns, "ha", "unsupported")
@@ -1562,7 +1579,7 @@ func TestRecordedClass(t *testing.T) {
 
 func reconcileNow(t *testing.T, ns, name string) time.Duration {
 	t.Helper()
-	result, err := (&datastore.Reconciler{Client: k8s, Reader: k8s}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}})
+	result, err := (&datastore.Reconciler{Client: k8s, Reader: k8s, EtcdDruidNamespace: druidNamespace}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1750,6 +1767,9 @@ func TestDeletion(t *testing.T) {
 			waitCondition(t, ns, "dev", metav1.ConditionFalse, lodiav1alpha1.ReasonDeleting, "the ControlPlane is being deleted")
 			untouched(t, ns, "dev-etcd-dev-etcd-0")
 			untouched(t, ns, "dev-etcd-dev-etcd-1")
+			if err := k8s.Delete(t.Context(), waitPolicy(t, ns, "dev", nil)); err != nil {
+				t.Fatal(err)
+			}
 
 			released := client.MergeFrom(etcd.DeepCopy())
 			etcd.Finalizers = nil
@@ -1762,6 +1782,9 @@ func TestDeletion(t *testing.T) {
 			if err := gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev-etcd"}, &druidv1alpha1.Etcd{})); err != nil {
 				t.Errorf("the Etcd: %v", err)
 			}
+			if err := gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev-etcd"}, &networkingv1.NetworkPolicy{})); err != nil {
+				t.Errorf("a pass of the deletion wrote the NetworkPolicy again: %v", err)
+			}
 			if policy == "Delete" {
 				deleted(t, ns, "dev-etcd-dev-etcd-0")
 			} else {
@@ -1769,6 +1792,273 @@ func TestDeletion(t *testing.T) {
 			}
 			untouched(t, ns, "dev-etcd-dev-etcd-1")
 			untouched(t, ns, "someone-elses")
+		})
+	}
+}
+
+func waitPolicy(t *testing.T, ns, cp string, check func(*networkingv1.NetworkPolicy) error) *networkingv1.NetworkPolicy {
+	t.Helper()
+	policy := &networkingv1.NetworkPolicy{}
+	eventually(t, func() error {
+		if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: cp + "-etcd"}, policy); err != nil {
+			return err
+		}
+		if check != nil {
+			return check(policy)
+		}
+		return nil
+	})
+	return policy
+}
+
+func policySpec(cp string, store bool) networkingv1.NetworkPolicySpec {
+	members := &metav1.LabelSelector{MatchLabels: map[string]string{
+		"app.kubernetes.io/managed-by": "etcd-druid", "app.kubernetes.io/part-of": cp + "-etcd", "app.kubernetes.io/name": cp + "-etcd",
+	}}
+	apiServer := &metav1.LabelSelector{MatchLabels: map[string]string{"lodia.io/control-plane": cp, "app.kubernetes.io/name": "kube-apiserver"}}
+	tcp := func(port int32) networkingv1.NetworkPolicyPort {
+		return networkingv1.NetworkPolicyPort{Protocol: new(corev1.ProtocolTCP), Port: new(intstr.FromInt32(port))}
+	}
+	spec := networkingv1.NetworkPolicySpec{
+		PodSelector: *members,
+		Ingress: []networkingv1.NetworkPolicyIngressRule{
+			{From: []networkingv1.NetworkPolicyPeer{{PodSelector: apiServer}}, Ports: []networkingv1.NetworkPolicyPort{tcp(2379)}},
+			{From: []networkingv1.NetworkPolicyPeer{{PodSelector: members}}, Ports: []networkingv1.NetworkPolicyPort{tcp(2379), tcp(2380)}},
+		},
+		PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+	}
+	if store {
+		spec.Ingress = append(spec.Ingress, networkingv1.NetworkPolicyIngressRule{
+			From:  []networkingv1.NetworkPolicyPeer{{NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": druidNamespace}}}},
+			Ports: []networkingv1.NetworkPolicyPort{tcp(8080)},
+		})
+	}
+	return spec
+}
+
+func sameSpec(t *testing.T, got, want networkingv1.NetworkPolicySpec) {
+	t.Helper()
+	g, err := yaml.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := yaml.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(g, w) {
+		t.Errorf("the NetworkPolicy's spec is\n%s\nwant\n%s", g, w)
+	}
+}
+
+func TestNetworkPolicy(t *testing.T) {
+	ns, credentialsNamespace := namespace(t), namespace(t)
+	create(t, credentials(credentialsNamespace))
+	createClass(t, fullClass("isolating", credentialsNamespace))
+	createClass(t, newClass("isolating-plain", "Retain"))
+	create(t, controlPlane(ns, "backed", "isolating"))
+	create(t, controlPlane(ns, "plain", "isolating-plain"))
+	waitCondition(t, ns, "plain", metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "waiting for a complete generation")
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "plain-etcd"}, &networkingv1.NetworkPolicy{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("want no NetworkPolicy before the Etcd, got %v", err)
+	}
+
+	for _, row := range []struct {
+		cp    string
+		store bool
+	}{{"backed", true}, {"plain", false}} {
+		t.Run(row.cp, func(t *testing.T) {
+			writeGeneration(t, ns, row.cp, 1)
+			policy := waitPolicy(t, ns, row.cp, nil)
+			cp := getControlPlane(t, ns, row.cp)
+			sameSpec(t, policy.Spec, policySpec(row.cp, row.store))
+			if want := map[string]string{"lodia.io/control-plane": row.cp}; !reflect.DeepEqual(policy.Labels, want) {
+				t.Errorf("labels %v, want %v", policy.Labels, want)
+			}
+			if want := []metav1.OwnerReference{{
+				APIVersion: "lodia.io/v1alpha1", Kind: "ControlPlane", Name: row.cp, UID: cp.UID, Controller: new(true), BlockOwnerDeletion: new(true),
+			}}; !reflect.DeepEqual(policy.OwnerReferences, want) {
+				t.Errorf("ownerReferences %+v, want %+v", policy.OwnerReferences, want)
+			}
+
+			settle(t, ns, row.cp)
+			if again := getPolicy(t, ns, row.cp); again.ResourceVersion != policy.ResourceVersion {
+				t.Fatalf("a further pass moved the NetworkPolicy from resourceVersion %s to %s", policy.ResourceVersion, again.ResourceVersion)
+			}
+
+			if err := k8s.Delete(t.Context(), policy); err != nil {
+				t.Fatal(err)
+			}
+			again := waitPolicy(t, ns, row.cp, func(p *networkingv1.NetworkPolicy) error {
+				if p.UID == policy.UID {
+					return errors.New("the deleted NetworkPolicy is still there")
+				}
+				return nil
+			})
+			sameSpec(t, again.Spec, policySpec(row.cp, row.store))
+		})
+	}
+}
+
+func getPolicy(t *testing.T, ns, cp string) *networkingv1.NetworkPolicy {
+	t.Helper()
+	policy := &networkingv1.NetworkPolicy{}
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: cp + "-etcd"}, policy); err != nil {
+		t.Fatal(err)
+	}
+	return policy
+}
+
+func TestNetworkPolicyOfAnotherOwner(t *testing.T) {
+	createClass(t, newClass("policed", "Retain"))
+	rows := []struct {
+		name, cp string
+		labels   map[string]string
+		owner    metav1.OwnerReference
+		message  string
+	}{
+		{"a previous ControlPlane", "succeeded", map[string]string{lodiav1alpha1.ControlPlaneLabel: "succeeded"}, metav1.OwnerReference{
+			APIVersion: "lodia.io/v1alpha1", Kind: "ControlPlane", Name: "succeeded", UID: "11111111-2222-3333-4444-555555555555",
+			Controller: new(true), BlockOwnerDeletion: new(true),
+		}, "another owner keeps NetworkPolicy succeeded-etcd by ControlPlane succeeded (UID 11111111-2222-3333-4444-555555555555)"},
+		{"another controller, unlabelled", "fenced", nil, metav1.OwnerReference{
+			APIVersion: "example.com/v1", Kind: "Fence", Name: "edge", UID: "66666666-7777-8888-9999-000000000000", Controller: new(true),
+		}, "another owner keeps NetworkPolicy fenced-etcd by Fence edge (UID 66666666-7777-8888-9999-000000000000)"},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			ns := namespace(t)
+			foreign := &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{
+				Name: row.cp + "-etcd", Namespace: ns, Labels: row.labels, OwnerReferences: []metav1.OwnerReference{row.owner},
+			}}
+			create(t, foreign)
+			create(t, controlPlane(ns, row.cp, "policed"))
+			writeGeneration(t, ns, row.cp, 1)
+			waitEtcd(t, ns, row.cp, namesGeneration(1))
+			waitCondition(t, ns, row.cp, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "etcd-druid has not observed generation 1")
+			runStatefulSet(t, ns, row.cp, 1)
+			setEtcdStatus(t, ns, row.cp, nil)
+			waitCondition(t, ns, row.cp, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere, row.message)
+			if after := reconcileNow(t, ns, row.cp); after != time.Minute {
+				t.Errorf("a NetworkPolicy another owner keeps requeues after %s, want a minute: an unlabelled one is outside the cache", after)
+			}
+			if again := getPolicy(t, ns, row.cp); again.ResourceVersion != foreign.ResourceVersion {
+				t.Fatalf("the NetworkPolicy another owner keeps moved from resourceVersion %s to %s: owners %+v", foreign.ResourceVersion, again.ResourceVersion, again.OwnerReferences)
+			}
+
+			if err := k8s.Delete(t.Context(), foreign); err != nil {
+				t.Fatal(err)
+			}
+			settle(t, ns, row.cp)
+			waitCondition(t, ns, row.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "ready on certificate generation 1")
+			cp := getControlPlane(t, ns, row.cp)
+			waitPolicy(t, ns, row.cp, func(p *networkingv1.NetworkPolicy) error {
+				if !metav1.IsControlledBy(p, cp) {
+					return fmt.Errorf("the NetworkPolicy is controlled by %v", metav1.GetControllerOf(p))
+				}
+				return nil
+			})
+		})
+	}
+}
+
+func TestOwnerlessNetworkPolicyIsAdopted(t *testing.T) {
+	ns := namespace(t)
+	createClass(t, newClass("adopting-policy", "Retain"))
+	create(t, &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "adopter-etcd", Namespace: ns},
+		Spec: networkingv1.NetworkPolicySpec{
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+			Ingress:     []networkingv1.NetworkPolicyIngressRule{{}},
+		},
+	})
+	create(t, controlPlane(ns, "adopter", "adopting-policy"))
+	writeGeneration(t, ns, "adopter", 1)
+	cp := getControlPlane(t, ns, "adopter")
+	policy := waitPolicy(t, ns, "adopter", func(p *networkingv1.NetworkPolicy) error {
+		if !metav1.IsControlledBy(p, cp) {
+			return fmt.Errorf("the NetworkPolicy is controlled by %v", metav1.GetControllerOf(p))
+		}
+		return nil
+	})
+	sameSpec(t, policy.Spec, policySpec("adopter", false))
+}
+
+func TestNetworkPolicyRefused(t *testing.T) {
+	ns := namespace(t)
+	const cp = "walled"
+	createClass(t, newClass("walling", "Retain"))
+	binding := refuse(t, ns, admissionregistrationv1.Rule{APIGroups: []string{networkingv1.GroupName}, APIVersions: []string{"v1"}, Resources: []string{"networkpolicies"}}, func() client.Object {
+		return &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: ns}}
+	})
+	create(t, controlPlane(ns, cp, "walling"))
+	writeGeneration(t, ns, cp, 1)
+	waitEtcd(t, ns, cp, namesGeneration(1))
+	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "etcd-druid has not observed generation 1")
+	runStatefulSet(t, ns, cp, 1)
+	setEtcdStatus(t, ns, cp, nil)
+	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, "the API server refuses NetworkPolicy walled-etcd; the reason is in Lodia's log")
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: cp + "-etcd"}, &networkingv1.NetworkPolicy{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("want no NetworkPolicy while the API server refuses it, got %v", err)
+	}
+
+	if err := k8s.Delete(t.Context(), binding); err != nil {
+		t.Fatal(err)
+	}
+	waitPolicy(t, ns, cp, nil)
+	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "ready on certificate generation 1")
+}
+
+func TestAFailedNetworkPolicyCallLeavesTheStatus(t *testing.T) {
+	ns := namespace(t)
+	const cp = "flaky"
+	createClass(t, newClass("flaking", "Retain"))
+	create(t, controlPlane(ns, cp, "flaking"))
+	writeGeneration(t, ns, cp, 1)
+	waitEtcd(t, ns, cp, namesGeneration(1))
+	readyOn(t, ns, cp, 1)
+	waitPolicy(t, ns, cp, nil)
+	settle(t, ns, cp)
+	before := getControlPlane(t, ns, cp)
+	injected := errors.New("injected: the API server did not answer")
+	lagging := func(failPolicies bool) func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+		return func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*networkingv1.NetworkPolicy); ok && failPolicies {
+				return injected
+			}
+			if err := c.Get(ctx, key, obj, opts...); err != nil {
+				return err
+			}
+			if sts, ok := obj.(*appsv1.StatefulSet); ok {
+				sts.Status.UpdatedReplicas = 0
+			}
+			return nil
+		}
+	}
+	for _, row := range []struct {
+		name  string
+		funcs interceptor.Funcs
+		err   error
+	}{
+		{"the read", interceptor.Funcs{Get: lagging(true)}, injected},
+		{"the apply, past its deadline", interceptor.Funcs{Get: lagging(false), Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+			if _, ok := obj.(*networkingv1ac.NetworkPolicyApplyConfiguration); ok {
+				return context.DeadlineExceeded
+			}
+			return c.Apply(ctx, obj, opts...)
+		}}, context.DeadlineExceeded},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			failing := interceptor.NewClient(k8s, row.funcs)
+			reconciler := &datastore.Reconciler{Client: failing, Reader: failing, EtcdDruidNamespace: druidNamespace}
+			if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}); !errors.Is(err, row.err) {
+				t.Fatalf("the pass returned %v, want %v", err, row.err)
+			}
+			if after := getControlPlane(t, ns, cp); after.ResourceVersion != before.ResourceVersion {
+				condition := meta.FindStatusCondition(after.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
+				t.Errorf("the pass moved the ControlPlane from resourceVersion %s to %s: DatastoreReady %s/%s %q",
+					before.ResourceVersion, after.ResourceVersion, condition.Status, condition.Reason, condition.Message)
+			}
 		})
 	}
 }

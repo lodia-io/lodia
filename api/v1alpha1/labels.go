@@ -25,7 +25,8 @@ const (
 	ManagedBy      = "lodia"
 
 	// ComponentLabel, written by Workloads on the control plane's pods,
-	// names their component.
+	// names their component; the Datastore controller's etcd NetworkPolicy
+	// admits the pods of APIServerComponent by it.
 	ComponentLabel = "app.kubernetes.io/name"
 
 	// ControlPlaneUIDLabel on an etcd claim, written by the Datastore

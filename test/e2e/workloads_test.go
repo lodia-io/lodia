@@ -57,7 +57,7 @@ func TestAPIServerOnKind(t *testing.T) {
 			if k8s, err = client.New(cfg.Client().RESTConfig(), client.Options{Scheme: scheme}); err != nil {
 				t.Fatal(err)
 			}
-			mgr := manager(t, cfg.Client().RESTConfig(), scheme, func(mgr ctrl.Manager) error { return operator.Setup(mgr, signer) })
+			mgr := manager(t, cfg.Client().RESTConfig(), scheme, func(mgr ctrl.Manager) error { return operator.Setup(mgr, signer, druidNamespace) })
 			var run context.Context
 			run, stop = context.WithCancel(context.Background())
 			stopped = make(chan error, 1)

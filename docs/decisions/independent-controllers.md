@@ -14,7 +14,7 @@ watch `ControlPlane`:
 | controller | owns | writes condition | waits on |
 |---|---|---|---|
 | **PKI** | CAs, leaf certificates, kubeconfigs, ServiceAccount keys, encryption keys; renewal and staged rotation; the tenant's bindings for Lodia, the admin group and the kubelet client | `CertificatesReady`, `AccessReady`; `CAValidityAcceptable` outside `Ready` | `status.endpoint`; `APIServerReady` for the bindings |
-| **Datastore** | the tenant's etcd (dedicated through etcd-druid, or a user and prefix in a shared store), backups, defragmentation; the only controller that talks to etcd | `DatastoreReady` | nothing |
+| **Datastore** | the tenant's etcd (dedicated through etcd-druid, with its NetworkPolicy, or a user and prefix in a shared store), backups, defragmentation; the only controller that talks to etcd | `DatastoreReady` | nothing |
 | **Workloads** | Deployments, Services, PodDisruptionBudgets, NetworkPolicies, ConfigMaps, Gateway routes in the tenant namespace | `APIServerReady` | `CertificatesReady`, `DatastoreReady` |
 | **Tenant** | objects inside the tenant cluster: kubeadm bootstrap objects, kube-proxy, CoreDNS, konnectivity-agent, apiserver-proxy, RBAC | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
 | **Health** | probes the API from outside and inside, samples node leases; holds the controller manager's leader lease inside the tenant while most nodes cannot reach the API ([controller-manager-hold](controller-manager-hold.md)) | `Reachable`; `ControllerManagerHeld` outside `Ready` | `AccessReady` |
@@ -142,8 +142,9 @@ flowchart LR
   Datastore's `Etcd` and claims). A predecessor's objects, left when a
   `ControlPlane` is recreated under the same name, are the garbage
   collector's: the controller waits with a condition, PKI with
-  `SecretsControlledElsewhere`, the Datastore with `VolumesExist`, Workloads
-  with `ObjectsControlledElsewhere`. Inside a tenant cluster, where no object
+  `SecretsControlledElsewhere`, the Datastore with `VolumesExist` for its
+  `Etcd` and `ObjectsControlledElsewhere` for the etcd's NetworkPolicy,
+  Workloads with `ObjectsControlledElsewhere`. Inside a tenant cluster, where no object
   has a `ControlPlane` for controller, the Tenant controller carries the rule
   over with `managedFields` as the signal: it reads an object before its
   first apply and leaves another owner's as it is, and deletes only what
@@ -159,7 +160,8 @@ flowchart LR
   cache, and for an `Etcd` without the control-plane label; a class held
   because its credentials copy cannot be made (the class's Secret, which
   belongs to the platform, is missing, or another owner holds the copy, which
-  may lack the label); and `DatastoreClassNotFound` for a class the claims
+  may lack the label); a NetworkPolicy `<cp>-etcd` another owner keeps, which
+  may lack it too; and `DatastoreClassNotFound` for a class the claims
   record, since deleting them to start empty brings no event; all after a
   minute. A StatefulSet that lags etcd-druid's report, read uncached, after
   15 seconds; and an `Etcd` being deleted, which has left the cache if its
@@ -196,12 +198,14 @@ flowchart LR
   `internal/operator` builds, with `ReaderFailOnMissingInformer`, and holds
   the first visit and the stale `APIServerReady` cases; `ownership_test.go` holds the
   Secrets another owner keeps and the reads that fail.
-- `internal/controller/datastore` — reads `spec`, writes the `Etcd` and the
-  credentials copy with server-side apply as `lodia/datastore`, applies
+- `internal/controller/datastore` — reads `spec`, writes the `Etcd`, the
+  credentials copy and the etcd's NetworkPolicy with server-side apply as
+  `lodia/datastore`, applies
   `DatastoreReady` alone through the status subresource (`Unknown` at the
   start of its first pass, messages from the state alone, an API error left
-  to the log unless the server refuses an object it is sent: the `Etcd`,
-  which is `Refused`, or the credentials copy, which holds the class),
+  to the log unless the server refuses an object it is sent: the `Etcd` or
+  the NetworkPolicy, which are `Refused`, or the credentials copy, which
+  holds the class),
   sets a reconcile timeout of a minute, and stops for a paused
   `ControlPlane`. `datastore_test.go`
   runs it under the same cache with `ReaderFailOnMissingInformer`, as a user

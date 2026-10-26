@@ -156,6 +156,7 @@ const (
 	APIServerReadyzPath = "/readyz"
 
 	// APIServerComponent is the ComponentLabel of the API server's pods,
-	// which Workloads writes.
+	// which Workloads writes and the Datastore controller's etcd
+	// NetworkPolicy admits.
 	APIServerComponent = "kube-apiserver"
 )

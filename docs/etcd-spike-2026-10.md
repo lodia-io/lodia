@@ -151,7 +151,7 @@ tests check it.
 |---|---|---|
 | every line TLS or none | finding 1 | sets all three TLS blocks |
 | certificates renewed under new names: Gardener's secrets manager writes immutable Secrets named after a checksum of their config ([manager.go](https://github.com/gardener/gardener/blob/2a9e7795749d1122a171caf69aabd6426db10777/pkg/utils/secrets/manager/manager.go#L405), [generate.go](https://github.com/gardener/gardener/blob/ac0343dcd77a3c14635bb9006f276ffc2cc30906/pkg/utils/secrets/manager/generate.go#L343)) | finding 3 | renews the same way |
-| NetworkPolicies come from the consumer | [etcd-druid#505](https://github.com/gardener/etcd-druid/issues/505) | admits the API server and the members, and etcd-druid on 2379 and 8080 |
+| NetworkPolicies come from the consumer | [etcd-druid#505](https://github.com/gardener/etcd-druid/issues/505) | the Datastore controller's `<cp>-etcd` ([README](README.md#a-tenant-namespace)) |
 | compaction Jobs carry Gardener's network-policy labels (`networking.gardener.cloud/to-dns`, `to-private-networks`, `to-public-networks`) | [reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/compaction/reconciler.go#L720-L722) | lets compaction Jobs reach DNS and the store |
 | images in Gardener's Artifact Registry | [images.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/images/images.yaml) | pins them in the version table, under the registry mirror |
 | deployed through skaffold | finding 8 | vendors the chart at a tag |

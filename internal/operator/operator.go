@@ -64,8 +64,9 @@ func Cache() (cache.Options, error) {
 }
 
 // Setup registers every controller with the manager; signerImage is
-// lodia-signer's, which runs beside each API server.
-func Setup(mgr ctrl.Manager, signerImage string) error {
+// lodia-signer's, which runs beside each API server, and etcdDruidNamespace
+// etcd-druid's, which each etcd's NetworkPolicy admits.
+func Setup(mgr ctrl.Manager, signerImage, etcdDruidNamespace string) error {
 	if err := (&pki.Reconciler{
 		Client:              mgr.GetClient(),
 		Reader:              mgr.GetAPIReader(),
@@ -76,7 +77,7 @@ func Setup(mgr ctrl.Manager, signerImage string) error {
 	}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the pki controller: %w", err)
 	}
-	if err := (&datastore.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader()}).SetupWithManager(mgr, workers); err != nil {
+	if err := (&datastore.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdDruidNamespace: etcdDruidNamespace}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the datastore controller: %w", err)
 	}
 	if err := (&lifecycle.Reconciler{Client: mgr.GetClient()}).SetupWithManager(mgr, workers); err != nil {

@@ -19,12 +19,13 @@ import (
 )
 
 func main() {
-	var metricsAddr, probeAddr, signerImage string
+	var metricsAddr, probeAddr, signerImage, etcdDruidNamespace string
 	var leaderElect bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "Address of the metrics endpoint, served over HTTPS behind authentication and authorization.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Address of the health and readiness probes.")
 	flag.BoolVar(&leaderElect, "leader-elect", true, "Run controllers only in the replica that holds the leader lease.")
 	flag.StringVar(&signerImage, "signer-image", "", "Image of lodia-signer, the API server's ServiceAccount token signer; required.")
+	flag.StringVar(&etcdDruidNamespace, "etcd-druid-namespace", "etcd-druid", "Namespace etcd-druid runs in; each etcd's NetworkPolicy admits its pods to the backup-restore sidecar.")
 	opts := zap.Options{}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -56,7 +57,7 @@ func main() {
 		log.Error(err, "create the manager")
 		os.Exit(1)
 	}
-	if err := operator.Setup(mgr, signerImage); err != nil {
+	if err := operator.Setup(mgr, signerImage, etcdDruidNamespace); err != nil {
 		log.Error(err, "set up the controllers")
 		os.Exit(1)
 	}

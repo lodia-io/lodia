@@ -63,7 +63,7 @@ in [`api/examples/`](api/examples/).
 | controller | writes | condition | needs |
 |---|---|---|---|
 | PKI | Secrets with certificates, keys and kubeconfigs; the tenant's bindings for Lodia, the admin group and the kubelet client | `CertificatesReady`, `AccessReady`; `CAValidityAcceptable` outside `Ready` | `status.endpoint`; `APIServerReady` for the bindings |
-| Datastore | the `Etcd` of a dedicated etcd — built, for one member — or a user and role in a shared store; backups and defragmentation | `DatastoreReady` | a complete generation of PKI's etcd certificates |
+| Datastore | the `Etcd` of a dedicated etcd and its NetworkPolicy — built, for one member — or a user and role in a shared store; backups and defragmentation | `DatastoreReady` | a complete generation of PKI's etcd certificates |
 | Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady` | `status.target`, `status.datastore`, `CertificatesReady`, `DatastoreReady` |
 | Tenant | objects inside the tenant cluster, with an inventory | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
 | Health | status, and from phase 2 the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable`; `ControllerManagerHeld` outside `Ready` from phase 2 | `status.endpoint` and the CA bundle; `AccessReady` from phase 2 |
@@ -129,11 +129,12 @@ flowchart TB
     sch --> svc
     svc --> k
     a -->|mTLS :2379| etcd
+    etcd -->|":2379 :2380"| etcd
     etcd -->|snapshots| s3[(object storage)]
   end
   ep["load balancer, node port<br/>or Gateway :443 by SNI"] --> svc
   op["Lodia"] --> svc
-  druid["etcd-druid"] -->|:2379 :8080| etcd
+  druid["etcd-druid"] -->|":8080 snapshots · :2379 scale-in"| etcd
 ```
 
 Four pods for a single control plane, nine for HA
@@ -232,7 +233,7 @@ The labels, annotations and the finalizer they share are defined in
 |---|---|---|---|
 | label `lodia.io/control-plane: <cp>` | every object Lodia creates for a `ControlPlane` | each controller, on its objects | the operator's cache, which holds only labelled objects |
 | label `app.kubernetes.io/managed-by: lodia` | every object Lodia writes inside a tenant cluster | PKI, on its bindings; Tenant, on its objects | none in Lodia: Tenant prunes by its inventory, never by the label |
-| label `app.kubernetes.io/name: <component>` | the control plane's pods and their Deployments: `kube-apiserver` (`APIServerComponent` in `names.go`), `kube-controller-manager`, `kube-scheduler` | Workloads | Workloads, whose Services, NetworkPolicies and Deployments select the pods by it with `lodia.io/control-plane` |
+| label `app.kubernetes.io/name: <component>` | the control plane's pods and their Deployments: `kube-apiserver` (`APIServerComponent` in `names.go`), `kube-controller-manager`, `kube-scheduler` | Workloads | Workloads, whose Services, NetworkPolicies and Deployments select the pods by it with `lodia.io/control-plane`; the Datastore controller, whose etcd NetworkPolicy admits the API server's pods by both |
 | label `lodia.io/control-plane-uid` | the etcd claims | Datastore | Datastore, which reclaims and starts only on its own claims |
 | label `lodia.io/etcd-certificates: <g>` | the etcd certificate Secrets | PKI | Datastore, which counts complete generations |
 | annotation `lodia.io/is-default-class: "true"` | a `DatastoreClass` | the platform | Datastore |
@@ -490,6 +491,53 @@ condition its certificate generations would stop with `DatastoreReady` still
 True; the refusal is returned as the pass's error too, so the next attempt
 follows controller-runtime's backoff.
 
+The etcd's NetworkPolicy, `<cp>-etcd`, is the Datastore controller's too:
+applied as `lodia/datastore` in every pass that finds an `Etcd` this
+`ControlPlane` controls, labelled `lodia.io/control-plane` and owned by the
+`ControlPlane`, so the garbage collector deletes it with the rest once the
+finalizer, which outlives the etcd, is gone. It selects the members by the
+labels etcd-druid gives the StatefulSet's pods,
+`app.kubernetes.io/managed-by: etcd-druid` and `app.kubernetes.io/part-of`
+and `app.kubernetes.io/name` `<cp>-etcd`
+([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L132-L138)),
+the name keeping out the compaction Job's pods, which carry the first two
+([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/compaction/reconciler.go#L716-L725)),
+and admits, for their ingress alone, what dials them:
+
+| port | from | dialled by |
+|---|---|---|
+| client, 2379 | the API server's pods: `lodia.io/control-plane: <cp>`, `app.kubernetes.io/name: kube-apiserver` | the API server, through the client Service |
+| client, 2379; peer, 2380 | the members | the members, each other on the peer port ([etcdconfig.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/configmap/etcdconfig.go#L150-L166)); their backup-restore sidecars on the client port, through the client Service, to list the members at every start and to add their own as a learner when the cluster grows ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L474-L477), [httpAPI.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/server/httpAPI.go#L452-L455), [member_control.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/member/member_control.go#L102-L104)) |
+| backup-restore, 8080, only with a backup store | the pods of etcd-druid's namespace, by `kubernetes.io/metadata.name`: the operator's flag `--etcd-druid-namespace`, `etcd-druid` by default | etcd-druid, for snapshots: an `EtcdOpsTask`'s, the one it takes before it rolls the members for a new image or replica count, and compaction's, none of them without a store ([ondemandsnapshot.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcdopstask/handler/ondemandsnapshot/ondemandsnapshot.go#L103), [statefulset.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/statefulset.go#L108-L150), [snapshot.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/compaction/snapshot.go#L117-L124)) |
+
+Nothing else dials them. The wrapper and the sidecar reach their own etcd
+and each other through the pod's loopback, by the host alias
+`<cp>-etcd-local`
+([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L211-L218),
+[builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L626-L627)),
+and the kubelet probes them from the node, neither of which a NetworkPolicy
+blocks
+([network policies](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/concepts/services-networking/network-policies.md#L467-L468));
+a compaction Job restores the snapshots into an etcd of its own
+([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/compaction/reconciler.go#L812-L857));
+and etcd-druid dials the client port only to remove a member in a scale-in
+([memberremoval.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/memberremoval.go#L31-L39)),
+which one member never has: phase 2 admits it with three members. The ports
+are etcd-druid's defaults, which the `Etcd` leaves unset
+([constants.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/common/constants.go#L55-L60)),
+named by number, since the peer port and the sidecar's share the container
+port name `server`
+([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L376-L387),
+[builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L414-L420)).
+A policy under the name is found uncached too, as the `Etcd` is; one
+without a controller is adopted, and one another owner keeps is never
+written over. The `Etcd` meanwhile takes each certificate generation as
+before, and `DatastoreReady`, once the etcd is otherwise ready, is False
+with `ObjectsControlledElsewhere`, naming the policy and its owner, and
+checked again every minute: a previous `ControlPlane`'s goes with the
+garbage collector, any other owner's with a person. A policy the API server
+refuses is `Refused` the same way, and retried with backoff.
+
 Identities: no root CA key is mounted into a control plane pod; the
 controller manager holds only the kubelet signer, an intermediate that signs
 kubelet client certificates for 30 days. No long-lived certificate carries
@@ -510,8 +558,9 @@ minutes and never stores, the way kubeadm uses `super-admin.conf` only to bind
 
 In phase 1 a NetworkPolicy per component isolates its pods' ingress: the
 API server's two ports are open to all, since they are the public endpoint,
-and nothing reaches the controller manager or the scheduler but the kubelet's
-probes, which come from the node. Phase 2 default-denies the namespace,
+the etcd's members take only the API server, each other and etcd-druid, as
+above, and nothing reaches the controller manager or the scheduler but the
+kubelet's probes, which come from the node. Phase 2 default-denies the namespace,
 egress included, and allows exactly the arrows above: the endpoint → API
 server and konnectivity-server, controller manager and scheduler and Lodia
 → the API Service, API server → etcd, etcd ↔ etcd, etcd-druid → etcd and its
@@ -805,7 +854,7 @@ the control plane.
 The Datastore controller calls exactly these verbs. Its envtest suite runs
 the controller as a user bound to these rules and nothing else, with the
 `OwnerReferencesPermissionEnforcement` admission plugin on, and leaving out
-any one verb fails a test, except `list` on the four kinds the cache holds:
+any one verb fails a test, except `list` on the five kinds the cache holds:
 client-go fills the cache with a streaming watch where the API server offers
 one, on by default since 1.35, and falls back to `list` where it does not
 ([known_features.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/client-go/features/known_features.go#L141-L144),
@@ -821,6 +870,7 @@ one, on by default since 1.35, and falls back to `list` where it does not
 | `""` | `secrets` | `get`, `list`, `watch`, `create`, `patch`, `delete` | the metadata of the certificate Secrets; the class's credentials Secret, read uncached in the namespace the class names; the copy `<cp>-etcd-backup`, applied; `delete` because that admission plugin lets only who may delete an object set an owner reference on it when it is updated, which adopting a copy with no owner does ([gc_admission.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/plugin/pkg/admission/gc/gc_admission.go#L103-L119)) |
 | `""` | `persistentvolumeclaims` | `list`, `patch`, `delete` | the claims of `<cp>-etcd`, listed in the tenant's namespace and matched by name; their UID label and class annotation; the reclaim |
 | `apps` | `statefulsets` | `get` | the readiness checks, read uncached |
+| `networking.k8s.io` | `networkpolicies` | `get`, `list`, `watch`, `create`, `patch`, `delete` | the cache, and the API server for a policy `<cp>-etcd` without the label; the apply, also authorized as `create` when it creates the object; `delete` because that admission plugin lets only who may delete an object set an owner reference on it when it is updated, which adopting a policy without an owner does |
 
 Lifecycle reads `ControlPlane`s from the cache and applies their status:
 `list` and `watch` on `controlplanes`, `patch` on `controlplanes/status`; its
