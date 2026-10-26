@@ -808,7 +808,8 @@ in its package; `make generate` writes them into one ClusterRole per
 controller in [`charts/lodia/files/rbac/`](../charts/lodia/files/rbac/), and
 the chart binds the operator's ServiceAccount to every one. Each controller's
 envtest suite runs it as a user bound to its generated ClusterRole and
-nothing else, with the `OwnerReferencesPermissionEnforcement` admission
+nothing else (PKI's direct passes read the `ControlPlane` through the envtest
+admin, standing in for the manager's cache), with the `OwnerReferencesPermissionEnforcement` admission
 plugin on for PKI, the Datastore controller and Workloads. For the Datastore
 controller, leaving out any one verb fails a test, except `list` on the four
 kinds the cache holds: client-go fills the cache with a streaming watch where
@@ -880,7 +881,11 @@ The phase 1 chart installs:
 - the operator: two replicas with leader election on the Lease `lodia.io` in
   the release namespace, spread across nodes by hostname, at
   `system-cluster-critical` priority, with a securityContext that passes Pod
-  Security `restricted`, liveness and readiness probes on port 8081, the
+  Security `restricted` (the release namespace cannot enforce it while
+  `etcdDruid.enabled`: etcd-druid's pod sets only
+  `allowPrivilegeEscalation: false`,
+  [deployment.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/charts/templates/deployment.yaml#L112-L113)),
+  liveness and readiness probes on port 8081, the
   metrics endpoint on 8443 behind controller-runtime's authentication and
   authorization filter, and a PodDisruptionBudget with `maxUnavailable: 1`
   and `unhealthyPodEvictionPolicy: AlwaysAllow`;

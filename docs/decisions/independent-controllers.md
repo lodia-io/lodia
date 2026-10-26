@@ -192,7 +192,9 @@ flowchart LR
   `APIServerReady` only at the current generation, and requeues in whole
   seconds, rounded up, at the earliest renewal, or when a CA enters its last
   year or expires.
-  `reconciler_test.go` runs it as a user bound to exactly its rules, with the
+  `reconciler_test.go` runs it as a user bound to exactly its rules (its
+  direct passes read the `ControlPlane` through the envtest admin, standing
+  in for the manager's cache), with the
   `OwnerReferencesPermissionEnforcement` admission plugin on, once under a
   manager whose cache is the one `internal/operator` builds, with
   `ReaderFailOnMissingInformer`, and holds
