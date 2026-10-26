@@ -42,10 +42,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/metadata"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/portforward"
+	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/client-go/transport/spdy"
 	certutil "k8s.io/client-go/util/cert"
 	bootstrapapi "k8s.io/cluster-bootstrap/token/api"
@@ -261,6 +263,21 @@ func TestPhase1Gate(t *testing.T) {
 				t.Errorf("exec hostname in pod web printed %q", hostname)
 			}
 			oneDial("exec")
+			stdout.Reset()
+			stderr.Reset()
+			execURL := kubernetes.NewForConfigOrDie(access.cfg).CoreV1().RESTClient().Post().Resource("pods").Namespace(web.Namespace).Name(web.Name).SubResource("exec").
+				VersionedParams(&corev1.PodExecOptions{Container: "web", Command: []string{"hostname"}, Stdout: true, Stderr: true}, scheme.ParameterCodec).URL()
+			webSocket, err := remotecommand.NewWebSocketExecutor(access.cfg, http.MethodGet, execURL.String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := webSocket.StreamWithContext(ctx, remotecommand.StreamOptions{Stdout: &stdout, Stderr: &stderr}); err != nil {
+				t.Fatalf("exec hostname in pod web over WebSocket: %v\n%s", err, stderr.String())
+			}
+			if hostname := strings.TrimSpace(stdout.String()); hostname != web.Name {
+				t.Errorf("exec hostname in pod web over WebSocket printed %q", hostname)
+			}
+			oneDial("exec over WebSocket")
 			local, stopWeb := forward(t, access.cfg, web, 8080)
 			defer stopWeb()
 			if status, echo := httpGet(ctx, t, http.DefaultClient, "http://"+local+"/echo?msg=through-the-tunnel"); status != http.StatusOK || echo != "through-the-tunnel" {
@@ -400,25 +417,56 @@ func forward(t *testing.T, cfg *rest.Config, pod *corev1.Pod, port int32) (strin
 		t.Fatal(err)
 	}
 	url := clientset.CoreV1().RESTClient().Post().Resource("pods").Namespace(pod.Namespace).Name(pod.Name).SubResource("portforward").URL()
-	stop, ready := make(chan struct{}), make(chan struct{})
-	forwarder, err := portforward.NewOnAddresses(spdy.NewDialer(upgrader, &http.Client{Transport: transport}, http.MethodPost, url),
-		[]string{"127.0.0.1"}, []string{fmt.Sprintf(":%d", port)}, stop, ready, io.Discard, os.Stderr)
+	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, http.MethodPost, url)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				stop := make(chan struct{})
+				defer close(stop)
+				forwarder, err := portforward.NewOnAddresses(dialer, []string{"127.0.0.1"}, []string{fmt.Sprintf(":%d", port)}, stop, make(chan struct{}), io.Discard, os.Stderr)
+				if err == nil {
+					err = relay(conn, forwarder)
+				}
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "port-forward to %s/%s:%d: %v\n", pod.Namespace, pod.Name, port, err)
+				}
+			}()
+		}
+	}()
+	return listener.Addr().String(), sync.OnceFunc(func() { _ = listener.Close() })
+}
+
+func relay(conn net.Conn, forwarder *portforward.PortForwarder) error {
+	defer func() { _ = conn.Close() }()
 	failed := make(chan error, 1)
 	go func() { failed <- forwarder.ForwardPorts() }()
 	select {
-	case <-ready:
+	case <-forwarder.Ready:
 	case err := <-failed:
-		t.Fatalf("port-forward to %s/%s:%d: %v", pod.Namespace, pod.Name, port, err)
+		return err
 	}
 	ports, err := forwarder.GetPorts()
 	if err != nil {
-		close(stop)
-		t.Fatal(err)
+		return err
 	}
-	return net.JoinHostPort("127.0.0.1", strconv.Itoa(int(ports[0].Local))), sync.OnceFunc(func() { close(stop) })
+	remote, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(ports[0].Local))))
+	if err != nil {
+		return err
+	}
+	go func() {
+		_, _ = io.Copy(remote, conn)
+		_ = remote.Close()
+	}()
+	_, _ = io.Copy(conn, remote)
+	return nil
 }
 
 func bootstrapToken(ctx context.Context, t *testing.T, c client.Client) string {
