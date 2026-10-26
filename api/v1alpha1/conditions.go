@@ -22,12 +22,14 @@ const (
 // type without "Ready", or a status field. Unsupported is what this release
 // does not build, the field named in the message; <Capability>Unsupported is
 // an environment that cannot serve the spec. <Kind>NotFound is a named
-// object that does not exist.
+// object that does not exist. Refused is the API server a controller writes
+// to refusing one of its objects, False, the object named in the message.
 const (
 	ReasonReconciling            = "Reconciling"
 	ReasonReady                  = "Ready"
 	ReasonUnsupported            = "Unsupported"
 	ReasonDeleting               = "Deleting"
+	ReasonRefused                = "Refused"
 	ReasonWaitingForEndpoint     = "WaitingForEndpoint"
 	ReasonWaitingForTarget       = "WaitingForTarget"
 	ReasonWaitingForCertificates = "WaitingForCertificates"
@@ -64,7 +66,6 @@ const (
 	ReasonDatastoreClassNotFound  = "DatastoreClassNotFound"
 	ReasonDatastoreClassAmbiguous = "DatastoreClassAmbiguous"
 	ReasonVolumesExist            = "VolumesExist"
-	ReasonEtcdRefused             = "EtcdRefused"
 )
 
 // APIServerReady.

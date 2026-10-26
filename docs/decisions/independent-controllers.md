@@ -2,8 +2,8 @@
 
 Decided 2026-10-25. The manager, PKI, the Datastore controller, for a
 dedicated etcd of one member, Lifecycle, for the target within a minor and
-`Ready`, and Health, for the probe through the public endpoint, are built;
-Workloads and Tenant are not.
+`Ready`, Tenant, without the apiserver-proxy, and Health, for the probe
+through the public endpoint, are built; Workloads is not.
 
 ## Decision
 
@@ -139,7 +139,12 @@ flowchart LR
   Datastore's `Etcd` and claims). A predecessor's objects, left when a
   `ControlPlane` is recreated under the same name, are the garbage
   collector's: the controller waits with a condition, PKI with
-  `SecretsControlledElsewhere`, the Datastore with `VolumesExist`.
+  `SecretsControlledElsewhere`, the Datastore with `VolumesExist`. Inside a
+  tenant cluster, where no object has a `ControlPlane` for controller, the
+  Tenant controller carries the rule over with `managedFields` as the
+  signal: it reads an object before its first apply and leaves another
+  owner's as it is, and deletes only what `brygga/tenant` has applied
+  ([tenant-resources-by-inventory](tenant-resources-by-inventory.md)).
 - A condition that waits on an object outside the cache comes with a bounded
   requeue, since no event reports that object's change; the condition still
   says what it waits on. PKI has one: Secrets under its names that another
@@ -154,14 +159,17 @@ flowchart LR
   record, since deleting them to start empty brings no event; all after a
   minute. A StatefulSet that lags etcd-druid's report, read uncached, after
   15 seconds; and an `Etcd` being deleted, which has left the cache if its
-  label was removed, after 10 seconds.
+  label was removed, after 10 seconds. The Tenant controller's: the addons'
+  rollout in the tenant, which Brygga does not watch, every minute until it
+  is complete, and `<cp>-ca-bundle` or `<cp>-brygga-kubeconfig` while
+  another owner keeps it, every minute.
 
 ## Code
 
 - `internal/operator` — the scheme, the cache rules above and the
   controllers: PKI registered as `pki`, the Datastore controller as
-  `datastore`, Lifecycle as `lifecycle` and Health as `health`, each with
-  ten workers.
+  `datastore`, Lifecycle as `lifecycle`, Tenant as `tenant` and Health as
+  `health`, each with ten workers.
   `cmd/brygga/main.go` runs them in one manager; every controller's tests
   take the cache from it.
 - `internal/controller/pki` — reads `spec` and `status.endpoint`, writes its
@@ -184,7 +192,7 @@ flowchart LR
   `DatastoreReady` alone through the status subresource (`Unknown` at the
   start of its first pass, messages from the state alone, an API error left
   to the log unless the server refuses an object it is sent: the `Etcd`,
-  which is `EtcdRefused`, or the credentials copy, which holds the class),
+  which is `Refused`, or the credentials copy, which holds the class),
   sets a reconcile timeout of a minute, and stops for a paused
   `ControlPlane`. `datastore_test.go`
   runs it under the same cache with `ReaderFailOnMissingInformer`, as a user
@@ -200,6 +208,17 @@ flowchart LR
   one-minute reconcile timeout. `lifecycle_test.go` runs it under the same
   cache with `ReaderFailOnMissingInformer`, as a user bound to exactly its
   rules; `internal/versions` holds the minors it supports.
+- `internal/controller/tenant` — waits on `AccessReady` at the current
+  generation, applies the tenant's objects as `brygga/tenant` with the
+  inventory in the tenant, and applies `AddonsApplied` and
+  `AddonsAvailable` (`Unknown` on the first visit, messages from the state,
+  a tenant that does not answer leaving a True as it was); a pass runs only
+  when the target, the endpoint, `AccessReady` or the generation changes,
+  and on its timers. Registered as `tenant` with ten workers and a
+  one-minute reconcile timeout. `tenant_test.go` runs it under the same
+  cache with `ReaderFailOnMissingInformer`, as a user bound to exactly its
+  rules, against a tenant kube-apiserver started from PKI's certificates
+  ([tenant-resources-by-inventory](tenant-resources-by-inventory.md)).
 - `internal/controller/health` — reads the `ControlPlane` from the cache and
   `<cp>-ca-bundle` uncached, probes the public endpoint every 10 seconds, and
   applies `Reachable` as `brygga/health`, only on a change: `Unknown` at the

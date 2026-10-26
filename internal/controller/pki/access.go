@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 	"time"
 
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -21,6 +20,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
+	"github.com/segla-io/brygga/internal/apistatus"
 	"github.com/segla-io/brygga/internal/certs"
 )
 
@@ -38,55 +38,53 @@ var bindings = []struct {
 
 // bind applies the bindings as brygga:operator and, when that is forbidden
 // (the first time, or after someone deleted its binding), with a
-// system:masters certificate that is never stored. It reports whether a
-// failure is the tenant's refusal; once brygga:operator is forbidden, every
-// failure is.
-func (r *Reconciler) bind(ctx context.Context, t *tenant) (bool, error) {
+// system:masters certificate that is never stored. It returns the binding
+// the tenant refused, empty when a failure is not a refusal; once
+// brygga:operator is forbidden, every failure is one.
+func (r *Reconciler) bind(ctx context.Context, t *tenant) (string, error) {
 	cfg, err := clientcmd.RESTConfigFromKubeConfig(t.existing[t.secret(bryggav1alpha1.BryggaKubeconfigSecret)].Data[bryggav1alpha1.KubeconfigKey])
 	if err != nil {
-		return false, err
+		return "", err
 	}
 	// The in-namespace Service is never behind a proxy from the environment.
 	cfg.Proxy = http.ProxyURL(nil)
 	cfg.Dial = r.Dial
-	err = applyBindings(ctx, cfg)
+	refused, err := applyBindings(ctx, cfg)
 	if !apierrors.IsForbidden(err) {
-		return refusal(err), err
+		if !apistatus.Refused(err) {
+			refused = ""
+		}
+		return refused, err
 	}
 	ca := t.cas[clientCA]
 	if ca == nil {
-		return true, errors.New("brygga:operator is forbidden and the client CA is missing or expired, so no bootstrap certificate can be issued")
+		return refused, errors.New("brygga:operator is forbidden and the client CA is missing or expired, so no bootstrap certificate can be issued")
 	}
 	bootstrap, err := ca.Issue(certs.Profile{CommonName: "brygga:bootstrap", Organizations: []string{"system:masters"}, Usages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}, t.now, bootstrapLifetime)
 	if err != nil {
-		return true, err
+		return refused, err
 	}
 	asBootstrap := rest.AnonymousClientConfig(cfg)
 	if asBootstrap.CertData, err = certs.CertPEM(bootstrap.Cert); err != nil {
-		return true, err
+		return refused, err
 	}
 	if asBootstrap.KeyData, err = certs.KeyPEM(bootstrap.Key); err != nil {
-		return true, err
+		return refused, err
 	}
-	err = applyBindings(ctx, asBootstrap)
-	return err != nil, err
+	if name, err := applyBindings(ctx, asBootstrap); err != nil {
+		if apistatus.Refused(err) {
+			refused = name
+		}
+		return refused, err
+	}
+	return "", nil
 }
 
-// refusal is an answer from the tenant's API server: a 4xx other than those
-// that ask to retry.
-func refusal(err error) bool {
-	var status apierrors.APIStatus
-	if !errors.As(err, &status) {
-		return false
-	}
-	code := status.Status().Code
-	return code >= 400 && code < 500 && !slices.Contains([]int32{http.StatusRequestTimeout, http.StatusConflict, http.StatusTooManyRequests}, code)
-}
-
-func applyBindings(ctx context.Context, cfg *rest.Config) error {
+// applyBindings also returns the binding it stopped at.
+func applyBindings(ctx context.Context, cfg *rest.Config) (string, error) {
 	k8s, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
-		return err
+		return "", err
 	}
 	for _, b := range bindings {
 		binding := rbacv1ac.ClusterRoleBinding(b.name).
@@ -94,8 +92,8 @@ func applyBindings(ctx context.Context, cfg *rest.Config) error {
 			WithSubjects(rbacv1ac.Subject().WithKind(b.kind).WithAPIGroup(rbacv1.GroupName).WithName(b.name)).
 			WithRoleRef(rbacv1ac.RoleRef().WithAPIGroup(rbacv1.GroupName).WithKind("ClusterRole").WithName(b.role))
 		if _, err := k8s.RbacV1().ClusterRoleBindings().Apply(ctx, binding, metav1.ApplyOptions{FieldManager: fieldManager, Force: true}); err != nil {
-			return fmt.Errorf("apply ClusterRoleBinding %s: %w", b.name, err)
+			return b.name, fmt.Errorf("apply ClusterRoleBinding %s: %w", b.name, err)
 		}
 	}
-	return nil
+	return "", nil
 }

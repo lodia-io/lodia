@@ -74,10 +74,10 @@ Each controller has its own queue and field manager, reads `spec`,
 own condition; none calls another
 ([decision](decisions/independent-controllers.md)). The cache is scoped to
 labelled objects, with metadata only for Secrets. PKI, the Datastore
-controller, a first Lifecycle and Health's external probe are built
-(`internal/controller/pki`, `datastore`, `lifecycle` and `health`,
-registered under those names by `internal/operator`, whose manager
-`cmd/brygga` runs and the tests build); Workloads and Tenant are not.
+controller, a first Lifecycle, the Tenant controller and Health's external
+probe are built (`internal/controller/pki`, `datastore`, `lifecycle`,
+`tenant` and `health`, registered under those names by `internal/operator`,
+whose manager `cmd/brygga` runs and the tests build); Workloads is not.
 
 ```mermaid
 sequenceDiagram
@@ -413,7 +413,7 @@ and starting from another tenant's data is a restore, not a start: nothing
 is created until they are deleted. `VolumesExist` too when an `Etcd`
 `<cp>-etcd` exists whose controller is not this `ControlPlane`, an orphan or
 a predecessor's the garbage collector has not removed yet: it is neither
-adopted nor written, and the message names it. `EtcdRefused` when the API
+adopted nor written, and the message names it. `Refused` when the API
 server refuses the `Etcd` Brygga renders — an admission policy on `Etcd`s, a
 class stored before a rule it breaks (validation ratcheting keeps an
 unchanged field on update,
@@ -498,8 +498,9 @@ The default is `gateway`: one address and one certificate story for a whole
 fleet, and nothing per tenant on the load balancer. A node needs outbound
 443 and nothing inbound: the API server reaches kubelets, and the webhooks
 and aggregated APIs that run in the tenant, through the konnectivity tunnel
-the agent opens from inside. On the node, the kubelet binds its node IP,
-and the agents' health and admin endpoints bind loopback.
+the agent opens from inside. On the node, the kubelet binds its node IP;
+the agents' admin endpoint binds loopback, and their health endpoint the pod
+IP.
 
 Inside the tenant, the `kubernetes` Service keeps its ClusterIP (the first
 address of the service CIDR), CoreDNS gets the tenth, and the controller
@@ -540,8 +541,37 @@ provider
 [bootstrap tokens](https://kubernetes.io/docs/reference/access-authn-authz/bootstrap-tokens/)).
 The pinned component versions per minor are those kubeadm pins: CoreDNS
 v1.13.1 and etcd 3.6.6 for 1.35, CoreDNS v1.14.2 for 1.36, CoreDNS v1.14.6 for
-1.37, and konnectivity 0.NN for Kubernetes 1.NN
-([kubeadm constants](https://github.com/kubernetes/kubernetes/blob/release-1.37/cmd/kubeadm/app/constants/constants.go)).
+1.37, and konnectivity 0.NN for Kubernetes 1.NN (kubeadm's constants at
+[v1.35.0](https://github.com/kubernetes/kubernetes/blob/v1.35.0/cmd/kubeadm/app/constants/constants.go),
+[v1.36.0](https://github.com/kubernetes/kubernetes/blob/v1.36.0/cmd/kubeadm/app/constants/constants.go)
+and
+[v1.37.1](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kubeadm/app/constants/constants.go)).
+
+Built for phase 1, without `apiserver-proxy` and the write lock
+(`internal/controller/tenant`, the templates in its `manifests/`, taken from
+[kubeadm v1.35.0](https://github.com/kubernetes/kubernetes/tree/v1.35.0/cmd/kubeadm/app/phases)
+and [the hard way](hard-way.md)). Once `AccessReady` is True for the
+generation, the controller applies every object as `brygga/tenant` through
+`<cp>-brygga-kubeconfig`, on a change of the inputs it reads and every 10
+minutes; until then both conditions are `WaitingForAccess`, and it uses
+`<cp>-brygga-kubeconfig` and `<cp>-ca-bundle` only while no other owner
+keeps them, looking again every minute. It leaves another owner's objects
+as they are: an object no inventory names yet is read before its first
+apply and left alone when it exists without `brygga/tenant` among its field
+managers, and the prune deletes an entry that left the render only when
+`brygga/tenant` applied it, under the UID and resourceVersion it read, and
+otherwise drops the entry. The inventory names an object before it is first written,
+and is rewritten to what the render holds once the objects that left it are
+deleted, so a pass that stops anywhere leaves nothing to leak; an object at
+another API version is the same entry, pruned at the version the tenant
+serves, and one of a kind it no longer serves is gone. `AddonsApplied` is
+True once every object is applied and pruned; False with `Refused` names
+the object, or the inventory read, the tenant refused, and with `Applying`
+another owner's object, an inventory it cannot read, or a tenant that never
+answered, while a tenant that stops answering leaves a True as it was. `AddonsAvailable` reads the
+DaemonSets and Deployments Brygga applied, every minute until they are
+rolled out; it keeps a rollout it read before while none can be read, and
+until one is, says what stopped the pass.
 
 ## Lifecycle
 
@@ -735,7 +765,10 @@ one, on by default since 1.35, and falls back to `list` where it does not
 
 Lifecycle reads `ControlPlane`s from the cache and applies their status:
 `list` and `watch` on `controlplanes`, `patch` on `controlplanes/status`; its
-envtest suite runs it as a user bound to exactly these rules.
+envtest suite runs it as a user bound to exactly these rules. The Tenant
+controller needs the same and `get` on `secrets`, for `<cp>-brygga-kubeconfig`
+and `<cp>-ca-bundle`, read uncached; inside the tenant it is
+`brygga:operator`.
 
 Health reads `ControlPlane`s from the cache and the CA bundle from the API
 server, and applies `Reachable`: `list` and `watch` on `controlplanes`,

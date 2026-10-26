@@ -184,8 +184,9 @@ func listed(items []string) string {
 }
 
 // access counts a refusal from the tenant as an answer, which turns
-// AccessReady False; no answer keeps a True, since whether the tenant can be
-// reached is Health's to report.
+// AccessReady False, Refused; no answer keeps a True, since whether the
+// tenant can be reached is Health's to report, and leaves anything else
+// Binding.
 func (r *Reconciler) access(ctx context.Context, t *tenant) (metav1.Condition, error) {
 	c := metav1.Condition{Type: bryggav1alpha1.ConditionAccessReady, Status: metav1.ConditionFalse, Reason: bryggav1alpha1.ReasonWaitingForAPIServer, Message: "APIServerReady is not True for this generation"}
 	ready := meta.FindStatusCondition(t.cp.Status.Conditions, bryggav1alpha1.ConditionAPIServerReady)
@@ -197,10 +198,14 @@ func (r *Reconciler) access(ctx context.Context, t *tenant) (metav1.Condition, e
 		c.Status, c.Reason, c.Message = metav1.ConditionTrue, bryggav1alpha1.ReasonBound, "brygga:operator, brygga:cluster-admins and brygga:kubelet-api-admins are bound"
 		return c, nil
 	}
-	if prev := meta.FindStatusCondition(t.cp.Status.Conditions, bryggav1alpha1.ConditionAccessReady); !refused && prev != nil && prev.Status == metav1.ConditionTrue {
+	if refused != "" {
+		c.Reason, c.Message = bryggav1alpha1.ReasonRefused, "ClusterRoleBinding "+refused+" is refused by the tenant's API server; the reason is in Brygga's log"
+		return c, err
+	}
+	if prev := meta.FindStatusCondition(t.cp.Status.Conditions, bryggav1alpha1.ConditionAccessReady); prev != nil && prev.Status == metav1.ConditionTrue {
 		return *prev, err
 	}
-	c.Reason, c.Message = bryggav1alpha1.ReasonBinding, "the tenant refused the bindings, or has not confirmed them since its API server became ready; the error is in the log"
+	c.Reason, c.Message = bryggav1alpha1.ReasonBinding, "the tenant has not confirmed the bindings since its API server became ready; the error is in the log"
 	return c, err
 }
 

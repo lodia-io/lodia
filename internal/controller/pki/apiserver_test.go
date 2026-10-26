@@ -12,9 +12,11 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -181,6 +183,43 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 	r.Dial = dialer(t, tenantCfg.Host)
 	reconcile(t, r, cp)
 	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionTrue, bryggav1alpha1.ReasonBound)
+
+	policy := &admissionregistrationv1.ValidatingAdmissionPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "no-kubelet-api-admins"},
+		Spec: admissionregistrationv1.ValidatingAdmissionPolicySpec{
+			MatchConstraints: &admissionregistrationv1.MatchResources{ResourceRules: []admissionregistrationv1.NamedRuleWithOperations{{
+				RuleWithOperations: admissionregistrationv1.RuleWithOperations{
+					Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+					Rule:       admissionregistrationv1.Rule{APIGroups: []string{rbacv1.GroupName}, APIVersions: []string{"v1"}, Resources: []string{"clusterrolebindings"}},
+				},
+			}}},
+			Validations: []admissionregistrationv1.Validation{{Expression: "object.metadata.name != 'brygga:kubelet-api-admins'"}},
+		},
+	}
+	if _, err := admin.AdmissionregistrationV1().ValidatingAdmissionPolicies().Create(ctx, policy, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.AdmissionregistrationV1().ValidatingAdmissionPolicyBindings().Create(ctx, &admissionregistrationv1.ValidatingAdmissionPolicyBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: policy.Name},
+		Spec:       admissionregistrationv1.ValidatingAdmissionPolicyBindingSpec{PolicyName: policy.Name, ValidationActions: []admissionregistrationv1.ValidationAction{admissionregistrationv1.Deny}},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, func() bool {
+		binding, err := admin.RbacV1().ClusterRoleBindings().Get(ctx, "brygga:kubelet-api-admins", metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+		_, err = admin.RbacV1().ClusterRoleBindings().Update(ctx, binding, metav1.UpdateOptions{DryRun: []string{metav1.DryRunAll}})
+		return err != nil
+	})
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+		t.Fatal("a pass whose binding the tenant refused succeeded")
+	}
+	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionFalse, bryggav1alpha1.ReasonRefused)
+	if c := condition(t, cp, bryggav1alpha1.ConditionAccessReady); !strings.HasPrefix(c.Message, "ClusterRoleBinding brygga:kubelet-api-admins is refused by the tenant's API server") {
+		t.Errorf("AccessReady says %q", c.Message)
+	}
 }
 
 func TestAccessReadyIsBindingUntilTheTenantAnswers(t *testing.T) {
