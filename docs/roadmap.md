@@ -82,8 +82,11 @@ exposure through `loadBalancer` and `nodePort`.
 - Health: the external probe only.
 - Helm chart, images by digest, `lodia-system` namespace.
 
-Gate (the e2e suite, per pull request; the first four are checked by
-`TestPhase1Gate` in [`test/e2e`](../test/e2e/README.md)):
+Gate (the e2e suite in [`test/e2e`](../test/e2e/README.md): the first four
+are checked on every pull request by `TestPhase1Gate`, the fifth every night
+by `TestConformance`, which the
+[`nightly`](../.github/workflows/nightly.yml) workflow runs; the last was
+measured once, and the nightly records it again without asserting it):
 
 - A `ControlPlane` reaches `Ready` in under 3 minutes on kind.
 - A container running the kind node image joins with
@@ -96,7 +99,8 @@ Gate (the e2e suite, per pull request; the first four are checked by
 - Nightly: the Kubernetes conformance suite passes against a tenant with two
   joined nodes.
 - Measured: idle CPU and memory of one control plane, against the planning
-  numbers in [`operations.md`](operations.md); the numbers replace the plan.
+  numbers in [`operations.md`](operations.md#capacity); the numbers replace
+  the plan.
 
 ## Phase 2 · Production
 

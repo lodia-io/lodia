@@ -11,11 +11,12 @@ workloads alive when the path to its nodes breaks.
 *Lodia*, from Ukrainian «лодія», is an old word for a boat from the time of
 Kyivan Rus': the vessel beside Segla, which is Swedish for sailing.
 
-**Status: phase 1 of the [roadmap](docs/roadmap.md).** The six controllers
-are built for a control plane with one replica, and the Helm chart in
-[`charts/lodia`](charts/lodia) installs them; the e2e gate, where a node
-joins and runs a pod, comes next. The documents below are
-the design, the reasons behind it, and what the code does.
+**Status: phase 1 of the [roadmap](docs/roadmap.md), its gate built.** The
+six controllers are built for a control plane with one replica, and the Helm
+chart in [`charts/lodia`](charts/lodia) installs them; the e2e gate, where
+a node joins and runs a pod, runs on every pull request, and the Kubernetes
+conformance suite every night. The documents below are the design, the
+reasons behind it, and what the code does.
 
 - [`docs/README.md`](docs/README.md) — what Lodia is: the objects, the
   controllers, the shape of a tenant namespace, networking, lifecycle,

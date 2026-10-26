@@ -17,8 +17,6 @@ is a decision — a decision is a file in `docs/decisions/`.
   retention period. etcd-druid keeps them when an `Etcd` is deleted, so the
   policy is Lodia's code (etcd spike, finding 6). The volumes follow the
   class's `storage.reclaimPolicy` since the Datastore controller (2026-10-25).
-- Measure, not assume, the idle footprint of one control plane in phase 1 and
-  replace the planning numbers in `docs/operations.md`.
 - etcd-druid's restore keeps the snapshot's revisions (no
   `--bump-revision`); propose the bump upstream in etcd-backup-restore, and
   until then roll the tenant's API server after any restore Lodia detects.
@@ -300,3 +298,29 @@ is a decision — a decision is a file in `docs/decisions/`.
   once the suite's tenant clients run where the endpoint is routable: on
   Linux CI it already is; on macOS, from a container on kind's network, for
   instance.
+
+## From #29's review (2026-10-26)
+
+- The idle table leaves out a control plane pod that is not Running with
+  every container ready (`pods` in `test/e2e/conformance_test.go`, through
+  `running` in `datastore_test.go`): the sum can come out short, and
+  `pods[0]` panics when none is left. Leave out only terminating pods and
+  fail on the rest.
+- A `CONFORMANCE_FOCUS` that selects no spec passes; hydrophone's
+  `--extra-ginkgo-args --fail-on-empty=true` would fail it
+  ([suite.go](https://github.com/onsi/ginkgo/blob/v2.32.0/internal/suite.go#L527-L530)).
+- `--conformance-image` repeats what hydrophone v0.8.0 derives from the
+  tenant's server version
+  ([root.go](https://github.com/kubernetes-sigs/hydrophone/blob/v0.8.0/cmd/root.go#L205-L219));
+  drop it.
+- `openTenant` builds its client with `clientcmd.NewDefaultClientConfig`,
+  which attaches the default loading rules (`$KUBECONFIG`,
+  `~/.kube/config`), though nothing reads or writes a kubeconfig through
+  them; `NewNonInteractiveClientConfig` attaches none.
+- The local serial run's one failure needs no chasing: the pod generation
+  spec's 20 s wait for `observedGeneration`
+  ([pods.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/test/e2e/node/pods.go#L531))
+  ran out while that network pulled `nginx:1.27.0-2` in 28.8 s, and the
+  spec passed with the images pulled beforehand and in CI.
+- Measure a highly available control plane's idle footprint; phase 2's
+  scope and gate do not list it.

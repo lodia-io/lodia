@@ -17,8 +17,10 @@ You need Go (the version in `go.mod`), Docker for the end-to-end suite,
 | `make generate` | deepcopy functions and CRDs from `api/`, their copies in the chart, and each controller's ClusterRole from its RBAC markers; commit the result |
 | `make verify` | the check that says a change is done: generated files current, the chart linted and rendered, lint, unit and envtest tests |
 | `make e2e` | the end-to-end suite on a kind cluster of its own ([how](test/e2e/README.md)) |
+| `make conformance` | the Kubernetes conformance suite against a tenant with two nodes, on a kind cluster of its own ([how](test/e2e/README.md#nightly-conformance-and-the-idle-control-plane)) |
 
-CI runs `make verify` and `make e2e` on every pull request.
+CI runs `make verify` and `make e2e` on every pull request, and
+`make conformance` every night.
 
 ## Commits
 
