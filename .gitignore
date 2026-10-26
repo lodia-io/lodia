@@ -20,3 +20,6 @@ go.work.sum
 
 # hard way: generated keys, certificates and kubeconfigs
 /work/
+
+# the chart's dependencies, fetched by helm dependency build
+/charts/lodia/charts/

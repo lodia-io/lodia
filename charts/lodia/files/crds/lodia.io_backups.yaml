@@ -1,0 +1,111 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
+  name: backups.lodia.io
+spec:
+  group: lodia.io
+  names:
+    kind: Backup
+    listKind: BackupList
+    plural: backups
+    singular: backup
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.controlPlaneRef.name
+      name: ControlPlane
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Backup is an on-demand full snapshot of a ControlPlane's etcd, kept in the
+          DatastoreClass's store; a new ControlPlane can start from it.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: BackupSpec names the ControlPlane to snapshot.
+            properties:
+              controlPlaneRef:
+                description: ControlPlaneRef names a ControlPlane in this namespace.
+                properties:
+                  name:
+                    description: Name of the object.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+            required:
+            - controlPlaneRef
+            type: object
+            x-kubernetes-validations:
+            - message: a Backup cannot change; create another
+              rule: self == oldSelf
+          status:
+            description: BackupStatus is the snapshot's progress and where it went.
+            properties:
+              completedAt:
+                format: date-time
+                type: string
+              kubernetesVersion:
+                description: KubernetesVersion of the ControlPlane when the snapshot
+                  was taken.
+                maxLength: 16
+                type: string
+              location:
+                description: Location of the snapshot in the store.
+                maxLength: 1024
+                type: string
+              phase:
+                description: Phase is Pending, Running, Completed or Failed.
+                enum:
+                - Pending
+                - Running
+                - Completed
+                - Failed
+                type: string
+              revision:
+                description: Revision of etcd in the snapshot.
+                format: int64
+                type: integer
+              sizeBytes:
+                format: int64
+                type: integer
+              startedAt:
+                format: date-time
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

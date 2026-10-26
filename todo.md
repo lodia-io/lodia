@@ -97,10 +97,6 @@ is a decision — a decision is a file in `docs/decisions/`.
   `DatastoreClass` and stay etcd-druid's default (50m / 128Mi at v0.39.0);
   the operator configuration's `defaults.resources` should cover them once
   phase 1 measures.
-- The chart's ClusterRole takes the Datastore controller's rules from the
-  table in `docs/README.md` (Identity and tenancy), which `datastoreRules` in
-  `internal/controller/datastore/datastore_test.go` enforces; the chart and
-  the test should read one list.
 - The shared `Placement` and `resources` types get the rules of pod
   validation with Workloads, which renders them for the `ControlPlane` in
   phase 1: the class's `placement` and `etcd.resources` have none yet. Until
@@ -256,8 +252,6 @@ is a decision — a decision is a file in `docs/decisions/`.
 - The NetworkPolicies isolate each component's ingress alone; the
   default-deny set and egress, the README's arrows, come in phase 2, and
   etcd's with the Datastore controller.
-- `--signer-image` is an operator flag until the operator configuration and
-  the chart render it.
 - The control plane pods set no securityContext: give them one that passes
   Pod Security `restricted`, the API server and the signer under one user
   (From lodia-signer, above).
@@ -281,3 +275,12 @@ is a decision — a decision is a file in `docs/decisions/`.
   with another controller is refused by validation, which `APIServerReady`
   reports as `Refused`. Reading the targets uncached, as PKI reads its
   Secrets, would see them all.
+
+## From the chart (2026-10-26)
+
+- etcd-druid's CRDs come from its chart's `crds/` directory, which Helm
+  applies only when it installs a release (`docs/README.md`, Installation):
+  a bump of the dependency needs its CRDs applied by hand first; decide
+  whether the chart templates them or the release notes carry the step.
+- The operator's pods set no requests or limits until the operator is
+  measured.

@@ -1,0 +1,20 @@
+image:
+  repository: ghcr.io/lodia-io/lodia
+  tag: ""
+  digest: ""
+
+signerImage:
+  repository: ghcr.io/lodia-io/lodia-signer
+  tag: ""
+  digest: ""
+
+crds:
+  enabled: true
+  keep: true
+
+etcdDruid:
+  enabled: true
+  operatorConfig:
+    controllers:
+      etcd:
+        enableEtcdSpecAutoReconcile: true

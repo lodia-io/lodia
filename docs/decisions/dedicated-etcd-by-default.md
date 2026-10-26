@@ -30,8 +30,10 @@ not.
   certificate also names the client Service, through which etcd-druid calls
   it ([etcd spike](../etcd-spike-2026-10.md), findings 1 and 2).
 - **The engine is etcd-druid**, installed beside Lodia (Lodia's chart
-  vendors etcd-druid's at a tag, since it is not released as a versioned
-  chart), run with `enableEtcdSpecAutoReconcile: true` so a spec
+  depends on etcd-druid's, which etcd-druid's release workflow publishes as
+  a versioned OCI chart,
+  [base.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/.github/workflows/base.yaml#L60-L84)),
+  run with `enableEtcdSpecAutoReconcile: true` so a spec
   change reconciles without an annotation, and with its optional components
   webhook off ([configuration](https://gardener.github.io/etcd-druid/deployment/configure-etcd-druid.html)).
   What Lodia gets from it, per tenant:
@@ -269,6 +271,9 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   `TestVolumesExist`, `TestForeignEtcd`, `TestStorageAtCreation`,
   `TestRecordedClass`, `TestClassSurvivesTheEtcd`, `TestClassGone`, `TestDeletionBeforeLabelling` and
   `TestDeletion`. `datastoretest` stands in for PKI there.
+- `charts/lodia` — etcd-druid v0.39.0 as a dependency behind
+  `etcdDruid.enabled`, with `enableEtcdSpecAutoReconcile` on and the
+  components webhook left off, its default.
 - `test/e2e/datastore_test.go` — `TestDatastoreOnKind`: etcd-druid v0.39.0
   from its chart at the tag, the PKI and Datastore controllers in the test
   process, a `ControlPlane` to `DatastoreReady=True` with the member running

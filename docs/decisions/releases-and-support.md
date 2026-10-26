@@ -1,6 +1,7 @@
 # Lodia ships signed multi-arch images built with ko and a Helm chart in GHCR, and supports the Kubernetes minors upstream maintains
 
-Decided 2026-10-25. Not built.
+Decided 2026-10-25. The chart is built; the release workflow that builds,
+signs, attests and publishes the images and the chart is not.
 
 ## Decision
 
@@ -106,4 +107,9 @@ Decided 2026-10-25. Not built.
 
 ## Code
 
-none yet.
+- `charts/lodia` — the chart: the CRDs as templates of the ones in
+  `api/crds`, which `make generate` copies into `files/crds`, behind
+  `crds.enabled` and `crds.keep`; the images as `repository@digest` when a
+  digest is set, else `repository:tag`, the tag defaulting to `appVersion`.
+  `make verify` lints and renders it with tags and with digests.
+- `.ko.yaml` — the base image, pinned by digest.
