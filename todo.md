@@ -30,12 +30,6 @@ is a decision — a decision is a file in `docs/decisions/`.
 
 - kube-api-linter on `api/`, as `releases-and-support` lists; it is not in
   `.golangci.yml` yet.
-- Before the repository goes public: an address for conduct reports
-  (`CODE_OF_CONDUCT.md` names only the maintainers), private vulnerability
-  reporting switched on (`SECURITY.md` points at it), and `GOVERNANCE.md` and
-  `ADOPTERS.md` from the CNCF template. Also the `go-import` page at
-  `go.lodia.io/lodia?go-get=1` (GitHub Pages in `lodia-io`, a CNAME for
-  `go.lodia.io`).
 - The workflow's actions are pinned by commit with nothing to bump them;
   Dependabot or Renovate for `github-actions` and `gomod`, leaving the API
   module's `k8s.io` floor alone (releases-and-support).
