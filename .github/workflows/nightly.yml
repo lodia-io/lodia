@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     steps:
-      # @todo: frees the runner's disk for three kind nodes' image stores; remove with todo.md's runner disk item.
+      # @todo: frees the runner's disk for the kind nodes' image stores; remove with todo.md's runner disk item.
       - name: Reclaim disk space
         run: |
           df -h /

@@ -307,10 +307,11 @@ is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the nightly conformance run (2026-10-26)
 
-- The nightly job deletes the runner image's .NET, Android, GHCup and
-  CodeQL directories before it starts, only because the image stores of
-  three kind nodes and the conformance images outgrow the 14 GB of disk
-  GitHub's standard runners give a job: in run 40342223835 a DNS spec's
-  image pull on a tenant node failed with `no space left on device`. Remove
-  the step once the nightly runs where the disk suffices, a larger runner
-  for instance, or once the nodes no longer keep an image store each.
+- The nightly and the per-PR `e2e` job delete the runner image's .NET,
+  Android, GHCup and CodeQL directories before they start, only because the
+  kind nodes' image stores and the test images outgrow the 14 GB of disk
+  GitHub's standard runners give a job: in nightly run 40342223835 a DNS
+  spec's image pull on a tenant node failed with `no space left on device`,
+  and the `e2e` job of run 40360016151 ended with 6.7 GB of 72 GB free.
+  Remove both steps once the jobs run where the disk suffices, a larger
+  runner for instance, or once the nodes no longer keep an image store each.
