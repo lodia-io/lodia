@@ -17,7 +17,7 @@ import (
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 )
 
-func TestEveryDerivedNameFitsTheLongestControlPlaneName(t *testing.T) {
+func TestDerivedNamesFitTheLongestControlPlaneName(t *testing.T) {
 	longestRevisionHash := strconv.FormatUint(math.MaxUint32, 10)
 	for length, fits := range map[int]bool{32: true, 33: false} {
 		controlPlane := strings.Repeat("a", length)
@@ -28,6 +28,8 @@ func TestEveryDerivedNameFitsTheLongestControlPlaneName(t *testing.T) {
 			validation.IsDNS1035Label(druidv1alpha1.GetPeerServiceName(etcd)),
 			validation.IsValidLabelValue(druidv1alpha1.GetStatefulSetName(etcd)+"-"+longestRevisionHash),
 			validation.IsValidLabelValue(druidv1alpha1.GetCompactionJobName(etcd)),
+			validation.IsValidLabelValue(druidv1alpha1.GetDeltaSnapshotLeaseName(etcd)),
+			validation.IsValidLabelValue(druidv1alpha1.GetFullSnapshotLeaseName(etcd)),
 			validation.IsValidLabelValue(strings.ReplaceAll(druidv1alpha1.GetRoleName(etcd), ":", "-")),
 			validation.IsValidLabelValue(strings.ReplaceAll(druidv1alpha1.GetRoleBindingName(etcd), ":", "-")),
 		)
