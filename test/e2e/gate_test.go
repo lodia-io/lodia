@@ -473,7 +473,7 @@ func startNode(ctx context.Context, t *testing.T, kubeconfig string) string {
 	if _, err := docker(ctx, "run", "--detach", "--tty", "--name", name, "--hostname", name, "--network", "kind",
 		"--privileged", "--security-opt", "seccomp=unconfined", "--security-opt", "apparmor=unconfined",
 		"--cgroupns=private", "--tmpfs", "/tmp", "--tmpfs", "/run", "--volume", "/var",
-		"--volume", "/lib/modules:/lib/modules:ro", "--restart=on-failure:1", defaults.Image); err != nil {
+		"--volume", "/lib/modules:/lib/modules:ro", "--restart=on-failure:1", "--init=false", defaults.Image); err != nil {
 		t.Fatal(err)
 	}
 	until(ctx, t, time.Minute, "container "+name+" booted", func(ctx context.Context) error {

@@ -246,7 +246,7 @@ the way kind starts its nodes, then joined with a plain `kubeadm join`:
 docker run --detach --tty --name "$NODE" --hostname "$NODE" --network kind \
   --privileged --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
   --cgroupns=private --tmpfs /tmp --tmpfs /run --volume /var \
-  --volume /lib/modules:/lib/modules:ro --restart=on-failure:1 "$KIND_NODE_IMAGE"
+  --volume /lib/modules:/lib/modules:ro --restart=on-failure:1 --init=false "$KIND_NODE_IMAGE"
 CA_HASH="sha256:$(openssl x509 -pubkey -in "$PKI/ca.crt" | openssl rsa -pubin -outform der 2>/dev/null | openssl dgst -sha256 -hex | sed 's/^.* //')"
 docker exec "$NODE" kubeadm join "$MGMT_IP:$APISERVER_PORT" \
   --token "$BOOTSTRAP_TOKEN" --discovery-token-ca-cert-hash "$CA_HASH" \
