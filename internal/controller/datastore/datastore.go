@@ -5,6 +5,7 @@
 package datastore
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -50,6 +52,9 @@ type Reconciler struct {
 	client.Client
 	// Reader reads what the label-filtered cache does not hold.
 	Reader client.Reader
+	// EtcdDruidNamespace is where etcd-druid runs; the etcd's NetworkPolicy
+	// admits its pods to the backup-restore sidecar.
+	EtcdDruidNamespace string
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
@@ -63,11 +68,16 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 		cp, ok := secret.GetLabels()[lodiav1alpha1.ControlPlaneLabel]
 		return ok && secret.GetName() == lodiav1alpha1.EtcdBackupSecret.Name(cp)
 	})
+	etcdPolicy := predicate.NewPredicateFuncs(func(policy client.Object) bool {
+		cp, ok := policy.GetLabels()[lodiav1alpha1.ControlPlaneLabel]
+		return ok && policy.GetName() == lodiav1alpha1.EtcdName(cp)
+	})
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(Name).
 		WithOptions(controller.Options{MaxConcurrentReconciles: workers, ReconciliationTimeout: time.Minute}).
 		For(&lodiav1alpha1.ControlPlane{}).
 		Owns(&druidv1alpha1.Etcd{}, builder.WithPredicates(etcdChanged())).
+		Owns(&networkingv1.NetworkPolicy{}, builder.WithPredicates(etcdPolicy)).
 		WatchesMetadata(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(controlPlaneOf), builder.WithPredicates(predicate.Or(certificates, backupCopy))).
 		Watches(&lodiav1alpha1.DatastoreClass{}, handler.EnqueueRequestsFromMapFunc(r.controlPlanesUsing)).
 		Complete(r)
@@ -107,6 +117,7 @@ func (r *Reconciler) controlPlanesUsing(ctx context.Context, class client.Object
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=list;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;patch;delete
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	cp := &lodiav1alpha1.ControlPlane{}
@@ -146,6 +157,21 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	etcd, condition, requeueAfter, err := r.reconcileEtcd(ctx, cp)
 	if condition.Type == "" {
 		return ctrl.Result{}, err
+	}
+	// The policy follows an Etcd of this ControlPlane's and is reported over
+	// the etcd's own state only when that is ready.
+	if etcd != nil {
+		blocked, policyErr := r.applyNetworkPolicy(ctx, cp, etcd)
+		if blocked == nil && policyErr != nil {
+			return ctrl.Result{}, errors.Join(err, policyErr)
+		}
+		if blocked != nil {
+			requeueAfter = cmp.Or(requeueAfter, time.Minute)
+			if condition.Status == metav1.ConditionTrue {
+				condition = *blocked
+			}
+		}
+		err = errors.Join(err, policyErr)
 	}
 	if cp.Spec.HighAvailability != nil && condition.Status == metav1.ConditionTrue {
 		condition = newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, "spec.highAvailability is not supported yet: the etcd runs one member")

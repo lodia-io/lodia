@@ -17,6 +17,7 @@ import (
 
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -74,6 +75,9 @@ func TestDatastoreOnKind(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Logf("pod %s is %s and mounts %s", pod.Name, pod.Status.Phase, strings.Join(secretVolumes(pod), ", "))
+			if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: controlPlane + "-etcd"}, &networkingv1.NetworkPolicy{}); err != nil {
+				t.Fatalf("the etcd's NetworkPolicy: %v", err)
+			}
 			logEtcd(ctx, t, k8s)
 			return ctx
 		}).
@@ -140,7 +144,7 @@ func TestDatastoreOnKind(t *testing.T) {
 			logEtcd(ctx, t, k8s)
 			return ctx
 		}).
-		Assess("deleting the ControlPlane removes the Etcd and the member's claim", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("deleting the ControlPlane removes the Etcd, the member's claim and the etcd's NetworkPolicy", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			cp := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: controlPlane, Namespace: tenant}}
 			if err := k8s.Delete(ctx, cp); err != nil {
 				t.Fatal(err)
@@ -153,6 +157,9 @@ func TestDatastoreOnKind(t *testing.T) {
 			}
 			until(ctx, t, 2*time.Minute, "the member's claim is gone", func(ctx context.Context) error {
 				return gone(k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: controlPlane + "-etcd-" + controlPlane + "-etcd-0"}, &corev1.PersistentVolumeClaim{}))
+			})
+			until(ctx, t, 2*time.Minute, "the garbage collector deleted the etcd's NetworkPolicy", func(ctx context.Context) error {
+				return gone(k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: controlPlane + "-etcd"}, &networkingv1.NetworkPolicy{}))
 			})
 			return ctx
 		}).

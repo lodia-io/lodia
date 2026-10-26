@@ -28,7 +28,7 @@ import (
 )
 
 const (
-	apiServer         = "kube-apiserver"
+	apiServer         = lodiav1alpha1.APIServerComponent
 	controllerManager = "kube-controller-manager"
 	scheduler         = "kube-scheduler"
 
@@ -61,7 +61,7 @@ var anonymousPaths = []string{"/healthz", "/livez", lodiav1alpha1.APIServerReady
 func deploymentName(cp, component string) string { return cp + "-" + component }
 
 func podLabels(cp, component string) map[string]string {
-	return map[string]string{lodiav1alpha1.ControlPlaneLabel: cp, "app.kubernetes.io/name": component}
+	return map[string]string{lodiav1alpha1.ControlPlaneLabel: cp, lodiav1alpha1.ComponentLabel: component}
 }
 
 func objectMeta(cp *lodiav1alpha1.ControlPlane, name string) metav1.ObjectMeta {
@@ -406,7 +406,7 @@ func (r rendering) deployment(component string, replicas int32, pod corev1.PodSp
 			Template: template,
 		},
 	}
-	maps.Copy(d.Labels, map[string]string{"app.kubernetes.io/name": component})
+	maps.Copy(d.Labels, map[string]string{lodiav1alpha1.ComponentLabel: component})
 	return d
 }
 

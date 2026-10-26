@@ -24,18 +24,21 @@ const (
 // an environment that cannot serve the spec. <Kind>NotFound is a named
 // object that does not exist. Refused is the API server a controller writes
 // to refusing one of its objects, False, the object named in the message.
+// ObjectsControlledElsewhere is an object under a writer's names that another
+// owner keeps, False, the object and its owner named in the message.
 const (
-	ReasonReconciling            = "Reconciling"
-	ReasonReady                  = "Ready"
-	ReasonUnsupported            = "Unsupported"
-	ReasonDeleting               = "Deleting"
-	ReasonRefused                = "Refused"
-	ReasonWaitingForEndpoint     = "WaitingForEndpoint"
-	ReasonWaitingForTarget       = "WaitingForTarget"
-	ReasonWaitingForCertificates = "WaitingForCertificates"
-	ReasonWaitingForDatastore    = "WaitingForDatastore"
-	ReasonWaitingForAPIServer    = "WaitingForAPIServer"
-	ReasonWaitingForAccess       = "WaitingForAccess"
+	ReasonReconciling                = "Reconciling"
+	ReasonReady                      = "Ready"
+	ReasonUnsupported                = "Unsupported"
+	ReasonDeleting                   = "Deleting"
+	ReasonRefused                    = "Refused"
+	ReasonObjectsControlledElsewhere = "ObjectsControlledElsewhere"
+	ReasonWaitingForEndpoint         = "WaitingForEndpoint"
+	ReasonWaitingForTarget           = "WaitingForTarget"
+	ReasonWaitingForCertificates     = "WaitingForCertificates"
+	ReasonWaitingForDatastore        = "WaitingForDatastore"
+	ReasonWaitingForAPIServer        = "WaitingForAPIServer"
+	ReasonWaitingForAccess           = "WaitingForAccess"
 )
 
 // CertificatesReady.
@@ -72,7 +75,6 @@ const (
 const (
 	ReasonRollingOut                      = "RollingOut"
 	ReasonLoadBalancerHostnameUnsupported = "LoadBalancerHostnameUnsupported"
-	ReasonObjectsControlledElsewhere      = "ObjectsControlledElsewhere"
 )
 
 // AddonsApplied and AddonsAvailable.

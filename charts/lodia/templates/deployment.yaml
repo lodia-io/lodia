@@ -33,6 +33,11 @@ spec:
           image: {{ include "lodia.image" (dict "image" .Values.image "appVersion" .Chart.AppVersion) }}
           args:
             - --signer-image={{ include "lodia.image" (dict "image" .Values.signerImage "appVersion" .Chart.AppVersion) }}
+            {{- if .Values.etcdDruid.enabled }}
+            - --etcd-druid-namespace={{ .Release.Namespace }}
+            {{- else }}
+            - --etcd-druid-namespace={{ required "etcdDruidNamespace must name the namespace etcd-druid runs in while etcdDruid.enabled is false" .Values.etcdDruidNamespace }}
+            {{- end }}
             - --metrics-bind-address=:8443
             - --health-probe-bind-address=:8081
           ports:

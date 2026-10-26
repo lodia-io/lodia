@@ -154,4 +154,9 @@ const (
 	// APIServerReadyzPath is the API server's readiness endpoint, which Health
 	// probes and Workloads lets anonymous requests read.
 	APIServerReadyzPath = "/readyz"
+
+	// APIServerComponent is the ComponentLabel of the API server's pods,
+	// which Workloads writes and the Datastore controller's etcd
+	// NetworkPolicy admits.
+	APIServerComponent = "kube-apiserver"
 )

@@ -221,7 +221,7 @@ func start(t *testing.T) client.WithWatch {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := operator.Setup(mgr, "registry.example/lodia-signer:test"); err != nil {
+	if err := operator.Setup(mgr, "registry.example/lodia-signer:test", "etcd-druid"); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())

@@ -4,7 +4,7 @@ Decided 2026-10-24. The phase 0 spike found etcd-druid fit
 ([etcd spike](../etcd-spike-2026-10.md)). The Datastore controller is built
 for the dedicated case with one member: the `Etcd` from the class recorded at
 creation and the newest certificate generation, the finalizer with the
-reclaim policy, `VolumesExist` and `DatastoreReady`; three members,
+reclaim policy, the NetworkPolicy, `VolumesExist` and `DatastoreReady`; three members,
 hibernation, class edits held for the maintenance window, the final snapshot
 and the backups' retention after deletion, restore and the shared store are
 not.
@@ -50,8 +50,11 @@ not.
   [recovering](https://gardener.github.io/etcd-druid/usage/recovering-etcd-clusters.html)).
 - **Lodia adds what etcd-druid leaves to its consumer:** the NetworkPolicy
   that admits only the tenant's API server, the members themselves and
-  etcd-druid, which calls the members on 2379 and their sidecars on 8080
-  ([etcd-druid#505](https://github.com/gardener/etcd-druid/issues/505)); the
+  etcd-druid, which calls their sidecars on 8080 for the snapshots it takes
+  and the members on 2379 only to remove one when it scales in
+  ([etcd-druid#505](https://github.com/gardener/etcd-druid/issues/505),
+  [ondemandsnapshot.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcdopstask/handler/ondemandsnapshot/ondemandsnapshot.go#L103),
+  [memberremoval.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/memberremoval.go#L31-L39)); the
   ServiceMonitor for the etcd and sidecar metrics; the `Backup` object as an
   on-demand snapshot through the sidecar; the failures of etcd-druid's
   `EtcdOpsTask`s in its own condition; and deleting the volumes and snapshots
@@ -251,7 +254,8 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   the claims, found by name, the credentials copy, the finalizer and the
   status; `etcd.go` renders the `DatastoreClass` into the `Etcd`
   ([the table](../README.md#a-tenant-namespace)), applies it and reads
-  etcd-druid's report. Registered as `datastore` in `internal/operator`.
+  etcd-druid's report; `networkpolicy.go` renders and applies the etcd's
+  NetworkPolicy. Registered as `datastore` in `internal/operator`.
 - `internal/controller/datastore/datastore_test.go` — envtest with
   etcd-druid v0.39.0's CRDs from its `crds` package, the controller running
   as a user bound to exactly its generated ClusterRole,
@@ -269,13 +273,18 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   `TestOwnerlessCopyIsAdopted`,
   `TestDatastoreReadyFollowsEtcdStatus`,
   `TestVolumesExist`, `TestForeignEtcd`, `TestStorageAtCreation`,
-  `TestRecordedClass`, `TestClassSurvivesTheEtcd`, `TestClassGone`, `TestDeletionBeforeLabelling` and
-  `TestDeletion`. `datastoretest` stands in for PKI there.
+  `TestRecordedClass`, `TestClassSurvivesTheEtcd`, `TestClassGone`, `TestDeletionBeforeLabelling`,
+  `TestDeletion`, `TestNetworkPolicy`, `TestNetworkPolicyOfAnotherOwner`,
+  `TestOwnerlessNetworkPolicyIsAdopted`, `TestNetworkPolicyRefused` and
+  `TestAFailedNetworkPolicyCallLeavesTheStatus`. `datastoretest` stands in
+  for PKI there.
 - `charts/lodia` — etcd-druid v0.39.0 as a dependency behind
   `etcdDruid.enabled`, with `enableEtcdSpecAutoReconcile` on and the
-  components webhook left off, its default.
+  components webhook left off, its default; the operator gets the
+  namespace etcd-druid runs in as `--etcd-druid-namespace`.
 - `test/e2e/datastore_test.go` — `TestDatastoreOnKind`: the operator and
   etcd-druid v0.39.0 from Lodia's chart, a `ControlPlane` to
   `DatastoreReady=True` with the member running on PKI's generation 1, a
   member Secret of generation 1 deleted and PKI's generation 2, under the
-  same CA, rolling the member, deletion under `Delete`.
+  same CA, rolling the member, deletion under `Delete`, which the garbage
+  collector carries to the etcd's NetworkPolicy.

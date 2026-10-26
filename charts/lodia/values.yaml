@@ -20,3 +20,5 @@ etcdDruid:
     controllers:
       etcd:
         enableEtcdSpecAutoReconcile: true
+
+etcdDruidNamespace: ""
