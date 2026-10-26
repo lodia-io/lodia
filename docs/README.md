@@ -247,7 +247,8 @@ images of `status.target.version` and the flags of the [hard way](hard-way.md),
 once `CertificatesReady` and `DatastoreReady` are True for the generation and
 the Datastore controller has published `status.datastore.endpoints`, the API
 server's `--etcd-servers`; lodia-signer runs beside the API server as a
-native sidecar, its image a flag of the operator (`--signer-image`). One
+native sidecar, its image a flag of the operator (`--signer-image`), which
+the chart sets from `signerImage`. One
 Service, `<cp>-kube-apiserver`, of the endpoint's type, takes 443 and 6443 to
 the API server and 8132 to konnectivity-server, and Workloads publishes
 `status.endpoint` from it before it waits on anything, whole once both
@@ -777,11 +778,12 @@ the control plane.
 ## Identity and tenancy
 
 - A `ControlPlane` is namespaced; the platform's RBAC on the namespace
-  decides who creates clusters and who reads their Secrets. Lodia's own
-  ClusterRole is limited to its kinds, the workload kinds it renders, Secrets
-  and ConfigMaps by label, Gateway API routes and listener sets, etcd-druid's
-  `Etcd`, the StatefulSet etcd-druid runs for it and the claims of that
-  StatefulSet; the Datastore controller's share is the table below.
+  decides who creates clusters and who reads their Secrets. Lodia's
+  ClusterRoles, one per controller, are limited to its kinds, the workload
+  kinds it renders, Secrets and ConfigMaps, the management nodes, Gateway API
+  routes and listener sets, etcd-druid's `Etcd`, the StatefulSet etcd-druid
+  runs for it and the claims of that StatefulSet; where they come from is
+  below.
 - Every field Lodia writes has a field manager `lodia/<controller>`;
   another manager's fields on the same object are left alone.
 - Inside a tenant, Lodia is `lodia:operator`; its objects carry
@@ -801,52 +803,37 @@ the control plane.
   so automation gets `get` on `<cp>-admin-kubeconfig` by `resourceNames` and
   never the namespace's Secrets; and a class per trust boundary.
 
-The Datastore controller calls exactly these verbs. Its envtest suite runs
-the controller as a user bound to these rules and nothing else, with the
-`OwnerReferencesPermissionEnforcement` admission plugin on, and leaving out
-any one verb fails a test, except `list` on the four kinds the cache holds:
-client-go fills the cache with a streaming watch where the API server offers
-one, on by default since 1.35, and falls back to `list` where it does not
+Each controller declares the verbs it calls with `+kubebuilder:rbac` markers
+in its package; `make generate` writes them into one ClusterRole per
+controller in [`charts/lodia/files/rbac/`](../charts/lodia/files/rbac/), and
+the chart binds the operator's ServiceAccount to every one. Each controller's
+envtest suite runs it as a user bound to its generated ClusterRole and
+nothing else (PKI's direct passes read the `ControlPlane` through the envtest
+admin, standing in for the manager's cache), with the `OwnerReferencesPermissionEnforcement` admission
+plugin on for PKI, the Datastore controller and Workloads. For the Datastore
+controller, leaving out any one verb fails a test, except `list` on the four
+kinds the cache holds: client-go fills the cache with a streaming watch where
+the API server offers one, on by default since 1.35, and falls back to `list`
+where it does not
 ([known_features.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/client-go/features/known_features.go#L141-L144),
 [reflector.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/client-go/tools/cache/reflector.go#L470-L509)).
 
-| group | resource | verbs | for |
-|---|---|---|---|
-| `lodia.io` | `controlplanes` | `list`, `watch`, `patch` | the cache; the finalizer, held and released with a patch |
-| `lodia.io` | `controlplanes/status` | `patch` | `DatastoreReady` and `status.datastore`, applied |
-| `lodia.io` | `controlplanes/finalizers` | `update` | `blockOwnerDeletion` on the owner references of the `Etcd` and of `<cp>-etcd-backup`, which that admission plugin allows only with `update` on the owner's `finalizers` ([gc_admission.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/plugin/pkg/admission/gc/gc_admission.go#L122-L152)) |
-| `lodia.io` | `datastoreclasses` | `list`, `watch` | the cache |
-| `druid.gardener.cloud` | `etcds` | `get`, `list`, `watch`, `create`, `patch`, `delete` | the cache, and the API server for an `Etcd` without the label; the apply, which the API server also authorizes as `create` when it creates the object ([patch.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/staging/src/k8s.io/apiserver/pkg/endpoints/handlers/patch.go#L203-L232)); the deletion |
-| `""` | `secrets` | `get`, `list`, `watch`, `create`, `patch`, `delete` | the metadata of the certificate Secrets; the class's credentials Secret, read uncached in the namespace the class names; the copy `<cp>-etcd-backup`, applied; `delete` because that admission plugin lets only who may delete an object set an owner reference on it when it is updated, which adopting a copy with no owner does ([gc_admission.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/plugin/pkg/admission/gc/gc_admission.go#L103-L119)) |
-| `""` | `persistentvolumeclaims` | `list`, `patch`, `delete` | the claims of `<cp>-etcd`, listed in the tenant's namespace and matched by name; their UID label and class annotation; the reclaim |
-| `apps` | `statefulsets` | `get` | the readiness checks, read uncached |
+The verbs nobody would guess from the calls:
 
-Lifecycle reads `ControlPlane`s from the cache and applies their status:
-`list` and `watch` on `controlplanes`, `patch` on `controlplanes/status`; its
-envtest suite runs it as a user bound to exactly these rules. The Tenant
-controller needs the same and `get` on `secrets`, for `<cp>-lodia-kubeconfig`
-and `<cp>-ca-bundle`, read uncached; inside the tenant it is
-`lodia:operator`.
-
-Health reads `ControlPlane`s from the cache and the CA bundle from the API
-server, and applies `Reachable`: `list` and `watch` on `controlplanes`,
-`patch` on `controlplanes/status`, `get` on `secrets`; its envtest suite runs
-it as a user bound to exactly these rules.
-
-Workloads calls these verbs; its envtest suite runs it as a user bound to
-exactly them, with the `OwnerReferencesPermissionEnforcement` admission plugin
-on:
-
-| group | resource | verbs | for |
-|---|---|---|---|
-| `lodia.io` | `controlplanes` | `list`, `watch` | the cache |
-| `lodia.io` | `controlplanes/status` | `patch` | `APIServerReady` and `status.endpoint`, applied |
-| `lodia.io` | `controlplanes/finalizers` | `update` | `blockOwnerDeletion` on the owner references of what it creates |
-| `apps` | `deployments` | `list`, `watch`, `create`, `patch`, `delete` | the cache; the apply; `delete` because the admission plugin lets only who may delete an object set an owner reference on it when it is updated, which adopting an orphan does ([gc_admission.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/plugin/pkg/admission/gc/gc_admission.go#L103-L119)) |
-| `""` | `services`, `configmaps` | `list`, `watch`, `create`, `patch`, `delete` | the cache, metadata only for ConfigMaps; the apply; `delete` for the adoption |
-| `networking.k8s.io` | `networkpolicies` | `list`, `watch`, `create`, `patch`, `delete` | the cache; the apply; `delete` for the adoption |
-| `""` | `secrets` | `list`, `watch` | the metadata of the restart-only Secrets in the cache: their data hash, and their events |
-| `""` | `nodes` | `list` | the management node a `nodePort` endpoint names, read uncached |
+- `create` beside `patch` wherever a controller applies: the API server
+  authorizes an apply that creates the object as `create`
+  ([patch.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/staging/src/k8s.io/apiserver/pkg/endpoints/handlers/patch.go#L203-L232)).
+- `update` on `controlplanes/finalizers` for PKI, the Datastore controller and
+  Workloads: they set `blockOwnerDeletion` on the owner references of what
+  they create, which that admission plugin allows only with `update` on the
+  owner's `finalizers`
+  ([gc_admission.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/plugin/pkg/admission/gc/gc_admission.go#L122-L152)).
+- `delete` on every kind a controller adopts: that plugin lets only who may
+  delete an object set an owner reference on it when it is updated, which
+  adopting an object with no owner does
+  ([gc_admission.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/plugin/pkg/admission/gc/gc_admission.go#L103-L119)).
+- `patch` on `controlplanes` for the Datastore controller: its finalizer,
+  held and released with a patch.
 
 ## Installation
 
@@ -857,22 +844,70 @@ Prerequisites on the management cluster:
 | Kubernetes ≥ 1.35 | a maintained minor that has the CEL libraries (semver, 1.34) and validation ratcheting (GA 1.33) the schema uses |
 | a StorageClass | etcd volumes; local or network, with low fsync latency |
 | etcd-druid | dedicated etcd (installed by the chart as a dependency, or separately) |
-| Gateway API ≥ 1.5 (where `TLSRoute` and `ListenerSet` became GA) and an implementation reporting `TLSRoute`, `TLSRouteModeTerminate` and `TLSRouteModeMixed` | `endpoint.gateway` only; the terminate modes only for in-cluster access through the tunnel |
+| Gateway API ≥ 1.5 (where `TLSRoute` and `ListenerSet` became GA) and an implementation reporting `TLSRoute`, `TLSRouteModeTerminate` and `TLSRouteModeMixed` | `endpoint.gateway` only, from phase 2; the terminate modes only for in-cluster access through the tunnel |
 | an S3-compatible bucket and credentials | backups, strongly recommended |
-| a metrics stack | optional: the chart ships ServiceMonitors, a dashboard and alert rules |
+| a metrics stack | optional: the chart ships ServiceMonitors, a dashboard and alert rules from phase 2 |
 
-Install: `helm install lodia oci://ghcr.io/lodia-io/charts/lodia -n
-lodia-system --create-namespace`. The chart installs etcd-druid as a
-dependency (or skips it when `etcdDruid.enabled=false` because it is already
-there), the CRDs (upgraded with the chart, kept on uninstall), the operator
-with two replicas, leader election, a PodDisruptionBudget with
-`maxUnavailable: 1` and `unhealthyPodEvictionPolicy: AlwaysAllow`, topology
-spread, a `system-cluster-critical` priority, the metrics endpoint behind
-controller-runtime's authentication and authorization filter, and the
-operator configuration. Then a `DatastoreClass` with the bucket, and the
-first `ControlPlane`. Images are signed and attested; how to verify them and
-which versions are supported is in
-[releases-and-support](decisions/releases-and-support.md).
+The chart is [`charts/lodia`](../charts/lodia). The release workflow that
+publishes it to `oci://ghcr.io/lodia-io/charts/lodia` with the images is not
+built yet ([releases-and-support](decisions/releases-and-support.md)); until
+it is, build both images with ko and install from a checkout, into
+`lodia-system` or any namespace:
+
+```sh
+KO_DOCKER_REPO=<registry> go run github.com/google/ko@v0.19.1 build \
+  --base-import-paths --platform=linux/amd64,linux/arm64 ./cmd/lodia ./cmd/lodia-signer
+helm dependency build charts/lodia
+helm install lodia charts/lodia -n lodia-system --create-namespace \
+  --set image.repository=<registry>/lodia,image.digest=sha256:… \
+  --set signerImage.repository=<registry>/lodia-signer,signerImage.digest=sha256:…
+```
+
+The phase 1 chart installs:
+
+- the CRDs, as templates of the ones `make generate` writes, so they upgrade
+  with the chart: `crds.enabled` (default `true`) leaves them out for those
+  who manage CRDs themselves, and `crds.keep` (default `true`) keeps them on
+  uninstall with `helm.sh/resource-policy: keep`;
+- etcd-druid v0.39.0 as a dependency, the chart etcd-druid's release workflow
+  publishes to `oci://europe-docker.pkg.dev/gardener-project/releases/charts/gardener/etcd-druid`
+  ([base.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/.github/workflows/base.yaml#L60-L84)),
+  with `enableEtcdSpecAutoReconcile` on; `etcdDruid.enabled=false` skips it
+  where etcd-druid is already installed. Its CRDs are in that chart's `crds/`
+  directory, which Helm applies only when it installs a release, skipping a
+  CRD that exists, and never on an upgrade
+  ([install.go](https://github.com/helm/helm/blob/v4.3.1/pkg/action/install.go#L206-L218),
+  [L329-L338](https://github.com/helm/helm/blob/v4.3.1/pkg/action/install.go#L329-L338));
+- the operator: two replicas with leader election on the Lease `lodia.io` in
+  the release namespace, spread across nodes by hostname, at
+  `system-cluster-critical` priority, with a securityContext that passes Pod
+  Security `restricted` (the release namespace cannot enforce it while
+  `etcdDruid.enabled`: etcd-druid's pod sets only
+  `allowPrivilegeEscalation: false`,
+  [deployment.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/charts/templates/deployment.yaml#L112-L113)),
+  liveness and readiness probes on port 8081, the
+  metrics endpoint on 8443 behind controller-runtime's authentication and
+  authorization filter, and a PodDisruptionBudget with `maxUnavailable: 1`
+  and `unhealthyPodEvictionPolicy: AlwaysAllow`;
+- its RBAC: a ClusterRole per controller from
+  [`charts/lodia/files/rbac/`](../charts/lodia/files/rbac/)
+  ([Identity and tenancy](#identity-and-tenancy)), the ClusterRole the
+  metrics filter needs (`create` on TokenReviews and SubjectAccessReviews),
+  and a Role in the release namespace for the Lease and events.
+
+`image` and `signerImage` each take a `repository`
+(`ghcr.io/lodia-io/lodia` and `ghcr.io/lodia-io/lodia-signer`), a `digest`
+and a `tag`, which defaults to the chart's `appVersion`: with a digest the
+chart renders `repository@digest`, otherwise `repository:tag`. The signer's
+image reaches the operator as `--signer-image`.
+
+Then a `DatastoreClass` with the bucket, and the first `ControlPlane`. Later
+phases bring the rest: the ServiceMonitors, the dashboard and the alert rules
+in phase 2, with the metrics they read; the operator configuration below,
+which the operator does not read yet, in phase 2, whose fleet limit,
+controller manager hold and `KubeconfigRequest`s it configures; signed and
+attested images, and how to verify them, in phase 4
+([roadmap](roadmap.md), [releases-and-support](decisions/releases-and-support.md)).
 
 Operator configuration (a file, mounted from a ConfigMap; the chart renders
 it from values):
@@ -889,9 +924,10 @@ it from values):
 | `kubeconfigRequests.maxExpiration` | | 24h |
 | `defaults.resources.<component>` | requests and limits per component | measured in phase 1 |
 
-Upgrading Lodia: `helm upgrade`; CRDs upgrade with the chart; tenants'
-pod templates re-render in their windows, the release notes say what changes
-([decision](decisions/upgrades-and-maintenance-windows.md)).
+Upgrading Lodia: `helm upgrade`; Lodia's CRDs upgrade with the chart,
+etcd-druid's do not (above); tenants' pod templates re-render in their
+windows from phase 2 on, at once before it, and the release notes say what
+changes ([decision](decisions/upgrades-and-maintenance-windows.md)).
 
 ## Operations
 

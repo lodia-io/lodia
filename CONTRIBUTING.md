@@ -8,14 +8,14 @@ the decision's file first. Taking part means following the
 
 ## Build and test
 
-You need Go (the version in `go.mod`), Docker for the end-to-end suite, and
-[golangci-lint](https://golangci-lint.run/) v2.13.2. Every other tool runs
-through `go tool`.
+You need Go (the version in `go.mod`), Docker for the end-to-end suite,
+[golangci-lint](https://golangci-lint.run/) v2.13.2 and
+[Helm](https://helm.sh/) v4.3.1. Every other tool runs through `go tool`.
 
 | command | does |
 |---|---|
-| `make generate` | deepcopy functions and CRDs from `api/`; commit the result |
-| `make verify` | the check that says a change is done: generated files current, lint, unit and envtest tests |
+| `make generate` | deepcopy functions and CRDs from `api/`, their copies in the chart, and each controller's ClusterRole from its RBAC markers; commit the result |
+| `make verify` | the check that says a change is done: generated files current, the chart linted and rendered, lint, unit and envtest tests |
 | `make e2e` | the end-to-end suite on a kind cluster of its own ([how](test/e2e/README.md)) |
 
 CI runs `make verify` and `make e2e` on every pull request.

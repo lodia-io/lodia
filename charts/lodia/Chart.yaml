@@ -1,0 +1,13 @@
+apiVersion: v2
+name: lodia
+description: Kubernetes control planes as pods on a management cluster, one ControlPlane per tenant cluster
+type: application
+version: 0.0.0-dev
+appVersion: 0.0.0-dev
+kubeVersion: ">=1.35.0-0"
+dependencies:
+  - name: etcd-druid
+    alias: etcdDruid
+    version: v0.39.0
+    repository: oci://europe-docker.pkg.dev/gardener-project/releases/charts/gardener
+    condition: etcdDruid.enabled

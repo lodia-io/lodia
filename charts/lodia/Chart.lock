@@ -1,0 +1,6 @@
+dependencies:
+- name: etcd-druid
+  repository: oci://europe-docker.pkg.dev/gardener-project/releases/charts/gardener
+  version: v0.39.0
+digest: sha256:600bb1e955f0878f6bcbe10196b5bdb17fb02dbb9f07d89c299dc6f4646570b9
+generated: "2026-10-26T03:50:19.748293+01:00"

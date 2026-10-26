@@ -1,17 +1,23 @@
 # Every tool runs through `go tool` (see the tool block in go.mod), except
-# golangci-lint, which is installed on its own, and ko, which runs as
-# `go run github.com/google/ko@<version>`: their dependency graphs would move
-# the operator's own dependencies.
+# golangci-lint and helm, which are installed on their own, and ko, which runs
+# as `go run github.com/google/ko@<version>`: their dependency graphs would
+# move the operator's own dependencies.
 
 ENVTEST_K8S_VERSION ?= 1.35.0
 E2E_CLUSTER ?= lodia-e2e-local
 E2E_DIR ?= $(CURDIR)/work/e2e
-GENERATED = api/v1alpha1/zz_generated.deepcopy.go api/crds/*.yaml
+CHART = charts/lodia
+CONTROLLERS = datastore health lifecycle pki tenant workloads
+GENERATED = api/v1alpha1/zz_generated.deepcopy.go api/crds/*.yaml $(CHART)/files/crds/*.yaml $(CHART)/files/rbac/*.yaml
+DIGEST = sha256:0000000000000000000000000000000000000000000000000000000000000000
 
 .PHONY: generate
-generate: ## regenerate deepcopy functions and CRDs from api/
+generate: ## regenerate deepcopy functions and CRDs from api/, the chart's copy of the CRDs, and each controller's ClusterRole from its RBAC markers
 	go tool controller-gen object:headerFile=hack/boilerplate.go.txt paths=./api/...
 	go tool controller-gen crd paths=./api/... output:crd:artifacts:config=api/crds
+	rm -f $(CHART)/files/crds/*.yaml && cp api/crds/*.yaml $(CHART)/files/crds/
+	rm -f $(CHART)/files/rbac/*.yaml
+	for c in $(CONTROLLERS); do go tool controller-gen rbac:roleName=lodia-$$c,fileName=$$c.yaml paths=./internal/controller/$$c output:rbac:artifacts:config=$(CHART)/files/rbac || exit 1; done
 
 .PHONY: lint
 lint:
@@ -23,13 +29,21 @@ test: ## unit and envtest tests; envtest runs a real API server and etcd
 	KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test ./...
 	cd api && go test ./...
 
+.PHONY: chart
+chart: ## lint and render the chart with image tags, then with image digests
+	helm dependency build $(CHART)
+	helm lint --strict $(CHART)
+	helm template lodia $(CHART) --namespace lodia-system > /dev/null
+	helm lint --strict $(CHART) --set image.digest=$(DIGEST),signerImage.digest=$(DIGEST)
+	helm template lodia $(CHART) --namespace lodia-system --set image.digest=$(DIGEST),signerImage.digest=$(DIGEST) > /dev/null
+
 .PHONY: verify
 verify: ## the check that says a change is done
 	@before="$$(cat $(GENERATED) | cksum)"; $(MAKE) --no-print-directory generate; \
 	[ "$$before" = "$$(cat $(GENERATED) | cksum)" ] || { echo "make generate changed the generated files: review and commit them"; exit 1; }
 	go mod tidy -diff
 	cd api && go mod tidy -diff
-	$(MAKE) --no-print-directory lint test
+	$(MAKE) --no-print-directory chart lint test
 
 .PHONY: e2e
 e2e: ## the e2e suite against E2E_KUBECONFIG, else against a kind cluster of its own that it deletes afterwards

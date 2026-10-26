@@ -1,0 +1,69 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: lodia-datastore
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - persistentvolumeclaims
+  verbs:
+  - delete
+  - list
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - statefulsets
+  verbs:
+  - get
+- apiGroups:
+  - druid.gardener.cloud
+  resources:
+  - etcds
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - watch
+- apiGroups:
+  - lodia.io
+  resources:
+  - controlplanes
+  verbs:
+  - list
+  - patch
+  - watch
+- apiGroups:
+  - lodia.io
+  resources:
+  - controlplanes/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - lodia.io
+  resources:
+  - controlplanes/status
+  verbs:
+  - patch
+- apiGroups:
+  - lodia.io
+  resources:
+  - datastoreclasses
+  verbs:
+  - list
+  - watch

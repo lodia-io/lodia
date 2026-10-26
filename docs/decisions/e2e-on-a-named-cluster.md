@@ -59,5 +59,10 @@ kubeadm workers, upgrade tests and conformance come with phase 1.
 
 - `test/e2e/guard.go` — `RequireNamedCluster`, the refusal;
   `TestRequireNamedCluster` in `guard_test.go` holds it.
-- `test/e2e/suite_test.go` — the suite, behind the `e2e` build tag.
+- `test/e2e/suite_test.go` — the suite, behind the `e2e` build tag; before
+  any test it builds both images with ko into the kind cluster and installs
+  the chart with them.
+- `test/e2e/operator_test.go` — the operator from the chart: Available, a
+  running replica holding the leader lease, its pod admitted where Pod
+  Security `restricted` is enforced.
 - `Makefile` — the `e2e` target.
