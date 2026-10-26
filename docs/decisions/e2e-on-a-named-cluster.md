@@ -1,7 +1,8 @@
 # End-to-end tests run only against a cluster named on the command line, and never the current kube context
 
 Decided 2026-10-25. The refusal, `make e2e` and a kubeadm worker are
-built; upgrade tests and conformance come with phase 1.
+built; nightly conformance comes with phase 1's last pull request, and
+upgrade tests with phase 2.
 
 ## Decision
 

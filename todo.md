@@ -294,3 +294,12 @@ is a decision — a decision is a file in `docs/decisions/`.
   whether the chart templates them or the release notes carry the step.
 - The operator's pods set no requests or limits until the operator is
   measured.
+
+## From the phase 1 gate (2026-10-26)
+
+- The gate reaches the tenant through one client-go port-forward, which
+  client-go v0.37.1 closes entirely on the first forwarding error
+  ([portforward.go](https://github.com/kubernetes/client-go/blob/v0.37.1/tools/portforward/portforward.go#L545-L550)):
+  a WebSocket exec through it ended the forward in a review run. A forward
+  per call, or one reopened on `ErrLostConnectionToPod`, would keep one
+  error from failing every later step.

@@ -65,8 +65,14 @@ chart installed.
   on its health port, 8134
   ([server.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/cmd/server/app/server.go#L585)),
   through a port-forward to the API server pod, and wants each call to add
-  one dial. Disabling `addons.coreDNS` removes CoreDNS's objects from the
-  tenant and from the inventory, and enabling it brings them back.
+  one dial. `exec` and the port-forward use client-go's SPDY transport;
+  kubectl's default, WebSocket, reaches the kubelet through the same
+  transport and tunnel
+  ([exec](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/registry/core/pod/rest/subresources.go#L208-L230),
+  [port-forward](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/registry/core/pod/rest/subresources.go#L293-L306)),
+  so the dial count covers it too. Disabling `addons.coreDNS` removes
+  CoreDNS's objects from the tenant and from the inventory, and enabling it
+  brings them back.
   Deleting the `ControlPlane` leaves in its namespace, of every namespaced
   kind the API server serves, Events aside, which outlive their objects,
   only the etcd's claim, which the class's `Retain` keeps, and what every
@@ -97,9 +103,15 @@ and the `ControlPlane` sets `addons.kubeProxy.conntrack.maxPerCore: 0`.
 `SystemVerification`: on GitHub's runners it finds the host kernel's
 configuration in none of the places it looks, and `modprobe configs` fails
 ([kernel_validator.go](https://github.com/kubernetes/system-validators/blob/v1.12.1/validators/kernel_validator.go#L191-L245),
-the version kubeadm v1.37.0 uses). The CNI is kindnet from the node image's
-manifest, with the tenant's pod range.
+the version kubeadm v1.37.0 uses). Ignoring it skips kubeadm's OS and
+cgroups validators too, which run under the same name; a check's name is
+the finest grain kubeadm ignores by
+([checks.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/cmd/kubeadm/app/preflight/checks.go#L573-L588),
+[checks_linux.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/cmd/kubeadm/app/preflight/checks_linux.go#L48-L54)).
+The CNI is kindnet from the node image's manifest, with the tenant's pod
+range.
 The suite removes the container when it ends, pass or fail, and before it
-starts one, in case an interrupted run left it.
+starts one; `make e2e` removes it as well, since a `go test` timeout or a
+panic never reaches the suite's end.
 
 `make e2e` gives the suite 30 minutes.
