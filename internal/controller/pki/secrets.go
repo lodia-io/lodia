@@ -67,10 +67,6 @@ var names = func() []string {
 }()
 
 const (
-	// signingDuration is how long the controller manager's kubelet client
-	// certificates live, and so how long a replaced kubelet signer stays in
-	// the client CA bundle.
-	signingDuration = 30 * 24 * time.Hour
 	// serviceAccountKeyBits is RSA 2048: OIDC makes RS256 mandatory for every
 	// provider, so it is what a federation partner accepts.
 	serviceAccountKeyBits = 2048
@@ -316,9 +312,9 @@ func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 		}
 	}
 	if cl != nil && cluster != nil {
-		internal := "https://" + bryggav1alpha1.APIServerServiceName(t.cp.Name) + "." + t.cp.Namespace + ".svc:443"
+		internal := "https://" + bryggav1alpha1.APIServerServiceName(t.cp.Name) + "." + t.cp.Namespace + ".svc:" + strconv.Itoa(bryggav1alpha1.APIServerServicePort)
 		kubeconfigs := []kubeconfig{
-			{bryggav1alpha1.KonnectivityKubeconfigSecret, "system:konnectivity-server", nil, "https://127.0.0.1:6443", false},
+			{bryggav1alpha1.KonnectivityKubeconfigSecret, "system:konnectivity-server", nil, internal, false},
 			{bryggav1alpha1.ControllerManagerKubeconfigSecret, "system:kube-controller-manager", nil, internal, false},
 			{bryggav1alpha1.SchedulerKubeconfigSecret, "system:kube-scheduler", nil, internal, false},
 			{bryggav1alpha1.BryggaKubeconfigSecret, "brygga:operator", nil, internal, true},
@@ -337,7 +333,7 @@ func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 		if err := r.bundle(ctx, t, t.secret(bryggav1alpha1.FrontProxyCASecret), frontProxy.Cert); err != nil {
 			return err
 		}
-		if err := r.tls(ctx, t, t.secret(bryggav1alpha1.FrontProxyClientSecret), frontProxy, certs.Profile{CommonName: "front-proxy-client", Usages: clientAuth}); err != nil {
+		if err := r.tls(ctx, t, t.secret(bryggav1alpha1.FrontProxyClientSecret), frontProxy, certs.Profile{CommonName: bryggav1alpha1.FrontProxyClientCommonName, Usages: clientAuth}); err != nil {
 			return err
 		}
 	}
@@ -472,7 +468,7 @@ func (t *tenant) clientBundle(signer *certs.Certificate) []*x509.Certificate {
 	previous, _ := certs.ParseCerts(data(t.existing[t.secret(bryggav1alpha1.ClientCASecret)], bryggav1alpha1.CACertKey))
 	replaced := signer.Cert.NotBefore.Add(certs.Backdate)
 	for _, c := range previous {
-		if c.IsCA && !c.Equal(ca) && certs.Verify(c, ca, t.now) == nil && t.now.Before(replaced.Add(signingDuration)) {
+		if c.IsCA && !c.Equal(ca) && certs.Verify(c, ca, t.now) == nil && t.now.Before(replaced.Add(certs.KubeletClientLifetime)) {
 			bundle = append(bundle, c)
 		}
 	}

@@ -10,8 +10,10 @@ Decided 2026-10-25. Not built.
 - `Compact` renders one Deployment `<cp>-control-plane` with one replica and
   the containers `kube-apiserver`, `kube-controller-manager`,
   `kube-scheduler`, `konnectivity-server` and `brygga-signer`. The controller
-  manager and the scheduler reach the API on `https://127.0.0.1:6443`, which
-  the serving certificate carries as a SAN.
+  manager and the scheduler reach the API on loopback at the API server's
+  secure port, which the serving certificate carries as a SAN: 6443, or the
+  node port in `nodePort` mode, where the API server listens on it
+  ([api-exposure](api-exposure.md)).
 - A schema rule refuses `Compact` together with `highAvailability` or
   `apiServer.replicas` above 1.
 - The datastore stays independent of the layout:

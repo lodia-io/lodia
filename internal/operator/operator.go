@@ -26,6 +26,7 @@ import (
 	"github.com/segla-io/brygga/internal/controller/lifecycle"
 	"github.com/segla-io/brygga/internal/controller/pki"
 	"github.com/segla-io/brygga/internal/controller/tenant"
+	"github.com/segla-io/brygga/internal/controller/workloads"
 )
 
 // workers is the default of controllers.<name>.workers until the operator
@@ -62,8 +63,9 @@ func Cache() (cache.Options, error) {
 	}, nil
 }
 
-// Setup registers every controller with the manager.
-func Setup(mgr ctrl.Manager) error {
+// Setup registers every controller with the manager; signerImage is
+// brygga-signer's, which runs beside each API server.
+func Setup(mgr ctrl.Manager, signerImage string) error {
 	if err := (&pki.Reconciler{
 		Client:              mgr.GetClient(),
 		Reader:              mgr.GetAPIReader(),
@@ -85,6 +87,9 @@ func Setup(mgr ctrl.Manager) error {
 	}
 	if err := (&health.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Period: 10 * time.Second, Timeout: 5 * time.Second}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the health controller: %w", err)
+	}
+	if err := (&workloads.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), SignerImage: signerImage}).SetupWithManager(mgr, workers); err != nil {
+		return fmt.Errorf("set up the workloads controller: %w", err)
 	}
 	return nil
 }

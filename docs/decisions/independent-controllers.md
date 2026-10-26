@@ -2,8 +2,9 @@
 
 Decided 2026-10-25. The manager, PKI, the Datastore controller, for a
 dedicated etcd of one member, Lifecycle, for the target within a minor and
-`Ready`, Tenant, without the apiserver-proxy, and Health, for the probe
-through the public endpoint, are built; Workloads is not.
+`Ready`, Tenant, without the apiserver-proxy, Health, for the probe through
+the public endpoint, and Workloads, for one replica behind a `loadBalancer`
+or `nodePort` endpoint, are built.
 
 ## Decision
 
@@ -139,11 +140,12 @@ flowchart LR
   Datastore's `Etcd` and claims). A predecessor's objects, left when a
   `ControlPlane` is recreated under the same name, are the garbage
   collector's: the controller waits with a condition, PKI with
-  `SecretsControlledElsewhere`, the Datastore with `VolumesExist`. Inside a
-  tenant cluster, where no object has a `ControlPlane` for controller, the
-  Tenant controller carries the rule over with `managedFields` as the
-  signal: it reads an object before its first apply and leaves another
-  owner's as it is, and deletes only what `brygga/tenant` has applied
+  `SecretsControlledElsewhere`, the Datastore with `VolumesExist`, Workloads
+  with `ObjectsControlledElsewhere`. Inside a tenant cluster, where no object
+  has a `ControlPlane` for controller, the Tenant controller carries the rule
+  over with `managedFields` as the signal: it reads an object before its
+  first apply and leaves another owner's as it is, and deletes only what
+  `brygga/tenant` has applied
   ([tenant-resources-by-inventory](tenant-resources-by-inventory.md)).
 - A condition that waits on an object outside the cache comes with a bounded
   requeue, since no event reports that object's change; the condition still
@@ -162,14 +164,19 @@ flowchart LR
   label was removed, after 10 seconds. The Tenant controller's: the addons'
   rollout in the tenant, which Brygga does not watch, every minute until it
   is complete, and `<cp>-ca-bundle` or `<cp>-brygga-kubeconfig` while
-  another owner keeps it, every minute.
+  another owner keeps it, every minute. Workloads': a `nodePort` endpoint's
+  management node, which no event reports, every minute; and an object under
+  its names that another owner keeps, whose deletion reaches this
+  `ControlPlane`'s queue only when that owner is a previous `ControlPlane` of
+  the same name, after 10 seconds while it is one and after a minute
+  otherwise.
 
 ## Code
 
 - `internal/operator` — the scheme, the cache rules above and the
   controllers: PKI registered as `pki`, the Datastore controller as
-  `datastore`, Lifecycle as `lifecycle`, Tenant as `tenant` and Health as
-  `health`, each with ten workers.
+  `datastore`, Lifecycle as `lifecycle`, Tenant as `tenant`, Health as
+  `health` and Workloads as `workloads`, each with ten workers.
   `cmd/brygga/main.go` runs them in one manager; every controller's tests
   take the cache from it.
 - `internal/controller/pki` — reads `spec` and `status.endpoint`, writes its
@@ -230,3 +237,16 @@ flowchart LR
   and a one-minute reconcile timeout. `health_test.go` runs it under the same
   cache with `ReaderFailOnMissingInformer`, as a user bound to exactly its
   rules.
+- `internal/controller/workloads` — reads `spec`, `status.target`,
+  `status.datastore.endpoints` and the conditions it waits on, the data hash
+  of each restart-only Secret from its metadata in the cache, and a
+  `nodePort` endpoint's nodes uncached; writes the Service, the ConfigMaps,
+  the NetworkPolicies and the Deployments with server-side apply as
+  `brygga/workloads`, none over an object another owner keeps, and applies
+  `APIServerReady` and `status.endpoint` through the status subresource
+  (`Unknown` at the start of its first visit, messages from the state alone,
+  an API error left to the log unless the server refuses an object it is
+  sent, which is `Refused`). Registered as `workloads` with ten workers
+  and a one-minute reconcile timeout. `workloads_test.go` runs it under the
+  same cache with `ReaderFailOnMissingInformer`, as a user bound to exactly
+  its rules.

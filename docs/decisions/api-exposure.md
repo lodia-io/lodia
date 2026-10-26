@@ -1,6 +1,7 @@
 # Control planes are exposed through a shared Gateway by SNI; pods reach their API through a node-local proxy and a fixed advertise address
 
-Decided 2026-10-25. Not built.
+Decided 2026-10-25. The `loadBalancer` and `nodePort` modes are built;
+`gateway`, the in-cluster `apiserver-proxy` and the tunnel are not.
 
 ## Decision
 
@@ -69,10 +70,10 @@ with `--agent-identifiers=ipv4=$(HOST_IP)` and the server tries `destHost`
 before `default`, so traffic for a kubelet goes through the agent on its own
 node
 ([konnectivity setup](https://kubernetes.io/docs/tasks/extend-kubernetes/setup-konnectivity/),
-[server options](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/master/cmd/server/app/options/options.go),
-[agent options](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/master/cmd/agent/app/options/options.go)).
+[server options](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/cmd/server/app/options/options.go),
+[agent options](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/cmd/agent/app/options/options.go)).
 The konnectivity version follows the Kubernetes minor (proxy 0.NN for
-Kubernetes 1.NN, [README](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/master/README.md)).
+Kubernetes 1.NN, [README](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/README.md#L37-L40)).
 
 **Nothing inbound on a node.** The API server reaches kubelets, webhooks and
 aggregated APIs through the agents' tunnels. Brygga's defaults bind what it
@@ -142,4 +143,6 @@ a node flag (`--address`, `--node-ip`), which the node's owner passes through
 
 ## Code
 
-none yet.
+- `internal/controller/workloads` — the Service of the `loadBalancer` and
+  `nodePort` modes, `status.endpoint`, the API server's advertise address
+  and secure port, and konnectivity-server beside it on a Unix socket.

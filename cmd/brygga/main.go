@@ -19,16 +19,21 @@ import (
 )
 
 func main() {
-	var metricsAddr, probeAddr string
+	var metricsAddr, probeAddr, signerImage string
 	var leaderElect bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "Address of the metrics endpoint, served over HTTPS behind authentication and authorization.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Address of the health and readiness probes.")
 	flag.BoolVar(&leaderElect, "leader-elect", true, "Run controllers only in the replica that holds the leader lease.")
+	flag.StringVar(&signerImage, "signer-image", "", "Image of brygga-signer, the API server's ServiceAccount token signer; required.")
 	opts := zap.Options{}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 	log := ctrl.Log.WithName("setup")
+	if signerImage == "" {
+		log.Error(nil, "--signer-image is required")
+		os.Exit(1)
+	}
 
 	cache, err := operator.Cache()
 	if err != nil {
@@ -51,7 +56,7 @@ func main() {
 		log.Error(err, "create the manager")
 		os.Exit(1)
 	}
-	if err := operator.Setup(mgr); err != nil {
+	if err := operator.Setup(mgr, signerImage); err != nil {
 		log.Error(err, "set up the controllers")
 		os.Exit(1)
 	}

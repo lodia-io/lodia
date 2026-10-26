@@ -1,6 +1,8 @@
 # Each control plane component runs in its own Deployment; etcd in its own StatefulSet
 
-Decided 2026-10-25. Not built.
+Decided 2026-10-25. The `Split` layout with one replica of each component is
+built; high availability, PodDisruptionBudgets and the `Compact` layout are
+not.
 
 ## Decision
 
@@ -89,4 +91,8 @@ flowchart TB
 
 ## Code
 
-none yet.
+- `internal/controller/workloads` — `render.go` renders the three
+  Deployments, their restart hashes and a NetworkPolicy for each;
+  `workloads.go` applies them once the certificates and the datastore are
+  ready and reports `APIServerReady`. `test/e2e/workloads_test.go` runs a
+  tenant API server on kind.
