@@ -1322,11 +1322,6 @@ spec:
                   controllerManagerHold:
                     description: ControllerManagerHold is present while the hold lasts.
                     properties:
-                      blockedBy:
-                        description: BlockedBy names another holder of the lease Lodia
-                          left alone.
-                        maxLength: 253
-                        type: string
                       countedNodes:
                         format: int32
                         type: integer
@@ -1425,6 +1420,9 @@ spec:
         required:
         - spec
         type: object
+        x-kubernetes-validations:
+        - message: the name must be a DNS-1035 label of at most 32 characters
+          rule: self.metadata.name.size() <= 32 && self.metadata.name.matches('^[a-z]([-a-z0-9]*[a-z0-9])?$')
     served: true
     storage: true
     subresources:
