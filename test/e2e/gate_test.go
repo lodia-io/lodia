@@ -406,6 +406,7 @@ func apiServerPod(ctx context.Context, t *testing.T, k8s client.Client) *corev1.
 	return nil
 }
 
+// @todo: stands in for the tenant's endpoint, unreachable from macOS; remove with todo.md's port-forward item.
 func forward(t *testing.T, cfg *rest.Config, pod *corev1.Pod, port int32) (string, func()) {
 	t.Helper()
 	transport, upgrader, err := spdy.RoundTripperFor(cfg)

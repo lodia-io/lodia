@@ -295,3 +295,14 @@ is a decision — a decision is a file in `docs/decisions/`.
   whether the chart templates them or the release notes carry the step.
 - The operator's pods set no requests or limits until the operator is
   measured.
+
+## From the phase 1 gate (2026-10-26)
+
+- The e2e suite reaches a tenant's API through port-forwards to the API
+  server pod, one per connection (`forward` in `test/e2e/gate_test.go`),
+  only because a kind node's address is not routable from macOS, where the
+  suite also runs. Real clients, and kubeadm on a joining node, use the
+  tenant's endpoint, and Lodia never relies on a port-forward. Remove it
+  once the suite's tenant clients run where the endpoint is routable: on
+  Linux CI it already is; on macOS, from a container on kind's network, for
+  instance.
