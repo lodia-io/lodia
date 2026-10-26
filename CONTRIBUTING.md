@@ -1,6 +1,6 @@
-# Contributing to Brygga
+# Contributing to Lodia
 
-Brygga is designed in the open. [`docs/README.md`](docs/README.md) says what
+Lodia is designed in the open. [`docs/README.md`](docs/README.md) says what
 it does and [`docs/decisions/`](docs/decisions/) why; a pull request that
 changes behaviour updates them, and one that goes against a decision changes
 the decision's file first. Taking part means following the

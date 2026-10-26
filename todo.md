@@ -15,13 +15,13 @@ is a decision — a decision is a file in `docs/decisions/`.
 - Decide the deletion policy of a dedicated etcd's backups after a
   `ControlPlane` is deleted; Gardener keeps backups for a configurable
   retention period. etcd-druid keeps them when an `Etcd` is deleted, so the
-  policy is Brygga's code (etcd spike, finding 6). The volumes follow the
+  policy is Lodia's code (etcd spike, finding 6). The volumes follow the
   class's `storage.reclaimPolicy` since the Datastore controller (2026-10-25).
 - Measure, not assume, the idle footprint of one control plane in phase 1 and
   replace the planning numbers in `docs/operations.md`.
 - etcd-druid's restore keeps the snapshot's revisions (no
   `--bump-revision`); propose the bump upstream in etcd-backup-restore, and
-  until then roll the tenant's API server after any restore Brygga detects.
+  until then roll the tenant's API server after any restore Lodia detects.
   The etcd spike measured the stale cache (finding 5); how the Datastore
   controller detects a restore is still open.
 - etcd-druid's scale at ~1000 `Etcd` objects with its default
@@ -35,11 +35,14 @@ is a decision — a decision is a file in `docs/decisions/`.
 - Before the repository goes public: an address for conduct reports
   (`CODE_OF_CONDUCT.md` names only the maintainers), private vulnerability
   reporting switched on (`SECURITY.md` points at it), and `GOVERNANCE.md` and
-  `ADOPTERS.md` from the CNCF template.
+  `ADOPTERS.md` from the CNCF template. Also the `go-import` page at
+  `go.lodia.io/lodia?go-get=1` (GitHub Pages in `lodia-io`, a CNAME for
+  `go.lodia.io`), and the repository moved to `lodia-io`, after which
+  `SECURITY.md`'s link follows it.
 - The workflow's actions are pinned by commit with nothing to bump them;
   Dependabot or Renovate for `github-actions` and `gomod`.
 
-## From brygga-signer (2026-10-23)
+## From lodia-signer (2026-10-23)
 
 - The signer's socket is mode 0600 and owned by the signer's user (65532 on
   distroless `nonroot`); kube-apiserver can dial it only as that user or as
@@ -65,7 +68,7 @@ is a decision — a decision is a file in `docs/decisions/`.
 - `KubeconfigRequest`'s schema refuses only `system:masters`;
   [short-lived-kubeconfigs](docs/decisions/short-lived-kubeconfigs.md) now
   refuses every user and group under `system:` and every user under
-  `brygga:`. The rule and its envtest cases come with the controller that
+  `lodia:`. The rule and its envtest cases come with the controller that
   answers requests.
 - `loadBalancer` mode with a load balancer that reports only a host name
   (AWS NLB and CLB): `--advertise-address` takes an IP, so the `kubernetes`
@@ -133,7 +136,7 @@ is a decision — a decision is a file in `docs/decisions/`.
   `<cp>-etcd-backup` reaches only that tenant's snapshots and not every
   tenant's on the class (`docs/README.md`, Identity and tenancy).
 - The e2e suite runs the PKI and Datastore controllers in the test process
-  and needs `git` and `helm`; the suite against Brygga's image and chart comes with the
+  and needs `git` and `helm`; the suite against Lodia's image and chart comes with the
   chart, and `make e2e` could check for the tools.
 - The cache keeps metadata only for Secrets because this controller watches
   them as `PartialObjectMetadata`; nothing stops a future controller from
@@ -159,7 +162,7 @@ is a decision — a decision is a file in `docs/decisions/`.
   [types.go](https://github.com/kubernetes/api/blob/v0.37.1/certificates/v1/types.go#L155-L158)),
   would make the narrowing true; decide before the client CA rotation is
   built.
-- Brygga reaches a tenant's API server through its in-namespace Service and
+- Lodia reaches a tenant's API server through its in-namespace Service and
   ignores `HTTPS_PROXY` for that connection; the chart's documentation should
   say so for sites that set a proxy on every pod.
 - The e2e suite installs the CRDs and applies the examples; nothing runs the
@@ -174,10 +177,10 @@ is a decision — a decision is a file in `docs/decisions/`.
 - `TestAPredecessorsSecretsAreNeitherReadNorWritten` passes with the
   metadata lookup disabled, since the labelled predecessor Secrets mask its
   unlabelled CA key; give that path its own case.
-- In a blocked pass the CAs are never loaded: a forbidden `brygga:operator`
+- In a blocked pass the CAs are never loaded: a forbidden `lodia:operator`
   then reports "client CA missing", and the bind error replaces the bounded
   requeue with exponential backoff. With `APIServerReady` True and
-  `<cp>-brygga-kubeconfig` missing or foreign, `AccessReady` says
+  `<cp>-lodia-kubeconfig` missing or foreign, `AccessReady` says
   "APIServerReady is not True for this generation", which the state
   contradicts.
 - `readEncryptionConfig` decodes leniently, while kube-apiserver decodes
@@ -203,7 +206,7 @@ is a decision — a decision is a file in `docs/decisions/`.
 - Phase 2: `status.endpoint.tunnel`, the tunnel listener's host and port in
   gateway mode, absent without a tunnel, for Tenant's apiserver-proxy and
   PKI's certificate.
-- Phase 2: `status.health` is present only while Brygga holds the controller
+- Phase 2: `status.health` is present only while Lodia holds the controller
   manager; a blocked hold is reported in `HoldBlocked`'s message, and
   `nodes.outdatedKubelets` compares against the tenant's own `/version`.
 - Phase 2: `Backup` and `KubeconfigRequest` get a named status writer, and
@@ -214,7 +217,7 @@ is a decision — a decision is a file in `docs/decisions/`.
   its own instead of sharing PKI's observed `RotationPhase`, and
   `rotation.ca` becomes `clusterCA`.
 - Phase 3: `Hibernated`, with Lifecycle as its writer, and the handled
-  `brygga.segla.io/operation` value recorded in `status`.
+  `lodia.io/operation` value recorded in `status`.
 
 ## From the Tenant controller (2026-10-25)
 
@@ -238,7 +241,7 @@ is a decision — a decision is a file in `docs/decisions/`.
 - `AddonsAvailable` is not read again while applies are refused: the
   rollout read before stays.
 - `--count-server-leases` on the agents is proven only by the wave 3 e2e.
-- CoreDNS's replicas are Brygga's: an autoscaler is set back on every
+- CoreDNS's replicas are Lodia's: an autoscaler is set back on every
   apply; a later phase lets one own them.
 
 ## From the Workloads controller (2026-10-25)
@@ -255,7 +258,7 @@ is a decision — a decision is a file in `docs/decisions/`.
   the chart render it.
 - The control plane pods set no securityContext: give them one that passes
   Pod Security `restricted`, the API server and the signer under one user
-  (From brygga-signer, above).
+  (From lodia-signer, above).
 - Workloads lists the management nodes uncached on every pass of a
   `nodePort` `ControlPlane`; an informer on Nodes, which carry no
   control-plane label and so need a cache rule of their own, would serve

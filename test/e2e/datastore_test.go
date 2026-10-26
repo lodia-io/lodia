@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 //go:build e2e
@@ -37,10 +37,10 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/features"
 	"sigs.k8s.io/e2e-framework/third_party/helm"
 
-	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
-	"github.com/segla-io/brygga/internal/controller/datastore"
-	"github.com/segla-io/brygga/internal/controller/pki"
-	"github.com/segla-io/brygga/internal/operator"
+	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/controller/datastore"
+	"go.lodia.io/lodia/internal/controller/pki"
+	"go.lodia.io/lodia/internal/operator"
 )
 
 const (
@@ -62,7 +62,7 @@ func TestDatastoreOnKind(t *testing.T) {
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			installEtcdDruid(t, cfg.KubeconfigFile())
 			scheme := runtime.NewScheme()
-			for _, add := range []func(*runtime.Scheme) error{clientgoscheme.AddToScheme, bryggav1alpha1.AddToScheme, druidv1alpha1.AddToScheme} {
+			for _, add := range []func(*runtime.Scheme) error{clientgoscheme.AddToScheme, lodiav1alpha1.AddToScheme, druidv1alpha1.AddToScheme} {
 				if err := add(scheme); err != nil {
 					t.Fatal(err)
 				}
@@ -90,17 +90,17 @@ func TestDatastoreOnKind(t *testing.T) {
 			go func() { stopped <- mgr.Start(run) }()
 
 			create(ctx, t, k8s, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: tenant}})
-			create(ctx, t, k8s, &bryggav1alpha1.DatastoreClass{
+			create(ctx, t, k8s, &lodiav1alpha1.DatastoreClass{
 				ObjectMeta: metav1.ObjectMeta{Name: "e2e"},
-				Spec:       bryggav1alpha1.DatastoreClassSpec{Storage: bryggav1alpha1.EtcdStorage{Size: resource.MustParse("1Gi"), ReclaimPolicy: "Delete"}},
+				Spec:       lodiav1alpha1.DatastoreClassSpec{Storage: lodiav1alpha1.EtcdStorage{Size: resource.MustParse("1Gi"), ReclaimPolicy: "Delete"}},
 			})
-			create(ctx, t, k8s, &bryggav1alpha1.ControlPlane{
+			create(ctx, t, k8s, &lodiav1alpha1.ControlPlane{
 				ObjectMeta: metav1.ObjectMeta{Name: controlPlane, Namespace: tenant},
-				Spec: bryggav1alpha1.ControlPlaneSpec{
+				Spec: lodiav1alpha1.ControlPlaneSpec{
 					Version:   "v1.37.1",
-					Datastore: bryggav1alpha1.DatastoreChoice{Dedicated: &bryggav1alpha1.DedicatedDatastore{ClassName: "e2e"}},
-					Endpoint:  bryggav1alpha1.Endpoint{LoadBalancer: &bryggav1alpha1.LoadBalancerEndpoint{}},
-					Network:   bryggav1alpha1.Network{ServiceCIDRs: []bryggav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []bryggav1alpha1.CIDR{"10.244.0.0/16"}},
+					Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{ClassName: "e2e"}},
+					Endpoint:  lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}},
+					Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
 				},
 			})
 			return ctx
@@ -110,7 +110,7 @@ func TestDatastoreOnKind(t *testing.T) {
 				return issued(ctx, k8s, 1)
 			})
 			until(ctx, t, 5*time.Minute, "DatastoreReady=True for generation 1", func(ctx context.Context) error {
-				return conditionIs(ctx, k8s, metav1.ConditionTrue, bryggav1alpha1.ReasonReady)
+				return conditionIs(ctx, k8s, metav1.ConditionTrue, lodiav1alpha1.ReasonReady)
 			})
 			pod := &corev1.Pod{}
 			if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: controlPlane + "-etcd-0"}, pod); err != nil {
@@ -128,10 +128,10 @@ func TestDatastoreOnKind(t *testing.T) {
 		}).
 		Assess("a member Secret deleted, PKI issues generation 2 under the same CA and the member rolls onto it", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			first := &corev1.Secret{}
-			if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: bryggav1alpha1.EtcdCertificateSecretName(controlPlane, bryggav1alpha1.EtcdCARole, 1)}, first); err != nil {
+			if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: lodiav1alpha1.EtcdCertificateSecretName(controlPlane, lodiav1alpha1.EtcdCARole, 1)}, first); err != nil {
 				t.Fatal(err)
 			}
-			member := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: tenant, Name: bryggav1alpha1.EtcdCertificateSecretName(controlPlane, bryggav1alpha1.EtcdClientRole, 1)}}
+			member := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: tenant, Name: lodiav1alpha1.EtcdCertificateSecretName(controlPlane, lodiav1alpha1.EtcdClientRole, 1)}}
 			if err := k8s.Delete(ctx, member); err != nil {
 				t.Fatal(err)
 			}
@@ -140,10 +140,10 @@ func TestDatastoreOnKind(t *testing.T) {
 				return issued(ctx, k8s, 2)
 			})
 			second := &corev1.Secret{}
-			if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: bryggav1alpha1.EtcdCertificateSecretName(controlPlane, bryggav1alpha1.EtcdCARole, 2)}, second); err != nil {
+			if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: lodiav1alpha1.EtcdCertificateSecretName(controlPlane, lodiav1alpha1.EtcdCARole, 2)}, second); err != nil {
 				t.Fatal(err)
 			}
-			if !bytes.Equal(first.Data[bryggav1alpha1.CACertKey], second.Data[bryggav1alpha1.CACertKey]) {
+			if !bytes.Equal(first.Data[lodiav1alpha1.CACertKey], second.Data[lodiav1alpha1.CACertKey]) {
 				t.Fatalf("generation 2 is not under the CA of generation 1")
 			}
 			t.Logf("generation 2 is under the CA of generation 1")
@@ -164,7 +164,7 @@ func TestDatastoreOnKind(t *testing.T) {
 				return nil
 			})
 			until(ctx, t, 2*time.Minute, "DatastoreReady leaves True for the roll", func(ctx context.Context) error {
-				return conditionIs(ctx, k8s, metav1.ConditionFalse, bryggav1alpha1.ReasonProvisioning)
+				return conditionIs(ctx, k8s, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning)
 			})
 			until(ctx, t, 5*time.Minute, "the member runs with generation 2 mounted", func(ctx context.Context) error {
 				pod := &corev1.Pod{}
@@ -184,18 +184,18 @@ func TestDatastoreOnKind(t *testing.T) {
 				if ptr.Deref(etcd.Status.ObservedGeneration, 0) != etcd.Generation {
 					return fmt.Errorf("etcd-druid observed generation %d of %d", ptr.Deref(etcd.Status.ObservedGeneration, 0), etcd.Generation)
 				}
-				return conditionIs(ctx, k8s, metav1.ConditionTrue, bryggav1alpha1.ReasonReady)
+				return conditionIs(ctx, k8s, metav1.ConditionTrue, lodiav1alpha1.ReasonReady)
 			})
 			logEtcd(ctx, t, k8s)
 			return ctx
 		}).
 		Assess("deleting the ControlPlane removes the Etcd and the member's claim", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			cp := &bryggav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: controlPlane, Namespace: tenant}}
+			cp := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: controlPlane, Namespace: tenant}}
 			if err := k8s.Delete(ctx, cp); err != nil {
 				t.Fatal(err)
 			}
 			until(ctx, t, 3*time.Minute, "the ControlPlane is gone", func(ctx context.Context) error {
-				return gone(k8s.Get(ctx, client.ObjectKeyFromObject(cp), &bryggav1alpha1.ControlPlane{}))
+				return gone(k8s.Get(ctx, client.ObjectKeyFromObject(cp), &lodiav1alpha1.ControlPlane{}))
 			})
 			if err := gone(k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: controlPlane + "-etcd"}, &druidv1alpha1.Etcd{})); err != nil {
 				t.Errorf("the Etcd: %v", err)
@@ -214,7 +214,7 @@ func TestDatastoreOnKind(t *testing.T) {
 			}
 			if k8s != nil {
 				for _, obj := range []client.Object{
-					&bryggav1alpha1.DatastoreClass{ObjectMeta: metav1.ObjectMeta{Name: "e2e"}},
+					&lodiav1alpha1.DatastoreClass{ObjectMeta: metav1.ObjectMeta{Name: "e2e"}},
 					&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: tenant}},
 				} {
 					if err := client.IgnoreNotFound(k8s.Delete(ctx, obj)); err != nil {
@@ -280,7 +280,7 @@ func create(ctx context.Context, t *testing.T, k8s client.Client, obj client.Obj
 
 func issued(ctx context.Context, k8s client.Client, generation int) error {
 	secrets := &corev1.SecretList{}
-	if err := k8s.List(ctx, secrets, client.InNamespace(tenant), client.MatchingLabels{bryggav1alpha1.EtcdCertificatesLabel: strconv.Itoa(generation)}); err != nil {
+	if err := k8s.List(ctx, secrets, client.InNamespace(tenant), client.MatchingLabels{lodiav1alpha1.EtcdCertificatesLabel: strconv.Itoa(generation)}); err != nil {
 		return err
 	}
 	var names []string
@@ -289,8 +289,8 @@ func issued(ctx context.Context, k8s client.Client, generation int) error {
 			names = append(names, secret.Name)
 		}
 	}
-	for _, certificate := range bryggav1alpha1.EtcdCertificateRoles() {
-		if name := bryggav1alpha1.EtcdCertificateSecretName(controlPlane, certificate, generation); !slices.Contains(names, name) {
+	for _, certificate := range lodiav1alpha1.EtcdCertificateRoles() {
+		if name := lodiav1alpha1.EtcdCertificateSecretName(controlPlane, certificate, generation); !slices.Contains(names, name) {
 			return fmt.Errorf("%s is missing; generation %d holds %s", name, generation, strings.Join(names, ", "))
 		}
 	}
@@ -312,13 +312,13 @@ func until(ctx context.Context, t *testing.T, timeout time.Duration, what string
 }
 
 func conditionIs(ctx context.Context, k8s client.Client, status metav1.ConditionStatus, reason string) error {
-	cp := &bryggav1alpha1.ControlPlane{}
+	cp := &lodiav1alpha1.ControlPlane{}
 	if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: controlPlane}, cp); err != nil {
 		return err
 	}
-	condition := meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionDatastoreReady)
+	condition := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
 	if condition == nil {
-		return fmt.Errorf("no %s condition yet", bryggav1alpha1.ConditionDatastoreReady)
+		return fmt.Errorf("no %s condition yet", lodiav1alpha1.ConditionDatastoreReady)
 	}
 	if condition.Status != status || condition.Reason != reason || condition.ObservedGeneration != cp.Generation {
 		return fmt.Errorf("%s=%s (%s, generation %d of %d): %s", condition.Type, condition.Status, condition.Reason, condition.ObservedGeneration, cp.Generation, condition.Message)
@@ -351,8 +351,8 @@ func secretVolumes(pod *corev1.Pod) []string {
 
 func mountsGeneration(pod *corev1.Pod, generation int) error {
 	mounted := secretVolumes(pod)
-	for _, certificate := range bryggav1alpha1.EtcdCertificateRoles() {
-		if name := bryggav1alpha1.EtcdCertificateSecretName(controlPlane, certificate, generation); !slices.Contains(mounted, name) {
+	for _, certificate := range lodiav1alpha1.EtcdCertificateRoles() {
+		if name := lodiav1alpha1.EtcdCertificateSecretName(controlPlane, certificate, generation); !slices.Contains(mounted, name) {
 			return fmt.Errorf("pod %s does not mount %s; it mounts %s", pod.Name, name, strings.Join(mounted, ", "))
 		}
 	}

@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package pki is the PKI controller.
@@ -24,11 +24,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 
-	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
+	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 )
 
 const (
-	fieldManager = "brygga/pki"
+	fieldManager = "lodia/pki"
 	kind         = "ControlPlane"
 	// bindingsPeriod is the Tenant controller's apply period.
 	bindingsPeriod = 10 * time.Minute
@@ -54,14 +54,14 @@ type Reconciler struct {
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("pki").
-		For(&bryggav1alpha1.ControlPlane{}).
+		For(&lodiav1alpha1.ControlPlane{}).
 		Owns(&corev1.Secret{}, builder.OnlyMetadata).
 		WithOptions(controller.Options{MaxConcurrentReconciles: workers, ReconciliationTimeout: time.Minute}).
 		Complete(r)
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	cp := &bryggav1alpha1.ControlPlane{}
+	cp := &lodiav1alpha1.ControlPlane{}
 	if err := r.Get(ctx, req.NamespacedName, cp); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -69,7 +69,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, nil
 	}
 	now := time.Now()
-	owned := []string{bryggav1alpha1.ConditionCertificatesReady, bryggav1alpha1.ConditionCAValidityAcceptable, bryggav1alpha1.ConditionAccessReady}
+	owned := []string{lodiav1alpha1.ConditionCertificatesReady, lodiav1alpha1.ConditionCAValidityAcceptable, lodiav1alpha1.ConditionAccessReady}
 	if slices.ContainsFunc(owned, func(c string) bool { return meta.FindStatusCondition(cp.Status.Conditions, c) == nil }) {
 		conditions := make([]metav1.Condition, 0, len(owned))
 		for _, c := range owned {
@@ -85,7 +85,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	if len(t.foreign) > 0 {
 		access, bindErr := r.access(ctx, t)
-		if err := r.applyStatus(ctx, cp, now, nil, t.controlledElsewhere(), previous(cp, bryggav1alpha1.ConditionCAValidityAcceptable), access); err != nil {
+		if err := r.applyStatus(ctx, cp, now, nil, t.controlledElsewhere(), previous(cp, lodiav1alpha1.ConditionCAValidityAcceptable), access); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: t.foreignRequeue()}, bindErr
@@ -97,7 +97,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	certificates := t.certificatesReady()
 	validity, read := t.caValidity(r.CAExpiryNotice)
 	if !read {
-		validity = previous(cp, bryggav1alpha1.ConditionCAValidityAcceptable)
+		validity = previous(cp, lodiav1alpha1.ConditionCAValidityAcceptable)
 	}
 	access, bindErr := r.access(ctx, t)
 	if err := r.applyStatus(ctx, cp, now, t.credentials(), certificates, validity, access); err != nil {
@@ -109,11 +109,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	return ctrl.Result{RequeueAfter: t.requeueAfter()}, nil
 }
 
-func previous(cp *bryggav1alpha1.ControlPlane, conditionType string) metav1.Condition {
+func previous(cp *lodiav1alpha1.ControlPlane, conditionType string) metav1.Condition {
 	if c := meta.FindStatusCondition(cp.Status.Conditions, conditionType); c != nil {
 		return *c
 	}
-	return metav1.Condition{Type: conditionType, Status: metav1.ConditionUnknown, Reason: bryggav1alpha1.ReasonReconciling, Message: "the first pass has not finished"}
+	return metav1.Condition{Type: conditionType, Status: metav1.ConditionUnknown, Reason: lodiav1alpha1.ReasonReconciling, Message: "the first pass has not finished"}
 }
 
 func missingCAMessage(cas []string) string {
@@ -123,22 +123,22 @@ func missingCAMessage(cas []string) string {
 // certificatesReady reads the state the pass leaves: a write that failed
 // counts as what it would have changed, never as the error.
 func (t *tenant) certificatesReady() metav1.Condition {
-	c := metav1.Condition{Type: bryggav1alpha1.ConditionCertificatesReady, Status: metav1.ConditionFalse}
+	c := metav1.Condition{Type: lodiav1alpha1.ConditionCertificatesReady, Status: metav1.ConditionFalse}
 	switch {
 	case len(t.missingCAs) > 0:
-		c.Reason, c.Message = bryggav1alpha1.ReasonCAMissing, missingCAMessage(t.missingCAs)
+		c.Reason, c.Message = lodiav1alpha1.ReasonCAMissing, missingCAMessage(t.missingCAs)
 	case len(t.expiredCAs) > 0:
-		c.Reason, c.Message = bryggav1alpha1.ReasonCAExpired, "expired CA: "+strings.Join(t.expiredCAs, ", ")+"; rotate it, nothing it signs is written"
+		c.Reason, c.Message = lodiav1alpha1.ReasonCAExpired, "expired CA: "+strings.Join(t.expiredCAs, ", ")+"; rotate it, nothing it signs is written"
 	case len(t.unreadable) > 0:
-		c.Reason, c.Message = bryggav1alpha1.ReasonSecretUnreadable, "unreadable: "+strings.Join(t.unreadable, ", ")+"; restore it, PKI never replaces a key it cannot read"
+		c.Reason, c.Message = lodiav1alpha1.ReasonSecretUnreadable, "unreadable: "+strings.Join(t.unreadable, ", ")+"; restore it, PKI never replaces a key it cannot read"
 	case len(t.pending) > 0:
-		c.Reason, c.Message = bryggav1alpha1.ReasonIssuing, "not written yet: "+listed(t.pending)+"; the error is in the log"
+		c.Reason, c.Message = lodiav1alpha1.ReasonIssuing, "not written yet: "+listed(t.pending)+"; the error is in the log"
 	case t.endpoint == nil:
-		c.Reason, c.Message = bryggav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint"
+		c.Reason, c.Message = lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint"
 	case t.unsupportedProvider != "":
-		c.Reason, c.Message = bryggav1alpha1.ReasonUnsupported, "spec.apiServer.encryption.provider "+string(t.unsupportedProvider)+" is not supported yet"
+		c.Reason, c.Message = lodiav1alpha1.ReasonUnsupported, "spec.apiServer.encryption.provider "+string(t.unsupportedProvider)+" is not supported yet"
 	default:
-		c.Status, c.Reason, c.Message = metav1.ConditionTrue, bryggav1alpha1.ReasonIssued, "every certificate verifies and is valid beyond its renewal time"
+		c.Status, c.Reason, c.Message = metav1.ConditionTrue, lodiav1alpha1.ReasonIssued, "every certificate verifies and is valid beyond its renewal time"
 	}
 	return c
 }
@@ -146,7 +146,7 @@ func (t *tenant) certificatesReady() metav1.Condition {
 // caValidity also reports whether every CA was read: a pass that failed
 // before keeps the condition it had.
 func (t *tenant) caValidity(notice time.Duration) (metav1.Condition, bool) {
-	c := metav1.Condition{Type: bryggav1alpha1.ConditionCAValidityAcceptable, Status: metav1.ConditionTrue, Reason: bryggav1alpha1.ReasonValid, Message: "no CA expires within " + notice.String()}
+	c := metav1.Condition{Type: lodiav1alpha1.ConditionCAValidityAcceptable, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonValid, Message: "no CA expires within " + notice.String()}
 	var expiring []string
 	for _, ca := range caBundles {
 		if cert := t.caCerts[ca.ca]; cert != nil && cert.NotAfter.Sub(t.now) <= notice {
@@ -155,9 +155,9 @@ func (t *tenant) caValidity(notice time.Duration) (metav1.Condition, bool) {
 	}
 	switch {
 	case len(expiring) > 0:
-		c.Status, c.Reason, c.Message = metav1.ConditionFalse, bryggav1alpha1.ReasonCAExpiring, "expiring within "+notice.String()+": "+strings.Join(expiring, ", ")+"; start its rotation"
+		c.Status, c.Reason, c.Message = metav1.ConditionFalse, lodiav1alpha1.ReasonCAExpiring, "expiring within "+notice.String()+": "+strings.Join(expiring, ", ")+"; start its rotation"
 	case len(t.missingCAs) > 0:
-		c.Status, c.Reason, c.Message = metav1.ConditionUnknown, bryggav1alpha1.ReasonCAMissing, missingCAMessage(t.missingCAs)
+		c.Status, c.Reason, c.Message = metav1.ConditionUnknown, lodiav1alpha1.ReasonCAMissing, missingCAMessage(t.missingCAs)
 	}
 	return c, len(t.caCerts)+len(t.missingCAs) == len(caBundles)
 }
@@ -168,9 +168,9 @@ func (t *tenant) controlledElsewhere() metav1.Condition {
 		held = append(held, fmt.Sprintf("%s by %s %s (UID %s)", f.name, f.owner.Kind, f.owner.Name, f.owner.UID))
 	}
 	return metav1.Condition{
-		Type:    bryggav1alpha1.ConditionCertificatesReady,
+		Type:    lodiav1alpha1.ConditionCertificatesReady,
 		Status:  metav1.ConditionFalse,
-		Reason:  bryggav1alpha1.ReasonSecretsControlledElsewhere,
+		Reason:  lodiav1alpha1.ReasonSecretsControlledElsewhere,
 		Message: "another owner keeps " + listed(held) + "; nothing is written until they are gone: the garbage collector deletes a previous ControlPlane's, any other owner's need a person",
 	}
 }
@@ -188,24 +188,24 @@ func listed(items []string) string {
 // tenant can be reached is Health's to report, and leaves anything else
 // Binding.
 func (r *Reconciler) access(ctx context.Context, t *tenant) (metav1.Condition, error) {
-	c := metav1.Condition{Type: bryggav1alpha1.ConditionAccessReady, Status: metav1.ConditionFalse, Reason: bryggav1alpha1.ReasonWaitingForAPIServer, Message: "APIServerReady is not True for this generation"}
-	ready := meta.FindStatusCondition(t.cp.Status.Conditions, bryggav1alpha1.ConditionAPIServerReady)
-	if ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != t.cp.Generation || t.existing[t.secret(bryggav1alpha1.BryggaKubeconfigSecret)] == nil {
+	c := metav1.Condition{Type: lodiav1alpha1.ConditionAccessReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonWaitingForAPIServer, Message: "APIServerReady is not True for this generation"}
+	ready := meta.FindStatusCondition(t.cp.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady)
+	if ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != t.cp.Generation || t.existing[t.secret(lodiav1alpha1.LodiaKubeconfigSecret)] == nil {
 		return c, nil
 	}
 	refused, err := r.bind(ctx, t)
 	if err == nil {
-		c.Status, c.Reason, c.Message = metav1.ConditionTrue, bryggav1alpha1.ReasonBound, "brygga:operator, brygga:cluster-admins and brygga:kubelet-api-admins are bound"
+		c.Status, c.Reason, c.Message = metav1.ConditionTrue, lodiav1alpha1.ReasonBound, "lodia:operator, lodia:cluster-admins and lodia:kubelet-api-admins are bound"
 		return c, nil
 	}
 	if refused != "" {
-		c.Reason, c.Message = bryggav1alpha1.ReasonRefused, "ClusterRoleBinding "+refused+" is refused by the tenant's API server; the reason is in Brygga's log"
+		c.Reason, c.Message = lodiav1alpha1.ReasonRefused, "ClusterRoleBinding "+refused+" is refused by the tenant's API server; the reason is in Lodia's log"
 		return c, err
 	}
-	if prev := meta.FindStatusCondition(t.cp.Status.Conditions, bryggav1alpha1.ConditionAccessReady); prev != nil && prev.Status == metav1.ConditionTrue {
+	if prev := meta.FindStatusCondition(t.cp.Status.Conditions, lodiav1alpha1.ConditionAccessReady); prev != nil && prev.Status == metav1.ConditionTrue {
 		return *prev, err
 	}
-	c.Reason, c.Message = bryggav1alpha1.ReasonBinding, "the tenant has not confirmed the bindings since its API server became ready; the error is in the log"
+	c.Reason, c.Message = lodiav1alpha1.ReasonBinding, "the tenant has not confirmed the bindings since its API server became ready; the error is in the log"
 	return c, err
 }
 
@@ -213,11 +213,11 @@ func (r *Reconciler) access(ctx context.Context, t *tenant) (metav1.Condition, e
 // ControlPlane's references, and a condition carried from an earlier pass
 // keeps its observedGeneration: an apply that leaves out a field PKI owns
 // removes it.
-func (r *Reconciler) applyStatus(ctx context.Context, cp *bryggav1alpha1.ControlPlane, now time.Time, credentials map[string]any, conditions ...metav1.Condition) error {
+func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, now time.Time, credentials map[string]any, conditions ...metav1.Condition) error {
 	if credentials == nil {
 		credentials = map[string]any{}
 		if c := cp.Status.Credentials; c != nil {
-			for field, ref := range map[string]*bryggav1alpha1.LocalReference{"adminKubeconfigSecretRef": c.AdminKubeconfigSecretRef, "caBundleSecretRef": c.CABundleSecretRef} {
+			for field, ref := range map[string]*lodiav1alpha1.LocalReference{"adminKubeconfigSecretRef": c.AdminKubeconfigSecretRef, "caBundleSecretRef": c.CABundleSecretRef} {
 				if ref != nil {
 					credentials[field] = map[string]any{"name": ref.Name}
 				}
@@ -241,9 +241,9 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *bryggav1alpha1.Control
 	}
 	prev := cp.Status.Credentials
 	if prev == nil {
-		prev = &bryggav1alpha1.CredentialsStatus{}
+		prev = &lodiav1alpha1.CredentialsStatus{}
 	}
-	for field, ref := range map[string]*bryggav1alpha1.LocalReference{"adminKubeconfigSecretRef": prev.AdminKubeconfigSecretRef, "caBundleSecretRef": prev.CABundleSecretRef} {
+	for field, ref := range map[string]*lodiav1alpha1.LocalReference{"adminKubeconfigSecretRef": prev.AdminKubeconfigSecretRef, "caBundleSecretRef": prev.CABundleSecretRef} {
 		want, _ := credentials[field].(map[string]any)
 		if (ref == nil) != (want == nil) || (ref != nil && ref.Name != want["name"]) {
 			changed = true
@@ -266,7 +266,7 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *bryggav1alpha1.Control
 		status["credentials"] = credentials
 	}
 	u := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": bryggav1alpha1.GroupVersion.String(),
+		"apiVersion": lodiav1alpha1.GroupVersion.String(),
 		"kind":       kind,
 		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
 		"status":     status,

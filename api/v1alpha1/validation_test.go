@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package v1alpha1_test
@@ -179,10 +179,10 @@ func TestControlPlaneValidation(t *testing.T) {
 			set(t, o, "Compact", "spec", "layout")
 			set(t, o, int64(2), "spec", "apiServer", "replicas")
 		}, "the Compact layout runs one API server"},
-		{"a flag Brygga sets", func(t *testing.T, o *unstructured.Unstructured) {
+		{"a flag Lodia sets", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, map[string]any{"etcd-servers": "https://elsewhere:2379"}, "spec", "apiServer", "extraArgs")
-		}, "Brygga sets this flag"},
-		{"a flag Brygga leaves alone", func(t *testing.T, o *unstructured.Unstructured) {
+		}, "Lodia sets this flag"},
+		{"a flag Lodia leaves alone", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, map[string]any{"max-requests-inflight": "800"}, "spec", "apiServer", "extraArgs")
 		}, ""},
 		{"uppercase hostname", func(t *testing.T, o *unstructured.Unstructured) {
@@ -297,7 +297,7 @@ func TestEndpointStatus(t *testing.T) {
 }
 
 func TestAHostTakesTheHostnameRule(t *testing.T) {
-	manifest, err := os.ReadFile(filepath.Join("..", "..", "config", "crd", "bases", "brygga.segla.io_controlplanes.yaml"))
+	manifest, err := os.ReadFile(filepath.Join("..", "..", "config", "crd", "bases", "lodia.io_controlplanes.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}

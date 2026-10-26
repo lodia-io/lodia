@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package pki_test
@@ -28,8 +28,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
-	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
-	"github.com/segla-io/brygga/internal/certs"
+	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/certs"
 )
 
 func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
@@ -38,8 +38,8 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 	cp := controlPlane(t, "pki-apiserver")
 	publishEndpoint(t, cp)
 	reconcile(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, bryggav1alpha1.ReasonIssued)
-	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForAPIServer)
+	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer)
 	secrets := secretsOf(t, cp)
 
 	dir := t.TempDir()
@@ -56,20 +56,20 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 	api.Authn = &tenantAuthn{
 		api:       api,
 		clientCA:  parseTLS(t, secrets["dev-cakey-client"]),
-		clusterCA: secrets["dev-ca-bundle"].Data[bryggav1alpha1.CACertKey],
-		bundle:    file("dev-client-ca", bryggav1alpha1.CACertKey),
+		clusterCA: secrets["dev-ca-bundle"].Data[lodiav1alpha1.CACertKey],
+		bundle:    file("dev-client-ca", lodiav1alpha1.CACertKey),
 	}
-	saKey := file("dev-sa-keys", bryggav1alpha1.SigningKeyKey)
+	saKey := file("dev-sa-keys", lodiav1alpha1.SigningKeyKey)
 	api.Configure().
-		Set("tls-cert-file", file("dev-apiserver-serving", bryggav1alpha1.TLSCertKey)).
-		Set("tls-private-key-file", file("dev-apiserver-serving", bryggav1alpha1.TLSPrivateKeyKey)).
-		Set("requestheader-client-ca-file", file("dev-front-proxy-ca", bryggav1alpha1.CACertKey)).
+		Set("tls-cert-file", file("dev-apiserver-serving", lodiav1alpha1.TLSCertKey)).
+		Set("tls-private-key-file", file("dev-apiserver-serving", lodiav1alpha1.TLSPrivateKeyKey)).
+		Set("requestheader-client-ca-file", file("dev-front-proxy-ca", lodiav1alpha1.CACertKey)).
 		Set("requestheader-allowed-names", "front-proxy-client").
 		Set("requestheader-username-headers", "X-Remote-User").
 		Set("requestheader-group-headers", "X-Remote-Group").
 		Set("requestheader-extra-headers-prefix", "X-Remote-Extra-").
-		Set("proxy-client-cert-file", file("dev-front-proxy-client", bryggav1alpha1.TLSCertKey)).
-		Set("proxy-client-key-file", file("dev-front-proxy-client", bryggav1alpha1.TLSPrivateKeyKey)).
+		Set("proxy-client-cert-file", file("dev-front-proxy-client", lodiav1alpha1.TLSCertKey)).
+		Set("proxy-client-key-file", file("dev-front-proxy-client", lodiav1alpha1.TLSPrivateKeyKey)).
 		Set("service-account-signing-key-file", saKey).
 		Set("service-account-key-file", saKey)
 	tenantCfg, err := env.Start()
@@ -92,7 +92,7 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	kcmCfg, err := clientcmd.BuildConfigFromFlags(tenantCfg.Host, filepath.Join(kcmDir, bryggav1alpha1.KubeconfigKey))
+	kcmCfg, err := clientcmd.BuildConfigFromFlags(tenantCfg.Host, filepath.Join(kcmDir, lodiav1alpha1.KubeconfigKey))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,19 +111,19 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 	setAPIServerReady(t, cp)
 	r.Dial = dialer(t, tenantCfg.Host)
 	reconcile(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionTrue, bryggav1alpha1.ReasonBound)
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionTrue, lodiav1alpha1.ReasonBound)
 	r.Dial = unreachable
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
 		t.Fatal("a pass that could not reach the tenant succeeded")
 	}
-	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionTrue, bryggav1alpha1.ReasonBound)
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionTrue, lodiav1alpha1.ReasonBound)
 	r.Dial = dialer(t, tenantCfg.Host)
 	for _, b := range []struct {
 		name, kind, role string
 	}{
-		{"brygga:operator", rbacv1.UserKind, "cluster-admin"},
-		{"brygga:cluster-admins", rbacv1.GroupKind, "cluster-admin"},
-		{"brygga:kubelet-api-admins", rbacv1.GroupKind, "system:kubelet-api-admin"},
+		{"lodia:operator", rbacv1.UserKind, "cluster-admin"},
+		{"lodia:cluster-admins", rbacv1.GroupKind, "cluster-admin"},
+		{"lodia:kubelet-api-admins", rbacv1.GroupKind, "system:kubelet-api-admin"},
 	} {
 		binding, err := admin.RbacV1().ClusterRoleBindings().Get(ctx, b.name, metav1.GetOptions{})
 		if err != nil {
@@ -134,31 +134,31 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 		}
 	}
 
-	if err := admin.RbacV1().ClusterRoleBindings().Delete(ctx, "brygga:operator", metav1.DeleteOptions{}); err != nil {
+	if err := admin.RbacV1().ClusterRoleBindings().Delete(ctx, "lodia:operator", metav1.DeleteOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	bryggaCfg, err := clientcmd.RESTConfigFromKubeConfig(secrets["dev-brygga-kubeconfig"].Data[bryggav1alpha1.KubeconfigKey])
+	lodiaCfg, err := clientcmd.RESTConfigFromKubeConfig(secrets["dev-lodia-kubeconfig"].Data[lodiav1alpha1.KubeconfigKey])
 	if err != nil {
 		t.Fatal(err)
 	}
-	bryggaCfg.Dial = r.Dial
-	bryggaCfg.Proxy = http.ProxyURL(nil)
-	brygga, err := kubernetes.NewForConfig(bryggaCfg)
+	lodiaCfg.Dial = r.Dial
+	lodiaCfg.Proxy = http.ProxyURL(nil)
+	lodia, err := kubernetes.NewForConfig(lodiaCfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, 10*time.Second, func() bool {
-		_, err := brygga.RbacV1().ClusterRoleBindings().Get(ctx, "brygga:cluster-admins", metav1.GetOptions{})
+		_, err := lodia.RbacV1().ClusterRoleBindings().Get(ctx, "lodia:cluster-admins", metav1.GetOptions{})
 		return apierrors.IsForbidden(err)
 	})
 
 	reconcile(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionTrue, bryggav1alpha1.ReasonBound)
-	if _, err := admin.RbacV1().ClusterRoleBindings().Get(ctx, "brygga:operator", metav1.GetOptions{}); err != nil {
-		t.Fatalf("brygga:operator's binding was not restored: %v", err)
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionTrue, lodiav1alpha1.ReasonBound)
+	if _, err := admin.RbacV1().ClusterRoleBindings().Get(ctx, "lodia:operator", metav1.GetOptions{}); err != nil {
+		t.Fatalf("lodia:operator's binding was not restored: %v", err)
 	}
 	waitFor(t, 10*time.Second, func() bool {
-		_, err := brygga.RbacV1().ClusterRoleBindings().Get(ctx, "brygga:cluster-admins", metav1.GetOptions{})
+		_, err := lodia.RbacV1().ClusterRoleBindings().Get(ctx, "lodia:cluster-admins", metav1.GetOptions{})
 		return err == nil
 	})
 
@@ -166,7 +166,7 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 		t.Fatal(err)
 	}
 	stale := cp.Generation
-	cp.Spec.Placement = &bryggav1alpha1.Placement{PriorityClassName: "system-cluster-critical"}
+	cp.Spec.Placement = &lodiav1alpha1.Placement{PriorityClassName: "system-cluster-critical"}
 	if err := k8s.Update(ctx, cp); err != nil {
 		t.Fatal(err)
 	}
@@ -178,11 +178,11 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 		return nil, errors.New("not dialed")
 	}
 	reconcile(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForAPIServer)
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer)
 	setAPIServerReady(t, cp)
 	r.Dial = dialer(t, tenantCfg.Host)
 	reconcile(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionTrue, bryggav1alpha1.ReasonBound)
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionTrue, lodiav1alpha1.ReasonBound)
 
 	policy := &admissionregistrationv1.ValidatingAdmissionPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: "no-kubelet-api-admins"},
@@ -193,7 +193,7 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 					Rule:       admissionregistrationv1.Rule{APIGroups: []string{rbacv1.GroupName}, APIVersions: []string{"v1"}, Resources: []string{"clusterrolebindings"}},
 				},
 			}}},
-			Validations: []admissionregistrationv1.Validation{{Expression: "object.metadata.name != 'brygga:kubelet-api-admins'"}},
+			Validations: []admissionregistrationv1.Validation{{Expression: "object.metadata.name != 'lodia:kubelet-api-admins'"}},
 		},
 	}
 	if _, err := admin.AdmissionregistrationV1().ValidatingAdmissionPolicies().Create(ctx, policy, metav1.CreateOptions{}); err != nil {
@@ -206,7 +206,7 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, 10*time.Second, func() bool {
-		binding, err := admin.RbacV1().ClusterRoleBindings().Get(ctx, "brygga:kubelet-api-admins", metav1.GetOptions{})
+		binding, err := admin.RbacV1().ClusterRoleBindings().Get(ctx, "lodia:kubelet-api-admins", metav1.GetOptions{})
 		if err != nil {
 			return false
 		}
@@ -216,8 +216,8 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
 		t.Fatal("a pass whose binding the tenant refused succeeded")
 	}
-	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionFalse, bryggav1alpha1.ReasonRefused)
-	if c := condition(t, cp, bryggav1alpha1.ConditionAccessReady); !strings.HasPrefix(c.Message, "ClusterRoleBinding brygga:kubelet-api-admins is refused by the tenant's API server") {
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused)
+	if c := condition(t, cp, lodiav1alpha1.ConditionAccessReady); !strings.HasPrefix(c.Message, "ClusterRoleBinding lodia:kubelet-api-admins is refused by the tenant's API server") {
 		t.Errorf("AccessReady says %q", c.Message)
 	}
 }
@@ -232,7 +232,7 @@ func TestAccessReadyIsBindingUntilTheTenantAnswers(t *testing.T) {
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
 		t.Fatal("a pass that could not reach the tenant succeeded")
 	}
-	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionFalse, bryggav1alpha1.ReasonBinding)
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding)
 }
 
 func unreachable(context.Context, string, string) (net.Conn, error) {

@@ -5,7 +5,7 @@ CRDs; no controller acts on them yet.
 
 ## Decision
 
-Five custom resources in `brygga.segla.io/v1alpha1`:
+Five custom resources in `lodia.io/v1alpha1`:
 
 | kind | scope | one per | holds |
 |---|---|---|---|
@@ -17,20 +17,20 @@ Five custom resources in `brygga.segla.io/v1alpha1`:
 
 Rules that hold across all of them:
 
-- `spec` is what the user wants, `status` is what Brygga did. Status is a
+- `spec` is what the user wants, `status` is what Lodia did. Status is a
   subresource; `status.conditions` follow the Kubernetes API conventions
   (`metav1.Condition` with `observedGeneration`); `status.observedGeneration`
   is set only after a full successful pass.
 - Everything a `ControlPlane` creates in its namespace carries an
-  `ownerReference` to it and the label `brygga.segla.io/control-plane: <name>`;
+  `ownerReference` to it and the label `lodia.io/control-plane: <name>`;
   deleting the `ControlPlane` garbage-collects it. The dedicated etcd's
   volumes and its backups follow the `DatastoreClass` reclaim policy.
-- A `ControlPlane` has one finalizer, `brygga.segla.io/datastore`, which the
+- A `ControlPlane` has one finalizer, `lodia.io/datastore`, which the
   Datastore controller holds: deletion takes a final snapshot when backups are
   configured, then lets garbage collection run.
 - Imperative operations that are not desired state — starting or completing a
   credential rotation — are requested through the annotation
-  `brygga.segla.io/operation`. Brygga never removes it: it acts once on each
+  `lodia.io/operation`. Lodia never removes it: it acts once on each
   value it has not handled and records that value in `status`, so a GitOps
   tool that keeps the annotation in Git never repeats an operation, and
   running one again takes a new value (`<operation>@<anything>`). Flux
@@ -68,12 +68,12 @@ examples are in [`docs/api/examples/`](../api/examples/).
   runs again.
 - A `JoinToken` resource — a bootstrap token is a Secret in the tenant
   cluster that any admin kubeconfig can create with `kubeadm token create`;
-  Brygga documents the command instead of wrapping it.
+  Lodia documents the command instead of wrapping it.
 
 ## Consequences
 
 - The Go types, the CRD YAML and `docs/api/controlplane.md` change together.
-- `v1alpha1` may change incompatibly between minor releases of Brygga until
+- `v1alpha1` may change incompatibly between minor releases of Lodia until
   `v1beta1`; the roadmap says when.
 
 ## Code

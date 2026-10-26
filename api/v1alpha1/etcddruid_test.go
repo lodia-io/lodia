@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package v1alpha1_test
@@ -38,7 +38,7 @@ var acknowledgedEtcdRules = []struct {
 	path, why string
 	rules     []string
 }{
-	{"", "they read additionalAdvertisedURLs or bootstrapWithExistingCluster, which Brygga never sets, or a change of replicas, which it keeps at 1", []string{
+	{"", "they read additionalAdvertisedURLs or bootstrapWithExistingCluster, which Lodia never sets, or a change of replicas, which it keeps at 1", []string{
 		`!has(self.spec.etcd.additionalAdvertisedURLs) || !has(self.spec.etcd.additionalAdvertisedURLs.peerURLs) || self.spec.etcd.additionalAdvertisedURLs.peerURLs.members.all(m, has(self.spec.memberNamePrefix) ? m.name.startsWith(self.spec.memberNamePrefix + '-' + self.metadata.name + '-') : m.name.startsWith(self.metadata.name + '-'))`,
 		`!has(self.spec.etcd.additionalAdvertisedURLs) || !has(self.spec.etcd.additionalAdvertisedURLs.peerURLs) || self.spec.etcd.additionalAdvertisedURLs.peerURLs.members.all(m, int(m.name.substring(m.name.lastIndexOf('-')+1)) < self.spec.replicas)`,
 		`!has(self.spec.etcd.additionalAdvertisedURLs) || !has(self.spec.etcd.additionalAdvertisedURLs.clientURLs) || self.spec.etcd.additionalAdvertisedURLs.clientURLs.members.all(m, has(self.spec.memberNamePrefix) ? m.name.startsWith(self.spec.memberNamePrefix + '-' + self.metadata.name + '-') : m.name.startsWith(self.metadata.name + '-'))`,
@@ -53,7 +53,7 @@ var acknowledgedEtcdRules = []struct {
 		`has(oldSelf.spec.etcd.bootstrapWithExistingCluster) && has(self.spec.etcd.bootstrapWithExistingCluster) && self.spec.etcd.bootstrapWithExistingCluster.members != oldSelf.spec.etcd.bootstrapWithExistingCluster.members ? (!has(self.status) || !has(self.status.conditions) || !self.status.conditions.exists(c, c.type == 'ScaleOperationComplete' && c.status == 'False' && (c.reason == 'ScalingIn' || c.reason == 'ScalingOut'))) : true`,
 		`has(oldSelf.spec.etcd.bootstrapWithExistingCluster) && !has(self.spec.etcd.bootstrapWithExistingCluster) ? (!has(self.status) || !has(self.status.conditions) || !self.status.conditions.exists(c, c.type == 'ScaleOperationComplete' && c.status == 'False' && (c.reason == 'ScalingIn' || c.reason == 'ScalingOut'))) : true`,
 	}},
-	{"spec", "they read memberNamePrefix, volumeClaimTemplate, externallyManagedMemberAddresses and volume mounts, which Brygga never sets, and whether storageClass is set, which it keeps as the Etcd was created", []string{
+	{"spec", "they read memberNamePrefix, volumeClaimTemplate, externallyManagedMemberAddresses and volume mounts, which Lodia never sets, and whether storageClass is set, which it keeps as the Etcd was created", []string{
 		`has(oldSelf.memberNamePrefix) == has(self.memberNamePrefix)`,
 		`has(oldSelf.storageClass) ==  has(self.storageClass)`,
 		`has(oldSelf.volumeClaimTemplate) == has(self.volumeClaimTemplate)`,
@@ -62,10 +62,10 @@ var acknowledgedEtcdRules = []struct {
 		`!has(self.etcd.volumeMounts) || self.etcd.volumeMounts.all(vm, has(self.volumes) && self.volumes.exists(v, v.name == vm.name))`,
 		`!has(self.backup.volumeMounts) || self.backup.volumeMounts.all(vm, has(self.volumes) && self.volumes.exists(v, v.name == vm.name))`,
 	}},
-	{"spec.backup", "Brygga never sets garbageCollectionPeriod", []string{
+	{"spec.backup", "Lodia never sets garbageCollectionPeriod", []string{
 		`!(has(self.deltaSnapshotPeriod) && has(self.garbageCollectionPeriod)) || duration(self.deltaSnapshotPeriod).getSeconds() < duration(self.garbageCollectionPeriod).getSeconds()`,
 	}},
-	{"spec.etcd", "Brygga never sets additionalAdvertisedURLs or bootstrapWithExistingCluster", []string{
+	{"spec.etcd", "Lodia never sets additionalAdvertisedURLs or bootstrapWithExistingCluster", []string{
 		`!has(self.additionalAdvertisedURLs) || !has(self.additionalAdvertisedURLs.peerURLs) || !has(self.peerUrlTls) || self.additionalAdvertisedURLs.peerURLs.members.all(m, m.urls.all(u, u.startsWith('https://')))`,
 		`!has(self.additionalAdvertisedURLs) || !has(self.additionalAdvertisedURLs.peerURLs) || has(self.peerUrlTls) || self.additionalAdvertisedURLs.peerURLs.members.all(m, m.urls.all(u, u.startsWith('http://')))`,
 		`!has(self.additionalAdvertisedURLs) || !has(self.additionalAdvertisedURLs.clientURLs) || !has(self.clientUrlTls) || self.additionalAdvertisedURLs.clientURLs.members.all(m, m.urls.all(u, u.startsWith('https://')))`,
@@ -76,7 +76,7 @@ var acknowledgedEtcdRules = []struct {
 		`!has(self.bootstrapWithExistingCluster) || has(self.clientUrlTls) || self.bootstrapWithExistingCluster.clientEndpoints.all(u, u.startsWith('http://'))`,
 		`!has(self.bootstrapWithExistingCluster) || has(oldSelf.bootstrapWithExistingCluster)`,
 	}},
-	{"spec.storageClass", "Brygga keeps the storage class the Etcd was created with", []string{
+	{"spec.storageClass", "Lodia keeps the storage class the Etcd was created with", []string{
 		`self == oldSelf`,
 	}},
 }
@@ -87,7 +87,7 @@ func TestDatastoreClassMirrorsEtcdDruid(t *testing.T) {
 		t.Fatal(err)
 	}
 	etcd := crdSchema(t, []byte(manifests[crds.ResourceNameEtcd]))
-	raw, err := os.ReadFile(filepath.Join("..", "..", "config", "crd", "bases", "brygga.segla.io_datastoreclasses.yaml"))
+	raw, err := os.ReadFile(filepath.Join("..", "..", "config", "crd", "bases", "lodia.io_datastoreclasses.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}

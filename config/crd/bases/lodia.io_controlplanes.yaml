@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.23.0
-  name: controlplanes.brygga.segla.io
+  name: controlplanes.lodia.io
 spec:
-  group: brygga.segla.io
+  group: lodia.io
   names:
     kind: ControlPlane
     listKind: ControlPlaneList
@@ -62,8 +62,7 @@ spec:
             description: ControlPlaneSpec is what the owner of the cluster wants.
             properties:
               addons:
-                description: Addons configures what Brygga runs inside the tenant
-                  cluster.
+                description: Addons configures what Lodia runs inside the tenant cluster.
                 properties:
                   coreDNS:
                     description: CoreDNS configures cluster DNS.
@@ -186,7 +185,7 @@ spec:
                   authentication:
                     description: |-
                       Authentication configures structured authentication; the anonymous
-                      section is Brygga's.
+                      section is Lodia's.
                     properties:
                       jwt:
                         description: JWT authenticators, such as OIDC providers.
@@ -278,13 +277,13 @@ spec:
                     additionalProperties:
                       type: string
                     description: |-
-                      ExtraArgs are flags passed to kube-apiserver. The flags Brygga sets are
+                      ExtraArgs are flags passed to kube-apiserver. The flags Lodia sets are
                       refused, but for enable-admission-plugins, whose entries follow
-                      Brygga's; featureGates sets feature-gates.
+                      Lodia's; featureGates sets feature-gates.
                     maxProperties: 64
                     type: object
                     x-kubernetes-validations:
-                    - message: Brygga sets this flag
+                    - message: Lodia sets this flag
                       rule: '!self.exists(k, k in [''advertise-address'', ''allow-privileged'',
                         ''anonymous-auth'', ''authentication-config'', ''authorization-mode'',
                         ''client-ca-file'', ''egress-selector-config-file'', ''enable-bootstrap-token-auth'',
@@ -378,13 +377,13 @@ spec:
                     additionalProperties:
                       type: string
                     description: |-
-                      ExtraArgs are flags passed to the component. The flags Brygga sets are
-                      refused, but for controllers, whose entries follow Brygga's;
+                      ExtraArgs are flags passed to the component. The flags Lodia sets are
+                      refused, but for controllers, whose entries follow Lodia's;
                       featureGates sets feature-gates.
                     maxProperties: 64
                     type: object
                     x-kubernetes-validations:
-                    - message: Brygga sets this flag
+                    - message: Lodia sets this flag
                       rule: '!self.exists(k, k in [''allocate-node-cidrs'', ''authentication-kubeconfig'',
                         ''authorization-kubeconfig'', ''bind-address'', ''client-ca-file'',
                         ''cluster-cidr'', ''cluster-name'', ''cluster-signing-cert-file'',
@@ -616,7 +615,7 @@ spec:
                   rule: '[has(self.gateway), has(self.loadBalancer), has(self.nodePort)].filter(x,
                     x).size() == 1'
               health:
-                description: Health configures how Brygga protects the tenant's workloads.
+                description: Health configures how Lodia protects the tenant's workloads.
                 properties:
                   holdControllerManager:
                     default: true
@@ -688,10 +687,10 @@ spec:
                 - message: layout is immutable
                   rule: self == oldSelf
               maintenance:
-                description: Maintenance is when Brygga may roll changes it initiates.
+                description: Maintenance is when Lodia may roll changes it initiates.
                 properties:
                   autoUpdate:
-                    description: AutoUpdate opts into updates Brygga applies in the
+                    description: AutoUpdate opts into updates Lodia applies in the
                       window.
                     properties:
                       kubernetesPatch:
@@ -853,7 +852,7 @@ spec:
                 properties:
                   configRef:
                     description: |-
-                      ConfigRef names a ConfigMap with a KubeSchedulerConfiguration; Brygga
+                      ConfigRef names a ConfigMap with a KubeSchedulerConfiguration; Lodia
                       overrides its client connection.
                     properties:
                       name:
@@ -868,12 +867,12 @@ spec:
                     additionalProperties:
                       type: string
                     description: |-
-                      ExtraArgs are flags passed to kube-scheduler; the flags Brygga sets are
+                      ExtraArgs are flags passed to kube-scheduler; the flags Lodia sets are
                       refused, and featureGates sets feature-gates.
                     maxProperties: 64
                     type: object
                     x-kubernetes-validations:
-                    - message: Brygga sets this flag
+                    - message: Lodia sets this flag
                       rule: '!self.exists(k, k in [''authentication-kubeconfig'',
                         ''authorization-kubeconfig'', ''bind-address'', ''config'',
                         ''feature-gates'', ''kubeconfig'', ''leader-elect''])'
@@ -964,7 +963,7 @@ spec:
               version:
                 description: |-
                   Version is the Kubernetes version, vMAJOR.MINOR.PATCH. The minor never
-                  decreases; Brygga upgrades one minor at a time towards it.
+                  decreases; Lodia upgrades one minor at a time towards it.
                 maxLength: 16
                 pattern: ^v1\.[0-9]+\.[0-9]+$
                 type: string
@@ -988,7 +987,7 @@ spec:
               rule: '!has(self.restoreFrom) || (has(oldSelf.restoreFrom) && oldSelf.restoreFrom
                 == self.restoreFrom)'
           status:
-            description: ControlPlaneStatus is what Brygga observed and did.
+            description: ControlPlaneStatus is what Lodia observed and did.
             properties:
               conditions:
                 description: Conditions, one per controller, plus Progressing, Hibernated
@@ -1318,13 +1317,13 @@ spec:
                 - konnectivity
                 type: object
               health:
-                description: Health is present while Brygga holds the controller manager.
+                description: Health is present while Lodia holds the controller manager.
                 properties:
                   controllerManagerHold:
                     description: ControllerManagerHold is present while the hold lasts.
                     properties:
                       blockedBy:
-                        description: BlockedBy names another holder of the lease Brygga
+                        description: BlockedBy names another holder of the lease Lodia
                           left alone.
                         maxLength: 253
                         type: string
@@ -1404,7 +1403,7 @@ spec:
                     description: Hibernated is the desired sleep state.
                     type: boolean
                   operatorVersion:
-                    description: OperatorVersion is the Brygga version this tenant's
+                    description: OperatorVersion is the Lodia version this tenant's
                       pods are rendered with.
                     maxLength: 64
                     type: string

@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package signer_test
@@ -33,8 +33,8 @@ import (
 	"google.golang.org/protobuf/proto"
 	externaljwtv1 "k8s.io/externaljwt/apis/v1"
 
-	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
-	"github.com/segla-io/brygga/internal/signer"
+	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/signer"
 )
 
 var (
@@ -232,7 +232,7 @@ func TestSignHeaderAndSignature(t *testing.T) {
 	claims := base64.RawURLEncoding.EncodeToString([]byte(`{"iss":"https://kubernetes.default.svc","sub":"system:serviceaccount:default:x","x":"é<>&","n":1}`))
 	for _, c := range supportedKeys {
 		t.Run(c.name, func(t *testing.T) {
-			s, _ := loaded(t, map[string][]byte{bryggav1alpha1.SigningKeyKey: privatePEM(t, c.key)})
+			s, _ := loaded(t, map[string][]byte{lodiav1alpha1.SigningKeyKey: privatePEM(t, c.key)})
 			h, resp := sign(t, s, claims)
 			if h != (header{Alg: c.alg, Kid: kid(t, c.key), Typ: "JWT"}) {
 				t.Fatalf("header = %+v", h)
@@ -280,7 +280,7 @@ func TestSignHeaderAndSignature(t *testing.T) {
 }
 
 func TestSignRejectsClaimsNotUnpaddedBase64URL(t *testing.T) {
-	s, _ := loaded(t, map[string][]byte{bryggav1alpha1.SigningKeyKey: privatePEM(t, rsaKey)})
+	s, _ := loaded(t, map[string][]byte{lodiav1alpha1.SigningKeyKey: privatePEM(t, rsaKey)})
 	for _, claims := range []string{"eyJhIjoxfQ==", "QR", "eyJhIjoxfQ+/"} {
 		_, err := s.Sign(context.Background(), &externaljwtv1.SignJWTRequest{Claims: claims})
 		if status.Code(err) != codes.InvalidArgument {
@@ -292,7 +292,7 @@ func TestSignRejectsClaimsNotUnpaddedBase64URL(t *testing.T) {
 func TestKeyIDIsKubeAPIServers(t *testing.T) {
 	for _, c := range supportedKeys {
 		t.Run(c.name, func(t *testing.T) {
-			s, _ := loaded(t, map[string][]byte{bryggav1alpha1.SigningKeyKey: privatePEM(t, c.key)})
+			s, _ := loaded(t, map[string][]byte{lodiav1alpha1.SigningKeyKey: privatePEM(t, c.key)})
 			keys := fetch(t, s).GetKeys()
 			if len(keys) != 1 || keys[0].GetKeyId() != kid(t, c.key) || !bytes.Equal(keys[0].GetKey(), pkix(t, c.key)) {
 				t.Fatalf("keys = %v", keys)
@@ -302,7 +302,7 @@ func TestKeyIDIsKubeAPIServers(t *testing.T) {
 }
 
 func TestFetchKeysIsStableUntilTheSetChanges(t *testing.T) {
-	files := map[string][]byte{bryggav1alpha1.SigningKeyKey: privatePEM(t, rsaKey), "verify-b.pub": publicPEM(t, p256Key)}
+	files := map[string][]byte{lodiav1alpha1.SigningKeyKey: privatePEM(t, rsaKey), "verify-b.pub": publicPEM(t, p256Key)}
 	s, dir := loaded(t, files)
 	first := fetch(t, s)
 	if first.GetRefreshHintSeconds() <= 0 || len(first.GetKeys()) == 0 {
@@ -319,7 +319,7 @@ func TestFetchKeysIsStableUntilTheSetChanges(t *testing.T) {
 		t.Fatalf("unchanged set, changed response:\n%v\n%v", first, again)
 	}
 
-	writeFiles(t, dir, map[string][]byte{bryggav1alpha1.SigningKeyKey: privatePEM(t, p256Key), "verify-a.pub": publicPEM(t, rsaKey)})
+	writeFiles(t, dir, map[string][]byte{lodiav1alpha1.SigningKeyKey: privatePEM(t, p256Key), "verify-a.pub": publicPEM(t, rsaKey)})
 	s.Reload()
 	if swapped := fetch(t, s); !proto.Equal(first, swapped) {
 		t.Fatalf("same published keys under another signing key, changed response:\n%v\n%v", first, swapped)
@@ -347,27 +347,27 @@ func TestBadUpdateKeepsTheLastGoodSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	good := map[string][]byte{bryggav1alpha1.SigningKeyKey: privatePEM(t, rsaKey), "verify-k2.pub": publicPEM(t, p256Key)}
+	good := map[string][]byte{lodiav1alpha1.SigningKeyKey: privatePEM(t, rsaKey), "verify-k2.pub": publicPEM(t, p256Key)}
 	cases := []struct {
 		name  string
 		files map[string][]byte
 	}{
 		{"no signing key", map[string][]byte{"verify-k2.pub": publicPEM(t, p256Key)}},
-		{"garbage signing key", map[string][]byte{bryggav1alpha1.SigningKeyKey: []byte("not a key")}},
-		{"two private keys", map[string][]byte{bryggav1alpha1.SigningKeyKey: append(privatePEM(t, rsaKey), privatePEM(t, p256Key)...)}},
-		{"public key as signing key", map[string][]byte{bryggav1alpha1.SigningKeyKey: publicPEM(t, rsaKey)}},
-		{"RSA 1024", map[string][]byte{bryggav1alpha1.SigningKeyKey: privatePEM(t, mustRSA(1024))}},
-		{"P-224", map[string][]byte{bryggav1alpha1.SigningKeyKey: privatePEM(t, mustECDSA(elliptic.P224()))}},
-		{"Ed25519", map[string][]byte{bryggav1alpha1.SigningKeyKey: func() []byte {
+		{"garbage signing key", map[string][]byte{lodiav1alpha1.SigningKeyKey: []byte("not a key")}},
+		{"two private keys", map[string][]byte{lodiav1alpha1.SigningKeyKey: append(privatePEM(t, rsaKey), privatePEM(t, p256Key)...)}},
+		{"public key as signing key", map[string][]byte{lodiav1alpha1.SigningKeyKey: publicPEM(t, rsaKey)}},
+		{"RSA 1024", map[string][]byte{lodiav1alpha1.SigningKeyKey: privatePEM(t, mustRSA(1024))}},
+		{"P-224", map[string][]byte{lodiav1alpha1.SigningKeyKey: privatePEM(t, mustECDSA(elliptic.P224()))}},
+		{"Ed25519", map[string][]byte{lodiav1alpha1.SigningKeyKey: func() []byte {
 			_, priv, err := ed25519.GenerateKey(rand.Reader)
 			if err != nil {
 				t.Fatal(err)
 			}
 			return privatePEM(t, priv)
 		}()}},
-		{"garbage verification key", map[string][]byte{bryggav1alpha1.SigningKeyKey: privatePEM(t, p256Key), "verify-k1.pub": []byte("-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n")}},
-		{"private key as verification key", map[string][]byte{bryggav1alpha1.SigningKeyKey: privatePEM(t, p256Key), "verify-k1.pub": privatePEM(t, rsaKey)}},
-		{"Ed25519 verification key", map[string][]byte{bryggav1alpha1.SigningKeyKey: privatePEM(t, p256Key), "verify-k1.pub": pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: edDER})}},
+		{"garbage verification key", map[string][]byte{lodiav1alpha1.SigningKeyKey: privatePEM(t, p256Key), "verify-k1.pub": []byte("-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n")}},
+		{"private key as verification key", map[string][]byte{lodiav1alpha1.SigningKeyKey: privatePEM(t, p256Key), "verify-k1.pub": privatePEM(t, rsaKey)}},
+		{"Ed25519 verification key", map[string][]byte{lodiav1alpha1.SigningKeyKey: privatePEM(t, p256Key), "verify-k1.pub": pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: edDER})}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -419,7 +419,7 @@ func TestPrivateKeyFormats(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			s, _ := loaded(t, map[string][]byte{bryggav1alpha1.SigningKeyKey: c.pem})
+			s, _ := loaded(t, map[string][]byte{lodiav1alpha1.SigningKeyKey: c.pem})
 			if h, _ := sign(t, s, "e30"); h.Kid != kid(t, c.key) {
 				t.Fatalf("kid = %s", h.Kid)
 			}
@@ -435,18 +435,18 @@ func TestDirectoryContract(t *testing.T) {
 		signing crypto.Signer
 		keys    []string
 	}{
-		{"before", map[string][]byte{bryggav1alpha1.SigningKeyKey: privatePEM(t, k1)}, k1, sorted(kid(t, k1))},
-		{"stage 1: K2 published", map[string][]byte{bryggav1alpha1.SigningKeyKey: privatePEM(t, k1), "verify-k2.pub": publicPEM(t, k2)}, k1, sorted(kid(t, k1), kid(t, k2))},
-		{"stage 2: K2 signs", map[string][]byte{bryggav1alpha1.SigningKeyKey: privatePEM(t, k2), "verify-k1.pub": publicPEM(t, k1)}, k2, sorted(kid(t, k1), kid(t, k2))},
-		{"stage 3: K1 dropped", map[string][]byte{bryggav1alpha1.SigningKeyKey: privatePEM(t, k2)}, k2, sorted(kid(t, k2))},
+		{"before", map[string][]byte{lodiav1alpha1.SigningKeyKey: privatePEM(t, k1)}, k1, sorted(kid(t, k1))},
+		{"stage 1: K2 published", map[string][]byte{lodiav1alpha1.SigningKeyKey: privatePEM(t, k1), "verify-k2.pub": publicPEM(t, k2)}, k1, sorted(kid(t, k1), kid(t, k2))},
+		{"stage 2: K2 signs", map[string][]byte{lodiav1alpha1.SigningKeyKey: privatePEM(t, k2), "verify-k1.pub": publicPEM(t, k1)}, k2, sorted(kid(t, k1), kid(t, k2))},
+		{"stage 3: K1 dropped", map[string][]byte{lodiav1alpha1.SigningKeyKey: privatePEM(t, k2)}, k2, sorted(kid(t, k2))},
 		{"duplicates and other files", map[string][]byte{
-			bryggav1alpha1.SigningKeyKey: privatePEM(t, k1),
-			"verify-k1.pub":              publicPEM(t, k1),
-			"verify-k2.pub":              publicPEM(t, k2),
-			"verify-dup.pub":             publicPEM(t, k2),
-			"verify-k3.pem":              []byte("ignored"),
-			"k4.pub":                     []byte("ignored"),
-			"README":                     []byte("ignored"),
+			lodiav1alpha1.SigningKeyKey: privatePEM(t, k1),
+			"verify-k1.pub":             publicPEM(t, k1),
+			"verify-k2.pub":             publicPEM(t, k2),
+			"verify-dup.pub":            publicPEM(t, k2),
+			"verify-k3.pem":             []byte("ignored"),
+			"k4.pub":                    []byte("ignored"),
+			"README":                    []byte("ignored"),
 		}, k1, sorted(kid(t, k1), kid(t, k2))},
 	}
 	for _, c := range cases {
@@ -469,7 +469,7 @@ func TestDirectoryContract(t *testing.T) {
 
 func TestSecretVolumeIsReadThroughData(t *testing.T) {
 	dir := t.TempDir()
-	writeSecretVolume(t, dir, map[string][]byte{bryggav1alpha1.SigningKeyKey: privatePEM(t, rsaKey), "verify-k2.pub": publicPEM(t, otherEC)})
+	writeSecretVolume(t, dir, map[string][]byte{lodiav1alpha1.SigningKeyKey: privatePEM(t, rsaKey), "verify-k2.pub": publicPEM(t, otherEC)})
 	if err := os.Mkdir(filepath.Join(dir, "..stale"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -485,7 +485,7 @@ func TestSecretVolumeIsReadThroughData(t *testing.T) {
 
 func TestWatchPicksUpASecretUpdate(t *testing.T) {
 	dir := t.TempDir()
-	writeSecretVolume(t, dir, map[string][]byte{bryggav1alpha1.SigningKeyKey: privatePEM(t, rsaKey)})
+	writeSecretVolume(t, dir, map[string][]byte{lodiav1alpha1.SigningKeyKey: privatePEM(t, rsaKey)})
 	s := newSigner(t, dir)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error)
@@ -498,7 +498,7 @@ func TestWatchPicksUpASecretUpdate(t *testing.T) {
 	})
 
 	waitFor(t, 5*time.Second, func() bool { return s.Ready() })
-	writeSecretVolume(t, dir, map[string][]byte{bryggav1alpha1.SigningKeyKey: privatePEM(t, p256Key), "verify-k1.pub": publicPEM(t, rsaKey)})
+	writeSecretVolume(t, dir, map[string][]byte{lodiav1alpha1.SigningKeyKey: privatePEM(t, p256Key), "verify-k1.pub": publicPEM(t, rsaKey)})
 	waitFor(t, 5*time.Second, func() bool {
 		h, _ := sign(t, s, "e30")
 		return h.Kid == kid(t, p256Key)

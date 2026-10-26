@@ -3,7 +3,7 @@
 # work directory, so its helpers and scripts work unchanged.
 source "$PWD/hack/hard-way/env.sh"
 
-export MGMT=brygga-etcd-spike   # the spike's kind cluster
+export MGMT=lodia-etcd-spike   # the spike's kind cluster
 export CP=tenant-e              # the tenant whose etcd the spike runs; also its namespace
 export APISERVER_PORT=31443     # beside the hard way's 30443
 export WORK="$PWD/work/etcd-spike"

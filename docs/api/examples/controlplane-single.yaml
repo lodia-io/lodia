@@ -1,6 +1,6 @@
 # The smallest ControlPlane: one replica of everything, a dedicated etcd from
 # the default DatastoreClass, exposed through a LoadBalancer Service.
-apiVersion: brygga.segla.io/v1alpha1
+apiVersion: lodia.io/v1alpha1
 kind: ControlPlane
 metadata:
   name: dev

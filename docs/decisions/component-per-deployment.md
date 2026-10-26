@@ -10,7 +10,7 @@ A tenant namespace holds:
 
 | workload | containers | replicas: single | replicas: HA | notes |
 |---|---|---|---|---|
-| Deployment `<name>-kube-apiserver` | `kube-apiserver`, `konnectivity-server`, `brygga-signer` | 1 | 2 | the sidecars talk to the API server over Unix sockets, so they share its pod; one PodDisruptionBudget, spread across nodes (or zones) |
+| Deployment `<name>-kube-apiserver` | `kube-apiserver`, `konnectivity-server`, `lodia-signer` | 1 | 2 | the sidecars talk to the API server over Unix sockets, so they share its pod; one PodDisruptionBudget, spread across nodes (or zones) |
 | Deployment `<name>-kube-controller-manager` | `kube-controller-manager` | 1 | 2 | leader election; reaches the API through the namespace Service |
 | Deployment `<name>-kube-scheduler` | `kube-scheduler` | 1 | 2 | leader election; same path to the API |
 | etcd (a `StatefulSet` managed by etcd-druid) | `etcd`, `backup-restore` | 1 | 3 | own CA, quota, continuous snapshots to object storage |
@@ -80,7 +80,7 @@ flowchart TB
   bundles, the kubelet client certificate, the encryption and authentication
   configuration, certificates referenced from kubeconfigs, and the
   ServiceAccount keys behind the signer sidecar. A Secret's hash is PKI's
-  annotation `brygga.segla.io/data-hash` on it, so Workloads reads the
+  annotation `lodia.io/data-hash` on it, so Workloads reads the
   metadata of the Secrets it mounts and never their keys.
 - Holding the controller manager while nodes cannot reach the API does not
   touch its replicas: Health takes its leader lease

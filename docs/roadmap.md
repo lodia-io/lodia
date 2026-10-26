@@ -13,14 +13,14 @@ and a gate that fails after it passed is a regression, not a backlog item.
 | 3 · Parity | shared etcd, migration by snapshot, staged rotations, hibernation, `Backup`, write lock, the `Compact` layout, a Cluster API provider | rotation keeps nodes `Ready` and tokens valid; sleep and wake keep data; migration freezes writes for seconds, reads never; a `Compact` tenant is one pod |
 | 4 · Scale and community | hundreds of tenants per operator, zone spread, `v1beta1`, docs site, supply-chain badges | 200 tenants on one management cluster within the resource budget; OpenSSF Scorecard ≥ 8 |
 
-Segla moves to Brygga in phase 3, through Brygga's Cluster API provider.
+Segla moves to Lodia in phase 3, through Lodia's Cluster API provider.
 Segla keeps Cluster API for the worker pools it will create through it, and
 Cluster API's kubeadm bootstrap provider joins a worker only once a control
 plane provider reports the control plane initialized
 ([kubeadmconfig_controller.go](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/bootstrap/kubeadm/reconcilers/kubeadmconfig/kubeadmconfig_controller.go#L351-L367)).
 Its `cluster` service then swaps the `KamajiControlPlane` for the
 provider's object, its agent drops its own API proxy, and its regional
-watchdog steps down for Brygga's controller manager hold. That work is
+watchdog steps down for Lodia's controller manager hold. That work is
 tracked in Segla's repositories, not here.
 
 ## Phase 0 · Foundations
@@ -33,7 +33,7 @@ Scope:
   `KubeconfigRequest` and `Backup` with every CEL rule from
   [`api/controlplane.md`](api/controlplane.md), and an envtest table of
   accepted and rejected manifests.
-- The e2e harness: a kind cluster named `kind-brygga-e2e-*`, and the refusal
+- The e2e harness: a kind cluster named `kind-lodia-e2e-*`, and the refusal
   to run elsewhere ([decision](decisions/e2e-on-a-named-cluster.md)).
 - **The hard way, once:** one tenant control plane assembled by hand in kind,
   following [`hard-way.md`](hard-way.md): certificates with `openssl`, etcd,
@@ -80,7 +80,7 @@ exposure through `loadBalancer` and `nodePort`.
   konnectivity-agent, the inventory and prune.
 - Lifecycle: `status.target` without windows; `Ready`.
 - Health: the external probe only.
-- Helm chart, images by digest, `brygga-system` namespace.
+- Helm chart, images by digest, `lodia-system` namespace.
 
 Gate (the e2e suite, per pull request):
 
@@ -127,7 +127,7 @@ Gate:
   serves the same namespaces and Secrets, and passes the conformance smoke
   subset.
 - e2e: cut both workers of a tenant off from the Gateway for 10 minutes;
-  within 30 seconds Brygga holds the controller manager's lease and the
+  within 30 seconds Lodia holds the controller manager's lease and the
   controller manager exits; no node is tainted and every pod keeps its UID;
   reconnect, and the lease is released 2 minutes later. Cut one worker of two:
   no hold, and its pods move to the other after the toleration, as upstream
@@ -157,7 +157,7 @@ Gate:
 - e2e: a `Compact` `ControlPlane` on a shared `Datastore` runs as one pod; a
   node joins, the conformance smoke subset passes, and the controller manager
   hold works as in `Split` ([compact-layout](decisions/compact-layout.md)).
-- e2e: a Cluster API `Cluster` whose control plane is Brygga's provider
+- e2e: a Cluster API `Cluster` whose control plane is Lodia's provider
   reaches `ControlPlaneInitialized`, and a `MachineDeployment` of Cluster
   API's Docker machines joins it through the kubeadm bootstrap provider.
 
@@ -176,9 +176,9 @@ Gate:
 
 ## What is deliberately not on the roadmap
 
-- Machines: Brygga joins nodes, it does not create them.
+- Machines: Lodia joins nodes, it does not create them.
 - SQL or NATS stores through kine: later, if users ask; the `Datastore` kind
   leaves room for a `driver`.
 - A VPN between control plane and nodes: konnectivity is upstream and
   enough.
-- A Brygga agent on nodes.
+- A Lodia agent on nodes.

@@ -9,7 +9,7 @@ Decided 2026-10-25. Not built.
   immutable in `v1alpha1`.
 - `Compact` renders one Deployment `<cp>-control-plane` with one replica and
   the containers `kube-apiserver`, `kube-controller-manager`,
-  `kube-scheduler`, `konnectivity-server` and `brygga-signer`. The controller
+  `kube-scheduler`, `konnectivity-server` and `lodia-signer`. The controller
   manager and the scheduler reach the API on loopback at the API server's
   secure port, which the serving certificate carries as a SAN: 6443, or the
   node port in `nodePort` mode, where the API server listens on it

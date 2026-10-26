@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package tenant
@@ -19,12 +19,12 @@ import (
 	corev1ac "k8s.io/client-go/applyconfigurations/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
-	"github.com/segla-io/brygga/internal/apistatus"
+	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/apistatus"
 )
 
 const (
-	inventoryName = "brygga-inventory"
+	inventoryName = "lodia-inventory"
 	inventoryKey  = "objects"
 )
 
@@ -84,9 +84,9 @@ func stale(previous, desired []entry) []entry {
 	return out
 }
 
-// appliedByBrygga reads managedFields: the managed-by label is on PKI's
+// appliedByLodia reads managedFields: the managed-by label is on PKI's
 // bindings in the tenant too.
-func appliedByBrygga(obj metav1.Object) bool {
+func appliedByLodia(obj metav1.Object) bool {
 	return slices.ContainsFunc(obj.GetManagedFields(), func(f metav1.ManagedFieldsEntry) bool {
 		return f.Manager == FieldManager && f.Operation == metav1.ManagedFieldsOperationApply
 	})
@@ -111,7 +111,7 @@ func (f *failure) Unwrap() error {
 func failed(e entry, err error) error {
 	f := &failure{entry: e, err: err}
 	if apistatus.Refused(err) {
-		f.reason, f.verdict = bryggav1alpha1.ReasonRefused, "is refused by the tenant's API server"
+		f.reason, f.verdict = lodiav1alpha1.ReasonRefused, "is refused by the tenant's API server"
 	}
 	return f
 }
@@ -130,7 +130,7 @@ func readInventory(ctx context.Context, c client.Client) ([]entry, error) {
 	}
 	var entries []entry
 	if err := json.Unmarshal([]byte(cm.Data[inventoryKey]), &entries); err != nil {
-		return nil, &failure{entry: inventoryEntry(), reason: bryggav1alpha1.ReasonApplying, verdict: "cannot be read: delete it, and every object is applied again", err: err}
+		return nil, &failure{entry: inventoryEntry(), reason: lodiav1alpha1.ReasonApplying, verdict: "cannot be read: delete it, and every object is applied again", err: err}
 	}
 	return entries, nil
 }
@@ -141,7 +141,7 @@ func writeInventory(ctx context.Context, c client.Client, entries []entry) error
 		return err
 	}
 	cm := corev1ac.ConfigMap(inventoryName, metav1.NamespaceSystem).
-		WithLabels(map[string]string{bryggav1alpha1.ManagedByLabel: bryggav1alpha1.ManagedBy}).
+		WithLabels(map[string]string{lodiav1alpha1.ManagedByLabel: lodiav1alpha1.ManagedBy}).
 		WithData(map[string]string{inventoryKey: string(data)})
 	if err := c.Apply(ctx, cm, client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
 		return failed(inventoryEntry(), err)
@@ -150,7 +150,7 @@ func writeInventory(ctx context.Context, c client.Client, entries []entry) error
 }
 
 // foreign returns the objects of the render no inventory lists yet that
-// exist without Brygga's field manager: another owner's.
+// exist without Lodia's field manager: another owner's.
 func foreign(ctx context.Context, c client.Client, objects []*unstructured.Unstructured, previous []entry) ([]entry, error) {
 	var others []entry
 	for _, obj := range objects {
@@ -165,7 +165,7 @@ func foreign(ctx context.Context, c client.Client, objects []*unstructured.Unstr
 		case apierrors.IsNotFound(err):
 		case err != nil:
 			return nil, failed(e, err)
-		case !appliedByBrygga(existing):
+		case !appliedByLodia(existing):
 			others = append(others, e)
 		}
 	}
@@ -173,7 +173,7 @@ func foreign(ctx context.Context, c client.Client, objects []*unstructured.Unstr
 	return others, nil
 }
 
-// prune deletes an entry that left the render if Brygga wrote it, under the
+// prune deletes an entry that left the render if Lodia wrote it, under the
 // UID and resourceVersion it read; an entry it did not write, or one gone or
 // of a kind no longer served, only leaves the inventory.
 func prune(ctx context.Context, c client.Client, e entry) error {
@@ -192,7 +192,7 @@ func prune(ctx context.Context, c client.Client, e entry) error {
 		return nil
 	case err != nil:
 		return failed(e, err)
-	case !appliedByBrygga(existing):
+	case !appliedByLodia(existing):
 		return nil
 	}
 	uid, version := existing.GetUID(), existing.GetResourceVersion()
@@ -205,7 +205,7 @@ func prune(ctx context.Context, c client.Client, e entry) error {
 
 // applyInventory applies the objects but another owner's, which it returns,
 // then prunes what the previous inventory lists and they do not. The
-// inventory names an object before Brygga first writes it, so a pass that
+// inventory names an object before Lodia first writes it, so a pass that
 // stops anywhere leaves nothing a later pass cannot prune.
 func applyInventory(ctx context.Context, c client.Client, objects []*unstructured.Unstructured) ([]entry, error) {
 	previous, err := readInventory(ctx, c)

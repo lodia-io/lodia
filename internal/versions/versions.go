@@ -1,7 +1,7 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package versions is the table of the Kubernetes minors Brygga runs and the
+// Package versions is the table of the Kubernetes minors Lodia runs and the
 // images of each version.
 package versions
 
@@ -33,7 +33,7 @@ var minors = map[string]struct{ coreDNS, konnectivity string }{
 }
 
 // For returns the images of a Kubernetes version vMAJOR.MINOR.PATCH, and
-// false when Brygga does not run its minor.
+// false when Lodia does not run its minor.
 func For(version string) (Images, bool) {
 	minor, ok := Minor(version)
 	m, supported := minors[minor]
@@ -58,7 +58,7 @@ func Minor(version string) (string, bool) {
 	return major + "." + minor, ok && hasPatch
 }
 
-// Minors are the minors Brygga runs, oldest first.
+// Minors are the minors Lodia runs, oldest first.
 func Minors() []string {
 	return slices.Sorted(maps.Keys(minors))
 }

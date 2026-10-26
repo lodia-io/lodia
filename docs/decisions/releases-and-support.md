@@ -1,4 +1,4 @@
-# Brygga ships signed multi-arch images built with ko and a Helm chart in GHCR, and supports the Kubernetes minors upstream maintains
+# Lodia ships signed multi-arch images built with ko and a Helm chart in GHCR, and supports the Kubernetes minors upstream maintains
 
 Decided 2026-10-25. Not built.
 
@@ -15,7 +15,7 @@ Decided 2026-10-25. Not built.
   GitHub artifact attestations
   ([cosign](https://docs.sigstore.dev/cosign/signing/overview/),
   [artifact attestations](https://docs.github.com/en/actions/concepts/security/artifact-attestations)).
-- The Helm chart is published to `oci://ghcr.io/segla-io/charts/brygga`
+- The Helm chart is published to `oci://ghcr.io/lodia-io/charts/lodia`
   next to the images, and references images by digest. The CRDs are templates
   in the chart, installed and upgraded with it, behind `crds.enabled`
   (default `true`) and kept on uninstall through `crds.keep` (default `true`,
@@ -32,7 +32,7 @@ Decided 2026-10-25. Not built.
 
 **Versions and support**
 
-- Brygga follows semver, independent of the API version. Until 1.0, the
+- Lodia follows semver, independent of the API version. Until 1.0, the
   latest minor gets fixes; from 1.0, the two latest minors.
 - A release ships a version table: for each Kubernetes minor it supports,
   the images of kube-apiserver, kube-controller-manager, kube-scheduler,
@@ -73,11 +73,11 @@ Decided 2026-10-25. Not built.
   rotate; artifact attestations are GitHub's maintained path for provenance,
   while the older `slsa-github-generator` is no longer actively maintained
   ([its README](https://github.com/slsa-framework/slsa-github-generator/blob/main/internal/builders/container/README.md)).
-- A management cluster that upgrades Brygga must upgrade its CRDs in the same
+- A management cluster that upgrades Lodia must upgrade its CRDs in the same
   step, or new fields are silently dropped; templated CRDs do that, and
   `keep` protects every `ControlPlane` from an accidental uninstall.
 - Following upstream's support window keeps tenants on versions that still
-  get security fixes, and keeps Brygga's test matrix at three minors.
+  get security fixes, and keeps Lodia's test matrix at three minors.
 
 ## Rejected
 
@@ -98,7 +98,7 @@ Decided 2026-10-25. Not built.
 - Users verify an image with
   `cosign verify --certificate-identity-regexp … --certificate-oidc-issuer https://token.actions.githubusercontent.com`
   and `gh attestation verify`.
-- Adding a Kubernetes minor is a Brygga release: a new row in the version
+- Adding a Kubernetes minor is a Lodia release: a new row in the version
   table, kind images in the matrix, the conformance run green.
 
 ## Code

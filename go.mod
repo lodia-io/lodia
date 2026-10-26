@@ -1,4 +1,4 @@
-module github.com/segla-io/brygga
+module go.lodia.io/lodia
 
 go 1.26.0
 

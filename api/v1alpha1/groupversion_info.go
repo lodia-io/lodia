@@ -1,10 +1,10 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package v1alpha1 is the Brygga API: control planes, the stores they keep
+// Package v1alpha1 is the Lodia API: control planes, the stores they keep
 // their data in, short-lived access and snapshots.
 // +kubebuilder:object:generate=true
-// +groupName=brygga.segla.io
+// +groupName=lodia.io
 package v1alpha1
 
 import (
@@ -14,8 +14,8 @@ import (
 )
 
 var (
-	// GroupVersion is brygga.segla.io/v1alpha1.
-	GroupVersion = schema.GroupVersion{Group: "brygga.segla.io", Version: "v1alpha1"}
+	// GroupVersion is lodia.io/v1alpha1.
+	GroupVersion = schema.GroupVersion{Group: "lodia.io", Version: "v1alpha1"}
 
 	// SchemeBuilder registers the kinds of this version.
 	SchemeBuilder = runtime.NewSchemeBuilder(addKnownTypes)

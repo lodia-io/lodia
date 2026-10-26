@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package v1alpha1
@@ -46,7 +46,7 @@ type ControlPlaneList struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.restoreFrom) || (has(oldSelf.restoreFrom) && oldSelf.restoreFrom == self.restoreFrom)",message="restoreFrom can only be set when the ControlPlane is created"
 type ControlPlaneSpec struct {
 	// Version is the Kubernetes version, vMAJOR.MINOR.PATCH. The minor never
-	// decreases; Brygga upgrades one minor at a time towards it.
+	// decreases; Lodia upgrades one minor at a time towards it.
 	// +required
 	// +kubebuilder:validation:MaxLength=16
 	// +kubebuilder:validation:Pattern=`^v1\.[0-9]+\.[0-9]+$`
@@ -92,7 +92,7 @@ type ControlPlaneSpec struct {
 	// +optional
 	Scheduler *Scheduler `json:"scheduler,omitempty"`
 
-	// Addons configures what Brygga runs inside the tenant cluster.
+	// Addons configures what Lodia runs inside the tenant cluster.
 	// +optional
 	Addons *Addons `json:"addons,omitempty"`
 
@@ -100,7 +100,7 @@ type ControlPlaneSpec struct {
 	// +optional
 	Placement *Placement `json:"placement,omitempty"`
 
-	// Maintenance is when Brygga may roll changes it initiates.
+	// Maintenance is when Lodia may roll changes it initiates.
 	// +optional
 	Maintenance *Maintenance `json:"maintenance,omitempty"`
 
@@ -108,7 +108,7 @@ type ControlPlaneSpec struct {
 	// +optional
 	Hibernation *Hibernation `json:"hibernation,omitempty"`
 
-	// Health configures how Brygga protects the tenant's workloads.
+	// Health configures how Lodia protects the tenant's workloads.
 	// +optional
 	Health *Health `json:"health,omitempty"`
 
@@ -307,7 +307,7 @@ type APIServer struct {
 	AdvertiseAddress string `json:"advertiseAddress,omitempty"`
 
 	// Authentication configures structured authentication; the anonymous
-	// section is Brygga's.
+	// section is Lodia's.
 	// +optional
 	Authentication *Authentication `json:"authentication,omitempty"`
 
@@ -323,12 +323,12 @@ type APIServer struct {
 	// +optional
 	Admission *Admission `json:"admission,omitempty"`
 
-	// ExtraArgs are flags passed to kube-apiserver. The flags Brygga sets are
+	// ExtraArgs are flags passed to kube-apiserver. The flags Lodia sets are
 	// refused, but for enable-admission-plugins, whose entries follow
-	// Brygga's; featureGates sets feature-gates.
+	// Lodia's; featureGates sets feature-gates.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
-	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['advertise-address', 'allow-privileged', 'anonymous-auth', 'authentication-config', 'authorization-mode', 'client-ca-file', 'egress-selector-config-file', 'enable-bootstrap-token-auth', 'encryption-provider-config', 'encryption-provider-config-automatic-reload', 'etcd-cafile', 'etcd-certfile', 'etcd-keyfile', 'etcd-servers', 'feature-gates', 'kubelet-client-certificate', 'kubelet-client-key', 'kubelet-preferred-address-types', 'proxy-client-cert-file', 'proxy-client-key-file', 'requestheader-allowed-names', 'requestheader-client-ca-file', 'requestheader-extra-headers-prefix', 'requestheader-group-headers', 'requestheader-username-headers', 'secure-port', 'service-account-issuer', 'service-account-key-file', 'service-account-signing-endpoint', 'service-account-signing-key-file', 'service-cluster-ip-range', 'tls-cert-file', 'tls-private-key-file'])",message="Brygga sets this flag"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['advertise-address', 'allow-privileged', 'anonymous-auth', 'authentication-config', 'authorization-mode', 'client-ca-file', 'egress-selector-config-file', 'enable-bootstrap-token-auth', 'encryption-provider-config', 'encryption-provider-config-automatic-reload', 'etcd-cafile', 'etcd-certfile', 'etcd-keyfile', 'etcd-servers', 'feature-gates', 'kubelet-client-certificate', 'kubelet-client-key', 'kubelet-preferred-address-types', 'proxy-client-cert-file', 'proxy-client-key-file', 'requestheader-allowed-names', 'requestheader-client-ca-file', 'requestheader-extra-headers-prefix', 'requestheader-group-headers', 'requestheader-username-headers', 'secure-port', 'service-account-issuer', 'service-account-key-file', 'service-account-signing-endpoint', 'service-account-signing-key-file', 'service-cluster-ip-range', 'tls-cert-file', 'tls-private-key-file'])",message="Lodia sets this flag"
 	ExtraArgs map[string]string `json:"extraArgs,omitempty"`
 
 	// FeatureGates are passed to kube-apiserver.
@@ -431,12 +431,12 @@ type Admission struct {
 
 // Component configures kube-controller-manager.
 type Component struct {
-	// ExtraArgs are flags passed to the component. The flags Brygga sets are
-	// refused, but for controllers, whose entries follow Brygga's;
+	// ExtraArgs are flags passed to the component. The flags Lodia sets are
+	// refused, but for controllers, whose entries follow Lodia's;
 	// featureGates sets feature-gates.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
-	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['allocate-node-cidrs', 'authentication-kubeconfig', 'authorization-kubeconfig', 'bind-address', 'client-ca-file', 'cluster-cidr', 'cluster-name', 'cluster-signing-cert-file', 'cluster-signing-duration', 'cluster-signing-key-file', 'cluster-signing-kubelet-client-cert-file', 'cluster-signing-kubelet-client-key-file', 'feature-gates', 'kubeconfig', 'leader-elect', 'requestheader-client-ca-file', 'root-ca-file', 'service-account-private-key-file', 'service-cluster-ip-range', 'use-service-account-credentials'])",message="Brygga sets this flag"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['allocate-node-cidrs', 'authentication-kubeconfig', 'authorization-kubeconfig', 'bind-address', 'client-ca-file', 'cluster-cidr', 'cluster-name', 'cluster-signing-cert-file', 'cluster-signing-duration', 'cluster-signing-key-file', 'cluster-signing-kubelet-client-cert-file', 'cluster-signing-kubelet-client-key-file', 'feature-gates', 'kubeconfig', 'leader-elect', 'requestheader-client-ca-file', 'root-ca-file', 'service-account-private-key-file', 'service-cluster-ip-range', 'use-service-account-credentials'])",message="Lodia sets this flag"
 	ExtraArgs map[string]string `json:"extraArgs,omitempty"`
 
 	// FeatureGates are passed to the component.
@@ -451,11 +451,11 @@ type Component struct {
 
 // Scheduler configures kube-scheduler.
 type Scheduler struct {
-	// ExtraArgs are flags passed to kube-scheduler; the flags Brygga sets are
+	// ExtraArgs are flags passed to kube-scheduler; the flags Lodia sets are
 	// refused, and featureGates sets feature-gates.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
-	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['authentication-kubeconfig', 'authorization-kubeconfig', 'bind-address', 'config', 'feature-gates', 'kubeconfig', 'leader-elect'])",message="Brygga sets this flag"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['authentication-kubeconfig', 'authorization-kubeconfig', 'bind-address', 'config', 'feature-gates', 'kubeconfig', 'leader-elect'])",message="Lodia sets this flag"
 	ExtraArgs map[string]string `json:"extraArgs,omitempty"`
 
 	// FeatureGates are passed to kube-scheduler.
@@ -467,13 +467,13 @@ type Scheduler struct {
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 
-	// ConfigRef names a ConfigMap with a KubeSchedulerConfiguration; Brygga
+	// ConfigRef names a ConfigMap with a KubeSchedulerConfiguration; Lodia
 	// overrides its client connection.
 	// +optional
 	ConfigRef *LocalReference `json:"configRef,omitempty"`
 }
 
-// Addons are the components Brygga runs inside the tenant cluster.
+// Addons are the components Lodia runs inside the tenant cluster.
 type Addons struct {
 	// Konnectivity configures the tunnel between the control plane and the nodes.
 	// +optional
@@ -578,13 +578,13 @@ type Placement struct {
 	PriorityClassName string `json:"priorityClassName,omitempty"`
 }
 
-// Maintenance is when Brygga may roll the changes it initiates.
+// Maintenance is when Lodia may roll the changes it initiates.
 type Maintenance struct {
 	// Window is the daily maintenance window; without one, any time.
 	// +optional
 	Window *MaintenanceWindow `json:"window,omitempty"`
 
-	// AutoUpdate opts into updates Brygga applies in the window.
+	// AutoUpdate opts into updates Lodia applies in the window.
 	// +optional
 	AutoUpdate *AutoUpdate `json:"autoUpdate,omitempty"`
 }
@@ -607,7 +607,7 @@ type MaintenanceWindow struct {
 	TimeZone string `json:"timeZone,omitempty"`
 }
 
-// AutoUpdate lists the updates Brygga applies on its own.
+// AutoUpdate lists the updates Lodia applies on its own.
 type AutoUpdate struct {
 	// KubernetesPatch moves to the newest patch of the running minor.
 	// +optional
@@ -678,7 +678,7 @@ type RestoreFrom struct {
 	BackupRef LocalReference `json:"backupRef"`
 }
 
-// ControlPlaneStatus is what Brygga observed and did.
+// ControlPlaneStatus is what Lodia observed and did.
 type ControlPlaneStatus struct {
 	// ObservedGeneration is the newest generation every readiness condition
 	// has been reported for.
@@ -716,7 +716,7 @@ type ControlPlaneStatus struct {
 	// +optional
 	Nodes *NodesStatus `json:"nodes,omitempty"`
 
-	// Health is present while Brygga holds the controller manager.
+	// Health is present while Lodia holds the controller manager.
 	// +optional
 	Health *HealthStatus `json:"health,omitempty"`
 }
@@ -728,7 +728,7 @@ type Target struct {
 	// +kubebuilder:validation:MaxLength=16
 	Version string `json:"version,omitempty"`
 
-	// OperatorVersion is the Brygga version this tenant's pods are rendered with.
+	// OperatorVersion is the Lodia version this tenant's pods are rendered with.
 	// +optional
 	// +kubebuilder:validation:MaxLength=64
 	OperatorVersion string `json:"operatorVersion,omitempty"`
@@ -924,7 +924,7 @@ type ControllerManagerHold struct {
 	SilentNodes int32 `json:"silentNodes,omitempty"`
 	// +optional
 	CountedNodes int32 `json:"countedNodes,omitempty"`
-	// BlockedBy names another holder of the lease Brygga left alone.
+	// BlockedBy names another holder of the lease Lodia left alone.
 	// +optional
 	// +kubebuilder:validation:MaxLength=253
 	BlockedBy string `json:"blockedBy,omitempty"`

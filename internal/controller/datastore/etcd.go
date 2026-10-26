@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package datastore
@@ -23,7 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
+	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 )
 
 // TLS is set on client, peer and backup-restore together: etcd-druid probes
@@ -32,33 +32,33 @@ import (
 // class and size come from the current Etcd once it exists: the first is
 // immutable in the Etcd, the second a StatefulSet field that cannot change in
 // place. A nil class is a recorded class that is gone.
-func render(cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClass, generation int, current *druidv1alpha1.Etcd) *druidv1alpha1.Etcd {
-	secret := func(certificate bryggav1alpha1.EtcdCertificateRole) corev1.SecretReference {
-		return corev1.SecretReference{Name: bryggav1alpha1.EtcdCertificateSecretName(cp.Name, certificate, generation)}
+func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, generation int, current *druidv1alpha1.Etcd) *druidv1alpha1.Etcd {
+	secret := func(certificate lodiav1alpha1.EtcdCertificateRole) corev1.SecretReference {
+		return corev1.SecretReference{Name: lodiav1alpha1.EtcdCertificateSecretName(cp.Name, certificate, generation)}
 	}
 	// etcd-druid reads the CA under ca.crt for the members and under
 	// bundle.crt for its own calls to the sidecar unless the key is named
 	// (etcd-druid@v0.39.0 internal/component/statefulset/builder.go#L468,
 	// internal/controller/compaction/snapshot.go#L87).
-	ca := druidv1alpha1.SecretReference{SecretReference: secret(bryggav1alpha1.EtcdCARole), DataKey: new(bryggav1alpha1.CACertKey)}
-	labels := map[string]string{bryggav1alpha1.ControlPlaneLabel: cp.Name}
+	ca := druidv1alpha1.SecretReference{SecretReference: secret(lodiav1alpha1.EtcdCARole), DataKey: new(lodiav1alpha1.CACertKey)}
+	labels := map[string]string{lodiav1alpha1.ControlPlaneLabel: cp.Name}
 	etcd := &druidv1alpha1.Etcd{
 		TypeMeta: metav1.TypeMeta{APIVersion: druidv1alpha1.SchemeGroupVersion.String(), Kind: "Etcd"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:            bryggav1alpha1.EtcdName(cp.Name),
+			Name:            lodiav1alpha1.EtcdName(cp.Name),
 			Namespace:       cp.Namespace,
 			Labels:          labels,
-			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cp, bryggav1alpha1.GroupVersion.WithKind("ControlPlane"))},
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cp, lodiav1alpha1.GroupVersion.WithKind("ControlPlane"))},
 		},
 		Spec: druidv1alpha1.EtcdSpec{
 			Replicas: 1,
 			Labels:   labels,
 			Etcd: druidv1alpha1.EtcdConfig{
-				ClientUrlTLS: &druidv1alpha1.TLSConfig{TLSCASecretRef: ca, ServerTLSSecretRef: secret(bryggav1alpha1.EtcdServerRole), ClientTLSSecretRef: secret(bryggav1alpha1.EtcdClientRole)},
-				PeerUrlTLS:   &druidv1alpha1.PeerTLSConfig{TLSConfig: druidv1alpha1.TLSConfig{TLSCASecretRef: ca, ServerTLSSecretRef: secret(bryggav1alpha1.EtcdPeerRole)}},
+				ClientUrlTLS: &druidv1alpha1.TLSConfig{TLSCASecretRef: ca, ServerTLSSecretRef: secret(lodiav1alpha1.EtcdServerRole), ClientTLSSecretRef: secret(lodiav1alpha1.EtcdClientRole)},
+				PeerUrlTLS:   &druidv1alpha1.PeerTLSConfig{TLSConfig: druidv1alpha1.TLSConfig{TLSCASecretRef: ca, ServerTLSSecretRef: secret(lodiav1alpha1.EtcdPeerRole)}},
 			},
 			Backup: druidv1alpha1.BackupSpec{
-				TLS: &druidv1alpha1.TLSConfig{TLSCASecretRef: ca, ServerTLSSecretRef: secret(bryggav1alpha1.EtcdBackupRestoreRole), ClientTLSSecretRef: secret(bryggav1alpha1.EtcdClientRole)},
+				TLS: &druidv1alpha1.TLSConfig{TLSCASecretRef: ca, ServerTLSSecretRef: secret(lodiav1alpha1.EtcdBackupRestoreRole), ClientTLSSecretRef: secret(lodiav1alpha1.EtcdClientRole)},
 			},
 		},
 	}
@@ -68,8 +68,8 @@ func render(cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClas
 	}
 	spec := &class.Spec
 	etcd.Annotations = map[string]string{
-		bryggav1alpha1.DatastoreClassAnnotation:           class.Name,
-		bryggav1alpha1.DatastoreClassGenerationAnnotation: strconv.FormatInt(class.Generation, 10),
+		lodiav1alpha1.DatastoreClassAnnotation:           class.Name,
+		lodiav1alpha1.DatastoreClassGenerationAnnotation: strconv.FormatInt(class.Generation, 10),
 	}
 	etcd.Spec.StorageCapacity = new(spec.Storage.Size)
 	if spec.Storage.ClassName != "" {
@@ -99,7 +99,7 @@ func render(cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClas
 			Provider:  new(druidv1alpha1.StorageProvider(backup.Store.Provider)),
 			Container: new(backup.Store.Bucket),
 			Prefix:    path.Join(backup.Store.Prefix, cp.Namespace, cp.Name, string(cp.UID)),
-			SecretRef: &corev1.SecretReference{Name: bryggav1alpha1.EtcdBackupSecret.Name(cp.Name)},
+			SecretRef: &corev1.SecretReference{Name: lodiav1alpha1.EtcdBackupSecret.Name(cp.Name)},
 		}
 		if backup.Store.Endpoint != "" {
 			etcd.Spec.Backup.Store.EndpointOverride = new(backup.Store.Endpoint)
@@ -127,7 +127,7 @@ func render(cp *bryggav1alpha1.ControlPlane, class *bryggav1alpha1.DatastoreClas
 
 // keep must copy every field render takes from the class.
 func keep(etcd, current *druidv1alpha1.Etcd) {
-	for _, key := range []string{bryggav1alpha1.DatastoreClassAnnotation, bryggav1alpha1.DatastoreClassGenerationAnnotation} {
+	for _, key := range []string{lodiav1alpha1.DatastoreClassAnnotation, lodiav1alpha1.DatastoreClassGenerationAnnotation} {
 		if value, ok := current.Annotations[key]; ok {
 			metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, key, value)
 		}
@@ -195,7 +195,7 @@ func (r *Reconciler) apply(ctx context.Context, etcd *druidv1alpha1.Etcd) (*drui
 // StatefulSet that lags a complete report, which no watch brings back.
 func readiness(cp string, etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet, generation int, missing []string) (metav1.Condition, bool) {
 	not := func(message string) (metav1.Condition, bool) {
-		return newCondition(metav1.ConditionFalse, bryggav1alpha1.ReasonProvisioning, message), false
+		return newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, message), false
 	}
 	if !etcd.DeletionTimestamp.IsZero() {
 		return not(fmt.Sprintf("Etcd %s is being deleted", etcd.Name))
@@ -235,7 +235,7 @@ func readiness(cp string, etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet, gen
 		condition, _ := not(fmt.Sprintf("StatefulSet %s: %d of %d replicas updated, %d ready", sts.Name, sts.Status.UpdatedReplicas, replicas, sts.Status.ReadyReplicas))
 		return condition, true
 	}
-	return newCondition(metav1.ConditionTrue, bryggav1alpha1.ReasonReady,
+	return newCondition(metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
 		fmt.Sprintf("etcd-druid reports Etcd %s ready on certificate generation %d, %d of %d replicas", etcd.Name, generation, etcd.Status.ReadyReplicas, etcd.Spec.Replicas)), false
 }
 
@@ -246,8 +246,8 @@ func mounts(sts *appsv1.StatefulSet, cp string, generation int) bool {
 			mounted = append(mounted, volume.Secret.SecretName)
 		}
 	}
-	for _, certificate := range bryggav1alpha1.EtcdCertificateRoles() {
-		if !slices.Contains(mounted, bryggav1alpha1.EtcdCertificateSecretName(cp, certificate, generation)) {
+	for _, certificate := range lodiav1alpha1.EtcdCertificateRoles() {
+		if !slices.Contains(mounted, lodiav1alpha1.EtcdCertificateSecretName(cp, certificate, generation)) {
 			return false
 		}
 	}

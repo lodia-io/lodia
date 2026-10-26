@@ -15,7 +15,7 @@ not.
   controller create one `Etcd` resource (`druid.gardener.cloud/v1alpha1`) in
   the tenant's namespace: 1 member, or 3 with `highAvailability`, built from
   the `DatastoreClass` (quota, compaction, storage, backup store and
-  schedules, defragmentation, placement). Brygga's PKI controller issues the
+  schedules, defragmentation, placement). Lodia's PKI controller issues the
   etcd CA and the server, peer and client certificates and the backup-restore
   sidecar's serving certificate; etcd-druid takes them as Secrets, because it
   does not generate TLS itself
@@ -29,12 +29,12 @@ not.
   Client, peer and backup-restore TLS are set together, and the sidecar's
   certificate also names the client Service, through which etcd-druid calls
   it ([etcd spike](../etcd-spike-2026-10.md), findings 1 and 2).
-- **The engine is etcd-druid**, installed beside Brygga (Brygga's chart
+- **The engine is etcd-druid**, installed beside Lodia (Lodia's chart
   vendors etcd-druid's at a tag, since it is not released as a versioned
   chart), run with `enableEtcdSpecAutoReconcile: true` so a spec
   change reconciles without an annotation, and with its optional components
   webhook off ([configuration](https://gardener.github.io/etcd-druid/deployment/configure-etcd-druid.html)).
-  What Brygga gets from it, per tenant:
+  What Lodia gets from it, per tenant:
   - full and delta snapshots to S3, GCS, Azure Blob, Swift and other stores,
     with garbage collection;
   - automatic restore of a single member that lost its data, and re-adding a
@@ -46,7 +46,7 @@ not.
     unless more than 1 GiB is free
   ([managing](https://gardener.github.io/etcd-druid/usage/managing-etcd-clusters.html),
   [recovering](https://gardener.github.io/etcd-druid/usage/recovering-etcd-clusters.html)).
-- **Brygga adds what etcd-druid leaves to its consumer:** the NetworkPolicy
+- **Lodia adds what etcd-druid leaves to its consumer:** the NetworkPolicy
   that admits only the tenant's API server, the members themselves and
   etcd-druid, which calls the members on 2379 and their sidecars on 8080
   ([etcd-druid#505](https://github.com/gardener/etcd-druid/issues/505)); the
@@ -56,7 +56,7 @@ not.
   of a deleted `ControlPlane`, which etcd-druid keeps
   ([etcd spike](../etcd-spike-2026-10.md), findings 2, 4 and 6).
 - **Shared, opt-in.** `spec.datastore.shared` names a `Datastore`: an etcd
-  several tenants use. Brygga creates per tenant an etcd user named after the
+  several tenants use. Lodia creates per tenant an etcd user named after the
   `ControlPlane`'s UID, authenticated by the CN of a client certificate (the
   API server has no other way to log in to etcd), and a role granting
   read-write on the prefix `/<prefix>/<uid>/`, whose range end is computed by
@@ -64,7 +64,7 @@ not.
   `--auth-token jwt`; the simple token is not meant for production
   ([RBAC](https://etcd.io/docs/v3.6/op-guide/authentication/rbac/),
   [auth design](https://etcd.io/docs/v3.6/learning/design-auth-v3/)).
-- **The defaults** of the `DatastoreClass` Brygga ships: quota 4 GiB,
+- **The defaults** of the `DatastoreClass` Lodia ships: quota 4 GiB,
   periodic compaction every 15 minutes (the API server also compacts every 5),
   delta snapshots every 5 minutes, a full snapshot daily inside the tenant's
   window, exponential garbage collection, defragmentation followers first and
@@ -123,7 +123,7 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
 ## Consequences
 
 - etcd-druid becomes a dependency with its own release cadence and image
-  registry (Gardener's public Artifact Registry, amd64 and arm64); Brygga's
+  registry (Gardener's public Artifact Registry, amd64 and arm64); Lodia's
   version table pins the vendored chart and its images, and the operator
   configuration's registry mirror applies to them too.
 - The etcd version is the one etcd-druid's wrapper runs: etcd 3.5.27 with
@@ -162,13 +162,13 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   Datastore neither adopts it, which a server-side apply with
   `ForceOwnership` would do, nor deletes it.
 - Every edit of a class that changes the `Etcd`'s spec rolls its members, a
-  single member with an outage, since etcd-druid carries every field Brygga
+  single member with an outage, since etcd-druid carries every field Lodia
   renders from the class into the pod template, directly, through the
   sidecar's arguments or through the checksum of its ConfigMap
   ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L161-L227));
   the storage fields, the reclaim policy, `retention.afterDelete`, the
   credentials' `secretRef` and the region change no spec and roll nothing.
-  So a class edit is a Brygga-initiated change for each tenant on it and
+  So a class edit is a Lodia-initiated change for each tenant on it and
   rolls in that tenant's maintenance window
   ([upgrades-and-maintenance-windows](upgrades-and-maintenance-windows.md));
   the `Etcd` records the class generation it was rendered from. The storage
@@ -178,8 +178,8 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   the second a StatefulSet field that cannot change in place
   ([validation.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/apis/apps/validation/validation.go#L262)).
 - The class is resolved once, when the `Etcd` is created, and recorded on it
-  (`brygga.segla.io/datastore-class`, beside
-  `brygga.segla.io/datastore-class-generation`); from then on the `Etcd`
+  (`lodia.io/datastore-class`, beside
+  `lodia.io/datastore-class-generation`); from then on the `Etcd`
   follows the recorded class, its `reclaimPolicy` included, the way a default
   StorageClass is written into a claim when the claim is created
   ([storage classes](https://kubernetes.io/docs/concepts/storage/storage-classes/#default-storageclass)).
@@ -221,7 +221,7 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   Secrets in one tenant namespace reads every tenant's snapshots on the
   class, and the encryption keys backed up next to them. Until the
   credentials are scoped to one tenant's prefix, two rules bound it: Secrets
-  in tenant namespaces are readable by Brygga and the platform's
+  in tenant namespaces are readable by Lodia and the platform's
   administrators only, and a class per trust boundary.
 - etcd-druid keeps the volumes and the snapshots of a deleted `Etcd`: the
   StatefulSet retains its claims and nothing removes the prefix in the

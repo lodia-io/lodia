@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package workloads_test
@@ -38,23 +38,23 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
-	"github.com/segla-io/brygga/internal/apistatus"
-	"github.com/segla-io/brygga/internal/controller/workloads"
-	"github.com/segla-io/brygga/internal/operator"
-	"github.com/segla-io/brygga/internal/versions"
+	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/apistatus"
+	"go.lodia.io/lodia/internal/controller/workloads"
+	"go.lodia.io/lodia/internal/operator"
+	"go.lodia.io/lodia/internal/versions"
 )
 
 const (
 	version     = "v1.37.1"
-	signerImage = "registry.example/brygga-signer:test"
+	signerImage = "registry.example/lodia-signer:test"
 	lbAddress   = "203.0.113.10"
 )
 
 var workloadsRules = []rbacv1.PolicyRule{
-	{APIGroups: []string{bryggav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes"}, Verbs: []string{"list", "watch"}},
-	{APIGroups: []string{bryggav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes/status"}, Verbs: []string{"patch"}},
-	{APIGroups: []string{bryggav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes/finalizers"}, Verbs: []string{"update"}},
+	{APIGroups: []string{lodiav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes"}, Verbs: []string{"list", "watch"}},
+	{APIGroups: []string{lodiav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes/status"}, Verbs: []string{"patch"}},
+	{APIGroups: []string{lodiav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes/finalizers"}, Verbs: []string{"update"}},
 	{APIGroups: []string{"apps"}, Resources: []string{"deployments"}, Verbs: []string{"list", "watch", "create", "patch", "delete"}},
 	{APIGroups: []string{""}, Resources: []string{"services", "configmaps"}, Verbs: []string{"list", "watch", "create", "patch", "delete"}},
 	{APIGroups: []string{"networking.k8s.io"}, Resources: []string{"networkpolicies"}, Verbs: []string{"list", "watch", "create", "patch", "delete"}},
@@ -62,9 +62,9 @@ var workloadsRules = []rbacv1.PolicyRule{
 	{APIGroups: []string{""}, Resources: []string{"nodes"}, Verbs: []string{"list"}},
 }
 
-var restartOnlySecrets = []bryggav1alpha1.Secret{
-	bryggav1alpha1.CABundleSecret, bryggav1alpha1.EtcdCASecret, bryggav1alpha1.FrontProxyClientSecret,
-	bryggav1alpha1.KonnectivityKubeconfigSecret, bryggav1alpha1.KonnectivityServerSecret,
+var restartOnlySecrets = []lodiav1alpha1.Secret{
+	lodiav1alpha1.CABundleSecret, lodiav1alpha1.EtcdCASecret, lodiav1alpha1.FrontProxyClientSecret,
+	lodiav1alpha1.KonnectivityKubeconfigSecret, lodiav1alpha1.KonnectivityServerSecret,
 }
 
 var k8s client.WithWatch
@@ -128,7 +128,7 @@ func TestMain(m *testing.M) {
 }
 
 func asWorkloadsController(cfg *rest.Config) (*rest.Config, error) {
-	const user = "brygga-workloads"
+	const user = "lodia-workloads"
 	ctx := context.Background()
 	role := &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: user}, Rules: workloadsRules}
 	binding := &rbacv1.ClusterRoleBinding{
@@ -160,13 +160,13 @@ func asWorkloadsController(cfg *rest.Config) (*rest.Config, error) {
 }
 
 func TestTheEndpointIsPublishedBeforeAnythingWaits(t *testing.T) {
-	cp := controlPlane(t, bryggav1alpha1.Endpoint{LoadBalancer: &bryggav1alpha1.LoadBalancerEndpoint{
+	cp := controlPlane(t, lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{
 		Class:        "example.com/lb",
-		SourceRanges: []bryggav1alpha1.CIDR{"198.51.100.0/24"},
+		SourceRanges: []lodiav1alpha1.CIDR{"198.51.100.0/24"},
 		Annotations:  map[string]string{"example.com/tier": "control-plane"},
 	}})
 	eventually(t, func() error {
-		return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForEndpoint)
+		return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint)
 	})
 	svc := getService(t, cp)
 	if svc.Spec.Type != corev1.ServiceTypeLoadBalancer || *svc.Spec.LoadBalancerClass != "example.com/lb" ||
@@ -179,17 +179,17 @@ func TestTheEndpointIsPublishedBeforeAnythingWaits(t *testing.T) {
 
 	setIngress(t, cp, corev1.LoadBalancerIngress{Hostname: "lb.example.com"})
 	eventually(t, func() error {
-		return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonLoadBalancerHostnameUnsupported)
+		return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonLoadBalancerHostnameUnsupported)
 	})
 	if e := get(t, cp).Status.Endpoint; e != nil {
 		t.Errorf("status.endpoint is %+v while the load balancer has a host name alone", e)
 	}
 
 	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
-	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForTarget) })
-	want := bryggav1alpha1.EndpointStatus{
-		APIServer:    bryggav1alpha1.HostPort{Host: lbAddress, Port: 443},
-		Konnectivity: bryggav1alpha1.HostPort{Host: lbAddress, Port: 8132},
+	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget) })
+	want := lodiav1alpha1.EndpointStatus{
+		APIServer:    lodiav1alpha1.HostPort{Host: lbAddress, Port: 443},
+		Konnectivity: lodiav1alpha1.HostPort{Host: lbAddress, Port: 8132},
 	}
 	if e := get(t, cp).Status.Endpoint; e == nil || *e != want {
 		t.Errorf("status.endpoint is %+v, want %+v", e, want)
@@ -200,14 +200,14 @@ func TestANodePortControlPlaneListensOnItsNodePort(t *testing.T) {
 	createNode(t, "node-a", false, "192.0.2.10")
 	createNode(t, "node-b", true, "192.0.2.11")
 	createNode(t, "node-c", true, "192.0.2.12")
-	cp := controlPlane(t, bryggav1alpha1.Endpoint{NodePort: &bryggav1alpha1.NodePortEndpoint{}})
-	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForTarget) })
+	cp := controlPlane(t, lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}})
+	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget) })
 	svc := getService(t, cp)
 	api, konnectivity := nodePort(svc, 6443), nodePort(svc, 8132)
 	e := get(t, cp).Status.Endpoint
-	want := bryggav1alpha1.EndpointStatus{
-		APIServer:    bryggav1alpha1.HostPort{Host: "192.0.2.11", Port: api},
-		Konnectivity: bryggav1alpha1.HostPort{Host: "192.0.2.11", Port: konnectivity},
+	want := lodiav1alpha1.EndpointStatus{
+		APIServer:    lodiav1alpha1.HostPort{Host: "192.0.2.11", Port: api},
+		Konnectivity: lodiav1alpha1.HostPort{Host: "192.0.2.11", Port: konnectivity},
 	}
 	if svc.Spec.Type != corev1.ServiceTypeNodePort || api == 0 || konnectivity == 0 || e == nil || *e != want {
 		t.Fatalf("Service %s with node ports %d and %d, status.endpoint %+v", svc.Spec.Type, api, konnectivity, e)
@@ -245,36 +245,36 @@ func TestANodePortControlPlaneListensOnItsNodePort(t *testing.T) {
 func TestAControlPlaneRollsOutOnceItsInputsAreReady(t *testing.T) {
 	cp := controlPlane(t, loadBalancer())
 	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
-	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForTarget) })
+	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget) })
 
 	setTarget(t, cp, version)
 	eventually(t, func() error {
-		return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForCertificates)
+		return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates)
 	})
-	setTrue(t, cp, bryggav1alpha1.ConditionCertificatesReady, "Issued")
+	setTrue(t, cp, lodiav1alpha1.ConditionCertificatesReady, "Issued")
 	eventually(t, func() error {
-		return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForDatastore)
+		return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore)
 	})
-	setTrue(t, cp, bryggav1alpha1.ConditionDatastoreReady, "Ready")
+	setTrue(t, cp, lodiav1alpha1.ConditionDatastoreReady, "Ready")
 	eventually(t, func() error {
 		c := condition(t, cp)
-		if c == nil || c.Reason != bryggav1alpha1.ReasonWaitingForDatastore || !strings.Contains(c.Message, "status.datastore.endpoints") {
+		if c == nil || c.Reason != lodiav1alpha1.ReasonWaitingForDatastore || !strings.Contains(c.Message, "status.datastore.endpoints") {
 			return fmt.Errorf("APIServerReady is %+v, want status.datastore.endpoints awaited", c)
 		}
 		return nil
 	})
-	setDatastore(t, cp, bryggav1alpha1.HostPort{Host: "etcd-0.dev.example", Port: 2379}, bryggav1alpha1.HostPort{Host: "2001:db8::5", Port: 12379})
+	setDatastore(t, cp, lodiav1alpha1.HostPort{Host: "etcd-0.dev.example", Port: 2379}, lodiav1alpha1.HostPort{Host: "2001:db8::5", Port: 12379})
 	unhashed := "dev-ca-bundle, dev-etcd-ca, dev-front-proxy-client, dev-konnectivity-kubeconfig, dev-konnectivity-server"
 	eventually(t, func() error {
 		c := condition(t, cp)
-		if c == nil || c.Reason != bryggav1alpha1.ReasonWaitingForCertificates || !strings.HasSuffix(c.Message, ": "+unhashed) {
+		if c == nil || c.Reason != lodiav1alpha1.ReasonWaitingForCertificates || !strings.HasSuffix(c.Message, ": "+unhashed) {
 			return fmt.Errorf("APIServerReady is %+v, want the restart-only Secrets named", c)
 		}
 		return nil
 	})
 	createSecrets(t, cp, "")
 	reconcileNow(t, cp)
-	if c := condition(t, cp); c.Reason != bryggav1alpha1.ReasonWaitingForCertificates || !strings.HasSuffix(c.Message, ": "+unhashed) {
+	if c := condition(t, cp); c.Reason != lodiav1alpha1.ReasonWaitingForCertificates || !strings.HasSuffix(c.Message, ": "+unhashed) {
 		t.Errorf("APIServerReady is %s %q while no Secret carries its data hash", c.Reason, c.Message)
 	}
 	if deployments(t, cp) != 0 {
@@ -282,11 +282,11 @@ func TestAControlPlaneRollsOutOnceItsInputsAreReady(t *testing.T) {
 	}
 
 	createSecrets(t, cp, "one")
-	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonRollingOut) })
+	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRollingOut) })
 	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
 		markAvailable(t, eventuallyDeployment(t, cp, component))
 	}
-	eventually(t, func() error { return expectCondition(cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReady) })
+	eventually(t, func() error { return expectCondition(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady) })
 	if c := condition(t, cp); c.Message != "kube-apiserver, kube-controller-manager and kube-scheduler run "+version+", every replica updated and ready" {
 		t.Errorf("APIServerReady says %q", c.Message)
 	}
@@ -306,17 +306,17 @@ func TestAControlPlaneRollsOutOnceItsInputsAreReady(t *testing.T) {
 		"--etcd-servers=https://etcd-0.dev.example:2379,https://[2001:db8::5]:12379",
 		"--service-account-signing-endpoint=/run/signer/signer.sock",
 		"--service-account-issuer=https://"+lbAddress,
-		"--client-ca-file=/etc/brygga/client-ca/ca.crt",
+		"--client-ca-file=/etc/lodia/client-ca/ca.crt",
 		"--enable-bootstrap-token-auth=true",
-		"--authentication-config=/etc/brygga/authentication/authentication-config.yaml",
-		"--egress-selector-config-file=/etc/brygga/egress/egress-selector.yaml",
+		"--authentication-config=/etc/lodia/authentication/authentication-config.yaml",
+		"--egress-selector-config-file=/etc/lodia/egress/egress-selector.yaml",
 	)
 	for _, flag := range pod.Containers[0].Command {
 		if strings.HasPrefix(flag, "--service-account-key-file") || strings.HasPrefix(flag, "--anonymous-auth") {
 			t.Errorf("the API server runs with %s, which the signer endpoint and the authentication configuration exclude", flag)
 		}
 	}
-	expectFlags(t, pod.Containers[1].Command, "--kubeconfig=/etc/brygga/konnectivity-kubeconfig/kubeconfig", "--uds-name=/run/konnectivity/konnectivity-server.socket", "--agent-port=8132")
+	expectFlags(t, pod.Containers[1].Command, "--kubeconfig=/etc/lodia/konnectivity-kubeconfig/kubeconfig", "--uds-name=/run/konnectivity/konnectivity-server.socket", "--agent-port=8132")
 	if len(pod.InitContainers) != 1 || pod.InitContainers[0].Image != signerImage || pod.InitContainers[0].RestartPolicy == nil || *pod.InitContainers[0].RestartPolicy != corev1.ContainerRestartPolicyAlways {
 		t.Errorf("the signer is %+v, want a native sidecar of %s", pod.InitContainers, signerImage)
 	}
@@ -326,14 +326,14 @@ func TestAControlPlaneRollsOutOnceItsInputsAreReady(t *testing.T) {
 		t.Errorf("the controller manager runs %s", kcm.Image)
 	}
 	expectFlags(t, kcm.Command,
-		"--cluster-signing-kubelet-client-cert-file=/etc/brygga/kubelet-signer/tls.crt",
+		"--cluster-signing-kubelet-client-cert-file=/etc/lodia/kubelet-signer/tls.crt",
 		"--cluster-signing-duration=720h0m0s",
 		"--controllers=*,bootstrap-signer-controller,token-cleaner-controller",
-		"--root-ca-file=/etc/brygga/ca-bundle/ca.crt",
+		"--root-ca-file=/etc/lodia/ca-bundle/ca.crt",
 		"--cluster-cidr=10.244.0.0/16",
 		"--service-cluster-ip-range=10.96.0.0/16",
 	)
-	expectFlags(t, deployment(t, cp, "kube-scheduler").Spec.Template.Spec.Containers[0].Command, "--kubeconfig=/etc/brygga/kubeconfig/kubeconfig", "--leader-elect=true")
+	expectFlags(t, deployment(t, cp, "kube-scheduler").Spec.Template.Spec.Containers[0].Command, "--kubeconfig=/etc/lodia/kubeconfig/kubeconfig", "--leader-elect=true")
 
 	authn := &corev1.ConfigMap{}
 	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: cp.Namespace, Name: "dev-authentication-config"}, authn); err != nil {
@@ -358,7 +358,7 @@ func TestAControlPlaneRollsOutOnceItsInputsAreReady(t *testing.T) {
 			rules = append(rules, fmt.Sprintf("from %d peers to %v", len(rule.From), ports))
 		}
 		selected := p.Spec.PodSelector.MatchLabels
-		got[p.Name] = fmt.Sprintf("%s/%s %v %v", selected[bryggav1alpha1.ControlPlaneLabel], selected["app.kubernetes.io/name"], p.Spec.PolicyTypes, rules)
+		got[p.Name] = fmt.Sprintf("%s/%s %v %v", selected[lodiav1alpha1.ControlPlaneLabel], selected["app.kubernetes.io/name"], p.Spec.PolicyTypes, rules)
 	}
 	want := map[string]string{
 		"dev-kube-apiserver":          "dev/kube-apiserver [Ingress] [from 0 peers to [https konnectivity]]",
@@ -378,13 +378,13 @@ func TestOnlyARestartOnlyInputRollsItsComponent(t *testing.T) {
 	}
 	generations := generationsOf(t, cp)
 
-	setSecret(t, cp, bryggav1alpha1.APIServerServingSecret, "renewed")
+	setSecret(t, cp, lodiav1alpha1.APIServerServingSecret, "renewed")
 	reconcileNow(t, cp)
 	if after := generationsOf(t, cp); fmt.Sprint(after) != fmt.Sprint(generations) {
 		t.Errorf("a renewal of the reloaded apiserver-serving alone rolled: generations %v, then %v", generations, after)
 	}
 
-	setSecret(t, cp, bryggav1alpha1.FrontProxyClientSecret, "renewed")
+	setSecret(t, cp, lodiav1alpha1.FrontProxyClientSecret, "renewed")
 	eventually(t, func() error {
 		if after := hashes(t, cp); after["kube-apiserver"] == before["kube-apiserver"] || after["kube-controller-manager"] != before["kube-controller-manager"] {
 			return fmt.Errorf("restart hashes %v, then %v: want the API server's alone to change", before, after)
@@ -393,7 +393,7 @@ func TestOnlyARestartOnlyInputRollsItsComponent(t *testing.T) {
 	})
 
 	middle := hashes(t, cp)
-	setSecret(t, cp, bryggav1alpha1.CABundleSecret, "renewed")
+	setSecret(t, cp, lodiav1alpha1.CABundleSecret, "renewed")
 	eventually(t, func() error {
 		if after := hashes(t, cp); after["kube-controller-manager"] == middle["kube-controller-manager"] || after["kube-apiserver"] != middle["kube-apiserver"] {
 			return fmt.Errorf("restart hashes %v, then %v: want the controller manager's alone to change", middle, after)
@@ -403,16 +403,16 @@ func TestOnlyARestartOnlyInputRollsItsComponent(t *testing.T) {
 }
 
 func TestTheSpecIsRendered(t *testing.T) {
-	cp := controlPlane(t, loadBalancer(), func(spec *bryggav1alpha1.ControlPlaneSpec) {
-		spec.APIServer = &bryggav1alpha1.APIServer{
+	cp := controlPlane(t, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) {
+		spec.APIServer = &lodiav1alpha1.APIServer{
 			ExtraArgs:    map[string]string{"audit-log-maxage": "7", "enable-admission-plugins": "PodSecurity,NodeRestriction"},
 			FeatureGates: map[string]bool{"B": false, "A": true},
 			Resources:    &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")}},
 		}
-		spec.ControllerManager = &bryggav1alpha1.Component{ExtraArgs: map[string]string{"node-monitor-grace-period": "50s", "controllers": "-ttl-controller"}}
-		spec.ServiceAccount = &bryggav1alpha1.ServiceAccount{Issuer: "https://issuer.example.com"}
-		spec.Addons = &bryggav1alpha1.Addons{Konnectivity: &bryggav1alpha1.Konnectivity{Version: "v0.37.2"}}
-		spec.Placement = &bryggav1alpha1.Placement{
+		spec.ControllerManager = &lodiav1alpha1.Component{ExtraArgs: map[string]string{"node-monitor-grace-period": "50s", "controllers": "-ttl-controller"}}
+		spec.ServiceAccount = &lodiav1alpha1.ServiceAccount{Issuer: "https://issuer.example.com"}
+		spec.Addons = &lodiav1alpha1.Addons{Konnectivity: &lodiav1alpha1.Konnectivity{Version: "v0.37.2"}}
+		spec.Placement = &lodiav1alpha1.Placement{
 			NodeSelector:      map[string]string{"node-role.example.com/control-plane": ""},
 			Tolerations:       []corev1.Toleration{{Key: "dedicated", Operator: corev1.TolerationOpExists}},
 			PriorityClassName: "system-cluster-critical",
@@ -438,20 +438,20 @@ func TestTheSpecIsRendered(t *testing.T) {
 }
 
 func TestWhatIsNotBuiltYetIsSaid(t *testing.T) {
-	gateway := controlPlane(t, bryggav1alpha1.Endpoint{Gateway: &bryggav1alpha1.GatewayEndpoint{
-		ParentRef: bryggav1alpha1.ParentReference{Name: "shared", Namespace: "gateways"},
-		Hostnames: bryggav1alpha1.GatewayHostnames{APIServer: "api.dev.example.com", Konnectivity: "konnectivity.dev.example.com"},
+	gateway := controlPlane(t, lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
+		ParentRef: lodiav1alpha1.ParentReference{Name: "shared", Namespace: "gateways"},
+		Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.com", Konnectivity: "konnectivity.dev.example.com"},
 	}})
-	eventually(t, func() error { return expectCondition(gateway, metav1.ConditionFalse, bryggav1alpha1.ReasonUnsupported) })
+	eventually(t, func() error { return expectCondition(gateway, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported) })
 	if c := condition(t, gateway); c.Message != "not built yet: endpoint.gateway" {
 		t.Errorf("APIServerReady says %q", c.Message)
 	}
 
-	ha := controlPlane(t, loadBalancer(), func(spec *bryggav1alpha1.ControlPlaneSpec) {
-		spec.HighAvailability = &bryggav1alpha1.HighAvailability{FailureTolerance: "Node"}
-		spec.Scheduler = &bryggav1alpha1.Scheduler{ConfigRef: &bryggav1alpha1.LocalReference{Name: "profiles"}}
+	ha := controlPlane(t, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) {
+		spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+		spec.Scheduler = &lodiav1alpha1.Scheduler{ConfigRef: &lodiav1alpha1.LocalReference{Name: "profiles"}}
 	})
-	eventually(t, func() error { return expectCondition(ha, metav1.ConditionFalse, bryggav1alpha1.ReasonUnsupported) })
+	eventually(t, func() error { return expectCondition(ha, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported) })
 	if c := condition(t, ha); c.Message != "not built yet: highAvailability, scheduler.configRef" {
 		t.Errorf("APIServerReady says %q", c.Message)
 	}
@@ -460,17 +460,17 @@ func TestWhatIsNotBuiltYetIsSaid(t *testing.T) {
 		if e := get(t, ha).Status.Endpoint; e == nil || e.APIServer.Host != lbAddress {
 			return fmt.Errorf("status.endpoint is %+v", e)
 		}
-		return expectCondition(ha, metav1.ConditionFalse, bryggav1alpha1.ReasonUnsupported)
+		return expectCondition(ha, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported)
 	})
 	if getServiceOrNil(t, gateway) != nil {
 		t.Errorf("a Service was created in %s for a gateway endpoint", gateway.Namespace)
 	}
 
-	ignored := controlPlane(t, loadBalancer(), func(spec *bryggav1alpha1.ControlPlaneSpec) {
-		spec.APIServer = &bryggav1alpha1.APIServer{Replicas: new(int32(2)), AdvertiseAddress: "172.20.0.1"}
-		spec.ServiceAccount = &bryggav1alpha1.ServiceAccount{PublicDiscovery: true}
+	ignored := controlPlane(t, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) {
+		spec.APIServer = &lodiav1alpha1.APIServer{Replicas: new(int32(2)), AdvertiseAddress: "172.20.0.1"}
+		spec.ServiceAccount = &lodiav1alpha1.ServiceAccount{PublicDiscovery: true}
 	})
-	eventually(t, func() error { return expectCondition(ignored, metav1.ConditionFalse, bryggav1alpha1.ReasonUnsupported) })
+	eventually(t, func() error { return expectCondition(ignored, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported) })
 	if c := condition(t, ignored); c.Message != "not built yet: apiServer.replicas, apiServer.advertiseAddress, serviceAccount.publicDiscovery" {
 		t.Errorf("APIServerReady says %q", c.Message)
 	}
@@ -480,34 +480,34 @@ func TestAnUnsupportedFieldKeepsTheEndpoint(t *testing.T) {
 	cp := running(t)
 	published := get(t, cp).Status.Endpoint
 	fresh := get(t, cp)
-	fresh.Spec.ServiceAccount = &bryggav1alpha1.ServiceAccount{PublicDiscovery: true}
+	fresh.Spec.ServiceAccount = &lodiav1alpha1.ServiceAccount{PublicDiscovery: true}
 	if err := k8s.Update(t.Context(), fresh); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonUnsupported) })
+	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported) })
 	if e := get(t, cp).Status.Endpoint; e == nil || *e != *published {
 		t.Errorf("status.endpoint is %+v once the ControlPlane asks for a field not built yet, want %+v", e, published)
 	}
 }
 
-func TestEveryFlagBryggaRendersIsRefusedOrMerged(t *testing.T) {
+func TestEveryFlagLodiaRendersIsRefusedOrMerged(t *testing.T) {
 	cp := running(t)
 	merged := map[string]bool{"enable-admission-plugins": true, "controllers": true}
 	components := map[string]struct {
 		alsoRefused []string
-		set         func(*bryggav1alpha1.ControlPlaneSpec, map[string]string)
+		set         func(*lodiav1alpha1.ControlPlaneSpec, map[string]string)
 	}{
 		"kube-apiserver": {[]string{"anonymous-auth", "feature-gates", "service-account-key-file", "service-account-signing-key-file"},
-			func(spec *bryggav1alpha1.ControlPlaneSpec, args map[string]string) {
-				spec.APIServer = &bryggav1alpha1.APIServer{ExtraArgs: args}
+			func(spec *lodiav1alpha1.ControlPlaneSpec, args map[string]string) {
+				spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: args}
 			}},
 		"kube-controller-manager": {[]string{"cluster-signing-cert-file", "cluster-signing-key-file", "feature-gates", "service-account-private-key-file"},
-			func(spec *bryggav1alpha1.ControlPlaneSpec, args map[string]string) {
-				spec.ControllerManager = &bryggav1alpha1.Component{ExtraArgs: args}
+			func(spec *lodiav1alpha1.ControlPlaneSpec, args map[string]string) {
+				spec.ControllerManager = &lodiav1alpha1.Component{ExtraArgs: args}
 			}},
 		"kube-scheduler": {[]string{"config", "feature-gates"},
-			func(spec *bryggav1alpha1.ControlPlaneSpec, args map[string]string) {
-				spec.Scheduler = &bryggav1alpha1.Scheduler{ExtraArgs: args}
+			func(spec *lodiav1alpha1.ControlPlaneSpec, args map[string]string) {
+				spec.Scheduler = &lodiav1alpha1.Scheduler{ExtraArgs: args}
 			}},
 	}
 	for component, c := range components {
@@ -520,8 +520,8 @@ func TestEveryFlagBryggaRendersIsRefusedOrMerged(t *testing.T) {
 		for _, flag := range flags {
 			spec := cp.Spec.DeepCopy()
 			c.set(spec, map[string]string{flag: "set by the tenant"})
-			tenant := &bryggav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "flags", Namespace: cp.Namespace}, Spec: *spec}
-			if err := k8s.Create(t.Context(), tenant, client.DryRunAll); !apierrors.IsInvalid(err) || !strings.Contains(err.Error(), "Brygga sets this flag") {
+			tenant := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "flags", Namespace: cp.Namespace}, Spec: *spec}
+			if err := k8s.Create(t.Context(), tenant, client.DryRunAll); !apierrors.IsInvalid(err) || !strings.Contains(err.Error(), "Lodia sets this flag") {
 				t.Errorf("the extra arguments of %s take --%s: %v", component, flag, err)
 			}
 		}
@@ -550,8 +550,8 @@ func TestTheProbesAreKubeadms(t *testing.T) {
 
 func TestOrphansUnderWorkloadsNamesAreAdopted(t *testing.T) {
 	ns := namespace(t)
-	labels := map[string]string{bryggav1alpha1.ControlPlaneLabel: "dev"}
-	scheduler := map[string]string{bryggav1alpha1.ControlPlaneLabel: "dev", "app.kubernetes.io/name": "kube-scheduler"}
+	labels := map[string]string{lodiav1alpha1.ControlPlaneLabel: "dev"}
+	scheduler := map[string]string{lodiav1alpha1.ControlPlaneLabel: "dev", "app.kubernetes.io/name": "kube-scheduler"}
 	orphans := []client.Object{
 		&corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{Name: "dev-kube-apiserver", Namespace: ns, Labels: labels},
@@ -587,7 +587,7 @@ func TestOrphansUnderWorkloadsNamesAreAdopted(t *testing.T) {
 	})
 	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
 	inputsReady(t, cp)
-	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonRollingOut) })
+	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRollingOut) })
 	for _, orphan := range orphans {
 		fresh := orphan.DeepCopyObject().(client.Object)
 		if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(orphan), fresh); err != nil {
@@ -601,7 +601,7 @@ func TestOrphansUnderWorkloadsNamesAreAdopted(t *testing.T) {
 
 func TestConditionsFromState(t *testing.T) {
 	ns := namespace(t)
-	events, err := k8s.Watch(t.Context(), &bryggav1alpha1.ControlPlaneList{}, client.InNamespace(ns))
+	events, err := k8s.Watch(t.Context(), &lodiav1alpha1.ControlPlaneList{}, client.InNamespace(ns))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -611,18 +611,18 @@ func TestConditionsFromState(t *testing.T) {
 	for first == nil {
 		select {
 		case event := <-events.ResultChan():
-			if fresh, ok := event.Object.(*bryggav1alpha1.ControlPlane); ok && event.Type == watch.Modified {
-				first = meta.FindStatusCondition(fresh.Status.Conditions, bryggav1alpha1.ConditionAPIServerReady)
+			if fresh, ok := event.Object.(*lodiav1alpha1.ControlPlane); ok && event.Type == watch.Modified {
+				first = meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady)
 			}
 		case <-time.After(30 * time.Second):
 			t.Fatal("no APIServerReady condition was written")
 		}
 	}
-	if first.Status != metav1.ConditionUnknown || first.Reason != bryggav1alpha1.ReasonReconciling {
-		t.Errorf("the first APIServerReady is %s/%s %q, want Unknown/%s", first.Status, first.Reason, first.Message, bryggav1alpha1.ReasonReconciling)
+	if first.Status != metav1.ConditionUnknown || first.Reason != lodiav1alpha1.ReasonReconciling {
+		t.Errorf("the first APIServerReady is %s/%s %q, want Unknown/%s", first.Status, first.Reason, first.Message, lodiav1alpha1.ReasonReconciling)
 	}
 	eventually(t, func() error {
-		return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForEndpoint)
+		return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint)
 	})
 
 	before := get(t, cp).ResourceVersion
@@ -672,11 +672,11 @@ func TestAPredecessorsServiceIsNotWrittenOver(t *testing.T) {
 	predecessor := types.UID("5d1e8a52-5f0e-4bd3-a1a8-0f3c0e6a8b11")
 	held := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      bryggav1alpha1.APIServerServiceName("dev"),
+			Name:      lodiav1alpha1.APIServerServiceName("dev"),
 			Namespace: ns,
-			Labels:    map[string]string{bryggav1alpha1.ControlPlaneLabel: "dev"},
+			Labels:    map[string]string{lodiav1alpha1.ControlPlaneLabel: "dev"},
 			OwnerReferences: []metav1.OwnerReference{{
-				APIVersion: bryggav1alpha1.GroupVersion.String(), Kind: "ControlPlane", Name: "dev", UID: predecessor, Controller: new(true),
+				APIVersion: lodiav1alpha1.GroupVersion.String(), Kind: "ControlPlane", Name: "dev", UID: predecessor, Controller: new(true),
 			}},
 		},
 		Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{Name: "https", Port: 443}}},
@@ -686,7 +686,7 @@ func TestAPredecessorsServiceIsNotWrittenOver(t *testing.T) {
 	}
 	cp := create(t, ns, loadBalancer())
 	eventually(t, func() error {
-		return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonObjectsControlledElsewhere)
+		return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere)
 	})
 	if c := condition(t, cp); !strings.Contains(c.Message, "Service dev-kube-apiserver by ControlPlane dev (UID "+string(predecessor)+")") {
 		t.Errorf("APIServerReady says %q", c.Message)
@@ -705,7 +705,7 @@ func TestAPredecessorsServiceIsNotWrittenOver(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, func() error {
-		return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForEndpoint)
+		return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint)
 	})
 	if svc := getService(t, cp); !metav1.IsControlledBy(svc, cp) || svc.Spec.Type != corev1.ServiceTypeLoadBalancer {
 		t.Errorf("the Service is %s, controlled by %v", svc.Spec.Type, metav1.GetControllerOf(svc))
@@ -720,9 +720,9 @@ func TestAnObjectAnotherControlPlaneKeepsHoldsEveryWorkload(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "dev-kube-scheduler",
 			Namespace: ns,
-			Labels:    map[string]string{bryggav1alpha1.ControlPlaneLabel: "dev"},
+			Labels:    map[string]string{lodiav1alpha1.ControlPlaneLabel: "dev"},
 			OwnerReferences: []metav1.OwnerReference{{
-				APIVersion: bryggav1alpha1.GroupVersion.String(), Kind: "ControlPlane", Name: "prod", UID: other, Controller: new(true),
+				APIVersion: lodiav1alpha1.GroupVersion.String(), Kind: "ControlPlane", Name: "prod", UID: other, Controller: new(true),
 			}},
 		},
 		Spec: appsv1.DeploymentSpec{
@@ -740,7 +740,7 @@ func TestAnObjectAnotherControlPlaneKeepsHoldsEveryWorkload(t *testing.T) {
 	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
 	inputsReady(t, cp)
 	eventually(t, func() error {
-		return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonObjectsControlledElsewhere)
+		return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere)
 	})
 	if c := condition(t, cp); !strings.Contains(c.Message, "Deployment dev-kube-scheduler by ControlPlane prod (UID "+string(other)+")") {
 		t.Errorf("APIServerReady says %q", c.Message)
@@ -766,7 +766,7 @@ func TestAnObjectAnotherControlPlaneKeepsHoldsEveryWorkload(t *testing.T) {
 		t.Fatal(err)
 	}
 	reconcileNow(t, cp)
-	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonRollingOut) })
+	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRollingOut) })
 	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
 		if d := deployment(t, cp, component); !metav1.IsControlledBy(d, cp) {
 			t.Errorf("%s is controlled by %v", d.Name, metav1.GetControllerOf(d))
@@ -797,8 +797,8 @@ func TestAQuotaThatRefusesTheServiceIsSaid(t *testing.T) {
 	})
 
 	cp := create(t, ns, loadBalancer())
-	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonRefused) })
-	if c := condition(t, cp); c.Message != "the API server refuses Service dev-kube-apiserver; the reason is in Brygga's log" {
+	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused) })
+	if c := condition(t, cp); c.Message != "the API server refuses Service dev-kube-apiserver; the reason is in Lodia's log" {
 		t.Errorf("APIServerReady says %q", c.Message)
 	}
 	reconciler := &workloads.Reconciler{Client: k8s, Reader: k8s, SignerImage: signerImage}
@@ -813,7 +813,7 @@ func TestAQuotaThatRefusesTheServiceIsSaid(t *testing.T) {
 		if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 			return err
 		}
-		return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForEndpoint)
+		return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint)
 	})
 }
 
@@ -873,8 +873,8 @@ func TestAPolicyThatRefusesADeploymentIsSaid(t *testing.T) {
 	cp := create(t, ns, loadBalancer())
 	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
 	inputsReady(t, cp)
-	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonRefused) })
-	if c := condition(t, cp); c.Message != "the API server refuses Deployment dev-kube-scheduler; the reason is in Brygga's log" {
+	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused) })
+	if c := condition(t, cp); c.Message != "the API server refuses Deployment dev-kube-scheduler; the reason is in Lodia's log" {
 		t.Errorf("APIServerReady says %q", c.Message)
 	}
 	if e := get(t, cp).Status.Endpoint; e == nil || e.APIServer.Host != lbAddress {
@@ -889,12 +889,12 @@ func TestAPolicyThatRefusesADeploymentIsSaid(t *testing.T) {
 		if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 			return err
 		}
-		return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonRollingOut)
+		return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRollingOut)
 	})
 }
 
-func loadBalancer() bryggav1alpha1.Endpoint {
-	return bryggav1alpha1.Endpoint{LoadBalancer: &bryggav1alpha1.LoadBalancerEndpoint{}}
+func loadBalancer() lodiav1alpha1.Endpoint {
+	return lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}}
 }
 
 func namespace(t *testing.T) string {
@@ -906,20 +906,20 @@ func namespace(t *testing.T) string {
 	return ns.Name
 }
 
-func controlPlane(t *testing.T, endpoint bryggav1alpha1.Endpoint, change ...func(*bryggav1alpha1.ControlPlaneSpec)) *bryggav1alpha1.ControlPlane {
+func controlPlane(t *testing.T, endpoint lodiav1alpha1.Endpoint, change ...func(*lodiav1alpha1.ControlPlaneSpec)) *lodiav1alpha1.ControlPlane {
 	t.Helper()
 	return create(t, namespace(t), endpoint, change...)
 }
 
-func create(t *testing.T, ns string, endpoint bryggav1alpha1.Endpoint, change ...func(*bryggav1alpha1.ControlPlaneSpec)) *bryggav1alpha1.ControlPlane {
+func create(t *testing.T, ns string, endpoint lodiav1alpha1.Endpoint, change ...func(*lodiav1alpha1.ControlPlaneSpec)) *lodiav1alpha1.ControlPlane {
 	t.Helper()
-	cp := &bryggav1alpha1.ControlPlane{
+	cp := &lodiav1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: ns},
-		Spec: bryggav1alpha1.ControlPlaneSpec{
+		Spec: lodiav1alpha1.ControlPlaneSpec{
 			Version:   version,
-			Datastore: bryggav1alpha1.DatastoreChoice{Dedicated: &bryggav1alpha1.DedicatedDatastore{}},
+			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{}},
 			Endpoint:  endpoint,
-			Network:   bryggav1alpha1.Network{ServiceCIDRs: []bryggav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []bryggav1alpha1.CIDR{"10.244.0.0/16"}},
+			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
 		},
 	}
 	for _, c := range change {
@@ -932,7 +932,7 @@ func create(t *testing.T, ns string, endpoint bryggav1alpha1.Endpoint, change ..
 }
 
 // running brings a ControlPlane to APIServerReady=True.
-func running(t *testing.T) *bryggav1alpha1.ControlPlane {
+func running(t *testing.T) *lodiav1alpha1.ControlPlane {
 	t.Helper()
 	cp := controlPlane(t, loadBalancer())
 	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
@@ -940,21 +940,21 @@ func running(t *testing.T) *bryggav1alpha1.ControlPlane {
 	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
 		markAvailable(t, eventuallyDeployment(t, cp, component))
 	}
-	eventually(t, func() error { return expectCondition(cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReady) })
+	eventually(t, func() error { return expectCondition(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady) })
 	return cp
 }
 
-func inputsReady(t *testing.T, cp *bryggav1alpha1.ControlPlane) {
+func inputsReady(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 	t.Helper()
 	setTarget(t, cp, version)
-	setTrue(t, cp, bryggav1alpha1.ConditionCertificatesReady, "Issued")
-	setTrue(t, cp, bryggav1alpha1.ConditionDatastoreReady, "Ready")
-	setDatastore(t, cp, bryggav1alpha1.HostPort{Host: "dev-etcd-client." + cp.Namespace + ".svc", Port: 2379})
+	setTrue(t, cp, lodiav1alpha1.ConditionCertificatesReady, "Issued")
+	setTrue(t, cp, lodiav1alpha1.ConditionDatastoreReady, "Ready")
+	setDatastore(t, cp, lodiav1alpha1.HostPort{Host: "dev-etcd-client." + cp.Namespace + ".svc", Port: 2379})
 	createSecrets(t, cp, "one")
-	setSecret(t, cp, bryggav1alpha1.APIServerServingSecret, "one")
+	setSecret(t, cp, lodiav1alpha1.APIServerServingSecret, "one")
 }
 
-func reconcileNow(t *testing.T, cp *bryggav1alpha1.ControlPlane) ctrl.Result {
+func reconcileNow(t *testing.T, cp *lodiav1alpha1.ControlPlane) ctrl.Result {
 	t.Helper()
 	reconciler := &workloads.Reconciler{Client: k8s, Reader: k8s, SignerImage: signerImage}
 	result, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
@@ -964,36 +964,36 @@ func reconcileNow(t *testing.T, cp *bryggav1alpha1.ControlPlane) ctrl.Result {
 	return result
 }
 
-func get(t *testing.T, cp *bryggav1alpha1.ControlPlane) *bryggav1alpha1.ControlPlane {
+func get(t *testing.T, cp *lodiav1alpha1.ControlPlane) *lodiav1alpha1.ControlPlane {
 	t.Helper()
-	fresh := &bryggav1alpha1.ControlPlane{}
+	fresh := &lodiav1alpha1.ControlPlane{}
 	if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(cp), fresh); err != nil {
 		t.Fatal(err)
 	}
 	return fresh
 }
 
-func condition(t *testing.T, cp *bryggav1alpha1.ControlPlane) *metav1.Condition {
+func condition(t *testing.T, cp *lodiav1alpha1.ControlPlane) *metav1.Condition {
 	t.Helper()
-	return meta.FindStatusCondition(get(t, cp).Status.Conditions, bryggav1alpha1.ConditionAPIServerReady)
+	return meta.FindStatusCondition(get(t, cp).Status.Conditions, lodiav1alpha1.ConditionAPIServerReady)
 }
 
-func expectCondition(cp *bryggav1alpha1.ControlPlane, status metav1.ConditionStatus, reason string) error {
-	fresh := &bryggav1alpha1.ControlPlane{}
+func expectCondition(cp *lodiav1alpha1.ControlPlane, status metav1.ConditionStatus, reason string) error {
+	fresh := &lodiav1alpha1.ControlPlane{}
 	if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(cp), fresh); err != nil {
 		return err
 	}
-	c := meta.FindStatusCondition(fresh.Status.Conditions, bryggav1alpha1.ConditionAPIServerReady)
+	c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady)
 	if c == nil || c.Status != status || c.Reason != reason || c.ObservedGeneration != fresh.Generation {
 		return fmt.Errorf("APIServerReady is %+v, want %s %s at generation %d", c, status, reason, fresh.Generation)
 	}
 	return nil
 }
 
-func applyStatus(t *testing.T, cp *bryggav1alpha1.ControlPlane, owner string, status map[string]any) {
+func applyStatus(t *testing.T, cp *lodiav1alpha1.ControlPlane, owner string, status map[string]any) {
 	t.Helper()
 	u := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": bryggav1alpha1.GroupVersion.String(),
+		"apiVersion": lodiav1alpha1.GroupVersion.String(),
 		"kind":       "ControlPlane",
 		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
 		"status":     status,
@@ -1003,12 +1003,12 @@ func applyStatus(t *testing.T, cp *bryggav1alpha1.ControlPlane, owner string, st
 	}
 }
 
-func setTarget(t *testing.T, cp *bryggav1alpha1.ControlPlane, version string) {
+func setTarget(t *testing.T, cp *lodiav1alpha1.ControlPlane, version string) {
 	t.Helper()
 	applyStatus(t, cp, "test/target", map[string]any{"target": map[string]any{"version": version}})
 }
 
-func setDatastore(t *testing.T, cp *bryggav1alpha1.ControlPlane, endpoints ...bryggav1alpha1.HostPort) {
+func setDatastore(t *testing.T, cp *lodiav1alpha1.ControlPlane, endpoints ...lodiav1alpha1.HostPort) {
 	t.Helper()
 	var list []any
 	for _, e := range endpoints {
@@ -1020,7 +1020,7 @@ func setDatastore(t *testing.T, cp *bryggav1alpha1.ControlPlane, endpoints ...br
 	}})
 }
 
-func setTrue(t *testing.T, cp *bryggav1alpha1.ControlPlane, conditionType, reason string) {
+func setTrue(t *testing.T, cp *lodiav1alpha1.ControlPlane, conditionType, reason string) {
 	t.Helper()
 	applyStatus(t, cp, "test/"+conditionType, map[string]any{"conditions": []any{map[string]any{
 		"type":               conditionType,
@@ -1032,22 +1032,22 @@ func setTrue(t *testing.T, cp *bryggav1alpha1.ControlPlane, conditionType, reaso
 	}}})
 }
 
-func createSecrets(t *testing.T, cp *bryggav1alpha1.ControlPlane, hash string) {
+func createSecrets(t *testing.T, cp *lodiav1alpha1.ControlPlane, hash string) {
 	t.Helper()
 	for _, s := range restartOnlySecrets {
 		setSecret(t, cp, s, hash)
 	}
 }
 
-func setSecret(t *testing.T, cp *bryggav1alpha1.ControlPlane, s bryggav1alpha1.Secret, hash string) {
+func setSecret(t *testing.T, cp *lodiav1alpha1.ControlPlane, s lodiav1alpha1.Secret, hash string) {
 	t.Helper()
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: s.Name(cp.Name), Namespace: cp.Namespace}}
 	err := k8s.Get(t.Context(), client.ObjectKeyFromObject(secret), secret)
 	if client.IgnoreNotFound(err) != nil {
 		t.Fatal(err)
 	}
-	secret.Labels = map[string]string{bryggav1alpha1.ControlPlaneLabel: cp.Name}
-	secret.Annotations = map[string]string{bryggav1alpha1.DataHashAnnotation: hash}
+	secret.Labels = map[string]string{lodiav1alpha1.ControlPlaneLabel: cp.Name}
+	secret.Annotations = map[string]string{lodiav1alpha1.DataHashAnnotation: hash}
 	if hash == "" {
 		secret.Annotations = nil
 	}
@@ -1062,7 +1062,7 @@ func setSecret(t *testing.T, cp *bryggav1alpha1.ControlPlane, s bryggav1alpha1.S
 	}
 }
 
-func setIngress(t *testing.T, cp *bryggav1alpha1.ControlPlane, ingress corev1.LoadBalancerIngress) {
+func setIngress(t *testing.T, cp *lodiav1alpha1.ControlPlane, ingress corev1.LoadBalancerIngress) {
 	t.Helper()
 	eventually(t, func() error {
 		svc := getServiceOrNil(t, cp)
@@ -1077,7 +1077,7 @@ func setIngress(t *testing.T, cp *bryggav1alpha1.ControlPlane, ingress corev1.Lo
 	})
 }
 
-func getService(t *testing.T, cp *bryggav1alpha1.ControlPlane) *corev1.Service {
+func getService(t *testing.T, cp *lodiav1alpha1.ControlPlane) *corev1.Service {
 	t.Helper()
 	svc := getServiceOrNil(t, cp)
 	if svc == nil {
@@ -1086,10 +1086,10 @@ func getService(t *testing.T, cp *bryggav1alpha1.ControlPlane) *corev1.Service {
 	return svc
 }
 
-func getServiceOrNil(t *testing.T, cp *bryggav1alpha1.ControlPlane) *corev1.Service {
+func getServiceOrNil(t *testing.T, cp *lodiav1alpha1.ControlPlane) *corev1.Service {
 	t.Helper()
 	svc := &corev1.Service{}
-	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: cp.Namespace, Name: bryggav1alpha1.APIServerServiceName(cp.Name)}, svc); err != nil {
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.APIServerServiceName(cp.Name)}, svc); err != nil {
 		if client.IgnoreNotFound(err) != nil {
 			t.Fatal(err)
 		}
@@ -1140,7 +1140,7 @@ func createNode(t *testing.T, name string, ready bool, address string) {
 	}
 }
 
-func deployment(t *testing.T, cp *bryggav1alpha1.ControlPlane, component string) *appsv1.Deployment {
+func deployment(t *testing.T, cp *lodiav1alpha1.ControlPlane, component string) *appsv1.Deployment {
 	t.Helper()
 	d := &appsv1.Deployment{}
 	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: cp.Namespace, Name: cp.Name + "-" + component}, d); err != nil {
@@ -1149,7 +1149,7 @@ func deployment(t *testing.T, cp *bryggav1alpha1.ControlPlane, component string)
 	return d
 }
 
-func eventuallyDeployment(t *testing.T, cp *bryggav1alpha1.ControlPlane, component string) *appsv1.Deployment {
+func eventuallyDeployment(t *testing.T, cp *lodiav1alpha1.ControlPlane, component string) *appsv1.Deployment {
 	t.Helper()
 	d := &appsv1.Deployment{}
 	eventually(t, func() error {
@@ -1158,7 +1158,7 @@ func eventuallyDeployment(t *testing.T, cp *bryggav1alpha1.ControlPlane, compone
 	return d
 }
 
-func deployments(t *testing.T, cp *bryggav1alpha1.ControlPlane) int {
+func deployments(t *testing.T, cp *lodiav1alpha1.ControlPlane) int {
 	t.Helper()
 	list := &appsv1.DeploymentList{}
 	if err := k8s.List(t.Context(), list, client.InNamespace(cp.Namespace)); err != nil {
@@ -1180,7 +1180,7 @@ func markAvailable(t *testing.T, d *appsv1.Deployment) {
 	})
 }
 
-func generationsOf(t *testing.T, cp *bryggav1alpha1.ControlPlane) map[string]int64 {
+func generationsOf(t *testing.T, cp *lodiav1alpha1.ControlPlane) map[string]int64 {
 	t.Helper()
 	out := map[string]int64{}
 	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
@@ -1189,11 +1189,11 @@ func generationsOf(t *testing.T, cp *bryggav1alpha1.ControlPlane) map[string]int
 	return out
 }
 
-func hashes(t *testing.T, cp *bryggav1alpha1.ControlPlane) map[string]string {
+func hashes(t *testing.T, cp *lodiav1alpha1.ControlPlane) map[string]string {
 	t.Helper()
 	out := map[string]string{}
 	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
-		out[component] = deployment(t, cp, component).Spec.Template.Annotations["brygga.segla.io/restart-hash"]
+		out[component] = deployment(t, cp, component).Spec.Template.Annotations["lodia.io/restart-hash"]
 	}
 	return out
 }

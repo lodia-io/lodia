@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package apistatus_test
@@ -16,7 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
-	"github.com/segla-io/brygga/internal/apistatus"
+	"go.lodia.io/lodia/internal/apistatus"
 )
 
 func TestRefused(t *testing.T) {
@@ -35,7 +35,7 @@ func TestRefused(t *testing.T) {
 		{"wrapped", fmt.Errorf("apply Etcd dev-etcd: %w", invalid), true},
 		{"a webhook's denial without a code", apierrors.NewBadRequest("admission webhook denied the request"), true},
 		{"forbidden by a policy", apierrors.NewForbidden(etcds, "dev-etcd", errors.New("denied by a policy")), true},
-		{"forbidden to brygga:operator", apierrors.NewForbidden(bindings, "brygga:operator", errors.New("denied")), true},
+		{"forbidden to lodia:operator", apierrors.NewForbidden(bindings, "lodia:operator", errors.New("denied")), true},
 		{"unauthorized", apierrors.NewUnauthorized("denied by a policy"), true},
 		{"too large", apierrors.NewRequestEntityTooLargeError("limit is 3145728"), true},
 		{"not found", apierrors.NewNotFound(etcds, "dev-etcd"), false},

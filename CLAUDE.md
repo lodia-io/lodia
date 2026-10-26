@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Brygga is an open-source operator that runs Kubernetes control planes as pods
+Lodia is an open-source operator that runs Kubernetes control planes as pods
 on a management cluster, one `ControlPlane` object per tenant cluster, with
 worker nodes anywhere joining through `kubeadm`. The fact that frames
 everything: **controllers never call each other** — each one reads `spec`,
@@ -9,7 +9,7 @@ cannot work without.
 
 ## Where truth lives
 
-- `docs/README.md` — what Brygga is and does: objects, controllers, the
+- `docs/README.md` — what Lodia is and does: objects, controllers, the
   tenant namespace, networking, lifecycle, install, operations. It describes
   the design now and the code once it exists; a change to behaviour updates it
   in the same commit.

@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package workloads
@@ -22,9 +22,9 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/yaml"
 
-	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
-	"github.com/segla-io/brygga/internal/certs"
-	"github.com/segla-io/brygga/internal/versions"
+	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/certs"
+	"go.lodia.io/lodia/internal/versions"
 )
 
 const (
@@ -35,7 +35,7 @@ const (
 	kubernetesPort   = 6443
 	konnectivityPort = 8132
 
-	restartHashAnnotation = "brygga.segla.io/restart-hash"
+	restartHashAnnotation = "lodia.io/restart-hash"
 	signerSocket          = "/run/signer/signer.sock"
 	konnectivitySocket    = "/run/konnectivity/konnectivity-server.socket"
 	egressFile            = "egress-selector.yaml"
@@ -46,42 +46,42 @@ var components = []string{apiServer, controllerManager, scheduler}
 
 // restartOnly are the PKI Secrets each component reads once at start; it
 // reloads the rest (docs/README.md, A tenant namespace).
-var restartOnly = map[string][]bryggav1alpha1.Secret{
+var restartOnly = map[string][]lodiav1alpha1.Secret{
 	apiServer: {
-		bryggav1alpha1.EtcdCASecret, bryggav1alpha1.FrontProxyClientSecret,
-		bryggav1alpha1.KonnectivityServerSecret, bryggav1alpha1.KonnectivityKubeconfigSecret,
+		lodiav1alpha1.EtcdCASecret, lodiav1alpha1.FrontProxyClientSecret,
+		lodiav1alpha1.KonnectivityServerSecret, lodiav1alpha1.KonnectivityKubeconfigSecret,
 	},
-	controllerManager: {bryggav1alpha1.CABundleSecret},
+	controllerManager: {lodiav1alpha1.CABundleSecret},
 }
 
 // anonymousPaths are what kubeadm join reads before it has credentials, and
 // the health paths.
-var anonymousPaths = []string{"/healthz", "/livez", bryggav1alpha1.APIServerReadyzPath, "/api/v1/namespaces/kube-public/configmaps/cluster-info"}
+var anonymousPaths = []string{"/healthz", "/livez", lodiav1alpha1.APIServerReadyzPath, "/api/v1/namespaces/kube-public/configmaps/cluster-info"}
 
 func deploymentName(cp, component string) string { return cp + "-" + component }
 
 func podLabels(cp, component string) map[string]string {
-	return map[string]string{bryggav1alpha1.ControlPlaneLabel: cp, "app.kubernetes.io/name": component}
+	return map[string]string{lodiav1alpha1.ControlPlaneLabel: cp, "app.kubernetes.io/name": component}
 }
 
-func objectMeta(cp *bryggav1alpha1.ControlPlane, name string) metav1.ObjectMeta {
+func objectMeta(cp *lodiav1alpha1.ControlPlane, name string) metav1.ObjectMeta {
 	return metav1.ObjectMeta{
 		Name:            name,
 		Namespace:       cp.Namespace,
-		Labels:          map[string]string{bryggav1alpha1.ControlPlaneLabel: cp.Name},
-		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cp, bryggav1alpha1.GroupVersion.WithKind("ControlPlane"))},
+		Labels:          map[string]string{lodiav1alpha1.ControlPlaneLabel: cp.Name},
+		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cp, lodiav1alpha1.GroupVersion.WithKind("ControlPlane"))},
 	}
 }
 
-func service(cp *bryggav1alpha1.ControlPlane) *corev1.Service {
+func service(cp *lodiav1alpha1.ControlPlane) *corev1.Service {
 	svc := &corev1.Service{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
-		ObjectMeta: objectMeta(cp, bryggav1alpha1.APIServerServiceName(cp.Name)),
+		ObjectMeta: objectMeta(cp, lodiav1alpha1.APIServerServiceName(cp.Name)),
 		Spec: corev1.ServiceSpec{
 			Type:     corev1.ServiceTypeNodePort,
 			Selector: podLabels(cp.Name, apiServer),
 			Ports: []corev1.ServicePort{
-				{Name: "https", Protocol: corev1.ProtocolTCP, Port: bryggav1alpha1.APIServerServicePort, TargetPort: intstr.FromString("https")},
+				{Name: "https", Protocol: corev1.ProtocolTCP, Port: lodiav1alpha1.APIServerServicePort, TargetPort: intstr.FromString("https")},
 				{Name: "kubernetes", Protocol: corev1.ProtocolTCP, Port: kubernetesPort, TargetPort: intstr.FromString("https")},
 				{Name: "konnectivity", Protocol: corev1.ProtocolTCP, Port: konnectivityPort, TargetPort: intstr.FromString("konnectivity")},
 			},
@@ -125,7 +125,7 @@ func authentication() ([]byte, error) {
 	})
 }
 
-func configMaps(cp *bryggav1alpha1.ControlPlane) ([]*corev1.ConfigMap, error) {
+func configMaps(cp *lodiav1alpha1.ControlPlane) ([]*corev1.ConfigMap, error) {
 	egress, err := egressSelector()
 	if err != nil {
 		return nil, err
@@ -140,7 +140,7 @@ func configMaps(cp *bryggav1alpha1.ControlPlane) ([]*corev1.ConfigMap, error) {
 	}, nil
 }
 
-func configMap(cp *bryggav1alpha1.ControlPlane, suffix, key string, content []byte) *corev1.ConfigMap {
+func configMap(cp *lodiav1alpha1.ControlPlane, suffix, key string, content []byte) *corev1.ConfigMap {
 	return &corev1.ConfigMap{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
 		ObjectMeta: objectMeta(cp, cp.Name+"-"+suffix),
@@ -149,13 +149,13 @@ func configMap(cp *bryggav1alpha1.ControlPlane, suffix, key string, content []by
 }
 
 type rendering struct {
-	cp          *bryggav1alpha1.ControlPlane
+	cp          *lodiav1alpha1.ControlPlane
 	images      versions.Images
 	signerImage string
 	advertise   string
 	securePort  int32
 	issuer      string
-	etcd        []bryggav1alpha1.HostPort
+	etcd        []lodiav1alpha1.HostPort
 	hashes      map[string]string
 }
 
@@ -165,7 +165,7 @@ func (r rendering) deployments() []*appsv1.Deployment {
 
 func (r rendering) apiServer() *appsv1.Deployment {
 	cp := r.cp
-	settings := ptr.Deref(cp.Spec.APIServer, bryggav1alpha1.APIServer{})
+	settings := ptr.Deref(cp.Spec.APIServer, lodiav1alpha1.APIServer{})
 	etcd := make([]string, 0, len(r.etcd))
 	for _, e := range r.etcd {
 		etcd = append(etcd, "https://"+net.JoinHostPort(e.Host, strconv.Itoa(int(e.Port))))
@@ -173,25 +173,25 @@ func (r rendering) apiServer() *appsv1.Deployment {
 	flags := map[string]string{
 		"advertise-address":                           r.advertise,
 		"allow-privileged":                            "true",
-		"authentication-config":                       "/etc/brygga/authentication/" + authenticationFile,
+		"authentication-config":                       "/etc/lodia/authentication/" + authenticationFile,
 		"authorization-mode":                          "Node,RBAC",
-		"client-ca-file":                              "/etc/brygga/client-ca/" + bryggav1alpha1.CACertKey,
-		"egress-selector-config-file":                 "/etc/brygga/egress/" + egressFile,
+		"client-ca-file":                              "/etc/lodia/client-ca/" + lodiav1alpha1.CACertKey,
+		"egress-selector-config-file":                 "/etc/lodia/egress/" + egressFile,
 		"enable-admission-plugins":                    "NodeRestriction",
 		"enable-bootstrap-token-auth":                 "true",
-		"encryption-provider-config":                  "/etc/brygga/encryption/" + bryggav1alpha1.EncryptionConfigKey,
+		"encryption-provider-config":                  "/etc/lodia/encryption/" + lodiav1alpha1.EncryptionConfigKey,
 		"encryption-provider-config-automatic-reload": "true",
-		"etcd-cafile":                                 "/etc/brygga/etcd-ca/" + bryggav1alpha1.CACertKey,
-		"etcd-certfile":                               "/etc/brygga/etcd-client/" + bryggav1alpha1.TLSCertKey,
-		"etcd-keyfile":                                "/etc/brygga/etcd-client/" + bryggav1alpha1.TLSPrivateKeyKey,
+		"etcd-cafile":                                 "/etc/lodia/etcd-ca/" + lodiav1alpha1.CACertKey,
+		"etcd-certfile":                               "/etc/lodia/etcd-client/" + lodiav1alpha1.TLSCertKey,
+		"etcd-keyfile":                                "/etc/lodia/etcd-client/" + lodiav1alpha1.TLSPrivateKeyKey,
 		"etcd-servers":                                strings.Join(etcd, ","),
-		"kubelet-client-certificate":                  "/etc/brygga/kubelet-client/" + bryggav1alpha1.TLSCertKey,
-		"kubelet-client-key":                          "/etc/brygga/kubelet-client/" + bryggav1alpha1.TLSPrivateKeyKey,
+		"kubelet-client-certificate":                  "/etc/lodia/kubelet-client/" + lodiav1alpha1.TLSCertKey,
+		"kubelet-client-key":                          "/etc/lodia/kubelet-client/" + lodiav1alpha1.TLSPrivateKeyKey,
 		"kubelet-preferred-address-types":             "InternalIP,ExternalIP,Hostname",
-		"proxy-client-cert-file":                      "/etc/brygga/front-proxy-client/" + bryggav1alpha1.TLSCertKey,
-		"proxy-client-key-file":                       "/etc/brygga/front-proxy-client/" + bryggav1alpha1.TLSPrivateKeyKey,
-		"requestheader-allowed-names":                 bryggav1alpha1.FrontProxyClientCommonName,
-		"requestheader-client-ca-file":                "/etc/brygga/front-proxy-ca/" + bryggav1alpha1.CACertKey,
+		"proxy-client-cert-file":                      "/etc/lodia/front-proxy-client/" + lodiav1alpha1.TLSCertKey,
+		"proxy-client-key-file":                       "/etc/lodia/front-proxy-client/" + lodiav1alpha1.TLSPrivateKeyKey,
+		"requestheader-allowed-names":                 lodiav1alpha1.FrontProxyClientCommonName,
+		"requestheader-client-ca-file":                "/etc/lodia/front-proxy-ca/" + lodiav1alpha1.CACertKey,
 		"requestheader-extra-headers-prefix":          "X-Remote-Extra-",
 		"requestheader-group-headers":                 "X-Remote-Group",
 		"requestheader-username-headers":              "X-Remote-User",
@@ -199,15 +199,15 @@ func (r rendering) apiServer() *appsv1.Deployment {
 		"service-account-issuer":                      r.issuer,
 		"service-account-signing-endpoint":            signerSocket,
 		"service-cluster-ip-range":                    joined(cp.Spec.Network.ServiceCIDRs),
-		"tls-cert-file":                               "/etc/brygga/serving/" + bryggav1alpha1.TLSCertKey,
-		"tls-private-key-file":                        "/etc/brygga/serving/" + bryggav1alpha1.TLSPrivateKeyKey,
+		"tls-cert-file":                               "/etc/lodia/serving/" + lodiav1alpha1.TLSCertKey,
+		"tls-private-key-file":                        "/etc/lodia/serving/" + lodiav1alpha1.TLSPrivateKeyKey,
 	}
 	container := corev1.Container{
 		Name:           apiServer,
 		Image:          r.images.APIServer,
 		Command:        command(apiServer, flags, settings.ExtraArgs, settings.FeatureGates),
 		Ports:          []corev1.ContainerPort{{Name: "https", ContainerPort: r.securePort, Protocol: corev1.ProtocolTCP}},
-		ReadinessProbe: readinessProbe(bryggav1alpha1.APIServerReadyzPath, intstr.FromString("https")),
+		ReadinessProbe: readinessProbe(lodiav1alpha1.APIServerReadyzPath, intstr.FromString("https")),
 		LivenessProbe:  livenessProbe("/livez", intstr.FromString("https")),
 		StartupProbe:   startupProbe("/livez", intstr.FromString("https")),
 		Resources:      resources(settings.Resources, "100m", "256Mi"),
@@ -231,9 +231,9 @@ func (r rendering) apiServer() *appsv1.Deployment {
 			"agent-port":               strconv.Itoa(konnectivityPort),
 			"admin-port":               "8133",
 			"health-port":              "8134",
-			"cluster-cert":             "/etc/brygga/konnectivity-server/" + bryggav1alpha1.TLSCertKey,
-			"cluster-key":              "/etc/brygga/konnectivity-server/" + bryggav1alpha1.TLSPrivateKeyKey,
-			"kubeconfig":               "/etc/brygga/konnectivity-kubeconfig/" + bryggav1alpha1.KubeconfigKey,
+			"cluster-cert":             "/etc/lodia/konnectivity-server/" + lodiav1alpha1.TLSCertKey,
+			"cluster-key":              "/etc/lodia/konnectivity-server/" + lodiav1alpha1.TLSPrivateKeyKey,
+			"kubeconfig":               "/etc/lodia/konnectivity-kubeconfig/" + lodiav1alpha1.KubeconfigKey,
 			"agent-namespace":          "kube-system",
 			"agent-service-account":    "konnectivity-agent",
 			"authentication-audience":  "system:konnectivity-server",
@@ -250,7 +250,7 @@ func (r rendering) apiServer() *appsv1.Deployment {
 		VolumeMounts: append(mounts("konnectivity-server", "konnectivity-kubeconfig"), corev1.VolumeMount{Name: "konnectivity-socket", MountPath: "/run/konnectivity"}),
 	}
 	signer := corev1.Container{
-		Name:          "brygga-signer",
+		Name:          "lodia-signer",
 		Image:         r.signerImage,
 		RestartPolicy: new(corev1.ContainerRestartPolicyAlways),
 		Args:          []string{"--socket=" + signerSocket, "--keys-dir=/keys"},
@@ -269,18 +269,18 @@ func (r rendering) apiServer() *appsv1.Deployment {
 			{Name: "sa-keys", MountPath: "/keys", ReadOnly: true},
 		},
 	}
-	volumes := append(secretVolumes(cp.Name, map[string]bryggav1alpha1.Secret{
-		"serving":                 bryggav1alpha1.APIServerServingSecret,
-		"client-ca":               bryggav1alpha1.ClientCASecret,
-		"kubelet-client":          bryggav1alpha1.APIServerKubeletClientSecret,
-		"front-proxy-ca":          bryggav1alpha1.FrontProxyCASecret,
-		"front-proxy-client":      bryggav1alpha1.FrontProxyClientSecret,
-		"etcd-ca":                 bryggav1alpha1.EtcdCASecret,
-		"etcd-client":             bryggav1alpha1.APIServerEtcdClientSecret,
-		"encryption":              bryggav1alpha1.EncryptionConfigSecret,
-		"konnectivity-server":     bryggav1alpha1.KonnectivityServerSecret,
-		"konnectivity-kubeconfig": bryggav1alpha1.KonnectivityKubeconfigSecret,
-		"sa-keys":                 bryggav1alpha1.ServiceAccountKeysSecret,
+	volumes := append(secretVolumes(cp.Name, map[string]lodiav1alpha1.Secret{
+		"serving":                 lodiav1alpha1.APIServerServingSecret,
+		"client-ca":               lodiav1alpha1.ClientCASecret,
+		"kubelet-client":          lodiav1alpha1.APIServerKubeletClientSecret,
+		"front-proxy-ca":          lodiav1alpha1.FrontProxyCASecret,
+		"front-proxy-client":      lodiav1alpha1.FrontProxyClientSecret,
+		"etcd-ca":                 lodiav1alpha1.EtcdCASecret,
+		"etcd-client":             lodiav1alpha1.APIServerEtcdClientSecret,
+		"encryption":              lodiav1alpha1.EncryptionConfigSecret,
+		"konnectivity-server":     lodiav1alpha1.KonnectivityServerSecret,
+		"konnectivity-kubeconfig": lodiav1alpha1.KonnectivityKubeconfigSecret,
+		"sa-keys":                 lodiav1alpha1.ServiceAccountKeysSecret,
 	}),
 		configMapVolume("authentication", cp.Name+"-authentication-config"),
 		configMapVolume("egress", cp.Name+"-egress-selector"),
@@ -296,7 +296,7 @@ func (r rendering) apiServer() *appsv1.Deployment {
 
 // konnectivityImage is the version table's konnectivity-server image, with the
 // tag of addons.konnectivity.version in place of its tag and digest.
-func konnectivityImage(cp *bryggav1alpha1.ControlPlane, image string) (string, error) {
+func konnectivityImage(cp *lodiav1alpha1.ControlPlane, image string) (string, error) {
 	k := cp.Spec.Addons
 	if k == nil || k.Konnectivity == nil || k.Konnectivity.Version == "" {
 		return image, nil
@@ -314,24 +314,24 @@ func konnectivityImage(cp *bryggav1alpha1.ControlPlane, image string) (string, e
 
 func (r rendering) controllerManager() *appsv1.Deployment {
 	cp := r.cp
-	settings := ptr.Deref(cp.Spec.ControllerManager, bryggav1alpha1.Component{})
-	kubeconfig := "/etc/brygga/kubeconfig/" + bryggav1alpha1.KubeconfigKey
+	settings := ptr.Deref(cp.Spec.ControllerManager, lodiav1alpha1.Component{})
+	kubeconfig := "/etc/lodia/kubeconfig/" + lodiav1alpha1.KubeconfigKey
 	flags := map[string]string{
 		"allocate-node-cidrs":                      "true",
 		"authentication-kubeconfig":                kubeconfig,
 		"authorization-kubeconfig":                 kubeconfig,
 		"bind-address":                             "0.0.0.0",
-		"client-ca-file":                           "/etc/brygga/client-ca/" + bryggav1alpha1.CACertKey,
+		"client-ca-file":                           "/etc/lodia/client-ca/" + lodiav1alpha1.CACertKey,
 		"cluster-cidr":                             joined(cp.Spec.Network.PodCIDRs),
 		"cluster-name":                             cp.Name,
 		"cluster-signing-duration":                 certs.KubeletClientLifetime.String(),
-		"cluster-signing-kubelet-client-cert-file": "/etc/brygga/kubelet-signer/" + bryggav1alpha1.TLSCertKey,
-		"cluster-signing-kubelet-client-key-file":  "/etc/brygga/kubelet-signer/" + bryggav1alpha1.TLSPrivateKeyKey,
+		"cluster-signing-kubelet-client-cert-file": "/etc/lodia/kubelet-signer/" + lodiav1alpha1.TLSCertKey,
+		"cluster-signing-kubelet-client-key-file":  "/etc/lodia/kubelet-signer/" + lodiav1alpha1.TLSPrivateKeyKey,
 		"controllers":                              "*,bootstrap-signer-controller,token-cleaner-controller",
 		"kubeconfig":                               kubeconfig,
 		"leader-elect":                             "true",
-		"requestheader-client-ca-file":             "/etc/brygga/front-proxy-ca/" + bryggav1alpha1.CACertKey,
-		"root-ca-file":                             "/etc/brygga/ca-bundle/" + bryggav1alpha1.CACertKey,
+		"requestheader-client-ca-file":             "/etc/lodia/front-proxy-ca/" + lodiav1alpha1.CACertKey,
+		"root-ca-file":                             "/etc/lodia/ca-bundle/" + lodiav1alpha1.CACertKey,
 		"service-cluster-ip-range":                 joined(cp.Spec.Network.ServiceCIDRs),
 		"use-service-account-credentials":          "true",
 	}
@@ -346,20 +346,20 @@ func (r rendering) controllerManager() *appsv1.Deployment {
 	}
 	return r.deployment(controllerManager, 1, corev1.PodSpec{
 		Containers: []corev1.Container{container},
-		Volumes: secretVolumes(cp.Name, map[string]bryggav1alpha1.Secret{
-			"kubeconfig":     bryggav1alpha1.ControllerManagerKubeconfigSecret,
-			"client-ca":      bryggav1alpha1.ClientCASecret,
-			"front-proxy-ca": bryggav1alpha1.FrontProxyCASecret,
-			"kubelet-signer": bryggav1alpha1.KubeletSignerSecret,
-			"ca-bundle":      bryggav1alpha1.CABundleSecret,
+		Volumes: secretVolumes(cp.Name, map[string]lodiav1alpha1.Secret{
+			"kubeconfig":     lodiav1alpha1.ControllerManagerKubeconfigSecret,
+			"client-ca":      lodiav1alpha1.ClientCASecret,
+			"front-proxy-ca": lodiav1alpha1.FrontProxyCASecret,
+			"kubelet-signer": lodiav1alpha1.KubeletSignerSecret,
+			"ca-bundle":      lodiav1alpha1.CABundleSecret,
 		}),
 	})
 }
 
 func (r rendering) scheduler() *appsv1.Deployment {
 	cp := r.cp
-	settings := ptr.Deref(cp.Spec.Scheduler, bryggav1alpha1.Scheduler{})
-	kubeconfig := "/etc/brygga/kubeconfig/" + bryggav1alpha1.KubeconfigKey
+	settings := ptr.Deref(cp.Spec.Scheduler, lodiav1alpha1.Scheduler{})
+	kubeconfig := "/etc/lodia/kubeconfig/" + lodiav1alpha1.KubeconfigKey
 	flags := map[string]string{
 		"authentication-kubeconfig": kubeconfig,
 		"authorization-kubeconfig":  kubeconfig,
@@ -379,7 +379,7 @@ func (r rendering) scheduler() *appsv1.Deployment {
 	}
 	return r.deployment(scheduler, 1, corev1.PodSpec{
 		Containers: []corev1.Container{container},
-		Volumes:    secretVolumes(cp.Name, map[string]bryggav1alpha1.Secret{"kubeconfig": bryggav1alpha1.SchedulerKubeconfigSecret}),
+		Volumes:    secretVolumes(cp.Name, map[string]lodiav1alpha1.Secret{"kubeconfig": lodiav1alpha1.SchedulerKubeconfigSecret}),
 	})
 }
 
@@ -415,7 +415,7 @@ func (r rendering) deployment(component string, replicas int32, pod corev1.PodSp
 // nothing; the kubelet's probes come from the node, which a NetworkPolicy
 // does not block
 // (https://kubernetes.io/docs/concepts/services-networking/network-policies/).
-func networkPolicies(cp *bryggav1alpha1.ControlPlane) []*networkingv1.NetworkPolicy {
+func networkPolicies(cp *lodiav1alpha1.ControlPlane) []*networkingv1.NetworkPolicy {
 	var out []*networkingv1.NetworkPolicy
 	for _, component := range components {
 		p := &networkingv1.NetworkPolicy{
@@ -438,11 +438,11 @@ func networkPolicies(cp *bryggav1alpha1.ControlPlane) []*networkingv1.NetworkPol
 	return out
 }
 
-// merged are the list flags whose tenant entries follow Brygga's rather than
-// replace them; the schema refuses the tenant every other flag Brygga sets.
+// merged are the list flags whose tenant entries follow Lodia's rather than
+// replace them; the schema refuses the tenant every other flag Lodia sets.
 var merged = []string{"enable-admission-plugins", "controllers"}
 
-// command puts the flags Brygga sets and the tenant's extra ones in a fixed
+// command puts the flags Lodia sets and the tenant's extra ones in a fixed
 // order, so an unchanged ControlPlane renders the same pod template.
 func command(binary string, flags, extra map[string]string, gates map[string]bool) []string {
 	all := maps.Clone(flags)
@@ -512,12 +512,12 @@ func resources(override *corev1.ResourceRequirements, cpu, memory string) corev1
 func mounts(names ...string) []corev1.VolumeMount {
 	out := make([]corev1.VolumeMount, 0, len(names))
 	for _, name := range names {
-		out = append(out, corev1.VolumeMount{Name: name, MountPath: "/etc/brygga/" + name, ReadOnly: true})
+		out = append(out, corev1.VolumeMount{Name: name, MountPath: "/etc/lodia/" + name, ReadOnly: true})
 	}
 	return out
 }
 
-func secretVolumes(cp string, byVolume map[string]bryggav1alpha1.Secret) []corev1.Volume {
+func secretVolumes(cp string, byVolume map[string]lodiav1alpha1.Secret) []corev1.Volume {
 	out := make([]corev1.Volume, 0, len(byVolume))
 	for _, name := range slices.Sorted(maps.Keys(byVolume)) {
 		out = append(out, corev1.Volume{Name: name, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: byVolume[name].Name(cp)}}})
@@ -531,7 +531,7 @@ func configMapVolume(name, configMap string) corev1.Volume {
 	}}}
 }
 
-func joined(cidrs []bryggav1alpha1.CIDR) string {
+func joined(cidrs []lodiav1alpha1.CIDR) string {
 	out := make([]string, 0, len(cidrs))
 	for _, cidr := range cidrs {
 		out = append(out, string(cidr))

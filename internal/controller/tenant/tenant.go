@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package tenant is the Tenant controller.
@@ -29,13 +29,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
-	"github.com/segla-io/brygga/internal/ownership"
+	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/ownership"
 )
 
 const (
 	Name         = "tenant"
-	FieldManager = "brygga/" + Name
+	FieldManager = "lodia/" + Name
 )
 
 // waitPeriod is how often a pass runs while it waits on what no event
@@ -58,7 +58,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(Name).
 		WithOptions(controller.Options{MaxConcurrentReconciles: workers, ReconciliationTimeout: time.Minute}).
-		For(&bryggav1alpha1.ControlPlane{}, builder.WithPredicates(inputsChanged())).
+		For(&lodiav1alpha1.ControlPlane{}, builder.WithPredicates(inputsChanged())).
 		Complete(r)
 }
 
@@ -66,13 +66,13 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 // the render or the wait reads.
 func inputsChanged() predicate.Funcs {
 	return predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool {
-		before, ok := e.ObjectOld.(*bryggav1alpha1.ControlPlane)
-		after, ok2 := e.ObjectNew.(*bryggav1alpha1.ControlPlane)
+		before, ok := e.ObjectOld.(*lodiav1alpha1.ControlPlane)
+		after, ok2 := e.ObjectNew.(*lodiav1alpha1.ControlPlane)
 		return !ok || !ok2 || inputs(before) != inputs(after)
 	}}
 }
 
-func inputs(cp *bryggav1alpha1.ControlPlane) string {
+func inputs(cp *lodiav1alpha1.ControlPlane) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d %t", cp.Generation, cp.DeletionTimestamp.IsZero())
 	if t := cp.Status.Target; t != nil {
@@ -81,36 +81,36 @@ func inputs(cp *bryggav1alpha1.ControlPlane) string {
 	if e := cp.Status.Endpoint; e != nil {
 		fmt.Fprintf(&b, " %s:%d %s:%d", e.APIServer.Host, e.APIServer.Port, e.Konnectivity.Host, e.Konnectivity.Port)
 	}
-	if c := meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionAccessReady); c != nil {
+	if c := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAccessReady); c != nil {
 		fmt.Fprintf(&b, " %s/%d", c.Status, c.ObservedGeneration)
 	}
 	return b.String()
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	cp := &bryggav1alpha1.ControlPlane{}
+	cp := &lodiav1alpha1.ControlPlane{}
 	if err := r.Get(ctx, req.NamespacedName, cp); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !cp.DeletionTimestamp.IsZero() || cp.Spec.Paused {
 		return ctrl.Result{}, nil
 	}
-	applied, available := previous(cp, bryggav1alpha1.ConditionAddonsApplied), previous(cp, bryggav1alpha1.ConditionAddonsAvailable)
+	applied, available := previous(cp, lodiav1alpha1.ConditionAddonsApplied), previous(cp, lodiav1alpha1.ConditionAddonsAvailable)
 	if meta.FindStatusCondition(cp.Status.Conditions, applied.Type) == nil || meta.FindStatusCondition(cp.Status.Conditions, available.Type) == nil {
 		if err := r.applyStatus(ctx, cp, applied, available); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
-	access := meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionAccessReady)
+	access := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAccessReady)
 	if access == nil || access.Status != metav1.ConditionTrue || access.ObservedGeneration != cp.Generation {
-		return ctrl.Result{}, r.wait(ctx, cp, bryggav1alpha1.ReasonWaitingForAccess, "AccessReady is not True for this generation")
+		return ctrl.Result{}, r.wait(ctx, cp, lodiav1alpha1.ReasonWaitingForAccess, "AccessReady is not True for this generation")
 	}
 	clusterCA, kubeconfig, keptElsewhere, err := r.credentials(ctx, cp)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if keptElsewhere != "" {
-		if err := r.wait(ctx, cp, bryggav1alpha1.ReasonWaitingForAccess, keptElsewhere); err != nil {
+		if err := r.wait(ctx, cp, lodiav1alpha1.ReasonWaitingForAccess, keptElsewhere); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: min(waitPeriod, r.ApplyPeriod)}, nil
@@ -134,9 +134,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	others, syncErr := applyInventory(ctx, tenant, objects)
 	switch reason, message, answered := outcome(syncErr); {
 	case syncErr == nil && len(others) > 0:
-		applied = newCondition(cp, applied.Type, metav1.ConditionFalse, bryggav1alpha1.ReasonApplying, others[0].String()+" exists and is not Brygga's; delete it or disable the addon")
+		applied = newCondition(cp, applied.Type, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, others[0].String()+" exists and is not Lodia's; delete it or disable the addon")
 	case syncErr == nil:
-		applied = newCondition(cp, applied.Type, metav1.ConditionTrue, bryggav1alpha1.ReasonApplied, fmt.Sprintf("%d objects are applied and the inventory is pruned", len(objects)))
+		applied = newCondition(cp, applied.Type, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, fmt.Sprintf("%d objects are applied and the inventory is pruned", len(objects)))
 	case answered || applied.Status != metav1.ConditionTrue:
 		// No answer is no observation: a True stays, anything else says so.
 		applied = newCondition(cp, applied.Type, metav1.ConditionFalse, reason, message)
@@ -148,7 +148,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			syncErr = err
 		}
 	}
-	if syncErr != nil && available.Reason != bryggav1alpha1.ReasonAvailable && available.Reason != bryggav1alpha1.ReasonRolloutPending {
+	if syncErr != nil && available.Reason != lodiav1alpha1.ReasonAvailable && available.Reason != lodiav1alpha1.ReasonRolloutPending {
 		// A rollout read before stays while none can be read; until one is,
 		// what stopped the pass says why.
 		reason, message, _ := outcome(syncErr)
@@ -167,26 +167,26 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 // and whether the tenant answered.
 func outcome(err error) (string, string, bool) {
 	if f, ok := errors.AsType[*failure](err); ok && f.verdict != "" {
-		return f.reason, f.entry.String() + " " + f.verdict + "; the reason is in Brygga's log", true
+		return f.reason, f.entry.String() + " " + f.verdict + "; the reason is in Lodia's log", true
 	}
-	return bryggav1alpha1.ReasonApplying, "the tenant's API server does not answer; the error is in Brygga's log", false
+	return lodiav1alpha1.ReasonApplying, "the tenant's API server does not answer; the error is in Lodia's log", false
 }
 
 // wait says what both conditions wait for: neither can be observed yet.
-func (r *Reconciler) wait(ctx context.Context, cp *bryggav1alpha1.ControlPlane, reason, message string) error {
+func (r *Reconciler) wait(ctx context.Context, cp *lodiav1alpha1.ControlPlane, reason, message string) error {
 	return r.applyStatus(ctx, cp,
-		newCondition(cp, bryggav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, reason, message),
-		newCondition(cp, bryggav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, reason, message))
+		newCondition(cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, reason, message),
+		newCondition(cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, reason, message))
 }
 
 // credentials also returns, when one of the two Secrets is another owner's,
 // which; its content is not used.
-func (r *Reconciler) credentials(ctx context.Context, cp *bryggav1alpha1.ControlPlane) ([]byte, []byte, string, error) {
+func (r *Reconciler) credentials(ctx context.Context, cp *lodiav1alpha1.ControlPlane) ([]byte, []byte, string, error) {
 	bundle, kubeconfig := &corev1.Secret{}, &corev1.Secret{}
 	for _, read := range []struct {
-		secret bryggav1alpha1.Secret
+		secret lodiav1alpha1.Secret
 		obj    *corev1.Secret
-	}{{bryggav1alpha1.CABundleSecret, bundle}, {bryggav1alpha1.BryggaKubeconfigSecret, kubeconfig}} {
+	}{{lodiav1alpha1.CABundleSecret, bundle}, {lodiav1alpha1.LodiaKubeconfigSecret, kubeconfig}} {
 		obj := read.obj
 		if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: read.secret.Name(cp.Name)}, obj); err != nil {
 			return nil, nil, "", err
@@ -195,7 +195,7 @@ func (r *Reconciler) credentials(ctx context.Context, cp *bryggav1alpha1.Control
 			return nil, nil, fmt.Sprintf("Secret %s is kept by %s %s with UID %s", obj.Name, ref.Kind, ref.Name, ref.UID), nil
 		}
 	}
-	return bundle.Data[bryggav1alpha1.CACertKey], kubeconfig.Data[bryggav1alpha1.KubeconfigKey], "", nil
+	return bundle.Data[lodiav1alpha1.CACertKey], kubeconfig.Data[lodiav1alpha1.KubeconfigKey], "", nil
 }
 
 func (r *Reconciler) tenantClient(kubeconfig []byte) (client.Client, error) {
@@ -211,7 +211,7 @@ func (r *Reconciler) tenantClient(kubeconfig []byte) (client.Client, error) {
 
 // rollout reads the DaemonSets and Deployments of the render but another
 // owner's.
-func rollout(ctx context.Context, c client.Client, cp *bryggav1alpha1.ControlPlane, objects []*unstructured.Unstructured, others []entry) (metav1.Condition, error) {
+func rollout(ctx context.Context, c client.Client, cp *lodiav1alpha1.ControlPlane, objects []*unstructured.Unstructured, others []entry) (metav1.Condition, error) {
 	var names, pending []string
 	for _, obj := range objects {
 		e := entryOf(obj)
@@ -236,10 +236,10 @@ func rollout(ctx context.Context, c client.Client, cp *bryggav1alpha1.ControlPla
 	}
 	if len(pending) > 0 {
 		slices.Sort(pending)
-		return newCondition(cp, bryggav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, bryggav1alpha1.ReasonRolloutPending, strings.Join(pending, ", ")), nil
+		return newCondition(cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonRolloutPending, strings.Join(pending, ", ")), nil
 	}
 	slices.Sort(names)
-	return newCondition(cp, bryggav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, bryggav1alpha1.ReasonAvailable, strings.Join(names, ", ")+" are rolled out"), nil
+	return newCondition(cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable, strings.Join(names, ", ")+" are rolled out"), nil
 }
 
 func rolledOut(obj client.Object) (int32, int32, bool) {
@@ -258,20 +258,20 @@ func rolledOut(obj client.Object) (int32, int32, bool) {
 	return 0, 0, false
 }
 
-func previous(cp *bryggav1alpha1.ControlPlane, conditionType string) metav1.Condition {
+func previous(cp *lodiav1alpha1.ControlPlane, conditionType string) metav1.Condition {
 	if c := meta.FindStatusCondition(cp.Status.Conditions, conditionType); c != nil {
 		return *c
 	}
-	return newCondition(cp, conditionType, metav1.ConditionUnknown, bryggav1alpha1.ReasonReconciling, "the first pass has not finished")
+	return newCondition(cp, conditionType, metav1.ConditionUnknown, lodiav1alpha1.ReasonReconciling, "the first pass has not finished")
 }
 
-func newCondition(cp *bryggav1alpha1.ControlPlane, conditionType string, status metav1.ConditionStatus, reason, message string) metav1.Condition {
+func newCondition(cp *lodiav1alpha1.ControlPlane, conditionType string, status metav1.ConditionStatus, reason, message string) metav1.Condition {
 	return metav1.Condition{Type: conditionType, Status: status, Reason: reason, Message: message, ObservedGeneration: cp.Generation}
 }
 
 // applyStatus writes only on a change, and both conditions every time: an
 // apply that leaves one out removes it.
-func (r *Reconciler) applyStatus(ctx context.Context, cp *bryggav1alpha1.ControlPlane, conditions ...metav1.Condition) error {
+func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, conditions ...metav1.Condition) error {
 	all := slices.Clone(cp.Status.Conditions)
 	changed := false
 	var applied []any
@@ -291,7 +291,7 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *bryggav1alpha1.Control
 		return nil
 	}
 	u := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": bryggav1alpha1.GroupVersion.String(),
+		"apiVersion": lodiav1alpha1.GroupVersion.String(),
 		"kind":       "ControlPlane",
 		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
 		"status":     map[string]any{"conditions": applied},

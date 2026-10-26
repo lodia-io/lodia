@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.23.0
-  name: datastores.brygga.segla.io
+  name: datastores.lodia.io
 spec:
-  group: brygga.segla.io
+  group: lodia.io
   names:
     kind: Datastore
     listKind: DatastoreList
@@ -71,13 +71,13 @@ spec:
                 type: array
                 x-kubernetes-list-type: set
               prefix:
-                default: /brygga
+                default: /lodia
                 description: Prefix under which every tenant gets its own prefix.
                 maxLength: 64
                 pattern: ^/[a-z0-9/-]*$
                 type: string
               tls:
-                description: TLS is the store's CA and the root client Brygga creates
+                description: TLS is the store's CA and the root client Lodia creates
                   tenants with.
                 properties:
                   caSecretRef:

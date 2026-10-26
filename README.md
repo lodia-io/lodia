@@ -1,6 +1,6 @@
-# Brygga
+# Lodia
 
-Brygga runs Kubernetes control planes as pods on a management cluster, one
+Lodia runs Kubernetes control planes as pods on a management cluster, one
 per tenant cluster, and lets worker nodes anywhere join them with `kubeadm`.
 Each control plane is an ordinary set of Deployments (or a single pod in the
 compact layout) with an etcd of its own or a prefix in a shared one,
@@ -8,14 +8,15 @@ described by one `ControlPlane` object; six independent controllers keep it
 certified, stored, running, reachable and up to date, and keep the tenant's
 workloads alive when the path to its nodes breaks.
 
-*Brygga* is Swedish for a ship's bridge, the place a vessel is steered from,
-and for brewing a pot of coffee.
+*Lodia*, from the Ukrainian «лодія», is an old word for a boat, the vessel
+beside Segla, which is Swedish for sailing.
 
-**Status: phase 0 of the [roadmap](docs/roadmap.md).** The API types, their
-CRDs and the test harness are built; no controller yet. The documents below
-are the plan and the reasons behind it.
+**Status: phase 1 of the [roadmap](docs/roadmap.md).** The six controllers
+are built for a control plane with one replica; the Helm chart and the e2e
+gate, where a node joins and runs a pod, come next. The documents below are
+the design, the reasons behind it, and what the code does.
 
-- [`docs/README.md`](docs/README.md) — what Brygga is: the objects, the
+- [`docs/README.md`](docs/README.md) — what Lodia is: the objects, the
   controllers, the shape of a tenant namespace, networking, lifecycle,
   installation and operations.
 - [`docs/api/`](docs/api/) — the `ControlPlane` field reference and example
@@ -27,9 +28,9 @@ are the plan and the reasons behind it.
 - [`docs/roadmap.md`](docs/roadmap.md) — the phases, and how each one is
   verified before the next starts.
 - [`docs/hard-way.md`](docs/hard-way.md) — a hosted control plane built by
-  hand in kind, step by step: what Brygga will automate.
+  hand in kind, step by step: what Lodia will automate.
 - [`docs/operations.md`](docs/operations.md) — installing, upgrading and
-  running Brygga; the runbooks.
+  running Lodia; the runbooks.
 - [`CLAUDE.md`](CLAUDE.md) — how to work on the repository.
 - [`todo.md`](todo.md) — findings waiting for triage.
 

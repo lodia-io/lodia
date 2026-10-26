@@ -1,6 +1,6 @@
 # The tenant's controller manager: its own Deployment, reaching the API server
 # through the Service by name. It holds the cluster CA key to sign kubelet
-# certificates, as kubeadm does; Brygga gives it only an intermediate.
+# certificates, as kubeadm does; Lodia gives it only an intermediate.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

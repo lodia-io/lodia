@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package pki_test
@@ -42,10 +42,10 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/yaml"
 
-	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
-	"github.com/segla-io/brygga/internal/certs"
-	"github.com/segla-io/brygga/internal/controller/pki"
-	"github.com/segla-io/brygga/internal/operator"
+	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/certs"
+	"go.lodia.io/lodia/internal/controller/pki"
+	"go.lodia.io/lodia/internal/operator"
 )
 
 const (
@@ -71,7 +71,7 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	}
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(bryggav1alpha1.AddToScheme(scheme))
+	utilruntime.Must(lodiav1alpha1.AddToScheme(scheme))
 	env := &envtest.Environment{
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "config", "crd", "bases")},
 		ErrorIfCRDPathMissing: true,
@@ -129,17 +129,17 @@ func TestALoadBalancerControlPlaneWaitsForItsEndpoint(t *testing.T) {
 	})
 
 	waitFor(t, 30*time.Second, func() bool {
-		c := condition(t, cp, bryggav1alpha1.ConditionCertificatesReady)
-		return c != nil && c.Status == metav1.ConditionFalse && c.Reason == bryggav1alpha1.ReasonWaitingForEndpoint
+		c := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady)
+		return c != nil && c.Status == metav1.ConditionFalse && c.Reason == lodiav1alpha1.ReasonWaitingForEndpoint
 	})
-	expectCondition(t, cp, bryggav1alpha1.ConditionAccessReady, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForAPIServer)
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer)
 	secrets := secretsOf(t, cp)
 	for _, name := range []string{"dev-apiserver-serving", "dev-konnectivity-server", "dev-admin-kubeconfig"} {
 		if secrets[name] != nil {
 			t.Errorf("%s issued before the endpoint is known", name)
 		}
 	}
-	for _, name := range []string{"dev-cakey-cluster", "dev-kubelet-signer", "dev-brygga-kubeconfig", "dev-sa-keys", "dev-etcd-server-1"} {
+	for _, name := range []string{"dev-cakey-cluster", "dev-kubelet-signer", "dev-lodia-kubeconfig", "dev-sa-keys", "dev-etcd-server-1"} {
 		if secrets[name] == nil {
 			t.Errorf("%s not issued while waiting for the endpoint", name)
 		}
@@ -147,18 +147,18 @@ func TestALoadBalancerControlPlaneWaitsForItsEndpoint(t *testing.T) {
 
 	publishEndpoint(t, cp)
 	waitFor(t, 30*time.Second, func() bool {
-		c := condition(t, cp, bryggav1alpha1.ConditionCertificatesReady)
+		c := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady)
 		return c != nil && c.Status == metav1.ConditionTrue
 	})
-	fresh := &bryggav1alpha1.ControlPlane{}
+	fresh := &lodiav1alpha1.ControlPlane{}
 	if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(cp), fresh); err != nil {
 		t.Fatal(err)
 	}
-	ready := meta.FindStatusCondition(fresh.Status.Conditions, bryggav1alpha1.ConditionCertificatesReady)
-	if ready.Reason != bryggav1alpha1.ReasonIssued || ready.ObservedGeneration != fresh.Generation {
-		t.Errorf("CertificatesReady is %s at generation %d, want %s at %d", ready.Reason, ready.ObservedGeneration, bryggav1alpha1.ReasonIssued, fresh.Generation)
+	ready := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionCertificatesReady)
+	if ready.Reason != lodiav1alpha1.ReasonIssued || ready.ObservedGeneration != fresh.Generation {
+		t.Errorf("CertificatesReady is %s at generation %d, want %s at %d", ready.Reason, ready.ObservedGeneration, lodiav1alpha1.ReasonIssued, fresh.Generation)
 	}
-	expectCondition(t, cp, bryggav1alpha1.ConditionCAValidityAcceptable, metav1.ConditionTrue, bryggav1alpha1.ReasonValid)
+	expectCondition(t, cp, lodiav1alpha1.ConditionCAValidityAcceptable, metav1.ConditionTrue, lodiav1alpha1.ReasonValid)
 	creds := fresh.Status.Credentials
 	if creds == nil || creds.AdminKubeconfigSecretRef == nil || creds.AdminKubeconfigSecretRef.Name != "dev-admin-kubeconfig" ||
 		creds.CABundleSecretRef == nil || creds.CABundleSecretRef.Name != "dev-ca-bundle" {
@@ -184,7 +184,7 @@ func TestALoadBalancerControlPlaneWaitsForItsEndpoint(t *testing.T) {
 		}) {
 			t.Errorf("%s is not owned by the ControlPlane: %+v", row.name, s.OwnerReferences)
 		}
-		if s.Labels[bryggav1alpha1.ControlPlaneLabel] != cp.Name {
+		if s.Labels[lodiav1alpha1.ControlPlaneLabel] != cp.Name {
 			t.Errorf("%s has labels %v", row.name, s.Labels)
 		}
 		for k, v := range row.labels {
@@ -243,15 +243,15 @@ func TestEveryCertificateVerifiesAgainstItsCA(t *testing.T) {
 			[]string{"kubernetes", "kubernetes.default", "kubernetes.default.svc", "kubernetes.default.svc.cluster.local",
 				"dev-kube-apiserver", "dev-kube-apiserver." + ns, "dev-kube-apiserver." + ns + ".svc", "localhost", certSAN},
 			[]string{"10.96.0.1", "127.0.0.1", endpointHost}, serverAuth, false},
-		{"dev-apiserver-kubelet-client", cluster, "kube-apiserver-kubelet-client", []string{"brygga:kubelet-api-admins"}, nil, nil, clientAuth, false},
+		{"dev-apiserver-kubelet-client", cluster, "kube-apiserver-kubelet-client", []string{"lodia:kubelet-api-admins"}, nil, nil, clientAuth, false},
 		{"dev-front-proxy-client", frontProxy, "front-proxy-client", nil, nil, nil, clientAuth, false},
 		{"dev-apiserver-etcd-client", etcd, "kube-apiserver-etcd-client", nil, nil, nil, clientAuth, false},
 		{"dev-konnectivity-server", cluster, "konnectivity-server", nil, []string{"localhost"}, []string{"127.0.0.1", endpointHost}, serverAuth, false},
 		{"dev-konnectivity-kubeconfig", clientCA, "system:konnectivity-server", nil, nil, nil, clientAuth, false},
 		{"dev-controller-manager-kubeconfig", clientCA, "system:kube-controller-manager", nil, nil, nil, clientAuth, false},
 		{"dev-scheduler-kubeconfig", clientCA, "system:kube-scheduler", nil, nil, nil, clientAuth, false},
-		{"dev-admin-kubeconfig", clientCA, "kubernetes-admin", []string{"brygga:cluster-admins"}, nil, nil, clientAuth, false},
-		{"dev-brygga-kubeconfig", clientCA, "brygga:operator", nil, nil, nil, clientAuth, false},
+		{"dev-admin-kubeconfig", clientCA, "kubernetes-admin", []string{"lodia:cluster-admins"}, nil, nil, clientAuth, false},
+		{"dev-lodia-kubeconfig", clientCA, "lodia:operator", nil, nil, nil, clientAuth, false},
 		{"dev-etcd-server-1", etcd, n, nil, slices.Concat([]string{n + "-local"}, forms(n+"-client", "*."+n+"-peer"), []string{"localhost"}), []string{"127.0.0.1"}, serverClientAuth, false},
 		{"dev-etcd-peer-1", etcd, n + "-peer", nil, forms(n+"-peer", "*."+n+"-peer"), nil, serverClientAuth, false},
 		{"dev-etcd-backup-restore-1", etcd, n + "-backup-restore", nil, slices.Concat([]string{n + "-local"}, forms(n+"-client"), []string{"localhost"}), []string{"127.0.0.1"}, serverAuth, false},
@@ -317,24 +317,24 @@ func TestEveryCertificateVerifiesAgainstItsCA(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := secrets[bundle.secret].Data[bryggav1alpha1.CACertKey]; !bytes.Equal(got, want) {
+		if got := secrets[bundle.secret].Data[lodiav1alpha1.CACertKey]; !bytes.Equal(got, want) {
 			t.Errorf("%s is not the bundle of %v", bundle.secret, subjects(bundle.certs))
 		}
 	}
 
-	key, err := certs.ParseKey(secrets["dev-sa-keys"].Data[bryggav1alpha1.SigningKeyKey])
+	key, err := certs.ParseKey(secrets["dev-sa-keys"].Data[lodiav1alpha1.SigningKeyKey])
 	if err != nil {
 		t.Fatal(err)
 	}
 	if rsaKey, ok := key.(*rsa.PrivateKey); !ok || rsaKey.N.BitLen() != 2048 {
 		t.Errorf("signing.key is %T, want RSA 2048", key)
 	}
-	if block, _ := pem.Decode(secrets["dev-sa-keys"].Data[bryggav1alpha1.SigningKeyKey]); block == nil || block.Type != "PRIVATE KEY" {
+	if block, _ := pem.Decode(secrets["dev-sa-keys"].Data[lodiav1alpha1.SigningKeyKey]); block == nil || block.Type != "PRIVATE KEY" {
 		t.Error("signing.key is not PKCS#8")
 	}
 
 	var enc apiserverv1.EncryptionConfiguration
-	if err := yaml.Unmarshal(secrets["dev-encryption-config"].Data[bryggav1alpha1.EncryptionConfigKey], &enc); err != nil {
+	if err := yaml.Unmarshal(secrets["dev-encryption-config"].Data[lodiav1alpha1.EncryptionConfigKey], &enc); err != nil {
 		t.Fatal(err)
 	}
 	if len(enc.Resources) != 1 || !slices.Equal(enc.Resources[0].Resources, []string{"secrets"}) || len(enc.Resources[0].Providers) != 1 || enc.Resources[0].Providers[0].Secretbox == nil {
@@ -357,11 +357,11 @@ func TestEveryCertificateVerifiesAgainstItsCA(t *testing.T) {
 		{"dev-konnectivity-kubeconfig", internal, "system:konnectivity-server", false},
 		{"dev-controller-manager-kubeconfig", internal, "system:kube-controller-manager", false},
 		{"dev-scheduler-kubeconfig", internal, "system:kube-scheduler", false},
-		{"dev-brygga-kubeconfig", internal, "brygga:operator", true},
+		{"dev-lodia-kubeconfig", internal, "lodia:operator", true},
 		{"dev-admin-kubeconfig", "https://" + endpointHost + ":443", "kubernetes-admin", true},
 	} {
 		s := secrets[k.secret]
-		raw, err := clientcmd.Load(s.Data[bryggav1alpha1.KubeconfigKey])
+		raw, err := clientcmd.Load(s.Data[lodiav1alpha1.KubeconfigKey])
 		if err != nil {
 			t.Fatalf("%s: %v", k.secret, err)
 		}
@@ -379,10 +379,10 @@ func TestEveryCertificateVerifiesAgainstItsCA(t *testing.T) {
 			}
 			continue
 		}
-		if clusterInfo.CertificateAuthority != bryggav1alpha1.CACertKey || user.ClientCertificate != bryggav1alpha1.TLSCertKey || user.ClientKey != bryggav1alpha1.TLSPrivateKeyKey {
+		if clusterInfo.CertificateAuthority != lodiav1alpha1.CACertKey || user.ClientCertificate != lodiav1alpha1.TLSCertKey || user.ClientKey != lodiav1alpha1.TLSPrivateKeyKey {
 			t.Errorf("%s references %s, %s, %s", k.secret, clusterInfo.CertificateAuthority, user.ClientCertificate, user.ClientKey)
 		}
-		if !bytes.Equal(s.Data[bryggav1alpha1.CACertKey], clusterPEM) {
+		if !bytes.Equal(s.Data[lodiav1alpha1.CACertKey], clusterPEM) {
 			t.Errorf("%s: ca.crt is not the cluster CA", k.secret)
 		}
 	}
@@ -446,8 +446,8 @@ func TestEverySecretCarriesTheHashOfItsData(t *testing.T) {
 	publishEndpoint(t, cp)
 	reconcile(t, r, cp)
 	for name, s := range secretsOf(t, cp) {
-		if got, want := s.Annotations[bryggav1alpha1.DataHashAnnotation], bryggav1alpha1.DataHash(s.Data); got != want {
-			t.Errorf("%s carries %s %q, want %q", name, bryggav1alpha1.DataHashAnnotation, got, want)
+		if got, want := s.Annotations[lodiav1alpha1.DataHashAnnotation], lodiav1alpha1.DataHash(s.Data); got != want {
+			t.Errorf("%s carries %s %q, want %q", name, lodiav1alpha1.DataHashAnnotation, got, want)
 		}
 	}
 }
@@ -502,7 +502,7 @@ func TestAMovedEndpointReissuesExactlyWhatNamesIt(t *testing.T) {
 			t.Errorf("%s does not name %s", name, moved)
 		}
 	}
-	raw, err := clientcmd.Load(secrets["dev-admin-kubeconfig"].Data[bryggav1alpha1.KubeconfigKey])
+	raw, err := clientcmd.Load(secrets["dev-admin-kubeconfig"].Data[lodiav1alpha1.KubeconfigKey])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -533,7 +533,7 @@ func TestLeavesRenewAtTwoThirdsOfTheirLifetime(t *testing.T) {
 	after := secretsOf(t, cp)
 	for name, s := range after {
 		prev := before[name]
-		generation := s.Labels[bryggav1alpha1.EtcdCertificatesLabel] != ""
+		generation := s.Labels[lodiav1alpha1.EtcdCertificatesLabel] != ""
 		unchanged := strings.Contains(name, "-cakey-") || generation ||
 			slices.Contains([]string{"dev-ca-bundle", "dev-front-proxy-ca", "dev-etcd-ca", "dev-sa-keys", "dev-encryption-config"}, name)
 		switch {
@@ -565,7 +565,7 @@ func TestLeavesRenewAtTwoThirdsOfTheirLifetime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := after["dev-client-ca"].Data[bryggav1alpha1.CACertKey]; !bytes.Equal(got, want) {
+	if got := after["dev-client-ca"].Data[lodiav1alpha1.CACertKey]; !bytes.Equal(got, want) {
 		bundle, _ := certs.ParseCerts(got)
 		t.Errorf("the client CA bundle holds %v, want the client CA, the new signer and the old one", subjects(bundle))
 	}
@@ -653,8 +653,8 @@ func TestALostCAIsNeverReplaced(t *testing.T) {
 		}
 	}
 	reconcile(t, r, cp)
-	c := condition(t, cp, bryggav1alpha1.ConditionCertificatesReady)
-	if c.Reason != bryggav1alpha1.ReasonCAMissing || !strings.Contains(c.Message, "cluster, etcd") {
+	c := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady)
+	if c.Reason != lodiav1alpha1.ReasonCAMissing || !strings.Contains(c.Message, "cluster, etcd") {
 		t.Fatalf("CertificatesReady is %s: %s", c.Reason, c.Message)
 	}
 	after, _ := resourceVersions(t, cp)
@@ -670,16 +670,16 @@ func TestALostCAIsNeverReplaced(t *testing.T) {
 	}
 
 	corrupt := secretsOf(t, cp)["dev-cakey-client"]
-	corrupt.Data[bryggav1alpha1.TLSPrivateKeyKey] = []byte("not a key")
+	corrupt.Data[lodiav1alpha1.TLSPrivateKeyKey] = []byte("not a key")
 	if err := k8s.Update(ctx, corrupt); err != nil {
 		t.Fatal(err)
 	}
 	reconcile(t, r, cp)
-	c = condition(t, cp, bryggav1alpha1.ConditionCertificatesReady)
-	if c.Reason != bryggav1alpha1.ReasonCAMissing || !strings.Contains(c.Message, "cluster, client, etcd") {
+	c = condition(t, cp, lodiav1alpha1.ConditionCertificatesReady)
+	if c.Reason != lodiav1alpha1.ReasonCAMissing || !strings.Contains(c.Message, "cluster, client, etcd") {
 		t.Fatalf("CertificatesReady is %s: %s", c.Reason, c.Message)
 	}
-	if !bytes.Equal(secretsOf(t, cp)["dev-cakey-client"].Data[bryggav1alpha1.TLSPrivateKeyKey], []byte("not a key")) {
+	if !bytes.Equal(secretsOf(t, cp)["dev-cakey-client"].Data[lodiav1alpha1.TLSPrivateKeyKey], []byte("not a key")) {
 		t.Fatal("the unreadable client CA key was overwritten")
 	}
 	_, versionBefore := resourceVersions(t, cp)
@@ -692,13 +692,13 @@ func TestALostCAIsNeverReplaced(t *testing.T) {
 func TestAnUnsupportedEncryptionProviderBlocksNothingElse(t *testing.T) {
 	r := newReconciler(time.Hour)
 	cp := controlPlane(t, "pki-kms")
-	cp.Spec.APIServer = &bryggav1alpha1.APIServer{Encryption: &bryggav1alpha1.Encryption{Provider: "kms"}}
+	cp.Spec.APIServer = &lodiav1alpha1.APIServer{Encryption: &lodiav1alpha1.Encryption{Provider: "kms"}}
 	if err := k8s.Update(t.Context(), cp); err != nil {
 		t.Fatal(err)
 	}
 	publishEndpoint(t, cp)
 	reconcile(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, bryggav1alpha1.ReasonUnsupported)
+	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported)
 	secrets := secretsOf(t, cp)
 	if secrets["dev-encryption-config"] != nil {
 		t.Error("an encryption configuration was written for kms")
@@ -721,12 +721,12 @@ func TestTheFirstVisitWritesUnknown(t *testing.T) {
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
 		t.Fatal("a pass with a failing reader succeeded")
 	}
-	for _, conditionType := range []string{bryggav1alpha1.ConditionCertificatesReady, bryggav1alpha1.ConditionCAValidityAcceptable, bryggav1alpha1.ConditionAccessReady} {
-		expectCondition(t, cp, conditionType, metav1.ConditionUnknown, bryggav1alpha1.ReasonReconciling)
+	for _, conditionType := range []string{lodiav1alpha1.ConditionCertificatesReady, lodiav1alpha1.ConditionCAValidityAcceptable, lodiav1alpha1.ConditionAccessReady} {
+		expectCondition(t, cp, conditionType, metav1.ConditionUnknown, lodiav1alpha1.ReasonReconciling)
 	}
 	r.Reader = k8s
 	reconcile(t, r, cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForEndpoint)
+	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint)
 }
 
 type failingReader struct {
@@ -761,7 +761,7 @@ func replaceSecret(t *testing.T, s *corev1.Secret, content map[string][]byte) {
 	}
 }
 
-func reconcileFails(t *testing.T, r *pki.Reconciler, cp *bryggav1alpha1.ControlPlane) {
+func reconcileFails(t *testing.T, r *pki.Reconciler, cp *lodiav1alpha1.ControlPlane) {
 	t.Helper()
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
 		t.Fatal("the pass succeeded although an apply failed")
@@ -772,14 +772,14 @@ func (failingReader) List(context.Context, client.ObjectList, ...client.ListOpti
 	return errors.New("the reader is down")
 }
 
-func expectGenerations(t *testing.T, cp *bryggav1alpha1.ControlPlane, want ...int) {
+func expectGenerations(t *testing.T, cp *lodiav1alpha1.ControlPlane, want ...int) {
 	t.Helper()
 	got := map[int][]string{}
 	for name, s := range secretsOf(t, cp) {
-		if value, ok := s.Labels[bryggav1alpha1.EtcdCertificatesLabel]; ok {
+		if value, ok := s.Labels[lodiav1alpha1.EtcdCertificatesLabel]; ok {
 			g, err := strconv.Atoi(value)
 			if err != nil {
-				t.Fatalf("%s has the label %s=%q", name, bryggav1alpha1.EtcdCertificatesLabel, value)
+				t.Fatalf("%s has the label %s=%q", name, lodiav1alpha1.EtcdCertificatesLabel, value)
 			}
 			got[g] = append(got[g], name)
 			if !immutable(s) {
@@ -810,33 +810,33 @@ type secretRow struct {
 }
 
 func secretTable(cp string) []secretRow {
-	tls := []string{bryggav1alpha1.TLSCertKey, bryggav1alpha1.TLSPrivateKeyKey}
-	files := []string{bryggav1alpha1.CACertKey, bryggav1alpha1.KubeconfigKey, bryggav1alpha1.TLSCertKey, bryggav1alpha1.TLSPrivateKeyKey}
+	tls := []string{lodiav1alpha1.TLSCertKey, lodiav1alpha1.TLSPrivateKeyKey}
+	files := []string{lodiav1alpha1.CACertKey, lodiav1alpha1.KubeconfigKey, lodiav1alpha1.TLSCertKey, lodiav1alpha1.TLSPrivateKeyKey}
 	rows := []secretRow{
 		{cp + "-cakey-cluster", corev1.SecretTypeTLS, tls, nil, false},
 		{cp + "-cakey-client", corev1.SecretTypeTLS, tls, nil, false},
 		{cp + "-cakey-front-proxy", corev1.SecretTypeTLS, tls, nil, false},
 		{cp + "-cakey-etcd", corev1.SecretTypeTLS, tls, nil, false},
-		{cp + "-ca-bundle", corev1.SecretTypeOpaque, []string{bryggav1alpha1.CACertKey}, nil, false},
-		{cp + "-client-ca", corev1.SecretTypeOpaque, []string{bryggav1alpha1.CACertKey}, nil, false},
+		{cp + "-ca-bundle", corev1.SecretTypeOpaque, []string{lodiav1alpha1.CACertKey}, nil, false},
+		{cp + "-client-ca", corev1.SecretTypeOpaque, []string{lodiav1alpha1.CACertKey}, nil, false},
 		{cp + "-kubelet-signer", corev1.SecretTypeTLS, tls, nil, false},
 		{cp + "-apiserver-serving", corev1.SecretTypeTLS, tls, nil, false},
 		{cp + "-apiserver-kubelet-client", corev1.SecretTypeTLS, tls, nil, false},
-		{cp + "-front-proxy-ca", corev1.SecretTypeOpaque, []string{bryggav1alpha1.CACertKey}, nil, false},
+		{cp + "-front-proxy-ca", corev1.SecretTypeOpaque, []string{lodiav1alpha1.CACertKey}, nil, false},
 		{cp + "-front-proxy-client", corev1.SecretTypeTLS, tls, nil, false},
-		{cp + "-etcd-ca", corev1.SecretTypeOpaque, []string{bryggav1alpha1.CACertKey}, nil, false},
+		{cp + "-etcd-ca", corev1.SecretTypeOpaque, []string{lodiav1alpha1.CACertKey}, nil, false},
 		{cp + "-apiserver-etcd-client", corev1.SecretTypeTLS, tls, nil, false},
 		{cp + "-konnectivity-server", corev1.SecretTypeTLS, tls, nil, false},
 		{cp + "-konnectivity-kubeconfig", corev1.SecretTypeOpaque, files, nil, false},
 		{cp + "-controller-manager-kubeconfig", corev1.SecretTypeOpaque, files, nil, false},
 		{cp + "-scheduler-kubeconfig", corev1.SecretTypeOpaque, files, nil, false},
-		{cp + "-admin-kubeconfig", corev1.SecretTypeOpaque, []string{bryggav1alpha1.KubeconfigKey}, nil, false},
-		{cp + "-brygga-kubeconfig", corev1.SecretTypeOpaque, []string{bryggav1alpha1.KubeconfigKey}, nil, false},
-		{cp + "-sa-keys", corev1.SecretTypeOpaque, []string{bryggav1alpha1.SigningKeyKey}, nil, false},
-		{cp + "-encryption-config", corev1.SecretTypeOpaque, []string{bryggav1alpha1.EncryptionConfigKey}, nil, false},
+		{cp + "-admin-kubeconfig", corev1.SecretTypeOpaque, []string{lodiav1alpha1.KubeconfigKey}, nil, false},
+		{cp + "-lodia-kubeconfig", corev1.SecretTypeOpaque, []string{lodiav1alpha1.KubeconfigKey}, nil, false},
+		{cp + "-sa-keys", corev1.SecretTypeOpaque, []string{lodiav1alpha1.SigningKeyKey}, nil, false},
+		{cp + "-encryption-config", corev1.SecretTypeOpaque, []string{lodiav1alpha1.EncryptionConfigKey}, nil, false},
 	}
-	generation := map[string]string{bryggav1alpha1.EtcdCertificatesLabel: "1"}
-	rows = append(rows, secretRow{cp + "-etcd-ca-1", corev1.SecretTypeOpaque, []string{bryggav1alpha1.CACertKey}, generation, true})
+	generation := map[string]string{lodiav1alpha1.EtcdCertificatesLabel: "1"}
+	rows = append(rows, secretRow{cp + "-etcd-ca-1", corev1.SecretTypeOpaque, []string{lodiav1alpha1.CACertKey}, generation, true})
 	for _, role := range []string{"server", "client", "peer", "backup-restore"} {
 		rows = append(rows, secretRow{cp + "-etcd-" + role + "-1", corev1.SecretTypeTLS, tls, generation, true})
 	}
@@ -851,23 +851,23 @@ func newReconciler(leafLifetime time.Duration) *pki.Reconciler {
 	return &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: leafLifetime, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour}
 }
 
-func controlPlane(t *testing.T, namespace string) *bryggav1alpha1.ControlPlane {
+func controlPlane(t *testing.T, namespace string) *lodiav1alpha1.ControlPlane {
 	t.Helper()
-	return controlPlaneAt(t, namespace, bryggav1alpha1.Endpoint{LoadBalancer: &bryggav1alpha1.LoadBalancerEndpoint{}, CertSANs: []bryggav1alpha1.Hostname{certSAN}})
+	return controlPlaneAt(t, namespace, lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}, CertSANs: []lodiav1alpha1.Hostname{certSAN}})
 }
 
-func controlPlaneAt(t *testing.T, namespace string, endpoint bryggav1alpha1.Endpoint) *bryggav1alpha1.ControlPlane {
+func controlPlaneAt(t *testing.T, namespace string, endpoint lodiav1alpha1.Endpoint) *lodiav1alpha1.ControlPlane {
 	t.Helper()
 	if err := k8s.Create(t.Context(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}); err != nil {
 		t.Fatal(err)
 	}
-	cp := &bryggav1alpha1.ControlPlane{
+	cp := &lodiav1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: namespace},
-		Spec: bryggav1alpha1.ControlPlaneSpec{
+		Spec: lodiav1alpha1.ControlPlaneSpec{
 			Version:   "v1.37.1",
-			Datastore: bryggav1alpha1.DatastoreChoice{Dedicated: &bryggav1alpha1.DedicatedDatastore{}},
+			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{}},
 			Endpoint:  endpoint,
-			Network:   bryggav1alpha1.Network{ServiceCIDRs: []bryggav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []bryggav1alpha1.CIDR{"10.244.0.0/16"}},
+			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
 		},
 	}
 	if err := k8s.Create(t.Context(), cp); err != nil {
@@ -876,7 +876,7 @@ func controlPlaneAt(t *testing.T, namespace string, endpoint bryggav1alpha1.Endp
 	return cp
 }
 
-func reconcile(t *testing.T, r *pki.Reconciler, cp *bryggav1alpha1.ControlPlane) ctrl.Result {
+func reconcile(t *testing.T, r *pki.Reconciler, cp *lodiav1alpha1.ControlPlane) ctrl.Result {
 	t.Helper()
 	result, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 	if err != nil {
@@ -885,15 +885,15 @@ func reconcile(t *testing.T, r *pki.Reconciler, cp *bryggav1alpha1.ControlPlane)
 	return result
 }
 
-func applyStatus(t *testing.T, cp *bryggav1alpha1.ControlPlane, status map[string]any) {
+func applyStatus(t *testing.T, cp *lodiav1alpha1.ControlPlane, status map[string]any) {
 	t.Helper()
 	u := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": bryggav1alpha1.GroupVersion.String(),
+		"apiVersion": lodiav1alpha1.GroupVersion.String(),
 		"kind":       "ControlPlane",
 		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
 		"status":     status,
 	}}
-	if err := k8s.Status().Apply(t.Context(), client.ApplyConfigurationFromUnstructured(u), client.FieldOwner("brygga/workloads"), client.ForceOwnership); err != nil {
+	if err := k8s.Status().Apply(t.Context(), client.ApplyConfigurationFromUnstructured(u), client.FieldOwner("lodia/workloads"), client.ForceOwnership); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -920,12 +920,12 @@ func TestTheKonnectivityCertificateNamesTheKonnectivityHost(t *testing.T) {
 }
 
 func TestAGatewayControlPlaneWaitsForItsEndpoint(t *testing.T) {
-	cp := controlPlaneAt(t, "pki-gateway", bryggav1alpha1.Endpoint{Gateway: &bryggav1alpha1.GatewayEndpoint{
-		ParentRef: bryggav1alpha1.ParentReference{Name: "edge", Namespace: "gateways"},
-		Hostnames: bryggav1alpha1.GatewayHostnames{APIServer: "api.dev.example.test", Konnectivity: "konnectivity.dev.example.test"},
+	cp := controlPlaneAt(t, "pki-gateway", lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
+		ParentRef: lodiav1alpha1.ParentReference{Name: "edge", Namespace: "gateways"},
+		Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.test", Konnectivity: "konnectivity.dev.example.test"},
 	}})
 	reconcile(t, newReconciler(time.Hour), cp)
-	expectCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForEndpoint)
+	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint)
 	secrets := secretsOf(t, cp)
 	for _, name := range []string{"dev-apiserver-serving", "dev-konnectivity-server", "dev-admin-kubeconfig"} {
 		if secrets[name] != nil {
@@ -934,12 +934,12 @@ func TestAGatewayControlPlaneWaitsForItsEndpoint(t *testing.T) {
 	}
 }
 
-func publishEndpoint(t *testing.T, cp *bryggav1alpha1.ControlPlane) {
+func publishEndpoint(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 	t.Helper()
 	publishEndpointAt(t, cp, endpointHost)
 }
 
-func publishEndpointAt(t *testing.T, cp *bryggav1alpha1.ControlPlane, host string) {
+func publishEndpointAt(t *testing.T, cp *lodiav1alpha1.ControlPlane, host string) {
 	t.Helper()
 	applyStatus(t, cp, map[string]any{"endpoint": map[string]any{
 		"apiServer":    map[string]any{"host": host, "port": int64(endpointPort)},
@@ -947,28 +947,28 @@ func publishEndpointAt(t *testing.T, cp *bryggav1alpha1.ControlPlane, host strin
 	}})
 }
 
-func setAPIServerReady(t *testing.T, cp *bryggav1alpha1.ControlPlane) {
+func setAPIServerReady(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 	t.Helper()
 	applyStatus(t, cp, map[string]any{"conditions": []any{map[string]any{
-		"type":               bryggav1alpha1.ConditionAPIServerReady,
+		"type":               lodiav1alpha1.ConditionAPIServerReady,
 		"status":             string(metav1.ConditionTrue),
-		"reason":             bryggav1alpha1.ReasonReady,
+		"reason":             lodiav1alpha1.ReasonReady,
 		"message":            "",
 		"observedGeneration": cp.Generation,
 		"lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
 	}}})
 }
 
-func condition(t *testing.T, cp *bryggav1alpha1.ControlPlane, conditionType string) *metav1.Condition {
+func condition(t *testing.T, cp *lodiav1alpha1.ControlPlane, conditionType string) *metav1.Condition {
 	t.Helper()
-	fresh := &bryggav1alpha1.ControlPlane{}
+	fresh := &lodiav1alpha1.ControlPlane{}
 	if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(cp), fresh); err != nil {
 		t.Fatal(err)
 	}
 	return meta.FindStatusCondition(fresh.Status.Conditions, conditionType)
 }
 
-func expectCondition(t *testing.T, cp *bryggav1alpha1.ControlPlane, conditionType string, status metav1.ConditionStatus, reason string) {
+func expectCondition(t *testing.T, cp *lodiav1alpha1.ControlPlane, conditionType string, status metav1.ConditionStatus, reason string) {
 	t.Helper()
 	c := condition(t, cp, conditionType)
 	if c == nil {
@@ -982,10 +982,10 @@ func expectCondition(t *testing.T, cp *bryggav1alpha1.ControlPlane, conditionTyp
 	}
 }
 
-func secretsOf(t *testing.T, cp *bryggav1alpha1.ControlPlane) map[string]*corev1.Secret {
+func secretsOf(t *testing.T, cp *lodiav1alpha1.ControlPlane) map[string]*corev1.Secret {
 	t.Helper()
 	var list corev1.SecretList
-	if err := k8s.List(t.Context(), &list, client.InNamespace(cp.Namespace), client.MatchingLabels{bryggav1alpha1.ControlPlaneLabel: cp.Name}); err != nil {
+	if err := k8s.List(t.Context(), &list, client.InNamespace(cp.Namespace), client.MatchingLabels{lodiav1alpha1.ControlPlaneLabel: cp.Name}); err != nil {
 		t.Fatal(err)
 	}
 	out := make(map[string]*corev1.Secret, len(list.Items))
@@ -995,13 +995,13 @@ func secretsOf(t *testing.T, cp *bryggav1alpha1.ControlPlane) map[string]*corev1
 	return out
 }
 
-func resourceVersions(t *testing.T, cp *bryggav1alpha1.ControlPlane) (map[string]string, string) {
+func resourceVersions(t *testing.T, cp *lodiav1alpha1.ControlPlane) (map[string]string, string) {
 	t.Helper()
 	versions := map[string]string{}
 	for name, s := range secretsOf(t, cp) {
 		versions[name] = s.ResourceVersion
 	}
-	fresh := &bryggav1alpha1.ControlPlane{}
+	fresh := &lodiav1alpha1.ControlPlane{}
 	if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(cp), fresh); err != nil {
 		t.Fatal(err)
 	}
@@ -1013,7 +1013,7 @@ func parseTLS(t *testing.T, s *corev1.Secret) *certs.Certificate {
 	if s == nil {
 		t.Fatal("no Secret")
 	}
-	c, err := certs.Parse(s.Data[bryggav1alpha1.TLSCertKey], s.Data[bryggav1alpha1.TLSPrivateKeyKey])
+	c, err := certs.Parse(s.Data[lodiav1alpha1.TLSCertKey], s.Data[lodiav1alpha1.TLSPrivateKeyKey])
 	if err != nil {
 		t.Fatalf("%s: %v", s.Name, err)
 	}
@@ -1025,10 +1025,10 @@ func leafOf(t *testing.T, s *corev1.Secret) *certs.Certificate {
 	if s == nil {
 		t.Fatal("no Secret")
 	}
-	if s.Data[bryggav1alpha1.TLSCertKey] != nil {
+	if s.Data[lodiav1alpha1.TLSCertKey] != nil {
 		return parseTLS(t, s)
 	}
-	cert, key, err := certs.Embedded(s.Data[bryggav1alpha1.KubeconfigKey])
+	cert, key, err := certs.Embedded(s.Data[lodiav1alpha1.KubeconfigKey])
 	if err != nil {
 		t.Fatalf("%s: %v", s.Name, err)
 	}
@@ -1043,7 +1043,7 @@ func pemBlocks(t *testing.T, s *corev1.Secret) []*pem.Block {
 	t.Helper()
 	var raw [][]byte
 	for key, value := range s.Data {
-		if key != bryggav1alpha1.KubeconfigKey {
+		if key != lodiav1alpha1.KubeconfigKey {
 			raw = append(raw, value)
 			continue
 		}

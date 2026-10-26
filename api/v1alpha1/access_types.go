@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package v1alpha1
@@ -7,7 +7,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// KubeconfigRequest asks for a short-lived kubeconfig. Brygga writes it into
+// KubeconfigRequest asks for a short-lived kubeconfig. Lodia writes it into
 // the Secret named in status and deletes both after expiry.
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
@@ -49,7 +49,7 @@ type KubeconfigRequestSpec struct {
 	// +kubebuilder:validation:MaxLength=128
 	User string `json:"user"`
 
-	// Groups are the certificate's organizations; brygga:cluster-admins by default.
+	// Groups are the certificate's organizations; lodia:cluster-admins by default.
 	// +optional
 	// +listType=set
 	// +kubebuilder:validation:MaxItems=16

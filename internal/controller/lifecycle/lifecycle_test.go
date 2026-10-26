@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package lifecycle_test
@@ -28,23 +28,23 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
-	"github.com/segla-io/brygga/internal/controller/lifecycle"
-	"github.com/segla-io/brygga/internal/operator"
+	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/controller/lifecycle"
+	"go.lodia.io/lodia/internal/operator"
 )
 
 var lifecycleRules = []rbacv1.PolicyRule{
-	{APIGroups: []string{bryggav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes"}, Verbs: []string{"list", "watch"}},
-	{APIGroups: []string{bryggav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes/status"}, Verbs: []string{"patch"}},
+	{APIGroups: []string{lodiav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes"}, Verbs: []string{"list", "watch"}},
+	{APIGroups: []string{lodiav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes/status"}, Verbs: []string{"patch"}},
 }
 
 var readiness = []string{
-	bryggav1alpha1.ConditionCertificatesReady,
-	bryggav1alpha1.ConditionDatastoreReady,
-	bryggav1alpha1.ConditionAPIServerReady,
-	bryggav1alpha1.ConditionAccessReady,
-	bryggav1alpha1.ConditionAddonsApplied,
-	bryggav1alpha1.ConditionReachable,
+	lodiav1alpha1.ConditionCertificatesReady,
+	lodiav1alpha1.ConditionDatastoreReady,
+	lodiav1alpha1.ConditionAPIServerReady,
+	lodiav1alpha1.ConditionAccessReady,
+	lodiav1alpha1.ConditionAddonsApplied,
+	lodiav1alpha1.ConditionReachable,
 }
 
 var k8s client.WithWatch
@@ -70,7 +70,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	scheme := runtime.NewScheme()
-	for _, add := range []func(*runtime.Scheme) error{clientgoscheme.AddToScheme, bryggav1alpha1.AddToScheme} {
+	for _, add := range []func(*runtime.Scheme) error{clientgoscheme.AddToScheme, lodiav1alpha1.AddToScheme} {
 		if err := add(scheme); err != nil {
 			stop("scheme", err)
 		}
@@ -111,7 +111,7 @@ func TestMain(m *testing.M) {
 }
 
 func asLifecycleController(cfg *rest.Config) (*rest.Config, error) {
-	const user = "brygga-lifecycle"
+	const user = "lodia-lifecycle"
 	ctx := context.Background()
 	role := &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: user}, Rules: lifecycleRules}
 	binding := &rbacv1.ClusterRoleBinding{
@@ -127,7 +127,7 @@ func asLifecycleController(cfg *rest.Config) (*rest.Config, error) {
 	err := wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (bool, error) {
 		review := &authorizationv1.SubjectAccessReview{Spec: authorizationv1.SubjectAccessReviewSpec{
 			User:               user,
-			ResourceAttributes: &authorizationv1.ResourceAttributes{Group: bryggav1alpha1.GroupVersion.Group, Resource: "controlplanes", Verb: "watch"},
+			ResourceAttributes: &authorizationv1.ResourceAttributes{Group: lodiav1alpha1.GroupVersion.Group, Resource: "controlplanes", Verb: "watch"},
 		}}
 		if err := k8s.Create(ctx, review); err != nil {
 			return false, err
@@ -144,24 +144,24 @@ func asLifecycleController(cfg *rest.Config) (*rest.Config, error) {
 
 func TestTheTargetFollowsTheVersionWithinAMinor(t *testing.T) {
 	cp := controlPlane(t, "v1.35.0")
-	eventually(t, func() error { return expect(t, cp, "v1.35.0", "", bryggav1alpha1.ReasonIdle) })
+	eventually(t, func() error { return expect(t, cp, "v1.35.0", "", lodiav1alpha1.ReasonIdle) })
 
 	setVersion(t, cp, "v1.35.1")
-	eventually(t, func() error { return expect(t, cp, "v1.35.1", "", bryggav1alpha1.ReasonIdle) })
+	eventually(t, func() error { return expect(t, cp, "v1.35.1", "", lodiav1alpha1.ReasonIdle) })
 
 	setVersion(t, cp, "v1.36.0")
 	eventually(t, func() error {
-		return expect(t, cp, "v1.35.1", bryggav1alpha1.ReasonUnsupported, bryggav1alpha1.ReasonUnsupported)
+		return expect(t, cp, "v1.35.1", lodiav1alpha1.ReasonUnsupported, lodiav1alpha1.ReasonUnsupported)
 	})
-	if c := condition(t, cp, bryggav1alpha1.ConditionProgressing); c.Message != "spec.version v1.36.0 is another minor than the target v1.35.1, which stays until minor upgrades are supported" {
+	if c := condition(t, cp, lodiav1alpha1.ConditionProgressing); c.Message != "spec.version v1.36.0 is another minor than the target v1.35.1, which stays until minor upgrades are supported" {
 		t.Errorf("Progressing says %q", c.Message)
 	}
 
 	setVersion(t, cp, "v1.38.0")
 	eventually(t, func() error {
-		return expect(t, cp, "v1.35.1", bryggav1alpha1.ReasonUnsupported, bryggav1alpha1.ReasonUnsupported)
+		return expect(t, cp, "v1.35.1", lodiav1alpha1.ReasonUnsupported, lodiav1alpha1.ReasonUnsupported)
 	})
-	if c := condition(t, cp, bryggav1alpha1.ConditionProgressing); c.Message != "spec.version v1.38.0 is not of a minor Brygga runs: 1.35, 1.36, 1.37" {
+	if c := condition(t, cp, lodiav1alpha1.ConditionProgressing); c.Message != "spec.version v1.38.0 is not of a minor Lodia runs: 1.35, 1.36, 1.37" {
 		t.Errorf("Progressing says %q", c.Message)
 	}
 }
@@ -169,65 +169,65 @@ func TestTheTargetFollowsTheVersionWithinAMinor(t *testing.T) {
 func TestAnUnsupportedMinorGetsNoTarget(t *testing.T) {
 	cp := controlPlane(t, "v1.34.2")
 	eventually(t, func() error {
-		return expect(t, cp, "", bryggav1alpha1.ReasonUnsupported, bryggav1alpha1.ReasonUnsupported)
+		return expect(t, cp, "", lodiav1alpha1.ReasonUnsupported, lodiav1alpha1.ReasonUnsupported)
 	})
 
 	setVersion(t, cp, "v1.35.0")
-	eventually(t, func() error { return expect(t, cp, "v1.35.0", "", bryggav1alpha1.ReasonIdle) })
+	eventually(t, func() error { return expect(t, cp, "v1.35.0", "", lodiav1alpha1.ReasonIdle) })
 }
 
 func TestReadyFollowsTheReadinessConditions(t *testing.T) {
 	cp := controlPlane(t, "v1.37.1")
 	eventually(t, func() error {
-		return expectReady(t, cp, metav1.ConditionUnknown, bryggav1alpha1.ReasonLatestGenerationNotObserved, "CertificatesReady is not reported for generation 1", 0)
+		return expectReady(t, cp, metav1.ConditionUnknown, lodiav1alpha1.ReasonLatestGenerationNotObserved, "CertificatesReady is not reported for generation 1", 0)
 	})
 
 	for _, conditionType := range readiness {
 		setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
 	}
 	eventually(t, func() error {
-		return expectReady(t, cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReady,
+		return expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
 			"CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied and Reachable are True", 1)
 	})
 
-	setCondition(t, cp, bryggav1alpha1.ConditionAPIServerReady, metav1.ConditionFalse, bryggav1alpha1.ReasonRollingOut, "0 of 1 replicas updated")
+	setCondition(t, cp, lodiav1alpha1.ConditionAPIServerReady, metav1.ConditionFalse, lodiav1alpha1.ReasonRollingOut, "0 of 1 replicas updated")
 	eventually(t, func() error {
-		return expectReady(t, cp, metav1.ConditionFalse, bryggav1alpha1.ReasonRollingOut, "APIServerReady: 0 of 1 replicas updated", 1)
+		return expectReady(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRollingOut, "APIServerReady: 0 of 1 replicas updated", 1)
 	})
 
-	setCondition(t, cp, bryggav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, bryggav1alpha1.ReasonIssuing, "dev-ca-bundle is not written yet")
+	setCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, lodiav1alpha1.ReasonIssuing, "dev-ca-bundle is not written yet")
 	eventually(t, func() error {
-		return expectReady(t, cp, metav1.ConditionFalse, bryggav1alpha1.ReasonIssuing, "CertificatesReady: dev-ca-bundle is not written yet", 1)
+		return expectReady(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonIssuing, "CertificatesReady: dev-ca-bundle is not written yet", 1)
 	})
 
 	setVersion(t, cp, "v1.37.2")
 	eventually(t, func() error {
-		return expectReady(t, cp, metav1.ConditionUnknown, bryggav1alpha1.ReasonLatestGenerationNotObserved, "CertificatesReady is not reported for generation 2", 1)
+		return expectReady(t, cp, metav1.ConditionUnknown, lodiav1alpha1.ReasonLatestGenerationNotObserved, "CertificatesReady is not reported for generation 2", 1)
 	})
 }
 
 func TestAPausedControlPlaneKeepsItsTarget(t *testing.T) {
 	cp := controlPlane(t, "v1.35.0")
-	eventually(t, func() error { return expect(t, cp, "v1.35.0", "", bryggav1alpha1.ReasonIdle) })
+	eventually(t, func() error { return expect(t, cp, "v1.35.0", "", lodiav1alpha1.ReasonIdle) })
 
-	update(t, cp, func(cp *bryggav1alpha1.ControlPlane) {
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) {
 		cp.Spec.Paused = true
 		cp.Spec.Version = "v1.35.1"
 	})
-	eventually(t, func() error { return expect(t, cp, "v1.35.0", "", bryggav1alpha1.ReasonPaused) })
+	eventually(t, func() error { return expect(t, cp, "v1.35.0", "", lodiav1alpha1.ReasonPaused) })
 
-	update(t, cp, func(cp *bryggav1alpha1.ControlPlane) { cp.Spec.Paused = false })
-	eventually(t, func() error { return expect(t, cp, "v1.35.1", "", bryggav1alpha1.ReasonIdle) })
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = false })
+	eventually(t, func() error { return expect(t, cp, "v1.35.1", "", lodiav1alpha1.ReasonIdle) })
 }
 
 func TestReadyDuringDeletion(t *testing.T) {
 	cp := controlPlane(t, "v1.35.0")
-	setFinalizers(t, cp, "test.brygga.segla.io/hold")
+	setFinalizers(t, cp, "test.lodia.io/hold")
 	for _, conditionType := range readiness {
 		setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
 	}
 	eventually(t, func() error {
-		return expectReady(t, cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReady,
+		return expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
 			"CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied and Reachable are True", 1)
 	})
 
@@ -235,16 +235,16 @@ func TestReadyDuringDeletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, func() error {
-		c := condition(t, cp, bryggav1alpha1.ConditionReady)
-		if c == nil || c.Status != metav1.ConditionFalse || c.Reason != bryggav1alpha1.ReasonDeleting {
-			return fmt.Errorf("Ready is %+v, want False %s", c, bryggav1alpha1.ReasonDeleting)
+		c := condition(t, cp, lodiav1alpha1.ConditionReady)
+		if c == nil || c.Status != metav1.ConditionFalse || c.Reason != lodiav1alpha1.ReasonDeleting {
+			return fmt.Errorf("Ready is %+v, want False %s", c, lodiav1alpha1.ReasonDeleting)
 		}
 		return nil
 	})
 	setFinalizers(t, cp)
 }
 
-func setFinalizers(t *testing.T, cp *bryggav1alpha1.ControlPlane, finalizers ...string) {
+func setFinalizers(t *testing.T, cp *lodiav1alpha1.ControlPlane, finalizers ...string) {
 	t.Helper()
 	fresh := get(t, cp)
 	patch := client.MergeFrom(fresh.DeepCopy())
@@ -262,7 +262,7 @@ func TestAPassThatChangesNothingWritesNothing(t *testing.T) {
 	var settled string
 	eventually(t, func() error {
 		fresh := get(t, cp)
-		ready := meta.FindStatusCondition(fresh.Status.Conditions, bryggav1alpha1.ConditionReady)
+		ready := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionReady)
 		if ready == nil || ready.Status != metav1.ConditionTrue || settled != fresh.ResourceVersion {
 			settled = fresh.ResourceVersion
 			return fmt.Errorf("resourceVersion %s, Ready %v", fresh.ResourceVersion, ready)
@@ -284,19 +284,19 @@ func TestAPassThatChangesNothingWritesNothing(t *testing.T) {
 	}
 }
 
-func controlPlane(t *testing.T, version string) *bryggav1alpha1.ControlPlane {
+func controlPlane(t *testing.T, version string) *lodiav1alpha1.ControlPlane {
 	t.Helper()
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "lifecycle-"}}
 	if err := k8s.Create(t.Context(), ns); err != nil {
 		t.Fatal(err)
 	}
-	cp := &bryggav1alpha1.ControlPlane{
+	cp := &lodiav1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: ns.Name},
-		Spec: bryggav1alpha1.ControlPlaneSpec{
+		Spec: lodiav1alpha1.ControlPlaneSpec{
 			Version:   version,
-			Datastore: bryggav1alpha1.DatastoreChoice{Dedicated: &bryggav1alpha1.DedicatedDatastore{}},
-			Endpoint:  bryggav1alpha1.Endpoint{LoadBalancer: &bryggav1alpha1.LoadBalancerEndpoint{}},
-			Network:   bryggav1alpha1.Network{ServiceCIDRs: []bryggav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []bryggav1alpha1.CIDR{"10.244.0.0/16"}},
+			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{}},
+			Endpoint:  lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}},
+			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
 		},
 	}
 	if err := k8s.Create(t.Context(), cp); err != nil {
@@ -305,16 +305,16 @@ func controlPlane(t *testing.T, version string) *bryggav1alpha1.ControlPlane {
 	return cp
 }
 
-func get(t *testing.T, cp *bryggav1alpha1.ControlPlane) *bryggav1alpha1.ControlPlane {
+func get(t *testing.T, cp *lodiav1alpha1.ControlPlane) *lodiav1alpha1.ControlPlane {
 	t.Helper()
-	fresh := &bryggav1alpha1.ControlPlane{}
+	fresh := &lodiav1alpha1.ControlPlane{}
 	if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(cp), fresh); err != nil {
 		t.Fatal(err)
 	}
 	return fresh
 }
 
-func update(t *testing.T, cp *bryggav1alpha1.ControlPlane, change func(*bryggav1alpha1.ControlPlane)) {
+func update(t *testing.T, cp *lodiav1alpha1.ControlPlane, change func(*lodiav1alpha1.ControlPlane)) {
 	t.Helper()
 	fresh := get(t, cp)
 	change(fresh)
@@ -323,15 +323,15 @@ func update(t *testing.T, cp *bryggav1alpha1.ControlPlane, change func(*bryggav1
 	}
 }
 
-func setVersion(t *testing.T, cp *bryggav1alpha1.ControlPlane, version string) {
+func setVersion(t *testing.T, cp *lodiav1alpha1.ControlPlane, version string) {
 	t.Helper()
-	update(t, cp, func(cp *bryggav1alpha1.ControlPlane) { cp.Spec.Version = version })
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Version = version })
 }
 
-func setCondition(t *testing.T, cp *bryggav1alpha1.ControlPlane, conditionType string, status metav1.ConditionStatus, reason, message string) {
+func setCondition(t *testing.T, cp *lodiav1alpha1.ControlPlane, conditionType string, status metav1.ConditionStatus, reason, message string) {
 	t.Helper()
 	u := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": bryggav1alpha1.GroupVersion.String(),
+		"apiVersion": lodiav1alpha1.GroupVersion.String(),
 		"kind":       "ControlPlane",
 		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
 		"status": map[string]any{"conditions": []any{map[string]any{
@@ -348,19 +348,19 @@ func setCondition(t *testing.T, cp *bryggav1alpha1.ControlPlane, conditionType s
 	}
 }
 
-func condition(t *testing.T, cp *bryggav1alpha1.ControlPlane, conditionType string) *metav1.Condition {
+func condition(t *testing.T, cp *lodiav1alpha1.ControlPlane, conditionType string) *metav1.Condition {
 	t.Helper()
 	return meta.FindStatusCondition(get(t, cp).Status.Conditions, conditionType)
 }
 
-func expect(t *testing.T, cp *bryggav1alpha1.ControlPlane, version, targetReason, progressing string) error {
+func expect(t *testing.T, cp *lodiav1alpha1.ControlPlane, version, targetReason, progressing string) error {
 	t.Helper()
 	fresh := get(t, cp)
-	target := bryggav1alpha1.Target{}
+	target := lodiav1alpha1.Target{}
 	if fresh.Status.Target != nil {
 		target = *fresh.Status.Target
 	}
-	c := meta.FindStatusCondition(fresh.Status.Conditions, bryggav1alpha1.ConditionProgressing)
+	c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionProgressing)
 	switch {
 	case target.Version != version || target.Reason != targetReason:
 		return fmt.Errorf("target is %q with reason %q, want %q with %q", target.Version, target.Reason, version, targetReason)
@@ -370,10 +370,10 @@ func expect(t *testing.T, cp *bryggav1alpha1.ControlPlane, version, targetReason
 	return nil
 }
 
-func expectReady(t *testing.T, cp *bryggav1alpha1.ControlPlane, status metav1.ConditionStatus, reason, message string, observedGeneration int64) error {
+func expectReady(t *testing.T, cp *lodiav1alpha1.ControlPlane, status metav1.ConditionStatus, reason, message string, observedGeneration int64) error {
 	t.Helper()
 	fresh := get(t, cp)
-	c := meta.FindStatusCondition(fresh.Status.Conditions, bryggav1alpha1.ConditionReady)
+	c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionReady)
 	switch {
 	case c == nil || c.Status != status || c.Reason != reason || c.Message != message || c.ObservedGeneration != fresh.Generation:
 		return fmt.Errorf("Ready is %+v, want %s %s %q at generation %d", c, status, reason, message, fresh.Generation)

@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 //go:build e2e
@@ -30,8 +30,8 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
-	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
-	"github.com/segla-io/brygga/internal/operator"
+	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/operator"
 )
 
 const apiTenant = "team-api"
@@ -48,7 +48,7 @@ func TestAPIServerOnKind(t *testing.T) {
 			installEtcdDruid(t, cfg.KubeconfigFile())
 			signer := buildSigner(t, cfg.KubeconfigFile())
 			scheme := runtime.NewScheme()
-			for _, add := range []func(*runtime.Scheme) error{clientgoscheme.AddToScheme, bryggav1alpha1.AddToScheme, druidv1alpha1.AddToScheme} {
+			for _, add := range []func(*runtime.Scheme) error{clientgoscheme.AddToScheme, lodiav1alpha1.AddToScheme, druidv1alpha1.AddToScheme} {
 				if err := add(scheme); err != nil {
 					t.Fatal(err)
 				}
@@ -64,34 +64,34 @@ func TestAPIServerOnKind(t *testing.T) {
 			go func() { stopped <- mgr.Start(run) }()
 
 			create(ctx, t, k8s, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: apiTenant}})
-			create(ctx, t, k8s, &bryggav1alpha1.DatastoreClass{
+			create(ctx, t, k8s, &lodiav1alpha1.DatastoreClass{
 				ObjectMeta: metav1.ObjectMeta{Name: "e2e-api"},
-				Spec:       bryggav1alpha1.DatastoreClassSpec{Storage: bryggav1alpha1.EtcdStorage{Size: resource.MustParse("1Gi"), ReclaimPolicy: "Delete"}},
+				Spec:       lodiav1alpha1.DatastoreClassSpec{Storage: lodiav1alpha1.EtcdStorage{Size: resource.MustParse("1Gi"), ReclaimPolicy: "Delete"}},
 			})
-			create(ctx, t, k8s, &bryggav1alpha1.ControlPlane{
+			create(ctx, t, k8s, &lodiav1alpha1.ControlPlane{
 				ObjectMeta: metav1.ObjectMeta{Name: controlPlane, Namespace: apiTenant},
-				Spec: bryggav1alpha1.ControlPlaneSpec{
+				Spec: lodiav1alpha1.ControlPlaneSpec{
 					Version:   "v1.37.1",
-					Datastore: bryggav1alpha1.DatastoreChoice{Dedicated: &bryggav1alpha1.DedicatedDatastore{ClassName: "e2e-api"}},
-					Endpoint:  bryggav1alpha1.Endpoint{NodePort: &bryggav1alpha1.NodePortEndpoint{}},
-					Network:   bryggav1alpha1.Network{ServiceCIDRs: []bryggav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []bryggav1alpha1.CIDR{"10.244.0.0/16"}},
+					Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{ClassName: "e2e-api"}},
+					Endpoint:  lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}},
+					Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
 				},
 			})
 			return ctx
 		}).
 		Assess("APIServerReady=True: the API server answers /readyz, the controller manager and the scheduler run", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			until(ctx, t, 8*time.Minute, "APIServerReady=True", func(ctx context.Context) error {
-				cp := &bryggav1alpha1.ControlPlane{}
+				cp := &lodiav1alpha1.ControlPlane{}
 				if err := k8s.Get(ctx, key, cp); err != nil {
 					return err
 				}
-				c := meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionAPIServerReady)
+				c := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady)
 				if c == nil || c.Status != metav1.ConditionTrue || c.ObservedGeneration != cp.Generation {
-					return fmt.Errorf("APIServerReady is %+v; DatastoreReady %+v", c, meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionDatastoreReady))
+					return fmt.Errorf("APIServerReady is %+v; DatastoreReady %+v", c, meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady))
 				}
 				return nil
 			})
-			cp := &bryggav1alpha1.ControlPlane{}
+			cp := &lodiav1alpha1.ControlPlane{}
 			if err := k8s.Get(ctx, key, cp); err != nil {
 				t.Fatal(err)
 			}
@@ -108,11 +108,11 @@ func TestAPIServerOnKind(t *testing.T) {
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			if k8s != nil {
-				if err := client.IgnoreNotFound(k8s.Delete(ctx, &bryggav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: controlPlane, Namespace: apiTenant}})); err != nil {
+				if err := client.IgnoreNotFound(k8s.Delete(ctx, &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: controlPlane, Namespace: apiTenant}})); err != nil {
 					t.Error(err)
 				}
 				until(ctx, t, 3*time.Minute, "the ControlPlane is gone", func(ctx context.Context) error {
-					return gone(k8s.Get(ctx, key, &bryggav1alpha1.ControlPlane{}))
+					return gone(k8s.Get(ctx, key, &lodiav1alpha1.ControlPlane{}))
 				})
 			}
 			if stop != nil {
@@ -123,7 +123,7 @@ func TestAPIServerOnKind(t *testing.T) {
 			}
 			if k8s != nil {
 				for _, obj := range []client.Object{
-					&bryggav1alpha1.DatastoreClass{ObjectMeta: metav1.ObjectMeta{Name: "e2e-api"}},
+					&lodiav1alpha1.DatastoreClass{ObjectMeta: metav1.ObjectMeta{Name: "e2e-api"}},
 					&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: apiTenant}},
 				} {
 					if err := client.IgnoreNotFound(k8s.Delete(ctx, obj)); err != nil {
@@ -137,7 +137,7 @@ func TestAPIServerOnKind(t *testing.T) {
 	testenv.Test(t, f)
 }
 
-// buildSigner builds brygga-signer's image with ko straight into the kind
+// buildSigner builds lodia-signer's image with ko straight into the kind
 // cluster, as the hard way does.
 func buildSigner(t *testing.T, kubeconfig string) string {
 	t.Helper()
@@ -146,16 +146,16 @@ func buildSigner(t *testing.T, kubeconfig string) string {
 		t.Fatal(err)
 	}
 	build := exec.CommandContext(t.Context(), "go", "run", "github.com/google/ko@v0.19.1", "build",
-		"--base-import-paths", "--platform=linux/"+goruntime.GOARCH, "./cmd/brygga-signer")
+		"--base-import-paths", "--platform=linux/"+goruntime.GOARCH, "./cmd/lodia-signer")
 	build.Dir = filepath.Join("..", "..")
 	build.Env = append(os.Environ(), "KO_DOCKER_REPO=kind.local", "KIND_CLUSTER_NAME="+strings.TrimPrefix(cfg.CurrentContext, "kind-"))
 	var stderr bytes.Buffer
 	build.Stderr = &stderr
 	out, err := build.Output()
 	if err != nil {
-		t.Fatalf("build brygga-signer into kind: %v\n%s", err, stderr.String())
+		t.Fatalf("build lodia-signer into kind: %v\n%s", err, stderr.String())
 	}
 	image := strings.TrimSpace(string(out))
-	t.Logf("brygga-signer built into kind as %s", image)
+	t.Logf("lodia-signer built into kind as %s", image)
 	return image
 }

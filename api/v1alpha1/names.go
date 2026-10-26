@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package v1alpha1
@@ -44,20 +44,20 @@ const (
 
 // The kubeconfigs, under KubeconfigKey. A component's names its certificate,
 // key and CA as the files TLSCertKey, TLSPrivateKeyKey and CACertKey beside
-// it in the same Secret, which is mounted whole; Brygga's and the admin's
+// it in the same Secret, which is mounted whole; Lodia's and the admin's
 // embed them.
 const (
 	KonnectivityKubeconfigSecret      Secret = "konnectivity-kubeconfig"
 	ControllerManagerKubeconfigSecret Secret = "controller-manager-kubeconfig"
 	SchedulerKubeconfigSecret         Secret = "scheduler-kubeconfig"
-	BryggaKubeconfigSecret            Secret = "brygga-kubeconfig"
+	LodiaKubeconfigSecret             Secret = "lodia-kubeconfig"
 	AdminKubeconfigSecret             Secret = "admin-kubeconfig"
 
 	KubeconfigKey = "kubeconfig"
 )
 
 // The ServiceAccount signing key, PEM under SigningKeyKey, which the
-// brygga-signer sidecar reads.
+// lodia-signer sidecar reads.
 const (
 	ServiceAccountKeysSecret Secret = "sa-keys"
 
@@ -81,7 +81,7 @@ func PKISecrets() []Secret {
 		CABundleSecret, ClientCASecret, FrontProxyCASecret, EtcdCASecret,
 		KubeletSignerSecret, APIServerServingSecret, APIServerKubeletClientSecret, APIServerEtcdClientSecret,
 		FrontProxyClientSecret, KonnectivityServerSecret, KonnectivityKubeconfigSecret,
-		ControllerManagerKubeconfigSecret, SchedulerKubeconfigSecret, BryggaKubeconfigSecret, AdminKubeconfigSecret,
+		ControllerManagerKubeconfigSecret, SchedulerKubeconfigSecret, LodiaKubeconfigSecret, AdminKubeconfigSecret,
 		ServiceAccountKeysSecret, EncryptionConfigSecret,
 	}
 }

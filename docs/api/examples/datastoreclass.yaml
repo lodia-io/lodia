@@ -1,12 +1,12 @@
 # What a dedicated etcd looks like. Cluster-scoped, written by the operator
 # of the management cluster; a ControlPlane only names the class. The member
 # count comes from the ControlPlane (1, or 3 with highAvailability).
-apiVersion: brygga.segla.io/v1alpha1
+apiVersion: lodia.io/v1alpha1
 kind: DatastoreClass
 metadata:
   name: fast-ssd
   annotations:
-    brygga.segla.io/is-default-class: "true"
+    lodia.io/is-default-class: "true"
 spec:
   etcd:                                   # rendered into an etcd-druid Etcd resource
     quotaBackendBytes: 4Gi
@@ -23,11 +23,11 @@ spec:
   backup:
     store:
       provider: S3                        # S3 | GCS | ABS | Swift, as etcd-druid supports
-      bucket: brygga-backups
+      bucket: lodia-backups
       prefix: prod
       region: eu-central-1
       endpoint: https://s3.eu-central-1.amazonaws.com
-      secretRef: {name: s3-backups, namespace: brygga-system}
+      secretRef: {name: s3-backups, namespace: lodia-system}
     fullSnapshotSchedule: "0 */24 * * *"  # the hour is randomised inside the tenant's maintenance window
     deltaSnapshotPeriod: 5m
     retention:

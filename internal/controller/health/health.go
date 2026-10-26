@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package health is the Health controller. In phase 1 it probes each control
@@ -31,12 +31,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
+	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 )
 
 const (
 	Name         = "health"
-	FieldManager = "brygga/" + Name
+	FieldManager = "lodia/" + Name
 	// FailuresBeforeFalse consecutive failed probes turn a True Reachable
 	// False, so that one blip does not drop Ready.
 	FailuresBeforeFalse = 3
@@ -58,7 +58,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(Name).
 		WithOptions(controller.Options{MaxConcurrentReconciles: workers, ReconciliationTimeout: time.Minute}).
-		For(&bryggav1alpha1.ControlPlane{}, builder.WithPredicates(predicate.Or[client.Object](predicate.GenerationChangedPredicate{}, endpointChanged()))).
+		For(&lodiav1alpha1.ControlPlane{}, builder.WithPredicates(predicate.Or[client.Object](predicate.GenerationChangedPredicate{}, endpointChanged()))).
 		Complete(r)
 }
 
@@ -66,14 +66,14 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 // the failures counted are probes a period apart.
 func endpointChanged() predicate.Funcs {
 	return predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool {
-		before, ok := e.ObjectOld.(*bryggav1alpha1.ControlPlane)
-		after, ok2 := e.ObjectNew.(*bryggav1alpha1.ControlPlane)
+		before, ok := e.ObjectOld.(*lodiav1alpha1.ControlPlane)
+		after, ok2 := e.ObjectNew.(*lodiav1alpha1.ControlPlane)
 		return !ok || !ok2 || endpoint(before) != endpoint(after)
 	}}
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	cp := &bryggav1alpha1.ControlPlane{}
+	cp := &lodiav1alpha1.ControlPlane{}
 	if err := r.Get(ctx, req.NamespacedName, cp); err != nil {
 		if apierrors.IsNotFound(err) {
 			r.count(req.NamespacedName, false)
@@ -83,8 +83,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if !cp.DeletionTimestamp.IsZero() || cp.Spec.Paused {
 		return ctrl.Result{}, nil
 	}
-	if meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionReachable) == nil {
-		if err := r.apply(ctx, cp, newCondition(cp, metav1.ConditionUnknown, bryggav1alpha1.ReasonReconciling, "the first probe has not finished")); err != nil {
+	if meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionReachable) == nil {
+		if err := r.apply(ctx, cp, newCondition(cp, metav1.ConditionUnknown, lodiav1alpha1.ReasonReconciling, "the first probe has not finished")); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -102,34 +102,34 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 // reachable returns nil to keep the condition as it is: a True after fewer
 // than FailuresBeforeFalse failed probes in a row.
-func (r *Reconciler) reachable(ctx context.Context, cp *bryggav1alpha1.ControlPlane) (*metav1.Condition, error) {
+func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*metav1.Condition, error) {
 	key := client.ObjectKeyFromObject(cp)
 	url := endpoint(cp)
 	if url == "" {
 		r.count(key, false)
-		return newCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint"), nil
+		return newCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint"), nil
 	}
-	name := bryggav1alpha1.CABundleSecret.Name(cp.Name)
+	name := lodiav1alpha1.CABundleSecret.Name(cp.Name)
 	secret := &corev1.Secret{}
 	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: name}, secret); err != nil {
 		if apierrors.IsNotFound(err) {
 			r.count(key, false)
-			return newCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the CA bundle "+name), nil
+			return newCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the CA bundle "+name), nil
 		}
 		return nil, err
 	}
 	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(secret.Data[bryggav1alpha1.CACertKey]) {
+	if !roots.AppendCertsFromPEM(secret.Data[lodiav1alpha1.CACertKey]) {
 		r.count(key, false)
-		return newCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForCertificates, "the CA bundle "+name+" holds no certificate"), nil
+		return newCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "the CA bundle "+name+" holds no certificate"), nil
 	}
 	code := r.probe(ctx, url, roots)
 	if code == http.StatusOK {
 		r.count(key, false)
-		return newCondition(cp, metav1.ConditionTrue, bryggav1alpha1.ReasonReachable, url+" answered 200"), nil
+		return newCondition(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, url+" answered 200"), nil
 	}
 	failures := r.count(key, true)
-	if previous := meta.FindStatusCondition(cp.Status.Conditions, bryggav1alpha1.ConditionReachable); previous != nil &&
+	if previous := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionReachable); previous != nil &&
 		previous.Status == metav1.ConditionTrue && failures < FailuresBeforeFalse {
 		return nil, nil
 	}
@@ -137,7 +137,7 @@ func (r *Reconciler) reachable(ctx context.Context, cp *bryggav1alpha1.ControlPl
 	if code != 0 {
 		answer = fmt.Sprintf("%s answered %d", url, code)
 	}
-	return newCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonExternalProbeFailed, answer), nil
+	return newCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonExternalProbeFailed, answer), nil
 }
 
 // probe returns the status code the endpoint answered with, or 0 for none.
@@ -180,20 +180,20 @@ func (r *Reconciler) count(key types.NamespacedName, failed bool) int {
 	return r.failures[key]
 }
 
-func endpoint(cp *bryggav1alpha1.ControlPlane) string {
+func endpoint(cp *lodiav1alpha1.ControlPlane) string {
 	if cp.Status.Endpoint == nil {
 		return ""
 	}
 	api := cp.Status.Endpoint.APIServer
-	return "https://" + net.JoinHostPort(api.Host, strconv.Itoa(int(api.Port))) + bryggav1alpha1.APIServerReadyzPath
+	return "https://" + net.JoinHostPort(api.Host, strconv.Itoa(int(api.Port))) + lodiav1alpha1.APIServerReadyzPath
 }
 
-func newCondition(cp *bryggav1alpha1.ControlPlane, status metav1.ConditionStatus, reason, message string) *metav1.Condition {
-	return &metav1.Condition{Type: bryggav1alpha1.ConditionReachable, Status: status, Reason: reason, Message: message, ObservedGeneration: cp.Generation}
+func newCondition(cp *lodiav1alpha1.ControlPlane, status metav1.ConditionStatus, reason, message string) *metav1.Condition {
+	return &metav1.Condition{Type: lodiav1alpha1.ConditionReachable, Status: status, Reason: reason, Message: message, ObservedGeneration: cp.Generation}
 }
 
 // apply writes Reachable only on a change, and leaves cp with what it wrote.
-func (r *Reconciler) apply(ctx context.Context, cp *bryggav1alpha1.ControlPlane, c *metav1.Condition) error {
+func (r *Reconciler) apply(ctx context.Context, cp *lodiav1alpha1.ControlPlane, c *metav1.Condition) error {
 	if previous := meta.FindStatusCondition(cp.Status.Conditions, c.Type); previous != nil && previous.Status == c.Status &&
 		previous.Reason == c.Reason && previous.Message == c.Message && previous.ObservedGeneration == c.ObservedGeneration {
 		return nil
@@ -205,7 +205,7 @@ func (r *Reconciler) apply(ctx context.Context, cp *bryggav1alpha1.ControlPlane,
 		return err
 	}
 	u := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": bryggav1alpha1.GroupVersion.String(),
+		"apiVersion": lodiav1alpha1.GroupVersion.String(),
 		"kind":       "ControlPlane",
 		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
 		"status":     map[string]any{"conditions": []any{applied}},

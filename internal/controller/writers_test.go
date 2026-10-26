@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package controller_test
@@ -29,29 +29,29 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/yaml"
 
-	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
-	"github.com/segla-io/brygga/internal/operator"
+	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/operator"
 )
 
 var conditionWriters = map[string]string{
-	bryggav1alpha1.ConditionCertificatesReady:    "brygga/pki",
-	bryggav1alpha1.ConditionCAValidityAcceptable: "brygga/pki",
-	bryggav1alpha1.ConditionAccessReady:          "brygga/pki",
-	bryggav1alpha1.ConditionDatastoreReady:       "brygga/datastore",
-	bryggav1alpha1.ConditionAPIServerReady:       "brygga/workloads",
-	bryggav1alpha1.ConditionAddonsApplied:        "brygga/tenant",
-	bryggav1alpha1.ConditionAddonsAvailable:      "brygga/tenant",
-	bryggav1alpha1.ConditionReachable:            "brygga/health",
-	bryggav1alpha1.ConditionProgressing:          "brygga/lifecycle",
-	bryggav1alpha1.ConditionReady:                "brygga/lifecycle",
+	lodiav1alpha1.ConditionCertificatesReady:    "lodia/pki",
+	lodiav1alpha1.ConditionCAValidityAcceptable: "lodia/pki",
+	lodiav1alpha1.ConditionAccessReady:          "lodia/pki",
+	lodiav1alpha1.ConditionDatastoreReady:       "lodia/datastore",
+	lodiav1alpha1.ConditionAPIServerReady:       "lodia/workloads",
+	lodiav1alpha1.ConditionAddonsApplied:        "lodia/tenant",
+	lodiav1alpha1.ConditionAddonsAvailable:      "lodia/tenant",
+	lodiav1alpha1.ConditionReachable:            "lodia/health",
+	lodiav1alpha1.ConditionProgressing:          "lodia/lifecycle",
+	lodiav1alpha1.ConditionReady:                "lodia/lifecycle",
 }
 
 var fieldWriters = map[string]string{
-	"credentials":        "brygga/pki",
-	"datastore":          "brygga/datastore",
-	"endpoint":           "brygga/workloads",
-	"target":             "brygga/lifecycle",
-	"observedGeneration": "brygga/lifecycle",
+	"credentials":        "lodia/pki",
+	"datastore":          "lodia/datastore",
+	"endpoint":           "lodia/workloads",
+	"target":             "lodia/lifecycle",
+	"observedGeneration": "lodia/lifecycle",
 }
 
 func TestEveryStatusFieldHasOneWriter(t *testing.T) {
@@ -63,7 +63,7 @@ func TestEveryStatusFieldHasOneWriter(t *testing.T) {
 	if err := k8s.Create(t.Context(), ns); err != nil {
 		t.Fatal(err)
 	}
-	updates, err := k8s.Watch(t.Context(), &bryggav1alpha1.ControlPlaneList{}, client.InNamespace(ns.Name))
+	updates, err := k8s.Watch(t.Context(), &lodiav1alpha1.ControlPlaneList{}, client.InNamespace(ns.Name))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,17 +77,17 @@ func TestEveryStatusFieldHasOneWriter(t *testing.T) {
 	if err := k8s.Status().Update(t.Context(), node); err != nil {
 		t.Fatal(err)
 	}
-	class := &bryggav1alpha1.DatastoreClass{
-		ObjectMeta: metav1.ObjectMeta{Name: "writers", Annotations: map[string]string{bryggav1alpha1.DefaultClassAnnotation: "true"}},
-		Spec:       bryggav1alpha1.DatastoreClassSpec{Storage: bryggav1alpha1.EtcdStorage{Size: resource.MustParse("1Gi"), ReclaimPolicy: "Delete"}},
+	class := &lodiav1alpha1.DatastoreClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "writers", Annotations: map[string]string{lodiav1alpha1.DefaultClassAnnotation: "true"}},
+		Spec:       lodiav1alpha1.DatastoreClassSpec{Storage: lodiav1alpha1.EtcdStorage{Size: resource.MustParse("1Gi"), ReclaimPolicy: "Delete"}},
 	}
-	cp := &bryggav1alpha1.ControlPlane{
+	cp := &lodiav1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: ns.Name},
-		Spec: bryggav1alpha1.ControlPlaneSpec{
+		Spec: lodiav1alpha1.ControlPlaneSpec{
 			Version:   "v1.35.0",
-			Datastore: bryggav1alpha1.DatastoreChoice{Dedicated: &bryggav1alpha1.DedicatedDatastore{}},
-			Endpoint:  bryggav1alpha1.Endpoint{NodePort: &bryggav1alpha1.NodePortEndpoint{}},
-			Network:   bryggav1alpha1.Network{ServiceCIDRs: []bryggav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []bryggav1alpha1.CIDR{"10.244.0.0/16"}},
+			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{}},
+			Endpoint:  lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}},
+			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
 		},
 	}
 	for _, obj := range []client.Object{class, cp} {
@@ -110,7 +110,7 @@ watching:
 			if event.Type == watch.Error {
 				t.Fatalf("watch: %v", apierrors.FromObject(event.Object))
 			}
-			fresh := event.Object.(*bryggav1alpha1.ControlPlane)
+			fresh := event.Object.(*lodiav1alpha1.ControlPlane)
 			current, err := statusOwners(fresh)
 			if err != nil {
 				t.Fatal(err)
@@ -143,7 +143,7 @@ watching:
 	}
 }
 
-func complete(cp *bryggav1alpha1.ControlPlane) bool {
+func complete(cp *lodiav1alpha1.ControlPlane) bool {
 	if cp.Status.Datastore == nil || cp.Status.Credentials == nil || cp.Status.Target == nil || cp.Status.Endpoint == nil {
 		return false
 	}
@@ -155,7 +155,7 @@ func complete(cp *bryggav1alpha1.ControlPlane) bool {
 	return true
 }
 
-func statusOwners(cp *bryggav1alpha1.ControlPlane) (map[string][]string, error) {
+func statusOwners(cp *lodiav1alpha1.ControlPlane) (map[string][]string, error) {
 	owners := map[string][]string{}
 	for _, entry := range cp.ManagedFields {
 		if entry.Subresource != "status" || entry.FieldsV1 == nil {
@@ -221,7 +221,7 @@ func start(t *testing.T) client.WithWatch {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := operator.Setup(mgr, "registry.example/brygga-signer:test"); err != nil {
+	if err := operator.Setup(mgr, "registry.example/lodia-signer:test"); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())

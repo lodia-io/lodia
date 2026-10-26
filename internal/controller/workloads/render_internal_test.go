@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package workloads
@@ -11,12 +11,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
+	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 )
 
 func TestTheKonnectivityVersionReplacesTheTagOfAnyReference(t *testing.T) {
-	pinned := &bryggav1alpha1.ControlPlane{Spec: bryggav1alpha1.ControlPlaneSpec{
-		Addons: &bryggav1alpha1.Addons{Konnectivity: &bryggav1alpha1.Konnectivity{Version: "v0.37.2"}},
+	pinned := &lodiav1alpha1.ControlPlane{Spec: lodiav1alpha1.ControlPlaneSpec{
+		Addons: &lodiav1alpha1.Addons{Konnectivity: &lodiav1alpha1.Konnectivity{Version: "v0.37.2"}},
 	}}
 	digest := "@sha256:" + strings.Repeat("ab", 32)
 	for image, want := range map[string]string{
@@ -28,14 +28,14 @@ func TestTheKonnectivityVersionReplacesTheTagOfAnyReference(t *testing.T) {
 		if got, err := konnectivityImage(pinned, image); err != nil || got != want {
 			t.Errorf("%s pinned to v0.37.2 is %q, %v; want %s", image, got, err, want)
 		}
-		if got, err := konnectivityImage(&bryggav1alpha1.ControlPlane{}, image); err != nil || got != image {
+		if got, err := konnectivityImage(&lodiav1alpha1.ControlPlane{}, image); err != nil || got != image {
 			t.Errorf("%s without a pin is %q, %v", image, got, err)
 		}
 	}
 }
 
 func TestEveryConfigMapRollsTheAPIServerAlone(t *testing.T) {
-	cp := &bryggav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: "team"}}
+	cp := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: "team"}}
 	config, err := configMaps(cp)
 	if err != nil {
 		t.Fatal(err)

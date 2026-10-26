@@ -1,6 +1,6 @@
 # Credentials rotate in stages, and the routine ones never touch a node: the trust anchor is split from the client CA, and ServiceAccount tokens are signed by a sidecar
 
-Decided 2026-10-25. `brygga-signer` is built; the PKI controller issues the
+Decided 2026-10-25. `lodia-signer` is built; the PKI controller issues the
 CA per purpose, the leaves, the kubeconfigs, the ServiceAccount key and the
 encryption configuration, renews leaves at two thirds and the etcd set as
 generations; the Workloads controller and the rotation operations are not
@@ -16,7 +16,7 @@ Each tenant has:
 | CA | signs | who must trust it | lifetime |
 |---|---|---|---|
 | **cluster CA** (the trust anchor) | the API server's serving certificate, its kubelet client certificate, the tunnel and konnectivity serving certificates | every client and node: kubeconfigs, `cluster-info`, `kube-root-ca.crt`, the kubelet's `clientCAFile` | 10 years |
-| **client CA** | every client identity: admin, controller manager, scheduler, Brygga, `KubeconfigRequest`s; and an intermediate *kubelet signer* | only the API server, whose `--client-ca-file` bundle holds the client CA and the current kubelet signer | 5 years |
+| **client CA** | every client identity: admin, controller manager, scheduler, Lodia, `KubeconfigRequest`s; and an intermediate *kubelet signer* | only the API server, whose `--client-ca-file` bundle holds the client CA and the current kubelet signer | 5 years |
 | **front-proxy CA** | the API server's aggregation client certificate | the API server and aggregated API servers | 5 years |
 | **etcd CA** | etcd server, peer and the API server's etcd client certificate | etcd and the API server | 5 years |
 
@@ -28,12 +28,12 @@ requests. kubelet client certificates live 30 days
 (`--cluster-signing-duration=720h`), and kubelets rotate them on their own
 ([kube-controller-manager](https://kubernetes.io/docs/reference/command-line-tools-reference/kube-controller-manager/)).
 
-**ServiceAccount tokens** are signed by `brygga-signer`, a sidecar in the
+**ServiceAccount tokens** are signed by `lodia-signer`, a sidecar in the
 API server pod that implements the external JWT signer API over a Unix
 socket on an `emptyDir` (`--service-account-signing-endpoint`); it serves
 the signing key and the verification keys from a Secret the PKI controller
 writes. The external signer is beta and on by default in 1.35, and GA and
-locked on since 1.36, so it is on in every minor Brygga supports
+locked on since 1.36, so it is on in every minor Lodia supports
 ([KEP-740](https://github.com/kubernetes/enhancements/blob/master/keps/sig-auth/740-service-account-external-signing/README.md),
 [`ExternalServiceAccountTokenSigner`](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/features/kube_features.go#L1612-L1616)).
 The controller manager gets no ServiceAccount key at all: its
@@ -80,17 +80,17 @@ renews etcd's certificates together, under new names: one roll, no API outage
 with three members, about 20 s with one
 ([etcd spike](../etcd-spike-2026-10.md), finding 3). Each renewal is a
 generation `g` of five Secrets, `<cp>-etcd-{ca,server,client,peer,backup-restore}-<g>`,
-labelled `brygga.segla.io/etcd-certificates: "<g>"`; Datastore points the
+labelled `lodia.io/etcd-certificates: "<g>"`; Datastore points the
 `Etcd` at the newest complete generation, and PKI keeps the previous one and
 deletes older ones, so neither controller reads the other's state.
 
-**Rotations**, started with `brygga.segla.io/operation=<name>-start` and,
+**Rotations**, started with `lodia.io/operation=<name>-start` and,
 where a stage waits for people, completed with `<name>-complete`; phases in
 `status.credentials.rotation`:
 
 | rotation | Preparing | Prepared → Completing | touches nodes | completes |
 |---|---|---|---|---|
-| client CA | CA₂ joins the API server's client bundle (reloaded); Brygga re-issues every client certificate it holds and the admin kubeconfig from CA₂; the kubelet signer moves under CA₂ (the controller manager reloads signing files) | after one signing duration (30 days) every kubelet has renewed under CA₂; CA₁ leaves the bundle | no | on its own, or at once with `-complete` if the owner accepts losing stale kubeconfigs |
+| client CA | CA₂ joins the API server's client bundle (reloaded); Lodia re-issues every client certificate it holds and the admin kubeconfig from CA₂; the kubelet signer moves under CA₂ (the controller manager reloads signing files) | after one signing duration (30 days) every kubelet has renewed under CA₂; CA₁ leaves the bundle | no | on its own, or at once with `-complete` if the owner accepts losing stale kubeconfigs |
 | ServiceAccount key | K₂ is published as a verification key; once every replica serves it, K₂ signs and K₁ only verifies | K₁ is dropped after the owner confirms that no client holds an old token | no | `-complete` |
 | etcd encryption key | E₂ is added, then made first (the API server reloads the configuration every minute); the Tenant controller rewrites every encrypted resource | E₁ is removed | no | on its own |
 | etcd CA, front-proxy CA | the new CA joins the bundles; certificates are re-issued; etcd and the API server roll where a CA file is read once | the old CA leaves the bundles | no | on its own |
@@ -110,7 +110,7 @@ first four.
   documented CA hierarchy does
   ([control plane certificates](https://github.com/openshift/hypershift/blob/main/docs/content/how-to/pki/control-plane-certificates.md)),
   and it means the routine rotation (client identities) never reaches a node.
-- **Nodes Brygga does not manage cannot be re-anchored by Brygga.** A node's
+- **Nodes Lodia does not manage cannot be re-anchored by Lodia.** A node's
   trust is in files kubeadm wrote at join; only its owner can change them.
   Keeping those files valid across routine rotations is the only rotation
   model that works for nodes anywhere.
@@ -133,7 +133,7 @@ first four.
 - **Stages with both credentials valid** are how Gardener rotates without
   outage
   ([credentials rotation](https://github.com/gardener/gardener/blob/master/docs/usage/shoot-operations/shoot_credentials_rotation.md));
-  Brygga keeps the stages and their names.
+  Lodia keeps the stages and their names.
 
 ## Rejected
 
@@ -149,7 +149,7 @@ first four.
 
 ## Consequences
 
-- `brygga-signer` is a Brygga image in every API server pod; all replicas
+- `lodia-signer` is a Lodia image in every API server pod; all replicas
   read the same Secret, and the PKI controller waits for every replica to
   report the new key set before switching the signing key.
 - The phase 3 gate runs every rotation with two nodes `Ready` and a workload
@@ -166,7 +166,7 @@ first four.
 
 ## Code
 
-- `cmd/brygga-signer` — the sidecar: the socket, the keys directory, the
+- `cmd/lodia-signer` — the sidecar: the socket, the keys directory, the
   probes, `--max-token-expiration` (8760h, so the API server keeps upstream's
   one-year extension) and `--refresh-hint` (1m).
 - `internal/signer` — the `ExternalJWTSigner` service of

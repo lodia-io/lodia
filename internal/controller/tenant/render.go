@@ -1,4 +1,4 @@
-// Copyright 2026 The Brygga Authors.
+// Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package tenant
@@ -23,8 +23,8 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"sigs.k8s.io/yaml"
 
-	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
-	"github.com/segla-io/brygga/internal/versions"
+	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/versions"
 )
 
 //go:embed manifests/*.yaml
@@ -61,13 +61,13 @@ type values struct {
 
 // newValues also returns the reason and the message of what a render still
 // waits for, empty when nothing.
-func newValues(cp *bryggav1alpha1.ControlPlane, clusterCA []byte) (*values, string, string, error) {
+func newValues(cp *lodiav1alpha1.ControlPlane, clusterCA []byte) (*values, string, string, error) {
 	endpoint := cp.Status.Endpoint
 	switch {
 	case cp.Status.Target == nil || cp.Status.Target.Version == "":
-		return nil, bryggav1alpha1.ReasonWaitingForTarget, "status.target has no version", nil
+		return nil, lodiav1alpha1.ReasonWaitingForTarget, "status.target has no version", nil
 	case endpoint == nil:
-		return nil, bryggav1alpha1.ReasonWaitingForEndpoint, "status.endpoint is not published", nil
+		return nil, lodiav1alpha1.ReasonWaitingForEndpoint, "status.endpoint is not published", nil
 	}
 	images, ok := versions.For(cp.Status.Target.Version)
 	if !ok {
@@ -194,7 +194,7 @@ func render(v *values) ([]*unstructured.Unstructured, error) {
 			if labels == nil {
 				labels = map[string]string{}
 			}
-			labels[bryggav1alpha1.ManagedByLabel] = bryggav1alpha1.ManagedBy
+			labels[lodiav1alpha1.ManagedByLabel] = lodiav1alpha1.ManagedBy
 			obj.SetLabels(labels)
 			objects = append(objects, obj)
 		}

@@ -1,7 +1,7 @@
 # A production ControlPlane: highly available, exposed through a shared
 # Gateway by SNI, OIDC for people, audit and encryption at rest, a maintenance
 # window at night and hibernation outside working hours.
-apiVersion: brygga.segla.io/v1alpha1
+apiVersion: lodia.io/v1alpha1
 kind: ControlPlane
 metadata:
   name: prod-eu
@@ -34,7 +34,7 @@ spec:
           claimMappings:
             username: {claim: email, prefix: "oidc:"}
             groups: {claim: groups, prefix: "oidc:"}
-      # anonymous access is Brygga's: only cluster-info and the health paths
+      # anonymous access is Lodia's: only cluster-info and the health paths
     audit:
       policyRef: {name: audit-default}   # a ConfigMap in this namespace, key policy.yaml
     encryption:
