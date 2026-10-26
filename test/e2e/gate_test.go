@@ -234,7 +234,16 @@ func TestPhase1Gate(t *testing.T) {
 
 			metrics, stopMetrics := forward(t, cfg.Client().RESTConfig(), apiServerPod(ctx, t, k8s), konnectivityMetricsPort)
 			defer stopMetrics()
-			before := dials(ctx, t, metrics)
+			count := dials(ctx, t, metrics)
+			oneDial := func(call string) {
+				t.Helper()
+				after := dials(ctx, t, metrics)
+				t.Logf("konnectivity-server's dials: %d before %s, %d after", count, call, after)
+				if after != count+1 {
+					t.Errorf("%s took konnectivity-server's dials from %d to %d; want one dial", call, count, after)
+				}
+				count = after
+			}
 
 			logs, err := kubernetes.NewForConfigOrDie(access.cfg).CoreV1().Pods(web.Namespace).GetLogs(web.Name, &corev1.PodLogOptions{}).DoRaw(ctx)
 			if err != nil {
@@ -243,6 +252,7 @@ func TestPhase1Gate(t *testing.T) {
 			if !strings.Contains(string(logs), "Started HTTP server on port 8080") {
 				t.Errorf("the logs of pod web lack agnhost's start line:\n%s", logs)
 			}
+			oneDial("logs")
 			var stdout, stderr bytes.Buffer
 			if err := access.resources.ExecInPod(ctx, web.Namespace, web.Name, "web", []string{"hostname"}, &stdout, &stderr); err != nil {
 				t.Fatalf("exec hostname in pod web: %v\n%s", err, stderr.String())
@@ -250,16 +260,13 @@ func TestPhase1Gate(t *testing.T) {
 			if hostname := strings.TrimSpace(stdout.String()); hostname != web.Name {
 				t.Errorf("exec hostname in pod web printed %q", hostname)
 			}
+			oneDial("exec")
 			local, stopWeb := forward(t, access.cfg, web, 8080)
 			defer stopWeb()
 			if status, echo := httpGet(ctx, t, http.DefaultClient, "http://"+local+"/echo?msg=through-the-tunnel"); status != http.StatusOK || echo != "through-the-tunnel" {
 				t.Errorf("port-forward to pod web answered %d %q", status, echo)
 			}
-			after := dials(ctx, t, metrics)
-			t.Logf("konnectivity-server's dials: %d before logs, exec and port-forward, %d after", before, after)
-			if after < before+3 {
-				t.Errorf("konnectivity-server dialled %d times for logs, exec and port-forward; want at least 3", after-before)
-			}
+			oneDial("port-forward")
 			return ctx
 		}).
 		Assess("disabling and re-enabling CoreDNS removes and restores its objects through the inventory", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {

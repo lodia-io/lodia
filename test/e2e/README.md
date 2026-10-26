@@ -56,16 +56,16 @@ chart installed.
   [binding](https://github.com/kubernetes/kubernetes/blob/v1.37.0/plugin/pkg/auth/authorizer/rbac/bootstrappolicy/policy.go#L723)),
   answers 401. A node joins (below) and turns `Ready`; a pod of
   agnhost, pinned by digest, runs on it, and its logs, an `exec` and a
-  port-forward reach it through the konnectivity tunnel: before and after
-  the three, the suite reads konnectivity-server's dial count, the count of
-  its `konnectivity_network_proxy_server_dial_duration_seconds` histogram,
-  observed once per established dial
+  port-forward reach it through the konnectivity tunnel: before the three
+  and after each, the suite reads konnectivity-server's dial count, the
+  count of its `konnectivity_network_proxy_server_dial_duration_seconds`
+  histogram, observed once per established dial
   ([metrics.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/pkg/server/metrics/metrics.go#L76-L85),
   [server.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/pkg/server/server.go#L1067)),
   on its health port, 8134
   ([server.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/cmd/server/app/server.go#L585)),
-  through a port-forward to the API server pod, and wants it to grow by at
-  least three. Disabling `addons.coreDNS` removes CoreDNS's objects from the
+  through a port-forward to the API server pod, and wants each call to add
+  one dial. Disabling `addons.coreDNS` removes CoreDNS's objects from the
   tenant and from the inventory, and enabling it brings them back.
   Deleting the `ControlPlane` leaves in its namespace, of every namespaced
   kind the API server serves, Events aside, which outlive their objects,
