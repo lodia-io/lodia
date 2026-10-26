@@ -245,7 +245,8 @@ flowchart LR
   `brygga/workloads`, none over an object another owner keeps, and applies
   `APIServerReady` and `status.endpoint` through the status subresource
   (`Unknown` at the start of its first visit, messages from the state alone,
-  an API error left to the log). Registered as `workloads` with ten workers
+  an API error left to the log unless the server refuses an object it is
+  sent, which is `Refused`). Registered as `workloads` with ten workers
   and a one-minute reconcile timeout. `workloads_test.go` runs it under the
   same cache with `ReaderFailOnMissingInformer`, as a user bound to exactly
   its rules.

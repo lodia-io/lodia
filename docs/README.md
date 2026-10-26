@@ -290,7 +290,9 @@ controller is not this `ControlPlane`, or that refers to another
 nothing, and while a ConfigMap, NetworkPolicy or Deployment is, nothing but
 the Service (`APIServerReady=False`, `ObjectsControlledElsewhere`, naming each
 object and its owner); a predecessor's objects go with the garbage collector,
-any other owner's with a person.
+any other owner's with a person. An object the API server refuses, for a
+quota on load balancers or an admission policy, makes `APIServerReady` False
+with `Refused`, the message naming it, and the pass is retried with backoff.
 
 The dedicated etcd is etcd-druid's `Etcd` `<cp>-etcd`, which the Datastore
 controller renders from the `DatastoreClass` and the newest complete

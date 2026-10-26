@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -38,6 +39,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
+	"github.com/segla-io/brygga/internal/apistatus"
 	"github.com/segla-io/brygga/internal/controller/workloads"
 	"github.com/segla-io/brygga/internal/operator"
 	"github.com/segla-io/brygga/internal/versions"
@@ -770,6 +772,125 @@ func TestAnObjectAnotherControlPlaneKeepsHoldsEveryWorkload(t *testing.T) {
 			t.Errorf("%s is controlled by %v", d.Name, metav1.GetControllerOf(d))
 		}
 	}
+}
+
+func TestAQuotaThatRefusesTheServiceIsSaid(t *testing.T) {
+	ns := namespace(t)
+	none := corev1.ResourceList{corev1.ResourceServicesLoadBalancers: resource.MustParse("0")}
+	quota := &corev1.ResourceQuota{ObjectMeta: metav1.ObjectMeta{Name: "no-load-balancers", Namespace: ns}, Spec: corev1.ResourceQuotaSpec{Hard: none}}
+	if err := k8s.Create(t.Context(), quota); err != nil {
+		t.Fatal(err)
+	}
+	quota.Status = corev1.ResourceQuotaStatus{Hard: none, Used: none}
+	if err := k8s.Status().Update(t.Context(), quota); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() error {
+		probe := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: ns},
+			Spec:       corev1.ServiceSpec{Type: corev1.ServiceTypeLoadBalancer, Ports: []corev1.ServicePort{{Port: 443}}},
+		}
+		if err := k8s.Create(t.Context(), probe, client.DryRunAll); !apistatus.Refused(err) || !strings.Contains(err.Error(), "exceeded quota") {
+			return fmt.Errorf("the quota does not refuse a load balancer yet: %w", err)
+		}
+		return nil
+	})
+
+	cp := create(t, ns, loadBalancer())
+	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonRefused) })
+	if c := condition(t, cp); c.Message != "the API server refuses Service dev-kube-apiserver; the reason is in Brygga's log" {
+		t.Errorf("APIServerReady says %q", c.Message)
+	}
+	reconciler := &workloads.Reconciler{Client: k8s, Reader: k8s, SignerImage: signerImage}
+	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apistatus.Refused(err) {
+		t.Errorf("a pass whose Service is refused returned %v, want the refusal for the backoff", err)
+	}
+
+	if err := k8s.Delete(t.Context(), quota); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() error {
+		if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+			return err
+		}
+		return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForEndpoint)
+	})
+}
+
+func TestAPolicyThatRefusesADeploymentIsSaid(t *testing.T) {
+	ns := namespace(t)
+	policy := &admissionregistrationv1.ValidatingAdmissionPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "refuse-schedulers-in-" + ns},
+		Spec: admissionregistrationv1.ValidatingAdmissionPolicySpec{
+			FailurePolicy: new(admissionregistrationv1.Fail),
+			MatchConstraints: &admissionregistrationv1.MatchResources{ResourceRules: []admissionregistrationv1.NamedRuleWithOperations{{
+				RuleWithOperations: admissionregistrationv1.RuleWithOperations{
+					Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+					Rule:       admissionregistrationv1.Rule{APIGroups: []string{"apps"}, APIVersions: []string{"v1"}, Resources: []string{"deployments"}},
+				},
+			}}},
+			Validations: []admissionregistrationv1.Validation{{
+				Expression: "object.metadata.namespace != '" + ns + "' || object.metadata.name != 'dev-kube-scheduler'",
+				Message:    "no scheduler in " + ns,
+			}},
+		},
+	}
+	binding := &admissionregistrationv1.ValidatingAdmissionPolicyBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: policy.Name},
+		Spec: admissionregistrationv1.ValidatingAdmissionPolicyBindingSpec{
+			PolicyName:        policy.Name,
+			ValidationActions: []admissionregistrationv1.ValidationAction{admissionregistrationv1.Deny},
+		},
+	}
+	for _, obj := range []client.Object{policy, binding} {
+		if err := k8s.Create(t.Context(), obj); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := client.IgnoreNotFound(k8s.Delete(context.Background(), obj)); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	pod := map[string]string{"app": "probe"}
+	eventually(t, func() error {
+		probe := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: "dev-kube-scheduler", Namespace: ns},
+			Spec: appsv1.DeploymentSpec{
+				Selector: &metav1.LabelSelector{MatchLabels: pod},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: pod},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "probe", Image: "registry.example/probe"}}},
+				},
+			},
+		}
+		if err := k8s.Create(t.Context(), probe, client.DryRunAll); err == nil || !strings.Contains(err.Error(), "no scheduler in "+ns) {
+			return fmt.Errorf("the policy does not refuse the scheduler yet: %w", err)
+		}
+		return nil
+	})
+
+	cp := create(t, ns, loadBalancer())
+	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
+	inputsReady(t, cp)
+	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonRefused) })
+	if c := condition(t, cp); c.Message != "the API server refuses Deployment dev-kube-scheduler; the reason is in Brygga's log" {
+		t.Errorf("APIServerReady says %q", c.Message)
+	}
+	if e := get(t, cp).Status.Endpoint; e == nil || e.APIServer.Host != lbAddress {
+		t.Errorf("status.endpoint is %+v while the scheduler is refused", e)
+	}
+
+	if err := k8s.Delete(t.Context(), binding); err != nil {
+		t.Fatal(err)
+	}
+	reconciler := &workloads.Reconciler{Client: k8s, Reader: k8s, SignerImage: signerImage}
+	eventually(t, func() error {
+		if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+			return err
+		}
+		return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonRollingOut)
+	})
 }
 
 func loadBalancer() bryggav1alpha1.Endpoint {

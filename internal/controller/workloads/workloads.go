@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"maps"
 	"net"
@@ -35,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	bryggav1alpha1 "github.com/segla-io/brygga/api/v1alpha1"
+	"github.com/segla-io/brygga/internal/apistatus"
 	"github.com/segla-io/brygga/internal/ownership"
 	"github.com/segla-io/brygga/internal/versions"
 )
@@ -100,11 +102,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 	}
 	endpoint, condition, requeueAfter, err := r.reconcile(ctx, cp)
-	if err != nil {
+	if condition.Type == "" {
 		return ctrl.Result{}, err
 	}
-	if err := r.applyStatus(ctx, cp, endpoint, condition); err != nil {
-		return ctrl.Result{}, err
+	if statusErr := r.applyStatus(ctx, cp, endpoint, condition); statusErr != nil || err != nil {
+		return ctrl.Result{}, errors.Join(err, statusErr)
 	}
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
@@ -126,7 +128,7 @@ func (r *Reconciler) reconcile(ctx context.Context, cp *bryggav1alpha1.ControlPl
 		return nil, ptr.Deref(held, metav1.Condition{}), requeueAfter, err
 	}
 	if err := r.apply(ctx, svc); err != nil {
-		return nil, metav1.Condition{}, 0, err
+		return refused(cp.Status.Endpoint, svc, err)
 	}
 	endpoint, waiting, requeueAfter, err := r.endpoint(ctx, cp, svc)
 	if err != nil {
@@ -202,10 +204,20 @@ func (r *Reconciler) reconcile(ctx context.Context, cp *bryggav1alpha1.ControlPl
 	}
 	for _, obj := range objects {
 		if err := r.apply(ctx, obj); err != nil {
-			return nil, metav1.Condition{}, 0, err
+			return refused(endpoint, obj, err)
 		}
 	}
 	return endpoint, readiness(target, deployments), requeueAfter, nil
+}
+
+// refused says that the API server refuses obj, so that the status no longer
+// tells of the pass before, and returns the error for the backoff either way.
+func refused(endpoint *bryggav1alpha1.EndpointStatus, obj client.Object, err error) (*bryggav1alpha1.EndpointStatus, metav1.Condition, time.Duration, error) {
+	if !apistatus.Refused(err) {
+		return nil, metav1.Condition{}, 0, err
+	}
+	message := fmt.Sprintf("the API server refuses %s %s; the reason is in Brygga's log", obj.GetObjectKind().GroupVersionKind().Kind, obj.GetName())
+	return endpoint, newCondition(metav1.ConditionFalse, bryggav1alpha1.ReasonRefused, message), 0, err
 }
 
 // unsupported names the fields phase 1 does not render, so a ControlPlane that

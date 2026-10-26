@@ -273,6 +273,6 @@ is a decision — a decision is a file in `docs/decisions/`.
   `OwnerReferencesPermissionEnforcement` plugin as without it, now that
   Workloads may delete (before, the plugin refused the apply); one that only
   refers to another `ControlPlane` is applied over once and then held; one
-  with another controller is refused by validation, and `APIServerReady`
-  stays as it was. Reading the targets uncached, as PKI reads its Secrets,
-  would see them all.
+  with another controller is refused by validation, which `APIServerReady`
+  reports as `Refused`. Reading the targets uncached, as PKI reads its
+  Secrets, would see them all.
