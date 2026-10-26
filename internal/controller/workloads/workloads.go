@@ -109,11 +109,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
-// reconcile publishes the endpoint before it waits on anything, since PKI
-// needs it for the serving certificate.
+// reconcile publishes the endpoint before it waits on anything or says what it
+// does not build, since PKI and Health need it; a gateway endpoint has no
+// Service to publish it from.
 func (r *Reconciler) reconcile(ctx context.Context, cp *bryggav1alpha1.ControlPlane) (*bryggav1alpha1.EndpointStatus, metav1.Condition, time.Duration, error) {
+	var notBuilt *metav1.Condition
 	if fields := unsupported(cp); len(fields) > 0 {
-		return nil, newCondition(metav1.ConditionFalse, bryggav1alpha1.ReasonUnsupported, "not built yet: "+strings.Join(fields, ", ")), 0, nil
+		c := newCondition(metav1.ConditionFalse, bryggav1alpha1.ReasonUnsupported, "not built yet: "+strings.Join(fields, ", "))
+		notBuilt = &c
+	}
+	if notBuilt != nil && cp.Spec.Endpoint.Gateway != nil {
+		return nil, *notBuilt, 0, nil
 	}
 	svc := service(cp)
 	if held, requeueAfter, err := r.controlledElsewhere(ctx, cp, svc); err != nil || held != nil {
@@ -123,8 +129,14 @@ func (r *Reconciler) reconcile(ctx context.Context, cp *bryggav1alpha1.ControlPl
 		return nil, metav1.Condition{}, 0, err
 	}
 	endpoint, waiting, requeueAfter, err := r.endpoint(ctx, cp, svc)
-	if err != nil || waiting != nil {
-		return endpoint, ptr.Deref(waiting, metav1.Condition{}), requeueAfter, err
+	if err != nil {
+		return nil, metav1.Condition{}, 0, err
+	}
+	if notBuilt != nil {
+		return endpoint, *notBuilt, requeueAfter, nil
+	}
+	if waiting != nil {
+		return endpoint, *waiting, requeueAfter, nil
 	}
 	target := ""
 	if cp.Status.Target != nil {
@@ -138,6 +150,9 @@ func (r *Reconciler) reconcile(ctx context.Context, cp *bryggav1alpha1.ControlPl
 		}
 		return endpoint, newCondition(metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForTarget, message), requeueAfter, nil
 	}
+	if images.KonnectivityServer, err = konnectivityImage(cp, images.KonnectivityServer); err != nil {
+		return nil, metav1.Condition{}, 0, err
+	}
 	for _, input := range []struct{ condition, reason string }{
 		{bryggav1alpha1.ConditionCertificatesReady, bryggav1alpha1.ReasonWaitingForCertificates},
 		{bryggav1alpha1.ConditionDatastoreReady, bryggav1alpha1.ReasonWaitingForDatastore},
@@ -150,15 +165,11 @@ func (r *Reconciler) reconcile(ctx context.Context, cp *bryggav1alpha1.ControlPl
 	if cp.Status.Datastore == nil || len(cp.Status.Datastore.Endpoints) == 0 {
 		return endpoint, newCondition(metav1.ConditionFalse, bryggav1alpha1.ReasonWaitingForDatastore, "waiting for the Datastore controller to publish status.datastore.endpoints"), requeueAfter, nil
 	}
-	egress, err := egressSelector()
+	config, err := configMaps(cp)
 	if err != nil {
 		return nil, metav1.Condition{}, 0, err
 	}
-	authn, err := authentication()
-	if err != nil {
-		return nil, metav1.Condition{}, 0, err
-	}
-	hashes, unhashed, err := r.hashes(ctx, cp, egress)
+	hashes, unhashed, err := r.hashes(ctx, cp, config)
 	if err != nil {
 		return nil, metav1.Condition{}, 0, err
 	}
@@ -176,9 +187,9 @@ func (r *Reconciler) reconcile(ctx context.Context, cp *bryggav1alpha1.ControlPl
 		etcd:        cp.Status.Datastore.Endpoints,
 		hashes:      hashes,
 	}.deployments()
-	objects := []client.Object{
-		configMap(cp, "egress-selector", egressFile, egress),
-		configMap(cp, "authentication-config", authenticationFile, authn),
+	var objects []client.Object
+	for _, c := range config {
+		objects = append(objects, c)
 	}
 	for _, p := range networkPolicies(cp) {
 		objects = append(objects, p)
@@ -211,6 +222,12 @@ func unsupported(cp *bryggav1alpha1.ControlPlane) []string {
 		fields = append(fields, "highAvailability")
 	}
 	if a := cp.Spec.APIServer; a != nil {
+		if ptr.Deref(a.Replicas, 1) > 1 && cp.Spec.HighAvailability == nil {
+			fields = append(fields, "apiServer.replicas")
+		}
+		if a.AdvertiseAddress != "" && cp.Spec.Endpoint.Gateway == nil {
+			fields = append(fields, "apiServer.advertiseAddress")
+		}
 		if a.Authentication != nil && len(a.Authentication.JWT) > 0 {
 			fields = append(fields, "apiServer.authentication.jwt")
 		}
@@ -223,6 +240,9 @@ func unsupported(cp *bryggav1alpha1.ControlPlane) []string {
 	}
 	if s := cp.Spec.Scheduler; s != nil && s.ConfigRef != nil {
 		fields = append(fields, "scheduler.configRef")
+	}
+	if sa := cp.Spec.ServiceAccount; sa != nil && sa.PublicDiscovery {
+		fields = append(fields, "serviceAccount.publicDiscovery")
 	}
 	return fields
 }
@@ -277,11 +297,18 @@ func cached(obj client.Object) client.Object {
 	}
 }
 
-// A node port endpoint is the first Ready management node by name, which no
-// event reports, so it is checked again every minute.
+// A node port endpoint keeps the address it was published with while any node
+// still reports it as an InternalIP, Ready or not: the serving certificate,
+// the kubeconfigs, the ServiceAccount issuer and every joined kubelet name it.
+// A new one is the first Ready node's by name. No event reports a node, so it
+// is checked again every minute.
 func (r *Reconciler) endpoint(ctx context.Context, cp *bryggav1alpha1.ControlPlane, svc *corev1.Service) (*bryggav1alpha1.EndpointStatus, *metav1.Condition, time.Duration, error) {
 	if cp.Spec.Endpoint.NodePort != nil {
-		host, err := r.nodeAddress(ctx)
+		published := ""
+		if e := cp.Status.Endpoint; e != nil {
+			published = e.APIServer.Host
+		}
+		host, err := r.nodeAddress(ctx, published)
 		if err != nil {
 			return nil, nil, 0, err
 		}
@@ -311,21 +338,31 @@ func (r *Reconciler) endpoint(ctx context.Context, cp *bryggav1alpha1.ControlPla
 	}, nil, 0, nil
 }
 
-func (r *Reconciler) nodeAddress(ctx context.Context) (string, error) {
+func (r *Reconciler) nodeAddress(ctx context.Context, published string) (string, error) {
 	nodes := &corev1.NodeList{}
 	if err := r.Reader.List(ctx, nodes); err != nil {
 		return "", err
 	}
 	slices.SortFunc(nodes.Items, func(a, b corev1.Node) int { return strings.Compare(a.Name, b.Name) })
+	first := ""
 	for _, node := range nodes.Items {
+		var internal []string
+		for _, a := range node.Status.Addresses {
+			if a.Type == corev1.NodeInternalIP {
+				internal = append(internal, a.Address)
+			}
+		}
+		if published != "" && slices.Contains(internal, published) {
+			return published, nil
+		}
 		ready := slices.ContainsFunc(node.Status.Conditions, func(c corev1.NodeCondition) bool {
 			return c.Type == corev1.NodeReady && c.Status == corev1.ConditionTrue
 		})
-		if i := slices.IndexFunc(node.Status.Addresses, func(a corev1.NodeAddress) bool { return a.Type == corev1.NodeInternalIP }); ready && i >= 0 {
-			return node.Status.Addresses[i].Address, nil
+		if first == "" && ready && len(internal) > 0 {
+			first = internal[0]
 		}
 	}
-	return "", nil
+	return first, nil
 }
 
 func nodePort(svc *corev1.Service, port int32) int32 {
@@ -353,35 +390,52 @@ func issuer(cp *bryggav1alpha1.ControlPlane, api bryggav1alpha1.HostPort) string
 	return "https://" + strings.TrimSuffix(net.JoinHostPort(api.Host, strconv.Itoa(int(api.Port))), ":"+strconv.Itoa(bryggav1alpha1.APIServerServicePort))
 }
 
-// hashes are the restart-only inputs of each component, the Secrets by the
-// data hash PKI writes on them, so that a renewed one rolls the component that
-// reads it once and nothing else. The second result names the Secrets not
-// written with a hash yet.
-func (r *Reconciler) hashes(ctx context.Context, cp *bryggav1alpha1.ControlPlane, egress []byte) (map[string]string, []string, error) {
-	out := map[string]string{}
+// hashes are each component's restart hashes, from the data hash PKI writes on
+// its restart-only Secrets. The second result names the Secrets not written
+// with a hash yet.
+func (r *Reconciler) hashes(ctx context.Context, cp *bryggav1alpha1.ControlPlane, config []*corev1.ConfigMap) (map[string]string, []string, error) {
+	data := map[string]string{}
 	var unhashed []string
-	for _, component := range slices.Sorted(maps.Keys(restartOnly)) {
-		h := sha256.New()
-		if component == apiServer {
-			h.Write(egress)
-		}
-		for _, s := range restartOnly[component] {
+	for _, secrets := range restartOnly {
+		for _, s := range secrets {
 			secret := &metav1.PartialObjectMetadata{}
 			secret.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Secret"))
 			err := r.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: s.Name(cp.Name)}, secret)
 			if client.IgnoreNotFound(err) != nil {
 				return nil, nil, err
 			}
-			hash := secret.Annotations[bryggav1alpha1.DataHashAnnotation]
-			if hash == "" {
+			data[s.Name(cp.Name)] = secret.Annotations[bryggav1alpha1.DataHashAnnotation]
+			if data[s.Name(cp.Name)] == "" {
 				unhashed = append(unhashed, s.Name(cp.Name))
 			}
-			h.Write([]byte(s.Name(cp.Name) + "=" + hash + "\n"))
+		}
+	}
+	slices.Sort(unhashed)
+	return restartHashes(cp.Name, data, config), unhashed, nil
+}
+
+// restartHashes are each component's hash of what it reads once: its
+// restart-only Secrets by their data hashes and, for the API server, the
+// ConfigMaps Workloads renders, so that a change to one rolls the component
+// that reads it once and nothing else.
+func restartHashes(cp string, data map[string]string, config []*corev1.ConfigMap) map[string]string {
+	out := map[string]string{}
+	for component, secrets := range restartOnly {
+		h := sha256.New()
+		if component == apiServer {
+			for _, c := range config {
+				for _, key := range slices.Sorted(maps.Keys(c.Data)) {
+					sum := sha256.Sum256([]byte(c.Data[key]))
+					h.Write([]byte(c.Name + "/" + key + "=" + hex.EncodeToString(sum[:]) + "\n"))
+				}
+			}
+		}
+		for _, s := range secrets {
+			h.Write([]byte(s.Name(cp) + "=" + data[s.Name(cp)] + "\n"))
 		}
 		out[component] = hex.EncodeToString(h.Sum(nil))
 	}
-	slices.Sort(unhashed)
-	return out, unhashed, nil
+	return out
 }
 
 func readiness(version string, deployments []*appsv1.Deployment) metav1.Condition {

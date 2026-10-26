@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/distribution/reference"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -124,6 +125,22 @@ func authentication() ([]byte, error) {
 	})
 }
 
+// configMaps are the API server's configuration files Workloads renders.
+func configMaps(cp *bryggav1alpha1.ControlPlane) ([]*corev1.ConfigMap, error) {
+	egress, err := egressSelector()
+	if err != nil {
+		return nil, err
+	}
+	authn, err := authentication()
+	if err != nil {
+		return nil, err
+	}
+	return []*corev1.ConfigMap{
+		configMap(cp, "egress-selector", egressFile, egress),
+		configMap(cp, "authentication-config", authenticationFile, authn),
+	}, nil
+}
+
 func configMap(cp *bryggav1alpha1.ControlPlane, suffix, key string, content []byte) *corev1.ConfigMap {
 	return &corev1.ConfigMap{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
@@ -187,21 +204,14 @@ func (r rendering) apiServer() *appsv1.Deployment {
 		"tls-private-key-file":                        "/etc/brygga/serving/" + bryggav1alpha1.TLSPrivateKeyKey,
 	}
 	container := corev1.Container{
-		Name:    apiServer,
-		Image:   r.images.APIServer,
-		Command: command(apiServer, flags, settings.ExtraArgs, settings.FeatureGates),
-		Ports:   []corev1.ContainerPort{{Name: "https", ContainerPort: r.securePort, Protocol: corev1.ProtocolTCP}},
-		ReadinessProbe: &corev1.Probe{
-			ProbeHandler:  httpsGet("/readyz", intstr.FromString("https")),
-			PeriodSeconds: 5,
-		},
-		LivenessProbe: &corev1.Probe{
-			ProbeHandler:        httpsGet("/livez", intstr.FromString("https")),
-			InitialDelaySeconds: 15,
-			PeriodSeconds:       10,
-			FailureThreshold:    8,
-		},
-		Resources: resources(settings.Resources, "100m", "256Mi"),
+		Name:           apiServer,
+		Image:          r.images.APIServer,
+		Command:        command(apiServer, flags, settings.ExtraArgs, settings.FeatureGates),
+		Ports:          []corev1.ContainerPort{{Name: "https", ContainerPort: r.securePort, Protocol: corev1.ProtocolTCP}},
+		ReadinessProbe: readinessProbe(bryggav1alpha1.APIServerReadyzPath, intstr.FromString("https")),
+		LivenessProbe:  livenessProbe("/livez", intstr.FromString("https")),
+		StartupProbe:   startupProbe("/livez", intstr.FromString("https")),
+		Resources:      resources(settings.Resources, "100m", "256Mi"),
 		VolumeMounts: mounts(
 			"serving", "client-ca", "kubelet-client", "front-proxy-ca", "front-proxy-client",
 			"etcd-ca", "etcd-client", "encryption", "authentication", "egress",
@@ -213,7 +223,7 @@ func (r rendering) apiServer() *appsv1.Deployment {
 	)
 	konnectivity := corev1.Container{
 		Name:  "konnectivity-server",
-		Image: r.konnectivityImage(),
+		Image: r.images.KonnectivityServer,
 		Command: command("/proxy-server", map[string]string{
 			"uds-name":                 konnectivitySocket,
 			"delete-existing-uds-file": "true",
@@ -285,12 +295,22 @@ func (r rendering) apiServer() *appsv1.Deployment {
 	})
 }
 
-func (r rendering) konnectivityImage() string {
-	if k := r.cp.Spec.Addons; k != nil && k.Konnectivity != nil && k.Konnectivity.Version != "" {
-		image, _, _ := strings.Cut(r.images.KonnectivityServer, ":")
-		return image + ":" + k.Konnectivity.Version
+// konnectivityImage is the version table's konnectivity-server image, with the
+// tag of addons.konnectivity.version in place of its tag and digest.
+func konnectivityImage(cp *bryggav1alpha1.ControlPlane, image string) (string, error) {
+	k := cp.Spec.Addons
+	if k == nil || k.Konnectivity == nil || k.Konnectivity.Version == "" {
+		return image, nil
 	}
-	return r.images.KonnectivityServer
+	named, err := reference.ParseNormalizedNamed(image)
+	if err != nil {
+		return "", err
+	}
+	pinned, err := reference.WithTag(reference.TrimNamed(named), k.Konnectivity.Version)
+	if err != nil {
+		return "", err
+	}
+	return pinned.String(), nil
 }
 
 func (r rendering) controllerManager() *appsv1.Deployment {
@@ -317,13 +337,13 @@ func (r rendering) controllerManager() *appsv1.Deployment {
 		"use-service-account-credentials":          "true",
 	}
 	container := corev1.Container{
-		Name:           controllerManager,
-		Image:          r.images.ControllerManager,
-		Command:        command(controllerManager, flags, settings.ExtraArgs, settings.FeatureGates),
-		ReadinessProbe: &corev1.Probe{ProbeHandler: httpsGet("/healthz", intstr.FromInt32(10257)), PeriodSeconds: 5},
-		LivenessProbe:  &corev1.Probe{ProbeHandler: httpsGet("/healthz", intstr.FromInt32(10257)), InitialDelaySeconds: 15, PeriodSeconds: 10},
-		Resources:      resources(settings.Resources, "50m", "64Mi"),
-		VolumeMounts:   mounts("kubeconfig", "client-ca", "front-proxy-ca", "kubelet-signer", "ca-bundle"),
+		Name:          controllerManager,
+		Image:         r.images.ControllerManager,
+		Command:       command(controllerManager, flags, settings.ExtraArgs, settings.FeatureGates),
+		LivenessProbe: livenessProbe("/healthz", intstr.FromInt32(10257)),
+		StartupProbe:  startupProbe("/healthz", intstr.FromInt32(10257)),
+		Resources:     resources(settings.Resources, "50m", "64Mi"),
+		VolumeMounts:  mounts("kubeconfig", "client-ca", "front-proxy-ca", "kubelet-signer", "ca-bundle"),
 	}
 	return r.deployment(controllerManager, 1, corev1.PodSpec{
 		Containers: []corev1.Container{container},
@@ -352,8 +372,9 @@ func (r rendering) scheduler() *appsv1.Deployment {
 		Name:           scheduler,
 		Image:          r.images.Scheduler,
 		Command:        command(scheduler, flags, settings.ExtraArgs, settings.FeatureGates),
-		ReadinessProbe: &corev1.Probe{ProbeHandler: httpsGet("/readyz", intstr.FromInt32(10259)), PeriodSeconds: 5},
-		LivenessProbe:  &corev1.Probe{ProbeHandler: httpsGet("/livez", intstr.FromInt32(10259)), InitialDelaySeconds: 15, PeriodSeconds: 10},
+		ReadinessProbe: readinessProbe("/readyz", intstr.FromInt32(10259)),
+		LivenessProbe:  livenessProbe("/livez", intstr.FromInt32(10259)),
+		StartupProbe:   startupProbe("/livez", intstr.FromInt32(10259)),
 		Resources:      resources(settings.Resources, "20m", "32Mi"),
 		VolumeMounts:   mounts("kubeconfig"),
 	}
@@ -418,11 +439,26 @@ func networkPolicies(cp *bryggav1alpha1.ControlPlane) []*networkingv1.NetworkPol
 	return out
 }
 
+// merged are the list flags whose tenant entries follow Brygga's rather than
+// replace them; the schema refuses the tenant every other flag Brygga sets.
+var merged = []string{"enable-admission-plugins", "controllers"}
+
 // command puts the flags Brygga sets and the tenant's extra ones in a fixed
 // order, so an unchanged ControlPlane renders the same pod template.
 func command(binary string, flags, extra map[string]string, gates map[string]bool) []string {
 	all := maps.Clone(flags)
-	maps.Copy(all, extra)
+	for name, value := range extra {
+		if own, ok := flags[name]; ok && slices.Contains(merged, name) {
+			entries := strings.Split(own, ",")
+			for _, entry := range strings.Split(value, ",") {
+				if entry != "" && !slices.Contains(entries, entry) {
+					entries = append(entries, entry)
+				}
+			}
+			value = strings.Join(entries, ",")
+		}
+		all[name] = value
+	}
 	if len(gates) > 0 {
 		var pairs []string
 		for _, gate := range slices.Sorted(maps.Keys(gates)) {
@@ -437,8 +473,31 @@ func command(binary string, flags, extra map[string]string, gates map[string]boo
 	return out
 }
 
-func httpsGet(path string, port intstr.IntOrString) corev1.ProbeHandler {
-	return corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Scheme: corev1.URISchemeHTTPS, Path: path, Port: port}}
+// The probes are kubeadm's
+// (https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kubeadm/app/util/staticpod/utils.go#L255-L296,
+// https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kubeadm/app/phases/controlplane/manifests.go#L67-L107):
+// the startup probe's 24 failures are its default four minutes for a
+// component to come up, ten seconds apart.
+func livenessProbe(path string, port intstr.IntOrString) *corev1.Probe {
+	return httpsProbe(path, port, 10, 15, 8, 10)
+}
+
+func readinessProbe(path string, port intstr.IntOrString) *corev1.Probe {
+	return httpsProbe(path, port, 0, 15, 3, 1)
+}
+
+func startupProbe(path string, port intstr.IntOrString) *corev1.Probe {
+	return httpsProbe(path, port, 10, 15, 24, 10)
+}
+
+func httpsProbe(path string, port intstr.IntOrString, initialDelay, timeout, failures, period int32) *corev1.Probe {
+	return &corev1.Probe{
+		ProbeHandler:        corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Scheme: corev1.URISchemeHTTPS, Path: path, Port: port}},
+		InitialDelaySeconds: initialDelay,
+		TimeoutSeconds:      timeout,
+		FailureThreshold:    failures,
+		PeriodSeconds:       period,
+	}
 }
 
 func resources(override *corev1.ResourceRequirements, cpu, memory string) corev1.ResourceRequirements {

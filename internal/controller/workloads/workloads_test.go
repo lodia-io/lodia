@@ -20,6 +20,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -52,9 +53,9 @@ var workloadsRules = []rbacv1.PolicyRule{
 	{APIGroups: []string{bryggav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes"}, Verbs: []string{"list", "watch"}},
 	{APIGroups: []string{bryggav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes/status"}, Verbs: []string{"patch"}},
 	{APIGroups: []string{bryggav1alpha1.GroupVersion.Group}, Resources: []string{"controlplanes/finalizers"}, Verbs: []string{"update"}},
-	{APIGroups: []string{"apps"}, Resources: []string{"deployments"}, Verbs: []string{"list", "watch", "create", "patch"}},
-	{APIGroups: []string{""}, Resources: []string{"services", "configmaps"}, Verbs: []string{"list", "watch", "create", "patch"}},
-	{APIGroups: []string{"networking.k8s.io"}, Resources: []string{"networkpolicies"}, Verbs: []string{"list", "watch", "create", "patch"}},
+	{APIGroups: []string{"apps"}, Resources: []string{"deployments"}, Verbs: []string{"list", "watch", "create", "patch", "delete"}},
+	{APIGroups: []string{""}, Resources: []string{"services", "configmaps"}, Verbs: []string{"list", "watch", "create", "patch", "delete"}},
+	{APIGroups: []string{"networking.k8s.io"}, Resources: []string{"networkpolicies"}, Verbs: []string{"list", "watch", "create", "patch", "delete"}},
 	{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"list", "watch"}},
 	{APIGroups: []string{""}, Resources: []string{"nodes"}, Verbs: []string{"list"}},
 }
@@ -218,6 +219,25 @@ func TestANodePortControlPlaneListensOnItsNodePort(t *testing.T) {
 	if p := deployment.Spec.Template.Spec.Containers[0].Ports; len(p) != 1 || p[0].Name != "https" || p[0].ContainerPort != api {
 		t.Errorf("the API server listens on %+v, want its node port %d", p, api)
 	}
+
+	setReady(t, "node-b", false)
+	reconcileNow(t, cp)
+	if e := get(t, cp).Status.Endpoint; e == nil || *e != want {
+		t.Errorf("status.endpoint is %+v once node-b is NotReady, want %+v", e, want)
+	}
+	createNode(t, "node-0", true, "192.0.2.9")
+	reconcileNow(t, cp)
+	if e := get(t, cp).Status.Endpoint; e == nil || *e != want {
+		t.Errorf("status.endpoint is %+v once node-0 sorts first, want %+v", e, want)
+	}
+	if err := k8s.Delete(t.Context(), &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-b"}}); err != nil {
+		t.Fatal(err)
+	}
+	reconcileNow(t, cp)
+	want.APIServer.Host, want.Konnectivity.Host = "192.0.2.9", "192.0.2.9"
+	if e := get(t, cp).Status.Endpoint; e == nil || *e != want {
+		t.Errorf("status.endpoint is %+v once node-b is gone, want %+v", e, want)
+	}
 }
 
 func TestAControlPlaneRollsOutOnceItsInputsAreReady(t *testing.T) {
@@ -354,8 +374,14 @@ func TestOnlyARestartOnlyInputRollsItsComponent(t *testing.T) {
 	if before["kube-apiserver"] == "" || before["kube-controller-manager"] == "" || before["kube-scheduler"] != "" {
 		t.Fatalf("restart hashes %v", before)
 	}
+	generations := generationsOf(t, cp)
 
 	setSecret(t, cp, bryggav1alpha1.APIServerServingSecret, "renewed")
+	reconcileNow(t, cp)
+	if after := generationsOf(t, cp); fmt.Sprint(after) != fmt.Sprint(generations) {
+		t.Errorf("a renewal of the reloaded apiserver-serving alone rolled: generations %v, then %v", generations, after)
+	}
+
 	setSecret(t, cp, bryggav1alpha1.FrontProxyClientSecret, "renewed")
 	eventually(t, func() error {
 		if after := hashes(t, cp); after["kube-apiserver"] == before["kube-apiserver"] || after["kube-controller-manager"] != before["kube-controller-manager"] {
@@ -377,12 +403,11 @@ func TestOnlyARestartOnlyInputRollsItsComponent(t *testing.T) {
 func TestTheSpecIsRendered(t *testing.T) {
 	cp := controlPlane(t, loadBalancer(), func(spec *bryggav1alpha1.ControlPlaneSpec) {
 		spec.APIServer = &bryggav1alpha1.APIServer{
-			Replicas:     new(int32(2)),
-			ExtraArgs:    map[string]string{"audit-log-maxage": "7"},
+			ExtraArgs:    map[string]string{"audit-log-maxage": "7", "enable-admission-plugins": "PodSecurity,NodeRestriction"},
 			FeatureGates: map[string]bool{"B": false, "A": true},
 			Resources:    &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")}},
 		}
-		spec.ControllerManager = &bryggav1alpha1.Component{ExtraArgs: map[string]string{"node-monitor-grace-period": "50s"}}
+		spec.ControllerManager = &bryggav1alpha1.Component{ExtraArgs: map[string]string{"node-monitor-grace-period": "50s", "controllers": "-ttl-controller"}}
 		spec.ServiceAccount = &bryggav1alpha1.ServiceAccount{Issuer: "https://issuer.example.com"}
 		spec.Addons = &bryggav1alpha1.Addons{Konnectivity: &bryggav1alpha1.Konnectivity{Version: "v0.37.2"}}
 		spec.Placement = &bryggav1alpha1.Placement{
@@ -395,9 +420,10 @@ func TestTheSpecIsRendered(t *testing.T) {
 	inputsReady(t, cp)
 	api := eventuallyDeployment(t, cp, "kube-apiserver")
 	pod := api.Spec.Template.Spec
-	expectFlags(t, pod.Containers[0].Command, "--audit-log-maxage=7", "--feature-gates=A=true,B=false", "--service-account-issuer=https://issuer.example.com")
-	if *api.Spec.Replicas != 2 || pod.Containers[0].Resources.Requests.Memory().String() != "1Gi" || !strings.HasSuffix(pod.Containers[1].Image, ":v0.37.2") {
-		t.Errorf("the API server has %d replicas, requests %v, konnectivity %s", *api.Spec.Replicas, pod.Containers[0].Resources.Requests, pod.Containers[1].Image)
+	expectFlags(t, pod.Containers[0].Command, "--audit-log-maxage=7", "--feature-gates=A=true,B=false", "--service-account-issuer=https://issuer.example.com",
+		"--enable-admission-plugins=NodeRestriction,PodSecurity")
+	if pod.Containers[0].Resources.Requests.Memory().String() != "1Gi" || !strings.HasSuffix(pod.Containers[1].Image, ":v0.37.2") {
+		t.Errorf("the API server requests %v, konnectivity %s", pod.Containers[0].Resources.Requests, pod.Containers[1].Image)
 	}
 	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
 		pod := eventuallyDeployment(t, cp, component).Spec.Template.Spec
@@ -405,7 +431,8 @@ func TestTheSpecIsRendered(t *testing.T) {
 			t.Errorf("%s is placed with %v, %v and %q", component, pod.NodeSelector, pod.Tolerations, pod.PriorityClassName)
 		}
 	}
-	expectFlags(t, deployment(t, cp, "kube-controller-manager").Spec.Template.Spec.Containers[0].Command, "--node-monitor-grace-period=50s")
+	expectFlags(t, deployment(t, cp, "kube-controller-manager").Spec.Template.Spec.Containers[0].Command, "--node-monitor-grace-period=50s",
+		"--controllers=*,bootstrap-signer-controller,token-cleaner-controller,-ttl-controller")
 }
 
 func TestWhatIsNotBuiltYetIsSaid(t *testing.T) {
@@ -426,9 +453,146 @@ func TestWhatIsNotBuiltYetIsSaid(t *testing.T) {
 	if c := condition(t, ha); c.Message != "not built yet: highAvailability, scheduler.configRef" {
 		t.Errorf("APIServerReady says %q", c.Message)
 	}
-	for _, cp := range []*bryggav1alpha1.ControlPlane{gateway, ha} {
-		if getServiceOrNil(t, cp) != nil {
-			t.Errorf("a Service was created in %s for a ControlPlane whose fields are not built yet", cp.Namespace)
+	setIngress(t, ha, corev1.LoadBalancerIngress{IP: lbAddress})
+	eventually(t, func() error {
+		if e := get(t, ha).Status.Endpoint; e == nil || e.APIServer.Host != lbAddress {
+			return fmt.Errorf("status.endpoint is %+v", e)
+		}
+		return expectCondition(ha, metav1.ConditionFalse, bryggav1alpha1.ReasonUnsupported)
+	})
+	if getServiceOrNil(t, gateway) != nil {
+		t.Errorf("a Service was created in %s for a gateway endpoint", gateway.Namespace)
+	}
+
+	ignored := controlPlane(t, loadBalancer(), func(spec *bryggav1alpha1.ControlPlaneSpec) {
+		spec.APIServer = &bryggav1alpha1.APIServer{Replicas: new(int32(2)), AdvertiseAddress: "172.20.0.1"}
+		spec.ServiceAccount = &bryggav1alpha1.ServiceAccount{PublicDiscovery: true}
+	})
+	eventually(t, func() error { return expectCondition(ignored, metav1.ConditionFalse, bryggav1alpha1.ReasonUnsupported) })
+	if c := condition(t, ignored); c.Message != "not built yet: apiServer.replicas, apiServer.advertiseAddress, serviceAccount.publicDiscovery" {
+		t.Errorf("APIServerReady says %q", c.Message)
+	}
+}
+
+func TestAnUnsupportedFieldKeepsTheEndpoint(t *testing.T) {
+	cp := running(t)
+	published := get(t, cp).Status.Endpoint
+	fresh := get(t, cp)
+	fresh.Spec.ServiceAccount = &bryggav1alpha1.ServiceAccount{PublicDiscovery: true}
+	if err := k8s.Update(t.Context(), fresh); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonUnsupported) })
+	if e := get(t, cp).Status.Endpoint; e == nil || *e != *published {
+		t.Errorf("status.endpoint is %+v once the ControlPlane asks for a field not built yet, want %+v", e, published)
+	}
+}
+
+func TestEveryFlagBryggaRendersIsRefusedOrMerged(t *testing.T) {
+	cp := running(t)
+	merged := map[string]bool{"enable-admission-plugins": true, "controllers": true}
+	components := map[string]struct {
+		alsoRefused []string
+		set         func(*bryggav1alpha1.ControlPlaneSpec, map[string]string)
+	}{
+		"kube-apiserver": {[]string{"anonymous-auth", "feature-gates", "service-account-key-file", "service-account-signing-key-file"},
+			func(spec *bryggav1alpha1.ControlPlaneSpec, args map[string]string) {
+				spec.APIServer = &bryggav1alpha1.APIServer{ExtraArgs: args}
+			}},
+		"kube-controller-manager": {[]string{"cluster-signing-cert-file", "cluster-signing-key-file", "feature-gates", "service-account-private-key-file"},
+			func(spec *bryggav1alpha1.ControlPlaneSpec, args map[string]string) {
+				spec.ControllerManager = &bryggav1alpha1.Component{ExtraArgs: args}
+			}},
+		"kube-scheduler": {[]string{"config", "feature-gates"},
+			func(spec *bryggav1alpha1.ControlPlaneSpec, args map[string]string) {
+				spec.Scheduler = &bryggav1alpha1.Scheduler{ExtraArgs: args}
+			}},
+	}
+	for component, c := range components {
+		flags := c.alsoRefused
+		for _, arg := range deployment(t, cp, component).Spec.Template.Spec.Containers[0].Command[1:] {
+			if name, _, _ := strings.Cut(strings.TrimPrefix(arg, "--"), "="); !merged[name] {
+				flags = append(flags, name)
+			}
+		}
+		for _, flag := range flags {
+			spec := cp.Spec.DeepCopy()
+			c.set(spec, map[string]string{flag: "set by the tenant"})
+			tenant := &bryggav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "flags", Namespace: cp.Namespace}, Spec: *spec}
+			if err := k8s.Create(t.Context(), tenant, client.DryRunAll); !apierrors.IsInvalid(err) || !strings.Contains(err.Error(), "Brygga sets this flag") {
+				t.Errorf("the extra arguments of %s take --%s: %v", component, flag, err)
+			}
+		}
+	}
+}
+
+func TestTheProbesAreKubeadms(t *testing.T) {
+	cp := running(t)
+	describe := func(p *corev1.Probe) string {
+		if p == nil {
+			return "none"
+		}
+		return fmt.Sprintf("%s %s %s %d/%d/%d/%d", p.HTTPGet.Scheme, p.HTTPGet.Path, p.HTTPGet.Port.String(), p.InitialDelaySeconds, p.TimeoutSeconds, p.FailureThreshold, p.PeriodSeconds)
+	}
+	for component, want := range map[string][3]string{
+		"kube-apiserver":          {"HTTPS /livez https 10/15/8/10", "HTTPS /readyz https 0/15/3/1", "HTTPS /livez https 10/15/24/10"},
+		"kube-controller-manager": {"HTTPS /healthz 10257 10/15/8/10", "none", "HTTPS /healthz 10257 10/15/24/10"},
+		"kube-scheduler":          {"HTTPS /livez 10259 10/15/8/10", "HTTPS /readyz 10259 0/15/3/1", "HTTPS /livez 10259 10/15/24/10"},
+	} {
+		c := deployment(t, cp, component).Spec.Template.Spec.Containers[0]
+		if got := [3]string{describe(c.LivenessProbe), describe(c.ReadinessProbe), describe(c.StartupProbe)}; got != want {
+			t.Errorf("%s probes liveness, readiness and startup with %q, want kubeadm's %q", component, got, want)
+		}
+	}
+}
+
+func TestOrphansUnderWorkloadsNamesAreAdopted(t *testing.T) {
+	ns := namespace(t)
+	labels := map[string]string{bryggav1alpha1.ControlPlaneLabel: "dev"}
+	scheduler := map[string]string{bryggav1alpha1.ControlPlaneLabel: "dev", "app.kubernetes.io/name": "kube-scheduler"}
+	orphans := []client.Object{
+		&corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: "dev-kube-apiserver", Namespace: ns, Labels: labels},
+			Spec:       corev1.ServiceSpec{Ports: []corev1.ServicePort{{Name: "https", Port: 443}}},
+		},
+		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dev-egress-selector", Namespace: ns, Labels: labels}},
+		&networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "dev-kube-scheduler", Namespace: ns, Labels: labels},
+			Spec:       networkingv1.NetworkPolicySpec{PodSelector: metav1.LabelSelector{MatchLabels: scheduler}},
+		},
+		&appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: "dev-kube-scheduler", Namespace: ns, Labels: labels},
+			Spec: appsv1.DeploymentSpec{
+				Selector: &metav1.LabelSelector{MatchLabels: scheduler},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: scheduler},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "kube-scheduler", Image: "registry.example/orphan"}}},
+				},
+			},
+		},
+	}
+	for _, orphan := range orphans {
+		if err := k8s.Create(t.Context(), orphan); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cp := create(t, ns, loadBalancer())
+	eventually(t, func() error {
+		if svc := getService(t, cp); !metav1.IsControlledBy(svc, cp) || svc.Spec.Type != corev1.ServiceTypeLoadBalancer {
+			return fmt.Errorf("the Service is %s, controlled by %v; APIServerReady %+v", svc.Spec.Type, metav1.GetControllerOf(svc), condition(t, cp))
+		}
+		return nil
+	})
+	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
+	inputsReady(t, cp)
+	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, bryggav1alpha1.ReasonRollingOut) })
+	for _, orphan := range orphans {
+		fresh := orphan.DeepCopyObject().(client.Object)
+		if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(orphan), fresh); err != nil {
+			t.Fatal(err)
+		}
+		if !metav1.IsControlledBy(fresh, cp) {
+			t.Errorf("%T %s is controlled by %v", orphan, orphan.GetName(), metav1.GetControllerOf(fresh))
 		}
 	}
 }
@@ -666,6 +830,7 @@ func inputsReady(t *testing.T, cp *bryggav1alpha1.ControlPlane) {
 	setTrue(t, cp, bryggav1alpha1.ConditionDatastoreReady, "Ready")
 	setDatastore(t, cp, bryggav1alpha1.HostPort{Host: "dev-etcd-client." + cp.Namespace + ".svc", Port: 2379})
 	createSecrets(t, cp, "one")
+	setSecret(t, cp, bryggav1alpha1.APIServerServingSecret, "one")
 }
 
 func reconcileNow(t *testing.T, cp *bryggav1alpha1.ControlPlane) ctrl.Result {
@@ -821,6 +986,22 @@ func nodePort(svc *corev1.Service, port int32) int32 {
 	return 0
 }
 
+func setReady(t *testing.T, name string, ready bool) {
+	t.Helper()
+	node := &corev1.Node{}
+	if err := k8s.Get(t.Context(), client.ObjectKey{Name: name}, node); err != nil {
+		t.Fatal(err)
+	}
+	status := corev1.ConditionFalse
+	if ready {
+		status = corev1.ConditionTrue
+	}
+	node.Status.Conditions = []corev1.NodeCondition{{Type: corev1.NodeReady, Status: status}}
+	if err := k8s.Status().Update(t.Context(), node); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func createNode(t *testing.T, name string, ready bool, address string) {
 	t.Helper()
 	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: name}}
@@ -876,6 +1057,15 @@ func markAvailable(t *testing.T, d *appsv1.Deployment) {
 		fresh.Status = appsv1.DeploymentStatus{ObservedGeneration: fresh.Generation, Replicas: replicas, UpdatedReplicas: replicas, ReadyReplicas: replicas, AvailableReplicas: replicas}
 		return k8s.Status().Update(t.Context(), fresh)
 	})
+}
+
+func generationsOf(t *testing.T, cp *bryggav1alpha1.ControlPlane) map[string]int64 {
+	t.Helper()
+	out := map[string]int64{}
+	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
+		out[component] = deployment(t, cp, component).Generation
+	}
+	return out
 }
 
 func hashes(t *testing.T, cp *bryggav1alpha1.ControlPlane) map[string]string {

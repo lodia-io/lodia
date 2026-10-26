@@ -323,10 +323,12 @@ type APIServer struct {
 	// +optional
 	Admission *Admission `json:"admission,omitempty"`
 
-	// ExtraArgs are flags passed to kube-apiserver; the flags Brygga sets are refused.
+	// ExtraArgs are flags passed to kube-apiserver. The flags Brygga sets are
+	// refused, but for enable-admission-plugins, whose entries follow
+	// Brygga's; featureGates sets feature-gates.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
-	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['advertise-address', 'client-ca-file', 'egress-selector-config-file', 'etcd-cafile', 'etcd-certfile', 'etcd-keyfile', 'etcd-servers', 'secure-port', 'service-account-issuer', 'service-account-key-file', 'service-account-signing-endpoint', 'service-account-signing-key-file', 'service-cluster-ip-range', 'tls-cert-file', 'tls-private-key-file'])",message="Brygga sets this flag"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['advertise-address', 'allow-privileged', 'anonymous-auth', 'authentication-config', 'authorization-mode', 'client-ca-file', 'egress-selector-config-file', 'enable-bootstrap-token-auth', 'encryption-provider-config', 'encryption-provider-config-automatic-reload', 'etcd-cafile', 'etcd-certfile', 'etcd-keyfile', 'etcd-servers', 'feature-gates', 'kubelet-client-certificate', 'kubelet-client-key', 'kubelet-preferred-address-types', 'proxy-client-cert-file', 'proxy-client-key-file', 'requestheader-allowed-names', 'requestheader-client-ca-file', 'requestheader-extra-headers-prefix', 'requestheader-group-headers', 'requestheader-username-headers', 'secure-port', 'service-account-issuer', 'service-account-key-file', 'service-account-signing-endpoint', 'service-account-signing-key-file', 'service-cluster-ip-range', 'tls-cert-file', 'tls-private-key-file'])",message="Brygga sets this flag"
 	ExtraArgs map[string]string `json:"extraArgs,omitempty"`
 
 	// FeatureGates are passed to kube-apiserver.
@@ -429,10 +431,12 @@ type Admission struct {
 
 // Component configures kube-controller-manager.
 type Component struct {
-	// ExtraArgs are flags passed to the component; the flags Brygga sets are refused.
+	// ExtraArgs are flags passed to the component. The flags Brygga sets are
+	// refused, but for controllers, whose entries follow Brygga's;
+	// featureGates sets feature-gates.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
-	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['authentication-kubeconfig', 'authorization-kubeconfig', 'cluster-cidr', 'cluster-signing-cert-file', 'cluster-signing-key-file', 'kubeconfig', 'root-ca-file', 'service-account-private-key-file', 'service-cluster-ip-range'])",message="Brygga sets this flag"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['allocate-node-cidrs', 'authentication-kubeconfig', 'authorization-kubeconfig', 'bind-address', 'client-ca-file', 'cluster-cidr', 'cluster-name', 'cluster-signing-cert-file', 'cluster-signing-duration', 'cluster-signing-key-file', 'cluster-signing-kubelet-client-cert-file', 'cluster-signing-kubelet-client-key-file', 'feature-gates', 'kubeconfig', 'leader-elect', 'requestheader-client-ca-file', 'root-ca-file', 'service-account-private-key-file', 'service-cluster-ip-range', 'use-service-account-credentials'])",message="Brygga sets this flag"
 	ExtraArgs map[string]string `json:"extraArgs,omitempty"`
 
 	// FeatureGates are passed to the component.
@@ -447,10 +451,11 @@ type Component struct {
 
 // Scheduler configures kube-scheduler.
 type Scheduler struct {
-	// ExtraArgs are flags passed to kube-scheduler; the flags Brygga sets are refused.
+	// ExtraArgs are flags passed to kube-scheduler; the flags Brygga sets are
+	// refused, and featureGates sets feature-gates.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
-	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['authentication-kubeconfig', 'authorization-kubeconfig', 'config', 'kubeconfig'])",message="Brygga sets this flag"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['authentication-kubeconfig', 'authorization-kubeconfig', 'bind-address', 'config', 'feature-gates', 'kubeconfig', 'leader-elect'])",message="Brygga sets this flag"
 	ExtraArgs map[string]string `json:"extraArgs,omitempty"`
 
 	// FeatureGates are passed to kube-scheduler.

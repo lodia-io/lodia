@@ -166,7 +166,7 @@ ConfigMaps are their writer's alone:
 | `Etcd` `<cp>-etcd` | Datastore | PKI, whose etcd certificates name its members and Services; etcd-druid | etcd-druid rolls the members |
 | `<cp>-etcd-backup` (the class's backup credentials, copied) | Datastore | etcd-druid, through the `Etcd`, for the backup sidecar | whether the sidecar reads new keys without a restart is open (`todo.md`) |
 | Service `<cp>-kube-apiserver` | Workloads | PKI, which names it in certificates and kubeconfigs | — |
-| ConfigMap `<cp>-authentication-config` (an `AuthenticationConfiguration` whose anonymous section admits only `cluster-info` and the health paths) | Workloads | the API server | reloaded, except its anonymous section |
+| ConfigMap `<cp>-authentication-config` (an `AuthenticationConfiguration` whose anonymous section admits only `cluster-info` and the health paths) | Workloads | the API server | the API server restarts: a reload never changes the anonymous section ([authentication.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/kubeapiserver/options/authentication.go#L797-L799)) |
 | ConfigMap `<cp>-egress-selector` (the cluster's traffic through konnectivity-server's socket); `audit-policy`, `admission-config` / `scheduler-config` from phase 2 | Workloads | the API server / the scheduler | that component restarts |
 
 Sources: the reload behaviour of each flag is in the
@@ -252,15 +252,26 @@ native sidecar, its image a flag of the operator (`--signer-image`). One
 Service, `<cp>-kube-apiserver`, of the endpoint's type, takes 443 and 6443 to
 the API server and 8132 to konnectivity-server, and Workloads publishes
 `status.endpoint` from it before it waits on anything, whole once both
-addresses exist: the balancer's IP with 443 and 8132, or, for `nodePort`, the
-InternalIP of the first Ready management node by name with the node ports of
-6443 and 8132, checked every minute since no event reports a node. In
-`nodePort` mode the API server listens on that node port itself: it
+addresses exist: the balancer's IP with 443 and 8132, or, for `nodePort`, a
+management node's InternalIP with the node ports of 6443 and 8132. That
+address is the first Ready node's by name when none is published, and then
+stays for as long as any node still reports it, Ready or not, since the
+serving certificate, the kubeconfigs, the ServiceAccount issuer and every
+joined kubelet name it; it is checked every minute, since no event reports a
+node. In `nodePort` mode the API server listens on that node port itself: it
 advertises its address and its own port into the tenant's `kubernetes`
 endpoints, which the tenant's nodes reach only through the node port. Each
-pod template carries a hash of the data hashes of what its component reads
-once (`brygga.segla.io/restart-hash`), so a renewal of a reloaded certificate
-rolls nothing. A NetworkPolicy per component, named as its Deployment,
+pod template carries a hash of what its component reads once
+(`brygga.segla.io/restart-hash`): the data hashes of its restart-only Secrets
+and, for the API server, its two ConfigMaps, since it reads the egress
+selector, and the anonymous section of the authentication configuration,
+only at start
+([authentication.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/kubeapiserver/options/authentication.go#L797-L799));
+a renewal of a reloaded certificate rolls nothing. The probes are kubeadm's,
+startup probes included
+([utils.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kubeadm/app/util/staticpod/utils.go#L255-L296),
+[manifests.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kubeadm/app/phases/controlplane/manifests.go#L67-L107)).
+A NetworkPolicy per component, named as its Deployment,
 isolates the ingress of its pods: the API server takes its two ports from
 anywhere, since they are the public endpoint, and the controller manager and
 the scheduler take nothing; the kubelet's probes come from the node, which a
@@ -268,15 +279,19 @@ NetworkPolicy does not block
 ([network policies](https://kubernetes.io/docs/concepts/services-networking/network-policies/)).
 With one replica there is no PodDisruptionBudget. A `ControlPlane` that asks
 for what Workloads does not render yet — `endpoint.gateway`, the Compact
-layout, `highAvailability`, JWT authentication, an audit policy, an admission
-or a scheduler configuration — is `APIServerReady=False` (`Unsupported`)
-rather than run without it. An object under Workloads' names whose controller
-is not this `ControlPlane`, or that refers to another `ControlPlane`, is not
-written: while the Service is held Workloads writes nothing, and while a
-ConfigMap, NetworkPolicy or Deployment is, nothing but the Service
-(`APIServerReady=False`, `ObjectsControlledElsewhere`, naming each object and
-its owner); a predecessor's objects go with the garbage collector, any other
-owner's with a person.
+layout, `highAvailability`, more than one API server replica,
+`apiServer.advertiseAddress` outside gateway mode, JWT authentication, an
+audit policy, an admission or a scheduler configuration,
+`serviceAccount.publicDiscovery` — is `APIServerReady=False` (`Unsupported`)
+rather than run without it, and keeps its endpoint: only gateway mode, which
+has no Service yet, publishes none. An orphan under Workloads' names, an
+object without a controller, is adopted. An object under its names whose
+controller is not this `ControlPlane`, or that refers to another
+`ControlPlane`, is not written: while the Service is held Workloads writes
+nothing, and while a ConfigMap, NetworkPolicy or Deployment is, nothing but
+the Service (`APIServerReady=False`, `ObjectsControlledElsewhere`, naming each
+object and its owner); a predecessor's objects go with the garbage collector,
+any other owner's with a person.
 
 The dedicated etcd is etcd-druid's `Etcd` `<cp>-etcd`, which the Datastore
 controller renders from the `DatastoreClass` and the newest complete
@@ -788,9 +803,9 @@ on:
 | `brygga.segla.io` | `controlplanes` | `list`, `watch` | the cache |
 | `brygga.segla.io` | `controlplanes/status` | `patch` | `APIServerReady` and `status.endpoint`, applied |
 | `brygga.segla.io` | `controlplanes/finalizers` | `update` | `blockOwnerDeletion` on the owner references of what it creates |
-| `apps` | `deployments` | `list`, `watch`, `create`, `patch` | the cache; the apply |
-| `""` | `services`, `configmaps` | `list`, `watch`, `create`, `patch` | the cache, metadata only for ConfigMaps; the apply |
-| `networking.k8s.io` | `networkpolicies` | `list`, `watch`, `create`, `patch` | the cache; the apply |
+| `apps` | `deployments` | `list`, `watch`, `create`, `patch`, `delete` | the cache; the apply; `delete` because the admission plugin lets only who may delete an object set an owner reference on it when it is updated, which adopting an orphan does ([gc_admission.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/plugin/pkg/admission/gc/gc_admission.go#L103-L119)) |
+| `""` | `services`, `configmaps` | `list`, `watch`, `create`, `patch`, `delete` | the cache, metadata only for ConfigMaps; the apply; `delete` for the adoption |
+| `networking.k8s.io` | `networkpolicies` | `list`, `watch`, `create`, `patch`, `delete` | the cache; the apply; `delete` for the adoption |
 | `""` | `secrets` | `list`, `watch` | the metadata of the restart-only Secrets in the cache: their data hash, and their events |
 | `""` | `nodes` | `list` | the management node a `nodePort` endpoint names, read uncached |
 
