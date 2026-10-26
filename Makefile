@@ -53,5 +53,6 @@ else
 	mkdir -p $(E2E_DIR)
 	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig
 	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e -count=1 -timeout 30m ./test/e2e/...; status=$$?; \
+	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node || status=1; \
 	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
 endif
