@@ -204,7 +204,8 @@ is a decision — a decision is a file in `docs/decisions/`.
   with a status field that says which version each component runs, and
   `status.kubernetes.version` written from it: Cluster API creates no worker
   while a control plane reports no version
-  ([preflight](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/core/reconcilers/machineset/machineset_preflight.go#L170-L190)).
+  ([preflight](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/core/reconcilers/machineset/machineset_preflight.go#L174-L181),
+  [provisioning](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/internal/contract/controlplane.go#L277-L293)).
 - Phase 2: `status.endpoint.tunnel`, the tunnel listener's host and port in
   gateway mode, absent without a tunnel, for Tenant's apiserver-proxy and
   PKI's certificate.

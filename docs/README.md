@@ -772,7 +772,7 @@ lease another component holds
 what Gardener's dependency-watchdog does for its clusters, built into the
 operator. Health reports a hold in `ControllerManagerHeld`, outside `Ready`:
 the nodes are cut off, not the control plane, and `Reachable` stays about
-the API.
+the control plane.
 
 ## Identity and tenancy
 
