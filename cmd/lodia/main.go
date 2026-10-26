@@ -35,6 +35,10 @@ func main() {
 		log.Error(nil, "--signer-image is required")
 		os.Exit(1)
 	}
+	if etcdDruidNamespace == "" {
+		log.Error(nil, "--etcd-druid-namespace must not be empty")
+		os.Exit(1)
+	}
 
 	cache, err := operator.Cache()
 	if err != nil {

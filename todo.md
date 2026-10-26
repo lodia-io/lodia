@@ -282,7 +282,12 @@ is a decision — a decision is a file in `docs/decisions/`.
   through the client Service
   ([memberremoval.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/memberremoval.go#L31-L39),
   [client.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/client/etcd/client.go#L82-L95)),
-  so the etcd's policy admits etcd-druid's namespace to the client port then.
+  so the etcd's policy admits etcd-druid's namespace to the client port then,
+  and the members to each other's backup-restore port: a sidecar that is not
+  the backup leader forwards snapshot requests to the leader's
+  ([httpAPI.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/server/httpAPI.go#L281-L288)),
+  which Gardener opens between members for the same reason
+  ([etcd.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/component/etcd/etcd/etcd.go#L404-L411)).
 - `--etcd-druid-namespace` is an operator flag, `etcd-druid` by default,
   the namespace the e2e installs etcd-druid into; the chart sets it to the
   namespace it installs etcd-druid in.

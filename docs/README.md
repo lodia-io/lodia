@@ -129,7 +129,7 @@ flowchart TB
     sch --> svc
     svc --> k
     a -->|mTLS :2379| etcd
-    etcd -->|":2379 :2380"| etcd
+    etcd -->|":2379 :2380 :8080"| etcd
     etcd -->|snapshots| s3[(object storage)]
   end
   ep["load balancer, node port<br/>or Gateway :443 by SNI"] --> svc
@@ -524,7 +524,8 @@ and etcd-druid dials the client port only to remove a member in a scale-in
 ([memberremoval.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/memberremoval.go#L31-L39)),
 which one member never has: phase 2 admits it with three members. The ports
 are etcd-druid's defaults, which the `Etcd` leaves unset
-([constants.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/common/constants.go#L55-L60)),
+([client](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/common/constants.go#L15-L16),
+[the others](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/common/constants.go#L55-L60)),
 named by number, since the peer port and the sidecar's share the container
 port name `server`
 ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L376-L387),
