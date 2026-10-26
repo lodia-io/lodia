@@ -37,8 +37,7 @@ is a decision — a decision is a file in `docs/decisions/`.
   reporting switched on (`SECURITY.md` points at it), and `GOVERNANCE.md` and
   `ADOPTERS.md` from the CNCF template. Also the `go-import` page at
   `go.lodia.io/lodia?go-get=1` (GitHub Pages in `lodia-io`, a CNAME for
-  `go.lodia.io`), and the repository moved to `lodia-io`, after which
-  `SECURITY.md`'s link follows it.
+  `go.lodia.io`).
 - The workflow's actions are pinned by commit with nothing to bump them;
   Dependabot or Renovate for `github-actions` and `gomod`.
 

@@ -1,17 +1,16 @@
 # Lodia is an Apache-2.0 project with the Go module go.lodia.io/lodia and the API group lodia.io
 
 Decided 2026-10-23 as Brygga (`github.com/segla-io/brygga`, API group
-`brygga.segla.io`); renamed to Lodia on 2026-10-26, before any cluster ran
-it.
+`brygga.segla.io`); renamed to Lodia and moved to the `lodia-io`
+organization on 2026-10-26, before any cluster ran it.
 
 ## Decision
 
 - **Name:** Lodia, from Ukrainian «лодія», an old word for a boat from the
   time of Kyivan Rus': the vessel beside Segla, which is Swedish for
   sailing.
-- **Home:** the repository is `github.com/segla-io/brygga` for now and moves
-  to the `lodia-io` organization. Issues, discussions and pull requests live
-  there; CI runs on GitHub Actions.
+- **Home:** `github.com/lodia-io/lodia`. Issues, discussions and pull
+  requests live there; CI runs on GitHub Actions.
 - **Go module:** `go.lodia.io/lodia`, a path of the project's own domain, so
   it stays when the repository moves; `go.lodia.io` serves the `go-import`
   page that points it at the repository
