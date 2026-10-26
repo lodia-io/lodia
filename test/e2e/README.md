@@ -65,9 +65,10 @@ chart installed.
   on its health port, 8134
   ([server.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/cmd/server/app/server.go#L585)),
   through a port-forward to the API server pod, and wants each call to add
-  one dial. `exec` and the port-forward use client-go's SPDY transport;
-  kubectl's default, WebSocket, reaches the kubelet through the same
-  transport and tunnel
+  one dial. `exec` runs twice, over client-go's SPDY transport and over
+  WebSocket, kubectl's default; the port-forward uses SPDY, and kubectl's
+  WebSocket port-forward reaches the kubelet through the same transport and
+  tunnel
   ([exec](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/registry/core/pod/rest/subresources.go#L208-L230),
   [port-forward](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/registry/core/pod/rest/subresources.go#L293-L306)),
   so the dial count covers it too. Disabling `addons.coreDNS` removes
@@ -85,6 +86,12 @@ server pod's secure port, as `<cp>-admin-kubeconfig` with its server set to
 the forwarded address, which the serving certificate names (`127.0.0.1`),
 and, as the platform, creates a bootstrap token Secret there
 ([nodes-join-with-kubeadm](../../docs/decisions/nodes-join-with-kubeadm.md)).
+Each connection to a forwarded address gets a port-forward of its own:
+client-go ends a port-forward, with every connection through it, on the
+first forwarding error
+([portforward.go](https://github.com/kubernetes/client-go/blob/v0.37.1/tools/portforward/portforward.go#L545-L550)),
+and an exec's connection meets one when the API server has closed it before
+the client's last write (`write: broken pipe`).
 It starts a container of kind's node image, `<cluster>-tenant-node`, on the
 docker network `kind`, waits for its entrypoint to report the boot as kind
 does

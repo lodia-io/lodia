@@ -298,9 +298,11 @@ is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the phase 1 gate (2026-10-26)
 
-- The gate reaches the tenant through one client-go port-forward, which
-  client-go v0.37.1 closes entirely on the first forwarding error
-  ([portforward.go](https://github.com/kubernetes/client-go/blob/v0.37.1/tools/portforward/portforward.go#L545-L550)):
-  a WebSocket exec through it ended the forward in a review run. A forward
-  per call, or one reopened on `ErrLostConnectionToPod`, would keep one
-  error from failing every later step.
+- The e2e suite reaches a tenant's API through port-forwards to the API
+  server pod, one per connection (`forward` in `test/e2e/gate_test.go`),
+  only because a kind node's address is not routable from macOS, where the
+  suite also runs. Real clients, and kubeadm on a joining node, use the
+  tenant's endpoint, and Lodia never relies on a port-forward. Remove it
+  once the suite's tenant clients run where the endpoint is routable: on
+  Linux CI it already is; on macOS, from a container on kind's network, for
+  instance.
