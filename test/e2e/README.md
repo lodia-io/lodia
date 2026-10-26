@@ -84,8 +84,10 @@ does
 and runs `kubeadm join <status.endpoint.apiServer> --token …
 --discovery-token-ca-cert-hash sha256:…` in it. `--patches` names
 [`testdata/kubeadm-patches`](testdata/kubeadm-patches), whose
-`kubeletconfiguration` patch
-([--patches](https://github.com/kubernetes/kubernetes/blob/v1.37.0/cmd/kubeadm/app/cmd/options/generic.go#L104-L114))
+`kubeletconfiguration` patch, the node's own configuration over the
+cluster's
+([patches](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/setup/production-environment/tools/kubeadm/control-plane-flags.md?plain=1#L185-L205),
+[--patches](https://github.com/kubernetes/kubernetes/blob/v1.37.0/cmd/kubeadm/app/cmd/options/generic.go#L104-L114)),
 carries the kubelet settings kind gives its nodes
 ([config.go](https://github.com/kubernetes-sigs/kind/blob/v0.33.0/pkg/cluster/internal/kubeadm/config.go#L596-L615)),
 and the `ControlPlane` sets `addons.kubeProxy.conntrack.maxPerCore: 0`. The
