@@ -218,17 +218,36 @@ is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the Workloads controller (2026-10-25)
 
-- `highAvailability` (replicas, spread, PodDisruptionBudgets), JWT
-  authentication, an audit policy, an admission and a scheduler
-  configuration are not rendered: they turn `APIServerReady` False with
-  `Unsupported` until phase 2 builds them.
+- `highAvailability` (replicas, spread, PodDisruptionBudgets), more than one
+  API server replica, JWT authentication, an audit policy, an admission and a
+  scheduler configuration, `serviceAccount.publicDiscovery` and
+  `apiServer.advertiseAddress` outside gateway mode are not rendered: they
+  turn `APIServerReady` False with `Unsupported` until phase 2 builds them.
 - The NetworkPolicies isolate each component's ingress alone; the
-  default-deny set of the README's arrows comes with the Gateway mode, and
+  default-deny set and egress, the README's arrows, come in phase 2, and
   etcd's with the Datastore controller.
 - `--signer-image` is an operator flag until the operator configuration and
   the chart render it.
+- The control plane pods set no securityContext: give them one that passes
+  Pod Security `restricted`, the API server and the signer under one user
+  (From brygga-signer, above).
+- Workloads lists the management nodes uncached on every pass of a
+  `nodePort` `ControlPlane`; an informer on Nodes, which carry no
+  control-plane label and so need a cache rule of their own, would serve
+  them from memory.
+- In `nodePort` mode the Service takes a node port for 443 as well, which
+  nothing dials: the endpoint names the node ports of 6443 and 8132, and
+  in-namespace clients use the cluster IP.
+- Wave 3's gate checks the tenant API from inside the cluster with a token:
+  anonymous requests reach only the health paths and `cluster-info`.
+- The e2e asserts `APIServerReady` alone, with the operator in the test
+  process outside kind; wave 3 runs it in the cluster.
 - Workloads finds another owner's objects under its names in the cache,
-  which holds only labelled ones: an unlabelled object that refers to
-  another `ControlPlane` without being its controller is applied over once,
-  and the API server refuses the apply over one with a controller; read them
-  uncached, as PKI does its Secrets, if that ever matters.
+  which holds only labelled ones. An unlabelled object it applied for a
+  predecessor is taken over silently, with the
+  `OwnerReferencesPermissionEnforcement` plugin as without it, now that
+  Workloads may delete (before, the plugin refused the apply); one that only
+  refers to another `ControlPlane` is applied over once and then held; one
+  with another controller is refused by validation, and `APIServerReady`
+  stays as it was. Reading the targets uncached, as PKI reads its Secrets,
+  would see them all.

@@ -123,16 +123,15 @@ flowchart TB
     kcm["Deployment kube-controller-manager ×2"]
     sch["Deployment kube-scheduler ×2"]
     etcd[("etcd ×3 + backup-restore<br/>PVC · PDB · own CA")]
-    svc["Service prod-eu-kube-apiserver<br/>ClusterIP :443→6443"]
-    ksvc["Service prod-eu-konnectivity :8132"]
-    np["NetworkPolicy: only these arrows"]
+    svc["Service prod-eu-kube-apiserver<br/>of the endpoint's type<br/>:443 :6443 → kube-apiserver<br/>:8132 → konnectivity-server"]
+    np["NetworkPolicy per component"]
     kcm --> svc --> a
     sch --> svc
+    svc --> k
     a -->|mTLS :2379| etcd
     etcd -->|snapshots| s3[(object storage)]
   end
-  gw["Gateway :443 · SNI"] --> svc
-  gw --> ksvc --> k
+  ep["load balancer, node port<br/>or Gateway :443 by SNI"] --> svc
   op["Brygga"] --> svc
   druid["etcd-druid"] -->|:2379 :8080| etcd
 ```
@@ -506,12 +505,15 @@ are created once with a `system:masters` certificate that PKI issues for ten
 minutes and never stores, the way kubeadm uses `super-admin.conf` only to bind
 `kubeadm:cluster-admins`.
 
-NetworkPolicies default-deny the namespace and allow exactly the arrows
-above: Gateway → API server and konnectivity-server, controller manager and
-scheduler and Brygga → the API Service, API server → etcd, etcd ↔ etcd,
-etcd-druid → etcd and its backup-restore sidecar, etcd and its compaction
-Jobs → object storage, metrics scrapers → the health ports, and every pod →
-the cluster DNS.
+In phase 1 a NetworkPolicy per component isolates its pods' ingress: the
+API server's two ports are open to all, since they are the public endpoint,
+and nothing reaches the controller manager or the scheduler but the kubelet's
+probes, which come from the node. Phase 2 default-denies the namespace,
+egress included, and allows exactly the arrows above: the endpoint → API
+server and konnectivity-server, controller manager and scheduler and Brygga
+→ the API Service, API server → etcd, etcd ↔ etcd, etcd-druid → etcd and its
+backup-restore sidecar, etcd and its compaction Jobs → object storage,
+metrics scrapers → the health ports, and every pod → the cluster DNS.
 
 ## Networking
 
@@ -876,6 +878,16 @@ off), capacity planning, the alert rules and what each means.
 - No machines, no node agent, no VPN, no SQL or NATS store (see the
   [roadmap](roadmap.md)).
 - No in-place restore API; a runbook.
+- No kubelet serving certificates from the cluster: the controller manager
+  holds only the kubelet client signer, and starts no signer for
+  `kubernetes.io/kubelet-serving`
+  ([certificates.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kube-controller-manager/app/certificates.go#L74-L86)),
+  so a kubelet with `serverTLSBootstrap: true` never gets one.
+- No legacy ServiceAccount token Secrets: brygga-signer holds the
+  ServiceAccount key, and the controller manager's token controller does not
+  start without one
+  ([service_accounts.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kube-controller-manager/app/service_accounts.go#L49-L52)),
+  so a Secret of type `kubernetes.io/service-account-token` stays empty.
 - No multi-cluster operator: one Brygga per management cluster; sharding
   across replicas is phase 4.
 - Owed before phase 2: the reclaim and retention defaults; measured

@@ -70,10 +70,10 @@ with `--agent-identifiers=ipv4=$(HOST_IP)` and the server tries `destHost`
 before `default`, so traffic for a kubelet goes through the agent on its own
 node
 ([konnectivity setup](https://kubernetes.io/docs/tasks/extend-kubernetes/setup-konnectivity/),
-[server options](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/master/cmd/server/app/options/options.go),
-[agent options](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/master/cmd/agent/app/options/options.go)).
+[server options](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/cmd/server/app/options/options.go),
+[agent options](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/cmd/agent/app/options/options.go)).
 The konnectivity version follows the Kubernetes minor (proxy 0.NN for
-Kubernetes 1.NN, [README](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/master/README.md)).
+Kubernetes 1.NN, [README](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/README.md#L37-L40)).
 
 **Nothing inbound on a node.** The API server reaches kubelets, webhooks and
 aggregated APIs through the agents' tunnels. Brygga's defaults bind what it
