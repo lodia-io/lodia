@@ -116,6 +116,7 @@ func (r *Reconciler) controlPlanesUsing(ctx context.Context, class client.Object
 // +kubebuilder:rbac:groups=druid.gardener.cloud,resources=etcds,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=list;patch;delete
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;patch;delete
 
@@ -259,7 +260,15 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.Contro
 			class, heldFor = nil, time.Minute
 		}
 	}
-	rendered := render(cp, class, generation, current)
+	var namespaceUID types.UID
+	if class != nil && class.Spec.Backup != nil {
+		namespace := &corev1.Namespace{}
+		if err := r.Reader.Get(ctx, client.ObjectKey{Name: cp.Namespace}, namespace); err != nil {
+			return nil, metav1.Condition{}, 0, fmt.Errorf("read Namespace %s: %w", cp.Namespace, err)
+		}
+		namespaceUID = namespace.UID
+	}
+	rendered := render(cp, class, namespaceUID, generation, current)
 	etcd, err := r.apply(ctx, rendered)
 	if err != nil {
 		err = fmt.Errorf("apply Etcd %s: %w", rendered.Name, err)

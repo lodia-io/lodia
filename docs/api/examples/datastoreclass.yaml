@@ -24,7 +24,8 @@ spec:
     store:
       provider: S3                        # S3 | GCS | ABS | Swift, as etcd-druid supports
       bucket: lodia-backups
-      prefix: prod
+      # a tenant's snapshots go under prod/<namespace UID>/controlplanes/<ControlPlane UID>
+      prefix: prod                        # neither containing v1/ nor ending in v1
       region: eu-central-1
       endpoint: https://s3.eu-central-1.amazonaws.com
       secretRef: {name: s3-backups, namespace: lodia-system}

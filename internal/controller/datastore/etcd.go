@@ -18,6 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -31,8 +32,11 @@ import (
 // client TLS is on (docs/decisions/dedicated-etcd-by-default.md). The storage
 // class and size come from the current Etcd once it exists: the first is
 // immutable in the Etcd, the second a StatefulSet field that cannot change in
-// place. A nil class is a recorded class that is gone.
-func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, generation int, current *druidv1alpha1.Etcd) *druidv1alpha1.Etcd {
+// place. A nil class is a recorded class that is gone. The backup prefix holds
+// UIDs and no name: etcd-backup-restore takes the last v1/ anywhere in a key
+// for its layout and ignores the snapshots it misreads
+// (etcd-backup-restore@v0.45.1 pkg/snapstore/snapshot.go#L39-L59).
+func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, namespaceUID types.UID, generation int, current *druidv1alpha1.Etcd) *druidv1alpha1.Etcd {
 	secret := func(certificate lodiav1alpha1.EtcdCertificateRole) corev1.SecretReference {
 		return corev1.SecretReference{Name: lodiav1alpha1.EtcdCertificateSecretName(cp.Name, certificate, generation)}
 	}
@@ -98,7 +102,7 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 		etcd.Spec.Backup.Store = &druidv1alpha1.StoreSpec{
 			Provider:  new(druidv1alpha1.StorageProvider(backup.Store.Provider)),
 			Container: new(backup.Store.Bucket),
-			Prefix:    path.Join(backup.Store.Prefix, cp.Namespace, cp.Name, string(cp.UID)),
+			Prefix:    path.Join(backup.Store.Prefix, string(namespaceUID), "controlplanes", string(cp.UID)),
 			SecretRef: &corev1.SecretReference{Name: lodiav1alpha1.EtcdBackupSecret.Name(cp.Name)},
 		}
 		if backup.Store.Endpoint != "" {

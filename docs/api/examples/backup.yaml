@@ -15,4 +15,4 @@ spec:
 #   kubernetesVersion: v1.37.1
 #   revision: 184739
 #   sizeBytes: 41943040
-#   location: s3://lodia-backups/prod/team-a/prod-eu/Full-00000000-00184739-1761184807
+#   location: s3://lodia-backups/prod/<namespace UID>/backups/<Backup UID>/v2/Full-00000000-00184739-1792720807
