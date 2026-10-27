@@ -473,11 +473,15 @@ func networkPolicies(cp *lodiav1alpha1.ControlPlane) []*networkingv1.NetworkPoli
 var merged = []string{"enable-admission-plugins", "controllers"}
 
 // command puts the flags Lodia sets and the tenant's extra ones in a fixed
-// order, so an unchanged ControlPlane renders the same pod template.
+// order, so an unchanged ControlPlane renders the same pod template. An
+// extra entry never replaces a flag Lodia sets: one the schema refused only
+// after it was stored stays valid until it changes.
 func command(binary string, flags, extra map[string]string, gates map[string]bool) []string {
 	all := maps.Clone(flags)
 	for name, value := range extra {
-		if own, ok := flags[name]; ok && slices.Contains(merged, name) {
+		own, set := flags[name]
+		switch {
+		case set && slices.Contains(merged, name):
 			entries := strings.Split(own, ",")
 			for entry := range strings.SplitSeq(value, ",") {
 				if entry != "" && !slices.Contains(entries, entry) {
@@ -485,6 +489,8 @@ func command(binary string, flags, extra map[string]string, gates map[string]boo
 				}
 			}
 			value = strings.Join(entries, ",")
+		case set:
+			continue
 		}
 		all[name] = value
 	}
