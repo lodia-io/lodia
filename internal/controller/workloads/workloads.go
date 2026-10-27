@@ -20,6 +20,8 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	policyv1 "k8s.io/api/policy/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -44,6 +46,11 @@ import (
 const (
 	Name         = "workloads"
 	FieldManager = "lodia/" + Name
+
+	// timedOutReason is the Deployment controller's reason for a rollout past
+	// its progress deadline
+	// (https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/deployment/util/deployment_util.go#L85-L86).
+	timedOutReason = "ProgressDeadlineExceeded"
 )
 
 // Messages are built from the state alone, never from an error, so a pass
@@ -69,6 +76,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}, builder.OnlyMetadata).
 		Owns(&networkingv1.NetworkPolicy{}).
+		Owns(&policyv1.PodDisruptionBudget{}).
 		WatchesMetadata(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(controlPlaneOf), builder.WithPredicates(readOnce)).
 		Complete(r)
 }
@@ -93,6 +101,7 @@ func restartOnlyNames(cp string) []string {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=list;watch;create;patch;delete
 // +kubebuilder:rbac:groups="",resources=services;configmaps,verbs=list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=list;watch;create;patch;delete
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=list;watch;create;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=list;watch
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=list
 
@@ -106,7 +115,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	if meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady) == nil {
 		first := newCondition(metav1.ConditionUnknown, lodiav1alpha1.ReasonReconciling, "the first pass has not finished")
-		if err := r.applyStatus(ctx, cp, cp.Status.Endpoint, first); err != nil {
+		if err := r.applyStatus(ctx, cp, cp.Status.Endpoint, cp.Status.Components, first); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -114,7 +123,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if condition.Type == "" {
 		return ctrl.Result{}, err
 	}
-	if statusErr := r.applyStatus(ctx, cp, endpoint, condition); statusErr != nil || err != nil {
+	components, readErr := r.components(ctx, cp)
+	if readErr != nil {
+		return ctrl.Result{}, errors.Join(err, readErr)
+	}
+	if statusErr := r.applyStatus(ctx, cp, endpoint, components, condition); statusErr != nil || err != nil {
 		return ctrl.Result{}, errors.Join(err, statusErr)
 	}
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
@@ -207,6 +220,9 @@ func (r *Reconciler) reconcile(ctx context.Context, cp *lodiav1alpha1.ControlPla
 	for _, d := range deployments {
 		objects = append(objects, d)
 	}
+	for _, b := range podDisruptionBudgets(cp) {
+		objects = append(objects, b)
+	}
 	if held, requeueAfter, err := r.controlledElsewhere(ctx, cp, objects...); err != nil || held != nil {
 		return endpoint, ptr.Deref(held, metav1.Condition{}), requeueAfter, err
 	}
@@ -215,7 +231,12 @@ func (r *Reconciler) reconcile(ctx context.Context, cp *lodiav1alpha1.ControlPla
 			return refused(endpoint, obj, err)
 		}
 	}
-	return endpoint, readiness(target, deployments), requeueAfter, nil
+	if cp.Spec.HighAvailability == nil {
+		if err := r.deletePodDisruptionBudgets(ctx, cp); err != nil {
+			return nil, metav1.Condition{}, 0, err
+		}
+	}
+	return endpoint, availability(deployments), requeueAfter, nil
 }
 
 // refused says that the API server refuses obj, so that the status no longer
@@ -238,13 +259,7 @@ func unsupported(cp *lodiav1alpha1.ControlPlane) []string {
 	if cp.Spec.Layout == lodiav1alpha1.LayoutCompact {
 		fields = append(fields, "layout Compact")
 	}
-	if cp.Spec.HighAvailability != nil {
-		fields = append(fields, "highAvailability")
-	}
 	if a := cp.Spec.APIServer; a != nil {
-		if ptr.Deref(a.Replicas, 1) > 1 && cp.Spec.HighAvailability == nil {
-			fields = append(fields, "apiServer.replicas")
-		}
 		if a.Authentication != nil && len(a.Authentication.JWT) > 0 {
 			fields = append(fields, "apiServer.authentication.jwt")
 		}
@@ -307,6 +322,8 @@ func cached(obj client.Object) client.Object {
 		return &appsv1.Deployment{}
 	case *networkingv1.NetworkPolicy:
 		return &networkingv1.NetworkPolicy{}
+	case *policyv1.PodDisruptionBudget:
+		return &policyv1.PodDisruptionBudget{}
 	default:
 		m := &metav1.PartialObjectMetadata{}
 		m.SetGroupVersionKind(obj.GetObjectKind().GroupVersionKind())
@@ -446,20 +463,94 @@ func restartHashes(cp string, data map[string]string, config []*corev1.ConfigMap
 	return out
 }
 
-func readiness(version string, deployments []*appsv1.Deployment) metav1.Condition {
+// availability is True while each component has a ready replica.
+func availability(deployments []*appsv1.Deployment) metav1.Condition {
+	var short, stalled []string
+	unavailable := false
 	for _, d := range deployments {
 		want := ptr.Deref(d.Spec.Replicas, 1)
-		switch {
-		case d.Status.ObservedGeneration < d.Generation:
-			return newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRollingOut,
-				fmt.Sprintf("the Deployment controller has not observed generation %d of Deployment %s", d.Generation, d.Name))
-		case d.Status.UpdatedReplicas != want || d.Status.ReadyReplicas != want || d.Status.Replicas != want:
-			return newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRollingOut,
-				fmt.Sprintf("Deployment %s: %d of %d replicas updated, %d ready, %d in all", d.Name, d.Status.UpdatedReplicas, want, d.Status.ReadyReplicas, d.Status.Replicas))
+		if d.Status.ReadyReplicas < want {
+			short = append(short, fmt.Sprintf("%s has %d of %d replicas ready", d.Labels[lodiav1alpha1.ComponentLabel], d.Status.ReadyReplicas, want))
+		}
+		unavailable = unavailable || d.Status.ReadyReplicas == 0
+		if d.Status.ObservedGeneration == d.Generation && slices.ContainsFunc(d.Status.Conditions, func(c appsv1.DeploymentCondition) bool {
+			return c.Type == appsv1.DeploymentProgressing && c.Status == corev1.ConditionFalse && c.Reason == timedOutReason
+		}) {
+			stalled = append(stalled, "the rollout of Deployment "+d.Name+" passed its progress deadline")
 		}
 	}
-	return newCondition(metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
-		fmt.Sprintf("kube-apiserver, kube-controller-manager and kube-scheduler run %s, every replica updated and ready", version))
+	switch {
+	case unavailable:
+		return newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, strings.Join(short, "; "))
+	case len(stalled) > 0:
+		return newCondition(metav1.ConditionTrue, lodiav1alpha1.ReasonProgressDeadlineExceeded, strings.Join(append(stalled, short...), "; "))
+	case len(short) > 0:
+		return newCondition(metav1.ConditionTrue, lodiav1alpha1.ReasonReady, strings.Join(short, "; "))
+	}
+	return newCondition(metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "every replica of kube-apiserver, kube-controller-manager and kube-scheduler is ready")
+}
+
+// components counts the replicas of the Deployments this ControlPlane
+// controls, as the cache holds them.
+func (r *Reconciler) components(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*lodiav1alpha1.ComponentsStatus, error) {
+	var out *lodiav1alpha1.ComponentsStatus
+	for _, component := range components {
+		d := &appsv1.Deployment{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: deploymentName(cp.Name, component)}, d); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return nil, err
+		}
+		if !metav1.IsControlledBy(d, cp) {
+			continue
+		}
+		if out == nil {
+			out = &lodiav1alpha1.ComponentsStatus{}
+		}
+		status := &lodiav1alpha1.ComponentStatus{RolloutCount: rolloutCount(d)}
+		switch component {
+		case apiServer:
+			out.APIServer = status
+		case controllerManager:
+			out.ControllerManager = status
+		case scheduler:
+			out.Scheduler = status
+		}
+	}
+	return out, nil
+}
+
+// rolloutCount's updated counts, once the Deployment controller has observed
+// the template, the available replicas of the template: all available ones
+// less those of older templates, which a surge keeps available until the new
+// ones are.
+func rolloutCount(d *appsv1.Deployment) lodiav1alpha1.RolloutCount {
+	s := d.Status
+	count := lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: ptr.Deref(d.Spec.Replicas, 1), Ready: s.ReadyReplicas}}
+	if s.ObservedGeneration == d.Generation {
+		count.Updated = new(max(0, min(s.UpdatedReplicas, s.AvailableReplicas-(s.Replicas-s.UpdatedReplicas))))
+	}
+	return count
+}
+
+func (r *Reconciler) deletePodDisruptionBudgets(ctx context.Context, cp *lodiav1alpha1.ControlPlane) error {
+	for _, component := range components {
+		b := &policyv1.PodDisruptionBudget{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: deploymentName(cp.Name, component)}, b); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return err
+		}
+		if !metav1.IsControlledBy(b, cp) {
+			continue
+		}
+		if err := client.IgnoreNotFound(r.Delete(ctx, b, client.Preconditions{UID: &b.UID})); err != nil {
+			return fmt.Errorf("delete PodDisruptionBudget %s: %w", b.Name, err)
+		}
+	}
+	return nil
 }
 
 func (r *Reconciler) apply(ctx context.Context, obj client.Object) error {
@@ -495,14 +586,15 @@ func dropNulls(m map[string]any) {
 	}
 }
 
-// applyStatus applies APIServerReady and, once both addresses exist,
-// status.endpoint whole; a nil endpoint drops a published one.
-func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, condition metav1.Condition) error {
+// applyStatus applies APIServerReady, status.components and, once both
+// addresses exist, status.endpoint whole; a nil endpoint or components drops
+// a published one.
+func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, components *lodiav1alpha1.ComponentsStatus, condition metav1.Condition) error {
 	condition.ObservedGeneration = cp.Generation
 	previous := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady)
 	unchanged := previous != nil && previous.Status == condition.Status && previous.Reason == condition.Reason &&
 		previous.Message == condition.Message && previous.ObservedGeneration == condition.ObservedGeneration
-	if unchanged && sameEndpoint(cp.Status.Endpoint, endpoint) {
+	if unchanged && sameEndpoint(cp.Status.Endpoint, endpoint) && equality.Semantic.DeepEqual(cp.Status.Components, components) {
 		return nil
 	}
 	conditions := slices.Clone(cp.Status.Conditions)
@@ -518,6 +610,13 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlP
 			return err
 		}
 		status["endpoint"] = e
+	}
+	if components != nil {
+		c, err := runtime.DefaultUnstructuredConverter.ToUnstructured(components)
+		if err != nil {
+			return err
+		}
+		status["components"] = c
 	}
 	controlPlane := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": lodiav1alpha1.GroupVersion.String(),

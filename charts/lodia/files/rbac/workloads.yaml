@@ -67,3 +67,13 @@ rules:
   - list
   - patch
   - watch
+- apiGroups:
+  - policy
+  resources:
+  - poddisruptionbudgets
+  verbs:
+  - create
+  - delete
+  - list
+  - patch
+  - watch

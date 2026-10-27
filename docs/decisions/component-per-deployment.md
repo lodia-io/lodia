@@ -1,8 +1,7 @@
 # Each control plane component runs in its own Deployment; etcd in its own StatefulSet
 
-Decided 2026-10-25. The `Split` layout with one replica of each component is
-built; high availability, PodDisruptionBudgets and the `Compact` layout are
-not.
+Decided 2026-10-25.
+The `Split` layout is built, with high availability; the `Compact` layout is not.
 
 ## Decision
 
@@ -96,3 +95,5 @@ flowchart TB
   `workloads.go` applies them once the certificates and the datastore are
   ready and reports `APIServerReady`. `test/e2e/workloads_test.go` runs a
   tenant API server on kind.
+- With `highAvailability`, `render.go` sets the replicas, the topology spread and a PodDisruptionBudget per Deployment, and `workloads.go` deletes the budgets once `highAvailability` is gone.
+  `workloads_test.go` holds a single and a highly available `ControlPlane`.

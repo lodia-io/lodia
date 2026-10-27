@@ -210,11 +210,7 @@ is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the Workloads controller (2026-10-25)
 
-- `highAvailability` (replicas, spread, PodDisruptionBudgets), more than one
-  API server replica, JWT authentication, an audit policy, an admission and a
-  scheduler configuration, `serviceAccount.publicDiscovery` and
-  `apiServer.advertiseAddress` outside gateway mode are not rendered: they
-  turn `APIServerReady` False with `Unsupported` until phase 2 builds them.
+- JWT authentication, an audit policy, an admission and a scheduler configuration, `serviceAccount.publicDiscovery` and `apiServer.advertiseAddress` outside gateway mode are not rendered: they turn `APIServerReady` False with `Unsupported` until phase 2 builds them.
 - The NetworkPolicies isolate each component's ingress alone; the
   default-deny set and egress, the README's arrows, come in phase 2.
 - The control plane pods set no securityContext: give them one that passes

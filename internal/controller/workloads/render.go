@@ -15,6 +15,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -174,6 +175,7 @@ func (r rendering) deployments() []*appsv1.Deployment {
 func (r rendering) apiServer() *appsv1.Deployment {
 	cp := r.cp
 	settings := ptr.Deref(cp.Spec.APIServer, lodiav1alpha1.APIServer{})
+	replicas := ptr.Deref(settings.Replicas, defaultReplicas(cp))
 	etcd := make([]string, 0, len(r.etcd))
 	for _, e := range r.etcd {
 		etcd = append(etcd, "https://"+net.JoinHostPort(e.Host, strconv.Itoa(int(e.Port))))
@@ -213,6 +215,9 @@ func (r rendering) apiServer() *appsv1.Deployment {
 		"tls-cert-file":                               "/etc/lodia/serving/" + lodiav1alpha1.TLSCertKey,
 		"tls-private-key-file":                        "/etc/lodia/serving/" + lodiav1alpha1.TLSPrivateKeyKey,
 	}
+	if replicas > 1 {
+		flags["goaway-chance"] = "0.001"
+	}
 	container := corev1.Container{
 		Name:           apiServer,
 		Image:          r.images.APIServer,
@@ -226,6 +231,10 @@ func (r rendering) apiServer() *appsv1.Deployment {
 			"serving", "client-ca", "kubelet-client", "front-proxy-ca", "front-proxy-client",
 			"etcd-ca", "etcd-client", "encryption", "authentication", "egress",
 		),
+	}
+	if cp.Spec.HighAvailability != nil {
+		container.ReadinessProbe.PeriodSeconds, container.ReadinessProbe.FailureThreshold = 2, 5
+		container.LivenessProbe.HTTPGet.Path = "/livez?exclude=etcd"
 	}
 	container.VolumeMounts = append(container.VolumeMounts,
 		corev1.VolumeMount{Name: "konnectivity-socket", MountPath: "/run/konnectivity"},
@@ -306,7 +315,7 @@ func (r rendering) apiServer() *appsv1.Deployment {
 		corev1.Volume{Name: "konnectivity-socket", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		corev1.Volume{Name: "signer-socket", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 	)
-	d := r.deployment(apiServer, ptr.Deref(settings.Replicas, 1), corev1.PodSpec{
+	d := r.deployment(apiServer, replicas, corev1.PodSpec{
 		InitContainers:                []corev1.Container{signer, konnectivity},
 		Containers:                    []corev1.Container{container},
 		Volumes:                       volumes,
@@ -374,7 +383,7 @@ func (r rendering) controllerManager() *appsv1.Deployment {
 		Resources:     resources(settings.Resources, "50m", "64Mi"),
 		VolumeMounts:  mounts("kubeconfig", "client-ca", "front-proxy-ca", "kubelet-signer", "ca-bundle"),
 	}
-	return r.deployment(controllerManager, 1, corev1.PodSpec{
+	return r.deployment(controllerManager, defaultReplicas(cp), corev1.PodSpec{
 		Containers: []corev1.Container{container},
 		Volumes: secretVolumes(cp.Name, map[string]lodiav1alpha1.Secret{
 			"kubeconfig":     lodiav1alpha1.ControllerManagerKubeconfigSecret,
@@ -410,7 +419,7 @@ func (r rendering) scheduler() *appsv1.Deployment {
 		Resources:      resources(settings.Resources, "20m", "32Mi"),
 		VolumeMounts:   mounts("kubeconfig"),
 	}
-	return r.deployment(scheduler, 1, corev1.PodSpec{
+	return r.deployment(scheduler, defaultReplicas(cp), corev1.PodSpec{
 		Containers: []corev1.Container{container},
 		Volumes:    secretVolumes(cp.Name, map[string]lodiav1alpha1.Secret{"kubeconfig": lodiav1alpha1.SchedulerKubeconfigSecret}),
 	})
@@ -425,6 +434,9 @@ func (r rendering) deployment(component string, replicas int32, pod corev1.PodSp
 	pod.EnableServiceLinks = new(false)
 	if p := cp.Spec.Placement; p != nil {
 		pod.NodeSelector, pod.Tolerations, pod.PriorityClassName = p.NodeSelector, p.Tolerations, p.PriorityClassName
+	}
+	if ha := cp.Spec.HighAvailability; ha != nil {
+		pod.TopologySpreadConstraints = spread(ha.FailureTolerance, labels, replicas)
 	}
 	template := corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels}, Spec: pod}
 	if hash, ok := r.hashes[component]; ok {
@@ -445,6 +457,55 @@ func (r rendering) deployment(component string, replicas int32, pod corev1.PodSp
 	}
 	maps.Copy(d.Labels, map[string]string{lodiav1alpha1.ComponentLabel: component})
 	return d
+}
+
+func defaultReplicas(cp *lodiav1alpha1.ControlPlane) int32 {
+	if cp.Spec.HighAvailability != nil {
+		return 2
+	}
+	return 1
+}
+
+// spread requires as many nodes as a component has replicas, and as many
+// zones, at most three: minDomains keeps a replica Pending rather than beside
+// another while too few exist. A rollout's new pods spread among themselves.
+func spread(tolerance lodiav1alpha1.FailureTolerance, labels map[string]string, replicas int32) []corev1.TopologySpreadConstraint {
+	domains := map[string]int32{corev1.LabelHostname: replicas}
+	if tolerance == "Zone" {
+		domains[corev1.LabelTopologyZone] = min(replicas, 3)
+	}
+	var out []corev1.TopologySpreadConstraint
+	for _, key := range slices.Sorted(maps.Keys(domains)) {
+		out = append(out, corev1.TopologySpreadConstraint{
+			MaxSkew:           1,
+			TopologyKey:       key,
+			WhenUnsatisfiable: corev1.DoNotSchedule,
+			LabelSelector:     &metav1.LabelSelector{MatchLabels: labels},
+			MinDomains:        new(domains[key]),
+			NodeTaintsPolicy:  new(corev1.NodeInclusionPolicyHonor),
+			MatchLabelKeys:    []string{appsv1.DefaultDeploymentUniqueLabelKey},
+		})
+	}
+	return out
+}
+
+func podDisruptionBudgets(cp *lodiav1alpha1.ControlPlane) []*policyv1.PodDisruptionBudget {
+	if cp.Spec.HighAvailability == nil {
+		return nil
+	}
+	var out []*policyv1.PodDisruptionBudget
+	for _, component := range components {
+		out = append(out, &policyv1.PodDisruptionBudget{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "policy/v1", Kind: "PodDisruptionBudget"},
+			ObjectMeta: objectMeta(cp, deploymentName(cp.Name, component)),
+			Spec: policyv1.PodDisruptionBudgetSpec{
+				MaxUnavailable:             new(intstr.FromInt32(1)),
+				Selector:                   &metav1.LabelSelector{MatchLabels: podLabels(cp.Name, component)},
+				UnhealthyPodEvictionPolicy: new(policyv1.AlwaysAllow),
+			},
+		})
+	}
+	return out
 }
 
 // networkPolicies isolate the ingress of each component's pods: the API

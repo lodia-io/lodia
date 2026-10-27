@@ -1,10 +1,7 @@
 # Six controllers share one object and communicate only through status conditions
 
-Decided 2026-10-25. The manager, PKI, the Datastore controller, for a
-dedicated etcd of one member, Lifecycle, for the target within a minor and
-`Ready`, Tenant, without the apiserver-proxy, Health, for the probe through
-the public endpoint, and Workloads, for one replica behind a `loadBalancer`
-or `nodePort` endpoint, are built.
+Decided 2026-10-25.
+The manager, PKI, the Datastore controller, for a dedicated etcd of one member, Lifecycle, for the target within a minor and `Ready`, Tenant, without the apiserver-proxy, Health, for the probe through the public endpoint, and Workloads, behind a `loadBalancer` or `nodePort` endpoint, are built.
 
 ## Decision
 
@@ -70,29 +67,12 @@ Rules:
   priority queue that controller-runtime enables by default puts resyncs
   behind real changes
   ([priority queue design](https://github.com/kubernetes-sigs/controller-runtime/blob/main/designs/priorityqueue.md)).
-- **A readiness condition reports availability**, not how far a change has
-  rolled out: `APIServerReady` is True while each component has a ready
-  replica, `DatastoreReady` while etcd has quorum, `ControllersLeading`
-  while the controller manager and the scheduler each have a leader. A
-  replica that rolls or is lost shows in the counts of `status.components`
-  and `status.datastore.members` and in the condition's message, and
-  Lifecycle sums the rollout in `Progressing`, reason `RollingOut`. Cluster
-  API separates the two the same way, in `Available` and `RollingOut`
-  ([kubeadm_control_plane_types.go](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/api/controlplane/kubeadm/v1beta2/kubeadm_control_plane_types.go#L73-L88),
-  [#L239-L242](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/api/controlplane/kubeadm/v1beta2/kubeadm_control_plane_types.go#L239-L242)),
-  Gardener's checks tell a healthy Deployment from a fully rolled-out one
-  ([deployment.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/utils/kubernetes/health/deployment.go#L46-L109)),
-  and HyperShift calls etcd available at quorum
-  ([hostedcontrolplane_controller.go](https://github.com/openshift/hypershift/blob/v0.1.86/control-plane-operator/controllers/hostedcontrolplane/hostedcontrolplane_controller.go#L2648-L2654)).
-  A rollout that surges never stops serving, so `Ready` that dropped for it
-  would report an outage that is not there. A component Lodia runs at 0 on
-  purpose, the controller manager of a restored `ControlPlane` before its
-  release, counts as available, and the message says it is held: `AccessReady`
-  waits on `APIServerReady`, Tenant on `AccessReady`, and the release on
-  Tenant's `AddonsApplied`
-  ([restore-replaces-the-source](restore-replaces-the-source.md)). Built with
-  HA in phase 2's wave 1b; until then `APIServerReady` and `DatastoreReady`
-  want every replica updated and ready.
+- **A readiness condition reports availability**, not how far a change has rolled out: `APIServerReady` is True while each component has a ready replica, `DatastoreReady` while etcd has quorum, `ControllersLeading` while the controller manager and the scheduler each have a leader.
+  A replica that rolls or is lost shows in the counts of `status.components` and `status.datastore.members` and in the condition's message, and Lifecycle sums the rollout in `Progressing`, reason `RollingOut`.
+  Cluster API separates the two the same way, in `Available` and `RollingOut` ([kubeadm_control_plane_types.go](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/api/controlplane/kubeadm/v1beta2/kubeadm_control_plane_types.go#L73-L88), [#L239-L242](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/api/controlplane/kubeadm/v1beta2/kubeadm_control_plane_types.go#L239-L242)), Gardener's checks tell a healthy Deployment from a fully rolled-out one ([deployment.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/utils/kubernetes/health/deployment.go#L46-L109)), and HyperShift calls etcd available at quorum ([hostedcontrolplane_controller.go](https://github.com/openshift/hypershift/blob/v0.1.86/control-plane-operator/controllers/hostedcontrolplane/hostedcontrolplane_controller.go#L2648-L2654)).
+  A rollout that surges never stops serving, so `Ready` that dropped for it would report an outage that is not there.
+  A component Lodia runs at 0 on purpose, the controller manager of a restored `ControlPlane` before its release, counts as available, and the message says it is held: `AccessReady` waits on `APIServerReady`, Tenant on `AccessReady`, and the release on Tenant's `AddonsApplied` ([restore-replaces-the-source](restore-replaces-the-source.md)).
+  `APIServerReady` is built so; `DatastoreReady` wants every member updated and ready until HA builds it in phase 2's wave 1b.
 - `Ready` on the `ControlPlane` is computed by Lifecycle from the others:
   `CertificatesReady ∧ DatastoreReady ∧ APIServerReady ∧ AccessReady ∧ AddonsApplied ∧ Reachable ∧ ControllersLeading`,
   and `Hibernated` when asleep; `ControllersLeading` joins with wave 1b.
@@ -273,16 +253,8 @@ flowchart LR
   and a one-minute reconcile timeout. `health_test.go` runs it under the same
   cache with `ReaderFailOnMissingInformer`, as a user bound to exactly its
   rules.
-- `internal/controller/workloads` — reads `spec`, `status.target`,
-  `status.datastore.endpoints` and the conditions it waits on, the data hash
-  of each restart-only Secret from its metadata in the cache, and a
-  `nodePort` endpoint's nodes uncached; writes the Service, the ConfigMaps,
-  the NetworkPolicies and the Deployments with server-side apply as
-  `lodia/workloads`, none over an object another owner keeps, and applies
-  `APIServerReady` and `status.endpoint` through the status subresource
-  (`Unknown` at the start of its first visit, messages from the state alone,
-  an API error left to the log unless the server refuses an object it is
-  sent, which is `Refused`). Registered as `workloads` with ten workers
-  and a one-minute reconcile timeout. `workloads_test.go` runs it under the
-  same cache with `ReaderFailOnMissingInformer`, as a user bound to exactly
-  its rules.
+- `internal/controller/workloads` — reads `spec`, `status.target`, `status.datastore.endpoints` and the conditions it waits on, the data hash of each restart-only Secret from its metadata in the cache, and a `nodePort` endpoint's nodes uncached.
+  It writes the Service, the ConfigMaps, the NetworkPolicies, the Deployments and, with `highAvailability`, their PodDisruptionBudgets with server-side apply as `lodia/workloads`, none over an object another owner keeps.
+  It applies `APIServerReady`, `status.components` and `status.endpoint` through the status subresource (`Unknown` at the start of its first visit, messages from the state alone, an API error left to the log unless the server refuses an object it is sent, which is `Refused`).
+  Registered as `workloads` with ten workers and a one-minute reconcile timeout.
+  `workloads_test.go` runs it under the same cache with `ReaderFailOnMissingInformer`, as a user bound to exactly its rules.

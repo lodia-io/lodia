@@ -47,6 +47,7 @@ var conditionWriters = map[string]string{
 }
 
 var fieldWriters = map[string]string{
+	"components":            "lodia/workloads",
 	"credentials":           "lodia/pki",
 	"datastore":             "lodia/datastore",
 	"endpoint.apiServer":    "lodia/workloads",

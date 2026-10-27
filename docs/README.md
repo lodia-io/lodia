@@ -313,22 +313,21 @@ anywhere, since they are the public endpoint, and the controller manager and
 the scheduler take nothing; the kubelet's probes come from the node, which a
 NetworkPolicy does not block
 ([network policies](https://kubernetes.io/docs/concepts/services-networking/network-policies/)).
-With one replica there is no PodDisruptionBudget. A `ControlPlane` that asks
-for what Workloads does not render yet — `endpoint.gateway`, the Compact
-layout, `highAvailability`, more than one API server replica, JWT
-authentication, an audit policy, an admission or a scheduler configuration,
-`serviceAccount.publicDiscovery` — is `APIServerReady=False` (`Unsupported`)
-rather than run without it, and keeps its endpoint: only gateway mode, which
-has no Service yet, publishes none. An orphan under Workloads' names, an
-object without a controller, is adopted. An object under its names whose
-controller is not this `ControlPlane`, or that refers to another
-`ControlPlane`, is not written: while the Service is held Workloads writes
-nothing, and while a ConfigMap, NetworkPolicy or Deployment is, nothing but
-the Service (`APIServerReady=False`, `ObjectsControlledElsewhere`, naming each
-object and its owner); a predecessor's objects go with the garbage collector,
-any other owner's with a person. An object the API server refuses, for a
-quota on load balancers or an admission policy, makes `APIServerReady` False
-with `Refused`, the message naming it, and the pass is retried with backoff.
+
+With `highAvailability` each component runs two replicas, the API server `apiServer.replicas`.
+Each Deployment spreads its replicas over as many nodes as it has, and with `failureTolerance: Zone` over as many zones too, at most three.
+The constraints are `DoNotSchedule`, leave out nodes whose taints the pods do not tolerate, and spread a rollout's new pods among themselves ([topology spread](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/concepts/scheduling-eviction/topology-spread-constraints.md)).
+A PodDisruptionBudget per Deployment, named as it, lets a drain evict one replica at a time, and an unhealthy one always ([configure-pdb.md](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/tasks/run-application/configure-pdb.md#L266-L274)); without `highAvailability` there is none.
+More than one API server replica runs with `--goaway-chance=0.001`, upstream's suggested start, so that HTTP/2 clients move between replicas ([server_run_options.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/server/options/server_run_options.go#L367-L371)).
+With `highAvailability` the API server's readiness probe runs every 2 seconds and allows five failures, so that an etcd leader election leaves it in its Service.
+Its liveness probe is `/livez?exclude=etcd`, so that an etcd outage restarts no replica, as HyperShift runs it ([deployment.yaml](https://github.com/openshift/hypershift/blob/v0.1.86/control-plane-operator/controllers/hostedcontrolplane/v2/assets/kube-apiserver/deployment.yaml#L36-L49)).
+`APIServerReady` is True while each component has a ready replica, and `status.components` counts each Deployment's replicas ([independent-controllers](decisions/independent-controllers.md)).
+A `ControlPlane` that asks for what Workloads does not render yet is `APIServerReady=False` (`Unsupported`) rather than run without it: `endpoint.gateway`, the Compact layout, JWT authentication, an audit policy, an admission or a scheduler configuration, `serviceAccount.publicDiscovery`.
+It keeps its endpoint: only gateway mode, which has no Service yet, publishes none.
+An orphan under Workloads' names, an object without a controller, is adopted.
+An object under its names whose controller is not this `ControlPlane`, or that refers to another `ControlPlane`, is not written: while the Service is held Workloads writes nothing, and while a ConfigMap, NetworkPolicy, Deployment or PodDisruptionBudget is, nothing but the Service (`APIServerReady=False`, `ObjectsControlledElsewhere`, naming each object and its owner).
+A predecessor's objects go with the garbage collector, any other owner's with a person.
+An object the API server refuses, for a quota on load balancers or an admission policy, makes `APIServerReady` False with `Refused`, the message naming it, and the pass is retried with backoff.
 
 The dedicated etcd is etcd-druid's `Etcd` `<cp>-etcd`, which the Datastore
 controller renders from the `DatastoreClass` and the newest complete
