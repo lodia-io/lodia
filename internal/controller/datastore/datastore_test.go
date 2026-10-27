@@ -1395,6 +1395,16 @@ func TestDatastoreReadyIsQuorum(t *testing.T) {
 	if err := k8s.Patch(t.Context(), etcd, released); err != nil {
 		t.Fatal(err)
 	}
+	recreated := waitEtcd(t, ns, cp, func(e *druidv1alpha1.Etcd) error {
+		if e.UID == etcd.UID {
+			return errors.New("the deleted Etcd is still there")
+		}
+		return nil
+	})
+	if metav1.HasAnnotation(recreated.ObjectMeta, lodiav1alpha1.EtcdFormedAnnotation) {
+		t.Errorf("the recreated Etcd starts annotated %v", recreated.Annotations)
+	}
+	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd reported-etcd")
 }
 
 func TestThreeMembersWithHighAvailability(t *testing.T) {
