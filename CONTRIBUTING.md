@@ -23,6 +23,13 @@ You need Go (the version in `go.mod`), Docker for the end-to-end suite,
 CI runs `make verify` and `make e2e` on every pull request, and
 `make conformance` every night.
 
+## Docs
+
+- Each fact once, in its home, and a link to it elsewhere: the API contract
+  in [`docs/api/controlplane.md`](docs/api/controlplane.md), runbooks in
+  [`docs/operations.md`](docs/operations.md). No history, and no prose that
+  restates the code.
+
 ## Commits
 
 - [Conventional commits](https://www.conventionalcommits.org/): `feat:`,
