@@ -12,14 +12,7 @@ Decided 2026-10-25. Built for phase 1, without the apiserver-proxy.
 - Lodia leaves another owner's objects as they are: the rule of
   [independent-controllers](independent-controllers.md) carried into the
   tenant, where no object has a `ControlPlane` for controller, with
-  `managedFields` as the signal. Before its first apply of an object no
-  inventory names, the controller reads it; one that exists without
-  `lodia/tenant` among its managers is another owner's, stays as it is, and
-  `AddonsApplied` names it: delete it, or disable the addon. The prune reads
-  an entry that left the render by group and kind, at the version the tenant
-  serves, and deletes it under the UID and resourceVersion it read only when
-  `lodia/tenant` applied it; any other entry, and one already gone or of a
-  kind no longer served, only leaves the inventory. The label
+  `managedFields` as the signal ([how](../README.md#inside-the-tenant)). The label
   `app.kubernetes.io/managed-by` is no signal: PKI's bindings carry it too.
 - It applies on every change of the `ControlPlane` or of `status.target`, and
   again on a timer (every 10 minutes by default), so a deleted or hand-edited
@@ -79,13 +72,9 @@ Decided 2026-10-25. Built for phase 1, without the apiserver-proxy.
 
 ## Code
 
-- `internal/controller/tenant` — `inventory.go` holds the inventory: an
-  object is named in it before its first write and the entries that left
-  the render are pruned before it is rewritten, so a pass that stops
-  anywhere leaks nothing; an object at another API version is the same
-  entry; `foreign` finds another owner's objects before the first apply and
-  `prune` deletes only what `lodia/tenant` applied; an inventory it cannot
-  read stops the pass with `AddonsApplied` False until someone deletes it.
+- `internal/controller/tenant` — `inventory.go` holds the inventory,
+  `foreign`, which finds another owner's objects before the first apply,
+  and `prune`, which deletes only what `lodia/tenant` applied ([how](../README.md#inside-the-tenant)).
   `tenant.go` holds the pass and the conditions, `render.go` and
   `manifests/` the objects.
 - `internal/controller/tenant/tenant_test.go` — the objects on a tenant
