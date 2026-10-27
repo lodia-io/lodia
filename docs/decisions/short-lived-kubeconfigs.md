@@ -1,4 +1,4 @@
-# People get short-lived kubeconfigs through KubeconfigRequest; the standing admin credential belongs to a revocable group, not to system:masters
+# People get short-lived kubeconfigs through KubeconfigRequest; the standing admin credential belongs to a group RBAC governs, not to system:masters
 
 Decided 2026-10-25.
 The admin kubeconfig in `lodia:cluster-admins`, Lodia's own credential and the three bindings made with a ten-minute `system:masters` certificate are built in the PKI controller; `KubeconfigRequest` is not.
@@ -26,7 +26,7 @@ The admin kubeconfig in `lodia:cluster-admins`, Lodia's own credential and the t
 
 ## Rejected
 
-- Only short-lived access, no standing admin credential — automation on top needs a credential it can store; a revocable group is the compromise.
+- Only short-lived access, no standing admin credential — automation on top needs a credential it can store; a group RBAC governs is the compromise.
 - OIDC as the only way in — Lodia supports structured authentication configuration for it, but a cluster must be reachable before an identity provider is wired.
 
 ## Consequences
