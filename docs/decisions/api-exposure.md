@@ -14,47 +14,29 @@ Decided 2026-10-25. The `loadBalancer` and `nodePort` modes are built;
 | `nodePort` | one Service of type NodePort with the same ports | `https://<a management node>:<port>` | endpoints `<node>:<port>`; development only |
 
 **The `kubernetes` Service's endpoints.** In every mode the API server runs
-with `--endpoint-reconciler-type=none` and writes neither the `kubernetes`
-Endpoints nor its EndpointSlice
-([none.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controlplane/reconcilers/none.go#L26-L53)).
+with `--endpoint-reconciler-type=none` and writes no `kubernetes` endpoints.
 Workloads publishes the endpoint of the table's last column as
-`status.endpoint.inCluster`, and the Tenant controller writes both objects
-from it with the port name `https`: the Endpoints labelled
-`endpointslice.kubernetes.io/skip-mirror: "true"`, the EndpointSlice
-`kubernetes` labelled `kubernetes.io/service-name: kubernetes` and
-`endpointslice.kubernetes.io/managed-by: lodia.io`. HyperShift runs `none`
-too and writes the two objects from outside, the Endpoints labelled
-`skip-mirror` and the slice labelled with the service's name, both with the
-port name `https`
+`status.endpoint.inCluster`, and Tenant writes the Endpoints and the
+EndpointSlice from it, as HyperShift does
 ([config.go](https://github.com/openshift/hypershift/blob/v0.1.86/control-plane-operator/controllers/hostedcontrolplane/v2/kas/config.go#L211),
 [reconcile.go](https://github.com/openshift/hypershift/blob/v0.1.86/control-plane-operator/hostedclusterconfigoperator/controllers/resources/kas/reconcile.go#L11-L52)).
-Every API server replica serves that address, so no rollout and no stopping
-replica changes them. Nothing else rewrites them: the EndpointSlice mirroring
-controller leaves Endpoints labelled `skip-mirror` alone and deletes only the
-slices it manages
+Every API server replica serves that address, so no rollout changes them,
+and no controller rewrites them: the mirroring controller leaves Endpoints
+labelled `skip-mirror` alone, and the EndpointSlice controller skips a
+Service without a selector
 ([endpointslicemirroring_controller.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/endpointslicemirroring/endpointslicemirroring_controller.go#L314-L318),
-[L545-L551](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/endpointslicemirroring/endpointslicemirroring_controller.go#L545-L551)),
-and the EndpointSlice and Endpoints controllers skip a Service without a
-selector
-([endpointslice_controller.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/endpointslice/endpointslice_controller.go#L398-L402),
-[endpoints_controller.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/endpoint/endpoints_controller.go#L385-L389)).
+[endpointslice_controller.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/endpointslice/endpointslice_controller.go#L398-L402)).
 
 **Rollouts.** Every endpoint above reaches the API server through something
 that follows its pods' readiness, so a stopping replica keeps serving while
 it leaves them: it fails `/readyz` at once and serves for 15 more seconds
-(`--shutdown-delay-duration=15s`), then shuts its HTTP server down and drains
-its watches for up to 10 seconds
+(`--shutdown-delay-duration=15s`), then shuts down, which sends each HTTP/2
+client a GOAWAY that moves its next requests to a new connection, and
+drains its watches for up to 10 seconds
 (`--shutdown-watch-termination-grace-period=10s`), as Gardener runs it
 ([deployment.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/component/apiserver/deployment.go#L51-L52)).
-Shutting down sends each HTTP/2 client a GOAWAY, and Go's client moves the
-requests the server has not taken to a new connection
-([h2_bundle.go](https://github.com/golang/go/blob/go1.26.8/src/net/http/h2_bundle.go#L4245),
-[L5448-L5478](https://github.com/golang/go/blob/go1.26.8/src/net/http/h2_bundle.go#L5448-L5478),
-[L8198-L8231](https://github.com/golang/go/blob/go1.26.8/src/net/http/h2_bundle.go#L8198-L8231);
-Go 1.26.8 builds kube-apiserver v1.37.1). `--shutdown-send-retry-after` stays
-off, and `apiServer.extraArgs` refuses it: it keeps the server listening
-after the delay and answers every request on an open connection with `429`
-and `Retry-After`
+`--shutdown-send-retry-after` stays off, and `apiServer.extraArgs` refuses
+it: it answers the requests on open connections with `429` and `Retry-After`
 ([with_retry_after.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/server/filters/with_retry_after.go#L55-L105)),
 which only a client that retries gets through.
 
@@ -111,16 +93,11 @@ which the server checks with TokenReviews as `system:konnectivity-server`
 bound to `system:auth-delegator` and to lease verbs in `kube-system`; the
 server's lease controller is on and agents count servers from leases
 (`--count-server-leases`), so agents hold a tunnel to every replica without a
-static count, and dial only while they hold fewer tunnels than there are
-leases
-([clientset.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/pkg/agent/clientset.go#L268-L271)).
-Both ends send a keepalive after 30 seconds without traffic
-(`--keepalive-time=30s`) instead of their default hour
-([agent](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/cmd/agent/app/options/options.go#L285),
-[server](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/cmd/server/app/options/options.go#L409)),
-so that no idle timeout on the way cuts an idle tunnel; 30 seconds is as
-often as the server lets an agent ping
-([server.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/cmd/server/app/server.go#L511-L515)).
+static count and dial only for a server they lack. Both ends ping after 30
+seconds without traffic (`--keepalive-time=30s`), as often as the server
+allows
+([server.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/cmd/server/app/server.go#L511-L515)),
+so no idle timeout on the way cuts a tunnel.
 Agents run as a DaemonSet on the pod network
 with `--agent-identifiers=ipv4=$(HOST_IP)` and the server tries `destHost`
 before `default`, so traffic for a kubelet goes through the agent on its own
@@ -156,23 +133,16 @@ a node flag (`--address`, `--node-ip`), which the node's owner passes through
   ([HyperShift haproxy](https://github.com/openshift/hypershift/blob/main/hypershift-operator/controllers/nodepool/apiserver-haproxy/haproxy.go),
   [Gardener apiserver-proxy](https://github.com/gardener/gardener/blob/master/pkg/component/networking/apiserverproxy/apiserver_proxy.go)).
 - **Endpoints a rollout cannot empty.** The default `lease` reconciler keeps
-  one record per advertise address
-  ([lease.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controlplane/reconcilers/lease.go#L96-L128)),
-  and every replica of a Lodia control plane advertises the same one, in
-  every mode. A stopping replica deletes that record at the very start of
-  its shutdown and rewrites the endpoints from the records left, which are
-  none
-  ([instance.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controlplane/instance.go#L373-L376),
-  [genericapiserver.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/server/genericapiserver.go#L719-L727),
-  [lease.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controlplane/reconcilers/lease.go#L227-L234),
-  [L334-L344](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controlplane/reconcilers/lease.go#L334-L344));
-  a survivor writes them again at its next pass, up to 10 seconds later
-  ([instance.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controlplane/instance.go#L115-L117)).
-  Every rollout stops a replica, a single one included: rolled on kind with
-  the lease reconciler and no shutdown delay, a tenant's `kubernetes`
-  EndpointSlice was empty for 3 seconds and pods inside it were refused,
-  while with `none` and the endpoints Tenant writes it never was
-  (the rollout check of `TestPhase1Gate`, [test/e2e](../../test/e2e/README.md)).
+  one record per advertise address, and every replica of a Lodia control
+  plane advertises the same one. A stopping replica deletes that record as
+  soon as it gets SIGTERM and, finding no record left, empties the
+  endpoints, until a survivor's next pass up to 10 seconds later
+  ([lease.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controlplane/reconcilers/lease.go#L227-L234),
+  [instance.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controlplane/instance.go#L373-L376)).
+  Every rollout stops a replica, a single one included: on kind with the
+  lease reconciler, a tenant's `kubernetes` EndpointSlice was empty for 3
+  seconds and pods inside it were refused; with `none` it never was
+  (`TestPhase1Gate`, [test/e2e](../../test/e2e/README.md)).
 - **A rollout loses no request.** Rolled on kind under 20 requests a second
   from outside the tenant and 20 from inside it, half on new connections,
   half on reused ones, with clients that retry nothing, the API server lost
@@ -197,12 +167,9 @@ a node flag (`--address`, `--node-ip`), which the node's owner passes through
 - The default `lease` endpoint reconciler — every replica advertises the
   same address, so a stopping replica empties the `kubernetes` endpoints
   until a survivor's next pass (Why).
-- Agents with `--sync-forever` — a dial that reaches a server an agent
-  already holds resets its backoff, so every agent dials, and is
-  authenticated with a TokenReview, every second for as long as it runs
-  ([clientset.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/pkg/agent/clientset.go#L227-L236),
-  [server.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/pkg/server/server.go#L887-L892));
-  counting leases dials only for a server it lacks.
+- Agents with `--sync-forever` — every agent dials, at a TokenReview each,
+  every second for as long as it runs
+  ([clientset.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/pkg/agent/clientset.go#L227-L236)).
 - Injecting `KUBERNETES_SERVICE_HOST` into pods with a mutating webhook — a
   webhook in every tenant, and clients that dial the ClusterIP still need the
   proxy.

@@ -291,30 +291,14 @@ startup probes included
 ([utils.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kubeadm/app/util/staticpod/utils.go#L255-L296),
 [manifests.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kubeadm/app/phases/controlplane/manifests.go#L67-L107));
 konnectivity-server's startup probe is its health port, so the API server
-starts once its tunnels can. A rollout loses no request. Each Deployment
-starts a full set of new pods before it stops an old one (`maxSurge: 100%`,
+starts once its tunnels can. A rollout loses no API request; one through
+the tunnel can fail for a moment (`todo.md`). Each Deployment starts a full
+set of new pods before it stops an old one (`maxSurge: 100%`,
 `maxUnavailable: 0`), the API server's once they have been ready for 10
 seconds (`minReadySeconds`), time for the konnectivity agents to reach the
-new servers. A stopping pod's endpoint is not ready at once, and kube-proxy
-sends new connections to it only while no other is ready
-([utils.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/endpointslice/utils.go#L38-L44),
-[topology.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/proxy/topology.go#L57-L81));
-the API server serves on for 15 seconds while that spreads, then shuts its
-HTTP server down, which sends each HTTP/2 client a GOAWAY that moves the
-requests the server has not taken to a new connection, and drains its
-requests and, at the same time, for up to 10 seconds, its watches
-(`--shutdown-delay-duration=15s`,
-`--shutdown-watch-termination-grace-period=10s`,
-[server_run_options.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/server/options/server_run_options.go#L387-L399),
-[genericapiserver.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/server/genericapiserver.go#L650-L714)).
-Then konnectivity-server stops, gracefully within 10 seconds
-(`--graceful-shutdown-timeout`). The grace period of 90 seconds holds it
-all: the delay, a minute for a request under the default
-`--request-timeout`, konnectivity-server's 10 seconds, and 5 seconds.
-`--shutdown-send-retry-after` stays off,
-and `apiServer.extraArgs` refuses it with the other shutdown flags: it would
-answer the requests that still arrive on open connections with `429` and
-`Retry-After`, which only a client that retries gets through
+new servers. A stopping API server serves for 15 more seconds and drains
+its watches for up to 10, and konnectivity-server stops after it, all
+within a grace period of 90 seconds
 ([api-exposure](decisions/api-exposure.md)).
 A NetworkPolicy per component, named as its Deployment,
 isolates the ingress of its pods: the API server takes its two ports from
