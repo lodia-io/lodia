@@ -14,14 +14,10 @@ A tenant namespace holds:
 | Deployment `<name>-kube-scheduler` | `kube-scheduler` | 1 | 2 | leader election; same path to the API |
 | etcd (a `StatefulSet` managed by etcd-druid) | `etcd`, `backup-restore` | 1 | 3 | own CA, quota, continuous snapshots to object storage |
 
-This is the `Split` layout, the default; `Compact` puts every component in
-one pod for development clusters and free tiers
-([compact-layout](compact-layout.md)).
+This is the `Split` layout, the default; `Compact` puts every component in one pod for development clusters and free tiers ([compact-layout](compact-layout.md)).
 
-Four pods for a single control plane, nine for a highly available one. Each
-Deployment has its own readiness: the API server on `/readyz`, the two
-controllers on their secure health endpoints; none waits on another through
-init containers.
+Four pods for a single control plane, nine for a highly available one.
+Each Deployment has its own readiness: the API server on `/readyz`, the two controllers on their secure health endpoints; none waits on another through init containers.
 
 ```mermaid
 flowchart TB
@@ -43,57 +39,27 @@ flowchart TB
 
 ## Why
 
-- A change to one component should roll only that component. With separate
-  Deployments, a controller-manager flag, a scheduler profile or a renewed
-  controller certificate restarts one pod with a leader election failover and
-  leaves the API server alone; the API server rolls only for its own changes.
-- A rolling update of the API server with two replicas and a PDB keeps the API
-  up during upgrades; with every component in one pod, the smallest change
-  restarts the API server too.
-- The API server reloads its serving certificate and client CA from disk, so a
-  routine certificate renewal is no rollout at all once nothing else lives in
-  its pod.
-- This is the shape Gardener and HyperShift use for their hosted control
-  planes
-  ([Gardener](https://github.com/gardener/gardener/blob/master/docs/development/high-availability-of-components.md),
-  [HyperShift](https://github.com/openshift/hypershift/blob/main/ARCHITECTURE.md)).
+- A change to one component should roll only that component.
+  With separate Deployments, a controller-manager flag, a scheduler profile or a renewed controller certificate restarts one pod with a leader election failover and leaves the API server alone; the API server rolls only for its own changes.
+- A rolling update of the API server with two replicas and a PDB keeps the API up during upgrades; with every component in one pod, the smallest change restarts the API server too.
+- The API server reloads its serving certificate and client CA from disk, so a routine certificate renewal is no rollout at all once nothing else lives in its pod.
+- This is the shape Gardener and HyperShift use for their hosted control planes ([Gardener](https://github.com/gardener/gardener/blob/master/docs/development/high-availability-of-components.md), [HyperShift](https://github.com/openshift/hypershift/blob/main/ARCHITECTURE.md)).
 
 ## Rejected
 
-- One pod with every component — fewest pods, simplest wiring, but one
-  rollout for any change and no independent scaling.
-- konnectivity-server as its own Deployment — the API server reaches it over
-  a Unix socket (the egress selector's `UDS` transport); a separate pod would
-  need TCP with its own TLS and one more hop.
-- Three API server replicas in HA by default — two already give zero-downtime
-  rollouts and node-failure tolerance; the third is memory for nothing
-  unless load asks for it (`spec.apiServer.replicas` can raise it).
+- One pod with every component — fewest pods, simplest wiring, but one rollout for any change and no independent scaling.
+- konnectivity-server as its own Deployment — the API server reaches it over a Unix socket (the egress selector's `UDS` transport); a separate pod would need TCP with its own TLS and one more hop.
+- Three API server replicas in HA by default — two already give zero-downtime rollouts and node-failure tolerance; the third is memory for nothing unless load asks for it (`spec.apiServer.replicas` can raise it).
 
 ## Consequences
 
-- Secrets and ConfigMaps whose change requires a restart (audit policy,
-  egress selector and admission configuration, the etcd CA, the konnectivity
-  server certificate, the scheduler configuration) are hashed into the pod
-  template of the component that mounts them, and only that component rolls.
-  Files that are reloaded are not hashed: serving certificates, client CA
-  bundles, the kubelet client certificate, the encryption and authentication
-  configuration, certificates referenced from kubeconfigs, and the
-  ServiceAccount keys behind the signer sidecar. A Secret's hash is PKI's
-  annotation `lodia.io/data-hash` on it, so Workloads reads the
-  metadata of the Secrets it mounts and never their keys.
-- Holding the controller manager while nodes cannot reach the API does not
-  touch its replicas: Health takes its leader lease
-  ([controller-manager-hold](controller-manager-hold.md)), which works the
-  same when every component shares one pod.
-- Resource requests are per component and per tenant; the defaults are in the
-  operator configuration and overridable per `ControlPlane`.
+- Secrets and ConfigMaps whose change requires a restart are hashed into the pod template of the component that mounts them, and only that component rolls: for the API server the etcd CA, the front-proxy client certificate, the konnectivity server's certificate and kubeconfig, the egress selector and the authentication configuration, and from phase 2 the audit policy and the admission configuration; for the controller manager the cluster CA bundle; for the scheduler, from phase 2, its configuration.
+  Files that are reloaded are not hashed: serving certificates, client CA bundles, the kubelet client certificate, the encryption configuration, the certificates the controller manager's and the scheduler's kubeconfigs reference, and the ServiceAccount keys behind the signer sidecar.
+  A Secret's hash is PKI's annotation `lodia.io/data-hash` on it, so Workloads reads the metadata of the Secrets it mounts and never their keys.
 
 ## Code
 
-- `internal/controller/workloads` — `render.go` renders the three
-  Deployments, their restart hashes and a NetworkPolicy for each;
-  `workloads.go` applies them once the certificates and the datastore are
-  ready and reports `APIServerReady`. `test/e2e/workloads_test.go` runs a
-  tenant API server on kind.
+- `internal/controller/workloads` — `render.go` renders the three Deployments, their restart hashes and a NetworkPolicy for each; `workloads.go` applies them once the certificates and the datastore are ready and reports `APIServerReady`.
+  `test/e2e/workloads_test.go` runs a tenant API server on kind.
 - With `highAvailability`, `render.go` sets the replicas, the topology spread and a PodDisruptionBudget per Deployment, and `workloads.go` deletes the budgets once `highAvailability` is gone.
   `workloads_test.go` holds a single and a highly available `ControlPlane`.

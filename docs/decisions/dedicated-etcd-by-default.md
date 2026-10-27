@@ -1,103 +1,46 @@
 # Every tenant gets its own etcd, run by etcd-druid; a shared etcd is an opt-in for density
 
 Decided 2026-10-24.
-The phase 0 spike found etcd-druid fit ([etcd spike](../etcd-spike-2026-10.md)).
-The Datastore controller is built for the dedicated case, of one member or three: the `Etcd` from the class recorded at creation and the newest certificate generation, the finalizer with the reclaim policy, the NetworkPolicy, `VolumesExist` and `DatastoreReady`.
-Hibernation, class edits held for the maintenance window, the final snapshot and the backups' retention after deletion, restore and the shared store are not.
-`Backup`s, sealed copies, and the restore that replaces their source were decided on 2026-10-27 and come with phase 2's wave 1b, backups ([restore-replaces-the-source](restore-replaces-the-source.md)).
+The Datastore controller is built for the dedicated case, of one member or three: the `Etcd` from the class recorded at creation and the newest certificate generation, the finalizer with the reclaim policy, the NetworkPolicy, `VolumesExist` and `DatastoreReady`; hibernation, class edits held for the maintenance window, the final snapshot and the backups' retention after deletion, restore and the shared store are not.
+`Backup`s and the restore come with phase 2's wave 1b, backups ([restore-replaces-the-source](restore-replaces-the-source.md)).
 
 ## Decision
 
-- **Dedicated by default.** `spec.datastore.dedicated` makes the Datastore
-  controller create one `Etcd` resource (`druid.gardener.cloud/v1alpha1`) in
-  the tenant's namespace: 1 member, or 3 with `highAvailability`, built from
-  the `DatastoreClass` (quota, compaction, storage, backup store and
-  schedules, defragmentation, placement). Lodia's PKI controller issues the
-  etcd CA and the server, peer and client certificates and the backup-restore
-  sidecar's serving certificate; etcd-druid takes them as Secrets, because it
-  does not generate TLS itself
-  ([securing etcd clusters](https://gardener.github.io/etcd-druid/usage/securing-etcd-clusters.html)),
-  and the `Etcd` names the newest complete generation of them that the
-  `ControlPlane` controls, never one below the generation it already names,
-  so a rotation is one roll of the members
-  ([staged-credential-rotation](staged-credential-rotation.md)): a
-  predecessor's or an orphaned generation trusts another etcd CA, and the
-  older generation PKI keeps can have expired.
-  Client, peer and backup-restore TLS are set together, and the sidecar's
-  certificate also names the client Service, through which etcd-druid calls
-  it ([etcd spike](../etcd-spike-2026-10.md), findings 1 and 2).
-- **The engine is etcd-druid**, installed beside Lodia (Lodia's chart
-  depends on etcd-druid's, which etcd-druid's release workflow publishes as
-  a versioned OCI chart,
-  [base.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/.github/workflows/base.yaml#L60-L84)),
-  run with its optional components webhook off
-  ([configuration](https://gardener.github.io/etcd-druid/deployment/configure-etcd-druid.html))
-  and, from phase 2's wave 2, without the automatic reconcile of a changed
-  spec, `enableEtcdSpecAutoReconcile: false`, its chart's default: with it,
-  etcd-druid reconciles the spec of every `Etcd` on every pass, so a new
-  etcd-druid release re-renders every etcd as soon as it starts, and it
-  warns that this can roll a single member with an outage
-  ([reconcile_spec.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcd/reconcile_spec.go#L193-L223),
-  [types.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/config/v1alpha1/types.go#L131-L138),
-  [values.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/charts/values.yaml#L61)).
-  The Datastore controller asks for each reconcile with the annotation
-  `druid.gardener.cloud/operation: reconcile`
-  ([helper.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/helper.go#L321-L324)),
-  as Gardener does, whenever it changes the `Etcd`'s spec and once for each
-  operator revision Lifecycle grants
-  ([upgrades-and-maintenance-windows](upgrades-and-maintenance-windows.md));
-  until wave 2 the chart turns the automatic reconcile on.
+- **Dedicated by default.**
+  `spec.datastore.dedicated` makes the Datastore controller create one `Etcd` resource (`druid.gardener.cloud/v1alpha1`) in the tenant's namespace: 1 member, or 3 with `highAvailability`, built from the `DatastoreClass` ([field by field](../README.md#a-tenant-namespace)).
+  Lodia's PKI controller issues the etcd CA and the server, peer and client certificates and the backup-restore sidecar's serving certificate; etcd-druid takes them as Secrets, because it does not generate TLS itself ([securing etcd clusters](https://gardener.github.io/etcd-druid/usage/securing-etcd-clusters.html)), and the `Etcd` names the newest complete generation of them that the `ControlPlane` controls, never one below the generation it already names, so a rotation is one roll of the members ([staged-credential-rotation](staged-credential-rotation.md)): a predecessor's or an orphaned generation trusts another etcd CA, and the older generation PKI keeps can have expired.
+  Client, peer and backup-restore TLS are set together, and the sidecar's certificate also names the client Service, through which etcd-druid calls it ([etcd spike](../etcd-spike-2026-10.md), findings 1 and 2).
+- **The engine is etcd-druid**, installed beside Lodia ([Installation](../README.md#installation)), run with its optional components webhook off, its default ([configuration](https://gardener.github.io/etcd-druid/deployment/configure-etcd-druid.html)) and, from phase 2's wave 2, without the automatic reconcile of a changed spec, `enableEtcdSpecAutoReconcile: false`, its chart's default: with it, etcd-druid reconciles the spec of every `Etcd` on every pass, so a new etcd-druid release re-renders every etcd as soon as it starts, and it warns that this can roll a single member with an outage ([reconcile_spec.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcd/reconcile_spec.go#L193-L223), [types.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/config/v1alpha1/types.go#L131-L138), [values.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/charts/values.yaml#L61)).
+  The Datastore controller asks for each reconcile with the annotation `druid.gardener.cloud/operation: reconcile` ([helper.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/helper.go#L321-L324)), as Gardener does, whenever it changes the `Etcd`'s spec and once for each operator revision Lifecycle grants ([upgrades-and-maintenance-windows](upgrades-and-maintenance-windows.md)).
   What Lodia gets from it, per tenant:
-  - full and delta snapshots to S3, GCS, Azure Blob, Swift and other stores,
-    with garbage collection;
-  - automatic restore of a single member that lost its data, and re-adding a
-    lost member of three as a learner;
+  - full and delta snapshots to S3, GCS, Azure Blob, Swift and other stores, with garbage collection;
+  - automatic restore of a single member that lost its data, and re-adding a lost member of three as a learner;
   - scaling 1 → 3 learner-first and back;
-  - `replicas: 0` that keeps the volumes and takes a full snapshot first,
-    which is hibernation;
-  - defragmentation on a schedule, which the sidecar skips below 3 GiB
-    unless more than 1 GiB is free
-  ([managing](https://gardener.github.io/etcd-druid/usage/managing-etcd-clusters.html),
-  [recovering](https://gardener.github.io/etcd-druid/usage/recovering-etcd-clusters.html)).
-- **Lodia adds what etcd-druid leaves to its consumer:** the NetworkPolicy that admits only the tenant's API server, the members themselves and etcd-druid, which calls their sidecars on 8080 for the snapshots it takes and the members on 2379 to remove and list members when it scales in, at any member count ([etcd-druid#505](https://github.com/gardener/etcd-druid/issues/505), [ondemandsnapshot.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcdopstask/handler/ondemandsnapshot/ondemandsnapshot.go#L103), [the table](../README.md#a-tenant-namespace)); from phase 2's wave 2, metrics of each etcd from a sample of its `Status` once a minute, while scraping the etcd and its sidecar stays the platform's choice ([metrics-are-part-of-the-api](metrics-are-part-of-the-api.md)); the `Backup` object, a sealed copy of the snapshots under a prefix of its own that nothing writes again, made with etcd-druid's `EtcdOpsTask` and `EtcdCopyBackupsTask` ([restore-replaces-the-source](restore-replaces-the-source.md)); the failures of etcd-druid's `EtcdOpsTask`s in its own condition; and deleting the volumes and snapshots of a deleted `ControlPlane`, which etcd-druid keeps ([etcd spike](../etcd-spike-2026-10.md), findings 2, 4 and 6).
-- **Shared, opt-in.** `spec.datastore.shared` names a `Datastore`: an etcd
-  several tenants use. Lodia creates per tenant an etcd user named after the
-  `ControlPlane`'s UID, authenticated by the CN of a client certificate (the
-  API server has no other way to log in to etcd), and a role granting
-  read-write on the prefix `/<prefix>/<uid>/`, whose range end is computed by
-  the etcd client library, never by hand. The shared etcd must run with
-  `--auth-token jwt`; the simple token is not meant for production
-  ([RBAC](https://etcd.io/docs/v3.6/op-guide/authentication/rbac/),
-  [auth design](https://etcd.io/docs/v3.6/learning/design-auth-v3/)).
-- **The defaults** of the `DatastoreClass` Lodia ships: quota 4 GiB,
-  periodic compaction every 15 minutes (the API server also compacts every 5),
-  delta snapshots every 5 minutes, a full snapshot daily inside the tenant's
-  window, exponential garbage collection, defragmentation followers first and
-  leader last, requests that start from Gardener's for its shoots (etcd 30m /
-  150M, sidecar 10m / 40Mi) until phase 1 measures our own
-  ([Gardener's etcd component](https://raw.githubusercontent.com/gardener/gardener/master/pkg/component/etcd/etcd/etcd.go),
-  [maintenance](https://etcd.io/docs/v3.6/op-guide/maintenance/)).
+  - `replicas: 0` that keeps the volumes and takes a full snapshot first, which is hibernation;
+  - defragmentation on a schedule ([managing](https://gardener.github.io/etcd-druid/usage/managing-etcd-clusters.html), [recovering](https://gardener.github.io/etcd-druid/usage/recovering-etcd-clusters.html)).
+- **Lodia adds what etcd-druid leaves to its consumer:** the NetworkPolicy ([etcd-druid#505](https://github.com/gardener/etcd-druid/issues/505)), which admits only what dials the members ([A tenant namespace](../README.md#a-tenant-namespace)); from phase 2's wave 2, metrics of each etcd ([metrics-are-part-of-the-api](metrics-are-part-of-the-api.md)); the `Backup` object, made with etcd-druid's `EtcdOpsTask` and `EtcdCopyBackupsTask` ([restore-replaces-the-source](restore-replaces-the-source.md)); the failures of etcd-druid's `EtcdOpsTask`s in its own condition; and deleting the volumes and snapshots of a deleted `ControlPlane`, which etcd-druid keeps ([etcd spike](../etcd-spike-2026-10.md), findings 2, 4 and 6).
+- **Shared, opt-in.**
+  `spec.datastore.shared` names a `Datastore`: an etcd several tenants use.
+  Lodia creates per tenant an etcd user named after the `ControlPlane`'s UID, authenticated by the CN of a client certificate (the API server has no other way to log in to etcd), and a role granting read-write on the prefix `/<prefix>/<uid>/`, whose range end is computed by the etcd client library, never by hand.
+  The shared etcd must run with `--auth-token jwt`; the simple token is not meant for production ([RBAC](https://etcd.io/docs/v3.6/op-guide/authentication/rbac/), [auth design](https://etcd.io/docs/v3.6/learning/design-auth-v3/)).
+- **The defaults** of the `DatastoreClass` Lodia ships: quota 4 GiB, periodic compaction every 15 minutes (the API server also compacts every 5), delta snapshots every 5 minutes, a full snapshot on the class's schedule, which Lodia passes to etcd-druid unchanged, `0 0 * * *` by default, and defragmentation followers first and leader last ([maintenance](https://etcd.io/docs/v3.6/op-guide/maintenance/)).
+  Garbage collection is LimitBased and keeps the newest `retention.fullSnapshots` full snapshots, 30 by default, or etcd-druid's 7 when the class has no `retention` ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L33-L37)).
+  Lodia sets no requests but the members', from the class's `etcd.resources`, so etcd-druid's 50m / 128Mi apply to the sidecar always and to etcd when the class sets none ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L51-L54), [builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L388), [builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L422)).
+  The example class sets etcd's to Gardener's for its shoots, 30m / 150M, where the sidecar asks 10m / 40Mi ([Gardener's etcd component](https://raw.githubusercontent.com/gardener/gardener/master/pkg/component/etcd/etcd/etcd.go)), and [Capacity](../operations.md#capacity) holds the idle use phase 1 measured.
 
 ## Why
 
-- **Failure stays with one tenant.** With a store per tenant, a slow disk, a
-  runaway controller filling the quota, a defragmentation or a lost quorum
-  touches one cluster. etcd has only a cluster-wide quota; in a shared store
-  one tenant's growth is everyone's `NOSPACE`
-  ([quota](https://etcd.io/docs/v3.6/op-guide/maintenance/)).
-- **Backups and restores are per tenant.** A snapshot of a dedicated etcd is
-  exactly one cluster; restoring it touches nobody else.
-- **Isolation in a shared store rests on code that must be right every
-  time:** the prefix range of every role and the mapping from names to
-  prefixes. A wrong range end or two names normalised to one prefix exposes
-  one tenant's Secrets to another. Using UIDs and the client library's range
-  end removes both, but only a dedicated store removes the class of bug.
-- **The people who run hosted control planes at scale chose the same:**
-  Gardener and HyperShift run an etcd per control plane.
-- **etcd-druid is the most complete engine available today.** Of the etcd
-  operators we compared, it is the only one with scheduled full and delta
-  backups, automatic single-member restore, learner-based scaling and
-  hibernation; it is released about monthly and runs Gardener's fleet.
+- **Failure stays with one tenant.**
+  With a store per tenant, a slow disk, a runaway controller filling the quota, a defragmentation or a lost quorum touches one cluster.
+  etcd has only a cluster-wide quota; in a shared store one tenant's growth is everyone's `NOSPACE` ([quota](https://etcd.io/docs/v3.6/op-guide/maintenance/)).
+- **Backups and restores are per tenant.**
+  A snapshot of a dedicated etcd is exactly one cluster; restoring it touches nobody else.
+- **Isolation in a shared store rests on code that must be right every time:** the prefix range of every role and the mapping from names to prefixes.
+  A wrong range end or two names normalised to one prefix exposes one tenant's Secrets to another.
+  Using UIDs and the client library's range end removes both, but only a dedicated store removes the class of bug.
+- **The people who run hosted control planes at scale chose the same:** Gardener and HyperShift run an etcd per control plane.
+- **etcd-druid is the most complete engine available today.**
+  Of the etcd operators we compared, it is the only one with scheduled full and delta backups, automatic single-member restore, learner-based scaling and hibernation; it is released about monthly and runs Gardener's fleet.
 
 | | etcd-druid | own StatefulSet + etcd-backup-restore | etcd-io/etcd-operator | Cozystack etcd-operator |
 |---|---|---|---|---|
@@ -107,223 +50,61 @@ Hibernation, class edits held for the maintenance window, the final snapshot and
 | scaling | 1 → 3 and back | static 1 or 3 | up and down | up and down |
 | hibernation | `replicas: 0`, snapshot first | by hand | no | `replicas: 0` |
 
-Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
-[etcd-backup-restore getting started](https://github.com/gardener/etcd-backup-restore/blob/master/docs/deployment/getting_started.md),
-[etcd-operator roadmap](https://github.com/etcd-io/etcd-operator/blob/main/docs/roadmap.md),
-[Cozystack etcd-operator](https://github.com/cozystack/etcd-operator).
+Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases), [etcd-backup-restore getting started](https://github.com/gardener/etcd-backup-restore/blob/master/docs/deployment/getting_started.md), [etcd-operator roadmap](https://github.com/etcd-io/etcd-operator/blob/main/docs/roadmap.md), [Cozystack etcd-operator](https://github.com/cozystack/etcd-operator).
 
 ## Rejected
 
-- A shared etcd by default — the density is real, the isolation is not:
-  no per-tenant quota, one outage for every tenant on it.
-- etcd-io/etcd-operator — the official home of an etcd operator and the one
-  to watch, but pre-release and without backups; re-evaluated when its
-  backups land.
-- Our own StatefulSet with the etcd-backup-restore sidecar — it covers one
-  member well and three only statically.
-- kine with SQL or NATS — a second storage semantics with no auth API, so
-  isolation means a database per tenant; nothing it offers outweighs that
-  for us.
+- A shared etcd by default — the density is real, the isolation is not: no per-tenant quota, one outage for every tenant on it.
+- etcd-io/etcd-operator — the official home of an etcd operator and the one to watch, but pre-release and without backups; re-evaluated when its backups land.
+- Our own StatefulSet with the etcd-backup-restore sidecar — it covers one member well and three only statically.
+- kine with SQL or NATS — a second storage semantics with no auth API, so isolation means a database per tenant; nothing it offers outweighs that for us.
 
 ## Consequences
 
-- etcd-druid becomes a dependency with its own release cadence and image
-  registry (Gardener's public Artifact Registry, amd64 and arm64); Lodia's
-  version table pins the vendored chart and its images, and the operator
-  configuration's registry mirror applies to them too.
-- The etcd version is the one etcd-druid's wrapper runs: etcd 3.5.27 with
-  etcd-druid v0.39.0, while kubeadm defaults to 3.6.6 for Kubernetes 1.35 and
-  3.7.0 for 1.37 and accepts an external etcd from 3.5.24
-  ([1.35](https://github.com/kubernetes/kubernetes/blob/v1.35.0/cmd/kubeadm/app/constants/constants.go#L326-L329),
-  [1.37](https://github.com/kubernetes/kubernetes/blob/v1.37.0/cmd/kubeadm/app/constants/constants.go#L326-L330)).
-  `spec.etcd.image` and `spec.backup.image` let the version table pin newer
-  builds; moving to 3.6 follows etcd-druid.
-- A restore from snapshot starts a new etcd cluster and, as etcd-druid does
-  it, keeps the snapshot's revisions: clients with caches must relist. The
-  spike measured it: until it restarted, the API server's cache listed 19
-  objects lost with the data and missed 16 of 17 written afterwards. A
-  `ControlPlane` restored from a `Backup` is new, so no client of its source
-  holds its revisions; for etcd-druid's own restore of a member that lost
-  its data, the sidecar should bump the revisions, as etcd's
-  `RevisionBump` and `MarkCompacted` can and the sidecar does not yet
-  ([restorer.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapshot/restorer/restorer.go#L193-L205),
-  [v3_snapshot.go](https://github.com/etcd-io/etcd/blob/v3.5.27/etcdutl/snapshot/v3_snapshot.go#L204-L212)),
-  which is owed upstream (`todo.md`). Lodia detects no restore to roll the
-  API server after: that would fix its cache alone. The lost-quorum runbook
-  rolls it by hand, and the in-place restore runbook uses
-  `etcdutl snapshot restore --bump-revision --mark-compacted`, which ends
-  every watch so informers relist
-  ([recovery](https://etcd.io/docs/v3.6/op-guide/recovery/)).
-- Permanent loss of quorum is recovered by hand
-  ([runbook](../operations.md#lost-etcd-quorum)), as etcd-druid documents.
-- A tenant's data never outlives it into another `ControlPlane` by name, and
-  no name reaches a snapshot's key. The backup prefix is
-  `<class prefix>/<namespace UID>/controlplanes/<ControlPlane UID>`:
-  etcd-backup-restore restores an empty member from the newest snapshot
-  under its prefix
-  ([design](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/docs/proposals/design.md#L27)),
-  and it takes the last `v1/` anywhere in a key for its layout, ignores a
-  snapshot it misreads, and with none left restores a member that lost its
-  volume empty
-  ([snapshot.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapstore/snapshot.go#L39-L59),
-  [s3_snapstore.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapstore/s3_snapstore.go#L714-L735),
-  [initializer.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/initializer/initializer.go#L221-L226)),
-  so a namespace `team-v1` or a `ControlPlane` `v1` in the key would hide
-  every snapshot of that tenant. For the same parser the schema refuses a
-  class prefix that contains `v1/` or ends in `v1`, until etcd-backup-restore
-  reads a key relative to its prefix (`todo.md`). A UID is a UUID of 36
-  characters
-  ([meta.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/registry/rest/meta.go#L39-L42),
-  [uuid.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apimachinery/pkg/util/uuid/uuid.go#L25-L27),
-  [google/uuid](https://github.com/google/uuid/blob/v1.6.0/uuid.go#L244-L248)),
-  so no tenant's prefix begins another's, which the sidecar needs, since it
-  lists its prefix without a trailing slash
-  ([s3_snapstore.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapstore/s3_snapstore.go#L590-L596));
-  the namespace's UID gives credentials scoped to one namespace a prefix to
-  name (`todo.md`); and `controlplanes/` keeps the layout's second branch,
-  `<class prefix>/<namespace UID>/backups/<Backup UID>`, where the `Backup`
-  reconciler to come puts its sealed copies, out of every member's listing.
-  Phase 1 has no users, so nothing migrates: an `Etcd` rendered under the
-  previous `<namespace>/<name>/<uid>` moves to the new prefix when Lodia
-  next renders it from its class, which rolls its member once, since the
-  prefix is an argument of the sidecar
-  ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L544)),
-  and its old snapshots stay where they are; one whose class is held or
-  gone keeps its prefix, with every other field the class gave it. A class
-  stored before the schema refused a `v1/` keeps its prefix through CRD
-  validation ratcheting, GA and locked on since 1.33
-  ([kube_features.go](https://github.com/kubernetes/apiextensions-apiserver/blob/v0.37.0/pkg/features/kube_features.go#L70-L74)),
-  and Lodia renders it as it is.
-  The volumes keep their names (`<cp>-etcd-<cp>-etcd-<n>`) and a StatefulSet
-  re-attaches a claim of that name
-  ([stateful_pod_control.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/statefulset/stateful_pod_control.go#L381-L405)),
-  whatever its labels, so when such claims of a retained `<cp>-etcd` exist
-  before a new `ControlPlane`'s first `Etcd`, Datastore stops with
-  `DatastoreReady=False`, `VolumesExist`,
-  until someone deletes them; starting from old data is a restore. The same
-  holds for an `Etcd` `<cp>-etcd` whose controller reference is not the
-  `ControlPlane`'s UID, an orphan or a predecessor's not yet collected:
-  Datastore neither adopts it, which a server-side apply with
-  `ForceOwnership` would do, nor deletes it.
-- Every edit of a class that changes the `Etcd`'s spec rolls its members, a
-  single member with an outage, since etcd-druid carries every field Lodia
-  renders from the class into the pod template, directly, through the
-  sidecar's arguments or through the checksum of its ConfigMap
-  ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L161-L227));
-  the storage fields, the reclaim policy, `retention.afterDelete`, the
-  credentials' `secretRef` and the region change no spec and roll nothing.
-  So a class edit is a Lodia-initiated change for each tenant on it and
-  rolls in that tenant's maintenance window
-  ([upgrades-and-maintenance-windows](upgrades-and-maintenance-windows.md));
-  the `Etcd` records the class generation it was rendered from. The storage
-  class and size apply when the `Etcd` is created and not after: the first is
-  immutable in the `Etcd`
-  ([etcd.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/etcd.go#L627-L638)),
-  the second a StatefulSet field that cannot change in place
-  ([validation.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/apis/apps/validation/validation.go#L262)).
-- The class is resolved once, when the `Etcd` is created, and recorded on it
-  (`lodia.io/datastore-class`, beside
-  `lodia.io/datastore-class-generation`); from then on the `Etcd`
-  follows the recorded class, its `reclaimPolicy` included, the way a default
-  StorageClass is written into a claim when the claim is created
-  ([storage classes](https://kubernetes.io/docs/concepts/storage/storage-classes/#default-storageclass)).
-  A default that moves therefore re-renders no running etcd and never turns a
-  `Retain` into a `Delete`. The claims record the class too, for their
-  reclaim, and an `Etcd` created again over this `ControlPlane`'s claims takes
-  the class they record, not the current default.
-- A recorded class that is deleted stops only its own edits. The `Etcd` keeps
-  every field the class gave it, the way a dynamically provisioned
-  PersistentVolume keeps in its own spec the reclaim policy and mount options
-  its StorageClass gave it
-  ([storage classes](https://kubernetes.io/docs/concepts/storage/storage-classes/#reclaim-policy)),
-  and it keeps following the certificate generations and reporting its
-  readiness: with the default `pki.leafLifetime` of a year
-  ([operator configuration](../README.md#installation)), PKI issues the next
-  generation after eight months, two thirds of it
-  ([staged-credential-rotation](staged-credential-rotation.md)), and the
-  current one expires at a year. `DatastoreClassNotFound` is therefore a
-  reason only before the `Etcd` exists. A class whose credentials copy
-  cannot be made — its Secret missing, another owner holding
-  `<cp>-etcd-backup`, the API server refusing the copy — is held the same
-  way, whole, with a note in `DatastoreReady`'s message, since the rest of an
-  edit could add a store whose copy does not exist; only the copy stops, never
-  the certificate generations.
-- The claims carry the `ControlPlane`'s UID as a label and the class as an
-  annotation, since they outlive the `Etcd`: deletion reclaims only this
-  `ControlPlane`'s claims, under the class each records, and keeps them when
-  that class is gone. While the `Etcd` exists, the deletion labels the claims
-  no pass has labelled yet, such as one the StatefulSet created seconds
-  before; they can only be its own, since `VolumesExist` kept the `Etcd` from
-  being created while anything else stood there. A claim that appears after
-  the last such pass stays unlabelled and is kept, the safe side.
-- Snapshots hold the tenant's Secrets as the API server stored them, so
-  encryption at rest is on by default (`secretbox`), and the encryption key
-  stays in the management cluster, never next to the snapshots, whose
-  bucket's credentials sit in every tenant namespace on the class: a
-  `Backup` carries a copy of its own, `<backup>.encryption-config`, and the
-  platform backs up Lodia's Secrets, as it must for the CAs; a KMS provider
-  is the long-term path. Bucket-side encryption is recommended on top.
-- A class's credentials reach every tenant's prefix on that class, and
-  `<cp>-etcd-backup` puts them into every tenant namespace: whoever reads
-  Secrets in one tenant namespace reads every tenant's snapshots on the
-  class, which their encryption keys, kept in the management cluster, still
-  protect. Until the
-  credentials are scoped to one tenant's prefix, two rules bound it: Secrets
-  in tenant namespaces are readable by Lodia and the platform's
-  administrators only, and a class per trust boundary.
-- etcd-druid keeps the volumes and the snapshots of a deleted `Etcd`: the
-  StatefulSet retains its claims and nothing removes the prefix in the
-  bucket ([etcd spike](../etcd-spike-2026-10.md), finding 6). Under
-  `storage.reclaimPolicy: Delete` the Datastore controller deletes the claims
-  itself, finding them by the name the StatefulSet gives them,
-  `<template>-<StatefulSet>-<ordinal>` with the template named after the
-  `Etcd`
-  ([stateful_set_utils.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/controller/statefulset/stateful_set_utils.go#L116-L119),
-  [builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L233)),
-  not by the labels it copies onto them, which a claim made by hand lacks.
-  Nothing deletes a prefix: neither etcd-druid nor its sidecar can, so
-  `retention.afterDelete` stays documented and unbuilt until etcd-druid has
-  a task for it, which Lodia proposes upstream (`todo.md`), rather than a
-  client of four stores of its own; meanwhile a platform expires old
-  prefixes with its bucket's lifecycle rules. `retention.fullSnapshots` is
-  the number of full snapshots the sidecar's `LimitBased` garbage collection
-  keeps, the newest
-  ([garbagecollector.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapshot/snapshotter/garbagecollector.go#L171-L203)).
-  It deletes the deltas after every full snapshot but the newest once they
-  are older than the delta retention period
-  ([garbagecollector.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapshot/snapshotter/garbagecollector.go#L276-L281)),
-  which the sidecar leaves at zero and etcd-druid passes only when the
-  `Etcd` sets one, which Lodia does not
-  ([snapshotter.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapshot/snapshotter/snapshotter.go#L61-L71),
-  [builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L560-L562)):
-  an older full snapshot restores to its own revision only.
-- The `Etcd` names the CA's key, `dataKey: ca.crt`, on all three TLS blocks:
-  etcd-druid defaults to `ca.crt` for the members and to `bundle.crt` for its
-  own calls to the backup-restore sidecar
-  ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L468),
-  [snapshot.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/compaction/snapshot.go#L87)).
-- The `Datastore` kind keeps a `driver` field reserved, so kine or another
-  store can be added later without a new API version.
+- etcd-druid becomes a dependency with its own release cadence and image registry (Gardener's public Artifact Registry, amd64 and arm64); Lodia's version table pins the vendored chart and its images, and the operator configuration's registry mirror applies to them too.
+- The etcd version is the one etcd-druid's wrapper runs: etcd 3.5.27 with etcd-druid v0.39.0, while kubeadm defaults to 3.6.6 for Kubernetes 1.35 and 3.7.0 for 1.37 and accepts an external etcd from 3.5.24 ([1.35](https://github.com/kubernetes/kubernetes/blob/v1.35.0/cmd/kubeadm/app/constants/constants.go#L326-L329), [1.37](https://github.com/kubernetes/kubernetes/blob/v1.37.0/cmd/kubeadm/app/constants/constants.go#L326-L330)).
+  `spec.etcd.image` and `spec.backup.image` let the version table pin newer builds; moving to 3.6 follows etcd-druid.
+- A restore from snapshot starts a new etcd cluster and, as etcd-druid does it, keeps the snapshot's revisions: clients with caches must relist.
+  The spike measured it: until it restarted, the API server's cache listed 19 objects lost with the data and missed 16 of 17 written afterwards.
+  A `ControlPlane` restored from a `Backup` is new, so no client of its source holds its revisions; for etcd-druid's own restore of a member that lost its data, the sidecar should bump the revisions, as etcd's `RevisionBump` and `MarkCompacted` can and the sidecar does not yet ([restorer.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapshot/restorer/restorer.go#L193-L205), [v3_snapshot.go](https://github.com/etcd-io/etcd/blob/v3.5.27/etcdutl/snapshot/v3_snapshot.go#L204-L212)), which is owed upstream (`todo.md`).
+  Lodia detects no restore to roll the API server after: that would fix its cache alone.
+  The [runbooks](../operations.md#runbooks) roll it by hand or bump the revisions.
+- Permanent loss of quorum is recovered by hand ([runbook](../operations.md#lost-etcd-quorum)), as etcd-druid documents.
+- A tenant's data never outlives it into another `ControlPlane` by name, and no name reaches a snapshot's key.
+  The backup prefix is `<class prefix>/<namespace UID>/controlplanes/<ControlPlane UID>`: etcd-backup-restore restores an empty member from the newest snapshot under its prefix ([design](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/docs/proposals/design.md#L27)), and it takes the last `v1/` anywhere in a key for its layout, ignores a snapshot it misreads, and with none left restores a member that lost its volume empty ([snapshot.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapstore/snapshot.go#L39-L59), [s3_snapstore.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapstore/s3_snapstore.go#L714-L735), [initializer.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/initializer/initializer.go#L221-L226)), so a namespace `team-v1` or a `ControlPlane` `v1` in the key would hide every snapshot of that tenant.
+  For the same parser the schema refuses a class prefix that contains `v1/` or ends in `v1`, until etcd-backup-restore reads a key relative to its prefix (`todo.md`).
+  A UID is a UUID of 36 characters ([meta.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/registry/rest/meta.go#L39-L42), [uuid.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apimachinery/pkg/util/uuid/uuid.go#L25-L27), [google/uuid](https://github.com/google/uuid/blob/v1.6.0/uuid.go#L244-L248)), so no tenant's prefix begins another's, which the sidecar needs, since it lists its prefix without a trailing slash ([s3_snapstore.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapstore/s3_snapstore.go#L590-L596)); the namespace's UID gives credentials scoped to one namespace a prefix to name (`todo.md`); and `controlplanes/` keeps the layout's second branch, `<class prefix>/<namespace UID>/backups/<Backup UID>`, where the `Backup` reconciler to come puts its sealed copies, out of every member's listing.
+  Phase 1 has no users, so nothing migrates: an `Etcd` rendered under the previous `<namespace>/<name>/<uid>` moves to the new prefix when Lodia next renders it from its class, which rolls its member once, since the prefix is an argument of the sidecar ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L544)), and its old snapshots stay where they are; one whose class is held or gone keeps its prefix, with every other field the class gave it.
+  A class stored before the schema refused a `v1/` keeps its prefix through CRD validation ratcheting, GA and locked on since 1.33 ([kube_features.go](https://github.com/kubernetes/apiextensions-apiserver/blob/v0.37.0/pkg/features/kube_features.go#L70-L74)), and Lodia renders it as it is.
+  The volumes keep their names (`<cp>-etcd-<cp>-etcd-<n>`) and a StatefulSet re-attaches a claim of that name ([stateful_pod_control.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/statefulset/stateful_pod_control.go#L381-L405)), whatever its labels, so when such claims of a retained `<cp>-etcd` exist before a new `ControlPlane`'s first `Etcd`, Datastore stops with `DatastoreReady=False`, `VolumesExist`, until someone deletes them; starting from old data is a restore.
+  The same holds for an `Etcd` `<cp>-etcd` whose controller reference is not the `ControlPlane`'s UID, an orphan or a predecessor's not yet collected: Datastore neither adopts it, which a server-side apply with `ForceOwnership` would do, nor deletes it.
+- Every edit of a class that changes the `Etcd`'s spec rolls its members, a single member with an outage, since etcd-druid carries every field Lodia renders from the class into the pod template, directly, through the sidecar's arguments or through the checksum of its ConfigMap ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L161-L227)); the storage fields, the reclaim policy, `retention.afterDelete`, the credentials' `secretRef` and the region change no spec and roll nothing.
+  So a class edit is a Lodia-initiated change for each tenant on it and rolls in that tenant's maintenance window ([upgrades-and-maintenance-windows](upgrades-and-maintenance-windows.md)); the `Etcd` records the class generation it was rendered from.
+- The class is resolved once, when the `Etcd` is created, and recorded on it (`lodia.io/datastore-class`, beside `lodia.io/datastore-class-generation`); from then on the `Etcd` follows the recorded class, its `reclaimPolicy` included, the way a default StorageClass is written into a claim when the claim is created ([storage classes](https://kubernetes.io/docs/concepts/storage/storage-classes/#default-storageclass)).
+  A default that moves therefore re-renders no running etcd and never turns a `Retain` into a `Delete`.
+  The claims record the class too, for their reclaim, and an `Etcd` created again over this `ControlPlane`'s claims takes the class they record, not the current default.
+- A recorded class that is deleted stops only its own edits.
+  The `Etcd` keeps every field the class gave it, the way a dynamically provisioned PersistentVolume keeps in its own spec the reclaim policy and mount options its StorageClass gave it ([storage classes](https://kubernetes.io/docs/concepts/storage/storage-classes/#reclaim-policy)), and it keeps following the certificate generations and reporting its readiness: with the default `pki.leafLifetime` of a year ([operator configuration](../README.md#installation)), PKI issues the next generation after eight months, two thirds of it ([staged-credential-rotation](staged-credential-rotation.md)), and the current one expires at a year.
+  `DatastoreClassNotFound` is therefore a reason only before the `Etcd` exists.
+  A class whose credentials copy cannot be made — its Secret missing, another owner holding `<cp>-etcd-backup`, the API server refusing the copy — is held the same way, whole, with a note in `DatastoreReady`'s message, since the rest of an edit could add a store whose copy does not exist; only the copy stops, never the certificate generations.
+- The claims carry the `ControlPlane`'s UID as a label and the class as an annotation, since they outlive the `Etcd`: deletion reclaims only this `ControlPlane`'s claims, under the class each records, and keeps them when that class is gone.
+  While the `Etcd` exists, the deletion labels the claims no pass has labelled yet, such as one the StatefulSet created seconds before; they can only be its own, since `VolumesExist` kept the `Etcd` from being created while anything else stood there.
+  A claim that appears after the last such pass stays unlabelled and is kept, the safe side.
+- Snapshots hold the tenant's Secrets as the API server stored them, so encryption at rest is on by default (`secretbox`), and the encryption key stays in the management cluster, never next to the snapshots, whose bucket's credentials sit in every tenant namespace on the class ([a `Backup`'s copy](restore-replaces-the-source.md)).
+  Bucket-side encryption is recommended on top.
+- Whoever reads Secrets in one tenant namespace reads every tenant's snapshots on the class ([Identity and tenancy](../README.md#identity-and-tenancy)).
+- etcd-druid keeps the volumes and the snapshots of a deleted `Etcd`: the StatefulSet retains its claims and nothing removes the prefix in the bucket ([etcd spike](../etcd-spike-2026-10.md), finding 6).
+  Under `storage.reclaimPolicy: Delete` the Datastore controller deletes the claims itself, finding them by the name the StatefulSet gives them, `<template>-<StatefulSet>-<ordinal>` with the template named after the `Etcd` ([stateful_set_utils.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/controller/statefulset/stateful_set_utils.go#L116-L119), [builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L233)), not by the labels it copies onto them, which a claim made by hand lacks.
+  Nothing deletes a prefix: neither etcd-druid nor its sidecar can, so `retention.afterDelete` stays documented and unbuilt until etcd-druid has a task for it, which Lodia proposes upstream (`todo.md`), rather than a client of four stores of its own; meanwhile a platform expires old prefixes with its bucket's lifecycle rules.
+  `retention.fullSnapshots` is the number of full snapshots the sidecar's `LimitBased` garbage collection keeps, the newest ([garbagecollector.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapshot/snapshotter/garbagecollector.go#L171-L203)).
+  It deletes the deltas after every full snapshot but the newest once they are older than the delta retention period ([garbagecollector.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapshot/snapshotter/garbagecollector.go#L276-L281)), which the sidecar leaves at zero and etcd-druid passes only when the `Etcd` sets one, which Lodia does not ([snapshotter.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapshot/snapshotter/snapshotter.go#L61-L71), [builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L560-L562)): an older full snapshot restores to its own revision only.
+- The `Etcd` names the CA's key, `dataKey: ca.crt`, on all three TLS blocks: etcd-druid defaults to `ca.crt` for the members and to `bundle.crt` for its own calls to the backup-restore sidecar ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L468), [snapshot.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/compaction/snapshot.go#L87)).
+- The `Datastore` kind keeps a `driver` field reserved, so kine or another store can be added later without a new API version.
 
 ## Code
 
-- `internal/controller/datastore` — the controller: `datastore.go` holds the
-  reconcile, the class lookup, the newest complete certificate generation,
-  the claims, found by name, the credentials copy, the namespace's UID for
-  the backup prefix, read uncached, the finalizer and the
-  status; `etcd.go` renders the `DatastoreClass` into the `Etcd`
-  ([the table](../README.md#a-tenant-namespace)), applies it and reads
-  etcd-druid's report; `networkpolicy.go` renders and applies the etcd's
-  NetworkPolicy. Registered as `datastore` in `internal/operator`.
-- `internal/controller/datastore/datastore_test.go` — envtest with etcd-druid v0.39.0's CRDs from its `crds` package, the controller running as a user bound to exactly its generated ClusterRole, [`datastore.yaml`](../../charts/lodia/files/rbac/datastore.yaml) ([Identity and tenancy](../README.md#identity-and-tenancy)): `TestFinalizerAndEtcdFromClass` (the finalizer before the first `Etcd`, the mapping table, generation 1 in all three TLS blocks), `TestConditionsFromState` (Unknown on the first visit, an API error leaves the status alone), `TestEtcdRefused` (an admission policy refuses the `Etcd`), `TestPaused`, `TestNewestCompleteGeneration`, `TestOnlyItsOwnGenerationsCount`, `TestMountedSecretsMustExist`, `TestGenerationsMoveForward`, `TestDatastoreClassNotFound`, `TestBackupCredentialsCopied`, `TestBackupPrefixHoldsNoName` (the prefix of a `ControlPlane` `v1` in the namespace `team-v1`, its keys read by etcd-backup-restore v0.45.1's rule, which the test restates since importing the parser would move the module's dependencies, and a failed Namespace read that leaves the status), `TestHeldClass`, `TestBackupCopyFollowsItsEvents`, `TestPredecessorsCopy`, `TestOwnerlessCopyIsAdopted`, `TestDatastoreReadyIsQuorum`, `TestThreeMembersWithHighAvailability`, `TestVolumesExist`, `TestForeignEtcd`, `TestStorageAtCreation`, `TestRecordedClass`, `TestClassSurvivesTheEtcd`, `TestClassGone`, `TestDeletionBeforeLabelling`, `TestDeletion`, `TestNetworkPolicy`, `TestNetworkPolicyOfAnotherOwner`, `TestOwnerlessNetworkPolicyIsAdopted`, `TestNetworkPolicyRefused` and `TestAFailedNetworkPolicyCallLeavesTheStatus`.
+- `internal/controller/datastore` — the controller: `datastore.go` holds the reconcile, the class lookup, the newest complete certificate generation, the claims, found by name, the credentials copy, the namespace's UID for the backup prefix, read uncached, the finalizer and the status; `etcd.go` renders the `DatastoreClass` into the `Etcd` ([the table](../README.md#a-tenant-namespace)), applies it and reads etcd-druid's report; `networkpolicy.go` renders and applies the etcd's NetworkPolicy.
+- `internal/controller/datastore/datastore_test.go` — envtest with etcd-druid v0.39.0's CRDs from its `crds` package, the controller running as a user bound to exactly its generated ClusterRole, [`datastore.yaml`](../../charts/lodia/files/rbac/datastore.yaml) ([Identity and tenancy](../README.md#identity-and-tenancy)): `TestFinalizerAndEtcdFromClass` (the finalizer before the first `Etcd`, the mapping table, generation 1 in all three TLS blocks), `TestConditionsFromState` (Unknown on the first visit, an API error leaves the status alone), `TestEtcdRefused` (an admission policy refuses the `Etcd`), `TestPaused`, `TestNewestCompleteGeneration`, `TestOnlyItsOwnGenerationsCount`, `TestMountedSecretsMustExist`, `TestGenerationsMoveForward`, `TestDatastoreClassNotFound`, `TestBackupCredentialsCopied`, `TestBackupPrefixHoldsNoName` (the prefix of a `ControlPlane` `v1` in the namespace `team-v1`, its keys read by etcd-backup-restore v0.45.1's rule, which the test restates since importing the parser would move the module's dependencies, and a failed Namespace read that leaves the status), `TestHeldClass`, `TestBackupCopyFollowsItsEvents`, `TestPredecessorsCopy`, `TestOwnerlessCopyIsAdopted`, `TestDatastoreReadyIsQuorum`, `TestThreeMembersWithHighAvailability`, `TestHighAvailabilityOnAFormedEtcd`, `TestEtcdDruidKeepsTheClientPortThroughAScaleIn`, `TestVolumesExist`, `TestForeignEtcd`, `TestStorageAtCreation`, `TestRecordedClass`, `TestClassSurvivesTheEtcd`, `TestClassGone`, `TestDeletionBeforeLabelling`, `TestDeletion`, `TestNetworkPolicy`, `TestNetworkPolicyOfAnotherOwner`, `TestOwnerlessNetworkPolicyIsAdopted`, `TestNetworkPolicyRefused` and `TestAFailedNetworkPolicyCallLeavesTheStatus`.
   `datastoretest` stands in for PKI there.
-- `charts/lodia` — etcd-druid v0.39.0 as a dependency behind
-  `etcdDruid.enabled`, with `enableEtcdSpecAutoReconcile` on and the
-  components webhook left off, its default; the operator gets the
-  namespace etcd-druid runs in as `--etcd-druid-namespace`.
-- `test/e2e/datastore_test.go` — `TestDatastoreOnKind`: the operator and
-  etcd-druid v0.39.0 from Lodia's chart, a `ControlPlane` to
-  `DatastoreReady=True` with the member running on PKI's generation 1, a
-  member Secret of generation 1 deleted and PKI's generation 2, under the
-  same CA, rolling the member, deletion under `Delete`, which the garbage
-  collector carries to the etcd's NetworkPolicy.
+- `charts/lodia` — etcd-druid as a dependency ([Installation](../README.md#installation)).
+- `test/e2e/datastore_test.go` — `TestDatastoreOnKind`: the operator and etcd-druid v0.39.0 from Lodia's chart, a `ControlPlane` to `DatastoreReady=True` with the member running on PKI's generation 1, a member Secret of generation 1 deleted and PKI's generation 2, under the same CA, rolling the member, deletion under `Delete`, which the garbage collector carries to the etcd's NetworkPolicy.

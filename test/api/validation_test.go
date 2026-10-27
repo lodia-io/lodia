@@ -244,7 +244,10 @@ func TestExtraArgsRefuseTheFlagsLodiaSets(t *testing.T) {
 	ensureNamespaces(t, "team-a")
 	const refused = "Lodia sets this flag"
 	for component, flags := range map[string]map[string]string{
-		"apiServer": {"goaway-chance": refused, "etcd-prefix": refused, "etcd-servers-overrides": refused, "max-requests-inflight": ""},
+		"apiServer": {
+			"goaway-chance": refused, "etcd-prefix": refused, "etcd-servers-overrides": refused, "max-requests-inflight": "",
+			"service-account-jwks-uri": refused, "service-account-max-token-expiration": "",
+		},
 		"controllerManager": {
 			"leader-elect-lease-duration": refused, "leader-elect-renew-deadline": refused, "leader-elect-retry-period": refused,
 			"leader-elect-resource-lock": refused, "leader-elect-resource-name": refused, "leader-elect-resource-namespace": refused,
