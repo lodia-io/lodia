@@ -60,7 +60,7 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cp, lodiav1alpha1.GroupVersion.WithKind("ControlPlane"))},
 		},
 		Spec: druidv1alpha1.EtcdSpec{
-			Replicas: 1,
+			Replicas: memberCount(cp),
 			Labels:   labels,
 			Etcd: druidv1alpha1.EtcdConfig{
 				ClientUrlTLS: &druidv1alpha1.TLSConfig{TLSCASecretRef: ca, ServerTLSSecretRef: secret(lodiav1alpha1.EtcdServerRole), ClientTLSSecretRef: secret(lodiav1alpha1.EtcdClientRole)},
@@ -79,7 +79,6 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 			metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, allowUnhealthyPodEviction, value)
 		}
 	case ha != nil:
-		etcd.Spec.Replicas = 3
 		metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, allowUnhealthyPodEviction, "")
 		etcd.Spec.SchedulingConstraints.TopologySpreadConstraints = spread(ha.FailureTolerance, memberLabels(etcd))
 	}
@@ -145,6 +144,13 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 		}
 	}
 	return etcd
+}
+
+func memberCount(cp *lodiav1alpha1.ControlPlane) int32 {
+	if cp.Spec.HighAvailability != nil {
+		return 3
+	}
+	return 1
 }
 
 // settled is an etcd that takes a change of highAvailability: its members all

@@ -1675,6 +1675,12 @@ func TestHighAvailabilityWaitsForASettledEtcd(t *testing.T) {
 		if constraints := etcd.Spec.SchedulingConstraints.TopologySpreadConstraints; etcd.Spec.Replicas != want || annotated != spread || (len(constraints) > 0) != spread {
 			t.Errorf("the Etcd asks for %d members, annotated %v, spread by %+v; want %d members, spread and annotated: %t", etcd.Spec.Replicas, etcd.Annotations, constraints, want, spread)
 		}
+		fresh := getControlPlane(t, ns, cp)
+		held := (fresh.Spec.HighAvailability != nil) != (want == 3)
+		condition := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
+		if condition == nil || strings.Contains(condition.Message, "highAvailability waits for Etcd toggled-etcd to settle: every member on its current spec and available, etcd-druid's last scale completed") != held {
+			t.Errorf("DatastoreReady is %+v, want the hold noted: %t", condition, held)
+		}
 	}
 	zone := &lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"}
 
