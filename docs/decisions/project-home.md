@@ -2,7 +2,7 @@
 
 Decided 2026-10-23 as Brygga (`github.com/segla-io/brygga`, API group
 `brygga.segla.io`); renamed to Lodia and moved to the `lodia-io`
-organization on 2026-10-26, before any cluster ran it.
+organization on 2026-10-26.
 
 ## Decision
 
