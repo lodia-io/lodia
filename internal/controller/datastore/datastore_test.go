@@ -1730,6 +1730,7 @@ func TestRemovingHighAvailabilityBacksOutOfAMemberThatNeverComesUp(t *testing.T)
 	t.Run("etcd-druid's scale in progress holds the removal", func(t *testing.T) {
 		setHighAvailability(t, ns, cp, nil)
 		expectMembers(t, ns, cp, 3, true)
+		waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum, 2 of 3 members ready, while etcd-druid scales it")
 	})
 	t.Run("a completed scale lets it through though a member never came up", func(t *testing.T) {
 		druid("")
