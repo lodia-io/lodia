@@ -24,7 +24,7 @@ Were the held controller manager unavailable instead, `AccessReady` would wait o
 **The seal.**
 Before it copies, the backup reconciler of the Datastore controller puts the key `/lodia.io/backups/<Backup UID>` (`BackupSealKey`) into the source's etcd, asks etcd-druid for a snapshot, and copies only once a snapshot Lease has reached that key's revision: an `EtcdCopyBackupsTask` with `maxBackups: 1` and no `maxBackupAge`, from the source's prefix to `<class prefix>/<namespace UID>/backups/<Backup UID>`, which nothing writes again.
 The copy holds the source's data at least up to the seal.
-The `Backup` records them ([fields](../api/controlplane.md#backup)) and outlives its source.
+The `Backup` records where the copy is, the seal's revision, and the source's name, UID, version and network ([fields](../api/controlplane.md#backup)), and outlives its source.
 
 **The restore checks before it starts anything.**
 The Datastore controller copies only from the store the `Backup` records, and only while it equals the class's store; then it requires the seal key in the restored etcd.
