@@ -1,24 +1,15 @@
 # ControlPlane — field reference (v1alpha1, draft)
 
-`lodia.io/v1alpha1`, namespaced. One object per tenant cluster. The
-Go types will be generated from this reference, and the two change together.
+`lodia.io/v1alpha1`, namespaced.
+One object per tenant cluster.
+The Go types will be generated from this reference, and the two change together.
 Examples: [`examples/`](examples/).
 
-The name is a DNS-1035 label of at most 32 characters (CEL), since the
-names Lodia and etcd-druid derive from it have to fit Kubernetes' limits.
-The tightest is etcd-druid's label on the etcd's Role,
-`druid.gardener.cloud-etcd-<name>-etcd`
-([role.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/role/role.go#L154)),
-and a label value holds at most 63 characters
-([syntax](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#syntax-and-character-set));
-the Service `<name>-kube-apiserver` needs a name that starts with a letter on
-management clusters before 1.36
-([RelaxedServiceNameValidation](https://github.com/kubernetes/kubernetes/blob/v1.36.0/pkg/features/kube_features.go#L1881-L1884)).
+The name is a DNS-1035 label of at most 32 characters (CEL), since the names Lodia and etcd-druid derive from it have to fit Kubernetes' limits.
+The tightest is etcd-druid's label on the etcd's Role, `druid.gardener.cloud-etcd-<name>-etcd` ([role.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/role/role.go#L154)), and a label value holds at most 63 characters ([syntax](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#syntax-and-character-set)); the Service `<name>-kube-apiserver` needs a name that starts with a letter on management clusters before 1.36 ([RelaxedServiceNameValidation](https://github.com/kubernetes/kubernetes/blob/v1.36.0/pkg/features/kube_features.go#L1881-L1884)).
 
-Phase 2 is built in waves ([roadmap](../roadmap.md#phase-2--production)). A field,
-condition or reason marked with a wave exists in the schema now and is
-written from that wave on; until then nothing writes it, or its writer keeps
-the behaviour the row describes.
+Phase 2 is built in waves ([roadmap](../roadmap.md#phase-2--production)).
+A field, condition or reason marked with a wave exists in the schema now and is written from that wave on; until then nothing writes it, or its writer keeps the behaviour the row describes.
 
 ## spec
 
@@ -70,8 +61,7 @@ the behaviour the row describes.
 | `health.holdControllerManager` | bool | `true` | hold the controller manager's leader lease while most nodes are silent ([controller-manager-hold](../decisions/controller-manager-hold.md)); `false` releases a hold in progress |
 | `paused` | bool | `false` | Lodia stops reconciling but keeps watching; `Progressing=False`, reason `Paused`; the finalizer stays, so a paused `ControlPlane`'s deletion waits until it is unpaused |
 
-A hostname is a lowercase DNS name whose labels are at most 63 characters,
-and not digits and dots alone, which read as an IP address.
+A hostname is a lowercase DNS name whose labels are at most 63 characters, and not digits and dots alone, which read as an IP address.
 
 ## status
 
@@ -110,29 +100,13 @@ and not digits and dots alone, which read as an IP address.
 | `health.controllerManagerHold.{since, silentNodes, countedNodes}` | Health, from wave 2, Health | present while Lodia holds the controller manager's leader lease (`ControllerManagerHeld`) |
 | `maintenance.lastHandled` | Lifecycle, from wave 2, upgrades | the value of the annotation `lodia.io/maintain-requested-at` handled last, at most 256 characters: a longer value is not handled, and `Progressing`'s message says so |
 
-Lodia's metrics, from wave 2, observability, are built from these fields at
-scrape time; [metrics-are-part-of-the-api](../decisions/metrics-are-part-of-the-api.md)
-lists each beside its field.
+Lodia's metrics, from wave 2, observability, are built from these fields at scrape time; [metrics-are-part-of-the-api](../decisions/metrics-are-part-of-the-api.md) lists each beside its field.
 
 ## Conditions and their reasons
 
-Every condition type has one writer, and every reason is a constant in
-`api/v1alpha1/conditions.go`, named by one rule: `Reconciling` is a writer's
-own first pass, `Unknown`, at the start of its first visit; `WaitingFor<X>`
-is an input awaited, `False`: `X` is a condition type without `Ready`
-(`WaitingForDatastore`), a spec or status field (`WaitingForWindow` waits
-for `spec.maintenance.window`, `WaitingForNodes` for `status.nodes`), or the
-kind of a named object that is not ready yet (`WaitingForBackup`);
-`Unsupported` is what this release does not build, the field named in the
-message; `<Capability>Unsupported` is an environment that cannot serve the
-spec; `<Kind>NotFound` is a named object that does not exist; `Refused` is
-the API server a controller writes to refusing one of its objects, `False`,
-the object named in the message; `ObjectsControlledElsewhere` is an object
-under the writer's names that another owner keeps, `False`, the object and
-its owner named in the message. A reader counts a condition only while its
-`observedGeneration` is the object's generation
-([independent-controllers](../decisions/independent-controllers.md)). A
-reason with a phase beside it is not written before that phase.
+Every condition type has one writer, and every reason is a constant in `api/v1alpha1/conditions.go`, named by one rule: `Reconciling` is a writer's own first pass, `Unknown`, at the start of its first visit; `WaitingFor<X>` is an input awaited, `False`: `X` is a condition type without `Ready` (`WaitingForDatastore`), a spec or status field (`WaitingForWindow` waits for `spec.maintenance.window`, `WaitingForNodes` for `status.nodes`), or the kind of a named object that is not ready yet (`WaitingForBackup`); `Unsupported` is what this release does not build, the field named in the message; `<Capability>Unsupported` is an environment that cannot serve the spec; `<Kind>NotFound` is a named object that does not exist; `Refused` is the API server a controller writes to refusing one of its objects, `False`, the object named in the message; `ObjectsControlledElsewhere` is an object under the writer's names that another owner keeps, `False`, the object and its owner named in the message.
+A reader counts a condition only while its `observedGeneration` is the object's generation ([independent-controllers](../decisions/independent-controllers.md)).
+A reason with a phase beside it is not written before that phase.
 
 | condition | writer | True, and its reason | False or Unknown reasons |
 |---|---|---|---|
@@ -151,27 +125,14 @@ reason with a phase beside it is not written before that phase.
 | `Hibernated` | Lifecycle, phase 3 | every component is scaled to zero and the data is kept | `Awake`, `FallingAsleep`, `WakingUp` |
 | `Ready` | Lifecycle | `CertificatesReady`, `DatastoreReady`, `APIServerReady`, `AccessReady`, `AddonsApplied`, `Reachable` and, from wave 1b, HA, `ControllersLeading` are True for this generation (`Ready`) | `Deleting` while the `ControlPlane` is being deleted; otherwise the status, reason and message of the first of them, in that order, that is not True, or `Unknown`, `LatestGenerationNotObserved` (kstatus's reason for it, [generic.go](https://github.com/kubernetes-sigs/cli-utils/blob/v0.37.2/pkg/kstatus/status/generic.go#L89-L94)) while that one is missing or reported for an older generation |
 
-When more than one of `Progressing`'s reasons applies, Lifecycle writes the
-first in this order: `Paused`; what the owner has to fix, `Unsupported`,
-`Failed`, `MaintenanceFailed`, `TimeZoneUnsupported`; a minor step that
-cannot start, `WaitingForDatastore`, `WaitingForNodes`,
-`ControllerManagerHeld`; what rolls, `Upgrading`, `Maintaining`,
-`RollingOut`; a change Lodia started that waits its turn, `WaitingForWindow`,
-`Ready`'s reason, `FleetLimit`; then `Idle`. A reason that no other field
-reports comes before one that `status.kubernetes.upgrade`,
-`status.components` or `status.datastore.members` counts anyway.
+When more than one of `Progressing`'s reasons applies, Lifecycle writes the first in this order: `Paused`; what the owner has to fix, `Unsupported`, `Failed`, `MaintenanceFailed`, `TimeZoneUnsupported`; a minor step that cannot start, `WaitingForDatastore`, `WaitingForNodes`, `ControllerManagerHeld`; what rolls, `Upgrading`, `Maintaining`, `RollingOut`; a change Lodia started that waits its turn, `WaitingForWindow`, `Ready`'s reason, `FleetLimit`; then `Idle`.
+A reason that no other field reports comes before one that `status.kubernetes.upgrade`, `status.components` or `status.datastore.members` counts anyway.
 
 ## Backup
 
-`lodia.io/v1alpha1`, namespaced: a sealed copy of a `ControlPlane`'s etcd,
-from which a new `ControlPlane` can start
-([restore-replaces-the-source](../decisions/restore-replaces-the-source.md)).
-The name is at most 235 characters (CEL), so that
-`<name>.encryption-config`, the copy of the source's encryption keys, fits a
-Secret's name. The backup reconciler of the Datastore controller, field
-manager `lodia/backup`, writes the status and holds the finalizer
-`lodia.io/restore-source`, all from wave 1b, backups; until then nothing
-acts on a `Backup`.
+`lodia.io/v1alpha1`, namespaced: a sealed copy of a `ControlPlane`'s etcd, from which a new `ControlPlane` can start ([restore-replaces-the-source](../decisions/restore-replaces-the-source.md)).
+The name is at most 235 characters (CEL), so that `<name>.encryption-config`, the copy of the source's encryption keys, fits a Secret's name.
+The backup reconciler of the Datastore controller, field manager `lodia/backup`, writes the status and holds the finalizer `lodia.io/restore-source`, all from wave 1b, backups; until then nothing acts on a `Backup`.
 
 | field | written by | meaning |
 |---|---|---|

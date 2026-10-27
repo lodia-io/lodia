@@ -1,7 +1,7 @@
 # Operations
 
-How Lodia is run once installed. Installation is in
-[`README.md`](README.md#installation).
+How Lodia is run once installed.
+Installation is in [`README.md`](README.md#installation).
 
 ## Everyday tasks
 
@@ -76,155 +76,77 @@ How Lodia is run once installed. Installation is in
 
 ### Lost etcd quorum
 
-1. Confirm: `DatastoreReady=False`, reason `QuorumLost` (wave 1b, HA); fewer than two
-   members `Ready`.
-2. If members are down because of their node: bring the node back, or delete
-   the pod so the StatefulSet reschedules it with its volume; quorum returns
-   when two members agree. A single member that lost its data is restored by
-   the backup sidecar on its own; a lost member of three is re-added as a
-   learner by etcd-druid.
-3. If quorum is lost for good (two of three volumes gone), follow etcd-druid's
-   manual procedure: suspend its reconciliation with the annotations it
-   documents, scale the StatefulSet to 0, delete the PVCs and member leases,
-   set the cluster to one member, scale to 1 so it restores from the newest
-   snapshots, re-enable reconciliation, and let Lodia scale back to 3
-   ([recovering etcd clusters](https://gardener.github.io/etcd-druid/usage/recovering-etcd-clusters.html)).
-   Alternatively, create a new `ControlPlane` with `restoreFrom` the latest
-   `Backup` and move the nodes (new token, `kubeadm join`).
-4. Afterwards: roll the API server
-   (`kubectl rollout restart deployment <cp>-kube-apiserver`), so that its
-   watch cache lists the restored data: nothing detects a restore, and the
-   sidecar keeps the snapshot's revisions until it bumps them (`todo.md`).
+1. Confirm: `DatastoreReady=False`, reason `QuorumLost` (wave 1b, HA); fewer than two members `Ready`.
+2. If members are down because of their node: bring the node back, or delete the pod so the StatefulSet reschedules it with its volume; quorum returns when two members agree.
+   A single member that lost its data is restored by the backup sidecar on its own; a lost member of three is re-added as a learner by etcd-druid.
+3. If quorum is lost for good (two of three volumes gone), follow etcd-druid's manual procedure: suspend its reconciliation with the annotations it documents, scale the StatefulSet to 0, delete the PVCs and member leases, set the cluster to one member, scale to 1 so it restores from the newest snapshots, re-enable reconciliation, and let Lodia scale back to 3 ([recovering etcd clusters](https://gardener.github.io/etcd-druid/usage/recovering-etcd-clusters.html)).
+   Alternatively, create a new `ControlPlane` with `restoreFrom` the latest `Backup` and move the nodes (new token, `kubeadm join`).
+4. Afterwards: roll the API server (`kubectl rollout restart deployment <cp>-kube-apiserver`), so that its watch cache lists the restored data: nothing detects a restore, and the sidecar keeps the snapshot's revisions until it bumps them (`todo.md`).
    Check that `BackupReady` is True again (wave 1b, backups).
 
 ### A Secret the Etcd mounts is gone
 
-etcd-druid holds its finalizer `druid.gardener.cloud/etcd-druid` on every
-Secret an `Etcd` references until none does
-([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/secret/reconciler.go#L44-L101)),
-so the certificate generation the `Etcd` names and `<cp>-etcd-backup` stay,
-terminating at worst, as long as it names them. Never remove that finalizer.
-If someone did and the Secrets are gone, a member that starts again cannot:
-the kubelet retries until the Secrets exist
-([secrets](https://kubernetes.io/docs/concepts/configuration/secret/#using-a-secret)).
+etcd-druid holds its finalizer `druid.gardener.cloud/etcd-druid` on every Secret an `Etcd` references until none does ([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/secret/reconciler.go#L44-L101)), so the certificate generation the `Etcd` names and `<cp>-etcd-backup` stay, terminating at worst, as long as it names them.
+Never remove that finalizer.
+If someone did and the Secrets are gone, a member that starts again cannot: the kubelet retries until the Secrets exist ([secrets](https://kubernetes.io/docs/concepts/configuration/secret/#using-a-secret)).
 
-1. A gone `<cp>-etcd-backup` comes back at the next pass, from the class's
-   Secret, while the class and its Secret exist: recreate a deleted class,
-   and restore its Secret if it is missing (until then the class is held and
-   the copy is not made).
-2. For a gone certificate generation, delete the `Etcd` `<cp>-etcd`, not the
-   `ControlPlane`. etcd-druid deletes the StatefulSet alone
-   ([statefulset.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/statefulset.go#L347-L363); it deletes claims
-   only on a scale-in, [pvccleanup.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/pvccleanup.go#L22-L58)), and
-   a StatefulSet keeps its claims by default
-   ([claim retention](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#persistentvolumeclaim-retention)). The Datastore controller creates the
-   `Etcd` again on the newest complete generation and the class the claims
-   record, and the new StatefulSet re-attaches the claims
-   `<cp>-etcd-<cp>-etcd-<n>` by name, so the members start on their data and
-   fresh mounts. Until then the condition says what is missing: a recorded
-   class that was deleted is `DatastoreClassNotFound` (recreate it), and a
-   class whose Secret is missing is `Provisioning`, `cannot be applied yet`
-   (restore it). Do it even when `DatastoreReady` turns True again by itself:
-   PKI numbers generations from the Secrets present and may have issued the
-   gone number again with new content, and the kubelet does not watch an
-   immutable Secret ([immutable Secrets](https://kubernetes.io/docs/concepts/configuration/secret/#secret-immutable)), so a running member
-   keeps the files it mounted. A single member is down until it starts
-   again.
+1. A gone `<cp>-etcd-backup` comes back at the next pass, from the class's Secret, while the class and its Secret exist: recreate a deleted class, and restore its Secret if it is missing (until then the class is held and the copy is not made).
+2. For a gone certificate generation, delete the `Etcd` `<cp>-etcd`, not the `ControlPlane`.
+   etcd-druid deletes the StatefulSet alone ([statefulset.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/statefulset.go#L347-L363); it deletes claims only on a scale-in, [pvccleanup.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/pvccleanup.go#L22-L58)), and a StatefulSet keeps its claims by default ([claim retention](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#persistentvolumeclaim-retention)).
+   The Datastore controller creates the `Etcd` again on the newest complete generation and the class the claims record, and the new StatefulSet re-attaches the claims `<cp>-etcd-<cp>-etcd-<n>` by name, so the members start on their data and fresh mounts.
+   Until then the condition says what is missing: a recorded class that was deleted is `DatastoreClassNotFound` (recreate it), and a class whose Secret is missing is `Provisioning`, `cannot be applied yet` (restore it).
+   Do it even when `DatastoreReady` turns True again by itself: PKI numbers generations from the Secrets present and may have issued the gone number again with new content, and the kubelet does not watch an immutable Secret ([immutable Secrets](https://kubernetes.io/docs/concepts/configuration/secret/#secret-immutable)), so a running member keeps the files it mounted.
+   A single member is down until it starts again.
 
 ### etcd space quota
 
-1. Confirm the `NOSPACE` alarm in the member's logs or metrics
-   (`etcd_server_quota_backend_bytes` against `etcd_mvcc_db_total_size_in_bytes`).
-2. Find what grew: usually Events or a controller writing large objects
-   inside the tenant; `kubectl get --raw /metrics | grep apiserver_storage_objects`
-   through the admin kubeconfig.
-3. Raise the class quota temporarily (`quotaBackendBytes`) or delete the
-   offending objects; then compaction and defragmentation run, and the alarm
-   is disarmed with `etcdctl alarm disarm`.
+1. Confirm the `NOSPACE` alarm in the member's logs or metrics (`etcd_server_quota_backend_bytes` against `etcd_mvcc_db_total_size_in_bytes`).
+2. Find what grew: usually Events or a controller writing large objects inside the tenant; `kubectl get --raw /metrics | grep apiserver_storage_objects` through the admin kubeconfig.
+3. Raise the class quota temporarily (`quotaBackendBytes`) or delete the offending objects; then compaction and defragmentation run, and the alarm is disarmed with `etcdctl alarm disarm`.
 
 ### Restore a tenant from backup
 
-The supported path is a new `ControlPlane` with `spec.restoreFrom`, which
-replaces the `Backup`'s source ([how](#everyday-tasks),
-[restore-replaces-the-source](decisions/restore-replaces-the-source.md)).
+The supported path is a new `ControlPlane` with `spec.restoreFrom`, which replaces the `Backup`'s source ([how](#everyday-tasks), [restore-replaces-the-source](decisions/restore-replaces-the-source.md)).
 
-Restoring in place under a running cluster follows the Kubernetes order:
-stop every API server, restore every etcd member from the same snapshot,
-start the API servers, then restart the controller manager and scheduler
-([operating etcd](https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/)).
-With Lodia: set `spec.paused: true`, scale the API server Deployment to 0,
-restore with `etcdutl snapshot restore --bump-revision 1000000000
---mark-compacted` so revisions keep moving forward and every watch ends and
-relists ([recovery](https://etcd.io/docs/v3.6/op-guide/recovery/)), then
-unpause; Lodia rolls the API server, the controller manager and the
-scheduler.
+Restoring in place under a running cluster follows the Kubernetes order: stop every API server, restore every etcd member from the same snapshot, start the API servers, then restart the controller manager and scheduler ([operating etcd](https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/)).
+With Lodia: set `spec.paused: true`, scale the API server Deployment to 0, restore with `etcdutl snapshot restore --bump-revision 1000000000 --mark-compacted` so revisions keep moving forward and every watch ends and relists ([recovery](https://etcd.io/docs/v3.6/op-guide/recovery/)), then unpause; Lodia rolls the API server, the controller manager and the scheduler.
 
 ### Stuck upgrade
 
-1. `status.kubernetes.upgrade.step` says the step, `Progressing`'s message
-   what failed; the upgrade resumes when the cause is gone.
-2. `Backup` step failing: the `Ready` message of the `Backup`
-   `<cp>-pre-upgrade-<version>-<ControlPlane UID>`. A failed `Backup` is final: delete it, and Lifecycle
-   takes it again. A class without a backup store skips it, and
-   `Progressing`'s message says so.
-3. API server step failing: a removed flag or feature gate in `extraArgs` or
-   `featureGates` is the usual cause; fix `spec`, the step retries.
-4. In-tenant step failing: an object the tenant refuses, named in
-   `AddonsApplied`; the addons' pods roll on the owner's nodes afterwards,
-   and an image they cannot pull (air gap, registry mirror missing) shows in
-   `AddonsAvailable`, not here.
-5. Rollback of a minor: create a new `ControlPlane` with `restoreFrom` the
-   `Backup` `<cp>-pre-upgrade-<version>-<ControlPlane UID>` and the old
-   `spec.version`; it
-   replaces the cluster, so delete the old one, or create the new one
-   `Released` once the old one is gone
-   ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)).
+1. `status.kubernetes.upgrade.step` says the step, `Progressing`'s message what failed; the upgrade resumes when the cause is gone.
+2. `Backup` step failing: the `Ready` message of the `Backup` `<cp>-pre-upgrade-<version>-<ControlPlane UID>`.
+   A failed `Backup` is final: delete it, and Lifecycle takes it again.
+   A class without a backup store skips it, and `Progressing`'s message says so.
+3. API server step failing: a removed flag or feature gate in `extraArgs` or `featureGates` is the usual cause; fix `spec`, the step retries.
+4. In-tenant step failing: an object the tenant refuses, named in `AddonsApplied`; the addons' pods roll on the owner's nodes afterwards, and an image they cannot pull (air gap, registry mirror missing) shows in `AddonsAvailable`, not here.
+5. Rollback of a minor: create a new `ControlPlane` with `restoreFrom` the `Backup` `<cp>-pre-upgrade-<version>-<ControlPlane UID>` and the old `spec.version`; it replaces the cluster, so delete the old one, or create the new one `Released` once the old one is gone ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)).
    A downgrade in place is not supported by Kubernetes.
 
 ### Forced CA rotation
 
-- **A kubeconfig or client certificate leaked:** rotate the client CA and
-  complete it at once (`rotate-client-ca-start`, then
-  `rotate-client-ca-complete`); every client certificate Lodia holds is
-  already re-issued, and kubelets whose certificates are still under the old
-  CA re-bootstrap with a new token (`kubeadm token create`, then on the node
-  `kubeadm reset` and `kubeadm join`), or wait for the automatic completion
-  after 30 days if the leak allows it.
+- **A kubeconfig or client certificate leaked:** rotate the client CA and complete it at once (`rotate-client-ca-start`, then `rotate-client-ca-complete`); every client certificate Lodia holds is already re-issued, and kubelets whose certificates are still under the old CA re-bootstrap with a new token (`kubeadm token create`, then on the node `kubeadm reset` and `kubeadm join`), or wait for the automatic completion after 30 days if the leak allows it.
 - **The cluster CA key leaked or the CA expires:** rotate the trust anchor.
-  Start it, add the new bundle to every node (`/etc/kubernetes/pki/ca.crt`
-  and the certificate authority in `/etc/kubernetes/kubelet.conf`), complete
-  it. Between start and complete both CAs are trusted; completing before the
-  nodes have the bundle cuts off every node that trusts only the old CA.
+  Start it, add the new bundle to every node (`/etc/kubernetes/pki/ca.crt` and the certificate authority in `/etc/kubernetes/kubelet.conf`), complete it.
+  Between start and complete both CAs are trusted; completing before the nodes have the bundle cuts off every node that trusts only the old CA.
 
 ### Nodes cut off from the control plane
 
-1. Confirm: `ControllerManagerHeld=True`, reason `NodesSilent` (wave 2, Health);
-   `status.health.controllerManagerHold` says since when and how many nodes
-   are silent. Workloads on the nodes keep running; the tenant's controllers do
-   not (no new ReplicaSets, no node IPAM) until the hold ends.
-2. Find the broken path: the Gateway listener and routes, DNS of the API
-   hostname, the network between the nodes and the Gateway. Kubelets log
-   their failed lease renewals.
-3. When the nodes reach the API again, Health releases the lease two minutes
-   later and the controller manager starts afresh; no node was tainted, no pod
-   evicted.
-4. If the nodes really are gone (a site lost for good), turn the hold off
-   with `spec.health.holdControllerManager: false`, so the controller manager
-   can mark them and move their pods to the nodes that remain
-   ([controller-manager-hold](decisions/controller-manager-hold.md)).
+1. Confirm: `ControllerManagerHeld=True`, reason `NodesSilent` (wave 2, Health); `status.health.controllerManagerHold` says since when and how many nodes are silent.
+   Workloads on the nodes keep running; the tenant's controllers do not (no new ReplicaSets, no node IPAM) until the hold ends.
+2. Find the broken path: the Gateway listener and routes, DNS of the API hostname, the network between the nodes and the Gateway.
+   Kubelets log their failed lease renewals.
+3. When the nodes reach the API again, Health releases the lease two minutes later and the controller manager starts afresh; no node was tainted, no pod evicted.
+4. If the nodes really are gone (a site lost for good), turn the hold off with `spec.health.holdControllerManager: false`, so the controller manager can mark them and move their pods to the nodes that remain ([controller-manager-hold](decisions/controller-manager-hold.md)).
 
 ### Operator down
 
-Tenants keep running: their pods, their certificates (valid for a year) and
-their etcds do not depend on Lodia being up. Changes to `ControlPlane`
-objects are accepted by the API (no webhooks) and applied when Lodia is
-back. Renewal and backups pause; the `LodiaOperatorDown` alert fires first.
+Tenants keep running: their pods, their certificates (valid for a year) and their etcds do not depend on Lodia being up.
+Changes to `ControlPlane` objects are accepted by the API (no webhooks) and applied when Lodia is back.
+Renewal and backups pause; the `LodiaOperatorDown` alert fires first.
 
 ## Alerts shipped in the chart
 
-From phase 2's wave 2, behind a value of `metrics.*` and off by default,
-written on the metrics of
-[metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md):
+From phase 2's wave 2, behind a value of `metrics.*` and off by default, written on the metrics of [metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md):
 
 | alert | fires when | means |
 |---|---|---|
@@ -246,22 +168,9 @@ Every alert links to its runbook section here.
 
 ## Capacity
 
-One idle control plane, as the nightly conformance run measures it before
-the suite starts
-([`TestConformance`](../test/e2e/README.md#nightly-conformance-and-the-idle-control-plane)):
-a `ControlPlane` of one replica at Kubernetes v1.37.0 with a dedicated etcd
-of one member, two nodes joined, the konnectivity agents and CoreDNS
-running and no workload, idle for 3 minutes. CPU is the rate of the
-kubelet's `container_cpu_usage_seconds_total` over the next 5 minutes and
-memory its `container_memory_working_set_bytes` at their end, both from the
-management kubelet's `/metrics/resource`
-([resource_metrics.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/kubelet/metrics/collectors/resource_metrics.go#L51-L63)).
-Measured on 2026-10-26 by nightly run
-[40360016124](https://github.com/lodia-io/lodia/actions/runs/40360016124)
-at e5686f8, on GitHub's `ubuntu-24.04` runner for private repositories
-([runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)):
-amd64, 2 CPUs and 7.8 GiB, kernel 6.17.0-1022-azure, in kind v0.33.0
-with its node image v1.37.0 (containerd 2.3.4) and etcd-druid v0.39.0.
+One idle control plane, as the nightly conformance run measures it before the suite starts ([`TestConformance`](../test/e2e/README.md#nightly-conformance-and-the-idle-control-plane)): a `ControlPlane` of one replica at Kubernetes v1.37.0 with a dedicated etcd of one member, two nodes joined, the konnectivity agents and CoreDNS running and no workload, idle for 3 minutes.
+CPU is the rate of the kubelet's `container_cpu_usage_seconds_total` over the next 5 minutes and memory its `container_memory_working_set_bytes` at their end, both from the management kubelet's `/metrics/resource` ([resource_metrics.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/kubelet/metrics/collectors/resource_metrics.go#L51-L63)).
+Measured on 2026-10-26 by nightly run [40360016124](https://github.com/lodia-io/lodia/actions/runs/40360016124) at e5686f8, on GitHub's `ubuntu-24.04` runner for private repositories ([runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)): amd64, 2 CPUs and 7.8 GiB, kernel 6.17.0-1022-azure, in kind v0.33.0 with its node image v1.37.0 (containerd 2.3.4) and etcd-druid v0.39.0.
 
 | pod | container | CPU (millicores) | memory (MiB) |
 |---|---|---:|---:|
@@ -274,35 +183,22 @@ with its node image v1.37.0 (containerd 2.3.4) and etcd-druid v0.39.0.
 | | `backup-restore` | 1.8 | 26.2 |
 | sum | | 62.3 | 392.5 |
 
-The sum replaces phase 0's target for a
-single idle control plane, 0.5 CPU and 1 GiB with etcd. CPU varies between runs more than memory: run
-[40334709578](https://github.com/lodia-io/lodia/actions/runs/40334709578)
-on the same runner measured 43.3 millicores and 387.7 MiB. The nightly now
-runs on the public runner, 4 CPUs and 15.6 GiB, where run
-[40371428547](https://github.com/lodia-io/lodia/actions/runs/40371428547)
-measured 55.4 millicores and 422.9 MiB; the table stays run 40360016124's.
-A highly available control plane's target stays 1.5 CPU and 2.5 GiB. A
-management cluster sized for N tenants needs the sum of their requests on
-its control plane nodes, plus room to roll one Deployment of every tenant
-(the fleet limit bounds how many roll at once), plus etcd volumes with low
-fsync latency.
+The sum replaces phase 0's target for a single idle control plane, 0.5 CPU and 1 GiB with etcd.
+CPU varies between runs more than memory: run [40334709578](https://github.com/lodia-io/lodia/actions/runs/40334709578) on the same runner measured 43.3 millicores and 387.7 MiB.
+The nightly now runs on the public runner, 4 CPUs and 15.6 GiB, where run [40371428547](https://github.com/lodia-io/lodia/actions/runs/40371428547) measured 55.4 millicores and 422.9 MiB; the table stays run 40360016124's.
+A highly available control plane's target stays 1.5 CPU and 2.5 GiB.
+A management cluster sized for N tenants needs the sum of their requests on its control plane nodes, plus room to roll one Deployment of every tenant (the fleet limit bounds how many roll at once), plus etcd volumes with low fsync latency.
 
-The operator: two replicas; memory grows with the number of tenants it
-caches (label-scoped, metadata-only for Secrets); the phase 4 gate is 200
-tenants under 2 GiB.
+The operator: two replicas; memory grows with the number of tenants it caches (label-scoped, metadata-only for Secrets); the phase 4 gate is 200 tenants under 2 GiB.
 
 ## Upgrading Lodia
 
-`helm upgrade`. The chart upgrades the CRDs first (served versions are only
-added, never removed, within a major), then the operator. From phase 2's
-wave 2 a tenant renders with the new release once Lifecycle grants it the
-operator revision: in its window, `fleet.maxConcurrentRollouts` tenants at a
-time, or at once when its owner edits its spec; before wave 2, every tenant
-at once. The release notes list what changes per component. Rolling back
-the chart is safe while the CRDs did not add a stored version; to the
-tenants it is one more revision. A `ControlPlane` stored with an
-`extraArgs` flag the new schema refuses keeps that map while it is
-unchanged, and the next change to the map must drop the flag.
+`helm upgrade`.
+The chart upgrades the CRDs first (served versions are only added, never removed, within a major), then the operator.
+From phase 2's wave 2 a tenant renders with the new release once Lifecycle grants it the operator revision: in its window, `fleet.maxConcurrentRollouts` tenants at a time, or at once when its owner edits its spec; before wave 2, every tenant at once.
+The release notes list what changes per component.
+Rolling back the chart is safe while the CRDs did not add a stored version; to the tenants it is one more revision.
+A `ControlPlane` stored with an `extraArgs` flag the new schema refuses keeps that map while it is unchanged, and the next change to the map must drop the flag.
 
 ## Support policy
 

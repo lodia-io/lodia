@@ -1,14 +1,10 @@
 # What we learned from existing solutions
 
-Before designing Lodia we studied how the projects that run Kubernetes
-control planes as a service do it: what they host where, how they store,
-back up, rotate, upgrade and expose control planes, and what their users run
-into. This page is the summary; every statement links the project's own
-documentation, code or issue tracker. Survey date: 2026-10-23.
+Before designing Lodia we studied how the projects that run Kubernetes control planes as a service do it: what they host where, how they store, back up, rotate, upgrade and expose control planes, and what their users run into.
+This page is the summary; every statement links the project's own documentation, code or issue tracker.
+Survey date: 2026-10-23.
 
-We describe problems as they appear across the category, not as faults of
-one project: most of them are hard trade-offs that every project resolves
-differently, and the projects below are the reason this space works at all.
+We describe problems as they appear across the category, not as faults of one project: most of them are hard trade-offs that every project resolves differently, and the projects below are the reason this space works at all.
 
 ## What we studied
 
@@ -27,119 +23,53 @@ differently, and the projects below are the reason this space works at all.
 
 ## What we found across the category
 
-**A change to one secret restarts the whole control plane.** Renewing a
-certificate or changing a Secret commonly rolls every control plane
-component, or replaces machines: k0smotron stamps a certificate fingerprint
-onto the pod template
-([certificates](https://docs.k0smotron.io/stable/certificates/)), vCluster's
-rotation restarts the tenant cluster
-([certificates](https://www.vcluster.com/docs/vcluster/manage/certificates)),
-and KubeadmControlPlane rotates certificates by rolling machines
-([auto-rotate](https://cluster-api.sigs.k8s.io/tasks/certs/auto-rotate-certificates-in-kcp)).
-With every component in one pod, the API server restarts for a scheduler
-flag.
+**A change to one secret restarts the whole control plane.**
+Renewing a certificate or changing a Secret commonly rolls every control plane component, or replaces machines: k0smotron stamps a certificate fingerprint onto the pod template ([certificates](https://docs.k0smotron.io/stable/certificates/)), vCluster's rotation restarts the tenant cluster ([certificates](https://www.vcluster.com/docs/vcluster/manage/certificates)), and KubeadmControlPlane rotates certificates by rolling machines ([auto-rotate](https://cluster-api.sigs.k8s.io/tasks/certs/auto-rotate-certificates-in-kcp)).
+With every component in one pod, the API server restarts for a scheduler flag.
 
-**Nobody rotates a CA automatically, and a rotation often means touching
-every node.** Gardener rotates in manual stages and rolls nodes
-([credentials rotation](https://gardener.cloud/docs/gardener/shoot-operations/shoot_credentials_rotation/)),
-HyperShift's root CAs are never auto-rotated
-([control plane certificates](https://github.com/openshift/hypershift/blob/main/docs/content/how-to/pki/control-plane-certificates.md)),
-k0smotron does not renew CAs
-([certificates](https://docs.k0smotron.io/stable/certificates/)), vCluster's
-CA rotation breaks existing kubeconfigs and joined nodes must re-join
-([certificates](https://www.vcluster.com/docs/vcluster/manage/certificates)),
-and Cluster API calls it non-trivial
-([custom certificates](https://cluster-api.sigs.k8s.io/tasks/certs/using-custom-certificates)).
+**Nobody rotates a CA automatically, and a rotation often means touching every node.**
+Gardener rotates in manual stages and rolls nodes ([credentials rotation](https://gardener.cloud/docs/gardener/shoot-operations/shoot_credentials_rotation/)), HyperShift's root CAs are never auto-rotated ([control plane certificates](https://github.com/openshift/hypershift/blob/main/docs/content/how-to/pki/control-plane-certificates.md)), k0smotron does not renew CAs ([certificates](https://docs.k0smotron.io/stable/certificates/)), vCluster's CA rotation breaks existing kubeconfigs and joined nodes must re-join ([certificates](https://www.vcluster.com/docs/vcluster/manage/certificates)), and Cluster API calls it non-trivial ([custom certificates](https://cluster-api.sigs.k8s.io/tasks/certs/using-custom-certificates)).
 
-**A shared datastore makes tenant separation a property of code.** etcd has
-one quota for the whole cluster and no quota per key prefix
-([maintenance](https://etcd.io/docs/v3.6/op-guide/maintenance/)), so one
-tenant's growth is every tenant's outage; prefix permissions are correct only
-if every range end and every name-to-prefix mapping is
-([RBAC](https://etcd.io/docs/v3.6/op-guide/authentication/rbac/)). Projects
-that run hosted control planes at scale give each tenant its own etcd
-(Gardener, HyperShift, KKP, Cozystack).
+**A shared datastore makes tenant separation a property of code.**
+etcd has one quota for the whole cluster and no quota per key prefix ([maintenance](https://etcd.io/docs/v3.6/op-guide/maintenance/)), so one tenant's growth is every tenant's outage; prefix permissions are correct only if every range end and every name-to-prefix mapping is ([RBAC](https://etcd.io/docs/v3.6/op-guide/authentication/rbac/)).
+Projects that run hosted control planes at scale give each tenant its own etcd (Gardener, HyperShift, KKP, Cozystack).
 
-**Storage and topology choices are hard to change later.** A backing store
-cannot change in place in vCluster
-([backing store](https://www.vcluster.com/docs/vcluster/configure/vcluster-yaml/control-plane/components/backing-store/)),
-a NATS store's size is fixed in k0smotron
-([NATS](https://docs.k0smotron.io/stable/nats/)), KKP's expose strategy and
-HyperShift's etcd type are immutable
-([expose strategies](https://docs.kubermatic.com/kubermatic/main/tutorials-howtos/networking/expose-strategies/),
-[API](https://github.com/openshift/hypershift/blob/main/docs/content/reference/api.md)).
+**Storage and topology choices are hard to change later.**
+A backing store cannot change in place in vCluster ([backing store](https://www.vcluster.com/docs/vcluster/configure/vcluster-yaml/control-plane/components/backing-store/)), a NATS store's size is fixed in k0smotron ([NATS](https://docs.k0smotron.io/stable/nats/)), KKP's expose strategy and HyperShift's etcd type are immutable ([expose strategies](https://docs.kubermatic.com/kubermatic/main/tutorials-howtos/networking/expose-strategies/), [API](https://github.com/openshift/hypershift/blob/main/docs/content/reference/api.md)).
 
-**Admission webhooks couple availability.** A webhook with a failing
-backend blocks what it guards; Gardener even reports user webhooks that block
-hibernation or maintenance as a shoot constraint
-([shoot status](https://github.com/gardener/gardener/blob/master/docs/usage/shoot/shoot_status.md)).
-An operator whose own webhooks fail closed turns its outage into an outage
-of every object it validates.
+**Admission webhooks couple availability.**
+A webhook with a failing backend blocks what it guards; Gardener even reports user webhooks that block hibernation or maintenance as a shoot constraint ([shoot status](https://github.com/gardener/gardener/blob/master/docs/usage/shoot/shoot_status.md)).
+An operator whose own webhooks fail closed turns its outage into an outage of every object it validates.
 
-**Backups cover less than operators expect.** Snapshots that omit volumes
-and certificates
-([vCluster backup](https://www.vcluster.com/docs/vcluster/manage/backup-restore/)),
-restore only at creation and with the saved encryption key
-([HyperShift](https://hypershift-docs.netlify.app/how-to/aws/etc-backup-restore/)),
-restores that pause the cluster
-([KKP](https://docs.kubermatic.com/kubermatic/main/tutorials-howtos/etcd-backups/)),
-no point-in-time recovery
-([Gardener](https://gardener.cloud/docs/gardener/concepts/backup-restore/)).
-Gardener's continuous full and delta snapshots with automatic restore are the
-most complete.
+**Backups cover less than operators expect.**
+Snapshots that omit volumes and certificates ([vCluster backup](https://www.vcluster.com/docs/vcluster/manage/backup-restore/)), restore only at creation and with the saved encryption key ([HyperShift](https://hypershift-docs.netlify.app/how-to/aws/etc-backup-restore/)), restores that pause the cluster ([KKP](https://docs.kubermatic.com/kubermatic/main/tutorials-howtos/etcd-backups/)), no point-in-time recovery ([Gardener](https://gardener.cloud/docs/gardener/concepts/backup-restore/)).
+Gardener's continuous full and delta snapshots with automatic restore are the most complete.
 
-**One load balancer per control plane is the cost driver.** Gardener
-measured it (one LB per shoot, quotas, slow provisioning) and moved to SNI
-multiplexing on one LB per seed
-([GEP-08](https://github.com/gardener/enhancements/blob/main/geps/0008-shoot-apiserver-via-sni/README.md));
-KKP offers an SNI tunnelling strategy
-([expose strategies](https://docs.kubermatic.com/kubermatic/main/tutorials-howtos/networking/expose-strategies/)).
-Once many control planes share one address, pods inside a tenant can no
-longer reach `kubernetes.default` through it without SNI, and each project
-ships a per-node proxy or rewrites the Service's endpoints.
+**One load balancer per control plane is the cost driver.**
+Gardener measured it (one LB per shoot, quotas, slow provisioning) and moved to SNI multiplexing on one LB per seed ([GEP-08](https://github.com/gardener/enhancements/blob/main/geps/0008-shoot-apiserver-via-sni/README.md)); KKP offers an SNI tunnelling strategy ([expose strategies](https://docs.kubermatic.com/kubermatic/main/tutorials-howtos/networking/expose-strategies/)).
+Once many control planes share one address, pods inside a tenant can no longer reach `kubernetes.default` through it without SNI, and each project ships a per-node proxy or rewrites the Service's endpoints.
 
-**Listeners on nodes bind wider than they need to.** Talos Omni moved its
-metrics to loopback and stopped embedded etcd listening by default in 1.13
-([releases](https://github.com/siderolabs/omni/releases)); we found
-konnectivity agents and kube-proxy health ports on every interface of nodes
-we run ourselves. A node of a hosted control plane needs no inbound port at
-all.
+**Listeners on nodes bind wider than they need to.**
+Talos Omni moved its metrics to loopback and stopped embedded etcd listening by default in 1.13 ([releases](https://github.com/siderolabs/omni/releases)); we found konnectivity agents and kube-proxy health ports on every interface of nodes we run ourselves.
+A node of a hosted control plane needs no inbound port at all.
 
-**Upgrade order is often left to the user.** Gardener, HyperShift and KKP
-enforce version skew in their API or UI
-([worker pool versions](https://github.com/gardener/gardener/blob/master/docs/usage/shoot-operations/worker_pool_k8s_versions.md),
-[HyperShift updating](https://docs.okd.io/latest/hosted_control_planes/hcp-updating.html),
-[KKP upgrades](https://docs.kubermatic.com/kubermatic/main/tutorials-howtos/operation/control-plane/upgrading-the-control-plane/));
-in smaller projects the order of control plane, add-ons and nodes is a
-manual plan ([k0smotron autopilot](https://docs.k0smotron.io/stable/update/hcp-autopilot/)).
+**Upgrade order is often left to the user.**
+Gardener, HyperShift and KKP enforce version skew in their API or UI ([worker pool versions](https://github.com/gardener/gardener/blob/master/docs/usage/shoot-operations/worker_pool_k8s_versions.md), [HyperShift updating](https://docs.okd.io/latest/hosted_control_planes/hcp-updating.html), [KKP upgrades](https://docs.kubermatic.com/kubermatic/main/tutorials-howtos/operation/control-plane/upgrading-the-control-plane/)); in smaller projects the order of control plane, add-ons and nodes is a manual plan ([k0smotron autopilot](https://docs.k0smotron.io/stable/update/hcp-autopilot/)).
 
-**An outage between the control plane and its nodes evicts healthy
-workloads.** Remote nodes stop renewing their leases when the path to their
-control plane breaks, and the controller manager cannot tell that from dead
-machines: it taints them and evicts their pods after the toleration.
-Kubernetes stops evicting when every node goes silent at once, but a taint
-added before can stay
-([kubernetes#131481](https://github.com/kubernetes/kubernetes/issues/131481)).
-Gardener guards its clusters with a dependency-watchdog that stops the
-controller manager while node leases expire and the API server answers
-([configuration](https://github.com/gardener/dependency-watchdog/blob/master/docs/deployment/configure.md)).
+**An outage between the control plane and its nodes evicts healthy workloads.**
+Remote nodes stop renewing their leases when the path to their control plane breaks, and the controller manager cannot tell that from dead machines: it taints them and evicts their pods after the toleration.
+Kubernetes stops evicting when every node goes silent at once, but a taint added before can stay ([kubernetes#131481](https://github.com/kubernetes/kubernetes/issues/131481)).
+Gardener guards its clusters with a dependency-watchdog that stops the controller manager while node leases expire and the API server answers ([configuration](https://github.com/gardener/dependency-watchdog/blob/master/docs/deployment/configure.md)).
 
-**A new operator release can roll the whole fleet at once.** Re-rendering
-every control plane the moment an operator upgrades turns one changed
-default into a fleet-wide rollout. Gardener bounds it with maintenance
-windows and per-seed limits
-([shoot maintenance](https://gardener.cloud/docs/gardener/shoot/shoot_maintenance/)).
+**A new operator release can roll the whole fleet at once.**
+Re-rendering every control plane the moment an operator upgrades turns one changed default into a fleet-wide rollout.
+Gardener bounds it with maintenance windows and per-seed limits ([shoot maintenance](https://gardener.cloud/docs/gardener/shoot/shoot_maintenance/)).
 
-**Hibernation is uneven.** Built into Gardener with schedules
-([hibernation](https://gardener.cloud/docs/gardener/shoot/shoot_hibernate/)),
-available as scaling to zero elsewhere, unavailable with vCluster private
-nodes ([private nodes](https://www.vcluster.com/docs/vcluster/configure/vcluster-yaml/private-nodes)),
-absent from the HyperShift, k0smotron and KKP documentation.
+**Hibernation is uneven.**
+Built into Gardener with schedules ([hibernation](https://gardener.cloud/docs/gardener/shoot/shoot_hibernate/)), available as scaling to zero elsewhere, unavailable with vCluster private nodes ([private nodes](https://www.vcluster.com/docs/vcluster/configure/vcluster-yaml/private-nodes)), absent from the HyperShift, k0smotron and KKP documentation.
 
-**Fresh control planes can roll twice.** When two steps of a reconcile
-render the same Deployment (first without an add-on, then with it), a new
-control plane gets two rollouts before it is ever ready, and every later
-toggle of that add-on does the same.
+**Fresh control planes can roll twice.**
+When two steps of a reconcile render the same Deployment (first without an add-on, then with it), a new control plane gets two rollouts before it is ever ready, and every later toggle of that add-on does the same.
 
 ## Where the bar is
 
@@ -180,15 +110,9 @@ toggle of that add-on does the same.
 
 ## What we take from each
 
-- **Kamaji:** control planes as plain workloads on a management cluster,
-  kubeadm-joined nodes, Gateway API exposure, a write lock in the tenant.
-- **Gardener:** etcd-druid and its backups, staged credential rotation,
-  maintenance windows, the dependency watchdog, the apiserver-proxy and SNI
-  model, ManagedResource-style apply and prune, hibernation, short-lived admin
-  kubeconfigs.
-- **HyperShift:** a Deployment per component, its tenancy invariants, a
-  documented PKI and sizing.
+- **Kamaji:** control planes as plain workloads on a management cluster, kubeadm-joined nodes, Gateway API exposure, a write lock in the tenant.
+- **Gardener:** etcd-druid and its backups, staged credential rotation, maintenance windows, the dependency watchdog, the apiserver-proxy and SNI model, ManagedResource-style apply and prune, hibernation, short-lived admin kubeconfigs.
+- **HyperShift:** a Deployment per component, its tenancy invariants, a documented PKI and sizing.
 - **KKP:** declarative backup schedules and restores as objects.
-- **Cluster API:** a published support policy; the provider contract Lodia's
-  own Cluster API provider will implement.
+- **Cluster API:** a published support policy; the provider contract Lodia's own Cluster API provider will implement.
 - **Talos Omni:** nodes that need egress only.
