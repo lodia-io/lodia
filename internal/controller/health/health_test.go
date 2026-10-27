@@ -389,8 +389,11 @@ func TestAFailedLeaseReadKeepsControllersLeading(t *testing.T) {
 
 	writeKubeconfig(t, cp, tenantKubeconfig)
 	reconcile(t, r, cp)
-	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, "the leader Leases of kube-controller-manager and kube-scheduler are renewed"); err != nil {
-		t.Fatalf("after a failed read, a lease counts as renewed when it is read again: %v", err)
+	renewed := start.UTC().Format(time.RFC3339)
+	if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonControllerManagerNotLeading,
+		"Lease kube-system/kube-controller-manager of dev-kube-controller-manager-7d9_1 was last renewed "+renewed+
+			"; Lease kube-system/kube-scheduler of dev-kube-scheduler-5c4_2 was last renewed "+renewed); err != nil {
+		t.Fatalf("after a failed read, the leases unchanged since they were first seen: %v", err)
 	}
 }
 

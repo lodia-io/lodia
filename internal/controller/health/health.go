@@ -182,8 +182,7 @@ func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPla
 }
 
 // leading returns nil to keep the condition as it is when a read of a Lease
-// fails, and forgets the Leases' versions, so each counts as changed when it
-// is read again (docs/README.md, Health).
+// fails (docs/README.md, Health).
 func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*metav1.Condition, error) {
 	key := client.ObjectKeyFromObject(cp)
 	waiting := func(message string) (*metav1.Condition, error) {
@@ -223,7 +222,6 @@ func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 			message = "Lease " + lodiav1alpha1.LeaderElectionNamespace + "/" + l.name + " does not exist"
 		case err != nil:
 			logf.FromContext(ctx).Error(err, "read a leader Lease", "lease", l.name)
-			r.forget(key)
 			return nil, nil
 		default:
 			message = r.stale(key, lease, now)
