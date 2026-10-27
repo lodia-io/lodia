@@ -1,6 +1,6 @@
 # While most of a tenant's nodes are silent, Lodia holds its controller manager's leader lease
 
-Decided 2026-10-25; the timings Lodia owns decided 2026-10-26. Not built:
+Decided 2026-10-25. Not built:
 the hold and its timings come with phase 2's wave 2 (Health), and
 `ControllersLeading` with wave 1b (HA) ([roadmap](../roadmap.md)).
 
@@ -47,11 +47,11 @@ the control plane and its nodes:
   60 seconds, to upstream behaviour; a Lodia that restarts keeps a hold it
   finds with holder `lodia`. A paused `ControlPlane` gets no writes, so its
   hold lapses within those 60 seconds.
-- **Settings.** On by default; `spec.health.holdControllerManager: false`
-  turns it off for one `ControlPlane`, releases a hold in progress at once
-  and reports `ControllerManagerHeld=False`, reason `Disabled`. The
-  thresholds (20 s, 60%, 2 min) and the period (5 s) are operator
-  configuration.
+- **Settings.** On by default, off for one `ControlPlane` with
+  `spec.health.holdControllerManager: false`
+  ([the field](../api/controlplane.md#spec)). The
+  thresholds and the period are
+  [operator configuration](../README.md#installation).
 - **Lodia owns the timings the hold races.** The hold works only if the
   controller manager exits before its node lifecycle controller marks the
   first silent node. Workloads renders that controller's grace period and
@@ -90,7 +90,7 @@ seconds:
 
 | grace period | margin |
 |---|---|
-| 40 s (Gardener's default, [defaults_shoot.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/apis/core/v1beta1/defaults_shoot.go#L117-L119), and the HA example's until this decision) | −7.4 s: the first node can be marked and tainted before the exit |
+| 40 s (Gardener's default, [defaults_shoot.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/apis/core/v1beta1/defaults_shoot.go#L117-L119)) | −7.4 s: the first node can be marked and tainted before the exit |
 | 50 s (upstream's default, [defaults.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/nodelifecycle/config/v1alpha1/defaults.go#L46)) | 2.6 s, before any delay in Health's queue, the API or a failover of the operator |
 | 60 s (Lodia's) | 12.6 s |
 
@@ -166,15 +166,13 @@ are evicted as upstream does.
   tenant: no new ReplicaSets, no garbage collection, no node IPAM; changes wait
   for the release (on Segla's platform, a Deployment created during a hold got
   its ReplicaSet 5 seconds after the release).
-- `ControllerManagerHeld=True` with reason `NodesSilent`, outside `Ready`
-  since the API answers; `status.health.controllerManagerHold` says since
-  when and how many nodes, and the alert `LodiaControllerManagerHeld` fires
-  after 15 minutes.
+- A hold shows in `ControllerManagerHeld`, outside `Ready`,
+  `status.health.controllerManagerHold` and an alert
+  ([reasons](../api/controlplane.md#conditions-and-their-reasons),
+  [alerts](../operations.md#alerts-shipped-in-the-chart)).
 - A platform that already runs such a watchdog turns it off before relying on
   Lodia's; Segla's bosun steps down when Segla moves to Lodia.
-- The phase 2 gate cuts both workers of a tenant from the control plane and
-  checks that no node is tainted and no pod is replaced
-  ([roadmap](../roadmap.md)).
+- The phase 2 gate tests the hold ([roadmap](../roadmap.md)).
 
 ## Code
 
