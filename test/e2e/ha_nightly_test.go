@@ -21,6 +21,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	watchtools "k8s.io/client-go/tools/watch"
 	"k8s.io/utils/ptr"
@@ -64,7 +65,7 @@ func TestHighAvailabilityRemovedAndRestored(t *testing.T) {
 		}).
 		Assess("adding it back scales etcd out to three members and each component to two replicas, availability never leaving True", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			start := time.Now()
-			stop := watchPods(ctx, t, k8s, key)
+			stop := watchPods(ctx, t, k8s, kubernetes.NewForConfigOrDie(cfg.Client().RESTConfig()), key)
 			setHighAvailability(ctx, t, k8s, key, zone)
 			until(ctx, t, 10*time.Minute, "three members and two replicas each, Ready", func(ctx context.Context) error {
 				return shaped(ctx, k8s, key, 3, 2)
@@ -108,8 +109,15 @@ func shaped(ctx context.Context, k8s client.Client, key client.ObjectKey, member
 	if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: lodiav1alpha1.EtcdName(key.Name)}, etcd); err != nil {
 		return err
 	}
-	if etcd.Spec.Replicas != members || etcd.Status.ReadyReplicas != members || len(etcd.Status.Members) != int(members) || !druidv1alpha1.HasScaleOperationCompleted(etcd) {
-		return fmt.Errorf("Etcd %s asks for %d members, %d ready, members %+v, conditions %+v", etcd.Name, etcd.Spec.Replicas, etcd.Status.ReadyReplicas, etcd.Status.Members, etcd.Status.Conditions)
+	if etcd.Spec.Replicas != members || ptr.Deref(etcd.Status.ObservedGeneration, 0) != etcd.Generation || etcd.Status.ReadyReplicas != members || len(etcd.Status.Members) != int(members) || !druidv1alpha1.HasScaleOperationCompleted(etcd) {
+		return fmt.Errorf("Etcd %s asks for %d members, generation %d observed %d, %d ready, members %+v, conditions %+v", etcd.Name, etcd.Spec.Replicas, etcd.Generation, ptr.Deref(etcd.Status.ObservedGeneration, 0), etcd.Status.ReadyReplicas, etcd.Status.Members, etcd.Status.Conditions)
+	}
+	sts := &appsv1.StatefulSet{}
+	if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: etcd.Name}, sts); err != nil {
+		return err
+	}
+	if s := sts.Status; ptr.Deref(sts.Spec.Replicas, 0) != members || s.ObservedGeneration != sts.Generation || s.CurrentRevision != s.UpdateRevision || s.UpdatedReplicas != members || s.ReadyReplicas != members {
+		return fmt.Errorf("StatefulSet %s asks for %d, generation %d observed %d, revision %s of %s, %d updated, %d ready", sts.Name, ptr.Deref(sts.Spec.Replicas, 0), sts.Generation, s.ObservedGeneration, s.CurrentRevision, s.UpdateRevision, s.UpdatedReplicas, s.ReadyReplicas)
 	}
 	for _, component := range []string{lodiav1alpha1.APIServerComponent, "kube-controller-manager", "kube-scheduler"} {
 		name := key.Name + "-" + component
@@ -168,7 +176,7 @@ func explainEtcd(ctx context.Context, t *testing.T, k8s client.Client, key clien
 	}
 }
 
-func watchPods(ctx context.Context, t *testing.T, k8s client.WithWatch, key client.ObjectKey) func() {
+func watchPods(ctx context.Context, t *testing.T, k8s client.WithWatch, logs kubernetes.Interface, key client.ObjectKey) func() {
 	t.Helper()
 	pods := &corev1.PodList{}
 	selector := client.MatchingLabels{lodiav1alpha1.ControlPlaneLabel: key.Name}
@@ -184,6 +192,12 @@ func watchPods(ctx context.Context, t *testing.T, k8s client.WithWatch, key clie
 		cancel()
 		t.Fatal(err)
 	}
+	seen := map[string]int32{}
+	for _, pod := range pods.Items {
+		for _, c := range pod.Status.ContainerStatuses {
+			seen[pod.Name+"/"+c.Name] = c.RestartCount
+		}
+	}
 	var mu sync.Mutex
 	var lines []string
 	done := make(chan struct{})
@@ -195,9 +209,13 @@ func watchPods(ctx context.Context, t *testing.T, k8s client.WithWatch, key clie
 				continue
 			}
 			var restarts int32
-			var states []string
+			var states, previous []string
 			for _, c := range pod.Status.ContainerStatuses {
 				restarts += c.RestartCount
+				if container := pod.Name + "/" + c.Name; c.RestartCount > seen[container] {
+					seen[container] = c.RestartCount
+					previous = append(previous, previousLog(watching, logs, pod, c)...)
+				}
 				switch {
 				case c.State.Waiting != nil:
 					states = append(states, c.Name+" waiting "+c.State.Waiting.Reason)
@@ -214,6 +232,7 @@ func watchPods(ctx context.Context, t *testing.T, k8s client.WithWatch, key clie
 			mu.Lock()
 			lines = append(lines, fmt.Sprintf("%s pod %s %s on %s: %s, ready %t, deleting %t, %d restarts %v",
 				time.Now().UTC().Format(time.RFC3339Nano), event.Type, pod.Name, pod.Spec.NodeName, pod.Status.Phase, ready, !pod.DeletionTimestamp.IsZero(), restarts, states))
+			lines = append(lines, previous...)
 			mu.Unlock()
 		}
 	}()
@@ -227,4 +246,18 @@ func watchPods(ctx context.Context, t *testing.T, k8s client.WithWatch, key clie
 			t.Log(line)
 		}
 	}
+}
+
+func previousLog(ctx context.Context, logs kubernetes.Interface, pod *corev1.Pod, c corev1.ContainerStatus) []string {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	raw, err := logs.CoreV1().Pods(pod.Namespace).GetLogs(pod.Name, &corev1.PodLogOptions{Container: c.Name, Previous: true, TailLines: new(int64(20))}).DoRaw(ctx)
+	if err != nil {
+		return []string{fmt.Sprintf("pod %s container %s, the log before restart %d: %v", pod.Name, c.Name, c.RestartCount, err)}
+	}
+	var out []string
+	for line := range strings.Lines(string(raw)) {
+		out = append(out, fmt.Sprintf("pod %s container %s, before restart %d: %s", pod.Name, c.Name, c.RestartCount, strings.TrimRight(line, "\n")))
+	}
+	return out
 }
