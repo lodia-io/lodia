@@ -1,7 +1,7 @@
 # Lodia runs no admission webhooks: validation and defaults live in the CRD schema
 
 Decided 2026-10-25.
-The schema rules and defaults are built; the conditions and the tenant write lock come with their controllers.
+The schema rules, the defaults and the controllers' conditions are built; the tenant write lock comes with phase 3 ([roadmap](../roadmap.md)).
 
 ## Decision
 
