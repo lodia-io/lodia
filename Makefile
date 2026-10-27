@@ -7,6 +7,7 @@
 ENVTEST_K8S_VERSION ?= 1.35.0
 E2E_CLUSTER ?= lodia-e2e-local
 E2E_DIR ?= $(CURDIR)/work/e2e
+E2E_HA_TEST ?= TestHighAvailabilityGate
 CHART = charts/lodia
 CONTROLLERS = datastore health lifecycle pki tenant workloads
 GENERATED = api/v1alpha1/zz_generated.deepcopy.go api/crds/*.yaml $(CHART)/files/crds/*.yaml $(CHART)/files/rbac/*.yaml
@@ -62,10 +63,10 @@ else
 endif
 
 .PHONY: e2e-ha
-e2e-ha: ## gate G2 against a highly available tenant, on a kind cluster of its own with three workers in three zones, that it deletes afterwards
+e2e-ha: ## gate G2 against a highly available tenant, on a kind cluster of its own with three workers in three zones, that it deletes afterwards; E2E_HA_TEST=TestHighAvailabilityRemovedAndRestored runs the nightly test instead
 	mkdir -p $(E2E_DIR)
 	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig --config test/e2e/testdata/kind-ha.yaml
-	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,ha -count=1 -timeout 30m -run '^TestHighAvailabilityGate$$' ./test/e2e/...; status=$$?; \
+	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,ha -count=1 -timeout 40m -run '^$(E2E_HA_TEST)$$' ./test/e2e/...; status=$$?; \
 	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 || status=1; \
 	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
 

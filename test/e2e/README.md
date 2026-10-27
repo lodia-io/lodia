@@ -136,6 +136,12 @@ Two steps follow, the second once the first has recovered:
 In each step `Ready` must not leave `True` for longer than 5 seconds, Health's period in the gate, and neither loop may lose a request.
 The test logs each recorded change and, for each condition, the longest time it was not `True`.
 
+## Nightly: highAvailability removed and added back
+
+`TestHighAvailabilityRemovedAndRestored`, in the same build tag and on the same cluster shape as G2, runs every night in the `high-availability` job of [`nightly.yml`](../../.github/workflows/nightly.yml), on demand, and on a pull request that changes the workflow or the test; `make e2e-ha E2E_HA_TEST=TestHighAvailabilityRemovedAndRestored` runs it locally.
+A tenant with `failureTolerance: Zone` turns `Ready` with three etcd members and two replicas of each component.
+Removing `highAvailability` must then leave it `Ready` with one member, one replica of each component and no PodDisruptionBudget, once etcd-druid has completed the scale-in, and adding it back must bring the three members, the two replicas and the budgets back, each within 10 minutes.
+
 ## Nightly: conformance and the idle control plane
 
 `TestConformance` checks the conformance item of the
