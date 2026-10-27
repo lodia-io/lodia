@@ -59,6 +59,16 @@ const (
 	// as a rotation (docs/decisions/one-controlplane-per-cluster.md).
 	OperationAnnotation = "lodia.io/operation"
 
+	// MaintainRequestedAtAnnotation, set by the platform on a ControlPlane,
+	// asks Lifecycle for the maintenance pending now, outside the window:
+	// each new value once, recorded in status.maintenance.lastHandled.
+	MaintainRequestedAtAnnotation = "lodia.io/maintain-requested-at"
+
+	// OperatorRevisionAnnotation, written by Workloads, Tenant and the
+	// Datastore controller on the objects they render, records the operator
+	// revision they were rendered with.
+	OperatorRevisionAnnotation = "lodia.io/operator-revision"
+
 	// DatastoreFinalizer, held by the Datastore controller, keeps a
 	// ControlPlane until its etcd is deleted and its claims reclaimed.
 	DatastoreFinalizer = "lodia.io/datastore"

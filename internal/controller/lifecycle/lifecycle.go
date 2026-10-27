@@ -70,7 +70,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		observedGeneration: cp.Status.ObservedGeneration,
 	}
 	if cp.Status.Target != nil {
-		next.target = lodiav1alpha1.Target{Version: cp.Status.Target.Version, Reason: cp.Status.Target.Reason}
+		next.target = lodiav1alpha1.Target{Version: cp.Status.Target.Version}
 	}
 	switch {
 	case !cp.DeletionTimestamp.IsZero():
@@ -94,13 +94,13 @@ func target(cp *lodiav1alpha1.ControlPlane, current string) (lodiav1alpha1.Targe
 	want := cp.Spec.Version
 	if _, ok := versions.For(want); !ok {
 		message := fmt.Sprintf("spec.version %s is not of a minor Lodia runs: %s", want, strings.Join(versions.Minors(), ", "))
-		return lodiav1alpha1.Target{Version: current, Reason: lodiav1alpha1.ReasonUnsupported},
+		return lodiav1alpha1.Target{Version: current},
 			newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, message)
 	}
 	wantMinor, _ := versions.Minor(want)
 	if currentMinor, ok := versions.Minor(current); ok && currentMinor != wantMinor {
 		message := fmt.Sprintf("spec.version %s is another minor than the target %s, which stays until minor upgrades are supported", want, current)
-		return lodiav1alpha1.Target{Version: current, Reason: lodiav1alpha1.ReasonUnsupported},
+		return lodiav1alpha1.Target{Version: current},
 			newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, message)
 	}
 	return lodiav1alpha1.Target{Version: want},
@@ -142,7 +142,7 @@ func newCondition(cp *lodiav1alpha1.ControlPlane, conditionType string, status m
 func (r *Reconciler) apply(ctx context.Context, cp *lodiav1alpha1.ControlPlane, next owned) error {
 	previousTarget := lodiav1alpha1.Target{}
 	if cp.Status.Target != nil {
-		previousTarget = lodiav1alpha1.Target{Version: cp.Status.Target.Version, Reason: cp.Status.Target.Reason}
+		previousTarget = lodiav1alpha1.Target{Version: cp.Status.Target.Version}
 	}
 	changed := next.target != previousTarget || next.observedGeneration != cp.Status.ObservedGeneration
 	conditions := slices.Clone(cp.Status.Conditions)
@@ -169,9 +169,6 @@ func (r *Reconciler) apply(ctx context.Context, cp *lodiav1alpha1.ControlPlane, 
 	target := map[string]any{}
 	if next.target.Version != "" {
 		target["version"] = next.target.Version
-	}
-	if next.target.Reason != "" {
-		target["reason"] = next.target.Reason
 	}
 	if len(target) > 0 {
 		fields["target"] = target

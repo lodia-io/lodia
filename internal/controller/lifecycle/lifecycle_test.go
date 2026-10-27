@@ -147,14 +147,14 @@ func asLifecycleController(cfg *rest.Config) (*rest.Config, error) {
 
 func TestTheTargetFollowsTheVersionWithinAMinor(t *testing.T) {
 	cp := controlPlane(t, "v1.35.0")
-	eventually(t, func() error { return expect(t, cp, "v1.35.0", "", lodiav1alpha1.ReasonIdle) })
+	eventually(t, func() error { return expect(t, cp, "v1.35.0", lodiav1alpha1.ReasonIdle) })
 
 	setVersion(t, cp, "v1.35.1")
-	eventually(t, func() error { return expect(t, cp, "v1.35.1", "", lodiav1alpha1.ReasonIdle) })
+	eventually(t, func() error { return expect(t, cp, "v1.35.1", lodiav1alpha1.ReasonIdle) })
 
 	setVersion(t, cp, "v1.36.0")
 	eventually(t, func() error {
-		return expect(t, cp, "v1.35.1", lodiav1alpha1.ReasonUnsupported, lodiav1alpha1.ReasonUnsupported)
+		return expect(t, cp, "v1.35.1", lodiav1alpha1.ReasonUnsupported)
 	})
 	if c := condition(t, cp, lodiav1alpha1.ConditionProgressing); c.Message != "spec.version v1.36.0 is another minor than the target v1.35.1, which stays until minor upgrades are supported" {
 		t.Errorf("Progressing says %q", c.Message)
@@ -162,7 +162,7 @@ func TestTheTargetFollowsTheVersionWithinAMinor(t *testing.T) {
 
 	setVersion(t, cp, "v1.38.0")
 	eventually(t, func() error {
-		return expect(t, cp, "v1.35.1", lodiav1alpha1.ReasonUnsupported, lodiav1alpha1.ReasonUnsupported)
+		return expect(t, cp, "v1.35.1", lodiav1alpha1.ReasonUnsupported)
 	})
 	if c := condition(t, cp, lodiav1alpha1.ConditionProgressing); c.Message != "spec.version v1.38.0 is not of a minor Lodia runs: 1.35, 1.36, 1.37" {
 		t.Errorf("Progressing says %q", c.Message)
@@ -172,11 +172,11 @@ func TestTheTargetFollowsTheVersionWithinAMinor(t *testing.T) {
 func TestAnUnsupportedMinorGetsNoTarget(t *testing.T) {
 	cp := controlPlane(t, "v1.34.2")
 	eventually(t, func() error {
-		return expect(t, cp, "", lodiav1alpha1.ReasonUnsupported, lodiav1alpha1.ReasonUnsupported)
+		return expect(t, cp, "", lodiav1alpha1.ReasonUnsupported)
 	})
 
 	setVersion(t, cp, "v1.35.0")
-	eventually(t, func() error { return expect(t, cp, "v1.35.0", "", lodiav1alpha1.ReasonIdle) })
+	eventually(t, func() error { return expect(t, cp, "v1.35.0", lodiav1alpha1.ReasonIdle) })
 }
 
 func TestReadyFollowsTheReadinessConditions(t *testing.T) {
@@ -211,16 +211,16 @@ func TestReadyFollowsTheReadinessConditions(t *testing.T) {
 
 func TestAPausedControlPlaneKeepsItsTarget(t *testing.T) {
 	cp := controlPlane(t, "v1.35.0")
-	eventually(t, func() error { return expect(t, cp, "v1.35.0", "", lodiav1alpha1.ReasonIdle) })
+	eventually(t, func() error { return expect(t, cp, "v1.35.0", lodiav1alpha1.ReasonIdle) })
 
 	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) {
 		cp.Spec.Paused = true
 		cp.Spec.Version = "v1.35.1"
 	})
-	eventually(t, func() error { return expect(t, cp, "v1.35.0", "", lodiav1alpha1.ReasonPaused) })
+	eventually(t, func() error { return expect(t, cp, "v1.35.0", lodiav1alpha1.ReasonPaused) })
 
 	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = false })
-	eventually(t, func() error { return expect(t, cp, "v1.35.1", "", lodiav1alpha1.ReasonIdle) })
+	eventually(t, func() error { return expect(t, cp, "v1.35.1", lodiav1alpha1.ReasonIdle) })
 }
 
 func TestReadyDuringDeletion(t *testing.T) {
@@ -356,7 +356,7 @@ func condition(t *testing.T, cp *lodiav1alpha1.ControlPlane, conditionType strin
 	return meta.FindStatusCondition(get(t, cp).Status.Conditions, conditionType)
 }
 
-func expect(t *testing.T, cp *lodiav1alpha1.ControlPlane, version, targetReason, progressing string) error {
+func expect(t *testing.T, cp *lodiav1alpha1.ControlPlane, version, progressing string) error {
 	t.Helper()
 	fresh := get(t, cp)
 	target := lodiav1alpha1.Target{}
@@ -365,8 +365,8 @@ func expect(t *testing.T, cp *lodiav1alpha1.ControlPlane, version, targetReason,
 	}
 	c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionProgressing)
 	switch {
-	case target.Version != version || target.Reason != targetReason:
-		return fmt.Errorf("target is %q with reason %q, want %q with %q", target.Version, target.Reason, version, targetReason)
+	case target.Version != version:
+		return fmt.Errorf("target is %q, want %q", target.Version, version)
 	case c == nil || c.Status != metav1.ConditionFalse || c.Reason != progressing || c.ObservedGeneration != fresh.Generation:
 		return fmt.Errorf("Progressing is %+v, want False %s at generation %d", c, progressing, fresh.Generation)
 	}

@@ -67,7 +67,7 @@ in [`api/examples/`](api/examples/).
 | Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady` | `status.target`, `status.datastore`, `CertificatesReady`, `DatastoreReady` |
 | Tenant | objects inside the tenant cluster, with an inventory | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
 | Health | status, and from phase 2's wave 2 the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable`, and `ControllersLeading` from wave 1b; `ControllerManagerHeld` outside `Ready` from wave 2 | `status.endpoint` and the CA bundle; `AccessReady` from wave 1b |
-| Lifecycle | `status.target`, `Progressing`, `Ready`; the pre-upgrade `Backup` | `Progressing` | the others |
+| Lifecycle | `status.target`, `Progressing`, `Ready`; from phase 2's wave 2 `status.kubernetes`, `status.maintenance` and the pre-upgrade `Backup` | `Progressing` | the others |
 
 Each controller has its own queue and field manager, reads `spec`,
 `status.target` and the endpoint Workloads publishes, and reports through its
@@ -256,6 +256,8 @@ The labels, annotations and the finalizer they share are defined in
 | annotation `lodia.io/datastore-class-generation` | the `Etcd` | Datastore | Datastore, for `status.datastore.class` |
 | annotation `lodia.io/data-hash` | every Secret PKI writes | PKI: `DataHash` of the Secret's data, a SHA-256 that changes whenever the data does | Workloads, for the restart hashes of its pod templates |
 | annotation `lodia.io/operation` | a `ControlPlane` | the platform | Lifecycle and PKI, with rotations in phase 3 |
+| annotation `lodia.io/maintain-requested-at` | a `ControlPlane` | the platform: a new value asks for the pending maintenance now | Lifecycle, from phase 2's wave 2, which grants it outside the window, once per value, and records the value in `status.maintenance.lastHandled` |
+| annotation `lodia.io/operator-revision` | every object Workloads, Tenant and the Datastore controller render, never a pod template | each of them, from phase 2's wave 2: the operator revision the object was rendered with | each writer, which reports the revision in `status` once the object has rolled out |
 | finalizer `lodia.io/datastore` | a `ControlPlane` | Datastore | the API server, which deletes the `ControlPlane` once it is gone |
 | finalizer `lodia.io/restore-source` | a `Backup` | the backup reconciler of the Datastore controller, from phase 2's wave 1b | the API server, which deletes the `Backup` once every `ControlPlane` restoring from it has an encryption configuration of its own |
 
@@ -740,16 +742,20 @@ the current generation.
 
 ### Upgrades and windows
 
-One minor at a time, in the order the version skew policy allows: backup →
-API server → controller manager and scheduler → in-tenant components →
-nodes by their owner. User changes roll now; changes Lodia initiates
-(patch updates, a new Lodia release, a restart-only renewal) wait for the
-tenant's maintenance window and the fleet limit
+From phase 2's wave 2: one minor at a time, in the order the version skew
+policy allows: backup → API server → controller manager and scheduler →
+in-tenant components → nodes by their owner. Lifecycle moves one target,
+`status.target.version`, and each renderer follows what runs: the controller
+manager and the scheduler the API server's reported version, the in-tenant
+components the oldest component's. The owner's changes roll now; changes
+Lodia initiates (patch updates, a new operator revision, an edit of a
+`DatastoreClass`, a restart-only renewal) wait for the tenant's maintenance
+window and the fleet limit, and `Progressing` says where a change stands
 ([decision](decisions/upgrades-and-maintenance-windows.md)).
 
 ```mermaid
 flowchart LR
-  v["CEL: minor never decreases"] --> b["Backup pre-upgrade-vX"] --> kas["kube-apiserver rolls<br/>/readyz on every replica"] --> kcm["controller manager, scheduler<br/>leader elected"] --> add["kube-proxy, CoreDNS, agents<br/>rollouts complete"] --> done["status.kubernetes.version = vX<br/>nodes: owner's pace, skew ≤ 3 minors"]
+  v["preflight: next minor in the table,<br/>DatastoreReady, kubelets ≤ 3 minors behind,<br/>no hold"] --> b["the pre-upgrade Backup"] --> kas["kube-apiserver rolls<br/>every replica updated and ready"] --> kcm["controller manager, scheduler roll<br/>at the API server's version"] --> add["kube-proxy, CoreDNS, agents<br/>applied at the oldest component's"] --> done["status.kubernetes.version = vX<br/>nodes: owner's pace"]
 ```
 
 ### Hibernation
@@ -763,7 +769,7 @@ stateDiagram-v2
 ```
 
 Volumes stay; snapshots continue to exist; rotations and patch updates wait
-until the control plane is awake and say so in `status.target.reason`.
+until the control plane is awake, and `Progressing` says so.
 Nodes are not Lodia's to stop; their owner scales them down or lets them
 sit (kubelets retry the API without harm).
 
@@ -982,7 +988,9 @@ The phase 1 chart installs:
 - etcd-druid v0.39.0 as a dependency, the chart etcd-druid's release workflow
   publishes to `oci://europe-docker.pkg.dev/gardener-project/releases/charts/gardener/etcd-druid`
   ([base.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/.github/workflows/base.yaml#L60-L84)),
-  with `enableEtcdSpecAutoReconcile` on; `etcdDruid.enabled=false` skips it
+  with `enableEtcdSpecAutoReconcile` on until phase 2's wave 2 turns it off
+  ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md));
+  `etcdDruid.enabled=false` skips it
   where etcd-druid is already installed, and `etcdDruidNamespace` then names
   the namespace it runs in. The operator gets etcd-druid's namespace, the
   release's or that one, as `--etcd-druid-namespace`, for each etcd's
@@ -1029,10 +1037,10 @@ it from values):
 
 | key | meaning | default |
 |---|---|---|
-| `versions` | the Kubernetes versions Lodia runs and, per minor, the images of kube-apiserver, controller manager, scheduler, kube-proxy, CoreDNS, konnectivity, etcd; each with an end-of-support date | the table shipped with the release |
+| `versions` | the Kubernetes versions Lodia runs and, per minor, the images of kube-apiserver, controller manager, scheduler, kube-proxy, CoreDNS, konnectivity, etcd, the `latest` patch, which patch updates move to, and the end-of-support date | the table shipped with the release |
 | `registry` | a mirror prefix for every image, for air-gapped sites | `registry.k8s.io` |
 | `controllers.<name>.workers` | concurrent reconciles per controller | 10 |
-| `fleet.maxConcurrentRollouts` | tenants rolling Lodia-initiated changes at once | 5 |
+| `fleet.maxConcurrentRollouts` | tenants rolling a change Lodia started at once; a tenant whose such change failed keeps its slot, so failures halt maintenance across the fleet | 5 |
 | `tenant.applyInterval` | the inventory re-apply period | 10m |
 | `health.period` | how often Health probes each control plane and reads its leases; 10 seconds until the operator reads this file | 5s |
 | `health.failuresBeforeFalse` | failed passes in a row that turn `Reachable` False | 3 |
@@ -1042,9 +1050,11 @@ it from values):
 | `defaults.resources.<component>` | requests and limits per component | from the idle usage measured in phase 1 ([Capacity](operations.md#capacity)) |
 
 Upgrading Lodia: `helm upgrade`; Lodia's CRDs upgrade with the chart,
-etcd-druid's do not (above); tenants' pod templates re-render in their
-windows from phase 2 on, at once before it, and the release notes say what
-changes ([decision](decisions/upgrades-and-maintenance-windows.md)).
+etcd-druid's do not (above). From phase 2's wave 2 a tenant renders with the
+new release only once Lifecycle grants it the operator revision, in its
+window and within the fleet limit, or at once when its owner edits its spec;
+before wave 2, at once. The release notes say what changes
+([decision](decisions/upgrades-and-maintenance-windows.md)).
 
 ## Operations
 

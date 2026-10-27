@@ -137,8 +137,10 @@ type BackupStatus struct {
 	// +optional
 	Source *UIDReference `json:"source,omitempty"`
 
-	// KubernetesVersion is the version the source's API server ran when the
-	// Backup was sealed, which wrote the data.
+	// KubernetesVersion is the version the source ran when the Backup was
+	// sealed: its status.kubernetes.version, or its status.target.version
+	// until Lifecycle writes the former. A ControlPlane restored from the
+	// Backup runs the same minor.
 	// +optional
 	// +kubebuilder:validation:MaxLength=16
 	KubernetesVersion string `json:"kubernetesVersion,omitempty"`

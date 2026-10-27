@@ -47,3 +47,10 @@ func TestTheLongestBackupNameLeavesRoomForItsEncryptionSecret(t *testing.T) {
 		}
 	}
 }
+
+func TestAPreUpgradeBackupNameIsABackupName(t *testing.T) {
+	name := lodiav1alpha1.PreUpgradeBackupName(strings.Repeat("a", 32), "v1."+strings.Repeat("9", 6)+"."+strings.Repeat("9", 6))
+	if errs := validation.IsDNS1123Subdomain(name); len(errs) > 0 || len(name) > 235 {
+		t.Errorf("%s is no Backup name: %v", name, errs)
+	}
+}

@@ -35,9 +35,23 @@ were decided on 2026-10-27 and come with phase 2's wave 1b, backups
   depends on etcd-druid's, which etcd-druid's release workflow publishes as
   a versioned OCI chart,
   [base.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/.github/workflows/base.yaml#L60-L84)),
-  run with `enableEtcdSpecAutoReconcile: true` so a spec
-  change reconciles without an annotation, and with its optional components
-  webhook off ([configuration](https://gardener.github.io/etcd-druid/deployment/configure-etcd-druid.html)).
+  run with its optional components webhook off
+  ([configuration](https://gardener.github.io/etcd-druid/deployment/configure-etcd-druid.html))
+  and, from phase 2's wave 2, without the automatic reconcile of a changed
+  spec, `enableEtcdSpecAutoReconcile: false`, its chart's default: with it,
+  etcd-druid reconciles the spec of every `Etcd` on every pass, so a new
+  etcd-druid release re-renders every etcd as soon as it starts, and it
+  warns that this can roll a single member with an outage
+  ([reconcile_spec.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcd/reconcile_spec.go#L193-L223),
+  [types.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/config/v1alpha1/types.go#L131-L138),
+  [values.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/charts/values.yaml#L61)).
+  The Datastore controller asks for each reconcile with the annotation
+  `druid.gardener.cloud/operation: reconcile`
+  ([helper.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/helper.go#L321-L324)),
+  as Gardener does, whenever it changes the `Etcd`'s spec and once for each
+  operator revision Lifecycle grants
+  ([upgrades-and-maintenance-windows](upgrades-and-maintenance-windows.md));
+  until wave 2 the chart turns the automatic reconcile on.
   What Lodia gets from it, per tenant:
   - full and delta snapshots to S3, GCS, Azure Blob, Swift and other stores,
     with garbage collection;

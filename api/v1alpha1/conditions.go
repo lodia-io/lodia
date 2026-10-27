@@ -149,5 +149,13 @@ const (
 	ReasonIdle                        = "Idle"
 	ReasonPaused                      = "Paused"
 	ReasonRollingOut                  = "RollingOut"
+	ReasonUpgrading                   = "Upgrading"
+	ReasonMaintaining                 = "Maintaining"
+	ReasonWaitingForWindow            = "WaitingForWindow"
+	ReasonFleetLimit                  = "FleetLimit"
+	ReasonWaitingForNodes             = "WaitingForNodes"
+	ReasonControllerManagerHeld       = "ControllerManagerHeld"
+	ReasonTimeZoneUnsupported         = "TimeZoneUnsupported"
+	ReasonMaintenanceFailed           = "MaintenanceFailed"
 	ReasonLatestGenerationNotObserved = "LatestGenerationNotObserved"
 )

@@ -72,13 +72,15 @@ is a decision — a decision is a file in `docs/decisions/`.
   ([known_features.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/client-go/features/known_features.go#L115-L117)):
   on 1.35 a trust anchor rotation restarts every component whose kubeconfig
   names the CA file; plan it into the phase 3 rotation.
-- Argo CD has no generic health check for custom resources: the chart ships
-  a Lua health check for `ControlPlane` that reads `status.observedGeneration`
-  and `Ready`
-  ([health checks](https://github.com/argoproj/argo-cd/blob/v3.5.6/docs/operator-manual/health.md#L61-L83));
-  Flux reads the same through kstatus, where a permanently failing object
-  stays InProgress until a timeout unless it reports `Stalled`
-  ([kstatus](https://github.com/kubernetes-sigs/cli-utils/blob/v0.37.2/pkg/kstatus/status/status.go#L102-L183)).
+- Phase 2: Argo CD has no generic health check for custom resources
+  ([health checks](https://github.com/argoproj/argo-cd/blob/v3.5.6/docs/operator-manual/health.md#L61-L83)),
+  and kstatus, through which Flux waits, keeps a permanently failing object
+  InProgress until a timeout unless it reports `Stalled`
+  ([kstatus](https://github.com/kubernetes-sigs/cli-utils/blob/v0.37.2/pkg/kstatus/status/status.go#L102-L183));
+  Lodia writes no kstatus `Reconciling`, so the docs ship an Argo CD Lua
+  health check and a Flux `healthCheckExprs` entry
+  ([kustomizations.md](https://github.com/fluxcd/kustomize-controller/blob/v1.10.1/docs/spec/v1/kustomizations.md#L351-L374))
+  for `ControlPlane`, both reading `status.observedGeneration` and `Ready`.
 
 ## From the Datastore controller (2026-10-25)
 
@@ -180,15 +182,6 @@ is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the contracts audit (2026-10-25)
 
-- Phase 2: one `status.target.version` cannot order an upgrade's steps,
-  since Workloads and Tenant both render from it; a target per step, decided
-  with a status field that says which version each component runs, and
-  `status.kubernetes.version` written from it: Cluster API creates no worker
-  while a control plane reports no version
-  ([preflight](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/core/reconcilers/machineset/machineset_preflight.go#L174-L181),
-  [provisioning](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/internal/contract/controlplane.go#L277-L293)).
-- Phase 2: `nodes.outdatedKubelets` compares against the tenant's own
-  `/version`.
 - Phase 2: `KubeconfigRequest` gets a named status writer.
 - Phase 3: `target.rotation.*`, which `Target` lacks, gets a stage enum of
   its own instead of sharing PKI's observed `RotationPhase`, and

@@ -12,8 +12,9 @@ itself and the support policy. Installation is in
 | Get access as a person | create a `KubeconfigRequest` ([example](api/examples/kubeconfigrequest.yaml)); read the Secret named in its `status.secretRef`; it expires on its own |
 | Get access for automation | grant `get` on the Secret `<cp>-admin-kubeconfig` by `resourceNames`, never on the namespace's Secrets, which hold the class's backup credentials in `<cp>-etcd-backup`; read it; every copy is revoked by the client CA rotation (phase 3), not by deleting the ClusterRoleBinding `lodia:cluster-admins` in the tenant, which PKI applies again on its next pass |
 | Join a node | with an admin kubeconfig: `kubeadm token create --print-join-command --kubeconfig admin.kubeconfig`; run the printed `kubeadm join …` on the machine; it needs outbound 443 to the endpoint and nothing inbound |
-| Upgrade Kubernetes | set `spec.version`; watch `status.kubernetes.upgrade` and `Progressing`; Lodia goes one minor at a time; nodes follow at the owner's pace |
-| Get patch updates automatically | `spec.maintenance.autoUpdate.kubernetesPatch: true` and a `maintenance.window` |
+| Upgrade Kubernetes | set `spec.version`; watch `status.kubernetes.upgrade` and `Progressing`; from phase 2's wave 2 Lodia goes one minor at a time, each minor step after the `Backup` `<cp>-pre-upgrade-<version>`, and `status.kubernetes.version` moves once every part runs the new version; nodes follow at the owner's pace, at most three minors behind. Until wave 2, a patch within the running minor only |
+| Get patch updates automatically | `spec.maintenance.autoUpdate.kubernetesPatch: true` and a `maintenance.window`: in the window the target moves to the version table's `latest` patch of the minor, and `spec.version` stays as written (wave 2) |
+| Roll pending maintenance now | `kubectl annotate controlplane <cp> lodia.io/maintain-requested-at="$(date -u +%FT%TZ)" --overwrite`: each new value rolls what waits for the window once, outside it and without a slot of the fleet; `status.maintenance.lastHandled` shows the value handled (wave 2) |
 | Rotate client identities (yearly, or after a leaked kubeconfig) | `kubectl annotate controlplane <cp> lodia.io/operation=rotate-client-ca-start`; it completes on its own after one kubelet signing duration (30 days), nodes untouched |
 | Rotate the ServiceAccount key | `…=rotate-serviceaccount-key-start`; when `status.credentials.rotation.serviceAccountKey.phase` is `Prepared` and no client holds an old token, `…=rotate-serviceaccount-key-complete` |
 | Rotate the etcd encryption key, the etcd CA, the front-proxy CA | `…=rotate-etcd-encryption-key-start`, `…=rotate-etcd-ca-start`, `…=rotate-front-proxy-ca-start`; each completes on its own |
@@ -23,7 +24,7 @@ itself and the support policy. Installation is in
 | Replace a cluster from a `Backup` | create a new `ControlPlane` with `spec.restoreFrom.backupRef`; it serves the copy's data from the start and runs no controller manager until `spec.restoreFrom.release` is `Released` and the source `ControlPlane` is gone, which `ControllersLeading` reports; delete the source, or create the new one `Released` if the source is gone already; nodes join it anew with a new token ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)). Built in wave 1b, backups: until then nothing reads `restoreFrom`, and the `ControlPlane` starts empty. A clone beside a live source is for tools that restore through the API |
 | Stop Lodia touching a cluster | `spec.paused: true`; everything keeps running, nothing is reconciled; deleting a paused `ControlPlane` waits until it is unpaused |
 | Turn the controller manager hold off for a cluster | `spec.health.holdControllerManager: false`; a hold in progress is released at once |
-| Change a `DatastoreClass` | edit it; a value etcd-druid or the backup sidecar would refuse is refused when the class is written ([the rules](README.md#a-tenant-namespace)); an edit that changes the `Etcd`'s spec reaches the `Etcd` of every tenant on the class at once and rolls their members, a single member with an outage, until Lifecycle holds class edits for each tenant's maintenance window in phase 2; the storage class and size reach only `Etcd`s created afterwards, and the reclaim policy, `retention.afterDelete`, the credentials' `secretRef` and the region roll nothing |
+| Change a `DatastoreClass` | edit it; a value etcd-druid or the backup sidecar would refuse is refused when the class is written ([the rules](README.md#a-tenant-namespace)); an edit that changes the `Etcd`'s spec reaches the `Etcd` of every tenant on the class at once and rolls their members, a single member with an outage, until an edit that reaches the `Etcd` waits for each tenant's maintenance window, from phase 2's wave 2; the storage class and size reach only `Etcd`s created afterwards, and the reclaim policy, `retention.afterDelete`, the credentials' `secretRef` and the region roll nothing |
 | Rotate a backup store's credentials | create a new Secret with the new keys and point the class's `backup.store.secretRef` at it: the class edit reaches every tenant on the class at once and rolls nothing, since the `Etcd` names the copy, whose name stays; once every tenant's `<cp>-etcd-backup` (labelled `lodia.io/control-plane`) holds the new keys, revoke the old ones. Editing the class's Secret in place reaches each tenant only at its next pass, at worst 10 hours later. A class pointed at a Secret that does not exist yet, or whose old Secret is deleted first, is held until the Secret exists: the copies keep their last keys and the certificates keep moving. Whether the backup sidecar reads new keys without a restart is open (`todo.md`) |
 | Delete a cluster | delete the `ControlPlane`; its finalizer deletes the `Etcd`, then with `storage.reclaimPolicy: Delete` the claims `<cp>-etcd-<cp>-etcd-<n>`, with `Retain` keeps them (`kubectl get pvc -L lodia.io/control-plane-uid` shows whose each is); the last snapshot comes with backups in phase 2, and nothing deletes the snapshots: a lifecycle rule of the bucket expires old prefixes |
 
@@ -66,9 +67,11 @@ itself and the support policy. Installation is in
 | `AddonsApplied=False`, `Applying` | the message names it: an object that exists and is not Lodia's, another owner's under a name Lodia renders, such as one's own CoreDNS (delete it, and Lodia applies its own within the apply period, or disable the addon), an inventory `kube-system/lodia-inventory` that cannot be read (delete it, and every object is applied again), or a tenant that has not answered yet; Lodia's log (`controller="tenant"`) has the answer |
 | `AddonsAvailable=False`, `RolloutPending` | the DaemonSet or Deployment inside the tenant; a node that cannot pull images; a CNI missing (pods of CoreDNS stay Pending until a CNI is installed) |
 | `kubectl logs` / `exec` hang, everything else works | the konnectivity path: agents connected to every server (`konnectivity_network_proxy_server_ready_backend_connections`), the agent's DaemonSet, outbound 443 for the konnectivity hostname |
-| `Progressing=False`, `WaitingForWindow` (phase 2) for long | expected outside the window; `status.target.scheduledFor` says when |
-| `Progressing=False`, `FleetLimit` (phase 2) | other tenants are rolling; the operator's `fleet.maxConcurrentRollouts` |
-| `Progressing=False`, `Failed` (phase 2) | `status.kubernetes.upgrade.step` and `message`; the [stuck upgrade](#stuck-upgrade) runbook |
+| `Progressing=False`, `WaitingForWindow` (wave 2) for long | expected outside the window; `status.target.scheduledFor` says when it opens, and `lodia.io/maintain-requested-at` rolls the change now |
+| `Progressing=False`, `FleetLimit` (wave 2) | other tenants roll a change Lodia started, or failed one and keep their slots (`LodiaMaintenanceHalted`); the operator's `fleet.maxConcurrentRollouts`; `status.target.scheduledFor` orders the queue |
+| `Progressing=False`, `Failed` or `MaintenanceFailed` (wave 2) | `status.kubernetes.upgrade.step` and `Progressing`'s message; the [stuck upgrade](#stuck-upgrade) runbook |
+| `Progressing=False`, `WaitingForNodes` (wave 2) | a kubelet more than three minors older than the next minor, `status.nodes.oldestKubelet`; upgrade the nodes first |
+| `Progressing=False`, `TimeZoneUnsupported` (wave 2) | `spec.maintenance.window.timeZone` is not in the operator's zone database; an IANA name such as `Europe/Berlin` |
 | Nothing changes after editing `spec` | `metadata.generation` against `status.observedGeneration`; `spec.paused`; the operator's leader and its logs |
 
 ## Runbooks
@@ -163,14 +166,24 @@ scheduler.
 
 ### Stuck upgrade
 
-1. `status.kubernetes.upgrade` says the step and the message.
-2. API server step failing: a removed flag or feature gate in `extraArgs` or
+1. `status.kubernetes.upgrade.step` says the step, `Progressing`'s message
+   what failed; the upgrade resumes when the cause is gone.
+2. `Backup` step failing: the `Backup` `<cp>-pre-upgrade-<version>`'s
+   `Ready` message. A failed `Backup` is final: delete it, and Lifecycle
+   takes it again. A class without a backup store skips it, and
+   `Progressing`'s message says so.
+3. API server step failing: a removed flag or feature gate in `extraArgs` or
    `featureGates` is the usual cause; fix `spec`, the step retries.
-3. In-tenant step failing: an addon image not pullable from the tenant's
-   nodes (air gap, registry mirror missing).
-4. Rollback of a minor: create a new `ControlPlane` with `restoreFrom` the
-   `pre-upgrade-<version>` backup and the old `spec.version`; a downgrade in
-   place is not supported by Kubernetes.
+4. In-tenant step failing: an object the tenant refuses, named in
+   `AddonsApplied`; the addons' pods roll on the owner's nodes afterwards,
+   and an image they cannot pull (air gap, registry mirror missing) shows in
+   `AddonsAvailable`, not here.
+5. Rollback of a minor: create a new `ControlPlane` with `restoreFrom` the
+   `Backup` `<cp>-pre-upgrade-<version>` and the old `spec.version`; it
+   replaces the cluster, so delete the old one, or create the new one
+   `Released` once the old one is gone
+   ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)).
+   A downgrade in place is not supported by Kubernetes.
 
 ### Forced CA rotation
 
@@ -222,7 +235,8 @@ back. Renewal and backups pause; the `LodiaOperatorDown` alert fires first.
 | `LodiaEtcdSpaceNearQuota` | the database above 80% of the quota | compaction is not keeping up, or the tenant writes too much |
 | `LodiaEtcdNoLeader` | a dedicated etcd without a leader for 1 m | quorum or network inside the management cluster |
 | `LodiaControllerManagerHeld` | the hold active for 15 m | most nodes cannot reach the control plane; the tenant's workloads run, its controllers wait |
-| `LodiaUpgradeFailed` | `Progressing=False`, reason `Failed` (phase 2) | the stuck upgrade runbook |
+| `LodiaUpgradeFailed` | `Progressing=False`, reason `Failed` (wave 2) | the stuck upgrade runbook |
+| `LodiaMaintenanceHalted` | as many tenants `Progressing=False`, `MaintenanceFailed`, as `fleet.maxConcurrentRollouts` (wave 2) | changes Lodia starts are halted across the fleet; the stuck upgrade runbook for each |
 | `LodiaReconcileErrors` | a controller's error rate above 5% for 15 m | the operator logs, by controller |
 
 Every alert links to its runbook section here.
@@ -278,16 +292,19 @@ tenants under 2 GiB.
 ## Upgrading Lodia
 
 `helm upgrade`. The chart upgrades the CRDs first (served versions are only
-added, never removed, within a major), then the operator. New pod templates
-roll into tenants in their maintenance windows, N at a time; the release
-notes list what changes per component. Rolling back the chart is safe while
-the CRDs did not add a stored version.
+added, never removed, within a major), then the operator. From phase 2's
+wave 2 a tenant renders with the new release once Lifecycle grants it the
+operator revision: in its window, `fleet.maxConcurrentRollouts` tenants at a
+time, or at once when its owner edits its spec; before wave 2, every tenant
+at once. The release notes list what changes per component. Rolling back
+the chart is safe while the CRDs did not add a stored version; to the
+tenants it is one more revision.
 
 ## Support policy
 
 | what | supported |
 |---|---|
-| Tenant Kubernetes versions | the minors the Kubernetes project maintains, today 1.35, 1.36 and 1.37; a minor leaves Lodia's version table one release after it leaves upstream support |
+| Tenant Kubernetes versions | the minors the Kubernetes project maintains, today 1.35, 1.36 and 1.37; a minor leaves Lodia's version table with the first release after it leaves upstream support, and stays renderable for one more release, only as the source of an upgrade; from wave 2 tenants are warned ahead of its end-of-support date |
 | Management cluster | a maintained minor with the CEL features the CRDs use: 1.35 or newer today |
 | Lodia versions | until 1.0, the latest minor gets fixes; from 1.0, the two latest minors |
 | API versions | `v1alpha1` may change between minors until `v1beta1`; from `v1beta1`, changes are additive and conversion needs no webhook |

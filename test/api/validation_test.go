@@ -219,6 +219,12 @@ func TestControlPlaneValidation(t *testing.T) {
 		{"window at 25:00", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, map[string]any{"begin": "25:00", "end": "04:00"}, "spec", "maintenance", "window")
 		}, "spec.maintenance.window.begin"},
+		{"a window that ends where it begins", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, map[string]any{"begin": "02:00", "end": "02:00"}, "spec", "maintenance", "window")
+		}, "begin and end must differ"},
+		{"a window across midnight", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, map[string]any{"begin": "22:00", "end": "02:00", "timeZone": "Europe/Kyiv"}, "spec", "maintenance", "window")
+		}, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -616,6 +622,31 @@ func TestEndpointStatus(t *testing.T) {
 			written := obj.DeepCopy()
 			set(t, written, tc.endpoint, "status", "endpoint")
 			expect(t, k8s.Status().Update(context.Background(), written, client.DryRunAll), tc.want)
+		})
+	}
+}
+
+func TestKubernetesStatus(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	obj := example(t, "controlplane-single.yaml", "kubernetes-status")
+	if err := k8s.Create(context.Background(), obj); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = k8s.Delete(context.Background(), obj) })
+	for _, c := range []struct {
+		name    string
+		upgrade map[string]any
+		want    string
+	}{
+		{"a step", map[string]any{"step": "ControllerManager", "startedAt": "2026-10-27T02:00:00Z"}, ""},
+		{"another step", map[string]any{"step": "Nodes", "startedAt": "2026-10-27T02:00:00Z"}, `supported values: "Backup", "APIServer", "ControllerManager", "Scheduler", "Addons"`},
+		{"no start", map[string]any{"step": "APIServer"}, "startedAt: Required value"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			written := obj.DeepCopy()
+			set(t, written, map[string]any{"version": "v1.36.4", "upgrade": c.upgrade}, "status", "kubernetes")
+			expect(t, k8s.Status().Update(context.Background(), written, client.DryRunAll), c.want)
 		})
 	}
 }

@@ -726,8 +726,9 @@ spec:
                       window.
                     properties:
                       kubernetesPatch:
-                        description: KubernetesPatch moves to the newest patch of
-                          the running minor.
+                        description: |-
+                          KubernetesPatch moves to the newest patch of the running minor that
+                          the operator's version table names, in the window.
                         type: boolean
                     type: object
                   window:
@@ -743,13 +744,18 @@ spec:
                         pattern: ^([01][0-9]|2[0-3]):[0-5][0-9]$
                         type: string
                       timeZone:
-                        description: TimeZone is an IANA time zone; UTC by default.
+                        description: |-
+                          TimeZone is an IANA time zone; UTC by default. One the operator's
+                          embedded zone database lacks is TimeZoneUnsupported.
                         maxLength: 64
                         type: string
                     required:
                     - begin
                     - end
                     type: object
+                    x-kubernetes-validations:
+                    - message: begin and end must differ
+                      rule: self.begin != self.end
                 type: object
               network:
                 description: Network holds the tenant cluster's address ranges.
@@ -1012,8 +1018,9 @@ spec:
                 type: object
               version:
                 description: |-
-                  Version is the Kubernetes version, vMAJOR.MINOR.PATCH. The minor never
-                  decreases; Lodia upgrades one minor at a time towards it.
+                  Version is the Kubernetes version, vMAJOR.MINOR.PATCH, any patch of a
+                  minor Lodia runs. The minor never decreases; Lodia upgrades one minor
+                  at a time towards it.
                 maxLength: 16
                 pattern: ^v1\.[0-9]+\.[0-9]+$
                 type: string
@@ -1063,14 +1070,37 @@ spec:
           status:
             description: ControlPlaneStatus is what Lodia observed and did.
             properties:
+              addons:
+                description: Addons is what Tenant last applied in full inside the
+                  tenant.
+                properties:
+                  operatorRevision:
+                    description: |-
+                      OperatorRevision is the operator revision of that render, which the
+                      annotation lodia.io/operator-revision on its objects records.
+                    maxLength: 128
+                    type: string
+                  version:
+                    description: Version is the Kubernetes version of that render.
+                    maxLength: 16
+                    type: string
+                type: object
               components:
                 description: |-
                   Components are the rollouts of the API server, the controller manager
                   and the scheduler.
                 properties:
                   apiServer:
-                    description: ComponentStatus counts one component's replicas.
+                    description: |-
+                      ComponentStatus counts one component's replicas, and says what all of
+                      them run.
                     properties:
+                      operatorRevision:
+                        description: |-
+                          OperatorRevision is the operator revision of that render, which the
+                          annotation lodia.io/operator-revision on its objects records.
+                        maxLength: 128
+                        type: string
                       ready:
                         description: Ready replicas pass their readiness probe.
                         format: int32
@@ -1088,14 +1118,26 @@ spec:
                         format: int32
                         minimum: 0
                         type: integer
+                      version:
+                        description: Version is the Kubernetes version of that render.
+                        maxLength: 16
+                        type: string
                     required:
                     - ready
                     - replicas
                     - updated
                     type: object
                   controllerManager:
-                    description: ComponentStatus counts one component's replicas.
+                    description: |-
+                      ComponentStatus counts one component's replicas, and says what all of
+                      them run.
                     properties:
+                      operatorRevision:
+                        description: |-
+                          OperatorRevision is the operator revision of that render, which the
+                          annotation lodia.io/operator-revision on its objects records.
+                        maxLength: 128
+                        type: string
                       ready:
                         description: Ready replicas pass their readiness probe.
                         format: int32
@@ -1113,14 +1155,26 @@ spec:
                         format: int32
                         minimum: 0
                         type: integer
+                      version:
+                        description: Version is the Kubernetes version of that render.
+                        maxLength: 16
+                        type: string
                     required:
                     - ready
                     - replicas
                     - updated
                     type: object
                   scheduler:
-                    description: ComponentStatus counts one component's replicas.
+                    description: |-
+                      ComponentStatus counts one component's replicas, and says what all of
+                      them run.
                     properties:
+                      operatorRevision:
+                        description: |-
+                          OperatorRevision is the operator revision of that render, which the
+                          annotation lodia.io/operator-revision on its objects records.
+                        maxLength: 128
+                        type: string
                       ready:
                         description: Ready replicas pass their readiness probe.
                         format: int32
@@ -1138,6 +1192,10 @@ spec:
                         format: int32
                         minimum: 0
                         type: integer
+                      version:
+                        description: Version is the Kubernetes version of that render.
+                        maxLength: 16
+                        type: string
                     required:
                     - ready
                     - replicas
@@ -1414,6 +1472,11 @@ spec:
                     - ready
                     - total
                     type: object
+                  operatorRevision:
+                    description: OperatorRevision is the operator revision the Etcd
+                      was rendered with.
+                    maxLength: 128
+                    type: string
                   restore:
                     description: Restore is the restore this ControlPlane's data came
                       from.
@@ -1634,28 +1697,46 @@ spec:
                   upgrade in progress.
                 properties:
                   upgrade:
-                    description: Upgrade is present while an upgrade runs or is stuck.
+                    description: |-
+                      Upgrade is present from the moment a version change passes its
+                      preflight until every component and the addons run target.version.
                     properties:
-                      from:
-                        maxLength: 16
-                        type: string
-                      message:
-                        maxLength: 1024
-                        type: string
                       startedAt:
+                        description: StartedAt is when the version change passed its
+                          preflight.
                         format: date-time
                         type: string
                       step:
-                        description: Step is the step running or failed.
-                        maxLength: 64
+                        description: |-
+                          Step is Backup while a minor step's pre-upgrade Backup is taken,
+                          before the target moves, then the first of the others not at the
+                          target yet.
+                        enum:
+                        - Backup
+                        - APIServer
+                        - ControllerManager
+                        - Scheduler
+                        - Addons
                         type: string
-                      to:
-                        maxLength: 16
-                        type: string
+                    required:
+                    - startedAt
+                    - step
                     type: object
                   version:
-                    description: Version every component runs.
+                    description: |-
+                      Version is the oldest of the versions the components and the addons
+                      report, and absent until all of them do.
                     maxLength: 16
+                    type: string
+                type: object
+              maintenance:
+                description: Maintenance is the maintenance Lodia was asked for and
+                  did.
+                properties:
+                  lastHandled:
+                    description: |-
+                      LastHandled is the value of the annotation
+                      lodia.io/maintain-requested-at that Lifecycle acted on last.
                     type: string
                 type: object
               nodes:
@@ -1695,22 +1776,27 @@ spec:
                   hibernated:
                     description: Hibernated is the desired sleep state.
                     type: boolean
-                  operatorVersion:
-                    description: OperatorVersion is the Lodia version this tenant's
-                      pods are rendered with.
-                    maxLength: 64
-                    type: string
-                  reason:
-                    description: Reason says why the target lags the spec.
-                    maxLength: 64
+                  operatorRevision:
+                    description: |-
+                      OperatorRevision is the operator revision this tenant may be rendered
+                      with: the operator's build version and a digest of its rendering
+                      configuration, compared for equality only.
+                    maxLength: 128
                     type: string
                   scheduledFor:
-                    description: ScheduledFor is when a deferred change rolls.
+                    description: |-
+                      ScheduledFor is when a change Lodia initiates may roll: while it waits
+                      for the window, the window's next start; while it waits for a slot of
+                      the fleet, when it became eligible, in its window and Ready, which
+                      orders the queue.
                     format: date-time
                     type: string
                   version:
-                    description: Version is the Kubernetes version being rolled, one
-                      minor at a time.
+                    description: |-
+                      Version is the Kubernetes version the API server rolls to now: one
+                      minor at a time towards spec.version, and with
+                      maintenance.autoUpdate.kubernetesPatch the newest patch of that minor,
+                      moved in the window.
                     maxLength: 16
                     type: string
                 type: object

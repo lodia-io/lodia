@@ -51,8 +51,9 @@ type ControlPlaneList struct {
 // +kubebuilder:validation:XValidation:rule="has(self.apiServer) && has(self.apiServer.advertiseAddress) ? has(oldSelf.apiServer) && has(oldSelf.apiServer.advertiseAddress) && oldSelf.apiServer.advertiseAddress == self.apiServer.advertiseAddress : !has(oldSelf.apiServer) || !has(oldSelf.apiServer.advertiseAddress)",message="apiServer.advertiseAddress is immutable"
 // +kubebuilder:validation:XValidation:rule="has(self.restoreFrom) == has(oldSelf.restoreFrom)",message="restoreFrom can be set only when the ControlPlane is created, and never removed"
 type ControlPlaneSpec struct {
-	// Version is the Kubernetes version, vMAJOR.MINOR.PATCH. The minor never
-	// decreases; Lodia upgrades one minor at a time towards it.
+	// Version is the Kubernetes version, vMAJOR.MINOR.PATCH, any patch of a
+	// minor Lodia runs. The minor never decreases; Lodia upgrades one minor
+	// at a time towards it.
 	// +required
 	// +kubebuilder:validation:MaxLength=16
 	// +kubebuilder:validation:Pattern=`^v1\.[0-9]+\.[0-9]+$`
@@ -615,7 +616,9 @@ type Maintenance struct {
 	AutoUpdate *AutoUpdate `json:"autoUpdate,omitempty"`
 }
 
-// MaintenanceWindow is a daily window; End may be before Begin (it crosses midnight).
+// MaintenanceWindow is daily, from Begin up to End in its time zone; it
+// crosses midnight when End is before Begin.
+// +kubebuilder:validation:XValidation:rule="self.begin != self.end",message="begin and end must differ"
 type MaintenanceWindow struct {
 	// Begin is HH:MM.
 	// +required
@@ -627,7 +630,8 @@ type MaintenanceWindow struct {
 	// +kubebuilder:validation:Pattern=`^([01][0-9]|2[0-3]):[0-5][0-9]$`
 	End string `json:"end"`
 
-	// TimeZone is an IANA time zone; UTC by default.
+	// TimeZone is an IANA time zone; UTC by default. One the operator's
+	// embedded zone database lacks is TimeZoneUnsupported.
 	// +optional
 	// +kubebuilder:validation:MaxLength=64
 	TimeZone string `json:"timeZone,omitempty"`
@@ -635,7 +639,8 @@ type MaintenanceWindow struct {
 
 // AutoUpdate lists the updates Lodia applies on its own.
 type AutoUpdate struct {
-	// KubernetesPatch moves to the newest patch of the running minor.
+	// KubernetesPatch moves to the newest patch of the running minor that
+	// the operator's version table names, in the window.
 	// +optional
 	KubernetesPatch bool `json:"kubernetesPatch,omitempty"`
 }
@@ -754,6 +759,10 @@ type ControlPlaneStatus struct {
 	// +optional
 	Components *ComponentsStatus `json:"components,omitempty"`
 
+	// Addons is what Tenant last applied in full inside the tenant.
+	// +optional
+	Addons *Rendered `json:"addons,omitempty"`
+
 	// Endpoint is where the control plane is reachable.
 	// +optional
 	Endpoint *EndpointStatus `json:"endpoint,omitempty"`
@@ -773,64 +782,81 @@ type ControlPlaneStatus struct {
 	// Health is present while Lodia holds the controller manager.
 	// +optional
 	Health *HealthStatus `json:"health,omitempty"`
+
+	// Maintenance is the maintenance Lodia was asked for and did.
+	// +optional
+	Maintenance *MaintenanceStatus `json:"maintenance,omitempty"`
 }
 
 // Target is the state Lifecycle rolls towards now.
 type Target struct {
-	// Version is the Kubernetes version being rolled, one minor at a time.
+	// Version is the Kubernetes version the API server rolls to now: one
+	// minor at a time towards spec.version, and with
+	// maintenance.autoUpdate.kubernetesPatch the newest patch of that minor,
+	// moved in the window.
 	// +optional
 	// +kubebuilder:validation:MaxLength=16
 	Version string `json:"version,omitempty"`
 
-	// OperatorVersion is the Lodia version this tenant's pods are rendered with.
+	// OperatorRevision is the operator revision this tenant may be rendered
+	// with: the operator's build version and a digest of its rendering
+	// configuration, compared for equality only.
 	// +optional
-	// +kubebuilder:validation:MaxLength=64
-	OperatorVersion string `json:"operatorVersion,omitempty"`
+	// +kubebuilder:validation:MaxLength=128
+	OperatorRevision string `json:"operatorRevision,omitempty"`
 
 	// Hibernated is the desired sleep state.
 	// +optional
 	Hibernated bool `json:"hibernated,omitempty"`
 
-	// Reason says why the target lags the spec.
-	// +optional
-	// +kubebuilder:validation:MaxLength=64
-	Reason string `json:"reason,omitempty"`
-
-	// ScheduledFor is when a deferred change rolls.
+	// ScheduledFor is when a change Lodia initiates may roll: while it waits
+	// for the window, the window's next start; while it waits for a slot of
+	// the fleet, when it became eligible, in its window and Ready, which
+	// orders the queue.
 	// +optional
 	ScheduledFor *metav1.Time `json:"scheduledFor,omitempty"`
 }
 
 // KubernetesStatus is the running version and the upgrade in progress.
 type KubernetesStatus struct {
-	// Version every component runs.
+	// Version is the oldest of the versions the components and the addons
+	// report, and absent until all of them do.
 	// +optional
 	// +kubebuilder:validation:MaxLength=16
 	Version string `json:"version,omitempty"`
 
-	// Upgrade is present while an upgrade runs or is stuck.
+	// Upgrade is present from the moment a version change passes its
+	// preflight until every component and the addons run target.version.
 	// +optional
 	Upgrade *UpgradeStatus `json:"upgrade,omitempty"`
 }
 
-// UpgradeStatus is one upgrade's progress.
+// UpgradeStatus is the version change in progress.
 type UpgradeStatus struct {
-	// +optional
-	// +kubebuilder:validation:MaxLength=16
-	From string `json:"from,omitempty"`
-	// +optional
-	// +kubebuilder:validation:MaxLength=16
-	To string `json:"to,omitempty"`
-	// Step is the step running or failed.
-	// +optional
-	// +kubebuilder:validation:MaxLength=64
-	Step string `json:"step,omitempty"`
-	// +optional
-	StartedAt *metav1.Time `json:"startedAt,omitempty"`
-	// +optional
-	// +kubebuilder:validation:MaxLength=1024
-	Message string `json:"message,omitempty"`
+	// Step is Backup while a minor step's pre-upgrade Backup is taken,
+	// before the target moves, then the first of the others not at the
+	// target yet.
+	// +required
+	Step UpgradeStep `json:"step"`
+
+	// StartedAt is when the version change passed its preflight.
+	// +required
+	StartedAt metav1.Time `json:"startedAt"`
 }
+
+// UpgradeStep is a step of a version change, in their order: the
+// pre-upgrade Backup of a minor step, then the API server, the controller
+// manager and the scheduler, and the objects inside the tenant.
+// +kubebuilder:validation:Enum=Backup;APIServer;ControllerManager;Scheduler;Addons
+type UpgradeStep string
+
+const (
+	UpgradeStepBackup            UpgradeStep = "Backup"
+	UpgradeStepAPIServer         UpgradeStep = "APIServer"
+	UpgradeStepControllerManager UpgradeStep = "ControllerManager"
+	UpgradeStepScheduler         UpgradeStep = "Scheduler"
+	UpgradeStepAddons            UpgradeStep = "Addons"
+)
 
 // ComponentsStatus is the rollout of each control plane component.
 type ComponentsStatus struct {
@@ -842,7 +868,8 @@ type ComponentsStatus struct {
 	Scheduler *ComponentStatus `json:"scheduler,omitempty"`
 }
 
-// ComponentStatus counts one component's replicas.
+// ComponentStatus counts one component's replicas, and says what all of
+// them run.
 type ComponentStatus struct {
 	// Replicas the component runs: the replicas its Deployment asks for.
 	// +required
@@ -858,6 +885,24 @@ type ComponentStatus struct {
 	// +required
 	// +kubebuilder:validation:Minimum=0
 	Ready int32 `json:"ready"`
+
+	Rendered `json:",inline"`
+}
+
+// Rendered is what a renderer rolled out in full: for a component, its
+// template once every replica is updated and ready, the previous one until
+// then; for the addons, the render last applied whole.
+type Rendered struct {
+	// Version is the Kubernetes version of that render.
+	// +optional
+	// +kubebuilder:validation:MaxLength=16
+	Version string `json:"version,omitempty"`
+
+	// OperatorRevision is the operator revision of that render, which the
+	// annotation lodia.io/operator-revision on its objects records.
+	// +optional
+	// +kubebuilder:validation:MaxLength=128
+	OperatorRevision string `json:"operatorRevision,omitempty"`
 }
 
 // EndpointStatus is where the control plane is reachable from outside the
@@ -973,6 +1018,11 @@ type DatastoreStatus struct {
 	// Restore is the restore this ControlPlane's data came from.
 	// +optional
 	Restore *RestoreStatus `json:"restore,omitempty"`
+
+	// OperatorRevision is the operator revision the Etcd was rendered with.
+	// +optional
+	// +kubebuilder:validation:MaxLength=128
+	OperatorRevision string `json:"operatorRevision,omitempty"`
 }
 
 // SnapshotLocation is where snapshots are: a store, a bucket in it and a
@@ -1067,6 +1117,14 @@ type HealthStatus struct {
 	// ControllerManagerHold is present while the hold lasts.
 	// +optional
 	ControllerManagerHold *ControllerManagerHold `json:"controllerManagerHold,omitempty"`
+}
+
+// MaintenanceStatus is the maintenance Lodia was asked for and did.
+type MaintenanceStatus struct {
+	// LastHandled is the value of the annotation
+	// lodia.io/maintain-requested-at that Lifecycle acted on last.
+	// +optional
+	LastHandled string `json:"lastHandled,omitempty"`
 }
 
 // ControllerManagerHold is one hold of the controller manager's leader lease.
