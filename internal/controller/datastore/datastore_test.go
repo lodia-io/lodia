@@ -1649,7 +1649,7 @@ func TestEtcdDruidKeepsTheClientPortThroughAScaleIn(t *testing.T) {
 	}
 }
 
-func TestHighAvailabilityWaitsForASettledEtcd(t *testing.T) {
+func TestAddingHighAvailabilityWaitsForASettledEtcd(t *testing.T) {
 	ns := namespace(t)
 	const cp = "toggled"
 	createClass(t, newClass("toggled", "Retain"))
@@ -1659,72 +1659,125 @@ func TestHighAvailabilityWaitsForASettledEtcd(t *testing.T) {
 	runStatefulSet(t, ns, cp, 1)
 	setEtcdStatus(t, ns, cp, nil)
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum, 1 of 1 members ready")
-	highAvailability := func(ha *lodiav1alpha1.HighAvailability) {
-		t.Helper()
-		eventually(t, func() error {
-			fresh := getControlPlane(t, ns, cp)
-			fresh.Spec.HighAvailability = ha
-			return k8s.Update(t.Context(), fresh)
-		})
-	}
-	members := func(want int32, spread bool) {
-		t.Helper()
-		settle(t, ns, cp)
-		etcd := getEtcd(t, ns, cp)
-		_, annotated := etcd.Annotations["resources.druid.gardener.cloud/allow-unhealthy-pod-eviction"]
-		if constraints := etcd.Spec.SchedulingConstraints.TopologySpreadConstraints; etcd.Spec.Replicas != want || annotated != spread || (len(constraints) > 0) != spread {
-			t.Errorf("the Etcd asks for %d members, annotated %v, spread by %+v; want %d members, spread and annotated: %t", etcd.Spec.Replicas, etcd.Annotations, constraints, want, spread)
-		}
-		fresh := getControlPlane(t, ns, cp)
-		held := (fresh.Spec.HighAvailability != nil) != (want == 3)
-		condition := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
-		if condition == nil || strings.Contains(condition.Message, "highAvailability waits for Etcd toggled-etcd to settle: every member on its current spec and available, etcd-druid's last scale completed") != held {
-			t.Errorf("DatastoreReady is %+v, want the hold noted: %t", condition, held)
-		}
-	}
-	zone := &lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"}
 
-	t.Run("the lone member restarting on the current spec holds highAvailability", func(t *testing.T) {
+	t.Run("the lone member restarting on the current spec holds it", func(t *testing.T) {
 		setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) {
 			s.ReadyReplicas, s.AvailableReplicas, s.CurrentReplicas, s.CurrentRevision = 0, 0, 0, "old"
 		})
-		highAvailability(zone)
-		members(1, false)
+		setHighAvailability(t, ns, cp, &lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"})
+		expectMembers(t, ns, cp, 1, false)
 	})
 	t.Run("a held highAvailability lets a certificate generation through", func(t *testing.T) {
 		writeGeneration(t, ns, cp, 2)
 		waitEtcd(t, ns, cp, namesGeneration(2))
-		members(1, false)
+		expectMembers(t, ns, cp, 1, false)
 	})
 	t.Run("an Etcd etcd-druid has not observed holds it", func(t *testing.T) {
 		setStatefulSetStatus(t, ns, cp, nil)
-		members(1, false)
-	})
-	t.Run("a settled etcd takes it", func(t *testing.T) {
-		setEtcdStatus(t, ns, cp, nil)
-		members(3, true)
-	})
-	t.Run("a member of three on an older revision holds its removal", func(t *testing.T) {
-		setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) { s.Replicas, s.CurrentReplicas, s.ReadyReplicas = 3, 3, 3 })
-		setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) {
-			s.Replicas, s.ReadyReplicas, s.AvailableReplicas, s.CurrentReplicas, s.UpdatedReplicas, s.CurrentRevision = 3, 3, 3, 1, 2, "old"
-		})
-		highAvailability(nil)
-		members(3, true)
+		expectMembers(t, ns, cp, 1, false)
 	})
 	t.Run("a StatefulSet its controller has not observed holds it", func(t *testing.T) {
-		setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) {
-			s.ObservedGeneration--
-			s.Replicas, s.ReadyReplicas, s.AvailableReplicas, s.CurrentReplicas, s.UpdatedReplicas = 3, 3, 3, 3, 3
-		})
-		members(3, true)
+		setEtcdStatus(t, ns, cp, nil)
+		setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) { s.ObservedGeneration-- })
+		expectMembers(t, ns, cp, 1, false)
 	})
-	t.Run("every member on the current spec lets it go", func(t *testing.T) {
-		setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) {
-			s.Replicas, s.ReadyReplicas, s.AvailableReplicas, s.CurrentReplicas, s.UpdatedReplicas = 3, 3, 3, 3, 3
-		})
-		members(1, false)
+	t.Run("a settled etcd takes it", func(t *testing.T) {
+		setStatefulSetStatus(t, ns, cp, nil)
+		expectMembers(t, ns, cp, 3, true)
 	})
+}
+
+func TestRemovingHighAvailabilityBacksOutOfAMemberThatNeverComesUp(t *testing.T) {
+	ns := namespace(t)
+	const cp = "stuck"
+	createClass(t, newClass("stuck", "Retain"))
+	ha := controlPlane(ns, cp, "stuck")
+	ha.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"}
+	create(t, ha)
+	writeGeneration(t, ns, cp, 1)
+	waitEtcd(t, ns, cp, nil)
+	runStatefulSet(t, ns, cp, 1)
+	setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) {
+		s.Replicas, s.ReadyReplicas, s.AvailableReplicas, s.CurrentReplicas, s.UpdatedReplicas = 3, 2, 2, 3, 3
+	})
+	druid := func(scaling string) {
+		t.Helper()
+		setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) {
+			s.Replicas, s.CurrentReplicas, s.ReadyReplicas, s.Ready = 3, 3, 2, new(false)
+			complete := druidv1alpha1.Condition{
+				Type: druidv1alpha1.ConditionTypeScaleOperationComplete, Status: druidv1alpha1.ConditionTrue, Reason: druidv1alpha1.ScaleOperationReasonNoScaleOperation,
+				LastTransitionTime: metav1.Now(), LastUpdateTime: metav1.Now(),
+			}
+			if scaling != "" {
+				complete.Status, complete.Reason = druidv1alpha1.ConditionFalse, scaling
+			}
+			s.Conditions = append(s.Conditions, complete)
+		})
+	}
+	druid(druidv1alpha1.ScaleOperationReasonScalingOut)
+	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum, 2 of 3 members ready, while etcd-druid scales it")
+
+	t.Run("etcd-druid's scale in progress holds the removal", func(t *testing.T) {
+		setHighAvailability(t, ns, cp, nil)
+		expectMembers(t, ns, cp, 3, true)
+	})
+	t.Run("a completed scale lets it through though a member never came up", func(t *testing.T) {
+		druid("")
+		expectMembers(t, ns, cp, 1, false)
+	})
+}
+
+func TestAHeldScaleOutResumesOnceTheStatefulSetSettles(t *testing.T) {
+	ns := namespace(t)
+	const cp = "resumes"
+	createClass(t, newClass("resumes", "Retain"))
+	create(t, controlPlane(ns, cp, "resumes"))
+	writeGeneration(t, ns, cp, 1)
+	waitEtcd(t, ns, cp, nil)
+	runStatefulSet(t, ns, cp, 1)
+	setEtcdStatus(t, ns, cp, nil)
+	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum, 1 of 1 members ready")
+	setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) {
+		s.ReadyReplicas, s.AvailableReplicas, s.CurrentReplicas, s.CurrentRevision = 0, 0, 0, "old"
+	})
+	setHighAvailability(t, ns, cp, &lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"})
+	expectMembers(t, ns, cp, 1, false)
+
+	setStatefulSetStatus(t, ns, cp, nil)
+	waitEtcd(t, ns, cp, func(etcd *druidv1alpha1.Etcd) error {
+		if etcd.Spec.Replicas != 3 {
+			return fmt.Errorf("the Etcd asks for %d members after the StatefulSet settled", etcd.Spec.Replicas)
+		}
+		return nil
+	})
+}
+
+func setHighAvailability(t *testing.T, ns, cp string, ha *lodiav1alpha1.HighAvailability) {
+	t.Helper()
+	eventually(t, func() error {
+		fresh := getControlPlane(t, ns, cp)
+		fresh.Spec.HighAvailability = ha
+		return k8s.Update(t.Context(), fresh)
+	})
+}
+
+func expectMembers(t *testing.T, ns, cp string, want int32, spread bool) {
+	t.Helper()
+	settle(t, ns, cp)
+	etcd := getEtcd(t, ns, cp)
+	_, annotated := etcd.Annotations["resources.druid.gardener.cloud/allow-unhealthy-pod-eviction"]
+	if constraints := etcd.Spec.SchedulingConstraints.TopologySpreadConstraints; etcd.Spec.Replicas != want || annotated != spread || (len(constraints) > 0) != spread {
+		t.Errorf("the Etcd asks for %d members, annotated %v, spread by %+v; want %d members, spread and annotated: %t", etcd.Spec.Replicas, etcd.Annotations, constraints, want, spread)
+	}
+	fresh := getControlPlane(t, ns, cp)
+	asked := int32(1)
+	if fresh.Spec.HighAvailability != nil {
+		asked = 3
+	}
+	condition := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
+	if condition == nil || strings.Contains(condition.Message, "highAvailability waits for Etcd "+cp+"-etcd to settle: every member on its current spec and available, etcd-druid's last scale completed") != (want < asked) {
+		t.Errorf("DatastoreReady is %+v, want the wait noted: %t", condition, want < asked)
+	}
 }
 
 func describeIngress(policy *networkingv1.NetworkPolicy) string {

@@ -72,7 +72,7 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 		},
 	}
 	switch ha := cp.Spec.HighAvailability; {
-	case current != nil && !settled(current, sts):
+	case membersHeld(cp, current, sts):
 		etcd.Spec.Replicas = current.Spec.Replicas
 		etcd.Spec.SchedulingConstraints.TopologySpreadConstraints = current.Spec.SchedulingConstraints.TopologySpreadConstraints
 		if value, ok := current.Annotations[allowUnhealthyPodEviction]; ok {
@@ -153,20 +153,17 @@ func memberCount(cp *lodiav1alpha1.ControlPlane) int32 {
 	return 1
 }
 
-// settled is an etcd that takes a change of highAvailability: its members all
-// run the Etcd's current spec and are available, and etcd-druid has completed
-// its last scale, as it refuses the opposite direction meanwhile. New members
-// join through one that serves
-// (etcd-backup-restore@v0.45.1 pkg/member/member_control.go#L133-L169), while
-// the StatefulSet controller replaces at once a member of etcd-druid's
-// Parallel pods (etcd-druid@v0.39.0 internal/component/statefulset/builder.go#L43)
-// that is not available when the spec changes
-// (kubernetes@v1.37.0 pkg/controller/statefulset/stateful_set_control.go#L875-L894):
-// a lone member still restarting would restart again, and the new ones would
-// start without a member that serves.
-func settled(current *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) bool {
+// membersHeld keeps the Etcd's members, spread and eviction annotation as they
+// are (docs/README.md, the highAvailability row of the Etcd's fields).
+func membersHeld(cp *lodiav1alpha1.ControlPlane, current *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) bool {
+	if current == nil {
+		return false
+	}
+	if !druidv1alpha1.HasScaleOperationCompleted(current) {
+		return true
+	}
 	updated := updatedMembers(current, sts)
-	return updated != nil && *updated >= current.Spec.Replicas && druidv1alpha1.HasScaleOperationCompleted(current)
+	return memberCount(cp) > current.Spec.Replicas && (updated == nil || *updated < current.Spec.Replicas)
 }
 
 // spread puts the members on three nodes, and with Zone in three zones too;

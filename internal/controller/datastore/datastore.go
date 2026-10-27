@@ -291,7 +291,7 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.Contro
 		return nil, nil, metav1.Condition{}, 0, err
 	}
 	condition := readiness(etcd, absent)
-	if etcd.Spec.Replicas != memberCount(cp) {
+	if etcd.Spec.Replicas < memberCount(cp) {
 		condition.Message = note(condition.Message, fmt.Sprintf("highAvailability waits for Etcd %s to settle: every member on its current spec and available, etcd-druid's last scale completed", etcd.Name))
 	}
 	condition.Message = note(condition.Message, held)
