@@ -79,4 +79,6 @@ restore in phase 2's wave 1b, and upgrade tests with wave 2.
   conformance suite through hydrophone.
 - `.github/workflows/nightly.yml` — runs it every night, on demand, and on a
   pull request that changes the workflow or the test.
-- `Makefile` — the `e2e` and `conformance` targets.
+- `test/e2e/ha_test.go` — gate G2, behind the `ha` build tag with `e2e`: a highly available tenant on a kind cluster with three zoned workers, `testdata/kind-ha.yaml`, loses an API server pod, then the etcd leader's pod.
+  The `e2e-ha` job of `.github/workflows/ci.yml` runs it on every pull request.
+- `Makefile` — the `e2e`, `e2e-ha` and `conformance` targets.

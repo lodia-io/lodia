@@ -119,7 +119,7 @@ func kindCluster(kubeconfig string) (string, error) {
 	return strings.TrimPrefix(cfg.CurrentContext, "kind-"), nil
 }
 
-func newClient(t *testing.T, cfg *envconf.Config) client.Client {
+func newClient(t *testing.T, cfg *envconf.Config) client.WithWatch {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	for _, add := range []func(*runtime.Scheme) error{clientgoscheme.AddToScheme, lodiav1alpha1.AddToScheme, druidv1alpha1.AddToScheme} {
@@ -127,7 +127,7 @@ func newClient(t *testing.T, cfg *envconf.Config) client.Client {
 			t.Fatal(err)
 		}
 	}
-	k8s, err := client.New(cfg.Client().RESTConfig(), client.Options{Scheme: scheme})
+	k8s, err := client.NewWithWatch(cfg.Client().RESTConfig(), client.Options{Scheme: scheme})
 	if err != nil {
 		t.Fatal(err)
 	}

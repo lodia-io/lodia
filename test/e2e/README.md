@@ -115,9 +115,27 @@ The suite starts a container of kind's node image, `<cluster>-tenant-node-1`, on
 `--ignore-preflight-errors` names the one check a container fails, `SystemVerification`: on GitHub's runners it finds the host kernel's configuration in none of the places it looks, and `modprobe configs` fails ([kernel_validator.go](https://github.com/kubernetes/system-validators/blob/v1.12.1/validators/kernel_validator.go#L191-L245), the version kubeadm v1.37.0 uses).
 Ignoring it skips kubeadm's OS and cgroups validators too, which run under the same name; a check's name is the finest grain kubeadm ignores by ([checks.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/cmd/kubeadm/app/preflight/checks.go#L573-L588), [checks_linux.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/cmd/kubeadm/app/preflight/checks_linux.go#L48-L54)).
 The CNI is kindnet from the node image's manifest, with the tenant's pod range.
-The suite removes the containers it started when it ends, pass or fail, and each one before it starts it; `make e2e` and `make conformance` remove them as well, since a `go test` timeout or a panic never reaches the suite's end.
+The suite removes the containers it started when it ends, pass or fail, and each one before it starts it; `make e2e`, `make e2e-ha` and `make conformance` remove them as well, since a `go test` timeout or a panic never reaches the suite's end.
 
 `make e2e` gives the suite 30 minutes.
+
+## Gate G2: a highly available control plane
+
+`TestHighAvailabilityGate` checks the second item of the [phase 2 gate](../../docs/roadmap.md#phase-2--production).
+It sits behind a build tag of its own, `ha` with `e2e`, since it needs a cluster of another shape: [`testdata/kind-ha.yaml`](testdata/kind-ha.yaml), a control plane node and three workers in the zones `a`, `b` and `c`.
+`make e2e-ha` runs it on such a cluster of its own as `make conformance` runs `TestConformance`, and the `e2e-ha` job of [`ci.yml`](../../.github/workflows/ci.yml) runs that on every pull request.
+
+The tenant is the phase 1 gate's with `highAvailability.failureTolerance: Zone`, and must turn `Ready` within 5 minutes.
+The test then wants each component's two pods and the three etcd members each in a zone of its own, a PodDisruptionBudget with `maxUnavailable: 1` per component and etcd-druid's with `minAvailable: 2`, all four with `unhealthyPodEvictionPolicy: AlwaysAllow`.
+A node joins, the two loops of the phase 1 gate start, and a watch of the `ControlPlane` records each change of `Ready` and its inputs at the time it arrives.
+Two steps follow, the second once the first has recovered:
+
+1. One API server pod is deleted; the step ends 30 seconds after the pod is gone and two replicas are ready.
+2. The pod of the etcd leader, the member whose role `Etcd.status.members` gives as `Leader`, is deleted; the step ends 30 seconds after its replacement runs and etcd-druid reports three members ready, one of them the leader.
+
+In each step `Ready` must not leave `True` for longer than 5 seconds, Health's period in the gate, and the loop inside the tenant must lose no request.
+The loop outside must lose none in the first step; its counts in the second are logged, not asserted.
+The test logs each recorded change and, for each condition, the longest time it was not `True`.
 
 ## Nightly: conformance and the idle control plane
 
