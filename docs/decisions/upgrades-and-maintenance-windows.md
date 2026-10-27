@@ -105,7 +105,7 @@ Lodia never removes the annotation, so a GitOps tool that keeps it does not figh
 
 ## Consequences
 
-- Lifecycle is the only controller that knows the time and the fleet; it counts the tenants rolling a Lodia-initiated change from their `status` (`Progressing`), not in memory, so a restarted operator neither forgets nor double-counts a rollout in progress.
+- Lifecycle is the only controller that knows the maintenance windows and the fleet; it counts the tenants rolling a Lodia-initiated change from their `status` (`Progressing`), not in memory, so a restarted operator neither forgets nor double-counts a rollout in progress.
 - In the `Compact` layout steps 3 and 4 are one rollout of the single pod: the API server, controller manager and scheduler change version together, which the skew policy allows ([compact-layout](compact-layout.md)).
 - `status.target` is part of the API users read: `target.version`, `target.operatorRevision` and `target.scheduledFor`, with `Progressing`.
 - An operator release note states which tenants will roll (all with a changed render) and what changes, because the roll is deferred, not hidden.
