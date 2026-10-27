@@ -352,6 +352,31 @@ func TestAGatewayStoredWithoutATunnelStaysUntilItsHostnamesChange(t *testing.T) 
 	expect(t, k8s.Update(ctx, stored), "tunnel: Required value")
 }
 
+func TestAnAdvertiseAddressStoredOutsideGatewayModeCanOnlyBeRemoved(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	const gatewayOnly = "apiServer.advertiseAddress is set only with endpoint.gateway"
+	stored := example(t, "controlplane-single.yaml", "advertise-ratcheting")
+	set(t, stored, "240.0.0.2", "spec", "apiServer", "advertiseAddress")
+	storeUnderAnOlderSchema(t, "advertise.ratcheting.lodia.io", stored, gatewayOnly, func(schema map[string]any) {
+		rules, _, err := unstructured.NestedSlice(schema, "properties", "spec", "x-kubernetes-validations")
+		if err != nil {
+			t.Fatal(err)
+		}
+		kept := slices.DeleteFunc(rules, func(r any) bool { return r.(map[string]any)["message"] == gatewayOnly })
+		if err := unstructured.SetNestedSlice(schema, kept, "properties", "spec", "x-kubernetes-validations"); err != nil {
+			t.Fatal(err)
+		}
+	})
+	ctx := context.Background()
+	stored.SetFinalizers([]string{lodiav1alpha1.DatastoreFinalizer})
+	expect(t, k8s.Update(ctx, stored), "")
+	set(t, stored, true, "spec", "paused")
+	expect(t, k8s.Update(ctx, stored), gatewayOnly)
+	unstructured.RemoveNestedField(stored.Object, "spec", "apiServer", "advertiseAddress")
+	expect(t, k8s.Update(ctx, stored), "")
+}
+
 func eventually(t *testing.T, f func() error) {
 	t.Helper()
 	var last error

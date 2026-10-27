@@ -1064,10 +1064,10 @@ spec:
                 [''240.0.0.1''] : []).all(a, !isIP(a) || !(self.network.serviceCIDRs
                 + self.network.podCIDRs).exists(c, isCIDR(c) && cidr(c).containsIP(a)))'
             - message: apiServer.advertiseAddress is immutable
-              rule: 'has(self.apiServer) && has(self.apiServer.advertiseAddress) ?
-                has(oldSelf.apiServer) && has(oldSelf.apiServer.advertiseAddress)
+              rule: '!has(self.endpoint.gateway) || (has(self.apiServer) && has(self.apiServer.advertiseAddress)
+                ? has(oldSelf.apiServer) && has(oldSelf.apiServer.advertiseAddress)
                 && oldSelf.apiServer.advertiseAddress == self.apiServer.advertiseAddress
-                : !has(oldSelf.apiServer) || !has(oldSelf.apiServer.advertiseAddress)'
+                : !has(oldSelf.apiServer) || !has(oldSelf.apiServer.advertiseAddress))'
             - message: restoreFrom can be set only when the ControlPlane is created,
                 and never removed
               rule: has(self.restoreFrom) == has(oldSelf.restoreFrom)
