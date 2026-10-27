@@ -242,7 +242,7 @@ type ParentReference struct {
 }
 
 // GatewayHostnames are the SNI names of one control plane.
-// +kubebuilder:validation:XValidation:rule="self.apiServer != self.konnectivity && self.apiServer != self.tunnel && self.konnectivity != self.tunnel",message="apiServer, konnectivity and tunnel must be three different hostnames"
+// +kubebuilder:validation:XValidation:rule="self.apiServer != self.konnectivity && (!has(self.tunnel) || self.apiServer != self.tunnel && self.konnectivity != self.tunnel)",message="apiServer, konnectivity and tunnel must be three different hostnames"
 type GatewayHostnames struct {
 	// APIServer is the public API hostname.
 	// +required

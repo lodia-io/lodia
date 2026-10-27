@@ -316,66 +316,97 @@ func TestControlPlaneTransitions(t *testing.T) {
 func TestExtraArgsStoredBeforeTheirRefusalStayUntilTheMapChanges(t *testing.T) {
 	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")
-	ctx := context.Background()
-	eventually := func(f func() error) {
-		t.Helper()
-		var last error
-		if err := wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 30*time.Second, true, func(context.Context) (bool, error) {
-			last = f()
-			return last == nil, nil
-		}); err != nil {
-			t.Fatalf("%v: %v", err, last)
+	stored := example(t, "controlplane-single.yaml", "ratcheting")
+	set(t, stored, map[string]any{"node-monitor-grace-period": "40s"}, "spec", "controllerManager", "extraArgs")
+	storeUnderAnOlderSchema(t, "extraargs.ratcheting.lodia.io", stored, "Lodia sets this flag", func(schema map[string]any) {
+		unstructured.RemoveNestedField(schema, "properties", "spec", "properties", "controllerManager", "properties", "extraArgs", "x-kubernetes-validations")
+	})
+
+	set(t, stored, true, "spec", "paused")
+	expect(t, k8s.Update(context.Background(), stored), "")
+	set(t, stored, map[string]any{"node-monitor-grace-period": "40s", "terminated-pod-gc-threshold": "100"}, "spec", "controllerManager", "extraArgs")
+	expect(t, k8s.Update(context.Background(), stored), "Lodia sets this flag")
+}
+
+func TestAGatewayStoredWithoutATunnelStaysUntilItsHostnamesChange(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	stored := example(t, "controlplane-ha.yaml", "tunnel-ratcheting")
+	unstructured.RemoveNestedField(stored.Object, "spec", "endpoint", "gateway", "hostnames", "tunnel")
+	storeUnderAnOlderSchema(t, "tunnel.ratcheting.lodia.io", stored, "tunnel: Required value", func(schema map[string]any) {
+		hostnames := []string{"properties", "spec", "properties", "endpoint", "properties", "gateway", "properties", "hostnames"}
+		unstructured.RemoveNestedField(schema, append(hostnames, "properties", "tunnel")...)
+		unstructured.RemoveNestedField(schema, append(hostnames, "x-kubernetes-validations")...)
+		if err := unstructured.SetNestedStringSlice(schema, []string{"apiServer", "konnectivity"}, append(hostnames, "required")...); err != nil {
+			t.Fatal(err)
 		}
+	})
+	ctx := context.Background()
+	stored.SetFinalizers([]string{lodiav1alpha1.DatastoreFinalizer})
+	expect(t, k8s.Update(ctx, stored), "")
+	stored.SetFinalizers(nil)
+	expect(t, k8s.Update(ctx, stored), "")
+	set(t, stored, true, "spec", "paused")
+	expect(t, k8s.Update(ctx, stored), "")
+	set(t, stored, "api2.prod-eu.k8s.example.com", "spec", "endpoint", "gateway", "hostnames", "apiServer")
+	expect(t, k8s.Update(ctx, stored), "tunnel: Required value")
+}
+
+func eventually(t *testing.T, f func() error) {
+	t.Helper()
+	var last error
+	if err := wait.PollUntilContextTimeout(context.Background(), 100*time.Millisecond, 30*time.Second, true, func(context.Context) (bool, error) {
+		last = f()
+		return last == nil, nil
+	}); err != nil {
+		t.Fatalf("%v: %v", err, last)
 	}
+}
+
+func storeUnderAnOlderSchema(t *testing.T, group string, stored *unstructured.Unstructured, refusal string, older func(schema map[string]any)) {
+	t.Helper()
+	ctx := context.Background()
 	raw, err := os.ReadFile(filepath.Join("..", "..", "api", "crds", "lodia.io_controlplanes.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	crd := decode(t, string(raw))
-	crd.SetName("controlplanes.ratcheting.lodia.io")
-	set(t, crd, "ratcheting.lodia.io", "spec", "group")
-	refusing, _, err := unstructured.NestedSlice(crd.Object, "spec", "versions")
+	crd.SetName("controlplanes." + group)
+	set(t, crd, group, "spec", "group")
+	current, _, err := unstructured.NestedSlice(crd.Object, "spec", "versions")
 	if err != nil {
 		t.Fatal(err)
 	}
-	accepting := runtime.DeepCopyJSONValue(refusing).([]any)
-	unstructured.RemoveNestedField(accepting[0].(map[string]any), "schema", "openAPIV3Schema", "properties", "spec", "properties", "controllerManager", "properties", "extraArgs", "x-kubernetes-validations")
-	set(t, crd, accepting, "spec", "versions")
+	previous := runtime.DeepCopyJSONValue(current).([]any)
+	older(previous[0].(map[string]any)["schema"].(map[string]any)["openAPIV3Schema"].(map[string]any))
+	set(t, crd, previous, "spec", "versions")
 	if err := k8s.Create(ctx, crd); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = k8s.Delete(context.Background(), crd) })
 
-	stored := example(t, "controlplane-single.yaml", "ratcheting")
-	stored.SetAPIVersion("ratcheting.lodia.io/v1alpha1")
-	set(t, stored, map[string]any{"node-monitor-grace-period": "40s"}, "spec", "controllerManager", "extraArgs")
-	eventually(func() error { return k8s.Create(ctx, stored) })
-
-	eventually(func() error {
+	stored.SetAPIVersion(group + "/v1alpha1")
+	eventually(t, func() error { return k8s.Create(ctx, stored) })
+	eventually(t, func() error {
 		if err := k8s.Get(ctx, client.ObjectKeyFromObject(crd), crd); err != nil {
 			return err
 		}
-		set(t, crd, refusing, "spec", "versions")
+		set(t, crd, current, "spec", "versions")
 		return k8s.Update(ctx, crd)
 	})
 	probe := stored.DeepCopy()
-	probe.SetName("ratcheting-probe")
+	probe.SetName(stored.GetName() + "-probe")
 	probe.SetResourceVersion("")
-	eventually(func() error {
+	eventually(t, func() error {
 		err := k8s.Create(ctx, probe, client.DryRunAll)
 		switch {
 		case err == nil:
-			return errors.New("the refusal is not served yet")
-		case !strings.Contains(err.Error(), "Lodia sets this flag"):
+			return errors.New("the current schema is not served yet")
+		case !strings.Contains(err.Error(), refusal):
 			return err
 		}
 		return nil
 	})
-
-	set(t, stored, true, "spec", "paused")
-	expect(t, k8s.Update(ctx, stored), "")
-	set(t, stored, map[string]any{"node-monitor-grace-period": "40s", "terminated-pod-gc-threshold": "100"}, "spec", "controllerManager", "extraArgs")
-	expect(t, k8s.Update(ctx, stored), "Lodia sets this flag")
 }
 
 func TestHighAvailabilityTransitions(t *testing.T) {

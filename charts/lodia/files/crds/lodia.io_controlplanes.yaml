@@ -576,8 +576,9 @@ spec:
                         x-kubernetes-validations:
                         - message: apiServer, konnectivity and tunnel must be three
                             different hostnames
-                          rule: self.apiServer != self.konnectivity && self.apiServer
-                            != self.tunnel && self.konnectivity != self.tunnel
+                          rule: self.apiServer != self.konnectivity && (!has(self.tunnel)
+                            || self.apiServer != self.tunnel && self.konnectivity
+                            != self.tunnel)
                       parentRef:
                         description: ParentRef is the Gateway with a TLS passthrough
                           listener.
