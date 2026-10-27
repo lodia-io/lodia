@@ -305,7 +305,9 @@ operator revision: in its window, `fleet.maxConcurrentRollouts` tenants at a
 time, or at once when its owner edits its spec; before wave 2, every tenant
 at once. The release notes list what changes per component. Rolling back
 the chart is safe while the CRDs did not add a stored version; to the
-tenants it is one more revision.
+tenants it is one more revision. A `ControlPlane` stored with an
+`extraArgs` flag the new schema refuses keeps that map while it is
+unchanged, and the next change to the map must drop the flag.
 
 ## Support policy
 

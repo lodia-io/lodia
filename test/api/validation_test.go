@@ -5,18 +5,22 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/robfig/cron/v3"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/yaml"
@@ -307,6 +311,71 @@ func TestControlPlaneTransitions(t *testing.T) {
 			update(t, example(t, "controlplane-single.yaml", fmt.Sprintf("transition-%d", i)), c.mutate, c.want)
 		})
 	}
+}
+
+func TestExtraArgsStoredBeforeTheirRefusalStayUntilTheMapChanges(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	ctx := context.Background()
+	eventually := func(f func() error) {
+		t.Helper()
+		var last error
+		if err := wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 30*time.Second, true, func(context.Context) (bool, error) {
+			last = f()
+			return last == nil, nil
+		}); err != nil {
+			t.Fatalf("%v: %v", err, last)
+		}
+	}
+	raw, err := os.ReadFile(filepath.Join("..", "..", "api", "crds", "lodia.io_controlplanes.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	crd := decode(t, string(raw))
+	crd.SetName("controlplanes.ratcheting.lodia.io")
+	set(t, crd, "ratcheting.lodia.io", "spec", "group")
+	refusing, _, err := unstructured.NestedSlice(crd.Object, "spec", "versions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepting := runtime.DeepCopyJSONValue(refusing).([]any)
+	unstructured.RemoveNestedField(accepting[0].(map[string]any), "schema", "openAPIV3Schema", "properties", "spec", "properties", "controllerManager", "properties", "extraArgs", "x-kubernetes-validations")
+	set(t, crd, accepting, "spec", "versions")
+	if err := k8s.Create(ctx, crd); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = k8s.Delete(context.Background(), crd) })
+
+	stored := example(t, "controlplane-single.yaml", "ratcheting")
+	stored.SetAPIVersion("ratcheting.lodia.io/v1alpha1")
+	set(t, stored, map[string]any{"node-monitor-grace-period": "40s"}, "spec", "controllerManager", "extraArgs")
+	eventually(func() error { return k8s.Create(ctx, stored) })
+
+	eventually(func() error {
+		if err := k8s.Get(ctx, client.ObjectKeyFromObject(crd), crd); err != nil {
+			return err
+		}
+		set(t, crd, refusing, "spec", "versions")
+		return k8s.Update(ctx, crd)
+	})
+	probe := stored.DeepCopy()
+	probe.SetName("ratcheting-probe")
+	probe.SetResourceVersion("")
+	eventually(func() error {
+		err := k8s.Create(ctx, probe, client.DryRunAll)
+		switch {
+		case err == nil:
+			return errors.New("the refusal is not served yet")
+		case !strings.Contains(err.Error(), "Lodia sets this flag"):
+			return err
+		}
+		return nil
+	})
+
+	set(t, stored, true, "spec", "paused")
+	expect(t, k8s.Update(ctx, stored), "")
+	set(t, stored, map[string]any{"node-monitor-grace-period": "40s", "terminated-pod-gc-threshold": "100"}, "spec", "controllerManager", "extraArgs")
+	expect(t, k8s.Update(ctx, stored), "Lodia sets this flag")
 }
 
 func TestHighAvailabilityTransitions(t *testing.T) {
