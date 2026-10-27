@@ -1,8 +1,7 @@
 # A ControlPlane restored from a Backup replaces the Backup's source, and runs no controller manager until it is released
 
-Decided 2026-10-27, after the restore's red team. Not built: phase 2's wave
-1b (backups) builds it ([roadmap](../roadmap.md)); its contracts are in
-`api/v1alpha1`.
+Decided 2026-10-27. Not built: phase 2's wave
+1b (backups) builds it ([roadmap](../roadmap.md)).
 
 ## Decision
 
@@ -19,20 +18,17 @@ CAs is phase 3's.
 
 **Inert until released.** The controller manager runs only once
 `spec.restoreFrom.release` is `Released` and no `ControlPlane` with the
-Backup's source UID exists in the namespace. `release` defaults to `Held`,
-moves only from `Held` to `Released` (CEL), and may be `Released` when the
-`ControlPlane` is created, for a source that is already gone. Until then
+Backup's source UID exists in the namespace. `release` may be `Released`
+when the `ControlPlane` is created, for a source that is already gone
+([the field](../api/controlplane.md#spec)). Until then
 Workloads renders the controller manager at 0 replicas in the Split layout,
 and its pod without that container in the Compact one; `APIServerReady`
 counts a component Lodia runs at 0 on purpose as available, its message
 saying the controller manager is held, so `AccessReady`, Tenant and Health,
 which wait on it, go on. The API server serves the restored data, and the
 scheduler runs, harmless without nodes. Health reports
-`ControllersLeading=False`, reason `AwaitingRelease`, its message listing
-what acts outside the cluster once the controllers run: LoadBalancer
-Services, PersistentVolumes with the `Delete` policy, pending
-PersistentVolumeClaims, webhooks that call a URL or fail closed, APIServices
-and CronJobs; or `SourceExists` while the source does.
+`ControllersLeading=False`, reason `AwaitingRelease`, or `SourceExists`
+while the source does ([reasons](../api/controlplane.md#conditions-and-their-reasons)).
 
 **The release goes through published conditions.** Once `release` is
 `Released` and no `ControlPlane` with the source's UID exists, Workloads
@@ -49,18 +45,15 @@ a snapshot Lease has reached that key's revision: an `EtcdCopyBackupsTask`
 with `maxBackups: 1` and no `maxBackupAge`, from the source's prefix to
 `<class prefix>/<namespace UID>/backups/<Backup UID>`, which nothing writes
 again. The copy holds the source's data at least up to the seal. The
-`Backup` records the store, the prefix and the seal's revision
-(`status.snapshots`, `status.seal`), with the source's name, UID, version and
-network, and outlives its source.
+`Backup` records them ([fields](../api/controlplane.md#backup)) and
+outlives its source.
 
 **The restore checks before it starts anything.** The Datastore controller
 copies only from the store the `Backup` records, and only while it equals
 the class's store; then it requires the seal key in the restored etcd.
 Otherwise it reports `DatastoreReady=False`, `RestoreFailed`, cleans up
-nothing and lets no API server start. A `Backup` of another network or
-Kubernetes minor is `BackupIncompatible`, one that does not exist is
-`BackupNotFound`, one not sealed yet `WaitingForBackup`; meanwhile the
-reason is `Restoring`.
+nothing and lets no API server start
+([the other reasons](../api/controlplane.md#conditions-and-their-reasons)).
 
 **One transaction unbinds the data from the source.** Before any API server
 reads the data, one conditional transaction keyed
@@ -85,8 +78,8 @@ and an envtest per supported minor pins them.
 **Durable before ready.** A full snapshot follows the transaction, and
 `DatastoreReady` turns True only once a snapshot Lease shows it in the store:
 a member that loses its volume afterwards restores the cleaned data, not the
-source's. Datastore then writes `status.datastore.restore`: the `Backup`, the
-source by name and UID, and when it completed.
+source's. Datastore then writes `status.datastore.restore`
+([field](../api/controlplane.md#status)).
 
 **The encryption key stays in the management cluster.** When it seals, the
 backup reconciler writes `<backup>.encryption-config`
@@ -171,23 +164,16 @@ namespace's data; the docs say so, and `todo.md` keeps the policy.
 - A fixed marker key — a `Backup` of the restored cluster would carry it, and
   restoring from that `Backup` would skip the cleanup.
 - Detecting a restore and rolling the API server — a restored `ControlPlane`
-  is new, so no client of the source holds its revisions; for etcd-druid's
-  own restore of a lost member the fix is upstream's revision bump
-  (`todo.md`).
+  is new, so no client of the source holds its revisions
+  ([dedicated-etcd-by-default](dedicated-etcd-by-default.md)).
 
 ## Consequences
 
-- Restoring a `Backup` of A into B is a replacement: delete A, or create B
-  `Released` if A is gone. A `ControlPlane` restored beside its source stays
-  inert, serving the data, for as long as the source exists.
-- The restored cluster's nodes join anew, and the source's tokens and
-  certificates are not trusted; its `kube-system` UID, the cluster ID some
+- The restored cluster's `kube-system` UID, the cluster ID some
   tools use, is the source's.
 - `docs/operations.md` gets the replace checklist and a Velero recipe for a
   clone with the restore (`todo.md`).
-- The phase 2 gate restores a `Backup` of A into B: B stays inert and serves
-  A's data, a `Released` B still waits with `SourceExists`, deleting A
-  releases B, a node joins and the conformance smoke subset passes.
+- The phase 2 gate restores a `Backup` ([roadmap](../roadmap.md)).
 
 ## Code
 
