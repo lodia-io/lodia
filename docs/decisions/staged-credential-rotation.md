@@ -80,8 +80,7 @@ the members only when the `Etcd` names a new Secret, so the PKI controller
 renews etcd's certificates together, under new names: one roll, no API outage
 with three members, about 20 s with one
 ([etcd spike](../etcd-spike-2026-10.md), finding 3). Each renewal is a
-generation `g` of five Secrets, `<cp>-etcd-{ca,server,client,peer,backup-restore}-<g>`,
-labelled `lodia.io/etcd-certificates: "<g>"`; Datastore points the
+generation of five Secrets ([A tenant namespace](../README.md#a-tenant-namespace)); Datastore points the
 `Etcd` at the newest complete generation, and PKI keeps the previous one and
 deletes older ones, so neither controller reads the other's state.
 
@@ -160,10 +159,8 @@ first four.
   `serverTLSBootstrap`), so no CSR approver is needed in the tenant; turning
   it on is a later option with its own approver.
 - Every CA is announced a year before it expires, through
-  `CAValidityAcceptable=False` (`CAExpiring`) outside `Ready` and an alert,
-  as Gardener does
-  ([shoot status](https://github.com/gardener/gardener/blob/v1.154.0/docs/usage/shoot/shoot_status.md#L105-L109)),
-  because every CA rotation is started by someone.
+  [`CAValidityAcceptable`](../api/controlplane.md#conditions-and-their-reasons)
+  and an alert, because every CA rotation is started by someone.
 
 ## Code
 
@@ -178,38 +175,21 @@ first four.
   stages against one envtest kube-apiserver whose only signer it is.
 - [The hard way, spike d](../hard-way.md#d-spike-serviceaccount-tokens-from-an-external-signer)
   — the same rotation by hand in kind, with a pod calling the API throughout.
-- `internal/certs` — ECDSA P-256 CAs and leaves from `crypto/x509`, valid
-  from five minutes before issuance (kubeadm's backdate,
-  [constants.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kubeadm/app/constants/constants.go#L45-L46))
-  and no longer than their CA, renewed two thirds of the way from issuance to
-  expiry; bundles as sets in DER order, as library-go writes them
-  ([cabundle.go](https://github.com/openshift/library-go/blob/9a2bc12675c2bb37d3799a30786ccee5fa545d57/pkg/operator/certrotation/cabundle.go#L134-L177));
-  PEM through client-go's `util/cert` and `util/keyutil`; kubeconfigs with
-  their certificates as files beside them or embedded; every time is the
-  caller's, so PKI issues and verifies a whole pass at the time it started.
+- `internal/certs` — the CAs, leaves, bundles and kubeconfigs whose
+  validity, renewal and order [A tenant namespace](../README.md#a-tenant-namespace) gives, from `crypto/x509`;
+  PEM through client-go's `util/cert` and `util/keyutil`; every time is the
+  caller's.
   `certs_test.go` holds the validity, that time and the bundle order.
-- `internal/controller/pki` — the controller. `secrets.go` is the Secret
-  table above: the four `<cp>-cakey-*` key pairs that no pod mounts, each a
-  self-signed root with the nanosecond of its issuance in its subject; the
-  kubelet signer, matched by its Secret rather than its subject, and the
-  client CA bundle that keeps a replaced signer for one signing duration;
-  the leaves and kubeconfigs; `<cp>-sa-keys` with its `signing.key`; the
-  encryption configuration, written last so that a provider PKI cannot
-  render (`kms`) blocks nothing else, each new key named after the
-  nanosecond of its pass and every existing one kept under its name; and
-  the immutable etcd generations,
-  each written once: a generation with a member missing, being deleted or
-  not holding what it needs is replaced by the next, and the newest complete
-  generation below it is kept. A certificate that already ends with its CA
-  is not renewed, since a new one would not outlive it; nothing is issued
-  under an expired CA (`CAExpired`); a new kubelet signer is written only
-  once the client CA bundle trusts it. A CA is created only for a tenant
-  that has neither its key Secret nor its bundle. PKI finds its Secrets by
-  name, labelled or not, so a key restored without its labels is kept,
-  never uses or writes one another owner keeps, and adopts the etcd
-  generations it keeps; a lost or unreadable key is `CAMissing`, and nothing
-  that CA signs is written; an encryption configuration or ServiceAccount
-  key it cannot read is never replaced (`SecretUnreadable`). `CAValidityAcceptable` announces a CA in its last year
+- `internal/controller/pki` — the controller. `secrets.go` writes the
+  Secrets of [A tenant namespace](../README.md#a-tenant-namespace): the
+  kubelet signer is matched by its Secret rather than its subject, and a new
+  one is written only once the client CA bundle trusts it; the
+  encryption configuration is written last, so that a provider PKI cannot
+  render (`kms`) blocks nothing else; the etcd generations are immutable,
+  each written once, and one not holding what it needs is replaced by the
+  next, the newest complete generation below it kept. A CA is created only
+  for a tenant that has neither its key Secret nor its bundle.
+  `CAValidityAcceptable` announces a CA in its last year
   (`CAExpiryNotice`, a year in `internal/operator`). `reconciler_test.go` and
   `recovery_test.go` prove each of these against a running envtest API
   server: the subjects, usages, SANs and validity; that no Secret but
