@@ -15,10 +15,7 @@ the Service `<name>-kube-apiserver` needs a name that starts with a letter on
 management clusters before 1.36
 ([RelaxedServiceNameValidation](https://github.com/kubernetes/kubernetes/blob/v1.36.0/pkg/features/kube_features.go#L1881-L1884)).
 
-Phase 2 is built in waves ([roadmap](../roadmap.md#phase-2--production)):
-wave 1b brings HA, the Gateway, backups with restore and
-`KubeconfigRequest`s; wave 2 brings upgrades with maintenance windows and the
-operator revision, Health's probes and hold, and observability. A field,
+Phase 2 is built in waves ([roadmap](../roadmap.md#phase-2--production)). A field,
 condition or reason marked with a wave exists in the schema now and is
 written from that wave on; until then nothing writes it, or its writer keeps
 the behaviour the row describes.
@@ -80,9 +77,9 @@ and not digits and dots alone, which read as an IP address.
 
 | field | written by | meaning |
 |---|---|---|
-| `observedGeneration` | Lifecycle | the newest `metadata.generation` that every readiness condition (`CertificatesReady`, `DatastoreReady`, `APIServerReady`, `AccessReady`, `AddonsApplied`, `Reachable`, and `ControllersLeading` from wave 1b, HA) has been reported for |
-| `conditions[]` | each controller its own | `CertificatesReady`, `CAValidityAcceptable`, `DatastoreReady`, `BackupReady`, `APIServerReady`, `AccessReady`, `AddonsApplied`, `AddonsAvailable`, `Reachable`, `ControllersLeading`, `ControllerManagerHeld`, `Progressing`, `Hibernated`, `Ready`; each with `reason`, `message`, `observedGeneration` |
-| `target.version` | Lifecycle | the Kubernetes version the API server rolls to now: one minor at a time towards `spec.version`, and with `autoUpdate.kubernetesPatch` the newest patch of its minor; the controller manager and the scheduler follow the API server's reported version, the addons the oldest component's; until wave 2, upgrades, it follows `spec.version` within its minor only, and `Progressing` says why it lags |
+| `observedGeneration` | Lifecycle | the newest `metadata.generation` that every readiness condition, each term of `Ready`, has been reported for |
+| `conditions[]` | each controller its own | [below](#conditions-and-their-reasons), each with `reason`, `message`, `observedGeneration` |
+| `target.version` | Lifecycle | the Kubernetes version the API server rolls to now: one minor at a time towards `spec.version`, and with `autoUpdate.kubernetesPatch` the newest patch of its minor; until wave 2, upgrades, it follows `spec.version` within its minor only, and `Progressing` says why it lags |
 | `target.operatorRevision` | Lifecycle, from wave 2, upgrades | the operator revision this tenant may be rendered with: the operator's build version and a digest of its rendering configuration, compared for equality only; Workloads, Tenant and Datastore hold every write until it equals their own, but creating a missing object, a new generation of the etcd certificates and deletion. Until wave 2 nothing writes it and every renderer renders with the running operator, as phase 1 does |
 | `target.hibernated` | Lifecycle, phase 3 | the desired sleep state |
 | `target.rotation.{clientCA, ca, serviceAccountKey, etcdEncryptionKey, etcdCA, frontProxyCA}` | Lifecycle, phase 3 | `Idle` \| `Preparing` \| `Prepared` \| `Completing`; not in the Go types until then |
@@ -115,8 +112,7 @@ and not digits and dots alone, which read as an IP address.
 
 Lodia's metrics, from wave 2, observability, are built from these fields at
 scrape time; [metrics-are-part-of-the-api](../decisions/metrics-are-part-of-the-api.md)
-lists each beside its field. The database size and the backups' age are
-metrics and `BackupReady`, not status.
+lists each beside its field.
 
 ## Conditions and their reasons
 
