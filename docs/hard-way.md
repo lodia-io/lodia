@@ -1,13 +1,10 @@
 # The hard way: a hosted control plane by hand
 
-Phase 0 of the [roadmap](roadmap.md): build one tenant control plane in a kind
-cluster with nothing but openssl, kubectl and stock images, join a real node to
-it, and watch every piece work. Each step is something Lodia will automate;
-the callouts say which controller, and what Lodia will do differently. What
-surprises us goes into [What we learned](#what-we-learned) and, from there,
-into decisions.
+Phase 0 of the [roadmap](roadmap.md): build one tenant control plane in a kind cluster with nothing but openssl, kubectl and stock images, join a real node to it, and watch every piece work.
+Each step is something Lodia will automate; the callouts say which controller, and what Lodia will do differently.
 
-Time: about two hours. Files: [`hack/hard-way/`](../hack/hard-way/).
+Time: about two hours.
+Files: [`hack/hard-way/`](../hack/hard-way/).
 
 ```mermaid
 flowchart LR
@@ -49,21 +46,15 @@ flowchart LR
 
 ## 1. Before you start
 
-- Docker Desktop with at least 6 GB of memory, kind ≥ v0.33, kubectl (a
-  1.34 or newer client works with the 1.35 cluster), openssl 3, perl (macOS
-  ships it); Go for spike d.
+- Docker Desktop with at least 6 GB of memory, kind ≥ v0.33, kubectl (a 1.34 or newer client works with the 1.35 cluster), openssl 3, perl (macOS ships it); Go for spike d.
 - In every new terminal, from the repository root:
 
   ```bash
   source hack/hard-way/env.sh
   ```
 
-  It sets the versions (Kubernetes 1.35.8 and what kubeadm pins for it), the
-  names, the tenant's ranges (services `10.32.0.0/16`, pods `10.200.0.0/16`,
-  unlike kind's own), and three helpers: `mk` talks to the management cluster,
-  `tk` to the tenant cluster, `render` fills `${VARS}` in a manifest. **Neither
-  helper ever uses your current kube context**; every kubeconfig lives in
-  `work/hard-way/`, which git ignores.
+  It sets the versions (Kubernetes 1.35.8 and what kubeadm pins for it), the names, the tenant's ranges (services `10.32.0.0/16`, pods `10.200.0.0/16`, unlike kind's own), and three helpers: `mk` talks to the management cluster, `tk` to the tenant cluster, `render` fills `${VARS}` in a manifest.
+  **Neither helper ever uses your current kube context**; every kubeconfig lives in `work/hard-way/`, which git ignores.
 
 ## 2. The management cluster
 
@@ -74,10 +65,8 @@ source hack/hard-way/env.sh   # now sets MGMT_IP
 echo "$MGMT_IP"; mk get nodes
 ```
 
-`MGMT_IP` is the management node's address on the docker network `kind`. The
-tenant's nodes, which are containers on the same network, reach the control
-plane through it; your machine reaches it through the port mapping on
-`127.0.0.1:30443`.
+`MGMT_IP` is the management node's address on the docker network `kind`.
+The tenant's nodes, which are containers on the same network, reach the control plane through it; your machine reaches it through the port mapping on `127.0.0.1:30443`.
 
 ## 3. The PKI
 
@@ -103,11 +92,7 @@ Three CAs and the certificates under them, named as kubeadm names them:
 
 Look at one: `openssl x509 -in "$PKI/apiserver.crt" -noout -text | less`.
 
-> **Lodia (PKI controller):** the same files, plus a CA per purpose: a client
-> CA only the API server trusts, so rotating identities never touches nodes;
-> the controller manager gets an intermediate instead of `ca.key`; tokens are
-> signed by a sidecar instead of `sa.key`
-> ([staged-credential-rotation](decisions/staged-credential-rotation.md)).
+> **Lodia (PKI controller):** the same files, plus a CA per purpose: a client CA only the API server trusts, so rotating identities never touches nodes; the controller manager gets an intermediate instead of `ca.key`; tokens are signed by a sidecar instead of `sa.key` ([staged-credential-rotation](decisions/staged-credential-rotation.md)).
 
 ## 4. Kubeconfigs
 
@@ -115,11 +100,7 @@ Look at one: `openssl x509 -in "$PKI/apiserver.crt" -noout -text | less`.
 bash "$HW/kubeconfigs.sh"
 ```
 
-Each kubeconfig points where its user runs: the controller manager and the
-scheduler at the Service by name inside the management cluster, the
-konnectivity server at `127.0.0.1` in its own pod, you at `127.0.0.1:30443`,
-and `admin-net.conf` at `MGMT_IP:30443` for the kubeadm container on the
-docker network.
+Each kubeconfig points where its user runs: the controller manager and the scheduler at the Service by name inside the management cluster, the konnectivity server at `127.0.0.1` in its own pod, you at `127.0.0.1:30443`, and `admin-net.conf` at `MGMT_IP:30443` for the kubeadm container on the docker network.
 
 ## 5. etcd
 
@@ -136,12 +117,9 @@ mk -n "$CP" exec "$CP-etcd-0" -- etcdctl --endpoints=https://127.0.0.1:2379 \
   endpoint status -w table
 ```
 
-One member, client TLS with its own CA, data on a PVC from kind's default
-StorageClass, a 2 GiB quota, periodic compaction.
+One member, client TLS with its own CA, data on a PVC from kind's default StorageClass, a 2 GiB quota, periodic compaction.
 
-> **Lodia (Datastore):** an `Etcd` resource for etcd-druid instead of this
-> StatefulSet, with continuous snapshots and the peer TLS three members need
-> ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)).
+> **Lodia (Datastore):** an `Etcd` resource for etcd-druid instead of this StatefulSet, with continuous snapshots and the peer TLS three members need ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)).
 
 ## 6. The API server and konnectivity-server
 
@@ -153,17 +131,11 @@ kubectl --kubeconfig "$WORK/super-admin.conf" get namespaces
 kubectl --kubeconfig "$WORK/super-admin.conf" get endpoints kubernetes
 ```
 
-The API server creates `default`, `kube-system`, `kube-public` and
-`kube-node-lease` itself. The `kubernetes` endpoint is `MGMT_IP:30443`: the
-advertise address and the secure port, which is why the port is the same as
-the NodePort. Read the flags in
-[`20-apiserver.yaml`](../hack/hard-way/management/20-apiserver.yaml): the
-egress selector sends only `cluster` traffic (kubelets, pods, webhooks)
-through the konnectivity socket; etcd is dialled directly.
+The API server creates `default`, `kube-system`, `kube-public` and `kube-node-lease` itself.
+The `kubernetes` endpoint is `MGMT_IP:30443`: the advertise address and the secure port, which is why the port is the same as the NodePort.
+Read the flags in [`20-apiserver.yaml`](../hack/hard-way/management/20-apiserver.yaml): the egress selector sends only `cluster` traffic (kubelets, pods, webhooks) through the konnectivity socket; etcd is dialled directly.
 
-> **Lodia (Workloads):** the same pod plus the `lodia-signer` sidecar; in
-> gateway mode the advertise address is `240.0.0.1` by default, served on
-> every node by apiserver-proxy ([api-exposure](decisions/api-exposure.md)).
+> **Lodia (Workloads):** the same pod plus the `lodia-signer` sidecar; in gateway mode the advertise address is `240.0.0.1` by default, served on every node by apiserver-proxy ([api-exposure](decisions/api-exposure.md)).
 
 ## 7. Bind the admin group, then put super-admin away
 
@@ -173,9 +145,8 @@ tk auth whoami          # kubernetes-admin, groups kubeadm:cluster-admins, syste
 tk auth can-i '*' '*'   # yes
 ```
 
-From here on, `tk` (admin) is enough. `system:masters` short-circuits
-authorization and can only be revoked by rotating the CA; the group can be
-revoked by deleting the binding.
+From here on, `tk` (admin) is enough.
+`system:masters` short-circuits authorization and can only be revoked by rotating the CA; the group can be revoked by deleting the binding.
 
 ## 8. The controller manager and the scheduler
 
@@ -187,18 +158,13 @@ mk -n "$CP" rollout status deployment/"$CP-scheduler"
 tk -n kube-system get leases
 ```
 
-Beside the API server's own identity lease (`apiserver-…`,
-[API server identity](https://kubernetes.io/docs/concepts/architecture/leases/#api-server-identity)),
-two leases, `kube-controller-manager` and `kube-scheduler`, each held by its
-pod: leader election works through the tenant's API. Note
-`--controllers=*,bootstrapsigner,tokencleaner`: the two controllers `kubeadm
-join` depends on are off by default.
+Beside the API server's own identity lease (`apiserver-…`, [API server identity](https://kubernetes.io/docs/concepts/architecture/leases/#api-server-identity)), two leases, `kube-controller-manager` and `kube-scheduler`, each held by its pod: leader election works through the tenant's API.
+Note `--controllers=*,bootstrapsigner,tokencleaner`: the two controllers `kubeadm join` depends on are off by default.
 
 ## 9. What `kubeadm join` needs
 
 kubeadm can write the bootstrap objects into an API server it did not create.
-Run its phases from a container on the docker network, with the admin
-kubeconfig that dials `MGMT_IP`:
+Run its phases from a container on the docker network, with the admin kubeconfig that dials `MGMT_IP`:
 
 ```bash
 export BOOTSTRAP_TOKEN="$(LC_ALL=C tr -dc a-z0-9 </dev/urandom | head -c 6).$(LC_ALL=C tr -dc a-z0-9 </dev/urandom | head -c 16)"
@@ -211,7 +177,8 @@ kubeadm init phase addon kube-proxy --config /work/kubeadm.yaml --kubeconfig /wo
 kubeadm init phase addon coredns --config /work/kubeadm.yaml --kubeconfig /work/admin-net.conf
 ```
 
-Now look at what it wrote. **This list is the Tenant controller's job**:
+Now look at what it wrote.
+**This list is the Tenant controller's job**:
 
 ```bash
 tk -n kube-public get configmap cluster-info -o yaml   # a kubeconfig with no user, and jws-kubeconfig-<token id>
@@ -221,13 +188,9 @@ tk get clusterrolebindings | grep -E 'kubeadm|node-proxier'
 tk -n kube-public get roles,rolebindings
 ```
 
-The `jws-kubeconfig-…` key appears only once the controller manager's bootstrap
-signer has signed `cluster-info` with the token: that signature is how a
-joining node knows the CA it downloaded came from someone holding the token.
+The `jws-kubeconfig-…` key appears only once the controller manager's bootstrap signer has signed `cluster-info` with the token: that signature is how a joining node knows the CA it downloaded came from someone holding the token.
 
-> **Lodia (Tenant):** the same objects, rendered from its own templates
-> (no `k8s.io/kubernetes` import), applied with an inventory and pruned
-> ([nodes-join-with-kubeadm](decisions/nodes-join-with-kubeadm.md)).
+> **Lodia (Tenant):** the same objects, rendered from its own templates (no `k8s.io/kubernetes` import), applied with an inventory and pruned ([nodes-join-with-kubeadm](decisions/nodes-join-with-kubeadm.md)).
 
 ## 10. konnectivity agents
 
@@ -239,8 +202,7 @@ They stay `Pending`: there is no node yet.
 
 ## 11. Join a node
 
-A tenant node is a kind node container on the same docker network, started
-the way kind starts its nodes, then joined with a plain `kubeadm join`:
+A tenant node is a kind node container on the same docker network, started the way kind starts its nodes, then joined with a plain `kubeadm join`:
 
 ```bash
 docker run --detach --tty --name "$NODE" --hostname "$NODE" --network kind \
@@ -255,9 +217,7 @@ tk get nodes -o wide   # NotReady until a CNI runs
 tk get csr             # the kubelet's client certificate, approved by the controller manager
 ```
 
-What happened: kubeadm read `cluster-info` anonymously, checked its signature
-with the token and its CA against the hash, logged in with the token, posted a
-CSR, got it auto-approved, wrote `kubelet.conf`, and started the kubelet.
+What happened: kubeadm read `cluster-info` anonymously, checked its signature with the token and its CA against the hash, logged in with the token, posted a CSR, got it auto-approved, wrote `kubelet.conf`, and started the kubelet.
 
 ## 12. The CNI
 
@@ -270,8 +230,7 @@ tk -n kube-system get pods -o wide
 mk -n "$CP" logs deploy/"$CP-apiserver" -c konnectivity-server | grep -i agent | tail -3
 ```
 
-The node turns `Ready`; kube-proxy, kindnet, CoreDNS and the agent run; the
-konnectivity server logs the agent's connection.
+The node turns `Ready`; kube-proxy, kindnet, CoreDNS and the agent run; the konnectivity server logs the agent's connection.
 
 ## 13. Check it — the gate of this exercise
 
@@ -285,11 +244,9 @@ tk run dns --image=busybox:1.36 --rm -it --restart=Never -- nslookup kubernetes.
 tk run api --image=curlimages/curl:8.10.1 --rm -it --restart=Never -- curl -sk https://kubernetes.default/version
 ```
 
-The last line goes pod → `10.32.0.1:443` → kube-proxy → `MGMT_IP:30443`: the
-in-cluster path to a hosted API server.
+The last line goes pod → `10.32.0.1:443` → kube-proxy → `MGMT_IP:30443`: the in-cluster path to a hosted API server.
 
-Prove that logs and exec really go through the tunnel: forbid the management
-node to forward anything to the kubelet's port, and try again.
+Prove that logs and exec really go through the tunnel: forbid the management node to forward anything to the kubelet's port, and try again.
 
 ```bash
 NODE_IP="$(docker inspect -f '{{(index .NetworkSettings.Networks "kind").IPAddress}}' "$NODE")"
@@ -302,9 +259,7 @@ docker exec "$MGMT-control-plane" iptables -D FORWARD -d "$NODE_IP" -p tcp --dpo
 
 ### a. A renewed certificate without a restart
 
-The API server watches its serving certificate on disk
-([staged-credential-rotation](decisions/staged-credential-rotation.md) rests
-on this):
+The API server watches its serving certificate on disk ([staged-credential-rotation](decisions/staged-credential-rotation.md) rests on this):
 
 ```bash
 openssl s_client -connect "127.0.0.1:$APISERVER_PORT" </dev/null 2>/dev/null | openssl x509 -noout -serial
@@ -314,13 +269,11 @@ for i in $(seq 1 24); do openssl s_client -connect "127.0.0.1:$APISERVER_PORT" <
 mk -n "$CP" get pods -l app="$CP-apiserver" -o jsonpath='{.items[0].status.containerStatuses[*].restartCount}'
 ```
 
-Expected: the serial changes within about two minutes (the kubelet syncs the
-Secret, then the API server notices the file); the restart counts stay 0.
+Expected: the serial changes within about two minutes (the kubelet syncs the Secret, then the API server notices the file); the restart counts stay 0.
 
 ### b. Hold the controller manager
 
-What [controller-manager-hold](decisions/controller-manager-hold.md) does,
-by hand:
+What [controller-manager-hold](decisions/controller-manager-hold.md) does, by hand:
 
 ```bash
 hold() { tk -n kube-system patch lease kube-controller-manager --type merge \
@@ -336,9 +289,8 @@ sleep 75; tk get replicasets -l app=held                   # the ReplicaSet appe
 
 ### c. Spike: does the konnectivity agent send SNI?
 
-If it does, agents can share the Gateway's TLS passthrough listener on 443
-([api-exposure](decisions/api-exposure.md)). An nginx in front of the
-konnectivity port logs the server name of every ClientHello:
+If it does, agents can share the Gateway's TLS passthrough listener on 443 ([api-exposure](decisions/api-exposure.md)).
+An nginx in front of the konnectivity port logs the server name of every ClientHello:
 
 ```bash
 render "$HW/sni-logger.conf" > "$WORK/sni-logger.conf"
@@ -354,27 +306,17 @@ tk -n kube-system delete pod -l k8s-app=konnectivity-agent    # a stream is logg
 sleep 5; docker logs sni-logger
 ```
 
-`sni="konnectivity.tenant-a.example"` means the agent sends SNI; `sni=""`
-means it does not, and Lodia needs a dedicated konnectivity port on the
-Gateway. Put the agent back with `tk -n kube-system delete daemonset
-konnectivity-agent` and step 10.
+`sni="konnectivity.tenant-a.example"` means the agent sends SNI; `sni=""` means it does not, and Lodia needs a dedicated konnectivity port on the Gateway.
+Put the agent back with `tk -n kube-system delete daemonset konnectivity-agent` and step 10.
 
 ### d. Spike: ServiceAccount tokens from an external signer
 
-[staged-credential-rotation](decisions/staged-credential-rotation.md) signs
-ServiceAccount tokens with `lodia-signer`, a sidecar that implements
-kube-apiserver's external signer API on a Unix socket
-([KEP-740](https://github.com/kubernetes/enhancements/blob/master/keps/sig-auth/740-service-account-external-signing/README.md)),
-so the signing key can rotate in three stages while the API server keeps
-running. This spike switches the hard way's API server from its static
-`sa.key` to the signer, then rotates the key while a pod calls the API. It
-needs Go as well (ko builds the image), and a node: steps 11 and 12.
+[staged-credential-rotation](decisions/staged-credential-rotation.md) signs ServiceAccount tokens with `lodia-signer`, a sidecar that implements kube-apiserver's external signer API on a Unix socket ([KEP-740](https://github.com/kubernetes/enhancements/blob/master/keps/sig-auth/740-service-account-external-signing/README.md)), so the signing key can rotate in three stages while the API server keeps running.
+This spike switches the hard way's API server from its static `sa.key` to the signer, then rotates the key while a pod calls the API.
+It needs Go as well (ko builds the image), and a node: steps 11 and 12.
 
-The signer reads the Secret `$CP-sa-keys`: `signing.key`, the one private key
-that signs, and any number of `verify-*.pub`, public keys published for
-verification only. Every key's ID is kube-apiserver's own: the unpadded
-base64url SHA-256 of its PKIX DER
-([`keyIDFromPublicKey`](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/serviceaccount/jwt.go#L99)).
+The signer reads the Secret `$CP-sa-keys`: `signing.key`, the one private key that signs, and any number of `verify-*.pub`, public keys published for verification only.
+Every key's ID is kube-apiserver's own: the unpadded base64url SHA-256 of its PKIX DER ([`keyIDFromPublicKey`](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/serviceaccount/jwt.go#L99)).
 `kid` prints it for a key file:
 
 ```bash
@@ -393,8 +335,7 @@ export SIGNER_IMAGE="$(KO_DOCKER_REPO=kind.local KIND_CLUSTER_NAME="$MGMT" go ru
 echo "$SIGNER_IMAGE"                                       # kind.local/lodia-signer:<digest>
 ```
 
-**A token from the static key**, minted before the switch, must stay valid
-after it: K₁'s ID does not change.
+**A token from the static key**, minted before the switch, must stay valid after it: K₁'s ID does not change.
 
 ```bash
 tk -n default create serviceaccount token-caller
@@ -403,15 +344,8 @@ satk() { kubectl --kubeconfig /dev/null --server "https://127.0.0.1:$APISERVER_P
 jwt 1 < "$WORK/static.token"; satk "$WORK/static.token"     # kid of K₁; system:serviceaccount:default:token-caller
 ```
 
-**Switch the API server to the signer.** The Secret holds K₁ alone; the
-patch adds the signer as a native sidecar (an init container with
-`restartPolicy: Always` and a startup probe on `/readyz`, so the API server
-starts only once the socket serves a key set) on a shared `emptyDir` at
-`/run/signer`, and replaces `--service-account-key-file` and
-`--service-account-signing-key-file`, which the endpoint excludes
-([authentication.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/kubeapiserver/options/authentication.go#L624)),
-with `--service-account-signing-endpoint=/run/signer/signer.sock`
-([`50-signer-patch.yaml`](../hack/hard-way/management/50-signer-patch.yaml)):
+**Switch the API server to the signer.**
+The Secret holds K₁ alone; the patch adds the signer as a native sidecar (an init container with `restartPolicy: Always` and a startup probe on `/readyz`, so the API server starts only once the socket serves a key set) on a shared `emptyDir` at `/run/signer`, and replaces `--service-account-key-file` and `--service-account-signing-key-file`, which the endpoint excludes ([authentication.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/kubeapiserver/options/authentication.go#L624)), with `--service-account-signing-endpoint=/run/signer/signer.sock` ([`50-signer-patch.yaml`](../hack/hard-way/management/50-signer-patch.yaml)):
 
 ```bash
 mk -n "$CP" create secret generic "$CP-sa-keys" --from-file=signing.key="$PKI/sa.key"
@@ -422,10 +356,8 @@ tk get --raw /openid/v1/jwks; echo                         # one key, K₁'s kid
 satk "$WORK/static.token"                                  # still the ServiceAccount
 ```
 
-That rollout is the last restart of the API server in this spike. Note the
-pod and its restart counts, and start the caller: a pod that calls the API
-every three seconds with a projected token of `expirationSeconds: 600`
-([`20-token-caller.yaml`](../hack/hard-way/tenant/20-token-caller.yaml)):
+That rollout is the last restart of the API server in this spike.
+Note the pod and its restart counts, and start the caller: a pod that calls the API every three seconds with a projected token of `expirationSeconds: 600` ([`20-token-caller.yaml`](../hack/hard-way/tenant/20-token-caller.yaml)):
 
 ```bash
 apiserver() { mk -n "$CP" get pods -l app="$CP-apiserver" -o jsonpath='{range .items[*]}{.metadata.name} restarts:{.status.initContainerStatuses[*].restartCount} {.status.containerStatuses[*].restartCount}{"\n"}{end}'; }
@@ -436,11 +368,11 @@ tk -n default logs -f token-caller &                       # "ok" every three se
 pod_kid() { tk -n default exec token-caller -- cat /var/run/secrets/tokens/token | jwt 1; }
 ```
 
-Each stage is one state of the Secret. The kubelet updates the mounted
-Secret within about a minute, the signer reloads it at once, and the API
-server fetches the keys again within the signer's refresh hint, one minute.
+Each stage is one state of the Secret.
+The kubelet updates the mounted Secret within about a minute, the signer reloads it at once, and the API server fetches the keys again within the signer's refresh hint, one minute.
 
-**Stage 1 — K₂ published.** K₁ still signs.
+**Stage 1 — K₂ published.**
+K₁ still signs.
 
 ```bash
 mk -n "$CP" create secret generic "$CP-sa-keys" --from-file=signing.key="$PKI/sa.key" \
@@ -452,8 +384,8 @@ tk -n default exec token-caller -- cat /var/run/secrets/tokens/token > "$WORK/ca
 jwt 1 < "$WORK/captured.token"                             # the pod's token of now: K₁
 ```
 
-**Stage 2 — K₂ signs.** Lodia does this only once every API server replica
-serves K₂; with one replica, the `jwks` above is that proof.
+**Stage 2 — K₂ signs.**
+Lodia does this only once every API server replica serves K₂; with one replica, the `jwks` above is that proof.
 
 ```bash
 mk -n "$CP" create secret generic "$CP-sa-keys" --from-file=signing.key="$WORK/sa-k2.key" \
@@ -463,12 +395,8 @@ tk -n default create token token-caller | jwt 1             # K₂
 satk "$WORK/captured.token"; satk "$WORK/static.token"     # both K₁ tokens still valid
 ```
 
-Now wait for the kubelet to refresh the pod's token: it requests a new one
-once the old one is older than 80% of its lifetime, so within about eight
-minutes plus the volume's resync
-([token manager](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/kubelet/token/token_manager.go#L172-L193)).
-This is what the owner's confirmation stands for: no client holds a K₁
-token any more.
+Now wait for the kubelet to refresh the pod's token: it requests a new one once the old one is older than 80% of its lifetime, so within about eight minutes plus the volume's resync ([token manager](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/kubelet/token/token_manager.go#L172-L193)).
+This is what the owner's confirmation stands for: no client holds a K₁ token any more.
 
 ```bash
 until pod_kid | grep -q '"ES256"'; do sleep 15; done
@@ -491,15 +419,7 @@ apiserver                                                  # the same pod, every
 mk -n "$CP" logs deploy/"$CP-apiserver" -c lodia-signer | grep 'key set loaded'   # four sets: K₁; K₁+K₂; K₂ signs; K₂
 ```
 
-The API server caches a successful token authentication for ten seconds
-([`TokenSuccessCacheTTL`](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/kubeapiserver/options/authentication.go#L168)),
-so a K₁ token that was used in those ten seconds outlives K₁ by that much.
-
-Put the API server back with `render "$HW/management/20-apiserver.yaml" | mk
-replace -f -` (the patch is not reversible by `apply`), delete
-`$CP-sa-keys`, and delete the caller with `tk delete -f
-"$HW/tenant/20-token-caller.yaml"`, so that step 15 measures an idle API
-server.
+Put the API server back with `render "$HW/management/20-apiserver.yaml" | mk replace -f -` (the patch is not reversible by `apply`), delete `$CP-sa-keys`, and delete the caller with `tk delete -f "$HW/tenant/20-token-caller.yaml"`, so that step 15 measures an idle API server.
 
 ## 15. Measure
 
@@ -522,8 +442,7 @@ rm -rf "$WORK"
 
 ## What we learned
 
-Filled in while doing it; each line that changes the design becomes a
-decision or a `todo.md` entry.
+Filled in while doing it; each line that changes the design becomes a decision or a `todo.md` entry.
 
 | step | what happened | what it means for Lodia |
 |---|---|---|
@@ -548,5 +467,4 @@ Measured at idle (step 15):
 | kube-scheduler | 3m | 19 MiB |
 | etcd | 12m | 40 MiB |
 
-The gate of phase 0 for this part: step 13 passes, experiments a and b behave
-as expected, spike c has an answer, and the two tables above are filled in.
+The gate of phase 0 for this part: step 13 passes, experiments a and b behave as expected, spike c has an answer, and the two tables above are filled in.
