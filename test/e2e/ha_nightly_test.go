@@ -153,7 +153,7 @@ func explainEtcd(ctx context.Context, t *testing.T, k8s client.Client, key clien
 	}
 	slices.SortFunc(events.Items, func(a, b corev1.Event) int { return at(a).Compare(at(b)) })
 	for _, e := range events.Items {
-		if at(e).Before(since) || e.InvolvedObject.Name != name && !strings.HasPrefix(e.InvolvedObject.Name, name+"-") {
+		if at(e).Before(since) || !strings.HasPrefix(e.InvolvedObject.Name, key.Name+"-") {
 			continue
 		}
 		t.Logf("event %s %s %s: %s %s", at(e).UTC().Format(time.RFC3339), e.InvolvedObject.Kind, e.InvolvedObject.Name, e.Reason, e.Message)
