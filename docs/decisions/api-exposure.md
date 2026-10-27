@@ -79,7 +79,7 @@ In gateway mode the agents resolve the public names through the node (`dnsPolicy
 **Nothing inbound on a node.**
 The API server reaches kubelets, webhooks and aggregated APIs through the agents' tunnels.
 Lodia's defaults bind what it configures to the smallest address that works: kubelet health on `127.0.0.1:10248`, no read-only port, anonymous kubelet access off; kube-proxy metrics and health on loopback (the health port can be opened for cloud load balancers with `addons.kubeProxy.healthzBindAddress`); agent admin on loopback and health on the pod IP.
-The kubelet's own listener address is a node flag (`--address`, `--node-ip`), which the node's owner passes through `kubeletExtraArgs` at join; the docs recommend the node IP.
+The kubelet's own listener address is a node flag (`--address`, `--node-ip`), which the node's owner passes through `kubeletExtraArgs` at join; binding the node IP is recommended.
 
 ## Why
 
