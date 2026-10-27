@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/rest"
@@ -689,6 +690,101 @@ func TestNodeToleranceSpreadsByHostnameAlone(t *testing.T) {
 	inputsReady(t, cp)
 	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
 		expectSpread(t, eventuallyDeployment(t, cp, component), map[string]int32{"kubernetes.io/hostname": 2})
+	}
+}
+
+func TestAPodDisruptionBudgetOfAnotherOwnerHoldsEveryWorkload(t *testing.T) {
+	ns := namespace(t)
+	other := types.UID("1c9e4b2a-7d3f-4a51-9b8e-2f6d0a4c7e13")
+	held := &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "dev-kube-scheduler",
+			Namespace: ns,
+			Labels:    map[string]string{lodiav1alpha1.ControlPlaneLabel: "dev"},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: lodiav1alpha1.GroupVersion.String(), Kind: "ControlPlane", Name: "prod", UID: other, Controller: new(true),
+			}},
+		},
+		Spec: policyv1.PodDisruptionBudgetSpec{MaxUnavailable: new(intstr.FromInt32(1)), Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "held"}}},
+	}
+	if err := k8s.Create(t.Context(), held); err != nil {
+		t.Fatal(err)
+	}
+	cp := create(t, ns, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) {
+		spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+	})
+	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
+	inputsReady(t, cp)
+	eventually(t, func() error {
+		return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere)
+	})
+	if c := condition(t, cp); !strings.Contains(c.Message, "PodDisruptionBudget dev-kube-scheduler by ControlPlane prod (UID "+string(other)+")") {
+		t.Errorf("APIServerReady says %q", c.Message)
+	}
+	deployments := &appsv1.DeploymentList{}
+	if err := k8s.List(t.Context(), deployments, client.InNamespace(ns)); err != nil {
+		t.Fatal(err)
+	}
+	if fresh := budgetOrNil(t, cp, "kube-scheduler"); len(deployments.Items) != 0 || fresh == nil || fresh.ResourceVersion != held.ResourceVersion {
+		t.Errorf("%d Deployments written, the held PodDisruptionBudget %+v: want none written and it unchanged", len(deployments.Items), fresh)
+	}
+}
+
+func TestAnOrphanPodDisruptionBudgetIsAdopted(t *testing.T) {
+	ns := namespace(t)
+	orphan := &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev-kube-apiserver", Namespace: ns, Labels: map[string]string{lodiav1alpha1.ControlPlaneLabel: "dev"}},
+		Spec:       policyv1.PodDisruptionBudgetSpec{MaxUnavailable: new(intstr.FromInt32(2)), Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "orphan"}}},
+	}
+	if err := k8s.Create(t.Context(), orphan); err != nil {
+		t.Fatal(err)
+	}
+	cp := create(t, ns, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) {
+		spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+	})
+	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
+	inputsReady(t, cp)
+	eventually(t, func() error {
+		b := budgetOrNil(t, cp, "kube-apiserver")
+		if b == nil || !metav1.IsControlledBy(b, cp) || b.Spec.MaxUnavailable.String() != "1" || b.Spec.MinAvailable != nil ||
+			fmt.Sprint(b.Spec.Selector.MatchLabels) != fmt.Sprint(map[string]string{lodiav1alpha1.ControlPlaneLabel: "dev", lodiav1alpha1.ComponentLabel: "kube-apiserver"}) {
+			return fmt.Errorf("the PodDisruptionBudget is %+v, controlled by %v", b, metav1.GetControllerOf(b))
+		}
+		return nil
+	})
+}
+
+func TestAForeignPodDisruptionBudgetSurvivesTheRemovalOfHighAvailability(t *testing.T) {
+	cp := controlPlane(t, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) {
+		spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+	})
+	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
+	inputsReady(t, cp)
+	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
+		eventuallyBudget(t, cp, component)
+	}
+	foreign := &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev-platform", Namespace: cp.Namespace, Labels: map[string]string{lodiav1alpha1.ControlPlaneLabel: "dev"}},
+		Spec: policyv1.PodDisruptionBudgetSpec{MinAvailable: new(intstr.FromInt32(1)), Selector: &metav1.LabelSelector{MatchLabels: map[string]string{
+			lodiav1alpha1.ControlPlaneLabel: "dev", lodiav1alpha1.ComponentLabel: "kube-apiserver",
+		}}},
+	}
+	if err := k8s.Create(t.Context(), foreign); err != nil {
+		t.Fatal(err)
+	}
+
+	update(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.HighAvailability = nil })
+	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
+		eventually(t, func() error {
+			if b := budgetOrNil(t, cp, component); b != nil {
+				return fmt.Errorf("the PodDisruptionBudget of %s is still there", component)
+			}
+			return nil
+		})
+	}
+	fresh := &policyv1.PodDisruptionBudget{}
+	if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(foreign), fresh); err != nil || !fresh.DeletionTimestamp.IsZero() || fresh.ResourceVersion != foreign.ResourceVersion {
+		t.Errorf("the platform's PodDisruptionBudget is %+v after highAvailability went: %v", fresh, err)
 	}
 }
 
