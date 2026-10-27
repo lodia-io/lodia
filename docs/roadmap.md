@@ -114,7 +114,6 @@ Scope:
   `Backup`, a sealed copy, which an upgrade takes before each minor; and
   `restoreFrom`, which replaces the `Backup`'s source and stays inert until
   released ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)).
-  `Backup` was phase 3's until the upgrades and the restore needed it.
 - Upgrades in the documented order, with the pre-upgrade backup and
   per-step gates; automatic patch updates; maintenance windows and the fleet
   limit; deferred re-render on operator upgrade.
