@@ -294,6 +294,9 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.Contro
 	if etcd.Spec.Replicas < memberCount(cp) {
 		condition.Message = note(condition.Message, fmt.Sprintf("highAvailability waits for Etcd %s to settle: every member on its current spec and available, etcd-druid's last scale completed", etcd.Name))
 	}
+	if kept, ready := keptMember(etcd); etcd.Spec.Replicas > memberCount(cp) && !ready {
+		condition.Message = note(condition.Message, fmt.Sprintf("removing highAvailability waits for member %s, which etcd-druid keeps, to be ready", kept))
+	}
 	condition.Message = note(condition.Message, held)
 	if updated := updatedMembers(etcd, sts); updated == nil || *updated < etcd.Spec.Replicas {
 		return etcd, sts, condition, 15 * time.Second, refusal

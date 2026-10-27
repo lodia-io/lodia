@@ -1737,6 +1737,66 @@ func TestRemovingHighAvailabilityBacksOutOfAMemberThatNeverComesUp(t *testing.T)
 	})
 }
 
+func TestRemovingHighAvailabilityWaitsForTheMemberEtcdDruidKeeps(t *testing.T) {
+	ns := namespace(t)
+	const cp = "kept"
+	createClass(t, newClass("kept", "Retain"))
+	ha := controlPlane(ns, cp, "kept")
+	ha.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"}
+	create(t, ha)
+	writeGeneration(t, ns, cp, 1)
+	waitEtcd(t, ns, cp, nil)
+	runStatefulSet(t, ns, cp, 1)
+	druid := func(ready int32, first druidv1alpha1.EtcdMemberConditionStatus) {
+		t.Helper()
+		setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) {
+			s.Replicas, s.ReadyReplicas, s.AvailableReplicas, s.CurrentReplicas, s.UpdatedReplicas = 3, ready, ready, 3, 3
+		})
+		setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) {
+			s.Replicas, s.CurrentReplicas, s.ReadyReplicas, s.Ready = 3, 3, ready, new(ready == 3)
+			s.Members[0].Status = first
+			for i := 1; i < 3; i++ {
+				s.Members = append(s.Members, druidv1alpha1.EtcdMemberStatus{
+					Name: fmt.Sprintf("%s-etcd-%d", cp, i), Status: druidv1alpha1.EtcdMemberStatusReady, Reason: "LeaseSucceeded", LastTransitionTime: metav1.Now(),
+				})
+			}
+			if first == "" {
+				s.Members = s.Members[1:]
+			}
+		})
+	}
+	druid(2, druidv1alpha1.EtcdMemberStatusNotReady)
+	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "Etcd kept-etcd has quorum, 2 of 3 members ready")
+
+	t.Run("the member etcd-druid keeps, not ready, holds the removal", func(t *testing.T) {
+		setHighAvailability(t, ns, cp, nil)
+		expectMembers(t, ns, cp, 3, true)
+		waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
+			"Etcd kept-etcd has quorum, 2 of 3 members ready; removing highAvailability waits for member kept-etcd-0, which etcd-druid keeps, to be ready")
+		if m := getControlPlane(t, ns, cp).Status.Datastore.Members; m.Total != 3 || m.Ready != 2 {
+			t.Errorf("status.datastore.members counts %d ready of %d, want 2 of 3", m.Ready, m.Total)
+		}
+	})
+	t.Run("missing from etcd-druid's member list, it holds it", func(t *testing.T) {
+		druid(2, "")
+		expectMembers(t, ns, cp, 3, true)
+	})
+	t.Run("listed not ready, it holds it though its pod is ready", func(t *testing.T) {
+		druid(3, druidv1alpha1.EtcdMemberStatusNotReady)
+		expectMembers(t, ns, cp, 3, true)
+	})
+	t.Run("listed ready, it lets it through", func(t *testing.T) {
+		druid(3, druidv1alpha1.EtcdMemberStatusReady)
+		waitEtcd(t, ns, cp, func(etcd *druidv1alpha1.Etcd) error {
+			if etcd.Spec.Replicas != 1 {
+				return fmt.Errorf("the Etcd asks for %d members", etcd.Spec.Replicas)
+			}
+			return nil
+		})
+		expectMembers(t, ns, cp, 1, false)
+	})
+}
+
 func TestAHeldScaleOutResumesOnceTheStatefulSetSettles(t *testing.T) {
 	ns := namespace(t)
 	const cp = "resumes"

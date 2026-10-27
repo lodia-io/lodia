@@ -162,8 +162,21 @@ func membersHeld(cp *lodiav1alpha1.ControlPlane, current *druidv1alpha1.Etcd, st
 	if !druidv1alpha1.HasScaleOperationCompleted(current) {
 		return true
 	}
+	if memberCount(cp) < current.Spec.Replicas {
+		_, ready := keptMember(current)
+		return !ready
+	}
 	updated := updatedMembers(current, sts)
 	return memberCount(cp) > current.Spec.Replicas && (updated == nil || *updated < current.Spec.Replicas)
+}
+
+// keptMember names the member a removal of highAvailability keeps and says
+// whether etcd-druid lists it ready.
+func keptMember(etcd *druidv1alpha1.Etcd) (string, bool) {
+	name := druidv1alpha1.GetOrdinalPodName(etcd.ObjectMeta, 0)
+	return name, slices.ContainsFunc(etcd.Status.Members, func(member druidv1alpha1.EtcdMemberStatus) bool {
+		return member.Name == name && member.Status == druidv1alpha1.EtcdMemberStatusReady
+	})
 }
 
 // spread puts the members on three nodes, and with Zone in three zones too;
@@ -299,8 +312,8 @@ func updatedMembers(etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) *int32 {
 
 // etcd-druid refreshes every Etcd's status every 15 seconds
 // (etcd-druid@v0.39.0 api/config/v1alpha1/defaults.go#L104, charts/values.yaml#L63)
-// with new timestamps alone; only a change readiness or status.datastore reads
-// gets a pass.
+// with new timestamps alone; only a change readiness, status.datastore or
+// membersHeld reads gets a pass.
 func etcdChanged() predicate.Funcs {
 	return predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool {
 		before, ok := e.ObjectOld.(*druidv1alpha1.Etcd)
@@ -311,8 +324,9 @@ func etcdChanged() predicate.Funcs {
 
 func readinessInput(etcd *druidv1alpha1.Etcd) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%d %t %d %t %d/%d %d;", etcd.Generation, !etcd.DeletionTimestamp.IsZero(), ptr.Deref(etcd.Status.ObservedGeneration, 0),
-		ptr.Deref(etcd.Status.Ready, false), etcd.Status.ReadyReplicas, etcd.Spec.Replicas, len(etcd.Status.Members))
+	_, kept := keptMember(etcd)
+	fmt.Fprintf(&b, "%d %t %d %t %d/%d %d %t;", etcd.Generation, !etcd.DeletionTimestamp.IsZero(), ptr.Deref(etcd.Status.ObservedGeneration, 0),
+		ptr.Deref(etcd.Status.Ready, false), etcd.Status.ReadyReplicas, etcd.Spec.Replicas, len(etcd.Status.Members), kept)
 	for _, c := range etcd.Status.Conditions {
 		fmt.Fprintf(&b, "%s=%s/%s;", c.Type, c.Status, c.Reason)
 	}
