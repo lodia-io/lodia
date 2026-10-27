@@ -66,7 +66,7 @@ in [`api/examples/`](api/examples/).
 | Datastore | the `Etcd` of a dedicated etcd and its NetworkPolicy — built — or a user and role in a shared store; backups and defragmentation | `DatastoreReady`; `BackupReady` outside `Ready` from wave 1b | a complete generation of PKI's etcd certificates |
 | Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady` | `status.target`, `status.datastore`, `CertificatesReady`, `DatastoreReady`; `AddonsApplied` before it starts a restored `ControlPlane`'s controller manager, from wave 1b |
 | Tenant | objects inside the tenant cluster, with an inventory | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
-| Health | status, and from phase 2's wave 2 the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable`, and `ControllersLeading` from wave 1b; `ControllerManagerHeld` outside `Ready` from wave 2 | `status.endpoint` and the CA bundle; `AccessReady` from wave 1b |
+| Health | status, and from phase 2's wave 2 the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable`, `ControllersLeading`; `ControllerManagerHeld` outside `Ready` from wave 2 | `status.endpoint` and the CA bundle; `AccessReady` and `<cp>-lodia-kubeconfig` for the leader Leases |
 | Lifecycle | `status.target`, `Progressing`, `Ready`; from phase 2's wave 2 `status.kubernetes`, `status.maintenance` and the pre-upgrade `Backup` | `Progressing` | the others |
 
 Each controller has its own queue and field manager, reads `spec`,
@@ -805,41 +805,22 @@ nothing deletes the snapshots of a deleted `ControlPlane`
 
 ## Health
 
-Built so far, for phase 1: the probe through the public endpoint. Every 10
-seconds Health asks `https://<status.endpoint.apiServer>/readyz` without
-credentials, which the API server's authentication allows for its health
-paths, and verifies it against `<cp>-ca-bundle`. `Reachable` is True on a 200
-and False, `ExternalProbeFailed`, after three probes in a row that fail, so
-one blip does not drop `Ready`; before the endpoint is published it is
-False, `WaitingForEndpoint`, and before the bundle is written,
-`WaitingForCertificates`. The rest of this section comes with phase 2.
+Built so far: the probe through the public endpoint and the leader Leases.
+Every 10 seconds Health asks `https://<status.endpoint.apiServer>/readyz` without credentials, which the API server's authentication allows for its health paths, and verifies it against `<cp>-ca-bundle`.
+`Reachable` is True on a 200 and False, `ExternalProbeFailed`, after three probes in a row that fail, so one blip does not drop `Ready`; before the endpoint is published it is False, `WaitingForEndpoint`, and before the bundle is written, `WaitingForCertificates`.
+In the same pass, once `AccessReady` is True for the generation, Health reads the leader Leases of the controller manager and the scheduler through the in-namespace Service, as `<cp>-lodia-kubeconfig`, each with a consistent GET.
+`ControllersLeading` is True while each Lease has a holder and has changed, by the operator's clock, within its own `leaseDurationSeconds` and one period; the clock lives in memory, so a Lease seen first, or again after a read that failed, counts as changed then.
+A read that fails leaves `ControllersLeading` as it was, since reaching the API server is `Reachable`'s to report.
+The rest of this section comes with phase 2.
 
-Every 5 seconds, its period, Health probes `/readyz` through the public
-endpoint and through the in-namespace Service, on a new connection each
-time; three failed passes of either turn `Reachable` False, with
-`InternalProbeFailed` first, since then the API server itself does not
-answer. From inside the management cluster the public probe reaches a load
-balancer's or a Gateway's address through kube-proxy, which captures
-traffic to such an address on every node, so it proves the cloud load
-balancer only in `nodePort` mode
-([serviceport.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/proxy/serviceport.go#L222-L235));
-the end-to-end signal from the nodes' side is their leases. Through the
-Service, Health reads the leader Leases of the controller manager and the
-scheduler every pass, which `ControllersLeading` reports (from wave 1b),
-the Leases in `kube-node-lease` every pass and the nodes every 30 seconds,
-and writes `status.nodes` only when it changes (wave 2). When 60% or more of
-the counted nodes have been silent for 20 seconds while the API server
-answers, the nodes are cut off from the control plane, not dead: Health takes
-the controller manager's leader Lease inside the tenant and keeps renewing
-it, the controller manager steps down and waits, and nothing marks the nodes
-or evicts their pods. Two minutes after the nodes are back, Health lets the
-lease go. It works the same in both layouts, rolls nothing, and never takes a
-lease another component holds
-([controller-manager-hold](decisions/controller-manager-hold.md)). This is
-what Gardener's dependency-watchdog does for its clusters, built into the
-operator. Health reports a hold in `ControllerManagerHeld`, outside `Ready`:
-the nodes are cut off, not the control plane, and `Reachable` stays about
-the control plane.
+Every 5 seconds, its period, Health probes `/readyz` through the public endpoint and through the in-namespace Service, on a new connection each time; three failed passes of either turn `Reachable` False, with `InternalProbeFailed` first, since then the API server itself does not answer.
+From inside the management cluster the public probe reaches a load balancer's or a Gateway's address through kube-proxy, which captures traffic to such an address on every node, so it proves the cloud load balancer only in `nodePort` mode ([serviceport.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/proxy/serviceport.go#L222-L235)); the end-to-end signal from the nodes' side is their leases.
+Through the Service, Health reads the Leases in `kube-node-lease` every pass and the nodes every 30 seconds, and writes `status.nodes` only when it changes (wave 2).
+When 60% or more of the counted nodes have been silent for 20 seconds while the API server answers, the nodes are cut off from the control plane, not dead: Health takes the controller manager's leader Lease inside the tenant and keeps renewing it, the controller manager steps down and waits, and nothing marks the nodes or evicts their pods.
+Two minutes after the nodes are back, Health lets the lease go.
+It works the same in both layouts, rolls nothing, and never takes a lease another component holds ([controller-manager-hold](decisions/controller-manager-hold.md)).
+This is what Gardener's dependency-watchdog does for its clusters, built into the operator.
+Health reports a hold in `ControllerManagerHeld`, outside `Ready`: the nodes are cut off, not the control plane, and `Reachable` stays about the control plane.
 
 ## Identity and tenancy
 

@@ -1,7 +1,7 @@
 # Six controllers share one object and communicate only through status conditions
 
 Decided 2026-10-25.
-The manager, PKI, the Datastore controller, for a dedicated etcd, Lifecycle, for the target within a minor and `Ready`, Tenant, without the apiserver-proxy, Health, for the probe through the public endpoint, and Workloads, behind a `loadBalancer` or `nodePort` endpoint, are built.
+The manager, PKI, the Datastore controller, for a dedicated etcd, Lifecycle, for the target within a minor and `Ready`, Tenant, without the apiserver-proxy, Health, for the probe through the public endpoint and the leader Leases, and Workloads, behind a `loadBalancer` or `nodePort` endpoint, are built.
 
 ## Decision
 
@@ -72,7 +72,6 @@ Rules:
   Cluster API separates the two the same way, in `Available` and `RollingOut` ([kubeadm_control_plane_types.go](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/api/controlplane/kubeadm/v1beta2/kubeadm_control_plane_types.go#L73-L88), [#L239-L242](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/api/controlplane/kubeadm/v1beta2/kubeadm_control_plane_types.go#L239-L242)), Gardener's checks tell a healthy Deployment from a fully rolled-out one ([deployment.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/utils/kubernetes/health/deployment.go#L46-L109)), and HyperShift calls etcd available at quorum ([hostedcontrolplane_controller.go](https://github.com/openshift/hypershift/blob/v0.1.86/control-plane-operator/controllers/hostedcontrolplane/hostedcontrolplane_controller.go#L2648-L2654)).
   A rollout that surges never stops serving, so `Ready` that dropped for it would report an outage that is not there.
   A component Lodia runs at 0 on purpose, the controller manager of a restored `ControlPlane` before its release, counts as available, and the message says it is held: `AccessReady` waits on `APIServerReady`, Tenant on `AccessReady`, and the release on Tenant's `AddonsApplied` ([restore-replaces-the-source](restore-replaces-the-source.md)).
-  `APIServerReady` and `DatastoreReady` are built so; `ControllersLeading` is not yet.
 - `Ready` on the `ControlPlane` is computed by Lifecycle from the others:
   `CertificatesReady ∧ DatastoreReady ∧ APIServerReady ∧ AccessReady ∧ AddonsApplied ∧ Reachable ∧ ControllersLeading`,
   and `Hibernated` when asleep; `ControllersLeading` joins with wave 1b.
@@ -242,17 +241,11 @@ flowchart LR
   cache with `ReaderFailOnMissingInformer`, as a user bound to exactly its
   rules, against a tenant kube-apiserver started from PKI's certificates
   ([tenant-resources-by-inventory](tenant-resources-by-inventory.md)).
-- `internal/controller/health` — reads the `ControlPlane` from the cache and
-  `<cp>-ca-bundle` uncached, probes the public endpoint every 10 seconds, and
-  applies `Reachable` as `lodia/health`, only on a change: `Unknown` at the
-  start of its first visit, a failed read leaving it as it was, False only
-  after three failed probes in a row, which it counts in memory, so a
-  restart counts afresh. Only a change of the endpoint, the bundle or the
-  generation brings a pass between the periodic ones, so the failures
-  counted are probes a period apart. Registered as `health` with ten workers
-  and a one-minute reconcile timeout. `health_test.go` runs it under the same
-  cache with `ReaderFailOnMissingInformer`, as a user bound to exactly its
-  rules.
+- `internal/controller/health` — reads the `ControlPlane` from the cache and `<cp>-ca-bundle` and `<cp>-lodia-kubeconfig` uncached, probes the public endpoint and reads the two leader Leases inside the tenant every 10 seconds, and applies `Reachable` and `ControllersLeading` as `lodia/health`, only on a change: `Unknown` at the start of its first visit, a failed read leaving them as they were.
+  `Reachable` is False only after three failed probes in a row, which it counts in memory, so a restart counts afresh.
+  Only a change of the endpoint, `AccessReady` or the generation brings a pass between the periodic ones, so the failures counted are probes a period apart.
+  Registered as `health` with ten workers and a one-minute reconcile timeout.
+  `health_test.go` runs it under the same cache with `ReaderFailOnMissingInformer`, as a user bound to exactly its rules, against a second envtest API server as the tenant.
 - `internal/controller/workloads` — reads `spec`, `status.target`, `status.datastore.endpoints` and the conditions it waits on, the data hash of each restart-only Secret from its metadata in the cache, and a `nodePort` endpoint's nodes uncached.
   It writes the Service, the ConfigMaps, the NetworkPolicies, the Deployments and, with `highAvailability`, their PodDisruptionBudgets with server-side apply as `lodia/workloads`, none over an object another owner keeps.
   It applies `APIServerReady`, `status.components` and `status.endpoint` through the status subresource (`Unknown` at the start of its first visit, messages from the state alone, an API error left to the log unless the server refuses an object it is sent, which is `Refused`).

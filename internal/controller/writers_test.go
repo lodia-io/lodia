@@ -42,6 +42,7 @@ var conditionWriters = map[string]string{
 	lodiav1alpha1.ConditionAddonsApplied:        "lodia/tenant",
 	lodiav1alpha1.ConditionAddonsAvailable:      "lodia/tenant",
 	lodiav1alpha1.ConditionReachable:            "lodia/health",
+	lodiav1alpha1.ConditionControllersLeading:   "lodia/health",
 	lodiav1alpha1.ConditionProgressing:          "lodia/lifecycle",
 	lodiav1alpha1.ConditionReady:                "lodia/lifecycle",
 }
