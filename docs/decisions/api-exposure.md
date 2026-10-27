@@ -22,9 +22,12 @@ Workloads publishes the endpoint of the table's last column as
 from it with the port name `https`: the Endpoints labelled
 `endpointslice.kubernetes.io/skip-mirror: "true"`, the EndpointSlice
 `kubernetes` labelled `kubernetes.io/service-name: kubernetes` and
-`endpointslice.kubernetes.io/managed-by: lodia.io`, as HyperShift writes them
+`endpointslice.kubernetes.io/managed-by: lodia.io`. HyperShift runs `none`
+too and writes the two objects from outside, the Endpoints labelled
+`skip-mirror` and the slice labelled with the service's name, both with the
+port name `https`
 ([config.go](https://github.com/openshift/hypershift/blob/v0.1.86/control-plane-operator/controllers/hostedcontrolplane/v2/kas/config.go#L211),
-[reconcile.go](https://github.com/openshift/hypershift/blob/v0.1.86/control-plane-operator/hostedclusterconfigoperator/controllers/resources/kas/reconcile.go#L11-L54)).
+[reconcile.go](https://github.com/openshift/hypershift/blob/v0.1.86/control-plane-operator/hostedclusterconfigoperator/controllers/resources/kas/reconcile.go#L11-L52)).
 Every API server replica serves that address, so no rollout and no stopping
 replica changes them, but in the one roll that brings `none` to a control
 plane that ran without it: there the old replica's lease reconciler rewrites

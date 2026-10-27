@@ -345,4 +345,17 @@ is a decision — a decision is a file in `docs/decisions/`.
 - Deleting a `ControlPlane` waits out the API server's 90 s grace period,
   since its etcd goes at the same moment and the requests in flight wait for
   it; the Datastore controller should delete the `Etcd` only after
-  Workloads' API server pods are gone.
+  Workloads' API server pods are gone, which also brings the per-pull-request
+  e2e job back under its budget (its overrun is accepted for now).
+- `--endpoint-reconciler-type=none` skips kube-apiserver's check that the
+  advertise address has the service range's family
+  ([validation.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kube-apiserver/app/options/validation.go#L111-L127));
+  Workloads should pick `inCluster` in the family of `serviceCIDRs[0]`, or
+  report `WaitingForEndpoint` naming the family.
+- Requests through the tunnel (logs, exec, webhooks, aggregated APIs) can
+  fail for 1–3 s after a new API server pod turns ready, since the agents
+  dial it through the Service; the gate's loop should send one such request
+  too.
+- With no `status.endpoint.inCluster` yet, Tenant should report
+  `WaitingForEndpoint` instead of returning the error of parsing an empty
+  address.
