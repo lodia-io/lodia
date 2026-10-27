@@ -4,11 +4,16 @@
 package health
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	coordinationv1client "k8s.io/client-go/kubernetes/typed/coordination/v1"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
@@ -67,5 +72,32 @@ func TestAControlPlaneKeepsItsClientsWhileTheirInputsStay(t *testing.T) {
 	r.forget(key)
 	if leases("https://dev-kube-apiserver.team-a.svc:6443") == second {
 		t.Error("a forgotten ControlPlane kept its Lease client")
+	}
+}
+
+func TestTheLeaseClientNamesItself(t *testing.T) {
+	var agent atomic.Value
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		agent.Store(req.UserAgent())
+		http.NotFound(w, req)
+	}))
+	t.Cleanup(server.Close)
+	kubeconfig, err := clientcmd.Write(clientcmdapi.Config{
+		Clusters:       map[string]*clientcmdapi.Cluster{"tenant": {Server: server.URL}},
+		AuthInfos:      map[string]*clientcmdapi.AuthInfo{"lodia": {}},
+		Contexts:       map[string]*clientcmdapi.Context{"tenant": {Cluster: "tenant", AuthInfo: "lodia"}},
+		CurrentContext: "tenant",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &Reconciler{}
+	leases, err := r.leases(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = leases.Get(t.Context(), "kube-scheduler", metav1.GetOptions{})
+	if got, want := agent.Load(), rest.DefaultKubernetesUserAgent(); got != want {
+		t.Errorf("the Lease client sends the User-Agent %q, want %q", got, want)
 	}
 }

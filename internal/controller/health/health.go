@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	utilnet "k8s.io/apimachinery/pkg/util/net"
 	coordinationv1client "k8s.io/client-go/kubernetes/typed/coordination/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -290,7 +291,7 @@ func (r *Reconciler) forget(key types.NamespacedName) {
 	defer r.mu.Unlock()
 	delete(r.renewals, key)
 	if c := r.clients[key]; c != nil && c.transport != nil {
-		c.transport.CloseIdleConnections()
+		utilnet.CloseIdleConnectionsFor(c.transport.Transport)
 	}
 	delete(r.clients, key)
 }
@@ -342,6 +343,7 @@ func (r *Reconciler) leases(key types.NamespacedName, kubeconfig []byte) (coordi
 		return nil, err
 	}
 	cfg.Proxy = http.ProxyURL(nil)
+	cfg.UserAgent = rest.DefaultKubernetesUserAgent()
 	transport, err := rest.HTTPClientFor(cfg)
 	if err != nil {
 		return nil, err
@@ -351,7 +353,7 @@ func (r *Reconciler) leases(key types.NamespacedName, kubeconfig []byte) (coordi
 		return nil, err
 	}
 	if c.transport != nil {
-		c.transport.CloseIdleConnections()
+		utilnet.CloseIdleConnectionsFor(c.transport.Transport)
 	}
 	c.kubeconfig, c.leases, c.transport = kubeconfig, leases.Leases(lodiav1alpha1.LeaderElectionNamespace), transport
 	return c.leases, nil
