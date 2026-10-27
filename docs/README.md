@@ -349,7 +349,7 @@ stateDiagram-v2
 
 ### Backup, restore, migration
 
-A `DatastoreClass` with a backup store gives every dedicated etcd continuous snapshots: a full snapshot daily, at a time inside the tenant's window, and a delta every few minutes, with retention in the class (the schedule Gardener runs, [backup and restore](https://github.com/gardener/gardener/blob/master/docs/concepts/backup-restore.md)).
+A `DatastoreClass` with a backup store gives every dedicated etcd continuous snapshots: a full snapshot on the class's schedule, `0 0 * * *` by default, and a delta every few minutes, with retention in the class; placing the full snapshot inside the tenant's maintenance window, as Gardener does for its shoots ([backup and restore](https://github.com/gardener/gardener/blob/master/docs/concepts/backup-restore.md)), is owed with phase 2's wave 2 (`todo.md`).
 A `Backup` is a sealed copy ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)), and a new `ControlPlane` with `restoreFrom` replaces its source.
 
 Migration between stores (shared → dedicated, or between classes): Tenant applies a `ValidatingAdmissionPolicy` that refuses writes, Datastore takes a final snapshot and restores it into the target, Workloads rolls the API server onto the new endpoints, Tenant lifts the lock.
