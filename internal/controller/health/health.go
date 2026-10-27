@@ -242,19 +242,18 @@ func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 
 // stale says why lease does not lead, or nothing when it does.
 func (r *Reconciler) stale(key types.NamespacedName, lease *coordinationv1.Lease, now time.Time) string {
-	holder := ptr.Deref(lease.Spec.HolderIdentity, "")
-	renewed := "never"
-	if t := lease.Spec.RenewTime; t != nil {
-		renewed = t.UTC().Format(time.RFC3339)
-	}
-	if holder == "" {
-		return fmt.Sprintf("Lease %s/%s has no holder; it was last renewed %s", lease.Namespace, lease.Name, renewed)
-	}
 	duration := time.Duration(ptr.Deref(lease.Spec.LeaseDurationSeconds, 0)) * time.Second
 	if now.Sub(r.changed(key, lease, now)) <= duration+r.Period {
 		return ""
 	}
-	return fmt.Sprintf("Lease %s/%s of %s was last renewed %s", lease.Namespace, lease.Name, holder, renewed)
+	renewed := "never"
+	if t := lease.Spec.RenewTime; t != nil {
+		renewed = t.UTC().Format(time.RFC3339)
+	}
+	if holder := ptr.Deref(lease.Spec.HolderIdentity, ""); holder != "" {
+		return fmt.Sprintf("Lease %s/%s of %s was last renewed %s", lease.Namespace, lease.Name, holder, renewed)
+	}
+	return fmt.Sprintf("Lease %s/%s has no holder; it was last renewed %s", lease.Namespace, lease.Name, renewed)
 }
 
 // changed returns when Health first saw the lease's current version.

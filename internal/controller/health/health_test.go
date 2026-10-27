@@ -337,7 +337,23 @@ func TestControllersLeadingFollowsTheLeaderLeases(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	renew(t, lodiav1alpha1.SchedulerLease, "", start.Add(27*time.Second))
+	now.SetTime(start.Add(27 * time.Second))
+	release(t, lodiav1alpha1.SchedulerLease, start.Add(27*time.Second))
+	reconcile(t, r, cp)
+	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, "the leader Leases of kube-controller-manager and kube-scheduler are renewed"); err != nil {
+		t.Fatalf("the pass after a release: %v", err)
+	}
+	now.SetTime(start.Add(37 * time.Second))
+	reconcile(t, r, cp)
+	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, "the leader Leases of kube-controller-manager and kube-scheduler are renewed"); err != nil {
+		t.Fatalf("a pass within a period of a release: %v", err)
+	}
+	now.SetTime(start.Add(38 * time.Second))
+	reconcile(t, r, cp)
+	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, "the leader Leases of kube-controller-manager and kube-scheduler are renewed"); err != nil {
+		t.Fatalf("within the released lease's 1 second and the period: %v", err)
+	}
+	now.SetTime(start.Add(39 * time.Second))
 	reconcile(t, r, cp)
 	if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonSchedulerNotLeading,
 		"Lease kube-system/kube-scheduler has no holder; it was last renewed "+start.Add(27*time.Second).UTC().Format(time.RFC3339)); err != nil {
@@ -583,6 +599,19 @@ func removeLeases(t *testing.T) {
 		if err := client.IgnoreNotFound(tenant.Delete(t.Context(), lease)); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func release(t *testing.T, name string, at time.Time) {
+	t.Helper()
+	lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Namespace: lodiav1alpha1.LeaderElectionNamespace, Name: name}}
+	if err := tenant.Get(t.Context(), client.ObjectKeyFromObject(lease), lease); err != nil {
+		t.Fatal(err)
+	}
+	lease.Spec.HolderIdentity, lease.Spec.LeaseDurationSeconds = nil, new(int32(1))
+	lease.Spec.AcquireTime, lease.Spec.RenewTime = &metav1.MicroTime{Time: at}, &metav1.MicroTime{Time: at}
+	if err := tenant.Update(t.Context(), lease); err != nil {
+		t.Fatal(err)
 	}
 }
 
