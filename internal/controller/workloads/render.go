@@ -42,6 +42,9 @@ const (
 	// requestTimeout is kube-apiserver's default --request-timeout
 	// (https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/server/config.go#L453).
 	requestTimeout = time.Minute
+	// jwksPath is where kube-apiserver serves the ServiceAccount issuer's keys
+	// (https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/serviceaccount/openidmetadata.go#L44-L47).
+	jwksPath = "/openid/v1/jwks"
 
 	restartHashAnnotation = "lodia.io/restart-hash"
 	signerSocket          = "/run/signer/signer.sock"
@@ -162,6 +165,7 @@ type rendering struct {
 	signerImage string
 	advertise   string
 	issuer      string
+	jwksURI     string
 	etcd        []lodiav1alpha1.HostPort
 	hashes      map[string]string
 }
@@ -205,6 +209,7 @@ func (r rendering) apiServer() *appsv1.Deployment {
 		"requestheader-username-headers":              "X-Remote-User",
 		"secure-port":                                 strconv.Itoa(kubernetesPort),
 		"service-account-issuer":                      r.issuer,
+		"service-account-jwks-uri":                    r.jwksURI,
 		"service-account-signing-endpoint":            signerSocket,
 		"service-cluster-ip-range":                    joined(cp.Spec.Network.ServiceCIDRs),
 		"shutdown-delay-duration":                     shutdownDelay.String(),
