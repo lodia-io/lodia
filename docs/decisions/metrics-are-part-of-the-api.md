@@ -34,8 +34,7 @@ read from a tenant. A metric is renamed only under a new name, and in
   (`LodiaUpgradeFailed`) or to leave a case out (`LodiaBackupStale`).
 - **etcd is sampled, not scraped.** The Datastore controller reads each
   dedicated etcd's `Status` once a minute and keeps it in memory: the
-  database size, the quota and whether there is a leader. The etcd's
-  NetworkPolicy admits the operator to the client port for it. Scraping the
+  database size, the quota and whether there is a leader. Scraping the
   etcd and its backup sidecar stays the platform's choice until they serve
   metrics on a listener of their own: etcd-druid's etcd serves its metrics
   on the client port only, behind client certificates
