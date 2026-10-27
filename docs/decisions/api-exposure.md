@@ -94,7 +94,9 @@ agent already runs in production:
    ([RFC 4193](https://www.rfc-editor.org/rfc/rfc4193#section-3.2)), the
    schema cannot draw one, and Lodia never writes `spec`, so a
    `ControlPlane` whose first service range is IPv6 names its address,
-   from a /48 its platform drew once. The schema refuses an address that is
+   from a /48 its platform drew once; Lodia drawing one per `ControlPlane`,
+   kept beside its CAs, can come later without breaking a manifest
+   (`todo.md`). The schema refuses an address that is
    not unicast, not in canonical form, of another family than the first
    service range, or inside the tenant's service or pod ranges, the default
    included, and refuses every change of it: the address is in every node's

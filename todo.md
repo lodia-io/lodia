@@ -382,3 +382,8 @@ is a decision — a decision is a file in `docs/decisions/`.
   could never be True. Workloads forces `leaderElect: true` in the
   configuration it overrides, or the configuration is refused while it says
   `false`.
+- An IPv6 advertise address Lodia draws: once gateway mode has users with an
+  IPv6 first service range, Workloads could draw a unique local address per
+  `ControlPlane` and keep it beside its CAs, which a platform backs up
+  anyway. `apiServer.advertiseAddress` then becomes optional, which breaks
+  no manifest (api-exposure).
