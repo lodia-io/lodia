@@ -86,22 +86,15 @@ Rules:
   ([hostedcontrolplane_controller.go](https://github.com/openshift/hypershift/blob/v0.1.86/control-plane-operator/controllers/hostedcontrolplane/hostedcontrolplane_controller.go#L2648-L2654)).
   A rollout that surges never stops serving, so `Ready` that dropped for it
   would report an outage that is not there. A component Lodia runs at 0 on
-  purpose, the controller manager of a restored `ControlPlane` before its
-  release, counts as available, and the message says it is held: `AccessReady`
-  waits on `APIServerReady`, Tenant on `AccessReady`, and the release on
-  Tenant's `AddonsApplied`
+  purpose counts as available
   ([restore-replaces-the-source](restore-replaces-the-source.md)). Built with
   HA in phase 2's wave 1b; until then `APIServerReady` and `DatastoreReady`
   want every replica updated and ready.
-- `Ready` on the `ControlPlane` is computed by Lifecycle from the others:
-  `CertificatesReady ∧ DatastoreReady ∧ APIServerReady ∧ AccessReady ∧ AddonsApplied ∧ Reachable ∧ ControllersLeading`,
-  and `Hibernated` when asleep; `ControllersLeading` joins with wave 1b.
+- `Ready` on the `ControlPlane` is computed by Lifecycle from the others
+  ([which](../api/controlplane.md#conditions-and-their-reasons)), and
+  `Hibernated` when asleep.
   Nothing in it waits for the tenant's nodes: the owner joins them once the
-  control plane is `Ready`, so `AddonsAvailable`, the addons' pods on those
-  nodes, is reported beside it, and so is `ControllerManagerHeld`, Health's
-  hold while most nodes cannot reach an API that answers; so is
-  `CAValidityAcceptable`, a CA in its last year, since every certificate is
-  still valid then and its rotation is started by someone.
+  control plane is `Ready`.
 
 ```mermaid
 flowchart LR
@@ -156,10 +149,8 @@ flowchart LR
 - The layout (`Split` or `Compact`) is known to Workloads alone
   ([compact-layout](compact-layout.md)).
 - Metrics come per controller, labelled by the controller alone: queue
-  depth, reconcile duration and errors. Per tenant, one collector builds
-  Lodia's metrics from `status`
-  ([metrics-are-part-of-the-api](metrics-are-part-of-the-api.md)), and each
-  controller records an event per transition of its condition.
+  depth, reconcile duration and errors; the per-tenant ones and the events
+  are [metrics-are-part-of-the-api](metrics-are-part-of-the-api.md)'s.
 - No controller uses the content of, or writes over, an object whose
   controller is not its `ControlPlane`, or that refers to another
   `ControlPlane` at all; `internal/ownership` is the one place that rule is
@@ -206,18 +197,16 @@ flowchart LR
 - `internal/operator` — the scheme, the cache rules above and the
   controllers: PKI registered as `pki`, the Datastore controller as
   `datastore`, Lifecycle as `lifecycle`, Tenant as `tenant`, Health as
-  `health` and Workloads as `workloads`, each with ten workers.
+  `health` and Workloads as `workloads`, each with ten workers and a
+  one-minute reconcile timeout.
   `cmd/lodia/main.go` runs them in one manager; every controller's tests
   take the cache from it.
 - `internal/controller/pki` — reads `spec` and `status.endpoint`, writes its
   Secrets with server-side apply as `lodia/pki`, applies `CertificatesReady`,
   `CAValidityAcceptable` and `AccessReady` alone through the status
-  subresource (`Unknown` at the start of its first visit, then with messages
-  from the state alone, so a pass that changes nothing writes nothing; a
+  subresource (a
   failed read leaves them as they were, and a failed write stops the pass's
-  writes and reports what it had to change and could not write as
-  `Issuing`), counts
-  `APIServerReady` only at the current generation, and requeues in whole
+  writes), and requeues in whole
   seconds, rounded up, at the earliest renewal, or when a CA enters its last
   year or expires.
   `reconciler_test.go` runs it as a user bound to exactly its rules (its
@@ -231,12 +220,10 @@ flowchart LR
 - `internal/controller/datastore` — reads `spec`, writes the `Etcd`, the
   credentials copy and the etcd's NetworkPolicy with server-side apply as
   `lodia/datastore`, applies
-  `DatastoreReady` alone through the status subresource (`Unknown` at the
-  start of its first pass, messages from the state alone, an API error left
+  `DatastoreReady` alone through the status subresource (an API error left
   to the log unless the server refuses an object it is sent: the `Etcd` or
   the NetworkPolicy, which are `Refused`, or the credentials copy, which
-  holds the class),
-  sets a reconcile timeout of a minute, and stops for a paused
+  holds the class), and stops for a paused
   `ControlPlane`. `datastore_test.go`
   runs it under the same cache with `ReaderFailOnMissingInformer`, as a user
   bound to exactly its rules, and holds the first visit and the pass that
@@ -247,30 +234,25 @@ flowchart LR
   `status.observedGeneration` as `lodia/lifecycle`, all of them on every
   write and only on a change; its pass reads nothing that can fail midway,
   so its first visit writes the conditions it computes rather than a
-  separate `Unknown`. Registered as `lifecycle` with ten workers and a
-  one-minute reconcile timeout. `lifecycle_test.go` runs it under the same
+  separate `Unknown`. `lifecycle_test.go` runs it under the same
   cache with `ReaderFailOnMissingInformer`, as a user bound to exactly its
   rules; `internal/versions` holds the minors it supports.
 - `internal/controller/tenant` — waits on `AccessReady` at the current
   generation, applies the tenant's objects as `lodia/tenant` with the
   inventory in the tenant, and applies `AddonsApplied` and
-  `AddonsAvailable` (`Unknown` on the first visit, messages from the state,
-  a tenant that does not answer leaving a True as it was); a pass runs only
+  `AddonsAvailable`; a pass runs only
   when the target, the endpoint, `AccessReady` or the generation changes,
-  and on its timers. Registered as `tenant` with ten workers and a
-  one-minute reconcile timeout. `tenant_test.go` runs it under the same
+  and on its timers. `tenant_test.go` runs it under the same
   cache with `ReaderFailOnMissingInformer`, as a user bound to exactly its
   rules, against a tenant kube-apiserver started from PKI's certificates
   ([tenant-resources-by-inventory](tenant-resources-by-inventory.md)).
 - `internal/controller/health` — reads the `ControlPlane` from the cache and
-  `<cp>-ca-bundle` uncached, probes the public endpoint every 10 seconds, and
-  applies `Reachable` as `lodia/health`, only on a change: `Unknown` at the
-  start of its first visit, a failed read leaving it as it was, False only
-  after three failed probes in a row, which it counts in memory, so a
+  `<cp>-ca-bundle` uncached, probes the public endpoint, and
+  applies `Reachable` as `lodia/health`, only on a change: a failed read
+  leaving it as it was, and the failed probes counted in memory, so a
   restart counts afresh. Only a change of the endpoint, the bundle or the
   generation brings a pass between the periodic ones, so the failures
-  counted are probes a period apart. Registered as `health` with ten workers
-  and a one-minute reconcile timeout. `health_test.go` runs it under the same
+  counted are probes a period apart. `health_test.go` runs it under the same
   cache with `ReaderFailOnMissingInformer`, as a user bound to exactly its
   rules.
 - `internal/controller/workloads` — reads `spec`, `status.target`,
@@ -280,9 +262,7 @@ flowchart LR
   the NetworkPolicies and the Deployments with server-side apply as
   `lodia/workloads`, none over an object another owner keeps, and applies
   `APIServerReady` and `status.endpoint` through the status subresource
-  (`Unknown` at the start of its first visit, messages from the state alone,
-  an API error left to the log unless the server refuses an object it is
-  sent, which is `Refused`). Registered as `workloads` with ten workers
-  and a one-minute reconcile timeout. `workloads_test.go` runs it under the
+  (an API error left to the log unless the server refuses an object it is
+  sent, which is `Refused`). `workloads_test.go` runs it under the
   same cache with `ReaderFailOnMissingInformer`, as a user bound to exactly
   its rules.
