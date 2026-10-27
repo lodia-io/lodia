@@ -66,7 +66,7 @@ in [`api/examples/`](api/examples/).
 | Datastore | the `Etcd` of a dedicated etcd and its NetworkPolicy — built, for one member — or a user and role in a shared store; backups and defragmentation | `DatastoreReady` | a complete generation of PKI's etcd certificates |
 | Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady` | `status.target`, `status.datastore`, `CertificatesReady`, `DatastoreReady` |
 | Tenant | objects inside the tenant cluster, with an inventory | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
-| Health | status, and from phase 2 the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable`; `ControllerManagerHeld` outside `Ready` from phase 2 | `status.endpoint` and the CA bundle; `AccessReady` from phase 2 |
+| Health | status, and from phase 2's wave 2 the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable`, and `ControllersLeading` from wave 1b; `ControllerManagerHeld` outside `Ready` from wave 2 | `status.endpoint` and the CA bundle; `AccessReady` from wave 1b |
 | Lifecycle | `status.target`, `Progressing`, `Ready`; the pre-upgrade `Backup` | `Progressing` | the others |
 
 Each controller has its own queue and field manager, reads `spec`,
@@ -105,8 +105,10 @@ sequenceDiagram
 ```
 
 What each example of failure does: an etcd that loses quorum turns
-`DatastoreReady` False with `QuorumLost` (phase 2); Workloads leaves the Deployments
-alone and PKI keeps renewing certificates. A changed controller-manager flag
+`DatastoreReady` False with `QuorumLost` (phase 2's wave 1b, HA), while a
+member that rolls or is lost leaves it True as long as the others keep
+quorum; Workloads leaves the Deployments alone and PKI keeps renewing
+certificates. A changed controller-manager flag
 rolls only its Deployment. A deleted CoreDNS Deployment inside the tenant
 returns at the next inventory apply.
 
@@ -845,9 +847,20 @@ one blip does not drop `Ready`; before the endpoint is published it is
 False, `WaitingForEndpoint`, and before the bundle is written,
 `WaitingForCertificates`. The rest of this section comes with phase 2.
 
-Health probes `/readyz` through the public endpoint, the way a kubelet
-reaches it, and through the in-namespace Service, and every 5 seconds reads
-the tenant's nodes and their leases through that Service. When 60% or more of
+Every 5 seconds, its period, Health probes `/readyz` through the public
+endpoint and through the in-namespace Service, on a new connection each
+time; three failed passes of either turn `Reachable` False, with
+`InternalProbeFailed` first, since then the API server itself does not
+answer. From inside the management cluster the public probe reaches a load
+balancer's or a Gateway's address through kube-proxy, which captures
+traffic to such an address on every node, so it proves the cloud load
+balancer only in `nodePort` mode
+([serviceport.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/proxy/serviceport.go#L222-L235));
+the end-to-end signal from the nodes' side is their leases. Through the
+Service, Health reads the leader Leases of the controller manager and the
+scheduler every pass, which `ControllersLeading` reports (from wave 1b),
+the Leases in `kube-node-lease` every pass and the nodes every 30 seconds,
+and writes `status.nodes` only when it changes (wave 2). When 60% or more of
 the counted nodes have been silent for 20 seconds while the API server
 answers, the nodes are cut off from the control plane, not dead: Health takes
 the controller manager's leader Lease inside the tenant and keeps renewing
@@ -1009,7 +1022,9 @@ it from values):
 | `controllers.<name>.workers` | concurrent reconciles per controller | 10 |
 | `fleet.maxConcurrentRollouts` | tenants rolling Lodia-initiated changes at once | 5 |
 | `tenant.applyInterval` | the inventory re-apply period | 10m |
-| `health.silentAfter`, `health.holdFraction`, `health.releaseAfter` | when a node counts as silent, the share of silent nodes that starts the hold, how long the nodes must be back before it ends | 20s, 0.6, 2m |
+| `health.period` | how often Health probes each control plane and reads its leases; 10 seconds until the operator reads this file | 5s |
+| `health.failuresBeforeFalse` | failed passes in a row that turn `Reachable` False | 3 |
+| `health.silentAfter`, `health.holdFraction`, `health.releaseAfter` | when a node counts as silent, the share of silent nodes that starts the hold, how long the nodes must be back before it ends; the operator refuses to start when they break the margin of [controller-manager-hold](decisions/controller-manager-hold.md) | 20s, 0.6, 2m |
 | `pki.leafLifetime`, `pki.caLifetime`, `pki.trustAnchorLifetime` | leaf certificates and the kubelet signer; every CA but the cluster CA; the cluster CA ([staged-credential-rotation](decisions/staged-credential-rotation.md)) | 1 year, 5 years, 10 years |
 | `kubeconfigRequests.maxExpiration` | | 24h |
 | `defaults.resources.<component>` | requests and limits per component | from the idle usage measured in phase 1 ([Capacity](operations.md#capacity)) |

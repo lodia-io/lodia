@@ -42,9 +42,6 @@ spec:
     featureGates: {}
     extraArgs:
       max-requests-inflight: "800"
-  controllerManager:
-    extraArgs:
-      node-monitor-grace-period: 40s
   scheduler: {}
   addons:
     konnectivity:

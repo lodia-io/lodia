@@ -408,7 +408,7 @@ func TestTheSpecIsRendered(t *testing.T) {
 			FeatureGates: map[string]bool{"B": false, "A": true},
 			Resources:    &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")}},
 		}
-		spec.ControllerManager = &lodiav1alpha1.Component{ExtraArgs: map[string]string{"node-monitor-grace-period": "50s", "controllers": "-ttl-controller"}}
+		spec.ControllerManager = &lodiav1alpha1.Component{ExtraArgs: map[string]string{"terminated-pod-gc-threshold": "100", "controllers": "-ttl-controller"}}
 		spec.ServiceAccount = &lodiav1alpha1.ServiceAccount{Issuer: "https://issuer.example.com"}
 		spec.Addons = &lodiav1alpha1.Addons{Konnectivity: &lodiav1alpha1.Konnectivity{Version: "v0.37.2"}}
 		spec.Placement = &lodiav1alpha1.Placement{
@@ -432,7 +432,7 @@ func TestTheSpecIsRendered(t *testing.T) {
 			t.Errorf("%s is placed with %v, %v and %q", component, pod.NodeSelector, pod.Tolerations, pod.PriorityClassName)
 		}
 	}
-	expectFlags(t, deployment(t, cp, "kube-controller-manager").Spec.Template.Spec.Containers[0].Command, "--node-monitor-grace-period=50s",
+	expectFlags(t, deployment(t, cp, "kube-controller-manager").Spec.Template.Spec.Containers[0].Command, "--terminated-pod-gc-threshold=100",
 		"--controllers=*,bootstrap-signer-controller,token-cleaner-controller,-ttl-controller")
 }
 

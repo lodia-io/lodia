@@ -6,6 +6,7 @@ package v1alpha1
 import (
 	"strconv"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 )
@@ -159,4 +160,25 @@ const (
 	// which Workloads writes and the Datastore controller's etcd
 	// NetworkPolicy admits.
 	APIServerComponent = "kube-apiserver"
+
+	// ControllerManagerLease and SchedulerLease are the components' leader
+	// Leases in LeaderElectionNamespace inside the tenant: Workloads names
+	// them in the components' flags, and Health reads them.
+	ControllerManagerLease  = "kube-controller-manager"
+	SchedulerLease          = "kube-scheduler"
+	LeaderElectionNamespace = "kube-system"
+
+	// HoldHolderIdentity is the holder Health writes into
+	// ControllerManagerLease while it holds the controller manager.
+	HoldHolderIdentity = "lodia"
+)
+
+// The controller manager's timings, which Workloads renders as its flags and
+// the operator checks Health's thresholds against when it starts.
+const (
+	NodeMonitorGracePeriod         = 60 * time.Second
+	NodeMonitorPeriod              = 5 * time.Second
+	ControllerManagerLeaseDuration = 15 * time.Second
+	ControllerManagerRenewDeadline = 10 * time.Second
+	ControllerManagerRetryPeriod   = 2 * time.Second
 )

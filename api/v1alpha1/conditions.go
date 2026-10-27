@@ -5,16 +5,18 @@ package v1alpha1
 
 // Condition types, each with its one writer.
 const (
-	ConditionCertificatesReady    = "CertificatesReady"    // PKI
-	ConditionAccessReady          = "AccessReady"          // PKI
-	ConditionCAValidityAcceptable = "CAValidityAcceptable" // PKI
-	ConditionDatastoreReady       = "DatastoreReady"       // Datastore
-	ConditionAPIServerReady       = "APIServerReady"       // Workloads
-	ConditionAddonsApplied        = "AddonsApplied"        // Tenant
-	ConditionAddonsAvailable      = "AddonsAvailable"      // Tenant
-	ConditionReachable            = "Reachable"            // Health
-	ConditionProgressing          = "Progressing"          // Lifecycle
-	ConditionReady                = "Ready"                // Lifecycle
+	ConditionCertificatesReady     = "CertificatesReady"     // PKI
+	ConditionAccessReady           = "AccessReady"           // PKI
+	ConditionCAValidityAcceptable  = "CAValidityAcceptable"  // PKI
+	ConditionDatastoreReady        = "DatastoreReady"        // Datastore
+	ConditionAPIServerReady        = "APIServerReady"        // Workloads
+	ConditionAddonsApplied         = "AddonsApplied"         // Tenant
+	ConditionAddonsAvailable       = "AddonsAvailable"       // Tenant
+	ConditionReachable             = "Reachable"             // Health
+	ConditionControllersLeading    = "ControllersLeading"    // Health
+	ConditionControllerManagerHeld = "ControllerManagerHeld" // Health
+	ConditionProgressing           = "Progressing"           // Lifecycle
+	ConditionReady                 = "Ready"                 // Lifecycle
 )
 
 // Reasons several conditions share. Reconciling is a writer's own first
@@ -69,11 +71,13 @@ const (
 	ReasonDatastoreClassNotFound  = "DatastoreClassNotFound"
 	ReasonDatastoreClassAmbiguous = "DatastoreClassAmbiguous"
 	ReasonVolumesExist            = "VolumesExist"
+	ReasonQuorumLost              = "QuorumLost"
 )
 
 // APIServerReady.
 const (
-	ReasonRollingOut                      = "RollingOut"
+	ReasonUnavailable                     = "Unavailable"
+	ReasonProgressDeadlineExceeded        = "ProgressDeadlineExceeded"
 	ReasonLoadBalancerHostnameUnsupported = "LoadBalancerHostnameUnsupported"
 )
 
@@ -89,11 +93,29 @@ const (
 const (
 	ReasonReachable           = "Reachable"
 	ReasonExternalProbeFailed = "ExternalProbeFailed"
+	ReasonInternalProbeFailed = "InternalProbeFailed"
+)
+
+// ControllersLeading.
+const (
+	ReasonLeading                     = "Leading"
+	ReasonHeld                        = "Held"
+	ReasonControllerManagerNotLeading = "ControllerManagerNotLeading"
+	ReasonSchedulerNotLeading         = "SchedulerNotLeading"
+)
+
+// ControllerManagerHeld.
+const (
+	ReasonNodesSilent = "NodesSilent"
+	ReasonNotHeld     = "NotHeld"
+	ReasonHoldBlocked = "HoldBlocked"
+	ReasonDisabled    = "Disabled"
 )
 
 // Progressing and Ready.
 const (
 	ReasonIdle                        = "Idle"
 	ReasonPaused                      = "Paused"
+	ReasonRollingOut                  = "RollingOut"
 	ReasonLatestGenerationNotObserved = "LatestGenerationNotObserved"
 )

@@ -44,6 +44,7 @@ type ControlPlaneList struct {
 // ControlPlaneSpec is what the owner of the cluster wants.
 // +kubebuilder:validation:XValidation:rule="self.layout != 'Compact' || !has(self.highAvailability)",message="the Compact layout runs one replica of everything: remove highAvailability"
 // +kubebuilder:validation:XValidation:rule="self.layout != 'Compact' || !has(self.apiServer) || !has(self.apiServer.replicas) || self.apiServer.replicas == 1",message="the Compact layout runs one API server"
+// +kubebuilder:validation:XValidation:rule="!has(self.highAvailability) || !has(self.apiServer) || !has(self.apiServer.replicas) || self.apiServer.replicas >= 2",message="highAvailability runs at least two API servers"
 // +kubebuilder:validation:XValidation:rule="!has(self.restoreFrom) || (has(oldSelf.restoreFrom) && oldSelf.restoreFrom == self.restoreFrom)",message="restoreFrom can only be set when the ControlPlane is created"
 type ControlPlaneSpec struct {
 	// Version is the Kubernetes version, vMAJOR.MINOR.PATCH. The minor never
@@ -140,8 +141,10 @@ const (
 // HighAvailability is the failure a control plane survives.
 type HighAvailability struct {
 	// FailureTolerance is Node (replicas on different nodes) or Zone
-	// (replicas in different zones).
+	// (replicas in different zones). It cannot change once set, since etcd's
+	// volumes stay where they were spread; highAvailability can be removed.
 	// +required
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="failureTolerance is immutable once set"
 	FailureTolerance FailureTolerance `json:"failureTolerance"`
 }
 
@@ -329,7 +332,7 @@ type APIServer struct {
 	// Lodia's; featureGates sets feature-gates.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
-	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['advertise-address', 'allow-privileged', 'anonymous-auth', 'authentication-config', 'authorization-mode', 'client-ca-file', 'egress-selector-config-file', 'enable-bootstrap-token-auth', 'encryption-provider-config', 'encryption-provider-config-automatic-reload', 'endpoint-reconciler-type', 'etcd-cafile', 'etcd-certfile', 'etcd-keyfile', 'etcd-servers', 'feature-gates', 'kubelet-client-certificate', 'kubelet-client-key', 'kubelet-preferred-address-types', 'proxy-client-cert-file', 'proxy-client-key-file', 'requestheader-allowed-names', 'requestheader-client-ca-file', 'requestheader-extra-headers-prefix', 'requestheader-group-headers', 'requestheader-username-headers', 'secure-port', 'service-account-issuer', 'service-account-key-file', 'service-account-signing-endpoint', 'service-account-signing-key-file', 'service-cluster-ip-range', 'shutdown-delay-duration', 'shutdown-send-retry-after', 'shutdown-watch-termination-grace-period', 'tls-cert-file', 'tls-private-key-file'])",message="Lodia sets this flag"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['advertise-address', 'allow-privileged', 'anonymous-auth', 'authentication-config', 'authorization-mode', 'client-ca-file', 'egress-selector-config-file', 'enable-bootstrap-token-auth', 'encryption-provider-config', 'encryption-provider-config-automatic-reload', 'endpoint-reconciler-type', 'etcd-cafile', 'etcd-certfile', 'etcd-keyfile', 'etcd-servers', 'feature-gates', 'goaway-chance', 'kubelet-client-certificate', 'kubelet-client-key', 'kubelet-preferred-address-types', 'proxy-client-cert-file', 'proxy-client-key-file', 'requestheader-allowed-names', 'requestheader-client-ca-file', 'requestheader-extra-headers-prefix', 'requestheader-group-headers', 'requestheader-username-headers', 'secure-port', 'service-account-issuer', 'service-account-key-file', 'service-account-signing-endpoint', 'service-account-signing-key-file', 'service-cluster-ip-range', 'shutdown-delay-duration', 'shutdown-send-retry-after', 'shutdown-watch-termination-grace-period', 'tls-cert-file', 'tls-private-key-file'])",message="Lodia sets this flag"
 	ExtraArgs map[string]string `json:"extraArgs,omitempty"`
 
 	// FeatureGates are passed to kube-apiserver.
@@ -437,7 +440,7 @@ type Component struct {
 	// featureGates sets feature-gates.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
-	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['allocate-node-cidrs', 'authentication-kubeconfig', 'authorization-kubeconfig', 'bind-address', 'client-ca-file', 'cluster-cidr', 'cluster-name', 'cluster-signing-cert-file', 'cluster-signing-duration', 'cluster-signing-key-file', 'cluster-signing-kubelet-client-cert-file', 'cluster-signing-kubelet-client-key-file', 'feature-gates', 'kubeconfig', 'leader-elect', 'requestheader-client-ca-file', 'root-ca-file', 'service-account-private-key-file', 'service-cluster-ip-range', 'use-service-account-credentials'])",message="Lodia sets this flag"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['allocate-node-cidrs', 'authentication-kubeconfig', 'authorization-kubeconfig', 'bind-address', 'client-ca-file', 'cluster-cidr', 'cluster-name', 'cluster-signing-cert-file', 'cluster-signing-duration', 'cluster-signing-key-file', 'cluster-signing-kubelet-client-cert-file', 'cluster-signing-kubelet-client-key-file', 'feature-gates', 'kubeconfig', 'leader-elect', 'leader-elect-lease-duration', 'leader-elect-renew-deadline', 'leader-elect-resource-lock', 'leader-elect-resource-name', 'leader-elect-resource-namespace', 'leader-elect-retry-period', 'node-monitor-grace-period', 'node-monitor-period', 'requestheader-client-ca-file', 'root-ca-file', 'service-account-private-key-file', 'service-cluster-ip-range', 'use-service-account-credentials'])",message="Lodia sets this flag"
 	ExtraArgs map[string]string `json:"extraArgs,omitempty"`
 
 	// FeatureGates are passed to the component.
@@ -456,7 +459,7 @@ type Scheduler struct {
 	// refused, and featureGates sets feature-gates.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
-	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['authentication-kubeconfig', 'authorization-kubeconfig', 'bind-address', 'config', 'feature-gates', 'kubeconfig', 'leader-elect'])",message="Lodia sets this flag"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['authentication-kubeconfig', 'authorization-kubeconfig', 'bind-address', 'config', 'feature-gates', 'kubeconfig', 'leader-elect', 'leader-elect-resource-lock', 'leader-elect-resource-name', 'leader-elect-resource-namespace'])",message="Lodia sets this flag"
 	ExtraArgs map[string]string `json:"extraArgs,omitempty"`
 
 	// FeatureGates are passed to kube-scheduler.
@@ -469,7 +472,8 @@ type Scheduler struct {
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 
 	// ConfigRef names a ConfigMap with a KubeSchedulerConfiguration; Lodia
-	// overrides its client connection.
+	// overrides its client connection and its leader election's resource
+	// lock, name and namespace.
 	// +optional
 	ConfigRef *LocalReference `json:"configRef,omitempty"`
 }
@@ -715,6 +719,11 @@ type ControlPlaneStatus struct {
 	// +optional
 	Kubernetes *KubernetesStatus `json:"kubernetes,omitempty"`
 
+	// Components are the rollouts of the API server, the controller manager
+	// and the scheduler.
+	// +optional
+	Components *ComponentsStatus `json:"components,omitempty"`
+
 	// Endpoint is where the control plane is reachable.
 	// +optional
 	Endpoint *EndpointStatus `json:"endpoint,omitempty"`
@@ -791,6 +800,34 @@ type UpgradeStatus struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=1024
 	Message string `json:"message,omitempty"`
+}
+
+// ComponentsStatus is the rollout of each control plane component.
+type ComponentsStatus struct {
+	// +optional
+	APIServer *ComponentStatus `json:"apiServer,omitempty"`
+	// +optional
+	ControllerManager *ComponentStatus `json:"controllerManager,omitempty"`
+	// +optional
+	Scheduler *ComponentStatus `json:"scheduler,omitempty"`
+}
+
+// ComponentStatus counts one component's replicas.
+type ComponentStatus struct {
+	// Replicas the component runs: the replicas its Deployment asks for.
+	// +required
+	// +kubebuilder:validation:Minimum=0
+	Replicas int32 `json:"replicas"`
+
+	// Updated replicas run the component's current template.
+	// +required
+	// +kubebuilder:validation:Minimum=0
+	Updated int32 `json:"updated"`
+
+	// Ready replicas pass their readiness probe.
+	// +required
+	// +kubebuilder:validation:Minimum=0
+	Ready int32 `json:"ready"`
 }
 
 // EndpointStatus is where the control plane is reachable from outside the
@@ -892,7 +929,17 @@ type DatastoreStatus struct {
 
 	// Members counts the etcd members.
 	// +required
-	Members Count `json:"members"`
+	Members MemberCount `json:"members"`
+}
+
+// MemberCount counts the etcd members, and those that run the Etcd's
+// current spec.
+type MemberCount struct {
+	Count `json:",inline"`
+
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	Updated int32 `json:"updated,omitempty"`
 }
 
 // DatastoreClassStatus is a DatastoreClass at the generation an etcd was
@@ -926,8 +973,11 @@ type NodesStatus struct {
 	// OutdatedKubelets run an older minor than the control plane.
 	// +optional
 	OutdatedKubelets int32 `json:"outdatedKubelets,omitempty"`
+
+	// OldestKubelet is the oldest version a node's kubelet reports.
 	// +optional
-	SampledAt *metav1.Time `json:"sampledAt,omitempty"`
+	// +kubebuilder:validation:MaxLength=64
+	OldestKubelet string `json:"oldestKubelet,omitempty"`
 }
 
 // HealthStatus reports the controller manager hold.

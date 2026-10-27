@@ -691,7 +691,7 @@ func datastoreStatus(etcd *druidv1alpha1.Etcd) *lodiav1alpha1.DatastoreStatus {
 			Host: druidv1alpha1.GetClientServiceName(etcd.ObjectMeta) + "." + etcd.Namespace + ".svc",
 			Port: druidv1alpha1.GetClientPort(etcd),
 		}},
-		Members: lodiav1alpha1.Count{Total: etcd.Spec.Replicas, Ready: etcd.Status.ReadyReplicas},
+		Members: lodiav1alpha1.MemberCount{Count: lodiav1alpha1.Count{Total: etcd.Spec.Replicas, Ready: etcd.Status.ReadyReplicas}},
 	}
 	generation, err := strconv.ParseInt(etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation], 10, 64)
 	if name := etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation]; name != "" && err == nil {

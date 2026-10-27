@@ -179,6 +179,17 @@ func TestControlPlaneValidation(t *testing.T) {
 			set(t, o, "Compact", "spec", "layout")
 			set(t, o, int64(2), "spec", "apiServer", "replicas")
 		}, "the Compact layout runs one API server"},
+		{"high availability with one API server", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, map[string]any{"failureTolerance": "Node"}, "spec", "highAvailability")
+			set(t, o, int64(1), "spec", "apiServer", "replicas")
+		}, "highAvailability runs at least two API servers"},
+		{"high availability with two API servers", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, map[string]any{"failureTolerance": "Zone"}, "spec", "highAvailability")
+			set(t, o, int64(2), "spec", "apiServer", "replicas")
+		}, ""},
+		{"high availability with the default replicas", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, map[string]any{"failureTolerance": "Node"}, "spec", "highAvailability")
+		}, ""},
 		{"a flag Lodia sets", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, map[string]any{"etcd-servers": "https://elsewhere:2379"}, "spec", "apiServer", "extraArgs")
 		}, "Lodia sets this flag"},
@@ -213,6 +224,32 @@ func TestControlPlaneValidation(t *testing.T) {
 			c.mutate(t, obj)
 			expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), c.want)
 		})
+	}
+}
+
+func TestExtraArgsRefuseTheFlagsLodiaSets(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	const refused = "Lodia sets this flag"
+	for component, flags := range map[string]map[string]string{
+		"apiServer": {"goaway-chance": refused, "max-requests-inflight": ""},
+		"controllerManager": {
+			"leader-elect-lease-duration": refused, "leader-elect-renew-deadline": refused, "leader-elect-retry-period": refused,
+			"leader-elect-resource-lock": refused, "leader-elect-resource-name": refused, "leader-elect-resource-namespace": refused,
+			"node-monitor-grace-period": refused, "node-monitor-period": refused, "terminated-pod-gc-threshold": "",
+		},
+		"scheduler": {
+			"leader-elect-resource-lock": refused, "leader-elect-resource-name": refused, "leader-elect-resource-namespace": refused,
+			"leader-elect-lease-duration": "",
+		},
+	} {
+		for flag, want := range flags {
+			t.Run(component+"/"+flag, func(t *testing.T) {
+				obj := example(t, "controlplane-single.yaml", "flags")
+				set(t, obj, map[string]any{flag: "1"}, "spec", component, "extraArgs")
+				expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), want)
+			})
+		}
 	}
 }
 
@@ -253,19 +290,50 @@ func TestControlPlaneTransitions(t *testing.T) {
 			set(t, o, map[string]any{"backupRef": map[string]any{"name": "nightly"}}, "spec", "restoreFrom")
 		}, "restoreFrom can only be set when the ControlPlane is created"},
 		{"paused", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, true, "spec", "paused") }, ""},
+		{"high availability added", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, map[string]any{"failureTolerance": "Zone"}, "spec", "highAvailability")
+		}, ""},
 	}
 	for i, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			ctx := context.Background()
-			obj := example(t, "controlplane-single.yaml", fmt.Sprintf("transition-%d", i))
-			if err := k8s.Create(ctx, obj); err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = k8s.Delete(context.Background(), obj) })
-			c.mutate(t, obj)
-			expect(t, k8s.Update(ctx, obj), c.want)
+			update(t, example(t, "controlplane-single.yaml", fmt.Sprintf("transition-%d", i)), c.mutate, c.want)
 		})
 	}
+}
+
+func TestHighAvailabilityTransitions(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	cases := []struct {
+		name   string
+		mutate func(*testing.T, *unstructured.Unstructured)
+		want   string
+	}{
+		{"failure tolerance changed", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "Zone", "spec", "highAvailability", "failureTolerance")
+		}, "failureTolerance is immutable once set"},
+		{"high availability removed", func(t *testing.T, o *unstructured.Unstructured) {
+			unstructured.RemoveNestedField(o.Object, "spec", "highAvailability")
+		}, ""},
+	}
+	for i, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			obj := example(t, "controlplane-single.yaml", fmt.Sprintf("ha-transition-%d", i))
+			set(t, obj, map[string]any{"failureTolerance": "Node"}, "spec", "highAvailability")
+			update(t, obj, c.mutate, c.want)
+		})
+	}
+}
+
+func update(t *testing.T, obj *unstructured.Unstructured, mutate func(*testing.T, *unstructured.Unstructured), want string) {
+	t.Helper()
+	ctx := context.Background()
+	if err := k8s.Create(ctx, obj); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = k8s.Delete(context.Background(), obj) })
+	mutate(t, obj)
+	expect(t, k8s.Update(ctx, obj), want)
 }
 
 func TestRestoreFromAtCreation(t *testing.T) {

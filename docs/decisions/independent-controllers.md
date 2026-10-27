@@ -17,7 +17,7 @@ watch `ControlPlane`:
 | **Datastore** | the tenant's etcd (dedicated through etcd-druid, with its NetworkPolicy, or a user and prefix in a shared store), backups, defragmentation; the only controller that talks to etcd | `DatastoreReady` | nothing |
 | **Workloads** | Deployments, Services, PodDisruptionBudgets, NetworkPolicies, ConfigMaps, Gateway routes in the tenant namespace | `APIServerReady` | `CertificatesReady`, `DatastoreReady` |
 | **Tenant** | objects inside the tenant cluster: kubeadm bootstrap objects, kube-proxy, CoreDNS, konnectivity-agent, apiserver-proxy, RBAC | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
-| **Health** | probes the API from outside and inside, samples node leases; holds the controller manager's leader lease inside the tenant while most nodes cannot reach the API ([controller-manager-hold](controller-manager-hold.md)) | `Reachable`; `ControllerManagerHeld` outside `Ready` | `AccessReady` |
+| **Health** | probes the API from outside and inside, samples the components' leader leases and the node leases; holds the controller manager's leader lease inside the tenant while most nodes cannot reach the API ([controller-manager-hold](controller-manager-hold.md)) | `Reachable`, `ControllersLeading`; `ControllerManagerHeld` outside `Ready` | `AccessReady` |
 | **Lifecycle** | the pace: which version to run now, whether to hibernate, which rotation stage is active, when a tenant's maintenance window is open and how many tenants roll at once | `status.target` and `Progressing` | the others' conditions |
 
 Rules:
@@ -70,15 +70,33 @@ Rules:
   priority queue that controller-runtime enables by default puts resyncs
   behind real changes
   ([priority queue design](https://github.com/kubernetes-sigs/controller-runtime/blob/main/designs/priorityqueue.md)).
+- **A readiness condition reports availability**, not how far a change has
+  rolled out: `APIServerReady` is True while each component has a ready
+  replica, `DatastoreReady` while etcd has quorum, `ControllersLeading`
+  while the controller manager and the scheduler each have a leader. A
+  replica that rolls or is lost shows in the counts of `status.components`
+  and `status.datastore.members` and in the condition's message, and
+  Lifecycle sums the rollout in `Progressing`, reason `RollingOut`. Cluster
+  API separates the two the same way, in `Available` and `RollingOut`
+  ([kubeadm_control_plane_types.go](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/api/controlplane/kubeadm/v1beta2/kubeadm_control_plane_types.go#L73-L88),
+  [#L239-L242](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/api/controlplane/kubeadm/v1beta2/kubeadm_control_plane_types.go#L239-L242)),
+  Gardener's checks tell a healthy Deployment from a fully rolled-out one
+  ([deployment.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/utils/kubernetes/health/deployment.go#L46-L109)),
+  and HyperShift calls etcd available at quorum
+  ([hostedcontrolplane_controller.go](https://github.com/openshift/hypershift/blob/v0.1.86/control-plane-operator/controllers/hostedcontrolplane/hostedcontrolplane_controller.go#L2648-L2654)).
+  A rollout that surges never stops serving, so `Ready` that dropped for it
+  would report an outage that is not there. Built with HA in phase 2's wave
+  1b; until then `APIServerReady` and `DatastoreReady` want every replica
+  updated and ready.
 - `Ready` on the `ControlPlane` is computed by Lifecycle from the others:
-  `CertificatesReady ∧ DatastoreReady ∧ APIServerReady ∧ AccessReady ∧ AddonsApplied ∧ Reachable`,
-  and `Hibernated` when asleep. Nothing in it waits for the tenant's nodes:
-  the owner joins them once the control plane is `Ready`, so
-  `AddonsAvailable`, the addons' pods on those nodes, is reported beside it,
-  and so is `ControllerManagerHeld`, Health's hold while most nodes cannot
-  reach an API that answers; so is `CAValidityAcceptable`, a CA in its last
-  year, since every certificate is still valid then and its rotation is
-  started by someone.
+  `CertificatesReady ∧ DatastoreReady ∧ APIServerReady ∧ AccessReady ∧ AddonsApplied ∧ Reachable ∧ ControllersLeading`,
+  and `Hibernated` when asleep; `ControllersLeading` joins with wave 1b.
+  Nothing in it waits for the tenant's nodes: the owner joins them once the
+  control plane is `Ready`, so `AddonsAvailable`, the addons' pods on those
+  nodes, is reported beside it, and so is `ControllerManagerHeld`, Health's
+  hold while most nodes cannot reach an API that answers; so is
+  `CAValidityAcceptable`, a CA in its last year, since every certificate is
+  still valid then and its rotation is started by someone.
 
 ```mermaid
 flowchart LR
@@ -87,7 +105,7 @@ flowchart LR
   DS[Datastore] -->|DatastoreReady| CP
   WL[Workloads] -->|APIServerReady| CP
   TN[Tenant] -->|AddonsApplied, AddonsAvailable| CP
-  HL[Health] -->|Reachable| CP
+  HL[Health] -->|Reachable, ControllersLeading, ControllerManagerHeld| CP
   LC[Lifecycle] -->|status.target, Progressing, Ready| CP
   CP -. watch .-> PKI
   CP -. watch .-> DS

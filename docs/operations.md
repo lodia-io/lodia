@@ -41,9 +41,11 @@ itself and the support policy. Installation is in
 | `DatastoreReady=False`, `Provisioning`, `Secrets Etcd <cp>-etcd mounts do not exist` | someone removed etcd-druid's finalizer from Secrets the `Etcd` names and deleted them; the members run on what they mounted until they restart: the [runbook](#a-secret-the-etcd-mounts-is-gone) |
 | `DatastoreReady=False`, `Provisioning` for long | the message says what is awaited: a complete generation of the etcd certificates that this `ControlPlane` controls (PKI; one another `ControlPlane` controls never counts), the class's credentials copy, or etcd-druid's report; then the `Etcd`'s status — its `lastErrors`, which `DatastoreReady` does not read, are the only place a persistent failure of etcd-druid's other objects (the client Service, the ConfigMap, the leases) shows at a generation it has observed — its conditions, etcd-druid's log, and the tenant's `EtcdOpsTask`s, where a blocked operation shows ([etcd spike](etcd-spike-2026-10.md), finding 4) |
 | An etcd member that does not come back after a roll: `DatastoreReady=False`, the StatefulSet's pod missing | the StatefulSet's events (`kubectl describe statefulset <cp>-etcd`): `FailedCreate` means pod admission refused the new pod after the old one was deleted, for a `priorityClassName` that names no PriorityClass (or one deleted since) or a LimitRange or ResourceQuota in the namespace, which no schema can check; with one member it is an outage until fixed, and every certificate generation rolls the member |
-| `DatastoreReady=False`, `QuorumLost` (phase 2) | fewer than two of three members up; the [lost quorum](#lost-etcd-quorum) runbook |
+| `DatastoreReady=False`, `QuorumLost` (phase 2's wave 1b, HA) | fewer than two of three members up; the [lost quorum](#lost-etcd-quorum) runbook |
 | API calls fail with `etcdserver: mvcc: database space exceeded` | the [space quota](#etcd-space-quota) runbook; `status.datastore.dbSizeBytes` (phase 2) against the class quota |
-| `APIServerReady=False`, `RollingOut` for long | the kube-apiserver Deployment's events; a new replica failing `/readyz` (often a flag in `extraArgs` that the new minor removed) |
+| `APIServerReady=False`, `RollingOut` for long; from wave 1b, HA, `Progressing=True`, `RollingOut` for long, or `APIServerReady=True`, `ProgressDeadlineExceeded` | the kube-apiserver Deployment's events; a new replica failing `/readyz` (often a flag in `extraArgs` that the new minor removed); from wave 1b the old replicas keep serving meanwhile |
+| `APIServerReady=False`, `Unavailable` (wave 1b, HA) | a component without a ready replica, named in the message: its pods' events and logs |
+| `ControllersLeading=False`, `ControllerManagerNotLeading` or `SchedulerNotLeading` (wave 1b, HA) | the component's pods and logs; its leader Lease inside the tenant, `kube-system/kube-controller-manager` or `kube-system/kube-scheduler`, names the last holder |
 | `CAValidityAcceptable=False`, `CAExpiring` | a CA expires within a year; the message names it and when; start a [CA rotation](#forced-ca-rotation). `Ready` stays True: every certificate is still valid |
 | `CertificatesReady=False`, `CAExpired` | a CA is past its `NotAfter`, and every certificate it signed with it; nothing is issued under it until a [CA rotation](#forced-ca-rotation) |
 | `CertificatesReady=False`, `CAMissing` | a CA's key Secret `<cp>-cakey-<ca>` is missing or unreadable while its bundle exists; restore it from a backup without its `metadata.ownerReferences` (it is found by name, labels or not) or rotate the CA; PKI never replaces it on its own |
@@ -52,8 +54,8 @@ itself and the support policy. Installation is in
 | `CertificatesReady=False`, `Issuing` | a Secret PKI has to change could not be written; the message names it and Lodia's log (`controller="pki"`) has the error; PKI retries with backoff |
 | `AccessReady=False`, `Refused` | the tenant refuses the ClusterRoleBinding the message names, of Lodia, the admin group or the kubelet client: an admission policy in the tenant; Lodia's log (`controller="pki"`) has the answer |
 | `AccessReady=False`, `Binding` | the tenant has not confirmed the bindings since its API server became ready; Lodia's log has the error. PKI recreates a missing binding with a ten-minute `system:masters` certificate on its next pass. While the tenant does not answer, a True stays: `Reachable` reports that |
-| `ControllerManagerHeld=True`, `NodesSilent` (phase 2); in the tenant, the Lease `kube-system/kube-controller-manager` held by `lodia` | most nodes cannot reach the API, so Health holds the controller manager; the [nodes cut off](#nodes-cut-off-from-the-control-plane) runbook |
-| `ControllerManagerHeld=False`, `HoldBlocked` (phase 2) | nodes are silent but another component holds the controller manager's lease, named in the message, for example a platform's own watchdog; run one of the two, not both |
+| `ControllerManagerHeld=True`, `NodesSilent` (wave 2, Health); in the tenant, the Lease `kube-system/kube-controller-manager` held by `lodia` | most nodes cannot reach the API, so Health holds the controller manager; the [nodes cut off](#nodes-cut-off-from-the-control-plane) runbook |
+| `ControllerManagerHeld=False`, `HoldBlocked` (wave 2, Health) | nodes are silent but another component holds the controller manager's lease, named in the message, for example a platform's own watchdog; run one of the two, not both |
 | `Reachable=False`, `ExternalProbeFailed`, nodes fine | the public endpoint from the management cluster's side: Gateway listener, route status, certificate SANs |
 | `AddonsApplied=False`, `Refused` | the tenant refuses the object the message names: an admission policy in the tenant, or `lodia:operator` without access there (`AccessReady`), which the inventory `kube-system/lodia-inventory` shows first; Lodia's log (`controller="tenant"`) has the answer |
 | `AddonsApplied=False`, `Applying` | the message names it: an object that exists and is not Lodia's, another owner's under a name Lodia renders, such as one's own CoreDNS (delete it, and Lodia applies its own within the apply period, or disable the addon), an inventory `kube-system/lodia-inventory` that cannot be read (delete it, and every object is applied again), or a tenant that has not answered yet; Lodia's log (`controller="tenant"`) has the answer |
@@ -68,7 +70,7 @@ itself and the support policy. Installation is in
 
 ### Lost etcd quorum
 
-1. Confirm: `DatastoreReady=False`, reason `QuorumLost` (phase 2); fewer than two
+1. Confirm: `DatastoreReady=False`, reason `QuorumLost` (wave 1b, HA); fewer than two
    members `Ready`.
 2. If members are down because of their node: bring the node back, or delete
    the pod so the StatefulSet reschedules it with its volume; quorum returns
@@ -176,7 +178,7 @@ scheduler.
 
 ### Nodes cut off from the control plane
 
-1. Confirm: `ControllerManagerHeld=True`, reason `NodesSilent` (phase 2);
+1. Confirm: `ControllerManagerHeld=True`, reason `NodesSilent` (wave 2, Health);
    `status.health.controllerManagerHold` says since when and how many nodes
    are silent. Workloads on the nodes keep running; the tenant's controllers do
    not (no new ReplicaSets, no node IPAM) until the hold ends.

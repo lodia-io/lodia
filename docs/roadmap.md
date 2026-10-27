@@ -121,13 +121,23 @@ Scope:
 - Observability: metrics per controller and tenant, conditions as metrics,
   events, the Grafana dashboard and alert rules in the chart.
 
+It is built in waves. The fixes came first: API server rollouts that lose
+no request, the backup prefix and the encryption key names. Then the
+contracts: every field, condition, reason and shared name phase 2 decided,
+in `api/v1alpha1`, with its writer and the wave that writes it in
+[`api/controlplane.md`](api/controlplane.md). Then, in parallel, wave 1b:
+HA, the Gateway with in-cluster access, backups with restore, and
+`KubeconfigRequest`s. Then wave 2: upgrades with maintenance windows, the
+fleet limit and the operator revision; Health's internal probe, node
+sampling and controller manager hold; observability.
+
 Gate:
 
 - e2e: during a rolling update of the API server and during a minor upgrade
   (two kind node images), a client loop of 20 requests per second against
   the public endpoint records zero failures.
 - e2e: delete an API server pod and an etcd pod of an HA control plane;
-  `Ready` never turns False for longer than the probe period.
+  `Ready` never turns False for longer than Health's period, 5 seconds.
 - e2e: a `ControlPlane` created with `restoreFrom` a backup of another
   serves the same namespaces and Secrets, and passes the conformance smoke
   subset.

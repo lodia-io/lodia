@@ -302,8 +302,8 @@ spec:
                         ''client-ca-file'', ''egress-selector-config-file'', ''enable-bootstrap-token-auth'',
                         ''encryption-provider-config'', ''encryption-provider-config-automatic-reload'',
                         ''endpoint-reconciler-type'', ''etcd-cafile'', ''etcd-certfile'',
-                        ''etcd-keyfile'', ''etcd-servers'', ''feature-gates'', ''kubelet-client-certificate'',
-                        ''kubelet-client-key'', ''kubelet-preferred-address-types'',
+                        ''etcd-keyfile'', ''etcd-servers'', ''feature-gates'', ''goaway-chance'',
+                        ''kubelet-client-certificate'', ''kubelet-client-key'', ''kubelet-preferred-address-types'',
                         ''proxy-client-cert-file'', ''proxy-client-key-file'', ''requestheader-allowed-names'',
                         ''requestheader-client-ca-file'', ''requestheader-extra-headers-prefix'',
                         ''requestheader-group-headers'', ''requestheader-username-headers'',
@@ -404,7 +404,11 @@ spec:
                         ''cluster-cidr'', ''cluster-name'', ''cluster-signing-cert-file'',
                         ''cluster-signing-duration'', ''cluster-signing-key-file'',
                         ''cluster-signing-kubelet-client-cert-file'', ''cluster-signing-kubelet-client-key-file'',
-                        ''feature-gates'', ''kubeconfig'', ''leader-elect'', ''requestheader-client-ca-file'',
+                        ''feature-gates'', ''kubeconfig'', ''leader-elect'', ''leader-elect-lease-duration'',
+                        ''leader-elect-renew-deadline'', ''leader-elect-resource-lock'',
+                        ''leader-elect-resource-name'', ''leader-elect-resource-namespace'',
+                        ''leader-elect-retry-period'', ''node-monitor-grace-period'',
+                        ''node-monitor-period'', ''requestheader-client-ca-file'',
                         ''root-ca-file'', ''service-account-private-key-file'', ''service-cluster-ip-range'',
                         ''use-service-account-credentials''])'
                   featureGates:
@@ -681,11 +685,15 @@ spec:
                   failureTolerance:
                     description: |-
                       FailureTolerance is Node (replicas on different nodes) or Zone
-                      (replicas in different zones).
+                      (replicas in different zones). It cannot change once set, since etcd's
+                      volumes stay where they were spread; highAvailability can be removed.
                     enum:
                     - Node
                     - Zone
                     type: string
+                    x-kubernetes-validations:
+                    - message: failureTolerance is immutable once set
+                      rule: self == oldSelf
                 required:
                 - failureTolerance
                 type: object
@@ -868,7 +876,8 @@ spec:
                   configRef:
                     description: |-
                       ConfigRef names a ConfigMap with a KubeSchedulerConfiguration; Lodia
-                      overrides its client connection.
+                      overrides its client connection and its leader election's resource
+                      lock, name and namespace.
                     properties:
                       name:
                         description: Name of the object.
@@ -890,7 +899,8 @@ spec:
                     - message: Lodia sets this flag
                       rule: '!self.exists(k, k in [''authentication-kubeconfig'',
                         ''authorization-kubeconfig'', ''bind-address'', ''config'',
-                        ''feature-gates'', ''kubeconfig'', ''leader-elect''])'
+                        ''feature-gates'', ''kubeconfig'', ''leader-elect'', ''leader-elect-resource-lock'',
+                        ''leader-elect-resource-name'', ''leader-elect-resource-namespace''])'
                   featureGates:
                     additionalProperties:
                       type: boolean
@@ -998,12 +1008,96 @@ spec:
             - message: the Compact layout runs one API server
               rule: self.layout != 'Compact' || !has(self.apiServer) || !has(self.apiServer.replicas)
                 || self.apiServer.replicas == 1
+            - message: highAvailability runs at least two API servers
+              rule: '!has(self.highAvailability) || !has(self.apiServer) || !has(self.apiServer.replicas)
+                || self.apiServer.replicas >= 2'
             - message: restoreFrom can only be set when the ControlPlane is created
               rule: '!has(self.restoreFrom) || (has(oldSelf.restoreFrom) && oldSelf.restoreFrom
                 == self.restoreFrom)'
           status:
             description: ControlPlaneStatus is what Lodia observed and did.
             properties:
+              components:
+                description: |-
+                  Components are the rollouts of the API server, the controller manager
+                  and the scheduler.
+                properties:
+                  apiServer:
+                    description: ComponentStatus counts one component's replicas.
+                    properties:
+                      ready:
+                        description: Ready replicas pass their readiness probe.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      replicas:
+                        description: 'Replicas the component runs: the replicas its
+                          Deployment asks for.'
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      updated:
+                        description: Updated replicas run the component's current
+                          template.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                    required:
+                    - ready
+                    - replicas
+                    - updated
+                    type: object
+                  controllerManager:
+                    description: ComponentStatus counts one component's replicas.
+                    properties:
+                      ready:
+                        description: Ready replicas pass their readiness probe.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      replicas:
+                        description: 'Replicas the component runs: the replicas its
+                          Deployment asks for.'
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      updated:
+                        description: Updated replicas run the component's current
+                          template.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                    required:
+                    - ready
+                    - replicas
+                    - updated
+                    type: object
+                  scheduler:
+                    description: ComponentStatus counts one component's replicas.
+                    properties:
+                      ready:
+                        description: Ready replicas pass their readiness probe.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      replicas:
+                        description: 'Replicas the component runs: the replicas its
+                          Deployment asks for.'
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      updated:
+                        description: Updated replicas run the component's current
+                          template.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                    required:
+                    - ready
+                    - replicas
+                    - updated
+                    type: object
+                type: object
               conditions:
                 description: Conditions, one per controller, plus Progressing, Hibernated
                   and Ready.
@@ -1266,6 +1360,10 @@ spec:
                         format: int32
                         minimum: 0
                         type: integer
+                      updated:
+                        format: int32
+                        minimum: 0
+                        type: integer
                     required:
                     - ready
                     - total
@@ -1410,6 +1508,11 @@ spec:
               nodes:
                 description: Nodes summarise the tenant's nodes.
                 properties:
+                  oldestKubelet:
+                    description: OldestKubelet is the oldest version a node's kubelet
+                      reports.
+                    maxLength: 64
+                    type: string
                   outdatedKubelets:
                     description: OutdatedKubelets run an older minor than the control
                       plane.
@@ -1419,9 +1522,6 @@ spec:
                     format: int32
                     minimum: 0
                     type: integer
-                  sampledAt:
-                    format: date-time
-                    type: string
                   total:
                     format: int32
                     minimum: 0
