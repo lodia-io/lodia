@@ -5,8 +5,8 @@ Decided 2026-10-25. Not built.
 ## Decision
 
 - `spec.layout` is `Split` (the default, a Deployment per component,
-  [component-per-deployment](component-per-deployment.md)) or `Compact`. It is
-  immutable in `v1alpha1`.
+  [component-per-deployment](component-per-deployment.md)) or `Compact`
+  ([the field](../api/controlplane.md#spec)).
 - `Compact` renders one Deployment `<cp>-control-plane` with one replica and
   the containers `kube-apiserver`, `kube-controller-manager`,
   `kube-scheduler`, `konnectivity-server` and `lodia-signer`. The controller
@@ -14,8 +14,6 @@ Decided 2026-10-25. Not built.
   secure port, which the serving certificate carries as a SAN: 6443, or the
   node port in `nodePort` mode, where the API server listens on it
   ([api-exposure](api-exposure.md)).
-- A schema rule refuses `Compact` together with `highAvailability` or
-  `apiServer.replicas` above 1.
 - The datastore stays independent of the layout:
 
 | layout | datastore | pods per tenant |
@@ -69,9 +67,7 @@ Decided 2026-10-25. Not built.
 - Moving a tenant from `Compact` to `Split` is a new `ControlPlane` restored
   from a `Backup` (dedicated), or a migration (shared), documented in
   [operations](../operations.md).
-- The phase 3 gate runs a `Compact` tenant on a shared `Datastore` as one pod
-  through the conformance smoke subset and the controller manager hold
-  ([roadmap](../roadmap.md)).
+- The phase 3 gate runs a `Compact` tenant ([roadmap](../roadmap.md)).
 
 ## Code
 
