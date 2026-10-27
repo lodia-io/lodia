@@ -676,19 +676,10 @@ until one is, says what stopped the pass.
 
 ## Lifecycle
 
-Built so far, for phase 1: Lifecycle sets `status.target.version` to
-`spec.version` when its minor is one Lodia runs — 1.35, 1.36 and 1.37, whose
-images are in `internal/versions` — and within that minor only, since a minor
-upgrade needs the order below, which phase 2 builds; otherwise the target
-stays and `Progressing` says why (`Unsupported`), else `Idle`, or `Paused`.
-`Ready` is True when the six readiness conditions are True at the current
-generation; otherwise it takes the status, reason and message of the first
-that is not, in the order `CertificatesReady`, `DatastoreReady`,
-`APIServerReady`, `AccessReady`, `AddonsApplied`, `Reachable`, and is
-`Unknown`, `LatestGenerationNotObserved`, while that one is missing or
-reported for an older generation; while the `ControlPlane` is being deleted it
-is False, `Deleting`. `status.observedGeneration` follows once all six are reported for
-the current generation.
+Built so far: Lifecycle sets `status.target.version` to `spec.version` when its minor is one Lodia runs — 1.35, 1.36 and 1.37, whose images are in `internal/versions` — and within that minor only, since a minor upgrade needs the order below, which phase 2 builds; otherwise the target stays and `Progressing` says why (`Unsupported`).
+`Progressing` is True, `RollingOut`, while `status.components` or `status.datastore.members` count a replica or member not updated, or do not report how many are, naming each; else `Idle`, or `Paused`.
+`Ready` is True when the seven readiness conditions are True at the current generation; otherwise it takes the status, reason and message of the first that is not, in the order `CertificatesReady`, `DatastoreReady`, `APIServerReady`, `AccessReady`, `AddonsApplied`, `Reachable`, `ControllersLeading`, and is `Unknown`, `LatestGenerationNotObserved`, while that one is missing or reported for an older generation; while the `ControlPlane` is being deleted it is False, `Deleting`.
+`status.observedGeneration` follows once all seven are reported for the current generation.
 
 ### Upgrades and windows
 

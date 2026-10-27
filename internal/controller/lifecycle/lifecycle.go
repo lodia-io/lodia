@@ -36,6 +36,7 @@ var readiness = []string{
 	lodiav1alpha1.ConditionAccessReady,
 	lodiav1alpha1.ConditionAddonsApplied,
 	lodiav1alpha1.ConditionReachable,
+	lodiav1alpha1.ConditionControllersLeading,
 }
 
 type Reconciler struct {
@@ -103,8 +104,46 @@ func target(cp *lodiav1alpha1.ControlPlane, current string) (lodiav1alpha1.Targe
 		return lodiav1alpha1.Target{Version: current},
 			newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, message)
 	}
+	if rolling := rollingOut(cp); len(rolling) > 0 {
+		return lodiav1alpha1.Target{Version: want},
+			newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionTrue, lodiav1alpha1.ReasonRollingOut, strings.Join(rolling, "; "))
+	}
 	return lodiav1alpha1.Target{Version: want},
 		newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonIdle, "no upgrade, rotation or hibernation is running")
+}
+
+// rollingOut names what status.components and status.datastore.members count
+// as not updated; a count of updated not reported yet is a spec its writer's
+// controller has not observed.
+func rollingOut(cp *lodiav1alpha1.ControlPlane) []string {
+	type rollout struct {
+		name, unit string
+		count      lodiav1alpha1.RolloutCount
+	}
+	var counts []rollout
+	if c := cp.Status.Components; c != nil {
+		for _, component := range []struct {
+			name   string
+			status *lodiav1alpha1.ComponentStatus
+		}{{"kube-apiserver", c.APIServer}, {"kube-controller-manager", c.ControllerManager}, {"kube-scheduler", c.Scheduler}} {
+			if component.status != nil {
+				counts = append(counts, rollout{component.name, "replicas", component.status.RolloutCount})
+			}
+		}
+	}
+	if d := cp.Status.Datastore; d != nil {
+		counts = append(counts, rollout{"etcd", "members", d.Members})
+	}
+	var rolling []string
+	for _, c := range counts {
+		switch {
+		case c.count.Updated == nil:
+			rolling = append(rolling, fmt.Sprintf("%s: its updated %s are not reported yet", c.name, c.unit))
+		case *c.count.Updated < c.count.Total:
+			rolling = append(rolling, fmt.Sprintf("%s: %d of %d %s updated", c.name, *c.count.Updated, c.count.Total, c.unit))
+		}
+	}
+	return rolling
 }
 
 func ready(cp *lodiav1alpha1.ControlPlane) *metav1.Condition {

@@ -1,7 +1,7 @@
 # Six controllers share one object and communicate only through status conditions
 
 Decided 2026-10-25.
-The manager, PKI, the Datastore controller, for a dedicated etcd, Lifecycle, for the target within a minor and `Ready`, Tenant, without the apiserver-proxy, Health, for the probe through the public endpoint and the leader Leases, and Workloads, behind a `loadBalancer` or `nodePort` endpoint, are built.
+The manager, PKI, the Datastore controller, for a dedicated etcd, Lifecycle, for the target within a minor, the rollout in `Progressing` and `Ready`, Tenant, without the apiserver-proxy, Health, for the probe through the public endpoint and the leader Leases, and Workloads, behind a `loadBalancer` or `nodePort` endpoint, are built.
 
 ## Decision
 
@@ -72,15 +72,8 @@ Rules:
   Cluster API separates the two the same way, in `Available` and `RollingOut` ([kubeadm_control_plane_types.go](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/api/controlplane/kubeadm/v1beta2/kubeadm_control_plane_types.go#L73-L88), [#L239-L242](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/api/controlplane/kubeadm/v1beta2/kubeadm_control_plane_types.go#L239-L242)), Gardener's checks tell a healthy Deployment from a fully rolled-out one ([deployment.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/utils/kubernetes/health/deployment.go#L46-L109)), and HyperShift calls etcd available at quorum ([hostedcontrolplane_controller.go](https://github.com/openshift/hypershift/blob/v0.1.86/control-plane-operator/controllers/hostedcontrolplane/hostedcontrolplane_controller.go#L2648-L2654)).
   A rollout that surges never stops serving, so `Ready` that dropped for it would report an outage that is not there.
   A component Lodia runs at 0 on purpose, the controller manager of a restored `ControlPlane` before its release, counts as available, and the message says it is held: `AccessReady` waits on `APIServerReady`, Tenant on `AccessReady`, and the release on Tenant's `AddonsApplied` ([restore-replaces-the-source](restore-replaces-the-source.md)).
-- `Ready` on the `ControlPlane` is computed by Lifecycle from the others:
-  `CertificatesReady ∧ DatastoreReady ∧ APIServerReady ∧ AccessReady ∧ AddonsApplied ∧ Reachable ∧ ControllersLeading`,
-  and `Hibernated` when asleep; `ControllersLeading` joins with wave 1b.
-  Nothing in it waits for the tenant's nodes: the owner joins them once the
-  control plane is `Ready`, so `AddonsAvailable`, the addons' pods on those
-  nodes, is reported beside it, and so is `ControllerManagerHeld`, Health's
-  hold while most nodes cannot reach an API that answers; so is
-  `CAValidityAcceptable`, a CA in its last year, since every certificate is
-  still valid then and its rotation is started by someone.
+- `Ready` on the `ControlPlane` is computed by Lifecycle from the others: `CertificatesReady ∧ DatastoreReady ∧ APIServerReady ∧ AccessReady ∧ AddonsApplied ∧ Reachable ∧ ControllersLeading`, and `Hibernated` when asleep.
+  Nothing in it waits for the tenant's nodes: the owner joins them once the control plane is `Ready`, so `AddonsAvailable`, the addons' pods on those nodes, is reported beside it, and so is `ControllerManagerHeld`, Health's hold while most nodes cannot reach an API that answers; so is `CAValidityAcceptable`, a CA in its last year, since every certificate is still valid then and its rotation is started by someone.
 
 ```mermaid
 flowchart LR

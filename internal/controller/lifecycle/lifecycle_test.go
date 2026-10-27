@@ -41,6 +41,7 @@ var readiness = []string{
 	lodiav1alpha1.ConditionAccessReady,
 	lodiav1alpha1.ConditionAddonsApplied,
 	lodiav1alpha1.ConditionReachable,
+	lodiav1alpha1.ConditionControllersLeading,
 }
 
 var k8s client.WithWatch
@@ -190,12 +191,17 @@ func TestReadyFollowsTheReadinessConditions(t *testing.T) {
 	}
 	eventually(t, func() error {
 		return expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
-			"CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied and Reachable are True", 1)
+			"CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied, Reachable and ControllersLeading are True", 1)
 	})
 
-	setCondition(t, cp, lodiav1alpha1.ConditionAPIServerReady, metav1.ConditionFalse, lodiav1alpha1.ReasonRollingOut, "0 of 1 replicas updated")
+	setCondition(t, cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionFalse, lodiav1alpha1.ReasonSchedulerNotLeading, "Lease kube-system/kube-scheduler has no holder")
 	eventually(t, func() error {
-		return expectReady(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRollingOut, "APIServerReady: 0 of 1 replicas updated", 1)
+		return expectReady(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonSchedulerNotLeading, "ControllersLeading: Lease kube-system/kube-scheduler has no holder", 1)
+	})
+
+	setCondition(t, cp, lodiav1alpha1.ConditionAPIServerReady, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, "kube-apiserver has 0 of 1 replicas ready")
+	eventually(t, func() error {
+		return expectReady(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, "APIServerReady: kube-apiserver has 0 of 1 replicas ready", 1)
 	})
 
 	setCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, lodiav1alpha1.ReasonIssuing, "dev-ca-bundle is not written yet")
@@ -207,6 +213,48 @@ func TestReadyFollowsTheReadinessConditions(t *testing.T) {
 	eventually(t, func() error {
 		return expectReady(t, cp, metav1.ConditionUnknown, lodiav1alpha1.ReasonLatestGenerationNotObserved, "CertificatesReady is not reported for generation 2", 1)
 	})
+}
+
+func TestProgressingSumsTheRollout(t *testing.T) {
+	cp := controlPlane(t, "v1.37.1")
+	eventually(t, func() error { return expect(t, cp, "v1.37.1", lodiav1alpha1.ReasonIdle) })
+
+	applyStatus(t, cp, "test/components", map[string]any{"components": map[string]any{
+		"apiServer":         map[string]any{"total": int64(2), "ready": int64(3), "updated": int64(1)},
+		"controllerManager": map[string]any{"total": int64(2), "ready": int64(2), "updated": int64(2)},
+		"scheduler":         map[string]any{"total": int64(2), "ready": int64(2)},
+	}})
+	eventually(t, func() error {
+		return expectProgressing(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRollingOut,
+			"kube-apiserver: 1 of 2 replicas updated; kube-scheduler: its updated replicas are not reported yet")
+	})
+	applyStatus(t, cp, "test/components", map[string]any{"components": map[string]any{
+		"apiServer":         map[string]any{"total": int64(2), "ready": int64(2), "updated": int64(2)},
+		"controllerManager": map[string]any{"total": int64(2), "ready": int64(2), "updated": int64(2)},
+		"scheduler":         map[string]any{"total": int64(2), "ready": int64(1), "updated": int64(2)},
+	}})
+	applyStatus(t, cp, "test/datastore", map[string]any{"datastore": map[string]any{
+		"endpoints": []any{map[string]any{"host": "dev-etcd-client.team.svc", "port": int64(2379)}},
+		"members":   map[string]any{"total": int64(3), "ready": int64(3), "updated": int64(2)},
+	}})
+	eventually(t, func() error {
+		return expectProgressing(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRollingOut, "etcd: 2 of 3 members updated")
+	})
+	applyStatus(t, cp, "test/datastore", map[string]any{"datastore": map[string]any{
+		"endpoints": []any{map[string]any{"host": "dev-etcd-client.team.svc", "port": int64(2379)}},
+		"members":   map[string]any{"total": int64(3), "ready": int64(2), "updated": int64(3)},
+	}})
+	eventually(t, func() error { return expect(t, cp, "v1.37.1", lodiav1alpha1.ReasonIdle) })
+
+	applyStatus(t, cp, "test/datastore", map[string]any{"datastore": map[string]any{
+		"endpoints": []any{map[string]any{"host": "dev-etcd-client.team.svc", "port": int64(2379)}},
+		"members":   map[string]any{"total": int64(3), "ready": int64(3)},
+	}})
+	eventually(t, func() error {
+		return expectProgressing(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRollingOut, "etcd: its updated members are not reported yet")
+	})
+	setVersion(t, cp, "v1.38.0")
+	eventually(t, func() error { return expect(t, cp, "v1.37.1", lodiav1alpha1.ReasonUnsupported) })
 }
 
 func TestAPausedControlPlaneKeepsItsTarget(t *testing.T) {
@@ -231,7 +279,7 @@ func TestReadyDuringDeletion(t *testing.T) {
 	}
 	eventually(t, func() error {
 		return expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
-			"CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied and Reachable are True", 1)
+			"CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied, Reachable and ControllersLeading are True", 1)
 	})
 
 	if err := k8s.Delete(t.Context(), get(t, cp)); err != nil {
@@ -396,4 +444,27 @@ func eventually(t *testing.T, check func() error) {
 	if err != nil {
 		t.Fatalf("%v: %v", err, last)
 	}
+}
+
+func applyStatus(t *testing.T, cp *lodiav1alpha1.ControlPlane, manager string, status map[string]any) {
+	t.Helper()
+	u := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": lodiav1alpha1.GroupVersion.String(),
+		"kind":       "ControlPlane",
+		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
+		"status":     status,
+	}}
+	if err := k8s.Status().Apply(t.Context(), client.ApplyConfigurationFromUnstructured(u), client.FieldOwner(manager), client.ForceOwnership); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func expectProgressing(t *testing.T, cp *lodiav1alpha1.ControlPlane, status metav1.ConditionStatus, reason, message string) error {
+	t.Helper()
+	fresh := get(t, cp)
+	c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionProgressing)
+	if c == nil || c.Status != status || c.Reason != reason || c.Message != message || c.ObservedGeneration != fresh.Generation {
+		return fmt.Errorf("Progressing is %+v, want %s %s %q at generation %d", c, status, reason, message, fresh.Generation)
+	}
+	return nil
 }
