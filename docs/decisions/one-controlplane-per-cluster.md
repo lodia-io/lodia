@@ -26,8 +26,7 @@ Rules that hold across all of them:
   deleting the `ControlPlane` garbage-collects it. The dedicated etcd's
   volumes and its backups follow the `DatastoreClass` reclaim policy.
 - A `ControlPlane` has one finalizer, `lodia.io/datastore`, which the
-  Datastore controller holds: deletion takes a final snapshot when backups are
-  configured, then lets garbage collection run.
+  Datastore controller holds ([deletion](../README.md#deletion)).
 - Imperative operations that are not desired state — starting or completing a
   credential rotation — are requested through the annotation
   `lodia.io/operation`. Lodia never removes it: it acts once on each
