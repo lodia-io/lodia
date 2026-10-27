@@ -29,6 +29,7 @@ CI runs `make verify` and `make e2e` on every pull request, and
   in [`docs/api/controlplane.md`](docs/api/controlplane.md), runbooks in
   [`docs/operations.md`](docs/operations.md). No history, and no prose that
   restates the code.
+- Markdown uses one sentence per line.
 
 ## Commits
 
