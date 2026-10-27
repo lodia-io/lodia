@@ -395,6 +395,57 @@ func TestTheLeaseReconcilersEndpointsAreTakenOver(t *testing.T) {
 	})
 }
 
+func TestEndpointsAnotherWriterEmptiedComeBackWithin10s(t *testing.T) {
+	ctx := t.Context()
+	cp, admin := servedTenant(t, "tenant-rewritten")
+	eventually(t, 30*time.Second, func() error {
+		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied); err != nil {
+			return err
+		}
+		return kubernetesEndpoints(t, admin, endpointHost, inClusterPort)
+	})
+	r := &tenant.Reconciler{Client: k8s, Reader: k8s, ApplyPeriod: time.Hour, Dial: *dial.Load()}
+	dial.Store(&unreachable)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}
+	pass := func() time.Duration {
+		t.Helper()
+		result, err := r.Reconcile(ctx, request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result.RequeueAfter
+	}
+	if after := pass(); after == 10*time.Second {
+		t.Errorf("a pass that found the endpoints as Lodia left them comes back after %s", after)
+	}
+
+	endpoints := &unstructured.Unstructured{}
+	endpoints.SetAPIVersion("v1")
+	endpoints.SetKind("Endpoints")
+	if err := admin.Get(ctx, client.ObjectKey{Namespace: "default", Name: "kubernetes"}, endpoints); err != nil {
+		t.Fatal(err)
+	}
+	unstructured.RemoveNestedField(endpoints.Object, "subsets")
+	if err := admin.Update(ctx, endpoints, client.FieldOwner("kube-apiserver")); err != nil {
+		t.Fatal(err)
+	}
+	slice := get(t, admin, &discoveryv1.EndpointSlice{}, "default", "kubernetes")
+	slice.Labels = map[string]string{discoveryv1.LabelServiceName: "kubernetes"}
+	slice.Endpoints, slice.Ports = nil, nil
+	if err := admin.Update(ctx, slice, client.FieldOwner("kube-apiserver")); err != nil {
+		t.Fatal(err)
+	}
+	if after := pass(); after != 10*time.Second {
+		t.Errorf("a pass that wrote back the endpoints another writer emptied comes back after %s, want 10s", after)
+	}
+	if err := kubernetesEndpoints(t, admin, endpointHost, inClusterPort); err != nil {
+		t.Error(err)
+	}
+	if after := pass(); after == 10*time.Second {
+		t.Errorf("a pass after the endpoints were written back comes back after %s", after)
+	}
+}
+
 func kubernetesEndpoints(t *testing.T, c client.Client, host string, port int32) error {
 	t.Helper()
 	key := client.ObjectKey{Namespace: "default", Name: "kubernetes"}

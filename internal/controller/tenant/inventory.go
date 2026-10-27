@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 
 	corev1 "k8s.io/api/core/v1"
@@ -158,6 +159,21 @@ var kubernetesEndpoints = []entry{
 	{Group: "discovery.k8s.io", Version: "v1", Kind: "EndpointSlice", Namespace: metav1.NamespaceDefault, Name: "kubernetes"},
 }
 
+// endpointsVersions are the resourceVersions of the kubernetes Service's
+// Endpoints and EndpointSlice, empty for one that does not exist.
+func endpointsVersions(ctx context.Context, c client.Client) (map[entry]string, error) {
+	out := map[entry]string{}
+	for _, e := range kubernetesEndpoints {
+		obj := &metav1.PartialObjectMetadata{}
+		obj.SetGroupVersionKind(schema.GroupVersionKind{Group: e.Group, Version: e.Version, Kind: e.Kind})
+		if err := c.Get(ctx, client.ObjectKey{Namespace: e.Namespace, Name: e.Name}, obj); client.IgnoreNotFound(err) != nil {
+			return nil, failed(e, err)
+		}
+		out[e] = obj.GetResourceVersion()
+	}
+	return out, nil
+}
+
 // foreign returns the objects of the render no inventory lists yet that
 // exist without Lodia's field manager: another owner's, but for the
 // kubernetes Service's endpoints.
@@ -214,18 +230,23 @@ func prune(ctx context.Context, c client.Client, e entry) error {
 }
 
 // applyInventory applies the objects but another owner's, which it returns,
-// then prunes what the previous inventory lists and they do not. The
+// then prunes what the previous inventory lists and they do not; it also
+// says whether the kubernetes Service's endpoints changed meanwhile. The
 // inventory names an object before Lodia first writes it, so a pass that
 // stops anywhere leaves nothing a later pass cannot prune.
-func applyInventory(ctx context.Context, c client.Client, objects []*unstructured.Unstructured) ([]entry, error) {
+func applyInventory(ctx context.Context, c client.Client, objects []*unstructured.Unstructured) ([]entry, bool, error) {
 	previous, err := readInventory(ctx, c)
 	if err != nil {
-		return nil, err
+		return nil, false, err
+	}
+	before, err := endpointsVersions(ctx, c)
+	if err != nil {
+		return nil, false, err
 	}
 	previous = union(previous)
 	others, err := foreign(ctx, c, objects, previous)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	var desired []entry
 	var writes []*unstructured.Unstructured
@@ -238,22 +259,27 @@ func applyInventory(ctx context.Context, c client.Client, objects []*unstructure
 	stored := previous
 	if both := union(desired, previous); !slices.Equal(both, previous) {
 		if err := writeInventory(ctx, c, both); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		stored = both
 	}
 	for _, obj := range writes {
 		if err := c.Apply(ctx, client.ApplyConfigurationFromUnstructured(obj), client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
-			return nil, failed(entryOf(obj), err)
+			return nil, false, failed(entryOf(obj), err)
 		}
 	}
+	after, err := endpointsVersions(ctx, c)
+	if err != nil {
+		return nil, false, err
+	}
+	changed := !maps.Equal(before, after)
 	for _, e := range stale(previous, desired) {
 		if err := prune(ctx, c, e); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
 	if !slices.Equal(desired, stored) {
-		return others, writeInventory(ctx, c, desired)
+		return others, changed, writeInventory(ctx, c, desired)
 	}
-	return others, nil
+	return others, changed, nil
 }

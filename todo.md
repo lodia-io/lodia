@@ -342,11 +342,6 @@ is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the lossless rollouts (2026-10-27)
 
-- A tenant created before `--endpoint-reconciler-type=none` loses its
-  `kubernetes` endpoints once, in the roll that brings `none`: the old
-  replica's lease reconciler empties them as it stops, after Tenant took
-  them over, until Tenant's next pass writes them back, within a minute
-  while the agents roll and within the apply period otherwise.
 - Deleting a `ControlPlane` waits out the API server's 90 s grace period,
   since its etcd goes at the same moment and the requests in flight wait for
   it; the Datastore controller should delete the `Etcd` only after

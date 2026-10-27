@@ -28,7 +28,9 @@ Decided 2026-10-25. Built for phase 1, without the apiserver-proxy.
   `app.kubernetes.io/managed-by` is no signal: PKI's bindings carry it too.
 - It applies on every change of the `ControlPlane` or of `status.target`, and
   again on a timer (every 10 minutes by default), so a deleted or hand-edited
-  object comes back within that period.
+  object comes back within that period. A pass that had to write the
+  `kubernetes` Service's endpoints back runs again 10 seconds later, as long
+  as another writer keeps changing them.
 - `AddonsApplied` says the inventory is applied and pruned. The readiness of
   in-tenant workloads (kube-proxy, CoreDNS, konnectivity-agent,
   apiserver-proxy) is read with direct GETs at apply time and on the timer,
