@@ -107,7 +107,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 - Phase 2, with three members: etcd-druid removes a member in a scale-in through the client Service ([memberremoval.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/memberremoval.go#L31-L39), [client.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/client/etcd/client.go#L82-L95)), so the etcd's policy admits etcd-druid's namespace to the client port then, and the members to each other's backup-restore port: a sidecar that is not the backup leader forwards snapshot requests to the leader's ([httpAPI.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/server/httpAPI.go#L281-L288)), which Gardener opens between members for the same reason ([etcd.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/component/etcd/etcd/etcd.go#L404-L411)).
 - The etcd's policy admits no metrics scraper, as the controller manager's and the scheduler's do not: a ServiceMonitor for the etcd and sidecar metrics needs its scraper admitted, the phase 2 arrow from the metrics scrapers to the health ports.
-- The README's paragraph on what the processes accept names etcd-backup-restore v0.41.2 as the sidecar etcd-druid v0.39.0 runs; with the `UpgradeEtcdVersion` gate, beta, on by default and set in etcd-druid's chart too, it runs etcd-wrapper v0.8.2 and etcd-backup-restore v0.45.1 ([image.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/utils/image.go#L39-L44), [values.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/charts/values.yaml#L22-L24), the etcd spike's finding 9): its sources should be read again at v0.45.1.
 - The Datastore controller reads its previous `DatastoreReady` from the cache: a pass that starts before the cache holds the previous pass's write applies a transition a second time, moving `lastTransitionTime` by the gap, a second in envtest, where a test that compared the ControlPlane's resourceVersion right after a transition to True caught it once in fifteen runs.
 
 ## From the chart (2026-10-26)
@@ -159,3 +158,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   Workloads forces `leaderElect: true` in the configuration it overrides, or the configuration is refused while it says `false`.
 - An IPv6 advertise address Lodia draws: once gateway mode has users with an IPv6 first service range, Workloads could draw a unique local address per `ControlPlane` and keep it beside its CAs, which a platform backs up anyway.
   `apiServer.advertiseAddress` then becomes optional, which breaks no manifest (api-exposure).
+
+## From the docs review (2026-10-27)
+
+- A runbook in `docs/operations.md` for moving a tenant from `Compact` to `Split`: a new `ControlPlane` restored from a `Backup` (dedicated), or a migration (shared) (compact-layout).
