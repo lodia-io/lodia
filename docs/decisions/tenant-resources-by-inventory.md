@@ -6,7 +6,7 @@ Built for phase 1, without the apiserver-proxy.
 ## Decision
 
 - The Tenant controller applies its objects to a tenant cluster with server-side apply under the field manager `lodia/tenant`, records their identities in an inventory ConfigMap (`kube-system/lodia-inventory`), and deletes what the previous inventory names and the current render no longer contains, when Lodia applied it.
-- Lodia leaves another owner's objects as they are: the rule of [independent-controllers](independent-controllers.md) carried into the tenant, where no object has a `ControlPlane` for controller, with `managedFields` as the signal ([how](../README.md#inside-the-tenant)).
+- Lodia leaves another owner's objects as they are: the rule of [independent-controllers](independent-controllers.md) carried into the tenant, where no object has a `ControlPlane` for controller, with `managedFields` as the signal ([Inside the tenant](../README.md#inside-the-tenant)).
   The label `app.kubernetes.io/managed-by` is no signal: PKI's bindings carry it too.
 - It applies on every change of the `ControlPlane` or of `status.target`, and again on a timer (every 10 minutes by default), so a deleted or hand-edited object comes back within that period.
 - `AddonsApplied` says the inventory is applied and pruned.
@@ -38,6 +38,6 @@ Built for phase 1, without the apiserver-proxy.
 
 ## Code
 
-- `internal/controller/tenant` — `inventory.go` holds the inventory, `foreign`, which finds another owner's objects before the first apply, and `prune`, which deletes only what `lodia/tenant` applied ([how](../README.md#inside-the-tenant)).
+- `internal/controller/tenant` — `inventory.go` holds the inventory, `foreign`, which finds another owner's objects before the first apply, and `prune`, which deletes only what `lodia/tenant` applied ([Inside the tenant](../README.md#inside-the-tenant)).
   `tenant.go` holds the pass and the conditions, `render.go` and `manifests/` the objects.
 - `internal/controller/tenant/tenant_test.go` — the objects on a tenant kube-apiserver, prune and restore of CoreDNS, a deleted DaemonSet coming back, an object the tenant refuses that leaks nothing, a tenant that does not answer, a prune that deletes only what Lodia applied, another owner's CoreDNS neither taken over nor pruned, an inventory read the tenant refuses.
