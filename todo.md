@@ -15,14 +15,11 @@ is a decision — a decision is a file in `docs/decisions/`.
 - Propose upstream a task of etcd-druid that deletes a prefix in the store
   (dedicated-etcd-by-default): `retention.afterDelete`, a deleted
   `ControlPlane`'s last snapshots and a deleted `Backup`'s copy wait for
-  it, and platforms use their bucket's lifecycle rules meanwhile. The
-  volumes follow the class's `storage.reclaimPolicy` since the Datastore
-  controller (2026-10-25).
+  it, and platforms use their bucket's lifecycle rules meanwhile.
 - etcd-backup-restore restores without etcd's `RevisionBump` and
   `MarkCompacted`, so a member it restores keeps the snapshot's revisions;
-  propose the bump upstream. Lodia detects no restore (dedicated-etcd-by-default);
-  the lost-quorum runbook rolls the API server by hand. The etcd spike
-  measured the stale cache (finding 5).
+  propose the bump upstream (dedicated-etcd-by-default; the etcd spike's
+  finding 5 measured the stale cache).
 - etcd-druid's scale at ~1000 `Etcd` objects with its default
   `concurrentSyncs: 3` is not documented; measure in phase 4 or ask the
   maintainers.
@@ -84,8 +81,7 @@ is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the Datastore controller (2026-10-25)
 
-- Nothing reads `spec.restoreFrom` until restore is built in phase 2's wave
-  1b: a `ControlPlane` created with it starts on an empty etcd. When restore lands,
+- When restore lands in phase 2's wave 1b,
   test the `VolumesExist` remedy end to end: the claims kept, a `Backup` of
   the old cluster, a new `ControlPlane` with `restoreFrom` that serves the old
   data.
