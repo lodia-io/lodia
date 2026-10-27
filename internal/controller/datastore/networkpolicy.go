@@ -31,10 +31,8 @@ const (
 	etcdBackupRestorePort int32 = 8080
 )
 
-// networkPolicy admits to the members of the Etcd what dials them
-// (docs/README.md, A tenant namespace). Several members are counted in the
-// spec and in etcd-druid's report, so that a scale-in keeps its arrows until
-// it is done.
+// networkPolicy admits to the members of the Etcd what dials them, at any
+// member count (docs/README.md, A tenant namespace).
 func networkPolicy(cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, druidNamespace string) *networkingv1ac.NetworkPolicyApplyConfiguration {
 	members := metav1ac.LabelSelector().WithMatchLabels(memberLabels(etcd))
 	apiServer := metav1ac.LabelSelector().WithMatchLabels(map[string]string{
@@ -45,25 +43,17 @@ func networkPolicy(cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, dru
 		return networkingv1ac.NetworkPolicyPort().WithProtocol(corev1.ProtocolTCP).WithPort(intstr.FromInt32(port))
 	}
 	clientPort := druidv1alpha1.GetClientPort(etcd)
-	several := etcd.Spec.Replicas > 1 || len(etcd.Status.Members) > 1
 	memberPorts := []*networkingv1ac.NetworkPolicyPortApplyConfiguration{tcp(clientPort), tcp(etcdPeerPort)}
-	var druidPorts []*networkingv1ac.NetworkPolicyPortApplyConfiguration
-	if several {
-		druidPorts = append(druidPorts, tcp(clientPort))
-	}
+	druidPorts := []*networkingv1ac.NetworkPolicyPortApplyConfiguration{tcp(clientPort)}
 	if etcd.IsBackupStoreEnabled() {
+		memberPorts = append(memberPorts, tcp(etcdBackupRestorePort))
 		druidPorts = append(druidPorts, tcp(etcdBackupRestorePort))
-		if several {
-			memberPorts = append(memberPorts, tcp(etcdBackupRestorePort))
-		}
 	}
+	druid := metav1ac.LabelSelector().WithMatchLabels(map[string]string{corev1.LabelMetadataName: druidNamespace})
 	rules := []*networkingv1ac.NetworkPolicyIngressRuleApplyConfiguration{
 		networkingv1ac.NetworkPolicyIngressRule().WithFrom(networkingv1ac.NetworkPolicyPeer().WithPodSelector(apiServer)).WithPorts(tcp(clientPort)),
 		networkingv1ac.NetworkPolicyIngressRule().WithFrom(networkingv1ac.NetworkPolicyPeer().WithPodSelector(members)).WithPorts(memberPorts...),
-	}
-	if len(druidPorts) > 0 {
-		druid := metav1ac.LabelSelector().WithMatchLabels(map[string]string{corev1.LabelMetadataName: druidNamespace})
-		rules = append(rules, networkingv1ac.NetworkPolicyIngressRule().WithFrom(networkingv1ac.NetworkPolicyPeer().WithNamespaceSelector(druid)).WithPorts(druidPorts...))
+		networkingv1ac.NetworkPolicyIngressRule().WithFrom(networkingv1ac.NetworkPolicyPeer().WithNamespaceSelector(druid)).WithPorts(druidPorts...),
 	}
 	return networkingv1ac.NetworkPolicy(lodiav1alpha1.EtcdName(cp.Name), cp.Namespace).
 		WithLabels(map[string]string{lodiav1alpha1.ControlPlaneLabel: cp.Name}).

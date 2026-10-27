@@ -1470,6 +1470,74 @@ func TestThreeMembersWithHighAvailability(t *testing.T) {
 	})
 }
 
+func TestEtcdDruidKeepsTheClientPortThroughAScaleIn(t *testing.T) {
+	ns := namespace(t)
+	const cp = "shrinking"
+	createClass(t, newClass("shrinking", "Retain"))
+	ha := controlPlane(ns, cp, "shrinking")
+	ha.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+	create(t, ha)
+	writeGeneration(t, ns, cp, 1)
+	waitEtcd(t, ns, cp, nil)
+	runStatefulSet(t, ns, cp, 1)
+	druid := func(members, ready, pods int32, scaling string) {
+		t.Helper()
+		setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) {
+			s.Replicas, s.ReadyReplicas, s.AvailableReplicas, s.CurrentReplicas, s.UpdatedReplicas = pods, ready, ready, pods, pods
+		})
+		setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) {
+			s.Replicas, s.CurrentReplicas, s.ReadyReplicas, s.Ready = pods, pods, ready, new(ready == pods)
+			for i := int32(1); i < members; i++ {
+				s.Members = append(s.Members, druidv1alpha1.EtcdMemberStatus{
+					Name: fmt.Sprintf("%s-etcd-%d", cp, i), Status: druidv1alpha1.EtcdMemberStatusReady, Reason: "LeaseSucceeded", LastTransitionTime: metav1.Now(),
+				})
+			}
+			complete := druidv1alpha1.Condition{
+				Type: druidv1alpha1.ConditionTypeScaleOperationComplete, Status: druidv1alpha1.ConditionTrue, Reason: druidv1alpha1.ScaleOperationReasonNoScaleOperation,
+				LastTransitionTime: metav1.Now(), LastUpdateTime: metav1.Now(),
+			}
+			if scaling != "" {
+				complete.Status, complete.Reason = druidv1alpha1.ConditionFalse, scaling
+			}
+			s.Conditions = append(s.Conditions, complete)
+		})
+	}
+	druid(3, 3, 3, "")
+	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum")
+
+	eventually(t, func() error {
+		fresh := getControlPlane(t, ns, cp)
+		fresh.Spec.HighAvailability = nil
+		return k8s.Update(t.Context(), fresh)
+	})
+	waitEtcd(t, ns, cp, func(etcd *druidv1alpha1.Etcd) error {
+		if etcd.Spec.Replicas != 1 {
+			return fmt.Errorf("the Etcd asks for %d members", etcd.Spec.Replicas)
+		}
+		return nil
+	})
+	for _, step := range []struct {
+		name                 string
+		members, ready, pods int32
+		scaling              string
+	}{
+		{"etcd-druid starts the scale-in", 3, 3, 3, druidv1alpha1.ScaleOperationReasonScalingIn},
+		{"its status lists only the member the spec asks for", 1, 3, 3, druidv1alpha1.ScaleOperationReasonScalingIn},
+		{"it has removed the surplus members and their pods", 1, 1, 1, druidv1alpha1.ScaleOperationReasonScalingIn},
+		{"its member list completes the scale-in", 1, 1, 1, ""},
+	} {
+		t.Run(step.name, func(t *testing.T) {
+			druid(step.members, step.ready, step.pods, step.scaling)
+			settle(t, ns, cp)
+			waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum")
+			sameSpec(t, getPolicy(t, ns, cp).Spec, policySpec(cp, false))
+			if etcd := getEtcd(t, ns, cp); etcd.Spec.Replicas != 1 {
+				t.Errorf("the Etcd asks for %d members, want the 1 etcd-druid scales it to", etcd.Spec.Replicas)
+			}
+		})
+	}
+}
+
 func describeIngress(policy *networkingv1.NetworkPolicy) string {
 	var rules []string
 	for _, rule := range policy.Spec.Ingress {
@@ -1934,7 +2002,7 @@ func waitPolicy(t *testing.T, ns, cp string, check func(*networkingv1.NetworkPol
 	return policy
 }
 
-func policySpec(cp string, store, several bool) networkingv1.NetworkPolicySpec {
+func policySpec(cp string, store bool) networkingv1.NetworkPolicySpec {
 	members := &metav1.LabelSelector{MatchLabels: map[string]string{
 		"app.kubernetes.io/managed-by": "etcd-druid", "app.kubernetes.io/part-of": cp + "-etcd", "app.kubernetes.io/name": cp + "-etcd",
 	}}
@@ -1943,31 +2011,23 @@ func policySpec(cp string, store, several bool) networkingv1.NetworkPolicySpec {
 		return networkingv1.NetworkPolicyPort{Protocol: new(corev1.ProtocolTCP), Port: new(intstr.FromInt32(port))}
 	}
 	memberPorts := []networkingv1.NetworkPolicyPort{tcp(2379), tcp(2380)}
-	var druidPorts []networkingv1.NetworkPolicyPort
-	if several {
-		druidPorts = append(druidPorts, tcp(2379))
-	}
+	druidPorts := []networkingv1.NetworkPolicyPort{tcp(2379)}
 	if store {
+		memberPorts = append(memberPorts, tcp(8080))
 		druidPorts = append(druidPorts, tcp(8080))
-		if several {
-			memberPorts = append(memberPorts, tcp(8080))
-		}
 	}
-	spec := networkingv1.NetworkPolicySpec{
+	return networkingv1.NetworkPolicySpec{
 		PodSelector: *members,
 		Ingress: []networkingv1.NetworkPolicyIngressRule{
 			{From: []networkingv1.NetworkPolicyPeer{{PodSelector: apiServer}}, Ports: []networkingv1.NetworkPolicyPort{tcp(2379)}},
 			{From: []networkingv1.NetworkPolicyPeer{{PodSelector: members}}, Ports: memberPorts},
+			{
+				From:  []networkingv1.NetworkPolicyPeer{{NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": druidNamespace}}}},
+				Ports: druidPorts,
+			},
 		},
 		PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 	}
-	if len(druidPorts) > 0 {
-		spec.Ingress = append(spec.Ingress, networkingv1.NetworkPolicyIngressRule{
-			From:  []networkingv1.NetworkPolicyPeer{{NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": druidNamespace}}}},
-			Ports: druidPorts,
-		})
-	}
-	return spec
 }
 
 func sameSpec(t *testing.T, got, want networkingv1.NetworkPolicySpec) {
@@ -2003,14 +2063,14 @@ func TestNetworkPolicy(t *testing.T) {
 	}
 
 	for _, row := range []struct {
-		cp             string
-		store, several bool
-	}{{"backed", true, false}, {"plain", false, false}, {"backed-ha", true, true}, {"plain-ha", false, true}} {
+		cp    string
+		store bool
+	}{{"backed", true}, {"plain", false}, {"backed-ha", true}, {"plain-ha", false}} {
 		t.Run(row.cp, func(t *testing.T) {
 			writeGeneration(t, ns, row.cp, 1)
 			policy := waitPolicy(t, ns, row.cp, nil)
 			cp := getControlPlane(t, ns, row.cp)
-			sameSpec(t, policy.Spec, policySpec(row.cp, row.store, row.several))
+			sameSpec(t, policy.Spec, policySpec(row.cp, row.store))
 			if want := map[string]string{"lodia.io/control-plane": row.cp}; !reflect.DeepEqual(policy.Labels, want) {
 				t.Errorf("labels %v, want %v", policy.Labels, want)
 			}
@@ -2034,7 +2094,7 @@ func TestNetworkPolicy(t *testing.T) {
 				}
 				return nil
 			})
-			sameSpec(t, again.Spec, policySpec(row.cp, row.store, row.several))
+			sameSpec(t, again.Spec, policySpec(row.cp, row.store))
 		})
 	}
 }
@@ -2120,7 +2180,7 @@ func TestOwnerlessNetworkPolicyIsAdopted(t *testing.T) {
 		}
 		return nil
 	})
-	sameSpec(t, policy.Spec, policySpec("adopter", false, false))
+	sameSpec(t, policy.Spec, policySpec("adopter", false))
 }
 
 func TestNetworkPolicyRefused(t *testing.T) {

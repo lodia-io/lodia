@@ -59,24 +59,7 @@ Hibernation, class edits held for the maintenance window, the final snapshot and
     unless more than 1 GiB is free
   ([managing](https://gardener.github.io/etcd-druid/usage/managing-etcd-clusters.html),
   [recovering](https://gardener.github.io/etcd-druid/usage/recovering-etcd-clusters.html)).
-- **Lodia adds what etcd-druid leaves to its consumer:** the NetworkPolicy
-  that admits only the tenant's API server, the members themselves and
-  etcd-druid, which calls their sidecars on 8080 for the snapshots it takes
-  and the members on 2379 only to remove one when it scales in
-  ([etcd-druid#505](https://github.com/gardener/etcd-druid/issues/505),
-  [ondemandsnapshot.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcdopstask/handler/ondemandsnapshot/ondemandsnapshot.go#L103),
-  [memberremoval.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/memberremoval.go#L31-L39));
-  from phase 2's wave 2, metrics of each etcd from a sample of its `Status`
-  once a minute, while scraping the etcd and its sidecar stays the
-  platform's choice
-  ([metrics-are-part-of-the-api](metrics-are-part-of-the-api.md)); the `Backup` object, a
-  sealed copy of the snapshots under a prefix of its own that nothing writes
-  again, made with etcd-druid's `EtcdOpsTask` and `EtcdCopyBackupsTask`
-  ([restore-replaces-the-source](restore-replaces-the-source.md)); the
-  failures of etcd-druid's
-  `EtcdOpsTask`s in its own condition; and deleting the volumes and snapshots
-  of a deleted `ControlPlane`, which etcd-druid keeps
-  ([etcd spike](../etcd-spike-2026-10.md), findings 2, 4 and 6).
+- **Lodia adds what etcd-druid leaves to its consumer:** the NetworkPolicy that admits only the tenant's API server, the members themselves and etcd-druid, which calls their sidecars on 8080 for the snapshots it takes and the members on 2379 to remove and list members when it scales in, at any member count ([etcd-druid#505](https://github.com/gardener/etcd-druid/issues/505), [ondemandsnapshot.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcdopstask/handler/ondemandsnapshot/ondemandsnapshot.go#L103), [the table](../README.md#a-tenant-namespace)); from phase 2's wave 2, metrics of each etcd from a sample of its `Status` once a minute, while scraping the etcd and its sidecar stays the platform's choice ([metrics-are-part-of-the-api](metrics-are-part-of-the-api.md)); the `Backup` object, a sealed copy of the snapshots under a prefix of its own that nothing writes again, made with etcd-druid's `EtcdOpsTask` and `EtcdCopyBackupsTask` ([restore-replaces-the-source](restore-replaces-the-source.md)); the failures of etcd-druid's `EtcdOpsTask`s in its own condition; and deleting the volumes and snapshots of a deleted `ControlPlane`, which etcd-druid keeps ([etcd spike](../etcd-spike-2026-10.md), findings 2, 4 and 6).
 - **Shared, opt-in.** `spec.datastore.shared` names a `Datastore`: an etcd
   several tenants use. Lodia creates per tenant an etcd user named after the
   `ControlPlane`'s UID, authenticated by the CN of a client certificate (the
