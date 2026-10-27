@@ -21,8 +21,10 @@ CI runs `make verify` and `make e2e` on every pull request, and `make conformanc
 
 ## Docs
 
-- Each fact once, in its home, and a link to it elsewhere: the API contract in [`docs/api/controlplane.md`](docs/api/controlplane.md), runbooks in [`docs/operations.md`](docs/operations.md).
+- Each fact once, in its home, and a link to it elsewhere: the fields, conditions and reasons of `ControlPlane` and `Backup` in [`docs/api/controlplane.md`](docs/api/controlplane.md), runbooks in [`docs/operations.md`](docs/operations.md).
   No history, and no prose that restates the code.
+- Every claim about Kubernetes or a neighbour carries a source.
+- Decisions are in the handbook format; a behaviour change updates [`docs/README.md`](docs/README.md) and the decision in the same commit.
 - Markdown uses one sentence per line.
 
 ## Commits
