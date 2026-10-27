@@ -14,7 +14,7 @@ spec:
     defragmentation:
       schedule: "0 3 * * *"               # followers first, leader last
     resources:
-      requests: {cpu: 30m, memory: 150M}  # Gardener's shoot defaults until phase 1 measures ours
+      requests: {cpu: 30m, memory: 150M}  # Gardener's shoot defaults; the measured use is in docs/operations.md, Capacity
       limits: {memory: 2Gi}
   storage:
     className: local-nvme
@@ -29,7 +29,7 @@ spec:
       region: eu-central-1
       endpoint: https://s3.eu-central-1.amazonaws.com
       secretRef: {name: s3-backups, namespace: lodia-system}
-    fullSnapshotSchedule: "0 */24 * * *"  # the hour is randomised inside the tenant's maintenance window
+    fullSnapshotSchedule: "0 */24 * * *"  # passed to etcd-druid as written; "0 0 * * *" by default
     deltaSnapshotPeriod: 5m
     retention:
       fullSnapshots: 30                   # the newest 30, one a day; deltas only after the newest
