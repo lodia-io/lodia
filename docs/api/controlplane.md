@@ -16,7 +16,7 @@ A field, condition or reason marked with a wave exists in the schema now and is 
 | field | type | default | rules |
 |---|---|---|---|
 | `version` | string | required | `v<major>.<minor>.<patch>`, any patch of a minor in the version table; the minor never decreases (CEL transition rule); the patch may; Lodia moves one minor at a time towards it, through the newest patch of each minor between, from wave 2, upgrades ([upgrades-and-maintenance-windows](../decisions/upgrades-and-maintenance-windows.md)) |
-| `layout` | `Split` \| `Compact` | `Split` | immutable; `Compact` puts every control plane component in one pod and excludes `highAvailability` and `apiServer.replicas` above 1 ([compact-layout](../decisions/compact-layout.md)) |
+| `layout` | `Split` \| `Compact` | `Split` | immutable; `Compact` puts every control plane component in one pod, and CEL refuses it with `highAvailability` or with `apiServer.replicas` above 1 ([compact-layout](../decisions/compact-layout.md)) |
 | `highAvailability.failureTolerance` | `Node` \| `Zone` | absent = single | sets replicas (2/2/2, etcd 3) and the spread topology key (`kubernetes.io/hostname` or `topology.kubernetes.io/zone`); immutable once set, since etcd's volumes stay where they were spread, while `highAvailability` itself can be removed (CEL transition rule); wave 1b, HA (until then `APIServerReady=False`, `Unsupported`) |
 | `datastore` | union | required | exactly one of `dedicated`, `shared`; immutable in v1alpha1 (migration is a later operation) |
 | `datastore.dedicated.className` | string | the default `DatastoreClass` | |
