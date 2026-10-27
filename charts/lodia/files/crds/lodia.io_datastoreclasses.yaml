@@ -98,8 +98,10 @@ spec:
                       fullSnapshots:
                         default: 30
                         description: |-
-                          FullSnapshots is how many full snapshots, each with the deltas after
-                          it, a running ControlPlane keeps: days, at the default schedule.
+                          FullSnapshots is how many full snapshots a running ControlPlane keeps,
+                          the newest: days, at the default schedule. Only the newest keeps the
+                          delta snapshots after it, since no delta retention period is set, so an
+                          older one restores to its own revision.
                         format: int32
                         maximum: 3650
                         minimum: 1

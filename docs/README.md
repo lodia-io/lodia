@@ -415,7 +415,7 @@ everything the class does not set is etcd-druid's default:
 | `backup.store.region` | the key `region` of `<cp>-etcd-backup` | where the sidecar reads it |
 | `backup.store.secretRef` | `spec.backup.store.secretRef` | `<cp>-etcd-backup`, the copy, with the class Secret's data |
 | `backup.fullSnapshotSchedule`, `.deltaSnapshotPeriod` | `spec.backup.fullSnapshotSchedule`, `.deltaSnapshotPeriod` | the delta period bounds what a restore loses ([etcd spike](etcd-spike-2026-10.md), finding 5) |
-| `backup.retention.fullSnapshots` | `spec.backup.garbageCollectionPolicy: LimitBased`, `.maxBackupsLimitBasedGC` | counts full snapshots, each with the deltas after it: days, at the default schedule of one a day |
+| `backup.retention.fullSnapshots` | `spec.backup.garbageCollectionPolicy: LimitBased`, `.maxBackupsLimitBasedGC` | the newest full snapshots kept: days, at the default schedule of one a day; only the newest keeps the deltas after it, since neither Lodia nor etcd-druid sets a delta retention period, so an older one restores to its own revision ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)) |
 | `backup.retention.afterDelete` | — | not built: nothing deletes a prefix, so a platform expires old ones with its bucket's lifecycle rules ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)) |
 | `placement.nodeSelector`, `.tolerations`, `.priorityClassName` | `spec.schedulingConstraints.affinity` (as required node affinity), `.tolerations`, `spec.priorityClassName` | the `Etcd` has no node selector |
 | the `ControlPlane`'s availability | `spec.replicas` | 1 today, and `DatastoreReady` is `Unsupported` with `highAvailability`; 3 with `highAvailability` and 0 while hibernating come with later phases |

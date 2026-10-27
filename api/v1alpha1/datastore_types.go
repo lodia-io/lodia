@@ -200,8 +200,10 @@ type StoreProvider string
 
 // BackupRetention is how long snapshots live.
 type BackupRetention struct {
-	// FullSnapshots is how many full snapshots, each with the deltas after
-	// it, a running ControlPlane keeps: days, at the default schedule.
+	// FullSnapshots is how many full snapshots a running ControlPlane keeps,
+	// the newest: days, at the default schedule. Only the newest keeps the
+	// delta snapshots after it, since no delta retention period is set, so an
+	// older one restores to its own revision.
 	// +optional
 	// +kubebuilder:default=30
 	// +kubebuilder:validation:Minimum=1

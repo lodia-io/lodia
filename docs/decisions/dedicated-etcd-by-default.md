@@ -307,10 +307,18 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   `retention.afterDelete` stays documented and unbuilt until etcd-druid has
   a task for it, which Lodia proposes upstream (`todo.md`), rather than a
   client of four stores of its own; meanwhile a platform expires old
-  prefixes with its bucket's lifecycle rules. `retention.fullSnapshots`
-  counts full snapshots, each with the deltas after it, which etcd-druid's
-  `LimitBased` garbage collection keeps
-  ([garbagecollector.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapshot/snapshotter/garbagecollector.go#L78-L204)).
+  prefixes with its bucket's lifecycle rules. `retention.fullSnapshots` is
+  the number of full snapshots the sidecar's `LimitBased` garbage collection
+  keeps, the newest
+  ([garbagecollector.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapshot/snapshotter/garbagecollector.go#L171-L203)).
+  It deletes the deltas after every full snapshot but the newest once they
+  are older than the delta retention period
+  ([garbagecollector.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapshot/snapshotter/garbagecollector.go#L276-L281)),
+  which the sidecar leaves at zero and etcd-druid passes only when the
+  `Etcd` sets one, which Lodia does not
+  ([snapshotter.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapshot/snapshotter/snapshotter.go#L61-L71),
+  [builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L560-L562)):
+  an older full snapshot restores to its own revision only.
 - The `Etcd` names the CA's key, `dataKey: ca.crt`, on all three TLS blocks:
   etcd-druid defaults to `ca.crt` for the members and to `bundle.crt` for its
   own calls to the backup-restore sidecar
