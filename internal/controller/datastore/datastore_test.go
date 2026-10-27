@@ -1367,7 +1367,7 @@ func TestDatastoreReadyIsQuorum(t *testing.T) {
 	}
 
 	setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) { s.Ready, s.ReadyReplicas = new(false), 0 })
-	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonQuorumLost, "Etcd reported-etcd has 0 of 1 members ready, and its quorum needs 1")
+	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonQuorumLost, "Etcd reported-etcd has 0 of 1 members ready")
 	setEtcdStatus(t, ns, cp, nil)
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "Etcd reported-etcd has quorum, 1 of 1 members ready")
 
@@ -1424,14 +1424,18 @@ func TestThreeMembersWithHighAvailability(t *testing.T) {
 	setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) {
 		s.Replicas, s.ReadyReplicas, s.AvailableReplicas, s.CurrentReplicas, s.UpdatedReplicas = 3, 3, 3, 3, 3
 	})
-	quorate(0)
+	setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) {
+		s.Replicas, s.CurrentReplicas, s.ReadyReplicas, s.Ready, s.Members = 3, 3, 0, new(false), nil
+	})
 	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "Etcd ha-etcd has 0 of 3 members ready")
 	quorate(3)
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "Etcd ha-etcd has quorum, 3 of 3 members ready")
 	quorate(2)
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "Etcd ha-etcd has quorum, 2 of 3 members ready")
 	quorate(1)
-	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonQuorumLost, "Etcd ha-etcd has 1 of 3 members ready, and its quorum needs 2")
+	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "Etcd ha-etcd has quorum, 1 of 3 members ready")
+	quorate(0)
+	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonQuorumLost, "Etcd ha-etcd has 0 of 3 members ready")
 	quorate(3)
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "Etcd ha-etcd has quorum, 3 of 3 members ready")
 
@@ -1468,6 +1472,103 @@ func TestThreeMembersWithHighAvailability(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestHighAvailabilityOnAFormedEtcd(t *testing.T) {
+	ns := namespace(t)
+	const cp = "growing"
+	createClass(t, newClass("growing", "Retain"))
+	create(t, controlPlane(ns, cp, "growing"))
+	writeGeneration(t, ns, cp, 1)
+	waitEtcd(t, ns, cp, nil)
+	runStatefulSet(t, ns, cp, 1)
+	druid := func(members, ready, pods int32, scaling string) {
+		t.Helper()
+		setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) {
+			s.Replicas, s.ReadyReplicas, s.AvailableReplicas, s.CurrentReplicas, s.UpdatedReplicas = pods, ready, ready, pods, pods
+		})
+		setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) {
+			s.Replicas, s.CurrentReplicas, s.ReadyReplicas, s.Ready = pods, pods, ready, new(ready == pods)
+			for i := int32(1); i < members; i++ {
+				s.Members = append(s.Members, druidv1alpha1.EtcdMemberStatus{
+					Name: fmt.Sprintf("%s-etcd-%d", cp, i), Role: new(druidv1alpha1.EtcdRoleMember), Status: druidv1alpha1.EtcdMemberStatusReady, Reason: "LeaseSucceeded", LastTransitionTime: metav1.Now(),
+				})
+			}
+			complete := druidv1alpha1.Condition{
+				Type: druidv1alpha1.ConditionTypeScaleOperationComplete, Status: druidv1alpha1.ConditionTrue, Reason: druidv1alpha1.ScaleOperationReasonNoScaleOperation,
+				LastTransitionTime: metav1.Now(), LastUpdateTime: metav1.Now(),
+			}
+			if scaling != "" {
+				complete.Status, complete.Reason = druidv1alpha1.ConditionFalse, scaling
+			}
+			s.Conditions = append(s.Conditions, complete)
+		})
+	}
+	druid(1, 1, 1, "")
+	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "Etcd growing-etcd has quorum, 1 of 1 members ready")
+	highAvailability := func(ha *lodiav1alpha1.HighAvailability) {
+		t.Helper()
+		eventually(t, func() error {
+			fresh := getControlPlane(t, ns, cp)
+			fresh.Spec.HighAvailability = ha
+			return k8s.Update(t.Context(), fresh)
+		})
+	}
+
+	highAvailability(&lodiav1alpha1.HighAvailability{FailureTolerance: "Node"})
+	waitEtcd(t, ns, cp, func(etcd *druidv1alpha1.Etcd) error {
+		if etcd.Spec.Replicas != 3 {
+			return fmt.Errorf("the Etcd asks for %d members", etcd.Spec.Replicas)
+		}
+		return nil
+	})
+	for _, step := range []struct {
+		name                 string
+		members, ready, pods int32
+		scaling, want        string
+	}{
+		{"etcd-druid starts the scale-out", 1, 1, 3, druidv1alpha1.ScaleOperationReasonScalingOut, "has quorum, 1 of 3 members ready, while etcd-druid scales it"},
+		{"two learners joined, which fail the readiness read", 3, 1, 3, druidv1alpha1.ScaleOperationReasonScalingOut, "has quorum, 1 of 3 members ready, while etcd-druid scales it"},
+		{"the scale-out is complete before the learners are promoted", 3, 1, 3, "", "has quorum, 1 of 3 members ready"},
+		{"the learners are promoted", 3, 3, 3, "", "has quorum, 3 of 3 members ready"},
+	} {
+		t.Run("on: "+step.name, func(t *testing.T) {
+			druid(step.members, step.ready, step.pods, step.scaling)
+			eventually(t, func() error {
+				c := meta.FindStatusCondition(getControlPlane(t, ns, cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
+				if want := "Etcd growing-etcd " + step.want; c == nil || c.Status != metav1.ConditionTrue || c.Reason != lodiav1alpha1.ReasonReady || c.Message != want {
+					return fmt.Errorf("DatastoreReady is %+v, want True Ready %q", c, want)
+				}
+				return nil
+			})
+		})
+	}
+
+	highAvailability(nil)
+	waitEtcd(t, ns, cp, func(etcd *druidv1alpha1.Etcd) error {
+		if etcd.Spec.Replicas != 1 {
+			return fmt.Errorf("the Etcd asks for %d members", etcd.Spec.Replicas)
+		}
+		return nil
+	})
+	for _, step := range []struct {
+		name                 string
+		members, ready, pods int32
+		scaling              string
+	}{
+		{"etcd-druid starts the scale-in", 1, 3, 3, druidv1alpha1.ScaleOperationReasonScalingIn},
+		{"it has removed the surplus members and their pods", 1, 1, 1, druidv1alpha1.ScaleOperationReasonScalingIn},
+		{"its member list completes the scale-in", 1, 1, 1, ""},
+	} {
+		t.Run("off: "+step.name, func(t *testing.T) {
+			druid(step.members, step.ready, step.pods, step.scaling)
+			settle(t, ns, cp)
+			waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum")
+			if etcd := getEtcd(t, ns, cp); etcd.Spec.Replicas != 1 {
+				t.Errorf("the Etcd asks for %d members, want 1", etcd.Spec.Replicas)
+			}
+		})
+	}
 }
 
 func TestEtcdDruidKeepsTheClientPortThroughAScaleIn(t *testing.T) {

@@ -290,9 +290,7 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.Contro
 		}
 		sts = nil
 	}
-	previous := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
-	formed := previous != nil && (previous.Status == metav1.ConditionTrue || previous.Reason == lodiav1alpha1.ReasonQuorumLost)
-	condition := readiness(etcd, absent, formed)
+	condition := readiness(etcd, absent)
 	condition.Message = note(condition.Message, held)
 	if updated := updatedMembers(etcd, sts); updated == nil || *updated < etcd.Spec.Replicas {
 		return etcd, sts, condition, 15 * time.Second, refusal

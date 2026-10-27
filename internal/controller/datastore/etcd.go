@@ -239,11 +239,11 @@ func (r *Reconciler) apply(ctx context.Context, etcd *druidv1alpha1.Etcd) (*drui
 	return result, nil
 }
 
-// readiness reports quorum (docs/README.md, A tenant namespace): a majority
-// of the members ready, or one while etcd-druid scales the etcd or has not
-// observed a new count. Fewer are a quorum lost once the etcd has had one,
-// and an etcd on its way before.
-func readiness(etcd *druidv1alpha1.Etcd, missing []string, formed bool) metav1.Condition {
+// readiness reports quorum (docs/README.md, A tenant namespace), which one
+// ready member shows, since a member is ready only while it answers a
+// linearizable read. Without one, an etcd that etcd-druid has seen members
+// join has lost it, and any other is on its way.
+func readiness(etcd *druidv1alpha1.Etcd, missing []string) metav1.Condition {
 	not := func(message string) metav1.Condition {
 		return newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, message)
 	}
@@ -254,21 +254,15 @@ func readiness(etcd *druidv1alpha1.Etcd, missing []string, formed bool) metav1.C
 		return not(fmt.Sprintf("Secrets Etcd %s mounts do not exist: %s", etcd.Name, strings.Join(missing, ", ")))
 	}
 	observed := ptr.Deref(etcd.Status.ObservedGeneration, 0)
-	scaling := !druidv1alpha1.HasScaleOperationCompleted(etcd)
-	quorum := etcd.Spec.Replicas/2 + 1
-	if scaling || observed != etcd.Generation {
-		quorum = 1
-	}
 	ready := etcd.Status.ReadyReplicas
 	switch {
-	case ready >= quorum && scaling:
+	case ready > 0 && !druidv1alpha1.HasScaleOperationCompleted(etcd):
 		return newCondition(metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
 			fmt.Sprintf("Etcd %s has quorum, %d of %d members ready, while etcd-druid scales it", etcd.Name, ready, etcd.Spec.Replicas))
-	case ready >= quorum:
+	case ready > 0:
 		return newCondition(metav1.ConditionTrue, lodiav1alpha1.ReasonReady, fmt.Sprintf("Etcd %s has quorum, %d of %d members ready", etcd.Name, ready, etcd.Spec.Replicas))
-	case formed:
-		return newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonQuorumLost,
-			fmt.Sprintf("Etcd %s has %d of %d members ready, and its quorum needs %d", etcd.Name, ready, etcd.Spec.Replicas, quorum))
+	case len(etcd.Status.Members) > 0:
+		return newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonQuorumLost, fmt.Sprintf("Etcd %s has %d of %d members ready", etcd.Name, ready, etcd.Spec.Replicas))
 	case observed != etcd.Generation:
 		return not(fmt.Sprintf("etcd-druid has not observed generation %d of Etcd %s, observedGeneration %d", etcd.Generation, etcd.Name, observed))
 	}
