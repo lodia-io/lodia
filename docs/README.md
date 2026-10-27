@@ -78,7 +78,7 @@ sequenceDiagram
   Note over U,T: Lifecycle sets Ready, then the owner runs kubeadm join on nodes
 ```
 
-An etcd that loses quorum turns `DatastoreReady` False with `QuorumLost` (phase 2's wave 1b, HA); Workloads leaves the Deployments alone and PKI keeps renewing certificates.
+What each example of failure does: an etcd that loses quorum turns `DatastoreReady` False with `QuorumLost` (phase 2's wave 1b, HA); Workloads leaves the Deployments alone and PKI keeps renewing certificates.
 
 ## A tenant namespace
 
@@ -168,10 +168,10 @@ The labels, annotations and the finalizer they share are defined in `api/v1alpha
 | finalizer `lodia.io/restore-source` | a `Backup` | the backup reconciler of the Datastore controller, from phase 2's wave 1b | the API server, which deletes the `Backup` once every `ControlPlane` restoring from it has an encryption configuration of its own |
 
 Workloads runs the three Deployments of [component-per-deployment](decisions/component-per-deployment.md) from the images of `status.target.version` and the flags of the [hard way](hard-way.md); lodia-signer and then konnectivity-server run beside the API server as native sidecars, which start before it and stop after it ([sidecar containers](https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/)).
-One Service, `<cp>-kube-apiserver`, of the endpoint's type, takes 443 and 6443 to the API server and 8132 to konnectivity-server, and Workloads publishes `status.endpoint` from it, whole once both addresses exist: the balancer's IP with 443 and 8132, or, for `nodePort`, a management node's InternalIP with the node ports of 6443 and 8132; and, as `inCluster`, where the tenant's pods reach the API server: the balancer's IP with 6443, or the node's address with the node port of 6443.
-That address is the first Ready node's by name when none is published, and then stays for as long as any node still reports it, Ready or not, since the serving certificate, the kubeconfigs, the ServiceAccount issuer and every joined kubelet name it.
+One Service, `<cp>-kube-apiserver`, of the endpoint's type, takes 443 and 6443 to the API server and 8132 to konnectivity-server, and Workloads publishes [`status.endpoint`](api/controlplane.md#status) from it.
+In `nodePort` mode its address is the first Ready node's by name when none is published, and then stays for as long as any node still reports it, Ready or not, since the serving certificate, the kubeconfigs, the ServiceAccount issuer and every joined kubelet name it.
 Each pod template carries a hash of what its component reads once (`lodia.io/restart-hash`): the data hashes of its restart-only Secrets and, for the API server, its two ConfigMaps; a renewal of a reloaded certificate rolls nothing.
-The probes are kubeadm's, startup probes included ([manifests.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kubeadm/app/phases/controlplane/manifests.go#L67-L107)); konnectivity-server's startup probe is its health port, so the API server starts once its tunnels can.
+The probes are kubeadm's, startup probes included ([utils.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kubeadm/app/util/staticpod/utils.go#L255-L296), [manifests.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kubeadm/app/phases/controlplane/manifests.go#L67-L107)); konnectivity-server's startup probe is its health port, so the API server starts once its tunnels can.
 A rollout loses no API request of a client that follows `Retry-After`, as client-go does; one through the tunnel can fail for a moment (`todo.md`).
 Each Deployment starts a full set of new pods before it stops an old one (`maxSurge: 100%`, `maxUnavailable: 0`), the API server's once they have been ready for 10 seconds (`minReadySeconds`), time for the konnectivity agents to reach the new servers.
 A stopping API server drains as [api-exposure](decisions/api-exposure.md) says, and konnectivity-server stops after it, all within a grace period of 90 seconds.
@@ -189,7 +189,7 @@ A missing Secret or a copy another owner holds is checked again after a minute; 
 Before the first `Etcd` exists, the same cause is `Provisioning`, and nothing is created.
 
 An `Etcd` follows the class recorded on it when it was created ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)), and one created again over this `ControlPlane`'s claims, after someone deleted it, takes the class they record rather than `className` or the current default, which could give it another bucket and placement.
-An edit of that class that changes the `Etcd`'s spec reaches the `Etcd` of every tenant on it at once and rolls their members, a single member with an outage, until Lifecycle holds class edits for each tenant's maintenance window in phase 2; etcd-druid updates the StatefulSet with `RollingUpdate` ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L57)).
+An edit of that class that changes the `Etcd`'s spec reaches the `Etcd` of every tenant on it at once and rolls their members, a single member with an outage, until Lifecycle holds class edits for each tenant's maintenance window in phase 2; etcd-druid carries the class's store, prefix and schedules into the backup sidecar's arguments ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L430-L601)) and updates the StatefulSet with `RollingUpdate` ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L57)).
 What each field of the class becomes ([etcd.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/etcd.go), [store.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/store.go)); everything the class does not set is etcd-druid's default:
 
 | `DatastoreClass` | `Etcd` | note |
@@ -218,10 +218,11 @@ The rest is what the processes accept.
 The sidecar etcd-druid v0.39.0 runs, etcd-backup-restore v0.41.2 ([images.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/images/images.yaml#L14-L19)), parses both schedules with robfig/cron v3.0.1 and exits on an error ([snapshotter.go](https://github.com/gardener/etcd-backup-restore/blob/v0.41.2/pkg/types/snapshotter.go#L68), [init.go](https://github.com/gardener/etcd-backup-restore/blob/v0.41.2/pkg/server/init.go#L78), [server.go](https://github.com/gardener/etcd-backup-restore/blob/v0.41.2/cmd/server.go#L29-L32)): a schedule is five fields separated by single spaces, without lists, its ranges ascend ([parser.go](https://github.com/robfig/cron/blob/v3.0.1/parser.go#L310-L312)), and its days of the week run from 1 to 6, since etcd-druid refuses 0 and the parser 7 ([spec.go](https://github.com/robfig/cron/blob/v3.0.1/spec.go#L40)); `*/7` selects Sunday.
 The quota is above zero ([restorer.go](https://github.com/gardener/etcd-backup-restore/blob/v0.41.2/pkg/types/restorer.go#L124-L126)), the compaction retention a number, or in periodic mode a duration ([etcd.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/embed/etcd.go#L939-L956)), and every duration one Go parses ([duration.go](https://github.com/kubernetes/apimachinery/blob/v0.37.1/pkg/apis/meta/v1/duration.go#L32-L42)): the operator decodes classes into Go types, and one it cannot decode fails the list its cache syncs from, so the Datastore controller fails to start and the manager with it ([controller.go](https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/internal/controller/controller.go#L363-L386)); `test/api/durations_test.go` holds every duration of the API to that.
 
-`DatastoreReady`'s reasons are in [`api/controlplane.md`](api/controlplane.md#conditions-and-their-reasons).
+`DatastoreReady`'s reasons are in [`api/controlplane.md`](api/controlplane.md#conditions-and-their-reasons), and how each shows in [`operations.md`](operations.md#what-breaks-and-how-it-shows).
 Every Secret the `Etcd` mounts must exist — the five of its certificate generation and, with a store, `<cp>-etcd-backup` — or the next start of a member fails; a terminating one still counts ([operations](operations.md#a-secret-the-etcd-mounts-is-gone)).
 etcd-druid's report is read with the checks Gardener makes before it counts an `Etcd` ready ([waiter.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/component/etcd/etcd/waiter.go#L49-L104)): no deletion timestamp, `observedGeneration` current, `AllMembersUpdated` True, `ready`.
 Gardener's waiter, a one-shot wait, also retries while there are `lastErrors`; Datastore does not read them, since etcd-druid clears them at the start of every spec reconcile, every 15 seconds, and sets them again on a failure ([etcdstatus.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/utils/etcdstatus.go#L45-L93)), so a persistent error would flip the condition, while a failed StatefulSet sync at a new generation shows anyway: etcd-druid returns before it stamps `observedGeneration` ([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcd/reconciler.go#L127-L144)).
+A persistent failure of etcd-druid's other objects (the client Service, the ConfigMap, the leases) at a generation it has observed shows only in `lastErrors` ([operations](operations.md#what-breaks-and-how-it-shows)).
 Then the StatefulSet itself, read from the API server, must mount the certificate generation, its controller must have observed its generation, and every replica must be updated and ready: etcd-druid syncs the StatefulSet, then computes `ready` from the StatefulSet its cache holds, and only then stamps `observedGeneration` ([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcd/reconciler.go#L102-L148), [reconcile_status.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcd/reconcile_status.go#L57-L80), [reconcile_complete.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcd/reconcile_complete.go#L33-L42)), so its report can call a generation switch ready before the member rolled.
 True once every check holds.
 
@@ -244,7 +245,7 @@ The ports are etcd-druid's defaults, which the `Etcd` leaves unset ([client](htt
 A policy under the name is found uncached too, as the `Etcd` is; one without a controller is adopted, and one another owner keeps is never written over ([reasons](api/controlplane.md#conditions-and-their-reasons)).
 A policy the API server refuses is retried with backoff.
 
-Identities ([short-lived-kubeconfigs](decisions/short-lived-kubeconfigs.md), [staged-credential-rotation](decisions/staged-credential-rotation.md)): the API server's kubelet client is `kube-apiserver-kubelet-client` in the group `lodia:kubelet-api-admins`; konnectivity-server runs as `system:konnectivity-server`, allowed to create TokenReviews and nothing else; the controller manager and scheduler use their standard identities; Lodia reaches the tenant as `lodia:operator`, bound to `cluster-admin` because it manages RBAC.
+Identities ([short-lived-kubeconfigs](decisions/short-lived-kubeconfigs.md), [staged-credential-rotation](decisions/staged-credential-rotation.md)): the API server's kubelet client is `kube-apiserver-kubelet-client` in the group `lodia:kubelet-api-admins`; konnectivity-server runs as `system:konnectivity-server`, allowed to create TokenReviews and to manage its Leases in `kube-system`; the controller manager and scheduler use their standard identities; Lodia reaches the tenant as `lodia:operator`, bound to `cluster-admin` because it manages RBAC.
 
 Phase 2 default-denies the namespace, egress included, and allows exactly the arrows above: the endpoint → API server and konnectivity-server, controller manager and scheduler and Lodia → the API Service, API server → etcd, Lodia → etcd's client port (wave 2, observability), etcd ↔ etcd, etcd-druid → etcd and its backup-restore sidecar, etcd and its compaction Jobs → object storage, and every pod → the cluster DNS; a platform that scrapes the components admits its scraper itself ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)).
 
@@ -275,7 +276,6 @@ flowchart LR
 ```
 
 Three ways to expose a control plane, `gateway` by default ([decision](decisions/api-exposure.md)): one address and one certificate story for a whole fleet, and nothing per tenant on the load balancer.
-On the node, the kubelet binds its node IP.
 
 ## Inside the tenant
 
@@ -309,7 +309,7 @@ A tenant that stops answering leaves a True `AddonsApplied` as it was.
 
 ## Lifecycle
 
-Built so far, for phase 1: the target within a minor, `Progressing` and `Ready`, as [`api/controlplane.md`](api/controlplane.md) defines them.
+Built so far, for phase 1: the target within a minor, `Progressing` and `Ready`, as [`api/controlplane.md`](api/controlplane.md#status) defines them.
 
 ### Upgrades and windows
 
@@ -335,7 +335,8 @@ Nodes are not Lodia's to stop; their owner scales them down or lets them sit (ku
 
 ### Credential rotation
 
-Credentials rotate in stages, and the routine rotations never touch a node ([decision](decisions/staged-credential-rotation.md)); the client CA's:
+Credentials rotate in stages, and the routine rotations never touch a node ([decision](decisions/staged-credential-rotation.md)).
+The client CA's rotation:
 
 ```mermaid
 stateDiagram-v2
@@ -355,9 +356,7 @@ Reads work throughout; writes stop for the copy.
 
 ### Deletion
 
-The Datastore controller holds the `ControlPlane`'s finalizer `lodia.io/datastore`.
-On deletion it deletes the `Etcd` and waits for etcd-druid to let it go, then reclaims the volumes, which etcd-druid keeps: of the PersistentVolumeClaims named `<cp>-etcd-<cp>-etcd-<n>`, which the StatefulSet attaches by that name ([stateful_pod_control.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/statefulset/stateful_pod_control.go#L381-L405)), those labelled with the `ControlPlane`'s UID are deleted when the class each records says `Delete`, and left when it says `Retain` or no longer exists.
-While the `Etcd` exists, each pass of the deletion first labels the claims no earlier pass has labelled, which can only be its own, since `VolumesExist` kept it from being created while anything else stood there; a claim that appears after the last such pass stays unlabelled and is kept.
+On deletion the Datastore controller deletes the `Etcd` and waits for etcd-druid to let it go, then reclaims the volumes, which etcd-druid keeps: of the PersistentVolumeClaims named `<cp>-etcd-<cp>-etcd-<n>`, which the StatefulSet attaches by that name ([stateful_pod_control.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/statefulset/stateful_pod_control.go#L381-L405)), those labelled with the `ControlPlane`'s UID ([which](decisions/dedicated-etcd-by-default.md)) are deleted when the class each records says `Delete`, and left when it says `Retain` or no longer exists.
 A claim of another `ControlPlane` is never touched, and neither is an `Etcd` `<cp>-etcd` this `ControlPlane` does not control, nor the claims its StatefulSet uses.
 Then the finalizer goes and the owner references garbage-collect the rest of the namespace objects.
 The final snapshot when a backup store exists comes with backups in phase 2; nothing deletes the snapshots of a deleted `ControlPlane` (`retention.afterDelete` is not built, [dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)).
@@ -366,7 +365,7 @@ The final snapshot when a backup store exists comes with backups in phase 2; not
 
 Built so far, for phase 1: the probe through the public endpoint.
 Every 10 seconds Health asks `https://<status.endpoint.apiServer>/readyz` without credentials, which the API server's authentication allows for its health paths, and verifies it against `<cp>-ca-bundle`.
-`Reachable` turns False after three probes in a row that fail, so one blip does not drop `Ready` ([reasons](api/controlplane.md#conditions-and-their-reasons)).
+`Reachable` is True on a 200 and turns False after three probes in a row that fail, so one blip does not drop `Ready` ([reasons](api/controlplane.md#conditions-and-their-reasons)).
 The rest of this section comes with phase 2.
 
 From inside the management cluster the public probe reaches a load balancer's or a Gateway's address through kube-proxy, which captures traffic to such an address on every node, so it proves the cloud load balancer only in `nodePort` mode ([serviceport.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/proxy/serviceport.go#L222-L235)); the end-to-end signal from the nodes' side is their leases.
@@ -459,11 +458,9 @@ Upgrading Lodia: [`operations.md`](operations.md#upgrading-lodia); etcd-druid's 
 
 ## Conventions
 
-- Decisions in [`decisions/`](decisions/) in the handbook format; a behaviour change updates this file and the decision in the same commit.
 - Names: `<cp>-<component>` for workloads and Services, `<cp>-<purpose>` for Secrets, `lodia.io/*` for labels, annotations and the finalizer.
 - Fields: a field named `<x>Ref` names an object its reader follows, by name in the namespace (`backupRef`, `secretRef`, `parentRef`); an identity record, `{name, uid}`, says which object a fact is about and is not followed, since the object may be gone: a `Backup`'s `status.source`, `status.datastore.restore.{backup, source}`.
 - Every reconcile is idempotent and uses server-side apply; no controller reads an object it did not render except through status, or by a name in `api/v1alpha1/names.go`.
-- Every claim about Kubernetes or a neighbour carries a source.
 
 ## Deliberately not offered — and owed
 
@@ -472,7 +469,7 @@ Upgrading Lodia: [`operations.md`](operations.md#upgrading-lodia); etcd-druid's 
 - No kubelet serving certificates from the cluster: the controller manager holds only the kubelet client signer, and starts no signer for `kubernetes.io/kubelet-serving` ([certificates.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kube-controller-manager/app/certificates.go#L74-L86)), so a kubelet with `serverTLSBootstrap: true` never gets one.
 - No legacy ServiceAccount token Secrets: lodia-signer holds the ServiceAccount key, and the controller manager's token controller does not start without one ([service_accounts.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kube-controller-manager/app/service_accounts.go#L49-L52)), so a Secret of type `kubernetes.io/service-account-token` stays empty.
 - No multi-cluster operator: one Lodia per management cluster; sharding across replicas is phase 4.
-- Owed before phase 2: the reclaim and retention defaults; measured resource defaults; whether konnectivity agents can share the passthrough listener on 443 ([`todo.md`](../todo.md), [roadmap](roadmap.md)).
+- What is owed: the [roadmap](roadmap.md) and [`todo.md`](../todo.md).
 
 ## Decisions
 
