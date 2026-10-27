@@ -36,8 +36,9 @@ const (
 	kubernetesPort   = 6443
 	konnectivityPort = 8132
 
-	shutdownDelay = 15 * time.Second
-	watchGrace    = 10 * time.Second
+	shutdownDelay     = 15 * time.Second
+	watchGrace        = 10 * time.Second
+	konnectivityGrace = 10 * time.Second
 	// requestTimeout is kube-apiserver's default --request-timeout
 	// (https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/server/config.go#L453).
 	requestTimeout = time.Minute
@@ -249,7 +250,7 @@ func (r rendering) apiServer() *appsv1.Deployment {
 			"authentication-audience":   "system:konnectivity-server",
 			"proxy-strategies":          "destHost,default",
 			"enable-lease-controller":   "true",
-			"graceful-shutdown-timeout": "10s",
+			"graceful-shutdown-timeout": konnectivityGrace.String(),
 			"keepalive-time":            "30s",
 		}, nil, nil),
 		Ports: []corev1.ContainerPort{{Name: "konnectivity", ContainerPort: konnectivityPort, Protocol: corev1.ProtocolTCP}},
@@ -308,7 +309,7 @@ func (r rendering) apiServer() *appsv1.Deployment {
 		InitContainers:                []corev1.Container{signer, konnectivity},
 		Containers:                    []corev1.Container{container},
 		Volumes:                       volumes,
-		TerminationGracePeriodSeconds: new(int64((shutdownDelay + requestTimeout + watchGrace + 5*time.Second) / time.Second)),
+		TerminationGracePeriodSeconds: new(int64((shutdownDelay + requestTimeout + konnectivityGrace + 5*time.Second) / time.Second)),
 	})
 	d.Spec.MinReadySeconds = 10
 	return d

@@ -302,14 +302,16 @@ sends new connections to it only while no other is ready
 the API server serves on for 15 seconds while that spreads, then shuts its
 HTTP server down, which sends each HTTP/2 client a GOAWAY that moves the
 requests the server has not taken to a new connection, and drains its
-requests and, for up to 10 seconds, its watches
+requests and, at the same time, for up to 10 seconds, its watches
 (`--shutdown-delay-duration=15s`,
 `--shutdown-watch-termination-grace-period=10s`,
-[server_run_options.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/server/options/server_run_options.go#L387-L399)),
-within a grace period of 90 seconds: the delay, a minute for a request under
-the default `--request-timeout`, the watches, and 5 seconds. Then
-konnectivity-server stops, gracefully within 10 seconds
-(`--graceful-shutdown-timeout`). `--shutdown-send-retry-after` stays off,
+[server_run_options.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/server/options/server_run_options.go#L387-L399),
+[genericapiserver.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/server/genericapiserver.go#L650-L714)).
+Then konnectivity-server stops, gracefully within 10 seconds
+(`--graceful-shutdown-timeout`). The grace period of 90 seconds holds it
+all: the delay, a minute for a request under the default
+`--request-timeout`, konnectivity-server's 10 seconds, and 5 seconds.
+`--shutdown-send-retry-after` stays off,
 and `apiServer.extraArgs` refuses it with the other shutdown flags: it would
 answer the requests that still arrive on open connections with `429` and
 `Retry-After`, which only a client that retries gets through
