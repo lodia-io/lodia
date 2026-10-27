@@ -147,9 +147,11 @@ const (
 
 // HighAvailability is the failure a control plane survives.
 type HighAvailability struct {
-	// FailureTolerance is Node (replicas on different nodes) or Zone
-	// (replicas in different zones). It cannot change once set, since etcd's
-	// volumes stay where they were spread; highAvailability can be removed.
+	// FailureTolerance is Node, replicas spread over nodes by
+	// kubernetes.io/hostname, or Zone, over nodes and over zones by
+	// topology.kubernetes.io/zone too. It cannot change once set, since
+	// etcd's volumes stay where they were spread; highAvailability can be
+	// removed.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="failureTolerance is immutable once set"
 	FailureTolerance FailureTolerance `json:"failureTolerance"`
@@ -1061,12 +1063,13 @@ type RestoreStatus struct {
 }
 
 // RolloutCount counts a component's replicas or an etcd's members: how many
-// there are, how many are ready, and how many run the current spec.
+// the spec asks for, how many of them are ready, and how many run the current
+// spec.
 type RolloutCount struct {
 	Count `json:",inline"`
 
-	// Updated run the current spec; absent while the writer does not report
-	// it.
+	// Updated run the current spec and are available; absent until the
+	// controllers that roll them out have observed that spec.
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	Updated *int32 `json:"updated,omitempty"`
@@ -1091,6 +1094,7 @@ type Count struct {
 	// +kubebuilder:validation:Minimum=0
 	Total int32 `json:"total"`
 
+	// Ready never exceeds Total.
 	// +required
 	// +kubebuilder:validation:Minimum=0
 	Ready int32 `json:"ready"`
