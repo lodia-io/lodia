@@ -47,10 +47,7 @@ built; the conditions and the tenant write lock come with their controllers.
 - Some invalid states are accepted and then reported: `Ready=False`,
   reason `DatastoreClassNotFound`. Documentation and the CLI show conditions
   first.
-- The CEL cost budget bounds rule complexity; rules are kept per field and
-  tested in envtest with a table of accepted and rejected manifests.
-- An API change that cannot be expressed in `strategy: None` conversion is a
-  new decision, not a quiet webhook.
+- The CEL cost budget bounds rule complexity; rules are kept per field.
 
 ## Code
 
