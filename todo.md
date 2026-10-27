@@ -255,17 +255,6 @@ is a decision — a decision is a file in `docs/decisions/`.
 - The operator's pods set no requests or limits until the operator is
   measured.
 
-## From the phase 1 gate (2026-10-26)
-
-- The e2e suite reaches a tenant's API through port-forwards to the API
-  server pod, one per connection (`forward` in `test/e2e/gate_test.go`),
-  only because a kind node's address is not routable from macOS, where the
-  suite also runs. Real clients, and kubeadm on a joining node, use the
-  tenant's endpoint, and Lodia never relies on a port-forward. Remove it
-  once the suite's tenant clients run where the endpoint is routable: on
-  Linux CI it already is; on macOS, from a container on kind's network, for
-  instance.
-
 ## From #29's review (2026-10-26)
 
 - The idle table leaves out a control plane pod that is not Running with
@@ -280,10 +269,6 @@ is a decision — a decision is a file in `docs/decisions/`.
   tenant's server version
   ([root.go](https://github.com/kubernetes-sigs/hydrophone/blob/v0.8.0/cmd/root.go#L205-L219));
   drop it.
-- `openTenant` builds its client with `clientcmd.NewDefaultClientConfig`,
-  which attaches the default loading rules (`$KUBECONFIG`,
-  `~/.kube/config`), though nothing reads or writes a kubeconfig through
-  them; `NewNonInteractiveClientConfig` attaches none.
 - The local serial run's one failure needs no chasing: the pod generation
   spec's 20 s wait for `observedGeneration`
   ([pods.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/test/e2e/node/pods.go#L531))

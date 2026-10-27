@@ -123,7 +123,7 @@ func TestPhase1Gate(t *testing.T) {
 			return ctx
 		}).
 		Assess("anonymous requests reach the tenant's health paths and cluster-info, nothing else", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			access = openTenant(ctx, t, k8s, cfg.Client().RESTConfig(), key)
+			access = openTenant(ctx, t, k8s, key)
 			anonymous, err := rest.HTTPClientFor(rest.AnonymousClientConfig(access.cfg))
 			if err != nil {
 				t.Fatal(err)
@@ -279,8 +279,6 @@ func TestPhase1Gate(t *testing.T) {
 				return nil
 			})
 			time.Sleep(5 * time.Second)
-			access.stop()
-			access = openTenant(ctx, t, k8s, cfg.Client().RESTConfig(), key)
 
 			var outsideAfter, insideAfter loopCounts
 			var outsideLog, insideLog string
@@ -346,7 +344,7 @@ func TestPhase1Gate(t *testing.T) {
 			return ctx
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			closeTenant(ctx, t, k8s, access, key, gateClass)
+			closeTenant(ctx, t, k8s, key, gateClass)
 			return ctx
 		}).
 		Feature()
@@ -380,11 +378,8 @@ func createTenant(ctx context.Context, t *testing.T, k8s client.Client, key clie
 	return version
 }
 
-func closeTenant(ctx context.Context, t *testing.T, k8s client.Client, access *tenantAccess, key client.ObjectKey, class string) {
+func closeTenant(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey, class string) {
 	t.Helper()
-	if access != nil {
-		access.stop()
-	}
 	if k8s == nil {
 		return
 	}
@@ -413,10 +408,9 @@ type tenantAccess struct {
 	kubeconfig clientcmdapi.Config
 	client     client.Client
 	resources  *resources.Resources
-	stop       func()
 }
 
-func openTenant(ctx context.Context, t *testing.T, k8s client.Client, management *rest.Config, key client.ObjectKey) *tenantAccess {
+func openTenant(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey) *tenantAccess {
 	t.Helper()
 	secret := &corev1.Secret{}
 	if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: lodiav1alpha1.AdminKubeconfigSecret.Name(key.Name)}, secret); err != nil {
@@ -426,20 +420,7 @@ func openTenant(ctx context.Context, t *testing.T, k8s client.Client, management
 	if err != nil {
 		t.Fatal(err)
 	}
-	pod := apiServerPod(ctx, t, k8s, key)
-	var port int32
-	for _, container := range pod.Spec.Containers {
-		for _, p := range container.Ports {
-			if p.Name == "https" {
-				port = p.ContainerPort
-			}
-		}
-	}
-	address, stop := forward(t, management, pod, port)
-	for _, cluster := range kubeconfig.Clusters {
-		cluster.Server = "https://" + address
-	}
-	cfg, err := clientcmd.NewDefaultClientConfig(*kubeconfig, nil).ClientConfig()
+	cfg, err := clientcmd.NewNonInteractiveClientConfig(*kubeconfig, kubeconfig.CurrentContext, nil, nil).ClientConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -451,8 +432,8 @@ func openTenant(ctx context.Context, t *testing.T, k8s client.Client, management
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("the tenant's API server %s is reached through a port-forward to pod %s, as %s", cfg.Host, pod.Name, secret.Name)
-	return &tenantAccess{cfg: cfg, kubeconfig: *kubeconfig, client: c, resources: r, stop: stop}
+	t.Logf("the tenant's API server %s is reached through status.endpoint, as %s", cfg.Host, secret.Name)
+	return &tenantAccess{cfg: cfg, kubeconfig: *kubeconfig, client: c, resources: r}
 }
 
 func apiServerPod(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey) *corev1.Pod {
@@ -472,7 +453,6 @@ func apiServerPod(ctx context.Context, t *testing.T, k8s client.Client, key clie
 	return nil
 }
 
-// @todo: stands in for the tenant's endpoint, unreachable from macOS; remove with todo.md's port-forward item.
 func forward(t *testing.T, cfg *rest.Config, pod *corev1.Pod, port int32) (string, func()) {
 	t.Helper()
 	transport, upgrader, err := spdy.RoundTripperFor(cfg)
