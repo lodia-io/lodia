@@ -1315,12 +1315,21 @@ func TestDatastoreReadyIsQuorum(t *testing.T) {
 	writeGeneration(t, ns, cp, 1)
 	waitEtcd(t, ns, cp, nil)
 	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd reported-etcd, observedGeneration 0")
-	setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) { s.Ready, s.ReadyReplicas, s.Members = new(false), 0, nil })
+	setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) { s.Ready, s.ReadyReplicas = new(false), 0 })
 	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "Etcd reported-etcd has 0 of 1 members ready")
+	if etcd := getEtcd(t, ns, cp); metav1.HasAnnotation(etcd.ObjectMeta, lodiav1alpha1.EtcdFormedAnnotation) {
+		t.Errorf("an etcd that never had a ready member is annotated %v", etcd.Annotations)
+	}
 
 	runStatefulSet(t, ns, cp, 1)
 	setEtcdStatus(t, ns, cp, nil)
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "Etcd reported-etcd has quorum, 1 of 1 members ready")
+	waitEtcd(t, ns, cp, func(etcd *druidv1alpha1.Etcd) error {
+		if !metav1.HasAnnotation(etcd.ObjectMeta, lodiav1alpha1.EtcdFormedAnnotation) {
+			return fmt.Errorf("an etcd with a ready member is annotated %v", etcd.Annotations)
+		}
+		return nil
+	})
 	if got, want := ptr.Deref(getControlPlane(t, ns, cp).Status.Datastore, lodiav1alpha1.DatastoreStatus{}), (lodiav1alpha1.DatastoreStatus{
 		Endpoints: []lodiav1alpha1.HostPort{{Host: "reported-etcd-client." + ns + ".svc", Port: 2379}},
 		Class:     &lodiav1alpha1.DatastoreClassStatus{Name: "reported", Generation: 1},
@@ -1424,9 +1433,7 @@ func TestThreeMembersWithHighAvailability(t *testing.T) {
 	setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) {
 		s.Replicas, s.ReadyReplicas, s.AvailableReplicas, s.CurrentReplicas, s.UpdatedReplicas = 3, 3, 3, 3, 3
 	})
-	setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) {
-		s.Replicas, s.CurrentReplicas, s.ReadyReplicas, s.Ready, s.Members = 3, 3, 0, new(false), nil
-	})
+	quorate(0)
 	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "Etcd ha-etcd has 0 of 3 members ready")
 	quorate(3)
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "Etcd ha-etcd has quorum, 3 of 3 members ready")

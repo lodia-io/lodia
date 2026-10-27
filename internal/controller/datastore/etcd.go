@@ -75,6 +75,9 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 		metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, allowUnhealthyPodEviction, "")
 		etcd.Spec.SchedulingConstraints.TopologySpreadConstraints = spread(ha.FailureTolerance, memberLabels(etcd))
 	}
+	if current != nil && (metav1.HasAnnotation(current.ObjectMeta, lodiav1alpha1.EtcdFormedAnnotation) || current.Status.ReadyReplicas > 0) {
+		metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, lodiav1alpha1.EtcdFormedAnnotation, "true")
+	}
 	if class == nil {
 		keep(etcd, current)
 		return etcd
@@ -241,8 +244,8 @@ func (r *Reconciler) apply(ctx context.Context, etcd *druidv1alpha1.Etcd) (*drui
 
 // readiness reports quorum (docs/README.md, A tenant namespace), which one
 // ready member shows, since a member is ready only while it answers a
-// linearizable read. Without one, an etcd that etcd-druid has seen members
-// join has lost it, and any other is on its way.
+// linearizable read. Without one, an etcd marked formed has lost it, and any
+// other is on its way.
 func readiness(etcd *druidv1alpha1.Etcd, missing []string) metav1.Condition {
 	not := func(message string) metav1.Condition {
 		return newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, message)
@@ -261,7 +264,7 @@ func readiness(etcd *druidv1alpha1.Etcd, missing []string) metav1.Condition {
 			fmt.Sprintf("Etcd %s has quorum, %d of %d members ready, while etcd-druid scales it", etcd.Name, ready, etcd.Spec.Replicas))
 	case ready > 0:
 		return newCondition(metav1.ConditionTrue, lodiav1alpha1.ReasonReady, fmt.Sprintf("Etcd %s has quorum, %d of %d members ready", etcd.Name, ready, etcd.Spec.Replicas))
-	case len(etcd.Status.Members) > 0:
+	case metav1.HasAnnotation(etcd.ObjectMeta, lodiav1alpha1.EtcdFormedAnnotation):
 		return newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonQuorumLost, fmt.Sprintf("Etcd %s has %d of %d members ready", etcd.Name, ready, etcd.Spec.Replicas))
 	case observed != etcd.Generation:
 		return not(fmt.Sprintf("etcd-druid has not observed generation %d of Etcd %s, observedGeneration %d", etcd.Generation, etcd.Name, observed))
