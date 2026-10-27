@@ -15,7 +15,7 @@ watch `ControlPlane`:
 |---|---|---|---|
 | **PKI** | CAs, leaf certificates, kubeconfigs, ServiceAccount keys, encryption keys; renewal and staged rotation; the tenant's bindings for Lodia, the admin group and the kubelet client | `CertificatesReady`, `AccessReady`; `CAValidityAcceptable` outside `Ready` | `status.endpoint`; `APIServerReady` for the bindings |
 | **Datastore** | the tenant's etcd (dedicated through etcd-druid, with its NetworkPolicy, or a user and prefix in a shared store), backups, defragmentation; the only controller that talks to etcd | `DatastoreReady`; `BackupReady` outside `Ready` | nothing |
-| **Workloads** | Deployments, Services, PodDisruptionBudgets, NetworkPolicies, ConfigMaps, Gateway routes in the tenant namespace | `APIServerReady` | `CertificatesReady`, `DatastoreReady` |
+| **Workloads** | Deployments, Services, PodDisruptionBudgets, NetworkPolicies, ConfigMaps, Gateway routes in the tenant namespace | `APIServerReady` | `CertificatesReady`, `DatastoreReady`; `AddonsApplied` before it starts a restored `ControlPlane`'s controller manager |
 | **Tenant** | objects inside the tenant cluster: kubeadm bootstrap objects, kube-proxy, CoreDNS, konnectivity-agent, apiserver-proxy, RBAC | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
 | **Health** | probes the API from outside and inside, samples the components' leader leases and the node leases; holds the controller manager's leader lease inside the tenant while most nodes cannot reach the API ([controller-manager-hold](controller-manager-hold.md)) | `Reachable`, `ControllersLeading`; `ControllerManagerHeld` outside `Ready` | `AccessReady` |
 | **Lifecycle** | the pace: which version to run now, whether to hibernate, which rotation stage is active, when a tenant's maintenance window is open and how many tenants roll at once | `status.target` and `Progressing` | the others' conditions |
@@ -85,9 +85,14 @@ Rules:
   and HyperShift calls etcd available at quorum
   ([hostedcontrolplane_controller.go](https://github.com/openshift/hypershift/blob/v0.1.86/control-plane-operator/controllers/hostedcontrolplane/hostedcontrolplane_controller.go#L2648-L2654)).
   A rollout that surges never stops serving, so `Ready` that dropped for it
-  would report an outage that is not there. Built with HA in phase 2's wave
-  1b; until then `APIServerReady` and `DatastoreReady` want every replica
-  updated and ready.
+  would report an outage that is not there. A component Lodia runs at 0 on
+  purpose, the controller manager of a restored `ControlPlane` before its
+  release, counts as available, and the message says it is held: `AccessReady`
+  waits on `APIServerReady`, Tenant on `AccessReady`, and the release on
+  Tenant's `AddonsApplied`
+  ([restore-replaces-the-source](restore-replaces-the-source.md)). Built with
+  HA in phase 2's wave 1b; until then `APIServerReady` and `DatastoreReady`
+  want every replica updated and ready.
 - `Ready` on the `ControlPlane` is computed by Lifecycle from the others:
   `CertificatesReady ∧ DatastoreReady ∧ APIServerReady ∧ AccessReady ∧ AddonsApplied ∧ Reachable ∧ ControllersLeading`,
   and `Hibernated` when asleep; `ControllersLeading` joins with wave 1b.

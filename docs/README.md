@@ -64,7 +64,7 @@ in [`api/examples/`](api/examples/).
 |---|---|---|---|
 | PKI | Secrets with certificates, keys and kubeconfigs; the tenant's bindings for Lodia, the admin group and the kubelet client | `CertificatesReady`, `AccessReady`; `CAValidityAcceptable` outside `Ready` | `status.endpoint`; `APIServerReady` for the bindings |
 | Datastore | the `Etcd` of a dedicated etcd and its NetworkPolicy — built, for one member — or a user and role in a shared store; backups and defragmentation | `DatastoreReady`; `BackupReady` outside `Ready` from wave 1b | a complete generation of PKI's etcd certificates |
-| Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady` | `status.target`, `status.datastore`, `CertificatesReady`, `DatastoreReady` |
+| Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady` | `status.target`, `status.datastore`, `CertificatesReady`, `DatastoreReady`; `AddonsApplied` before it starts a restored `ControlPlane`'s controller manager, from wave 1b |
 | Tenant | objects inside the tenant cluster, with an inventory | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
 | Health | status, and from phase 2's wave 2 the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable`, and `ControllersLeading` from wave 1b; `ControllerManagerHeld` outside `Ready` from wave 2 | `status.endpoint` and the CA bundle; `AccessReady` from wave 1b |
 | Lifecycle | `status.target`, `Progressing`, `Ready`; from phase 2's wave 2 `status.kubernetes`, `status.maintenance` and the pre-upgrade `Backup` | `Progressing` | the others |
@@ -818,7 +818,8 @@ prefix of their own that nothing writes again, with the source's encryption
 keys kept beside it in the management cluster, never in the bucket. A new
 `ControlPlane` with `restoreFrom` starts its etcd from that copy and replaces
 the source: it serves the data from the start, with new CAs and keys, and
-runs its controller manager once it is released and the source is gone
+runs its controller manager once it is released, the source is gone and
+Tenant has applied the cluster's objects, `AddonsApplied`
 ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)).
 A clone beside a live source is for tools that restore through the API.
 Restoring in place over a running cluster is a documented runbook, not an

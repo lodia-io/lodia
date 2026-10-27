@@ -23,14 +23,24 @@ Backup's source UID exists in the namespace. `release` defaults to `Held`,
 moves only from `Held` to `Released` (CEL), and may be `Released` when the
 `ControlPlane` is created, for a source that is already gone. Until then
 Workloads renders the controller manager at 0 replicas in the Split layout,
-and its pod without that container in the Compact one, and says so; the API
-server serves the restored data, and the scheduler runs, harmless without
-nodes. Health reports `ControllersLeading=False`, reason `AwaitingRelease`,
-its message listing what acts outside the cluster once the controllers run:
-LoadBalancer Services, PersistentVolumes with the `Delete` policy, pending
+and its pod without that container in the Compact one; `APIServerReady`
+counts a component Lodia runs at 0 on purpose as available, its message
+saying the controller manager is held, so `AccessReady`, Tenant and Health,
+which wait on it, go on. The API server serves the restored data, and the
+scheduler runs, harmless without nodes. Health reports
+`ControllersLeading=False`, reason `AwaitingRelease`, its message listing
+what acts outside the cluster once the controllers run: LoadBalancer
+Services, PersistentVolumes with the `Delete` policy, pending
 PersistentVolumeClaims, webhooks that call a URL or fail closed, APIServices
-and CronJobs; or `SourceExists` while the source does. At the release Tenant
-applies the cluster's objects first, then the controller manager starts.
+and CronJobs; or `SourceExists` while the source does.
+
+**The release goes through published conditions.** Once `release` is
+`Released` and no `ControlPlane` with the source's UID exists, Workloads
+scales the controller manager up only when `AddonsApplied` is True for that
+generation: Tenant applies the cluster's objects first, and no controller
+calls another. Were the held controller manager unavailable instead,
+`AccessReady` would wait on `APIServerReady`, Tenant on `AccessReady`, and
+the release on Tenant: a deadlock.
 
 **The seal.** Before it copies, the backup reconciler of the Datastore
 controller puts the key `/lodia.io/backups/<Backup UID>` (`BackupSealKey`)
