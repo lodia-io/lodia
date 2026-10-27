@@ -1,7 +1,7 @@
 # Credentials rotate in stages, and the routine ones never touch a node: the trust anchor is split from the client CA, and ServiceAccount tokens are signed by a sidecar
 
 Decided 2026-10-25.
-`lodia-signer` is built; the PKI controller issues the CA per purpose, the leaves, the kubeconfigs, the ServiceAccount key and the encryption configuration, renews leaves at two thirds and the etcd set as generations; the Workloads controller and the rotation operations are not built.
+`lodia-signer` is built, and Workloads runs it beside the API server; the PKI controller issues the CA per purpose, the leaves, the kubeconfigs, the ServiceAccount key and the encryption configuration, renews leaves at two thirds and the etcd set as generations; the rotation operations are not built.
 
 ## Decision
 
