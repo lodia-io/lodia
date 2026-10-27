@@ -18,9 +18,8 @@ signs, attests and publishes the images and the chart is not.
   [artifact attestations](https://docs.github.com/en/actions/concepts/security/artifact-attestations)).
 - The Helm chart is published to `oci://ghcr.io/lodia-io/charts/lodia`
   next to the images, and references images by digest. The CRDs are templates
-  in the chart, installed and upgraded with it, behind `crds.enabled`
-  (default `true`) and kept on uninstall through `crds.keep` (default `true`,
-  `helm.sh/resource-policy: keep`), the pattern cert-manager uses because
+  in the chart, installed and upgraded with it and kept on uninstall
+  ([values](../README.md#installation)), the pattern cert-manager uses because
   Helm's `crds/` directory is never upgraded
   ([Helm CRD best practices](https://helm.sh/docs/chart_best_practices/custom_resource_definitions/),
   [cert-manager chart](https://cert-manager.io/docs/installation/helm/)).
@@ -121,9 +120,8 @@ signs, attests and publishes the images and the chart is not.
 
 ## Code
 
-- `charts/lodia` — the chart: the CRDs as templates of the ones in
-  `api/crds`, which `make generate` copies into `files/crds`, behind
-  `crds.enabled` and `crds.keep`; the images as `repository@digest` when a
-  digest is set, else `repository:tag`, the tag defaulting to `appVersion`.
+- `charts/lodia` — the chart ([values](../README.md#installation)): the
+  CRDs as templates of the ones in `api/crds`, which `make generate` copies
+  into `files/crds`.
   `make verify` lints and renders it with tags and with digests.
 - `.ko.yaml` — the base image, pinned by digest.
