@@ -1,9 +1,7 @@
 # Upgrades follow the version skew policy step by step; changes Lodia initiates roll in each tenant's maintenance window, a bounded number of tenants at a time
 
-Decided 2026-10-25; the model of the upgrade, the operator revision, the
-fleet and patch updates decided 2026-10-26. Not built: phase 2's wave 2,
-upgrades, builds it ([roadmap](../roadmap.md)); its contracts are in
-`api/v1alpha1`. Until then Lifecycle moves `status.target.version` within a
+Decided 2026-10-25. Not built: phase 2's wave 2,
+upgrades, builds it ([roadmap](../roadmap.md)). Until then Lifecycle moves `status.target.version` within a
 minor only, and every renderer renders with the running operator at once.
 
 ## Decision
@@ -20,21 +18,12 @@ the newest patch of each minor between, as the version table names it.
   `Compact` layout runs all three in one pod at `target.version`.
 - Tenant renders every object inside the tenant at the oldest of the three
   components' versions.
-- Each reports what it rolled out in full: Workloads
-  `status.components.<component>.version`, once every replica of the
-  component's template is updated and ready; Tenant `status.addons.version`,
-  once its render is applied whole.
-- `status.kubernetes.version` is the oldest of those four, absent until all
-  of them report. It moves only once the last step is done, and it is the
+- Each reports what it rolled out in full, in `status.components` and
+  `status.addons` ([status](../api/controlplane.md#status)).
+- `status.kubernetes.version` is the oldest of those four. It moves only once the last step is done, and it is the
   version Cluster API reads as the control plane's: the minimum, "more
   specifically the API server version"
   ([control-plane.md](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/docs/book/src/developer/providers/contracts/control-plane.md#L455-L457)).
-- `status.kubernetes.upgrade` is `{step, startedAt}` from the moment a
-  version change passes its preflight until every part runs
-  `target.version`; `step` is `Backup` while a minor step's pre-upgrade
-  `Backup` is taken, before the target moves, then the first of
-  `APIServer`, `ControllerManager`, `Scheduler` and `Addons` that is not at
-  the target yet.
 
 **A minor step.**
 
@@ -68,12 +57,9 @@ the pre-upgrade `Backup` into a new `ControlPlane` at the old version is
 the documented rollback, and it replaces the cluster
 ([restore-replaces-the-source](restore-replaces-the-source.md)).
 
-**Patch updates.** Lodia never writes `spec`. With
-`maintenance.autoUpdate.kubernetesPatch`, the target patch is the newer of
-`spec.version` and the version table's `latest` for its minor, moved through
-`target.version` in the window; turning it off returns the target to
-`spec.version` at once, a patch downgrade included; a new `ControlPlane`
-with it starts at `latest`. `spec.version` takes any patch of a minor in the
+**Patch updates.** Lodia never writes `spec`:
+`maintenance.autoUpdate.kubernetesPatch` moves `target.version`
+([the field](../api/controlplane.md#spec)). `spec.version` takes any patch of a minor in the
 table: `latest` is what updates move to, not an allowlist.
 
 **End of support.** Each minor in the version table has an end-of-support
@@ -91,15 +77,11 @@ table, the registry, the default resources, the images of `lodia-signer`
 and `lodia-tunnel`, and etcd-druid's version. Revisions are compared for
 equality only, so a rollback of the operator is one more revision.
 Workloads, Tenant and the Datastore controller render with the running
-revision only while `status.target.operatorRevision` equals it. Until it
-does, each holds every write but three: an object that is missing is
-created, the `Etcd` takes a new generation of the etcd certificates, and a
-deletion goes on; and each reports a newer generation as `WaitingForTarget`.
+revision only while `status.target.operatorRevision` equals it
+([what they hold until then](../api/controlplane.md#status)).
 Each stamps the revision on the objects it renders, in the annotation
 `lodia.io/operator-revision`, never in a pod template, so a revision that
-changes nothing rolls nothing, and reports it in
-`status.components.<component>.operatorRevision`,
-`status.addons.operatorRevision` and `status.datastore.operatorRevision`.
+changes nothing rolls nothing.
 etcd-druid's automatic spec reconcile is off, and the Datastore controller
 asks for each reconcile ([dedicated-etcd-by-default](dedicated-etcd-by-default.md)).
 Lifecycle grants the running revision when a `ControlPlane` is created, when
@@ -120,15 +102,12 @@ contracts.
 | a certificate renewal that needs a restart | in the window, or now if the certificate expires before the next window |
 | a credential rotation the owner started | now; the stages wait for the owner |
 
-**Windows.** `spec.maintenance.window` is daily, from `begin` up to `end` in
-`timeZone`, and crosses midnight when `end` is before `begin`; the schema
-refuses a `begin` equal to `end`. The zone database is embedded in the
-operator (`time/tzdata`), and a zone it lacks makes `Progressing`
-`TimeZoneUnsupported`. A window inside an hour that daylight saving skips
-does not open that day; one inside a repeated hour opens once. Without a
+**Windows.** `spec.maintenance.window`
+([the field](../api/controlplane.md#spec)) is read with the zone database
+embedded in the operator (`time/tzdata`); a window inside a repeated hour
+opens once. Without a
 window Lodia-initiated changes roll at any time, still within the fleet
-limit. A rollout started in the window completes after it ends, and none
-starts after the end; `status.target.scheduledFor` says when one can.
+limit.
 
 **The fleet.** Across all tenants, at most `fleet.maxConcurrentRollouts`
 (operator configuration, 5 by default) roll a Lodia-initiated change at
@@ -143,9 +122,8 @@ new revision, can come later without a change of contract.
 
 **Maintenance on request.** The annotation
 `lodia.io/maintain-requested-at: <token>` on a `ControlPlane` grants its
-pending maintenance now, outside the window, taking no slot;
-`status.maintenance.lastHandled` records the token handled, and the same
-token again does nothing. Lodia never removes the annotation, so a GitOps
+pending maintenance now ([the field](../api/controlplane.md#spec)). Lodia
+never removes the annotation, so a GitOps
 tool that keeps it does not fight Lodia; it works like the
 `kubectl.kubernetes.io/restartedAt` that `kubectl rollout restart` writes
 ([objectrestarter.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/kubectl/pkg/polymorphichelpers/objectrestarter.go#L41)).
@@ -220,9 +198,6 @@ it is the one home of the reason a target lags `spec`.
 - In the `Compact` layout steps 3 and 4 are one rollout of the single pod:
   the API server, controller manager and scheduler change version together,
   which the skew policy allows ([compact-layout](compact-layout.md)).
-- An upgrade does not start while Health holds the controller manager
-  ([controller-manager-hold](controller-manager-hold.md)); one under way
-  goes on.
 - `status.target` is part of the API users read: `target.version`,
   `target.operatorRevision` and `target.scheduledFor`, with `Progressing`.
 - An operator release note states which tenants will roll (all with a changed
