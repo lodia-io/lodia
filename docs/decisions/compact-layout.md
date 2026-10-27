@@ -39,7 +39,7 @@ Not built.
 
 - In `Compact`, a restart-only change (audit policy, egress or admission configuration, the etcd CA, the konnectivity certificate, the scheduler configuration) restarts every component of that control plane; renewals of reloaded certificates still restart nothing.
 - A single replica means the API is down for the seconds a pod restart or an upgrade takes; the maintenance window matters more than in `Split`.
-- Moving a tenant from `Compact` to `Split` is a new `ControlPlane` restored from a `Backup` (dedicated), or a migration (shared), documented in [operations](../operations.md).
+- Moving a tenant from `Compact` to `Split` is a new `ControlPlane` restored from a `Backup` (dedicated), or a migration (shared); its runbook is owed (`todo.md`).
 - The phase 3 gate runs a `Compact` tenant ([roadmap](../roadmap.md)).
 
 ## Code
