@@ -125,7 +125,7 @@ flowchart TB
     kcm["Deployment kube-controller-manager ×2"]
     sch["Deployment kube-scheduler ×2"]
     etcd[("etcd ×3 + backup-restore<br/>PVC · PDB · own CA")]
-    svc["Service prod-eu-kube-apiserver<br/>of the endpoint's type<br/>:443 :6443 → kube-apiserver<br/>:8132 → konnectivity-server"]
+    svc["Service prod-eu-kube-apiserver<br/>of the endpoint's type<br/>:443 :6443 → kube-apiserver<br/>:8132 → konnectivity-server<br/>:6444 → the tunnel sidecar (gateway)"]
     np["NetworkPolicy per component"]
     kcm --> svc --> a
     sch --> svc
@@ -603,22 +603,24 @@ metrics scrapers → the health ports, and every pod → the cluster DNS.
 ```mermaid
 flowchart LR
   subgraph mgmt["management cluster"]
-    gw["Gateway :443<br/>TLS passthrough by SNI<br/>+ one terminating listener for tunnels"]
+    gw["Gateway :443<br/>TLS passthrough by SNI"]
     a["kube-apiserver :6443"]
     k["konnectivity-server :8132"]
+    t["lodia-tunnel serve :6444<br/>ends the outer TLS"]
     gw -- "api.<cp>" --> a
     gw -- "konnectivity.<cp>" --> k
-    gw -- "tunnel.<cp>, outer TLS removed" --> a
+    gw -- "tunnel.<cp>" --> t
+    t -- "127.0.0.1:6443" --> a
   end
   subgraph node["a tenant node, anywhere"]
     kubelet
     agent["konnectivity-agent"]
-    proxy["apiserver-proxy<br/>listens on 172.20.0.1:6443 (loopback)"]
-    pods["pods → 10.96.0.1:443<br/>kube-proxy → 172.20.0.1:6443"]
+    proxy["apiserver-proxy<br/>listens on 240.0.0.1:6443 (loopback)"]
+    pods["pods → 10.96.0.1:443<br/>kube-proxy → 240.0.0.1:6443"]
   end
   kubelet -- ":443" --> gw
   agent -- ":443, keeps the tunnel open" --> gw
-  pods --> proxy -- "TLS-in-TLS :443" --> gw
+  pods --> proxy -- "TLS-in-TLS :443, client certificate" --> gw
   a -. "logs, exec, webhooks, through the tunnel" .-> agent
 ```
 
@@ -627,7 +629,7 @@ Three ways to expose a control plane
 
 | `spec.endpoint` | what Lodia creates | endpoint | in-cluster access |
 |---|---|---|---|
-| `gateway` | two TLS passthrough routes (API, konnectivity) on the platform's Gateway, and a `ListenerSet` with a terminating listener and route for the tunnel | `https://api.<cp>:443` | the `kubernetes` Service's endpoint is the API server's advertise address, `172.20.0.1:6443`; the apiserver-proxy DaemonSet owns that address on every node's loopback and wraps each connection in an outer TLS session with the tunnel's SNI, which the Gateway terminates and forwards to the API server untouched |
+| `gateway` | three TLS passthrough routes (API, konnectivity, tunnel) on the platform's Gateway | `https://api.<cp>:443` | the `kubernetes` Service's endpoint is the API server's advertise address, `240.0.0.1:6443` by default; the apiserver-proxy DaemonSet owns that address on every node's loopback and wraps each connection in an outer TLS session with the tunnel's SNI and client certificate, which the Gateway passes through to a sidecar of every API server pod that ends it and forwards the inner stream to the API server untouched |
 | `loadBalancer` | one Service of type LoadBalancer with ports 443 and 6443 (API) and 8132 (konnectivity) | the LB address | the `kubernetes` Service's endpoint is the LB address and 6443; no proxy |
 | `nodePort` | one Service of type NodePort | a management node address and port | the `kubernetes` Service's endpoint is the node's address and the node port of 6443; no proxy |
 
@@ -668,7 +670,7 @@ The kubeadm objects use kubeadm's own names, so `kubeadm join` and
 | CoreDNS: ServiceAccount, ClusterRole and binding, ConfigMap, Deployment, Service `kube-dns` at the tenth service address | cluster DNS, the version kubeadm pins for the minor |
 | konnectivity-agent: ServiceAccount, DaemonSet, Role to list and watch server leases in `kube-system` | the tunnel to every API server replica: agents count the servers from their leases, dial only for one they lack, and send a keepalive after 30 seconds without traffic |
 | Endpoints and EndpointSlice `default/kubernetes` (`status.endpoint.inCluster`, port `https`; the Endpoints labelled `endpointslice.kubernetes.io/skip-mirror: "true"`, the slice `kubernetes.io/service-name: kubernetes` and `endpointslice.kubernetes.io/managed-by: lodia.io`) | the `kubernetes` Service's endpoint, which the API server leaves alone (`--endpoint-reconciler-type=none`) |
-| `apiserver-proxy` DaemonSet | in-cluster API access in `gateway` mode ([api-exposure](decisions/api-exposure.md)) |
+| `apiserver-proxy` DaemonSet (`lodia-tunnel` in its `addr` and `proxy` modes), and the Secret with its client certificate, from `<cp>-tunnel-client` | in-cluster API access in `gateway` mode ([api-exposure](decisions/api-exposure.md)); phase 2's wave 1b, Gateway |
 | ClusterRoleBinding for `system:konnectivity-server` (→ `system:auth-delegator`) with its lease Role; the bindings of `lodia:operator` and `lodia:cluster-admins` (→ `cluster-admin`) and `lodia:kubelet-api-admins` (→ `system:kubelet-api-admin`) are PKI's, since nothing can apply them before they exist (`AccessReady`) | the identities above |
 | `ValidatingAdmissionPolicy` and binding `lodia-write-lock`, only while a lock is requested | refusing writes during a migration, without a webhook |
 | ConfigMap `kube-system/lodia-inventory` | what to prune next time |
@@ -880,7 +882,7 @@ the control plane.
   decides who creates clusters and who reads their Secrets. Lodia's
   ClusterRoles, one per controller, are limited to its kinds, the workload
   kinds it renders, Secrets and ConfigMaps, the management nodes, Gateway API
-  routes and listener sets, etcd-druid's `Etcd`, the StatefulSet etcd-druid
+  `TLSRoute`s and the Gateways they attach to, etcd-druid's `Etcd`, the StatefulSet etcd-druid
   runs for it and the claims of that StatefulSet, and `get` on the
   namespaces, whose UIDs go into the backup prefix; where they come from is
   below.
@@ -944,7 +946,7 @@ Prerequisites on the management cluster:
 | Kubernetes ≥ 1.35 | a maintained minor that has the CEL libraries (semver, 1.34) and validation ratcheting (GA 1.33) the schema uses |
 | a StorageClass | etcd volumes; local or network, with low fsync latency |
 | etcd-druid | dedicated etcd (installed by the chart as a dependency, or separately) |
-| Gateway API ≥ 1.5 (where `TLSRoute` and `ListenerSet` became GA) and an implementation reporting `TLSRoute`, `TLSRouteModeTerminate` and `TLSRouteModeMixed` | `endpoint.gateway` only, from phase 2; the terminate modes only for in-cluster access through the tunnel |
+| Gateway API ≥ 1.5 (where `TLSRoute` became GA) and an implementation that supports `TLSRoute` in passthrough, its core feature | `endpoint.gateway` only, from phase 2's wave 1b ([api-exposure](decisions/api-exposure.md)) |
 | an S3-compatible bucket and credentials | backups, strongly recommended |
 | a metrics stack | optional: the chart ships ServiceMonitors, a dashboard and alert rules from phase 2 |
 
@@ -1002,7 +1004,9 @@ The phase 1 chart installs:
 (`ghcr.io/lodia-io/lodia` and `ghcr.io/lodia-io/lodia-signer`), a `digest`
 and a `tag`, which defaults to the chart's `appVersion`: with a digest the
 chart renders `repository@digest`, otherwise `repository:tag`. The signer's
-image reaches the operator as `--signer-image`.
+image reaches the operator as `--signer-image`; from phase 2's wave 1b,
+Gateway, `tunnelImage` (`ghcr.io/lodia-io/lodia-tunnel`) brings
+`lodia-tunnel`'s as `--tunnel-image`.
 
 Then a `DatastoreClass` with the bucket, and the first `ControlPlane`. Later
 phases bring the rest: the ServiceMonitors, the dashboard and the alert rules

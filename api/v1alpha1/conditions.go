@@ -79,6 +79,10 @@ const (
 	ReasonUnavailable                     = "Unavailable"
 	ReasonProgressDeadlineExceeded        = "ProgressDeadlineExceeded"
 	ReasonLoadBalancerHostnameUnsupported = "LoadBalancerHostnameUnsupported"
+	ReasonGatewayNotFound                 = "GatewayNotFound"
+	ReasonGatewayUnsupported              = "GatewayUnsupported"
+	ReasonRouteNotAccepted                = "RouteNotAccepted"
+	ReasonHostnameConflict                = "HostnameConflict"
 )
 
 // AddonsApplied and AddonsAvailable.

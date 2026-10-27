@@ -439,7 +439,7 @@ func TestTheSpecIsRendered(t *testing.T) {
 func TestWhatIsNotBuiltYetIsSaid(t *testing.T) {
 	gateway := controlPlane(t, lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
 		ParentRef: lodiav1alpha1.ParentReference{Name: "shared", Namespace: "gateways"},
-		Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.com", Konnectivity: "konnectivity.dev.example.com"},
+		Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.com", Konnectivity: "konnectivity.dev.example.com", Tunnel: "tunnel.dev.example.com"},
 	}})
 	eventually(t, func() error { return expectCondition(gateway, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported) })
 	if c := condition(t, gateway); c.Message != "not built yet: endpoint.gateway" {

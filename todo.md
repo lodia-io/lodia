@@ -6,9 +6,9 @@ is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the design (2026-10-23)
 
-- List the Gateway implementations that report `TLSRouteModeTerminate`,
-  `TLSRouteModeMixed` and `ListenerSet` support today (Envoy Gateway, Istio,
-  Cilium, NGINX Gateway Fabric, Traefik), for the install docs.
+- List the Gateway implementations whose conformance reports pass
+  `TLSRoute` in passthrough (Envoy Gateway, Istio, Cilium, kgateway, NGINX
+  Gateway Fabric, Traefik), for the install docs.
 - Check whether kube-apiserver reloads `--proxy-client-cert-file` and whether
   konnectivity-server reloads `--cluster-cert`; each proven reload removes a
   rollout from certificate renewal.
@@ -186,15 +186,10 @@ is a decision — a decision is a file in `docs/decisions/`.
   while a control plane reports no version
   ([preflight](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/core/reconcilers/machineset/machineset_preflight.go#L174-L181),
   [provisioning](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/internal/contract/controlplane.go#L277-L293)).
-- Phase 2: `status.endpoint.tunnel`, the tunnel listener's host and port in
-  gateway mode, absent without a tunnel, for Tenant's apiserver-proxy and
-  PKI's certificate.
 - Phase 2: `nodes.outdatedKubelets` compares against the tenant's own
   `/version`.
 - Phase 2: `Backup` and `KubeconfigRequest` get a named status writer, and
   `Backup` reports conditions instead of a `phase`.
-- Phase 2: the default `advertiseAddress`, `172.20.0.1`, becomes a constant
-  that Workloads and Tenant both read.
 - Phase 3: `target.rotation.*`, which `Target` lacks, gets a stage enum of
   its own instead of sharing PKI's observed `RotationPhase`, and
   `rotation.ca` becomes `clusterCA`.

@@ -45,6 +45,10 @@ type ControlPlaneList struct {
 // +kubebuilder:validation:XValidation:rule="self.layout != 'Compact' || !has(self.highAvailability)",message="the Compact layout runs one replica of everything: remove highAvailability"
 // +kubebuilder:validation:XValidation:rule="self.layout != 'Compact' || !has(self.apiServer) || !has(self.apiServer.replicas) || self.apiServer.replicas == 1",message="the Compact layout runs one API server"
 // +kubebuilder:validation:XValidation:rule="!has(self.highAvailability) || !has(self.apiServer) || !has(self.apiServer.replicas) || self.apiServer.replicas >= 2",message="highAvailability runs at least two API servers"
+// +kubebuilder:validation:XValidation:rule="!has(self.apiServer) || !has(self.apiServer.advertiseAddress) || !isIP(self.apiServer.advertiseAddress) || !isCIDR(self.network.serviceCIDRs[0]) || ip(self.apiServer.advertiseAddress).family() == cidr(self.network.serviceCIDRs[0]).ip().family()",message="apiServer.advertiseAddress must be of the family of the first service range"
+// +kubebuilder:validation:XValidation:rule="!has(self.endpoint.gateway) || has(self.apiServer) && has(self.apiServer.advertiseAddress) || !isCIDR(self.network.serviceCIDRs[0]) || cidr(self.network.serviceCIDRs[0]).ip().family() == 4",message="an IPv6 first service range in gateway mode needs apiServer.advertiseAddress, which has no IPv6 default"
+// +kubebuilder:validation:XValidation:rule="(has(self.apiServer) && has(self.apiServer.advertiseAddress) ? [self.apiServer.advertiseAddress] : has(self.endpoint.gateway) ? ['240.0.0.1'] : []).all(a, !isIP(a) || !(self.network.serviceCIDRs + self.network.podCIDRs).exists(c, isCIDR(c) && cidr(c).containsIP(a)))",message="the advertise address, apiServer.advertiseAddress or 240.0.0.1 in gateway mode, must lie outside the service and pod ranges"
+// +kubebuilder:validation:XValidation:rule="has(self.apiServer) && has(self.apiServer.advertiseAddress) ? has(oldSelf.apiServer) && has(oldSelf.apiServer.advertiseAddress) && oldSelf.apiServer.advertiseAddress == self.apiServer.advertiseAddress : !has(oldSelf.apiServer) || !has(oldSelf.apiServer.advertiseAddress)",message="apiServer.advertiseAddress is immutable"
 // +kubebuilder:validation:XValidation:rule="!has(self.restoreFrom) || (has(oldSelf.restoreFrom) && oldSelf.restoreFrom == self.restoreFrom)",message="restoreFrom can only be set when the ControlPlane is created"
 type ControlPlaneSpec struct {
 	// Version is the Kubernetes version, vMAJOR.MINOR.PATCH. The minor never
@@ -235,6 +239,7 @@ type ParentReference struct {
 }
 
 // GatewayHostnames are the SNI names of one control plane.
+// +kubebuilder:validation:XValidation:rule="self.apiServer != self.konnectivity && self.apiServer != self.tunnel && self.konnectivity != self.tunnel",message="apiServer, konnectivity and tunnel must be three different hostnames"
 type GatewayHostnames struct {
 	// APIServer is the public API hostname.
 	// +required
@@ -244,10 +249,10 @@ type GatewayHostnames struct {
 	// +required
 	Konnectivity Hostname `json:"konnectivity"`
 
-	// Tunnel is the hostname apiserver-proxy dials for in-cluster access;
-	// empty means no in-cluster proxy.
-	// +optional
-	Tunnel Hostname `json:"tunnel,omitempty"`
+	// Tunnel is the hostname apiserver-proxy on every node dials, inside
+	// TLS, for the tenant's pods to reach their API server.
+	// +required
+	Tunnel Hostname `json:"tunnel"`
 }
 
 // LoadBalancerEndpoint configures the control plane's LoadBalancer Service.
@@ -304,10 +309,11 @@ type APIServer struct {
 	Replicas *int32 `json:"replicas,omitempty"`
 
 	// AdvertiseAddress is the address apiserver-proxy owns on every node in
-	// gateway mode; 172.20.0.1 by default.
+	// gateway mode: 240.0.0.1 by default when the first service range is
+	// IPv4, and required when it is IPv6. It cannot change.
 	// +optional
 	// +kubebuilder:validation:MaxLength=45
-	// +kubebuilder:validation:XValidation:rule="isIP(self)",message="must be an IP address"
+	// +kubebuilder:validation:XValidation:rule="isIP(self) && ip.isCanonical(self) && ip(self).isGlobalUnicast()",message="must be a unicast IP address in canonical form, neither loopback nor link-local"
 	AdvertiseAddress string `json:"advertiseAddress,omitempty"`
 
 	// Authentication configures structured authentication; the anonymous
@@ -848,6 +854,11 @@ type EndpointStatus struct {
 	// +required
 	// +kubebuilder:validation:XValidation:rule="isIP(self.host)",message="must be an IP address"
 	InCluster HostPort `json:"inCluster"`
+
+	// Tunnel is where apiserver-proxy reaches the API server for the
+	// tenant's pods; in gateway mode only.
+	// +optional
+	Tunnel *HostPort `json:"tunnel,omitempty"`
 }
 
 // HostPort is a host and a port.

@@ -172,12 +172,14 @@ spec:
                   advertiseAddress:
                     description: |-
                       AdvertiseAddress is the address apiserver-proxy owns on every node in
-                      gateway mode; 172.20.0.1 by default.
+                      gateway mode: 240.0.0.1 by default when the first service range is
+                      IPv4, and required when it is IPv6. It cannot change.
                     maxLength: 45
                     type: string
                     x-kubernetes-validations:
-                    - message: must be an IP address
-                      rule: isIP(self)
+                    - message: must be a unicast IP address in canonical form, neither
+                        loopback nor link-local
+                      rule: isIP(self) && ip.isCanonical(self) && ip(self).isGlobalUnicast()
                   audit:
                     description: Audit configures audit logging.
                     properties:
@@ -556,8 +558,8 @@ spec:
                                 && !self.matches('^[0-9.]+$')
                           tunnel:
                             description: |-
-                              Tunnel is the hostname apiserver-proxy dials for in-cluster access;
-                              empty means no in-cluster proxy.
+                              Tunnel is the hostname apiserver-proxy on every node dials, inside
+                              TLS, for the tenant's pods to reach their API server.
                             maxLength: 253
                             minLength: 1
                             type: string
@@ -568,7 +570,13 @@ spec:
                         required:
                         - apiServer
                         - konnectivity
+                        - tunnel
                         type: object
+                        x-kubernetes-validations:
+                        - message: apiServer, konnectivity and tunnel must be three
+                            different hostnames
+                          rule: self.apiServer != self.konnectivity && self.apiServer
+                            != self.tunnel && self.konnectivity != self.tunnel
                       parentRef:
                         description: ParentRef is the Gateway with a TLS passthrough
                           listener.
@@ -1011,6 +1019,27 @@ spec:
             - message: highAvailability runs at least two API servers
               rule: '!has(self.highAvailability) || !has(self.apiServer) || !has(self.apiServer.replicas)
                 || self.apiServer.replicas >= 2'
+            - message: apiServer.advertiseAddress must be of the family of the first
+                service range
+              rule: '!has(self.apiServer) || !has(self.apiServer.advertiseAddress)
+                || !isIP(self.apiServer.advertiseAddress) || !isCIDR(self.network.serviceCIDRs[0])
+                || ip(self.apiServer.advertiseAddress).family() == cidr(self.network.serviceCIDRs[0]).ip().family()'
+            - message: an IPv6 first service range in gateway mode needs apiServer.advertiseAddress,
+                which has no IPv6 default
+              rule: '!has(self.endpoint.gateway) || has(self.apiServer) && has(self.apiServer.advertiseAddress)
+                || !isCIDR(self.network.serviceCIDRs[0]) || cidr(self.network.serviceCIDRs[0]).ip().family()
+                == 4'
+            - message: the advertise address, apiServer.advertiseAddress or 240.0.0.1
+                in gateway mode, must lie outside the service and pod ranges
+              rule: '(has(self.apiServer) && has(self.apiServer.advertiseAddress)
+                ? [self.apiServer.advertiseAddress] : has(self.endpoint.gateway) ?
+                [''240.0.0.1''] : []).all(a, !isIP(a) || !(self.network.serviceCIDRs
+                + self.network.podCIDRs).exists(c, isCIDR(c) && cidr(c).containsIP(a)))'
+            - message: apiServer.advertiseAddress is immutable
+              rule: 'has(self.apiServer) && has(self.apiServer.advertiseAddress) ?
+                has(oldSelf.apiServer) && has(oldSelf.apiServer.advertiseAddress)
+                && oldSelf.apiServer.advertiseAddress == self.apiServer.advertiseAddress
+                : !has(oldSelf.apiServer) || !has(oldSelf.apiServer.advertiseAddress)'
             - message: restoreFrom can only be set when the ControlPlane is created
               rule: '!has(self.restoreFrom) || (has(oldSelf.restoreFrom) && oldSelf.restoreFrom
                 == self.restoreFrom)'
@@ -1432,6 +1461,32 @@ spec:
                     description: |-
                       Konnectivity is where konnectivity agents reach the konnectivity
                       server.
+                    properties:
+                      host:
+                        description: |-
+                          Host is an IP address, an IPv6 one without brackets, or a lowercase DNS
+                          name: labels of at most 63 characters, and not digits and dots alone.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                        x-kubernetes-validations:
+                        - message: must be an IP address or a lowercase DNS name
+                          rule: isIP(self) || self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$')
+                            && !self.matches('^[0-9.]+$')
+                      port:
+                        description: Port is a TCP port.
+                        format: int32
+                        maximum: 65535
+                        minimum: 1
+                        type: integer
+                    required:
+                    - host
+                    - port
+                    type: object
+                  tunnel:
+                    description: |-
+                      Tunnel is where apiserver-proxy reaches the API server for the
+                      tenant's pods; in gateway mode only.
                     properties:
                       host:
                         description: |-

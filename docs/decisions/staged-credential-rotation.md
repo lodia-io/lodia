@@ -19,6 +19,7 @@ Each tenant has:
 | **client CA** | every client identity: admin, controller manager, scheduler, Lodia, `KubeconfigRequest`s; and an intermediate *kubelet signer* | only the API server, whose `--client-ca-file` bundle holds the client CA and the current kubelet signer | 5 years |
 | **front-proxy CA** | the API server's aggregation client certificate | the API server and aggregated API servers | 5 years |
 | **etcd CA** | etcd server, peer and the API server's etcd client certificate | etcd and the API server | 5 years |
+| **tunnel CA** (gateway mode, from phase 2's wave 1b) | the short-lived client certificate of the in-cluster tunnel, which `apiserver-proxy` and Health present ([api-exposure](api-exposure.md)) | only the tunnel sidecar in each API server pod | 5 years |
 
 The controller manager signs kubelet client certificates with the kubelet
 signer intermediate only, through the per-signer flags
@@ -93,7 +94,7 @@ where a stage waits for people, completed with `<name>-complete`; phases in
 | client CA | CA₂ joins the API server's client bundle (reloaded); Lodia re-issues every client certificate it holds and the admin kubeconfig from CA₂; the kubelet signer moves under CA₂ (the controller manager reloads signing files) | after one signing duration (30 days) every kubelet has renewed under CA₂; CA₁ leaves the bundle | no | on its own, or at once with `-complete` if the owner accepts losing stale kubeconfigs |
 | ServiceAccount key | K₂ is published as a verification key; once every replica serves it, K₂ signs and K₁ only verifies | K₁ is dropped after the owner confirms that no client holds an old token | no | `-complete` |
 | etcd encryption key | E₂ is added, then made first (the API server reloads the configuration every minute); the Tenant controller rewrites every encrypted resource | E₁ is removed | no | on its own |
-| etcd CA, front-proxy CA | the new CA joins the bundles; certificates are re-issued; etcd and the API server roll where a CA file is read once | the old CA leaves the bundles | no | on its own |
+| etcd CA, front-proxy CA, tunnel CA | the new CA joins the bundles; certificates are re-issued; etcd and the API server roll where a CA file is read once | the old CA leaves the bundles | no | on its own |
 | cluster CA (trust anchor) | CA₂ joins every bundle: `cluster-info`, `kube-root-ca.crt` (the controller manager restarts, its `--root-ca-file` is read once), the CA bundle Secret, kubeconfigs; node owners add CA₂ to `/etc/kubernetes/pki/ca.crt` and the kubelet's kubeconfig | serving, kubelet client, tunnel and konnectivity certificates move to CA₂; CA₁ leaves the bundles | **yes** | `-complete`, after the owner updated every node |
 
 Only the last row needs people. It is meant for a compromised or expiring

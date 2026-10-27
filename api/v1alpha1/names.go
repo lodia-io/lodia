@@ -43,6 +43,18 @@ const (
 	TLSPrivateKeyKey = corev1.TLSPrivateKeyKey
 )
 
+// The in-cluster tunnel's Secrets, which PKI writes from phase 2's wave 1b,
+// Gateway, and adds to PKISecrets then: TunnelServingSecret, from the cluster
+// CA, which the tunnel sidecar in every API server pod serves; TunnelCASecret,
+// the CA of the tunnel's clients under CACertKey, which the sidecar requires
+// a client certificate of; TunnelClientSecret, that client certificate, which
+// Tenant delivers to apiserver-proxy and Health presents.
+const (
+	TunnelServingSecret Secret = "tunnel-serving"
+	TunnelCASecret      Secret = "tunnel-ca"
+	TunnelClientSecret  Secret = "tunnel-client"
+)
+
 // The kubeconfigs, under KubeconfigKey. A component's names its certificate,
 // key and CA as the files TLSCertKey, TLSPrivateKeyKey and CACertKey beside
 // it in the same Secret, which is mounted whole; Lodia's and the admin's
@@ -171,6 +183,12 @@ const (
 	// HoldHolderIdentity is the holder Health writes into
 	// ControllerManagerLease while it holds the controller manager.
 	HoldHolderIdentity = "lodia"
+
+	// DefaultAdvertiseAddress is the API server's advertise address in
+	// gateway mode when apiServer.advertiseAddress names none and the first
+	// service range is IPv4, which Workloads renders and publishes as
+	// status.endpoint.inCluster; the schema names it too.
+	DefaultAdvertiseAddress = "240.0.0.1"
 )
 
 // The controller manager's timings, which Workloads renders as its flags and

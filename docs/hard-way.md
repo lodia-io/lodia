@@ -162,8 +162,8 @@ egress selector sends only `cluster` traffic (kubelets, pods, webhooks)
 through the konnectivity socket; etcd is dialled directly.
 
 > **Lodia (Workloads):** the same pod plus the `lodia-signer` sidecar; in
-> gateway mode the advertise address is `172.20.0.1`, served on every node by
-> apiserver-proxy ([api-exposure](decisions/api-exposure.md)).
+> gateway mode the advertise address is `240.0.0.1` by default, served on
+> every node by apiserver-proxy ([api-exposure](decisions/api-exposure.md)).
 
 ## 7. Bind the admin group, then put super-admin away
 
