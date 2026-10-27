@@ -662,12 +662,7 @@ writes it into the tenant (Inside the tenant). Every API server replica
 serves that address, so a rollout never empties the endpoints, which the
 API server's own reconciler did whenever a replica stopped, since every
 replica advertises the same address
-([api-exposure](decisions/api-exposure.md)). The exception is the one roll
-that brings `none` to a control plane that ran without it: its old replica
-rewrites the EndpointSlice every 10 seconds while it runs and empties both
-objects as it stops, and Tenant, which comes back 10 seconds after a pass
-that had to write them back, leaves them empty for at most about 10
-seconds.
+([api-exposure](decisions/api-exposure.md)).
 
 ## Inside the tenant
 
@@ -717,9 +712,7 @@ Built for phase 1, without `apiserver-proxy` and the write lock
 and [the hard way](hard-way.md)). Once `AccessReady` is True for the
 generation, the controller applies every object as `lodia/tenant` through
 `<cp>-lodia-kubeconfig`, on a change of the inputs it reads and every 10
-minutes, and 10 seconds after a pass that had to write the `kubernetes`
-Service's endpoints back; until then both conditions are
-`WaitingForAccess`, and it uses
+minutes; until then both conditions are `WaitingForAccess`, and it uses
 `<cp>-lodia-kubeconfig` and `<cp>-ca-bundle` only while no other owner
 keeps them, looking again every minute. It leaves another owner's objects
 as they are: an object no inventory names yet is read before its first

@@ -29,13 +29,9 @@ port name `https`
 ([config.go](https://github.com/openshift/hypershift/blob/v0.1.86/control-plane-operator/controllers/hostedcontrolplane/v2/kas/config.go#L211),
 [reconcile.go](https://github.com/openshift/hypershift/blob/v0.1.86/control-plane-operator/hostedclusterconfigoperator/controllers/resources/kas/reconcile.go#L11-L52)).
 Every API server replica serves that address, so no rollout and no stopping
-replica changes them, but in the one roll that brings `none` to a control
-plane that ran without it: there the old replica's lease reconciler rewrites
-the EndpointSlice every 10 seconds while it runs and empties both objects as
-it stops. A Tenant pass that has to write them back runs again 10 seconds
-later, so they are empty for at most about 10 seconds. Nothing else rewrites them: the
-EndpointSlice mirroring controller leaves Endpoints labelled `skip-mirror`
-alone and deletes only the slices it manages
+replica changes them. Nothing else rewrites them: the EndpointSlice mirroring
+controller leaves Endpoints labelled `skip-mirror` alone and deletes only the
+slices it manages
 ([endpointslicemirroring_controller.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/endpointslicemirroring/endpointslicemirroring_controller.go#L314-L318),
 [L545-L551](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/endpointslicemirroring/endpointslicemirroring_controller.go#L545-L551)),
 and the EndpointSlice and Endpoints controllers skip a Service without a

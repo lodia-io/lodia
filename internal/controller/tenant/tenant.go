@@ -42,12 +42,6 @@ const (
 // reports: the addons' pods on the nodes, and a Secret another owner keeps.
 const waitPeriod = time.Minute
 
-// rewritePeriod is how soon a pass that had to write the kubernetes
-// Service's endpoints runs again: the lease reconciler of an API server from
-// before --endpoint-reconciler-type=none rewrites them every 10 s while it
-// runs, and empties them as it stops.
-const rewritePeriod = 10 * time.Second
-
 type Reconciler struct {
 	client.Client
 	// Reader reads the Secrets the cache holds the metadata of only.
@@ -141,7 +135,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 
-	others, rewritten, syncErr := applyInventory(ctx, tenant, objects)
+	others, syncErr := applyInventory(ctx, tenant, objects)
 	switch reason, message, answered := outcome(syncErr); {
 	case syncErr == nil && len(others) > 0:
 		applied = newCondition(cp, applied.Type, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, others[0].String()+" exists and is not Lodia's; delete it or disable the addon")
@@ -167,14 +161,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.applyStatus(ctx, cp, applied, available); err != nil || syncErr != nil {
 		return ctrl.Result{}, errors.Join(syncErr, err)
 	}
-	requeueAfter := r.ApplyPeriod
 	if available.Status != metav1.ConditionTrue {
-		requeueAfter = min(waitPeriod, r.ApplyPeriod)
+		return ctrl.Result{RequeueAfter: min(waitPeriod, r.ApplyPeriod)}, nil
 	}
-	if rewritten {
-		requeueAfter = min(rewritePeriod, requeueAfter)
-	}
-	return ctrl.Result{RequeueAfter: requeueAfter}, nil
+	return ctrl.Result{RequeueAfter: r.ApplyPeriod}, nil
 }
 
 // outcome is the reason and the message a pass that stopped on err reports,
