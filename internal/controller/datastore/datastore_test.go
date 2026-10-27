@@ -249,7 +249,7 @@ func fullClass(name, credentialsNamespace string) *lodiav1alpha1.DatastoreClass 
 				},
 				FullSnapshotSchedule: "0 2 * * *",
 				DeltaSnapshotPeriod:  &metav1.Duration{Duration: 5 * time.Minute},
-				Retention:            &lodiav1alpha1.BackupRetention{Days: 30},
+				Retention:            &lodiav1alpha1.BackupRetention{FullSnapshots: 30},
 			},
 			Placement: &lodiav1alpha1.Placement{
 				NodeSelector:      map[string]string{"node-role.example.com/control-planes": "true"},
@@ -510,8 +510,8 @@ func TestFinalizerAndEtcdFromClass(t *testing.T) {
 		{"backup.store.secretRef → spec.backup.store.secretRef, the copy in the namespace", ptr.Deref(store.SecretRef, corev1.SecretReference{}).Name, "dev-etcd-backup"},
 		{"backup.fullSnapshotSchedule → spec.backup.fullSnapshotSchedule", ptr.Deref(etcd.Spec.Backup.FullSnapshotSchedule, ""), "0 2 * * *"},
 		{"backup.deltaSnapshotPeriod → spec.backup.deltaSnapshotPeriod", ptr.Deref(etcd.Spec.Backup.DeltaSnapshotPeriod, metav1.Duration{}).Duration, 5 * time.Minute},
-		{"backup.retention.days → spec.backup.garbageCollectionPolicy", ptr.Deref(etcd.Spec.Backup.GarbageCollectionPolicy, ""), druidv1alpha1.GarbageCollectionPolicy("LimitBased")},
-		{"backup.retention.days → spec.backup.maxBackupsLimitBasedGC", ptr.Deref(etcd.Spec.Backup.MaxBackupsLimitBasedGC, 0), int32(30)},
+		{"backup.retention.fullSnapshots → spec.backup.garbageCollectionPolicy", ptr.Deref(etcd.Spec.Backup.GarbageCollectionPolicy, ""), druidv1alpha1.GarbageCollectionPolicy("LimitBased")},
+		{"backup.retention.fullSnapshots → spec.backup.maxBackupsLimitBasedGC", ptr.Deref(etcd.Spec.Backup.MaxBackupsLimitBasedGC, 0), int32(30)},
 		{"placement.nodeSelector → spec.schedulingConstraints.affinity", etcd.Spec.SchedulingConstraints.Affinity, &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
 			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{NodeSelectorTerms: []corev1.NodeSelectorTerm{{MatchExpressions: []corev1.NodeSelectorRequirement{
 				{Key: "node-role.example.com/control-planes", Operator: corev1.NodeSelectorOpIn, Values: []string{"true"}},
@@ -531,7 +531,7 @@ func TestFinalizerAndEtcdFromClass(t *testing.T) {
 		{"the Etcd → status.datastore", ptr.Deref(cp.Status.Datastore, lodiav1alpha1.DatastoreStatus{}), lodiav1alpha1.DatastoreStatus{
 			Endpoints: []lodiav1alpha1.HostPort{{Host: "dev-etcd-client." + ns + ".svc", Port: 2379}},
 			Class:     &lodiav1alpha1.DatastoreClassStatus{Name: "mapped", Generation: 1},
-			Members:   lodiav1alpha1.Count{Total: 1},
+			Members:   lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: 1}},
 		}},
 		{"the class → metadata.annotations[" + lodiav1alpha1.DatastoreClassAnnotation + "]", etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation], "mapped"},
 		{"the class's generation → metadata.annotations[" + lodiav1alpha1.DatastoreClassGenerationAnnotation + "]", etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation], "1"},
@@ -1332,7 +1332,7 @@ func TestDatastoreReadyFollowsEtcdStatus(t *testing.T) {
 	if got, want := ptr.Deref(getControlPlane(t, ns, cp).Status.Datastore, lodiav1alpha1.DatastoreStatus{}), (lodiav1alpha1.DatastoreStatus{
 		Endpoints: []lodiav1alpha1.HostPort{{Host: "reported-etcd-client." + ns + ".svc", Port: 2379}},
 		Class:     &lodiav1alpha1.DatastoreClassStatus{Name: "reported", Generation: 1},
-		Members:   lodiav1alpha1.Count{Total: 1, Ready: 1},
+		Members:   lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: 1, Ready: 1}},
 	}); !reflect.DeepEqual(got, want) {
 		t.Errorf("status.datastore %+v, want %+v", got, want)
 	}

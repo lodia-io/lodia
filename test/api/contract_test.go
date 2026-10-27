@@ -69,7 +69,8 @@ func table(t *testing.T, doc, after string) []string {
 }
 
 func TestEveryReasonIsNamedByItsValueAndDocumented(t *testing.T) {
-	rows := strings.Join(table(t, filepath.Join("api", "controlplane.md"), "## Conditions and their reasons"), "")
+	doc := filepath.Join("api", "controlplane.md")
+	rows := strings.Join(slices.Concat(table(t, doc, "## Conditions and their reasons"), table(t, doc, "The `Backup`'s condition:")), "")
 	for _, c := range constants(t, "conditions.go") {
 		reason, ok := strings.CutPrefix(c.name, "Reason")
 		if !ok {
@@ -79,7 +80,7 @@ func TestEveryReasonIsNamedByItsValueAndDocumented(t *testing.T) {
 			t.Errorf("%s is %q", c.name, c.value)
 		}
 		if !strings.Contains(rows, "`"+c.value+"`") {
-			t.Errorf("the conditions table of docs/api/controlplane.md does not name the reason %s", c.value)
+			t.Errorf("no conditions table of docs/api/controlplane.md names the reason %s", c.value)
 		}
 	}
 }

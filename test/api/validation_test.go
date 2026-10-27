@@ -5,21 +5,27 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/robfig/cron/v3"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/yaml"
+
+	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 )
 
 var k8s client.Client
@@ -179,6 +185,17 @@ func TestControlPlaneValidation(t *testing.T) {
 			set(t, o, "Compact", "spec", "layout")
 			set(t, o, int64(2), "spec", "apiServer", "replicas")
 		}, "the Compact layout runs one API server"},
+		{"high availability with one API server", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, map[string]any{"failureTolerance": "Node"}, "spec", "highAvailability")
+			set(t, o, int64(1), "spec", "apiServer", "replicas")
+		}, "highAvailability runs at least two API servers"},
+		{"high availability with two API servers", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, map[string]any{"failureTolerance": "Zone"}, "spec", "highAvailability")
+			set(t, o, int64(2), "spec", "apiServer", "replicas")
+		}, ""},
+		{"high availability with the default replicas", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, map[string]any{"failureTolerance": "Node"}, "spec", "highAvailability")
+		}, ""},
 		{"a flag Lodia sets", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, map[string]any{"etcd-servers": "https://elsewhere:2379"}, "spec", "apiServer", "extraArgs")
 		}, "Lodia sets this flag"},
@@ -206,6 +223,12 @@ func TestControlPlaneValidation(t *testing.T) {
 		{"window at 25:00", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, map[string]any{"begin": "25:00", "end": "04:00"}, "spec", "maintenance", "window")
 		}, "spec.maintenance.window.begin"},
+		{"a window that ends where it begins", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, map[string]any{"begin": "02:00", "end": "02:00"}, "spec", "maintenance", "window")
+		}, "begin and end must differ"},
+		{"a window across midnight", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, map[string]any{"begin": "22:00", "end": "02:00", "timeZone": "Europe/Kyiv"}, "spec", "maintenance", "window")
+		}, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -213,6 +236,32 @@ func TestControlPlaneValidation(t *testing.T) {
 			c.mutate(t, obj)
 			expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), c.want)
 		})
+	}
+}
+
+func TestExtraArgsRefuseTheFlagsLodiaSets(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	const refused = "Lodia sets this flag"
+	for component, flags := range map[string]map[string]string{
+		"apiServer": {"goaway-chance": refused, "etcd-prefix": refused, "etcd-servers-overrides": refused, "max-requests-inflight": ""},
+		"controllerManager": {
+			"leader-elect-lease-duration": refused, "leader-elect-renew-deadline": refused, "leader-elect-retry-period": refused,
+			"leader-elect-resource-lock": refused, "leader-elect-resource-name": refused, "leader-elect-resource-namespace": refused,
+			"node-monitor-grace-period": refused, "node-monitor-period": refused, "terminated-pod-gc-threshold": "",
+		},
+		"scheduler": {
+			"leader-elect-resource-lock": refused, "leader-elect-resource-name": refused, "leader-elect-resource-namespace": refused,
+			"leader-elect-lease-duration": "",
+		},
+	} {
+		for flag, want := range flags {
+			t.Run(component+"/"+flag, func(t *testing.T) {
+				obj := example(t, "controlplane-single.yaml", "flags")
+				set(t, obj, map[string]any{flag: "1"}, "spec", component, "extraArgs")
+				expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), want)
+			})
+		}
 	}
 }
 
@@ -251,29 +300,419 @@ func TestControlPlaneTransitions(t *testing.T) {
 		}, "network is immutable"},
 		{"restoreFrom added", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, map[string]any{"backupRef": map[string]any{"name": "nightly"}}, "spec", "restoreFrom")
-		}, "restoreFrom can only be set when the ControlPlane is created"},
+		}, "restoreFrom can be set only when the ControlPlane is created, and never removed"},
 		{"paused", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, true, "spec", "paused") }, ""},
+		{"high availability added", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, map[string]any{"failureTolerance": "Zone"}, "spec", "highAvailability")
+		}, ""},
 	}
 	for i, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			ctx := context.Background()
-			obj := example(t, "controlplane-single.yaml", fmt.Sprintf("transition-%d", i))
-			if err := k8s.Create(ctx, obj); err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = k8s.Delete(context.Background(), obj) })
-			c.mutate(t, obj)
-			expect(t, k8s.Update(ctx, obj), c.want)
+			update(t, example(t, "controlplane-single.yaml", fmt.Sprintf("transition-%d", i)), c.mutate, c.want)
 		})
+	}
+}
+
+func TestExtraArgsStoredBeforeTheirRefusalStayUntilTheMapChanges(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	stored := example(t, "controlplane-single.yaml", "ratcheting")
+	set(t, stored, map[string]any{"node-monitor-grace-period": "40s"}, "spec", "controllerManager", "extraArgs")
+	storeUnderAnOlderSchema(t, "extraargs.ratcheting.lodia.io", stored, "Lodia sets this flag", func(schema map[string]any) {
+		unstructured.RemoveNestedField(schema, "properties", "spec", "properties", "controllerManager", "properties", "extraArgs", "x-kubernetes-validations")
+	})
+
+	set(t, stored, true, "spec", "paused")
+	expect(t, k8s.Update(context.Background(), stored), "")
+	set(t, stored, map[string]any{"node-monitor-grace-period": "40s", "terminated-pod-gc-threshold": "100"}, "spec", "controllerManager", "extraArgs")
+	expect(t, k8s.Update(context.Background(), stored), "Lodia sets this flag")
+}
+
+func TestAGatewayStoredWithoutATunnelStaysUntilItsHostnamesChange(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	stored := example(t, "controlplane-ha.yaml", "tunnel-ratcheting")
+	unstructured.RemoveNestedField(stored.Object, "spec", "endpoint", "gateway", "hostnames", "tunnel")
+	storeUnderAnOlderSchema(t, "tunnel.ratcheting.lodia.io", stored, "tunnel: Required value", func(schema map[string]any) {
+		hostnames := []string{"properties", "spec", "properties", "endpoint", "properties", "gateway", "properties", "hostnames"}
+		unstructured.RemoveNestedField(schema, append(hostnames, "properties", "tunnel")...)
+		unstructured.RemoveNestedField(schema, append(hostnames, "x-kubernetes-validations")...)
+		if err := unstructured.SetNestedStringSlice(schema, []string{"apiServer", "konnectivity"}, append(hostnames, "required")...); err != nil {
+			t.Fatal(err)
+		}
+	})
+	ctx := context.Background()
+	stored.SetFinalizers([]string{lodiav1alpha1.DatastoreFinalizer})
+	expect(t, k8s.Update(ctx, stored), "")
+	stored.SetFinalizers(nil)
+	expect(t, k8s.Update(ctx, stored), "")
+	set(t, stored, true, "spec", "paused")
+	expect(t, k8s.Update(ctx, stored), "")
+	set(t, stored, "api2.prod-eu.k8s.example.com", "spec", "endpoint", "gateway", "hostnames", "apiServer")
+	expect(t, k8s.Update(ctx, stored), "tunnel: Required value")
+}
+
+func TestAnAdvertiseAddressStoredOutsideGatewayModeCanOnlyBeRemoved(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	const gatewayOnly = "apiServer.advertiseAddress is set only with endpoint.gateway"
+	stored := example(t, "controlplane-single.yaml", "advertise-ratcheting")
+	set(t, stored, "240.0.0.2", "spec", "apiServer", "advertiseAddress")
+	storeUnderAnOlderSchema(t, "advertise.ratcheting.lodia.io", stored, gatewayOnly, func(schema map[string]any) {
+		rules, _, err := unstructured.NestedSlice(schema, "properties", "spec", "x-kubernetes-validations")
+		if err != nil {
+			t.Fatal(err)
+		}
+		kept := slices.DeleteFunc(rules, func(r any) bool { return r.(map[string]any)["message"] == gatewayOnly })
+		if err := unstructured.SetNestedSlice(schema, kept, "properties", "spec", "x-kubernetes-validations"); err != nil {
+			t.Fatal(err)
+		}
+	})
+	ctx := context.Background()
+	stored.SetFinalizers([]string{lodiav1alpha1.DatastoreFinalizer})
+	expect(t, k8s.Update(ctx, stored), "")
+	set(t, stored, true, "spec", "paused")
+	expect(t, k8s.Update(ctx, stored), gatewayOnly)
+	unstructured.RemoveNestedField(stored.Object, "spec", "apiServer", "advertiseAddress")
+	expect(t, k8s.Update(ctx, stored), "")
+}
+
+func eventually(t *testing.T, f func() error) {
+	t.Helper()
+	var last error
+	if err := wait.PollUntilContextTimeout(context.Background(), 100*time.Millisecond, 30*time.Second, true, func(context.Context) (bool, error) {
+		last = f()
+		return last == nil, nil
+	}); err != nil {
+		t.Fatalf("%v: %v", err, last)
+	}
+}
+
+func storeUnderAnOlderSchema(t *testing.T, group string, stored *unstructured.Unstructured, refusal string, older func(schema map[string]any)) {
+	t.Helper()
+	ctx := context.Background()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "api", "crds", "lodia.io_controlplanes.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	crd := decode(t, string(raw))
+	crd.SetName("controlplanes." + group)
+	set(t, crd, group, "spec", "group")
+	current, _, err := unstructured.NestedSlice(crd.Object, "spec", "versions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := runtime.DeepCopyJSONValue(current).([]any)
+	older(previous[0].(map[string]any)["schema"].(map[string]any)["openAPIV3Schema"].(map[string]any))
+	set(t, crd, previous, "spec", "versions")
+	if err := k8s.Create(ctx, crd); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = k8s.Delete(context.Background(), crd) })
+
+	stored.SetAPIVersion(group + "/v1alpha1")
+	eventually(t, func() error { return k8s.Create(ctx, stored) })
+	eventually(t, func() error {
+		if err := k8s.Get(ctx, client.ObjectKeyFromObject(crd), crd); err != nil {
+			return err
+		}
+		set(t, crd, current, "spec", "versions")
+		return k8s.Update(ctx, crd)
+	})
+	probe := stored.DeepCopy()
+	probe.SetName(stored.GetName() + "-probe")
+	probe.SetResourceVersion("")
+	eventually(t, func() error {
+		err := k8s.Create(ctx, probe, client.DryRunAll)
+		switch {
+		case err == nil:
+			return errors.New("the current schema is not served yet")
+		case !strings.Contains(err.Error(), refusal):
+			return err
+		}
+		return nil
+	})
+}
+
+func TestHighAvailabilityTransitions(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	cases := []struct {
+		name   string
+		mutate func(*testing.T, *unstructured.Unstructured)
+		want   string
+	}{
+		{"failure tolerance changed", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "Zone", "spec", "highAvailability", "failureTolerance")
+		}, "failureTolerance is immutable once set"},
+		{"high availability removed", func(t *testing.T, o *unstructured.Unstructured) {
+			unstructured.RemoveNestedField(o.Object, "spec", "highAvailability")
+		}, ""},
+	}
+	for i, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			obj := example(t, "controlplane-single.yaml", fmt.Sprintf("ha-transition-%d", i))
+			set(t, obj, map[string]any{"failureTolerance": "Node"}, "spec", "highAvailability")
+			update(t, obj, c.mutate, c.want)
+		})
+	}
+}
+
+func update(t *testing.T, obj *unstructured.Unstructured, mutate func(*testing.T, *unstructured.Unstructured), want string) {
+	t.Helper()
+	ctx := context.Background()
+	if err := k8s.Create(ctx, obj); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = k8s.Delete(context.Background(), obj) })
+	mutate(t, obj)
+	expect(t, k8s.Update(ctx, obj), want)
+}
+
+func TestGatewayHostnames(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	const differ = "apiServer, konnectivity and tunnel must be three different hostnames"
+	api, konnectivity, tunnel := "api.a.example.com", "konnectivity.a.example.com", "tunnel.a.example.com"
+	for _, c := range []struct {
+		name      string
+		hostnames map[string]any
+		want      string
+	}{
+		{"three hostnames", map[string]any{"apiServer": api, "konnectivity": konnectivity, "tunnel": tunnel}, ""},
+		{"no tunnel", map[string]any{"apiServer": api, "konnectivity": konnectivity}, "tunnel: Required value"},
+		{"the API server's for konnectivity", map[string]any{"apiServer": api, "konnectivity": api, "tunnel": tunnel}, differ},
+		{"the API server's for the tunnel", map[string]any{"apiServer": api, "konnectivity": konnectivity, "tunnel": api}, differ},
+		{"konnectivity's for the tunnel", map[string]any{"apiServer": api, "konnectivity": konnectivity, "tunnel": konnectivity}, differ},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			obj := example(t, "controlplane-ha.yaml", "hostnames")
+			set(t, obj, c.hostnames, "spec", "endpoint", "gateway", "hostnames")
+			expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), c.want)
+		})
+	}
+}
+
+func TestAdvertiseAddress(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	const (
+		unicast = "must be a unicast IP address in canonical form, neither loopback nor link-local"
+		family  = "must be of the family of the first service range"
+		outside = "must lie outside the service and pod ranges"
+		ipv6    = "needs apiServer.advertiseAddress, which has no IPv6 default"
+		gateway = "apiServer.advertiseAddress is set only with endpoint.gateway"
+	)
+	address := func(a string) func(*testing.T, *unstructured.Unstructured) {
+		return func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, a, "spec", "apiServer", "advertiseAddress")
+		}
+	}
+	ipv6Ranges := func(t *testing.T, o *unstructured.Unstructured) {
+		set(t, o, []any{"fd00:10:96::/112"}, "spec", "network", "serviceCIDRs")
+		set(t, o, []any{"fd00:10:244::/56"}, "spec", "network", "podCIDRs")
+	}
+	cases := []struct {
+		name, file string
+		mutate     []func(*testing.T, *unstructured.Unstructured)
+		want       string
+	}{
+		{"the default", "controlplane-ha.yaml", nil, ""},
+		{"another address of class E", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){address("240.0.0.2")}, ""},
+		{"behind a load balancer", "controlplane-single.yaml", []func(*testing.T, *unstructured.Unstructured){address("240.0.0.2")}, gateway},
+		{"behind a node port", "controlplane-single.yaml", []func(*testing.T, *unstructured.Unstructured){func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, map[string]any{"nodePort": map[string]any{}}, "spec", "endpoint")
+		}, address("240.0.0.2")}, gateway},
+		{"a private address", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){address("172.20.0.1")}, ""},
+		{"loopback", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){address("127.0.0.1")}, unicast},
+		{"link-local", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){address("169.254.0.1")}, unicast},
+		{"unspecified", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){address("0.0.0.0")}, unicast},
+		{"multicast", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){address("239.1.1.1")}, unicast},
+		{"broadcast", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){address("255.255.255.255")}, unicast},
+		{"a name", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){address("proxy.example.com")}, unicast},
+		{"in the service range", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){address("10.96.0.1")}, outside},
+		{"in the pod range", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){address("10.244.3.1")}, outside},
+		{"the default in the pod range", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, []any{"240.0.0.0/16"}, "spec", "network", "podCIDRs")
+		}}, outside},
+		{"the default's range for pods outside gateway mode", "controlplane-single.yaml", []func(*testing.T, *unstructured.Unstructured){func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, []any{"240.0.0.0/16"}, "spec", "network", "podCIDRs")
+		}}, ""},
+		{"IPv6 beside an IPv4 service range", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){address("fd12:3456:789a::1")}, family},
+		{"IPv6 not in canonical form", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){ipv6Ranges, address("FD12:3456:789A::1")}, unicast},
+		{"an IPv6 service range without an address", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){ipv6Ranges}, ipv6},
+		{"an IPv6 service range with a unique local address", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){ipv6Ranges, address("fd12:3456:789a::1")}, ""},
+		{"an IPv4 address beside an IPv6 service range", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){ipv6Ranges, address("240.0.0.1")}, family},
+		{"dual stack, IPv4 first, with the default", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, []any{"10.96.0.0/16", "fd00:10:96::/112"}, "spec", "network", "serviceCIDRs")
+		}}, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			obj := example(t, c.file, "advertised")
+			for _, mutate := range c.mutate {
+				mutate(t, obj)
+			}
+			expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), c.want)
+		})
+	}
+}
+
+func TestAdvertiseAddressTransitions(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	const immutable = "apiServer.advertiseAddress is immutable"
+	cases := []struct {
+		name, from string
+		mutate     func(*testing.T, *unstructured.Unstructured)
+		want       string
+	}{
+		{"the default named", "", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "240.0.0.1", "spec", "apiServer", "advertiseAddress")
+		}, immutable},
+		{"changed", "240.0.0.2", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "240.0.0.3", "spec", "apiServer", "advertiseAddress")
+		}, immutable},
+		{"removed", "240.0.0.2", func(t *testing.T, o *unstructured.Unstructured) {
+			unstructured.RemoveNestedField(o.Object, "spec", "apiServer", "advertiseAddress")
+		}, immutable},
+		{"kept while something else changes", "240.0.0.2", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, true, "spec", "paused")
+		}, ""},
+	}
+	for i, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			obj := example(t, "controlplane-ha.yaml", fmt.Sprintf("advertised-%d", i))
+			if c.from != "" {
+				set(t, obj, c.from, "spec", "apiServer", "advertiseAddress")
+			}
+			update(t, obj, c.mutate, c.want)
+		})
+	}
+}
+
+func TestTheSchemaDefaultsTheAdvertiseAddressAsTheAPI(t *testing.T) {
+	manifest, err := os.ReadFile(filepath.Join("..", "..", "api", "crds", "lodia.io_controlplanes.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	quoted := "'" + lodiav1alpha1.DefaultAdvertiseAddress + "'"
+	if !slices.ContainsFunc(rules(at(t, crdSchema(t, manifest), "spec")), func(rule string) bool { return strings.Contains(rule, "["+quoted+"]") }) {
+		t.Errorf("no rule of spec takes %s for the advertise address of gateway mode", quoted)
 	}
 }
 
 func TestRestoreFromAtCreation(t *testing.T) {
 	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")
-	obj := example(t, "controlplane-single.yaml", "restored")
-	set(t, obj, map[string]any{"backupRef": map[string]any{"name": "nightly"}}, "spec", "restoreFrom")
-	expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), "")
+	for _, c := range []struct {
+		name, release, want, stored string
+	}{
+		{"held by default", "", "", "Held"},
+		{"released at once", "Released", "", "Released"},
+		{"another release", "Paused", `supported values: "Held", "Released"`, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			obj := example(t, "controlplane-single.yaml", "restored")
+			restoreFrom := map[string]any{"backupRef": map[string]any{"name": "nightly"}}
+			if c.release != "" {
+				restoreFrom["release"] = c.release
+			}
+			set(t, obj, restoreFrom, "spec", "restoreFrom")
+			expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), c.want)
+			if release, _, _ := unstructured.NestedString(obj.Object, "spec", "restoreFrom", "release"); c.want == "" && release != c.stored {
+				t.Errorf("restoreFrom.release is %q, want %q", release, c.stored)
+			}
+		})
+	}
+}
+
+func TestRestoreFromTransitions(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	cases := []struct {
+		name, from string
+		mutate     func(*testing.T, *unstructured.Unstructured)
+		want       string
+	}{
+		{"removed", "Held", func(t *testing.T, o *unstructured.Unstructured) {
+			unstructured.RemoveNestedField(o.Object, "spec", "restoreFrom")
+		}, "restoreFrom can be set only when the ControlPlane is created, and never removed"},
+		{"another Backup", "Held", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "weekly", "spec", "restoreFrom", "backupRef", "name")
+		}, "restoreFrom.backupRef is immutable"},
+		{"released", "Held", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "Released", "spec", "restoreFrom", "release")
+		}, ""},
+		{"held again", "Released", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "Held", "spec", "restoreFrom", "release")
+		}, "restoreFrom.release moves only from Held to Released"},
+		{"kept while something else changes", "Held", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, true, "spec", "paused")
+		}, ""},
+	}
+	for i, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			obj := example(t, "controlplane-single.yaml", fmt.Sprintf("restore-transition-%d", i))
+			set(t, obj, map[string]any{"backupRef": map[string]any{"name": "nightly"}, "release": c.from}, "spec", "restoreFrom")
+			update(t, obj, c.mutate, c.want)
+		})
+	}
+}
+
+func TestBackupNames(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	for _, c := range []struct{ name, want string }{
+		{strings.Repeat("b", 235), ""},
+		{strings.Repeat("b", 236), "the name must be at most 235 characters"},
+	} {
+		t.Run(fmt.Sprintf("%d characters", len(c.name)), func(t *testing.T) {
+			expect(t, k8s.Create(context.Background(), example(t, "backup.yaml", c.name), client.DryRunAll), c.want)
+		})
+	}
+}
+
+func TestBackupStatus(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	obj := example(t, "backup.yaml", "status")
+	if err := k8s.Create(context.Background(), obj); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = k8s.Delete(context.Background(), obj) })
+	status := func(revision int64) map[string]any {
+		return map[string]any{
+			"conditions": []any{map[string]any{
+				"type": "Ready", "status": "True", "reason": "Completed", "message": "sealed at revision 184739",
+				"lastTransitionTime": "2026-10-27T02:00:07Z",
+			}},
+			"source":            map[string]any{"name": "prod-eu", "uid": "6f1c1b6e-58a4-4b8a-9f5e-2b0a5d3c7e91"},
+			"kubernetesVersion": "v1.37.1",
+			"network":           map[string]any{"serviceCIDRs": []any{"10.96.0.0/16"}, "podCIDRs": []any{"10.244.0.0/16"}},
+			"snapshots": map[string]any{
+				"provider": "S3", "bucket": "lodia-backups",
+				"prefix": "prod/8d2f2f7e-0c1a-4b7e-9d43-6a1f0b9e2c55/backups/3b9e0c2a-7d41-4f6e-8a5c-1e2d3f4a5b6c",
+			},
+			"seal":        map[string]any{"revision": revision},
+			"startedAt":   "2026-10-27T02:00:00Z",
+			"completedAt": "2026-10-27T02:00:07Z",
+		}
+	}
+	for _, c := range []struct {
+		name     string
+		revision int64
+		want     string
+	}{
+		{"sealed", 184739, ""},
+		{"a seal at revision 0", 0, "status.seal.revision"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			written := obj.DeepCopy()
+			set(t, written, status(c.revision), "status")
+			expect(t, k8s.Status().Update(context.Background(), written, client.DryRunAll), c.want)
+		})
+	}
 }
 
 func TestEndpointStatus(t *testing.T) {
@@ -305,12 +744,70 @@ func TestEndpointStatus(t *testing.T) {
 		{"no inCluster", map[string]any{"apiServer": address("203.0.113.10", 443), "konnectivity": address("203.0.113.10", 8132)}, "inCluster: Required value"},
 		{"an IPv6 inCluster", map[string]any{"apiServer": address("api.example.test", 443), "konnectivity": address("api.example.test", 443), "inCluster": address("2001:db8::1", 6443)}, ""},
 		{"an inCluster DNS name", map[string]any{"apiServer": address("api.example.test", 443), "konnectivity": address("api.example.test", 443), "inCluster": address("api.example.test", 6443)}, "status.endpoint.inCluster: Invalid value"},
+		{"a tunnel", map[string]any{"apiServer": address("api.example.test", 443), "konnectivity": address("konnectivity.example.test", 443), "inCluster": inCluster, "tunnel": address("tunnel.example.test", 443)}, ""},
+		{"a tunnel of an uppercase name", map[string]any{"apiServer": address("api.example.test", 443), "konnectivity": address("konnectivity.example.test", 443), "inCluster": inCluster, "tunnel": address("Tunnel.example.test", 443)}, "must be an IP address or a lowercase DNS name"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			written := obj.DeepCopy()
 			set(t, written, tc.endpoint, "status", "endpoint")
 			expect(t, k8s.Status().Update(context.Background(), written, client.DryRunAll), tc.want)
+		})
+	}
+}
+
+func TestKubernetesStatus(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	obj := example(t, "controlplane-single.yaml", "kubernetes-status")
+	if err := k8s.Create(context.Background(), obj); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = k8s.Delete(context.Background(), obj) })
+	for _, c := range []struct {
+		name    string
+		upgrade map[string]any
+		want    string
+	}{
+		{"a step", map[string]any{"step": "ControllerManager", "startedAt": "2026-10-27T02:00:00Z"}, ""},
+		{"another step", map[string]any{"step": "Nodes", "startedAt": "2026-10-27T02:00:00Z"}, `supported values: "Backup", "APIServer", "ControllerManager", "Scheduler", "Addons"`},
+		{"no start", map[string]any{"step": "APIServer"}, "startedAt: Required value"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			written := obj.DeepCopy()
+			set(t, written, map[string]any{"version": "v1.36.4", "upgrade": c.upgrade}, "status", "kubernetes")
+			expect(t, k8s.Status().Update(context.Background(), written, client.DryRunAll), c.want)
+		})
+	}
+}
+
+func TestTheRestoreRecordIsWrittenWhole(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	obj := example(t, "controlplane-single.yaml", "restore-record")
+	if err := k8s.Create(context.Background(), obj); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = k8s.Delete(context.Background(), obj) })
+	backup := map[string]any{"name": "nightly", "uid": "6a1f4c1e-2f47-4c58-9a40-0d2e31f6a7b1"}
+	source := map[string]any{"name": "old", "uid": "0b5d9e3a-81c2-4f4e-b6d7-5c2a1e9f8d30"}
+	for _, c := range []struct {
+		name    string
+		restore map[string]any
+		want    string
+	}{
+		{"completed", map[string]any{"backup": backup, "source": source, "completedAt": "2026-10-27T02:00:00Z"}, ""},
+		{"not completed", map[string]any{"backup": backup, "source": source}, "completedAt: Required value"},
+		{"without its source", map[string]any{"backup": backup, "completedAt": "2026-10-27T02:00:00Z"}, "source: Required value"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			written := obj.DeepCopy()
+			set(t, written, map[string]any{
+				"endpoints": []any{map[string]any{"host": "restore-record-etcd-client.team-a.svc", "port": int64(2379)}},
+				"members":   map[string]any{"total": int64(1), "ready": int64(1)},
+				"restore":   c.restore,
+			}, "status", "datastore")
+			expect(t, k8s.Status().Update(context.Background(), written, client.DryRunAll), c.want)
 		})
 	}
 }

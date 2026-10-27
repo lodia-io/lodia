@@ -114,7 +114,7 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 		etcd.Spec.Backup.DeltaSnapshotPeriod = backup.DeltaSnapshotPeriod
 		if backup.Retention != nil {
 			etcd.Spec.Backup.GarbageCollectionPolicy = new(druidv1alpha1.GarbageCollectionPolicy(druidv1alpha1.GarbageCollectionPolicyLimitBased))
-			etcd.Spec.Backup.MaxBackupsLimitBasedGC = new(backup.Retention.Days)
+			etcd.Spec.Backup.MaxBackupsLimitBasedGC = new(backup.Retention.FullSnapshots)
 		}
 	}
 	if placement := spec.Placement; placement != nil {

@@ -83,12 +83,16 @@ type KubeconfigRequestStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
-// Backup is an on-demand full snapshot of a ControlPlane's etcd, kept in the
-// DatastoreClass's store; a new ControlPlane can start from it.
+// Backup is a sealed copy of a ControlPlane's etcd, kept in the
+// DatastoreClass's store under a prefix of its own that nothing writes again;
+// a new ControlPlane can start from it, and replaces its source. It outlives
+// its source.
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:validation:XValidation:rule="self.metadata.name.size() <= 235",message="the name must be at most 235 characters, so that the Secret <name>.encryption-config fits"
 // +kubebuilder:printcolumn:name="ControlPlane",type=string,JSONPath=".spec.controlPlaneRef.name"
-// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=".status.phase"
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].status"
+// +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].reason"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 type Backup struct {
 	metav1.TypeMeta `json:",inline"`
@@ -119,27 +123,56 @@ type BackupSpec struct {
 	ControlPlaneRef LocalReference `json:"controlPlaneRef"`
 }
 
-// BackupStatus is the snapshot's progress and where it went.
+// BackupStatus is the copy's progress, what it was taken of, and where it
+// is. The backup reconciler of the Datastore controller writes it.
 type BackupStatus struct {
-	// Phase is Pending, Running, Completed or Failed.
+	// Conditions, Ready among them.
 	// +optional
-	// +kubebuilder:validation:Enum=Pending;Running;Completed;Failed
-	Phase string `json:"phase,omitempty"`
+	// +listType=map
+	// +listMapKey=type
+	// +kubebuilder:validation:MaxItems=8
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// Source is the ControlPlane the Backup was taken of.
+	// +optional
+	Source *UIDReference `json:"source,omitempty"`
+
+	// KubernetesVersion is the version the source ran when the Backup was
+	// sealed: its status.kubernetes.version, or its status.target.version
+	// until Lifecycle writes the former. A ControlPlane restored from the
+	// Backup runs the same minor.
+	// +optional
+	// +kubebuilder:validation:MaxLength=16
+	KubernetesVersion string `json:"kubernetesVersion,omitempty"`
+
+	// Network is the source's network, which a ControlPlane restored from the
+	// Backup must have too.
+	// +optional
+	Network *Network `json:"network,omitempty"`
+
+	// Snapshots is where the copy is: the store it was sealed in and the
+	// Backup's own prefix there.
+	// +optional
+	Snapshots *SnapshotLocation `json:"snapshots,omitempty"`
+
+	// Seal is what the copy holds.
+	// +optional
+	Seal *BackupSeal `json:"seal,omitempty"`
+
 	// +optional
 	StartedAt *metav1.Time `json:"startedAt,omitempty"`
 	// +optional
 	CompletedAt *metav1.Time `json:"completedAt,omitempty"`
-	// KubernetesVersion of the ControlPlane when the snapshot was taken.
-	// +optional
-	// +kubebuilder:validation:MaxLength=16
-	KubernetesVersion string `json:"kubernetesVersion,omitempty"`
-	// Revision of etcd in the snapshot.
-	// +optional
-	Revision int64 `json:"revision,omitempty"`
-	// +optional
-	SizeBytes int64 `json:"sizeBytes,omitempty"`
-	// Location of the snapshot in the store.
-	// +optional
-	// +kubebuilder:validation:MaxLength=1024
-	Location string `json:"location,omitempty"`
+}
+
+// BackupSeal is the seal of a Backup: before the copy, the backup
+// reconciler puts the key BackupSealKey into the source's etcd and copies
+// only once a snapshot reached its revision, so the copy holds the source's
+// data at least up to it, and a restore proves it came from this Backup by
+// finding the key.
+type BackupSeal struct {
+	// Revision of the seal key in the source's etcd.
+	// +required
+	// +kubebuilder:validation:Minimum=1
+	Revision int64 `json:"revision"`
 }

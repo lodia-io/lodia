@@ -3,6 +3,8 @@
 
 package v1alpha1
 
+import "k8s.io/apimachinery/pkg/types"
+
 // CIDR is an IPv4 or IPv6 network in CIDR notation.
 // +kubebuilder:validation:MaxLength=43
 // +kubebuilder:validation:XValidation:rule="isCIDR(self)",message="must be a network in CIDR notation"
@@ -37,6 +39,25 @@ type NamespacedReference struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=63
 	Namespace string `json:"namespace,omitempty"`
+}
+
+// UIDReference is an identity record: an object in the same namespace by its
+// name and the one object that had that name, since a name can be taken
+// again and a UID never. A reader does not follow it to the object, as it
+// follows a field named <x>Ref; the object may be gone.
+type UIDReference struct {
+	// Name of the object.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+
+	// UID of the object.
+	// +required
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=36
+	UID types.UID `json:"uid"`
 }
 
 // SecretReference names a Secret in a namespace.

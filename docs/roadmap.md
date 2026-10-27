@@ -9,8 +9,8 @@ and a gate that fails after it passed is a regression, not a backlog item.
 |---|---|---|
 | 0 · Foundations | the repository can build, test and ship; one control plane built by hand | `make verify` green in CI; the hand-built control plane runs a pod; the etcd spike has numbers |
 | 1 · Walking skeleton | a single-replica `ControlPlane` a real kubeadm node joins | e2e: `Ready` in under 3 minutes, node `Ready`, `kubectl logs` and `exec` through the tunnel, conformance passes |
-| 2 · Production | HA, Gateway exposure with in-cluster access, backups, upgrades, maintenance windows, Health, metrics | zero failed API requests during a rollout and an upgrade; restore from backup passes conformance; nodes cut off for 10 minutes lose no pod |
-| 3 · Parity | shared etcd, migration by snapshot, staged rotations, hibernation, `Backup`, write lock, the `Compact` layout, a Cluster API provider | rotation keeps nodes `Ready` and tokens valid; sleep and wake keep data; migration freezes writes for seconds, reads never; a `Compact` tenant is one pod |
+| 2 · Production | HA, Gateway exposure with in-cluster access, backups with `Backup` and restore, upgrades, maintenance windows, Health, metrics | zero failed API requests during a rollout and an upgrade; restore from backup passes conformance; nodes cut off for 10 minutes lose no pod |
+| 3 · Parity | shared etcd, migration by snapshot, staged rotations, hibernation, write lock, the `Compact` layout, a Cluster API provider | rotation keeps nodes `Ready` and tokens valid; sleep and wake keep data; migration freezes writes for seconds, reads never; a `Compact` tenant is one pod |
 | 4 · Scale and community | hundreds of tenants per operator, zone spread, `v1beta1`, docs site, supply-chain badges | 200 tenants on one management cluster within the resource budget; OpenSSF Scorecard ≥ 8 |
 
 Segla moves to Lodia in phase 3, through Lodia's Cluster API provider.
@@ -111,26 +111,45 @@ Scope:
 - `endpoint.gateway` with TLS passthrough routes and the in-cluster
   apiserver-proxy ([api-exposure](decisions/api-exposure.md)).
 - Backups: continuous snapshots to object storage from the `DatastoreClass`;
-  `restoreFrom` for a new `ControlPlane`.
+  `Backup`, a sealed copy, which an upgrade takes before each minor; and
+  `restoreFrom`, which replaces the `Backup`'s source and stays inert until
+  released ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)).
+  `Backup` was phase 3's until the upgrades and the restore needed it.
 - Upgrades in the documented order, with the pre-upgrade backup and
   per-step gates; automatic patch updates; maintenance windows and the fleet
   limit; deferred re-render on operator upgrade.
 - Health: the internal probe, node lease sampling, the controller manager
   hold.
 - `KubeconfigRequest`.
-- Observability: metrics per controller and tenant, conditions as metrics,
-  events, the Grafana dashboard and alert rules in the chart.
+- Observability: Lodia's metrics per tenant, conditions among them, built
+  from `status`, and controller-runtime's per controller; an event per
+  condition transition; a metrics Service, ServiceMonitor, alert rules and
+  dashboards in the chart, all off by default
+  ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)).
+
+It is built in waves. The fixes came first: API server rollouts that lose
+no request, the backup prefix and the encryption key names. Then the
+contracts: every field, condition, reason and shared name phase 2 decided,
+in `api/v1alpha1`, with its writer and the wave that writes it in
+[`api/controlplane.md`](api/controlplane.md). Then, in parallel, wave 1b:
+HA, the Gateway with in-cluster access, backups with restore, and
+`KubeconfigRequest`s. Then wave 2: upgrades with maintenance windows, the
+fleet limit and the operator revision; Health's internal probe, node
+sampling and controller manager hold; observability.
 
 Gate:
 
 - e2e: during a rolling update of the API server and during a minor upgrade
   (two kind node images), a client loop of 20 requests per second against
-  the public endpoint records zero failures.
+  the public endpoint, and one from a pod in the tenant through
+  `kubernetes.default`, record zero failures.
 - e2e: delete an API server pod and an etcd pod of an HA control plane;
-  `Ready` never turns False for longer than the probe period.
-- e2e: a `ControlPlane` created with `restoreFrom` a backup of another
-  serves the same namespaces and Secrets, and passes the conformance smoke
-  subset.
+  `Ready` never turns False for longer than Health's period, 5 seconds, and
+  the same two loops record zero failures.
+- e2e: a `Backup` of A; B, created with `restoreFrom` it, stays inert while
+  it serves A's namespaces and Secrets, and a `Released` B still waits,
+  `SourceExists`; deleting A releases B, a node joins it, and the
+  conformance smoke subset passes.
 - e2e: cut both workers of a tenant off from the Gateway for 10 minutes;
   within 30 seconds Lodia holds the controller manager's lease and the
   controller manager exits; no node is tainted and every pod keeps its UID;
@@ -138,7 +157,9 @@ Gate:
   no hold, and its pods move to the other after the toleration, as upstream
   does ([controller-manager-hold](decisions/controller-manager-hold.md)).
 - e2e: an operator upgrade re-renders a tenant only inside its window;
-  outside it, `status.target.reason` says `WaitingForWindow`.
+  outside it, `Progressing` is False, `WaitingForWindow`, and
+  `status.target.scheduledFor` is the window's next start; an edit of the
+  tenant's spec renders it at once.
 - Measured: API p99 latency through the Gateway against a direct Service,
   overhead under 5 ms on kind.
 
@@ -147,7 +168,7 @@ Gate:
 Scope: shared `Datastore` with a user and prefix per tenant; migration
 between stores through a write lock and a snapshot; staged rotation of the
 CA, the ServiceAccount key and the etcd encryption key; hibernation with
-schedules; `Backup`; the `ValidatingAdmissionPolicy` write lock; the
+schedules; the `ValidatingAdmissionPolicy` write lock; the
 `Compact` layout; a Cluster API control plane provider in its own repository.
 
 Gate:

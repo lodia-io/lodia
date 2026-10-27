@@ -6,8 +6,10 @@ package v1alpha1
 import (
 	"strconv"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // The names of the objects in a tenant namespace that one controller writes
@@ -40,6 +42,18 @@ const (
 
 	TLSCertKey       = corev1.TLSCertKey
 	TLSPrivateKeyKey = corev1.TLSPrivateKeyKey
+)
+
+// The in-cluster tunnel's Secrets, which PKI writes from phase 2's wave 1b,
+// Gateway, and adds to PKISecrets then: TunnelServingSecret, from the cluster
+// CA, which the tunnel sidecar in every API server pod serves; TunnelCASecret,
+// the CA of the tunnel's clients under CACertKey, which the sidecar requires
+// a client certificate of; TunnelClientSecret, that client certificate, which
+// Tenant delivers to apiserver-proxy and Health presents.
+const (
+	TunnelServingSecret Secret = "tunnel-serving"
+	TunnelCASecret      Secret = "tunnel-ca"
+	TunnelClientSecret  Secret = "tunnel-client"
 )
 
 // The kubeconfigs, under KubeconfigKey. A component's names its certificate,
@@ -139,6 +153,32 @@ func EtcdName(controlPlane string) string { return controlPlane + "-etcd" }
 // Workloads writes and PKI names in certificates and kubeconfigs.
 func APIServerServiceName(controlPlane string) string { return controlPlane + "-kube-apiserver" }
 
+// PreUpgradeBackupName is "<ControlPlane>-pre-upgrade-<version>-<UID>", the
+// Backup Lifecycle takes before a minor step to version. A Backup outlives
+// its source, so the UID keeps a predecessor's of the same name from
+// standing in for this ControlPlane's.
+func PreUpgradeBackupName(controlPlane, version string, uid types.UID) string {
+	return controlPlane + "-pre-upgrade-" + version + "-" + string(uid)
+}
+
+// BackupEncryptionConfigSecretName is "<Backup>.encryption-config": the
+// union of the source's encryption keys when the Backup was sealed, under
+// EncryptionConfigKey, immutable and owned by the Backup, which the backup
+// reconciler writes and PKI copies into each ControlPlane restored from it.
+func BackupEncryptionConfigSecretName(backup string) string { return backup + ".encryption-config" }
+
+// BackupSealKey is the etcd key the backup reconciler puts into the
+// source's etcd before it copies the Backup, and that the Datastore
+// controller requires in the restored etcd.
+func BackupSealKey(backup types.UID) string { return "/lodia.io/backups/" + string(backup) }
+
+// RestoreMarkerKey is the etcd key of the Datastore controller's cleanup of
+// a restored etcd: its one transaction deletes what bound the data to the
+// source unless the key exists, and creates it.
+func RestoreMarkerKey(controlPlane types.UID) string {
+	return "/lodia.io/restores/" + string(controlPlane)
+}
+
 // The values beside the names that one controller renders and another relies
 // on.
 const (
@@ -159,4 +199,31 @@ const (
 	// which Workloads writes and the Datastore controller's etcd
 	// NetworkPolicy admits.
 	APIServerComponent = "kube-apiserver"
+
+	// ControllerManagerLease and SchedulerLease are the components' leader
+	// Leases in LeaderElectionNamespace inside the tenant: Workloads names
+	// them in the components' flags, and Health reads them.
+	ControllerManagerLease  = "kube-controller-manager"
+	SchedulerLease          = "kube-scheduler"
+	LeaderElectionNamespace = "kube-system"
+
+	// HoldHolderIdentity is the holder Health writes into
+	// ControllerManagerLease while it holds the controller manager.
+	HoldHolderIdentity = "lodia"
+
+	// DefaultAdvertiseAddress is the API server's advertise address in
+	// gateway mode when apiServer.advertiseAddress names none and the first
+	// service range is IPv4, which Workloads renders and publishes as
+	// status.endpoint.inCluster; the schema names it too.
+	DefaultAdvertiseAddress = "240.0.0.1"
+)
+
+// The controller manager's timings, which Workloads renders as its flags and
+// the operator checks Health's thresholds against when it starts.
+const (
+	NodeMonitorGracePeriod         = 60 * time.Second
+	NodeMonitorPeriod              = 5 * time.Second
+	ControllerManagerLeaseDuration = 15 * time.Second
+	ControllerManagerRenewDeadline = 10 * time.Second
+	ControllerManagerRetryPeriod   = 2 * time.Second
 )

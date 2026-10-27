@@ -19,7 +19,7 @@ spec:
       hostnames:
         apiServer: api.prod-eu.k8s.example.com
         konnectivity: konnectivity.prod-eu.k8s.example.com
-        tunnel: tunnel.prod-eu.k8s.example.com   # in-cluster access; omit to disable apiserver-proxy
+        tunnel: tunnel.prod-eu.k8s.example.com   # in-cluster access through apiserver-proxy
     certSANs: [prod-eu.corp.example.com]
   network:
     serviceCIDRs: [10.96.0.0/16]
@@ -42,9 +42,6 @@ spec:
     featureGates: {}
     extraArgs:
       max-requests-inflight: "800"
-  controllerManager:
-    extraArgs:
-      node-monitor-grace-period: 40s
   scheduler: {}
   addons:
     konnectivity:

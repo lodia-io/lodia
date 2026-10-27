@@ -1,31 +1,38 @@
 # While most of a tenant's nodes are silent, Lodia holds its controller manager's leader lease
 
-Decided 2026-10-25. Not built.
+Decided 2026-10-25; the timings Lodia owns decided 2026-10-26. Not built:
+the hold and its timings come with phase 2's wave 2 (Health), and
+`ControllersLeading` with wave 1b (HA) ([roadmap](../roadmap.md)).
 
 ## Decision
 
 The Health controller protects a tenant's workloads from an outage between
 the control plane and its nodes:
 
-- **It watches from inside.** Every 5 seconds, for every awake
-  `ControlPlane`, it reads the tenant's `Node`s and their `Lease`s in
-  `kube-node-lease` through the in-namespace Service, never through the
-  public endpoint the nodes use.
+- **It watches from inside.** Every 5 seconds, Health's period, for every
+  awake `ControlPlane`, it reads the `Lease`s in `kube-node-lease` through
+  the in-namespace Service, never through the public endpoint the nodes use,
+  and the tenant's `Node`s every 30 seconds, since nodes are large objects
+  and the set it counts changes slowly
+  ([KEP-589](https://github.com/kubernetes/enhancements/blob/7eef794bb549a50c6b08c457556ff0eac98a4c6b/keps/sig-node/589-efficient-node-heartbeats/README.md#L31-L49)).
 - **A node is silent** once its lease has not changed for 20 seconds by the
-  operator's clock, not by `renewTime`: a node anywhere keeps its own time. A
-  lease seen for the first time counts as renewed then, and so does every
-  lease after a read that failed: the kubelets could not renew meanwhile
-  either.
+  operator's clock, not by `renewTime`: a node anywhere keeps its own time.
+  The clock lives in memory: a lease seen for the first time counts as
+  renewed then, and so does every lease after a read that failed, since the
+  kubelets could not renew meanwhile either, and an operator that restarts
+  counts afresh.
 - **A node counts** if it has a lease and is `Ready`, or if the controller
   manager marked it `Unknown` less than 5 minutes before the hold began. A
   node its kubelet reports `NotReady` does not count, and a cluster with one
   counted node is never held: its silence cannot be told from a dead machine.
 - **The hold.** When 60% or more of the counted nodes are silent and the API
   server answers, Health writes the Lease `kube-system/kube-controller-manager`
-  inside the tenant with holder `lodia` and a 60-second duration, and renews
-  it every round. The controller manager's leader fails its next renewal,
-  gives up within its renew deadline (10 seconds) and exits; restarted, it
-  waits on a lease that keeps being renewed. Nothing marks the nodes, nothing
+  inside the tenant (`LeaderElectionNamespace` and `ControllerManagerLease`
+  in `api/v1alpha1/names.go`) with holder `lodia` (`HoldHolderIdentity`) and
+  a 60-second duration, and renews it every round. The controller manager's
+  leader fails its next renewal, gives up within its renew deadline (10
+  seconds) and exits; restarted, it waits on a lease that keeps being
+  renewed. Nothing marks the nodes, nothing
   taints them, nothing evicts their pods.
 - **The release.** Once fewer than 60% have been silent for 2 minutes,
   Health releases the lease the way client-go steps down (no holder, a
@@ -33,15 +40,63 @@ the control plane and its nodes:
   starts afresh, counting its grace periods from its own start.
 - **It never fights.** Health takes the lease only when it has expired or
   when its holder's identity starts with the name of a pod Lodia runs for
-  that controller manager (a leader's identity is `<pod name>_<uuid>`). Any
+  this `ControlPlane` (a leader's identity is `<pod name>_<uuid>`). Any
   other holder, such as a platform's own watchdog, is left alone and named in
   the message of `ControllerManagerHeld=False`, reason `HoldBlocked`.
 - **It fails safe.** A Lodia that stops renewing gives the lease back after
   60 seconds, to upstream behaviour; a Lodia that restarts keeps a hold it
-  finds with holder `lodia`.
+  finds with holder `lodia`. A paused `ControlPlane` gets no writes, so its
+  hold lapses within those 60 seconds.
 - **Settings.** On by default; `spec.health.holdControllerManager: false`
-  turns it off for one `ControlPlane` and releases a hold in progress. The
-  thresholds (20 s, 60%, 2 min) are operator configuration.
+  turns it off for one `ControlPlane`, releases a hold in progress at once
+  and reports `ControllerManagerHeld=False`, reason `Disabled`. The
+  thresholds (20 s, 60%, 2 min) and the period (5 s) are operator
+  configuration.
+- **Lodia owns the timings the hold races.** The hold works only if the
+  controller manager exits before its node lifecycle controller marks the
+  first silent node. Workloads renders that controller's grace period and
+  the controller manager's leader election from constants in
+  `api/v1alpha1/names.go`, and the schema refuses every one of them in
+  `controllerManager.extraArgs`:
+
+  | flag | value | constant |
+  |---|---|---|
+  | `--node-monitor-grace-period` | 60s | `NodeMonitorGracePeriod` |
+  | `--node-monitor-period` | 5s | `NodeMonitorPeriod` |
+  | `--leader-elect-lease-duration` | 15s | `ControllerManagerLeaseDuration` |
+  | `--leader-elect-renew-deadline` | 10s | `ControllerManagerRenewDeadline` |
+  | `--leader-elect-retry-period` | 2s | `ControllerManagerRetryPeriod` |
+  | `--leader-elect-resource-lock`, `-resource-name`, `-resource-namespace` | `leases`, `kube-controller-manager`, `kube-system` | `ControllerManagerLease`, `LeaderElectionNamespace` |
+
+  The operator refuses to start when its Health thresholds break the
+  invariant below.
+- **While Lodia holds the lease, `ControllersLeading` stays True**, reason
+  `Held`: the hold is Lodia's own, so `Ready` does not drop for it.
+
+**The margin.** A kubelet renews its lease every quarter of its 40-second
+duration, 10 seconds, with up to 4% jitter
+([kubelet.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/kubelet/kubelet.go#L1155-L1165),
+[defaults.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/kubelet/apis/config/v1beta1/defaults.go#L150),
+[controller.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/component-helpers/apimachinery/lease/controller.go#L153)),
+so the last silent node renewed at most 10.4 seconds after the first. Health
+sees a renewal within its period, 5 seconds, and calls a node silent 20
+seconds after it saw the last change; the leader then fails its renewals
+for its renew deadline, counted from one retry period after its last
+success, 10 to 12 seconds
+([leaderelection.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/client-go/tools/leaderelection/leaderelection.go#L279-L310)),
+and exits. The first node is marked no sooner than the grace period after
+its last renewal. The margin is the grace period less 10.4 + 20 + 5 + 12
+seconds:
+
+| grace period | margin |
+|---|---|
+| 40 s (Gardener's default, [defaults_shoot.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/apis/core/v1beta1/defaults_shoot.go#L117-L119), and the HA example's until this decision) | −7.4 s: the first node can be marked and tainted before the exit |
+| 50 s (upstream's default, [defaults.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/nodelifecycle/config/v1alpha1/defaults.go#L46)) | 2.6 s, before any delay in Health's queue, the API or a failover of the operator |
+| 60 s (Lodia's) | 12.6 s |
+
+A grace period of 60 seconds marks a node that really died 10 seconds later
+than upstream does, and its pods are evicted 300 seconds after that, as
+before.
 
 It does not tell whose side broke: 60% of a cluster silent at once is a cut
 from the control plane, the provider's or the customer's, and there is
@@ -82,11 +137,26 @@ are evicted as upstream does.
 
 ## Rejected
 
-- Scaling the controller manager to zero — impossible in the Compact layout,
-  and a change to a Deployment in the Split one.
+- Scaling the controller manager to zero, as Gardener's dependency-watchdog
+  does
+  ([prober.go](https://github.com/gardener/dependency-watchdog/blob/v1.8.0/internal/prober/prober.go#L118-L168),
+  [scale.go](https://github.com/gardener/dependency-watchdog/blob/v1.8.0/internal/prober/scaler/scale.go#L22-L31))
+  — it calls a lease expired three quarters of the grace period after its
+  `renewTime`, 30 seconds with the 40 seconds Gardener runs, and Gardener
+  probes every 30 seconds with 20% jitter
+  ([prober.go](https://github.com/gardener/dependency-watchdog/blob/v1.8.0/internal/prober/prober.go#L274-L278),
+  [config.go](https://github.com/gardener/dependency-watchdog/blob/v1.8.0/internal/prober/config.go#L26),
+  [access.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/component/nodemanagement/dependencywatchdog/access.go#L31)),
+  so nodes are still marked and tainted, which wakes Cluster API's
+  MachineHealthChecks; it fights Workloads over the replicas of a
+  Deployment; and the Compact layout has no Deployment of the controller
+  manager to scale.
 - Longer tolerations (`--default-unreachable-toleration-seconds`) — pods
   would sit that long on a machine that really died.
-- A longer node monitor grace period — the eviction comes later, but it comes.
+- A longer node monitor grace period instead of the hold — the eviction
+  comes later, but it comes.
+- Sampling every 2 seconds to keep upstream's 50-second grace period — a
+  margin of 5.6 seconds for two and a half times the reads in every tenant.
 - Turning off the node lifecycle controller — no eviction from a dead node at
   all.
 

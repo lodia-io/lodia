@@ -40,10 +40,14 @@ signs, attests and publishes the images and the chart is not.
   ([version tags](https://go.dev/ref/mod#vcs-version)).
 - A release ships a version table: for each Kubernetes minor it supports,
   the images of kube-apiserver, kube-controller-manager, kube-scheduler,
-  kube-proxy, CoreDNS, konnectivity and etcd. It supports the minors the
-  Kubernetes project maintains, three at any time, about 14 months each
+  kube-proxy, CoreDNS, konnectivity and etcd, the newest patch, `latest`,
+  which automatic patch updates move to, and the end-of-support date, ahead
+  of which tenants are warned. It supports the minors the Kubernetes project
+  maintains, three at any time, about 14 months each
   ([releases](https://kubernetes.io/releases/)): today 1.35, 1.36 and 1.37,
-  with 1.34 leaving upstream support on 2026-10-27.
+  with 1.34 leaving upstream support on 2026-10-27. A minor that leaves the
+  table stays renderable for one more release, only as the source of an
+  upgrade ([upgrades-and-maintenance-windows](upgrades-and-maintenance-windows.md)).
 - The support matrix in the docs has two columns, *supported* and *tested*,
   as cert-manager's does: a minor is *tested* when the e2e suite and the
   nightly conformance run pass on it with kind images

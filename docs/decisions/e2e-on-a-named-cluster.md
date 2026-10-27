@@ -1,8 +1,9 @@
 # End-to-end tests run only against a cluster named on the command line, and never the current kube context
 
-Decided 2026-10-25. The refusal, `make e2e`, kubeadm workers and the
-nightly conformance run are built; the focused conformance subset on every
-pull request is not, and upgrade tests come with phase 2.
+Decided 2026-10-25; the subset on every pull request settled on
+2026-10-26. The refusal, `make e2e`, kubeadm workers and the nightly
+conformance run are built; the subset on every pull request comes with the
+restore in phase 2's wave 1b, and upgrade tests with wave 2.
 
 ## Decision
 
@@ -22,10 +23,13 @@ pull request is not, and upgrade tests come with phase 2.
   (1.35 → 1.36 → 1.37) with workers one minor behind, inside the skew
   policy; kind itself does not upgrade a cluster
   ([version skew policy](https://kubernetes.io/releases/version-skew-policy/)).
-- The Kubernetes conformance suite runs through hydrophone against a tenant
-  cluster with two joined workers: a focused subset in parallel on every pull
-  request, the full `--conformance` run nightly; a release is cut only from a
-  commit whose nightly conformance passed
+- The Kubernetes conformance suite runs through hydrophone: the full
+  `--conformance` run nightly, against a tenant cluster with two joined
+  workers; and on every pull request a focused subset, the smoke of the
+  restore gate, against a `ControlPlane` restored from a `Backup` of
+  another, once it is released and a node has joined
+  ([restore-replaces-the-source](restore-replaces-the-source.md)). A
+  release is cut only from a commit whose nightly conformance passed
   ([hydrophone flags](https://github.com/kubernetes-sigs/hydrophone/blob/v0.8.0/docs/flags-cli-ref.md),
   [conformance tests](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/conformance-tests.md)).
 - `go test ./...` from the repository root runs unit and envtest tests only;

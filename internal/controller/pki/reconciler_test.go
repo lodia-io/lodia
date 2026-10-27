@@ -985,7 +985,7 @@ func TestTheKonnectivityCertificateNamesTheKonnectivityHost(t *testing.T) {
 func TestAGatewayControlPlaneWaitsForItsEndpoint(t *testing.T) {
 	cp := controlPlaneAt(t, "pki-gateway", lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
 		ParentRef: lodiav1alpha1.ParentReference{Name: "edge", Namespace: "gateways"},
-		Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.test", Konnectivity: "konnectivity.dev.example.test"},
+		Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.test", Konnectivity: "konnectivity.dev.example.test", Tunnel: "tunnel.dev.example.test"},
 	}})
 	reconcile(t, newReconciler(time.Hour), cp)
 	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint)

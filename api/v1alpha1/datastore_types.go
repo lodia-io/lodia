@@ -158,10 +158,8 @@ type EtcdBackup struct {
 
 // BackupStore is an object storage bucket.
 type BackupStore struct {
-	// Provider is S3, GCS, ABS or Swift.
 	// +required
-	// +kubebuilder:validation:Enum=S3;GCS;ABS;Swift
-	Provider string `json:"provider"`
+	Provider StoreProvider `json:"provider"`
 
 	// Bucket name.
 	// +required
@@ -196,16 +194,24 @@ type BackupStore struct {
 	SecretRef SecretReference `json:"secretRef"`
 }
 
+// StoreProvider is the kind of an object store: S3, GCS, ABS or Swift.
+// +kubebuilder:validation:Enum=S3;GCS;ABS;Swift
+type StoreProvider string
+
 // BackupRetention is how long snapshots live.
 type BackupRetention struct {
-	// Days of snapshots kept for a running ControlPlane.
+	// FullSnapshots is how many full snapshots a running ControlPlane keeps,
+	// the newest: days, at the default schedule. Only the newest keeps the
+	// delta snapshots after it, since no delta retention period is set, so an
+	// older one restores to its own revision.
 	// +optional
 	// +kubebuilder:default=30
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=3650
-	Days int32 `json:"days,omitempty"`
+	FullSnapshots int32 `json:"fullSnapshots,omitempty"`
 
-	// AfterDelete is how long snapshots outlive their ControlPlane.
+	// AfterDelete is how long snapshots outlive their ControlPlane; no
+	// release deletes them yet.
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('0s')",message="must be a duration"
 	AfterDelete *metav1.Duration `json:"afterDelete,omitempty"`

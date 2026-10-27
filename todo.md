@@ -6,22 +6,23 @@ is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the design (2026-10-23)
 
-- List the Gateway implementations that report `TLSRouteModeTerminate`,
-  `TLSRouteModeMixed` and `ListenerSet` support today (Envoy Gateway, Istio,
-  Cilium, NGINX Gateway Fabric, Traefik), for the install docs.
+- List the Gateway implementations whose conformance reports pass
+  `TLSRoute` in passthrough (Envoy Gateway, Istio, Cilium, kgateway, NGINX
+  Gateway Fabric, Traefik), for the install docs.
 - Check whether kube-apiserver reloads `--proxy-client-cert-file` and whether
   konnectivity-server reloads `--cluster-cert`; each proven reload removes a
   rollout from certificate renewal.
-- Decide the deletion policy of a dedicated etcd's backups after a
-  `ControlPlane` is deleted; Gardener keeps backups for a configurable
-  retention period. etcd-druid keeps them when an `Etcd` is deleted, so the
-  policy is Lodia's code (etcd spike, finding 6). The volumes follow the
-  class's `storage.reclaimPolicy` since the Datastore controller (2026-10-25).
-- etcd-druid's restore keeps the snapshot's revisions (no
-  `--bump-revision`); propose the bump upstream in etcd-backup-restore, and
-  until then roll the tenant's API server after any restore Lodia detects.
-  The etcd spike measured the stale cache (finding 5); how the Datastore
-  controller detects a restore is still open.
+- Propose upstream a task of etcd-druid that deletes a prefix in the store
+  (dedicated-etcd-by-default): `retention.afterDelete`, a deleted
+  `ControlPlane`'s last snapshots and a deleted `Backup`'s copy wait for
+  it, and platforms use their bucket's lifecycle rules meanwhile. The
+  volumes follow the class's `storage.reclaimPolicy` since the Datastore
+  controller (2026-10-25).
+- etcd-backup-restore restores without etcd's `RevisionBump` and
+  `MarkCompacted`, so a member it restores keeps the snapshot's revisions;
+  propose the bump upstream. Lodia detects no restore (dedicated-etcd-by-default);
+  the lost-quorum runbook rolls the API server by hand. The etcd spike
+  measured the stale cache (finding 5).
 - etcd-druid's scale at ~1000 `Etcd` objects with its default
   `concurrentSyncs: 3` is not documented; measure in phase 4 or ask the
   maintainers.
@@ -71,18 +72,20 @@ is a decision — a decision is a file in `docs/decisions/`.
   ([known_features.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/client-go/features/known_features.go#L115-L117)):
   on 1.35 a trust anchor rotation restarts every component whose kubeconfig
   names the CA file; plan it into the phase 3 rotation.
-- Argo CD has no generic health check for custom resources: the chart ships
-  a Lua health check for `ControlPlane` that reads `status.observedGeneration`
-  and `Ready`
-  ([health checks](https://github.com/argoproj/argo-cd/blob/v3.5.6/docs/operator-manual/health.md#L61-L83));
-  Flux reads the same through kstatus, where a permanently failing object
-  stays InProgress until a timeout unless it reports `Stalled`
-  ([kstatus](https://github.com/kubernetes-sigs/cli-utils/blob/v0.37.2/pkg/kstatus/status/status.go#L102-L183)).
+- Phase 2: Argo CD has no generic health check for custom resources
+  ([health checks](https://github.com/argoproj/argo-cd/blob/v3.5.6/docs/operator-manual/health.md#L61-L83)),
+  and kstatus, through which Flux waits, keeps a permanently failing object
+  InProgress until a timeout unless it reports `Stalled`
+  ([kstatus](https://github.com/kubernetes-sigs/cli-utils/blob/v0.37.2/pkg/kstatus/status/status.go#L102-L183));
+  Lodia writes no kstatus `Reconciling`, so the docs ship an Argo CD Lua
+  health check and a Flux `healthCheckExprs` entry
+  ([kustomizations.md](https://github.com/fluxcd/kustomize-controller/blob/v1.10.1/docs/spec/v1/kustomizations.md#L351-L374))
+  for `ControlPlane`, both reading `status.observedGeneration` and `Ready`.
 
 ## From the Datastore controller (2026-10-25)
 
-- Nothing reads `spec.restoreFrom` until restore is built in phase 2: a
-  `ControlPlane` created with it starts on an empty etcd. When restore lands,
+- Nothing reads `spec.restoreFrom` until restore is built in phase 2's wave
+  1b: a `ControlPlane` created with it starts on an empty etcd. When restore lands,
   test the `VolumesExist` remedy end to end: the claims kept, a `Backup` of
   the old cluster, a new `ControlPlane` with `restoreFrom` that serves the old
   data.
@@ -179,22 +182,7 @@ is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the contracts audit (2026-10-25)
 
-- Phase 2: one `status.target.version` cannot order an upgrade's steps,
-  since Workloads and Tenant both render from it; a target per step, decided
-  with a status field that says which version each component runs, and
-  `status.kubernetes.version` written from it: Cluster API creates no worker
-  while a control plane reports no version
-  ([preflight](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/core/reconcilers/machineset/machineset_preflight.go#L174-L181),
-  [provisioning](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/internal/contract/controlplane.go#L277-L293)).
-- Phase 2: `status.endpoint.tunnel`, the tunnel listener's host and port in
-  gateway mode, absent without a tunnel, for Tenant's apiserver-proxy and
-  PKI's certificate.
-- Phase 2: `nodes.outdatedKubelets` compares against the tenant's own
-  `/version`.
-- Phase 2: `Backup` and `KubeconfigRequest` get a named status writer, and
-  `Backup` reports conditions instead of a `phase`.
-- Phase 2: the default `advertiseAddress`, `172.20.0.1`, becomes a constant
-  that Workloads and Tenant both read.
+- Phase 2: `KubeconfigRequest` gets a named status writer.
 - Phase 3: `target.rotation.*`, which `Target` lacks, gets a stage enum of
   its own instead of sharing PKI's observed `RotationPhase`, and
   `rotation.ca` becomes `clusterCA`.
@@ -366,3 +354,36 @@ is a decision — a decision is a file in `docs/decisions/`.
 - With no `status.endpoint.inCluster` yet, Tenant should report
   `WaitingForEndpoint` instead of returning the error of parsing an empty
   address.
+
+## From the phase 2 contracts (2026-10-27)
+
+- The `restore` verb (restore-replaces-the-source, not built): a
+  ValidatingAdmissionPolicy in the chart could require
+  `authorizer…check('restore')` on the `Backup` a new `ControlPlane`'s
+  `restoreFrom` names, for platforms where the right to create
+  `ControlPlane`s is wider than the right to read a namespace's Secrets.
+- A `Backup` that comes back without its status, from a restore of the
+  management cluster that gives new UIDs, would be sealed again from a
+  source that may be empty. The restore's validation proposed the
+  annotation `lodia.io/sealed-uid`, so that such a `Backup` is never sealed
+  again; the decision recovers a management cluster only from a backup that
+  keeps UIDs and did not take it. Settle it with the backups of wave 1b.
+- `docs/operations.md` gets the replace checklist and a Velero recipe for a
+  clone beside a live source, with the restore in wave 1b
+  (restore-replaces-the-source).
+- Health's own metrics, which the availability research suggested and the
+  decisions did not name: failed probes, silent nodes, and the lag of
+  Health's pass, the watchdog of the hold's margin. Name them under
+  metrics-are-part-of-the-api with wave 2, Health, or drop them; the hold
+  itself is `lodia_controlplane_condition{type="ControllerManagerHeld"}`.
+- For the HA pull request: a `KubeSchedulerConfiguration` from
+  `scheduler.configRef` with `leaderElection.leaderElect: false` would run
+  every scheduler replica without a leader Lease, and `ControllersLeading`
+  could never be True. Workloads forces `leaderElect: true` in the
+  configuration it overrides, or the configuration is refused while it says
+  `false`.
+- An IPv6 advertise address Lodia draws: once gateway mode has users with an
+  IPv6 first service range, Workloads could draw a unique local address per
+  `ControlPlane` and keep it beside its CAs, which a platform backs up
+  anyway. `apiServer.advertiseAddress` then becomes optional, which breaks
+  no manifest (api-exposure).

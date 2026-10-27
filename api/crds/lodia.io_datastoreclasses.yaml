@@ -88,15 +88,20 @@ spec:
                     description: Retention is how long snapshots are kept.
                     properties:
                       afterDelete:
-                        description: AfterDelete is how long snapshots outlive their
-                          ControlPlane.
+                        description: |-
+                          AfterDelete is how long snapshots outlive their ControlPlane; no
+                          release deletes them yet.
                         type: string
                         x-kubernetes-validations:
                         - message: must be a duration
                           rule: duration(self) >= duration('0s')
-                      days:
+                      fullSnapshots:
                         default: 30
-                        description: Days of snapshots kept for a running ControlPlane.
+                        description: |-
+                          FullSnapshots is how many full snapshots a running ControlPlane keeps,
+                          the newest: days, at the default schedule. Only the newest keeps the
+                          delta snapshots after it, since no delta retention period is set, so an
+                          older one restores to its own revision.
                         format: int32
                         maximum: 3650
                         minimum: 1
@@ -132,7 +137,8 @@ spec:
                             and would ignore every snapshot under this prefix'
                           rule: '!(self + ''/'').contains(''v1/'')'
                       provider:
-                        description: Provider is S3, GCS, ABS or Swift.
+                        description: 'StoreProvider is the kind of an object store:
+                          S3, GCS, ABS or Swift.'
                         enum:
                         - S3
                         - GCS
