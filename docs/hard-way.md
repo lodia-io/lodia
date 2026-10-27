@@ -3,9 +3,7 @@
 Phase 0 of the [roadmap](roadmap.md): build one tenant control plane in a kind
 cluster with nothing but openssl, kubectl and stock images, join a real node to
 it, and watch every piece work. Each step is something Lodia will automate;
-the callouts say which controller, and what Lodia will do differently. What
-surprises us goes into [What we learned](#what-we-learned) and, from there,
-into decisions.
+the callouts say which controller, and what Lodia will do differently.
 
 Time: about two hours. Files: [`hack/hard-way/`](../hack/hard-way/).
 
@@ -490,10 +488,6 @@ tk -n default logs token-caller | grep -c FAIL             # 0
 apiserver                                                  # the same pod, every count still 0
 mk -n "$CP" logs deploy/"$CP-apiserver" -c lodia-signer | grep 'key set loaded'   # four sets: K₁; K₁+K₂; K₂ signs; K₂
 ```
-
-The API server caches a successful token authentication for ten seconds
-([`TokenSuccessCacheTTL`](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/kubeapiserver/options/authentication.go#L168)),
-so a K₁ token that was used in those ten seconds outlives K₁ by that much.
 
 Put the API server back with `render "$HW/management/20-apiserver.yaml" | mk
 replace -f -` (the patch is not reversible by `apply`), delete
