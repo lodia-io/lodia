@@ -37,16 +37,16 @@ flowchart LR
 
 | step | what you build | Lodia's controller |
 |---|---|---|
-| 3, 4 | certificates, keys, kubeconfigs | PKI |
+| 3, 4, 7 | certificates, keys, kubeconfigs; the bindings of the admin group (step 7) and of the API server's kubelet client (step 9) | PKI |
 | 5 | the tenant's etcd | Datastore |
 | 6, 8 | API server with konnectivity, controller manager, scheduler, Services | Workloads |
-| 7, 9, 10, 12 | RBAC, kubeadm bootstrap objects, kube-proxy, CoreDNS, agents, CNI | Tenant (CNI excepted: the tenant's choice) |
+| 9, 10, 12 | kubeadm bootstrap objects, kube-proxy, CoreDNS, agents with konnectivity-server's binding (step 7), CNI | Tenant (CNI excepted: the tenant's choice) |
 | 13 | checks | the e2e gate |
 | 14b | holding the controller manager | Health |
 
 ## 1. Before you start
 
-- Docker Desktop with at least 6 GB of memory, kind ≥ v0.33, kubectl (a 1.34 or newer client works with the 1.35 cluster), openssl 3, perl (macOS ships it); Go for spike d.
+- Docker Desktop with at least 6 GB of memory, kind ≥ v0.33, kubectl 1.34 to 1.36 (the [version skew policy](https://kubernetes.io/releases/version-skew-policy/#kubectl) supports a client within one minor of the 1.35 API server), openssl 3, perl (macOS ships it); Go for spike d.
 - In every new terminal, from the repository root:
 
   ```bash
@@ -92,7 +92,12 @@ Three CAs and the certificates under them, named as kubeadm names them:
 
 Look at one: `openssl x509 -in "$PKI/apiserver.crt" -noout -text | less`.
 
-> **Lodia (PKI controller):** the same files, plus a CA per purpose: a client CA only the API server trusts, so rotating identities never touches nodes; the controller manager gets an intermediate instead of `ca.key`; tokens are signed by a sidecar instead of `sa.key` ([staged-credential-rotation](decisions/staged-credential-rotation.md)).
+> **Lodia (PKI controller):** the same chain, issued differently ([staged-credential-rotation](decisions/staged-credential-rotation.md), [A tenant namespace](README.md#a-tenant-namespace)).
+> A CA per purpose: a client CA, which no node trusts, signs every identity the API server authenticates, so rotating identities never touches nodes, and the controller manager gets an intermediate under it instead of `ca.key`.
+> No certificate with `system:masters` is stored: PKI makes the first bindings with one it issues for ten minutes and holds in memory ([short-lived-kubeconfigs](decisions/short-lived-kubeconfigs.md)).
+> The groups are Lodia's own: the admin is in `lodia:cluster-admins`, the API server's kubelet client in `lodia:kubelet-api-admins`.
+> Every key is ECDSA P-256 but the ServiceAccount key, an RSA key that a sidecar holds and signs tokens with instead of the API server.
+> etcd's certificates come as generations of five immutable Secrets, a new one per renewal.
 
 ## 4. Kubeconfigs
 
@@ -117,7 +122,8 @@ mk -n "$CP" exec "$CP-etcd-0" -- etcdctl --endpoints=https://127.0.0.1:2379 \
   endpoint status -w table
 ```
 
-One member, client TLS with its own CA, data on a PVC from kind's default StorageClass, a 2 GiB quota, periodic compaction.
+One member, client TLS with its own CA, data on a PVC from kind's default StorageClass.
+The quota, 4 GiB, and periodic compaction every 15 minutes are the defaults of a `DatastoreClass`'s `etcd`; the volume holds the whole quota.
 
 > **Lodia (Datastore):** an `Etcd` resource for etcd-druid instead of this StatefulSet, with continuous snapshots and the peer TLS three members need ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)).
 
@@ -135,7 +141,10 @@ The API server creates `default`, `kube-system`, `kube-public` and `kube-node-le
 The `kubernetes` endpoint is `MGMT_IP:30443`: the advertise address and the secure port, which is why the port is the same as the NodePort.
 Read the flags in [`20-apiserver.yaml`](../hack/hard-way/management/20-apiserver.yaml): the egress selector sends only `cluster` traffic (kubelets, pods, webhooks) through the konnectivity socket; etcd is dialled directly.
 
-> **Lodia (Workloads):** the same pod plus the `lodia-signer` sidecar; in gateway mode the advertise address is `240.0.0.1` by default, served on every node by apiserver-proxy ([api-exposure](decisions/api-exposure.md)).
+> **Lodia (Workloads):** the same pod, with konnectivity-server and `lodia-signer` as native sidecars, which start before the API server and stop after it ([A tenant namespace](README.md#a-tenant-namespace)).
+> The API server listens on 6443 in every mode, and the Service `<cp>-kube-apiserver` takes 443 and 6443 to it.
+> It runs with `--endpoint-reconciler-type=none`, and Tenant writes the `kubernetes` endpoints from `status.endpoint.inCluster`, so no secure port has to match a node port ([api-exposure](decisions/api-exposure.md)).
+> In gateway mode the advertise address is `240.0.0.1` by default, served on every node by apiserver-proxy.
 
 ## 7. Bind the admin group, then put super-admin away
 
@@ -178,7 +187,7 @@ kubeadm init phase addon coredns --config /work/kubeadm.yaml --kubeconfig /work/
 ```
 
 Now look at what it wrote.
-**This list is the Tenant controller's job**:
+**This list is the Tenant controller's job**, but for three objects: the bootstrap-token Secret, which the cluster's owner creates with `kubeadm token create`, and the bindings `kubeadm:cluster-admins` (step 7) and `kubeadm:apiserver-kubelet-client`, whose places PKI's `lodia:cluster-admins` and `lodia:kubelet-api-admins` take:
 
 ```bash
 tk -n kube-public get configmap cluster-info -o yaml   # a kubeconfig with no user, and jws-kubeconfig-<token id>
@@ -190,7 +199,7 @@ tk -n kube-public get roles,rolebindings
 
 The `jws-kubeconfig-…` key appears only once the controller manager's bootstrap signer has signed `cluster-info` with the token: that signature is how a joining node knows the CA it downloaded came from someone holding the token.
 
-> **Lodia (Tenant):** the same objects, rendered from its own templates (no `k8s.io/kubernetes` import), applied with an inventory and pruned ([nodes-join-with-kubeadm](decisions/nodes-join-with-kubeadm.md)).
+> **Lodia (Tenant):** the objects above but those three, rendered from its own templates (no `k8s.io/kubernetes` import), applied with an inventory and pruned ([nodes-join-with-kubeadm](decisions/nodes-join-with-kubeadm.md)).
 
 ## 10. konnectivity agents
 
@@ -198,7 +207,7 @@ The `jws-kubeconfig-…` key appears only once the controller manager's bootstra
 render "$HW/tenant/10-konnectivity-agent.yaml" | tk apply -f -
 ```
 
-They stay `Pending`: there is no node yet.
+The DaemonSet creates no pod until a node joins in step 11 ([DaemonSet](https://kubernetes.io/docs/concepts/workloads/controllers/daemonset/)).
 
 ## 11. Join a node
 
@@ -217,7 +226,7 @@ tk get nodes -o wide   # NotReady until a CNI runs
 tk get csr             # the kubelet's client certificate, approved by the controller manager
 ```
 
-What happened: kubeadm read `cluster-info` anonymously, checked its signature with the token and its CA against the hash, logged in with the token, posted a CSR, got it auto-approved, wrote `kubelet.conf`, and started the kubelet.
+What happened: kubeadm read `cluster-info` anonymously, checked its signature with the token and its CA against the hash, read the cluster's configuration with the token, wrote `bootstrap-kubelet.conf` and started the kubelet, which posted a CSR, got it auto-approved and wrote `kubelet.conf` ([kubelet.go](https://github.com/kubernetes/kubernetes/blob/v1.35.8/cmd/kubeadm/app/cmd/phases/join/kubelet.go#L277-L295)).
 
 ## 12. The CNI
 

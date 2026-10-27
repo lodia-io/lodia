@@ -106,7 +106,7 @@ When two steps of a reconcile render the same Deployment (first without an add-o
 | separate pods per component cost density | an optional `Compact` layout: one pod per tenant with a shared store | [compact-layout](decisions/compact-layout.md) |
 | control planes roll twice at creation | every component rendered in one pass by one controller | [independent-controllers](decisions/independent-controllers.md) |
 | a sequential reconcile makes failures global | six controllers with their own queues, coupled only by conditions | [independent-controllers](decisions/independent-controllers.md) |
-| standing admin credentials in the super-user group | short-lived kubeconfigs; the standing admin group is revocable | [short-lived-kubeconfigs](decisions/short-lived-kubeconfigs.md) |
+| standing admin credentials in the super-user group | short-lived kubeconfigs; the standing admin credential in a group RBAC governs | [short-lived-kubeconfigs](decisions/short-lived-kubeconfigs.md) |
 
 ## What we take from each
 

@@ -43,7 +43,7 @@ spec:
             - --cert-file=/pki/etcd-server.crt
             - --key-file=/pki/etcd-server.key
             - --listen-metrics-urls=http://0.0.0.0:2381
-            - --quota-backend-bytes=2147483648
+            - --quota-backend-bytes=4294967296
             - --auto-compaction-mode=periodic
             - --auto-compaction-retention=15m
             - --snapshot-count=10000
@@ -70,4 +70,4 @@ spec:
     - metadata: {name: data}
       spec:
         accessModes: [ReadWriteOnce]
-        resources: {requests: {storage: 1Gi}}
+        resources: {requests: {storage: 4Gi}}
