@@ -2,7 +2,7 @@
 
 Супутник до [`hard-way.md`](hard-way.md), щоб пройти його з наставником.
 Команди лишаються в оригіналі; тут для кожного кроку — що й навіщо будуємо, які сертифікати й облікові дані працюють, що робить Lodia замість тебе і як перевірити результат.
-Позначка «Розбіжність:» стоїть там, де `hard-way.md` або його скрипти розходяться із сьогоднішньою Lodia, між собою чи з upstream.
+Позначка «Виправлено в #40» стоїть там, де `hard-way.md` або його скрипти розходилися із сьогоднішньою Lodia, між собою чи з upstream; [#40](https://github.com/lodia-io/lodia/pull/40) виправляє всі такі місця.
 Звірено з `main` на коміті `b405d2b`.
 
 ## Карта
@@ -41,7 +41,7 @@ flowchart LR
 Для 1.35.8 образи ті самі, крім etcd: Lodia запускає 3.5.27 з обгортки etcd-druid, а не kubeadm'івську 3.6.6 ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md#consequences)).
 Правило «ніколи поточний kube-контекст» у Lodia — перевірка в коді: e2e відмовляється працювати з кластером, якого не названо явно ([e2e-on-a-named-cluster](decisions/e2e-on-a-named-cluster.md)).
 
-**Розбіжність:** «a 1.34 or newer client works with the 1.35 cluster» — kubectl підтримується в межах однієї мінорної версії від kube-apiserver, тобто 1.34–1.36 ([version skew policy](https://kubernetes.io/releases/version-skew-policy/#kubectl)).
+**Виправлено в [#40](https://github.com/lodia-io/lodia/pull/40):** оригінал допускав будь-який kubectl від 1.34, а підтримується лише клієнт у межах однієї мінорної версії від kube-apiserver, тобто 1.34–1.36 ([version skew policy](https://kubernetes.io/releases/version-skew-policy/#kubectl)).
 
 **Перевірка.** `type mk tk`: обидві функції передають kubectl свій `--kubeconfig`.
 
@@ -90,7 +90,7 @@ flowchart LR
 - Листові сертифікати живуть рік і оновлюються на двох третинах терміну; сертифікати etcd — поколіннями (крок 5).
 - Що в якому Secret і хто його читає — [A tenant namespace](README.md#a-tenant-namespace); стан — `CertificatesReady`.
 
-**Розбіжність:** врізка «the same files» неточна: `super-admin` немає, групи адміна й `apiserver-kubelet-client` інші, ключі ECDSA, сертифікати etcd — поколіннями.
+**Виправлено в [#40](https://github.com/lodia-io/lodia/pull/40):** врізка казала «the same files», хоча `super-admin` немає, групи адміна й `apiserver-kubelet-client` інші, ключі ECDSA, а сертифікати etcd — поколіннями.
 
 **Перевірка.**
 
@@ -141,7 +141,7 @@ Secret `tenant-a-pki` — уся тека `$PKI`, разом з `ca.key`, `etcd-
 - При видаленні Datastore під фіналізатором `lodia.io/datastore` видаляє `Etcd`, а томи видаляє чи лишає за `reclaimPolicy` класу ([Deletion](README.md#deletion)).
 - Три члени — з HA у хвилі 1b; стан — `DatastoreReady`.
 
-**Розбіжність:** квота 2 GiB у `10-etcd.yaml` більша за PVC, який він просить, — 1Gi.
+**Виправлено в [#40](https://github.com/lodia-io/lodia/pull/40):** `10-etcd.yaml` просив PVC 1Gi під квоту 2 GiB; тепер квота 4 GiB, як за замовчуванням в `etcd` класу, на томі 4Gi.
 
 **Перевірка.** `etcdctl … endpoint status` з оригіналу; `endpoint health` з тими самими прапорцями каже `is healthy`.
 У Lodia: `DatastoreReady=True` і `kubectl get etcd -n <ns>`.
@@ -172,7 +172,7 @@ konnectivity-server не слухає TCP для API server (`--server-port=0` �
 - HA з хвилі 1b: дві репліки з PDB, рознесені по нодах.
 - Стан — `APIServerReady`; Health кожні 10 с питає `/readyz` на публічній точці входу без облікових даних, і `Reachable` падає після трьох невдач поспіль ([Health](README.md#health)).
 
-**Розбіжність:** врізка «the same pod plus the `lodia-signer` sidecar» застаріла: konnectivity-server теж став native sidecar, а порт і endpoints — інші.
+**Виправлено в [#40](https://github.com/lodia-io/lodia/pull/40):** врізка казала «the same pod plus the `lodia-signer` sidecar», хоча konnectivity-server теж став native sidecar, а порт і endpoints — інші.
 
 **Перевірка.** Три команди оригіналу; у `/readyz?verbose` є `[+]etcd ok`.
 `openssl s_client -connect "127.0.0.1:$APISERVER_PORT" </dev/null 2>/dev/null | openssl x509 -noout -subject -issuer` показує `kube-apiserver` від `kubernetes`.
@@ -189,7 +189,7 @@ konnectivity-server не слухає TCP для API server (`--server-port=0` �
 Видалена `lodia:cluster-admins` повертається на наступному проході PKI, тож відкликати адмінські kubeconfig'и можна лише ротацією client CA, фаза 3 ([Forced CA rotation](operations.md#forced-ca-rotation)).
 Прив'язку `system:konnectivity-server` і її Role на Lease пише Tenant (`internal/controller/tenant/manifests/konnectivity.yaml`).
 
-**Розбіжність:** таблиця на початку `hard-way.md` віддає крок 7 Tenant'у; сьогодні прив'язка адмінів — PKI, а в Tenant'а лише konnectivity.
+**Виправлено в [#40](https://github.com/lodia-io/lodia/pull/40):** таблиця на початку `hard-way.md` віддавала крок 7 Tenant'у, хоча прив'язка адмінів — PKI, а в Tenant'а лише konnectivity.
 
 **Перевірка.** `tk auth whoami` і `tk auth can-i '*' '*'` з оригіналу; `kubectl --kubeconfig "$WORK/super-admin.conf" auth whoami` показує групу `system:masters`.
 
@@ -237,7 +237,7 @@ konnectivity-server не слухає TCP для API server (`--server-port=0` �
 - Замість `kubeadm:apiserver-kubelet-client` — прив'язка групи `lodia:kubelet-api-admins` від PKI (крок 7).
 - Стан — `AddonsApplied` і `AddonsAvailable`; другий у `Ready` не входить, бо подам потрібні ноди й CNI власника.
 
-**Розбіжність:** «This list is the Tenant controller's job» включає Secrets bootstrap-токенів, яких Lodia не створює; врізка «the same objects» мовчить і про це, і про `kubeadm:apiserver-kubelet-client`, який у Lodia замінює прив'язка PKI.
+**Виправлено в [#40](https://github.com/lodia-io/lodia/pull/40):** «This list is the Tenant controller's job» включав Secrets bootstrap-токенів, яких Lodia не створює, а врізка «the same objects» мовчала про них і про прив'язки, які в Lodia робить PKI.
 
 **Перевірка.** Команди оригіналу; `tk -n kube-public get configmap cluster-info -o jsonpath='{.data.kubeconfig}' | grep server` показує `MGMT_IP:30443`.
 
@@ -258,7 +258,7 @@ konnectivity-server не слухає TCP для API server (`--server-port=0` �
 - Пріоритет `system-node-critical` і толерування будь-яких taint'ів; режим `Deployment` — за `addons.konnectivity.agent.mode`.
 - Адреса — `status.endpoint.konnectivity`; у режимі `gateway` агенти йдуть на `konnectivity.<cp>:443` за SNI (крок 14c).
 
-**Розбіжність:** «They stay `Pending`» — агентів розгортає DaemonSet, а він без нод не створює жодного пода ([DaemonSet](https://kubernetes.io/docs/concepts/workloads/controllers/daemonset/)).
+**Виправлено в [#40](https://github.com/lodia-io/lodia/pull/40):** оригінал казав «They stay `Pending`», а DaemonSet без нод не створює жодного пода ([DaemonSet](https://kubernetes.io/docs/concepts/workloads/controllers/daemonset/)).
 
 **Перевірка.** `tk -n kube-system get daemonset konnectivity-agent` показує `DESIRED 0` до кроку 11.
 
@@ -285,7 +285,7 @@ Node-авторизатор і `NodeRestriction` дають kubelet'у змін�
 - CA Lodia — ECDSA, і `openssl rsa -pubin` з оригіналу на ньому падає з `Not an RSA key`: бери `openssl pkey -pubin -outform der` або хеш з `kubeadm token create --print-join-command`.
 - e2e ігнорує лише preflight-перевірку `SystemVerification`, а не всі ([test/e2e](../test/e2e/README.md)).
 
-**Розбіжність:** «posted a CSR, got it auto-approved, wrote `kubelet.conf`, and started the kubelet» — порядок інший: kubeadm пише `bootstrap-kubelet.conf` і запускає kubelet, а CSR подає вже kubelet і сам перетворює той файл на `kubelet.conf` ([kubelet.go](https://github.com/kubernetes/kubernetes/blob/v1.35.8/cmd/kubeadm/app/cmd/phases/join/kubelet.go#L277-L295)).
+**Виправлено в [#40](https://github.com/lodia-io/lodia/pull/40):** «What happened» мав інший порядок: насправді kubeadm пише `bootstrap-kubelet.conf` і запускає kubelet, а CSR подає вже kubelet і сам перетворює той файл на `kubelet.conf` ([kubelet.go](https://github.com/kubernetes/kubernetes/blob/v1.35.8/cmd/kubeadm/app/cmd/phases/join/kubelet.go#L277-L295)).
 
 **Перевірка.** `tk get csr`: SIGNERNAME `kubernetes.io/kube-apiserver-client-kubelet`, REQUESTOR `system:bootstrap:<id>`, CONDITION `Approved,Issued`.
 `docker exec "$NODE" cat /var/lib/kubelet/pki/kubelet-client-current.pem | openssl x509 -noout -subject -issuer` показує `system:node:tenant-a-node-1` від `kubernetes`.
