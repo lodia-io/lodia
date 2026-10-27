@@ -1,9 +1,7 @@
 # End-to-end tests
 
 The suite runs only against a kind cluster whose kubeconfig is named on the
-command line: `E2E_KUBECONFIG` points at a file with exactly one context, and
-that context's name starts with `kind-lodia-e2e`. Anything else, the current
-kube context included, stops it before the first request
+command line, in `E2E_KUBECONFIG`
 ([decision](../../docs/decisions/e2e-on-a-named-cluster.md)).
 
 `make e2e` creates the kind cluster `lodia-e2e-local` (`E2E_CLUSTER` changes
@@ -83,10 +81,9 @@ chart installed.
   connections and ten times a second on reused ones, with plain HTTP clients
   that give up after 5 seconds. They follow an answer's `Retry-After` once,
   as client-go does
-  ([with_retry.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/with_retry.go#L308-L318)):
-  a stopping API server answers a request that reaches it on a connection
-  still open, as it starts to drain, with `503` and `Retry-After`
-  ([waitgroup.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/server/filters/waitgroup.go#L79-L96)).
+  ([with_retry.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/with_retry.go#L308-L318)),
+  which a draining API server sends
+  ([api-exposure](../../docs/decisions/api-exposure.md)).
   They retry nothing else, since client-go would also retry a GET whose
   connection broke, which hides a lost request
   ([request.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/request.go#L1066-L1078)).
@@ -185,9 +182,7 @@ The tenant has the gate's shape, and two containers of kind's node image,
 agent and CoreDNS is available, the test leaves the tenant idle for 3
 minutes, then reads the resource metrics of the management kubelets,
 `/metrics/resource`, through the management API server's node proxy, twice,
-5 minutes apart, for every container of the control plane's pods: the API
-server, konnectivity-server and the signer, the controller manager, the
-scheduler, etcd and its backup-restore sidecar. CPU is the rate of
+5 minutes apart, for every container of the control plane's pods. CPU is the rate of
 `container_cpu_usage_seconds_total`, the container's cumulative CPU time in
 core-seconds, between the two samples' timestamps; memory is
 `container_memory_working_set_bytes` at the second, the working set:
