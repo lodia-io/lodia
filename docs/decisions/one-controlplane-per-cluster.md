@@ -1,7 +1,7 @@
 # One ControlPlane object describes one tenant cluster; four small objects describe storage classes, shared stores, access and snapshots
 
 Decided 2026-10-25.
-The five kinds are built as types and CRDs; no controller acts on them yet.
+The five kinds are built as types and CRDs; the six controllers act on `ControlPlane`, the Datastore controller also on `DatastoreClass`, and nothing yet on `Datastore`, `KubeconfigRequest` and `Backup`.
 
 ## Decision
 
@@ -20,7 +20,7 @@ Rules that hold across all of them:
 - `spec` is what the user wants, `status` is what Lodia did.
   Status is a subresource; `status.conditions` follow the Kubernetes API conventions (`metav1.Condition` with `observedGeneration`); `status.observedGeneration` is set only after a full successful pass.
 - Everything a `ControlPlane` creates in its namespace carries an `ownerReference` to it and the label `lodia.io/control-plane: <name>`; deleting the `ControlPlane` garbage-collects it.
-  The dedicated etcd's volumes and its backups follow the `DatastoreClass` reclaim policy.
+  The dedicated etcd's volumes follow the `DatastoreClass` reclaim policy; its snapshots stay, since nothing deletes them yet ([dedicated-etcd-by-default](dedicated-etcd-by-default.md)).
 - A `ControlPlane` has one finalizer, `lodia.io/datastore`, which the Datastore controller holds ([deletion](../README.md#deletion)).
 - Imperative operations that are not desired state — starting or completing a credential rotation — are requested through the annotation `lodia.io/operation`.
   Lodia never removes it: it acts once on each value it has not handled and records that value in `status`, so a GitOps tool that keeps the annotation in Git never repeats an operation, and running one again takes a new value (`<operation>@<anything>`).
