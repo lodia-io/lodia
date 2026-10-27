@@ -133,8 +133,7 @@ Two steps follow, the second once the first has recovered:
 1. One API server pod is deleted; the step ends 30 seconds after the pod is gone and two replicas are ready.
 2. The pod of the etcd leader, the member whose role `Etcd.status.members` gives as `Leader`, is deleted; the step ends 30 seconds after its replacement runs and etcd-druid reports three members ready, one of them the leader.
 
-In each step `Ready` must not leave `True` for longer than 5 seconds, Health's period in the gate, and the loop inside the tenant must lose no request.
-The loop outside must lose none in the first step; its counts in the second are logged, not asserted.
+In each step `Ready` must not leave `True` for longer than 5 seconds, Health's period in the gate, and neither loop may lose a request.
 The test logs each recorded change and, for each condition, the longest time it was not `True`.
 
 ## Nightly: conformance and the idle control plane
