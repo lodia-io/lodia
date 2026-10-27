@@ -63,7 +63,7 @@ in [`api/examples/`](api/examples/).
 | controller | writes | condition | needs |
 |---|---|---|---|
 | PKI | Secrets with certificates, keys and kubeconfigs; the tenant's bindings for Lodia, the admin group and the kubelet client | `CertificatesReady`, `AccessReady`; `CAValidityAcceptable` outside `Ready` | `status.endpoint`; `APIServerReady` for the bindings |
-| Datastore | the `Etcd` of a dedicated etcd and its NetworkPolicy — built, for one member — or a user and role in a shared store; backups and defragmentation | `DatastoreReady`; `BackupReady` outside `Ready` from wave 1b | a complete generation of PKI's etcd certificates |
+| Datastore | the `Etcd` of a dedicated etcd and its NetworkPolicy — built — or a user and role in a shared store; backups and defragmentation | `DatastoreReady`; `BackupReady` outside `Ready` from wave 1b | a complete generation of PKI's etcd certificates |
 | Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady` | `status.target`, `status.datastore`, `CertificatesReady`, `DatastoreReady`; `AddonsApplied` before it starts a restored `ControlPlane`'s controller manager, from wave 1b |
 | Tenant | objects inside the tenant cluster, with an inventory | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
 | Health | status, and from phase 2's wave 2 the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable`, and `ControllersLeading` from wave 1b; `ControllerManagerHeld` outside `Ready` from wave 2 | `status.endpoint` and the CA bundle; `AccessReady` from wave 1b |
@@ -104,13 +104,9 @@ sequenceDiagram
   Note over U,T: Lifecycle sets Ready, then the owner runs kubeadm join on nodes
 ```
 
-What each example of failure does: an etcd that loses quorum turns
-`DatastoreReady` False with `QuorumLost` (phase 2's wave 1b, HA), while a
-member that rolls or is lost leaves it True as long as the others keep
-quorum; Workloads leaves the Deployments alone and PKI keeps renewing
-certificates. A changed controller-manager flag
-rolls only its Deployment. A deleted CoreDNS Deployment inside the tenant
-returns at the next inventory apply.
+What each example of failure does: an etcd that loses quorum turns `DatastoreReady` False with `QuorumLost`, while a member that rolls or is lost leaves it True as long as the others keep quorum; Workloads leaves the Deployments alone and PKI keeps renewing certificates.
+A changed controller-manager flag rolls only its Deployment.
+A deleted CoreDNS Deployment inside the tenant returns at the next inventory apply.
 
 ## A tenant namespace
 
@@ -417,7 +413,7 @@ everything the class does not set is etcd-druid's default:
 | `backup.retention.fullSnapshots` | `spec.backup.garbageCollectionPolicy: LimitBased`, `.maxBackupsLimitBasedGC` | the newest full snapshots kept: days, at the default schedule of one a day; only the newest keeps the deltas after it, since neither Lodia nor etcd-druid sets a delta retention period, so an older one restores to its own revision ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)) |
 | `backup.retention.afterDelete` | — | not built: nothing deletes a prefix, so a platform expires old ones with its bucket's lifecycle rules ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)) |
 | `placement.nodeSelector`, `.tolerations`, `.priorityClassName` | `spec.schedulingConstraints.affinity` (as required node affinity), `.tolerations`, `spec.priorityClassName` | the `Etcd` has no node selector |
-| the `ControlPlane`'s availability | `spec.replicas` | 1 today, and `DatastoreReady` is `Unsupported` with `highAvailability`; 3 with `highAvailability` and 0 while hibernating come with later phases |
+| the `ControlPlane`'s `highAvailability` | `spec.replicas`, `spec.schedulingConstraints.topologySpreadConstraints`, the annotation `resources.druid.gardener.cloud/allow-unhealthy-pod-eviction` | 3 members with `highAvailability`, 1 without, and a scale etcd-druid has not completed keeps its count, since its schema refuses the opposite direction meanwhile ([etcd.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/etcd.go#L72-L74)); the members spread over three nodes, and with `Zone` over three zones too, beside the class's placement; the annotation lets etcd-druid's PodDisruptionBudget evict an unhealthy member always ([poddisruptionbudget.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/poddistruptionbudget/poddisruptionbudget.go#L121-L125)); 0 while hibernating comes with phase 3 |
 | the etcd certificates, generation `g` | `spec.etcd.clientUrlTls`, `spec.etcd.peerUrlTls`, `spec.backup.tls` | all three name one complete generation, with `dataKey: ca.crt` on the CA; a generation counts only while its five Secrets are this `ControlPlane`'s (its controller reference), so a predecessor's or an orphaned generation, which trusts another etcd CA, never starts an etcd before PKI has checked and adopted it; a newer complete generation is one update of the `Etcd`, so one roll of the members; the `Etcd` never moves below the generation it names: the newest complete one is older while a Secret of the named one is being deleted, and the older generation PKI keeps can have expired |
 
 A class is checked when it is written, since a value refused later stops
@@ -450,45 +446,17 @@ the manager with it
 ([controller.go](https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/internal/controller/controller.go#L363-L386));
 `test/api/durations_test.go` holds every duration of the API to that.
 
-`DatastoreReady` is `Unknown`, reason `Reconciling`, until the controller's
-first pass has finished, `WaitingForCertificates` until a complete
-certificate generation this `ControlPlane` controls exists, and
-`Provisioning` until etcd-druid reports the `Etcd` ready for its current
-generation. A shared store is `Unsupported` until phase 3, and so is
-`highAvailability`, whose etcd runs one member: `DatastoreReady` is never
-True while it is set. Every Secret the `Etcd` mounts must exist — the five of its
-certificate generation and, with a store, `<cp>-etcd-backup` — or the next
-start of a member fails; a terminating one still counts, since etcd-druid
-holds its finalizer on every Secret an `Etcd` references until none does
-([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/secret/reconciler.go#L44-L101)),
-so a Secret the `Etcd` names is gone only when someone removed that
-finalizer ([operations](operations.md#a-secret-the-etcd-mounts-is-gone)).
-etcd-druid's report is read with the checks Gardener makes
-before it counts an `Etcd` ready
-([waiter.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/component/etcd/etcd/waiter.go#L49-L104)):
-no deletion timestamp, `observedGeneration` current, `AllMembersUpdated`
-True, `ready`. Gardener's waiter, a one-shot wait, also retries while there
-are `lastErrors`; Datastore does not read them, since etcd-druid clears them
-at the start of every spec reconcile, every 15 seconds, and sets them again
-on a failure
-([etcdstatus.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/utils/etcdstatus.go#L45-L93)),
-so a persistent error would flip the condition, while a failed StatefulSet
-sync at a new generation shows anyway: etcd-druid returns before it stamps
-`observedGeneration`
-([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcd/reconciler.go#L127-L144)).
-A persistent failure of etcd-druid's other objects (the client Service, the
-ConfigMap, the leases) at a generation it has observed shows only in
-`lastErrors` ([operations](operations.md#what-breaks-and-how-it-shows)). Then the
-StatefulSet itself, read from the API server, must mount the certificate
-generation, its controller must have observed its generation, and every
-replica must be updated and ready: etcd-druid syncs the StatefulSet, then
-computes `ready` from the StatefulSet its cache holds, and only then stamps
-`observedGeneration`
-([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcd/reconciler.go#L102-L148),
-[reconcile_status.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcd/reconcile_status.go#L57-L80),
-[reconcile_complete.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcd/reconcile_complete.go#L33-L42)),
-so its report can call a generation switch ready before the member rolled.
-True once every check holds.
+`DatastoreReady` is `Unknown`, reason `Reconciling`, until the controller's first pass has finished, and `WaitingForCertificates` until a complete certificate generation this `ControlPlane` controls exists.
+A shared store is `Unsupported` until phase 3.
+Every Secret the `Etcd` mounts must exist — the five of its certificate generation and, with a store, `<cp>-etcd-backup` — or the next start of a member fails, and `DatastoreReady` is `Provisioning`, naming them.
+A terminating one still counts, since etcd-druid holds its finalizer on every Secret an `Etcd` references until none does ([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/secret/reconciler.go#L44-L101)), so a Secret the `Etcd` names is gone only when someone removed that finalizer ([operations](operations.md#a-secret-the-etcd-mounts-is-gone)).
+Then `DatastoreReady` is True while the etcd has quorum: while a majority of the members the `Etcd` asks for are ready, as etcd-druid counts them from the StatefulSet ([reconcile_status.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcd/reconcile_status.go#L57-L80)).
+A member is ready once it answers a linearizable read, which needs a leader with a quorum ([readycheck.go](https://github.com/gardener/etcd-wrapper/blob/v0.8.2/internal/app/readycheck.go#L50-L60)).
+One ready member is enough while etcd-druid scales the etcd, whose new members join as learners that do not vote ([member_control.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/member/member_control.go#L133-L170)), or has not observed a new count yet.
+With fewer, the etcd is `QuorumLost` once it has had quorum, and `Provisioning` before, the message saying what is awaited.
+`status.datastore.members` counts the members: `ready` from etcd-druid's report, and `updated`, those of the `Etcd`'s current spec that are available, from the StatefulSet, once etcd-druid and the StatefulSet controller have observed that spec.
+Datastore does not read etcd-druid's `lastErrors`, which etcd-druid clears at the start of every spec reconcile, every 15 seconds, and sets again on a failure ([etcdstatus.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/utils/etcdstatus.go#L45-L93)).
+A persistent failure shows in them alone, and, at a new generation, as `updated` absent, since etcd-druid stamps `observedGeneration` only after the sync ([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcd/reconciler.go#L127-L144), [operations](operations.md#what-breaks-and-how-it-shows)).
 
 The other reasons: `DatastoreClassNotFound`, before the `Etcd` exists, when
 the class is missing or no class is the default, and `DatastoreClassAmbiguous`
@@ -542,36 +510,16 @@ and admits, for their ingress alone, what dials them:
 | client, 2379 | the API server's pods: `lodia.io/control-plane: <cp>`, `app.kubernetes.io/name: kube-apiserver` | the API server, through the client Service |
 | client, 2379, from phase 2's wave 2, observability | the operator's pods | the Datastore controller, which samples the etcd's `Status` once a minute for Lodia's metrics: the database size, the quota and the leader ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)) |
 | client, 2379; peer, 2380 | the members | the members, each other on the peer port ([etcdconfig.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/configmap/etcdconfig.go#L150-L166)); their backup-restore sidecars on the client port, through the client Service, to list the members at every start and to add their own as a learner when the cluster grows ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L474-L477), [httpAPI.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/server/httpAPI.go#L452-L455), [member_control.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/member/member_control.go#L102-L104)) |
-| backup-restore, 8080, only with a backup store | the pods of etcd-druid's namespace, by `kubernetes.io/metadata.name`: the operator's flag `--etcd-druid-namespace`, which the chart sets ([Installation](#installation)) | etcd-druid, for snapshots: an `EtcdOpsTask`'s, the one it takes before it rolls the members for a new image or replica count, and compaction's, none of them without a store ([ondemandsnapshot.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcdopstask/handler/ondemandsnapshot/ondemandsnapshot.go#L103), [statefulset.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/statefulset.go#L108-L150), [snapshot.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/compaction/snapshot.go#L117-L124)) |
+| client, 2379, with more than one member | the pods of etcd-druid's namespace, by `kubernetes.io/metadata.name`: the operator's flag `--etcd-druid-namespace`, which the chart sets ([Installation](#installation)) | etcd-druid, to remove a member in a scale-in ([memberremoval.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/memberremoval.go#L31-L39)) |
+| backup-restore, 8080, with a backup store and more than one member | the members | a sidecar that is not the backup leader, which forwards a snapshot request to the leader's ([httpAPI.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/server/httpAPI.go#L281-L288)) |
+| backup-restore, 8080, only with a backup store | the pods of etcd-druid's namespace | etcd-druid, for snapshots: an `EtcdOpsTask`'s, the one it takes before it rolls the members for a new image or replica count, and compaction's, none of them without a store ([ondemandsnapshot.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcdopstask/handler/ondemandsnapshot/ondemandsnapshot.go#L103), [statefulset.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/statefulset.go#L108-L150), [snapshot.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/compaction/snapshot.go#L117-L124)) |
 
-Nothing else dials them. The wrapper and the sidecar reach their own etcd
-and each other through the pod's loopback, by the host alias
-`<cp>-etcd-local`
-([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L211-L218),
-[builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L626-L627)),
-and the kubelet probes them from the node, neither of which a NetworkPolicy
-blocks
-([network policies](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/concepts/services-networking/network-policies.md#L467-L468));
-a compaction Job restores the snapshots into an etcd of its own
-([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/compaction/reconciler.go#L812-L857));
-and etcd-druid dials the client port only to remove a member in a scale-in
-([memberremoval.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/memberremoval.go#L31-L39)),
-which one member never has: phase 2 admits it with three members. The ports
-are etcd-druid's defaults, which the `Etcd` leaves unset
-([client](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/common/constants.go#L15-L16),
-[the others](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/common/constants.go#L55-L60)),
-named by number, since the peer port and the sidecar's share the container
-port name `server`
-([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L376-L387),
-[builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L414-L420)).
-A policy under the name is found uncached too, as the `Etcd` is; one
-without a controller is adopted, and one another owner keeps is never
-written over. The `Etcd` meanwhile takes each certificate generation as
-before, and `DatastoreReady`, once the etcd is otherwise ready, is False
-with `ObjectsControlledElsewhere`, naming the policy and its owner, and
-checked again every minute: a previous `ControlPlane`'s goes with the
-garbage collector, any other owner's with a person. A policy the API server
-refuses is `Refused` the same way, and retried with backoff.
+Nothing else dials them.
+The wrapper and the sidecar reach their own etcd and each other through the pod's loopback, by the host alias `<cp>-etcd-local` ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L211-L218), [builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L626-L627)), and the kubelet probes them from the node, neither of which a NetworkPolicy blocks ([network policies](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/concepts/services-networking/network-policies.md#L467-L468)); a compaction Job restores the snapshots into an etcd of its own ([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/compaction/reconciler.go#L812-L857)).
+The ports are etcd-druid's defaults, which the `Etcd` leaves unset ([client](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/common/constants.go#L15-L16), [the others](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/common/constants.go#L55-L60)), named by number, since the peer port and the sidecar's share the container port name `server` ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L376-L387), [builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L414-L420)).
+A policy under the name is found uncached too, as the `Etcd` is; one without a controller is adopted, and one another owner keeps is never written over.
+The `Etcd` meanwhile takes each certificate generation as before, and `DatastoreReady`, once the etcd is otherwise ready, is False with `ObjectsControlledElsewhere`, naming the policy and its owner, and checked again every minute: a previous `ControlPlane`'s goes with the garbage collector, any other owner's with a person.
+A policy the API server refuses is `Refused` the same way, and retried with backoff.
 
 Identities: no root CA key is mounted into a control plane pod; the
 controller manager holds only the kubelet signer, an intermediate that signs

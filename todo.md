@@ -93,16 +93,9 @@ is a decision — a decision is a file in `docs/decisions/`.
   `DatastoreClass` and stay etcd-druid's default (50m / 128Mi at v0.39.0);
   the operator configuration's `defaults.resources` should cover them once
   phase 1 measures.
-- The shared `Placement` and `resources` types get the rules of pod
-  validation with Workloads, which renders them for the `ControlPlane` in
-  phase 1: the class's `placement` and `etcd.resources` have none yet. Until
-  then a class value the apps API refuses in etcd-druid's StatefulSet shows as
-  `DatastoreReady=False`, since etcd-druid returns before it stamps
-  `observedGeneration`
-  ([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcd/reconciler.go#L127-L144)):
-  the running member stays, later certificate generations stop reaching it
-  until the class is fixed, and the reason is in the `Etcd`'s
-  `status.lastErrors`.
+- The shared `Placement` and `resources` types get the rules of pod validation with Workloads, which renders them for the `ControlPlane` in phase 1: the class's `placement` and `etcd.resources` have none yet.
+  Until then a class value the apps API refuses in etcd-druid's StatefulSet shows as `status.datastore.members.updated` absent, since etcd-druid returns before it stamps `observedGeneration` ([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcd/reconciler.go#L127-L144)).
+  The running members stay, later certificate generations stop reaching them until the class is fixed, and the reason is in the `Etcd`'s `status.lastErrors`.
 - No schema can check what pod admission refuses in a pod the StatefulSet
   API accepted: a `priorityClassName` that names no PriorityClass, or one
   deleted later, and a LimitRange or ResourceQuota in the tenant namespace.
@@ -235,16 +228,6 @@ is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the etcd NetworkPolicy (2026-10-26)
 
-- Phase 2, with three members: etcd-druid removes a member in a scale-in
-  through the client Service
-  ([memberremoval.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/memberremoval.go#L31-L39),
-  [client.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/client/etcd/client.go#L82-L95)),
-  so the etcd's policy admits etcd-druid's namespace to the client port then,
-  and the members to each other's backup-restore port: a sidecar that is not
-  the backup leader forwards snapshot requests to the leader's
-  ([httpAPI.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/server/httpAPI.go#L281-L288)),
-  which Gardener opens between members for the same reason
-  ([etcd.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/component/etcd/etcd/etcd.go#L404-L411)).
 - The etcd's policy admits no metrics scraper, as the controller manager's
   and the scheduler's do not: a ServiceMonitor for the etcd and sidecar
   metrics needs its scraper admitted, the phase 2 arrow from the metrics

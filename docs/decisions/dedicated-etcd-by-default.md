@@ -1,15 +1,10 @@
 # Every tenant gets its own etcd, run by etcd-druid; a shared etcd is an opt-in for density
 
-Decided 2026-10-24. The phase 0 spike found etcd-druid fit
-([etcd spike](../etcd-spike-2026-10.md)). The Datastore controller is built
-for the dedicated case with one member: the `Etcd` from the class recorded at
-creation and the newest certificate generation, the finalizer with the
-reclaim policy, the NetworkPolicy, `VolumesExist` and `DatastoreReady`; three members,
-hibernation, class edits held for the maintenance window, the final snapshot
-and the backups' retention after deletion, restore and the shared store are
-not. `Backup`s, sealed copies, and the restore that replaces their source
-were decided on 2026-10-27 and come with phase 2's wave 1b, backups
-([restore-replaces-the-source](restore-replaces-the-source.md)).
+Decided 2026-10-24.
+The phase 0 spike found etcd-druid fit ([etcd spike](../etcd-spike-2026-10.md)).
+The Datastore controller is built for the dedicated case, of one member or three: the `Etcd` from the class recorded at creation and the newest certificate generation, the finalizer with the reclaim policy, the NetworkPolicy, `VolumesExist` and `DatastoreReady`.
+Hibernation, class edits held for the maintenance window, the final snapshot and the backups' retention after deletion, restore and the shared store are not.
+`Backup`s, sealed copies, and the restore that replaces their source were decided on 2026-10-27 and come with phase 2's wave 1b, backups ([restore-replaces-the-source](restore-replaces-the-source.md)).
 
 ## Decision
 
@@ -337,32 +332,8 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   ([the table](../README.md#a-tenant-namespace)), applies it and reads
   etcd-druid's report; `networkpolicy.go` renders and applies the etcd's
   NetworkPolicy. Registered as `datastore` in `internal/operator`.
-- `internal/controller/datastore/datastore_test.go` — envtest with
-  etcd-druid v0.39.0's CRDs from its `crds` package, the controller running
-  as a user bound to exactly its generated ClusterRole,
-  [`datastore.yaml`](../../charts/lodia/files/rbac/datastore.yaml)
-  ([Identity and tenancy](../README.md#identity-and-tenancy)):
-  `TestFinalizerAndEtcdFromClass` (the finalizer before the first `Etcd`, the
-  mapping table, generation 1 in all three TLS blocks),
-  `TestConditionsFromState` (Unknown on the first visit, an API error leaves
-  the status alone), `TestEtcdRefused` (an admission policy refuses the
-  `Etcd`), `TestPaused`, `TestNewestCompleteGeneration`,
-  `TestOnlyItsOwnGenerationsCount`, `TestMountedSecretsMustExist`,
-  `TestGenerationsMoveForward`, `TestDatastoreClassNotFound`,
-  `TestBackupCredentialsCopied`, `TestBackupPrefixHoldsNoName` (the prefix
-  of a `ControlPlane` `v1` in the namespace `team-v1`, its keys read by
-  etcd-backup-restore v0.45.1's rule, which the test restates since
-  importing the parser would move the module's dependencies, and a failed
-  Namespace read that leaves the status), `TestHeldClass`,
-  `TestBackupCopyFollowsItsEvents`, `TestPredecessorsCopy`,
-  `TestOwnerlessCopyIsAdopted`,
-  `TestDatastoreReadyFollowsEtcdStatus`,
-  `TestVolumesExist`, `TestForeignEtcd`, `TestStorageAtCreation`,
-  `TestRecordedClass`, `TestClassSurvivesTheEtcd`, `TestClassGone`, `TestDeletionBeforeLabelling`,
-  `TestDeletion`, `TestNetworkPolicy`, `TestNetworkPolicyOfAnotherOwner`,
-  `TestOwnerlessNetworkPolicyIsAdopted`, `TestNetworkPolicyRefused` and
-  `TestAFailedNetworkPolicyCallLeavesTheStatus`. `datastoretest` stands in
-  for PKI there.
+- `internal/controller/datastore/datastore_test.go` — envtest with etcd-druid v0.39.0's CRDs from its `crds` package, the controller running as a user bound to exactly its generated ClusterRole, [`datastore.yaml`](../../charts/lodia/files/rbac/datastore.yaml) ([Identity and tenancy](../README.md#identity-and-tenancy)): `TestFinalizerAndEtcdFromClass` (the finalizer before the first `Etcd`, the mapping table, generation 1 in all three TLS blocks), `TestConditionsFromState` (Unknown on the first visit, an API error leaves the status alone), `TestEtcdRefused` (an admission policy refuses the `Etcd`), `TestPaused`, `TestNewestCompleteGeneration`, `TestOnlyItsOwnGenerationsCount`, `TestMountedSecretsMustExist`, `TestGenerationsMoveForward`, `TestDatastoreClassNotFound`, `TestBackupCredentialsCopied`, `TestBackupPrefixHoldsNoName` (the prefix of a `ControlPlane` `v1` in the namespace `team-v1`, its keys read by etcd-backup-restore v0.45.1's rule, which the test restates since importing the parser would move the module's dependencies, and a failed Namespace read that leaves the status), `TestHeldClass`, `TestBackupCopyFollowsItsEvents`, `TestPredecessorsCopy`, `TestOwnerlessCopyIsAdopted`, `TestDatastoreReadyIsQuorum`, `TestThreeMembersWithHighAvailability`, `TestVolumesExist`, `TestForeignEtcd`, `TestStorageAtCreation`, `TestRecordedClass`, `TestClassSurvivesTheEtcd`, `TestClassGone`, `TestDeletionBeforeLabelling`, `TestDeletion`, `TestNetworkPolicy`, `TestNetworkPolicyOfAnotherOwner`, `TestOwnerlessNetworkPolicyIsAdopted`, `TestNetworkPolicyRefused` and `TestAFailedNetworkPolicyCallLeavesTheStatus`.
+  `datastoretest` stands in for PKI there.
 - `charts/lodia` — etcd-druid v0.39.0 as a dependency behind
   `etcdDruid.enabled`, with `enableEtcdSpecAutoReconcile` on and the
   components webhook left off, its default; the operator gets the
