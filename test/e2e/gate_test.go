@@ -864,9 +864,10 @@ func loopPod(namespace, kubeconfig string, image reference.NamedTagged, server s
 }
 
 type loopTally struct {
-	OK     int64 `json:"ok"`
-	Failed int64 `json:"failed"`
-	Empty  int64 `json:"empty"`
+	OK      int64 `json:"ok"`
+	Failed  int64 `json:"failed"`
+	Empty   int64 `json:"empty"`
+	Retried int64 `json:"retried"`
 }
 
 type loopCounts struct {
@@ -902,9 +903,9 @@ func checkLoop(t *testing.T, where string, before, after loopCounts, log string)
 		name          string
 		before, after loopTally
 	}{{"new connections", before.Fresh, after.Fresh}, {"reused connections", before.Reused, after.Reused}} {
-		ok, lost, empty := mode.after.OK-mode.before.OK, mode.after.Failed-mode.before.Failed, mode.after.Empty-mode.before.Empty
+		ok, lost, empty, retried := mode.after.OK-mode.before.OK, mode.after.Failed-mode.before.Failed, mode.after.Empty-mode.before.Empty, mode.after.Retried-mode.before.Retried
 		expected := apiLoopRate * seconds
-		t.Logf("%s on %s, %.0fs through the rollout: %d answered of %.0f sent at %d per second, %d failed, %d found the kubernetes EndpointSlice empty", where, mode.name, seconds, ok, expected, apiLoopRate, lost, empty)
+		t.Logf("%s on %s, %.0fs through the rollout: %d answered of %.0f sent at %d per second, %d failed, %d found the kubernetes EndpointSlice empty, %d followed a Retry-After", where, mode.name, seconds, ok, expected, apiLoopRate, lost, empty, retried)
 		if lost != 0 || empty != 0 || float64(ok) < 0.95*expected {
 			failed = true
 			t.Errorf("%s on %s: %d failed and %d found the EndpointSlice empty; %d answered, want at least 95%% of %.0f", where, mode.name, lost, empty, ok, expected)

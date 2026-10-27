@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Command apiloop reads the kubernetes EndpointSlice from an API server at a
-// fixed rate on new connections and at the same rate on reused ones, and
-// retries nothing. It prints each request that fails or finds the slice
-// empty, and every second the counts so far, after "counts ", as JSON; the
-// e2e suite reads them from its log.
+// fixed rate on new connections and at the same rate on reused ones. It
+// follows an answer's Retry-After once, as client-go does, and retries
+// nothing else. It prints each request that fails, finds the slice empty or
+// follows a Retry-After, and every second the counts so far, after "counts ",
+// as JSON; the e2e suite reads them from its log.
 package main
 
 import (
@@ -16,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -28,12 +30,14 @@ import (
 const slicePath = "/apis/discovery.k8s.io/v1/namespaces/default/endpointslices/kubernetes"
 
 // tally counts a loop's requests: sent, answered with the slice, failed,
-// and answered with an empty slice.
+// answered with an empty slice, and, of all of them, those that followed a
+// Retry-After.
 type tally struct {
-	Sent   int64 `json:"sent"`
-	OK     int64 `json:"ok"`
-	Failed int64 `json:"failed"`
-	Empty  int64 `json:"empty"`
+	Sent    int64 `json:"sent"`
+	OK      int64 `json:"ok"`
+	Failed  int64 `json:"failed"`
+	Empty   int64 `json:"empty"`
+	Retried int64 `json:"retried"`
 }
 
 // summary is what the program prints every second.
@@ -45,11 +49,11 @@ type summary struct {
 }
 
 type counter struct {
-	sent, ok, failed, empty atomic.Int64
+	sent, ok, failed, empty, retried atomic.Int64
 }
 
 func (c *counter) tally() tally {
-	return tally{Sent: c.sent.Load(), OK: c.ok.Load(), Failed: c.failed.Load(), Empty: c.empty.Load()}
+	return tally{Sent: c.sent.Load(), OK: c.ok.Load(), Failed: c.failed.Load(), Empty: c.empty.Load(), Retried: c.retried.Load()}
 }
 
 func main() {
@@ -110,9 +114,10 @@ func send(ctx context.Context, c *http.Client, url, name string, rate int, timeo
 		case start := <-tick.C:
 			n.sent.Add(1)
 			go func() {
-				empty, err := get(ctx, c, url, timeout)
+				empty, retried, err := get(ctx, c, url, timeout)
 				switch {
 				case ctx.Err() != nil:
+					return
 				case err != nil:
 					n.failed.Add(1)
 					fmt.Printf("failed %s %s: %v\n", start.UTC().Format(time.RFC3339Nano), name, err)
@@ -122,29 +127,54 @@ func send(ctx context.Context, c *http.Client, url, name string, rate int, timeo
 				default:
 					n.ok.Add(1)
 				}
+				if retried {
+					n.retried.Add(1)
+					fmt.Printf("retried %s %s\n", start.UTC().Format(time.RFC3339Nano), name)
+				}
 			}()
 		}
 	}
 }
 
-func get(ctx context.Context, c *http.Client, url string, timeout time.Duration) (bool, error) {
+// get follows a Retry-After on a 429 or a 5xx once, as client-go does
+// (https://github.com/kubernetes/client-go/blob/v0.37.1/rest/with_retry.go#L308-L318).
+func get(ctx context.Context, c *http.Client, url string, timeout time.Duration) (bool, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	empty, wait, err := getOnce(ctx, c, url)
+	if wait < 0 {
+		return empty, false, err
+	}
+	select {
+	case <-ctx.Done():
+		return false, true, ctx.Err()
+	case <-time.After(wait):
+	}
+	empty, _, err = getOnce(ctx, c, url)
+	return empty, true, err
+}
+
+// getOnce returns the wait an answer's Retry-After asks for, or -1.
+func getOnce(ctx context.Context, c *http.Client, url string) (bool, time.Duration, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return false, err
+		return false, -1, err
 	}
 	resp, err := c.Do(req)
 	if err != nil {
-		return false, err
+		return false, -1, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("status %s", resp.Status)
+		wait := time.Duration(-1)
+		if seconds, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError) {
+			wait = time.Duration(seconds) * time.Second
+		}
+		return false, wait, fmt.Errorf("status %s", resp.Status)
 	}
 	var slice discoveryv1.EndpointSlice
 	if err := json.NewDecoder(resp.Body).Decode(&slice); err != nil {
-		return false, err
+		return false, -1, err
 	}
-	return len(slice.Endpoints) == 0, nil
+	return len(slice.Endpoints) == 0, -1, nil
 }

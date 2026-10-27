@@ -81,15 +81,20 @@ chart installed.
   kind cluster into the joined node's containerd with `ctr`. Each loop reads
   the tenant's `kubernetes` EndpointSlice ten times a second on new
   connections and ten times a second on reused ones, with plain HTTP clients
-  that retry nothing and give up after 5 seconds, since client-go would
-  retry a GET whose connection broke and any request answered with
-  `Retry-After`
-  ([request.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/request.go#L1066-L1078),
-  [with_retry.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/with_retry.go#L308-L318)),
-  and prints each failure and, every second, its counts. Between the counts
-  before the change and those once the old pod is gone and 5 seconds more
-  have passed, the suite wants no request failed, no answer with an empty
-  slice, and answers to at least 95% of the requests the rate sends.
+  that give up after 5 seconds. They follow an answer's `Retry-After` once,
+  as client-go does
+  ([with_retry.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/with_retry.go#L308-L318)):
+  a stopping API server answers a request that reaches it on a connection
+  still open, as it starts to drain, with `503` and `Retry-After`
+  ([waitgroup.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/server/filters/waitgroup.go#L79-L96)).
+  They retry nothing else, since client-go would also retry a GET whose
+  connection broke, which hides a lost request
+  ([request.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/request.go#L1066-L1078)).
+  Each loop prints each failure and, every second, its counts. Between the
+  counts before the change and those once the old pod is gone and 5 seconds
+  more have passed, the suite wants no request failed, no answer with an
+  empty slice, and answers to at least 95% of the requests the rate sends,
+  and it logs how many followed a `Retry-After`.
   Disabling `addons.coreDNS` removes
   CoreDNS's objects from the tenant and from the inventory, and enabling it
   brings them back.

@@ -291,8 +291,9 @@ startup probes included
 ([utils.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kubeadm/app/util/staticpod/utils.go#L255-L296),
 [manifests.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kubeadm/app/phases/controlplane/manifests.go#L67-L107));
 konnectivity-server's startup probe is its health port, so the API server
-starts once its tunnels can. A rollout loses no API request; one through
-the tunnel can fail for a moment (`todo.md`). Each Deployment starts a full
+starts once its tunnels can. A rollout loses no API request of a client
+that follows `Retry-After`, as client-go does; one through the tunnel can
+fail for a moment (`todo.md`). Each Deployment starts a full
 set of new pods before it stops an old one (`maxSurge: 100%`,
 `maxUnavailable: 0`), the API server's once they have been ready for 10
 seconds (`minReadySeconds`), time for the konnectivity agents to reach the

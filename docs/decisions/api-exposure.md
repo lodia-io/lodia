@@ -35,10 +35,14 @@ client a GOAWAY that moves its next requests to a new connection, and
 drains its watches for up to 10 seconds
 (`--shutdown-watch-termination-grace-period=10s`), as Gardener runs it
 ([deployment.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/component/apiserver/deployment.go#L51-L52)).
-`--shutdown-send-retry-after` stays off, and `apiServer.extraArgs` refuses
-it: it answers the requests on open connections with `429` and `Retry-After`
+A request that reaches it on a connection still open, as it starts to
+drain, is answered with `503` and `Retry-After`
+([waitgroup.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/server/filters/waitgroup.go#L79-L96)),
+which client-go follows. `--shutdown-send-retry-after` stays off, and
+`apiServer.extraArgs` refuses it: it answers every request on an open
+connection during the drain with `429` and `Retry-After`
 ([with_retry_after.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/server/filters/with_retry_after.go#L55-L105)),
-which only a client that retries gets through.
+which costs each such client a retry a second later.
 
 **Gateway prerequisites.** Gateway API ≥ 1.5, where `TLSRoute` and
 `ListenerSet` are in the Standard channel; an implementation that reports
@@ -145,10 +149,11 @@ a node flag (`--address`, `--node-ip`), which the node's owner passes through
   (`TestPhase1Gate`, [test/e2e](../../test/e2e/README.md)).
 - **A rollout loses no request.** Rolled on kind under 20 requests a second
   from outside the tenant and 20 from inside it, half on new connections,
-  half on reused ones, with clients that retry nothing, the API server lost
-  none with the flags above; with `--shutdown-send-retry-after` too, each
-  reused connection took one `429`, and without the shutdown delay requests
-  were refused and timed out.
+  half on reused ones, with clients that follow only a `Retry-After`, once,
+  the API server lost none with the flags above; with
+  `--shutdown-send-retry-after` too, each reused connection was told to
+  retry once (`429`), and without the shutdown delay requests were refused
+  and timed out.
 - **TLS inside TLS needs no gateway extensions.** Gardener's proxy adds a
   PROXY protocol header or HTTP CONNECT and needs filters on its Istio
   gateway ([GEP-30](https://github.com/gardener/enhancements/blob/main/geps/0030-apiserver-proxy/README.md));
