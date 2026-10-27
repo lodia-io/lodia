@@ -82,12 +82,6 @@ flowchart TB
   ServiceAccount keys behind the signer sidecar. A Secret's hash is PKI's
   annotation `lodia.io/data-hash` on it, so Workloads reads the
   metadata of the Secrets it mounts and never their keys.
-- Holding the controller manager while nodes cannot reach the API does not
-  touch its replicas: Health takes its leader lease
-  ([controller-manager-hold](controller-manager-hold.md)), which works the
-  same when every component shares one pod.
-- Resource requests are per component and per tenant; the defaults are in the
-  operator configuration and overridable per `ControlPlane`.
 
 ## Code
 
