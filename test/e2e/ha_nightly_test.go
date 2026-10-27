@@ -201,7 +201,7 @@ func watchPods(ctx context.Context, t *testing.T, k8s client.WithWatch, logs kub
 	seen := map[string]int32{}
 	for _, pod := range pods.Items {
 		for _, c := range pod.Status.ContainerStatuses {
-			seen[pod.Name+"/"+c.Name] = c.RestartCount
+			seen[string(pod.UID)+"/"+c.Name] = c.RestartCount
 		}
 	}
 	var mu sync.Mutex
@@ -218,11 +218,11 @@ func watchPods(ctx context.Context, t *testing.T, k8s client.WithWatch, logs kub
 			var states, previous []string
 			for _, c := range pod.Status.ContainerStatuses {
 				restarts += c.RestartCount
-				if container := pod.Name + "/" + c.Name; c.RestartCount > seen[container] {
+				if container := string(pod.UID) + "/" + c.Name; c.RestartCount > seen[container] {
 					seen[container] = c.RestartCount
 					previous = append(previous, previousLog(watching, logs, pod, c)...)
 					mu.Lock()
-					restarted = append(restarted, fmt.Sprintf("%s restart %d", container, c.RestartCount))
+					restarted = append(restarted, fmt.Sprintf("%s/%s restart %d", pod.Name, c.Name, c.RestartCount))
 					mu.Unlock()
 				}
 				switch {
