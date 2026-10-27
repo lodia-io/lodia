@@ -24,7 +24,10 @@ import (
 )
 
 func TestHighAvailabilityRemovedAndRestored(t *testing.T) {
-	var k8s client.WithWatch
+	var (
+		k8s     client.WithWatch
+		history *recorder
+	)
 	const class = "e2e-ha-toggle"
 	key := client.ObjectKey{Namespace: "team-ha-toggle", Name: controlPlane}
 	zone := &lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"}
@@ -38,23 +41,31 @@ func TestHighAvailabilityRemovedAndRestored(t *testing.T) {
 			until(ctx, t, 8*time.Minute, "three members and two replicas each, Ready", func(ctx context.Context) error {
 				return shaped(ctx, k8s, key, 3, 2)
 			})
+			history = record(ctx, t, k8s, key)
 			return ctx
 		}).
-		Assess("removing highAvailability scales etcd in to one member and each component to one replica", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("removing highAvailability scales etcd in to one member and each component to one replica, Ready never leaving True", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			start := time.Now()
 			setHighAvailability(ctx, t, k8s, key, nil)
 			until(ctx, t, 10*time.Minute, "one member and one replica each, Ready", func(ctx context.Context) error {
 				return shaped(ctx, k8s, key, 1, 1)
 			})
+			history.check(t, start, time.Now(), 0)
 			return ctx
 		}).
-		Assess("adding it back scales etcd out to three members and each component to two replicas", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("adding it back scales etcd out to three members and each component to two replicas, Ready never leaving True", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			start := time.Now()
 			setHighAvailability(ctx, t, k8s, key, zone)
 			until(ctx, t, 10*time.Minute, "three members and two replicas each, Ready", func(ctx context.Context) error {
 				return shaped(ctx, k8s, key, 3, 2)
 			})
+			history.check(t, start, time.Now(), 0)
 			return ctx
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			if history != nil {
+				history.stop()
+			}
 			closeTenant(ctx, t, k8s, key, class)
 			return ctx
 		}).

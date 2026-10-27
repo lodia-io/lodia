@@ -9,6 +9,8 @@ on:
       - .github/workflows/nightly.yml
       - test/e2e/conformance_test.go
       - test/e2e/ha_nightly_test.go
+      - internal/controller/datastore/**
+      - internal/controller/workloads/**
 
 permissions:
   contents: read

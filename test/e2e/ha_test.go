@@ -148,7 +148,7 @@ func TestHighAvailabilityGate(t *testing.T) {
 				return nil
 			})
 			time.Sleep(settle)
-			history.check(t, start, time.Now())
+			history.check(t, start, time.Now(), gateBound)
 			after, logs := readLoops(ctx, t, "both loops' counts are read after the step", loops)
 			for i, l := range loops {
 				checkLoop(t, l.where, before[i], after[i], logs[i])
@@ -175,7 +175,7 @@ func TestHighAvailabilityGate(t *testing.T) {
 			})
 			t.Logf("pod %s is the etcd leader now", etcdLeader(ctx, t, k8s, key).Name)
 			time.Sleep(settle)
-			history.check(t, start, time.Now())
+			history.check(t, start, time.Now(), gateBound)
 			after, logs := readLoops(ctx, t, "both loops' counts are read after the step", loops)
 			for i, l := range loops {
 				checkLoop(t, l.where, before[i], after[i], logs[i])
@@ -323,7 +323,7 @@ func (r *recorder) last(conditionType string) (transition, bool) {
 	return transition{}, false
 }
 
-func (r *recorder) check(t *testing.T, from, to time.Time) {
+func (r *recorder) check(t *testing.T, from, to time.Time, bound time.Duration) {
 	t.Helper()
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -338,8 +338,8 @@ func (r *recorder) check(t *testing.T, from, to time.Time) {
 	for _, conditionType := range readyAndInputs {
 		longest := r.longestNotTrue(conditionType, from, to)
 		t.Logf("%s was not True for at most %s in the %s of the step", conditionType, longest, to.Sub(from).Round(time.Second))
-		if conditionType == lodiav1alpha1.ConditionReady && longest > gateBound {
-			t.Errorf("Ready was not True for %s, longer than the gate allows, %s", longest, gateBound)
+		if conditionType == lodiav1alpha1.ConditionReady && longest > bound {
+			t.Errorf("Ready was not True for %s, longer than %s", longest, bound)
 		}
 	}
 }
