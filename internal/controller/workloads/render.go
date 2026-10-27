@@ -215,7 +215,7 @@ func (r rendering) apiServer() *appsv1.Deployment {
 		"service-account-jwks-uri":                    r.jwksURI,
 		"service-account-signing-endpoint":            signerSocket,
 		"service-cluster-ip-range":                    joined(cp.Spec.Network.ServiceCIDRs),
-		"shutdown-delay-duration":                     shutdownDelay.String(),
+		"shutdown-delay-duration":                     "0s",
 		"shutdown-watch-termination-grace-period":     watchGrace.String(),
 		"tls-cert-file":                               "/etc/lodia/serving/" + lodiav1alpha1.TLSCertKey,
 		"tls-private-key-file":                        "/etc/lodia/serving/" + lodiav1alpha1.TLSPrivateKeyKey,
@@ -231,7 +231,9 @@ func (r rendering) apiServer() *appsv1.Deployment {
 		ReadinessProbe: readinessProbe(lodiav1alpha1.APIServerReadyzPath, intstr.FromString("https")),
 		LivenessProbe:  livenessProbe("/livez", intstr.FromString("https")),
 		StartupProbe:   startupProbe("/livez", intstr.FromString("https")),
-		Resources:      resources(settings.Resources, "100m", "256Mi"),
+		// @todo: kube-apiserver closes its signer connection on SIGTERM (kubernetes#142980), so the shutdown delay is a preStop sleep; undo with todo.md's signer item.
+		Lifecycle: &corev1.Lifecycle{PreStop: &corev1.LifecycleHandler{Sleep: &corev1.SleepAction{Seconds: int64(shutdownDelay / time.Second)}}},
+		Resources: resources(settings.Resources, "100m", "256Mi"),
 		VolumeMounts: mounts(
 			"serving", "client-ca", "kubelet-client", "front-proxy-ca", "front-proxy-client",
 			"etcd-ca", "etcd-client", "encryption", "authentication", "egress",

@@ -572,7 +572,10 @@ func TestARolloutSurgesAndTheOldAPIServerDrains(t *testing.T) {
 		}
 	}
 	api := deployment(t, cp, "kube-apiserver").Spec.Template.Spec
-	expectFlags(t, api.Containers[0].Command, "--endpoint-reconciler-type=none", "--shutdown-delay-duration=15s", "--shutdown-watch-termination-grace-period=10s")
+	expectFlags(t, api.Containers[0].Command, "--endpoint-reconciler-type=none", "--shutdown-delay-duration=0s", "--shutdown-watch-termination-grace-period=10s")
+	if l := api.Containers[0].Lifecycle; l == nil || l.PreStop == nil || l.PreStop.Sleep == nil || l.PreStop.Sleep.Seconds != 15 {
+		t.Errorf("the API server's lifecycle is %+v, want a preStop sleep of 15 seconds", l)
+	}
 	if grace := api.TerminationGracePeriodSeconds; grace == nil || *grace != 90 {
 		t.Errorf("the API server pod has a termination grace period of %v, want 90", grace)
 	}

@@ -176,6 +176,7 @@ The probes are kubeadm's, startup probes included ([utils.go](https://github.com
 A rollout loses no API request of a client that follows `Retry-After`, as client-go does; one through the tunnel can fail for a moment (`todo.md`).
 Each Deployment starts a full set of new pods before it stops an old one (`maxSurge: 100%`, `maxUnavailable: 0`), the API server's once they have been ready for 10 seconds (`minReadySeconds`), time for the konnectivity agents to reach the new servers.
 A stopping API server drains as [api-exposure](decisions/api-exposure.md) says, and konnectivity-server stops after it, all within a grace period of 90 seconds.
+Its first 15 seconds are a `preStop` sleep rather than `--shutdown-delay-duration`, since kube-apiserver closes its connection to lodia-signer on SIGTERM and could sign no ServiceAccount token during a delay after it.
 A NetworkPolicy per component, named as its Deployment, isolates the ingress of its pods: the API server takes its two ports from anywhere, since they are the public endpoint, and the controller manager and the scheduler take nothing; the kubelet's probes come from the node, which a NetworkPolicy does not block ([network policies](https://kubernetes.io/docs/concepts/services-networking/network-policies/)).
 
 With `highAvailability` each component runs two replicas, the API server `apiServer.replicas`.
