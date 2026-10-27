@@ -166,7 +166,8 @@ func endpointsVersions(ctx context.Context, c client.Client) (map[entry]string, 
 	for _, e := range kubernetesEndpoints {
 		obj := &metav1.PartialObjectMetadata{}
 		obj.SetGroupVersionKind(schema.GroupVersionKind{Group: e.Group, Version: e.Version, Kind: e.Kind})
-		if err := c.Get(ctx, client.ObjectKey{Namespace: e.Namespace, Name: e.Name}, obj); client.IgnoreNotFound(err) != nil {
+		err := c.Get(ctx, client.ObjectKey{Namespace: e.Namespace, Name: e.Name}, obj)
+		if client.IgnoreNotFound(err) != nil {
 			return nil, failed(e, err)
 		}
 		out[e] = obj.GetResourceVersion()
