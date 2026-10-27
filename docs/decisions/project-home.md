@@ -33,9 +33,9 @@ Decided 2026-10-23 as Brygga (`github.com/segla-io/brygga`, API group `brygga.se
 
 ## Consequences
 
-- The repository carries `LICENSE`, and every source file a short Apache-2.0 header; `CONTRIBUTING.md`, `SECURITY.md` and `CODE_OF_CONDUCT.md` arrive with the first code.
+- The repository carries `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md` and `CODE_OF_CONDUCT.md`, and every source file a short Apache-2.0 header.
 - Images and the Helm chart are published to `ghcr.io/lodia-io/lodia` and `oci://ghcr.io/lodia-io/charts/lodia`.
-- Before the repository goes public, `go.lodia.io/lodia?go-get=1` serves its `go-import` page (`todo.md`).
+- `go.lodia.io/lodia?go-get=1` serves the `go-import` page; the repository is public.
 
 ## Code
 
