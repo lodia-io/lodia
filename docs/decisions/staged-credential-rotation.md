@@ -91,7 +91,7 @@ It is meant for a compromised or expiring trust anchor, once in a decade; every 
   `signer_test.go` holds each invariant for RSA and ECDSA keys; `TestRotationUnderARunningAPIServer` in `apiserver_test.go` runs the three stages against one envtest kube-apiserver whose only signer it is.
 - [The hard way, spike d](../hard-way.md#d-spike-serviceaccount-tokens-from-an-external-signer) — the same rotation by hand in kind, with a pod calling the API throughout.
 - `internal/certs` — the CAs, leaves, bundles and kubeconfigs whose validity, renewal and order [A tenant namespace](../README.md#a-tenant-namespace) gives, from `crypto/x509`; PEM through client-go's `util/cert` and `util/keyutil`; every time is the caller's.
-  `certs_test.go` holds the validity, that time and the bundle order.
+  `certs_test.go` holds the validity, the bundle order and that a pass issues from one clock.
 - `internal/controller/pki` — the controller.
   `secrets.go` writes the Secrets of [A tenant namespace](../README.md#a-tenant-namespace): the kubelet signer is matched by its Secret rather than its subject, and a new one is written only once the client CA bundle trusts it; the encryption configuration is written last, so that a provider PKI cannot render (`kms`) blocks nothing else; the etcd generations are immutable, each written once, and one not holding what it needs is replaced by the next, the newest complete generation below it kept.
   A CA is created only for a tenant that has neither its key Secret nor its bundle.
