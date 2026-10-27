@@ -1,10 +1,8 @@
 # Control planes are exposed through a shared Gateway by SNI; pods reach their API through a node-local proxy and a fixed advertise address
 
-Decided 2026-10-25; the tunnel's shape decided 2026-10-26, and hardened by
-its red team on 2026-10-27. The `loadBalancer` and `nodePort` modes are
+Decided 2026-10-25. The `loadBalancer` and `nodePort` modes are
 built; `gateway`, the in-cluster `apiserver-proxy` and the tunnel come with
-phase 2's wave 1b, Gateway ([roadmap](../roadmap.md)), and their contracts
-are in `api/v1alpha1`.
+phase 2's wave 1b, Gateway ([roadmap](../roadmap.md)).
 
 ## Decision
 
@@ -56,13 +54,10 @@ feature
 no `ListenerSet`, no `TLSRouteModeTerminate` and no `TLSRouteModeMixed`. The
 platform owns the Gateway: a `TLS` listener in `Passthrough` mode on 443 for
 a wildcard hostname, routes allowed from tenant namespaces by label. Lodia
-only attaches. Workloads reports what stops it in `APIServerReady`:
-`GatewayUnsupported` when the management cluster serves no `TLSRoute`, which
-the operator detects when it starts, or the parent Gateway has no listener
-in `TLS` `Passthrough` mode that admits `TLSRoute`s; `GatewayNotFound` when
-the parent does not exist; `RouteNotAccepted` when a route is not
-`Accepted` and `ResolvedRefs` at its generation, the Gateway's reason in the
-message; `HostnameConflict` below.
+only attaches. Workloads reports what stops it in `APIServerReady`
+([reasons](../api/controlplane.md#conditions-and-their-reasons)); whether
+the management cluster serves `TLSRoute` the operator detects when it
+starts.
 
 **In-cluster access (the `gateway` mode).** A connection from a pod to the
 `kubernetes` ClusterIP carries no SNI, and every tenant's
@@ -79,7 +74,7 @@ agent already runs in production:
    so the address is one a network could use. A node that holds an address
    on its loopback answers ARP for it on its LAN by default
    ([ip-sysctl.rst](https://github.com/torvalds/linux/blob/v6.17/Documentation/networking/ip-sysctl.rst#L2063-L2075)),
-   which the tunnel's red team reproduced, so a private address such as
+   so a private address such as
    HyperShift's `172.20.0.1`
    ([constants.go](https://github.com/openshift/hypershift/blob/v0.1.86/support/config/constants.go#L28-L29))
    can answer for a neighbour's gateway. The IPv4 default is therefore
@@ -96,11 +91,8 @@ agent already runs in production:
    `ControlPlane` whose first service range is IPv6 names its address,
    from a /48 its platform drew once; Lodia drawing one per `ControlPlane`,
    kept beside its CAs, can come later without breaking a manifest
-   (`todo.md`). The schema refuses an address that is
-   not unicast, not in canonical form, of another family than the first
-   service range, or inside the tenant's service or pod ranges, the default
-   included, and refuses every change of it: the address is in every node's
-   loopback, the endpoints and the serving certificate. The setup on the node
+   (`todo.md`). The schema's rules for the address are in
+   [`api/controlplane.md`](../api/controlplane.md#spec). The setup on the node
    refuses an address that is on-link on any of its interfaces, and says so.
 2. The Tenant controller runs `apiserver-proxy` as a `hostNetwork`
    DaemonSet in `kube-system` (priority `system-node-critical`, tolerating
@@ -139,15 +131,13 @@ kubelet fetches through the public endpoint, and Health presents it when it
 probes the tunnel. Neither existing CA fits: kubelets accept the cluster CA
 for client authentication, and the API server accepts the client CA. Without
 it, anyone who reaches the Gateway could hold the sidecar's sessions and
-lock every pod of the tenant out of its API. The names are in
-`api/v1alpha1/names.go`: `TunnelServingSecret`, `TunnelCASecret` and
-`TunnelClientSecret`.
+lock every pod of the tenant out of its API.
 
 **One image.** `lodia-tunnel` is a Go binary on `crypto/tls`, built by ko
 like `lodia-signer`, that reloads its certificate through `GetCertificate`;
 its modes `serve`, `addr` and `proxy` are the sidecar and the node's two
-containers. The operator takes it as `--tunnel-image`, which the chart sets
-from `tunnelImage`, and Workloads and Tenant render it.
+containers. Workloads and Tenant render it
+([Installation](../README.md#installation)).
 
 **One owner per hostname.** Two `TLSRoute`s that claim one SNI on a shared
 listener are not a conflict to Gateway API, which gives the older the
@@ -167,22 +157,20 @@ hostname belongs to the `ControlPlane` that names it first, by
 route nor the gap while a route is recreated takes it. Workloads creates the
 routes one at a time per parent Gateway, reading the routes again without
 the cache just before it creates one, and never deletes and recreates its
-own. The schema refuses three hostnames that are not distinct. Only Lodia
+own. Only Lodia
 writes `TLSRoute`s in the namespaces the listener admits; a platform may
 bind each hostname to its namespace with a `ValidatingAdmissionPolicy`.
 
 **Konnectivity.** One `konnectivity-server` per API server replica, beside
 it in the pod as a native sidecar that stops only after the API server, in
-gRPC mode on a Unix socket (`--uds-name`, `--server-port=0`), the egress
+gRPC mode on a Unix socket, the egress
 selector sending only `cluster` traffic through it; agents authenticate with
-a projected ServiceAccount token
-(`--agent-namespace`, `--agent-service-account`, `--authentication-audience`),
+a projected ServiceAccount token,
 which the server checks with TokenReviews as `system:konnectivity-server`
 bound to `system:auth-delegator` and to lease verbs in `kube-system`; the
-server's lease controller is on and agents count servers from leases
-(`--count-server-leases`), so agents hold a tunnel to every replica without a
+server's lease controller is on and agents count servers from leases, so agents hold a tunnel to every replica without a
 static count and dial only for a server they lack. Both ends ping after 30
-seconds without traffic (`--keepalive-time=30s`), as often as the server
+seconds without traffic, as often as the server
 allows
 ([server.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/cmd/server/app/server.go#L511-L515)),
 so no idle timeout on the way cuts a tunnel.
@@ -313,8 +301,7 @@ a node flag (`--address`, `--node-ip`), which the node's owner passes through
   Go sends no SNI for an IP address
   ([`hostnameInSNI`](https://github.com/golang/go/blob/go1.26.10/src/crypto/tls/handshake_client.go#L1305-L1315)),
   so agents dial `konnectivity.<cp>` by name.
-- `apiserver-proxy` runs on every node: `NET_ADMIN` in its `addr` container
-  alone, which opens no listener, and no capability in `proxy`; its scope is
+- `apiserver-proxy` runs on every node; its scope is
   exactly one address and one listener, and it is in the inventory like
   every other in-tenant object.
 - The tunnel adds a second TLS session to every in-cluster API connection,
