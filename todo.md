@@ -345,3 +345,10 @@ is a decision — a decision is a file in `docs/decisions/`.
   `ControlPlane` and keep it beside its CAs, which a platform backs up
   anyway. `apiServer.advertiseAddress` then becomes optional, which breaks
   no manifest (api-exposure).
+
+## From high availability (2026-10-27)
+
+- The e2e suites reach a tenant through `status.endpoint`, a kind node's address on the docker network `kind`, which Docker Desktop does not route to a macOS host, so `make e2e` and `make e2e-ha` run on Linux alone, as on GitHub's runners.
+  Running `go test` in a container attached to that network would bring them back to macOS.
+- Lodia sets etcd-druid's annotation `resources.druid.gardener.cloud/allow-unhealthy-pod-eviction` on a highly available `Etcd`, which etcd-druid marks as one that may be removed at any time and is not meant for general use ([poddisruptionbudget.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/poddistruptionbudget/poddisruptionbudget.go#L35-L38)).
+  Check it with every etcd-druid upgrade, and ask upstream for a field of the `Etcd` in its place.
