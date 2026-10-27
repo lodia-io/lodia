@@ -8,11 +8,14 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/utils/ptr"
@@ -50,6 +53,7 @@ func TestHighAvailabilityRemovedAndRestored(t *testing.T) {
 			until(ctx, t, 10*time.Minute, "one member and one replica each, Ready", func(ctx context.Context) error {
 				return shaped(ctx, k8s, key, 1, 1)
 			})
+			explainEtcd(ctx, t, k8s, key, start)
 			history.check(t, start, time.Now(), 0)
 			return ctx
 		}).
@@ -59,6 +63,7 @@ func TestHighAvailabilityRemovedAndRestored(t *testing.T) {
 			until(ctx, t, 10*time.Minute, "three members and two replicas each, Ready", func(ctx context.Context) error {
 				return shaped(ctx, k8s, key, 3, 2)
 			})
+			explainEtcd(ctx, t, k8s, key, start)
 			history.check(t, start, time.Now(), 0)
 			return ctx
 		}).
@@ -116,4 +121,41 @@ func shaped(ctx context.Context, k8s client.Client, key client.ObjectKey, member
 		}
 	}
 	return nil
+}
+
+func explainEtcd(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey, since time.Time) {
+	t.Helper()
+	name := lodiav1alpha1.EtcdName(key.Name)
+	sts := &appsv1.StatefulSet{}
+	if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: name}, sts); err != nil {
+		t.Log(err)
+	} else {
+		t.Logf("StatefulSet %s: current revision %s, update revision %s, %d of %d ready", name, sts.Status.CurrentRevision, sts.Status.UpdateRevision, sts.Status.ReadyReplicas, ptr.Deref(sts.Spec.Replicas, 0))
+	}
+	pods := &corev1.PodList{}
+	if err := k8s.List(ctx, pods, client.InNamespace(key.Namespace), client.MatchingLabels{lodiav1alpha1.ControlPlaneLabel: key.Name, lodiav1alpha1.ComponentLabel: name}); err != nil {
+		t.Log(err)
+	}
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		var restarts int32
+		for _, c := range pod.Status.ContainerStatuses {
+			restarts += c.RestartCount
+		}
+		t.Logf("pod %s: UID %s, created %s, revision %s, %d restarts, ready: %v", pod.Name, pod.UID, pod.CreationTimestamp.UTC().Format(time.RFC3339), pod.Labels[appsv1.StatefulSetRevisionLabel], restarts, running(pod))
+	}
+	events := &corev1.EventList{}
+	if err := k8s.List(ctx, events, client.InNamespace(key.Namespace)); err != nil {
+		t.Log(err)
+	}
+	at := func(e corev1.Event) time.Time {
+		return slices.MaxFunc([]time.Time{e.LastTimestamp.Time, e.EventTime.Time, e.FirstTimestamp.Time}, func(a, b time.Time) int { return a.Compare(b) })
+	}
+	slices.SortFunc(events.Items, func(a, b corev1.Event) int { return at(a).Compare(at(b)) })
+	for _, e := range events.Items {
+		if at(e).Before(since) || e.InvolvedObject.Name != name && !strings.HasPrefix(e.InvolvedObject.Name, name+"-") {
+			continue
+		}
+		t.Logf("event %s %s %s: %s %s", at(e).UTC().Format(time.RFC3339), e.InvolvedObject.Kind, e.InvolvedObject.Name, e.Reason, e.Message)
+	}
 }
