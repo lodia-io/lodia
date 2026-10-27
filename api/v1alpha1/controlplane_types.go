@@ -1120,8 +1120,10 @@ type HealthStatus struct {
 // MaintenanceStatus is the maintenance Lodia was asked for and did.
 type MaintenanceStatus struct {
 	// LastHandled is the value of the annotation
-	// lodia.io/maintain-requested-at that Lifecycle acted on last.
+	// lodia.io/maintain-requested-at that Lifecycle acted on last; a value
+	// longer than this field holds is not handled.
 	// +optional
+	// +kubebuilder:validation:MaxLength=256
 	LastHandled string `json:"lastHandled,omitempty"`
 }
 

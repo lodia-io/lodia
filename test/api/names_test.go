@@ -67,3 +67,15 @@ func TestAPreUpgradeBackupNameIsABackupName(t *testing.T) {
 		t.Errorf("%s does not carry the ControlPlane's name, the version and the UID", name)
 	}
 }
+
+func TestNoSecretNameOfOneControlPlaneIsAnothers(t *testing.T) {
+	secrets := append(lodiav1alpha1.PKISecrets(), lodiav1alpha1.EtcdBackupSecret,
+		lodiav1alpha1.TunnelServingSecret, lodiav1alpha1.TunnelCASecret, lodiav1alpha1.TunnelClientSecret)
+	for _, a := range secrets {
+		for _, b := range secrets {
+			if prefix, found := strings.CutSuffix(string(b), "-"+string(a)); found {
+				t.Errorf("%s of a ControlPlane x is %s of a ControlPlane x-%s in the same namespace", b.Name("x"), a, prefix)
+			}
+		}
+	}
+}

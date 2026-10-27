@@ -1742,7 +1742,9 @@ spec:
                   lastHandled:
                     description: |-
                       LastHandled is the value of the annotation
-                      lodia.io/maintain-requested-at that Lifecycle acted on last.
+                      lodia.io/maintain-requested-at that Lifecycle acted on last; a value
+                      longer than this field holds is not handled.
+                    maxLength: 256
                     type: string
                 type: object
               nodes:
