@@ -2,7 +2,7 @@
 
 `lodia.io/v1alpha1`, namespaced.
 One object per tenant cluster.
-The Go types will be generated from this reference, and the two change together.
+The Go types in `api/v1alpha1` are written by hand and the CRDs are generated from them; this reference changes with them.
 Examples: [`examples/`](examples/).
 
 The name is a DNS-1035 label of at most 32 characters (CEL), since the names Lodia and etcd-druid derive from it have to fit Kubernetes' limits.
