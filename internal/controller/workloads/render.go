@@ -20,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	apiserverv1 "k8s.io/apiserver/pkg/apis/apiserver/v1"
 	apiserverv1beta1 "k8s.io/apiserver/pkg/apis/apiserver/v1beta1"
+	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/yaml"
 
@@ -351,6 +352,14 @@ func (r rendering) controllerManager() *appsv1.Deployment {
 		"controllers":                              "*,bootstrap-signer-controller,token-cleaner-controller",
 		"kubeconfig":                               kubeconfig,
 		"leader-elect":                             "true",
+		"leader-elect-lease-duration":              lodiav1alpha1.ControllerManagerLeaseDuration.String(),
+		"leader-elect-renew-deadline":              lodiav1alpha1.ControllerManagerRenewDeadline.String(),
+		"leader-elect-resource-lock":               resourcelock.LeasesResourceLock,
+		"leader-elect-resource-name":               lodiav1alpha1.ControllerManagerLease,
+		"leader-elect-resource-namespace":          lodiav1alpha1.LeaderElectionNamespace,
+		"leader-elect-retry-period":                lodiav1alpha1.ControllerManagerRetryPeriod.String(),
+		"node-monitor-grace-period":                lodiav1alpha1.NodeMonitorGracePeriod.String(),
+		"node-monitor-period":                      lodiav1alpha1.NodeMonitorPeriod.String(),
 		"requestheader-client-ca-file":             "/etc/lodia/front-proxy-ca/" + lodiav1alpha1.CACertKey,
 		"root-ca-file":                             "/etc/lodia/ca-bundle/" + lodiav1alpha1.CACertKey,
 		"service-cluster-ip-range":                 joined(cp.Spec.Network.ServiceCIDRs),
@@ -382,11 +391,14 @@ func (r rendering) scheduler() *appsv1.Deployment {
 	settings := ptr.Deref(cp.Spec.Scheduler, lodiav1alpha1.Scheduler{})
 	kubeconfig := "/etc/lodia/kubeconfig/" + lodiav1alpha1.KubeconfigKey
 	flags := map[string]string{
-		"authentication-kubeconfig": kubeconfig,
-		"authorization-kubeconfig":  kubeconfig,
-		"bind-address":              "0.0.0.0",
-		"kubeconfig":                kubeconfig,
-		"leader-elect":              "true",
+		"authentication-kubeconfig":       kubeconfig,
+		"authorization-kubeconfig":        kubeconfig,
+		"bind-address":                    "0.0.0.0",
+		"kubeconfig":                      kubeconfig,
+		"leader-elect":                    "true",
+		"leader-elect-resource-lock":      resourcelock.LeasesResourceLock,
+		"leader-elect-resource-name":      lodiav1alpha1.SchedulerLease,
+		"leader-elect-resource-namespace": lodiav1alpha1.LeaderElectionNamespace,
 	}
 	container := corev1.Container{
 		Name:           scheduler,

@@ -1,8 +1,7 @@
 # While most of a tenant's nodes are silent, Lodia holds its controller manager's leader lease
 
-Decided 2026-10-25; the timings Lodia owns decided 2026-10-26. Not built:
-the hold and its timings come with phase 2's wave 2 (Health), and
-`ControllersLeading` with wave 1b (HA) ([roadmap](../roadmap.md)).
+Decided 2026-10-25; the timings Lodia owns decided 2026-10-26.
+The timings are built; the hold comes with phase 2's wave 2 (Health), and `ControllersLeading` with wave 1b (HA) ([roadmap](../roadmap.md)).
 
 ## Decision
 
@@ -178,4 +177,4 @@ are evicted as upstream does.
 
 ## Code
 
-none yet.
+- `internal/controller/workloads` — `render.go` renders the controller manager's timings and the scheduler's lease from the constants in `api/v1alpha1/names.go`; `workloads_test.go` holds the flags.

@@ -331,8 +331,18 @@ func TestAControlPlaneRollsOutOnceItsInputsAreReady(t *testing.T) {
 		"--root-ca-file=/etc/lodia/ca-bundle/ca.crt",
 		"--cluster-cidr=10.244.0.0/16",
 		"--service-cluster-ip-range=10.96.0.0/16",
+		"--leader-elect=true",
+		"--leader-elect-lease-duration=15s",
+		"--leader-elect-renew-deadline=10s",
+		"--leader-elect-retry-period=2s",
+		"--leader-elect-resource-lock=leases",
+		"--leader-elect-resource-name=kube-controller-manager",
+		"--leader-elect-resource-namespace=kube-system",
+		"--node-monitor-grace-period=1m0s",
+		"--node-monitor-period=5s",
 	)
-	expectFlags(t, deployment(t, cp, "kube-scheduler").Spec.Template.Spec.Containers[0].Command, "--kubeconfig=/etc/lodia/kubeconfig/kubeconfig", "--leader-elect=true")
+	expectFlags(t, deployment(t, cp, "kube-scheduler").Spec.Template.Spec.Containers[0].Command, "--kubeconfig=/etc/lodia/kubeconfig/kubeconfig",
+		"--leader-elect=true", "--leader-elect-resource-lock=leases", "--leader-elect-resource-name=kube-scheduler", "--leader-elect-resource-namespace=kube-system")
 
 	authn := &corev1.ConfigMap{}
 	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: cp.Namespace, Name: "dev-authentication-config"}, authn); err != nil {
