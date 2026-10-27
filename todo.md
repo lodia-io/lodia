@@ -353,9 +353,16 @@ is a decision — a decision is a file in `docs/decisions/`.
   Workloads should pick `inCluster` in the family of `serviceCIDRs[0]`, or
   report `WaitingForEndpoint` naming the family.
 - Requests through the tunnel (logs, exec, webhooks, aggregated APIs) can
-  fail for 1–3 s after a new API server pod turns ready, since the agents
-  dial it through the Service; the gate's loop should send one such request
-  too.
+  fail for 1–3 s after a new API server pod turns ready: the agents reach
+  its konnectivity-server through the Service, which sends them to ready
+  pods only, so they connect only once the pod already takes requests, and
+  a webhook with `failurePolicy: Fail` turns that into refused writes. The
+  agents should connect before the pod turns ready, through an agent port
+  that reaches pods not yet ready, and the pod's readiness should wait for
+  them; konnectivity-server's `/readyz` waits for one agent
+  ([readiness_manager.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/pkg/server/readiness_manager.go#L28-L33)),
+  which a tenant without nodes never has. The gate's loop should send such
+  a request too.
 - With no `status.endpoint.inCluster` yet, Tenant should report
   `WaitingForEndpoint` instead of returning the error of parsing an empty
   address.
