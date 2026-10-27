@@ -34,10 +34,10 @@ import (
 )
 
 const (
-	haTenant     = "team-ha"
-	haClass      = "e2e-ha"
-	healthPeriod = 5 * time.Second
-	settle       = 30 * time.Second
+	haTenant  = "team-ha"
+	haClass   = "e2e-ha"
+	gateBound = 5 * time.Second
+	settle    = 30 * time.Second
 )
 
 var readyAndInputs = []string{
@@ -338,8 +338,8 @@ func (r *recorder) check(t *testing.T, from, to time.Time) {
 	for _, conditionType := range readyAndInputs {
 		longest := r.longestNotTrue(conditionType, from, to)
 		t.Logf("%s was not True for at most %s in the %s of the step", conditionType, longest, to.Sub(from).Round(time.Second))
-		if conditionType == lodiav1alpha1.ConditionReady && longest > healthPeriod {
-			t.Errorf("Ready was not True for %s, longer than Health's period, %s", longest, healthPeriod)
+		if conditionType == lodiav1alpha1.ConditionReady && longest > gateBound {
+			t.Errorf("Ready was not True for %s, longer than the gate allows, %s", longest, gateBound)
 		}
 	}
 }
