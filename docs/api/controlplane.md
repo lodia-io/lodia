@@ -81,7 +81,7 @@ and not digits and dots alone, which read as an IP address.
 | field | written by | meaning |
 |---|---|---|
 | `observedGeneration` | Lifecycle | the newest `metadata.generation` that every readiness condition (`CertificatesReady`, `DatastoreReady`, `APIServerReady`, `AccessReady`, `AddonsApplied`, `Reachable`, and `ControllersLeading` from wave 1b, HA) has been reported for |
-| `conditions[]` | each controller its own | `CertificatesReady`, `CAValidityAcceptable`, `DatastoreReady`, `APIServerReady`, `AccessReady`, `AddonsApplied`, `AddonsAvailable`, `Reachable`, `ControllersLeading`, `ControllerManagerHeld`, `Progressing`, `Hibernated`, `Ready`; each with `reason`, `message`, `observedGeneration` |
+| `conditions[]` | each controller its own | `CertificatesReady`, `CAValidityAcceptable`, `DatastoreReady`, `BackupReady`, `APIServerReady`, `AccessReady`, `AddonsApplied`, `AddonsAvailable`, `Reachable`, `ControllersLeading`, `ControllerManagerHeld`, `Progressing`, `Hibernated`, `Ready`; each with `reason`, `message`, `observedGeneration` |
 | `target.version` | Lifecycle | the Kubernetes version the API server rolls to now: one minor at a time towards `spec.version`, and with `autoUpdate.kubernetesPatch` the newest patch of its minor; the controller manager and the scheduler follow the API server's reported version, the addons the oldest component's; until wave 2, upgrades, it follows `spec.version` within its minor only, and `Progressing` says why it lags |
 | `target.operatorRevision` | Lifecycle, from wave 2, upgrades | the operator revision this tenant may be rendered with: the operator's build version and a digest of its rendering configuration, compared for equality only; Workloads, Tenant and Datastore hold every write until it equals their own, but creating a missing object, a new generation of the etcd certificates and deletion. Until wave 2 nothing writes it and every renderer renders with the running operator, as phase 1 does |
 | `target.hibernated` | Lifecycle, phase 3 | the desired sleep state |
@@ -123,14 +123,17 @@ metrics and `BackupReady`, not status.
 Every condition type has one writer, and every reason is a constant in
 `api/v1alpha1/conditions.go`, named by one rule: `Reconciling` is a writer's
 own first pass, `Unknown`, at the start of its first visit; `WaitingFor<X>`
-is an input awaited, `X` a condition type without `Ready` or a status field;
+is an input awaited, `False`: `X` is a condition type without `Ready`
+(`WaitingForDatastore`), a spec or status field (`WaitingForWindow` waits
+for `spec.maintenance.window`, `WaitingForNodes` for `status.nodes`), or the
+kind of a named object that is not ready yet (`WaitingForBackup`);
 `Unsupported` is what this release does not build, the field named in the
 message; `<Capability>Unsupported` is an environment that cannot serve the
 spec; `<Kind>NotFound` is a named object that does not exist; `Refused` is
-the API server a controller writes to refusing one of its objects, the
-object named in the message; `ObjectsControlledElsewhere` is an object under
-the writer's names that another owner keeps, the object and its owner named
-in the message. A reader counts a condition only while its
+the API server a controller writes to refusing one of its objects, `False`,
+the object named in the message; `ObjectsControlledElsewhere` is an object
+under the writer's names that another owner keeps, `False`, the object and
+its owner named in the message. A reader counts a condition only while its
 `observedGeneration` is the object's generation
 ([independent-controllers](../decisions/independent-controllers.md)). A
 reason with a phase beside it is not written before that phase.
@@ -179,7 +182,7 @@ acts on a `Backup`.
 | `spec.controlPlaneRef.name` | the platform | the `ControlPlane` to copy, in the same namespace; the spec never changes (CEL) |
 | `status.conditions[]` | backup reconciler | `Ready`, below |
 | `status.source.{name, uid}` | backup reconciler | the `ControlPlane` copied; a `ControlPlane` restored from the `Backup` replaces it and runs no controller manager while one with this UID exists |
-| `status.kubernetesVersion` | backup reconciler | the version the source ran when the `Backup` was sealed: its `status.kubernetes.version`, or, until wave 2, upgrades, writes that, its `status.target.version`, whose minor everything runs until then; a restored `ControlPlane` of another minor is `BackupIncompatible` |
+| `status.kubernetesVersion` | backup reconciler | the version the source ran when the `Backup` was sealed: its `status.kubernetes.version`, or its `status.target.version` until wave 2, upgrades, writes the former, the target's minor being then the one every part runs; a `ControlPlane` restored from the `Backup` with another minor is `BackupIncompatible` |
 | `status.network.{serviceCIDRs, podCIDRs, clusterDomain}` | backup reconciler | the source's `spec.network`; a restored `ControlPlane` with another one is `BackupIncompatible` |
 | `status.snapshots.{provider, endpoint, bucket, prefix}` | backup reconciler | where the copy is: the class's store when the `Backup` was sealed, and its prefix there, `<class prefix>/<namespace UID>/backups/<Backup UID>`, which nothing writes again; a restore copies from it only while the class names the same store |
 | `status.seal.revision` | backup reconciler | the revision of `/lodia.io/backups/<Backup UID>` (`BackupSealKey`) in the source's etcd; the copy holds the source's data at least up to it, and a restore requires the key |

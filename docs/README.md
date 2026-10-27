@@ -1074,6 +1074,11 @@ off), capacity planning, the alert rules and what each means.
   behaviour change updates this file and the decision in the same commit.
 - Names: `<cp>-<component>` for workloads and Services, `<cp>-<purpose>` for
   Secrets, `lodia.io/*` for labels, annotations and the finalizer.
+- Fields: a field named `<x>Ref` names an object its reader follows, by name
+  in the namespace (`backupRef`, `secretRef`, `parentRef`); an identity
+  record, `{name, uid}`, says which object a fact is about and is not
+  followed, since the object may be gone: a `Backup`'s `status.source`,
+  `status.datastore.restore.{backup, source}`.
 - Every reconcile is idempotent and uses server-side apply; no controller
   reads an object it did not render except through status, or by a name in
   `api/v1alpha1/names.go`.

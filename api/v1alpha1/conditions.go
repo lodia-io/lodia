@@ -21,13 +21,14 @@ const (
 )
 
 // Reasons several conditions share. Reconciling is a writer's own first
-// pass, Unknown. WaitingFor<X> is an input awaited, False: X is a condition
-// type without "Ready", a status field, or the kind of a named object that
-// is not ready yet. Unsupported is what this release
-// does not build, the field named in the message; <Capability>Unsupported is
-// an environment that cannot serve the spec. <Kind>NotFound is a named
-// object that does not exist. Refused is the API server a controller writes
-// to refusing one of its objects, False, the object named in the message.
+// pass, Unknown, at the start of its first visit. WaitingFor<X> is an input
+// awaited, False: X is a condition type without "Ready", a spec or status
+// field (WaitingForWindow, WaitingForNodes), or the kind of a named object
+// that is not ready yet. Unsupported is what this release does not build,
+// the field named in the message; <Capability>Unsupported is an environment
+// that cannot serve the spec. <Kind>NotFound is a named object that does not
+// exist. Refused is the API server a controller writes to refusing one of
+// its objects, False, the object named in the message.
 // ObjectsControlledElsewhere is an object under a writer's names that another
 // owner keeps, False, the object and its owner named in the message.
 const (

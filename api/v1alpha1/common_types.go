@@ -41,8 +41,10 @@ type NamespacedReference struct {
 	Namespace string `json:"namespace,omitempty"`
 }
 
-// UIDReference names an object in the same namespace and the one object
-// that had that name: a name can be taken again, a UID never.
+// UIDReference is an identity record: an object in the same namespace by its
+// name and the one object that had that name, since a name can be taken
+// again and a UID never. A reader does not follow it to the object, as it
+// follows a field named <x>Ref; the object may be gone.
 type UIDReference struct {
 	// Name of the object.
 	// +required

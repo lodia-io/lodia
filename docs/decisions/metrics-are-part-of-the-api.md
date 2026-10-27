@@ -19,7 +19,8 @@ read from a tenant. A metric is renamed only under a new name, and in
   ([certificate_collector.go](https://github.com/cert-manager/cert-manager/blob/v1.21.3/internal/collectors/certificate_collector.go#L28-L112))
   and HyperShift its hosted clusters' from a list
   ([metrics.go](https://github.com/openshift/hypershift/blob/v0.1.86/hypershift-operator/controllers/hostedcluster/metrics/metrics.go#L237-L267)):
-  about 60 series per `ControlPlane`, and no histogram per tenant.
+  about 74 series per `ControlPlane`, 42 of them the one-hot conditions, and
+  no histogram per tenant.
 - **controller-runtime's own metrics** stay as they are, labelled by
   `controller` alone
   ([metrics.go](https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/internal/controller/metrics/metrics.go#L28-L109));
@@ -82,7 +83,7 @@ read from a tenant. A metric is renamed only under a new name, and in
   change.
 - A tenant label on controller-runtime's reconcile histogram, 40 buckets,
   would be 40 × 7 controllers × 200 tenants, 56,000 series; Lodia's gauges
-  are about 60 series per tenant.
+  are about 74 series per tenant.
 - Built at scrape time, the metrics cannot drift from `status`, and a
   restarted operator has them at its first scrape.
 

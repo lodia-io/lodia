@@ -376,3 +376,9 @@ is a decision — a decision is a file in `docs/decisions/`.
   Health's pass, the watchdog of the hold's margin. Name them under
   metrics-are-part-of-the-api with wave 2, Health, or drop them; the hold
   itself is `lodia_controlplane_condition{type="ControllerManagerHeld"}`.
+- For the HA pull request: a `KubeSchedulerConfiguration` from
+  `scheduler.configRef` with `leaderElection.leaderElect: false` would run
+  every scheduler replica without a leader Lease, and `ControllersLeading`
+  could never be True. Workloads forces `leaderElect: true` in the
+  configuration it overrides, or the configuration is refused while it says
+  `false`.
