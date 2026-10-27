@@ -10,12 +10,8 @@ joins a node with them on every pull request.
   Nothing Lodia-specific runs on the node; the node needs outbound TCP 443
   to the control plane endpoint and nothing inbound.
 - The Tenant controller creates in the tenant cluster everything `kubeadm
-  join` reads and every permission it needs: the `cluster-info` ConfigMap in
-  `kube-public` with the CA bundle and endpoint, the `kubeadm-config` and
-  `kubelet-config` ConfigMaps in `kube-system`, the RBAC for bootstrap tokens
-  (node bootstrapper, CSR auto-approval for new nodes and for certificate
-  rotation, `get nodes`), and kube-proxy's ConfigMap and RBAC. The exact list
-  is in [`docs/README.md`](../README.md#inside-the-tenant).
+  join` reads and every permission it needs
+  ([the list](../README.md#inside-the-tenant)).
 - The controller manager runs with `bootstrap-signer-controller` and
   `token-cleaner-controller` enabled (both are off by default), so
   `cluster-info` carries a valid JWS signature for every bootstrap token and
@@ -58,11 +54,6 @@ joins a node with them on every pull request.
 - The Kubernetes version skew policy sets the order of upgrades: the control
   plane first, then nodes, which may lag by up to three minors
   ([upgrades-and-maintenance-windows](upgrades-and-maintenance-windows.md)).
-- Kubelet client certificates are signed by the controller manager with an
-  intermediate kubelet signer, never with a root CA key
-  ([staged-credential-rotation](staged-credential-rotation.md)); kubelet
-  serving certificates stay self-signed unless `serverTLSBootstrap` is turned
-  on later together with an approver.
 - Lodia's e2e suite joins real kubeadm nodes, so a regression in the
   bootstrap objects fails the gate.
 
