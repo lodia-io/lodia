@@ -55,10 +55,12 @@ func TestHighAvailabilityRemovedAndRestored(t *testing.T) {
 		}).
 		Assess("removing highAvailability scales etcd in to one member and each component to one replica, and Ready is back True", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			start := time.Now()
+			stop := watchPods(ctx, t, k8s, kubernetes.NewForConfigOrDie(cfg.Client().RESTConfig()), key)
 			setHighAvailability(ctx, t, k8s, key, nil)
 			until(ctx, t, 10*time.Minute, "one member and one replica each, Ready", func(ctx context.Context) error {
 				return shaped(ctx, k8s, key, 1, 1)
 			})
+			stop()
 			explainEtcd(ctx, t, k8s, key, start)
 			history.log(t, start, time.Now())
 			return ctx
@@ -70,10 +72,14 @@ func TestHighAvailabilityRemovedAndRestored(t *testing.T) {
 			until(ctx, t, 10*time.Minute, "three members and two replicas each, Ready", func(ctx context.Context) error {
 				return shaped(ctx, k8s, key, 3, 2)
 			})
-			stop()
+			restarted := stop()
 			explainEtcd(ctx, t, k8s, key, start)
 			history.log(t, start, time.Now())
-			history.waitsOnly(t, start, time.Now(), gateBound, lodiav1alpha1.ConditionReady, lodiav1alpha1.ConditionAPIServerReady, lodiav1alpha1.ConditionDatastoreReady)
+			history.waitsOnly(t, start, time.Now(), gateBound, lodiav1alpha1.ConditionReady, lodiav1alpha1.ConditionAPIServerReady)
+			history.alwaysTrue(t, start, time.Now(), lodiav1alpha1.ConditionDatastoreReady)
+			if len(restarted) > 0 {
+				t.Errorf("containers of the control plane restarted while highAvailability turned on: %v", restarted)
+			}
 			return ctx
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
@@ -176,7 +182,7 @@ func explainEtcd(ctx context.Context, t *testing.T, k8s client.Client, key clien
 	}
 }
 
-func watchPods(ctx context.Context, t *testing.T, k8s client.WithWatch, logs kubernetes.Interface, key client.ObjectKey) func() {
+func watchPods(ctx context.Context, t *testing.T, k8s client.WithWatch, logs kubernetes.Interface, key client.ObjectKey) func() []string {
 	t.Helper()
 	pods := &corev1.PodList{}
 	selector := client.MatchingLabels{lodiav1alpha1.ControlPlaneLabel: key.Name}
@@ -199,7 +205,7 @@ func watchPods(ctx context.Context, t *testing.T, k8s client.WithWatch, logs kub
 		}
 	}
 	var mu sync.Mutex
-	var lines []string
+	var lines, restarted []string
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -215,6 +221,9 @@ func watchPods(ctx context.Context, t *testing.T, k8s client.WithWatch, logs kub
 				if container := pod.Name + "/" + c.Name; c.RestartCount > seen[container] {
 					seen[container] = c.RestartCount
 					previous = append(previous, previousLog(watching, logs, pod, c)...)
+					mu.Lock()
+					restarted = append(restarted, fmt.Sprintf("%s restart %d", container, c.RestartCount))
+					mu.Unlock()
 				}
 				switch {
 				case c.State.Waiting != nil:
@@ -236,7 +245,7 @@ func watchPods(ctx context.Context, t *testing.T, k8s client.WithWatch, logs kub
 			mu.Unlock()
 		}
 	}()
-	return func() {
+	return func() []string {
 		cancel()
 		w.Stop()
 		<-done
@@ -245,6 +254,7 @@ func watchPods(ctx context.Context, t *testing.T, k8s client.WithWatch, logs kub
 		for _, line := range lines {
 			t.Log(line)
 		}
+		return restarted
 	}
 }
 

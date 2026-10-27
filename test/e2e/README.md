@@ -78,9 +78,9 @@ The test logs each recorded change and, for each condition, the longest time it 
 A tenant with `failureTolerance: Zone` turns `Ready` with three etcd members and two replicas of each component.
 Removing `highAvailability` must then leave it `Ready` with one member, one replica of each component and no PodDisruptionBudget, and adding it back must bring the three members, the two replicas and the budgets back, each within 10 minutes.
 A step ends once etcd-druid has completed its scale and the StatefulSet runs every member on its current revision, ready, since etcd-druid's count of ready members trails them ([A tenant namespace](../../docs/README.md#a-tenant-namespace)).
-The recorder of G2 watches both steps and logs every change, with the events of the control plane's objects and, while `highAvailability` turns on, every change of their pods and the last lines a restarted container logged.
-Removing `highAvailability` restarts the remaining etcd member ([A tenant namespace](../../docs/README.md#a-tenant-namespace)), and the step wants `Ready` back `True`.
-Adding it back must keep `Ready`, `APIServerReady` and `DatastoreReady` `True` but for the wait for the new generation, at most 5 seconds after the change, which `todo.md` names.
+The recorder of G2 watches both steps and logs every change, with the events of the control plane's objects, every change of their pods and the last lines a restarted container logged.
+Removing `highAvailability` restarts the remaining etcd member ([A tenant namespace](../../docs/README.md#a-tenant-namespace)), so that step only logs the restarts and wants `Ready` back `True`.
+Adding it back must keep `DatastoreReady` `True` throughout, and `Ready` and `APIServerReady` but for the wait for the new generation, at most 5 seconds after the change, which `todo.md` names; a restart of any control plane container fails it.
 
 ## Nightly: conformance and the idle control plane
 
