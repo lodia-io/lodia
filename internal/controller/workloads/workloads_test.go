@@ -344,7 +344,7 @@ func TestAControlPlaneRollsOutOnceItsInputsAreReady(t *testing.T) {
 		"--leader-elect-resource-lock=leases",
 		"--leader-elect-resource-name=kube-controller-manager",
 		"--leader-elect-resource-namespace=kube-system",
-		"--node-monitor-grace-period=1m0s",
+		"--node-monitor-grace-period=60s",
 		"--node-monitor-period=5s",
 	)
 	expectFlags(t, deployment(t, cp, "kube-scheduler").Spec.Template.Spec.Containers[0].Command, "--kubeconfig=/etc/lodia/kubeconfig/kubeconfig",

@@ -367,7 +367,7 @@ func (r rendering) controllerManager() *appsv1.Deployment {
 		"leader-elect-resource-name":               lodiav1alpha1.ControllerManagerLease,
 		"leader-elect-resource-namespace":          lodiav1alpha1.LeaderElectionNamespace,
 		"leader-elect-retry-period":                lodiav1alpha1.ControllerManagerRetryPeriod.String(),
-		"node-monitor-grace-period":                lodiav1alpha1.NodeMonitorGracePeriod.String(),
+		"node-monitor-grace-period":                strconv.Itoa(int(lodiav1alpha1.NodeMonitorGracePeriod/time.Second)) + "s",
 		"node-monitor-period":                      lodiav1alpha1.NodeMonitorPeriod.String(),
 		"requestheader-client-ca-file":             "/etc/lodia/front-proxy-ca/" + lodiav1alpha1.CACertKey,
 		"root-ca-file":                             "/etc/lodia/ca-bundle/" + lodiav1alpha1.CACertKey,

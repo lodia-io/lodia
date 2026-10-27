@@ -76,7 +76,7 @@ func TestAnExtraArgumentNeverReplacesAFlagLodiaSets(t *testing.T) {
 	r := rendering{cp: cp, etcd: []lodiav1alpha1.HostPort{{Host: "dev-etcd-client.team.svc", Port: 2379}}}
 	for component, want := range map[string][]string{
 		"kube-apiserver":          {"--endpoint-reconciler-type=none", "--shutdown-delay-duration=15s", "--enable-admission-plugins=NodeRestriction,PodSecurity", "--event-ttl=2h"},
-		"kube-controller-manager": {"--leader-elect=true", "--node-monitor-grace-period=1m0s", "--controllers=*,bootstrap-signer-controller,token-cleaner-controller,-ttl-controller"},
+		"kube-controller-manager": {"--leader-elect=true", "--node-monitor-grace-period=60s", "--controllers=*,bootstrap-signer-controller,token-cleaner-controller,-ttl-controller"},
 	} {
 		d := map[string]func() *appsv1.Deployment{"kube-apiserver": r.apiServer, "kube-controller-manager": r.controllerManager}[component]()
 		command := d.Spec.Template.Spec.Containers[0].Command
