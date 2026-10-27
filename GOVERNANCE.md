@@ -1,7 +1,6 @@
 # Lodia governance
 
-Lodia runs Kubernetes control planes as pods on a management cluster, one
-`ControlPlane` per tenant cluster. This document says how the project is run.
+This document says how Lodia is run.
 It follows the maintainer-council template of the
 [CNCF project template](https://github.com/cncf/project-template/blob/e66ba44f724d00f66c84932593c5a229fee3564b/GOVERNANCE-maintainer.md).
 
