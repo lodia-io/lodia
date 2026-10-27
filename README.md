@@ -12,7 +12,7 @@ The six controllers are built for a control plane with one replica, and the Helm
 - [`docs/analysis.md`](docs/analysis.md) — what we learned from the hosted control plane solutions that came before, and where the bar is.
 - [`docs/roadmap.md`](docs/roadmap.md) — the phases, and how each one is verified before the next starts.
 - [`docs/hard-way.md`](docs/hard-way.md) — a hosted control plane built by hand in kind, step by step: what Lodia will automate.
-- [`docs/operations.md`](docs/operations.md) — installing, upgrading and running Lodia; the runbooks.
+- [`docs/operations.md`](docs/operations.md) — upgrading and running Lodia; the runbooks.
 - [`CLAUDE.md`](CLAUDE.md) — how to work on the repository.
 - [`todo.md`](todo.md) — findings waiting for triage.
 
