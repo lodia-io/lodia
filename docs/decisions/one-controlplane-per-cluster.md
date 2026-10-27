@@ -1,7 +1,7 @@
 # One ControlPlane object describes one tenant cluster; four small objects describe storage classes, shared stores, access and snapshots
 
-Decided 2026-10-25. The five kinds are built as types and
-CRDs; no controller acts on them yet.
+Decided 2026-10-25.
+The five kinds are built as types and CRDs; the six controllers act on `ControlPlane`, the Datastore controller also on `DatastoreClass`, and nothing yet on `Datastore`, `KubeconfigRequest` and `Backup`.
 
 ## Decision
 
@@ -17,66 +17,37 @@ Five custom resources in `lodia.io/v1alpha1`:
 
 Rules that hold across all of them:
 
-- `spec` is what the user wants, `status` is what Lodia did. Status is a
-  subresource; `status.conditions` follow the Kubernetes API conventions
-  (`metav1.Condition` with `observedGeneration`); `status.observedGeneration`
-  is set only after a full successful pass.
-- Everything a `ControlPlane` creates in its namespace carries an
-  `ownerReference` to it and the label `lodia.io/control-plane: <name>`;
-  deleting the `ControlPlane` garbage-collects it. The dedicated etcd's
-  volumes and its backups follow the `DatastoreClass` reclaim policy.
-- A `ControlPlane` has one finalizer, `lodia.io/datastore`, which the
-  Datastore controller holds: deletion takes a final snapshot when backups are
-  configured, then lets garbage collection run.
-- Imperative operations that are not desired state — starting or completing a
-  credential rotation — are requested through the annotation
-  `lodia.io/operation`. Lodia never removes it: it acts once on each
-  value it has not handled and records that value in `status`, so a GitOps
-  tool that keeps the annotation in Git never repeats an operation, and
-  running one again takes a new value (`<operation>@<anything>`). Flux
-  triggers a reconcile the same way
-  ([`reconcile.fluxcd.io/requestedAt`](https://fluxcd.io/flux/components/kustomize/kustomizations/#triggering-a-reconcile)).
-- Validation and defaults live in the CRD schema (CEL and defaults), not in a
-  webhook ([no-admission-webhooks](no-admission-webhooks.md)).
+- `spec` is what the user wants, `status` is what Lodia did.
+  Status is a subresource; `status.conditions` follow the Kubernetes API conventions (`metav1.Condition` with `observedGeneration`); `status.observedGeneration` is set only after a full successful pass.
+- Everything a `ControlPlane` creates in its namespace carries an `ownerReference` to it and the label `lodia.io/control-plane: <name>`; deleting the `ControlPlane` garbage-collects it.
+  The dedicated etcd's volumes follow the `DatastoreClass` reclaim policy; its snapshots stay, since nothing deletes them yet ([dedicated-etcd-by-default](dedicated-etcd-by-default.md)).
+- A `ControlPlane` has one finalizer, `lodia.io/datastore`, which the Datastore controller holds ([deletion](../README.md#deletion)).
+- Imperative operations that are not desired state — starting or completing a credential rotation — are requested through the annotation `lodia.io/operation`.
+  Lodia never removes it: it acts once on each value it has not handled and records that value in `status`, so a GitOps tool that keeps the annotation in Git never repeats an operation, and running one again takes a new value (`<operation>@<anything>`).
+  Flux triggers a reconcile the same way ([`reconcile.fluxcd.io/requestedAt`](https://fluxcd.io/flux/components/kustomize/kustomizations/#triggering-a-reconcile)).
+- Validation and defaults live in the CRD schema (CEL and defaults), not in a webhook ([no-admission-webhooks](no-admission-webhooks.md)).
 
-The field reference is [`docs/api/controlplane.md`](../api/controlplane.md);
-examples are in [`docs/api/examples/`](../api/examples/).
+The field reference is [`docs/api/controlplane.md`](../api/controlplane.md); examples are in [`docs/api/examples/`](../api/examples/).
 
 ## Why
 
-- A platform that creates a cluster for a customer wants to write one object
-  and watch one `Ready` condition. Spreading a cluster across several objects
-  (one per component) moves the orchestration to every caller.
-- Storage, access and snapshots have their own lifecycles and their own
-  owners: a platform administrator defines a `DatastoreClass` once; a person
-  asks for a kubeconfig many times; a snapshot outlives the control plane it
-  was taken from.
-- `DatastoreClass` mirrors `StorageClass`: the operator of the management
-  cluster decides what a dedicated etcd looks like, the tenant only names a
-  class.
+- A platform that creates a cluster for a customer wants to write one object and watch one `Ready` condition.
+  Spreading a cluster across several objects (one per component) moves the orchestration to every caller.
+- Storage, access and snapshots have their own lifecycles and their own owners: a platform administrator defines a `DatastoreClass` once; a person asks for a kubeconfig many times; a snapshot outlives the control plane it was taken from.
+- `DatastoreClass` mirrors `StorageClass`: the operator of the management cluster decides what a dedicated etcd looks like, the tenant only names a class.
 
 ## Rejected
 
-- One object per component (`APIServer`, `ControllerManager`, …) — flexible,
-  but every caller re-implements the ordering.
-- Putting etcd settings inline in every `ControlPlane` — the same storage and
-  backup settings repeated per tenant drift apart; a class is edited once.
-- Removing the operation annotation once handled, as Gardener does with
-  `gardener.cloud/operation`
-  ([credentials rotation](https://github.com/gardener/gardener/blob/master/docs/usage/shoot-operations/shoot_credentials_rotation.md))
-  — a GitOps tool that applies the object puts it back, and the operation
-  runs again.
-- A `JoinToken` resource — a bootstrap token is a Secret in the tenant
-  cluster that any admin kubeconfig can create with `kubeadm token create`;
-  Lodia documents the command instead of wrapping it.
+- One object per component (`APIServer`, `ControllerManager`, …) — flexible, but every caller re-implements the ordering.
+- Putting etcd settings inline in every `ControlPlane` — the same storage and backup settings repeated per tenant drift apart; a class is edited once.
+- Removing the operation annotation once handled, as Gardener does with `gardener.cloud/operation` ([credentials rotation](https://github.com/gardener/gardener/blob/master/docs/usage/shoot-operations/shoot_credentials_rotation.md)) — a GitOps tool that applies the object puts it back, and the operation runs again.
+- A `JoinToken` resource — a bootstrap token is a Secret in the tenant cluster that any admin kubeconfig can create with `kubeadm token create`; Lodia documents the command instead of wrapping it.
 
 ## Consequences
 
 - The Go types, the CRD YAML and `docs/api/controlplane.md` change together.
-- `v1alpha1` may change incompatibly between minor releases of Lodia until
-  `v1beta1`; the roadmap says when.
+- `v1alpha1` may change incompatibly between minor releases of Lodia until `v1beta1`; the roadmap says when.
 
 ## Code
 
-- `api/v1alpha1/controlplane_types.go`, `datastore_types.go` and
-  `access_types.go` — the five kinds; `api/crds/` is generated from them.
+- `api/v1alpha1/controlplane_types.go`, `datastore_types.go` and `access_types.go` — the five kinds; `api/crds/` is generated from them.
