@@ -1649,6 +1649,78 @@ func TestEtcdDruidKeepsTheClientPortThroughAScaleIn(t *testing.T) {
 	}
 }
 
+func TestHighAvailabilityWaitsForASettledEtcd(t *testing.T) {
+	ns := namespace(t)
+	const cp = "toggled"
+	createClass(t, newClass("toggled", "Retain"))
+	create(t, controlPlane(ns, cp, "toggled"))
+	writeGeneration(t, ns, cp, 1)
+	waitEtcd(t, ns, cp, nil)
+	runStatefulSet(t, ns, cp, 1)
+	setEtcdStatus(t, ns, cp, nil)
+	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum, 1 of 1 members ready")
+	highAvailability := func(ha *lodiav1alpha1.HighAvailability) {
+		t.Helper()
+		eventually(t, func() error {
+			fresh := getControlPlane(t, ns, cp)
+			fresh.Spec.HighAvailability = ha
+			return k8s.Update(t.Context(), fresh)
+		})
+	}
+	members := func(want int32, spread bool) {
+		t.Helper()
+		settle(t, ns, cp)
+		etcd := getEtcd(t, ns, cp)
+		_, annotated := etcd.Annotations["resources.druid.gardener.cloud/allow-unhealthy-pod-eviction"]
+		if constraints := etcd.Spec.SchedulingConstraints.TopologySpreadConstraints; etcd.Spec.Replicas != want || annotated != spread || (len(constraints) > 0) != spread {
+			t.Errorf("the Etcd asks for %d members, annotated %v, spread by %+v; want %d members, spread and annotated: %t", etcd.Spec.Replicas, etcd.Annotations, constraints, want, spread)
+		}
+	}
+	zone := &lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"}
+
+	t.Run("the lone member restarting on the current spec holds highAvailability", func(t *testing.T) {
+		setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) {
+			s.ReadyReplicas, s.AvailableReplicas, s.CurrentReplicas, s.CurrentRevision = 0, 0, 0, "old"
+		})
+		highAvailability(zone)
+		members(1, false)
+	})
+	t.Run("a held highAvailability lets a certificate generation through", func(t *testing.T) {
+		writeGeneration(t, ns, cp, 2)
+		waitEtcd(t, ns, cp, namesGeneration(2))
+		members(1, false)
+	})
+	t.Run("an Etcd etcd-druid has not observed holds it", func(t *testing.T) {
+		setStatefulSetStatus(t, ns, cp, nil)
+		members(1, false)
+	})
+	t.Run("a settled etcd takes it", func(t *testing.T) {
+		setEtcdStatus(t, ns, cp, nil)
+		members(3, true)
+	})
+	t.Run("a member of three on an older revision holds its removal", func(t *testing.T) {
+		setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) { s.Replicas, s.CurrentReplicas, s.ReadyReplicas = 3, 3, 3 })
+		setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) {
+			s.Replicas, s.ReadyReplicas, s.AvailableReplicas, s.CurrentReplicas, s.UpdatedReplicas, s.CurrentRevision = 3, 3, 3, 1, 2, "old"
+		})
+		highAvailability(nil)
+		members(3, true)
+	})
+	t.Run("a StatefulSet its controller has not observed holds it", func(t *testing.T) {
+		setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) {
+			s.ObservedGeneration--
+			s.Replicas, s.ReadyReplicas, s.AvailableReplicas, s.CurrentReplicas, s.UpdatedReplicas = 3, 3, 3, 3, 3
+		})
+		members(3, true)
+	})
+	t.Run("every member on the current spec lets it go", func(t *testing.T) {
+		setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) {
+			s.Replicas, s.ReadyReplicas, s.AvailableReplicas, s.CurrentReplicas, s.UpdatedReplicas = 3, 3, 3, 3, 3
+		})
+		members(1, false)
+	})
+}
+
 func describeIngress(policy *networkingv1.NetworkPolicy) string {
 	var rules []string
 	for _, rule := range policy.Spec.Ingress {

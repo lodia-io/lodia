@@ -41,7 +41,7 @@ const allowUnhealthyPodEviction = "resources.druid.gardener.cloud/allow-unhealth
 // UIDs and no name: etcd-backup-restore takes the last v1/ anywhere in a key
 // for its layout and ignores the snapshots it misreads
 // (etcd-backup-restore@v0.45.1 pkg/snapstore/snapshot.go#L39-L59).
-func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, namespaceUID types.UID, generation int, current *druidv1alpha1.Etcd) *druidv1alpha1.Etcd {
+func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, namespaceUID types.UID, generation int, current *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) *druidv1alpha1.Etcd {
 	secret := func(certificate lodiav1alpha1.EtcdCertificateRole) corev1.SecretReference {
 		return corev1.SecretReference{Name: lodiav1alpha1.EtcdCertificateSecretName(cp.Name, certificate, generation)}
 	}
@@ -60,7 +60,7 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cp, lodiav1alpha1.GroupVersion.WithKind("ControlPlane"))},
 		},
 		Spec: druidv1alpha1.EtcdSpec{
-			Replicas: replicas(cp, current),
+			Replicas: 1,
 			Labels:   labels,
 			Etcd: druidv1alpha1.EtcdConfig{
 				ClientUrlTLS: &druidv1alpha1.TLSConfig{TLSCASecretRef: ca, ServerTLSSecretRef: secret(lodiav1alpha1.EtcdServerRole), ClientTLSSecretRef: secret(lodiav1alpha1.EtcdClientRole)},
@@ -71,7 +71,15 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 			},
 		},
 	}
-	if ha := cp.Spec.HighAvailability; ha != nil {
+	switch ha := cp.Spec.HighAvailability; {
+	case current != nil && !settled(current, sts):
+		etcd.Spec.Replicas = current.Spec.Replicas
+		etcd.Spec.SchedulingConstraints.TopologySpreadConstraints = current.Spec.SchedulingConstraints.TopologySpreadConstraints
+		if value, ok := current.Annotations[allowUnhealthyPodEviction]; ok {
+			metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, allowUnhealthyPodEviction, value)
+		}
+	case ha != nil:
+		etcd.Spec.Replicas = 3
 		metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, allowUnhealthyPodEviction, "")
 		etcd.Spec.SchedulingConstraints.TopologySpreadConstraints = spread(ha.FailureTolerance, memberLabels(etcd))
 	}
@@ -139,17 +147,20 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 	return etcd
 }
 
-// replicas are three members with high availability, one without; a scale
-// etcd-druid has not completed keeps its count, since etcd-druid refuses the
-// opposite direction meanwhile.
-func replicas(cp *lodiav1alpha1.ControlPlane, current *druidv1alpha1.Etcd) int32 {
-	if current != nil && !druidv1alpha1.HasScaleOperationCompleted(current) {
-		return current.Spec.Replicas
-	}
-	if cp.Spec.HighAvailability != nil {
-		return 3
-	}
-	return 1
+// settled is an etcd that takes a change of highAvailability: its members all
+// run the Etcd's current spec and are available, and etcd-druid has completed
+// its last scale, as it refuses the opposite direction meanwhile. New members
+// join through one that serves
+// (etcd-backup-restore@v0.45.1 pkg/member/member_control.go#L133-L169), while
+// the StatefulSet controller replaces at once a member of etcd-druid's
+// Parallel pods (etcd-druid@v0.39.0 internal/component/statefulset/builder.go#L43)
+// that is not available when the spec changes
+// (kubernetes@v1.37.0 pkg/controller/statefulset/stateful_set_control.go#L875-L894):
+// a lone member still restarting would restart again, and the new ones would
+// start without a member that serves.
+func settled(current *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) bool {
+	updated := updatedMembers(current, sts)
+	return updated != nil && *updated >= current.Spec.Replicas && druidv1alpha1.HasScaleOperationCompleted(current)
 }
 
 // spread puts the members on three nodes, and with Zone in three zones too;

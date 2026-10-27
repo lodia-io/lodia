@@ -265,7 +265,14 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.Contro
 		}
 		namespaceUID = namespace.UID
 	}
-	rendered := render(cp, class, namespaceUID, generation, current)
+	sts := &appsv1.StatefulSet{}
+	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.EtcdName(cp.Name)}, sts); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return nil, nil, metav1.Condition{}, 0, err
+		}
+		sts = nil
+	}
+	rendered := render(cp, class, namespaceUID, generation, current, sts)
 	etcd, err := r.apply(ctx, rendered)
 	if err != nil {
 		err = fmt.Errorf("apply Etcd %s: %w", rendered.Name, err)
@@ -282,13 +289,6 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.Contro
 	absent, err := r.missingSecrets(ctx, cp, etcd, secrets)
 	if err != nil {
 		return nil, nil, metav1.Condition{}, 0, err
-	}
-	sts := &appsv1.StatefulSet{}
-	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.EtcdName(cp.Name)}, sts); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return nil, nil, metav1.Condition{}, 0, err
-		}
-		sts = nil
 	}
 	condition := readiness(etcd, absent)
 	condition.Message = note(condition.Message, held)
