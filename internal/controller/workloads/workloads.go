@@ -194,6 +194,7 @@ func (r *Reconciler) reconcile(ctx context.Context, cp *lodiav1alpha1.ControlPla
 		signerImage: r.SignerImage,
 		advertise:   endpoint.APIServer.Host,
 		issuer:      issuer(cp, endpoint.APIServer),
+		jwksURI:     publicURL(endpoint.APIServer) + jwksPath,
 		etcd:        cp.Status.Datastore.Endpoints,
 		hashes:      hashes,
 	}.deployments()
@@ -395,6 +396,10 @@ func issuer(cp *lodiav1alpha1.ControlPlane, api lodiav1alpha1.HostPort) string {
 	if sa := cp.Spec.ServiceAccount; sa != nil && sa.Issuer != "" {
 		return sa.Issuer
 	}
+	return publicURL(api)
+}
+
+func publicURL(api lodiav1alpha1.HostPort) string {
 	return "https://" + strings.TrimSuffix(net.JoinHostPort(api.Host, strconv.Itoa(int(api.Port))), ":"+strconv.Itoa(lodiav1alpha1.APIServerServicePort))
 }
 

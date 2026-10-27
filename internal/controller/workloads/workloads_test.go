@@ -216,7 +216,8 @@ func TestANodePortControlPlanePublishesItsNodePorts(t *testing.T) {
 	deployment := eventuallyDeployment(t, cp, "kube-apiserver")
 	port := strconv.Itoa(int(api))
 	expectFlags(t, deployment.Spec.Template.Spec.Containers[0].Command,
-		"--advertise-address=192.0.2.11", "--secure-port=6443", "--service-account-issuer=https://192.0.2.11:"+port)
+		"--advertise-address=192.0.2.11", "--secure-port=6443", "--service-account-issuer=https://192.0.2.11:"+port,
+		"--service-account-jwks-uri=https://192.0.2.11:"+port+"/openid/v1/jwks")
 	if p := deployment.Spec.Template.Spec.Containers[0].Ports; len(p) != 1 || p[0].Name != "https" || p[0].ContainerPort != 6443 {
 		t.Errorf("the API server listens on %+v, want 6443", p)
 	}
@@ -305,6 +306,7 @@ func TestAControlPlaneRollsOutOnceItsInputsAreReady(t *testing.T) {
 		"--etcd-servers=https://etcd-0.dev.example:2379,https://[2001:db8::5]:12379",
 		"--service-account-signing-endpoint=/run/signer/signer.sock",
 		"--service-account-issuer=https://"+lbAddress,
+		"--service-account-jwks-uri=https://"+lbAddress+"/openid/v1/jwks",
 		"--client-ca-file=/etc/lodia/client-ca/ca.crt",
 		"--enable-bootstrap-token-auth=true",
 		"--authentication-config=/etc/lodia/authentication/authentication-config.yaml",
@@ -422,7 +424,7 @@ func TestTheSpecIsRendered(t *testing.T) {
 	api := eventuallyDeployment(t, cp, "kube-apiserver")
 	pod := api.Spec.Template.Spec
 	expectFlags(t, pod.Containers[0].Command, "--audit-log-maxage=7", "--feature-gates=A=true,B=false", "--service-account-issuer=https://issuer.example.com",
-		"--enable-admission-plugins=NodeRestriction,PodSecurity")
+		"--service-account-jwks-uri=https://"+lbAddress+"/openid/v1/jwks", "--enable-admission-plugins=NodeRestriction,PodSecurity")
 	if pod.Containers[0].Resources.Requests.Memory().String() != "1Gi" || !strings.HasSuffix(pod.InitContainers[1].Image, ":v0.37.2") {
 		t.Errorf("the API server requests %v, konnectivity %s", pod.Containers[0].Resources.Requests, pod.InitContainers[1].Image)
 	}
