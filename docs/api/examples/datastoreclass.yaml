@@ -32,7 +32,7 @@ spec:
     fullSnapshotSchedule: "0 */24 * * *"  # the hour is randomised inside the tenant's maintenance window
     deltaSnapshotPeriod: 5m
     retention:
-      days: 30
-      afterDelete: 720h                   # how long snapshots outlive their ControlPlane
+      fullSnapshots: 30                   # each with the deltas after it: 30 days at one a day
+      afterDelete: 720h                   # how long snapshots outlive their ControlPlane; not deleted by any release yet
   placement:
     nodeSelector: {node-role.example.com/control-planes: "true"}

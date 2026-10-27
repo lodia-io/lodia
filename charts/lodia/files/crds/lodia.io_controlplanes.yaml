@@ -304,8 +304,9 @@ spec:
                         ''client-ca-file'', ''egress-selector-config-file'', ''enable-bootstrap-token-auth'',
                         ''encryption-provider-config'', ''encryption-provider-config-automatic-reload'',
                         ''endpoint-reconciler-type'', ''etcd-cafile'', ''etcd-certfile'',
-                        ''etcd-keyfile'', ''etcd-servers'', ''feature-gates'', ''goaway-chance'',
-                        ''kubelet-client-certificate'', ''kubelet-client-key'', ''kubelet-preferred-address-types'',
+                        ''etcd-keyfile'', ''etcd-prefix'', ''etcd-servers'', ''etcd-servers-overrides'',
+                        ''feature-gates'', ''goaway-chance'', ''kubelet-client-certificate'',
+                        ''kubelet-client-key'', ''kubelet-preferred-address-types'',
                         ''proxy-client-cert-file'', ''proxy-client-key-file'', ''requestheader-allowed-names'',
                         ''requestheader-client-ca-file'', ''requestheader-extra-headers-prefix'',
                         ''requestheader-group-headers'', ''requestheader-username-headers'',
@@ -859,8 +860,9 @@ spec:
                     x-kubernetes-list-type: atomic
                 type: object
               restoreFrom:
-                description: RestoreFrom starts the datastore from a Backup; set only
-                  at creation.
+                description: |-
+                  RestoreFrom starts the datastore from a Backup, whose source this
+                  ControlPlane replaces; set only at creation.
                 properties:
                   backupRef:
                     description: |-
@@ -875,6 +877,21 @@ spec:
                     required:
                     - name
                     type: object
+                    x-kubernetes-validations:
+                    - message: restoreFrom.backupRef is immutable
+                      rule: self == oldSelf
+                  release:
+                    default: Held
+                    description: |-
+                      Release is Held until the owner has made sure nothing outside the
+                      cluster acts on the restored objects, then Released, for good.
+                    enum:
+                    - Held
+                    - Released
+                    type: string
+                    x-kubernetes-validations:
+                    - message: restoreFrom.release moves only from Held to Released
+                      rule: self == oldSelf || oldSelf == 'Held'
                 required:
                 - backupRef
                 type: object
@@ -1040,9 +1057,9 @@ spec:
                 has(oldSelf.apiServer) && has(oldSelf.apiServer.advertiseAddress)
                 && oldSelf.apiServer.advertiseAddress == self.apiServer.advertiseAddress
                 : !has(oldSelf.apiServer) || !has(oldSelf.apiServer.advertiseAddress)'
-            - message: restoreFrom can only be set when the ControlPlane is created
-              rule: '!has(self.restoreFrom) || (has(oldSelf.restoreFrom) && oldSelf.restoreFrom
-                == self.restoreFrom)'
+            - message: restoreFrom can be set only when the ControlPlane is created,
+                and never removed
+              rule: has(self.restoreFrom) == has(oldSelf.restoreFrom)
           status:
             description: ControlPlaneStatus is what Lodia observed and did.
             properties:
@@ -1396,6 +1413,87 @@ spec:
                     required:
                     - ready
                     - total
+                    type: object
+                  restore:
+                    description: Restore is the restore this ControlPlane's data came
+                      from.
+                    properties:
+                      backup:
+                        description: Backup is the Backup restored.
+                        properties:
+                          name:
+                            description: Name of the object.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                          uid:
+                            description: UID of the object.
+                            maxLength: 36
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        - uid
+                        type: object
+                      completedAt:
+                        description: CompletedAt is when the restored data was cleaned
+                          up and snapshotted.
+                        format: date-time
+                        type: string
+                      source:
+                        description: |-
+                          Source is the ControlPlane the Backup was taken of, which this one
+                          replaces: while one with its UID exists in the namespace, the
+                          controller manager does not run.
+                        properties:
+                          name:
+                            description: Name of the object.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                          uid:
+                            description: UID of the object.
+                            maxLength: 36
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        - uid
+                        type: object
+                    required:
+                    - backup
+                    - source
+                    type: object
+                  snapshots:
+                    description: Snapshots is where the etcd's continuous snapshots
+                      go.
+                    properties:
+                      bucket:
+                        maxLength: 63
+                        minLength: 1
+                        type: string
+                      endpoint:
+                        description: Endpoint of an S3-compatible store; empty for
+                          the provider's own.
+                        maxLength: 512
+                        type: string
+                      prefix:
+                        maxLength: 512
+                        minLength: 1
+                        type: string
+                      provider:
+                        description: 'StoreProvider is the kind of an object store:
+                          S3, GCS, ABS or Swift.'
+                        enum:
+                        - S3
+                        - GCS
+                        - ABS
+                        - Swift
+                        type: string
+                    required:
+                    - bucket
+                    - prefix
+                    - provider
                     type: object
                 required:
                 - endpoints

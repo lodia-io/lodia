@@ -7,7 +7,9 @@ creation and the newest certificate generation, the finalizer with the
 reclaim policy, the NetworkPolicy, `VolumesExist` and `DatastoreReady`; three members,
 hibernation, class edits held for the maintenance window, the final snapshot
 and the backups' retention after deletion, restore and the shared store are
-not.
+not. `Backup`s, sealed copies, and the restore that replaces their source
+were decided on 2026-10-27 and come with phase 2's wave 1b, backups
+([restore-replaces-the-source](restore-replaces-the-source.md)).
 
 ## Decision
 
@@ -55,8 +57,11 @@ not.
   ([etcd-druid#505](https://github.com/gardener/etcd-druid/issues/505),
   [ondemandsnapshot.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcdopstask/handler/ondemandsnapshot/ondemandsnapshot.go#L103),
   [memberremoval.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/memberremoval.go#L31-L39)); the
-  ServiceMonitor for the etcd and sidecar metrics; the `Backup` object as an
-  on-demand snapshot through the sidecar; the failures of etcd-druid's
+  ServiceMonitor for the etcd and sidecar metrics; the `Backup` object, a
+  sealed copy of the snapshots under a prefix of its own that nothing writes
+  again, made with etcd-druid's `EtcdOpsTask` and `EtcdCopyBackupsTask`
+  ([restore-replaces-the-source](restore-replaces-the-source.md)); the
+  failures of etcd-druid's
   `EtcdOpsTask`s in its own condition; and deleting the volumes and snapshots
   of a deleted `ControlPlane`, which etcd-druid keeps
   ([etcd spike](../etcd-spike-2026-10.md), findings 2, 4 and 6).
@@ -141,13 +146,19 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
 - A restore from snapshot starts a new etcd cluster and, as etcd-druid does
   it, keeps the snapshot's revisions: clients with caches must relist. The
   spike measured it: until it restarted, the API server's cache listed 19
-  objects lost with the data and missed 16 of 17 written afterwards. The
-  Datastore controller rolls the tenant's API server after any restore it
-  detects, and the in-place restore runbook uses
+  objects lost with the data and missed 16 of 17 written afterwards. A
+  `ControlPlane` restored from a `Backup` is new, so no client of its source
+  holds its revisions; for etcd-druid's own restore of a member that lost
+  its data, the sidecar should bump the revisions, as etcd's
+  `RevisionBump` and `MarkCompacted` can and the sidecar does not yet
+  ([restorer.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapshot/restorer/restorer.go#L193-L205),
+  [v3_snapshot.go](https://github.com/etcd-io/etcd/blob/v3.5.27/etcdutl/snapshot/v3_snapshot.go#L204-L212)),
+  which is owed upstream (`todo.md`). Lodia detects no restore to roll the
+  API server after: that would fix its cache alone. The lost-quorum runbook
+  rolls it by hand, and the in-place restore runbook uses
   `etcdutl snapshot restore --bump-revision --mark-compacted`, which ends
   every watch so informers relist
-  ([recovery](https://etcd.io/docs/v3.6/op-guide/recovery/)). Making the
-  sidecar bump revisions itself is owed upstream work.
+  ([recovery](https://etcd.io/docs/v3.6/op-guide/recovery/)).
 - Permanent loss of quorum is recovered by hand
   ([runbook](../operations.md#lost-etcd-quorum)), as etcd-druid documents.
 - A tenant's data never outlives it into another `ControlPlane` by name, and
@@ -251,13 +262,17 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   being created while anything else stood there. A claim that appears after
   the last such pass stays unlabelled and is kept, the safe side.
 - Snapshots hold the tenant's Secrets as the API server stored them, so
-  encryption at rest is on by default (`secretbox`), and the encryption key is
-  backed up next to the snapshots; bucket-side encryption is recommended on
-  top.
+  encryption at rest is on by default (`secretbox`), and the encryption key
+  stays in the management cluster, never next to the snapshots, whose
+  bucket's credentials sit in every tenant namespace on the class: a
+  `Backup` carries a copy of its own, `<backup>.encryption-config`, and the
+  platform backs up Lodia's Secrets, as it must for the CAs; a KMS provider
+  is the long-term path. Bucket-side encryption is recommended on top.
 - A class's credentials reach every tenant's prefix on that class, and
   `<cp>-etcd-backup` puts them into every tenant namespace: whoever reads
   Secrets in one tenant namespace reads every tenant's snapshots on the
-  class, and the encryption keys backed up next to them. Until the
+  class, which their encryption keys, kept in the management cluster, still
+  protect. Until the
   credentials are scoped to one tenant's prefix, two rules bound it: Secrets
   in tenant namespaces are readable by Lodia and the platform's
   administrators only, and a class per trust boundary.
@@ -270,8 +285,15 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
   `Etcd`
   ([stateful_set_utils.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/controller/statefulset/stateful_set_utils.go#L116-L119),
   [builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L233)),
-  not by the labels it copies onto them, which a claim made by hand lacks;
-  the snapshots' retention after deletion is phase 2.
+  not by the labels it copies onto them, which a claim made by hand lacks.
+  Nothing deletes a prefix: neither etcd-druid nor its sidecar can, so
+  `retention.afterDelete` stays documented and unbuilt until etcd-druid has
+  a task for it, which Lodia proposes upstream (`todo.md`), rather than a
+  client of four stores of its own; meanwhile a platform expires old
+  prefixes with its bucket's lifecycle rules. `retention.fullSnapshots`
+  counts full snapshots, each with the deltas after it, which etcd-druid's
+  `LimitBased` garbage collection keeps
+  ([garbagecollector.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapshot/snapshotter/garbagecollector.go#L78-L204)).
 - The `Etcd` names the CA's key, `dataKey: ca.crt`, on all three TLS blocks:
   etcd-druid defaults to `ca.crt` for the members and to `bundle.crt` for its
   own calls to the backup-restore sidecar

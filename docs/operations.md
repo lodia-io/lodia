@@ -19,13 +19,13 @@ itself and the support policy. Installation is in
 | Rotate the etcd encryption key, the etcd CA, the front-proxy CA | `…=rotate-etcd-encryption-key-start`, `…=rotate-etcd-ca-start`, `…=rotate-front-proxy-ca-start`; each completes on its own |
 | Rotate the trust anchor (the cluster CA) | `…=rotate-ca-start`; when the phase is `Prepared`, add the new bundle (`<cp>-ca-bundle`) to every node's `/etc/kubernetes/pki/ca.crt` and kubelet kubeconfig, then `…=rotate-ca-complete` |
 | Hibernate and wake | `spec.hibernation.enabled: true` / `false`, or `spec.hibernation.schedules` |
-| Take a snapshot now | create a `Backup` ([example](api/examples/backup.yaml)); its `status.location` is the object in the bucket |
-| Clone or recover a cluster | create a new `ControlPlane` with `spec.restoreFrom.backupRef`; nodes of the old cluster can join it with a new token. Restore is built in phase 2 ([roadmap](roadmap.md)): until then nothing reads `restoreFrom`, and the `ControlPlane` starts empty |
+| Take a sealed copy | create a `Backup` ([example](api/examples/backup.yaml)); it is `Ready`, `Completed`, once sealed, and `status.snapshots` says where the copy is (phase 2's wave 1b, backups) |
+| Replace a cluster from a `Backup` | create a new `ControlPlane` with `spec.restoreFrom.backupRef`; it serves the copy's data from the start and runs no controller manager until `spec.restoreFrom.release` is `Released` and the source `ControlPlane` is gone, which `ControllersLeading` reports; delete the source, or create the new one `Released` if the source is gone already; nodes join it anew with a new token ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)). Built in wave 1b, backups: until then nothing reads `restoreFrom`, and the `ControlPlane` starts empty. A clone beside a live source is for tools that restore through the API |
 | Stop Lodia touching a cluster | `spec.paused: true`; everything keeps running, nothing is reconciled; deleting a paused `ControlPlane` waits until it is unpaused |
 | Turn the controller manager hold off for a cluster | `spec.health.holdControllerManager: false`; a hold in progress is released at once |
 | Change a `DatastoreClass` | edit it; a value etcd-druid or the backup sidecar would refuse is refused when the class is written ([the rules](README.md#a-tenant-namespace)); an edit that changes the `Etcd`'s spec reaches the `Etcd` of every tenant on the class at once and rolls their members, a single member with an outage, until Lifecycle holds class edits for each tenant's maintenance window in phase 2; the storage class and size reach only `Etcd`s created afterwards, and the reclaim policy, `retention.afterDelete`, the credentials' `secretRef` and the region roll nothing |
 | Rotate a backup store's credentials | create a new Secret with the new keys and point the class's `backup.store.secretRef` at it: the class edit reaches every tenant on the class at once and rolls nothing, since the `Etcd` names the copy, whose name stays; once every tenant's `<cp>-etcd-backup` (labelled `lodia.io/control-plane`) holds the new keys, revoke the old ones. Editing the class's Secret in place reaches each tenant only at its next pass, at worst 10 hours later. A class pointed at a Secret that does not exist yet, or whose old Secret is deleted first, is held until the Secret exists: the copies keep their last keys and the certificates keep moving. Whether the backup sidecar reads new keys without a restart is open (`todo.md`) |
-| Delete a cluster | delete the `ControlPlane`; its finalizer deletes the `Etcd`, then with `storage.reclaimPolicy: Delete` the claims `<cp>-etcd-<cp>-etcd-<n>`, with `Retain` keeps them (`kubectl get pvc -L lodia.io/control-plane-uid` shows whose each is); the last snapshot and the snapshots' retention come with backups in phase 2 |
+| Delete a cluster | delete the `ControlPlane`; its finalizer deletes the `Etcd`, then with `storage.reclaimPolicy: Delete` the claims `<cp>-etcd-<cp>-etcd-<n>`, with `Retain` keeps them (`kubectl get pvc -L lodia.io/control-plane-uid` shows whose each is); the last snapshot comes with backups in phase 2, and nothing deletes the snapshots: a lifecycle rule of the bucket expires old prefixes |
 
 ## What breaks, and how it shows
 
@@ -33,7 +33,7 @@ itself and the support policy. Installation is in
 |---|---|
 | `DatastoreReady=False`, `DatastoreClassNotFound` | before the `Etcd` exists: the `DatastoreClass` that `spec.datastore.dedicated.className` names, or that the claims of a previous `Etcd` record, is missing, or no class is annotated `lodia.io/is-default-class: "true"`; the message says which. Deleting a class that running `Etcd`s record never shows here: each keeps what the class gave it, keeps taking new certificate generations and keeps its claims on deletion; only its class edits stop |
 | `DatastoreReady=False`, `DatastoreClassAmbiguous` | before the `Etcd` exists, without `className`: more than one class is annotated `lodia.io/is-default-class: "true"`; the message names them. Remove the annotation from all but one |
-| `DatastoreReady=False`, `VolumesExist` | claims `<cp>-etcd-<cp>-etcd-<n>` of a previous `ControlPlane` of that name, without this one's `lodia.io/control-plane-uid` label, or an `Etcd` `<cp>-etcd` that another `ControlPlane` or nobody controls; the message names them. To start empty, delete them (an `Etcd` with its claims); to keep the data, keep them, and this `ControlPlane` waits. Recovering the old cluster's data into a new `ControlPlane` is `restoreFrom` with a `Backup` of it, built in phase 2 ([roadmap](roadmap.md)); until then nothing reads `restoreFrom`, and a `ControlPlane` created with it starts empty |
+| `DatastoreReady=False`, `VolumesExist` | claims `<cp>-etcd-<cp>-etcd-<n>` of a previous `ControlPlane` of that name, without this one's `lodia.io/control-plane-uid` label, or an `Etcd` `<cp>-etcd` that another `ControlPlane` or nobody controls; the message names them. To start empty, delete them (an `Etcd` with its claims); to keep the data, keep them, and this `ControlPlane` waits. Recovering the old cluster's data into a new `ControlPlane` is `restoreFrom` with a `Backup` of it, built in wave 1b, backups ([roadmap](roadmap.md)); until then nothing reads `restoreFrom`, and a `ControlPlane` created with it starts empty |
 | `DatastoreReady=False`, `ObjectsControlledElsewhere` | a NetworkPolicy `<cp>-etcd` that another owner keeps, named in the message: a previous `ControlPlane`'s goes with the garbage collector; anyone else's needs deleting, or its controller reference removing, and Lodia then applies its own |
 | `DatastoreReady=False`, `Refused` | the API server refuses the `Etcd` or the NetworkPolicy `<cp>-etcd` Lodia renders; the refusal is in Lodia's log (`controller="datastore"`). An admission policy on `Etcd`s: let it admit Lodia's. An etcd-druid whose CRD moved: the version Lodia pins. A `DatastoreClass` stored before a rule one of its values breaks: validation ratcheting keeps an unchanged field on update ([ratcheting](https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/#validation-ratcheting)), so a value the `Etcd` API refuses shows here, while one only the backup sidecar refuses (a day of week 7, a descending range, a zero quota) is accepted and fails the member at its next roll. After an upgrade of Lodia, check each class by creating a copy under another name with `--dry-run=server`: a create is validated whole, ratcheting being for updates, and a dry run goes through validation and admission without being stored ([dry run](https://kubernetes.io/docs/reference/using-api/api-concepts/#dry-run)); fix what it refuses |
 | `DatastoreReady=Unknown`, `Reconciling`, or a `DatastoreReady` whose `observedGeneration` lags the `ControlPlane`'s generation | the Datastore controller's passes end in an error of the API server; the error is in Lodia's log (`controller="datastore"`), never in the condition |
@@ -44,6 +44,11 @@ itself and the support policy. Installation is in
 | `DatastoreReady=False`, `QuorumLost` (phase 2's wave 1b, HA) | fewer than two of three members up; the [lost quorum](#lost-etcd-quorum) runbook |
 | API calls fail with `etcdserver: mvcc: database space exceeded` | the [space quota](#etcd-space-quota) runbook; `status.datastore.dbSizeBytes` (phase 2) against the class quota |
 | `APIServerReady=False`, `RollingOut` for long; from wave 1b, HA, `Progressing=True`, `RollingOut` for long, or `APIServerReady=True`, `ProgressDeadlineExceeded` | the kube-apiserver Deployment's events; a new replica failing `/readyz` (often a flag in `extraArgs` that the new minor removed); from wave 1b the old replicas keep serving meanwhile |
+| `DatastoreReady=False`, `Restoring` for long (wave 1b, backups) | the `EtcdCopyBackupsTask` and `EtcdOpsTask` of the restore in the namespace, and the `Etcd`'s snapshot Leases |
+| `DatastoreReady=False`, `RestoreFailed` (wave 1b, backups) | the class no longer names the store the `Backup` was sealed in, or the restored etcd lacks the `Backup`'s seal key: the copy is not that `Backup`'s; nothing was cleaned up and no API server started. Point the class back at the store, or restore another `Backup` |
+| `DatastoreReady=False`, `BackupIncompatible` (wave 1b, backups) | the `Backup`'s Kubernetes minor or network (`status.kubernetesVersion`, `status.network`) differs from the `ControlPlane`'s, the message naming which; create the `ControlPlane` again with the `Backup`'s |
+| `DatastoreReady=False`, `CAPredatesControlPlane` (wave 1b, backups) | the etcd is empty while the cluster CA PKI adopted is older than the `ControlPlane`: Secrets came back, the data did not. Restore the management cluster from a backup that keeps UIDs, or delete the CA Secrets for a new identity |
+| `ControllersLeading=False`, `AwaitingRelease` or `SourceExists` (wave 1b, backups) | a restored `ControlPlane` waits for `spec.restoreFrom.release: Released`, the message listing what will act outside the cluster then, or for its source `ControlPlane` to be deleted |
 | `APIServerReady=False`, `Unavailable` (wave 1b, HA) | a component without a ready replica, named in the message: its pods' events and logs |
 | `ControllersLeading=False`, `ControllerManagerNotLeading` or `SchedulerNotLeading` (wave 1b, HA) | the component's pods and logs; its leader Lease inside the tenant, `kube-system/kube-controller-manager` or `kube-system/kube-scheduler`, names the last holder |
 | `CAValidityAcceptable=False`, `CAExpiring` | a CA expires within a year; the message names it and when; start a [CA rotation](#forced-ca-rotation). `Ready` stays True: every certificate is still valid |
@@ -85,8 +90,11 @@ itself and the support policy. Installation is in
    ([recovering etcd clusters](https://gardener.github.io/etcd-druid/usage/recovering-etcd-clusters.html)).
    Alternatively, create a new `ControlPlane` with `restoreFrom` the latest
    `Backup` and move the nodes (new token, `kubeadm join`).
-4. Afterwards: the API server rolls once (Datastore detects the restore);
-   check `status.datastore.lastBackup` (phase 2) is moving again.
+4. Afterwards: roll the API server
+   (`kubectl rollout restart deployment <cp>-kube-apiserver`), so that its
+   watch cache lists the restored data: nothing detects a restore, and the
+   sidecar keeps the snapshot's revisions until it bumps them (`todo.md`).
+   Check that `BackupReady` is True again (wave 1b, backups).
 
 ### A Secret the Etcd mounts is gone
 
@@ -135,9 +143,12 @@ the kubelet retries until the Secrets exist
 
 ### Restore a tenant from backup
 
-The supported path is a new `ControlPlane` with `spec.restoreFrom`: its
-etcd starts from the snapshot, the API server comes up on the restored data,
-and nodes join it fresh.
+The supported path is a new `ControlPlane` with `spec.restoreFrom`, which
+replaces the `Backup`'s source: its etcd starts from the `Backup`'s sealed
+copy, the API server comes up on the restored data with new CAs and keys,
+its controller manager waits for the release and for the source to be gone,
+and nodes join it fresh
+([restore-replaces-the-source](decisions/restore-replaces-the-source.md)).
 
 Restoring in place under a running cluster follows the Kubernetes order:
 stop every API server, restore every etcd member from the same snapshot,

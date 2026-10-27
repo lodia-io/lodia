@@ -18,8 +18,11 @@ spec:
     - jsonPath: .spec.controlPlaneRef.name
       name: ControlPlane
       type: string
-    - jsonPath: .status.phase
-      name: Phase
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].reason
+      name: Reason
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -28,8 +31,10 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          Backup is an on-demand full snapshot of a ControlPlane's etcd, kept in the
-          DatastoreClass's store; a new ControlPlane can start from it.
+          Backup is a sealed copy of a ControlPlane's etcd, kept in the
+          DatastoreClass's store under a prefix of its own that nothing writes again;
+          a new ControlPlane can start from it, and replaces its source. It outlives
+          its source.
         properties:
           apiVersion:
             description: |-
@@ -69,35 +74,188 @@ spec:
             - message: a Backup cannot change; create another
               rule: self == oldSelf
           status:
-            description: BackupStatus is the snapshot's progress and where it went.
+            description: |-
+              BackupStatus is the copy's progress, what it was taken of, and where it
+              is. The backup reconciler of the Datastore controller writes it.
             properties:
               completedAt:
                 format: date-time
                 type: string
+              conditions:
+                description: Conditions, Ready among them.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                maxItems: 8
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
               kubernetesVersion:
-                description: KubernetesVersion of the ControlPlane when the snapshot
-                  was taken.
+                description: |-
+                  KubernetesVersion is the version the source's API server ran when the
+                  Backup was sealed, which wrote the data.
                 maxLength: 16
                 type: string
-              location:
-                description: Location of the snapshot in the store.
-                maxLength: 1024
-                type: string
-              phase:
-                description: Phase is Pending, Running, Completed or Failed.
-                enum:
-                - Pending
-                - Running
-                - Completed
-                - Failed
-                type: string
-              revision:
-                description: Revision of etcd in the snapshot.
-                format: int64
-                type: integer
-              sizeBytes:
-                format: int64
-                type: integer
+              network:
+                description: |-
+                  Network is the source's network, which a ControlPlane restored from the
+                  Backup must have too.
+                properties:
+                  clusterDomain:
+                    default: cluster.local
+                    description: ClusterDomain is the cluster's DNS domain.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                    x-kubernetes-validations:
+                    - message: must be a lowercase DNS name
+                      rule: self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$')
+                        && !self.matches('^[0-9.]+$')
+                  podCIDRs:
+                    description: PodCIDRs are the ranges node CIDRs are allocated
+                      from.
+                    items:
+                      description: CIDR is an IPv4 or IPv6 network in CIDR notation.
+                      maxLength: 43
+                      type: string
+                      x-kubernetes-validations:
+                      - message: must be a network in CIDR notation
+                        rule: isCIDR(self)
+                    maxItems: 2
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  serviceCIDRs:
+                    description: |-
+                      ServiceCIDRs are the ranges Services get addresses from; the first
+                      address of the first range is the kubernetes Service, the tenth CoreDNS.
+                    items:
+                      description: CIDR is an IPv4 or IPv6 network in CIDR notation.
+                      maxLength: 43
+                      type: string
+                      x-kubernetes-validations:
+                      - message: must be a network in CIDR notation
+                        rule: isCIDR(self)
+                    maxItems: 2
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-type: atomic
+                required:
+                - podCIDRs
+                - serviceCIDRs
+                type: object
+              seal:
+                description: Seal is what the copy holds.
+                properties:
+                  revision:
+                    description: Revision of the seal key in the source's etcd.
+                    format: int64
+                    minimum: 1
+                    type: integer
+                required:
+                - revision
+                type: object
+              snapshots:
+                description: |-
+                  Snapshots is where the copy is: the store it was sealed in and the
+                  Backup's own prefix there.
+                properties:
+                  bucket:
+                    maxLength: 63
+                    minLength: 1
+                    type: string
+                  endpoint:
+                    description: Endpoint of an S3-compatible store; empty for the
+                      provider's own.
+                    maxLength: 512
+                    type: string
+                  prefix:
+                    maxLength: 512
+                    minLength: 1
+                    type: string
+                  provider:
+                    description: 'StoreProvider is the kind of an object store: S3,
+                      GCS, ABS or Swift.'
+                    enum:
+                    - S3
+                    - GCS
+                    - ABS
+                    - Swift
+                    type: string
+                required:
+                - bucket
+                - prefix
+                - provider
+                type: object
+              source:
+                description: Source is the ControlPlane the Backup was taken of.
+                properties:
+                  name:
+                    description: Name of the object.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  uid:
+                    description: UID of the object.
+                    maxLength: 36
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                - uid
+                type: object
               startedAt:
                 format: date-time
                 type: string
@@ -105,6 +263,10 @@ spec:
         required:
         - spec
         type: object
+        x-kubernetes-validations:
+        - message: the name must be at most 235 characters, so that the Secret <name>.encryption-config
+            fits
+          rule: self.metadata.name.size() <= 235
     served: true
     storage: true
     subresources:

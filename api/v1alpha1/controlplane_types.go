@@ -49,7 +49,7 @@ type ControlPlaneList struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.endpoint.gateway) || has(self.apiServer) && has(self.apiServer.advertiseAddress) || !isCIDR(self.network.serviceCIDRs[0]) || cidr(self.network.serviceCIDRs[0]).ip().family() == 4",message="an IPv6 first service range in gateway mode needs apiServer.advertiseAddress, which has no IPv6 default"
 // +kubebuilder:validation:XValidation:rule="(has(self.apiServer) && has(self.apiServer.advertiseAddress) ? [self.apiServer.advertiseAddress] : has(self.endpoint.gateway) ? ['240.0.0.1'] : []).all(a, !isIP(a) || !(self.network.serviceCIDRs + self.network.podCIDRs).exists(c, isCIDR(c) && cidr(c).containsIP(a)))",message="the advertise address, apiServer.advertiseAddress or 240.0.0.1 in gateway mode, must lie outside the service and pod ranges"
 // +kubebuilder:validation:XValidation:rule="has(self.apiServer) && has(self.apiServer.advertiseAddress) ? has(oldSelf.apiServer) && has(oldSelf.apiServer.advertiseAddress) && oldSelf.apiServer.advertiseAddress == self.apiServer.advertiseAddress : !has(oldSelf.apiServer) || !has(oldSelf.apiServer.advertiseAddress)",message="apiServer.advertiseAddress is immutable"
-// +kubebuilder:validation:XValidation:rule="!has(self.restoreFrom) || (has(oldSelf.restoreFrom) && oldSelf.restoreFrom == self.restoreFrom)",message="restoreFrom can only be set when the ControlPlane is created"
+// +kubebuilder:validation:XValidation:rule="has(self.restoreFrom) == has(oldSelf.restoreFrom)",message="restoreFrom can be set only when the ControlPlane is created, and never removed"
 type ControlPlaneSpec struct {
 	// Version is the Kubernetes version, vMAJOR.MINOR.PATCH. The minor never
 	// decreases; Lodia upgrades one minor at a time towards it.
@@ -122,7 +122,8 @@ type ControlPlaneSpec struct {
 	// +optional
 	ServiceAccount *ServiceAccount `json:"serviceAccount,omitempty"`
 
-	// RestoreFrom starts the datastore from a Backup; set only at creation.
+	// RestoreFrom starts the datastore from a Backup, whose source this
+	// ControlPlane replaces; set only at creation.
 	// +optional
 	RestoreFrom *RestoreFrom `json:"restoreFrom,omitempty"`
 
@@ -338,7 +339,7 @@ type APIServer struct {
 	// Lodia's; featureGates sets feature-gates.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
-	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['advertise-address', 'allow-privileged', 'anonymous-auth', 'authentication-config', 'authorization-mode', 'client-ca-file', 'egress-selector-config-file', 'enable-bootstrap-token-auth', 'encryption-provider-config', 'encryption-provider-config-automatic-reload', 'endpoint-reconciler-type', 'etcd-cafile', 'etcd-certfile', 'etcd-keyfile', 'etcd-servers', 'feature-gates', 'goaway-chance', 'kubelet-client-certificate', 'kubelet-client-key', 'kubelet-preferred-address-types', 'proxy-client-cert-file', 'proxy-client-key-file', 'requestheader-allowed-names', 'requestheader-client-ca-file', 'requestheader-extra-headers-prefix', 'requestheader-group-headers', 'requestheader-username-headers', 'secure-port', 'service-account-issuer', 'service-account-key-file', 'service-account-signing-endpoint', 'service-account-signing-key-file', 'service-cluster-ip-range', 'shutdown-delay-duration', 'shutdown-send-retry-after', 'shutdown-watch-termination-grace-period', 'tls-cert-file', 'tls-private-key-file'])",message="Lodia sets this flag"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['advertise-address', 'allow-privileged', 'anonymous-auth', 'authentication-config', 'authorization-mode', 'client-ca-file', 'egress-selector-config-file', 'enable-bootstrap-token-auth', 'encryption-provider-config', 'encryption-provider-config-automatic-reload', 'endpoint-reconciler-type', 'etcd-cafile', 'etcd-certfile', 'etcd-keyfile', 'etcd-prefix', 'etcd-servers', 'etcd-servers-overrides', 'feature-gates', 'goaway-chance', 'kubelet-client-certificate', 'kubelet-client-key', 'kubelet-preferred-address-types', 'proxy-client-cert-file', 'proxy-client-key-file', 'requestheader-allowed-names', 'requestheader-client-ca-file', 'requestheader-extra-headers-prefix', 'requestheader-group-headers', 'requestheader-username-headers', 'secure-port', 'service-account-issuer', 'service-account-key-file', 'service-account-signing-endpoint', 'service-account-signing-key-file', 'service-cluster-ip-range', 'shutdown-delay-duration', 'shutdown-send-retry-after', 'shutdown-watch-termination-grace-period', 'tls-cert-file', 'tls-private-key-file'])",message="Lodia sets this flag"
 	ExtraArgs map[string]string `json:"extraArgs,omitempty"`
 
 	// FeatureGates are passed to kube-apiserver.
@@ -695,13 +696,36 @@ type ServiceAccount struct {
 	PublicDiscovery bool `json:"publicDiscovery,omitempty"`
 }
 
-// RestoreFrom names the Backup a new control plane starts from.
+// RestoreFrom names the Backup a new control plane starts from. The
+// ControlPlane serves the Backup's data from the start, but runs no
+// controller manager until it is released and no ControlPlane with the
+// Backup's source UID exists in the namespace.
 type RestoreFrom struct {
 	// BackupRef names a Backup in the ControlPlane's namespace, never another
 	// tenant's.
 	// +required
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="restoreFrom.backupRef is immutable"
 	BackupRef LocalReference `json:"backupRef"`
+
+	// Release is Held until the owner has made sure nothing outside the
+	// cluster acts on the restored objects, then Released, for good.
+	// +optional
+	// +kubebuilder:default=Held
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf || oldSelf == 'Held'",message="restoreFrom.release moves only from Held to Released"
+	Release RestoreRelease `json:"release,omitempty"`
 }
+
+// RestoreRelease says whether a restored control plane may run its
+// controller manager.
+// +kubebuilder:validation:Enum=Held;Released
+type RestoreRelease string
+
+const (
+	// RestoreHeld keeps the controller manager stopped.
+	RestoreHeld RestoreRelease = "Held"
+	// RestoreReleased lets it run once the Backup's source is gone.
+	RestoreReleased RestoreRelease = "Released"
+)
 
 // ControlPlaneStatus is what Lodia observed and did.
 type ControlPlaneStatus struct {
@@ -941,6 +965,53 @@ type DatastoreStatus struct {
 	// Members counts the etcd members.
 	// +required
 	Members MemberCount `json:"members"`
+
+	// Snapshots is where the etcd's continuous snapshots go.
+	// +optional
+	Snapshots *SnapshotLocation `json:"snapshots,omitempty"`
+
+	// Restore is the restore this ControlPlane's data came from.
+	// +optional
+	Restore *RestoreStatus `json:"restore,omitempty"`
+}
+
+// SnapshotLocation is where snapshots are: a store, a bucket in it and a
+// prefix in the bucket.
+type SnapshotLocation struct {
+	// +required
+	Provider StoreProvider `json:"provider"`
+
+	// Endpoint of an S3-compatible store; empty for the provider's own.
+	// +optional
+	// +kubebuilder:validation:MaxLength=512
+	Endpoint string `json:"endpoint,omitempty"`
+
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	Bucket string `json:"bucket"`
+
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=512
+	Prefix string `json:"prefix"`
+}
+
+// RestoreStatus is a restore from a Backup.
+type RestoreStatus struct {
+	// Backup is the Backup restored.
+	// +required
+	Backup UIDReference `json:"backup"`
+
+	// Source is the ControlPlane the Backup was taken of, which this one
+	// replaces: while one with its UID exists in the namespace, the
+	// controller manager does not run.
+	// +required
+	Source UIDReference `json:"source"`
+
+	// CompletedAt is when the restored data was cleaned up and snapshotted.
+	// +optional
+	CompletedAt *metav1.Time `json:"completedAt,omitempty"`
 }
 
 // MemberCount counts the etcd members, and those that run the Etcd's

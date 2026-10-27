@@ -1,6 +1,8 @@
-# An on-demand full snapshot of a tenant's etcd, kept in the DatastoreClass's
-# backup store. A new ControlPlane with spec.restoreFrom.backupRef pointing at
-# it starts as a clone.
+# A sealed copy of a tenant's etcd, kept in the DatastoreClass's backup store
+# under a prefix of its own that nothing writes again. A new ControlPlane with
+# spec.restoreFrom.backupRef pointing at it replaces prod-eu: it serves the
+# copy's data from the start, and runs its controller manager once released
+# and prod-eu is gone.
 apiVersion: lodia.io/v1alpha1
 kind: Backup
 metadata:
@@ -9,10 +11,16 @@ metadata:
 spec:
   controlPlaneRef: {name: prod-eu}
 # status:
-#   phase: Completed                   # Pending | Running | Completed | Failed
+#   conditions:
+#     - {type: Ready, status: "True", reason: Completed}
+#   source: {name: prod-eu, uid: 6f1c1b6e-58a4-4b8a-9f5e-2b0a5d3c7e91}
+#   kubernetesVersion: v1.37.1
+#   network: {serviceCIDRs: [10.96.0.0/16], podCIDRs: [10.244.0.0/16], clusterDomain: cluster.local}
+#   snapshots:
+#     provider: S3
+#     endpoint: https://s3.eu-central-1.amazonaws.com
+#     bucket: lodia-backups
+#     prefix: prod/<namespace UID>/backups/<Backup UID>
+#   seal: {revision: 184739}                # of /lodia.io/backups/<Backup UID> in prod-eu's etcd
 #   startedAt: "2026-10-23T02:00:00Z"
 #   completedAt: "2026-10-23T02:00:07Z"
-#   kubernetesVersion: v1.37.1
-#   revision: 184739
-#   sizeBytes: 41943040
-#   location: s3://lodia-backups/prod/<namespace UID>/backups/<Backup UID>/v2/Full-00000000-00184739-1792720807

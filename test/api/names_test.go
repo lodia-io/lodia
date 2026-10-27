@@ -38,3 +38,12 @@ func TestDerivedNamesFitTheLongestControlPlaneName(t *testing.T) {
 		}
 	}
 }
+
+func TestTheLongestBackupNameLeavesRoomForItsEncryptionSecret(t *testing.T) {
+	for length, fits := range map[int]bool{235: true, 236: false} {
+		name := lodiav1alpha1.BackupEncryptionConfigSecretName(strings.Repeat("b", length))
+		if errs := validation.IsDNS1123Subdomain(name); (len(errs) == 0) != fits {
+			t.Errorf("the encryption Secret of a Backup name of %d characters: fits %t, want %t: %v", length, len(errs) == 0, fits, errs)
+		}
+	}
+}

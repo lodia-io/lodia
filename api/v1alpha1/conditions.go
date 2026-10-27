@@ -15,13 +15,15 @@ const (
 	ConditionReachable             = "Reachable"             // Health
 	ConditionControllersLeading    = "ControllersLeading"    // Health
 	ConditionControllerManagerHeld = "ControllerManagerHeld" // Health
+	ConditionBackupReady           = "BackupReady"           // Datastore
 	ConditionProgressing           = "Progressing"           // Lifecycle
 	ConditionReady                 = "Ready"                 // Lifecycle
 )
 
 // Reasons several conditions share. Reconciling is a writer's own first
 // pass, Unknown. WaitingFor<X> is an input awaited, False: X is a condition
-// type without "Ready", or a status field. Unsupported is what this release
+// type without "Ready", a status field, or the kind of a named object that
+// is not ready yet. Unsupported is what this release
 // does not build, the field named in the message; <Capability>Unsupported is
 // an environment that cannot serve the spec. <Kind>NotFound is a named
 // object that does not exist. Refused is the API server a controller writes
@@ -41,6 +43,9 @@ const (
 	ReasonWaitingForDatastore        = "WaitingForDatastore"
 	ReasonWaitingForAPIServer        = "WaitingForAPIServer"
 	ReasonWaitingForAccess           = "WaitingForAccess"
+	ReasonWaitingForBackup           = "WaitingForBackup"
+	ReasonNoBackupStore              = "NoBackupStore"
+	ReasonFailed                     = "Failed"
 )
 
 // CertificatesReady.
@@ -51,6 +56,7 @@ const (
 	ReasonCAExpired                  = "CAExpired"
 	ReasonSecretsControlledElsewhere = "SecretsControlledElsewhere"
 	ReasonSecretUnreadable           = "SecretUnreadable"
+	ReasonSecretsExist               = "SecretsExist"
 )
 
 // CAValidityAcceptable.
@@ -72,6 +78,11 @@ const (
 	ReasonDatastoreClassAmbiguous = "DatastoreClassAmbiguous"
 	ReasonVolumesExist            = "VolumesExist"
 	ReasonQuorumLost              = "QuorumLost"
+	ReasonRestoring               = "Restoring"
+	ReasonBackupNotFound          = "BackupNotFound"
+	ReasonBackupIncompatible      = "BackupIncompatible"
+	ReasonRestoreFailed           = "RestoreFailed"
+	ReasonCAPredatesControlPlane  = "CAPredatesControlPlane"
 )
 
 // APIServerReady.
@@ -106,6 +117,23 @@ const (
 	ReasonHeld                        = "Held"
 	ReasonControllerManagerNotLeading = "ControllerManagerNotLeading"
 	ReasonSchedulerNotLeading         = "SchedulerNotLeading"
+	ReasonAwaitingRelease             = "AwaitingRelease"
+	ReasonSourceExists                = "SourceExists"
+)
+
+// BackupReady.
+const (
+	ReasonBackupSucceeded  = "BackupSucceeded"
+	ReasonBackupFailed     = "BackupFailed"
+	ReasonSnapshotsPending = "SnapshotsPending"
+)
+
+// A Backup's Ready.
+const (
+	ReasonControlPlaneNotFound = "ControlPlaneNotFound"
+	ReasonSnapshotting         = "Snapshotting"
+	ReasonCopying              = "Copying"
+	ReasonCompleted            = "Completed"
 )
 
 // ControllerManagerHeld.

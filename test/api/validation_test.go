@@ -234,7 +234,7 @@ func TestExtraArgsRefuseTheFlagsLodiaSets(t *testing.T) {
 	ensureNamespaces(t, "team-a")
 	const refused = "Lodia sets this flag"
 	for component, flags := range map[string]map[string]string{
-		"apiServer": {"goaway-chance": refused, "max-requests-inflight": ""},
+		"apiServer": {"goaway-chance": refused, "etcd-prefix": refused, "etcd-servers-overrides": refused, "max-requests-inflight": ""},
 		"controllerManager": {
 			"leader-elect-lease-duration": refused, "leader-elect-renew-deadline": refused, "leader-elect-retry-period": refused,
 			"leader-elect-resource-lock": refused, "leader-elect-resource-name": refused, "leader-elect-resource-namespace": refused,
@@ -290,7 +290,7 @@ func TestControlPlaneTransitions(t *testing.T) {
 		}, "network is immutable"},
 		{"restoreFrom added", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, map[string]any{"backupRef": map[string]any{"name": "nightly"}}, "spec", "restoreFrom")
-		}, "restoreFrom can only be set when the ControlPlane is created"},
+		}, "restoreFrom can be set only when the ControlPlane is created, and never removed"},
 		{"paused", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, true, "spec", "paused") }, ""},
 		{"high availability added", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, map[string]any{"failureTolerance": "Zone"}, "spec", "highAvailability")
@@ -469,9 +469,114 @@ func TestTheSchemaDefaultsTheAdvertiseAddressAsTheAPI(t *testing.T) {
 func TestRestoreFromAtCreation(t *testing.T) {
 	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")
-	obj := example(t, "controlplane-single.yaml", "restored")
-	set(t, obj, map[string]any{"backupRef": map[string]any{"name": "nightly"}}, "spec", "restoreFrom")
-	expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), "")
+	for _, c := range []struct {
+		name, release, want, stored string
+	}{
+		{"held by default", "", "", "Held"},
+		{"released at once", "Released", "", "Released"},
+		{"another release", "Paused", `supported values: "Held", "Released"`, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			obj := example(t, "controlplane-single.yaml", "restored")
+			restoreFrom := map[string]any{"backupRef": map[string]any{"name": "nightly"}}
+			if c.release != "" {
+				restoreFrom["release"] = c.release
+			}
+			set(t, obj, restoreFrom, "spec", "restoreFrom")
+			expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), c.want)
+			if release, _, _ := unstructured.NestedString(obj.Object, "spec", "restoreFrom", "release"); c.want == "" && release != c.stored {
+				t.Errorf("restoreFrom.release is %q, want %q", release, c.stored)
+			}
+		})
+	}
+}
+
+func TestRestoreFromTransitions(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	cases := []struct {
+		name, from string
+		mutate     func(*testing.T, *unstructured.Unstructured)
+		want       string
+	}{
+		{"removed", "Held", func(t *testing.T, o *unstructured.Unstructured) {
+			unstructured.RemoveNestedField(o.Object, "spec", "restoreFrom")
+		}, "restoreFrom can be set only when the ControlPlane is created, and never removed"},
+		{"another Backup", "Held", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "weekly", "spec", "restoreFrom", "backupRef", "name")
+		}, "restoreFrom.backupRef is immutable"},
+		{"released", "Held", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "Released", "spec", "restoreFrom", "release")
+		}, ""},
+		{"held again", "Released", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "Held", "spec", "restoreFrom", "release")
+		}, "restoreFrom.release moves only from Held to Released"},
+		{"kept while something else changes", "Held", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, true, "spec", "paused")
+		}, ""},
+	}
+	for i, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			obj := example(t, "controlplane-single.yaml", fmt.Sprintf("restore-transition-%d", i))
+			set(t, obj, map[string]any{"backupRef": map[string]any{"name": "nightly"}, "release": c.from}, "spec", "restoreFrom")
+			update(t, obj, c.mutate, c.want)
+		})
+	}
+}
+
+func TestBackupNames(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	for _, c := range []struct{ name, want string }{
+		{strings.Repeat("b", 235), ""},
+		{strings.Repeat("b", 236), "the name must be at most 235 characters"},
+	} {
+		t.Run(fmt.Sprintf("%d characters", len(c.name)), func(t *testing.T) {
+			expect(t, k8s.Create(context.Background(), example(t, "backup.yaml", c.name), client.DryRunAll), c.want)
+		})
+	}
+}
+
+func TestBackupStatus(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	obj := example(t, "backup.yaml", "status")
+	if err := k8s.Create(context.Background(), obj); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = k8s.Delete(context.Background(), obj) })
+	status := func(revision int64) map[string]any {
+		return map[string]any{
+			"conditions": []any{map[string]any{
+				"type": "Ready", "status": "True", "reason": "Completed", "message": "sealed at revision 184739",
+				"lastTransitionTime": "2026-10-27T02:00:07Z",
+			}},
+			"source":            map[string]any{"name": "prod-eu", "uid": "6f1c1b6e-58a4-4b8a-9f5e-2b0a5d3c7e91"},
+			"kubernetesVersion": "v1.37.1",
+			"network":           map[string]any{"serviceCIDRs": []any{"10.96.0.0/16"}, "podCIDRs": []any{"10.244.0.0/16"}},
+			"snapshots": map[string]any{
+				"provider": "S3", "bucket": "lodia-backups",
+				"prefix": "prod/8d2f2f7e-0c1a-4b7e-9d43-6a1f0b9e2c55/backups/3b9e0c2a-7d41-4f6e-8a5c-1e2d3f4a5b6c",
+			},
+			"seal":        map[string]any{"revision": revision},
+			"startedAt":   "2026-10-27T02:00:00Z",
+			"completedAt": "2026-10-27T02:00:07Z",
+		}
+	}
+	for _, c := range []struct {
+		name     string
+		revision int64
+		want     string
+	}{
+		{"sealed", 184739, ""},
+		{"a seal at revision 0", 0, "status.seal.revision"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			written := obj.DeepCopy()
+			set(t, written, status(c.revision), "status")
+			expect(t, k8s.Status().Update(context.Background(), written, client.DryRunAll), c.want)
+		})
+	}
 }
 
 func TestEndpointStatus(t *testing.T) {

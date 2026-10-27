@@ -12,16 +12,17 @@ is a decision — a decision is a file in `docs/decisions/`.
 - Check whether kube-apiserver reloads `--proxy-client-cert-file` and whether
   konnectivity-server reloads `--cluster-cert`; each proven reload removes a
   rollout from certificate renewal.
-- Decide the deletion policy of a dedicated etcd's backups after a
-  `ControlPlane` is deleted; Gardener keeps backups for a configurable
-  retention period. etcd-druid keeps them when an `Etcd` is deleted, so the
-  policy is Lodia's code (etcd spike, finding 6). The volumes follow the
-  class's `storage.reclaimPolicy` since the Datastore controller (2026-10-25).
-- etcd-druid's restore keeps the snapshot's revisions (no
-  `--bump-revision`); propose the bump upstream in etcd-backup-restore, and
-  until then roll the tenant's API server after any restore Lodia detects.
-  The etcd spike measured the stale cache (finding 5); how the Datastore
-  controller detects a restore is still open.
+- Propose upstream a task of etcd-druid that deletes a prefix in the store
+  (dedicated-etcd-by-default): `retention.afterDelete`, a deleted
+  `ControlPlane`'s last snapshots and a deleted `Backup`'s copy wait for
+  it, and platforms use their bucket's lifecycle rules meanwhile. The
+  volumes follow the class's `storage.reclaimPolicy` since the Datastore
+  controller (2026-10-25).
+- etcd-backup-restore restores without etcd's `RevisionBump` and
+  `MarkCompacted`, so a member it restores keeps the snapshot's revisions;
+  propose the bump upstream. Lodia detects no restore (dedicated-etcd-by-default);
+  the lost-quorum runbook rolls the API server by hand. The etcd spike
+  measured the stale cache (finding 5).
 - etcd-druid's scale at ~1000 `Etcd` objects with its default
   `concurrentSyncs: 3` is not documented; measure in phase 4 or ask the
   maintainers.
@@ -81,8 +82,8 @@ is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the Datastore controller (2026-10-25)
 
-- Nothing reads `spec.restoreFrom` until restore is built in phase 2: a
-  `ControlPlane` created with it starts on an empty etcd. When restore lands,
+- Nothing reads `spec.restoreFrom` until restore is built in phase 2's wave
+  1b: a `ControlPlane` created with it starts on an empty etcd. When restore lands,
   test the `VolumesExist` remedy end to end: the claims kept, a `Backup` of
   the old cluster, a new `ControlPlane` with `restoreFrom` that serves the old
   data.
@@ -188,8 +189,7 @@ is a decision — a decision is a file in `docs/decisions/`.
   [provisioning](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/internal/contract/controlplane.go#L277-L293)).
 - Phase 2: `nodes.outdatedKubelets` compares against the tenant's own
   `/version`.
-- Phase 2: `Backup` and `KubeconfigRequest` get a named status writer, and
-  `Backup` reports conditions instead of a `phase`.
+- Phase 2: `KubeconfigRequest` gets a named status writer.
 - Phase 3: `target.rotation.*`, which `Target` lacks, gets a stage enum of
   its own instead of sharing PKI's observed `RotationPhase`, and
   `rotation.ca` becomes `clusterCA`.
@@ -361,3 +361,20 @@ is a decision — a decision is a file in `docs/decisions/`.
 - With no `status.endpoint.inCluster` yet, Tenant should report
   `WaitingForEndpoint` instead of returning the error of parsing an empty
   address.
+
+## From the phase 2 contracts (2026-10-27)
+
+- The `restore` verb (restore-replaces-the-source, not built): a
+  ValidatingAdmissionPolicy in the chart could require
+  `authorizer…check('restore')` on the `Backup` a new `ControlPlane`'s
+  `restoreFrom` names, for platforms where the right to create
+  `ControlPlane`s is wider than the right to read a namespace's Secrets.
+- A `Backup` that comes back without its status, from a restore of the
+  management cluster that gives new UIDs, would be sealed again from a
+  source that may be empty. The restore's validation proposed the
+  annotation `lodia.io/sealed-uid`, so that such a `Backup` is never sealed
+  again; the decision recovers a management cluster only from a backup that
+  keeps UIDs and did not take it. Settle it with the backups of wave 1b.
+- `docs/operations.md` gets the replace checklist and a Velero recipe for a
+  clone beside a live source, with the restore in wave 1b
+  (restore-replaces-the-source).

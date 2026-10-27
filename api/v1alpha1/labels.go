@@ -62,6 +62,11 @@ const (
 	// DatastoreFinalizer, held by the Datastore controller, keeps a
 	// ControlPlane until its etcd is deleted and its claims reclaimed.
 	DatastoreFinalizer = "lodia.io/datastore"
+
+	// RestoreSourceFinalizer, held by the backup reconciler of the Datastore
+	// controller, keeps a Backup until every ControlPlane restoring from it
+	// has an encryption configuration of its own.
+	RestoreSourceFinalizer = "lodia.io/restore-source"
 )
 
 // DataHash is the hex SHA-256 over a Secret's keys in order, each key and

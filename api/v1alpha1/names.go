@@ -9,6 +9,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // The names of the objects in a tenant namespace that one controller writes
@@ -151,6 +152,24 @@ func EtcdName(controlPlane string) string { return controlPlane + "-etcd" }
 // APIServerServiceName is the API server's in-namespace Service, which
 // Workloads writes and PKI names in certificates and kubeconfigs.
 func APIServerServiceName(controlPlane string) string { return controlPlane + "-kube-apiserver" }
+
+// BackupEncryptionConfigSecretName is "<Backup>.encryption-config": the
+// union of the source's encryption keys when the Backup was sealed, under
+// EncryptionConfigKey, immutable and owned by the Backup, which the backup
+// reconciler writes and PKI copies into each ControlPlane restored from it.
+func BackupEncryptionConfigSecretName(backup string) string { return backup + ".encryption-config" }
+
+// BackupSealKey is the etcd key the backup reconciler puts into the
+// source's etcd before it copies the Backup, and that the Datastore
+// controller requires in the restored etcd.
+func BackupSealKey(backup types.UID) string { return "/lodia.io/backups/" + string(backup) }
+
+// RestoreMarkerKey is the etcd key of the Datastore controller's cleanup of
+// a restored etcd: its one transaction deletes what bound the data to the
+// source unless the key exists, and creates it.
+func RestoreMarkerKey(controlPlane types.UID) string {
+	return "/lodia.io/restores/" + string(controlPlane)
+}
 
 // The values beside the names that one controller renders and another relies
 // on.
