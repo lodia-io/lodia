@@ -1,8 +1,6 @@
 # Operations
 
-How Lodia is run once installed: everyday tasks for a tenant, what breaks
-and how it shows, the runbooks, the alerts, capacity, upgrades of Lodia
-itself and the support policy. Installation is in
+How Lodia is run once installed. Installation is in
 [`README.md`](README.md#installation).
 
 ## Everyday tasks
@@ -12,27 +10,27 @@ itself and the support policy. Installation is in
 | Get access as a person | create a `KubeconfigRequest` ([example](api/examples/kubeconfigrequest.yaml)); read the Secret named in its `status.secretRef`; it expires on its own |
 | Get access for automation | grant `get` on the Secret `<cp>-admin-kubeconfig` by `resourceNames`, never on the namespace's Secrets, which hold the class's backup credentials in `<cp>-etcd-backup`; read it; every copy is revoked by the client CA rotation (phase 3), not by deleting the ClusterRoleBinding `lodia:cluster-admins` in the tenant, which PKI applies again on its next pass |
 | Join a node | with an admin kubeconfig: `kubeadm token create --print-join-command --kubeconfig admin.kubeconfig`; run the printed `kubeadm join …` on the machine; it needs outbound 443 to the endpoint and nothing inbound |
-| Upgrade Kubernetes | set `spec.version`; watch `status.kubernetes.upgrade` and `Progressing`; from phase 2's wave 2 Lodia goes one minor at a time, each minor step after the `Backup` `<cp>-pre-upgrade-<version>`, and `status.kubernetes.version` moves once every part runs the new version; nodes follow at the owner's pace, at most three minors behind. Until wave 2, a patch within the running minor only |
-| Get patch updates automatically | `spec.maintenance.autoUpdate.kubernetesPatch: true` and a `maintenance.window`: in the window the target moves to the version table's `latest` patch of the minor, and `spec.version` stays as written (wave 2) |
-| Roll pending maintenance now | `kubectl annotate controlplane <cp> lodia.io/maintain-requested-at="$(date -u +%FT%TZ)" --overwrite`: each new value rolls what waits for the window once, outside it and without a slot of the fleet; `status.maintenance.lastHandled` shows the value handled (wave 2) |
+| Upgrade Kubernetes | set `spec.version`; watch `status.kubernetes.upgrade` and `Progressing`; nodes follow at the owner's pace, at most three minors behind. From phase 2's wave 2 Lodia goes one minor at a time ([upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md)); until then, a patch within the running minor only |
+| Get patch updates automatically | `spec.maintenance.autoUpdate.kubernetesPatch: true` and a `maintenance.window` ([the field](api/controlplane.md#spec), wave 2) |
+| Roll pending maintenance now | `kubectl annotate controlplane <cp> lodia.io/maintain-requested-at="$(date -u +%FT%TZ)" --overwrite`; `status.maintenance.lastHandled` shows the value handled ([the annotation](api/controlplane.md#spec), wave 2) |
 | Rotate client identities (yearly, or after a leaked kubeconfig) | `kubectl annotate controlplane <cp> lodia.io/operation=rotate-client-ca-start`; it completes on its own after one kubelet signing duration (30 days), nodes untouched |
 | Rotate the ServiceAccount key | `…=rotate-serviceaccount-key-start`; when `status.credentials.rotation.serviceAccountKey.phase` is `Prepared` and no client holds an old token, `…=rotate-serviceaccount-key-complete` |
 | Rotate the etcd encryption key, the etcd CA, the front-proxy CA | `…=rotate-etcd-encryption-key-start`, `…=rotate-etcd-ca-start`, `…=rotate-front-proxy-ca-start`; each completes on its own |
 | Rotate the trust anchor (the cluster CA) | `…=rotate-ca-start`; when the phase is `Prepared`, add the new bundle (`<cp>-ca-bundle`) to every node's `/etc/kubernetes/pki/ca.crt` and kubelet kubeconfig, then `…=rotate-ca-complete` |
 | Hibernate and wake | `spec.hibernation.enabled: true` / `false`, or `spec.hibernation.schedules` |
 | Take a sealed copy | create a `Backup` ([example](api/examples/backup.yaml)); it is `Ready`, `Completed`, once sealed, and `status.snapshots` says where the copy is (phase 2's wave 1b, backups) |
-| Replace a cluster from a `Backup` | create a new `ControlPlane` with `spec.restoreFrom.backupRef`; it serves the copy's data from the start and runs no controller manager until `spec.restoreFrom.release` is `Released`, the source `ControlPlane` is gone and Tenant has applied the cluster's objects (`AddonsApplied`), which `ControllersLeading` reports; delete the source, or create the new one `Released` if the source is gone already; nodes join it anew with a new token ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)). Built in wave 1b, backups: until then nothing reads `restoreFrom`, and the `ControlPlane` starts empty. A clone beside a live source is for tools that restore through the API |
+| Replace a cluster from a `Backup` | create a new `ControlPlane` with `spec.restoreFrom.backupRef`; delete the source, or create the new one `Released` if the source is gone already; nodes join it anew with a new token ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)). Built in wave 1b, backups |
 | Stop Lodia touching a cluster | `spec.paused: true`; everything keeps running, nothing is reconciled; deleting a paused `ControlPlane` waits until it is unpaused |
 | Turn the controller manager hold off for a cluster | `spec.health.holdControllerManager: false`; a hold in progress is released at once |
-| Change a `DatastoreClass` | edit it; a value etcd-druid or the backup sidecar would refuse is refused when the class is written ([the rules](README.md#a-tenant-namespace)); an edit that changes the `Etcd`'s spec reaches the `Etcd` of every tenant on the class at once and rolls their members, a single member with an outage, until an edit that reaches the `Etcd` waits for each tenant's maintenance window, from phase 2's wave 2; the storage class and size reach only `Etcd`s created afterwards, and the reclaim policy, `retention.afterDelete`, the credentials' `secretRef` and the region roll nothing |
-| Rotate a backup store's credentials | create a new Secret with the new keys and point the class's `backup.store.secretRef` at it: the class edit reaches every tenant on the class at once and rolls nothing, since the `Etcd` names the copy, whose name stays; once every tenant's `<cp>-etcd-backup` (labelled `lodia.io/control-plane`) holds the new keys, revoke the old ones. Editing the class's Secret in place reaches each tenant only at its next pass, at worst 10 hours later. A class pointed at a Secret that does not exist yet, or whose old Secret is deleted first, is held until the Secret exists: the copies keep their last keys and the certificates keep moving. Whether the backup sidecar reads new keys without a restart is open (`todo.md`) |
-| Delete a cluster | delete the `ControlPlane`; its finalizer deletes the `Etcd`, then with `storage.reclaimPolicy: Delete` the claims `<cp>-etcd-<cp>-etcd-<n>`, with `Retain` keeps them (`kubectl get pvc -L lodia.io/control-plane-uid` shows whose each is); the last snapshot comes with backups in phase 2, and nothing deletes the snapshots: a lifecycle rule of the bucket expires old prefixes |
+| Change a `DatastoreClass` | edit it; [what the class refuses and what an edit rolls](README.md#a-tenant-namespace) |
+| Rotate a backup store's credentials | create a new Secret with the new keys and point the class's `backup.store.secretRef` at it: the class edit reaches every tenant on the class at once and rolls nothing; once every tenant's `<cp>-etcd-backup` holds the new keys, revoke the old ones ([the copy](README.md#a-tenant-namespace)) |
+| Delete a cluster | delete the `ControlPlane` ([what deletion does](README.md#deletion)); `kubectl get pvc -L lodia.io/control-plane-uid` shows whose each claim is; a lifecycle rule of the bucket expires old prefixes |
 
 ## What breaks, and how it shows
 
 | symptom | look at |
 |---|---|
-| `DatastoreReady=False`, `DatastoreClassNotFound` | before the `Etcd` exists: the `DatastoreClass` that `spec.datastore.dedicated.className` names, or that the claims of a previous `Etcd` record, is missing, or no class is annotated `lodia.io/is-default-class: "true"`; the message says which. Deleting a class that running `Etcd`s record never shows here: each keeps what the class gave it, keeps taking new certificate generations and keeps its claims on deletion; only its class edits stop |
+| `DatastoreReady=False`, `DatastoreClassNotFound` | before the `Etcd` exists: the `DatastoreClass` that `spec.datastore.dedicated.className` names, or that the claims of a previous `Etcd` record, is missing, or no class is annotated `lodia.io/is-default-class: "true"`; the message says which. Deleting a class that running `Etcd`s record never shows here ([why](decisions/dedicated-etcd-by-default.md)) |
 | `DatastoreReady=False`, `DatastoreClassAmbiguous` | before the `Etcd` exists, without `className`: more than one class is annotated `lodia.io/is-default-class: "true"`; the message names them. Remove the annotation from all but one |
 | `DatastoreReady=False`, `VolumesExist` | claims `<cp>-etcd-<cp>-etcd-<n>` of a previous `ControlPlane` of that name, without this one's `lodia.io/control-plane-uid` label, or an `Etcd` `<cp>-etcd` that another `ControlPlane` or nobody controls; the message names them. To start empty, delete them (an `Etcd` with its claims); to keep the data, keep them, and this `ControlPlane` waits. Recovering the old cluster's data into a new `ControlPlane` is `restoreFrom` with a `Backup` of it, built in wave 1b, backups ([roadmap](roadmap.md)); until then nothing reads `restoreFrom`, and a `ControlPlane` created with it starts empty |
 | `DatastoreReady=False`, `ObjectsControlledElsewhere` | a NetworkPolicy `<cp>-etcd` that another owner keeps, named in the message: a previous `ControlPlane`'s goes with the garbage collector; anyone else's needs deleting, or its controller reference removing, and Lodia then applies its own |
@@ -46,20 +44,20 @@ itself and the support policy. Installation is in
 | API calls fail with `etcdserver: mvcc: database space exceeded` | the [space quota](#etcd-space-quota) runbook; from wave 2, observability, the metric `lodia_controlplane_datastore_db_size_bytes` against `lodia_controlplane_datastore_quota_bytes` ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)) |
 | `APIServerReady=False`, `RollingOut` for long; from wave 1b, HA, `Progressing=True`, `RollingOut` for long, or `APIServerReady=True`, `ProgressDeadlineExceeded` | the kube-apiserver Deployment's events; a new replica failing `/readyz` (often a flag in `extraArgs` that the new minor removed); from wave 1b the old replicas keep serving meanwhile |
 | `DatastoreReady=False`, `Restoring` for long (wave 1b, backups) | the `EtcdCopyBackupsTask` and `EtcdOpsTask` of the restore in the namespace, and the `Etcd`'s snapshot Leases |
-| `DatastoreReady=False`, `RestoreFailed` (wave 1b, backups) | the class no longer names the store the `Backup` was sealed in, or the restored etcd lacks the `Backup`'s seal key: the copy is not that `Backup`'s; nothing was cleaned up and no API server started. Point the class back at the store, or restore another `Backup` |
+| `DatastoreReady=False`, `RestoreFailed` (wave 1b, backups) | the class no longer names the store the `Backup` was sealed in, or the restored etcd lacks the `Backup`'s seal key ([reason](api/controlplane.md#conditions-and-their-reasons)). Point the class back at the store, or restore another `Backup` |
 | `DatastoreReady=False`, `BackupIncompatible` (wave 1b, backups) | the `Backup`'s Kubernetes minor or network (`status.kubernetesVersion`, `status.network`) differs from the `ControlPlane`'s, the message naming which; create the `ControlPlane` again with the `Backup`'s |
 | `DatastoreReady=False`, `CAPredatesControlPlane` (wave 1b, backups) | the etcd is empty while the cluster CA PKI adopted is older than the `ControlPlane`: Secrets came back, the data did not. Restore the management cluster from a backup that keeps UIDs, or delete the CA Secrets for a new identity |
 | `ControllersLeading=False`, `AwaitingRelease` or `SourceExists` (wave 1b, backups) | a restored `ControlPlane` waits for `spec.restoreFrom.release: Released`, the message listing what will act outside the cluster then, or for its source `ControlPlane` to be deleted |
 | `APIServerReady=False`, `Unavailable` (wave 1b, HA) | a component without a ready replica, named in the message: its pods' events and logs |
 | `ControllersLeading=False`, `ControllerManagerNotLeading` or `SchedulerNotLeading` (wave 1b, HA) | the component's pods and logs; its leader Lease inside the tenant, `kube-system/kube-controller-manager` or `kube-system/kube-scheduler`, names the last holder |
-| `CAValidityAcceptable=False`, `CAExpiring` | a CA expires within a year; the message names it and when; start a [CA rotation](#forced-ca-rotation). `Ready` stays True: every certificate is still valid |
+| `CAValidityAcceptable=False`, `CAExpiring` | a CA expires within a year; the message names it and when; start a [CA rotation](#forced-ca-rotation) |
 | `CertificatesReady=False`, `CAExpired` | a CA is past its `NotAfter`, and every certificate it signed with it; nothing is issued under it until a [CA rotation](#forced-ca-rotation) |
 | `CertificatesReady=False`, `CAMissing` | a CA's key Secret `<cp>-cakey-<ca>` is missing or unreadable while its bundle exists; restore it from a backup without its `metadata.ownerReferences` (it is found by name, labels or not) or rotate the CA; PKI never replaces it on its own |
-| `CertificatesReady=False`, `SecretsControlledElsewhere` | the message names each Secret under PKI's names that another owner keeps, and the owner; PKI writes no Secret until they are gone. A previous `ControlPlane` of the same name: the garbage collector deletes its Secrets, except those an `Etcd` still references, on which etcd-druid holds its finalizer `druid.gardener.cloud/etcd-druid` until no `Etcd` does ([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/secret/reconciler.go#L44-L100)). Any other owner: release the Secret or delete it; PKI's names are its own |
-| `CertificatesReady=False`, `SecretUnreadable` | `<cp>-encryption-config` or `<cp>-sa-keys` cannot be read; restore it from a backup. PKI never replaces it: a new encryption key would leave what the old one encrypted unreadable, a new signing key every token invalid |
+| `CertificatesReady=False`, `SecretsControlledElsewhere` | the message names each Secret under PKI's names that another owner keeps, and the owner; PKI writes no Secret until they are gone. A previous `ControlPlane` of the same name: the garbage collector deletes its Secrets, except those an `Etcd` still references, on which etcd-druid holds its finalizer ([runbook](#a-secret-the-etcd-mounts-is-gone)). Any other owner: release the Secret or delete it; PKI's names are its own |
+| `CertificatesReady=False`, `SecretUnreadable` | `<cp>-encryption-config` or `<cp>-sa-keys` cannot be read; restore it from a backup. PKI never replaces it ([why](README.md#a-tenant-namespace)) |
 | `CertificatesReady=False`, `Issuing` | a Secret PKI has to change could not be written; the message names it and Lodia's log (`controller="pki"`) has the error; PKI retries with backoff |
 | `AccessReady=False`, `Refused` | the tenant refuses the ClusterRoleBinding the message names, of Lodia, the admin group or the kubelet client: an admission policy in the tenant; Lodia's log (`controller="pki"`) has the answer |
-| `AccessReady=False`, `Binding` | the tenant has not confirmed the bindings since its API server became ready; Lodia's log has the error. PKI recreates a missing binding with a ten-minute `system:masters` certificate on its next pass. While the tenant does not answer, a True stays: `Reachable` reports that |
+| `AccessReady=False`, `Binding` | the tenant has not confirmed the bindings since its API server became ready; Lodia's log has the error. PKI recreates a missing binding with a ten-minute `system:masters` certificate on its next pass |
 | `ControllerManagerHeld=True`, `NodesSilent` (wave 2, Health); in the tenant, the Lease `kube-system/kube-controller-manager` held by `lodia` | most nodes cannot reach the API, so Health holds the controller manager; the [nodes cut off](#nodes-cut-off-from-the-control-plane) runbook |
 | `ControllerManagerHeld=False`, `HoldBlocked` (wave 2, Health) | nodes are silent but another component holds the controller manager's lease, named in the message, for example a platform's own watchdog; run one of the two, not both |
 | `Reachable=False`, `ExternalProbeFailed`, nodes fine | the public endpoint from the management cluster's side: Gateway listener, route status, certificate SANs |
@@ -147,11 +145,8 @@ the kubelet retries until the Secrets exist
 ### Restore a tenant from backup
 
 The supported path is a new `ControlPlane` with `spec.restoreFrom`, which
-replaces the `Backup`'s source: its etcd starts from the `Backup`'s sealed
-copy, the API server comes up on the restored data with new CAs and keys,
-its controller manager waits for the release and for the source to be gone,
-and nodes join it fresh
-([restore-replaces-the-source](decisions/restore-replaces-the-source.md)).
+replaces the `Backup`'s source ([how](#everyday-tasks),
+[restore-replaces-the-source](decisions/restore-replaces-the-source.md)).
 
 Restoring in place under a running cluster follows the Kubernetes order:
 stop every API server, restore every etcd member from the same snapshot,
@@ -279,9 +274,8 @@ with its node image v1.37.0 (containerd 2.3.4) and etcd-druid v0.39.0.
 | | `backup-restore` | 1.8 | 26.2 |
 | sum | | 62.3 | 392.5 |
 
-It idles at 62.3 millicores and 392.5 MiB, against phase 0's target for a
-single idle control plane of 0.5 CPU and 1 GiB with etcd; these numbers
-replace that target. CPU varies between runs more than memory: run
+The sum replaces phase 0's target for a
+single idle control plane, 0.5 CPU and 1 GiB with etcd. CPU varies between runs more than memory: run
 [40334709578](https://github.com/lodia-io/lodia/actions/runs/40334709578)
 on the same runner measured 43.3 millicores and 387.7 MiB. The nightly now
 runs on the public runner, 4 CPUs and 15.6 GiB, where run
