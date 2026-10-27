@@ -315,9 +315,8 @@ NetworkPolicy does not block
 ([network policies](https://kubernetes.io/docs/concepts/services-networking/network-policies/)).
 With one replica there is no PodDisruptionBudget. A `ControlPlane` that asks
 for what Workloads does not render yet — `endpoint.gateway`, the Compact
-layout, `highAvailability`, more than one API server replica,
-`apiServer.advertiseAddress` outside gateway mode, JWT authentication, an
-audit policy, an admission or a scheduler configuration,
+layout, `highAvailability`, more than one API server replica, JWT
+authentication, an audit policy, an admission or a scheduler configuration,
 `serviceAccount.publicDiscovery` — is `APIServerReady=False` (`Unsupported`)
 rather than run without it, and keeps its endpoint: only gateway mode, which
 has no Service yet, publishes none. An orphan under Workloads' names, an

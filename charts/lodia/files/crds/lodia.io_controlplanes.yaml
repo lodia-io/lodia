@@ -1043,6 +1043,9 @@ spec:
             - message: highAvailability runs at least two API servers
               rule: '!has(self.highAvailability) || !has(self.apiServer) || !has(self.apiServer.replicas)
                 || self.apiServer.replicas >= 2'
+            - message: apiServer.advertiseAddress is set only with endpoint.gateway
+              rule: '!has(self.apiServer) || !has(self.apiServer.advertiseAddress)
+                || has(self.endpoint.gateway)'
             - message: apiServer.advertiseAddress must be of the family of the first
                 service range
               rule: '!has(self.apiServer) || !has(self.apiServer.advertiseAddress)

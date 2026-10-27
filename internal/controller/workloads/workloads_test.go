@@ -466,11 +466,11 @@ func TestWhatIsNotBuiltYetIsSaid(t *testing.T) {
 	}
 
 	ignored := controlPlane(t, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.APIServer = &lodiav1alpha1.APIServer{Replicas: new(int32(2)), AdvertiseAddress: "172.20.0.1"}
+		spec.APIServer = &lodiav1alpha1.APIServer{Replicas: new(int32(2))}
 		spec.ServiceAccount = &lodiav1alpha1.ServiceAccount{PublicDiscovery: true}
 	})
 	eventually(t, func() error { return expectCondition(ignored, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported) })
-	if c := condition(t, ignored); c.Message != "not built yet: apiServer.replicas, apiServer.advertiseAddress, serviceAccount.publicDiscovery" {
+	if c := condition(t, ignored); c.Message != "not built yet: apiServer.replicas, serviceAccount.publicDiscovery" {
 		t.Errorf("APIServerReady says %q", c.Message)
 	}
 }

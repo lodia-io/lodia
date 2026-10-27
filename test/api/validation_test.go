@@ -445,6 +445,7 @@ func TestAdvertiseAddress(t *testing.T) {
 		family  = "must be of the family of the first service range"
 		outside = "must lie outside the service and pod ranges"
 		ipv6    = "needs apiServer.advertiseAddress, which has no IPv6 default"
+		gateway = "apiServer.advertiseAddress is set only with endpoint.gateway"
 	)
 	address := func(a string) func(*testing.T, *unstructured.Unstructured) {
 		return func(t *testing.T, o *unstructured.Unstructured) {
@@ -462,6 +463,10 @@ func TestAdvertiseAddress(t *testing.T) {
 	}{
 		{"the default", "controlplane-ha.yaml", nil, ""},
 		{"another address of class E", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){address("240.0.0.2")}, ""},
+		{"behind a load balancer", "controlplane-single.yaml", []func(*testing.T, *unstructured.Unstructured){address("240.0.0.2")}, gateway},
+		{"behind a node port", "controlplane-single.yaml", []func(*testing.T, *unstructured.Unstructured){func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, map[string]any{"nodePort": map[string]any{}}, "spec", "endpoint")
+		}, address("240.0.0.2")}, gateway},
 		{"a private address", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){address("172.20.0.1")}, ""},
 		{"loopback", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){address("127.0.0.1")}, unicast},
 		{"link-local", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){address("169.254.0.1")}, unicast},

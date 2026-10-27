@@ -245,9 +245,6 @@ func unsupported(cp *lodiav1alpha1.ControlPlane) []string {
 		if ptr.Deref(a.Replicas, 1) > 1 && cp.Spec.HighAvailability == nil {
 			fields = append(fields, "apiServer.replicas")
 		}
-		if a.AdvertiseAddress != "" && cp.Spec.Endpoint.Gateway == nil {
-			fields = append(fields, "apiServer.advertiseAddress")
-		}
 		if a.Authentication != nil && len(a.Authentication.JWT) > 0 {
 			fields = append(fields, "apiServer.authentication.jwt")
 		}
