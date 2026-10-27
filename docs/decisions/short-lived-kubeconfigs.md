@@ -81,11 +81,8 @@ Lodia's own credential and the three bindings made with a ten-minute
   the in-namespace Service).
 - `internal/controller/pki/access.go` — the three ClusterRoleBindings,
   applied as `lodia:operator` on every pass and, when that is forbidden,
-  with a `system:masters` certificate issued for ten minutes in memory;
-  `AccessReady` is `WaitingForAPIServer` until `APIServerReady`, `Refused`,
-  naming the binding, while the tenant refuses one, `Binding` while it has
-  not confirmed them, `Bound` once the three exist, and a True stays while
-  the tenant does not answer.
+  with a `system:masters` certificate issued for ten minutes in memory, and
+  `AccessReady` ([reasons](../api/controlplane.md#conditions-and-their-reasons)).
 - `internal/controller/pki/apiserver_test.go` — a kube-apiserver from the
   envtest binaries started with PKI's serving certificate, client CA bundle,
   front-proxy files and signing key: the controller manager's kubeconfig
