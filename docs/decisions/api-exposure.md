@@ -13,6 +13,33 @@ Decided 2026-10-25. The `loadBalancer` and `nodePort` modes are built;
 | `loadBalancer` | one Service of type LoadBalancer: 443 and 6443 → the API server, 8132 → konnectivity | `https://<LB address>:443` | endpoints `<LB address>:6443`, no proxy |
 | `nodePort` | one Service of type NodePort with the same ports | `https://<a management node>:<port>` | endpoints `<node>:<port>`; development only |
 
+**The `kubernetes` Service's endpoints.** In every mode the API server runs
+with `--endpoint-reconciler-type=none` and writes no `kubernetes` endpoints.
+Workloads publishes the endpoint of the table's last column as
+`status.endpoint.inCluster`, and Tenant writes the Endpoints and the
+EndpointSlice from it, as HyperShift does
+([config.go](https://github.com/openshift/hypershift/blob/v0.1.86/control-plane-operator/controllers/hostedcontrolplane/v2/kas/config.go#L211),
+[reconcile.go](https://github.com/openshift/hypershift/blob/v0.1.86/control-plane-operator/hostedclusterconfigoperator/controllers/resources/kas/reconcile.go#L11-L52)).
+Every API server replica serves that address, so no rollout changes them,
+and no controller rewrites them: the mirroring controller leaves Endpoints
+labelled `skip-mirror` alone, and the EndpointSlice controller skips a
+Service without a selector
+([endpointslicemirroring_controller.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/endpointslicemirroring/endpointslicemirroring_controller.go#L314-L318),
+[endpointslice_controller.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/endpointslice/endpointslice_controller.go#L398-L402)).
+
+**Rollouts.** Every endpoint above reaches the API server through something
+that follows its pods' readiness, so a stopping replica keeps serving while
+it leaves them: it fails `/readyz` at once and serves for 15 more seconds
+(`--shutdown-delay-duration=15s`), then shuts down, which sends each HTTP/2
+client a GOAWAY that moves its next requests to a new connection, and
+drains its watches for up to 10 seconds
+(`--shutdown-watch-termination-grace-period=10s`), as Gardener runs it
+([deployment.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/component/apiserver/deployment.go#L51-L52)).
+`--shutdown-send-retry-after` stays off, and `apiServer.extraArgs` refuses
+it: it answers the requests on open connections with `429` and `Retry-After`
+([with_retry_after.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/server/filters/with_retry_after.go#L55-L105)),
+which only a client that retries gets through.
+
 **Gateway prerequisites.** Gateway API ≥ 1.5, where `TLSRoute` and
 `ListenerSet` are in the Standard channel; an implementation that reports
 `TLSRoute` (passthrough) and, for the tunnel, `TLSRouteModeTerminate`, plus
@@ -33,7 +60,7 @@ already runs in production:
 
 1. The API server runs with `--advertise-address=172.20.0.1` (configurable
    per `ControlPlane`, never inside the tenant's node, pod or service
-   ranges); the default `lease` endpoint reconciler publishes it, so the
+   ranges), which Workloads publishes as `status.endpoint.inCluster`, so the
    `kubernetes` Service's endpoint is `172.20.0.1:6443`. EndpointSlices reject
    loopback and link-local addresses, which is why the address is a private
    one and not `127.x` or `169.254.x`.
@@ -57,15 +84,21 @@ endpoint; nothing on the node rewrites packets. Kubelets and kube-proxy
 themselves use the public endpoint by name, so they never need the proxy.
 
 **Konnectivity.** One `konnectivity-server` per API server replica, beside
-it in the pod, in gRPC mode on a Unix socket (`--uds-name`,
-`--server-port=0`), the egress selector sending only `cluster` traffic
-through it; agents authenticate with a projected ServiceAccount token
+it in the pod as a native sidecar that stops only after the API server, in
+gRPC mode on a Unix socket (`--uds-name`, `--server-port=0`), the egress
+selector sending only `cluster` traffic through it; agents authenticate with
+a projected ServiceAccount token
 (`--agent-namespace`, `--agent-service-account`, `--authentication-audience`),
 which the server checks with TokenReviews as `system:konnectivity-server`
 bound to `system:auth-delegator` and to lease verbs in `kube-system`; the
 server's lease controller is on and agents count servers from leases
-(`--count-server-leases`, `--sync-forever`), so agents hold a tunnel to every
-replica without a static count. Agents run as a DaemonSet on the pod network
+(`--count-server-leases`), so agents hold a tunnel to every replica without a
+static count and dial only for a server they lack. Both ends ping after 30
+seconds without traffic (`--keepalive-time=30s`), as often as the server
+allows
+([server.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/cmd/server/app/server.go#L511-L515)),
+so no idle timeout on the way cuts a tunnel.
+Agents run as a DaemonSet on the pod network
 with `--agent-identifiers=ipv4=$(HOST_IP)` and the server tries `destHost`
 before `default`, so traffic for a kubelet goes through the agent on its own
 node
@@ -99,6 +132,23 @@ a node flag (`--address`, `--node-ip`), which the node's owner passes through
   the CNI is up
   ([HyperShift haproxy](https://github.com/openshift/hypershift/blob/main/hypershift-operator/controllers/nodepool/apiserver-haproxy/haproxy.go),
   [Gardener apiserver-proxy](https://github.com/gardener/gardener/blob/master/pkg/component/networking/apiserverproxy/apiserver_proxy.go)).
+- **Endpoints a rollout cannot empty.** The default `lease` reconciler keeps
+  one record per advertise address, and every replica of a Lodia control
+  plane advertises the same one. A stopping replica deletes that record as
+  soon as it gets SIGTERM and, finding no record left, empties the
+  endpoints, until a survivor's next pass up to 10 seconds later
+  ([lease.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controlplane/reconcilers/lease.go#L227-L234),
+  [instance.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controlplane/instance.go#L373-L376)).
+  Every rollout stops a replica, a single one included: on kind with the
+  lease reconciler, a tenant's `kubernetes` EndpointSlice was empty for 3
+  seconds and pods inside it were refused; with `none` it never was
+  (`TestPhase1Gate`, [test/e2e](../../test/e2e/README.md)).
+- **A rollout loses no request.** Rolled on kind under 20 requests a second
+  from outside the tenant and 20 from inside it, half on new connections,
+  half on reused ones, with clients that retry nothing, the API server lost
+  none with the flags above; with `--shutdown-send-retry-after` too, each
+  reused connection took one `429`, and without the shutdown delay requests
+  were refused and timed out.
 - **TLS inside TLS needs no gateway extensions.** Gardener's proxy adds a
   PROXY protocol header or HTTP CONNECT and needs filters on its Istio
   gateway ([GEP-30](https://github.com/gardener/enhancements/blob/main/geps/0030-apiserver-proxy/README.md));
@@ -114,9 +164,12 @@ a node flag (`--address`, `--node-ip`), which the node's owner passes through
   few tenants, the cost driver at hundreds; kept as `loadBalancer`.
 - A port per tenant on a shared address — not 443, and every node network
   needs a firewall rule per tenant.
-- Rewriting the `kubernetes` Service with `--endpoint-reconciler-type=none`
-  and hand-written EndpointSlices — the advertise address gives the same
-  result with the default reconciler.
+- The default `lease` endpoint reconciler — every replica advertises the
+  same address, so a stopping replica empties the `kubernetes` endpoints
+  until a survivor's next pass (Why).
+- Agents with `--sync-forever` — every agent dials, at a TokenReview each,
+  every second for as long as it runs
+  ([clientset.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/pkg/agent/clientset.go#L227-L236)).
 - Injecting `KUBERNETES_SERVICE_HOST` into pods with a mutating webhook — a
   webhook in every tenant, and clients that dial the ClusterIP still need the
   proxy.
@@ -140,9 +193,18 @@ a node flag (`--address`, `--node-ip`), which the node's owner passes through
   overhead.
 - Changing `spec.endpoint` after creation is not supported in `v1alpha1`;
   moving between modes changes the address in every kubeconfig and node.
+- A `kubernetes` Endpoints or EndpointSlice edited or deleted inside the
+  tenant comes back within Tenant's apply period, not within the lease
+  reconciler's 10 seconds.
 
 ## Code
 
 - `internal/controller/workloads` — the Service of the `loadBalancer` and
-  `nodePort` modes, `status.endpoint`, the API server's advertise address
-  and secure port, and konnectivity-server beside it on a Unix socket.
+  `nodePort` modes, `status.endpoint` with `inCluster`, the API server's
+  advertise address and `--endpoint-reconciler-type=none`, and
+  konnectivity-server beside it as a native sidecar on a Unix socket.
+- `internal/controller/tenant` — the `kubernetes` Endpoints and EndpointSlice
+  in `manifests/endpoints.yaml`, and the agents' flags in
+  `manifests/konnectivity.yaml`; `render_test.go` and `tenant_test.go` hold
+  the objects, and `TestPhase1Gate` in `test/e2e` rolls the API server under
+  requests from outside and inside the tenant.

@@ -24,6 +24,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -54,6 +55,7 @@ const (
 	endpointHost     = "203.0.113.10"
 	apiServerPort    = 443
 	konnectivityPort = 8132
+	inClusterPort    = 6443
 )
 
 type dialFunc = func(ctx context.Context, network, address string) (net.Conn, error)
@@ -235,10 +237,13 @@ func TestTheTenantGetsItsObjects(t *testing.T) {
 		t.Errorf("kube-proxy runs %s", image)
 	}
 	agent := get(t, admin, &appsv1.DaemonSet{}, "kube-system", "konnectivity-agent").Spec.Template.Spec.Containers[0]
-	for _, arg := range []string{"--proxy-server-host=203.0.113.10", "--proxy-server-port=8132", "--count-server-leases", "--agent-identifiers=ipv4=$(HOST_IP)"} {
+	for _, arg := range []string{"--proxy-server-host=203.0.113.10", "--proxy-server-port=8132", "--count-server-leases", "--keepalive-time=30s", "--agent-identifiers=ipv4=$(HOST_IP)"} {
 		if !slices.Contains(agent.Command, arg) {
 			t.Errorf("the konnectivity agent runs without %s: %v", arg, agent.Command)
 		}
+	}
+	if slices.Contains(agent.Command, "--sync-forever") {
+		t.Errorf("the konnectivity agent dials on every sync: %v", agent.Command)
 	}
 	inventory := inventoryOf(t, admin)
 	if !slices.Contains(inventory, "ConfigMap kube-public/cluster-info") || !slices.Contains(inventory, "Deployment kube-system/coredns") {
@@ -324,6 +329,64 @@ func setInventory(t *testing.T, c client.Client, objects string) {
 	if err := c.Update(t.Context(), inventory); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestTheKubernetesEndpointsAreTheInClusterEndpoint(t *testing.T) {
+	cp, admin := servedTenant(t, "tenant-endpoints")
+	eventually(t, 30*time.Second, func() error {
+		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied); err != nil {
+			return err
+		}
+		return kubernetesEndpoints(t, admin, inClusterPort)
+	})
+	inventory := inventoryOf(t, admin)
+	for _, entry := range []string{"Endpoints default/kubernetes", "EndpointSlice default/kubernetes"} {
+		if !slices.Contains(inventory, entry) {
+			t.Errorf("the inventory does not list %s: %v", entry, inventory)
+		}
+	}
+
+	applyStatus(t, cp, "test/endpoint", map[string]any{"endpoint": map[string]any{
+		"apiServer":    map[string]any{"host": endpointHost, "port": int64(apiServerPort)},
+		"konnectivity": map[string]any{"host": endpointHost, "port": int64(konnectivityPort)},
+		"inCluster":    map[string]any{"host": endpointHost, "port": int64(31443)},
+	}})
+	eventually(t, 30*time.Second, func() error {
+		return kubernetesEndpoints(t, admin, 31443)
+	})
+}
+
+func kubernetesEndpoints(t *testing.T, c client.Client, port int32) error {
+	t.Helper()
+	key := client.ObjectKey{Namespace: "default", Name: "kubernetes"}
+	endpoints, slice := &unstructured.Unstructured{}, &discoveryv1.EndpointSlice{}
+	endpoints.SetAPIVersion("v1")
+	endpoints.SetKind("Endpoints")
+	if err := c.Get(t.Context(), key, endpoints); err != nil {
+		return err
+	}
+	if err := c.Get(t.Context(), key, slice); err != nil {
+		return err
+	}
+	for _, obj := range []client.Object{endpoints, slice} {
+		if !slices.ContainsFunc(obj.GetManagedFields(), func(f metav1.ManagedFieldsEntry) bool {
+			return f.Manager == tenant.FieldManager && f.Operation == metav1.ManagedFieldsOperationApply
+		}) {
+			return fmt.Errorf("%T default/kubernetes is not applied as %s", obj, tenant.FieldManager)
+		}
+	}
+	subsets, err := json.Marshal(endpoints.Object["subsets"])
+	if want := fmt.Sprintf(`[{"addresses":[{"ip":%q}],"ports":[{"name":"https","port":%d,"protocol":"TCP"}]}]`, endpointHost, port); err != nil || string(subsets) != want ||
+		endpoints.GetLabels()[discoveryv1.LabelSkipMirror] != "true" {
+		return fmt.Errorf("the Endpoints' subsets are %s labelled %v, want %s labelled %s", subsets, endpoints.GetLabels(), want, discoveryv1.LabelSkipMirror)
+	}
+	if len(slice.Endpoints) != 1 || !slices.Equal(slice.Endpoints[0].Addresses, []string{endpointHost}) || slice.Endpoints[0].Conditions.Ready == nil || !*slice.Endpoints[0].Conditions.Ready ||
+		len(slice.Ports) != 1 || *slice.Ports[0].Name != "https" || *slice.Ports[0].Port != port || *slice.Ports[0].Protocol != corev1.ProtocolTCP ||
+		slice.AddressType != discoveryv1.AddressTypeIPv4 ||
+		slice.Labels[discoveryv1.LabelServiceName] != "kubernetes" || slice.Labels[discoveryv1.LabelManagedBy] != "lodia.io" {
+		return fmt.Errorf("the EndpointSlice is %s %+v %+v labelled %v, want %s:%d named https, managed by lodia.io", slice.AddressType, slice.Endpoints, slice.Ports, slice.Labels, endpointHost, port)
+	}
+	return nil
 }
 
 func TestKubeProxyTakesConntrackMaxPerCore(t *testing.T) {
@@ -720,7 +783,8 @@ func startTenant(t *testing.T, cp *lodiav1alpha1.ControlPlane) *tenantClient {
 		Set("tls-private-key-file", file("dev-apiserver-serving", "tls.key")).
 		Set("service-account-signing-key-file", saKey).
 		Set("service-account-key-file", saKey).
-		Set("service-cluster-ip-range", string(cp.Spec.Network.ServiceCIDRs[0]))
+		Set("service-cluster-ip-range", string(cp.Spec.Network.ServiceCIDRs[0])).
+		Set("endpoint-reconciler-type", "none")
 	cfg, err := env.Start()
 	if err != nil {
 		t.Fatal(err)
@@ -833,6 +897,7 @@ func publish(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 	applyStatus(t, cp, "test/endpoint", map[string]any{"endpoint": map[string]any{
 		"apiServer":    map[string]any{"host": endpointHost, "port": int64(apiServerPort)},
 		"konnectivity": map[string]any{"host": endpointHost, "port": int64(konnectivityPort)},
+		"inCluster":    map[string]any{"host": endpointHost, "port": int64(inClusterPort)},
 	}})
 }
 
@@ -967,8 +1032,8 @@ func inventoryOf(t *testing.T, c client.Client) []string {
 }
 
 var kinds = map[string]string{
-	"ConfigMap": "v1", "ServiceAccount": "v1", "Service": "v1",
-	"Deployment": "apps/v1", "DaemonSet": "apps/v1",
+	"ConfigMap": "v1", "ServiceAccount": "v1", "Service": "v1", "Endpoints": "v1",
+	"Deployment": "apps/v1", "DaemonSet": "apps/v1", "EndpointSlice": "discovery.k8s.io/v1",
 	"ClusterRole": "rbac.authorization.k8s.io/v1", "ClusterRoleBinding": "rbac.authorization.k8s.io/v1",
 	"Role": "rbac.authorization.k8s.io/v1", "RoleBinding": "rbac.authorization.k8s.io/v1",
 }

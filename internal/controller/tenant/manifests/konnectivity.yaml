@@ -97,7 +97,7 @@ spec:
         - --proxy-server-port={{ .KonnectivityPort }}
         - --service-account-token-path=/var/run/secrets/tokens/konnectivity-agent-token
         - --count-server-leases
-        - --sync-forever
+        - --keepalive-time=30s
 {{- if not .AgentDeployment }}
         - --agent-identifiers=ipv4=$(HOST_IP)
         env:

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -53,6 +54,35 @@ func TestEveryConfigMapRollsTheAPIServerAlone(t *testing.T) {
 		after := restartHashes(cp.Name, nil, changed)
 		if after[apiServer] == before[apiServer] || after[controllerManager] != before[controllerManager] {
 			t.Errorf("a change to %s gives the restart hashes %v, then %v: want the API server's alone to change", c.Name, before, after)
+		}
+	}
+}
+
+func TestAnExtraArgumentNeverReplacesAFlagLodiaSets(t *testing.T) {
+	cp := &lodiav1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: "team"},
+		Spec: lodiav1alpha1.ControlPlaneSpec{
+			Network: lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
+			APIServer: &lodiav1alpha1.APIServer{ExtraArgs: map[string]string{
+				"endpoint-reconciler-type": "lease",
+				"shutdown-delay-duration":  "70s",
+				"enable-admission-plugins": "PodSecurity",
+				"event-ttl":                "2h",
+			}},
+			ControllerManager: &lodiav1alpha1.Component{ExtraArgs: map[string]string{"leader-elect": "false", "controllers": "-ttl-controller"}},
+		},
+	}
+	r := rendering{cp: cp, etcd: []lodiav1alpha1.HostPort{{Host: "dev-etcd-client.team.svc", Port: 2379}}}
+	for component, want := range map[string][]string{
+		"kube-apiserver":          {"--endpoint-reconciler-type=none", "--shutdown-delay-duration=15s", "--enable-admission-plugins=NodeRestriction,PodSecurity", "--event-ttl=2h"},
+		"kube-controller-manager": {"--leader-elect=true", "--controllers=*,bootstrap-signer-controller,token-cleaner-controller,-ttl-controller"},
+	} {
+		d := map[string]func() *appsv1.Deployment{"kube-apiserver": r.apiServer, "kube-controller-manager": r.controllerManager}[component]()
+		command := d.Spec.Template.Spec.Containers[0].Command
+		for _, flag := range want {
+			if !slices.Contains(command, flag) {
+				t.Errorf("%s runs %v, without %s", component, command, flag)
+			}
 		}
 	}
 }

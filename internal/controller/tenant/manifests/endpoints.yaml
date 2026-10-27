@@ -1,0 +1,38 @@
+# The kubernetes Service's endpoints, which the API server leaves to Lodia
+# (--endpoint-reconciler-type=none), so that a rollout never empties them. The
+# labels keep the EndpointSlice mirroring controller off the Endpoints and name
+# Lodia as the slice's manager (kubernetes v1.37.1,
+# pkg/controller/endpointslicemirroring).
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: kubernetes
+  namespace: default
+  labels:
+    endpointslice.kubernetes.io/skip-mirror: "true"
+subsets:
+- addresses:
+  - ip: {{ quote .InClusterHost }}
+  ports:
+  - name: https
+    port: {{ .InClusterPort }}
+    protocol: TCP
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: kubernetes
+  namespace: default
+  labels:
+    kubernetes.io/service-name: kubernetes
+    endpointslice.kubernetes.io/managed-by: lodia.io
+addressType: {{ .AddressType }}
+endpoints:
+- addresses:
+  - {{ quote .InClusterHost }}
+  conditions:
+    ready: true
+ports:
+- name: https
+  port: {{ .InClusterPort }}
+  protocol: TCP
