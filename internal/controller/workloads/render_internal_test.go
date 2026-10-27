@@ -138,8 +138,8 @@ func TestUpdatedCountsAvailableReplicasOfTheCurrentTemplate(t *testing.T) {
 	}{
 		{"a template not observed", false, 2, 2, 2, 2, "2/2/absent"},
 		{"a surge starts", true, 4, 2, 2, 2, "2/2/0"},
-		{"one new replica available", true, 3, 2, 3, 2, "2/3/1"},
-		{"both new available, the old ones going", true, 4, 2, 4, 4, "2/4/2"},
+		{"one new replica available", true, 3, 2, 3, 2, "2/2/1"},
+		{"both new available, the old ones going", true, 4, 2, 4, 4, "2/2/2"},
 		{"rolled out", true, 2, 2, 2, 2, "2/2/2"},
 		{"new replicas that never start", true, 4, 2, 2, 2, "2/2/0"},
 		{"a replica lost", true, 2, 2, 1, 1, "2/1/1"},

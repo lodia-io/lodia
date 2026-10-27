@@ -526,8 +526,8 @@ func (r *Reconciler) components(ctx context.Context, cp *lodiav1alpha1.ControlPl
 // less those of older templates, which a surge keeps available until the new
 // ones are.
 func rolloutCount(d *appsv1.Deployment) lodiav1alpha1.RolloutCount {
-	s := d.Status
-	count := lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: ptr.Deref(d.Spec.Replicas, 1), Ready: s.ReadyReplicas}}
+	s, total := d.Status, ptr.Deref(d.Spec.Replicas, 1)
+	count := lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: total, Ready: min(s.ReadyReplicas, total)}}
 	if s.ObservedGeneration == d.Generation {
 		count.Updated = new(max(0, min(s.UpdatedReplicas, s.AvailableReplicas-(s.Replicas-s.UpdatedReplicas))))
 	}

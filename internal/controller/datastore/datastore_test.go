@@ -1632,6 +1632,9 @@ func TestEtcdDruidKeepsTheClientPortThroughAScaleIn(t *testing.T) {
 			settle(t, ns, cp)
 			waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum")
 			sameSpec(t, getPolicy(t, ns, cp).Spec, policySpec(cp, false))
+			if m := getControlPlane(t, ns, cp).Status.Datastore.Members; m.Ready > m.Total {
+				t.Errorf("status.datastore.members counts %d ready of %d", m.Ready, m.Total)
+			}
 			if etcd := getEtcd(t, ns, cp); etcd.Spec.Replicas != 1 {
 				t.Errorf("the Etcd asks for %d members, want the 1 etcd-druid scales it to", etcd.Spec.Replicas)
 			}

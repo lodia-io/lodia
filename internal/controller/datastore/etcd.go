@@ -254,7 +254,7 @@ func readiness(etcd *druidv1alpha1.Etcd, missing []string) metav1.Condition {
 		return not(fmt.Sprintf("Secrets Etcd %s mounts do not exist: %s", etcd.Name, strings.Join(missing, ", ")))
 	}
 	observed := ptr.Deref(etcd.Status.ObservedGeneration, 0)
-	ready := etcd.Status.ReadyReplicas
+	ready := min(etcd.Status.ReadyReplicas, etcd.Spec.Replicas)
 	switch {
 	case ready > 0 && !druidv1alpha1.HasScaleOperationCompleted(etcd):
 		return newCondition(metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
