@@ -360,7 +360,7 @@ func TestAControlPlaneRollsOutOnceItsInputsAreReady(t *testing.T) {
 		got[p.Name] = fmt.Sprintf("%s/%s %v %v", selected[lodiav1alpha1.ControlPlaneLabel], selected["app.kubernetes.io/name"], p.Spec.PolicyTypes, rules)
 	}
 	want := map[string]string{
-		"dev-kube-apiserver":          "dev/kube-apiserver [Ingress] [from 0 peers to [6443 8132]]",
+		"dev-kube-apiserver":          "dev/kube-apiserver [Ingress] [from 0 peers to [https 8132]]",
 		"dev-kube-controller-manager": "dev/kube-controller-manager [Ingress] []",
 		"dev-kube-scheduler":          "dev/kube-scheduler [Ingress] []",
 	}

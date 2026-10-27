@@ -439,10 +439,12 @@ func (r rendering) deployment(component string, replicas int32, pod corev1.PodSp
 // nothing; the kubelet's probes come from the node, which a NetworkPolicy
 // does not block
 // (https://kubernetes.io/docs/concepts/services-networking/network-policies/).
-// The ports go by number: implementations such as kube-network-policies, which
-// kind's kindnetd runs, resolve a named port in the main containers alone, not
-// in a native sidecar such as konnectivity-server
+// konnectivity-server's port goes by number: implementations such as
+// kube-network-policies, which kind's kindnetd runs, resolve a named port in
+// the main containers alone, not in a native sidecar
 // (https://github.com/kubernetes-sigs/kube-network-policies/blob/f67f0fb35e2b/pkg/api/helper.go#L17-L26).
+// The API server's goes by name, which also admits the node port a pod of an
+// older render listens on.
 func networkPolicies(cp *lodiav1alpha1.ControlPlane) []*networkingv1.NetworkPolicy {
 	var out []*networkingv1.NetworkPolicy
 	for _, component := range components {
@@ -456,8 +458,8 @@ func networkPolicies(cp *lodiav1alpha1.ControlPlane) []*networkingv1.NetworkPoli
 		}
 		if component == apiServer {
 			var ports []networkingv1.NetworkPolicyPort
-			for _, port := range []int32{kubernetesPort, konnectivityPort} {
-				ports = append(ports, networkingv1.NetworkPolicyPort{Protocol: new(corev1.ProtocolTCP), Port: new(intstr.FromInt32(port))})
+			for _, port := range []intstr.IntOrString{intstr.FromString("https"), intstr.FromInt32(konnectivityPort)} {
+				ports = append(ports, networkingv1.NetworkPolicyPort{Protocol: new(corev1.ProtocolTCP), Port: new(port)})
 			}
 			p.Spec.Ingress = []networkingv1.NetworkPolicyIngressRule{{Ports: ports}}
 		}
