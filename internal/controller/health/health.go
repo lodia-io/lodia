@@ -6,6 +6,7 @@
 package health
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/tls"
@@ -28,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	coordinationv1client "k8s.io/client-go/kubernetes/typed/coordination/v1"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
@@ -65,6 +67,17 @@ type Reconciler struct {
 	mu       sync.Mutex
 	failures map[types.NamespacedName]int
 	renewals map[types.NamespacedName]map[string]renewal
+	clients  map[types.NamespacedName]*clients
+}
+
+// clients reach one control plane: the probe while its CA bundle stays the
+// same, the Leases while Lodia's kubeconfig does.
+type clients struct {
+	bundle     []byte
+	probe      *http.Client
+	kubeconfig []byte
+	leases     coordinationv1client.LeaseInterface
+	transport  *http.Client
 }
 
 // renewal is the version of a leader Lease Health saw last, and when it saw
@@ -159,12 +172,12 @@ func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPla
 		}
 		return nil, err
 	}
-	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(secret.Data[lodiav1alpha1.CACertKey]) {
+	prober := r.prober(key, secret.Data[lodiav1alpha1.CACertKey])
+	if prober == nil {
 		r.count(key, false)
 		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "the CA bundle "+name+" holds no certificate"), nil
 	}
-	code := r.probe(ctx, url, roots)
+	code := r.probe(ctx, prober, url)
 	if code == http.StatusOK {
 		r.count(key, false)
 		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, url+" answered 200"), nil
@@ -203,7 +216,7 @@ func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 	if ref := ownership.ControlledElsewhere(secret, cp); ref != nil {
 		return waiting(fmt.Sprintf("Secret %s is kept by %s %s with UID %s", name, ref.Kind, ref.Name, ref.UID))
 	}
-	tenant, err := r.leases(secret.Data[lodiav1alpha1.KubeconfigKey])
+	tenant, err := r.leases(key, secret.Data[lodiav1alpha1.KubeconfigKey])
 	if err != nil {
 		return nil, err
 	}
@@ -276,38 +289,83 @@ func (r *Reconciler) forget(key types.NamespacedName) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.renewals, key)
+	if c := r.clients[key]; c != nil && c.transport != nil {
+		c.transport.CloseIdleConnections()
+	}
+	delete(r.clients, key)
+}
+
+func (r *Reconciler) clientsOf(key types.NamespacedName) *clients {
+	if r.clients == nil {
+		r.clients = map[types.NamespacedName]*clients{}
+	}
+	if r.clients[key] == nil {
+		r.clients[key] = &clients{}
+	}
+	return r.clients[key]
+}
+
+// prober verifies the endpoint against bundle, or is nil when bundle holds no
+// certificate.
+func (r *Reconciler) prober(key types.NamespacedName, bundle []byte) *http.Client {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	c := r.clientsOf(key)
+	if c.probe != nil && bytes.Equal(c.bundle, bundle) {
+		return c.probe
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(bundle) {
+		return nil
+	}
+	c.bundle, c.probe = bundle, &http.Client{
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}, DisableKeepAlives: true},
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	return c.probe
 }
 
 // leases reads the tenant's leader Leases as Lodia, through the in-namespace
-// Service, which is never behind a proxy from the environment.
-func (r *Reconciler) leases(kubeconfig []byte) (coordinationv1client.LeaseInterface, error) {
+// Service, which is never behind a proxy from the environment. The client of
+// a previous kubeconfig closes its idle connections.
+func (r *Reconciler) leases(key types.NamespacedName, kubeconfig []byte) (coordinationv1client.LeaseInterface, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	c := r.clientsOf(key)
+	if c.leases != nil && bytes.Equal(c.kubeconfig, kubeconfig) {
+		return c.leases, nil
+	}
 	cfg, err := clientcmd.RESTConfigFromKubeConfig(kubeconfig)
 	if err != nil {
 		return nil, err
 	}
 	cfg.Proxy = http.ProxyURL(nil)
-	c, err := coordinationv1client.NewForConfig(cfg)
+	transport, err := rest.HTTPClientFor(cfg)
 	if err != nil {
 		return nil, err
 	}
-	return c.Leases(lodiav1alpha1.LeaderElectionNamespace), nil
+	leases, err := coordinationv1client.NewForConfigAndClient(cfg, transport)
+	if err != nil {
+		return nil, err
+	}
+	if c.transport != nil {
+		c.transport.CloseIdleConnections()
+	}
+	c.kubeconfig, c.leases, c.transport = kubeconfig, leases.Leases(lodiav1alpha1.LeaderElectionNamespace), transport
+	return c.leases, nil
 }
 
 // probe returns the status code the endpoint answered with, or 0 for none.
-func (r *Reconciler) probe(ctx context.Context, url string, roots *x509.CertPool) int {
+func (r *Reconciler) probe(ctx context.Context, prober *http.Client, url string) int {
 	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return 0
 	}
-	probe := &http.Client{
-		Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}, DisableKeepAlives: true},
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	resp, err := probe.Do(req)
+	resp, err := prober.Do(req)
 	if err != nil {
 		return 0
 	}
