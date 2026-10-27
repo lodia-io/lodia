@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +19,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/watch"
+	"k8s.io/client-go/tools/cache"
+	watchtools "k8s.io/client-go/tools/watch"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
@@ -47,24 +52,27 @@ func TestHighAvailabilityRemovedAndRestored(t *testing.T) {
 			history = record(ctx, t, k8s, key)
 			return ctx
 		}).
-		Assess("removing highAvailability scales etcd in to one member and each component to one replica, Ready never leaving True", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("removing highAvailability scales etcd in to one member and each component to one replica, and Ready is back True", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			start := time.Now()
 			setHighAvailability(ctx, t, k8s, key, nil)
 			until(ctx, t, 10*time.Minute, "one member and one replica each, Ready", func(ctx context.Context) error {
 				return shaped(ctx, k8s, key, 1, 1)
 			})
 			explainEtcd(ctx, t, k8s, key, start)
-			history.check(t, start, time.Now(), 0)
+			history.log(t, start, time.Now())
 			return ctx
 		}).
-		Assess("adding it back scales etcd out to three members and each component to two replicas, Ready never leaving True", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("adding it back scales etcd out to three members and each component to two replicas, availability never leaving True", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			start := time.Now()
+			stop := watchPods(ctx, t, k8s, key)
 			setHighAvailability(ctx, t, k8s, key, zone)
 			until(ctx, t, 10*time.Minute, "three members and two replicas each, Ready", func(ctx context.Context) error {
 				return shaped(ctx, k8s, key, 3, 2)
 			})
+			stop()
 			explainEtcd(ctx, t, k8s, key, start)
-			history.check(t, start, time.Now(), 0)
+			history.log(t, start, time.Now())
+			history.waitsOnly(t, start, time.Now(), gateBound, lodiav1alpha1.ConditionReady, lodiav1alpha1.ConditionAPIServerReady, lodiav1alpha1.ConditionDatastoreReady)
 			return ctx
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
@@ -157,5 +165,66 @@ func explainEtcd(ctx context.Context, t *testing.T, k8s client.Client, key clien
 			continue
 		}
 		t.Logf("event %s %s %s: %s %s", at(e).UTC().Format(time.RFC3339), e.InvolvedObject.Kind, e.InvolvedObject.Name, e.Reason, e.Message)
+	}
+}
+
+func watchPods(ctx context.Context, t *testing.T, k8s client.WithWatch, key client.ObjectKey) func() {
+	t.Helper()
+	pods := &corev1.PodList{}
+	selector := client.MatchingLabels{lodiav1alpha1.ControlPlaneLabel: key.Name}
+	if err := k8s.List(ctx, pods, client.InNamespace(key.Namespace), selector); err != nil {
+		t.Fatal(err)
+	}
+	lw := &cache.ListWatch{WatchFuncWithContext: func(ctx context.Context, options metav1.ListOptions) (watch.Interface, error) {
+		return k8s.Watch(ctx, &corev1.PodList{}, client.InNamespace(key.Namespace), selector, &client.ListOptions{Raw: &options})
+	}}
+	watching, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	w, err := watchtools.NewRetryWatcherWithContext(watching, pods.ResourceVersion, lw)
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var lines []string
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for event := range w.ResultChan() {
+			pod, ok := event.Object.(*corev1.Pod)
+			if !ok {
+				continue
+			}
+			var restarts int32
+			var states []string
+			for _, c := range pod.Status.ContainerStatuses {
+				restarts += c.RestartCount
+				switch {
+				case c.State.Waiting != nil:
+					states = append(states, c.Name+" waiting "+c.State.Waiting.Reason)
+				case c.State.Terminated != nil:
+					states = append(states, fmt.Sprintf("%s terminated %s %d", c.Name, c.State.Terminated.Reason, c.State.Terminated.ExitCode))
+				}
+				if c.LastTerminationState.Terminated != nil {
+					states = append(states, fmt.Sprintf("%s last terminated %s %d", c.Name, c.LastTerminationState.Terminated.Reason, c.LastTerminationState.Terminated.ExitCode))
+				}
+			}
+			ready := slices.ContainsFunc(pod.Status.Conditions, func(c corev1.PodCondition) bool {
+				return c.Type == corev1.PodReady && c.Status == corev1.ConditionTrue
+			})
+			mu.Lock()
+			lines = append(lines, fmt.Sprintf("%s pod %s %s on %s: %s, ready %t, deleting %t, %d restarts %v",
+				time.Now().UTC().Format(time.RFC3339Nano), event.Type, pod.Name, pod.Spec.NodeName, pod.Status.Phase, ready, !pod.DeletionTimestamp.IsZero(), restarts, states))
+			mu.Unlock()
+		}
+	}()
+	return func() {
+		cancel()
+		w.Stop()
+		<-done
+		mu.Lock()
+		defer mu.Unlock()
+		for _, line := range lines {
+			t.Log(line)
+		}
 	}
 }

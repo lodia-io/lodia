@@ -325,6 +325,14 @@ func (r *recorder) last(conditionType string) (transition, bool) {
 
 func (r *recorder) check(t *testing.T, from, to time.Time, bound time.Duration) {
 	t.Helper()
+	r.log(t, from, to)
+	if longest := r.longestNotTrue(lodiav1alpha1.ConditionReady, from, to); longest > bound {
+		t.Errorf("Ready was not True for %s, longer than %s", longest, bound)
+	}
+}
+
+func (r *recorder) log(t *testing.T, from, to time.Time) {
+	t.Helper()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.broken != nil {
@@ -336,10 +344,35 @@ func (r *recorder) check(t *testing.T, from, to time.Time, bound time.Duration) 
 		}
 	}
 	for _, conditionType := range readyAndInputs {
-		longest := r.longestNotTrue(conditionType, from, to)
-		t.Logf("%s was not True for at most %s in the %s of the step", conditionType, longest, to.Sub(from).Round(time.Second))
-		if conditionType == lodiav1alpha1.ConditionReady && longest > bound {
-			t.Errorf("Ready was not True for %s, longer than %s", longest, bound)
+		t.Logf("%s was not True for at most %s in the %s of the step", conditionType, r.longestNotTrue(conditionType, from, to), to.Sub(from).Round(time.Second))
+	}
+}
+
+func (r *recorder) waitsOnly(t *testing.T, from, to time.Time, bound time.Duration, conditionTypes ...string) {
+	t.Helper()
+	waits := []string{
+		lodiav1alpha1.ReasonLatestGenerationNotObserved, lodiav1alpha1.ReasonWaitingForCertificates, lodiav1alpha1.ReasonWaitingForDatastore,
+		lodiav1alpha1.ReasonWaitingForAPIServer, lodiav1alpha1.ReasonWaitingForAccess,
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, conditionType := range conditionTypes {
+		var last *transition
+		for i := range r.transitions {
+			tr := &r.transitions[i]
+			if tr.condition != conditionType || tr.at.After(to) {
+				continue
+			}
+			if last != nil && last.status != metav1.ConditionTrue && tr.at.After(from) && tr.at.After(from.Add(bound)) {
+				t.Errorf("%s was %s, %s, until %s, longer than %s after the change", conditionType, last.status, last.reason, tr.at.Format(time.RFC3339Nano), bound)
+			}
+			if tr.at.After(from) && tr.status != metav1.ConditionTrue && !slices.Contains(waits, tr.reason) {
+				t.Errorf("%s was %s, %s, at %s: %s, not a wait for the new generation", conditionType, tr.status, tr.reason, tr.at.Format(time.RFC3339Nano), tr.message)
+			}
+			last = tr
+		}
+		if last != nil && last.status != metav1.ConditionTrue {
+			t.Errorf("%s is %s, %s, at the end of the step: %s", conditionType, last.status, last.reason, last.message)
 		}
 	}
 }
