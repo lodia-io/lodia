@@ -531,7 +531,7 @@ func TestFinalizerAndEtcdFromClass(t *testing.T) {
 		{"the Etcd → status.datastore", ptr.Deref(cp.Status.Datastore, lodiav1alpha1.DatastoreStatus{}), lodiav1alpha1.DatastoreStatus{
 			Endpoints: []lodiav1alpha1.HostPort{{Host: "dev-etcd-client." + ns + ".svc", Port: 2379}},
 			Class:     &lodiav1alpha1.DatastoreClassStatus{Name: "mapped", Generation: 1},
-			Members:   lodiav1alpha1.MemberCount{Count: lodiav1alpha1.Count{Total: 1}},
+			Members:   lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: 1}},
 		}},
 		{"the class → metadata.annotations[" + lodiav1alpha1.DatastoreClassAnnotation + "]", etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation], "mapped"},
 		{"the class's generation → metadata.annotations[" + lodiav1alpha1.DatastoreClassGenerationAnnotation + "]", etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation], "1"},
@@ -1332,7 +1332,7 @@ func TestDatastoreReadyFollowsEtcdStatus(t *testing.T) {
 	if got, want := ptr.Deref(getControlPlane(t, ns, cp).Status.Datastore, lodiav1alpha1.DatastoreStatus{}), (lodiav1alpha1.DatastoreStatus{
 		Endpoints: []lodiav1alpha1.HostPort{{Host: "reported-etcd-client." + ns + ".svc", Port: 2379}},
 		Class:     &lodiav1alpha1.DatastoreClassStatus{Name: "reported", Generation: 1},
-		Members:   lodiav1alpha1.MemberCount{Count: lodiav1alpha1.Count{Total: 1, Ready: 1}},
+		Members:   lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: 1, Ready: 1}},
 	}); !reflect.DeepEqual(got, want) {
 		t.Errorf("status.datastore %+v, want %+v", got, want)
 	}

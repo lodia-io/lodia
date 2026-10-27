@@ -1096,8 +1096,8 @@ spec:
                 properties:
                   apiServer:
                     description: |-
-                      ComponentStatus counts one component's replicas, and says what all of
-                      them run.
+                      ComponentStatus counts one component's replicas, those its Deployment asks
+                      for, and says what all of them run.
                     properties:
                       operatorRevision:
                         description: |-
@@ -1106,19 +1106,17 @@ spec:
                         maxLength: 128
                         type: string
                       ready:
-                        description: Ready replicas pass their readiness probe.
                         format: int32
                         minimum: 0
                         type: integer
-                      replicas:
-                        description: 'Replicas the component runs: the replicas its
-                          Deployment asks for.'
+                      total:
                         format: int32
                         minimum: 0
                         type: integer
                       updated:
-                        description: Updated replicas run the component's current
-                          template.
+                        description: |-
+                          Updated run the current spec; absent while the writer does not report
+                          it.
                         format: int32
                         minimum: 0
                         type: integer
@@ -1128,13 +1126,12 @@ spec:
                         type: string
                     required:
                     - ready
-                    - replicas
-                    - updated
+                    - total
                     type: object
                   controllerManager:
                     description: |-
-                      ComponentStatus counts one component's replicas, and says what all of
-                      them run.
+                      ComponentStatus counts one component's replicas, those its Deployment asks
+                      for, and says what all of them run.
                     properties:
                       operatorRevision:
                         description: |-
@@ -1143,19 +1140,17 @@ spec:
                         maxLength: 128
                         type: string
                       ready:
-                        description: Ready replicas pass their readiness probe.
                         format: int32
                         minimum: 0
                         type: integer
-                      replicas:
-                        description: 'Replicas the component runs: the replicas its
-                          Deployment asks for.'
+                      total:
                         format: int32
                         minimum: 0
                         type: integer
                       updated:
-                        description: Updated replicas run the component's current
-                          template.
+                        description: |-
+                          Updated run the current spec; absent while the writer does not report
+                          it.
                         format: int32
                         minimum: 0
                         type: integer
@@ -1165,13 +1160,12 @@ spec:
                         type: string
                     required:
                     - ready
-                    - replicas
-                    - updated
+                    - total
                     type: object
                   scheduler:
                     description: |-
-                      ComponentStatus counts one component's replicas, and says what all of
-                      them run.
+                      ComponentStatus counts one component's replicas, those its Deployment asks
+                      for, and says what all of them run.
                     properties:
                       operatorRevision:
                         description: |-
@@ -1180,19 +1174,17 @@ spec:
                         maxLength: 128
                         type: string
                       ready:
-                        description: Ready replicas pass their readiness probe.
                         format: int32
                         minimum: 0
                         type: integer
-                      replicas:
-                        description: 'Replicas the component runs: the replicas its
-                          Deployment asks for.'
+                      total:
                         format: int32
                         minimum: 0
                         type: integer
                       updated:
-                        description: Updated replicas run the component's current
-                          template.
+                        description: |-
+                          Updated run the current spec; absent while the writer does not report
+                          it.
                         format: int32
                         minimum: 0
                         type: integer
@@ -1202,8 +1194,7 @@ spec:
                         type: string
                     required:
                     - ready
-                    - replicas
-                    - updated
+                    - total
                     type: object
                 type: object
               conditions:
@@ -1475,6 +1466,9 @@ spec:
                         minimum: 0
                         type: integer
                       updated:
+                        description: |-
+                          Updated run the current spec; absent while the writer does not report
+                          it.
                         format: int32
                         minimum: 0
                         type: integer

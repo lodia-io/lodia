@@ -869,23 +869,10 @@ type ComponentsStatus struct {
 	Scheduler *ComponentStatus `json:"scheduler,omitempty"`
 }
 
-// ComponentStatus counts one component's replicas, and says what all of
-// them run.
+// ComponentStatus counts one component's replicas, those its Deployment asks
+// for, and says what all of them run.
 type ComponentStatus struct {
-	// Replicas the component runs: the replicas its Deployment asks for.
-	// +required
-	// +kubebuilder:validation:Minimum=0
-	Replicas int32 `json:"replicas"`
-
-	// Updated replicas run the component's current template.
-	// +required
-	// +kubebuilder:validation:Minimum=0
-	Updated int32 `json:"updated"`
-
-	// Ready replicas pass their readiness probe.
-	// +required
-	// +kubebuilder:validation:Minimum=0
-	Ready int32 `json:"ready"`
+	RolloutCount `json:",inline"`
 
 	Rendered `json:",inline"`
 }
@@ -1015,7 +1002,7 @@ type DatastoreStatus struct {
 
 	// Members counts the etcd members.
 	// +required
-	Members MemberCount `json:"members"`
+	Members RolloutCount `json:"members"`
 
 	// Snapshots is where the etcd's continuous snapshots go.
 	// +optional
@@ -1073,14 +1060,16 @@ type RestoreStatus struct {
 	CompletedAt metav1.Time `json:"completedAt"`
 }
 
-// MemberCount counts the etcd members, and those that run the Etcd's
-// current spec.
-type MemberCount struct {
+// RolloutCount counts a component's replicas or an etcd's members: how many
+// there are, how many are ready, and how many run the current spec.
+type RolloutCount struct {
 	Count `json:",inline"`
 
+	// Updated run the current spec; absent while the writer does not report
+	// it.
 	// +optional
 	// +kubebuilder:validation:Minimum=0
-	Updated int32 `json:"updated,omitempty"`
+	Updated *int32 `json:"updated,omitempty"`
 }
 
 // DatastoreClassStatus is a DatastoreClass at the generation an etcd was

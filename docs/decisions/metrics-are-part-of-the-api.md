@@ -69,7 +69,7 @@ read from a tenant. A metric is renamed only under a new name, and in
 | `lodia_controlplane_metadata_generation` | | `metadata.generation` |
 | `lodia_controlplane_status_observed_generation` | | `status.observedGeneration` |
 | `lodia_controlplane_nodes`, `lodia_controlplane_nodes_ready` | | `status.nodes.total`, `status.nodes.ready` |
-| `lodia_controlplane_component_replicas`, `lodia_controlplane_component_replicas_ready` | `component` (`apiServer`, `controllerManager`, `scheduler`) | `status.components.<component>.replicas`, `.ready`: lost redundancy, which `APIServerReady` leaves True |
+| `lodia_controlplane_component_replicas`, `lodia_controlplane_component_replicas_ready` | `component` (`apiServer`, `controllerManager`, `scheduler`) | `status.components.<component>.total`, `.ready`: lost redundancy, which `APIServerReady` leaves True |
 | `lodia_controlplane_datastore_members`, `lodia_controlplane_datastore_members_ready` | | `status.datastore.members.total`, `.ready`: lost redundancy, which `DatastoreReady` leaves True while there is quorum |
 | `lodia_controlplane_certificates_expiration_timestamp_seconds` | | `status.credentials.notAfter` |
 | `lodia_controlplane_kubernetes_end_of_support_timestamp_seconds` | | the end-of-support date the version table gives the minor of `status.kubernetes.version` ([upgrades-and-maintenance-windows](upgrades-and-maintenance-windows.md)) |
