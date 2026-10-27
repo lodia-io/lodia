@@ -830,20 +830,18 @@ func loadImage(ctx context.Context, t *testing.T, kubeconfig, node string, image
 	if err != nil || len(nodes) == 0 {
 		t.Fatalf("the nodes of kind cluster %s: %d, %v", cluster, len(nodes), err)
 	}
-	export := exec.CommandContext(ctx, "docker", "exec", nodes[0].String(), "ctr", "--namespace=k8s.io", "images", "export", "-", image.String())
-	load := exec.CommandContext(ctx, "docker", "exec", "--interactive", node, "ctr", "--namespace=k8s.io", "images", "import", "--digests", "-")
-	var stderr bytes.Buffer
-	export.Stderr, load.Stderr = &stderr, &stderr
-	archive, err := export.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	load.Stdin = archive
-	if err := load.Start(); err != nil {
-		t.Fatal(err)
-	}
-	if err := errors.Join(export.Run(), load.Wait()); err != nil {
-		t.Fatalf("copy %s from %s into %s: %v\n%s", image, nodes[0], node, err, stderr.String())
+	// Through files: piped from one docker exec into another, the archive
+	// arrived cut short on CI runners.
+	archive, local := "/tmp/"+apiLoop+".tar", filepath.Join(t.TempDir(), apiLoop+".tar")
+	for _, args := range [][]string{
+		{"exec", nodes[0].String(), "ctr", "--namespace=k8s.io", "images", "export", archive, image.String()},
+		{"cp", nodes[0].String() + ":" + archive, local},
+		{"cp", local, node + ":" + archive},
+		{"exec", node, "ctr", "--namespace=k8s.io", "images", "import", "--digests", archive},
+	} {
+		if _, err := docker(ctx, args...); err != nil {
+			t.Fatalf("copy %s from %s into %s: %v", image, nodes[0], node, err)
+		}
 	}
 }
 
