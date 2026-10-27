@@ -56,7 +56,8 @@ func TestConformance(t *testing.T) {
 	f := features.New("the Kubernetes conformance suite against a tenant with two nodes").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			k8s = newClient(t, cfg)
-			version = createTenant(ctx, t, k8s, key, conformanceClass)
+			createTenant(ctx, t, k8s, key, conformanceClass)
+			version = kindNodeVersion(t)
 			return ctx
 		}).
 		Assess("the ControlPlane is Ready, two nodes join and turn Ready, and CoreDNS is available", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
