@@ -7,7 +7,7 @@ Not built.
 
 - `spec.layout` is `Split` (the default, a Deployment per component, [component-per-deployment](component-per-deployment.md)) or `Compact` ([the field](../api/controlplane.md#spec)).
 - `Compact` renders one Deployment `<cp>-control-plane` with one replica and the containers `kube-apiserver`, `kube-controller-manager`, `kube-scheduler`, `konnectivity-server` and `lodia-signer`.
-  The controller manager and the scheduler reach the API on loopback at the API server's secure port, which the serving certificate carries as a SAN: 6443, or the node port in `nodePort` mode, where the API server listens on it ([api-exposure](api-exposure.md)).
+  The controller manager and the scheduler reach the API on loopback at the API server's secure port, 6443 in every mode, and the serving certificate carries `127.0.0.1` as a SAN ([api-exposure](api-exposure.md)).
 - The datastore stays independent of the layout:
 
 | layout | datastore | pods per tenant |
