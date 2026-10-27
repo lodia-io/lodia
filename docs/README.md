@@ -63,7 +63,7 @@ in [`api/examples/`](api/examples/).
 | controller | writes | condition | needs |
 |---|---|---|---|
 | PKI | Secrets with certificates, keys and kubeconfigs; the tenant's bindings for Lodia, the admin group and the kubelet client | `CertificatesReady`, `AccessReady`; `CAValidityAcceptable` outside `Ready` | `status.endpoint`; `APIServerReady` for the bindings |
-| Datastore | the `Etcd` of a dedicated etcd and its NetworkPolicy — built, for one member — or a user and role in a shared store; backups and defragmentation | `DatastoreReady` | a complete generation of PKI's etcd certificates |
+| Datastore | the `Etcd` of a dedicated etcd and its NetworkPolicy — built, for one member — or a user and role in a shared store; backups and defragmentation | `DatastoreReady`; `BackupReady` outside `Ready` from wave 1b | a complete generation of PKI's etcd certificates |
 | Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady` | `status.target`, `status.datastore`, `CertificatesReady`, `DatastoreReady` |
 | Tenant | objects inside the tenant cluster, with an inventory | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
 | Health | status, and from phase 2's wave 2 the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable`, and `ControllersLeading` from wave 1b; `ControllerManagerHeld` outside `Ready` from wave 2 | `status.endpoint` and the CA bundle; `AccessReady` from wave 1b |
@@ -541,6 +541,7 @@ and admits, for their ingress alone, what dials them:
 | port | from | dialled by |
 |---|---|---|
 | client, 2379 | the API server's pods: `lodia.io/control-plane: <cp>`, `app.kubernetes.io/name: kube-apiserver` | the API server, through the client Service |
+| client, 2379, from phase 2's wave 2, observability | the operator's pods | the Datastore controller, which samples the etcd's `Status` once a minute for Lodia's metrics: the database size, the quota and the leader ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)) |
 | client, 2379; peer, 2380 | the members | the members, each other on the peer port ([etcdconfig.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/configmap/etcdconfig.go#L150-L166)); their backup-restore sidecars on the client port, through the client Service, to list the members at every start and to add their own as a learner when the cluster grows ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L474-L477), [httpAPI.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/server/httpAPI.go#L452-L455), [member_control.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/member/member_control.go#L102-L104)) |
 | backup-restore, 8080, only with a backup store | the pods of etcd-druid's namespace, by `kubernetes.io/metadata.name`: the operator's flag `--etcd-druid-namespace`, which the chart sets ([Installation](#installation)) | etcd-druid, for snapshots: an `EtcdOpsTask`'s, the one it takes before it rolls the members for a new image or replica count, and compaction's, none of them without a store ([ondemandsnapshot.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcdopstask/handler/ondemandsnapshot/ondemandsnapshot.go#L103), [statefulset.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/statefulset.go#L108-L150), [snapshot.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/compaction/snapshot.go#L117-L124)) |
 
@@ -598,9 +599,11 @@ above, and nothing reaches the controller manager or the scheduler but the
 kubelet's probes, which come from the node. Phase 2 default-denies the namespace,
 egress included, and allows exactly the arrows above: the endpoint → API
 server and konnectivity-server, controller manager and scheduler and Lodia
-→ the API Service, API server → etcd, etcd ↔ etcd, etcd-druid → etcd and its
-backup-restore sidecar, etcd and its compaction Jobs → object storage,
-metrics scrapers → the health ports, and every pod → the cluster DNS.
+→ the API Service, API server → etcd, Lodia → etcd's client port (wave 2,
+observability), etcd ↔ etcd, etcd-druid → etcd and its backup-restore
+sidecar, etcd and its compaction Jobs → object storage, and every pod → the
+cluster DNS; a platform that scrapes the components admits its scraper
+itself ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)).
 
 ## Networking
 
@@ -962,7 +965,7 @@ Prerequisites on the management cluster:
 | etcd-druid | dedicated etcd (installed by the chart as a dependency, or separately) |
 | Gateway API ≥ 1.5 (where `TLSRoute` became GA) and an implementation that supports `TLSRoute` in passthrough, its core feature | `endpoint.gateway` only, from phase 2's wave 1b ([api-exposure](decisions/api-exposure.md)) |
 | an S3-compatible bucket and credentials | backups, strongly recommended |
-| a metrics stack | optional: the chart ships ServiceMonitors, a dashboard and alert rules from phase 2 |
+| a metrics stack | optional: from phase 2's wave 2 the chart ships a metrics Service, a ServiceMonitor, alert rules and dashboards, each behind a value and off by default |
 
 The chart is [`charts/lodia`](../charts/lodia). The release workflow that
 publishes it to `oci://ghcr.io/lodia-io/charts/lodia` with the images is not
@@ -1025,8 +1028,10 @@ Gateway, `tunnelImage` (`ghcr.io/lodia-io/lodia-tunnel`) brings
 `lodia-tunnel`'s as `--tunnel-image`.
 
 Then a `DatastoreClass` with the bucket, and the first `ControlPlane`. Later
-phases bring the rest: the ServiceMonitors, the dashboard and the alert rules
-in phase 2, with the metrics they read; the operator configuration below,
+phases bring the rest: the metrics Service, the ServiceMonitor, the alert
+rules and the dashboards in phase 2's wave 2, each behind a value of
+`metrics.*` and off by default, with the metrics they read
+([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)); the operator configuration below,
 which the operator does not read yet, in phase 2, whose fleet limit,
 controller manager hold and `KubeconfigRequest`s it configures; signed and
 attested images, and how to verify them, in phase 4
@@ -1110,6 +1115,7 @@ off), capacity planning, the alert rules and what each means.
 - [staged-credential-rotation](decisions/staged-credential-rotation.md) — a CA per purpose and a signer sidecar, so routine rotations never touch a node.
 - [upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md) — the upgrade order; Lodia-initiated changes roll in windows, N tenants at a time.
 - [controller-manager-hold](decisions/controller-manager-hold.md) — while most nodes are silent, Health holds the controller manager's leader lease, so an outage evicts nothing.
+- [metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md) — `lodia_*` metrics per tenant, built from status at scrape time; conditions one-hot; the chart's monitoring off by default.
 - [short-lived-kubeconfigs](decisions/short-lived-kubeconfigs.md) — `KubeconfigRequest`; the admin group is revocable.
 - [e2e-on-a-named-cluster](decisions/e2e-on-a-named-cluster.md) — e2e refuses the current context; conformance nightly.
 - [releases-and-support](decisions/releases-and-support.md) — ko, cosign, attestations, the chart in GHCR; the three maintained Kubernetes minors.

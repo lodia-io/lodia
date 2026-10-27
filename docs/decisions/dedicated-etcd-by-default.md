@@ -70,8 +70,11 @@ were decided on 2026-10-27 and come with phase 2's wave 1b, backups
   and the members on 2379 only to remove one when it scales in
   ([etcd-druid#505](https://github.com/gardener/etcd-druid/issues/505),
   [ondemandsnapshot.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcdopstask/handler/ondemandsnapshot/ondemandsnapshot.go#L103),
-  [memberremoval.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/memberremoval.go#L31-L39)); the
-  ServiceMonitor for the etcd and sidecar metrics; the `Backup` object, a
+  [memberremoval.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/memberremoval.go#L31-L39));
+  from phase 2's wave 2, metrics of each etcd from a sample of its `Status`
+  once a minute, while scraping the etcd and its sidecar stays the
+  platform's choice
+  ([metrics-are-part-of-the-api](metrics-are-part-of-the-api.md)); the `Backup` object, a
   sealed copy of the snapshots under a prefix of its own that nothing writes
   again, made with etcd-druid's `EtcdOpsTask` and `EtcdCopyBackupsTask`
   ([restore-replaces-the-source](restore-replaces-the-source.md)); the

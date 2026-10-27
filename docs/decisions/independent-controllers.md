@@ -14,7 +14,7 @@ watch `ControlPlane`:
 | controller | owns | writes condition | waits on |
 |---|---|---|---|
 | **PKI** | CAs, leaf certificates, kubeconfigs, ServiceAccount keys, encryption keys; renewal and staged rotation; the tenant's bindings for Lodia, the admin group and the kubelet client | `CertificatesReady`, `AccessReady`; `CAValidityAcceptable` outside `Ready` | `status.endpoint`; `APIServerReady` for the bindings |
-| **Datastore** | the tenant's etcd (dedicated through etcd-druid, with its NetworkPolicy, or a user and prefix in a shared store), backups, defragmentation; the only controller that talks to etcd | `DatastoreReady` | nothing |
+| **Datastore** | the tenant's etcd (dedicated through etcd-druid, with its NetworkPolicy, or a user and prefix in a shared store), backups, defragmentation; the only controller that talks to etcd | `DatastoreReady`; `BackupReady` outside `Ready` | nothing |
 | **Workloads** | Deployments, Services, PodDisruptionBudgets, NetworkPolicies, ConfigMaps, Gateway routes in the tenant namespace | `APIServerReady` | `CertificatesReady`, `DatastoreReady` |
 | **Tenant** | objects inside the tenant cluster: kubeadm bootstrap objects, kube-proxy, CoreDNS, konnectivity-agent, apiserver-proxy, RBAC | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
 | **Health** | probes the API from outside and inside, samples the components' leader leases and the node leases; holds the controller manager's leader lease inside the tenant while most nodes cannot reach the API ([controller-manager-hold](controller-manager-hold.md)) | `Reachable`, `ControllersLeading`; `ControllerManagerHeld` outside `Ready` | `AccessReady` |
@@ -150,8 +150,11 @@ flowchart LR
   four are pure functions of `spec` and `status.target`.
 - The layout (`Split` or `Compact`) is known to Workloads alone
   ([compact-layout](compact-layout.md)).
-- Metrics come per controller: queue depth, reconcile duration and errors,
-  labelled by controller and tenant.
+- Metrics come per controller, labelled by the controller alone: queue
+  depth, reconcile duration and errors. Per tenant, one collector builds
+  Lodia's metrics from `status`
+  ([metrics-are-part-of-the-api](metrics-are-part-of-the-api.md)), and each
+  controller records an event per transition of its condition.
 - No controller uses the content of, or writes over, an object whose
   controller is not its `ControlPlane`, or that refers to another
   `ControlPlane` at all; `internal/ownership` is the one place that rule is

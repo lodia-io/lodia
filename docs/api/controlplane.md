@@ -100,18 +100,23 @@ and not digits and dots alone, which read as an IP address.
 | `credentials.adminKubeconfigSecretRef` | PKI | `<name>-admin-kubeconfig` |
 | `credentials.caBundleSecretRef` | PKI | `<name>-ca-bundle`: the CAs a client must trust now (two during a rotation) |
 | `credentials.rotation.<credential>.{phase, lastInitiated, lastCompleted}` | PKI | the stages per credential (the same keys as `target.rotation`), as Gardener reports them |
+| `credentials.notAfter` | PKI, from wave 2, observability | the earliest expiry of the certificates PKI writes for this `ControlPlane`, its CAs among them |
 | `datastore` | Datastore | written whole once the store exists, absent until then |
 | `datastore.endpoints[].{host, port}` | Datastore | where the API server reaches etcd: for a dedicated etcd, etcd-druid's client Service; Workloads builds `--etcd-servers` from it |
 | `datastore.class.{name, generation}` | Datastore | the `DatastoreClass` a dedicated etcd was built from, and the generation of it the `Etcd` runs; Lifecycle reads it in phase 2 |
 | `datastore.members.{total, ready}` | Datastore | the members the `Etcd` asks for and those ready |
 | `datastore.members.updated` | Datastore, from wave 1b, HA | the members that run the `Etcd`'s current spec, from which Lifecycle's `Progressing` sums the rollout |
-| `datastore.dbSizeBytes`, `datastore.lastBackup.{time, kind, revision}` | Datastore | phase 2, with backups and metrics |
 | `datastore.snapshots.{provider, endpoint, bucket, prefix}` | Datastore, from wave 1b, backups | where the etcd's continuous snapshots go: the class's store and the prefix `<class prefix>/<namespace UID>/controlplanes/<ControlPlane UID>` |
 | `datastore.restore.{backup.{name, uid}, source.{name, uid}, completedAt}` | Datastore, from wave 1b, backups | the restore this `ControlPlane`'s data came from: the `Backup`, its source, which this `ControlPlane` replaces and whose UID Workloads and Health look for, and when the restored data was cleaned up and snapshotted; written when the copy starts, and kept, since the `Backup` may be deleted once PKI has its keys |
 | `datastore.operatorRevision` | Datastore, from wave 2, upgrades | the operator revision the `Etcd` was rendered with |
 | `nodes.{total, ready, outdatedKubelets, oldestKubelet}` | Health, from wave 2, Health | the tenant's nodes, those `Ready`, those whose kubelet runs an older minor than `kubernetes.version`, and the oldest version a kubelet reports, which Lifecycle's upgrade preflight reads; nodes are listed every 30 seconds and the status is written only when it changes |
 | `health.controllerManagerHold.{since, silentNodes, countedNodes}` | Health, from wave 2, Health | present while Lodia holds the controller manager's leader lease (`ControllerManagerHeld`) |
 | `maintenance.lastHandled` | Lifecycle, from wave 2, upgrades | the value of the annotation `lodia.io/maintain-requested-at` handled last |
+
+Lodia's metrics, from wave 2, observability, are built from these fields at
+scrape time; [metrics-are-part-of-the-api](../decisions/metrics-are-part-of-the-api.md)
+lists each beside its field. The database size and the backups' age are
+metrics and `BackupReady`, not status.
 
 ## Conditions and their reasons
 

@@ -1291,6 +1291,12 @@ spec:
                     required:
                     - name
                     type: object
+                  notAfter:
+                    description: |-
+                      NotAfter is the earliest expiry of the certificates PKI writes for
+                      this ControlPlane, its CAs among them.
+                    format: date-time
+                    type: string
                   rotation:
                     description: Rotation is the state of each credential's rotation.
                     properties:

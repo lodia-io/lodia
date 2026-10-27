@@ -121,8 +121,11 @@ Scope:
 - Health: the internal probe, node lease sampling, the controller manager
   hold.
 - `KubeconfigRequest`.
-- Observability: metrics per controller and tenant, conditions as metrics,
-  events, the Grafana dashboard and alert rules in the chart.
+- Observability: Lodia's metrics per tenant, conditions among them, built
+  from `status`, and controller-runtime's per controller; an event per
+  condition transition; a metrics Service, ServiceMonitor, alert rules and
+  dashboards in the chart, all off by default
+  ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)).
 
 It is built in waves. The fixes came first: API server rollouts that lose
 no request, the backup prefix and the encryption key names. Then the

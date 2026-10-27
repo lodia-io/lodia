@@ -226,17 +226,24 @@ back. Renewal and backups pause; the `LodiaOperatorDown` alert fires first.
 
 ## Alerts shipped in the chart
 
+From phase 2's wave 2, behind a value of `metrics.*` and off by default,
+written on the metrics of
+[metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md):
+
 | alert | fires when | means |
 |---|---|---|
-| `LodiaOperatorDown` | no ready operator replica for 5 m | nothing is reconciled; tenants keep running |
-| `LodiaControlPlaneNotReady` | `Ready=False` for 10 m, not hibernated | a tenant's API or a part of it is down; the reason names which |
-| `LodiaCertificateExpiring` | any certificate within 14 days of expiry | renewal failed; look at `CertificatesReady` |
-| `LodiaBackupStale` | the newest snapshot older than two periods | the backup sidecar or the bucket credentials |
-| `LodiaEtcdSpaceNearQuota` | the database above 80% of the quota | compaction is not keeping up, or the tenant writes too much |
+| `LodiaOperatorDown` | no operator replica scraped for 5 m | nothing is reconciled; tenants keep running |
+| `LodiaControlPlaneNotReady` | `Ready` not True for 10 m, not hibernated | a tenant's API or a part of it is down; the reason names which |
+| `LodiaRedundancyLost` | a component with fewer ready replicas than it runs, or an etcd with fewer ready members than it has, for 15 m | the control plane serves, and one more loss is an outage; the component's pods or the member's, and their nodes |
+| `LodiaCertificateExpiring` | `status.credentials.notAfter` within 14 days, for 1 h | renewal failed; look at `CertificatesReady` |
+| `LodiaCAExpiring` | `CAValidityAcceptable=False` for 1 h | a CA is in its last year, named in the message; rotate it |
+| `LodiaBackupStale` | `BackupReady=False` for 15 m, but for `NoBackupStore` | the backup sidecar or the bucket credentials; etcd-druid's message is in the condition |
+| `LodiaEtcdSpaceNearQuota` | the database above 80% of the quota for 15 m | compaction is not keeping up, or the tenant writes too much |
 | `LodiaEtcdNoLeader` | a dedicated etcd without a leader for 1 m | quorum or network inside the management cluster |
 | `LodiaControllerManagerHeld` | the hold active for 15 m | most nodes cannot reach the control plane; the tenant's workloads run, its controllers wait |
-| `LodiaUpgradeFailed` | `Progressing=False`, reason `Failed` (wave 2) | the stuck upgrade runbook |
-| `LodiaMaintenanceHalted` | as many tenants `Progressing=False`, `MaintenanceFailed`, as `fleet.maxConcurrentRollouts` (wave 2) | changes Lodia starts are halted across the fleet; the stuck upgrade runbook for each |
+| `LodiaUpgradeFailed` | `Progressing=False`, reason `Failed`, at once | the stuck upgrade runbook |
+| `LodiaMaintenanceHalted` | as many tenants `Progressing=False`, `MaintenanceFailed`, as `fleet.maxConcurrentRollouts` | changes Lodia starts are halted across the fleet; the stuck upgrade runbook for each |
+| `LodiaKubernetesEndOfSupport` | a tenant's minor within 30 days of its end-of-support date in the version table | upgrade it a minor; `Progressing`'s message says the same |
 | `LodiaReconcileErrors` | a controller's error rate above 5% for 15 m | the operator logs, by controller |
 
 Every alert links to its runbook section here.

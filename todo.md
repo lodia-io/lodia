@@ -371,3 +371,8 @@ is a decision — a decision is a file in `docs/decisions/`.
 - `docs/operations.md` gets the replace checklist and a Velero recipe for a
   clone beside a live source, with the restore in wave 1b
   (restore-replaces-the-source).
+- Health's own metrics, which the availability research suggested and the
+  decisions did not name: failed probes, silent nodes, and the lag of
+  Health's pass, the watchdog of the hold's margin. Name them under
+  metrics-are-part-of-the-api with wave 2, Health, or drop them; the hold
+  itself is `lodia_controlplane_condition{type="ControllerManagerHeld"}`.

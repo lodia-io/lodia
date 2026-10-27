@@ -960,6 +960,11 @@ type CredentialsStatus struct {
 	// Rotation is the state of each credential's rotation.
 	// +optional
 	Rotation *Rotations `json:"rotation,omitempty"`
+
+	// NotAfter is the earliest expiry of the certificates PKI writes for
+	// this ControlPlane, its CAs among them.
+	// +optional
+	NotAfter *metav1.Time `json:"notAfter,omitempty"`
 }
 
 // Rotations is the rotation state per credential.
