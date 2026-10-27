@@ -43,9 +43,11 @@ the newest patch of each minor between, as the version table names it.
    minors older than the next minor, from `status.nodes.oldestKubelet`
    (else `WaitingForNodes`); no hold of the controller manager (else
    `ControllerManagerHeld`).
-2. The `Backup` `<cp>-pre-upgrade-<version>` (`PreUpgradeBackupName`)
-   completes. The target moves once it does, or once it reports that the
-   class has no backup store, which `Progressing` then says.
+2. The `Backup` `<cp>-pre-upgrade-<version>-<ControlPlane UID>`
+   (`PreUpgradeBackupName`) completes; a `Backup` outlives its source, so the
+   UID keeps a predecessor's of the same name from standing in for it. The
+   target moves once it completes, or once it reports that the class has no
+   backup store, which `Progressing` then says.
 3. The API server rolls; the step is done when every replica runs the new
    template, updated and ready, since `/readyz` reports no version.
 4. The controller manager and the scheduler roll.

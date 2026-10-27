@@ -153,10 +153,12 @@ func EtcdName(controlPlane string) string { return controlPlane + "-etcd" }
 // Workloads writes and PKI names in certificates and kubeconfigs.
 func APIServerServiceName(controlPlane string) string { return controlPlane + "-kube-apiserver" }
 
-// PreUpgradeBackupName is "<ControlPlane>-pre-upgrade-<version>", the Backup
-// Lifecycle takes before a minor step to version.
-func PreUpgradeBackupName(controlPlane, version string) string {
-	return controlPlane + "-pre-upgrade-" + version
+// PreUpgradeBackupName is "<ControlPlane>-pre-upgrade-<version>-<UID>", the
+// Backup Lifecycle takes before a minor step to version. A Backup outlives
+// its source, so the UID keeps a predecessor's of the same name from
+// standing in for this ControlPlane's.
+func PreUpgradeBackupName(controlPlane, version string, uid types.UID) string {
+	return controlPlane + "-pre-upgrade-" + version + "-" + string(uid)
 }
 
 // BackupEncryptionConfigSecretName is "<Backup>.encryption-config": the

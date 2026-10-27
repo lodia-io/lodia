@@ -168,8 +168,8 @@ scheduler.
 
 1. `status.kubernetes.upgrade.step` says the step, `Progressing`'s message
    what failed; the upgrade resumes when the cause is gone.
-2. `Backup` step failing: the `Backup` `<cp>-pre-upgrade-<version>`'s
-   `Ready` message. A failed `Backup` is final: delete it, and Lifecycle
+2. `Backup` step failing: the `Ready` message of the `Backup`
+   `<cp>-pre-upgrade-<version>-<ControlPlane UID>`. A failed `Backup` is final: delete it, and Lifecycle
    takes it again. A class without a backup store skips it, and
    `Progressing`'s message says so.
 3. API server step failing: a removed flag or feature gate in `extraArgs` or
@@ -179,7 +179,8 @@ scheduler.
    and an image they cannot pull (air gap, registry mirror missing) shows in
    `AddonsAvailable`, not here.
 5. Rollback of a minor: create a new `ControlPlane` with `restoreFrom` the
-   `Backup` `<cp>-pre-upgrade-<version>` and the old `spec.version`; it
+   `Backup` `<cp>-pre-upgrade-<version>-<ControlPlane UID>` and the old
+   `spec.version`; it
    replaces the cluster, so delete the old one, or create the new one
    `Released` once the old one is gone
    ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)).
