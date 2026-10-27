@@ -1021,7 +1021,8 @@ type DatastoreStatus struct {
 	// +optional
 	Snapshots *SnapshotLocation `json:"snapshots,omitempty"`
 
-	// Restore is the restore this ControlPlane's data came from.
+	// Restore is the restore this ControlPlane's data came from, written
+	// once, when it completed.
 	// +optional
 	Restore *RestoreStatus `json:"restore,omitempty"`
 
@@ -1053,7 +1054,9 @@ type SnapshotLocation struct {
 	Prefix string `json:"prefix"`
 }
 
-// RestoreStatus is a restore from a Backup.
+// RestoreStatus is a completed restore from a Backup: the Datastore
+// controller writes it once the restored data is cleaned up and a full
+// snapshot of it is in the store.
 type RestoreStatus struct {
 	// Backup is the Backup restored.
 	// +required
@@ -1066,8 +1069,8 @@ type RestoreStatus struct {
 	Source UIDReference `json:"source"`
 
 	// CompletedAt is when the restored data was cleaned up and snapshotted.
-	// +optional
-	CompletedAt *metav1.Time `json:"completedAt,omitempty"`
+	// +required
+	CompletedAt metav1.Time `json:"completedAt"`
 }
 
 // MemberCount counts the etcd members, and those that run the Etcd's

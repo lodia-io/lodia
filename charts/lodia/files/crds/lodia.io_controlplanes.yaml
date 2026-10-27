@@ -1487,8 +1487,9 @@ spec:
                     maxLength: 128
                     type: string
                   restore:
-                    description: Restore is the restore this ControlPlane's data came
-                      from.
+                    description: |-
+                      Restore is the restore this ControlPlane's data came from, written
+                      once, when it completed.
                     properties:
                       backup:
                         description: Backup is the Backup restored.
@@ -1534,6 +1535,7 @@ spec:
                         type: object
                     required:
                     - backup
+                    - completedAt
                     - source
                     type: object
                   snapshots:

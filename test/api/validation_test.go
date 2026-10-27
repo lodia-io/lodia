@@ -725,6 +725,37 @@ func TestKubernetesStatus(t *testing.T) {
 	}
 }
 
+func TestTheRestoreRecordIsWrittenWhole(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	obj := example(t, "controlplane-single.yaml", "restore-record")
+	if err := k8s.Create(context.Background(), obj); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = k8s.Delete(context.Background(), obj) })
+	backup := map[string]any{"name": "nightly", "uid": "6a1f4c1e-2f47-4c58-9a40-0d2e31f6a7b1"}
+	source := map[string]any{"name": "old", "uid": "0b5d9e3a-81c2-4f4e-b6d7-5c2a1e9f8d30"}
+	for _, c := range []struct {
+		name    string
+		restore map[string]any
+		want    string
+	}{
+		{"completed", map[string]any{"backup": backup, "source": source, "completedAt": "2026-10-27T02:00:00Z"}, ""},
+		{"not completed", map[string]any{"backup": backup, "source": source}, "completedAt: Required value"},
+		{"without its source", map[string]any{"backup": backup, "completedAt": "2026-10-27T02:00:00Z"}, "source: Required value"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			written := obj.DeepCopy()
+			set(t, written, map[string]any{
+				"endpoints": []any{map[string]any{"host": "restore-record-etcd-client.team-a.svc", "port": int64(2379)}},
+				"members":   map[string]any{"total": int64(1), "ready": int64(1)},
+				"restore":   c.restore,
+			}, "status", "datastore")
+			expect(t, k8s.Status().Update(context.Background(), written, client.DryRunAll), c.want)
+		})
+	}
+}
+
 func TestAHostTakesTheHostnameRule(t *testing.T) {
 	manifest, err := os.ReadFile(filepath.Join("..", "..", "api", "crds", "lodia.io_controlplanes.yaml"))
 	if err != nil {
