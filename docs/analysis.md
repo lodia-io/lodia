@@ -192,6 +192,3 @@ toggle of that add-on does the same.
 - **Cluster API:** a published support policy; the provider contract Lodia's
   own Cluster API provider will implement.
 - **Talos Omni:** nodes that need egress only.
-
-Every fact above links its source; the decisions link the same sources where
-they rest on them.
