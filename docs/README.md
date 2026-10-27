@@ -717,11 +717,7 @@ minutes; until then both conditions are `WaitingForAccess`, and it uses
 keeps them, looking again every minute. It leaves another owner's objects
 as they are: an object no inventory names yet is read before its first
 apply and left alone when it exists without `lodia/tenant` among its field
-managers, but for the `kubernetes` Service's Endpoints and EndpointSlice,
-which belong to the control plane in every cluster and which Tenant takes
-over from any writer, such as the lease reconciler of an API server that
-ran before `--endpoint-reconciler-type=none`; and the prune deletes an
-entry that left the render only when
+managers, and the prune deletes an entry that left the render only when
 `lodia/tenant` applied it, under the UID and resourceVersion it read, and
 otherwise drops the entry. The inventory names an object before it is first written,
 and is rewritten to what the render holds once the objects that left it are

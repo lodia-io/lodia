@@ -149,23 +149,13 @@ func writeInventory(ctx context.Context, c client.Client, entries []entry) error
 	return nil
 }
 
-// kubernetesEndpoints are the kubernetes Service's Endpoints and
-// EndpointSlice, which the control plane owns in every cluster: the API
-// server's lease reconciler wrote them until Workloads ran it with
-// --endpoint-reconciler-type=none, and Tenant takes them over.
-var kubernetesEndpoints = []entry{
-	{Version: "v1", Kind: "Endpoints", Namespace: metav1.NamespaceDefault, Name: "kubernetes"},
-	{Group: "discovery.k8s.io", Version: "v1", Kind: "EndpointSlice", Namespace: metav1.NamespaceDefault, Name: "kubernetes"},
-}
-
 // foreign returns the objects of the render no inventory lists yet that
-// exist without Lodia's field manager: another owner's, but for the
-// kubernetes Service's endpoints.
+// exist without Lodia's field manager: another owner's.
 func foreign(ctx context.Context, c client.Client, objects []*unstructured.Unstructured, previous []entry) ([]entry, error) {
 	var others []entry
 	for _, obj := range objects {
 		e := entryOf(obj)
-		if contains(previous, e) || contains(kubernetesEndpoints, e) {
+		if contains(previous, e) {
 			continue
 		}
 		existing := &unstructured.Unstructured{}

@@ -356,45 +356,6 @@ func TestTheKubernetesEndpointsAreTheInClusterEndpoint(t *testing.T) {
 	})
 }
 
-func TestTheLeaseReconcilersEndpointsAreTakenOver(t *testing.T) {
-	cp := controlPlane(t, "tenant-lease-endpoints")
-	publish(t, cp)
-	issuer := &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour}
-	reconcilePKI(t, issuer, cp)
-	admin := startTenant(t, cp)
-	for _, obj := range []client.Object{
-		&unstructured.Unstructured{Object: map[string]any{
-			"apiVersion": "v1",
-			"kind":       "Endpoints",
-			"metadata":   map[string]any{"namespace": "default", "name": "kubernetes", "labels": map[string]any{discoveryv1.LabelSkipMirror: "true"}},
-			"subsets": []any{map[string]any{
-				"addresses": []any{map[string]any{"ip": "192.0.2.99"}},
-				"ports":     []any{map[string]any{"name": "https", "port": int64(443), "protocol": "TCP"}},
-			}},
-		}},
-		&discoveryv1.EndpointSlice{
-			ObjectMeta:  metav1.ObjectMeta{Namespace: "default", Name: "kubernetes", Labels: map[string]string{discoveryv1.LabelServiceName: "kubernetes"}},
-			AddressType: discoveryv1.AddressTypeIPv4,
-			Endpoints:   []discoveryv1.Endpoint{{Addresses: []string{"192.0.2.99"}, Conditions: discoveryv1.EndpointConditions{Ready: new(true)}}},
-			Ports:       []discoveryv1.EndpointPort{{Name: new("https"), Port: new(int32(443)), Protocol: new(corev1.ProtocolTCP)}},
-		},
-	} {
-		if err := admin.Create(t.Context(), obj, client.FieldOwner("kube-apiserver")); err != nil {
-			t.Fatal(err)
-		}
-	}
-	setDial(t, admin.host)
-	issuer.Dial = *dial.Load()
-	setCondition(t, cp, lodiav1alpha1.ConditionAPIServerReady, "Ready")
-	reconcilePKI(t, issuer, cp)
-	eventually(t, 30*time.Second, func() error {
-		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied); err != nil {
-			return err
-		}
-		return kubernetesEndpoints(t, admin, inClusterPort)
-	})
-}
-
 func kubernetesEndpoints(t *testing.T, c client.Client, port int32) error {
 	t.Helper()
 	key := client.ObjectKey{Namespace: "default", Name: "kubernetes"}

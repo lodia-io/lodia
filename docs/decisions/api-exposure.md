@@ -38,9 +38,6 @@ and the EndpointSlice and Endpoints controllers skip a Service without a
 selector
 ([endpointslice_controller.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/endpointslice/endpointslice_controller.go#L398-L402),
 [endpoints_controller.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/endpoint/endpoints_controller.go#L385-L389)).
-They belong to the control plane in every cluster, so Tenant takes them over
-from whoever wrote them, such as the lease reconciler of an API server that
-ran before `none`.
 
 **Rollouts.** Every endpoint above reaches the API server through something
 that follows its pods' readiness, so a stopping replica keeps serving while
@@ -240,8 +237,7 @@ a node flag (`--address`, `--node-ip`), which the node's owner passes through
   advertise address and `--endpoint-reconciler-type=none`, and
   konnectivity-server beside it as a native sidecar on a Unix socket.
 - `internal/controller/tenant` — the `kubernetes` Endpoints and EndpointSlice
-  in `manifests/endpoints.yaml`, taken over from any writer before
-  (`kubernetesEndpoints` in `inventory.go`), and the agents' flags in
+  in `manifests/endpoints.yaml`, and the agents' flags in
   `manifests/konnectivity.yaml`; `render_test.go` and `tenant_test.go` hold
-  the objects and the takeover, and `TestPhase1Gate` in `test/e2e` rolls the
-  API server under requests from outside and inside the tenant.
+  the objects, and `TestPhase1Gate` in `test/e2e` rolls the API server under
+  requests from outside and inside the tenant.

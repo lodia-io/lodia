@@ -63,9 +63,9 @@ func TestTheKubernetesEndpointsAreRenderedFromInCluster(t *testing.T) {
 		slice := &discoveryv1.EndpointSlice{}
 		for _, obj := range objects {
 			switch entryOf(obj) {
-			case kubernetesEndpoints[0]:
+			case entry{Version: "v1", Kind: "Endpoints", Namespace: metav1.NamespaceDefault, Name: "kubernetes"}:
 				endpoints = obj
-			case kubernetesEndpoints[1]:
+			case entry{Group: "discovery.k8s.io", Version: "v1", Kind: "EndpointSlice", Namespace: metav1.NamespaceDefault, Name: "kubernetes"}:
 				if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.Object, slice); err != nil {
 					t.Fatal(err)
 				}
