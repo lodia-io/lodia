@@ -282,7 +282,7 @@ func TestAWaitOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
 
 	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
 		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation-1),
-		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, cp.Generation),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, cp.Generation-1),
 	}})
 	applyStatus(t, cp, "test/"+lodiav1alpha1.ConditionAccessReady, map[string]any{"conditions": []any{
 		conditionAt(lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer, cp.Generation),
@@ -357,6 +357,20 @@ func TestAConditionKeptWithoutAnAnswerOnAStaleReadIsDecidedFromTheServer(t *test
 	}
 	if cp.ResourceVersion != written {
 		t.Errorf("a pass that keeps both conditions as the server holds them wrote the ControlPlane: resourceVersion %s, then %s", written, cp.ResourceVersion)
+	}
+
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, cp.Generation),
+	}})
+	if err := pass(k8s); err == nil {
+		t.Fatal("a pass that could not reach the tenant succeeded")
+	}
+	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied); err != nil {
+		t.Error(err)
+	}
+	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying); err != nil {
+		t.Error(err)
 	}
 }
 
@@ -433,6 +447,9 @@ func TestARolloutReadThatFailsOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
 		t.Errorf("a pass whose rollout read was refused returned %v, want the refusal", err)
 	}
 	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable); err != nil {
+		t.Error(err)
+	}
+	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied); err != nil {
 		t.Error(err)
 	}
 }
