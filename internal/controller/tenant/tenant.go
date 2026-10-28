@@ -107,7 +107,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	access := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAccessReady)
 	if access == nil || access.Status != metav1.ConditionTrue || access.ObservedGeneration != cp.Generation {
-		return ctrl.Result{}, r.wait(ctx, cp, lodiav1alpha1.ReasonWaitingForAccess, "AccessReady is not True for this generation")
+		return ctrl.Result{}, r.applyStatus(ctx, cp, waitForAccess(cp, applied), waitForAccess(cp, available))
 	}
 	clusterCA, kubeconfig, keptElsewhere, err := r.credentials(ctx, cp)
 	if err != nil {
@@ -181,6 +181,15 @@ func (r *Reconciler) wait(ctx context.Context, cp *lodiav1alpha1.ControlPlane, r
 	return r.applyStatus(ctx, cp,
 		newCondition(cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, reason, message),
 		newCondition(cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, reason, message))
+}
+
+// waitForAccess leaves a condition at the earlier generation it describes:
+// Tenant has not acted on this one.
+func waitForAccess(cp *lodiav1alpha1.ControlPlane, c metav1.Condition) metav1.Condition {
+	if c.ObservedGeneration < cp.Generation {
+		return c
+	}
+	return newCondition(cp, c.Type, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, "AccessReady is not True for this generation")
 }
 
 // credentials also returns, when one of the two Secrets is another owner's,

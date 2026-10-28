@@ -26,6 +26,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -184,6 +185,79 @@ func TestTheFirstVisitWaitsForAccess(t *testing.T) {
 			return err
 		}
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+	})
+}
+
+func TestTheAddonsConditionsStayAsTheyWereUntilAccessTakesUpAChange(t *testing.T) {
+	cp, admin := servedTenant(t, "tenant-change")
+	eventually(t, 30*time.Second, func() error {
+		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied); err != nil {
+			return err
+		}
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonRolloutPending)
+	})
+	applied, available := *condition(t, cp, lodiav1alpha1.ConditionAddonsApplied), *condition(t, cp, lodiav1alpha1.ConditionAddonsAvailable)
+
+	setReplicas(t, cp, 3)
+	written := cp.ResourceVersion
+	time.Sleep(3 * time.Second)
+	for _, before := range []metav1.Condition{applied, available} {
+		if after := *condition(t, cp, before.Type); !equality.Semantic.DeepEqual(after, before) {
+			t.Errorf("generation %d, which AccessReady does not describe yet, changed %s from %+v to %+v", cp.Generation, before.Type, before, after)
+		}
+	}
+	if cp.ResourceVersion != written {
+		t.Errorf("the ControlPlane was written while AccessReady describes generation %d of %d", condition(t, cp, lodiav1alpha1.ConditionAccessReady).ObservedGeneration, cp.Generation)
+	}
+
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	eventually(t, 30*time.Second, func() error {
+		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied); err != nil {
+			return err
+		}
+		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonRolloutPending); err != nil {
+			return err
+		}
+		if replicas := get(t, admin, &appsv1.Deployment{}, "kube-system", "coredns").Spec.Replicas; replicas == nil || *replicas != 3 {
+			return fmt.Errorf("CoreDNS has %v replicas", replicas)
+		}
+		return nil
+	})
+
+	applyStatus(t, cp, "test/"+lodiav1alpha1.ConditionAccessReady, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer, cp.Generation),
+	}})
+	eventually(t, 10*time.Second, func() error {
+		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess); err != nil {
+			return err
+		}
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+	})
+}
+
+func TestOnlyAConditionAtTheGenerationWaitsForAccess(t *testing.T) {
+	cp := controlPlane(t, "tenant-one-waits")
+	eventually(t, 10*time.Second, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+	})
+	setReplicas(t, cp, 3)
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation-1),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, cp.Generation),
+	}})
+	applied := *condition(t, cp, lodiav1alpha1.ConditionAddonsApplied)
+
+	applyStatus(t, cp, "test/"+lodiav1alpha1.ConditionAccessReady, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer, cp.Generation),
+	}})
+	eventually(t, 10*time.Second, func() error {
+		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess); err != nil {
+			return err
+		}
+		if after := *condition(t, cp, lodiav1alpha1.ConditionAddonsApplied); !equality.Semantic.DeepEqual(after, applied) {
+			return fmt.Errorf("AddonsApplied went from %+v to %+v", applied, after)
+		}
+		return nil
 	})
 }
 
@@ -904,14 +978,18 @@ func publish(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 func setCondition(t *testing.T, cp *lodiav1alpha1.ControlPlane, conditionType, reason string) {
 	t.Helper()
 	refresh(t, cp)
-	applyStatus(t, cp, "test/"+conditionType, map[string]any{"conditions": []any{map[string]any{
+	applyStatus(t, cp, "test/"+conditionType, map[string]any{"conditions": []any{conditionAt(conditionType, metav1.ConditionTrue, reason, cp.Generation)}})
+}
+
+func conditionAt(conditionType string, status metav1.ConditionStatus, reason string, generation int64) map[string]any {
+	return map[string]any{
 		"type":               conditionType,
-		"status":             string(metav1.ConditionTrue),
+		"status":             string(status),
 		"reason":             reason,
 		"message":            "",
-		"observedGeneration": cp.Generation,
+		"observedGeneration": generation,
 		"lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
-	}}})
+	}
 }
 
 func setCoreDNS(t *testing.T, cp *lodiav1alpha1.ControlPlane, enabled bool) {
