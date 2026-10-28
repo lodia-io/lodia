@@ -27,6 +27,11 @@ import (
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 )
 
+// allowUnhealthyPodEviction on an Etcd lets its PodDisruptionBudget evict an
+// unhealthy member always
+// (etcd-druid@v0.39.0 internal/component/poddistruptionbudget/poddisruptionbudget.go#L36-L38).
+const allowUnhealthyPodEviction = "resources.druid.gardener.cloud/allow-unhealthy-pod-eviction"
+
 // TLS is set on client, peer and backup-restore together: etcd-druid probes
 // the members over HTTPS only with backup.tls, while they serve HTTPS whenever
 // client TLS is on (docs/decisions/dedicated-etcd-by-default.md). The storage
@@ -36,7 +41,7 @@ import (
 // UIDs and no name: etcd-backup-restore takes the last v1/ anywhere in a key
 // for its layout and ignores the snapshots it misreads
 // (etcd-backup-restore@v0.45.1 pkg/snapstore/snapshot.go#L39-L59).
-func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, namespaceUID types.UID, generation int, current *druidv1alpha1.Etcd) *druidv1alpha1.Etcd {
+func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, namespaceUID types.UID, generation int, current *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) *druidv1alpha1.Etcd {
 	secret := func(certificate lodiav1alpha1.EtcdCertificateRole) corev1.SecretReference {
 		return corev1.SecretReference{Name: lodiav1alpha1.EtcdCertificateSecretName(cp.Name, certificate, generation)}
 	}
@@ -55,7 +60,7 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cp, lodiav1alpha1.GroupVersion.WithKind("ControlPlane"))},
 		},
 		Spec: druidv1alpha1.EtcdSpec{
-			Replicas: 1,
+			Replicas: memberCount(cp),
 			Labels:   labels,
 			Etcd: druidv1alpha1.EtcdConfig{
 				ClientUrlTLS: &druidv1alpha1.TLSConfig{TLSCASecretRef: ca, ServerTLSSecretRef: secret(lodiav1alpha1.EtcdServerRole), ClientTLSSecretRef: secret(lodiav1alpha1.EtcdClientRole)},
@@ -66,15 +71,27 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 			},
 		},
 	}
+	switch ha := cp.Spec.HighAvailability; {
+	case membersHeld(cp, current, sts):
+		etcd.Spec.Replicas = current.Spec.Replicas
+		etcd.Spec.SchedulingConstraints.TopologySpreadConstraints = current.Spec.SchedulingConstraints.TopologySpreadConstraints
+		if value, ok := current.Annotations[allowUnhealthyPodEviction]; ok {
+			metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, allowUnhealthyPodEviction, value)
+		}
+	case ha != nil:
+		metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, allowUnhealthyPodEviction, "")
+		etcd.Spec.SchedulingConstraints.TopologySpreadConstraints = spread(ha.FailureTolerance, memberLabels(etcd))
+	}
+	if current != nil && (metav1.HasAnnotation(current.ObjectMeta, lodiav1alpha1.EtcdFormedAnnotation) || current.Status.ReadyReplicas > 0) {
+		metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, lodiav1alpha1.EtcdFormedAnnotation, "true")
+	}
 	if class == nil {
 		keep(etcd, current)
 		return etcd
 	}
 	spec := &class.Spec
-	etcd.Annotations = map[string]string{
-		lodiav1alpha1.DatastoreClassAnnotation:           class.Name,
-		lodiav1alpha1.DatastoreClassGenerationAnnotation: strconv.FormatInt(class.Generation, 10),
-	}
+	metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, lodiav1alpha1.DatastoreClassAnnotation, class.Name)
+	metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, lodiav1alpha1.DatastoreClassGenerationAnnotation, strconv.FormatInt(class.Generation, 10))
 	etcd.Spec.StorageCapacity = new(spec.Storage.Size)
 	if spec.Storage.ClassName != "" {
 		etcd.Spec.StorageClass = new(spec.Storage.ClassName)
@@ -129,6 +146,67 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 	return etcd
 }
 
+func memberCount(cp *lodiav1alpha1.ControlPlane) int32 {
+	if cp.Spec.HighAvailability != nil {
+		return 3
+	}
+	return 1
+}
+
+// membersHeld keeps the Etcd's members, spread and eviction annotation as they
+// are (docs/README.md, the highAvailability row of the Etcd's fields).
+func membersHeld(cp *lodiav1alpha1.ControlPlane, current *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) bool {
+	if current == nil {
+		return false
+	}
+	if !druidv1alpha1.HasScaleOperationCompleted(current) {
+		return true
+	}
+	if memberCount(cp) < current.Spec.Replicas {
+		_, ready := keptMember(current)
+		return !ready
+	}
+	updated := updatedMembers(current, sts)
+	return memberCount(cp) > current.Spec.Replicas && (updated == nil || *updated < current.Spec.Replicas)
+}
+
+// keptMember names the member a removal of highAvailability keeps and says
+// whether etcd-druid lists it ready.
+func keptMember(etcd *druidv1alpha1.Etcd) (string, bool) {
+	name := druidv1alpha1.GetOrdinalPodName(etcd.ObjectMeta, 0)
+	return name, slices.ContainsFunc(etcd.Status.Members, func(member druidv1alpha1.EtcdMemberStatus) bool {
+		return member.Name == name && member.Status == druidv1alpha1.EtcdMemberStatusReady
+	})
+}
+
+// spread puts the members on three nodes, and with Zone in three zones too;
+// a member replaced in place keeps its volume's domain.
+func spread(tolerance lodiav1alpha1.FailureTolerance, members map[string]string) []corev1.TopologySpreadConstraint {
+	keys := []string{corev1.LabelHostname}
+	if tolerance == "Zone" {
+		keys = append(keys, corev1.LabelTopologyZone)
+	}
+	var out []corev1.TopologySpreadConstraint
+	for _, key := range keys {
+		out = append(out, corev1.TopologySpreadConstraint{
+			MaxSkew:           1,
+			TopologyKey:       key,
+			WhenUnsatisfiable: corev1.DoNotSchedule,
+			LabelSelector:     &metav1.LabelSelector{MatchLabels: members},
+			MinDomains:        new(int32(3)),
+			NodeTaintsPolicy:  new(corev1.NodeInclusionPolicyHonor),
+		})
+	}
+	return out
+}
+
+// memberLabels select the Etcd's members, not its compaction Job's pods.
+func memberLabels(etcd *druidv1alpha1.Etcd) map[string]string {
+	labels := druidv1alpha1.GetDefaultLabels(etcd.ObjectMeta)
+	labels[druidv1alpha1.LabelAppNameKey] = etcd.Name
+	return labels
+}
+
 // keep must copy every field render takes from the class.
 func keep(etcd, current *druidv1alpha1.Etcd) {
 	for _, key := range []string{lodiav1alpha1.DatastoreClassAnnotation, lodiav1alpha1.DatastoreClassGenerationAnnotation} {
@@ -172,9 +250,14 @@ func (r *Reconciler) apply(ctx context.Context, etcd *druidv1alpha1.Etcd) (*drui
 		return nil, err
 	}
 	// The typed Etcd marshals its deprecated selector as null and its status
-	// as an empty object; neither is a field to apply.
+	// as an empty object; neither is a field to apply. Nor are empty
+	// scheduling constraints: applied as an empty object where the apply set
+	// some before, they come back null, which the schema refuses.
 	unstructured.RemoveNestedField(content, "spec", "selector")
 	unstructured.RemoveNestedField(content, "status")
+	if constraints, _, _ := unstructured.NestedMap(content, "spec", "schedulingConstraints"); len(constraints) == 0 {
+		unstructured.RemoveNestedField(content, "spec", "schedulingConstraints")
+	}
 	applied := &unstructured.Unstructured{Object: content}
 	if err := r.Apply(ctx, client.ApplyConfigurationFromUnstructured(applied), client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
 		return nil, err
@@ -186,20 +269,13 @@ func (r *Reconciler) apply(ctx context.Context, etcd *druidv1alpha1.Etcd) (*drui
 	return result, nil
 }
 
-// etcd-druid's report is read with the checks Gardener makes before it counts
-// an Etcd ready (gardener/gardener@v1.154.0
-// pkg/component/etcd/etcd/waiter.go#L49-L104) but the last errors: Gardener's
-// one-shot wait retries on them, while etcd-druid clears them at the start of
-// every spec reconcile, every 15 seconds, and sets them again on a failure
-// (etcd-druid@v0.39.0 internal/controller/utils/etcdstatus.go#L45-L93), so a
-// condition would flip with them; a failed sync shows anyway, since etcd-druid
-// stamps the observed generation only after it. Then the StatefulSet, read
-// from the API server: etcd-druid computes ready from its cached StatefulSet
-// before it stamps the observed generation. The second result is a
-// StatefulSet that lags a complete report, which no watch brings back.
-func readiness(cp string, etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet, generation int, missing []string) (metav1.Condition, bool) {
-	not := func(message string) (metav1.Condition, bool) {
-		return newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, message), false
+// readiness reports quorum (docs/README.md, A tenant namespace), which one
+// ready member shows, since a member is ready only while it answers a
+// linearizable read. Without one, an etcd marked formed has lost it, and any
+// other is on its way.
+func readiness(etcd *druidv1alpha1.Etcd, missing []string) metav1.Condition {
+	not := func(message string) metav1.Condition {
+		return newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, message)
 	}
 	if !etcd.DeletionTimestamp.IsZero() {
 		return not(fmt.Sprintf("Etcd %s is being deleted", etcd.Name))
@@ -207,61 +283,37 @@ func readiness(cp string, etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet, gen
 	if len(missing) > 0 {
 		return not(fmt.Sprintf("Secrets Etcd %s mounts do not exist: %s", etcd.Name, strings.Join(missing, ", ")))
 	}
-	if observed := ptr.Deref(etcd.Status.ObservedGeneration, 0); observed != etcd.Generation {
+	observed := ptr.Deref(etcd.Status.ObservedGeneration, 0)
+	ready := min(etcd.Status.ReadyReplicas, etcd.Spec.Replicas)
+	switch {
+	case ready > 0 && !druidv1alpha1.HasScaleOperationCompleted(etcd):
+		return newCondition(metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
+			fmt.Sprintf("Etcd %s has quorum, %d of %d members ready, while etcd-druid scales it", etcd.Name, ready, etcd.Spec.Replicas))
+	case ready > 0:
+		return newCondition(metav1.ConditionTrue, lodiav1alpha1.ReasonReady, fmt.Sprintf("Etcd %s has quorum, %d of %d members ready", etcd.Name, ready, etcd.Spec.Replicas))
+	case metav1.HasAnnotation(etcd.ObjectMeta, lodiav1alpha1.EtcdFormedAnnotation):
+		return newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonQuorumLost, fmt.Sprintf("Etcd %s has %d of %d members ready", etcd.Name, ready, etcd.Spec.Replicas))
+	case observed != etcd.Generation:
 		return not(fmt.Sprintf("etcd-druid has not observed generation %d of Etcd %s, observedGeneration %d", etcd.Generation, etcd.Name, observed))
 	}
-	updated := slices.IndexFunc(etcd.Status.Conditions, func(c druidv1alpha1.Condition) bool { return c.Type == druidv1alpha1.ConditionTypeAllMembersUpdated })
-	switch {
-	case updated < 0:
-		return not(fmt.Sprintf("etcd-druid reports no %s condition on Etcd %s", druidv1alpha1.ConditionTypeAllMembersUpdated, etcd.Name))
-	case etcd.Status.Conditions[updated].Status != druidv1alpha1.ConditionTrue:
-		c := etcd.Status.Conditions[updated]
-		return not(fmt.Sprintf("etcd-druid reports %s=%s on Etcd %s: %s", c.Type, c.Status, etcd.Name, c.Message))
-	}
-	if !ptr.Deref(etcd.Status.Ready, false) || etcd.Status.ReadyReplicas != etcd.Spec.Replicas {
-		return not(fmt.Sprintf("etcd-druid reports Etcd %s not ready, %d of %d replicas", etcd.Name, etcd.Status.ReadyReplicas, etcd.Spec.Replicas))
-	}
-	if sts == nil {
-		condition, _ := not(fmt.Sprintf("StatefulSet %s does not exist", etcd.Name))
-		return condition, true
-	}
-	if !mounts(sts, cp, generation) {
-		condition, _ := not(fmt.Sprintf("StatefulSet %s does not mount certificate generation %d yet", sts.Name, generation))
-		return condition, true
-	}
-	if sts.Status.ObservedGeneration < sts.Generation {
-		condition, _ := not(fmt.Sprintf("the StatefulSet controller has not observed generation %d of StatefulSet %s, observedGeneration %d",
-			sts.Generation, sts.Name, sts.Status.ObservedGeneration))
-		return condition, true
-	}
-	replicas := ptr.Deref(sts.Spec.Replicas, 1)
-	if sts.Status.UpdatedReplicas != replicas || sts.Status.ReadyReplicas != replicas {
-		condition, _ := not(fmt.Sprintf("StatefulSet %s: %d of %d replicas updated, %d ready", sts.Name, sts.Status.UpdatedReplicas, replicas, sts.Status.ReadyReplicas))
-		return condition, true
-	}
-	return newCondition(metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
-		fmt.Sprintf("etcd-druid reports Etcd %s ready on certificate generation %d, %d of %d replicas", etcd.Name, generation, etcd.Status.ReadyReplicas, etcd.Spec.Replicas)), false
+	return not(fmt.Sprintf("Etcd %s has %d of %d members ready", etcd.Name, ready, etcd.Spec.Replicas))
 }
 
-func mounts(sts *appsv1.StatefulSet, cp string, generation int) bool {
-	var mounted []string
-	for _, volume := range sts.Spec.Template.Spec.Volumes {
-		if volume.Secret != nil {
-			mounted = append(mounted, volume.Secret.SecretName)
-		}
+// updatedMembers counts, once etcd-druid and the StatefulSet controller have
+// observed the Etcd's spec, its members that are available: all available
+// ones less those of older revisions.
+func updatedMembers(etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) *int32 {
+	if sts == nil || ptr.Deref(etcd.Status.ObservedGeneration, 0) != etcd.Generation || sts.Status.ObservedGeneration != sts.Generation {
+		return nil
 	}
-	for _, certificate := range lodiav1alpha1.EtcdCertificateRoles() {
-		if !slices.Contains(mounted, lodiav1alpha1.EtcdCertificateSecretName(cp, certificate, generation)) {
-			return false
-		}
-	}
-	return true
+	s := sts.Status
+	return new(max(0, min(s.UpdatedReplicas, s.AvailableReplicas-(s.Replicas-s.UpdatedReplicas))))
 }
 
 // etcd-druid refreshes every Etcd's status every 15 seconds
 // (etcd-druid@v0.39.0 api/config/v1alpha1/defaults.go#L104, charts/values.yaml#L63)
-// with new timestamps alone; only a change readiness or status.datastore reads
-// gets a pass.
+// with new timestamps alone; only a change readiness, status.datastore or
+// membersHeld reads gets a pass.
 func etcdChanged() predicate.Funcs {
 	return predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool {
 		before, ok := e.ObjectOld.(*druidv1alpha1.Etcd)
@@ -272,8 +324,9 @@ func etcdChanged() predicate.Funcs {
 
 func readinessInput(etcd *druidv1alpha1.Etcd) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%d %t %d %t %d/%d %d;", etcd.Generation, !etcd.DeletionTimestamp.IsZero(), ptr.Deref(etcd.Status.ObservedGeneration, 0),
-		ptr.Deref(etcd.Status.Ready, false), etcd.Status.ReadyReplicas, etcd.Spec.Replicas, len(etcd.Status.Members))
+	_, kept := keptMember(etcd)
+	fmt.Fprintf(&b, "%d %t %d %t %d/%d %d %t;", etcd.Generation, !etcd.DeletionTimestamp.IsZero(), ptr.Deref(etcd.Status.ObservedGeneration, 0),
+		ptr.Deref(etcd.Status.Ready, false), etcd.Status.ReadyReplicas, etcd.Spec.Replicas, len(etcd.Status.Members), kept)
 	for _, c := range etcd.Status.Conditions {
 		fmt.Fprintf(&b, "%s=%s/%s;", c.Type, c.Status, c.Reason)
 	}

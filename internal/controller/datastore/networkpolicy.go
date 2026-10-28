@@ -31,15 +31,10 @@ const (
 	etcdBackupRestorePort int32 = 8080
 )
 
-// networkPolicy admits to the members of the Etcd what dials them
-// (docs/README.md, A tenant namespace): the API server's pods to the client
-// port; the members to the client port, which their sidecars dial through the
-// client Service, and to the peer port; and, with a backup store, etcd-druid's
-// pods to the sidecar's port, for the snapshots it asks for.
+// networkPolicy admits to the members of the Etcd what dials them, at any
+// member count (docs/README.md, A tenant namespace).
 func networkPolicy(cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, druidNamespace string) *networkingv1ac.NetworkPolicyApplyConfiguration {
-	members := metav1ac.LabelSelector().
-		WithMatchLabels(druidv1alpha1.GetDefaultLabels(etcd.ObjectMeta)).
-		WithMatchLabels(map[string]string{druidv1alpha1.LabelAppNameKey: etcd.Name})
+	members := metav1ac.LabelSelector().WithMatchLabels(memberLabels(etcd))
 	apiServer := metav1ac.LabelSelector().WithMatchLabels(map[string]string{
 		lodiav1alpha1.ControlPlaneLabel: cp.Name,
 		lodiav1alpha1.ComponentLabel:    lodiav1alpha1.APIServerComponent,
@@ -48,13 +43,17 @@ func networkPolicy(cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, dru
 		return networkingv1ac.NetworkPolicyPort().WithProtocol(corev1.ProtocolTCP).WithPort(intstr.FromInt32(port))
 	}
 	clientPort := druidv1alpha1.GetClientPort(etcd)
+	memberPorts := []*networkingv1ac.NetworkPolicyPortApplyConfiguration{tcp(clientPort), tcp(etcdPeerPort)}
+	druidPorts := []*networkingv1ac.NetworkPolicyPortApplyConfiguration{tcp(clientPort)}
+	if etcd.IsBackupStoreEnabled() {
+		memberPorts = append(memberPorts, tcp(etcdBackupRestorePort))
+		druidPorts = append(druidPorts, tcp(etcdBackupRestorePort))
+	}
+	druid := metav1ac.LabelSelector().WithMatchLabels(map[string]string{corev1.LabelMetadataName: druidNamespace})
 	rules := []*networkingv1ac.NetworkPolicyIngressRuleApplyConfiguration{
 		networkingv1ac.NetworkPolicyIngressRule().WithFrom(networkingv1ac.NetworkPolicyPeer().WithPodSelector(apiServer)).WithPorts(tcp(clientPort)),
-		networkingv1ac.NetworkPolicyIngressRule().WithFrom(networkingv1ac.NetworkPolicyPeer().WithPodSelector(members)).WithPorts(tcp(clientPort), tcp(etcdPeerPort)),
-	}
-	if etcd.IsBackupStoreEnabled() {
-		druid := metav1ac.LabelSelector().WithMatchLabels(map[string]string{corev1.LabelMetadataName: druidNamespace})
-		rules = append(rules, networkingv1ac.NetworkPolicyIngressRule().WithFrom(networkingv1ac.NetworkPolicyPeer().WithNamespaceSelector(druid)).WithPorts(tcp(etcdBackupRestorePort)))
+		networkingv1ac.NetworkPolicyIngressRule().WithFrom(networkingv1ac.NetworkPolicyPeer().WithPodSelector(members)).WithPorts(memberPorts...),
+		networkingv1ac.NetworkPolicyIngressRule().WithFrom(networkingv1ac.NetworkPolicyPeer().WithNamespaceSelector(druid)).WithPorts(druidPorts...),
 	}
 	return networkingv1ac.NetworkPolicy(lodiav1alpha1.EtcdName(cp.Name), cp.Namespace).
 		WithLabels(map[string]string{lodiav1alpha1.ControlPlaneLabel: cp.Name}).

@@ -54,6 +54,7 @@ The chart is built; the release workflow that builds, signs, attests and publish
 - The release workflow runs on GitHub Actions with `id-token: write`, builds, signs, attests and pushes; a release is cut only from a commit whose nightly conformance passed ([e2e-on-a-named-cluster](e2e-on-a-named-cluster.md)).
 - Users verify an image with `cosign verify --certificate-identity-regexp … --certificate-oidc-issuer https://token.actions.githubusercontent.com` and `gh attestation verify`.
 - Adding a Kubernetes minor is a Lodia release: a new row in the version table, kind images in the matrix, the conformance run green.
+- Each update of the version table reviews every `@todo` whose undo condition names an upstream release, starting with the API server's `preStop` sleep ([kubernetes#142980](https://github.com/kubernetes/kubernetes/issues/142980), [#143346](https://github.com/kubernetes/kubernetes/pull/143346)) and the etcd-backup-restore `v1/` prefix rule (`todo.md`).
 
 ## Code
 

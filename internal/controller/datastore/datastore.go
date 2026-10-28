@@ -155,7 +155,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			return ctrl.Result{}, err
 		}
 	}
-	etcd, condition, requeueAfter, err := r.reconcileEtcd(ctx, cp)
+	etcd, sts, condition, requeueAfter, err := r.reconcileEtcd(ctx, cp)
 	if condition.Type == "" {
 		return ctrl.Result{}, err
 	}
@@ -174,37 +174,34 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		err = errors.Join(err, policyErr)
 	}
-	if cp.Spec.HighAvailability != nil && condition.Status == metav1.ConditionTrue {
-		condition = newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, "spec.highAvailability is not supported yet: the etcd runs one member")
-	}
-	if statusErr := r.applyStatus(ctx, cp, datastoreStatus(etcd), condition); statusErr != nil || err != nil {
+	if statusErr := r.applyStatus(ctx, cp, datastoreStatus(etcd, sts), condition); statusErr != nil || err != nil {
 		return ctrl.Result{}, errors.Join(err, statusErr)
 	}
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
-func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*druidv1alpha1.Etcd, metav1.Condition, time.Duration, error) {
+func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*druidv1alpha1.Etcd, *appsv1.StatefulSet, metav1.Condition, time.Duration, error) {
 	current, err := r.currentEtcd(ctx, cp)
 	if err != nil {
-		return nil, metav1.Condition{}, 0, err
+		return nil, nil, metav1.Condition{}, 0, err
 	}
 	// An Etcd another ControlPlane or nobody controls, an orphan or a
 	// predecessor's the garbage collector has not removed yet, is never
 	// applied: the apply would take it over, and this ControlPlane would start
 	// on another tenant's data.
 	if current != nil && !metav1.IsControlledBy(current, cp) {
-		return nil, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonVolumesExist, foreignEtcd(current)), time.Minute, nil
+		return nil, nil, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonVolumesExist, foreignEtcd(current)), time.Minute, nil
 	}
 	var claims []corev1.PersistentVolumeClaim
 	if current == nil {
 		if claims, err = r.claims(ctx, cp); err != nil {
-			return nil, metav1.Condition{}, 0, err
+			return nil, nil, metav1.Condition{}, 0, err
 		}
 	}
 	name, byClaims := className(cp, current, claims)
 	class, unresolved, err := r.class(ctx, name, byClaims)
 	if err != nil {
-		return nil, metav1.Condition{}, 0, err
+		return nil, nil, metav1.Condition{}, 0, err
 	}
 	// A recorded class that is gone stops only its own edits: the Etcd keeps
 	// what the class gave it and still takes new certificate generations.
@@ -214,11 +211,11 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.Contro
 		if byClaims {
 			requeueAfter = time.Minute
 		}
-		return nil, unresolved, requeueAfter, nil
+		return nil, nil, unresolved, requeueAfter, nil
 	}
 	secrets, err := r.secrets(ctx, cp)
 	if err != nil {
-		return nil, metav1.Condition{}, 0, err
+		return nil, nil, metav1.Condition{}, 0, err
 	}
 	generation, found := newestCompleteGeneration(cp, secrets)
 	if named, ok := namedGeneration(cp.Name, current); ok && (!found || named > generation) {
@@ -231,13 +228,13 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.Contro
 		}
 		message := fmt.Sprintf("waiting for a complete generation of the etcd certificates that this ControlPlane controls: the Secrets %s-etcd-{%s}-<g> labelled %s=<g>",
 			cp.Name, strings.Join(roles, ","), lodiav1alpha1.EtcdCertificatesLabel)
-		return current, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, message), 0, nil
+		return current, nil, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, message), 0, nil
 	}
 	if current == nil {
 		if foreign := foreignClaims(cp, claims); len(foreign) > 0 {
 			message := fmt.Sprintf("the claims %s of another ControlPlane stand where the etcd of %s would be created: delete them to start empty, or keep them, and this ControlPlane waits",
 				strings.Join(foreign, ", "), cp.Name)
-			return nil, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonVolumesExist, message), time.Minute, nil
+			return nil, nil, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonVolumesExist, message), time.Minute, nil
 		}
 	}
 	var held string
@@ -246,12 +243,12 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.Contro
 	if class != nil && class.Spec.Backup != nil {
 		blocked, err := r.copyCredentials(ctx, cp, class, secrets)
 		if blocked == "" && err != nil {
-			return nil, metav1.Condition{}, 0, err
+			return nil, nil, metav1.Condition{}, 0, err
 		}
 		refusal = err
 		if blocked != "" && current == nil {
 			message := fmt.Sprintf("DatastoreClass %s cannot be applied yet: %s", class.Name, blocked)
-			return nil, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, message), time.Minute, refusal
+			return nil, nil, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, message), time.Minute, refusal
 		}
 		// A class is held whole: applying the rest of an edit could add a store
 		// whose copy cannot be made, and the certificate generations still move.
@@ -264,41 +261,47 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.Contro
 	if class != nil && class.Spec.Backup != nil {
 		namespace := &corev1.Namespace{}
 		if err := r.Reader.Get(ctx, client.ObjectKey{Name: cp.Namespace}, namespace); err != nil {
-			return nil, metav1.Condition{}, 0, fmt.Errorf("read Namespace %s: %w", cp.Namespace, err)
+			return nil, nil, metav1.Condition{}, 0, fmt.Errorf("read Namespace %s: %w", cp.Namespace, err)
 		}
 		namespaceUID = namespace.UID
 	}
-	rendered := render(cp, class, namespaceUID, generation, current)
+	sts := &appsv1.StatefulSet{}
+	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.EtcdName(cp.Name)}, sts); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return nil, nil, metav1.Condition{}, 0, err
+		}
+		sts = nil
+	}
+	rendered := render(cp, class, namespaceUID, generation, current, sts)
 	etcd, err := r.apply(ctx, rendered)
 	if err != nil {
 		err = fmt.Errorf("apply Etcd %s: %w", rendered.Name, err)
 		if apistatus.Refused(err) {
 			message := note(fmt.Sprintf("the API server refuses Etcd %s on certificate generation %d with the fields of DatastoreClass %s generation %s; the reason is in Lodia's log",
 				rendered.Name, generation, rendered.Annotations[lodiav1alpha1.DatastoreClassAnnotation], rendered.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation]), held)
-			return current, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, message), 0, errors.Join(err, refusal)
+			return current, nil, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, message), 0, errors.Join(err, refusal)
 		}
-		return nil, metav1.Condition{}, 0, err
+		return nil, nil, metav1.Condition{}, 0, err
 	}
 	if err := r.labelClaims(ctx, cp, etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation]); err != nil {
-		return nil, metav1.Condition{}, 0, err
+		return nil, nil, metav1.Condition{}, 0, err
 	}
 	absent, err := r.missingSecrets(ctx, cp, etcd, secrets)
 	if err != nil {
-		return nil, metav1.Condition{}, 0, err
+		return nil, nil, metav1.Condition{}, 0, err
 	}
-	sts := &appsv1.StatefulSet{}
-	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.EtcdName(cp.Name)}, sts); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return nil, metav1.Condition{}, 0, err
-		}
-		sts = nil
+	condition := readiness(etcd, absent)
+	if etcd.Spec.Replicas < memberCount(cp) {
+		condition.Message = note(condition.Message, fmt.Sprintf("highAvailability waits for Etcd %s to settle: every member on its current spec and available, etcd-druid's last scale completed", etcd.Name))
 	}
-	condition, statefulSetLags := readiness(cp.Name, etcd, sts, generation, absent)
+	if kept, ready := keptMember(etcd); etcd.Spec.Replicas > memberCount(cp) && !ready {
+		condition.Message = note(condition.Message, fmt.Sprintf("removing highAvailability waits for member %s, which etcd-druid keeps, to be ready", kept))
+	}
 	condition.Message = note(condition.Message, held)
-	if statefulSetLags {
-		return etcd, condition, 15 * time.Second, refusal
+	if updated := updatedMembers(etcd, sts); updated == nil || *updated < etcd.Spec.Replicas {
+		return etcd, sts, condition, 15 * time.Second, refusal
 	}
-	return etcd, condition, heldFor, refusal
+	return etcd, sts, condition, heldFor, refusal
 }
 
 func note(message, held string) string {
@@ -603,7 +606,7 @@ func (r *Reconciler) finalize(ctx context.Context, cp *lodiav1alpha1.ControlPlan
 		etcd = nil
 	}
 	deleting := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonDeleting, "the ControlPlane is being deleted: the Etcd goes first, then its claims as the class says")
-	if err := r.applyStatus(ctx, cp, datastoreStatus(etcd), deleting); err != nil {
+	if err := r.applyStatus(ctx, cp, datastoreStatus(etcd, nil), deleting); err != nil {
 		return 0, err
 	}
 	// A claim no pass has labelled yet can only be this Etcd's: VolumesExist
@@ -682,7 +685,7 @@ func (r *Reconciler) setFinalizer(ctx context.Context, cp *lodiav1alpha1.Control
 
 // datastoreStatus says where the API server reaches the etcd: etcd-druid's
 // client Service (etcd-druid@v0.39.0 api/core/v1alpha1/helper.go#L27-L30).
-func datastoreStatus(etcd *druidv1alpha1.Etcd) *lodiav1alpha1.DatastoreStatus {
+func datastoreStatus(etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) *lodiav1alpha1.DatastoreStatus {
 	if etcd == nil {
 		return nil
 	}
@@ -691,7 +694,7 @@ func datastoreStatus(etcd *druidv1alpha1.Etcd) *lodiav1alpha1.DatastoreStatus {
 			Host: druidv1alpha1.GetClientServiceName(etcd.ObjectMeta) + "." + etcd.Namespace + ".svc",
 			Port: druidv1alpha1.GetClientPort(etcd),
 		}},
-		Members: lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: etcd.Spec.Replicas, Ready: etcd.Status.ReadyReplicas}},
+		Members: lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: etcd.Spec.Replicas, Ready: min(etcd.Status.ReadyReplicas, etcd.Spec.Replicas)}, Updated: updatedMembers(etcd, sts)},
 	}
 	generation, err := strconv.ParseInt(etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation], 10, 64)
 	if name := etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation]; name != "" && err == nil {

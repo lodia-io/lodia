@@ -40,17 +40,47 @@ The suite leaves the chart installed.
   Disabling `addons.coreDNS` removes CoreDNS's objects from the tenant and from the inventory, and enabling it brings them back.
   Deleting the `ControlPlane` leaves in its namespace, of every namespaced kind the API server serves, Events aside, which outlive their objects, only the etcd's claim, which the class's `Retain` keeps, and what every namespace holds: the ConfigMap `kube-root-ca.crt` and the ServiceAccount `default`.
 
-A node joins as in [the hard way](../../docs/hard-way.md#11-join-a-node).
-The suite reaches the tenant's API server through a port-forward to the API server pod's secure port, as `<cp>-admin-kubeconfig` with its server set to the forwarded address, which the serving certificate names (`127.0.0.1`), and, as the platform, creates a bootstrap token Secret there ([nodes-join-with-kubeadm](../../docs/decisions/nodes-join-with-kubeadm.md)).
+The suite reaches the tenant's API server through `status.endpoint`, as `<cp>-admin-kubeconfig`, whose server it is, and, as the platform, creates a bootstrap token Secret there ([nodes-join-with-kubeadm](../../docs/decisions/nodes-join-with-kubeadm.md)).
+That address is a kind node's on the docker network `kind`, so the suite runs where that network is routable, as on GitHub's Linux runners.
+It port-forwards to a pod only for what no Service serves: konnectivity-server's health port and the tenant's pod `web`.
 Each connection to a forwarded address gets a port-forward of its own: client-go ends a port-forward, with every connection through it, on the first forwarding error ([portforward.go](https://github.com/kubernetes/client-go/blob/v0.37.1/tools/portforward/portforward.go#L545-L550)), and an exec's connection meets one when the API server has closed it before the client's last write (`write: broken pipe`).
-It starts a container of kind's node image, `<cluster>-tenant-node-1`, on the docker network `kind`, waits for its entrypoint to report the boot as kind does ([cgroups.go](https://github.com/kubernetes-sigs/kind/blob/v0.33.0/pkg/cluster/internal/providers/common/cgroups.go#L33-L47)), and runs `kubeadm join <status.endpoint.apiServer> --token … --discovery-token-ca-cert-hash sha256:…` in it.
+
+A node joins as in [the hard way](../../docs/hard-way.md#11-join-a-node).
+The suite starts a container of kind's node image, `<cluster>-tenant-node-1`, on the docker network `kind`, waits for its entrypoint to report the boot as kind does ([cgroups.go](https://github.com/kubernetes-sigs/kind/blob/v0.33.0/pkg/cluster/internal/providers/common/cgroups.go#L33-L47)), and runs `kubeadm join <status.endpoint.apiServer> --token … --discovery-token-ca-cert-hash sha256:…` in it.
 `--patches` names [`testdata/kubeadm-patches`](testdata/kubeadm-patches), whose `kubeletconfiguration` patch, the node's own configuration over the cluster's ([patches](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/setup/production-environment/tools/kubeadm/control-plane-flags.md?plain=1#L185-L205), [--patches](https://github.com/kubernetes/kubernetes/blob/v1.37.0/cmd/kubeadm/app/cmd/options/generic.go#L104-L114)), carries the kubelet settings kind gives its nodes ([config.go](https://github.com/kubernetes-sigs/kind/blob/v0.33.0/pkg/cluster/internal/kubeadm/config.go#L596-L615)), and the `ControlPlane` sets `addons.kubeProxy.conntrack.maxPerCore: 0`.
 `--ignore-preflight-errors` names the one check a container fails, `SystemVerification`: on GitHub's runners it finds the host kernel's configuration in none of the places it looks, and `modprobe configs` fails ([kernel_validator.go](https://github.com/kubernetes/system-validators/blob/v1.12.1/validators/kernel_validator.go#L191-L245), the version kubeadm v1.37.0 uses).
 Ignoring it skips kubeadm's OS and cgroups validators too, which run under the same name; a check's name is the finest grain kubeadm ignores by ([checks.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/cmd/kubeadm/app/preflight/checks.go#L573-L588), [checks_linux.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/cmd/kubeadm/app/preflight/checks_linux.go#L48-L54)).
 The CNI is kindnet from the node image's manifest, with the tenant's pod range.
-The suite removes the containers it started when it ends, pass or fail, and each one before it starts it; `make e2e` and `make conformance` remove them as well, since a `go test` timeout or a panic never reaches the suite's end.
+The suite removes the containers it started when it ends, pass or fail, and each one before it starts it; `make e2e`, `make e2e-ha` and `make conformance` remove them as well, since a `go test` timeout or a panic never reaches the suite's end.
 
 `make e2e` gives the suite 30 minutes.
+
+## Gate G2: a highly available control plane
+
+`TestHighAvailabilityGate` checks the second item of the [phase 2 gate](../../docs/roadmap.md#phase-2--production).
+It sits behind a build tag of its own, `ha` with `e2e`, since it needs a cluster of another shape: [`testdata/kind-ha.yaml`](testdata/kind-ha.yaml), a control plane node and three workers in the zones `a`, `b` and `c`.
+`make e2e-ha` runs it on such a cluster of its own as `make conformance` runs `TestConformance`, and the `e2e-ha` job of [`ci.yml`](../../.github/workflows/ci.yml) runs that on every pull request.
+
+The tenant is the phase 1 gate's with `highAvailability.failureTolerance: Zone`, and must turn `Ready` within 5 minutes.
+The test then wants each component's two pods and the three etcd members each in a zone of its own, a PodDisruptionBudget with `maxUnavailable: 1` per component and etcd-druid's with `minAvailable: 2`, all four with `unhealthyPodEvictionPolicy: AlwaysAllow`.
+A node joins, the two loops of the phase 1 gate start, and a watch of the `ControlPlane` records each change of `Ready` and its inputs at the time it arrives.
+Two steps follow, the second once the first has recovered:
+
+1. One API server pod is deleted; the step ends 30 seconds after the pod is gone and two replicas are ready.
+2. The pod of the etcd leader, the member whose role `Etcd.status.members` gives as `Leader`, is deleted; the step ends 30 seconds after its replacement runs and etcd-druid reports three members ready, one of them the leader.
+
+In each step `Ready` must not leave `True` for longer than 5 seconds, Health's period in the gate, and neither loop may lose a request.
+The test logs each recorded change and, for each condition, the longest time it was not `True`.
+
+## Nightly: highAvailability removed and added back
+
+`TestHighAvailabilityRemovedAndRestored`, in the same build tag and on the same cluster shape as G2, runs every night in the `high-availability` job of [`nightly.yml`](../../.github/workflows/nightly.yml), on demand, and on a pull request that changes the workflow, the test, or the Datastore or Workloads controller; `make e2e-ha E2E_HA_TEST=TestHighAvailabilityRemovedAndRestored` runs it locally.
+A tenant with `failureTolerance: Zone` turns `Ready` with three etcd members and two replicas of each component.
+Removing `highAvailability` must then leave it `Ready` with one member, one replica of each component and no PodDisruptionBudget, and adding it back must bring the three members, the two replicas and the budgets back, each within 10 minutes.
+A step ends once etcd-druid has completed its scale and the StatefulSet runs every member on its current revision, ready, since etcd-druid's count of ready members trails them ([A tenant namespace](../../docs/README.md#a-tenant-namespace)).
+The recorder of G2 watches both steps and logs every change, with the events of the control plane's objects, every change of their pods and the last lines a restarted container logged.
+Removing `highAvailability` restarts the remaining etcd member ([A tenant namespace](../../docs/README.md#a-tenant-namespace)), so that step only logs the restarts and wants `Ready` back `True`.
+Adding it back must keep `DatastoreReady` `True` throughout, and `Ready` and `APIServerReady` but for the wait for the new generation, at most 5 seconds after the change, which `todo.md` names; a restart of any control plane container fails it.
 
 ## Nightly: conformance and the idle control plane
 
@@ -79,7 +109,7 @@ Its flags:
 - `--parallel 4`, four Ginkgo processes ([flags.go](https://github.com/kubernetes-sigs/hydrophone/blob/v0.8.0/pkg/types/flags.go#L32), [deploy.go](https://github.com/kubernetes-sigs/hydrophone/blob/v0.8.0/pkg/conformance/deploy.go#L125-L127)), with no skip added ([cmd.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/test/conformance/image/go-runner/cmd.go#L33-L40)): the specs marked `Serial` still run alone, on the first process once the others have finished ([ordering.go](https://github.com/onsi/ginkgo/blob/v2.32.0/internal/ordering.go#L174-L192), [suite.go](https://github.com/onsi/ginkgo/blob/v2.32.0/internal/suite.go#L505-L511), [ginkgowrapper.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/test/e2e/framework/ginkgowrapper.go#L396-L398); Ginkgo v2.32.0 is the version Kubernetes v1.37.0 builds the conformance image with).
   Kind's own parallel conformance jobs run 25 processes on 4 CPUs and skip the serial specs instead ([kind-presubmits.yaml](https://github.com/kubernetes/test-infra/blob/9b2551f8f32815d93a471123109af4ed36ce827a/config/jobs/kubernetes-sigs/kind/kind-presubmits.yaml#L78-L120), [e2e-k8s.sh](https://github.com/kubernetes-sigs/kind/blob/v0.33.0/hack/ci/e2e-k8s.sh#L253-L261), [ginkgo-e2e.sh](https://github.com/kubernetes/kubernetes/blob/v1.37.0/hack/ginkgo-e2e.sh#L181-L193)).
   The suite waits far more than it computes: with one process it took 1h57m on a 16-CPU workstation, where the kind containers kept a third of a CPU busy; with four it took 44 minutes on GitHub's runner of 2 CPUs, and the nightly job 65;
-- `--kubeconfig`, the admin kubeconfig with the forwarded address, so that hydrophone reaches the tenant as the suite does; the conformance pod in the tenant uses its in-cluster configuration;
+- `--kubeconfig`, the admin kubeconfig, so that hydrophone reaches the tenant as the suite does; the conformance pod in the tenant uses its in-cluster configuration;
 - `--output-dir`, the test's artifact directory, where it downloads `e2e.log` and `junit_01.xml` from the pod by exec ([download.go](https://github.com/kubernetes-sigs/hydrophone/blob/v0.8.0/pkg/conformance/client/download.go#L38-L50));
 - `--disable-progress-status`: the progress report execs into the pod every 30 seconds and stops hydrophone when the log it reads lacks the spec count ([logs.go](https://github.com/kubernetes-sigs/hydrophone/blob/v0.8.0/pkg/conformance/client/logs.go#L218-L221), [stops](https://github.com/kubernetes-sigs/hydrophone/blob/v0.8.0/pkg/conformance/client/logs.go#L80-L81)); the streamed log shows the progress.
 

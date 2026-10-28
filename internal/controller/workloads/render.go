@@ -15,11 +15,13 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	apiserverv1 "k8s.io/apiserver/pkg/apis/apiserver/v1"
 	apiserverv1beta1 "k8s.io/apiserver/pkg/apis/apiserver/v1beta1"
+	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/yaml"
 
@@ -177,6 +179,7 @@ func (r rendering) deployments() []*appsv1.Deployment {
 func (r rendering) apiServer() *appsv1.Deployment {
 	cp := r.cp
 	settings := ptr.Deref(cp.Spec.APIServer, lodiav1alpha1.APIServer{})
+	replicas := ptr.Deref(settings.Replicas, defaultReplicas(cp))
 	etcd := make([]string, 0, len(r.etcd))
 	for _, e := range r.etcd {
 		etcd = append(etcd, "https://"+net.JoinHostPort(e.Host, strconv.Itoa(int(e.Port))))
@@ -212,10 +215,13 @@ func (r rendering) apiServer() *appsv1.Deployment {
 		"service-account-jwks-uri":                    r.jwksURI,
 		"service-account-signing-endpoint":            signerSocket,
 		"service-cluster-ip-range":                    joined(cp.Spec.Network.ServiceCIDRs),
-		"shutdown-delay-duration":                     shutdownDelay.String(),
+		"shutdown-delay-duration":                     "0s",
 		"shutdown-watch-termination-grace-period":     watchGrace.String(),
 		"tls-cert-file":                               "/etc/lodia/serving/" + lodiav1alpha1.TLSCertKey,
 		"tls-private-key-file":                        "/etc/lodia/serving/" + lodiav1alpha1.TLSPrivateKeyKey,
+	}
+	if replicas > 1 {
+		flags["goaway-chance"] = "0.001"
 	}
 	container := corev1.Container{
 		Name:           apiServer,
@@ -225,11 +231,17 @@ func (r rendering) apiServer() *appsv1.Deployment {
 		ReadinessProbe: readinessProbe(lodiav1alpha1.APIServerReadyzPath, intstr.FromString("https")),
 		LivenessProbe:  livenessProbe("/livez", intstr.FromString("https")),
 		StartupProbe:   startupProbe("/livez", intstr.FromString("https")),
-		Resources:      resources(settings.Resources, "100m", "256Mi"),
+		// @todo: kube-apiserver closes its signer connection on SIGTERM (kubernetes#142980), so the shutdown delay is a preStop sleep; undo with todo.md's signer item.
+		Lifecycle: &corev1.Lifecycle{PreStop: &corev1.LifecycleHandler{Sleep: &corev1.SleepAction{Seconds: int64(shutdownDelay / time.Second)}}},
+		Resources: resources(settings.Resources, "100m", "256Mi"),
 		VolumeMounts: mounts(
 			"serving", "client-ca", "kubelet-client", "front-proxy-ca", "front-proxy-client",
 			"etcd-ca", "etcd-client", "encryption", "authentication", "egress",
 		),
+	}
+	if cp.Spec.HighAvailability != nil {
+		container.ReadinessProbe.PeriodSeconds, container.ReadinessProbe.FailureThreshold = 2, 5
+		container.LivenessProbe.HTTPGet.Path = "/livez?exclude=etcd"
 	}
 	container.VolumeMounts = append(container.VolumeMounts,
 		corev1.VolumeMount{Name: "konnectivity-socket", MountPath: "/run/konnectivity"},
@@ -310,7 +322,7 @@ func (r rendering) apiServer() *appsv1.Deployment {
 		corev1.Volume{Name: "konnectivity-socket", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		corev1.Volume{Name: "signer-socket", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 	)
-	d := r.deployment(apiServer, ptr.Deref(settings.Replicas, 1), corev1.PodSpec{
+	d := r.deployment(apiServer, replicas, corev1.PodSpec{
 		InitContainers:                []corev1.Container{signer, konnectivity},
 		Containers:                    []corev1.Container{container},
 		Volumes:                       volumes,
@@ -356,6 +368,14 @@ func (r rendering) controllerManager() *appsv1.Deployment {
 		"controllers":                              "*,bootstrap-signer-controller,token-cleaner-controller",
 		"kubeconfig":                               kubeconfig,
 		"leader-elect":                             "true",
+		"leader-elect-lease-duration":              lodiav1alpha1.ControllerManagerLeaseDuration.String(),
+		"leader-elect-renew-deadline":              lodiav1alpha1.ControllerManagerRenewDeadline.String(),
+		"leader-elect-resource-lock":               resourcelock.LeasesResourceLock,
+		"leader-elect-resource-name":               lodiav1alpha1.ControllerManagerLease,
+		"leader-elect-resource-namespace":          lodiav1alpha1.LeaderElectionNamespace,
+		"leader-elect-retry-period":                lodiav1alpha1.ControllerManagerRetryPeriod.String(),
+		"node-monitor-grace-period":                strconv.Itoa(int(lodiav1alpha1.NodeMonitorGracePeriod/time.Second)) + "s",
+		"node-monitor-period":                      lodiav1alpha1.NodeMonitorPeriod.String(),
 		"requestheader-client-ca-file":             "/etc/lodia/front-proxy-ca/" + lodiav1alpha1.CACertKey,
 		"root-ca-file":                             "/etc/lodia/ca-bundle/" + lodiav1alpha1.CACertKey,
 		"service-cluster-ip-range":                 joined(cp.Spec.Network.ServiceCIDRs),
@@ -370,7 +390,7 @@ func (r rendering) controllerManager() *appsv1.Deployment {
 		Resources:     resources(settings.Resources, "50m", "64Mi"),
 		VolumeMounts:  mounts("kubeconfig", "client-ca", "front-proxy-ca", "kubelet-signer", "ca-bundle"),
 	}
-	return r.deployment(controllerManager, 1, corev1.PodSpec{
+	return r.deployment(controllerManager, defaultReplicas(cp), corev1.PodSpec{
 		Containers: []corev1.Container{container},
 		Volumes: secretVolumes(cp.Name, map[string]lodiav1alpha1.Secret{
 			"kubeconfig":     lodiav1alpha1.ControllerManagerKubeconfigSecret,
@@ -387,11 +407,14 @@ func (r rendering) scheduler() *appsv1.Deployment {
 	settings := ptr.Deref(cp.Spec.Scheduler, lodiav1alpha1.Scheduler{})
 	kubeconfig := "/etc/lodia/kubeconfig/" + lodiav1alpha1.KubeconfigKey
 	flags := map[string]string{
-		"authentication-kubeconfig": kubeconfig,
-		"authorization-kubeconfig":  kubeconfig,
-		"bind-address":              "0.0.0.0",
-		"kubeconfig":                kubeconfig,
-		"leader-elect":              "true",
+		"authentication-kubeconfig":       kubeconfig,
+		"authorization-kubeconfig":        kubeconfig,
+		"bind-address":                    "0.0.0.0",
+		"kubeconfig":                      kubeconfig,
+		"leader-elect":                    "true",
+		"leader-elect-resource-lock":      resourcelock.LeasesResourceLock,
+		"leader-elect-resource-name":      lodiav1alpha1.SchedulerLease,
+		"leader-elect-resource-namespace": lodiav1alpha1.LeaderElectionNamespace,
 	}
 	container := corev1.Container{
 		Name:           scheduler,
@@ -403,7 +426,7 @@ func (r rendering) scheduler() *appsv1.Deployment {
 		Resources:      resources(settings.Resources, "20m", "32Mi"),
 		VolumeMounts:   mounts("kubeconfig"),
 	}
-	return r.deployment(scheduler, 1, corev1.PodSpec{
+	return r.deployment(scheduler, defaultReplicas(cp), corev1.PodSpec{
 		Containers: []corev1.Container{container},
 		Volumes:    secretVolumes(cp.Name, map[string]lodiav1alpha1.Secret{"kubeconfig": lodiav1alpha1.SchedulerKubeconfigSecret}),
 	})
@@ -418,6 +441,9 @@ func (r rendering) deployment(component string, replicas int32, pod corev1.PodSp
 	pod.EnableServiceLinks = new(false)
 	if p := cp.Spec.Placement; p != nil {
 		pod.NodeSelector, pod.Tolerations, pod.PriorityClassName = p.NodeSelector, p.Tolerations, p.PriorityClassName
+	}
+	if ha := cp.Spec.HighAvailability; ha != nil {
+		pod.TopologySpreadConstraints = spread(ha.FailureTolerance, labels, replicas)
 	}
 	template := corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels}, Spec: pod}
 	if hash, ok := r.hashes[component]; ok {
@@ -438,6 +464,55 @@ func (r rendering) deployment(component string, replicas int32, pod corev1.PodSp
 	}
 	maps.Copy(d.Labels, map[string]string{lodiav1alpha1.ComponentLabel: component})
 	return d
+}
+
+func defaultReplicas(cp *lodiav1alpha1.ControlPlane) int32 {
+	if cp.Spec.HighAvailability != nil {
+		return 2
+	}
+	return 1
+}
+
+// spread requires as many nodes as a component has replicas, and as many
+// zones, at most three: minDomains keeps a replica Pending rather than beside
+// another while too few exist. A rollout's new pods spread among themselves.
+func spread(tolerance lodiav1alpha1.FailureTolerance, labels map[string]string, replicas int32) []corev1.TopologySpreadConstraint {
+	domains := map[string]int32{corev1.LabelHostname: replicas}
+	if tolerance == "Zone" {
+		domains[corev1.LabelTopologyZone] = min(replicas, 3)
+	}
+	var out []corev1.TopologySpreadConstraint
+	for _, key := range slices.Sorted(maps.Keys(domains)) {
+		out = append(out, corev1.TopologySpreadConstraint{
+			MaxSkew:           1,
+			TopologyKey:       key,
+			WhenUnsatisfiable: corev1.DoNotSchedule,
+			LabelSelector:     &metav1.LabelSelector{MatchLabels: labels},
+			MinDomains:        new(domains[key]),
+			NodeTaintsPolicy:  new(corev1.NodeInclusionPolicyHonor),
+			MatchLabelKeys:    []string{appsv1.DefaultDeploymentUniqueLabelKey},
+		})
+	}
+	return out
+}
+
+func podDisruptionBudgets(cp *lodiav1alpha1.ControlPlane) []*policyv1.PodDisruptionBudget {
+	if cp.Spec.HighAvailability == nil {
+		return nil
+	}
+	var out []*policyv1.PodDisruptionBudget
+	for _, component := range components {
+		out = append(out, &policyv1.PodDisruptionBudget{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "policy/v1", Kind: "PodDisruptionBudget"},
+			ObjectMeta: objectMeta(cp, deploymentName(cp.Name, component)),
+			Spec: policyv1.PodDisruptionBudgetSpec{
+				MaxUnavailable:             new(intstr.FromInt32(1)),
+				Selector:                   &metav1.LabelSelector{MatchLabels: podLabels(cp.Name, component)},
+				UnhealthyPodEvictionPolicy: new(policyv1.AlwaysAllow),
+			},
+		})
+	}
+	return out
 }
 
 // networkPolicies isolate the ingress of each component's pods: the API

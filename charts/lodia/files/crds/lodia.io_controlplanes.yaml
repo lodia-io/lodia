@@ -695,9 +695,11 @@ spec:
                 properties:
                   failureTolerance:
                     description: |-
-                      FailureTolerance is Node (replicas on different nodes) or Zone
-                      (replicas in different zones). It cannot change once set, since etcd's
-                      volumes stay where they were spread; highAvailability can be removed.
+                      FailureTolerance is Node, replicas spread over nodes by
+                      kubernetes.io/hostname, or Zone, over nodes and over zones by
+                      topology.kubernetes.io/zone too. It cannot change once set, since
+                      etcd's volumes stay where they were spread; highAvailability can be
+                      removed.
                     enum:
                     - Node
                     - Zone
@@ -1107,6 +1109,7 @@ spec:
                         maxLength: 128
                         type: string
                       ready:
+                        description: Ready never exceeds Total.
                         format: int32
                         minimum: 0
                         type: integer
@@ -1116,8 +1119,8 @@ spec:
                         type: integer
                       updated:
                         description: |-
-                          Updated run the current spec; absent while the writer does not report
-                          it.
+                          Updated run the current spec and are available; absent until the
+                          controllers that roll them out have observed that spec.
                         format: int32
                         minimum: 0
                         type: integer
@@ -1141,6 +1144,7 @@ spec:
                         maxLength: 128
                         type: string
                       ready:
+                        description: Ready never exceeds Total.
                         format: int32
                         minimum: 0
                         type: integer
@@ -1150,8 +1154,8 @@ spec:
                         type: integer
                       updated:
                         description: |-
-                          Updated run the current spec; absent while the writer does not report
-                          it.
+                          Updated run the current spec and are available; absent until the
+                          controllers that roll them out have observed that spec.
                         format: int32
                         minimum: 0
                         type: integer
@@ -1175,6 +1179,7 @@ spec:
                         maxLength: 128
                         type: string
                       ready:
+                        description: Ready never exceeds Total.
                         format: int32
                         minimum: 0
                         type: integer
@@ -1184,8 +1189,8 @@ spec:
                         type: integer
                       updated:
                         description: |-
-                          Updated run the current spec; absent while the writer does not report
-                          it.
+                          Updated run the current spec and are available; absent until the
+                          controllers that roll them out have observed that spec.
                         format: int32
                         minimum: 0
                         type: integer
@@ -1459,6 +1464,7 @@ spec:
                     description: Members counts the etcd members.
                     properties:
                       ready:
+                        description: Ready never exceeds Total.
                         format: int32
                         minimum: 0
                         type: integer
@@ -1468,8 +1474,8 @@ spec:
                         type: integer
                       updated:
                         description: |-
-                          Updated run the current spec; absent while the writer does not report
-                          it.
+                          Updated run the current spec and are available; absent until the
+                          controllers that roll them out have observed that spec.
                         format: int32
                         minimum: 0
                         type: integer
@@ -1762,6 +1768,7 @@ spec:
                     format: int32
                     type: integer
                   ready:
+                    description: Ready never exceeds Total.
                     format: int32
                     minimum: 0
                     type: integer

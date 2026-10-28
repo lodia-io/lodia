@@ -56,14 +56,15 @@ func TestConformance(t *testing.T) {
 	f := features.New("the Kubernetes conformance suite against a tenant with two nodes").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			k8s = newClient(t, cfg)
-			version = createTenant(ctx, t, k8s, key, conformanceClass)
+			createTenant(ctx, t, k8s, key, conformanceClass)
+			version = kindNodeVersion(t)
 			return ctx
 		}).
 		Assess("the ControlPlane is Ready, two nodes join and turn Ready, and CoreDNS is available", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			until(ctx, t, 3*time.Minute, "Ready=True", func(ctx context.Context) error {
 				return controlPlaneReady(ctx, k8s, key, &lodiav1alpha1.ControlPlane{})
 			})
-			access = openTenant(ctx, t, k8s, cfg.Client().RESTConfig(), key)
+			access = openTenant(ctx, t, k8s, key)
 			joinNodes(ctx, t, cfg, k8s, key, access, conformanceNodes)
 			until(ctx, t, 3*time.Minute, "CoreDNS is available", func(ctx context.Context) error {
 				coreDNS := &appsv1.Deployment{}
@@ -144,7 +145,7 @@ func TestConformance(t *testing.T) {
 			return ctx
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			closeTenant(ctx, t, k8s, access, key, conformanceClass)
+			closeTenant(ctx, t, k8s, key, conformanceClass)
 			return ctx
 		}).
 		Feature()

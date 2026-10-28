@@ -123,7 +123,7 @@ func TestPhase1Gate(t *testing.T) {
 			return ctx
 		}).
 		Assess("anonymous requests reach the tenant's health paths and cluster-info, nothing else", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			access = openTenant(ctx, t, k8s, cfg.Client().RESTConfig(), key)
+			access = openTenant(ctx, t, k8s, key)
 			anonymous, err := rest.HTTPClientFor(rest.AnonymousClientConfig(access.cfg))
 			if err != nil {
 				t.Fatal(err)
@@ -228,36 +228,13 @@ func TestPhase1Gate(t *testing.T) {
 			until(ctx, t, 3*time.Minute, "CoreDNS is available", func(ctx context.Context) error {
 				return coreDNSAvailable(ctx, access.client)
 			})
+			loops := startLoops(ctx, t, cfg, k8s, access, key, node, loop)
+			before, _ := readLoops(ctx, t, "both loops answer on new and reused connections", loops)
+
 			cp := &lodiav1alpha1.ControlPlane{}
 			if err := k8s.Get(ctx, key, cp); err != nil {
 				t.Fatal(err)
 			}
-			kubeconfig := &corev1.Secret{}
-			if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: lodiav1alpha1.AdminKubeconfigSecret.Name(key.Name)}, kubeconfig); err != nil {
-				t.Fatal(err)
-			}
-			create(ctx, t, access.client, &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{Namespace: metav1.NamespaceDefault, Name: apiLoop},
-				Data:       map[string][]byte{lodiav1alpha1.KubeconfigKey: kubeconfig.Data[lodiav1alpha1.KubeconfigKey]},
-			})
-			loadImage(ctx, t, cfg.KubeconfigFile(), node, loop)
-			endpoint := "https://" + net.JoinHostPort(cp.Status.Endpoint.APIServer.Host, strconv.Itoa(int(cp.Status.Endpoint.APIServer.Port)))
-			outside := loopPod(key.Namespace, kubeconfig.Name, loop, endpoint)
-			inside := loopPod(metav1.NamespaceDefault, apiLoop, loop, "https://kubernetes.default")
-			inside.Spec.NodeName = node
-			create(ctx, t, k8s, outside)
-			create(ctx, t, access.client, inside)
-			management := kubernetes.NewForConfigOrDie(cfg.Client().RESTConfig())
-			var outsideBefore, insideBefore loopCounts
-			until(ctx, t, 2*time.Minute, "both loops answer on new and reused connections", func(ctx context.Context) error {
-				var err error
-				if outsideBefore, _, err = readLoop(ctx, management, outside); err != nil {
-					return err
-				}
-				insideBefore, _, err = readLoop(ctx, kubernetes.NewForConfigOrDie(access.cfg), inside)
-				return err
-			})
-
 			old := apiServerPod(ctx, t, k8s, key)
 			patch := client.MergeFrom(cp.DeepCopy())
 			cp.Spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]string{"event-ttl": "1h0m0s"}}
@@ -279,27 +256,12 @@ func TestPhase1Gate(t *testing.T) {
 				return nil
 			})
 			time.Sleep(5 * time.Second)
-			access.stop()
-			access = openTenant(ctx, t, k8s, cfg.Client().RESTConfig(), key)
 
-			var outsideAfter, insideAfter loopCounts
-			var outsideLog, insideLog string
-			until(ctx, t, time.Minute, "both loops' counts are read after the rollout", func(ctx context.Context) error {
-				var err error
-				if outsideAfter, outsideLog, err = readLoop(ctx, management, outside); err != nil {
-					return err
-				}
-				insideAfter, insideLog, err = readLoop(ctx, kubernetes.NewForConfigOrDie(access.cfg), inside)
-				return err
-			})
-			checkLoop(t, "outside the tenant, to "+endpoint, outsideBefore, outsideAfter, outsideLog)
-			checkLoop(t, "inside the tenant, to https://kubernetes.default", insideBefore, insideAfter, insideLog)
-			if err := k8s.Delete(ctx, outside); err != nil {
-				t.Error(err)
+			after, logs := readLoops(ctx, t, "both loops' counts are read after the rollout", loops)
+			for i, l := range loops {
+				checkLoop(t, l.where, before[i], after[i], logs[i])
 			}
-			if err := access.client.Delete(ctx, inside); err != nil {
-				t.Error(err)
-			}
+			stopLoops(ctx, t, loops)
 			return ctx
 		}).
 		Assess("disabling and re-enabling CoreDNS removes and restores its objects through the inventory", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
@@ -346,27 +308,22 @@ func TestPhase1Gate(t *testing.T) {
 			return ctx
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			closeTenant(ctx, t, k8s, access, key, gateClass)
+			closeTenant(ctx, t, k8s, key, gateClass)
 			return ctx
 		}).
 		Feature()
 	testenv.Test(t, f)
 }
 
-func createTenant(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey, class string) string {
+func createTenant(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey, class string, change ...func(*lodiav1alpha1.ControlPlaneSpec)) {
 	t.Helper()
-	image, err := reference.ParseNormalizedNamed(defaults.Image)
-	tagged, ok := image.(reference.Tagged)
-	if err != nil || !ok {
-		t.Fatalf("kind's node image %s has no version: %v", defaults.Image, err)
-	}
-	version := tagged.Tag()
+	version := kindNodeVersion(t)
 	create(ctx, t, k8s, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: key.Namespace}})
 	create(ctx, t, k8s, &lodiav1alpha1.DatastoreClass{
 		ObjectMeta: metav1.ObjectMeta{Name: class},
 		Spec:       lodiav1alpha1.DatastoreClassSpec{Storage: lodiav1alpha1.EtcdStorage{Size: resource.MustParse("1Gi"), ReclaimPolicy: "Retain"}},
 	})
-	create(ctx, t, k8s, &lodiav1alpha1.ControlPlane{
+	cp := &lodiav1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
 			Version:   version,
@@ -375,16 +332,26 @@ func createTenant(ctx context.Context, t *testing.T, k8s client.Client, key clie
 			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.32.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{gatePodCIDR}},
 			Addons:    &lodiav1alpha1.Addons{KubeProxy: &lodiav1alpha1.KubeProxy{Conntrack: &lodiav1alpha1.KubeProxyConntrack{MaxPerCore: new(int32(0))}}},
 		},
-	})
+	}
+	for _, c := range change {
+		c(&cp.Spec)
+	}
+	create(ctx, t, k8s, cp)
 	t.Logf("ControlPlane %s created at %s, the version of kind's node image %s", key, version, defaults.Image)
-	return version
 }
 
-func closeTenant(ctx context.Context, t *testing.T, k8s client.Client, access *tenantAccess, key client.ObjectKey, class string) {
+func kindNodeVersion(t *testing.T) string {
 	t.Helper()
-	if access != nil {
-		access.stop()
+	image, err := reference.ParseNormalizedNamed(defaults.Image)
+	tagged, ok := image.(reference.Tagged)
+	if err != nil || !ok {
+		t.Fatalf("kind's node image %s has no version: %v", defaults.Image, err)
 	}
+	return tagged.Tag()
+}
+
+func closeTenant(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey, class string) {
+	t.Helper()
 	if k8s == nil {
 		return
 	}
@@ -413,10 +380,9 @@ type tenantAccess struct {
 	kubeconfig clientcmdapi.Config
 	client     client.Client
 	resources  *resources.Resources
-	stop       func()
 }
 
-func openTenant(ctx context.Context, t *testing.T, k8s client.Client, management *rest.Config, key client.ObjectKey) *tenantAccess {
+func openTenant(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey) *tenantAccess {
 	t.Helper()
 	secret := &corev1.Secret{}
 	if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: lodiav1alpha1.AdminKubeconfigSecret.Name(key.Name)}, secret); err != nil {
@@ -426,20 +392,7 @@ func openTenant(ctx context.Context, t *testing.T, k8s client.Client, management
 	if err != nil {
 		t.Fatal(err)
 	}
-	pod := apiServerPod(ctx, t, k8s, key)
-	var port int32
-	for _, container := range pod.Spec.Containers {
-		for _, p := range container.Ports {
-			if p.Name == "https" {
-				port = p.ContainerPort
-			}
-		}
-	}
-	address, stop := forward(t, management, pod, port)
-	for _, cluster := range kubeconfig.Clusters {
-		cluster.Server = "https://" + address
-	}
-	cfg, err := clientcmd.NewDefaultClientConfig(*kubeconfig, nil).ClientConfig()
+	cfg, err := clientcmd.NewNonInteractiveClientConfig(*kubeconfig, kubeconfig.CurrentContext, nil, nil).ClientConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -451,8 +404,8 @@ func openTenant(ctx context.Context, t *testing.T, k8s client.Client, management
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("the tenant's API server %s is reached through a port-forward to pod %s, as %s", cfg.Host, pod.Name, secret.Name)
-	return &tenantAccess{cfg: cfg, kubeconfig: *kubeconfig, client: c, resources: r, stop: stop}
+	t.Logf("the tenant's API server %s is reached through status.endpoint, as %s", cfg.Host, secret.Name)
+	return &tenantAccess{cfg: cfg, kubeconfig: *kubeconfig, client: c, resources: r}
 }
 
 func apiServerPod(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey) *corev1.Pod {
@@ -472,7 +425,6 @@ func apiServerPod(ctx context.Context, t *testing.T, k8s client.Client, key clie
 	return nil
 }
 
-// @todo: stands in for the tenant's endpoint, unreachable from macOS; remove with todo.md's port-forward item.
 func forward(t *testing.T, cfg *rest.Config, pod *corev1.Pod, port int32) (string, func()) {
 	t.Helper()
 	transport, upgrader, err := spdy.RoundTripperFor(cfg)
@@ -846,6 +798,63 @@ func loadImage(ctx context.Context, t *testing.T, kubeconfig, node string, image
 	}
 }
 
+type apiLoopRun struct {
+	where string
+	pod   *corev1.Pod
+	api   kubernetes.Interface
+}
+
+func startLoops(ctx context.Context, t *testing.T, cfg *envconf.Config, k8s client.Client, access *tenantAccess, key client.ObjectKey, node string, image reference.NamedTagged) []apiLoopRun {
+	t.Helper()
+	cp := &lodiav1alpha1.ControlPlane{}
+	if err := k8s.Get(ctx, key, cp); err != nil {
+		t.Fatal(err)
+	}
+	kubeconfig := &corev1.Secret{}
+	if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: lodiav1alpha1.AdminKubeconfigSecret.Name(key.Name)}, kubeconfig); err != nil {
+		t.Fatal(err)
+	}
+	create(ctx, t, access.client, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: metav1.NamespaceDefault, Name: apiLoop},
+		Data:       map[string][]byte{lodiav1alpha1.KubeconfigKey: kubeconfig.Data[lodiav1alpha1.KubeconfigKey]},
+	})
+	loadImage(ctx, t, cfg.KubeconfigFile(), node, image)
+	endpoint := "https://" + net.JoinHostPort(cp.Status.Endpoint.APIServer.Host, strconv.Itoa(int(cp.Status.Endpoint.APIServer.Port)))
+	outside := loopPod(key.Namespace, kubeconfig.Name, image, endpoint)
+	inside := loopPod(metav1.NamespaceDefault, apiLoop, image, "https://kubernetes.default")
+	inside.Spec.NodeName = node
+	create(ctx, t, k8s, outside)
+	create(ctx, t, access.client, inside)
+	return []apiLoopRun{
+		{"outside the tenant, to " + endpoint, outside, kubernetes.NewForConfigOrDie(cfg.Client().RESTConfig())},
+		{"inside the tenant, to https://kubernetes.default", inside, kubernetes.NewForConfigOrDie(access.cfg)},
+	}
+}
+
+func readLoops(ctx context.Context, t *testing.T, what string, loops []apiLoopRun) ([]loopCounts, []string) {
+	t.Helper()
+	counts, logs := make([]loopCounts, len(loops)), make([]string, len(loops))
+	until(ctx, t, 2*time.Minute, what, func(ctx context.Context) error {
+		for i, l := range loops {
+			var err error
+			if counts[i], logs[i], err = readLoop(ctx, l.api, l.pod); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return counts, logs
+}
+
+func stopLoops(ctx context.Context, t *testing.T, loops []apiLoopRun) {
+	t.Helper()
+	for _, l := range loops {
+		if err := l.api.CoreV1().Pods(l.pod.Namespace).Delete(ctx, l.pod.Name, metav1.DeleteOptions{}); err != nil {
+			t.Error(err)
+		}
+	}
+}
+
 func loopPod(namespace, kubeconfig string, image reference.NamedTagged, server string) *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: apiLoop},
@@ -905,7 +914,7 @@ func checkLoop(t *testing.T, where string, before, after loopCounts, log string)
 	}{{"new connections", before.Fresh, after.Fresh}, {"reused connections", before.Reused, after.Reused}} {
 		ok, lost, empty, retried := mode.after.OK-mode.before.OK, mode.after.Failed-mode.before.Failed, mode.after.Empty-mode.before.Empty, mode.after.Retried-mode.before.Retried
 		expected := apiLoopRate * seconds
-		t.Logf("%s on %s, %.0fs through the rollout: %d answered of %.0f sent at %d per second, %d failed, %d found the kubernetes EndpointSlice empty, %d followed a Retry-After", where, mode.name, seconds, ok, expected, apiLoopRate, lost, empty, retried)
+		t.Logf("%s on %s, over %.0fs: %d answered of %.0f sent at %d per second, %d failed, %d found the kubernetes EndpointSlice empty, %d followed a Retry-After", where, mode.name, seconds, ok, expected, apiLoopRate, lost, empty, retried)
 		if lost != 0 || empty != 0 || float64(ok) < 0.95*expected {
 			failed = true
 			t.Errorf("%s on %s: %d failed and %d found the EndpointSlice empty; %d answered, want at least 95%% of %.0f", where, mode.name, lost, empty, ok, expected)

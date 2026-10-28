@@ -118,8 +118,8 @@ func TestDatastoreOnKind(t *testing.T) {
 				}
 				return nil
 			})
-			until(ctx, t, 2*time.Minute, "DatastoreReady leaves True for the roll", func(ctx context.Context) error {
-				return conditionIs(ctx, k8s, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning)
+			until(ctx, t, 2*time.Minute, "DatastoreReady reports the single member's roll as a quorum lost", func(ctx context.Context) error {
+				return conditionIs(ctx, k8s, metav1.ConditionFalse, lodiav1alpha1.ReasonQuorumLost)
 			})
 			until(ctx, t, 5*time.Minute, "the member runs with generation 2 mounted", func(ctx context.Context) error {
 				pod := &corev1.Pod{}

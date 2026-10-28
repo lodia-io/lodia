@@ -4,6 +4,7 @@
 package workloads
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -69,13 +70,13 @@ func TestAnExtraArgumentNeverReplacesAFlagLodiaSets(t *testing.T) {
 				"enable-admission-plugins": "PodSecurity",
 				"event-ttl":                "2h",
 			}},
-			ControllerManager: &lodiav1alpha1.Component{ExtraArgs: map[string]string{"leader-elect": "false", "controllers": "-ttl-controller"}},
+			ControllerManager: &lodiav1alpha1.Component{ExtraArgs: map[string]string{"leader-elect": "false", "node-monitor-grace-period": "40s", "controllers": "-ttl-controller"}},
 		},
 	}
 	r := rendering{cp: cp, etcd: []lodiav1alpha1.HostPort{{Host: "dev-etcd-client.team.svc", Port: 2379}}}
 	for component, want := range map[string][]string{
-		"kube-apiserver":          {"--endpoint-reconciler-type=none", "--shutdown-delay-duration=15s", "--enable-admission-plugins=NodeRestriction,PodSecurity", "--event-ttl=2h"},
-		"kube-controller-manager": {"--leader-elect=true", "--controllers=*,bootstrap-signer-controller,token-cleaner-controller,-ttl-controller"},
+		"kube-apiserver":          {"--endpoint-reconciler-type=none", "--shutdown-delay-duration=0s", "--enable-admission-plugins=NodeRestriction,PodSecurity", "--event-ttl=2h"},
+		"kube-controller-manager": {"--leader-elect=true", "--node-monitor-grace-period=60s", "--controllers=*,bootstrap-signer-controller,token-cleaner-controller,-ttl-controller"},
 	} {
 		d := map[string]func() *appsv1.Deployment{"kube-apiserver": r.apiServer, "kube-controller-manager": r.controllerManager}[component]()
 		command := d.Spec.Template.Spec.Containers[0].Command
@@ -83,6 +84,81 @@ func TestAnExtraArgumentNeverReplacesAFlagLodiaSets(t *testing.T) {
 			if !slices.Contains(command, flag) {
 				t.Errorf("%s runs %v, without %s", component, command, flag)
 			}
+		}
+	}
+}
+
+func TestAvailabilityIsAReadyReplicaOfEachComponent(t *testing.T) {
+	deployment := func(component string, replicas, ready int32, timedOut bool) *appsv1.Deployment {
+		d := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: "dev-" + component, Labels: map[string]string{lodiav1alpha1.ComponentLabel: component}, Generation: 2},
+			Spec:       appsv1.DeploymentSpec{Replicas: new(replicas)},
+			Status:     appsv1.DeploymentStatus{ObservedGeneration: 2, ReadyReplicas: ready},
+		}
+		if timedOut {
+			d.Status.Conditions = []appsv1.DeploymentCondition{{Type: appsv1.DeploymentProgressing, Status: corev1.ConditionFalse, Reason: "ProgressDeadlineExceeded"}}
+		}
+		return d
+	}
+	stale := deployment(apiServer, 2, 2, true)
+	stale.Status.ObservedGeneration = 1
+	for _, row := range []struct {
+		name        string
+		deployments []*appsv1.Deployment
+		want        string
+	}{
+		{"every replica ready", []*appsv1.Deployment{deployment(apiServer, 2, 2, false), deployment(controllerManager, 2, 2, false), deployment(scheduler, 2, 2, false)},
+			"True Ready every replica of kube-apiserver, kube-controller-manager and kube-scheduler is ready"},
+		{"one API server of two ready", []*appsv1.Deployment{deployment(apiServer, 2, 1, false), deployment(controllerManager, 2, 2, false), deployment(scheduler, 2, 2, false)},
+			"True Ready kube-apiserver has 1 of 2 replicas ready"},
+		{"a surge", []*appsv1.Deployment{deployment(apiServer, 2, 4, false), deployment(controllerManager, 1, 1, false), deployment(scheduler, 1, 2, false)},
+			"True Ready every replica of kube-apiserver, kube-controller-manager and kube-scheduler is ready"},
+		{"a scheduler without a ready replica", []*appsv1.Deployment{deployment(apiServer, 2, 1, false), deployment(controllerManager, 2, 2, false), deployment(scheduler, 2, 0, false)},
+			"False Unavailable kube-apiserver has 1 of 2 replicas ready; kube-scheduler has 0 of 2 replicas ready"},
+		{"a rollout past its deadline", []*appsv1.Deployment{deployment(apiServer, 2, 2, true), deployment(controllerManager, 2, 1, false), deployment(scheduler, 2, 2, false)},
+			"True ProgressDeadlineExceeded the rollout of Deployment dev-kube-apiserver passed its progress deadline; kube-controller-manager has 1 of 2 replicas ready"},
+		{"a deadline of a generation not observed", []*appsv1.Deployment{stale, deployment(controllerManager, 2, 2, false), deployment(scheduler, 2, 2, false)},
+			"True Ready every replica of kube-apiserver, kube-controller-manager and kube-scheduler is ready"},
+		{"a deadline and no ready replica", []*appsv1.Deployment{deployment(apiServer, 2, 0, true), deployment(controllerManager, 2, 2, false), deployment(scheduler, 2, 2, false)},
+			"False Unavailable kube-apiserver has 0 of 2 replicas ready"},
+	} {
+		c := availability(row.deployments)
+		if got := fmt.Sprintf("%s %s %s", c.Status, c.Reason, c.Message); got != row.want {
+			t.Errorf("%s: APIServerReady is %q, want %q", row.name, got, row.want)
+		}
+	}
+}
+
+func TestUpdatedCountsAvailableReplicasOfTheCurrentTemplate(t *testing.T) {
+	for _, row := range []struct {
+		name                                string
+		observed                            bool
+		replicas, updated, ready, available int32
+		want                                string
+	}{
+		{"a template not observed", false, 2, 2, 2, 2, "2/2/absent"},
+		{"a surge starts", true, 4, 2, 2, 2, "2/2/0"},
+		{"one new replica available", true, 3, 2, 3, 2, "2/2/1"},
+		{"both new available, the old ones going", true, 4, 2, 4, 4, "2/2/2"},
+		{"rolled out", true, 2, 2, 2, 2, "2/2/2"},
+		{"new replicas that never start", true, 4, 2, 2, 2, "2/2/0"},
+		{"a replica lost", true, 2, 2, 1, 1, "2/1/1"},
+	} {
+		d := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Generation: 3},
+			Spec:       appsv1.DeploymentSpec{Replicas: new(int32(2))},
+			Status:     appsv1.DeploymentStatus{ObservedGeneration: 2, Replicas: row.replicas, UpdatedReplicas: row.updated, ReadyReplicas: row.ready, AvailableReplicas: row.available},
+		}
+		if row.observed {
+			d.Status.ObservedGeneration = 3
+		}
+		count := rolloutCount(d)
+		updated := "absent"
+		if count.Updated != nil {
+			updated = fmt.Sprint(*count.Updated)
+		}
+		if got := fmt.Sprintf("%d/%d/%s", count.Total, count.Ready, updated); got != row.want {
+			t.Errorf("%s: total/ready/updated %s, want %s", row.name, got, row.want)
 		}
 	}
 }

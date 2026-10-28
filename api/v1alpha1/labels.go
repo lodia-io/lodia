@@ -50,6 +50,11 @@ const (
 	// on an Etcd, records the generation of the class it was rendered from.
 	DatastoreClassGenerationAnnotation = "lodia.io/datastore-class-generation"
 
+	// EtcdFormedAnnotation, written by the Datastore controller on an Etcd
+	// once DatastoreReady has seen a ready member of it, and kept from then
+	// on, tells an etcd that lost its quorum from one that never had it.
+	EtcdFormedAnnotation = "lodia.io/etcd-formed"
+
 	// DataHashAnnotation, written by PKI on every Secret it writes, holds
 	// DataHash of the Secret's data, so that Workloads hashes a restart-only
 	// Secret into a pod template from its metadata alone.

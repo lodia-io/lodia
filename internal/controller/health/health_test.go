@@ -19,6 +19,7 @@ import (
 	"time"
 
 	authorizationv1 "k8s.io/api/authorization/v1"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -31,6 +32,10 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
+	"k8s.io/utils/clock"
+	clocktesting "k8s.io/utils/clock/testing"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -45,7 +50,11 @@ import (
 	"go.lodia.io/lodia/internal/controller/health"
 )
 
-var k8s client.WithWatch
+var (
+	k8s              client.WithWatch
+	tenant           client.Client
+	tenantKubeconfig []byte
+)
 
 func TestMain(m *testing.M) {
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
@@ -62,8 +71,10 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "start envtest:", err)
 		os.Exit(1)
 	}
+	tenantEnv := &envtest.Environment{UseExistingCluster: new(false)}
 	stop := func(what string, err error) {
 		fmt.Fprintln(os.Stderr, what+":", err)
+		_ = tenantEnv.Stop()
 		_ = env.Stop()
 		os.Exit(1)
 	}
@@ -75,6 +86,16 @@ func TestMain(m *testing.M) {
 	}
 	if k8s, err = client.NewWithWatch(cfg, client.Options{Scheme: scheme}); err != nil {
 		stop("client", err)
+	}
+	tenantCfg, err := tenantEnv.Start()
+	if err != nil {
+		stop("start the tenant's envtest", err)
+	}
+	if tenant, err = client.New(tenantCfg, client.Options{Scheme: scheme}); err != nil {
+		stop("tenant client", err)
+	}
+	if tenantKubeconfig, err = kubeconfigOf(tenantCfg.Host, tenantCfg); err != nil {
+		stop("tenant kubeconfig", err)
 	}
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
 	controller, err := asHealthController(cfg)
@@ -105,7 +126,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		stop("manager", err)
 	}
-	if err := (&health.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Period: time.Hour, Timeout: 2 * time.Second}).SetupWithManager(mgr, 1); err != nil {
+	if err := (&health.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Period: time.Hour, Timeout: 2 * time.Second, Clock: clock.RealClock{}}).SetupWithManager(mgr, 1); err != nil {
 		stop("controller", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -119,6 +140,9 @@ func TestMain(m *testing.M) {
 	}
 	if err := env.Stop(); err != nil {
 		fmt.Fprintln(os.Stderr, "stop envtest:", err)
+	}
+	if err := tenantEnv.Stop(); err != nil {
+		fmt.Fprintln(os.Stderr, "stop the tenant's envtest:", err)
 	}
 	os.Exit(code)
 }
@@ -258,6 +282,118 @@ func TestAFailedReadLeavesTheStatus(t *testing.T) {
 	}
 	if after := get(t, cp).ResourceVersion; after != before {
 		t.Errorf("a pass whose read failed wrote the status: resourceVersion %s, then %s", before, after)
+	}
+}
+
+func TestControllersLeadingFollowsTheLeaderLeases(t *testing.T) {
+	cp := controlPlane(t)
+	eventually(t, func() error {
+		return expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, "AccessReady is not True for this generation")
+	})
+	setAccess(t, cp)
+	eventually(t, func() error {
+		return expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, "waiting for PKI to write dev-lodia-kubeconfig")
+	})
+	start := time.Now().Truncate(time.Second)
+	now := clocktesting.NewFakePassiveClock(start)
+	r := &health.Reconciler{Client: k8s, Reader: k8s, Period: 10 * time.Second, Timeout: 2 * time.Second, Clock: now}
+	writeKubeconfig(t, cp, tenantKubeconfig)
+	removeLeases(t)
+	reconcile(t, r, cp)
+	if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonControllerManagerNotLeading,
+		"Lease kube-system/kube-controller-manager does not exist; Lease kube-system/kube-scheduler does not exist"); err != nil {
+		t.Fatal(err)
+	}
+
+	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", start)
+	renew(t, lodiav1alpha1.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
+	reconcile(t, r, cp)
+	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, "the leader Leases of kube-controller-manager and kube-scheduler are renewed"); err != nil {
+		t.Fatal(err)
+	}
+	now.SetTime(start.Add(25 * time.Second))
+	reconcile(t, r, cp)
+	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, "the leader Leases of kube-controller-manager and kube-scheduler are renewed"); err != nil {
+		t.Fatalf("within each lease's 15 seconds and the period: %v", err)
+	}
+	now.SetTime(start.Add(26 * time.Second))
+	reconcile(t, r, cp)
+	renewed := start.UTC().Format(time.RFC3339)
+	if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonControllerManagerNotLeading,
+		"Lease kube-system/kube-controller-manager of dev-kube-controller-manager-7d9_1 was last renewed "+renewed+
+			"; Lease kube-system/kube-scheduler of dev-kube-scheduler-5c4_2 was last renewed "+renewed); err != nil {
+		t.Fatal(err)
+	}
+
+	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", start.Add(26*time.Second))
+	reconcile(t, r, cp)
+	if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonSchedulerNotLeading,
+		"Lease kube-system/kube-scheduler of dev-kube-scheduler-5c4_2 was last renewed "+renewed); err != nil {
+		t.Fatal(err)
+	}
+	renew(t, lodiav1alpha1.SchedulerLease, "dev-kube-scheduler-8f1_3", start.Add(26*time.Second))
+	reconcile(t, r, cp)
+	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, "the leader Leases of kube-controller-manager and kube-scheduler are renewed"); err != nil {
+		t.Fatal(err)
+	}
+
+	now.SetTime(start.Add(27 * time.Second))
+	release(t, lodiav1alpha1.SchedulerLease, start.Add(27*time.Second))
+	reconcile(t, r, cp)
+	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, "the leader Leases of kube-controller-manager and kube-scheduler are renewed"); err != nil {
+		t.Fatalf("the pass after a release: %v", err)
+	}
+	now.SetTime(start.Add(37 * time.Second))
+	reconcile(t, r, cp)
+	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, "the leader Leases of kube-controller-manager and kube-scheduler are renewed"); err != nil {
+		t.Fatalf("a pass within a period of a release: %v", err)
+	}
+	now.SetTime(start.Add(38 * time.Second))
+	reconcile(t, r, cp)
+	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, "the leader Leases of kube-controller-manager and kube-scheduler are renewed"); err != nil {
+		t.Fatalf("within the released lease's 1 second and the period: %v", err)
+	}
+	now.SetTime(start.Add(39 * time.Second))
+	reconcile(t, r, cp)
+	if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonSchedulerNotLeading,
+		"Lease kube-system/kube-scheduler has no holder; it was last renewed "+start.Add(27*time.Second).UTC().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAFailedLeaseReadKeepsControllersLeading(t *testing.T) {
+	cp := controlPlane(t)
+	setAccess(t, cp)
+	start := time.Now().Truncate(time.Second)
+	now := clocktesting.NewFakePassiveClock(start)
+	r := &health.Reconciler{Client: k8s, Reader: k8s, Period: 10 * time.Second, Timeout: 2 * time.Second, Clock: now}
+	writeKubeconfig(t, cp, tenantKubeconfig)
+	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", start)
+	renew(t, lodiav1alpha1.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
+	reconcile(t, r, cp)
+	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, "the leader Leases of kube-controller-manager and kube-scheduler are renewed"); err != nil {
+		t.Fatal(err)
+	}
+
+	unreachable, err := kubeconfigOf("https://127.0.0.1:1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeKubeconfig(t, cp, unreachable)
+	now.SetTime(start.Add(time.Hour))
+	before := get(t, cp).ResourceVersion
+	reconcile(t, r, cp)
+	if after := get(t, cp).ResourceVersion; after != before {
+		t.Errorf("a pass whose lease reads failed wrote the status: resourceVersion %s, then %s", before, after)
+	}
+
+	writeKubeconfig(t, cp, tenantKubeconfig)
+	reconcile(t, r, cp)
+	renewed := start.UTC().Format(time.RFC3339)
+	if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonControllerManagerNotLeading,
+		"Lease kube-system/kube-controller-manager of dev-kube-controller-manager-7d9_1 was last renewed "+renewed+
+			"; Lease kube-system/kube-scheduler of dev-kube-scheduler-5c4_2 was last renewed "+renewed); err != nil {
+		t.Fatalf("after a failed read, the leases unchanged since they were first seen: %v", err)
 	}
 }
 
@@ -409,4 +545,103 @@ func eventually(t *testing.T, check func() error) {
 	if err != nil {
 		t.Fatalf("%v: %v", err, last)
 	}
+}
+
+func kubeconfigOf(server string, cfg *rest.Config) ([]byte, error) {
+	user := &clientcmdapi.AuthInfo{}
+	cluster := &clientcmdapi.Cluster{Server: server}
+	if cfg != nil {
+		user.ClientCertificateData, user.ClientKeyData, cluster.CertificateAuthorityData = cfg.CertData, cfg.KeyData, cfg.CAData
+	}
+	return clientcmd.Write(clientcmdapi.Config{
+		Clusters:       map[string]*clientcmdapi.Cluster{"tenant": cluster},
+		AuthInfos:      map[string]*clientcmdapi.AuthInfo{"lodia": user},
+		Contexts:       map[string]*clientcmdapi.Context{"tenant": {Cluster: "tenant", AuthInfo: "lodia"}},
+		CurrentContext: "tenant",
+	})
+}
+
+func writeKubeconfig(t *testing.T, cp *lodiav1alpha1.ControlPlane, kubeconfig []byte) {
+	t.Helper()
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: lodiav1alpha1.LodiaKubeconfigSecret.Name(cp.Name), Namespace: cp.Namespace}}
+	err := k8s.Get(t.Context(), client.ObjectKeyFromObject(secret), secret)
+	if client.IgnoreNotFound(err) != nil {
+		t.Fatal(err)
+	}
+	secret.Data = map[string][]byte{lodiav1alpha1.KubeconfigKey: kubeconfig}
+	if err == nil {
+		err = k8s.Update(t.Context(), secret)
+	} else {
+		err = k8s.Create(t.Context(), secret)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func setAccess(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+	t.Helper()
+	u := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": lodiav1alpha1.GroupVersion.String(),
+		"kind":       "ControlPlane",
+		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
+		"status": map[string]any{"conditions": []any{map[string]any{
+			"type": lodiav1alpha1.ConditionAccessReady, "status": string(metav1.ConditionTrue), "reason": lodiav1alpha1.ReasonBound, "message": "set by the test",
+			"observedGeneration": get(t, cp).Generation, "lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
+		}}},
+	}}
+	if err := k8s.Status().Apply(t.Context(), client.ApplyConfigurationFromUnstructured(u), client.FieldOwner("test/access"), client.ForceOwnership); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func removeLeases(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{lodiav1alpha1.ControllerManagerLease, lodiav1alpha1.SchedulerLease} {
+		lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Namespace: lodiav1alpha1.LeaderElectionNamespace, Name: name}}
+		if err := client.IgnoreNotFound(tenant.Delete(t.Context(), lease)); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func release(t *testing.T, name string, at time.Time) {
+	t.Helper()
+	lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Namespace: lodiav1alpha1.LeaderElectionNamespace, Name: name}}
+	if err := tenant.Get(t.Context(), client.ObjectKeyFromObject(lease), lease); err != nil {
+		t.Fatal(err)
+	}
+	lease.Spec.HolderIdentity, lease.Spec.LeaseDurationSeconds = nil, new(int32(1))
+	lease.Spec.AcquireTime, lease.Spec.RenewTime = &metav1.MicroTime{Time: at}, &metav1.MicroTime{Time: at}
+	if err := tenant.Update(t.Context(), lease); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func renew(t *testing.T, name, holder string, at time.Time) {
+	t.Helper()
+	lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Namespace: lodiav1alpha1.LeaderElectionNamespace, Name: name}}
+	err := tenant.Get(t.Context(), client.ObjectKeyFromObject(lease), lease)
+	if client.IgnoreNotFound(err) != nil {
+		t.Fatal(err)
+	}
+	lease.Spec = coordinationv1.LeaseSpec{HolderIdentity: &holder, LeaseDurationSeconds: new(int32(15)), RenewTime: &metav1.MicroTime{Time: at}}
+	if err == nil {
+		err = tenant.Update(t.Context(), lease)
+	} else {
+		err = tenant.Create(t.Context(), lease)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func expectLeading(t *testing.T, cp *lodiav1alpha1.ControlPlane, status metav1.ConditionStatus, reason, message string) error {
+	t.Helper()
+	fresh := get(t, cp)
+	c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionControllersLeading)
+	if c == nil || c.Status != status || c.Reason != reason || c.Message != message || c.ObservedGeneration != fresh.Generation {
+		return fmt.Errorf("ControllersLeading is %+v, want %s %s %q at generation %d", c, status, reason, message, fresh.Generation)
+	}
+	return nil
 }
