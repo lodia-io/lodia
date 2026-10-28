@@ -276,7 +276,7 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.Contro
 	etcd, err := r.apply(ctx, rendered)
 	if err != nil {
 		err = fmt.Errorf("apply Etcd %s: %w", rendered.Name, err)
-		if apistatus.Refused(err) {
+		if apistatus.Refused(err) && !replaced(err) {
 			message := note(fmt.Sprintf("the API server refuses Etcd %s on certificate generation %d with the fields of DatastoreClass %s generation %s; the reason is in Lodia's log",
 				rendered.Name, generation, rendered.Annotations[lodiav1alpha1.DatastoreClassAnnotation], rendered.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation]), held)
 			return current, nil, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, message), 0, errors.Join(err, refusal)
@@ -318,6 +318,22 @@ func foreignEtcd(etcd *druidv1alpha1.Etcd) string {
 	}
 	return fmt.Sprintf("Etcd %s is not this ControlPlane's, %s: delete it and its claims to start empty, or keep them, and this ControlPlane waits",
 		etcd.Name, owner)
+}
+
+// replaced says whether the API server refuses an apply only for the UID it
+// names, that of an Etcd another has replaced since the cache read it; the
+// next pass reads the new one.
+func replaced(err error) bool {
+	var status apierrors.APIStatus
+	if !errors.As(err, &status) || status.Status().Details == nil {
+		return false
+	}
+	for _, cause := range status.Status().Details.Causes {
+		if cause.Field == "metadata.uid" {
+			return true
+		}
+	}
+	return false
 }
 
 // An Etcd without the control-plane label is outside the cache and still

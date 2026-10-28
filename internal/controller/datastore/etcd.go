@@ -71,6 +71,12 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 			},
 		},
 	}
+	// The apply names the UID it was rendered from, so a pass whose cache
+	// still holds a deleted Etcd creates nothing from it
+	// (k8s.io/apiserver@v0.37.1 pkg/endpoints/handlers/patch.go#L608-L618).
+	if current != nil {
+		etcd.UID = current.UID
+	}
 	switch ha := cp.Spec.HighAvailability; {
 	case membersHeld(cp, current, sts):
 		etcd.Spec.Replicas = current.Spec.Replicas

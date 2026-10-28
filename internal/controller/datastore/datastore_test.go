@@ -1404,7 +1404,7 @@ func TestDatastoreReadyIsQuorum(t *testing.T) {
 		}
 		return nil
 	})
-	if recreated.Annotations[lodiav1alpha1.EtcdFormedAnnotation] == string(recreated.UID) {
+	if metav1.HasAnnotation(recreated.ObjectMeta, lodiav1alpha1.EtcdFormedAnnotation) {
 		t.Errorf("the recreated Etcd starts annotated %v", recreated.Annotations)
 	}
 	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd reported-etcd")
@@ -1416,6 +1416,58 @@ func TestDatastoreReadyIsQuorum(t *testing.T) {
 	}
 	setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) { s.Ready, s.ReadyReplicas = new(false), 0 })
 	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "Etcd reported-etcd has 0 of 1 members ready")
+}
+
+func TestAPassFromAStaleCacheChangesNoEtcd(t *testing.T) {
+	ns := namespace(t)
+	const cp = "stale"
+	createClass(t, newClass("stale", "Retain"))
+	create(t, controlPlane(ns, cp, "stale"))
+	writeGeneration(t, ns, cp, 1)
+	predecessor := waitEtcd(t, ns, cp, nil)
+	stale := interceptor.NewClient(k8s, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if etcd, ok := obj.(*druidv1alpha1.Etcd); ok {
+				predecessor.DeepCopyInto(etcd)
+				return nil
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	pass := func() error {
+		_, err := (&datastore.Reconciler{Client: stale, Reader: stale, EtcdDruidNamespace: druidNamespace}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}})
+		return err
+	}
+
+	binding := refuseEtcds(t, ns)
+	if err := k8s.Delete(t.Context(), predecessor); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() error {
+		return gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: cp + "-etcd"}, &druidv1alpha1.Etcd{}))
+	})
+	if err := pass(); !apierrors.IsConflict(err) {
+		t.Fatalf("a pass from a cache that still holds the deleted Etcd returned %v, want a conflict", err)
+	}
+
+	if err := k8s.Delete(t.Context(), binding); err != nil {
+		t.Fatal(err)
+	}
+	recreated := waitEtcd(t, ns, cp, nil)
+	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd stale-etcd")
+	settle(t, ns, cp)
+	before := getControlPlane(t, ns, cp)
+	if err := pass(); err == nil {
+		t.Fatal("a pass from a cache that holds the replaced Etcd succeeded")
+	}
+	if after := getControlPlane(t, ns, cp); after.ResourceVersion != before.ResourceVersion {
+		condition := meta.FindStatusCondition(after.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
+		t.Errorf("a pass from a cache that holds the replaced Etcd moved the ControlPlane from resourceVersion %s to %s: DatastoreReady %s/%s %q",
+			before.ResourceVersion, after.ResourceVersion, condition.Status, condition.Reason, condition.Message)
+	}
+	if etcd := getEtcd(t, ns, cp); etcd.ResourceVersion != recreated.ResourceVersion {
+		t.Errorf("a pass from a cache that holds the replaced Etcd moved its replacement from resourceVersion %s to %s", recreated.ResourceVersion, etcd.ResourceVersion)
+	}
 }
 
 func TestThreeMembersWithHighAvailability(t *testing.T) {
