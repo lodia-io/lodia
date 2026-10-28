@@ -1,10 +1,10 @@
 // Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package live holds the rule that a writer that waits decides what to keep
-// from its own conditions as the API server holds them: its cache can lag
-// behind its own last write, and a condition kept from a stale cache would
-// write an older generation back (docs/decisions/independent-controllers.md).
+// Package live holds the rule that a writer that waits or keeps a condition
+// decides from its own conditions as the API server holds them: its cache can
+// lag behind its own last write, and a condition kept from a stale cache would
+// be written back over a newer one (docs/decisions/independent-controllers.md).
 package live
 
 import (

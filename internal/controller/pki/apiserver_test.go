@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -334,6 +335,96 @@ func TestAccessReadyOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer)
+}
+
+func TestAKeptAccessReadyOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
+	ctx := t.Context()
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "pki-access-kept-stale")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	fresh := func() *lodiav1alpha1.ControlPlane {
+		t.Helper()
+		out := &lodiav1alpha1.ControlPlane{}
+		if err := k8s.Get(ctx, client.ObjectKeyFromObject(cp), out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	bound := func(generation int64) {
+		t.Helper()
+		u := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": lodiav1alpha1.GroupVersion.String(),
+			"kind":       "ControlPlane",
+			"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
+			"status": map[string]any{"conditions": []any{map[string]any{
+				"type":               lodiav1alpha1.ConditionAccessReady,
+				"status":             string(metav1.ConditionTrue),
+				"reason":             lodiav1alpha1.ReasonBound,
+				"message":            "lodia:operator, lodia:cluster-admins and lodia:kubelet-api-admins are bound",
+				"observedGeneration": generation,
+				"lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
+			}}},
+		}}
+		if err := k8s.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(u), client.FieldOwner("test/access"), client.ForceOwnership); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ready := func() {
+		t.Helper()
+		applyStatus(t, cp, map[string]any{
+			"endpoint": map[string]any{
+				"apiServer":    map[string]any{"host": endpointHost, "port": int64(endpointPort)},
+				"konnectivity": map[string]any{"host": endpointHost, "port": int64(8132)},
+				"inCluster":    map[string]any{"host": endpointHost, "port": int64(6443)},
+			},
+			"conditions": []any{map[string]any{
+				"type":               lodiav1alpha1.ConditionAPIServerReady,
+				"status":             string(metav1.ConditionTrue),
+				"reason":             lodiav1alpha1.ReasonReady,
+				"message":            "",
+				"observedGeneration": cp.Generation,
+				"lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
+			}},
+		})
+	}
+	ready()
+	bound(cp.Generation)
+
+	if err := k8s.Get(ctx, client.ObjectKeyFromObject(cp), cp); err != nil {
+		t.Fatal(err)
+	}
+	cp.Spec.Placement = &lodiav1alpha1.Placement{PriorityClassName: "system-cluster-critical"}
+	if err := k8s.Update(ctx, cp); err != nil {
+		t.Fatal(err)
+	}
+	ready()
+	stale := fresh()
+	r.Dial = unreachable
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+		t.Fatal("a pass that could not reach the tenant succeeded")
+	}
+	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+	bound(cp.Generation)
+	pass := func(reader client.Reader) error {
+		withRead := newReconciler(time.Hour)
+		withRead.Client, withRead.Reader, withRead.Dial = snapshot{Client: controller, cp: stale}, reader, unreachable
+		_, err := withRead.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+		return err
+	}
+
+	written := fresh().ResourceVersion
+	if err := pass(failingRead{Reader: apiReader, read: "the ControlPlane"}); err == nil || !strings.Contains(err.Error(), "the API server is down") {
+		t.Errorf("a pass that cannot read AccessReady from the server returned %v, want the read's error", err)
+	}
+	if after := fresh().ResourceVersion; after != written {
+		t.Errorf("a pass that cannot read AccessReady from the server wrote the ControlPlane: resourceVersion %s, then %s", written, after)
+	}
+
+	if err := pass(apiReader); err == nil {
+		t.Fatal("a pass that could not reach the tenant succeeded")
+	}
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionTrue, lodiav1alpha1.ReasonBound)
 }
 
 type snapshot struct {

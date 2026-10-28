@@ -310,6 +310,56 @@ func TestAWaitOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
 	expectNow(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
 }
 
+func TestAConditionKeptWithoutAnAnswerOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
+	cp := controlPlane(t, "tenant-kept-stale")
+	publish(t, cp)
+	reconcilePKI(t, &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour}, cp)
+	eventually(t, 10*time.Second, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+	})
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation-1),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, cp.Generation-1),
+	}})
+	refresh(t, cp)
+	stale := cp.DeepCopy()
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable, cp.Generation),
+	}})
+	pass := func(reader client.Reader) error {
+		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: reader, ApplyPeriod: time.Hour, Dial: unreachable}
+		_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+		return err
+	}
+
+	refresh(t, cp)
+	written := cp.ResourceVersion
+	if err := pass(failingRead{Reader: k8s}); !errors.Is(err, errReadFailed) {
+		t.Errorf("a pass that cannot read its conditions from the server returned %v, want the read's error", err)
+	}
+	if refresh(t, cp); cp.ResourceVersion != written {
+		t.Errorf("a pass that cannot read its conditions from the server wrote the ControlPlane: resourceVersion %s, then %s", written, cp.ResourceVersion)
+	}
+
+	refresh(t, cp)
+	written = cp.ResourceVersion
+	if err := pass(k8s); err == nil {
+		t.Fatal("a pass that could not reach the tenant succeeded")
+	}
+	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied); err != nil {
+		t.Error(err)
+	}
+	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable); err != nil {
+		t.Error(err)
+	}
+	if cp.ResourceVersion != written {
+		t.Errorf("a pass that keeps both conditions as the server holds them wrote the ControlPlane: resourceVersion %s, then %s", written, cp.ResourceVersion)
+	}
+}
+
 type snapshot struct {
 	client.Client
 	cp *lodiav1alpha1.ControlPlane

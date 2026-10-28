@@ -199,9 +199,9 @@ func listed(items []string) string {
 // access counts a refusal from the tenant as an answer, which turns
 // AccessReady False, Refused; no answer keeps a True, since whether the
 // tenant can be reached is Health's to report, and leaves anything else
-// Binding. While it waits it keeps AccessReady, as the API server holds it,
-// at an older generation; a failed read of it returns an empty condition, and
-// the pass writes nothing.
+// Binding. While it waits it keeps AccessReady at an older generation. What it
+// keeps is AccessReady as the API server holds it; a failed read of it returns
+// an empty condition, and the pass writes nothing.
 func (r *Reconciler) access(ctx context.Context, t *tenant) (metav1.Condition, error) {
 	c := metav1.Condition{Type: lodiav1alpha1.ConditionAccessReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonWaitingForAPIServer, Message: "APIServerReady is not True for this generation"}
 	ready := meta.FindStatusCondition(t.cp.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady)
@@ -214,7 +214,6 @@ func (r *Reconciler) access(ctx context.Context, t *tenant) (metav1.Condition, e
 		}
 		return c, nil
 	}
-	prev := meta.FindStatusCondition(t.cp.Status.Conditions, c.Type)
 	refused, err := r.bind(ctx, t)
 	if err == nil {
 		c.Status, c.Reason, c.Message = metav1.ConditionTrue, lodiav1alpha1.ReasonBound, "lodia:operator, lodia:cluster-admins and lodia:kubelet-api-admins are bound"
@@ -224,7 +223,10 @@ func (r *Reconciler) access(ctx context.Context, t *tenant) (metav1.Condition, e
 		c.Reason, c.Message = lodiav1alpha1.ReasonRefused, "ClusterRoleBinding "+refused+" is refused by the tenant's API server; the reason is in Lodia's log"
 		return c, err
 	}
-	if prev != nil && prev.Status == metav1.ConditionTrue {
+	if readErr := live.Conditions(ctx, r.Reader, t.cp, c.Type); readErr != nil {
+		return metav1.Condition{}, errors.Join(err, readErr)
+	}
+	if prev := meta.FindStatusCondition(t.cp.Status.Conditions, c.Type); prev != nil && prev.Status == metav1.ConditionTrue {
 		return *prev, err
 	}
 	c.Reason, c.Message = lodiav1alpha1.ReasonBinding, "the tenant has not confirmed the bindings since its API server became ready; the error is in the log"
