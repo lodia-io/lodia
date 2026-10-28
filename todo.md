@@ -175,4 +175,3 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 - A writer that refuses a new generation, `Unsupported`, `Refused` or `ObjectsControlledElsewhere`, turns its condition, and so `Ready`, False while the tenant still serves the previous one, though a readiness condition reports availability ([independent-controllers](docs/decisions/independent-controllers.md)).
   It needs its own answer to where a refusal shows while availability stays.
-  Until then a spec change lifts a refusal of `APIServerReady` for as long as Workloads waits for its inputs, since it counts its Deployments meanwhile.
