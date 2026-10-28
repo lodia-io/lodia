@@ -433,14 +433,28 @@ func TestReadyDuringDeletion(t *testing.T) {
 		return expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
 			"CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied, Reachable and ControllersLeading are True", 1, 1)
 	})
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) {
+		cp.Spec.Placement = &lodiav1alpha1.Placement{PriorityClassName: "system-cluster-critical"}
+	})
+	for _, conditionType := range readiness[:len(readiness)-1] {
+		setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
+	}
+	eventually(t, func() error {
+		c := condition(t, cp, lodiav1alpha1.ConditionProgressing)
+		if want := "generation 2 is not taken up yet: ControllersLeading at 1"; c == nil || c.Reason != lodiav1alpha1.ReasonLatestGenerationNotObserved || c.Message != want {
+			return fmt.Errorf("Progressing is %+v, want %s %q", c, lodiav1alpha1.ReasonLatestGenerationNotObserved, want)
+		}
+		return nil
+	})
 
 	if err := k8s.Delete(t.Context(), get(t, cp)); err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, func() error {
-		c := condition(t, cp, lodiav1alpha1.ConditionReady)
-		if c == nil || c.Status != metav1.ConditionFalse || c.Reason != lodiav1alpha1.ReasonDeleting {
-			return fmt.Errorf("Ready is %+v, want False %s", c, lodiav1alpha1.ReasonDeleting)
+		fresh := get(t, cp)
+		c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionReady)
+		if c == nil || c.Status != metav1.ConditionFalse || c.Reason != lodiav1alpha1.ReasonDeleting || c.ObservedGeneration != fresh.Generation {
+			return fmt.Errorf("Ready is %+v, want False %s at generation %d", c, lodiav1alpha1.ReasonDeleting, fresh.Generation)
 		}
 		return nil
 	})
