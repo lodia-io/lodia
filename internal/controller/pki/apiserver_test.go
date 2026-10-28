@@ -19,6 +19,7 @@ import (
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -178,7 +179,7 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 		return nil, errors.New("not dialed")
 	}
 	reconcile(t, r, cp)
-	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer)
+	expectConditionAt(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionTrue, lodiav1alpha1.ReasonBound, stale)
 	setAPIServerReady(t, cp)
 	r.Dial = dialer(t, tenantCfg.Host)
 	reconcile(t, r, cp)
@@ -233,6 +234,48 @@ func TestAccessReadyIsBindingUntilTheTenantAnswers(t *testing.T) {
 		t.Fatal("a pass that could not reach the tenant succeeded")
 	}
 	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding)
+}
+
+func TestAccessReadyKeepsItsGenerationUntilTheAPIServerTakesTheChangeUp(t *testing.T) {
+	ctx := t.Context()
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "pki-access-generations")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	setAPIServerReady(t, cp)
+	r.Dial = unreachable
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+		t.Fatal("a pass that could not reach the tenant succeeded")
+	}
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding)
+	binding := condition(t, cp, lodiav1alpha1.ConditionAccessReady)
+
+	if err := k8s.Get(ctx, client.ObjectKeyFromObject(cp), cp); err != nil {
+		t.Fatal(err)
+	}
+	cp.Spec.Placement = &lodiav1alpha1.Placement{PriorityClassName: "system-cluster-critical"}
+	if err := k8s.Update(ctx, cp); err != nil {
+		t.Fatal(err)
+	}
+	r.Dial = func(context.Context, string, string) (net.Conn, error) {
+		t.Error("the tenant was dialed on an APIServerReady of an older generation")
+		return nil, errors.New("not dialed")
+	}
+	reconcile(t, r, cp)
+	if kept := condition(t, cp, lodiav1alpha1.ConditionAccessReady); !equality.Semantic.DeepEqual(kept, binding) {
+		t.Fatalf("AccessReady is %+v at generation %d, want it kept as %+v", kept, cp.Generation, binding)
+	}
+
+	setAPIServerReady(t, cp)
+	r.Dial = unreachable
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+		t.Fatal("a pass that could not reach the tenant succeeded")
+	}
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding)
+
+	setAPIServer(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable)
+	reconcile(t, r, cp)
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer)
 }
 
 func unreachable(context.Context, string, string) (net.Conn, error) {

@@ -194,8 +194,12 @@ func listed(items []string) string {
 // Binding.
 func (r *Reconciler) access(ctx context.Context, t *tenant) (metav1.Condition, error) {
 	c := metav1.Condition{Type: lodiav1alpha1.ConditionAccessReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonWaitingForAPIServer, Message: "APIServerReady is not True for this generation"}
+	prev := meta.FindStatusCondition(t.cp.Status.Conditions, lodiav1alpha1.ConditionAccessReady)
 	ready := meta.FindStatusCondition(t.cp.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady)
 	if ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != t.cp.Generation || t.existing[t.secret(lodiav1alpha1.LodiaKubeconfigSecret)] == nil {
+		if prev != nil && prev.ObservedGeneration < t.cp.Generation {
+			return *prev, nil
+		}
 		return c, nil
 	}
 	refused, err := r.bind(ctx, t)
@@ -207,7 +211,7 @@ func (r *Reconciler) access(ctx context.Context, t *tenant) (metav1.Condition, e
 		c.Reason, c.Message = lodiav1alpha1.ReasonRefused, "ClusterRoleBinding "+refused+" is refused by the tenant's API server; the reason is in Lodia's log"
 		return c, err
 	}
-	if prev := meta.FindStatusCondition(t.cp.Status.Conditions, lodiav1alpha1.ConditionAccessReady); prev != nil && prev.Status == metav1.ConditionTrue {
+	if prev != nil && prev.Status == metav1.ConditionTrue {
 		return *prev, err
 	}
 	c.Reason, c.Message = lodiav1alpha1.ReasonBinding, "the tenant has not confirmed the bindings since its API server became ready; the error is in the log"
