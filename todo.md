@@ -172,3 +172,9 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - Removing `highAvailability` waits for etcd-druid to list `<cp>-etcd-0` as ready, but etcd-druid lists a member as ready until its lease is a minute old ([check_ready.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/health/etcdmember/check_ready.go#L88-L106), [values.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/charts/values.yaml#L66)).
   A removal within that minute of member 0 failing reaches etcd-druid, which holds the scale-in until member 0 returns, so `DatastoreReady` reads `1 of 1 members ready`, and Lodia holds adding `highAvailability` back until that scale-in completes.
   Reading the pod's readiness would narrow the window, not close it, at the cost of RBAC on pods: etcd's readiness probe takes up to 25 seconds to fail ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L603-L610)).
+
+## From availability surviving a spec change (2026-10-28)
+
+- A writer that refuses a new generation, `Unsupported`, `Refused` or `ObjectsControlledElsewhere`, turns its condition, and so `Ready`, False while the tenant still serves the previous one, though a readiness condition reports availability ([independent-controllers](docs/decisions/independent-controllers.md)).
+  It needs its own answer to where a refusal shows while availability stays.
+  Until then a spec change lifts a refusal of `APIServerReady` for as long as Workloads waits for its inputs, since it counts its Deployments meanwhile.
