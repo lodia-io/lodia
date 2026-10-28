@@ -114,6 +114,16 @@ func TestASecretAnotherOwnerKeepsBlocksEveryWrite(t *testing.T) {
 			}
 			credentials := freshControlPlane(t, cp).Status.Credentials
 
+			down := newReconciler(time.Hour)
+			down.Reader = failingRead{Reader: apiReader, read: "the ControlPlane"}
+			written := freshControlPlane(t, cp).ResourceVersion
+			if _, err := down.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil || err.Error() != "the API server is down" {
+				t.Errorf("a pass that cannot read AccessReady from the server returned %v, want the read's error", err)
+			}
+			if after := freshControlPlane(t, cp).ResourceVersion; after != written {
+				t.Errorf("a pass that cannot read AccessReady from the server wrote the ControlPlane: resourceVersion %s, then %s", written, after)
+			}
+
 			before := namespaceSecrets(t, cp.Namespace)
 			result := reconcile(t, r, cp)
 			got := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady)
