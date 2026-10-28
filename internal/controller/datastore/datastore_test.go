@@ -1325,8 +1325,8 @@ func TestDatastoreReadyIsQuorum(t *testing.T) {
 	setEtcdStatus(t, ns, cp, nil)
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "Etcd reported-etcd has quorum, 1 of 1 members ready")
 	waitEtcd(t, ns, cp, func(etcd *druidv1alpha1.Etcd) error {
-		if !metav1.HasAnnotation(etcd.ObjectMeta, lodiav1alpha1.EtcdFormedAnnotation) {
-			return fmt.Errorf("an etcd with a ready member is annotated %v", etcd.Annotations)
+		if etcd.Annotations[lodiav1alpha1.EtcdFormedAnnotation] != string(etcd.UID) {
+			return fmt.Errorf("an etcd with a ready member is annotated %v, want %s with its UID %s", etcd.Annotations, lodiav1alpha1.EtcdFormedAnnotation, etcd.UID)
 		}
 		return nil
 	})
@@ -1401,10 +1401,18 @@ func TestDatastoreReadyIsQuorum(t *testing.T) {
 		}
 		return nil
 	})
-	if metav1.HasAnnotation(recreated.ObjectMeta, lodiav1alpha1.EtcdFormedAnnotation) {
+	if recreated.Annotations[lodiav1alpha1.EtcdFormedAnnotation] == string(recreated.UID) {
 		t.Errorf("the recreated Etcd starts annotated %v", recreated.Annotations)
 	}
 	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd reported-etcd")
+
+	copied := client.MergeFrom(recreated.DeepCopy())
+	metav1.SetMetaDataAnnotation(&recreated.ObjectMeta, lodiav1alpha1.EtcdFormedAnnotation, string(etcd.UID))
+	if err := k8s.Patch(t.Context(), recreated, copied); err != nil {
+		t.Fatal(err)
+	}
+	setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) { s.Ready, s.ReadyReplicas = new(false), 0 })
+	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "Etcd reported-etcd has 0 of 1 members ready")
 }
 
 func TestThreeMembersWithHighAvailability(t *testing.T) {

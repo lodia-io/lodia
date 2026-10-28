@@ -52,7 +52,10 @@ const (
 
 	// EtcdFormedAnnotation, written by the Datastore controller on an Etcd
 	// once DatastoreReady has seen a ready member of it, and kept from then
-	// on, tells an etcd that lost its quorum from one that never had it.
+	// on, tells an etcd that lost its quorum from one that never had it. Its
+	// value is the Etcd's UID, so that a predecessor's mark, copied onto a
+	// recreated Etcd from a cache that still holds the predecessor, counts for
+	// nothing.
 	EtcdFormedAnnotation = "lodia.io/etcd-formed"
 
 	// DataHashAnnotation, written by PKI on every Secret it writes, holds
