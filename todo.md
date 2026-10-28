@@ -172,9 +172,3 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - Removing `highAvailability` waits for etcd-druid to list `<cp>-etcd-0` as ready, but etcd-druid lists a member as ready until its lease is a minute old ([check_ready.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/health/etcdmember/check_ready.go#L88-L106), [values.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/charts/values.yaml#L66)).
   A removal within that minute of member 0 failing reaches etcd-druid, which holds the scale-in until member 0 returns, so `DatastoreReady` reads `1 of 1 members ready`, and Lodia holds adding `highAvailability` back until that scale-in completes.
   Reading the pod's readiness would narrow the window, not close it, at the cost of RBAC on pods: etcd's readiness probe takes up to 25 seconds to fail ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L603-L610)).
-
-## From #41's review (2026-10-28)
-
-- `finalize` labels unlabelled claims from the `Etcd` the cache read, and only then deletes that `Etcd` by its UID, or waits 10 seconds when it is already terminating: a cache still holding a deleted `Etcd` can label new claims of a foreign `Etcd` under the name with this `ControlPlane`'s UID and class.
-  The Deletion section of `docs/README.md` promises those claims stay untouched, and should a later pass find the foreign `Etcd` gone, `reclaimClaims` deletes them when this `ControlPlane`'s class says `Delete`; labelling after the delete is accepted, or reading the `Etcd` through the Reader in `finalize`, closes it.
-- `reclaimClaims` deletes a claim by name, from a fresh list, with no UID precondition; `client.Preconditions{UID: &claim.UID}` would close the milliseconds in which another claim could take the name.

@@ -1470,7 +1470,7 @@ func TestAPassFromAStaleCacheChangesNoEtcd(t *testing.T) {
 	}
 }
 
-func TestAFinalizingPassFromAStaleCacheDeletesNoOtherEtcd(t *testing.T) {
+func TestAFinalizingPassFromAStaleReadTouchesNoOtherEtcd(t *testing.T) {
 	ns := namespace(t)
 	const cp = "finalized"
 	createClass(t, newClass("finalized", "Retain"))
@@ -1507,13 +1507,83 @@ func TestAFinalizingPassFromAStaleCacheDeletesNoOtherEtcd(t *testing.T) {
 			return nil
 		},
 	})
-	_, err := (&datastore.Reconciler{Client: stale, Reader: stale, EtcdDruidNamespace: druidNamespace}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}})
-	if !apierrors.IsConflict(err) {
-		t.Fatalf("a finalizing pass from a cache that still holds the deleted Etcd returned %v, want a conflict", err)
+	stands := func(pass string) {
+		t.Helper()
+		etcd := &druidv1alpha1.Etcd{}
+		if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(foreign), etcd); err != nil || etcd.UID != foreign.UID || !etcd.DeletionTimestamp.IsZero() {
+			t.Errorf("%s deleted the Etcd standing under the name: %v, UID %s of %s, deletionTimestamp %v", pass, err, etcd.UID, foreign.UID, etcd.DeletionTimestamp)
+		}
 	}
-	etcd := &druidv1alpha1.Etcd{}
-	if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(foreign), etcd); err != nil || etcd.UID != foreign.UID || !etcd.DeletionTimestamp.IsZero() {
-		t.Errorf("a finalizing pass from a cache that still holds the deleted Etcd deleted the one standing under its name: %v, UID %s of %s, deletionTimestamp %v", err, etcd.UID, foreign.UID, etcd.DeletionTimestamp)
+	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}
+
+	if _, err := (&datastore.Reconciler{Client: stale, Reader: stale, EtcdDruidNamespace: druidNamespace}).Reconcile(t.Context(), request); !apierrors.IsConflict(err) {
+		t.Errorf("a finalizing pass whose reads still return the deleted Etcd returned %v, want a conflict", err)
+	}
+	stands("a finalizing pass whose reads still return the deleted Etcd")
+
+	name := cp + "-etcd-" + cp + "-etcd-0"
+	create(t, claim(ns, name, nil))
+	if _, err := (&datastore.Reconciler{Client: stale, Reader: k8s, EtcdDruidNamespace: druidNamespace}).Reconcile(t.Context(), request); err != nil {
+		t.Errorf("a finalizing pass from a cache that still holds the deleted Etcd returned %v", err)
+	}
+	stands("a finalizing pass from a cache that still holds the deleted Etcd")
+	if pvc := getClaim(t, ns, name); pvc.Labels[lodiav1alpha1.ControlPlaneUIDLabel] != "" || pvc.Annotations[lodiav1alpha1.DatastoreClassAnnotation] != "" {
+		t.Errorf("a finalizing pass from a cache that still holds the deleted Etcd labelled the claim of the Etcd standing under the name: labels %v, annotations %v", pvc.Labels, pvc.Annotations)
+	}
+}
+
+func TestReclaimingFromAStaleListDeletesNoOtherClaim(t *testing.T) {
+	ns := namespace(t)
+	const cp = "reclaimed"
+	createClass(t, newClass("reclaimed", "Delete"))
+	create(t, controlPlane(ns, cp, "reclaimed"))
+	writeGeneration(t, ns, cp, 1)
+	etcd := waitEtcd(t, ns, cp, nil)
+	name := cp + "-etcd-" + cp + "-etcd-0"
+	create(t, claim(ns, name, druidv1alpha1.GetDefaultLabels(etcd.ObjectMeta)))
+	settle(t, ns, cp)
+	predecessor := getClaim(t, ns, name)
+	if predecessor.Labels[lodiav1alpha1.ControlPlaneUIDLabel] != string(getControlPlane(t, ns, cp).UID) {
+		t.Fatalf("the StatefulSet's claim carries labels %v, want the ControlPlane's UID", predecessor.Labels)
+	}
+	setPaused(t, ns, cp, true)
+	if err := k8s.Delete(t.Context(), getControlPlane(t, ns, cp)); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Delete(t.Context(), etcd); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() error {
+		return gone(k8s.Get(t.Context(), client.ObjectKeyFromObject(etcd), &druidv1alpha1.Etcd{}))
+	})
+	removeClaim(t, ns, name)
+	create(t, claim(ns, name, nil))
+	successor := getClaim(t, ns, name)
+	stale := interceptor.NewClient(k8s, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if err := c.Get(ctx, key, obj, opts...); err != nil {
+				return err
+			}
+			if plane, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
+				plane.Spec.Paused = false
+			}
+			return nil
+		},
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if err := c.List(ctx, list, opts...); err != nil {
+				return err
+			}
+			if claims, ok := list.(*corev1.PersistentVolumeClaimList); ok {
+				claims.Items = []corev1.PersistentVolumeClaim{*predecessor.DeepCopy()}
+			}
+			return nil
+		},
+	})
+	if _, err := (&datastore.Reconciler{Client: stale, Reader: stale, EtcdDruidNamespace: druidNamespace}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}); !apierrors.IsConflict(err) {
+		t.Errorf("a finalizing pass whose list still returns the reclaimed claim returned %v, want a conflict", err)
+	}
+	if pvc := getClaim(t, ns, name); pvc.UID != successor.UID || !pvc.DeletionTimestamp.IsZero() {
+		t.Errorf("a finalizing pass whose list still returns the reclaimed claim deleted the one standing under its name: UID %s of %s, deletionTimestamp %v", pvc.UID, successor.UID, pvc.DeletionTimestamp)
 	}
 }
 
