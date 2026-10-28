@@ -613,8 +613,13 @@ func (r *Reconciler) finalize(ctx context.Context, cp *lodiav1alpha1.ControlPlan
 	if !controllerutil.ContainsFinalizer(cp, lodiav1alpha1.DatastoreFinalizer) {
 		return 0, nil
 	}
-	etcd, err := r.currentEtcd(ctx, cp)
-	if err != nil {
+	// Read from the API server: a deleted Etcd the cache still held would have
+	// the claims of one standing under the name since labelled, and reclaimed.
+	etcd := &druidv1alpha1.Etcd{}
+	switch err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.EtcdName(cp.Name)}, etcd); {
+	case apierrors.IsNotFound(err):
+		etcd = nil
+	case err != nil:
 		return 0, err
 	}
 	foreign := etcd != nil && !metav1.IsControlledBy(etcd, cp)
@@ -679,7 +684,7 @@ func (r *Reconciler) reclaimClaims(ctx context.Context, cp *lodiav1alpha1.Contro
 			continue
 		}
 		log.Info("deleting the claim", "claim", claim.Name, "class", name)
-		if err := client.IgnoreNotFound(r.Delete(ctx, claim)); err != nil {
+		if err := client.IgnoreNotFound(r.Delete(ctx, claim, client.Preconditions{UID: &claim.UID})); err != nil {
 			return err
 		}
 	}
