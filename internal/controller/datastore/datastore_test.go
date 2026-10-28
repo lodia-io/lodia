@@ -1507,7 +1507,7 @@ func TestAFinalizingPassFromAStaleReadTouchesNoOtherEtcd(t *testing.T) {
 			return nil
 		},
 	})
-	untouched := func(pass string) {
+	stands := func(pass string) {
 		t.Helper()
 		etcd := &druidv1alpha1.Etcd{}
 		if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(foreign), etcd); err != nil || etcd.UID != foreign.UID || !etcd.DeletionTimestamp.IsZero() {
@@ -1517,16 +1517,16 @@ func TestAFinalizingPassFromAStaleReadTouchesNoOtherEtcd(t *testing.T) {
 	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}
 
 	if _, err := (&datastore.Reconciler{Client: stale, Reader: stale, EtcdDruidNamespace: druidNamespace}).Reconcile(t.Context(), request); !apierrors.IsConflict(err) {
-		t.Fatalf("a finalizing pass whose reads still return the deleted Etcd returned %v, want a conflict", err)
+		t.Errorf("a finalizing pass whose reads still return the deleted Etcd returned %v, want a conflict", err)
 	}
-	untouched("a finalizing pass whose reads still return the deleted Etcd")
+	stands("a finalizing pass whose reads still return the deleted Etcd")
 
 	name := cp + "-etcd-" + cp + "-etcd-0"
 	create(t, claim(ns, name, nil))
 	if _, err := (&datastore.Reconciler{Client: stale, Reader: k8s, EtcdDruidNamespace: druidNamespace}).Reconcile(t.Context(), request); err != nil {
-		t.Fatalf("a finalizing pass from a cache that still holds the deleted Etcd returned %v", err)
+		t.Errorf("a finalizing pass from a cache that still holds the deleted Etcd returned %v", err)
 	}
-	untouched("a finalizing pass from a cache that still holds the deleted Etcd")
+	stands("a finalizing pass from a cache that still holds the deleted Etcd")
 	if pvc := getClaim(t, ns, name); pvc.Labels[lodiav1alpha1.ControlPlaneUIDLabel] != "" || pvc.Annotations[lodiav1alpha1.DatastoreClassAnnotation] != "" {
 		t.Errorf("a finalizing pass from a cache that still holds the deleted Etcd labelled the claim of the Etcd standing under the name: labels %v, annotations %v", pvc.Labels, pvc.Annotations)
 	}
@@ -1580,7 +1580,7 @@ func TestReclaimingFromAStaleListDeletesNoOtherClaim(t *testing.T) {
 		},
 	})
 	if _, err := (&datastore.Reconciler{Client: stale, Reader: stale, EtcdDruidNamespace: druidNamespace}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}); !apierrors.IsConflict(err) {
-		t.Fatalf("a finalizing pass whose list still returns the reclaimed claim returned %v, want a conflict", err)
+		t.Errorf("a finalizing pass whose list still returns the reclaimed claim returned %v, want a conflict", err)
 	}
 	if pvc := getClaim(t, ns, name); pvc.UID != successor.UID || !pvc.DeletionTimestamp.IsZero() {
 		t.Errorf("a finalizing pass whose list still returns the reclaimed claim deleted the one standing under its name: UID %s of %s, deletionTimestamp %v", pvc.UID, successor.UID, pvc.DeletionTimestamp)

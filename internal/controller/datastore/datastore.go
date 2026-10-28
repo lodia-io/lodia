@@ -50,7 +50,8 @@ const (
 
 type Reconciler struct {
 	client.Client
-	// Reader reads what the label-filtered cache does not hold.
+	// Reader reads the API server: what the label-filtered cache does not
+	// hold, and the Etcd a deletion acts on.
 	Reader client.Reader
 	// EtcdDruidNamespace is where etcd-druid runs; the etcd's NetworkPolicy
 	// admits its pods to the backup-restore sidecar.
