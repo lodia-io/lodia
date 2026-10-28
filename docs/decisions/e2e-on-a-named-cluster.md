@@ -41,5 +41,5 @@ The refusal, `make e2e`, kubeadm workers and the nightly conformance run are bui
 - `.github/workflows/nightly.yml` — runs it every night, on demand, and on a pull request that changes the workflow or the test.
 - `test/e2e/ha_test.go` — gate G2, behind the `ha` build tag with `e2e`: a highly available tenant on a kind cluster with three zoned workers, `testdata/kind-ha.yaml`, loses an API server pod, then the etcd leader's pod.
   The `e2e-ha` job of `.github/workflows/ci.yml` runs it on every pull request.
-- `test/e2e/ha_nightly_test.go` — on the same cluster shape, `highAvailability` removed from a formed tenant and added back; the `high-availability` job of `nightly.yml` runs it.
+- `test/e2e/ha_nightly_test.go` — on the same cluster shape, `highAvailability` removed from a formed tenant and added back; `.github/workflows/nightly-ha.yml` runs it every night, on demand, and on a pull request that changes the workflow or the test.
 - `Makefile` — the `e2e`, `e2e-ha` and `conformance` targets.

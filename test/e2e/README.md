@@ -74,7 +74,7 @@ The test logs each recorded change and, for each condition, the longest time it 
 
 ## Nightly: highAvailability removed and added back
 
-`TestHighAvailabilityRemovedAndRestored`, in the same build tag and on the same cluster shape as G2, runs every night in the `high-availability` job of [`nightly.yml`](../../.github/workflows/nightly.yml), on demand, and on a pull request that changes the workflow, the test, or the Datastore or Workloads controller; `make e2e-ha E2E_HA_TEST=TestHighAvailabilityRemovedAndRestored` runs it locally.
+`TestHighAvailabilityRemovedAndRestored`, in the same build tag and on the same cluster shape as G2, runs every night in [`nightly-ha.yml`](../../.github/workflows/nightly-ha.yml), on demand, and on a pull request that changes the workflow or the test; `make e2e-ha E2E_HA_TEST=TestHighAvailabilityRemovedAndRestored` runs it locally.
 A tenant with `failureTolerance: Zone` turns `Ready` with three etcd members and two replicas of each component.
 Removing `highAvailability` must then leave it `Ready` with one member, one replica of each component and no PodDisruptionBudget, and adding it back must bring the three members, the two replicas and the budgets back, each within 10 minutes.
 A step ends once etcd-druid has completed its scale and the StatefulSet runs every member on its current revision, ready, since etcd-druid's count of ready members trails them ([A tenant namespace](../../docs/README.md#a-tenant-namespace)).
