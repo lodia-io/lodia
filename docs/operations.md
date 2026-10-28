@@ -73,7 +73,7 @@ Installation is in [`README.md`](README.md#installation).
 | `Progressing=False`, `Failed` or `MaintenanceFailed` (wave 2) | `status.kubernetes.upgrade.step` and `Progressing`'s message; the [stuck upgrade](#stuck-upgrade) runbook |
 | `Progressing=False`, `WaitingForNodes` (wave 2) | a kubelet more than three minors older than the next minor, `status.nodes.oldestKubelet`; upgrade the nodes first |
 | `Progressing=False`, `TimeZoneUnsupported` (wave 2) | `spec.maintenance.window.timeZone` is not in the operator's zone database; an IANA name such as `Europe/Berlin` |
-| `Progressing=True`, `LatestGenerationNotObserved` for more than a few seconds | the first condition the message names has not taken the change up: its reason when it is False; otherwise what its controller waits on ([independent-controllers](decisions/independent-controllers.md)), which `Ready` names when that is not True; its controller's log (`controller="<name>"`) only when that is True at the new generation |
+| `Progressing=True`, `LatestGenerationNotObserved` for more than a few seconds | the first condition the message names has not taken the change up: its reason, which describes the generation it names, when it is False; otherwise what its controller waits on ([independent-controllers](decisions/independent-controllers.md)), which `Ready` names when that is not True; its controller's log (`controller="<name>"`) only when that is True at the new generation |
 | Nothing changes after editing `spec` | `metadata.generation` against `status.observedGeneration`; `spec.paused`; the operator's leader and its logs |
 
 ## Runbooks
