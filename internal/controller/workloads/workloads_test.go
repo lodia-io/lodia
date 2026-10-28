@@ -1145,7 +1145,7 @@ func TestAPolicyThatRefusesADeploymentIsSaid(t *testing.T) {
 
 func TestAWaitCountsTheDeploymentsWorkloadsControls(t *testing.T) {
 	auditArgs := func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.APIServer.ExtraArgs = map[string]string{"audit-log-maxage": "7"}
+		spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]string{"audit-log-maxage": "7"}}
 	}
 	for name, input := range map[string]struct {
 		lag, catchUp func(*testing.T, *lodiav1alpha1.ControlPlane)
@@ -1187,7 +1187,7 @@ func TestAWaitCountsTheDeploymentsWorkloadsControls(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			cp := running(t, func(spec *lodiav1alpha1.ControlPlaneSpec) {
-				spec.APIServer = &lodiav1alpha1.APIServer{Replicas: new(int32(2))}
+				spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
 			})
 			kept := get(t, cp).Generation
 			objects := []client.ObjectList{&appsv1.DeploymentList{}, &corev1.ConfigMapList{}, &networkingv1.NetworkPolicyList{}}
@@ -1220,9 +1220,9 @@ func TestAWaitCountsTheDeploymentsWorkloadsControls(t *testing.T) {
 				t.Fatal(err)
 			}
 			eventually(t, func() error {
-				return expectAt(cp, kept, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, "kube-apiserver has 0 of 2 replicas ready; kube-scheduler has 0 of 1 replicas ready")
+				return expectAt(cp, kept, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, "kube-apiserver has 0 of 2 replicas ready; kube-scheduler has no Deployment")
 			})
-			expectComponents(t, cp, "2/0/0 1/1/1 absent")
+			expectComponents(t, cp, "2/0/0 2/2/2 absent")
 			if n := deployments(t, cp); n != 2 {
 				t.Errorf("%d Deployments while Workloads waits, want the two it kept", n)
 			}

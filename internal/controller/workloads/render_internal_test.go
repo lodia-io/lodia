@@ -121,6 +121,8 @@ func TestAvailabilityIsAReadyReplicaOfEachComponent(t *testing.T) {
 			"True Ready every replica of kube-apiserver, kube-controller-manager and kube-scheduler is ready"},
 		{"a deadline and no ready replica", []*appsv1.Deployment{deployment(apiServer, 2, 0, true), deployment(controllerManager, 2, 2, false), deployment(scheduler, 2, 2, false)},
 			"False Unavailable kube-apiserver has 0 of 2 replicas ready"},
+		{"a scheduler without a Deployment", []*appsv1.Deployment{deployment(apiServer, 2, 1, false), deployment(controllerManager, 2, 2, false)},
+			"False Unavailable kube-apiserver has 1 of 2 replicas ready; kube-scheduler has no Deployment"},
 	} {
 		c := availability(row.deployments)
 		if got := fmt.Sprintf("%s %s %s", c.Status, c.Reason, c.Message); got != row.want {

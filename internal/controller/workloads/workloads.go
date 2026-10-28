@@ -251,8 +251,8 @@ func refused(endpoint *lodiav1alpha1.EndpointStatus, obj client.Object, err erro
 }
 
 // wait keeps APIServerReady at the generation it describes, counting the
-// Deployments this ControlPlane controls, a missing one as a component without
-// a ready replica, and returns waiting only while it controls none.
+// Deployments this ControlPlane controls, and returns waiting only while it
+// controls none.
 func (r *Reconciler) wait(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, waiting metav1.Condition, requeueAfter time.Duration) (*lodiav1alpha1.EndpointStatus, metav1.Condition, time.Duration, error) {
 	controlled, err := r.controlled(ctx, cp)
 	if err != nil {
@@ -261,15 +261,7 @@ func (r *Reconciler) wait(ctx context.Context, cp *lodiav1alpha1.ControlPlane, e
 	if len(controlled) == 0 {
 		return endpoint, waiting, requeueAfter, nil
 	}
-	var deployments []*appsv1.Deployment
-	for _, component := range components {
-		d, ok := controlled[component]
-		if !ok {
-			d = &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{lodiav1alpha1.ComponentLabel: component}}}
-		}
-		deployments = append(deployments, d)
-	}
-	kept := availability(deployments)
+	kept := availability(slices.Collect(maps.Values(controlled)))
 	if previous := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady); previous != nil {
 		kept.ObservedGeneration = previous.ObservedGeneration
 	}
@@ -494,14 +486,22 @@ func restartHashes(cp string, data map[string]string, config []*corev1.ConfigMap
 	return out
 }
 
-// availability is True while each component has a ready replica.
+// availability is True while each component has a ready replica; one without
+// a Deployment has none.
 func availability(deployments []*appsv1.Deployment) metav1.Condition {
 	var short, stalled []string
 	unavailable := false
-	for _, d := range deployments {
+	for _, component := range components {
+		i := slices.IndexFunc(deployments, func(d *appsv1.Deployment) bool { return d.Labels[lodiav1alpha1.ComponentLabel] == component })
+		if i < 0 {
+			short = append(short, component+" has no Deployment")
+			unavailable = true
+			continue
+		}
+		d := deployments[i]
 		want := ptr.Deref(d.Spec.Replicas, 1)
 		if d.Status.ReadyReplicas < want {
-			short = append(short, fmt.Sprintf("%s has %d of %d replicas ready", d.Labels[lodiav1alpha1.ComponentLabel], d.Status.ReadyReplicas, want))
+			short = append(short, fmt.Sprintf("%s has %d of %d replicas ready", component, d.Status.ReadyReplicas, want))
 		}
 		unavailable = unavailable || d.Status.ReadyReplicas == 0
 		if d.Status.ObservedGeneration == d.Generation && slices.ContainsFunc(d.Status.Conditions, func(c appsv1.DeploymentCondition) bool {
