@@ -134,7 +134,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			return ctrl.Result{}, err
 		}
 	}
-	reachable, err := r.reachable(ctx, cp)
+	reachable, failed, err := r.reachable(ctx, cp)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -145,50 +145,49 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.apply(ctx, cp, ptr.Deref(reachable, previous(cp, lodiav1alpha1.ConditionReachable)), ptr.Deref(leading, previous(cp, lodiav1alpha1.ConditionControllersLeading))); err != nil {
 		return ctrl.Result{}, err
 	}
+	r.count(req.NamespacedName, failed)
 	return ctrl.Result{RequeueAfter: r.Period}, nil
 }
 
 // reachable returns nil to keep the condition as the API server holds it: a
-// True after fewer than FailuresBeforeFalse failed probes in a row.
-func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*metav1.Condition, error) {
+// True after fewer than FailuresBeforeFalse failed probes in a row. It also
+// says whether its probe failed, which the pass counts only once its
+// conditions are applied, so the failures counted are probes a period apart.
+func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*metav1.Condition, bool, error) {
 	key := client.ObjectKeyFromObject(cp)
 	url := endpoint(cp)
 	if url == "" {
-		r.count(key, false)
-		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint"), nil
+		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint"), false, nil
 	}
 	name := lodiav1alpha1.CABundleSecret.Name(cp.Name)
 	secret := &corev1.Secret{}
 	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: name}, secret); err != nil {
 		if apierrors.IsNotFound(err) {
-			r.count(key, false)
-			return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the CA bundle "+name), nil
+			return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the CA bundle "+name), false, nil
 		}
-		return nil, err
+		return nil, false, err
 	}
 	prober := r.prober(key, secret.Data[lodiav1alpha1.CACertKey])
 	if prober == nil {
-		r.count(key, false)
-		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "the CA bundle "+name+" holds no certificate"), nil
+		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "the CA bundle "+name+" holds no certificate"), false, nil
 	}
 	code := r.probe(ctx, prober, url)
 	if code == http.StatusOK {
-		r.count(key, false)
-		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, url+" answered 200"), nil
+		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, url+" answered 200"), false, nil
 	}
-	if failures := r.count(key, true); failures < FailuresBeforeFalse {
+	if r.failed(key)+1 < FailuresBeforeFalse {
 		if err := live.Conditions(ctx, r.Reader, cp, lodiav1alpha1.ConditionReachable); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if previous := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionReachable); previous != nil && previous.Status == metav1.ConditionTrue {
-			return nil, nil
+			return nil, true, nil
 		}
 	}
 	answer := url + " did not answer"
 	if code != 0 {
 		answer = fmt.Sprintf("%s answered %d", url, code)
 	}
-	return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonExternalProbeFailed, answer), nil
+	return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonExternalProbeFailed, answer), true, nil
 }
 
 // leading returns nil to keep the condition as the API server holds it when a
@@ -371,21 +370,25 @@ func (r *Reconciler) probe(ctx context.Context, prober *http.Client, url string)
 	return resp.StatusCode
 }
 
-// count counts a failed probe of a ControlPlane, or clears its count, and
-// returns it. Every success clears it, so a ControlPlane recreated under the
-// same name is True, and keeps a True on a failure, only after a success of
-// its own.
-func (r *Reconciler) count(key types.NamespacedName, failed bool) int {
+// count counts a failed probe of a ControlPlane, or clears its count. Every
+// success clears it, so a ControlPlane recreated under the same name is True,
+// and keeps a True on a failure, only after a success of its own.
+func (r *Reconciler) count(key types.NamespacedName, failed bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !failed {
 		delete(r.failures, key)
-		return 0
+		return
 	}
 	if r.failures == nil {
 		r.failures = map[types.NamespacedName]int{}
 	}
 	r.failures[key]++
+}
+
+func (r *Reconciler) failed(key types.NamespacedName) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return r.failures[key]
 }
 
