@@ -278,6 +278,76 @@ func TestAccessReadyKeepsItsGenerationUntilTheAPIServerTakesTheChangeUp(t *testi
 	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer)
 }
 
+func TestAccessReadyKeptOnAStaleReadIsNotWrittenBack(t *testing.T) {
+	ctx := t.Context()
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "pki-access-stale")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	setAPIServerReady(t, cp)
+	r.Dial = unreachable
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+		t.Fatal("a pass that could not reach the tenant succeeded")
+	}
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding)
+
+	fresh := func() *lodiav1alpha1.ControlPlane {
+		t.Helper()
+		out := &lodiav1alpha1.ControlPlane{}
+		if err := k8s.Get(ctx, client.ObjectKeyFromObject(cp), out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	if err := k8s.Get(ctx, client.ObjectKeyFromObject(cp), cp); err != nil {
+		t.Fatal(err)
+	}
+	cp.Spec.Placement = &lodiav1alpha1.Placement{PriorityClassName: "system-cluster-critical"}
+	if err := k8s.Update(ctx, cp); err != nil {
+		t.Fatal(err)
+	}
+	setAPIServerReady(t, cp)
+	read := fresh()
+	setAPIServer(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable)
+	stale := fresh()
+	pass := func(at *lodiav1alpha1.ControlPlane) error {
+		withRead := newReconciler(time.Hour)
+		withRead.Client, withRead.Dial = snapshot{Client: controller, cp: at}, unreachable
+		_, err := withRead.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+		return err
+	}
+
+	if err := pass(read); err == nil {
+		t.Fatal("a pass that could not reach the tenant succeeded")
+	}
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding)
+	written := fresh().ResourceVersion
+	if err := pass(stale); !apierrors.IsConflict(err) {
+		t.Errorf("a pass on a read without AccessReady at generation %d returned %v, want a conflict", cp.Generation, err)
+	}
+	if after := fresh(); after.ResourceVersion != written {
+		t.Errorf("a pass on a stale read wrote the ControlPlane: resourceVersion %s, then %s; AccessReady %+v", written, after.ResourceVersion, condition(t, cp, lodiav1alpha1.ConditionAccessReady))
+	}
+
+	if err := pass(fresh()); err != nil {
+		t.Fatal(err)
+	}
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer)
+}
+
+type snapshot struct {
+	client.Client
+	cp *lodiav1alpha1.ControlPlane
+}
+
+func (c snapshot) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if cp, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
+		c.cp.DeepCopyInto(cp)
+		return nil
+	}
+	return c.Client.Get(ctx, key, obj, opts...)
+}
+
 func unreachable(context.Context, string, string) (net.Conn, error) {
 	return nil, errors.New("connection refused")
 }

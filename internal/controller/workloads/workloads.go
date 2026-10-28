@@ -629,7 +629,9 @@ func dropNulls(m map[string]any) {
 
 // applyStatus applies APIServerReady, at cp's generation unless it names one,
 // status.components and, once both addresses exist, status.endpoint whole; a
-// nil endpoint or components drops a published one.
+// nil endpoint or components drops a published one. A condition kept at an
+// older generation is applied only over the resourceVersion cp was read at,
+// so a stale cache conflicts instead of writing it back.
 func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, components *lodiav1alpha1.ComponentsStatus, condition metav1.Condition) error {
 	if condition.ObservedGeneration == 0 {
 		condition.ObservedGeneration = cp.Generation
@@ -661,10 +663,14 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlP
 		}
 		status["components"] = c
 	}
+	metadata := map[string]any{"name": cp.Name, "namespace": cp.Namespace}
+	if condition.ObservedGeneration < cp.Generation {
+		metadata["resourceVersion"] = cp.ResourceVersion
+	}
 	controlPlane := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": lodiav1alpha1.GroupVersion.String(),
 		"kind":       "ControlPlane",
-		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
+		"metadata":   metadata,
 		"status":     status,
 	}}
 	return r.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(controlPlane), client.FieldOwner(FieldManager), client.ForceOwnership)

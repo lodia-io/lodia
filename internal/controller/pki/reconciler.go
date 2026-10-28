@@ -221,7 +221,9 @@ func (r *Reconciler) access(ctx context.Context, t *tenant) (metav1.Condition, e
 // applyStatus writes only on a change. Nil credentials keep the
 // ControlPlane's references, and a condition carried from an earlier pass
 // keeps its observedGeneration: an apply that leaves out a field PKI owns
-// removes it.
+// removes it. One older than cp's generation is applied only over the
+// resourceVersion cp was read at, so a stale cache conflicts instead of
+// writing it back.
 func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, now time.Time, credentials map[string]any, conditions ...metav1.Condition) error {
 	if credentials == nil {
 		credentials = map[string]any{}
@@ -233,12 +235,13 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlP
 			}
 		}
 	}
-	changed := false
+	changed, kept := false, false
 	for i := range conditions {
 		c := &conditions[i]
 		if c.ObservedGeneration == 0 {
 			c.ObservedGeneration = cp.Generation
 		}
+		kept = kept || c.ObservedGeneration < cp.Generation
 		c.LastTransitionTime = metav1.NewTime(now)
 		prev := meta.FindStatusCondition(cp.Status.Conditions, c.Type)
 		if prev != nil && prev.Status == c.Status {
@@ -274,10 +277,14 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlP
 	if len(credentials) > 0 {
 		status["credentials"] = credentials
 	}
+	metadata := map[string]any{"name": cp.Name, "namespace": cp.Namespace}
+	if kept {
+		metadata["resourceVersion"] = cp.ResourceVersion
+	}
 	u := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": lodiav1alpha1.GroupVersion.String(),
 		"kind":       kind,
-		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
+		"metadata":   metadata,
 		"status":     status,
 	}}
 	if err := r.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(u), client.FieldOwner(fieldManager), client.ForceOwnership); err != nil {

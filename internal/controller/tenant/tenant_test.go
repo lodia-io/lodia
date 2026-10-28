@@ -261,6 +261,65 @@ func TestOnlyAConditionAtTheGenerationWaitsForAccess(t *testing.T) {
 	})
 }
 
+func TestAConditionKeptOnAStaleReadIsNotWrittenBack(t *testing.T) {
+	cp := controlPlane(t, "tenant-stale")
+	eventually(t, 10*time.Second, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+	})
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	bothKept := cp.DeepCopy()
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation-1),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, cp.Generation),
+	}})
+	applyStatus(t, cp, "test/"+lodiav1alpha1.ConditionAccessReady, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer, cp.Generation),
+	}})
+	refresh(t, cp)
+	stale := cp.DeepCopy()
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, cp.Generation),
+	}})
+	refresh(t, cp)
+	written := cp.ResourceVersion
+	pass := func(at *lodiav1alpha1.ControlPlane) error {
+		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: at}, Reader: k8s}
+		_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+		return err
+	}
+
+	if err := pass(bothKept); err != nil {
+		t.Errorf("a pass on a stale read that keeps both conditions returned %v", err)
+	}
+	if err := pass(stale); !apierrors.IsConflict(err) {
+		t.Errorf("a pass on a read with AddonsApplied at generation %d returned %v, want a conflict", stale.Generation-1, err)
+	}
+	if refresh(t, cp); cp.ResourceVersion != written {
+		t.Errorf("a pass on a stale read wrote the ControlPlane: resourceVersion %s, then %s; AddonsApplied %+v", written, cp.ResourceVersion, *condition(t, cp, lodiav1alpha1.ConditionAddonsApplied))
+	}
+
+	if err := pass(cp.DeepCopy()); err != nil {
+		t.Fatal(err)
+	}
+	expectNow(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+	expectNow(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+}
+
+type snapshot struct {
+	client.Client
+	cp *lodiav1alpha1.ControlPlane
+}
+
+func (c snapshot) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if cp, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
+		c.cp.DeepCopyInto(cp)
+		cp.Spec.Paused = false
+		return nil
+	}
+	return c.Client.Get(ctx, key, obj, opts...)
+}
+
 func TestTheTenantGetsItsObjects(t *testing.T) {
 	ctx := t.Context()
 	cp := controlPlane(t, "tenant-objects")

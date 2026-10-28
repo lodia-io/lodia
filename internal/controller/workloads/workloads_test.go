@@ -1332,6 +1332,62 @@ func TestAWaitThatCannotReadItsDeploymentsWritesNothing(t *testing.T) {
 	}
 }
 
+func TestAWaitOnAStaleReadWritesNoOlderGenerationBack(t *testing.T) {
+	cp := running(t, func(spec *lodiav1alpha1.ControlPlaneSpec) {
+		spec.APIServer = &lodiav1alpha1.APIServer{Replicas: new(int32(2))}
+	})
+	changeSpec(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.Paused = true })
+	setTrue(t, cp, lodiav1alpha1.ConditionCertificatesReady, "Issued")
+	setTrue(t, cp, lodiav1alpha1.ConditionDatastoreReady, "Ready")
+	read := get(t, cp)
+	applyStatus(t, cp, "test/"+lodiav1alpha1.ConditionDatastoreReady, map[string]any{"conditions": []any{map[string]any{
+		"type":               lodiav1alpha1.ConditionDatastoreReady,
+		"status":             string(metav1.ConditionFalse),
+		"reason":             lodiav1alpha1.ReasonUnavailable,
+		"message":            "set by the test",
+		"observedGeneration": read.Generation,
+		"lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
+	}}})
+	stale := get(t, cp)
+	pass := func(at *lodiav1alpha1.ControlPlane) error {
+		held := at.DeepCopy()
+		held.Spec.Paused = false
+		c := interceptor.NewClient(k8s, interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if plane, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
+					held.DeepCopyInto(plane)
+					return nil
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+		})
+		_, err := (&workloads.Reconciler{Client: c, Reader: c, SignerImage: signerImage}).Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+		return err
+	}
+
+	if err := pass(read); err != nil {
+		t.Fatal(err)
+	}
+	if err := expectAt(cp, read.Generation, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "every replica of kube-apiserver, kube-controller-manager and kube-scheduler is ready"); err != nil {
+		t.Fatal(err)
+	}
+	setDeploymentStatus(t, cp, "kube-apiserver", func(s *appsv1.DeploymentStatus) { s.ReadyReplicas, s.AvailableReplicas = 1, 1 })
+	written := get(t, cp).ResourceVersion
+	if err := pass(stale); !apierrors.IsConflict(err) {
+		t.Errorf("a wait on a read without APIServerReady at generation %d returned %v, want a conflict", read.Generation, err)
+	}
+	if after := get(t, cp).ResourceVersion; after != written {
+		t.Errorf("a wait on a stale read wrote the ControlPlane: resourceVersion %s, then %s; APIServerReady %+v", written, after, condition(t, cp))
+	}
+
+	if err := pass(get(t, cp)); err != nil {
+		t.Fatal(err)
+	}
+	if err := expectAt(cp, read.Generation, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "kube-apiserver has 1 of 2 replicas ready"); err != nil {
+		t.Error(err)
+	}
+}
+
 func loadBalancer() lodiav1alpha1.Endpoint {
 	return lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}}
 }

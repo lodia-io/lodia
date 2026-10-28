@@ -283,16 +283,19 @@ func newCondition(cp *lodiav1alpha1.ControlPlane, conditionType string, status m
 }
 
 // applyStatus writes only on a change, and both conditions every time: an
-// apply that leaves one out removes it.
+// apply that leaves one out removes it. One older than cp's generation is
+// applied only over the resourceVersion cp was read at, so a stale cache
+// conflicts instead of writing it back.
 func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, conditions ...metav1.Condition) error {
 	all := slices.Clone(cp.Status.Conditions)
-	changed := false
+	changed, kept := false, false
 	var applied []any
 	for _, c := range conditions {
 		prev := meta.FindStatusCondition(cp.Status.Conditions, c.Type)
 		if prev == nil || prev.Status != c.Status || prev.Reason != c.Reason || prev.Message != c.Message || prev.ObservedGeneration != c.ObservedGeneration {
 			changed = true
 		}
+		kept = kept || c.ObservedGeneration < cp.Generation
 		meta.SetStatusCondition(&all, c)
 		u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(meta.FindStatusCondition(all, c.Type))
 		if err != nil {
@@ -303,10 +306,14 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlP
 	if !changed {
 		return nil
 	}
+	metadata := map[string]any{"name": cp.Name, "namespace": cp.Namespace}
+	if kept {
+		metadata["resourceVersion"] = cp.ResourceVersion
+	}
 	u := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": lodiav1alpha1.GroupVersion.String(),
 		"kind":       "ControlPlane",
-		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
+		"metadata":   metadata,
 		"status":     map[string]any{"conditions": applied},
 	}}
 	if err := r.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(u), client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
