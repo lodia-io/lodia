@@ -1687,8 +1687,8 @@ func TestAddingHighAvailabilityWaitsForASettledEtcd(t *testing.T) {
 		expectMembers(t, ns, cp, 1, false)
 	})
 	t.Run("a StatefulSet its controller has not observed holds it", func(t *testing.T) {
-		setEtcdStatus(t, ns, cp, nil)
 		setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) { s.ObservedGeneration-- })
+		setEtcdStatus(t, ns, cp, nil)
 		expectMembers(t, ns, cp, 1, false)
 	})
 	t.Run("a settled etcd takes it", func(t *testing.T) {
