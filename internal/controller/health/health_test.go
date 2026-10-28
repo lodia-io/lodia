@@ -333,6 +333,44 @@ func TestAPassThatFailsAfterAFailedProbeCountsNoFailure(t *testing.T) {
 	}
 }
 
+func TestASuccessfulProbeClearsTheCountInAPassThatFails(t *testing.T) {
+	cp := controlPlane(t)
+	e := serve(t)
+	writeBundle(t, cp, e)
+	publish(t, cp, e)
+	setAccess(t, cp)
+	eventually(t, func() error {
+		return expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200")
+	})
+	probe := &health.Reconciler{Client: k8s, Reader: k8s, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
+	e.code.Store(http.StatusServiceUnavailable)
+	for range health.FailuresBeforeFalse - 1 {
+		reconcile(t, probe, cp)
+	}
+	if err := expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
+		t.Fatal(err)
+	}
+	e.code.Store(http.StatusOK)
+	injected := errors.New("injected")
+	probe.Reader = interceptor.NewClient(k8s, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if key.Name == lodiav1alpha1.LodiaKubeconfigSecret.Name(cp.Name) {
+				return injected
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	if _, err := probe.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !errors.Is(err, injected) {
+		t.Fatalf("a pass whose read of Lodia's kubeconfig failed returned %v, want the read's error", err)
+	}
+	probe.Reader = k8s
+	e.code.Store(http.StatusServiceUnavailable)
+	reconcile(t, probe, cp)
+	if err := expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
+		t.Errorf("one failed probe after a 200: %v", err)
+	}
+}
+
 func TestControllersLeadingFollowsTheLeaderLeases(t *testing.T) {
 	cp := controlPlane(t)
 	eventually(t, func() error {

@@ -138,6 +138,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	if !failed {
+		r.count(req.NamespacedName, false)
+	}
 	leading, err := r.leading(ctx, cp)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -145,14 +148,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.apply(ctx, cp, ptr.Deref(reachable, previous(cp, lodiav1alpha1.ConditionReachable)), ptr.Deref(leading, previous(cp, lodiav1alpha1.ConditionControllersLeading))); err != nil {
 		return ctrl.Result{}, err
 	}
-	r.count(req.NamespacedName, failed)
+	if failed {
+		r.count(req.NamespacedName, true)
+	}
 	return ctrl.Result{RequeueAfter: r.Period}, nil
 }
 
 // reachable returns nil to keep the condition as the API server holds it: a
 // True after fewer than FailuresBeforeFalse failed probes in a row. It also
-// says whether its probe failed, which the pass counts only once its
-// conditions are applied, so the failures counted are probes a period apart.
+// says whether its probe failed: a success clears the count at once, and a
+// failure counts only once the pass has applied its conditions.
 func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*metav1.Condition, bool, error) {
 	key := client.ObjectKeyFromObject(cp)
 	url := endpoint(cp)
