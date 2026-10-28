@@ -38,7 +38,7 @@ const (
 type Reconciler struct {
 	client.Client
 	// Reader reads Secrets whole, since the manager's cache holds their
-	// metadata only, and AccessReady while PKI waits.
+	// metadata only, and AccessReady when PKI waits or keeps it.
 	Reader client.Reader
 	// The kubelet signer lives LeafLifetime, the cluster CA
 	// TrustAnchorLifetime, every other CA CALifetime.
@@ -111,7 +111,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	access, bindErr := r.access(ctx, t)
 	if access.Type == "" {
-		return ctrl.Result{}, bindErr
+		return ctrl.Result{}, errors.Join(t.writeErr, bindErr)
 	}
 	if err := r.applyStatus(ctx, cp, now, t.credentials(), certificates, validity, access); err != nil {
 		return ctrl.Result{}, err

@@ -46,7 +46,8 @@ const waitPeriod = time.Minute
 type Reconciler struct {
 	client.Client
 	// Reader reads the Secrets the cache holds the metadata of only, and
-	// AddonsApplied and AddonsAvailable while Tenant waits for access.
+	// AddonsApplied and AddonsAvailable when Tenant waits for access or keeps
+	// them.
 	Reader client.Reader
 	// ApplyPeriod is how often the tenant gets every object again, so one
 	// deleted or edited there comes back.
@@ -140,30 +141,29 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 
-	others, syncErr := applyInventory(ctx, tenant, objects)
+	others, applyErr := applyInventory(ctx, tenant, objects)
+	syncErr := applyErr
+	var rolled metav1.Condition
+	if applyErr == nil {
+		rolled, syncErr = rollout(ctx, tenant, cp, objects, others)
+	}
 	if syncErr != nil {
 		if err := live.Conditions(ctx, r.Reader, cp, applied.Type, available.Type); err != nil {
 			return ctrl.Result{}, errors.Join(syncErr, err)
 		}
 		applied, available = previous(cp, applied.Type), previous(cp, available.Type)
 	}
-	switch reason, message, answered := outcome(syncErr); {
-	case syncErr == nil && len(others) > 0:
+	switch reason, message, answered := outcome(applyErr); {
+	case applyErr == nil && len(others) > 0:
 		applied = newCondition(cp, applied.Type, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, others[0].String()+" exists and is not Lodia's; delete it or disable the addon")
-	case syncErr == nil:
+	case applyErr == nil:
 		applied = newCondition(cp, applied.Type, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, fmt.Sprintf("%d objects are applied and the inventory is pruned", len(objects)))
 	case answered || applied.Status != metav1.ConditionTrue:
 		// No answer is no observation: a True stays, anything else says so.
 		applied = newCondition(cp, applied.Type, metav1.ConditionFalse, reason, message)
 	}
 	if syncErr == nil {
-		if c, err := rollout(ctx, tenant, cp, objects, others); err == nil {
-			available = c
-		} else if readErr := live.Conditions(ctx, r.Reader, cp, available.Type); readErr != nil {
-			return ctrl.Result{}, errors.Join(err, readErr)
-		} else {
-			syncErr, available = err, previous(cp, available.Type)
-		}
+		available = rolled
 	}
 	if syncErr != nil && available.Reason != lodiav1alpha1.ReasonAvailable && available.Reason != lodiav1alpha1.ReasonRolloutPending {
 		// A rollout read before stays while none can be read; until one is,
