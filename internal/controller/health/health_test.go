@@ -288,7 +288,7 @@ func TestAFailedReadLeavesTheStatus(t *testing.T) {
 func TestControllersLeadingFollowsTheLeaderLeases(t *testing.T) {
 	cp := controlPlane(t)
 	eventually(t, func() error {
-		return expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, "AccessReady is not True for this generation")
+		return expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, "AccessReady is not True")
 	})
 	setAccess(t, cp)
 	eventually(t, func() error {
@@ -394,6 +394,57 @@ func TestAFailedLeaseReadKeepsControllersLeading(t *testing.T) {
 		"Lease kube-system/kube-controller-manager of dev-kube-controller-manager-7d9_1 was last renewed "+renewed+
 			"; Lease kube-system/kube-scheduler of dev-kube-scheduler-5c4_2 was last renewed "+renewed); err != nil {
 		t.Fatalf("after a failed read, the leases unchanged since they were first seen: %v", err)
+	}
+}
+
+func TestControllersLeadingWaitsForAccessReadyAtAnyGeneration(t *testing.T) {
+	cp := controlPlane(t)
+	setAccess(t, cp)
+	eventually(t, func() error {
+		return expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, "waiting for PKI to write dev-lodia-kubeconfig")
+	})
+	start := time.Now().Truncate(time.Second)
+	now := clocktesting.NewFakePassiveClock(start)
+	r := &health.Reconciler{Client: k8s, Reader: k8s, Period: 10 * time.Second, Timeout: 2 * time.Second, Clock: now}
+	writeKubeconfig(t, cp, tenantKubeconfig)
+	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", start)
+	renew(t, lodiav1alpha1.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
+	reconcile(t, r, cp)
+	const leading = "the leader Leases of kube-controller-manager and kube-scheduler are renewed"
+	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, leading); err != nil {
+		t.Fatal(err)
+	}
+
+	changed := get(t, cp)
+	stale := changed.Generation
+	changed.Spec.Placement = &lodiav1alpha1.Placement{PriorityClassName: "system-cluster-critical"}
+	if err := k8s.Update(t.Context(), changed); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() error {
+		return expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, leading)
+	})
+	now.SetTime(start.Add(26 * time.Second))
+	reconcile(t, r, cp)
+	renewed := start.UTC().Format(time.RFC3339)
+	if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonControllerManagerNotLeading,
+		"Lease kube-system/kube-controller-manager of dev-kube-controller-manager-7d9_1 was last renewed "+renewed+
+			"; Lease kube-system/kube-scheduler of dev-kube-scheduler-5c4_2 was last renewed "+renewed); err != nil {
+		t.Fatalf("the Leases seen before the change: %v", err)
+	}
+
+	setAccessAt(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding, stale)
+	eventually(t, func() error {
+		return expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, "AccessReady is not True")
+	})
+	reconcile(t, r, cp)
+	if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, "AccessReady is not True"); err != nil {
+		t.Fatal(err)
+	}
+	setAccessAt(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonBound, stale)
+	reconcile(t, r, cp)
+	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, leading); err != nil {
+		t.Fatalf("the Leases seen again after the wait: %v", err)
 	}
 }
 
@@ -581,13 +632,18 @@ func writeKubeconfig(t *testing.T, cp *lodiav1alpha1.ControlPlane, kubeconfig []
 
 func setAccess(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 	t.Helper()
+	setAccessAt(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonBound, get(t, cp).Generation)
+}
+
+func setAccessAt(t *testing.T, cp *lodiav1alpha1.ControlPlane, status metav1.ConditionStatus, reason string, generation int64) {
+	t.Helper()
 	u := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": lodiav1alpha1.GroupVersion.String(),
 		"kind":       "ControlPlane",
 		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
 		"status": map[string]any{"conditions": []any{map[string]any{
-			"type": lodiav1alpha1.ConditionAccessReady, "status": string(metav1.ConditionTrue), "reason": lodiav1alpha1.ReasonBound, "message": "set by the test",
-			"observedGeneration": get(t, cp).Generation, "lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
+			"type": lodiav1alpha1.ConditionAccessReady, "status": string(status), "reason": reason, "message": "set by the test",
+			"observedGeneration": generation, "lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
 		}}},
 	}}
 	if err := k8s.Status().Apply(t.Context(), client.ApplyConfigurationFromUnstructured(u), client.FieldOwner("test/access"), client.ForceOwnership); err != nil {

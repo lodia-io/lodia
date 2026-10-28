@@ -96,8 +96,9 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 		Complete(r)
 }
 
-// Between the periodic passes, only a change of the endpoint or of
-// AccessReady brings one, so the failures counted are probes a period apart.
+// Between the periodic passes, only a change of the endpoint or of whether
+// AccessReady is True brings one, so the failures counted are probes a period
+// apart.
 func inputsChanged() predicate.Funcs {
 	return predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool {
 		before, ok := e.ObjectOld.(*lodiav1alpha1.ControlPlane)
@@ -106,12 +107,9 @@ func inputsChanged() predicate.Funcs {
 	}}
 }
 
-func access(cp *lodiav1alpha1.ControlPlane) string {
+func access(cp *lodiav1alpha1.ControlPlane) bool {
 	c := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAccessReady)
-	if c == nil {
-		return ""
-	}
-	return fmt.Sprintf("%s/%d", c.Status, c.ObservedGeneration)
+	return c != nil && c.Status == metav1.ConditionTrue
 }
 
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=list;watch
@@ -203,8 +201,8 @@ func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 		r.forget(key)
 		return newCondition(cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, message), nil
 	}
-	if c := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAccessReady); c == nil || c.Status != metav1.ConditionTrue || c.ObservedGeneration != cp.Generation {
-		return waiting("AccessReady is not True for this generation")
+	if !access(cp) {
+		return waiting("AccessReady is not True")
 	}
 	name := lodiav1alpha1.LodiaKubeconfigSecret.Name(cp.Name)
 	secret := &corev1.Secret{}
