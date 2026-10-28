@@ -175,3 +175,5 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 - A writer that refuses a new generation, `Unsupported`, `Refused` or `ObjectsControlledElsewhere`, turns its condition, and so `Ready`, False while the tenant still serves the previous one, though a readiness condition reports availability ([independent-controllers](docs/decisions/independent-controllers.md)).
   It needs its own answer to where a refusal shows while availability stays.
+- The required `e2e-ha` failed once on #43 (run 40764385375) in G2's step that deletes the etcd leader's pod: one request on a reused connection in each loop, outside and inside the tenant, answered 500 within 30 ms of the deletion, and the step wants none; the same operator passed it before and on the rerun.
+  Find what answered 500, the tenant's API server or etcd, before the gate is trusted to hold zero failed requests.

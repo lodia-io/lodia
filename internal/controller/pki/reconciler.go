@@ -201,7 +201,7 @@ func listed(items []string) string {
 // tenant can be reached is Health's to report, and leaves anything else
 // Binding. While it waits it keeps AccessReady at an older generation. What it
 // keeps is AccessReady as the API server holds it; a failed read of it returns
-// an empty condition, and the pass writes no status.
+// an empty condition, and the pass returns before its status apply.
 func (r *Reconciler) access(ctx context.Context, t *tenant) (metav1.Condition, error) {
 	c := metav1.Condition{Type: lodiav1alpha1.ConditionAccessReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonWaitingForAPIServer, Message: "APIServerReady is not True for this generation"}
 	ready := meta.FindStatusCondition(t.cp.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady)
