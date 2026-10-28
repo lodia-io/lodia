@@ -98,8 +98,8 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 }
 
 // Between the periodic passes, only a change of the endpoint or of whether
-// AccessReady is True brings one, so the failures counted are probes a period
-// apart.
+// AccessReady is True brings one, besides a new generation, so failed probes
+// count a period apart unless such a change comes between them.
 func inputsChanged() predicate.Funcs {
 	return predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool {
 		before, ok := e.ObjectOld.(*lodiav1alpha1.ControlPlane)
