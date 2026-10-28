@@ -40,6 +40,7 @@ import (
 	networkingv1ac "k8s.io/client-go/applyconfigurations/networking/v1"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -1272,26 +1273,28 @@ func setStatefulSetStatus(t *testing.T, ns, cp string, mutate func(*appsv1.State
 
 func setEtcdStatus(t *testing.T, ns, cp string, mutate func(*druidv1alpha1.EtcdStatus)) {
 	t.Helper()
-	etcd := getEtcd(t, ns, cp)
-	etcd.Status = druidv1alpha1.EtcdStatus{
-		ObservedGeneration: new(etcd.Generation),
-		Ready:              new(true),
-		Replicas:           1,
-		ReadyReplicas:      1,
-		CurrentReplicas:    1,
-		Conditions: []druidv1alpha1.Condition{{
-			Type: druidv1alpha1.ConditionTypeAllMembersUpdated, Status: druidv1alpha1.ConditionTrue, Reason: "AllMembersUpdated",
-			Message: "All members reflect latest desired spec", LastTransitionTime: metav1.Now(), LastUpdateTime: metav1.Now(),
-		}},
-		Members: []druidv1alpha1.EtcdMemberStatus{{
-			Name: cp + "-etcd-0", ID: new("8e9e05c52164694d"), Role: new(druidv1alpha1.EtcdRoleLeader),
-			Status: druidv1alpha1.EtcdMemberStatusReady, Reason: "LeaseSucceeded", LastTransitionTime: metav1.Now(),
-		}},
-	}
-	if mutate != nil {
-		mutate(&etcd.Status)
-	}
-	if err := k8s.Status().Update(t.Context(), etcd); err != nil {
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		etcd := getEtcd(t, ns, cp)
+		etcd.Status = druidv1alpha1.EtcdStatus{
+			ObservedGeneration: new(etcd.Generation),
+			Ready:              new(true),
+			Replicas:           1,
+			ReadyReplicas:      1,
+			CurrentReplicas:    1,
+			Conditions: []druidv1alpha1.Condition{{
+				Type: druidv1alpha1.ConditionTypeAllMembersUpdated, Status: druidv1alpha1.ConditionTrue, Reason: "AllMembersUpdated",
+				Message: "All members reflect latest desired spec", LastTransitionTime: metav1.Now(), LastUpdateTime: metav1.Now(),
+			}},
+			Members: []druidv1alpha1.EtcdMemberStatus{{
+				Name: cp + "-etcd-0", ID: new("8e9e05c52164694d"), Role: new(druidv1alpha1.EtcdRoleLeader),
+				Status: druidv1alpha1.EtcdMemberStatusReady, Reason: "LeaseSucceeded", LastTransitionTime: metav1.Now(),
+			}},
+		}
+		if mutate != nil {
+			mutate(&etcd.Status)
+		}
+		return k8s.Status().Update(t.Context(), etcd)
+	}); err != nil {
 		t.Fatal(err)
 	}
 }
