@@ -403,9 +403,13 @@ func newCondition(cp *lodiav1alpha1.ControlPlane, conditionType string, status m
 	return &metav1.Condition{Type: conditionType, Status: status, Reason: reason, Message: message, ObservedGeneration: cp.Generation}
 }
 
+// previous keeps the condition as it is but at cp's generation, since Health
+// applies nothing from the spec.
 func previous(cp *lodiav1alpha1.ControlPlane, conditionType string) metav1.Condition {
 	if c := meta.FindStatusCondition(cp.Status.Conditions, conditionType); c != nil {
-		return *c
+		kept := *c
+		kept.ObservedGeneration = cp.Generation
+		return kept
 	}
 	return *newCondition(cp, conditionType, metav1.ConditionUnknown, lodiav1alpha1.ReasonReconciling, "the first pass has not finished")
 }

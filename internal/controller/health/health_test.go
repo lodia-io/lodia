@@ -397,6 +397,46 @@ func TestAFailedLeaseReadKeepsControllersLeading(t *testing.T) {
 	}
 }
 
+func TestAKeptConditionIsWrittenAtTheObjectsGeneration(t *testing.T) {
+	cp := controlPlane(t)
+	e := serve(t)
+	writeBundle(t, cp, e)
+	publish(t, cp, e)
+	setAccess(t, cp)
+	writeKubeconfig(t, cp, tenantKubeconfig)
+	start := time.Now().Truncate(time.Second)
+	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", start)
+	renew(t, lodiav1alpha1.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
+	r := &health.Reconciler{Client: k8s, Reader: k8s, Period: 10 * time.Second, Timeout: 2 * time.Second, Clock: clocktesting.NewFakePassiveClock(start)}
+	reconcile(t, r, cp)
+	const leading = "the leader Leases of kube-controller-manager and kube-scheduler are renewed"
+	if err := expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
+		t.Fatal(err)
+	}
+	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, leading); err != nil {
+		t.Fatal(err)
+	}
+
+	e.code.Store(http.StatusServiceUnavailable)
+	unreachable, err := kubeconfigOf("https://127.0.0.1:1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeKubeconfig(t, cp, unreachable)
+	changed := get(t, cp)
+	changed.Spec.Placement = &lodiav1alpha1.Placement{PriorityClassName: "system-cluster-critical"}
+	if err := k8s.Update(t.Context(), changed); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, cp)
+	if err := expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
+		t.Errorf("Reachable kept after a failed probe: %v", err)
+	}
+	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, leading); err != nil {
+		t.Errorf("ControllersLeading kept after a failed Lease read: %v", err)
+	}
+}
+
 func TestControllersLeadingWaitsForAccessReadyAtAnyGeneration(t *testing.T) {
 	cp := controlPlane(t)
 	setAccess(t, cp)
