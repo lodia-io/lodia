@@ -276,7 +276,7 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.Contro
 	etcd, err := r.apply(ctx, rendered)
 	if err != nil {
 		err = fmt.Errorf("apply Etcd %s: %w", rendered.Name, err)
-		if apistatus.Refused(err) {
+		if apistatus.Refused(err) && !replaced(err) {
 			message := note(fmt.Sprintf("the API server refuses Etcd %s on certificate generation %d with the fields of DatastoreClass %s generation %s; the reason is in Lodia's log",
 				rendered.Name, generation, rendered.Annotations[lodiav1alpha1.DatastoreClassAnnotation], rendered.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation]), held)
 			return current, nil, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, message), 0, errors.Join(err, refusal)
@@ -295,7 +295,7 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.Contro
 		condition.Message = note(condition.Message, fmt.Sprintf("highAvailability waits for Etcd %s to settle: every member on its current spec and available, etcd-druid's last scale completed", etcd.Name))
 	}
 	if kept, ready := keptMember(etcd); etcd.Spec.Replicas > memberCount(cp) && !ready {
-		condition.Message = note(condition.Message, fmt.Sprintf("removing highAvailability waits for member %s, which etcd-druid keeps, to be ready", kept))
+		condition.Message = note(condition.Message, fmt.Sprintf("removing highAvailability waits for etcd-druid to list member %s, the one it keeps, as ready", kept))
 	}
 	condition.Message = note(condition.Message, held)
 	if updated := updatedMembers(etcd, sts); updated == nil || *updated < etcd.Spec.Replicas {
@@ -318,6 +318,22 @@ func foreignEtcd(etcd *druidv1alpha1.Etcd) string {
 	}
 	return fmt.Sprintf("Etcd %s is not this ControlPlane's, %s: delete it and its claims to start empty, or keep them, and this ControlPlane waits",
 		etcd.Name, owner)
+}
+
+// replaced says whether the API server refuses an apply for the UID it names,
+// that of an Etcd another has replaced since the cache read it; the next pass
+// reads the new one.
+func replaced(err error) bool {
+	var status apierrors.APIStatus
+	if !errors.As(err, &status) || status.Status().Details == nil {
+		return false
+	}
+	for _, cause := range status.Status().Details.Causes {
+		if cause.Field == "metadata.uid" {
+			return true
+		}
+	}
+	return false
 }
 
 // An Etcd without the control-plane label is outside the cache and still
@@ -619,7 +635,7 @@ func (r *Reconciler) finalize(ctx context.Context, cp *lodiav1alpha1.ControlPlan
 	switch {
 	case etcd != nil && etcd.DeletionTimestamp.IsZero():
 		logf.FromContext(ctx).Info("deleting the Etcd", "etcd", etcd.Name)
-		return 0, client.IgnoreNotFound(r.Delete(ctx, etcd))
+		return 0, client.IgnoreNotFound(r.Delete(ctx, etcd, client.Preconditions{UID: &etcd.UID}))
 	case etcd != nil:
 		return 10 * time.Second, nil
 	case foreign:

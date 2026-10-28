@@ -71,6 +71,12 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 			},
 		},
 	}
+	// The apply names the UID it was rendered from, so a pass whose cache
+	// still holds a deleted Etcd creates nothing from it
+	// (k8s.io/apiserver@v0.37.1 pkg/endpoints/handlers/patch.go#L608-L618).
+	if current != nil {
+		etcd.UID = current.UID
+	}
 	switch ha := cp.Spec.HighAvailability; {
 	case membersHeld(cp, current, sts):
 		etcd.Spec.Replicas = current.Spec.Replicas
@@ -82,8 +88,8 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 		metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, allowUnhealthyPodEviction, "")
 		etcd.Spec.SchedulingConstraints.TopologySpreadConstraints = spread(ha.FailureTolerance, memberLabels(etcd))
 	}
-	if current != nil && (metav1.HasAnnotation(current.ObjectMeta, lodiav1alpha1.EtcdFormedAnnotation) || current.Status.ReadyReplicas > 0) {
-		metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, lodiav1alpha1.EtcdFormedAnnotation, "true")
+	if current != nil && (formed(current) || current.Status.ReadyReplicas > 0) {
+		metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, lodiav1alpha1.EtcdFormedAnnotation, string(current.UID))
 	}
 	if class == nil {
 		keep(etcd, current)
@@ -291,7 +297,7 @@ func readiness(etcd *druidv1alpha1.Etcd, missing []string) metav1.Condition {
 			fmt.Sprintf("Etcd %s has quorum, %d of %d members ready, while etcd-druid scales it", etcd.Name, ready, etcd.Spec.Replicas))
 	case ready > 0:
 		return newCondition(metav1.ConditionTrue, lodiav1alpha1.ReasonReady, fmt.Sprintf("Etcd %s has quorum, %d of %d members ready", etcd.Name, ready, etcd.Spec.Replicas))
-	case metav1.HasAnnotation(etcd.ObjectMeta, lodiav1alpha1.EtcdFormedAnnotation):
+	case formed(etcd):
 		return newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonQuorumLost, fmt.Sprintf("Etcd %s has %d of %d members ready", etcd.Name, ready, etcd.Spec.Replicas))
 	case observed != etcd.Generation:
 		return not(fmt.Sprintf("etcd-druid has not observed generation %d of Etcd %s, observedGeneration %d", etcd.Generation, etcd.Name, observed))
@@ -331,4 +337,9 @@ func readinessInput(etcd *druidv1alpha1.Etcd) string {
 		fmt.Fprintf(&b, "%s=%s/%s;", c.Type, c.Status, c.Reason)
 	}
 	return b.String()
+}
+
+func formed(etcd *druidv1alpha1.Etcd) bool {
+	mark, ok := etcd.Annotations[lodiav1alpha1.EtcdFormedAnnotation]
+	return ok && mark == string(etcd.UID)
 }

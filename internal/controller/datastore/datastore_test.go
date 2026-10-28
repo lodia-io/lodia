@@ -40,6 +40,7 @@ import (
 	networkingv1ac "k8s.io/client-go/applyconfigurations/networking/v1"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -1272,26 +1273,28 @@ func setStatefulSetStatus(t *testing.T, ns, cp string, mutate func(*appsv1.State
 
 func setEtcdStatus(t *testing.T, ns, cp string, mutate func(*druidv1alpha1.EtcdStatus)) {
 	t.Helper()
-	etcd := getEtcd(t, ns, cp)
-	etcd.Status = druidv1alpha1.EtcdStatus{
-		ObservedGeneration: new(etcd.Generation),
-		Ready:              new(true),
-		Replicas:           1,
-		ReadyReplicas:      1,
-		CurrentReplicas:    1,
-		Conditions: []druidv1alpha1.Condition{{
-			Type: druidv1alpha1.ConditionTypeAllMembersUpdated, Status: druidv1alpha1.ConditionTrue, Reason: "AllMembersUpdated",
-			Message: "All members reflect latest desired spec", LastTransitionTime: metav1.Now(), LastUpdateTime: metav1.Now(),
-		}},
-		Members: []druidv1alpha1.EtcdMemberStatus{{
-			Name: cp + "-etcd-0", ID: new("8e9e05c52164694d"), Role: new(druidv1alpha1.EtcdRoleLeader),
-			Status: druidv1alpha1.EtcdMemberStatusReady, Reason: "LeaseSucceeded", LastTransitionTime: metav1.Now(),
-		}},
-	}
-	if mutate != nil {
-		mutate(&etcd.Status)
-	}
-	if err := k8s.Status().Update(t.Context(), etcd); err != nil {
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		etcd := getEtcd(t, ns, cp)
+		etcd.Status = druidv1alpha1.EtcdStatus{
+			ObservedGeneration: new(etcd.Generation),
+			Ready:              new(true),
+			Replicas:           1,
+			ReadyReplicas:      1,
+			CurrentReplicas:    1,
+			Conditions: []druidv1alpha1.Condition{{
+				Type: druidv1alpha1.ConditionTypeAllMembersUpdated, Status: druidv1alpha1.ConditionTrue, Reason: "AllMembersUpdated",
+				Message: "All members reflect latest desired spec", LastTransitionTime: metav1.Now(), LastUpdateTime: metav1.Now(),
+			}},
+			Members: []druidv1alpha1.EtcdMemberStatus{{
+				Name: cp + "-etcd-0", ID: new("8e9e05c52164694d"), Role: new(druidv1alpha1.EtcdRoleLeader),
+				Status: druidv1alpha1.EtcdMemberStatusReady, Reason: "LeaseSucceeded", LastTransitionTime: metav1.Now(),
+			}},
+		}
+		if mutate != nil {
+			mutate(&etcd.Status)
+		}
+		return k8s.Status().Update(t.Context(), etcd)
+	}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1325,8 +1328,8 @@ func TestDatastoreReadyIsQuorum(t *testing.T) {
 	setEtcdStatus(t, ns, cp, nil)
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "Etcd reported-etcd has quorum, 1 of 1 members ready")
 	waitEtcd(t, ns, cp, func(etcd *druidv1alpha1.Etcd) error {
-		if !metav1.HasAnnotation(etcd.ObjectMeta, lodiav1alpha1.EtcdFormedAnnotation) {
-			return fmt.Errorf("an etcd with a ready member is annotated %v", etcd.Annotations)
+		if etcd.Annotations[lodiav1alpha1.EtcdFormedAnnotation] != string(etcd.UID) {
+			return fmt.Errorf("an etcd with a ready member is annotated %v, want %s with its UID %s", etcd.Annotations, lodiav1alpha1.EtcdFormedAnnotation, etcd.UID)
 		}
 		return nil
 	})
@@ -1405,6 +1408,113 @@ func TestDatastoreReadyIsQuorum(t *testing.T) {
 		t.Errorf("the recreated Etcd starts annotated %v", recreated.Annotations)
 	}
 	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd reported-etcd")
+
+	copied := client.MergeFrom(recreated.DeepCopy())
+	metav1.SetMetaDataAnnotation(&recreated.ObjectMeta, lodiav1alpha1.EtcdFormedAnnotation, string(etcd.UID))
+	if err := k8s.Patch(t.Context(), recreated, copied); err != nil {
+		t.Fatal(err)
+	}
+	setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) { s.Ready, s.ReadyReplicas = new(false), 0 })
+	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "Etcd reported-etcd has 0 of 1 members ready")
+}
+
+func TestAPassFromAStaleCacheChangesNoEtcd(t *testing.T) {
+	ns := namespace(t)
+	const cp = "stale"
+	createClass(t, newClass("stale", "Retain"))
+	create(t, controlPlane(ns, cp, "stale"))
+	writeGeneration(t, ns, cp, 1)
+	predecessor := waitEtcd(t, ns, cp, nil)
+	stale := interceptor.NewClient(k8s, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if etcd, ok := obj.(*druidv1alpha1.Etcd); ok {
+				predecessor.DeepCopyInto(etcd)
+				return nil
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	pass := func() error {
+		_, err := (&datastore.Reconciler{Client: stale, Reader: stale, EtcdDruidNamespace: druidNamespace}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}})
+		return err
+	}
+
+	binding := refuseEtcds(t, ns)
+	if err := k8s.Delete(t.Context(), predecessor); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() error {
+		return gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: cp + "-etcd"}, &druidv1alpha1.Etcd{}))
+	})
+	if err := pass(); !apierrors.IsConflict(err) {
+		t.Fatalf("a pass from a cache that still holds the deleted Etcd returned %v, want a conflict", err)
+	}
+
+	if err := k8s.Delete(t.Context(), binding); err != nil {
+		t.Fatal(err)
+	}
+	recreated := waitEtcd(t, ns, cp, nil)
+	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd stale-etcd")
+	settle(t, ns, cp)
+	before := getControlPlane(t, ns, cp)
+	if err := pass(); !apierrors.IsInvalid(err) {
+		t.Fatalf("a pass from a cache that holds the replaced Etcd returned %v, want the UID refused", err)
+	}
+	if after := getControlPlane(t, ns, cp); after.ResourceVersion != before.ResourceVersion {
+		condition := meta.FindStatusCondition(after.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
+		t.Errorf("a pass from a cache that holds the replaced Etcd moved the ControlPlane from resourceVersion %s to %s: DatastoreReady %s/%s %q",
+			before.ResourceVersion, after.ResourceVersion, condition.Status, condition.Reason, condition.Message)
+	}
+	if etcd := getEtcd(t, ns, cp); etcd.ResourceVersion != recreated.ResourceVersion {
+		t.Errorf("a pass from a cache that holds the replaced Etcd moved its replacement from resourceVersion %s to %s", recreated.ResourceVersion, etcd.ResourceVersion)
+	}
+}
+
+func TestAFinalizingPassFromAStaleCacheDeletesNoOtherEtcd(t *testing.T) {
+	ns := namespace(t)
+	const cp = "finalized"
+	createClass(t, newClass("finalized", "Retain"))
+	create(t, controlPlane(ns, cp, "finalized"))
+	writeGeneration(t, ns, cp, 1)
+	predecessor := waitEtcd(t, ns, cp, nil)
+	setPaused(t, ns, cp, true)
+	if err := k8s.Delete(t.Context(), getControlPlane(t, ns, cp)); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Delete(t.Context(), predecessor); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() error {
+		return gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: cp + "-etcd"}, &druidv1alpha1.Etcd{}))
+	})
+	foreign := &druidv1alpha1.Etcd{
+		ObjectMeta: metav1.ObjectMeta{Name: cp + "-etcd", Namespace: ns},
+		Spec:       druidv1alpha1.EtcdSpec{Replicas: 1, Labels: map[string]string{"app": "etcd"}},
+	}
+	create(t, foreign)
+	stale := interceptor.NewClient(k8s, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if etcd, ok := obj.(*druidv1alpha1.Etcd); ok {
+				predecessor.DeepCopyInto(etcd)
+				return nil
+			}
+			if err := c.Get(ctx, key, obj, opts...); err != nil {
+				return err
+			}
+			if plane, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
+				plane.Spec.Paused = false
+			}
+			return nil
+		},
+	})
+	_, err := (&datastore.Reconciler{Client: stale, Reader: stale, EtcdDruidNamespace: druidNamespace}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}})
+	if !apierrors.IsConflict(err) {
+		t.Fatalf("a finalizing pass from a cache that still holds the deleted Etcd returned %v, want a conflict", err)
+	}
+	etcd := &druidv1alpha1.Etcd{}
+	if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(foreign), etcd); err != nil || etcd.UID != foreign.UID || !etcd.DeletionTimestamp.IsZero() {
+		t.Errorf("a finalizing pass from a cache that still holds the deleted Etcd deleted the one standing under its name: %v, UID %s of %s, deletionTimestamp %v", err, etcd.UID, foreign.UID, etcd.DeletionTimestamp)
+	}
 }
 
 func TestThreeMembersWithHighAvailability(t *testing.T) {
@@ -1730,7 +1840,10 @@ func TestRemovingHighAvailabilityBacksOutOfAMemberThatNeverComesUp(t *testing.T)
 	t.Run("etcd-druid's scale in progress holds the removal", func(t *testing.T) {
 		setHighAvailability(t, ns, cp, nil)
 		expectMembers(t, ns, cp, 3, true)
-		waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum, 2 of 3 members ready, while etcd-druid scales it")
+		c := meta.FindStatusCondition(getControlPlane(t, ns, cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
+		if want := "Etcd stuck-etcd has quorum, 2 of 3 members ready, while etcd-druid scales it"; c == nil || c.Status != metav1.ConditionTrue || c.Reason != lodiav1alpha1.ReasonReady || c.Message != want {
+			t.Errorf("DatastoreReady is %+v, want True Ready %q", c, want)
+		}
 	})
 	t.Run("a completed scale lets it through though a member never came up", func(t *testing.T) {
 		druid("")
@@ -1748,14 +1861,14 @@ func TestRemovingHighAvailabilityWaitsForTheMemberEtcdDruidKeeps(t *testing.T) {
 	writeGeneration(t, ns, cp, 1)
 	waitEtcd(t, ns, cp, nil)
 	runStatefulSet(t, ns, cp, 1)
-	druid := func(ready int32, first druidv1alpha1.EtcdMemberConditionStatus) {
+	druid := func(ready int32, first druidv1alpha1.EtcdMemberConditionStatus, reason string) {
 		t.Helper()
 		setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) {
 			s.Replicas, s.ReadyReplicas, s.AvailableReplicas, s.CurrentReplicas, s.UpdatedReplicas = 3, ready, ready, 3, 3
 		})
 		setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) {
 			s.Replicas, s.CurrentReplicas, s.ReadyReplicas, s.Ready = 3, 3, ready, new(ready == 3)
-			s.Members[0].Status = first
+			s.Members[0].Status, s.Members[0].Reason = first, reason
 			for i := 1; i < 3; i++ {
 				s.Members = append(s.Members, druidv1alpha1.EtcdMemberStatus{
 					Name: fmt.Sprintf("%s-etcd-%d", cp, i), Status: druidv1alpha1.EtcdMemberStatusReady, Reason: "LeaseSucceeded", LastTransitionTime: metav1.Now(),
@@ -1766,28 +1879,28 @@ func TestRemovingHighAvailabilityWaitsForTheMemberEtcdDruidKeeps(t *testing.T) {
 			}
 		})
 	}
-	druid(2, druidv1alpha1.EtcdMemberStatusNotReady)
+	druid(2, druidv1alpha1.EtcdMemberStatusNotReady, "ContainersNotReady")
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "Etcd kept-etcd has quorum, 2 of 3 members ready")
 
 	t.Run("the member etcd-druid keeps, not ready, holds the removal", func(t *testing.T) {
 		setHighAvailability(t, ns, cp, nil)
 		expectMembers(t, ns, cp, 3, true)
 		waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
-			"Etcd kept-etcd has quorum, 2 of 3 members ready; removing highAvailability waits for member kept-etcd-0, which etcd-druid keeps, to be ready")
+			"Etcd kept-etcd has quorum, 2 of 3 members ready; removing highAvailability waits for etcd-druid to list member kept-etcd-0, the one it keeps, as ready")
 		if m := getControlPlane(t, ns, cp).Status.Datastore.Members; m.Total != 3 || m.Ready != 2 {
 			t.Errorf("status.datastore.members counts %d ready of %d, want 2 of 3", m.Ready, m.Total)
 		}
 	})
 	t.Run("missing from etcd-druid's member list, it holds it", func(t *testing.T) {
-		druid(2, "")
+		druid(2, "", "")
 		expectMembers(t, ns, cp, 3, true)
 	})
-	t.Run("listed not ready, it holds it though its pod is ready", func(t *testing.T) {
-		druid(3, druidv1alpha1.EtcdMemberStatusNotReady)
+	t.Run("listed unknown, its lease expired, it holds it though its pod is ready", func(t *testing.T) {
+		druid(3, druidv1alpha1.EtcdMemberStatusUnknown, "LeaseExpired")
 		expectMembers(t, ns, cp, 3, true)
 	})
 	t.Run("listed ready, it lets it through", func(t *testing.T) {
-		druid(3, druidv1alpha1.EtcdMemberStatusReady)
+		druid(3, druidv1alpha1.EtcdMemberStatusReady, "LeaseSucceeded")
 		waitEtcd(t, ns, cp, func(etcd *druidv1alpha1.Etcd) error {
 			if etcd.Spec.Replicas != 1 {
 				return fmt.Errorf("the Etcd asks for %d members", etcd.Spec.Replicas)
