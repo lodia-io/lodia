@@ -278,7 +278,7 @@ func TestAccessReadyKeepsItsGenerationUntilTheAPIServerTakesTheChangeUp(t *testi
 	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer)
 }
 
-func TestAccessReadyKeptOnAStaleReadIsNotWrittenBack(t *testing.T) {
+func TestAccessReadyOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
 	ctx := t.Context()
 	r := newReconciler(time.Hour)
 	cp := controlPlane(t, "pki-access-stale")
@@ -310,26 +310,27 @@ func TestAccessReadyKeptOnAStaleReadIsNotWrittenBack(t *testing.T) {
 	read := fresh()
 	setAPIServer(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable)
 	stale := fresh()
-	pass := func(at *lodiav1alpha1.ControlPlane) error {
+	pass := func(at *lodiav1alpha1.ControlPlane, reader client.Reader) error {
 		withRead := newReconciler(time.Hour)
-		withRead.Client, withRead.Dial = snapshot{Client: controller, cp: at}, unreachable
+		withRead.Client, withRead.Reader, withRead.Dial = snapshot{Client: controller, cp: at}, reader, unreachable
 		_, err := withRead.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 		return err
 	}
 
-	if err := pass(read); err == nil {
+	if err := pass(read, apiReader); err == nil {
 		t.Fatal("a pass that could not reach the tenant succeeded")
 	}
 	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding)
+
 	written := fresh().ResourceVersion
-	if err := pass(stale); !apierrors.IsConflict(err) {
-		t.Errorf("a pass on a read without AccessReady at generation %d returned %v, want a conflict", cp.Generation, err)
+	if err := pass(stale, failingRead{Reader: apiReader, read: "the ControlPlane"}); err == nil || err.Error() != "the API server is down" {
+		t.Errorf("a pass that cannot read AccessReady from the server returned %v, want the read's error", err)
 	}
-	if after := fresh(); after.ResourceVersion != written {
-		t.Errorf("a pass on a stale read wrote the ControlPlane: resourceVersion %s, then %s; AccessReady %+v", written, after.ResourceVersion, condition(t, cp, lodiav1alpha1.ConditionAccessReady))
+	if after := fresh().ResourceVersion; after != written {
+		t.Errorf("a pass that cannot read AccessReady from the server wrote the ControlPlane: resourceVersion %s, then %s", written, after)
 	}
 
-	if err := pass(fresh()); err != nil {
+	if err := pass(stale, apiReader); err != nil {
 		t.Fatal(err)
 	}
 	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer)

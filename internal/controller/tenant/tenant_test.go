@@ -261,13 +261,25 @@ func TestOnlyAConditionAtTheGenerationWaitsForAccess(t *testing.T) {
 	})
 }
 
-func TestAConditionKeptOnAStaleReadIsNotWrittenBack(t *testing.T) {
+func TestAWaitOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
 	cp := controlPlane(t, "tenant-stale")
 	eventually(t, 10*time.Second, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
 	})
 	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
-	bothKept := cp.DeepCopy()
+	pass := func(at *lodiav1alpha1.ControlPlane, reader client.Reader) error {
+		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: at}, Reader: reader}
+		_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+		return err
+	}
+	written := cp.ResourceVersion
+	if err := pass(cp.DeepCopy(), k8s); err != nil {
+		t.Fatal(err)
+	}
+	if refresh(t, cp); cp.ResourceVersion != written {
+		t.Errorf("a pass that keeps both conditions wrote the ControlPlane: resourceVersion %s, then %s", written, cp.ResourceVersion)
+	}
+
 	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
 		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation-1),
 		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, cp.Generation),
@@ -281,25 +293,17 @@ func TestAConditionKeptOnAStaleReadIsNotWrittenBack(t *testing.T) {
 		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation),
 		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, cp.Generation),
 	}})
-	refresh(t, cp)
-	written := cp.ResourceVersion
-	pass := func(at *lodiav1alpha1.ControlPlane) error {
-		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: at}, Reader: k8s}
-		_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
-		return err
-	}
 
-	if err := pass(bothKept); err != nil {
-		t.Errorf("a pass on a stale read that keeps both conditions returned %v", err)
-	}
-	if err := pass(stale); !apierrors.IsConflict(err) {
-		t.Errorf("a pass on a read with AddonsApplied at generation %d returned %v, want a conflict", stale.Generation-1, err)
+	refresh(t, cp)
+	written = cp.ResourceVersion
+	if err := pass(stale, failingRead{Reader: k8s}); !errors.Is(err, errReadFailed) {
+		t.Errorf("a pass that cannot read its conditions from the server returned %v, want the read's error", err)
 	}
 	if refresh(t, cp); cp.ResourceVersion != written {
-		t.Errorf("a pass on a stale read wrote the ControlPlane: resourceVersion %s, then %s; AddonsApplied %+v", written, cp.ResourceVersion, *condition(t, cp, lodiav1alpha1.ConditionAddonsApplied))
+		t.Errorf("a pass that cannot read its conditions from the server wrote the ControlPlane: resourceVersion %s, then %s", written, cp.ResourceVersion)
 	}
 
-	if err := pass(cp.DeepCopy()); err != nil {
+	if err := pass(stale, k8s); err != nil {
 		t.Fatal(err)
 	}
 	expectNow(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
@@ -318,6 +322,19 @@ func (c snapshot) Get(ctx context.Context, key client.ObjectKey, obj client.Obje
 		return nil
 	}
 	return c.Client.Get(ctx, key, obj, opts...)
+}
+
+var errReadFailed = errors.New("injected: the API server did not answer")
+
+type failingRead struct {
+	client.Reader
+}
+
+func (r failingRead) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if _, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
+		return errReadFailed
+	}
+	return r.Reader.Get(ctx, key, obj, opts...)
 }
 
 func TestTheTenantGetsItsObjects(t *testing.T) {

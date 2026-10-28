@@ -39,6 +39,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/apistatus"
+	"go.lodia.io/lodia/internal/live"
 	"go.lodia.io/lodia/internal/ownership"
 	"go.lodia.io/lodia/internal/versions"
 )
@@ -57,7 +58,8 @@ const (
 // that changes nothing writes nothing.
 type Reconciler struct {
 	client.Client
-	// Reader reads what the label-filtered cache does not hold.
+	// Reader reads what the label-filtered cache does not hold, and
+	// APIServerReady while Workloads waits.
 	Reader client.Reader
 	// SignerImage is lodia-signer's image, the API server's sidecar.
 	SignerImage string
@@ -95,7 +97,7 @@ func restartOnlyNames(cp string) []string {
 	return names
 }
 
-// +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=list;watch
+// +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/status,verbs=patch
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=list;watch;create;patch;delete
@@ -250,10 +252,13 @@ func refused(endpoint *lodiav1alpha1.EndpointStatus, obj client.Object, err erro
 	return endpoint, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, message), 0, err
 }
 
-// wait keeps APIServerReady at the generation it describes, counting the
-// Deployments this ControlPlane controls, and returns waiting only while it
-// controls none.
+// wait keeps APIServerReady, as the API server holds it, at the generation it
+// describes, counting the Deployments this ControlPlane controls, and returns
+// waiting only while it controls none.
 func (r *Reconciler) wait(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, waiting metav1.Condition, requeueAfter time.Duration) (*lodiav1alpha1.EndpointStatus, metav1.Condition, time.Duration, error) {
+	if err := live.Conditions(ctx, r.Reader, cp, lodiav1alpha1.ConditionAPIServerReady); err != nil {
+		return nil, metav1.Condition{}, 0, err
+	}
 	controlled, err := r.controlled(ctx, cp)
 	if err != nil {
 		return nil, metav1.Condition{}, 0, err
@@ -629,9 +634,7 @@ func dropNulls(m map[string]any) {
 
 // applyStatus applies APIServerReady, at cp's generation unless it names one,
 // status.components and, once both addresses exist, status.endpoint whole; a
-// nil endpoint or components drops a published one. A condition kept at an
-// older generation is applied only over the resourceVersion cp was read at,
-// so a stale cache conflicts instead of writing it back.
+// nil endpoint or components drops a published one.
 func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, components *lodiav1alpha1.ComponentsStatus, condition metav1.Condition) error {
 	if condition.ObservedGeneration == 0 {
 		condition.ObservedGeneration = cp.Generation
@@ -663,14 +666,10 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlP
 		}
 		status["components"] = c
 	}
-	metadata := map[string]any{"name": cp.Name, "namespace": cp.Namespace}
-	if condition.ObservedGeneration < cp.Generation {
-		metadata["resourceVersion"] = cp.ResourceVersion
-	}
 	controlPlane := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": lodiav1alpha1.GroupVersion.String(),
 		"kind":       "ControlPlane",
-		"metadata":   metadata,
+		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
 		"status":     status,
 	}}
 	return r.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(controlPlane), client.FieldOwner(FieldManager), client.ForceOwnership)

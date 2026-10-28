@@ -1303,7 +1303,7 @@ func TestWithoutADeploymentOfItsOwnWorkloadsWaitsAtTheNewGeneration(t *testing.T
 	}
 }
 
-func TestAWaitThatCannotReadItsDeploymentsWritesNothing(t *testing.T) {
+func TestAWaitThatCannotReadWritesNothing(t *testing.T) {
 	cp := running(t)
 	changeSpec(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) {
 		spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]string{"audit-log-maxage": "7"}}
@@ -1313,26 +1313,34 @@ func TestAWaitThatCannotReadItsDeploymentsWritesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	before := get(t, cp).ResourceVersion
-	injected := errors.New("injected: the cache did not answer")
-	failing := interceptor.NewClient(k8s, interceptor.Funcs{
-		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-			if _, ok := obj.(*appsv1.Deployment); ok {
-				return injected
-			}
-			return c.Get(ctx, key, obj, opts...)
-		},
-	})
-	reconciler := &workloads.Reconciler{Client: failing, Reader: failing, SignerImage: signerImage}
-	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !errors.Is(err, injected) {
-		t.Fatalf("a pass that cannot read its Deployments returned %v, want the read's error", err)
+	injected := errors.New("injected: the API server did not answer")
+	failing := func(fails func(client.Object) bool) client.WithWatch {
+		return interceptor.NewClient(k8s, interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if fails(obj) {
+					return injected
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+		})
 	}
-	if after := get(t, cp).ResourceVersion; after != before {
-		t.Errorf("a pass that cannot read its Deployments wrote the ControlPlane: resourceVersion %s, then %s", before, after)
+	deployments := failing(func(obj client.Object) bool { _, ok := obj.(*appsv1.Deployment); return ok })
+	controlPlanes := failing(func(obj client.Object) bool { _, ok := obj.(*lodiav1alpha1.ControlPlane); return ok })
+	for name, reconciler := range map[string]*workloads.Reconciler{
+		"its Deployments":                {Client: deployments, Reader: k8s, SignerImage: signerImage},
+		"APIServerReady from the server": {Client: k8s, Reader: controlPlanes, SignerImage: signerImage},
+	} {
+		before := get(t, cp).ResourceVersion
+		if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !errors.Is(err, injected) {
+			t.Fatalf("a pass that cannot read %s returned %v, want the read's error", name, err)
+		}
+		if after := get(t, cp).ResourceVersion; after != before {
+			t.Errorf("a pass that cannot read %s wrote the ControlPlane: resourceVersion %s, then %s", name, before, after)
+		}
 	}
 }
 
-func TestAWaitOnAStaleReadWritesNoOlderGenerationBack(t *testing.T) {
+func TestAWaitOnAStaleReadKeepsTheGenerationItsConditionNames(t *testing.T) {
 	cp := running(t, func(spec *lodiav1alpha1.ControlPlaneSpec) {
 		spec.APIServer = &lodiav1alpha1.APIServer{Replicas: new(int32(2))}
 	})
@@ -1349,10 +1357,11 @@ func TestAWaitOnAStaleReadWritesNoOlderGenerationBack(t *testing.T) {
 		"lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
 	}}})
 	stale := get(t, cp)
-	pass := func(at *lodiav1alpha1.ControlPlane) error {
+	pass := func(at *lodiav1alpha1.ControlPlane) {
+		t.Helper()
 		held := at.DeepCopy()
 		held.Spec.Paused = false
-		c := interceptor.NewClient(k8s, interceptor.Funcs{
+		cached := interceptor.NewClient(k8s, interceptor.Funcs{
 			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 				if plane, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
 					held.DeepCopyInto(plane)
@@ -1361,30 +1370,19 @@ func TestAWaitOnAStaleReadWritesNoOlderGenerationBack(t *testing.T) {
 				return c.Get(ctx, key, obj, opts...)
 			},
 		})
-		_, err := (&workloads.Reconciler{Client: c, Reader: c, SignerImage: signerImage}).Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
-		return err
+		if _, err := (&workloads.Reconciler{Client: cached, Reader: k8s, SignerImage: signerImage}).Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+			t.Fatal(err)
+		}
 	}
 
-	if err := pass(read); err != nil {
-		t.Fatal(err)
-	}
+	pass(read)
 	if err := expectAt(cp, read.Generation, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "every replica of kube-apiserver, kube-controller-manager and kube-scheduler is ready"); err != nil {
 		t.Fatal(err)
 	}
 	setDeploymentStatus(t, cp, "kube-apiserver", func(s *appsv1.DeploymentStatus) { s.ReadyReplicas, s.AvailableReplicas = 1, 1 })
-	written := get(t, cp).ResourceVersion
-	if err := pass(stale); !apierrors.IsConflict(err) {
-		t.Errorf("a wait on a read without APIServerReady at generation %d returned %v, want a conflict", read.Generation, err)
-	}
-	if after := get(t, cp).ResourceVersion; after != written {
-		t.Errorf("a wait on a stale read wrote the ControlPlane: resourceVersion %s, then %s; APIServerReady %+v", written, after, condition(t, cp))
-	}
-
-	if err := pass(get(t, cp)); err != nil {
-		t.Fatal(err)
-	}
+	pass(stale)
 	if err := expectAt(cp, read.Generation, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "kube-apiserver has 1 of 2 replicas ready"); err != nil {
-		t.Error(err)
+		t.Errorf("a wait on a read without APIServerReady at generation %d: %v", read.Generation, err)
 	}
 }
 

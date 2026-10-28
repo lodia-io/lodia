@@ -350,7 +350,8 @@ func (f failingRead) List(ctx context.Context, list client.ObjectList, opts ...c
 }
 
 func (f failingRead) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-	if f.read == "a Secret by name" {
+	_, controlPlane := obj.(*lodiav1alpha1.ControlPlane)
+	if (controlPlane && f.read == "the ControlPlane") || (!controlPlane && f.read == "a Secret by name") {
 		return errors.New("the API server is down")
 	}
 	return f.Reader.Get(ctx, key, obj, opts...)

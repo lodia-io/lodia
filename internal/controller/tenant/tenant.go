@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/live"
 	"go.lodia.io/lodia/internal/ownership"
 )
 
@@ -44,7 +45,8 @@ const waitPeriod = time.Minute
 
 type Reconciler struct {
 	client.Client
-	// Reader reads the Secrets the cache holds the metadata of only.
+	// Reader reads the Secrets the cache holds the metadata of only, and
+	// AddonsApplied and AddonsAvailable while Tenant waits for access.
 	Reader client.Reader
 	// ApplyPeriod is how often the tenant gets every object again, so one
 	// deleted or edited there comes back.
@@ -87,7 +89,7 @@ func inputs(cp *lodiav1alpha1.ControlPlane) string {
 	return b.String()
 }
 
-// +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=list;watch
+// +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/status,verbs=patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 
@@ -107,7 +109,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	access := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAccessReady)
 	if access == nil || access.Status != metav1.ConditionTrue || access.ObservedGeneration != cp.Generation {
-		return ctrl.Result{}, r.applyStatus(ctx, cp, waitForAccess(cp, applied), waitForAccess(cp, available))
+		if err := live.Conditions(ctx, r.Reader, cp, applied.Type, available.Type); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, r.applyStatus(ctx, cp, waitForAccess(cp, previous(cp, applied.Type)), waitForAccess(cp, previous(cp, available.Type)))
 	}
 	clusterCA, kubeconfig, keptElsewhere, err := r.credentials(ctx, cp)
 	if err != nil {
@@ -283,19 +288,16 @@ func newCondition(cp *lodiav1alpha1.ControlPlane, conditionType string, status m
 }
 
 // applyStatus writes only on a change, and both conditions every time: an
-// apply that leaves one out removes it. One older than cp's generation is
-// applied only over the resourceVersion cp was read at, so a stale cache
-// conflicts instead of writing it back.
+// apply that leaves one out removes it.
 func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, conditions ...metav1.Condition) error {
 	all := slices.Clone(cp.Status.Conditions)
-	changed, kept := false, false
+	changed := false
 	var applied []any
 	for _, c := range conditions {
 		prev := meta.FindStatusCondition(cp.Status.Conditions, c.Type)
 		if prev == nil || prev.Status != c.Status || prev.Reason != c.Reason || prev.Message != c.Message || prev.ObservedGeneration != c.ObservedGeneration {
 			changed = true
 		}
-		kept = kept || c.ObservedGeneration < cp.Generation
 		meta.SetStatusCondition(&all, c)
 		u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(meta.FindStatusCondition(all, c.Type))
 		if err != nil {
@@ -306,14 +308,10 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlP
 	if !changed {
 		return nil
 	}
-	metadata := map[string]any{"name": cp.Name, "namespace": cp.Namespace}
-	if kept {
-		metadata["resourceVersion"] = cp.ResourceVersion
-	}
 	u := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": lodiav1alpha1.GroupVersion.String(),
 		"kind":       "ControlPlane",
-		"metadata":   metadata,
+		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
 		"status":     map[string]any{"conditions": applied},
 	}}
 	if err := r.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(u), client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {

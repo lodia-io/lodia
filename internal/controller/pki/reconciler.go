@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/live"
 )
 
 const (
@@ -36,7 +37,8 @@ const (
 
 type Reconciler struct {
 	client.Client
-	// Reader reads Secrets whole; the manager's cache holds their metadata only.
+	// Reader reads Secrets whole, since the manager's cache holds their
+	// metadata only, and AccessReady while PKI waits.
 	Reader client.Reader
 	// The kubelet signer lives LeafLifetime, the cluster CA
 	// TrustAnchorLifetime, every other CA CALifetime.
@@ -60,7 +62,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 		Complete(r)
 }
 
-// +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=list;watch
+// +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/status,verbs=patch
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;patch;delete
@@ -90,6 +92,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	if len(t.foreign) > 0 {
 		access, bindErr := r.access(ctx, t)
+		if access.Type == "" {
+			return ctrl.Result{}, bindErr
+		}
 		if err := r.applyStatus(ctx, cp, now, nil, t.controlledElsewhere(), previous(cp, lodiav1alpha1.ConditionCAValidityAcceptable), access); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -105,6 +110,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		validity = previous(cp, lodiav1alpha1.ConditionCAValidityAcceptable)
 	}
 	access, bindErr := r.access(ctx, t)
+	if access.Type == "" {
+		return ctrl.Result{}, bindErr
+	}
 	if err := r.applyStatus(ctx, cp, now, t.credentials(), certificates, validity, access); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -191,17 +199,22 @@ func listed(items []string) string {
 // access counts a refusal from the tenant as an answer, which turns
 // AccessReady False, Refused; no answer keeps a True, since whether the
 // tenant can be reached is Health's to report, and leaves anything else
-// Binding.
+// Binding. While it waits it keeps AccessReady, as the API server holds it,
+// at an older generation; a failed read of it returns an empty condition, and
+// the pass writes nothing.
 func (r *Reconciler) access(ctx context.Context, t *tenant) (metav1.Condition, error) {
 	c := metav1.Condition{Type: lodiav1alpha1.ConditionAccessReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonWaitingForAPIServer, Message: "APIServerReady is not True for this generation"}
-	prev := meta.FindStatusCondition(t.cp.Status.Conditions, lodiav1alpha1.ConditionAccessReady)
 	ready := meta.FindStatusCondition(t.cp.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady)
 	if ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != t.cp.Generation || t.existing[t.secret(lodiav1alpha1.LodiaKubeconfigSecret)] == nil {
-		if prev != nil && prev.ObservedGeneration < t.cp.Generation {
+		if err := live.Conditions(ctx, r.Reader, t.cp, c.Type); err != nil {
+			return metav1.Condition{}, err
+		}
+		if prev := meta.FindStatusCondition(t.cp.Status.Conditions, c.Type); prev != nil && prev.ObservedGeneration < t.cp.Generation {
 			return *prev, nil
 		}
 		return c, nil
 	}
+	prev := meta.FindStatusCondition(t.cp.Status.Conditions, c.Type)
 	refused, err := r.bind(ctx, t)
 	if err == nil {
 		c.Status, c.Reason, c.Message = metav1.ConditionTrue, lodiav1alpha1.ReasonBound, "lodia:operator, lodia:cluster-admins and lodia:kubelet-api-admins are bound"
@@ -221,9 +234,7 @@ func (r *Reconciler) access(ctx context.Context, t *tenant) (metav1.Condition, e
 // applyStatus writes only on a change. Nil credentials keep the
 // ControlPlane's references, and a condition carried from an earlier pass
 // keeps its observedGeneration: an apply that leaves out a field PKI owns
-// removes it. One older than cp's generation is applied only over the
-// resourceVersion cp was read at, so a stale cache conflicts instead of
-// writing it back.
+// removes it.
 func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, now time.Time, credentials map[string]any, conditions ...metav1.Condition) error {
 	if credentials == nil {
 		credentials = map[string]any{}
@@ -235,13 +246,12 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlP
 			}
 		}
 	}
-	changed, kept := false, false
+	changed := false
 	for i := range conditions {
 		c := &conditions[i]
 		if c.ObservedGeneration == 0 {
 			c.ObservedGeneration = cp.Generation
 		}
-		kept = kept || c.ObservedGeneration < cp.Generation
 		c.LastTransitionTime = metav1.NewTime(now)
 		prev := meta.FindStatusCondition(cp.Status.Conditions, c.Type)
 		if prev != nil && prev.Status == c.Status {
@@ -277,14 +287,10 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlP
 	if len(credentials) > 0 {
 		status["credentials"] = credentials
 	}
-	metadata := map[string]any{"name": cp.Name, "namespace": cp.Namespace}
-	if kept {
-		metadata["resourceVersion"] = cp.ResourceVersion
-	}
 	u := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": lodiav1alpha1.GroupVersion.String(),
 		"kind":       kind,
-		"metadata":   metadata,
+		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
 		"status":     status,
 	}}
 	if err := r.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(u), client.FieldOwner(fieldManager), client.ForceOwnership); err != nil {
