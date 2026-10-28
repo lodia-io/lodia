@@ -1730,7 +1730,10 @@ func TestRemovingHighAvailabilityBacksOutOfAMemberThatNeverComesUp(t *testing.T)
 	t.Run("etcd-druid's scale in progress holds the removal", func(t *testing.T) {
 		setHighAvailability(t, ns, cp, nil)
 		expectMembers(t, ns, cp, 3, true)
-		waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum, 2 of 3 members ready, while etcd-druid scales it")
+		c := meta.FindStatusCondition(getControlPlane(t, ns, cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
+		if want := "Etcd stuck-etcd has quorum, 2 of 3 members ready, while etcd-druid scales it"; c == nil || c.Status != metav1.ConditionTrue || c.Reason != lodiav1alpha1.ReasonReady || c.Message != want {
+			t.Errorf("DatastoreReady is %+v, want True Ready %q", c, want)
+		}
 	})
 	t.Run("a completed scale lets it through though a member never came up", func(t *testing.T) {
 		druid("")
