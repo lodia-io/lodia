@@ -175,6 +175,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From #41's review (2026-10-28)
 
-- `finalize` labels unlabelled claims from the `Etcd` the cache read, before its delete, which names that `Etcd`'s UID: a cache still holding a deleted `Etcd` can label new claims of a foreign `Etcd` under the name with this `ControlPlane`'s UID and class before the delete is refused.
-  Nothing acts on that label, but the Deletion section of `docs/README.md` promises those claims stay untouched; labelling after the delete is accepted, or reading the `Etcd` through the Reader in `finalize`, closes it.
+- `finalize` labels unlabelled claims from the `Etcd` the cache read, and only then deletes that `Etcd` by its UID, or waits 10 seconds when it is already terminating: a cache still holding a deleted `Etcd` can label new claims of a foreign `Etcd` under the name with this `ControlPlane`'s UID and class.
+  The Deletion section of `docs/README.md` promises those claims stay untouched, and should a later pass find the foreign `Etcd` gone, `reclaimClaims` deletes them when this `ControlPlane`'s class says `Delete`; labelling after the delete is accepted, or reading the `Etcd` through the Reader in `finalize`, closes it.
 - `reclaimClaims` deletes a claim by name, from a fresh list, with no UID precondition; `client.Preconditions{UID: &claim.UID}` would close the milliseconds in which another claim could take the name.
