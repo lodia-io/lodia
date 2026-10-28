@@ -1776,7 +1776,7 @@ func TestRemovingHighAvailabilityWaitsForTheMemberEtcdDruidKeeps(t *testing.T) {
 		setHighAvailability(t, ns, cp, nil)
 		expectMembers(t, ns, cp, 3, true)
 		waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
-			"Etcd kept-etcd has quorum, 2 of 3 members ready; removing highAvailability waits for member kept-etcd-0, which etcd-druid keeps, to be ready")
+			"Etcd kept-etcd has quorum, 2 of 3 members ready; removing highAvailability waits for etcd-druid to list member kept-etcd-0, the one it keeps, as ready")
 		if m := getControlPlane(t, ns, cp).Status.Datastore.Members; m.Total != 3 || m.Ready != 2 {
 			t.Errorf("status.datastore.members counts %d ready of %d, want 2 of 3", m.Ready, m.Total)
 		}
