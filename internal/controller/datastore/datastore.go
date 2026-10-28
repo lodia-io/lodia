@@ -320,9 +320,9 @@ func foreignEtcd(etcd *druidv1alpha1.Etcd) string {
 		etcd.Name, owner)
 }
 
-// replaced says whether the API server refuses an apply only for the UID it
-// names, that of an Etcd another has replaced since the cache read it; the
-// next pass reads the new one.
+// replaced says whether the API server refuses an apply for the UID it names,
+// that of an Etcd another has replaced since the cache read it; the next pass
+// reads the new one.
 func replaced(err error) bool {
 	var status apierrors.APIStatus
 	if !errors.As(err, &status) || status.Status().Details == nil {
@@ -635,7 +635,7 @@ func (r *Reconciler) finalize(ctx context.Context, cp *lodiav1alpha1.ControlPlan
 	switch {
 	case etcd != nil && etcd.DeletionTimestamp.IsZero():
 		logf.FromContext(ctx).Info("deleting the Etcd", "etcd", etcd.Name)
-		return 0, client.IgnoreNotFound(r.Delete(ctx, etcd))
+		return 0, client.IgnoreNotFound(r.Delete(ctx, etcd, client.Preconditions{UID: &etcd.UID}))
 	case etcd != nil:
 		return 10 * time.Second, nil
 	case foreign:
