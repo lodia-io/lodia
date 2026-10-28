@@ -252,25 +252,31 @@ func refused(endpoint *lodiav1alpha1.EndpointStatus, obj client.Object, err erro
 	return endpoint, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, message), 0, err
 }
 
-// wait keeps APIServerReady, as the API server holds it, at the generation it
-// describes, counting the Deployments this ControlPlane controls, and returns
-// waiting only while it controls none.
+// wait decides from APIServerReady as the API server holds it. While that
+// reports availability, it counts the Deployments this ControlPlane controls
+// at the generation the condition names; otherwise it keeps a condition of an
+// older generation and returns waiting for one of cp's.
 func (r *Reconciler) wait(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, waiting metav1.Condition, requeueAfter time.Duration) (*lodiav1alpha1.EndpointStatus, metav1.Condition, time.Duration, error) {
 	if err := live.Conditions(ctx, r.Reader, cp, lodiav1alpha1.ConditionAPIServerReady); err != nil {
 		return nil, metav1.Condition{}, 0, err
 	}
-	controlled, err := r.controlled(ctx, cp)
-	if err != nil {
-		return nil, metav1.Condition{}, 0, err
-	}
-	if len(controlled) == 0 {
+	previous := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady)
+	if previous == nil {
 		return endpoint, waiting, requeueAfter, nil
 	}
-	kept := availability(slices.Collect(maps.Values(controlled)))
-	if previous := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady); previous != nil {
-		kept.ObservedGeneration = previous.ObservedGeneration
+	if slices.Contains([]string{lodiav1alpha1.ReasonReady, lodiav1alpha1.ReasonUnavailable, lodiav1alpha1.ReasonProgressDeadlineExceeded}, previous.Reason) {
+		controlled, err := r.controlled(ctx, cp)
+		if err != nil {
+			return nil, metav1.Condition{}, 0, err
+		}
+		counted := availability(slices.Collect(maps.Values(controlled)))
+		counted.ObservedGeneration = previous.ObservedGeneration
+		return endpoint, counted, requeueAfter, nil
 	}
-	return endpoint, kept, requeueAfter, nil
+	if previous.ObservedGeneration < cp.Generation {
+		return endpoint, *previous, requeueAfter, nil
+	}
+	return endpoint, waiting, requeueAfter, nil
 }
 
 // unsupported names the fields phase 1 does not render, so a ControlPlane that

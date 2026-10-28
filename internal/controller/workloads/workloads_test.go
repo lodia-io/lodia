@@ -1069,57 +1069,7 @@ func TestAQuotaThatRefusesTheServiceIsSaid(t *testing.T) {
 
 func TestAPolicyThatRefusesADeploymentIsSaid(t *testing.T) {
 	ns := namespace(t)
-	policy := &admissionregistrationv1.ValidatingAdmissionPolicy{
-		ObjectMeta: metav1.ObjectMeta{Name: "refuse-schedulers-in-" + ns},
-		Spec: admissionregistrationv1.ValidatingAdmissionPolicySpec{
-			FailurePolicy: new(admissionregistrationv1.Fail),
-			MatchConstraints: &admissionregistrationv1.MatchResources{ResourceRules: []admissionregistrationv1.NamedRuleWithOperations{{
-				RuleWithOperations: admissionregistrationv1.RuleWithOperations{
-					Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
-					Rule:       admissionregistrationv1.Rule{APIGroups: []string{"apps"}, APIVersions: []string{"v1"}, Resources: []string{"deployments"}},
-				},
-			}}},
-			Validations: []admissionregistrationv1.Validation{{
-				Expression: "object.metadata.namespace != '" + ns + "' || object.metadata.name != 'dev-kube-scheduler'",
-				Message:    "no scheduler in " + ns,
-			}},
-		},
-	}
-	binding := &admissionregistrationv1.ValidatingAdmissionPolicyBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: policy.Name},
-		Spec: admissionregistrationv1.ValidatingAdmissionPolicyBindingSpec{
-			PolicyName:        policy.Name,
-			ValidationActions: []admissionregistrationv1.ValidationAction{admissionregistrationv1.Deny},
-		},
-	}
-	for _, obj := range []client.Object{policy, binding} {
-		if err := k8s.Create(t.Context(), obj); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			if err := client.IgnoreNotFound(k8s.Delete(context.Background(), obj)); err != nil {
-				t.Error(err)
-			}
-		})
-	}
-	pod := map[string]string{"app": "probe"}
-	eventually(t, func() error {
-		probe := &appsv1.Deployment{
-			ObjectMeta: metav1.ObjectMeta{Name: "dev-kube-scheduler", Namespace: ns},
-			Spec: appsv1.DeploymentSpec{
-				Selector: &metav1.LabelSelector{MatchLabels: pod},
-				Template: corev1.PodTemplateSpec{
-					ObjectMeta: metav1.ObjectMeta{Labels: pod},
-					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "probe", Image: "registry.example/probe"}}},
-				},
-			},
-		}
-		if err := k8s.Create(t.Context(), probe, client.DryRunAll); err == nil || !strings.Contains(err.Error(), "no scheduler in "+ns) {
-			return fmt.Errorf("the policy does not refuse the scheduler yet: %w", err)
-		}
-		return nil
-	})
-
+	binding := refuseScheduler(t, ns)
 	cp := create(t, ns, loadBalancer())
 	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
 	inputsReady(t, cp)
@@ -1226,6 +1176,15 @@ func TestAWaitCountsTheDeploymentsWorkloadsControls(t *testing.T) {
 			if n := deployments(t, cp); n != 2 {
 				t.Errorf("%d Deployments while Workloads waits, want the two it kept", n)
 			}
+			for _, component := range []string{"kube-apiserver", "kube-controller-manager"} {
+				if err := k8s.Delete(t.Context(), deployment(t, cp, component)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			eventually(t, func() error {
+				return expectAt(cp, kept, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable,
+					"kube-apiserver has no Deployment; kube-controller-manager has no Deployment; kube-scheduler has no Deployment")
+			})
 
 			input.catchUp(t, cp)
 			for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
@@ -1236,7 +1195,7 @@ func TestAWaitCountsTheDeploymentsWorkloadsControls(t *testing.T) {
 	}
 }
 
-func TestWithoutADeploymentOfItsOwnWorkloadsWaitsAtTheNewGeneration(t *testing.T) {
+func TestWithoutADeploymentOfItsOwnAWaitKeepsItsGeneration(t *testing.T) {
 	ns := namespace(t)
 	predecessor := types.UID("3e7b9c14-6a2d-4f80-b5c1-9d0e2a4f6b38")
 	pod := map[string]string{"app": "predecessor"}
@@ -1264,6 +1223,9 @@ func TestWithoutADeploymentOfItsOwnWorkloadsWaitsAtTheNewGeneration(t *testing.T
 	cp := create(t, ns, loadBalancer())
 	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
 	setTarget(t, cp, version)
+	eventually(t, func() error {
+		return expectAt(cp, 1, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "CertificatesReady is not True for generation 1")
+	})
 	setTrue(t, cp, lodiav1alpha1.ConditionCertificatesReady, "Issued")
 	setTrue(t, cp, lodiav1alpha1.ConditionDatastoreReady, "Ready")
 	endpoints := "waiting for the Datastore controller to publish status.datastore.endpoints"
@@ -1274,22 +1236,23 @@ func TestWithoutADeploymentOfItsOwnWorkloadsWaitsAtTheNewGeneration(t *testing.T
 	changeSpec(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) {
 		spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]string{"audit-log-maxage": "7"}}
 	})
-	eventually(t, func() error {
-		return expectAt(cp, 2, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "CertificatesReady is not True for generation 2")
-	})
-	setTrue(t, cp, lodiav1alpha1.ConditionCertificatesReady, "Issued")
-	eventually(t, func() error {
-		return expectAt(cp, 2, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, "DatastoreReady is not True for generation 2")
-	})
-	setTrue(t, cp, lodiav1alpha1.ConditionDatastoreReady, "Ready")
-	eventually(t, func() error {
-		return expectAt(cp, 2, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, endpoints)
-	})
-	setDatastore(t, cp, lodiav1alpha1.HostPort{Host: "dev-etcd-client." + ns + ".svc", Port: 2379})
-	eventually(t, func() error {
-		return expectAt(cp, 2, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates,
-			"waiting for PKI to write the Secrets the control plane reads once, with their data hash: dev-ca-bundle, dev-etcd-ca, dev-front-proxy-client, dev-konnectivity-kubeconfig, dev-konnectivity-server")
-	})
+	for _, step := range []struct {
+		name   string
+		change func()
+	}{
+		{"the spec change", func() {}},
+		{"CertificatesReady at the new generation", func() { setTrue(t, cp, lodiav1alpha1.ConditionCertificatesReady, "Issued") }},
+		{"DatastoreReady at the new generation", func() { setTrue(t, cp, lodiav1alpha1.ConditionDatastoreReady, "Ready") }},
+		{"status.datastore.endpoints, the Secrets unhashed", func() {
+			setDatastore(t, cp, lodiav1alpha1.HostPort{Host: "dev-etcd-client." + ns + ".svc", Port: 2379})
+		}},
+	} {
+		step.change()
+		reconcileNow(t, cp)
+		if err := expectAt(cp, 1, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, endpoints); err != nil {
+			t.Fatalf("after %s: %v", step.name, err)
+		}
+	}
 	if c := get(t, cp).Status.Components; c != nil {
 		t.Errorf("status.components is %+v from the predecessor's Deployment", c)
 	}
@@ -1300,6 +1263,45 @@ func TestWithoutADeploymentOfItsOwnWorkloadsWaitsAtTheNewGeneration(t *testing.T
 	})
 	if c := condition(t, cp); !strings.Contains(c.Message, "Deployment dev-kube-apiserver by ControlPlane dev (UID "+string(predecessor)+")") {
 		t.Errorf("APIServerReady says %q", c.Message)
+	}
+}
+
+func TestARefusalIsNotCountedAsAvailability(t *testing.T) {
+	audit := func(maxAge string) func(*lodiav1alpha1.ControlPlaneSpec) {
+		return func(spec *lodiav1alpha1.ControlPlaneSpec) {
+			spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]string{"audit-log-maxage": maxAge}}
+		}
+	}
+	refusal := "the API server refuses Deployment dev-kube-scheduler; the reason is in Lodia's log"
+	for name, row := range map[string]struct {
+		change                  func(*testing.T, *lodiav1alpha1.ControlPlane)
+		reason, message, waited string
+	}{
+		"status.datastore.endpoints dropped": {
+			func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+				applyStatus(t, cp, "test/datastore", map[string]any{})
+			},
+			lodiav1alpha1.ReasonWaitingForDatastore, "waiting for the Datastore controller to publish status.datastore.endpoints", "the wait at its generation",
+		},
+		"another spec change": {
+			func(t *testing.T, cp *lodiav1alpha1.ControlPlane) { changeSpec(t, cp, audit("8")) },
+			lodiav1alpha1.ReasonRefused, refusal, "the refusal kept",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cp := running(t)
+			refuseScheduler(t, cp.Namespace)
+			update(t, cp, audit("7"))
+			eventually(t, func() error {
+				return expectAt(cp, 2, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, refusal)
+			})
+
+			row.change(t, cp)
+			reconcileNow(t, cp)
+			if err := expectAt(cp, 2, metav1.ConditionFalse, row.reason, row.message); err != nil {
+				t.Errorf("want %s: %v", row.waited, err)
+			}
+		})
 	}
 }
 
@@ -1384,6 +1386,61 @@ func TestAWaitOnAStaleReadKeepsTheGenerationItsConditionNames(t *testing.T) {
 	if err := expectAt(cp, read.Generation, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "kube-apiserver has 1 of 2 replicas ready"); err != nil {
 		t.Errorf("a wait on a read without APIServerReady at generation %d: %v", read.Generation, err)
 	}
+}
+
+func refuseScheduler(t *testing.T, ns string) *admissionregistrationv1.ValidatingAdmissionPolicyBinding {
+	t.Helper()
+	policy := &admissionregistrationv1.ValidatingAdmissionPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "refuse-schedulers-in-" + ns},
+		Spec: admissionregistrationv1.ValidatingAdmissionPolicySpec{
+			FailurePolicy: new(admissionregistrationv1.Fail),
+			MatchConstraints: &admissionregistrationv1.MatchResources{ResourceRules: []admissionregistrationv1.NamedRuleWithOperations{{
+				RuleWithOperations: admissionregistrationv1.RuleWithOperations{
+					Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+					Rule:       admissionregistrationv1.Rule{APIGroups: []string{"apps"}, APIVersions: []string{"v1"}, Resources: []string{"deployments"}},
+				},
+			}}},
+			Validations: []admissionregistrationv1.Validation{{
+				Expression: "object.metadata.namespace != '" + ns + "' || object.metadata.name != 'dev-kube-scheduler'",
+				Message:    "no scheduler in " + ns,
+			}},
+		},
+	}
+	binding := &admissionregistrationv1.ValidatingAdmissionPolicyBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: policy.Name},
+		Spec: admissionregistrationv1.ValidatingAdmissionPolicyBindingSpec{
+			PolicyName:        policy.Name,
+			ValidationActions: []admissionregistrationv1.ValidationAction{admissionregistrationv1.Deny},
+		},
+	}
+	for _, obj := range []client.Object{policy, binding} {
+		if err := k8s.Create(t.Context(), obj); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := client.IgnoreNotFound(k8s.Delete(context.Background(), obj)); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	pod := map[string]string{"app": "probe"}
+	eventually(t, func() error {
+		probe := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: "dev-kube-scheduler", Namespace: ns},
+			Spec: appsv1.DeploymentSpec{
+				Selector: &metav1.LabelSelector{MatchLabels: pod},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: pod},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "probe", Image: "registry.example/probe"}}},
+				},
+			},
+		}
+		if err := k8s.Create(t.Context(), probe, client.DryRunAll); err == nil || !strings.Contains(err.Error(), "no scheduler in "+ns) {
+			return fmt.Errorf("the policy does not refuse the scheduler yet: %w", err)
+		}
+		return nil
+	})
+	return binding
 }
 
 func loadBalancer() lodiav1alpha1.Endpoint {
