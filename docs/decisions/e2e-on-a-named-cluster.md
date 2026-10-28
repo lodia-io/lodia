@@ -14,7 +14,7 @@ The refusal, `make e2e`, kubeadm workers and the nightly conformance run are bui
   A release is cut only from a commit whose nightly conformance passed ([hydrophone flags](https://github.com/kubernetes-sigs/hydrophone/blob/v0.8.0/docs/flags-cli-ref.md), [conformance tests](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/conformance-tests.md)).
 - `go test ./...` from the repository root runs unit and envtest tests only; e2e lives under `test/e2e` behind a build tag.
 - A nightly test has a workflow of its own, which runs every night, on demand, and on a pull request only when the workflow or the test changes, since `paths` decides for a whole workflow ([workflow syntax](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onpushpull_requestpull_request_targetpathspaths-ignore)).
-  Code a nightly test exercises is covered before a merge by the jobs of `ci.yml`, `e2e` and `e2e-ha`.
+  Code a nightly test exercises is covered before a merge by the jobs of `ci.yml`: envtest in `verify`, the gates in `e2e` and `e2e-ha`.
 
 ## Why
 
