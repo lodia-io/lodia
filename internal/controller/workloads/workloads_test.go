@@ -906,20 +906,8 @@ func TestConditionsFromState(t *testing.T) {
 func TestAPassThatChangesNothingWritesNothing(t *testing.T) {
 	cp := running(t)
 	versionsOf := func() map[string]string {
-		out := map[string]string{"ControlPlane": get(t, cp).ResourceVersion}
-		for _, list := range []client.ObjectList{&appsv1.DeploymentList{}, &corev1.ServiceList{}, &corev1.ConfigMapList{}, &networkingv1.NetworkPolicyList{}} {
-			if err := k8s.List(t.Context(), list, client.InNamespace(cp.Namespace)); err != nil {
-				t.Fatal(err)
-			}
-			items, err := meta.ExtractList(list)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, item := range items {
-				o := item.(client.Object)
-				out[fmt.Sprintf("%T/%s", o, o.GetName())] = o.GetResourceVersion()
-			}
-		}
+		out := resourceVersions(t, cp.Namespace, &appsv1.DeploymentList{}, &corev1.ServiceList{}, &corev1.ConfigMapList{}, &networkingv1.NetworkPolicyList{})
+		out["ControlPlane"] = get(t, cp).ResourceVersion
 		return out
 	}
 	before := versionsOf()
@@ -1155,6 +1143,195 @@ func TestAPolicyThatRefusesADeploymentIsSaid(t *testing.T) {
 	})
 }
 
+func TestAWaitCountsTheDeploymentsWorkloadsControls(t *testing.T) {
+	auditArgs := func(spec *lodiav1alpha1.ControlPlaneSpec) {
+		spec.APIServer.ExtraArgs = map[string]string{"audit-log-maxage": "7"}
+	}
+	for name, input := range map[string]struct {
+		lag, catchUp func(*testing.T, *lodiav1alpha1.ControlPlane)
+	}{
+		"CertificatesReady at an older generation": {
+			func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+				changeSpec(t, cp, auditArgs)
+				setTrue(t, cp, lodiav1alpha1.ConditionDatastoreReady, "Ready")
+			},
+			func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+				setTrue(t, cp, lodiav1alpha1.ConditionCertificatesReady, "Issued")
+			},
+		},
+		"DatastoreReady at an older generation": {
+			func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+				changeSpec(t, cp, auditArgs)
+				setTrue(t, cp, lodiav1alpha1.ConditionCertificatesReady, "Issued")
+			},
+			func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+				setTrue(t, cp, lodiav1alpha1.ConditionDatastoreReady, "Ready")
+			},
+		},
+		"no status.datastore.endpoints": {
+			func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+				applyStatus(t, cp, "test/datastore", map[string]any{})
+			},
+			func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+				setDatastore(t, cp, lodiav1alpha1.HostPort{Host: "dev-etcd-client." + cp.Namespace + ".svc", Port: 2379})
+			},
+		},
+		"a Secret read once without its data hash": {
+			func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+				setSecret(t, cp, lodiav1alpha1.FrontProxyClientSecret, "")
+			},
+			func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+				setSecret(t, cp, lodiav1alpha1.FrontProxyClientSecret, "two")
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cp := running(t, func(spec *lodiav1alpha1.ControlPlaneSpec) {
+				spec.APIServer = &lodiav1alpha1.APIServer{Replicas: new(int32(2))}
+			})
+			kept := get(t, cp).Generation
+			objects := []client.ObjectList{&appsv1.DeploymentList{}, &corev1.ConfigMapList{}, &networkingv1.NetworkPolicyList{}}
+			before := resourceVersions(t, cp.Namespace, objects...)
+			input.lag(t, cp)
+			reconcileNow(t, cp)
+			if err := expectAt(cp, kept, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "every replica of kube-apiserver, kube-controller-manager and kube-scheduler is ready"); err != nil {
+				t.Fatal(err)
+			}
+			if after := resourceVersions(t, cp.Namespace, objects...); fmt.Sprint(after) != fmt.Sprint(before) {
+				t.Errorf("a pass that waits wrote:\n%v\nthen\n%v", before, after)
+			}
+
+			setDeploymentStatus(t, cp, "kube-apiserver", func(s *appsv1.DeploymentStatus) { s.ReadyReplicas, s.AvailableReplicas = 1, 1 })
+			eventually(t, func() error {
+				return expectAt(cp, kept, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "kube-apiserver has 1 of 2 replicas ready")
+			})
+			setDeploymentStatus(t, cp, "kube-controller-manager", func(s *appsv1.DeploymentStatus) {
+				s.Conditions = []appsv1.DeploymentCondition{{Type: appsv1.DeploymentProgressing, Status: corev1.ConditionFalse, Reason: "ProgressDeadlineExceeded"}}
+			})
+			eventually(t, func() error {
+				return expectAt(cp, kept, metav1.ConditionTrue, lodiav1alpha1.ReasonProgressDeadlineExceeded,
+					"the rollout of Deployment dev-kube-controller-manager passed its progress deadline; kube-apiserver has 1 of 2 replicas ready")
+			})
+			setDeploymentStatus(t, cp, "kube-apiserver", func(s *appsv1.DeploymentStatus) { s.ReadyReplicas, s.AvailableReplicas = 0, 0 })
+			eventually(t, func() error {
+				return expectAt(cp, kept, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, "kube-apiserver has 0 of 2 replicas ready")
+			})
+			if err := k8s.Delete(t.Context(), deployment(t, cp, "kube-scheduler")); err != nil {
+				t.Fatal(err)
+			}
+			eventually(t, func() error {
+				return expectAt(cp, kept, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, "kube-apiserver has 0 of 2 replicas ready; kube-scheduler has 0 of 1 replicas ready")
+			})
+			expectComponents(t, cp, "2/0/0 1/1/1 absent")
+			if n := deployments(t, cp); n != 2 {
+				t.Errorf("%d Deployments while Workloads waits, want the two it kept", n)
+			}
+
+			input.catchUp(t, cp)
+			for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
+				markAvailable(t, eventuallyDeployment(t, cp, component))
+			}
+			eventually(t, func() error { return expectCondition(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady) })
+		})
+	}
+}
+
+func TestWithoutADeploymentOfItsOwnWorkloadsWaitsAtTheNewGeneration(t *testing.T) {
+	ns := namespace(t)
+	predecessor := types.UID("3e7b9c14-6a2d-4f80-b5c1-9d0e2a4f6b38")
+	pod := map[string]string{"app": "predecessor"}
+	held := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "dev-kube-apiserver",
+			Namespace: ns,
+			Labels:    map[string]string{lodiav1alpha1.ControlPlaneLabel: "dev", lodiav1alpha1.ComponentLabel: "kube-apiserver"},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: lodiav1alpha1.GroupVersion.String(), Kind: "ControlPlane", Name: "dev", UID: predecessor, Controller: new(true),
+			}},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: pod},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: pod},
+				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "kube-apiserver", Image: "registry.example/predecessor"}}},
+			},
+		},
+	}
+	if err := k8s.Create(t.Context(), held); err != nil {
+		t.Fatal(err)
+	}
+	markAvailable(t, held)
+	cp := create(t, ns, loadBalancer())
+	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
+	setTarget(t, cp, version)
+	setTrue(t, cp, lodiav1alpha1.ConditionCertificatesReady, "Issued")
+	setTrue(t, cp, lodiav1alpha1.ConditionDatastoreReady, "Ready")
+	endpoints := "waiting for the Datastore controller to publish status.datastore.endpoints"
+	eventually(t, func() error {
+		return expectAt(cp, 1, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, endpoints)
+	})
+
+	changeSpec(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) {
+		spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]string{"audit-log-maxage": "7"}}
+	})
+	eventually(t, func() error {
+		return expectAt(cp, 2, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "CertificatesReady is not True for generation 2")
+	})
+	setTrue(t, cp, lodiav1alpha1.ConditionCertificatesReady, "Issued")
+	eventually(t, func() error {
+		return expectAt(cp, 2, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, "DatastoreReady is not True for generation 2")
+	})
+	setTrue(t, cp, lodiav1alpha1.ConditionDatastoreReady, "Ready")
+	eventually(t, func() error {
+		return expectAt(cp, 2, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, endpoints)
+	})
+	setDatastore(t, cp, lodiav1alpha1.HostPort{Host: "dev-etcd-client." + ns + ".svc", Port: 2379})
+	eventually(t, func() error {
+		return expectAt(cp, 2, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates,
+			"waiting for PKI to write the Secrets the control plane reads once, with their data hash: dev-ca-bundle, dev-etcd-ca, dev-front-proxy-client, dev-konnectivity-kubeconfig, dev-konnectivity-server")
+	})
+	if c := get(t, cp).Status.Components; c != nil {
+		t.Errorf("status.components is %+v from the predecessor's Deployment", c)
+	}
+
+	createSecrets(t, cp, "one")
+	eventually(t, func() error {
+		return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere)
+	})
+	if c := condition(t, cp); !strings.Contains(c.Message, "Deployment dev-kube-apiserver by ControlPlane dev (UID "+string(predecessor)+")") {
+		t.Errorf("APIServerReady says %q", c.Message)
+	}
+}
+
+func TestAWaitThatCannotReadItsDeploymentsWritesNothing(t *testing.T) {
+	cp := running(t)
+	changeSpec(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) {
+		spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]string{"audit-log-maxage": "7"}}
+	})
+	reconcileNow(t, cp)
+	if err := expectAt(cp, 1, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "every replica of kube-apiserver, kube-controller-manager and kube-scheduler is ready"); err != nil {
+		t.Fatal(err)
+	}
+
+	before := get(t, cp).ResourceVersion
+	injected := errors.New("injected: the cache did not answer")
+	failing := interceptor.NewClient(k8s, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*appsv1.Deployment); ok {
+				return injected
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	reconciler := &workloads.Reconciler{Client: failing, Reader: failing, SignerImage: signerImage}
+	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !errors.Is(err, injected) {
+		t.Fatalf("a pass that cannot read its Deployments returned %v, want the read's error", err)
+	}
+	if after := get(t, cp).ResourceVersion; after != before {
+		t.Errorf("a pass that cannot read its Deployments wrote the ControlPlane: resourceVersion %s, then %s", before, after)
+	}
+}
+
 func loadBalancer() lodiav1alpha1.Endpoint {
 	return lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}}
 }
@@ -1194,9 +1371,9 @@ func create(t *testing.T, ns string, endpoint lodiav1alpha1.Endpoint, change ...
 }
 
 // running brings a ControlPlane to APIServerReady=True.
-func running(t *testing.T) *lodiav1alpha1.ControlPlane {
+func running(t *testing.T, change ...func(*lodiav1alpha1.ControlPlaneSpec)) *lodiav1alpha1.ControlPlane {
 	t.Helper()
-	cp := controlPlane(t, loadBalancer())
+	cp := controlPlane(t, loadBalancer(), change...)
 	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
 	inputsReady(t, cp)
 	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
@@ -1483,13 +1660,49 @@ func eventually(t *testing.T, check func() error) {
 
 func update(t *testing.T, cp *lodiav1alpha1.ControlPlane, change func(*lodiav1alpha1.ControlPlaneSpec)) {
 	t.Helper()
+	changeSpec(t, cp, change)
+	setTrue(t, cp, lodiav1alpha1.ConditionCertificatesReady, "Issued")
+	setTrue(t, cp, lodiav1alpha1.ConditionDatastoreReady, "Ready")
+}
+
+func changeSpec(t *testing.T, cp *lodiav1alpha1.ControlPlane, change func(*lodiav1alpha1.ControlPlaneSpec)) {
+	t.Helper()
 	eventually(t, func() error {
 		fresh := get(t, cp)
 		change(&fresh.Spec)
 		return k8s.Update(t.Context(), fresh)
 	})
-	setTrue(t, cp, lodiav1alpha1.ConditionCertificatesReady, "Issued")
-	setTrue(t, cp, lodiav1alpha1.ConditionDatastoreReady, "Ready")
+}
+
+func expectAt(cp *lodiav1alpha1.ControlPlane, generation int64, status metav1.ConditionStatus, reason, message string) error {
+	fresh := &lodiav1alpha1.ControlPlane{}
+	if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(cp), fresh); err != nil {
+		return err
+	}
+	c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady)
+	if c == nil || c.Status != status || c.Reason != reason || c.Message != message || c.ObservedGeneration != generation {
+		return fmt.Errorf("APIServerReady is %+v, want %s %s %q at generation %d", c, status, reason, message, generation)
+	}
+	return nil
+}
+
+func resourceVersions(t *testing.T, ns string, lists ...client.ObjectList) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	for _, list := range lists {
+		if err := k8s.List(t.Context(), list, client.InNamespace(ns)); err != nil {
+			t.Fatal(err)
+		}
+		items, err := meta.ExtractList(list)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, item := range items {
+			o := item.(client.Object)
+			out[fmt.Sprintf("%T/%s", o, o.GetName())] = o.GetResourceVersion()
+		}
+	}
+	return out
 }
 
 func setDeploymentStatus(t *testing.T, cp *lodiav1alpha1.ControlPlane, component string, change func(*appsv1.DeploymentStatus)) {

@@ -183,11 +183,11 @@ func (r *Reconciler) reconcile(ctx context.Context, cp *lodiav1alpha1.ControlPla
 	} {
 		if c := meta.FindStatusCondition(cp.Status.Conditions, input.condition); c == nil || c.Status != metav1.ConditionTrue || c.ObservedGeneration != cp.Generation {
 			message := fmt.Sprintf("%s is not True for generation %d", input.condition, cp.Generation)
-			return endpoint, newCondition(metav1.ConditionFalse, input.reason, message), requeueAfter, nil
+			return r.wait(ctx, cp, endpoint, newCondition(metav1.ConditionFalse, input.reason, message), requeueAfter)
 		}
 	}
 	if cp.Status.Datastore == nil || len(cp.Status.Datastore.Endpoints) == 0 {
-		return endpoint, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, "waiting for the Datastore controller to publish status.datastore.endpoints"), requeueAfter, nil
+		return r.wait(ctx, cp, endpoint, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, "waiting for the Datastore controller to publish status.datastore.endpoints"), requeueAfter)
 	}
 	config, err := configMaps(cp)
 	if err != nil {
@@ -199,7 +199,7 @@ func (r *Reconciler) reconcile(ctx context.Context, cp *lodiav1alpha1.ControlPla
 	}
 	if len(unhashed) > 0 {
 		message := "waiting for PKI to write the Secrets the control plane reads once, with their data hash: " + strings.Join(unhashed, ", ")
-		return endpoint, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, message), requeueAfter, nil
+		return r.wait(ctx, cp, endpoint, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, message), requeueAfter)
 	}
 	deployments := rendering{
 		cp:          cp,
@@ -248,6 +248,32 @@ func refused(endpoint *lodiav1alpha1.EndpointStatus, obj client.Object, err erro
 	}
 	message := fmt.Sprintf("the API server refuses %s %s; the reason is in Lodia's log", obj.GetObjectKind().GroupVersionKind().Kind, obj.GetName())
 	return endpoint, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, message), 0, err
+}
+
+// wait keeps APIServerReady at the generation it describes, counting the
+// Deployments this ControlPlane controls, a missing one as a component without
+// a ready replica, and returns waiting only while it controls none.
+func (r *Reconciler) wait(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, waiting metav1.Condition, requeueAfter time.Duration) (*lodiav1alpha1.EndpointStatus, metav1.Condition, time.Duration, error) {
+	controlled, err := r.controlled(ctx, cp)
+	if err != nil {
+		return nil, metav1.Condition{}, 0, err
+	}
+	if len(controlled) == 0 {
+		return endpoint, waiting, requeueAfter, nil
+	}
+	var deployments []*appsv1.Deployment
+	for _, component := range components {
+		d, ok := controlled[component]
+		if !ok {
+			d = &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{lodiav1alpha1.ComponentLabel: component}}}
+		}
+		deployments = append(deployments, d)
+	}
+	kept := availability(deployments)
+	if previous := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady); previous != nil {
+		kept.ObservedGeneration = previous.ObservedGeneration
+	}
+	return endpoint, kept, requeueAfter, nil
 }
 
 // unsupported names the fields phase 1 does not render, so a ControlPlane that
@@ -495,10 +521,10 @@ func availability(deployments []*appsv1.Deployment) metav1.Condition {
 	return newCondition(metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "every replica of kube-apiserver, kube-controller-manager and kube-scheduler is ready")
 }
 
-// components counts the replicas of the Deployments this ControlPlane
-// controls, as the cache holds them.
-func (r *Reconciler) components(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*lodiav1alpha1.ComponentsStatus, error) {
-	var out *lodiav1alpha1.ComponentsStatus
+// controlled are the Deployments this ControlPlane controls, by component, as
+// the cache holds them.
+func (r *Reconciler) controlled(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (map[string]*appsv1.Deployment, error) {
+	out := map[string]*appsv1.Deployment{}
 	for _, component := range components {
 		d := &appsv1.Deployment{}
 		if err := r.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: deploymentName(cp.Name, component)}, d); err != nil {
@@ -507,12 +533,22 @@ func (r *Reconciler) components(ctx context.Context, cp *lodiav1alpha1.ControlPl
 			}
 			return nil, err
 		}
-		if !metav1.IsControlledBy(d, cp) {
-			continue
+		if metav1.IsControlledBy(d, cp) {
+			out[component] = d
 		}
-		if out == nil {
-			out = &lodiav1alpha1.ComponentsStatus{}
-		}
+	}
+	return out, nil
+}
+
+// components counts the replicas of the Deployments this ControlPlane
+// controls.
+func (r *Reconciler) components(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*lodiav1alpha1.ComponentsStatus, error) {
+	controlled, err := r.controlled(ctx, cp)
+	if err != nil || len(controlled) == 0 {
+		return nil, err
+	}
+	out := &lodiav1alpha1.ComponentsStatus{}
+	for component, d := range controlled {
 		status := &lodiav1alpha1.ComponentStatus{RolloutCount: rolloutCount(d)}
 		switch component {
 		case apiServer:
@@ -591,11 +627,13 @@ func dropNulls(m map[string]any) {
 	}
 }
 
-// applyStatus applies APIServerReady, status.components and, once both
-// addresses exist, status.endpoint whole; a nil endpoint or components drops
-// a published one.
+// applyStatus applies APIServerReady, at cp's generation unless it names one,
+// status.components and, once both addresses exist, status.endpoint whole; a
+// nil endpoint or components drops a published one.
 func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, components *lodiav1alpha1.ComponentsStatus, condition metav1.Condition) error {
-	condition.ObservedGeneration = cp.Generation
+	if condition.ObservedGeneration == 0 {
+		condition.ObservedGeneration = cp.Generation
+	}
 	previous := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady)
 	unchanged := previous != nil && previous.Status == condition.Status && previous.Reason == condition.Reason &&
 		previous.Message == condition.Message && previous.ObservedGeneration == condition.ObservedGeneration
