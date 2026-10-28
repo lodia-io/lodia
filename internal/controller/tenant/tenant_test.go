@@ -360,6 +360,83 @@ func TestAConditionKeptWithoutAnAnswerOnAStaleReadIsDecidedFromTheServer(t *test
 	}
 }
 
+func TestARolloutReadThatFailsOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
+	cp, admin := servedTenant(t, "tenant-rollout-stale")
+	eventually(t, 30*time.Second, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
+	})
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	ctx := t.Context()
+	role := &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{Name: "lodia:operator-without-rollout-reads"},
+		Rules: []rbacv1.PolicyRule{
+			{APIGroups: []string{"", "discovery.k8s.io", rbacv1.GroupName}, Resources: []string{"*"}, Verbs: []string{"*"}},
+			{APIGroups: []string{appsv1.GroupName}, Resources: []string{"deployments", "daemonsets"}, Verbs: []string{"create", "patch", "update", "delete", "list", "watch"}},
+			{NonResourceURLs: []string{"*"}, Verbs: []string{"*"}},
+		},
+	}
+	if err := admin.Create(ctx, role); err != nil {
+		t.Fatal(err)
+	}
+	if err := admin.Delete(ctx, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: "lodia:operator"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := admin.Create(ctx, &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "lodia:operator"},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: role.Name},
+		Subjects:   []rbacv1.Subject{{APIGroup: rbacv1.GroupName, Kind: rbacv1.UserKind, Name: "lodia:operator"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 30*time.Second, func() error {
+		review := &authorizationv1.SubjectAccessReview{Spec: authorizationv1.SubjectAccessReviewSpec{
+			User:               "lodia:operator",
+			ResourceAttributes: &authorizationv1.ResourceAttributes{Group: appsv1.GroupName, Resource: "deployments", Verb: "get", Namespace: "kube-system"},
+		}}
+		if err := admin.Create(ctx, review); err != nil {
+			return err
+		}
+		if review.Status.Allowed {
+			return errors.New("lodia:operator may still read Deployments")
+		}
+		return nil
+	})
+
+	refresh(t, cp)
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonRolloutPending, cp.Generation),
+	}})
+	refresh(t, cp)
+	stale := cp.DeepCopy()
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable, cp.Generation),
+	}})
+	pass := func(reader client.Reader) error {
+		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: reader, ApplyPeriod: time.Hour, Dial: *dial.Load()}
+		_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+		return err
+	}
+
+	refresh(t, cp)
+	written := cp.ResourceVersion
+	if err := pass(failingRead{Reader: k8s}); !errors.Is(err, errReadFailed) || !apierrors.IsForbidden(err) {
+		t.Errorf("a pass whose rollout read and live read both failed returned %v, want both errors", err)
+	}
+	if refresh(t, cp); cp.ResourceVersion != written {
+		t.Errorf("a pass that cannot read its conditions from the server wrote the ControlPlane: resourceVersion %s, then %s", written, cp.ResourceVersion)
+	}
+
+	if err := pass(k8s); !apierrors.IsForbidden(err) {
+		t.Errorf("a pass whose rollout read was refused returned %v, want the refusal", err)
+	}
+	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable); err != nil {
+		t.Error(err)
+	}
+}
+
 type snapshot struct {
 	client.Client
 	cp *lodiav1alpha1.ControlPlane
