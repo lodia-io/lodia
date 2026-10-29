@@ -177,3 +177,5 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   It needs its own answer to where a refusal shows while availability stays.
 - The required `e2e-ha` failed once on #43 (run 40764385375) in G2's step that deletes the etcd leader's pod: one request on a reused connection in each loop, outside and inside the tenant, answered 500 within 30 ms of the deletion, and the step wants none; the same operator passed it before and on the rerun.
   Find what answered 500, the tenant's API server or etcd, before the gate is trusted to hold zero failed requests.
+- A Tenant pass that succeeds compares its status apply with the cache, and its predicate ignores Tenant's own conditions, so a write the server holds and the cache does not yet, such as a refusal, stays until the next timed pass, a minute or `ApplyPeriod`; the same on `main`.
+  Compare that apply with the live copy too, as the waits and keeps do ([independent-controllers](docs/decisions/independent-controllers.md)).

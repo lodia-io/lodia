@@ -333,6 +333,32 @@ func TestProgressingNamesTheLagAfterUnsupportedAndBeforeTheRollout(t *testing.T)
 	eventually(t, func() error { return expect(t, cp, "v1.35.1", lodiav1alpha1.ReasonUnsupported) })
 }
 
+func TestTheTargetFollowsTheSpecWhileAnInputLags(t *testing.T) {
+	const allTrue = "CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied, Reachable and ControllersLeading are True"
+	cp := controlPlane(t, "v1.37.1")
+	for _, conditionType := range readiness {
+		setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
+	}
+	eventually(t, func() error {
+		return expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, allTrue, 1, 1)
+	})
+	setVersion(t, cp, "v1.37.2")
+	for _, conditionType := range readiness {
+		if conditionType != lodiav1alpha1.ConditionAccessReady {
+			setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
+		}
+	}
+	eventually(t, func() error {
+		if err := expectProgressing(t, cp, lodiav1alpha1.ReasonLatestGenerationNotObserved, "generation 2 is not taken up yet: AccessReady at 1"); err != nil {
+			return err
+		}
+		if target := get(t, cp).Status.Target; target == nil || target.Version != "v1.37.2" {
+			return fmt.Errorf("target is %+v while AccessReady lags, want v1.37.2", target)
+		}
+		return nil
+	})
+}
+
 func TestAStuckInputKeepsTheChangeInProgress(t *testing.T) {
 	const allTrue = "CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied, Reachable and ControllersLeading are True"
 	cp := controlPlane(t, "v1.37.1")

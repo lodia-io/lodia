@@ -251,7 +251,7 @@ func TestAControlPlaneRollsOutOnceItsInputsAreReady(t *testing.T) {
 	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
 	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget) })
 
-	setTarget(t, cp, version)
+	setTarget(t, cp)
 	eventually(t, func() error {
 		return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates)
 	})
@@ -1223,7 +1223,7 @@ func TestWithoutADeploymentOfItsOwnAWaitKeepsItsGeneration(t *testing.T) {
 	markAvailable(t, held)
 	cp := create(t, ns, loadBalancer())
 	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
-	setTarget(t, cp, version)
+	setTarget(t, cp)
 	eventually(t, func() error {
 		return expectAt(cp, 1, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "CertificatesReady is not True for generation 1")
 	})
@@ -1338,6 +1338,49 @@ func TestAWaitComparesItsWriteWithTheServer(t *testing.T) {
 	if err := expectAt(cp, kept.ObservedGeneration, kept.Status, kept.Reason, kept.Message); err != nil {
 		t.Error(err)
 	}
+}
+
+func TestAWaitKeepsTheEndpointAndItsRequeue(t *testing.T) {
+	createNode(t, "waiting-node", true, "192.0.2.50")
+	cp := controlPlane(t, lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}})
+	eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget) })
+	published := *get(t, cp).Status.Endpoint
+	check := func(step string, generation int64, status metav1.ConditionStatus, reason string) {
+		t.Helper()
+		result := reconcileNow(t, cp)
+		fresh := get(t, cp)
+		if e := fresh.Status.Endpoint; e == nil || *e != published {
+			t.Errorf("%s: status.endpoint is %+v, want %+v", step, e, published)
+		}
+		if result.RequeueAfter != time.Minute {
+			t.Errorf("%s: requeue after %s, want a minute", step, result.RequeueAfter)
+		}
+		if c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady); c == nil || c.ObservedGeneration != generation || c.Status != status || c.Reason != reason {
+			t.Errorf("%s: APIServerReady is %+v, want %s %s at generation %d", step, c, status, reason, generation)
+		}
+	}
+	audit := func(maxAge string) func(*lodiav1alpha1.ControlPlaneSpec) {
+		return func(spec *lodiav1alpha1.ControlPlaneSpec) {
+			spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]string{"audit-log-maxage": maxAge}}
+		}
+	}
+
+	setTarget(t, cp)
+	eventually(t, func() error {
+		return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates)
+	})
+	check("a wait at its generation", 1, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates)
+
+	changeSpec(t, cp, audit("7"))
+	check("a kept wait", 1, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates)
+
+	inputsReady(t, cp)
+	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
+		markAvailable(t, eventuallyDeployment(t, cp, component))
+	}
+	eventually(t, func() error { return expectCondition(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady) })
+	changeSpec(t, cp, audit("8"))
+	check("a counted wait", 2, metav1.ConditionTrue, lodiav1alpha1.ReasonReady)
 }
 
 func TestAWaitThatCannotReadWritesNothing(t *testing.T) {
@@ -1532,7 +1575,7 @@ func running(t *testing.T, change ...func(*lodiav1alpha1.ControlPlaneSpec)) *lod
 
 func inputsReady(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 	t.Helper()
-	setTarget(t, cp, version)
+	setTarget(t, cp)
 	setTrue(t, cp, lodiav1alpha1.ConditionCertificatesReady, "Issued")
 	setTrue(t, cp, lodiav1alpha1.ConditionDatastoreReady, "Ready")
 	setDatastore(t, cp, lodiav1alpha1.HostPort{Host: "dev-etcd-client." + cp.Namespace + ".svc", Port: 2379})
@@ -1589,7 +1632,7 @@ func applyStatus(t *testing.T, cp *lodiav1alpha1.ControlPlane, owner string, sta
 	}
 }
 
-func setTarget(t *testing.T, cp *lodiav1alpha1.ControlPlane, version string) {
+func setTarget(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 	t.Helper()
 	applyStatus(t, cp, "test/target", map[string]any{"target": map[string]any{"version": version}})
 }
