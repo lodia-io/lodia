@@ -454,6 +454,74 @@ func TestARolloutReadThatFailsOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
 	}
 }
 
+func TestAWaitComparesItsWriteWithTheServer(t *testing.T) {
+	cp := controlPlane(t, "tenant-gate-compare")
+	eventually(t, 10*time.Second, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+	})
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	waiting := func(conditionType string) map[string]any {
+		return map[string]any{
+			"type": conditionType, "status": string(metav1.ConditionFalse), "reason": lodiav1alpha1.ReasonWaitingForAccess,
+			"message": "AccessReady is not True for this generation", "observedGeneration": cp.Generation,
+			"lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
+		}
+	}
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		waiting(lodiav1alpha1.ConditionAddonsApplied), waiting(lodiav1alpha1.ConditionAddonsAvailable),
+	}})
+	applyStatus(t, cp, "test/"+lodiav1alpha1.ConditionAccessReady, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding, cp.Generation),
+	}})
+	refresh(t, cp)
+	stale := cp.DeepCopy()
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable, cp.Generation),
+	}})
+	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: k8s}
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+		t.Fatal(err)
+	}
+	refresh(t, cp)
+	expectNow(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+	expectNow(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+}
+
+func TestAFailedSyncComparesItsWriteWithTheServer(t *testing.T) {
+	cp := controlPlane(t, "tenant-sync-compare")
+	publish(t, cp)
+	reconcilePKI(t, &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour}, cp)
+	eventually(t, 10*time.Second, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+	})
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	applying := func(conditionType string) map[string]any {
+		return map[string]any{
+			"type": conditionType, "status": string(metav1.ConditionFalse), "reason": lodiav1alpha1.ReasonApplying,
+			"message": "the tenant's API server does not answer; the error is in Lodia's log", "observedGeneration": cp.Generation,
+			"lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
+		}
+	}
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		applying(lodiav1alpha1.ConditionAddonsApplied), applying(lodiav1alpha1.ConditionAddonsAvailable),
+	}})
+	refresh(t, cp)
+	stale := cp.DeepCopy()
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, cp.Generation),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, cp.Generation),
+	}})
+	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: k8s, ApplyPeriod: time.Hour, Dial: unreachable}
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+		t.Fatal("a pass that could not reach the tenant succeeded")
+	}
+	refresh(t, cp)
+	expectNow(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying)
+	expectNow(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying)
+}
+
 type snapshot struct {
 	client.Client
 	cp *lodiav1alpha1.ControlPlane

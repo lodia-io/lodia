@@ -1306,6 +1306,40 @@ func TestARefusalIsNotCountedAsAvailability(t *testing.T) {
 	}
 }
 
+func TestAWaitComparesItsWriteWithTheServer(t *testing.T) {
+	cp := running(t)
+	changeSpec(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.Paused = true })
+	setTrue(t, cp, lodiav1alpha1.ConditionCertificatesReady, "Issued")
+	setTrue(t, cp, lodiav1alpha1.ConditionDatastoreReady, "Ready")
+	applyStatus(t, cp, "test/"+lodiav1alpha1.ConditionDatastoreReady, map[string]any{"conditions": []any{map[string]any{
+		"type": lodiav1alpha1.ConditionDatastoreReady, "status": string(metav1.ConditionFalse), "reason": lodiav1alpha1.ReasonUnavailable,
+		"message": "set by the test", "observedGeneration": get(t, cp).Generation, "lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
+	}}})
+	stale := get(t, cp)
+	kept := *meta.FindStatusCondition(stale.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady)
+	applyStatus(t, cp, workloads.FieldManager, map[string]any{"conditions": []any{map[string]any{
+		"type": lodiav1alpha1.ConditionAPIServerReady, "status": string(metav1.ConditionFalse), "reason": lodiav1alpha1.ReasonUnavailable,
+		"message": "kube-apiserver has 0 of 1 replicas ready", "observedGeneration": kept.ObservedGeneration, "lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
+	}}})
+	held := stale.DeepCopy()
+	held.Spec.Paused = false
+	cached := interceptor.NewClient(k8s, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if plane, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
+				held.DeepCopyInto(plane)
+				return nil
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	if _, err := (&workloads.Reconciler{Client: cached, Reader: k8s, SignerImage: signerImage}).Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := expectAt(cp, kept.ObservedGeneration, kept.Status, kept.Reason, kept.Message); err != nil {
+		t.Error(err)
+	}
+}
+
 func TestAWaitThatCannotReadWritesNothing(t *testing.T) {
 	cp := running(t)
 	changeSpec(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) {

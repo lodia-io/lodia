@@ -367,6 +367,22 @@ func TestAFailedApplyAfterAFailedProbeCountsNoFailure(t *testing.T) {
 	}
 }
 
+func TestAFailedProbeOfAReachableThatIsNotTrueIsAFailure(t *testing.T) {
+	cp := controlPlane(t)
+	e := serve(t)
+	e.code.Store(http.StatusServiceUnavailable)
+	publish(t, cp, e)
+	eventually(t, func() error {
+		return expect(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the CA bundle dev-ca-bundle")
+	})
+	probe := &health.Reconciler{Client: k8s, Reader: k8s, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
+	writeBundle(t, cp, e)
+	reconcile(t, probe, cp)
+	if err := expect(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonExternalProbeFailed, e.url+" answered 503"); err != nil {
+		t.Error(err)
+	}
+}
+
 func TestASuccessfulProbeClearsTheCountInAPassThatFails(t *testing.T) {
 	cp := controlPlane(t)
 	e := serve(t)
