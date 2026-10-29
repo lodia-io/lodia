@@ -414,8 +414,8 @@ func TestAKeptAccessReadyOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
 	}
 
 	written := fresh().ResourceVersion
-	if err := pass(failingRead{Reader: apiReader, read: "the ControlPlane"}); err == nil || !strings.Contains(err.Error(), "the API server is down") {
-		t.Errorf("a pass that cannot read AccessReady from the server returned %v, want the read's error", err)
+	if err := pass(failingRead{Reader: apiReader, read: "the ControlPlane"}); err == nil || !strings.Contains(err.Error(), "the API server is down") || !strings.Contains(err.Error(), "connection refused") {
+		t.Errorf("a pass that cannot read AccessReady from the server returned %v, want the read's error and the bind's", err)
 	}
 	if after := fresh().ResourceVersion; after != written {
 		t.Errorf("a pass that cannot read AccessReady from the server wrote the ControlPlane: resourceVersion %s, then %s", written, after)

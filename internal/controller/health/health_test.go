@@ -528,16 +528,20 @@ func TestAKeptConditionIsDecidedFromTheServer(t *testing.T) {
 	writeBundle(t, cp, e)
 	publish(t, cp, e)
 	setAccess(t, cp)
+	eventually(t, func() error {
+		return expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, "waiting for PKI to write dev-lodia-kubeconfig")
+	})
 	writeKubeconfig(t, cp, tenantKubeconfig)
 	start := time.Now().Truncate(time.Second)
 	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", start)
 	renew(t, lodiav1alpha1.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
 	const leading = "the leader Leases of kube-controller-manager and kube-scheduler are renewed"
-	eventually(t, func() error {
-		return expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, leading)
-	})
 	now := clocktesting.NewFakePassiveClock(start)
 	r := &health.Reconciler{Client: k8s, Reader: k8s, Period: 10 * time.Second, Timeout: 2 * time.Second, Clock: now}
+	reconcile(t, r, cp)
+	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, leading); err != nil {
+		t.Fatal(err)
+	}
 	e.code.Store(http.StatusServiceUnavailable)
 	for range health.FailuresBeforeFalse {
 		reconcile(t, r, cp)
@@ -603,10 +607,12 @@ func TestAKeptConditionIsDecidedFromTheServer(t *testing.T) {
 	})
 	written := get(t, cp).ResourceVersion
 	for _, kept := range []struct {
-		condition string
-		code      int32
-	}{{lodiav1alpha1.ConditionControllersLeading, http.StatusOK}, {lodiav1alpha1.ConditionReachable, http.StatusServiceUnavailable}} {
+		condition  string
+		code       int32
+		kubeconfig []byte
+	}{{lodiav1alpha1.ConditionControllersLeading, http.StatusOK, unreachable}, {lodiav1alpha1.ConditionReachable, http.StatusServiceUnavailable, tenantKubeconfig}} {
 		e.code.Store(kept.code)
+		writeKubeconfig(t, cp, kept.kubeconfig)
 		if err := pass(stale, failing); !errors.Is(err, injected) {
 			t.Errorf("a pass that keeps %s and cannot read it from the server returned %v, want the read's error", kept.condition, err)
 		}

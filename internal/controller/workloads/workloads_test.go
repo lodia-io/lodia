@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1326,7 +1327,8 @@ func TestAWaitThatCannotReadWritesNothing(t *testing.T) {
 			},
 		})
 	}
-	deployments := failing(func(obj client.Object) bool { _, ok := obj.(*appsv1.Deployment); return ok })
+	var failed atomic.Bool
+	deployments := failing(func(obj client.Object) bool { _, ok := obj.(*appsv1.Deployment); return ok && !failed.Swap(true) })
 	controlPlanes := failing(func(obj client.Object) bool { _, ok := obj.(*lodiav1alpha1.ControlPlane); return ok })
 	for name, reconciler := range map[string]*workloads.Reconciler{
 		"its Deployments":                {Client: deployments, Reader: k8s, SignerImage: signerImage},
