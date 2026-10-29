@@ -333,6 +333,38 @@ func TestAPassThatFailsAfterAFailedProbeCountsNoFailure(t *testing.T) {
 	}
 }
 
+func TestAPassThatFailsKeepsTheCountOfFailedProbes(t *testing.T) {
+	cp := controlPlane(t)
+	e := serve(t)
+	writeBundle(t, cp, e)
+	publish(t, cp, e)
+	eventually(t, func() error {
+		return expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200")
+	})
+	e.code.Store(http.StatusServiceUnavailable)
+	probe := &health.Reconciler{Client: k8s, Reader: k8s, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
+	reconcile(t, probe, cp)
+	injected := errors.New("injected")
+	probe.Reader = interceptor.NewClient(k8s, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
+				return injected
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	if _, err := probe.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !errors.Is(err, injected) {
+		t.Fatalf("a pass whose live read failed returned %v, want the read's error", err)
+	}
+	probe.Reader = k8s
+	for range health.FailuresBeforeFalse - 1 {
+		reconcile(t, probe, cp)
+	}
+	if err := expect(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonExternalProbeFailed, e.url+" answered 503"); err != nil {
+		t.Error(err)
+	}
+}
+
 func TestAFailedApplyAfterAFailedProbeCountsNoFailure(t *testing.T) {
 	cp := controlPlane(t)
 	e := serve(t)
