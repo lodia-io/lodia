@@ -382,40 +382,11 @@ func TestARolloutReadThatFailsOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
 	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 	ctx := t.Context()
-	role := &rbacv1.ClusterRole{
-		ObjectMeta: metav1.ObjectMeta{Name: "lodia:operator-without-rollout-reads"},
-		Rules: []rbacv1.PolicyRule{
-			{APIGroups: []string{"", "discovery.k8s.io", rbacv1.GroupName}, Resources: []string{"*"}, Verbs: []string{"*"}},
-			{APIGroups: []string{appsv1.GroupName}, Resources: []string{"deployments", "daemonsets"}, Verbs: []string{"create", "patch", "update", "delete", "list", "watch"}},
-			{NonResourceURLs: []string{"*"}, Verbs: []string{"*"}},
-		},
-	}
-	if err := admin.Create(ctx, role); err != nil {
-		t.Fatal(err)
-	}
-	if err := admin.Delete(ctx, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: "lodia:operator"}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := admin.Create(ctx, &rbacv1.ClusterRoleBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: "lodia:operator"},
-		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: role.Name},
-		Subjects:   []rbacv1.Subject{{APIGroup: rbacv1.GroupName, Kind: rbacv1.UserKind, Name: "lodia:operator"}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	eventually(t, 30*time.Second, func() error {
-		review := &authorizationv1.SubjectAccessReview{Spec: authorizationv1.SubjectAccessReviewSpec{
-			User:               "lodia:operator",
-			ResourceAttributes: &authorizationv1.ResourceAttributes{Group: appsv1.GroupName, Resource: "deployments", Verb: "get", Namespace: "kube-system"},
-		}}
-		if err := admin.Create(ctx, review); err != nil {
-			return err
-		}
-		if review.Status.Allowed {
-			return errors.New("lodia:operator may still read Deployments")
-		}
-		return nil
-	})
+	rebindOperator(t, admin, []rbacv1.PolicyRule{
+		{APIGroups: []string{"", "discovery.k8s.io", rbacv1.GroupName}, Resources: []string{"*"}, Verbs: []string{"*"}},
+		{APIGroups: []string{appsv1.GroupName}, Resources: []string{"deployments", "daemonsets"}, Verbs: []string{"create", "patch", "update", "delete", "list", "watch"}},
+		{NonResourceURLs: []string{"*"}, Verbs: []string{"*"}},
+	}, authorizationv1.ResourceAttributes{Group: appsv1.GroupName, Resource: "deployments", Verb: "get", Namespace: "kube-system"})
 
 	refresh(t, cp)
 	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
@@ -425,7 +396,7 @@ func TestARolloutReadThatFailsOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
 	refresh(t, cp)
 	stale := cp.DeepCopy()
 	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
-		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation),
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation-1),
 		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable, cp.Generation),
 	}})
 	pass := func(reader client.Reader) error {
@@ -452,8 +423,106 @@ func TestARolloutReadThatFailsOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
 	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied); err != nil {
 		t.Error(err)
 	}
+
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation-1),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, cp.Generation-1),
+	}})
+	if err := pass(k8s); !apierrors.IsForbidden(err) {
+		t.Errorf("a pass whose rollout read was refused returned %v, want the refusal", err)
+	}
+	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied); err != nil {
+		t.Error(err)
+	}
+	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused); err != nil {
+		t.Error(err)
+	}
 }
 
+func TestARefusedApplyStopsThePass(t *testing.T) {
+	cp, admin := servedTenant(t, "tenant-refused-apply")
+	eventually(t, 30*time.Second, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
+	})
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	ctx := t.Context()
+	rebindOperator(t, admin, []rbacv1.PolicyRule{
+		{APIGroups: []string{"*"}, Resources: []string{"*"}, Verbs: []string{"get", "list", "watch"}},
+		{NonResourceURLs: []string{"*"}, Verbs: []string{"*"}},
+	}, authorizationv1.ResourceAttributes{Resource: "configmaps", Verb: "patch", Namespace: "kube-system"})
+	refresh(t, cp)
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation-1),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, cp.Generation-1),
+	}})
+	refresh(t, cp)
+	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, ApplyPeriod: time.Hour, Dial: *dial.Load()}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apierrors.IsForbidden(err) {
+		t.Errorf("a pass whose apply was refused returned %v, want the refusal", err)
+	}
+	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused); err != nil {
+		t.Error(err)
+	}
+	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestAnotherOwnersObjectKeepsApplyingThoughTheRolloutReadFails(t *testing.T) {
+	ctx := t.Context()
+	cp, admin := servedTenant(t, "tenant-owners-rollout")
+	setCoreDNS(t, cp, false)
+	eventually(t, 30*time.Second, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
+	})
+	for _, obj := range []client.Object{
+		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "coredns"}, Data: map[string]string{"Corefile": ".:53 { forward . 9.9.9.9 }"}},
+		&appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "coredns"},
+			Spec: appsv1.DeploymentSpec{
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "owners-dns"}},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "owners-dns"}},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "dns", Image: "owners/coredns"}}},
+				},
+			},
+		},
+	} {
+		if err := admin.Create(ctx, obj); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setCoreDNS(t, cp, true)
+	const others = "ConfigMap kube-system/coredns exists and is not Lodia's; delete it or disable the addon"
+	eventually(t, 30*time.Second, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying)
+	})
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	rebindOperator(t, admin, []rbacv1.PolicyRule{
+		{APIGroups: []string{"", "discovery.k8s.io", rbacv1.GroupName}, Resources: []string{"*"}, Verbs: []string{"*"}},
+		{APIGroups: []string{appsv1.GroupName}, Resources: []string{"deployments"}, Verbs: []string{"*"}},
+		{APIGroups: []string{appsv1.GroupName}, Resources: []string{"daemonsets"}, Verbs: []string{"create", "patch", "update", "delete", "list", "watch"}},
+		{NonResourceURLs: []string{"*"}, Verbs: []string{"*"}},
+	}, authorizationv1.ResourceAttributes{Group: appsv1.GroupName, Resource: "daemonsets", Verb: "get", Namespace: "kube-system"})
+	refresh(t, cp)
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation-1),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable, cp.Generation-1),
+	}})
+	refresh(t, cp)
+	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, ApplyPeriod: time.Hour, Dial: *dial.Load()}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apierrors.IsForbidden(err) {
+		t.Errorf("a pass whose rollout read was refused returned %v, want the refusal", err)
+	}
+	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying); err != nil {
+		t.Error(err)
+	}
+	if c := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied); c.Message != others {
+		t.Errorf("AddonsApplied says %q", c.Message)
+	}
+}
 func TestAWaitComparesItsWriteWithTheServer(t *testing.T) {
 	cp := controlPlane(t, "tenant-gate-compare")
 	eventually(t, 10*time.Second, func() error {
@@ -1122,6 +1191,35 @@ func TestAnInventoryReadTheTenantRefusesIsReported(t *testing.T) {
 		}
 		if c := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied); !strings.HasPrefix(c.Message, "ConfigMap kube-system/lodia-inventory is refused by the tenant's API server") {
 			return fmt.Errorf("AddonsApplied says %q", c.Message)
+		}
+		return nil
+	})
+}
+
+func rebindOperator(t *testing.T, admin *tenantClient, rules []rbacv1.PolicyRule, denied authorizationv1.ResourceAttributes) {
+	t.Helper()
+	ctx := t.Context()
+	role := &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: "lodia:operator-restricted"}, Rules: rules}
+	if err := admin.Create(ctx, role); err != nil {
+		t.Fatal(err)
+	}
+	if err := admin.Delete(ctx, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: "lodia:operator"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := admin.Create(ctx, &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "lodia:operator"},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: role.Name},
+		Subjects:   []rbacv1.Subject{{APIGroup: rbacv1.GroupName, Kind: rbacv1.UserKind, Name: "lodia:operator"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 30*time.Second, func() error {
+		review := &authorizationv1.SubjectAccessReview{Spec: authorizationv1.SubjectAccessReviewSpec{User: "lodia:operator", ResourceAttributes: &denied}}
+		if err := admin.Create(ctx, review); err != nil {
+			return err
+		}
+		if review.Status.Allowed {
+			return fmt.Errorf("lodia:operator may still %s %s", denied.Verb, denied.Resource)
 		}
 		return nil
 	})

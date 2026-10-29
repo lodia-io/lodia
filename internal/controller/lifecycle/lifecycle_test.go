@@ -359,6 +359,22 @@ func TestTheTargetFollowsTheSpecWhileAnInputLags(t *testing.T) {
 	})
 }
 
+func TestAConditionOutsideReadyHoldsNoChange(t *testing.T) {
+	const allTrue = "CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied, Reachable and ControllersLeading are True"
+	cp := controlPlane(t, "v1.37.1")
+	setCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable, "")
+	setVersion(t, cp, "v1.37.2")
+	for _, conditionType := range readiness {
+		setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
+	}
+	eventually(t, func() error {
+		if err := expect(t, cp, "v1.37.2", lodiav1alpha1.ReasonIdle); err != nil {
+			return err
+		}
+		return expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, allTrue, 2, 2)
+	})
+}
+
 func TestAStuckInputKeepsTheChangeInProgress(t *testing.T) {
 	const allTrue = "CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied, Reachable and ControllersLeading are True"
 	cp := controlPlane(t, "v1.37.1")
