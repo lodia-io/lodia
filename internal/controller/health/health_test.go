@@ -333,6 +333,40 @@ func TestAPassThatFailsAfterAFailedProbeCountsNoFailure(t *testing.T) {
 	}
 }
 
+func TestAFailedApplyAfterAFailedProbeCountsNoFailure(t *testing.T) {
+	cp := controlPlane(t)
+	e := serve(t)
+	writeBundle(t, cp, e)
+	publish(t, cp, e)
+	setAccess(t, cp)
+	eventually(t, func() error {
+		return expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, "waiting for PKI to write dev-lodia-kubeconfig")
+	})
+	if err := expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
+		t.Fatal(err)
+	}
+	writeKubeconfig(t, cp, tenantKubeconfig)
+
+	e.code.Store(http.StatusServiceUnavailable)
+	injected := errors.New("injected: the status apply failed")
+	probe := &health.Reconciler{Reader: k8s, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
+	probe.Client = interceptor.NewClient(k8s, interceptor.Funcs{
+		SubResourceApply: func(context.Context, client.Client, string, runtime.ApplyConfiguration, ...client.SubResourceApplyOption) error {
+			return injected
+		},
+	})
+	for range health.FailuresBeforeFalse - 1 {
+		if _, err := probe.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !errors.Is(err, injected) {
+			t.Fatalf("a pass whose status apply failed returned %v, want the apply's error", err)
+		}
+	}
+	probe.Client = k8s
+	reconcile(t, probe, cp)
+	if err := expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
+		t.Errorf("one failed probe after passes whose apply failed: %v", err)
+	}
+}
+
 func TestASuccessfulProbeClearsTheCountInAPassThatFails(t *testing.T) {
 	cp := controlPlane(t)
 	e := serve(t)
@@ -489,6 +523,9 @@ func TestAKeptConditionIsWrittenAtTheObjectsGeneration(t *testing.T) {
 	writeBundle(t, cp, e)
 	publish(t, cp, e)
 	setAccess(t, cp)
+	eventually(t, func() error {
+		return expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, "waiting for PKI to write dev-lodia-kubeconfig")
+	})
 	writeKubeconfig(t, cp, tenantKubeconfig)
 	start := time.Now().Truncate(time.Second)
 	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", start)

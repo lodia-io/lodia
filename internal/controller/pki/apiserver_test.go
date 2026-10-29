@@ -427,6 +427,44 @@ func TestAKeptAccessReadyOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
 	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionTrue, lodiav1alpha1.ReasonBound)
 }
 
+func TestATrueKeptWithoutAnAnswerKeepsItsGeneration(t *testing.T) {
+	ctx := t.Context()
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "pki-kept-generation")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	u := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": lodiav1alpha1.GroupVersion.String(),
+		"kind":       "ControlPlane",
+		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
+		"status": map[string]any{"conditions": []any{map[string]any{
+			"type":               lodiav1alpha1.ConditionAccessReady,
+			"status":             string(metav1.ConditionTrue),
+			"reason":             lodiav1alpha1.ReasonBound,
+			"message":            "lodia:operator, lodia:cluster-admins and lodia:kubelet-api-admins are bound",
+			"observedGeneration": cp.Generation,
+			"lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
+		}}},
+	}}
+	if err := k8s.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(u), client.FieldOwner("test/access"), client.ForceOwnership); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Get(ctx, client.ObjectKeyFromObject(cp), cp); err != nil {
+		t.Fatal(err)
+	}
+	stale := cp.Generation
+	cp.Spec.Placement = &lodiav1alpha1.Placement{PriorityClassName: "system-cluster-critical"}
+	if err := k8s.Update(ctx, cp); err != nil {
+		t.Fatal(err)
+	}
+	setAPIServerReady(t, cp)
+	r.Dial = unreachable
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+		t.Fatal("a pass that could not reach the tenant succeeded")
+	}
+	expectConditionAt(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionTrue, lodiav1alpha1.ReasonBound, stale)
+}
+
 type snapshot struct {
 	client.Client
 	cp *lodiav1alpha1.ControlPlane

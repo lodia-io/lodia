@@ -840,6 +840,39 @@ func TestATenantThatDoesNotAnswerKeepsATrueAddonsApplied(t *testing.T) {
 	})
 }
 
+func TestATenantThatDoesNotAnswerAtANewGenerationKeepsWhatItDescribed(t *testing.T) {
+	cp := controlPlane(t, "tenant-unanswered-generation")
+	publish(t, cp)
+	issuer := &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour}
+	reconcilePKI(t, issuer, cp)
+	admin := startTenant(t, cp)
+	setDial(t, admin.host)
+	issuer.Dial = *dial.Load()
+	setCondition(t, cp, lodiav1alpha1.ConditionAPIServerReady, "Ready")
+	reconcilePKI(t, issuer, cp)
+	eventually(t, 30*time.Second, func() error {
+		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied); err != nil {
+			return err
+		}
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonRolloutPending)
+	})
+	applied, available := *condition(t, cp, lodiav1alpha1.ConditionAddonsApplied), *condition(t, cp, lodiav1alpha1.ConditionAddonsAvailable)
+
+	dial.Store(&unreachable)
+	setReplicas(t, cp, 2)
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	r := &tenant.Reconciler{Client: k8s, Reader: k8s, ApplyPeriod: time.Hour, Dial: unreachable}
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+		t.Fatal("a pass that could not reach the tenant succeeded")
+	}
+	for _, before := range []metav1.Condition{applied, available} {
+		after := *condition(t, cp, before.Type)
+		if after.Status != before.Status || after.Reason != before.Reason || after.Message != before.Message || after.ObservedGeneration != before.ObservedGeneration {
+			t.Errorf("a tenant that does not answer at generation %d changed %s from %+v to %+v", cp.Generation, before.Type, before, after)
+		}
+	}
+}
+
 func TestATenantThatNeverAnsweredIsApplying(t *testing.T) {
 	cp := controlPlane(t, "tenant-never-answered")
 	publish(t, cp)
