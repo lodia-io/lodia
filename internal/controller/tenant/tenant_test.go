@@ -523,6 +523,7 @@ func TestAnotherOwnersObjectKeepsApplyingThoughTheRolloutReadFails(t *testing.T)
 		t.Errorf("AddonsApplied says %q", c.Message)
 	}
 }
+
 func TestAWaitComparesItsWriteWithTheServer(t *testing.T) {
 	cp := controlPlane(t, "tenant-gate-compare")
 	eventually(t, 10*time.Second, func() error {
