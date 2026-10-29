@@ -179,3 +179,5 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   Find what answered 500, the tenant's API server or etcd, before the gate is trusted to hold zero failed requests.
 - A Tenant pass that succeeds compares its status apply with the cache, and its predicate ignores Tenant's own conditions, so a write the server holds and the cache does not yet, such as a refusal, stays until the next timed pass, a minute or `ApplyPeriod`; the same on `main`.
   Compare that apply with the live copy too, as the waits and keeps do ([independent-controllers](docs/decisions/independent-controllers.md)).
+- PKI carries `CAValidityAcceptable` over from the cache while another owner keeps one of its Secrets and while a CA cannot be read, so a stale cache can write an older value back, which stays while that path holds; the same on `main`.
+  Read it live there too, as the waits and keeps do ([independent-controllers](docs/decisions/independent-controllers.md)).
