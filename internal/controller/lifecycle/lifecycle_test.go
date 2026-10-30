@@ -183,7 +183,7 @@ func TestAnUnsupportedMinorGetsNoTarget(t *testing.T) {
 func TestReadyFollowsTheReadinessConditions(t *testing.T) {
 	cp := controlPlane(t, "v1.37.1")
 	eventually(t, func() error {
-		return expectReady(t, cp, metav1.ConditionUnknown, lodiav1alpha1.ReasonLatestGenerationNotObserved, "CertificatesReady is not reported for generation 1", 0)
+		return expectReady(t, cp, metav1.ConditionUnknown, lodiav1alpha1.ReasonLatestGenerationNotObserved, "CertificatesReady is not reported for generation 1", 1, 0)
 	})
 
 	for _, conditionType := range readiness {
@@ -191,27 +191,221 @@ func TestReadyFollowsTheReadinessConditions(t *testing.T) {
 	}
 	eventually(t, func() error {
 		return expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
-			"CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied, Reachable and ControllersLeading are True", 1)
+			"CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied, Reachable and ControllersLeading are True", 1, 1)
 	})
 
 	setCondition(t, cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionFalse, lodiav1alpha1.ReasonSchedulerNotLeading, "Lease kube-system/kube-scheduler has no holder")
 	eventually(t, func() error {
-		return expectReady(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonSchedulerNotLeading, "ControllersLeading: Lease kube-system/kube-scheduler has no holder", 1)
+		return expectReady(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonSchedulerNotLeading, "ControllersLeading: Lease kube-system/kube-scheduler has no holder", 1, 1)
 	})
 
 	setCondition(t, cp, lodiav1alpha1.ConditionAPIServerReady, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, "kube-apiserver has 0 of 1 replicas ready")
 	eventually(t, func() error {
-		return expectReady(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, "APIServerReady: kube-apiserver has 0 of 1 replicas ready", 1)
+		return expectReady(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, "APIServerReady: kube-apiserver has 0 of 1 replicas ready", 1, 1)
 	})
 
 	setCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, lodiav1alpha1.ReasonIssuing, "dev-ca-bundle is not written yet")
 	eventually(t, func() error {
-		return expectReady(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonIssuing, "CertificatesReady: dev-ca-bundle is not written yet", 1)
+		return expectReady(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonIssuing, "CertificatesReady: dev-ca-bundle is not written yet", 1, 1)
 	})
 
 	setVersion(t, cp, "v1.37.2")
 	eventually(t, func() error {
-		return expectReady(t, cp, metav1.ConditionUnknown, lodiav1alpha1.ReasonLatestGenerationNotObserved, "CertificatesReady is not reported for generation 2", 1)
+		if err := expectReady(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonIssuing, "CertificatesReady: dev-ca-bundle is not written yet", 1, 1); err != nil {
+			return err
+		}
+		return expectProgressing(t, cp, lodiav1alpha1.ReasonLatestGenerationNotObserved,
+			"generation 2 is not taken up yet: CertificatesReady at 1, DatastoreReady at 1, APIServerReady at 1, AccessReady at 1, AddonsApplied at 1, Reachable at 1, ControllersLeading at 1")
+	})
+}
+
+func TestReadyStaysTrueWhileTheWritersTakeAChangeUp(t *testing.T) {
+	const allTrue = "CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied, Reachable and ControllersLeading are True"
+	cp := controlPlane(t, "v1.37.1")
+	for _, conditionType := range readiness {
+		setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
+	}
+	eventually(t, func() error {
+		return expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, allTrue, 1, 1)
+	})
+
+	setVersion(t, cp, "v1.37.2")
+	eventually(t, func() error {
+		if err := expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, allTrue, 1, 1); err != nil {
+			return err
+		}
+		return expectProgressing(t, cp, lodiav1alpha1.ReasonLatestGenerationNotObserved,
+			"generation 2 is not taken up yet: CertificatesReady at 1, DatastoreReady at 1, APIServerReady at 1, AccessReady at 1, AddonsApplied at 1, Reachable at 1, ControllersLeading at 1")
+	})
+
+	setCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, "Fine", "")
+	setCondition(t, cp, lodiav1alpha1.ConditionDatastoreReady, metav1.ConditionTrue, "Fine", "")
+	eventually(t, func() error {
+		if err := expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, allTrue, 1, 1); err != nil {
+			return err
+		}
+		return expectProgressing(t, cp, lodiav1alpha1.ReasonLatestGenerationNotObserved,
+			"generation 2 is not taken up yet: APIServerReady at 1, AccessReady at 1, AddonsApplied at 1, Reachable at 1, ControllersLeading at 1")
+	})
+
+	setVersion(t, cp, "v1.37.3")
+	eventually(t, func() error {
+		if err := expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, allTrue, 1, 1); err != nil {
+			return err
+		}
+		return expectProgressing(t, cp, lodiav1alpha1.ReasonLatestGenerationNotObserved,
+			"generation 3 is not taken up yet: CertificatesReady at 2, DatastoreReady at 2, APIServerReady at 1, AccessReady at 1, AddonsApplied at 1, Reachable at 1, ControllersLeading at 1")
+	})
+
+	for _, conditionType := range readiness[:len(readiness)-1] {
+		setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
+	}
+	eventually(t, func() error {
+		if err := expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, allTrue, 1, 1); err != nil {
+			return err
+		}
+		return expectProgressing(t, cp, lodiav1alpha1.ReasonLatestGenerationNotObserved,
+			"generation 3 is not taken up yet: ControllersLeading at 1")
+	})
+
+	setCondition(t, cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionTrue, "Fine", "")
+	eventually(t, func() error {
+		if err := expect(t, cp, "v1.37.3", lodiav1alpha1.ReasonIdle); err != nil {
+			return err
+		}
+		return expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, allTrue, 3, 3)
+	})
+}
+
+func TestAMissingInputLeavesReadyAtTheObjectsGeneration(t *testing.T) {
+	cp := controlPlane(t, "v1.37.1")
+	for _, conditionType := range readiness[:len(readiness)-1] {
+		setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
+	}
+	eventually(t, func() error {
+		return expectReady(t, cp, metav1.ConditionUnknown, lodiav1alpha1.ReasonLatestGenerationNotObserved, "ControllersLeading is not reported for generation 1", 1, 0)
+	})
+
+	setVersion(t, cp, "v1.37.2")
+	eventually(t, func() error {
+		if err := expectReady(t, cp, metav1.ConditionUnknown, lodiav1alpha1.ReasonLatestGenerationNotObserved, "ControllersLeading is not reported for generation 2", 2, 0); err != nil {
+			return err
+		}
+		return expectProgressing(t, cp, lodiav1alpha1.ReasonLatestGenerationNotObserved,
+			"generation 2 is not taken up yet: CertificatesReady at 1, DatastoreReady at 1, APIServerReady at 1, AccessReady at 1, AddonsApplied at 1, Reachable at 1")
+	})
+
+	setCondition(t, cp, lodiav1alpha1.ConditionAPIServerReady, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, "kube-apiserver has 0 of 1 replicas ready")
+	eventually(t, func() error {
+		return expectReady(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, "APIServerReady: kube-apiserver has 0 of 1 replicas ready", 2, 0)
+	})
+}
+
+func TestProgressingNamesTheLagAfterUnsupportedAndBeforeTheRollout(t *testing.T) {
+	cp := controlPlane(t, "v1.35.0")
+	for _, conditionType := range readiness {
+		setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
+	}
+	applyStatus(t, cp, "test/components", map[string]any{"components": map[string]any{
+		"apiServer": map[string]any{"total": int64(2), "ready": int64(2), "updated": int64(1)},
+	}})
+	eventually(t, func() error {
+		return expectProgressing(t, cp, lodiav1alpha1.ReasonRollingOut, "kube-apiserver: 1 of 2 replicas updated")
+	})
+
+	setVersion(t, cp, "v1.35.1")
+	eventually(t, func() error {
+		return expectProgressing(t, cp, lodiav1alpha1.ReasonLatestGenerationNotObserved,
+			"generation 2 is not taken up yet: CertificatesReady at 1, DatastoreReady at 1, APIServerReady at 1, AccessReady at 1, AddonsApplied at 1, Reachable at 1, ControllersLeading at 1")
+	})
+
+	for _, conditionType := range readiness {
+		setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
+	}
+	eventually(t, func() error {
+		return expectProgressing(t, cp, lodiav1alpha1.ReasonRollingOut, "kube-apiserver: 1 of 2 replicas updated")
+	})
+
+	setVersion(t, cp, "v1.36.0")
+	eventually(t, func() error { return expect(t, cp, "v1.35.1", lodiav1alpha1.ReasonUnsupported) })
+
+	setVersion(t, cp, "v1.38.0")
+	eventually(t, func() error { return expect(t, cp, "v1.35.1", lodiav1alpha1.ReasonUnsupported) })
+}
+
+func TestTheTargetFollowsTheSpecWhileAnInputLags(t *testing.T) {
+	const allTrue = "CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied, Reachable and ControllersLeading are True"
+	cp := controlPlane(t, "v1.37.1")
+	for _, conditionType := range readiness {
+		setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
+	}
+	eventually(t, func() error {
+		return expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, allTrue, 1, 1)
+	})
+	setVersion(t, cp, "v1.37.2")
+	for _, conditionType := range readiness {
+		if conditionType != lodiav1alpha1.ConditionAccessReady {
+			setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
+		}
+	}
+	eventually(t, func() error {
+		if err := expectProgressing(t, cp, lodiav1alpha1.ReasonLatestGenerationNotObserved, "generation 2 is not taken up yet: AccessReady at 1"); err != nil {
+			return err
+		}
+		if target := get(t, cp).Status.Target; target == nil || target.Version != "v1.37.2" {
+			return fmt.Errorf("target is %+v while AccessReady lags, want v1.37.2", target)
+		}
+		return nil
+	})
+}
+
+func TestAConditionOutsideReadyHoldsNoChange(t *testing.T) {
+	const allTrue = "CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied, Reachable and ControllersLeading are True"
+	cp := controlPlane(t, "v1.37.1")
+	setCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable, "")
+	setVersion(t, cp, "v1.37.2")
+	for _, conditionType := range readiness {
+		setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
+	}
+	eventually(t, func() error {
+		if err := expect(t, cp, "v1.37.2", lodiav1alpha1.ReasonIdle); err != nil {
+			return err
+		}
+		return expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, allTrue, 2, 2)
+	})
+}
+
+func TestAStuckInputKeepsTheChangeInProgress(t *testing.T) {
+	const allTrue = "CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied, Reachable and ControllersLeading are True"
+	cp := controlPlane(t, "v1.37.1")
+	for _, conditionType := range readiness {
+		setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
+	}
+	eventually(t, func() error {
+		return expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, allTrue, 1, 1)
+	})
+
+	setVersion(t, cp, "v1.37.2")
+	for _, conditionType := range readiness {
+		if conditionType != lodiav1alpha1.ConditionAccessReady {
+			setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
+		}
+	}
+	eventually(t, func() error {
+		if err := expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, allTrue, 1, 1); err != nil {
+			return err
+		}
+		return expectProgressing(t, cp, lodiav1alpha1.ReasonLatestGenerationNotObserved,
+			"generation 2 is not taken up yet: AccessReady at 1")
+	})
+
+	setCondition(t, cp, lodiav1alpha1.ConditionAPIServerReady, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, "kube-apiserver has 0 of 1 replicas ready")
+	eventually(t, func() error {
+		if err := expectReady(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, "APIServerReady: kube-apiserver has 0 of 1 replicas ready", 1, 1); err != nil {
+			return err
+		}
+		return expectProgressing(t, cp, lodiav1alpha1.ReasonLatestGenerationNotObserved,
+			"generation 2 is not taken up yet: AccessReady at 1")
 	})
 }
 
@@ -225,7 +419,7 @@ func TestProgressingSumsTheRollout(t *testing.T) {
 		"scheduler":         map[string]any{"total": int64(2), "ready": int64(2)},
 	}})
 	eventually(t, func() error {
-		return expectProgressing(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRollingOut,
+		return expectProgressing(t, cp, lodiav1alpha1.ReasonRollingOut,
 			"kube-apiserver: 1 of 2 replicas updated; kube-scheduler: its updated replicas are not reported yet")
 	})
 	applyStatus(t, cp, "test/components", map[string]any{"components": map[string]any{
@@ -238,7 +432,7 @@ func TestProgressingSumsTheRollout(t *testing.T) {
 		"members":   map[string]any{"total": int64(3), "ready": int64(3), "updated": int64(2)},
 	}})
 	eventually(t, func() error {
-		return expectProgressing(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRollingOut, "etcd: 2 of 3 members updated")
+		return expectProgressing(t, cp, lodiav1alpha1.ReasonRollingOut, "etcd: 2 of 3 members updated")
 	})
 	applyStatus(t, cp, "test/datastore", map[string]any{"datastore": map[string]any{
 		"endpoints": []any{map[string]any{"host": "dev-etcd-client.team.svc", "port": int64(2379)}},
@@ -251,7 +445,7 @@ func TestProgressingSumsTheRollout(t *testing.T) {
 		"members":   map[string]any{"total": int64(3), "ready": int64(3)},
 	}})
 	eventually(t, func() error {
-		return expectProgressing(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRollingOut, "etcd: its updated members are not reported yet")
+		return expectProgressing(t, cp, lodiav1alpha1.ReasonRollingOut, "etcd: its updated members are not reported yet")
 	})
 	setVersion(t, cp, "v1.38.0")
 	eventually(t, func() error { return expect(t, cp, "v1.37.1", lodiav1alpha1.ReasonUnsupported) })
@@ -279,16 +473,30 @@ func TestReadyDuringDeletion(t *testing.T) {
 	}
 	eventually(t, func() error {
 		return expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
-			"CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied, Reachable and ControllersLeading are True", 1)
+			"CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied, Reachable and ControllersLeading are True", 1, 1)
+	})
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) {
+		cp.Spec.Placement = &lodiav1alpha1.Placement{PriorityClassName: "system-cluster-critical"}
+	})
+	for _, conditionType := range readiness[:len(readiness)-1] {
+		setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
+	}
+	eventually(t, func() error {
+		c := condition(t, cp, lodiav1alpha1.ConditionProgressing)
+		if want := "generation 2 is not taken up yet: ControllersLeading at 1"; c == nil || c.Reason != lodiav1alpha1.ReasonLatestGenerationNotObserved || c.Message != want {
+			return fmt.Errorf("Progressing is %+v, want %s %q", c, lodiav1alpha1.ReasonLatestGenerationNotObserved, want)
+		}
+		return nil
 	})
 
 	if err := k8s.Delete(t.Context(), get(t, cp)); err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, func() error {
-		c := condition(t, cp, lodiav1alpha1.ConditionReady)
-		if c == nil || c.Status != metav1.ConditionFalse || c.Reason != lodiav1alpha1.ReasonDeleting {
-			return fmt.Errorf("Ready is %+v, want False %s", c, lodiav1alpha1.ReasonDeleting)
+		fresh := get(t, cp)
+		c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionReady)
+		if c == nil || c.Status != metav1.ConditionFalse || c.Reason != lodiav1alpha1.ReasonDeleting || c.ObservedGeneration != fresh.Generation {
+			return fmt.Errorf("Ready is %+v, want False %s at generation %d", c, lodiav1alpha1.ReasonDeleting, fresh.Generation)
 		}
 		return nil
 	})
@@ -310,13 +518,21 @@ func TestAPassThatChangesNothingWritesNothing(t *testing.T) {
 	for _, conditionType := range readiness {
 		setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
 	}
+	expectNoWrite(t, cp, lodiav1alpha1.ConditionReady, lodiav1alpha1.ReasonReady)
+
+	setVersion(t, cp, "v1.36.1")
+	expectNoWrite(t, cp, lodiav1alpha1.ConditionProgressing, lodiav1alpha1.ReasonLatestGenerationNotObserved)
+}
+
+func expectNoWrite(t *testing.T, cp *lodiav1alpha1.ControlPlane, conditionType, reason string) {
+	t.Helper()
 	var settled string
 	eventually(t, func() error {
 		fresh := get(t, cp)
-		ready := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionReady)
-		if ready == nil || ready.Status != metav1.ConditionTrue || settled != fresh.ResourceVersion {
+		c := meta.FindStatusCondition(fresh.Status.Conditions, conditionType)
+		if c == nil || c.Reason != reason || settled != fresh.ResourceVersion {
 			settled = fresh.ResourceVersion
-			return fmt.Errorf("resourceVersion %s, Ready %v", fresh.ResourceVersion, ready)
+			return fmt.Errorf("resourceVersion %s, %s %v", fresh.ResourceVersion, conditionType, c)
 		}
 		return nil
 	})
@@ -421,13 +637,13 @@ func expect(t *testing.T, cp *lodiav1alpha1.ControlPlane, version, progressing s
 	return nil
 }
 
-func expectReady(t *testing.T, cp *lodiav1alpha1.ControlPlane, status metav1.ConditionStatus, reason, message string, observedGeneration int64) error {
+func expectReady(t *testing.T, cp *lodiav1alpha1.ControlPlane, status metav1.ConditionStatus, reason, message string, generation, observedGeneration int64) error {
 	t.Helper()
 	fresh := get(t, cp)
 	c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionReady)
 	switch {
-	case c == nil || c.Status != status || c.Reason != reason || c.Message != message || c.ObservedGeneration != fresh.Generation:
-		return fmt.Errorf("Ready is %+v, want %s %s %q at generation %d", c, status, reason, message, fresh.Generation)
+	case c == nil || c.Status != status || c.Reason != reason || c.Message != message || c.ObservedGeneration != generation:
+		return fmt.Errorf("Ready is %+v, want %s %s %q at generation %d", c, status, reason, message, generation)
 	case fresh.Status.ObservedGeneration != observedGeneration:
 		return fmt.Errorf("status.observedGeneration is %d, want %d", fresh.Status.ObservedGeneration, observedGeneration)
 	}
@@ -459,12 +675,12 @@ func applyStatus(t *testing.T, cp *lodiav1alpha1.ControlPlane, manager string, s
 	}
 }
 
-func expectProgressing(t *testing.T, cp *lodiav1alpha1.ControlPlane, status metav1.ConditionStatus, reason, message string) error {
+func expectProgressing(t *testing.T, cp *lodiav1alpha1.ControlPlane, reason, message string) error {
 	t.Helper()
 	fresh := get(t, cp)
 	c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionProgressing)
-	if c == nil || c.Status != status || c.Reason != reason || c.Message != message || c.ObservedGeneration != fresh.Generation {
-		return fmt.Errorf("Progressing is %+v, want %s %s %q at generation %d", c, status, reason, message, fresh.Generation)
+	if c == nil || c.Status != metav1.ConditionTrue || c.Reason != reason || c.Message != message || c.ObservedGeneration != fresh.Generation {
+		return fmt.Errorf("Progressing is %+v, want True %s %q at generation %d", c, reason, message, fresh.Generation)
 	}
 	return nil
 }

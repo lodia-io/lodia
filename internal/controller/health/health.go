@@ -43,6 +43,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/live"
 	"go.lodia.io/lodia/internal/ownership"
 )
 
@@ -57,7 +58,7 @@ const (
 type Reconciler struct {
 	client.Client
 	// Reader reads the CA bundle and Lodia's kubeconfig, whose data the cache
-	// does not hold.
+	// does not hold, and a condition Health keeps.
 	Reader client.Reader
 	// Period is how often a control plane is probed and its leader Leases
 	// read, Timeout how long a probe or a read waits for an answer.
@@ -96,8 +97,9 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 		Complete(r)
 }
 
-// Between the periodic passes, only a change of the endpoint or of
-// AccessReady brings one, so the failures counted are probes a period apart.
+// Between the periodic passes, only a change of the endpoint or of whether
+// AccessReady is True brings one, besides a new generation, so failed probes
+// count a period apart unless such a change comes between them.
 func inputsChanged() predicate.Funcs {
 	return predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool {
 		before, ok := e.ObjectOld.(*lodiav1alpha1.ControlPlane)
@@ -106,15 +108,12 @@ func inputsChanged() predicate.Funcs {
 	}}
 }
 
-func access(cp *lodiav1alpha1.ControlPlane) string {
+func access(cp *lodiav1alpha1.ControlPlane) bool {
 	c := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAccessReady)
-	if c == nil {
-		return ""
-	}
-	return fmt.Sprintf("%s/%d", c.Status, c.ObservedGeneration)
+	return c != nil && c.Status == metav1.ConditionTrue
 }
 
-// +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=list;watch
+// +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/status,verbs=patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 
@@ -130,81 +129,82 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if !cp.DeletionTimestamp.IsZero() || cp.Spec.Paused {
 		return ctrl.Result{}, nil
 	}
-	reachable, leading := previous(cp, lodiav1alpha1.ConditionReachable), previous(cp, lodiav1alpha1.ConditionControllersLeading)
-	if meta.FindStatusCondition(cp.Status.Conditions, reachable.Type) == nil || meta.FindStatusCondition(cp.Status.Conditions, leading.Type) == nil {
-		if err := r.apply(ctx, cp, reachable, leading); err != nil {
+	if meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionReachable) == nil || meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionControllersLeading) == nil {
+		if err := r.apply(ctx, cp, previous(cp, lodiav1alpha1.ConditionReachable), previous(cp, lodiav1alpha1.ConditionControllersLeading)); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
-	c, err := r.reachable(ctx, cp)
+	reachable, failed, err := r.reachable(ctx, cp)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if c != nil {
-		reachable = *c
+	if !failed {
+		r.count(req.NamespacedName, false)
 	}
-	if c, err = r.leading(ctx, cp); err != nil {
+	leading, err := r.leading(ctx, cp)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if c != nil {
-		leading = *c
-	}
-	if err := r.apply(ctx, cp, reachable, leading); err != nil {
+	if err := r.apply(ctx, cp, ptr.Deref(reachable, previous(cp, lodiav1alpha1.ConditionReachable)), ptr.Deref(leading, previous(cp, lodiav1alpha1.ConditionControllersLeading))); err != nil {
 		return ctrl.Result{}, err
+	}
+	if failed {
+		r.count(req.NamespacedName, true)
 	}
 	return ctrl.Result{RequeueAfter: r.Period}, nil
 }
 
-// reachable returns nil to keep the condition as it is: a True after fewer
-// than FailuresBeforeFalse failed probes in a row.
-func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*metav1.Condition, error) {
+// reachable returns nil to keep the condition as the API server holds it: a
+// True after fewer than FailuresBeforeFalse failed probes in a row. It also
+// says whether its probe failed: a success clears the count at once, and a
+// failure counts only once the pass has applied its conditions.
+func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*metav1.Condition, bool, error) {
 	key := client.ObjectKeyFromObject(cp)
 	url := endpoint(cp)
 	if url == "" {
-		r.count(key, false)
-		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint"), nil
+		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint"), false, nil
 	}
 	name := lodiav1alpha1.CABundleSecret.Name(cp.Name)
 	secret := &corev1.Secret{}
 	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: name}, secret); err != nil {
 		if apierrors.IsNotFound(err) {
-			r.count(key, false)
-			return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the CA bundle "+name), nil
+			return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the CA bundle "+name), false, nil
 		}
-		return nil, err
+		return nil, false, err
 	}
 	prober := r.prober(key, secret.Data[lodiav1alpha1.CACertKey])
 	if prober == nil {
-		r.count(key, false)
-		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "the CA bundle "+name+" holds no certificate"), nil
+		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "the CA bundle "+name+" holds no certificate"), false, nil
 	}
 	code := r.probe(ctx, prober, url)
 	if code == http.StatusOK {
-		r.count(key, false)
-		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, url+" answered 200"), nil
+		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, url+" answered 200"), false, nil
 	}
-	failures := r.count(key, true)
-	if previous := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionReachable); previous != nil &&
-		previous.Status == metav1.ConditionTrue && failures < FailuresBeforeFalse {
-		return nil, nil
+	if r.failed(key)+1 < FailuresBeforeFalse {
+		if err := live.Conditions(ctx, r.Reader, cp, lodiav1alpha1.ConditionReachable); err != nil {
+			return nil, false, err
+		}
+		if previous := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionReachable); previous != nil && previous.Status == metav1.ConditionTrue {
+			return nil, true, nil
+		}
 	}
 	answer := url + " did not answer"
 	if code != 0 {
 		answer = fmt.Sprintf("%s answered %d", url, code)
 	}
-	return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonExternalProbeFailed, answer), nil
+	return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonExternalProbeFailed, answer), true, nil
 }
 
-// leading returns nil to keep the condition as it is when a read of a Lease
-// fails (docs/README.md, Health).
+// leading returns nil to keep the condition as the API server holds it when a
+// read of a Lease fails (docs/README.md, Health).
 func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*metav1.Condition, error) {
 	key := client.ObjectKeyFromObject(cp)
 	waiting := func(message string) (*metav1.Condition, error) {
 		r.forget(key)
 		return newCondition(cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, message), nil
 	}
-	if c := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAccessReady); c == nil || c.Status != metav1.ConditionTrue || c.ObservedGeneration != cp.Generation {
-		return waiting("AccessReady is not True for this generation")
+	if !access(cp) {
+		return waiting("AccessReady is not True")
 	}
 	name := lodiav1alpha1.LodiaKubeconfigSecret.Name(cp.Name)
 	secret := &corev1.Secret{}
@@ -221,7 +221,7 @@ func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
+	reading, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
 	now := r.Clock.Now()
 	reason, messages := "", []string(nil)
@@ -229,14 +229,14 @@ func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 		{lodiav1alpha1.ControllerManagerLease, lodiav1alpha1.ReasonControllerManagerNotLeading},
 		{lodiav1alpha1.SchedulerLease, lodiav1alpha1.ReasonSchedulerNotLeading},
 	} {
-		lease, err := tenant.Get(ctx, l.name, metav1.GetOptions{})
+		lease, err := tenant.Get(reading, l.name, metav1.GetOptions{})
 		var message string
 		switch {
 		case apierrors.IsNotFound(err):
 			message = "Lease " + lodiav1alpha1.LeaderElectionNamespace + "/" + l.name + " does not exist"
 		case err != nil:
 			logf.FromContext(ctx).Error(err, "read a leader Lease", "lease", l.name)
-			return nil, nil
+			return nil, live.Conditions(ctx, r.Reader, cp, lodiav1alpha1.ConditionControllersLeading)
 		default:
 			message = r.stale(key, lease, now)
 		}
@@ -375,21 +375,25 @@ func (r *Reconciler) probe(ctx context.Context, prober *http.Client, url string)
 	return resp.StatusCode
 }
 
-// count counts a failed probe of a ControlPlane, or clears its count, and
-// returns it. Every success clears it, so a ControlPlane recreated under the
-// same name is True, and keeps a True on a failure, only after a success of
-// its own.
-func (r *Reconciler) count(key types.NamespacedName, failed bool) int {
+// count counts a failed probe of a ControlPlane, or clears its count. Every
+// success clears it, so a ControlPlane recreated under the same name is True,
+// and keeps a True on a failure, only after a success of its own.
+func (r *Reconciler) count(key types.NamespacedName, failed bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !failed {
 		delete(r.failures, key)
-		return 0
+		return
 	}
 	if r.failures == nil {
 		r.failures = map[types.NamespacedName]int{}
 	}
 	r.failures[key]++
+}
+
+func (r *Reconciler) failed(key types.NamespacedName) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return r.failures[key]
 }
 
@@ -405,9 +409,13 @@ func newCondition(cp *lodiav1alpha1.ControlPlane, conditionType string, status m
 	return &metav1.Condition{Type: conditionType, Status: status, Reason: reason, Message: message, ObservedGeneration: cp.Generation}
 }
 
+// previous keeps the condition as it is but at cp's generation, since Health
+// applies nothing from the spec.
 func previous(cp *lodiav1alpha1.ControlPlane, conditionType string) metav1.Condition {
 	if c := meta.FindStatusCondition(cp.Status.Conditions, conditionType); c != nil {
-		return *c
+		kept := *c
+		kept.ObservedGeneration = cp.Generation
+		return kept
 	}
 	return *newCondition(cp, conditionType, metav1.ConditionUnknown, lodiav1alpha1.ReasonReconciling, "the first pass has not finished")
 }

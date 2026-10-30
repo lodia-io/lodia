@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/live"
 	"go.lodia.io/lodia/internal/ownership"
 )
 
@@ -44,7 +45,9 @@ const waitPeriod = time.Minute
 
 type Reconciler struct {
 	client.Client
-	// Reader reads the Secrets the cache holds the metadata of only.
+	// Reader reads the Secrets the cache holds the metadata of only, and
+	// AddonsApplied and AddonsAvailable when Tenant waits for access or keeps
+	// them.
 	Reader client.Reader
 	// ApplyPeriod is how often the tenant gets every object again, so one
 	// deleted or edited there comes back.
@@ -87,7 +90,7 @@ func inputs(cp *lodiav1alpha1.ControlPlane) string {
 	return b.String()
 }
 
-// +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=list;watch
+// +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/status,verbs=patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 
@@ -107,7 +110,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	access := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAccessReady)
 	if access == nil || access.Status != metav1.ConditionTrue || access.ObservedGeneration != cp.Generation {
-		return ctrl.Result{}, r.wait(ctx, cp, lodiav1alpha1.ReasonWaitingForAccess, "AccessReady is not True for this generation")
+		if err := live.Conditions(ctx, r.Reader, cp, applied.Type, available.Type); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, r.applyStatus(ctx, cp, waitForAccess(cp, previous(cp, applied.Type)), waitForAccess(cp, previous(cp, available.Type)))
 	}
 	clusterCA, kubeconfig, keptElsewhere, err := r.credentials(ctx, cp)
 	if err != nil {
@@ -135,22 +141,29 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 
-	others, syncErr := applyInventory(ctx, tenant, objects)
-	switch reason, message, answered := outcome(syncErr); {
-	case syncErr == nil && len(others) > 0:
+	others, applyErr := applyInventory(ctx, tenant, objects)
+	syncErr := applyErr
+	var rolled metav1.Condition
+	if applyErr == nil {
+		rolled, syncErr = rollout(ctx, tenant, cp, objects, others)
+	}
+	if syncErr != nil {
+		if err := live.Conditions(ctx, r.Reader, cp, applied.Type, available.Type); err != nil {
+			return ctrl.Result{}, errors.Join(syncErr, err)
+		}
+		applied, available = previous(cp, applied.Type), previous(cp, available.Type)
+	}
+	switch reason, message, answered := outcome(applyErr); {
+	case applyErr == nil && len(others) > 0:
 		applied = newCondition(cp, applied.Type, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, others[0].String()+" exists and is not Lodia's; delete it or disable the addon")
-	case syncErr == nil:
+	case applyErr == nil:
 		applied = newCondition(cp, applied.Type, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, fmt.Sprintf("%d objects are applied and the inventory is pruned", len(objects)))
 	case answered || applied.Status != metav1.ConditionTrue:
 		// No answer is no observation: a True stays, anything else says so.
 		applied = newCondition(cp, applied.Type, metav1.ConditionFalse, reason, message)
 	}
 	if syncErr == nil {
-		if c, err := rollout(ctx, tenant, cp, objects, others); err == nil {
-			available = c
-		} else {
-			syncErr = err
-		}
+		available = rolled
 	}
 	if syncErr != nil && available.Reason != lodiav1alpha1.ReasonAvailable && available.Reason != lodiav1alpha1.ReasonRolloutPending {
 		// A rollout read before stays while none can be read; until one is,
@@ -181,6 +194,15 @@ func (r *Reconciler) wait(ctx context.Context, cp *lodiav1alpha1.ControlPlane, r
 	return r.applyStatus(ctx, cp,
 		newCondition(cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, reason, message),
 		newCondition(cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, reason, message))
+}
+
+// waitForAccess leaves a condition at the earlier generation it describes:
+// Tenant has not acted on this one.
+func waitForAccess(cp *lodiav1alpha1.ControlPlane, c metav1.Condition) metav1.Condition {
+	if c.ObservedGeneration < cp.Generation {
+		return c
+	}
+	return newCondition(cp, c.Type, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, "AccessReady is not True for this generation")
 }
 
 // credentials also returns, when one of the two Secrets is another owner's,

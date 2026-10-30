@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -285,10 +286,177 @@ func TestAFailedReadLeavesTheStatus(t *testing.T) {
 	}
 }
 
+func TestAPassThatFailsAfterAFailedProbeCountsNoFailure(t *testing.T) {
+	cp := controlPlane(t)
+	e := serve(t)
+	writeBundle(t, cp, e)
+	publish(t, cp, e)
+	setAccess(t, cp)
+	eventually(t, func() error {
+		return expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200")
+	})
+
+	e.code.Store(http.StatusServiceUnavailable)
+	injected := errors.New("injected: the API server did not answer")
+	probe := &health.Reconciler{Client: k8s, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
+	for _, failed := range []struct {
+		read  string
+		fails func(client.ObjectKey, client.Object) bool
+	}{
+		{"the live Reachable", func(_ client.ObjectKey, obj client.Object) bool {
+			_, ok := obj.(*lodiav1alpha1.ControlPlane)
+			return ok
+		}},
+		{"Lodia's kubeconfig", func(key client.ObjectKey, _ client.Object) bool {
+			return key.Name == lodiav1alpha1.LodiaKubeconfigSecret.Name(cp.Name)
+		}},
+	} {
+		probe.Reader = interceptor.NewClient(k8s, interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if failed.fails(key, obj) {
+					return injected
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+		})
+		for range health.FailuresBeforeFalse - 1 {
+			if _, err := probe.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !errors.Is(err, injected) {
+				t.Fatalf("a pass whose read of %s failed returned %v, want the read's error", failed.read, err)
+			}
+		}
+	}
+
+	probe.Reader = k8s
+	reconcile(t, probe, cp)
+	if err := expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
+		t.Errorf("one failed probe after passes that failed after theirs: %v", err)
+	}
+}
+
+func TestAPassThatFailsKeepsTheCountOfFailedProbes(t *testing.T) {
+	cp := controlPlane(t)
+	e := serve(t)
+	writeBundle(t, cp, e)
+	publish(t, cp, e)
+	eventually(t, func() error {
+		return expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200")
+	})
+	e.code.Store(http.StatusServiceUnavailable)
+	probe := &health.Reconciler{Client: k8s, Reader: k8s, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
+	reconcile(t, probe, cp)
+	injected := errors.New("injected")
+	probe.Reader = interceptor.NewClient(k8s, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
+				return injected
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	if _, err := probe.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !errors.Is(err, injected) {
+		t.Fatalf("a pass whose live read failed returned %v, want the read's error", err)
+	}
+	probe.Reader = k8s
+	for range health.FailuresBeforeFalse - 1 {
+		reconcile(t, probe, cp)
+	}
+	if err := expect(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonExternalProbeFailed, e.url+" answered 503"); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestAFailedApplyAfterAFailedProbeCountsNoFailure(t *testing.T) {
+	cp := controlPlane(t)
+	e := serve(t)
+	writeBundle(t, cp, e)
+	publish(t, cp, e)
+	setAccess(t, cp)
+	eventually(t, func() error {
+		return expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, "waiting for PKI to write dev-lodia-kubeconfig")
+	})
+	if err := expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
+		t.Fatal(err)
+	}
+	writeKubeconfig(t, cp, tenantKubeconfig)
+
+	e.code.Store(http.StatusServiceUnavailable)
+	injected := errors.New("injected: the status apply failed")
+	probe := &health.Reconciler{Reader: k8s, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
+	probe.Client = interceptor.NewClient(k8s, interceptor.Funcs{
+		SubResourceApply: func(context.Context, client.Client, string, runtime.ApplyConfiguration, ...client.SubResourceApplyOption) error {
+			return injected
+		},
+	})
+	for range health.FailuresBeforeFalse - 1 {
+		if _, err := probe.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !errors.Is(err, injected) {
+			t.Fatalf("a pass whose status apply failed returned %v, want the apply's error", err)
+		}
+	}
+	probe.Client = k8s
+	reconcile(t, probe, cp)
+	if err := expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
+		t.Errorf("one failed probe after passes whose apply failed: %v", err)
+	}
+}
+
+func TestAFailedProbeOfAReachableThatIsNotTrueIsAFailure(t *testing.T) {
+	cp := controlPlane(t)
+	e := serve(t)
+	e.code.Store(http.StatusServiceUnavailable)
+	publish(t, cp, e)
+	eventually(t, func() error {
+		return expect(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the CA bundle dev-ca-bundle")
+	})
+	probe := &health.Reconciler{Client: k8s, Reader: k8s, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
+	writeBundle(t, cp, e)
+	reconcile(t, probe, cp)
+	if err := expect(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonExternalProbeFailed, e.url+" answered 503"); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestASuccessfulProbeClearsTheCountInAPassThatFails(t *testing.T) {
+	cp := controlPlane(t)
+	e := serve(t)
+	writeBundle(t, cp, e)
+	publish(t, cp, e)
+	setAccess(t, cp)
+	eventually(t, func() error {
+		return expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200")
+	})
+	probe := &health.Reconciler{Client: k8s, Reader: k8s, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
+	e.code.Store(http.StatusServiceUnavailable)
+	for range health.FailuresBeforeFalse - 1 {
+		reconcile(t, probe, cp)
+	}
+	if err := expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
+		t.Fatal(err)
+	}
+	e.code.Store(http.StatusOK)
+	injected := errors.New("injected")
+	probe.Reader = interceptor.NewClient(k8s, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if key.Name == lodiav1alpha1.LodiaKubeconfigSecret.Name(cp.Name) {
+				return injected
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	if _, err := probe.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !errors.Is(err, injected) {
+		t.Fatalf("a pass whose read of Lodia's kubeconfig failed returned %v, want the read's error", err)
+	}
+	probe.Reader = k8s
+	e.code.Store(http.StatusServiceUnavailable)
+	reconcile(t, probe, cp)
+	if err := expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
+		t.Errorf("one failed probe after a 200: %v", err)
+	}
+}
+
 func TestControllersLeadingFollowsTheLeaderLeases(t *testing.T) {
 	cp := controlPlane(t)
 	eventually(t, func() error {
-		return expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, "AccessReady is not True for this generation")
+		return expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, "AccessReady is not True")
 	})
 	setAccess(t, cp)
 	eventually(t, func() error {
@@ -394,6 +562,216 @@ func TestAFailedLeaseReadKeepsControllersLeading(t *testing.T) {
 		"Lease kube-system/kube-controller-manager of dev-kube-controller-manager-7d9_1 was last renewed "+renewed+
 			"; Lease kube-system/kube-scheduler of dev-kube-scheduler-5c4_2 was last renewed "+renewed); err != nil {
 		t.Fatalf("after a failed read, the leases unchanged since they were first seen: %v", err)
+	}
+}
+
+func TestAKeptConditionIsWrittenAtTheObjectsGeneration(t *testing.T) {
+	cp := controlPlane(t)
+	e := serve(t)
+	writeBundle(t, cp, e)
+	publish(t, cp, e)
+	setAccess(t, cp)
+	eventually(t, func() error {
+		return expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, "waiting for PKI to write dev-lodia-kubeconfig")
+	})
+	writeKubeconfig(t, cp, tenantKubeconfig)
+	start := time.Now().Truncate(time.Second)
+	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", start)
+	renew(t, lodiav1alpha1.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
+	r := &health.Reconciler{Client: k8s, Reader: k8s, Period: 10 * time.Second, Timeout: 2 * time.Second, Clock: clocktesting.NewFakePassiveClock(start)}
+	reconcile(t, r, cp)
+	const leading = "the leader Leases of kube-controller-manager and kube-scheduler are renewed"
+	if err := expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
+		t.Fatal(err)
+	}
+	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, leading); err != nil {
+		t.Fatal(err)
+	}
+
+	e.code.Store(http.StatusServiceUnavailable)
+	unreachable, err := kubeconfigOf("https://127.0.0.1:1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeKubeconfig(t, cp, unreachable)
+	changed := get(t, cp)
+	changed.Spec.Placement = &lodiav1alpha1.Placement{PriorityClassName: "system-cluster-critical"}
+	if err := k8s.Update(t.Context(), changed); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() error {
+		if err := expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
+			return err
+		}
+		return expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, leading)
+	})
+}
+
+func TestAKeptConditionIsDecidedFromTheServer(t *testing.T) {
+	cp := controlPlane(t)
+	e := serve(t)
+	writeBundle(t, cp, e)
+	publish(t, cp, e)
+	setAccess(t, cp)
+	eventually(t, func() error {
+		return expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, "waiting for PKI to write dev-lodia-kubeconfig")
+	})
+	writeKubeconfig(t, cp, tenantKubeconfig)
+	start := time.Now().Truncate(time.Second)
+	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", start)
+	renew(t, lodiav1alpha1.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
+	const leading = "the leader Leases of kube-controller-manager and kube-scheduler are renewed"
+	now := clocktesting.NewFakePassiveClock(start)
+	r := &health.Reconciler{Client: k8s, Reader: k8s, Period: 10 * time.Second, Timeout: 2 * time.Second, Clock: now}
+	reconcile(t, r, cp)
+	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, leading); err != nil {
+		t.Fatal(err)
+	}
+	e.code.Store(http.StatusServiceUnavailable)
+	for range health.FailuresBeforeFalse {
+		reconcile(t, r, cp)
+	}
+	if err := expect(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonExternalProbeFailed, e.url+" answered 503"); err != nil {
+		t.Fatal(err)
+	}
+	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, leading); err != nil {
+		t.Fatal(err)
+	}
+
+	paused := get(t, cp)
+	paused.Spec.Paused = true
+	if err := k8s.Update(t.Context(), paused); err != nil {
+		t.Fatal(err)
+	}
+	stale := get(t, cp)
+	pass := func(at *lodiav1alpha1.ControlPlane, reader client.Reader) error {
+		held := at.DeepCopy()
+		held.Spec.Paused = false
+		r.Client = interceptor.NewClient(k8s, interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if plane, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
+					held.DeepCopyInto(plane)
+					return nil
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+		})
+		r.Reader = reader
+		_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+		return err
+	}
+
+	e.code.Store(http.StatusOK)
+	now.SetTime(start.Add(26 * time.Second))
+	if err := pass(get(t, cp), k8s); err != nil {
+		t.Fatal(err)
+	}
+	renewed := start.UTC().Format(time.RFC3339)
+	notLeading := "Lease kube-system/kube-controller-manager of dev-kube-controller-manager-7d9_1 was last renewed " + renewed +
+		"; Lease kube-system/kube-scheduler of dev-kube-scheduler-5c4_2 was last renewed " + renewed
+	if err := expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
+		t.Fatal(err)
+	}
+	if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonControllerManagerNotLeading, notLeading); err != nil {
+		t.Fatal(err)
+	}
+
+	unreachable, err := kubeconfigOf("https://127.0.0.1:1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeKubeconfig(t, cp, unreachable)
+	injected := errors.New("injected: the API server did not answer")
+	failing := interceptor.NewClient(k8s, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
+				return injected
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	written := get(t, cp).ResourceVersion
+	for _, kept := range []struct {
+		condition  string
+		code       int32
+		kubeconfig []byte
+	}{{lodiav1alpha1.ConditionControllersLeading, http.StatusOK, unreachable}, {lodiav1alpha1.ConditionReachable, http.StatusServiceUnavailable, tenantKubeconfig}} {
+		e.code.Store(kept.code)
+		writeKubeconfig(t, cp, kept.kubeconfig)
+		if err := pass(stale, failing); !errors.Is(err, injected) {
+			t.Errorf("a pass that keeps %s and cannot read it from the server returned %v, want the read's error", kept.condition, err)
+		}
+	}
+	if after := get(t, cp).ResourceVersion; after != written {
+		t.Errorf("a pass that cannot read what it keeps from the server wrote the ControlPlane: resourceVersion %s, then %s", written, after)
+	}
+
+	hanging := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
+	t.Cleanup(hanging.Close)
+	timingOut, err := kubeconfigOf(hanging.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeKubeconfig(t, cp, timingOut)
+	if err := pass(stale, k8s); err != nil {
+		t.Fatal(err)
+	}
+	if err := expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
+		t.Errorf("Reachable kept after a failed probe on a read without Health's last write: %v", err)
+	}
+	if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonControllerManagerNotLeading, notLeading); err != nil {
+		t.Errorf("ControllersLeading kept after a failed Lease read on a read without Health's last write: %v", err)
+	}
+}
+
+func TestControllersLeadingWaitsForAccessReadyAtAnyGeneration(t *testing.T) {
+	cp := controlPlane(t)
+	setAccess(t, cp)
+	eventually(t, func() error {
+		return expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, "waiting for PKI to write dev-lodia-kubeconfig")
+	})
+	start := time.Now().Truncate(time.Second)
+	now := clocktesting.NewFakePassiveClock(start)
+	r := &health.Reconciler{Client: k8s, Reader: k8s, Period: 10 * time.Second, Timeout: 2 * time.Second, Clock: now}
+	writeKubeconfig(t, cp, tenantKubeconfig)
+	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", start)
+	renew(t, lodiav1alpha1.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
+	reconcile(t, r, cp)
+	const leading = "the leader Leases of kube-controller-manager and kube-scheduler are renewed"
+	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, leading); err != nil {
+		t.Fatal(err)
+	}
+
+	changed := get(t, cp)
+	stale := changed.Generation
+	changed.Spec.Placement = &lodiav1alpha1.Placement{PriorityClassName: "system-cluster-critical"}
+	if err := k8s.Update(t.Context(), changed); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() error {
+		return expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, leading)
+	})
+	now.SetTime(start.Add(26 * time.Second))
+	reconcile(t, r, cp)
+	renewed := start.UTC().Format(time.RFC3339)
+	if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonControllerManagerNotLeading,
+		"Lease kube-system/kube-controller-manager of dev-kube-controller-manager-7d9_1 was last renewed "+renewed+
+			"; Lease kube-system/kube-scheduler of dev-kube-scheduler-5c4_2 was last renewed "+renewed); err != nil {
+		t.Fatalf("the Leases seen before the change: %v", err)
+	}
+
+	setAccessAt(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding, stale)
+	eventually(t, func() error {
+		return expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, "AccessReady is not True")
+	})
+	reconcile(t, r, cp)
+	if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, "AccessReady is not True"); err != nil {
+		t.Fatal(err)
+	}
+	setAccessAt(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonBound, stale)
+	reconcile(t, r, cp)
+	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, leading); err != nil {
+		t.Fatalf("the Leases seen again after the wait: %v", err)
 	}
 }
 
@@ -581,13 +959,18 @@ func writeKubeconfig(t *testing.T, cp *lodiav1alpha1.ControlPlane, kubeconfig []
 
 func setAccess(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 	t.Helper()
+	setAccessAt(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonBound, get(t, cp).Generation)
+}
+
+func setAccessAt(t *testing.T, cp *lodiav1alpha1.ControlPlane, status metav1.ConditionStatus, reason string, generation int64) {
+	t.Helper()
 	u := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": lodiav1alpha1.GroupVersion.String(),
 		"kind":       "ControlPlane",
 		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
 		"status": map[string]any{"conditions": []any{map[string]any{
-			"type": lodiav1alpha1.ConditionAccessReady, "status": string(metav1.ConditionTrue), "reason": lodiav1alpha1.ReasonBound, "message": "set by the test",
-			"observedGeneration": get(t, cp).Generation, "lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
+			"type": lodiav1alpha1.ConditionAccessReady, "status": string(status), "reason": reason, "message": "set by the test",
+			"observedGeneration": generation, "lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
 		}}},
 	}}
 	if err := k8s.Status().Apply(t.Context(), client.ApplyConfigurationFromUnstructured(u), client.FieldOwner("test/access"), client.ForceOwnership); err != nil {

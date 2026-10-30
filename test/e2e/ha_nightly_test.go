@@ -75,8 +75,7 @@ func TestHighAvailabilityRemovedAndRestored(t *testing.T) {
 			restarted := stop()
 			explainEtcd(ctx, t, k8s, key, start)
 			history.log(t, start, time.Now())
-			history.waitsOnly(t, start, time.Now(), gateBound, lodiav1alpha1.ConditionReady, lodiav1alpha1.ConditionAPIServerReady)
-			history.alwaysTrue(t, start, time.Now(), lodiav1alpha1.ConditionDatastoreReady)
+			history.alwaysTrue(t, start, time.Now(), readyAndInputs...)
 			if len(restarted) > 0 {
 				t.Errorf("containers of the control plane restarted while highAvailability turned on: %v", restarted)
 			}

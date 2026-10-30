@@ -19,8 +19,10 @@ import (
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -178,7 +180,7 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 		return nil, errors.New("not dialed")
 	}
 	reconcile(t, r, cp)
-	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer)
+	expectConditionAt(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionTrue, lodiav1alpha1.ReasonBound, stale)
 	setAPIServerReady(t, cp)
 	r.Dial = dialer(t, tenantCfg.Host)
 	reconcile(t, r, cp)
@@ -233,6 +235,314 @@ func TestAccessReadyIsBindingUntilTheTenantAnswers(t *testing.T) {
 		t.Fatal("a pass that could not reach the tenant succeeded")
 	}
 	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding)
+}
+
+func TestAccessReadyKeepsItsGenerationUntilTheAPIServerTakesTheChangeUp(t *testing.T) {
+	ctx := t.Context()
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "pki-access-generations")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	setAPIServerReady(t, cp)
+	r.Dial = unreachable
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+		t.Fatal("a pass that could not reach the tenant succeeded")
+	}
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding)
+	binding := condition(t, cp, lodiav1alpha1.ConditionAccessReady)
+
+	if err := k8s.Get(ctx, client.ObjectKeyFromObject(cp), cp); err != nil {
+		t.Fatal(err)
+	}
+	cp.Spec.Placement = &lodiav1alpha1.Placement{PriorityClassName: "system-cluster-critical"}
+	if err := k8s.Update(ctx, cp); err != nil {
+		t.Fatal(err)
+	}
+	r.Dial = func(context.Context, string, string) (net.Conn, error) {
+		t.Error("the tenant was dialed on an APIServerReady of an older generation")
+		return nil, errors.New("not dialed")
+	}
+	reconcile(t, r, cp)
+	if kept := condition(t, cp, lodiav1alpha1.ConditionAccessReady); !equality.Semantic.DeepEqual(kept, binding) {
+		t.Fatalf("AccessReady is %+v at generation %d, want it kept as %+v", kept, cp.Generation, binding)
+	}
+
+	setAPIServerReady(t, cp)
+	r.Dial = unreachable
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+		t.Fatal("a pass that could not reach the tenant succeeded")
+	}
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding)
+
+	setAPIServer(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable)
+	reconcile(t, r, cp)
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer)
+}
+
+func TestAccessReadyOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
+	ctx := t.Context()
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "pki-access-stale")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	setAPIServerReady(t, cp)
+	r.Dial = unreachable
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+		t.Fatal("a pass that could not reach the tenant succeeded")
+	}
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding)
+
+	fresh := func() *lodiav1alpha1.ControlPlane {
+		t.Helper()
+		out := &lodiav1alpha1.ControlPlane{}
+		if err := k8s.Get(ctx, client.ObjectKeyFromObject(cp), out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	if err := k8s.Get(ctx, client.ObjectKeyFromObject(cp), cp); err != nil {
+		t.Fatal(err)
+	}
+	cp.Spec.Placement = &lodiav1alpha1.Placement{PriorityClassName: "system-cluster-critical"}
+	if err := k8s.Update(ctx, cp); err != nil {
+		t.Fatal(err)
+	}
+	setAPIServerReady(t, cp)
+	read := fresh()
+	setAPIServer(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable)
+	stale := fresh()
+	pass := func(at *lodiav1alpha1.ControlPlane, reader client.Reader) error {
+		withRead := newReconciler(time.Hour)
+		withRead.Client, withRead.Reader, withRead.Dial = snapshot{Client: controller, cp: at}, reader, unreachable
+		_, err := withRead.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+		return err
+	}
+
+	if err := pass(read, apiReader); err == nil {
+		t.Fatal("a pass that could not reach the tenant succeeded")
+	}
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding)
+
+	written := fresh().ResourceVersion
+	if err := pass(stale, failingRead{Reader: apiReader, read: "the ControlPlane"}); err == nil || err.Error() != "the API server is down" {
+		t.Errorf("a pass that cannot read AccessReady from the server returned %v, want the read's error", err)
+	}
+	if after := fresh().ResourceVersion; after != written {
+		t.Errorf("a pass that cannot read AccessReady from the server wrote the ControlPlane: resourceVersion %s, then %s", written, after)
+	}
+
+	if err := pass(stale, apiReader); err != nil {
+		t.Fatal(err)
+	}
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer)
+}
+
+func TestAKeptAccessReadyOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
+	ctx := t.Context()
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "pki-access-kept-stale")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	fresh := func() *lodiav1alpha1.ControlPlane {
+		t.Helper()
+		out := &lodiav1alpha1.ControlPlane{}
+		if err := k8s.Get(ctx, client.ObjectKeyFromObject(cp), out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	bound := func(generation int64) {
+		t.Helper()
+		u := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": lodiav1alpha1.GroupVersion.String(),
+			"kind":       "ControlPlane",
+			"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
+			"status": map[string]any{"conditions": []any{map[string]any{
+				"type":               lodiav1alpha1.ConditionAccessReady,
+				"status":             string(metav1.ConditionTrue),
+				"reason":             lodiav1alpha1.ReasonBound,
+				"message":            "lodia:operator, lodia:cluster-admins and lodia:kubelet-api-admins are bound",
+				"observedGeneration": generation,
+				"lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
+			}}},
+		}}
+		if err := k8s.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(u), client.FieldOwner("test/access"), client.ForceOwnership); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ready := func() {
+		t.Helper()
+		applyStatus(t, cp, map[string]any{
+			"endpoint": map[string]any{
+				"apiServer":    map[string]any{"host": endpointHost, "port": int64(endpointPort)},
+				"konnectivity": map[string]any{"host": endpointHost, "port": int64(8132)},
+				"inCluster":    map[string]any{"host": endpointHost, "port": int64(6443)},
+			},
+			"conditions": []any{map[string]any{
+				"type":               lodiav1alpha1.ConditionAPIServerReady,
+				"status":             string(metav1.ConditionTrue),
+				"reason":             lodiav1alpha1.ReasonReady,
+				"message":            "",
+				"observedGeneration": cp.Generation,
+				"lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
+			}},
+		})
+	}
+	ready()
+	bound(cp.Generation)
+
+	if err := k8s.Get(ctx, client.ObjectKeyFromObject(cp), cp); err != nil {
+		t.Fatal(err)
+	}
+	cp.Spec.Placement = &lodiav1alpha1.Placement{PriorityClassName: "system-cluster-critical"}
+	if err := k8s.Update(ctx, cp); err != nil {
+		t.Fatal(err)
+	}
+	ready()
+	stale := fresh()
+	r.Dial = unreachable
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+		t.Fatal("a pass that could not reach the tenant succeeded")
+	}
+	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+	bound(cp.Generation)
+	pass := func(reader client.Reader) error {
+		withRead := newReconciler(time.Hour)
+		withRead.Client, withRead.Reader, withRead.Dial = snapshot{Client: controller, cp: stale}, reader, unreachable
+		_, err := withRead.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+		return err
+	}
+
+	written := fresh().ResourceVersion
+	if err := pass(failingRead{Reader: apiReader, read: "the ControlPlane"}); err == nil || !strings.Contains(err.Error(), "the API server is down") || !strings.Contains(err.Error(), "connection refused") {
+		t.Errorf("a pass that cannot read AccessReady from the server returned %v, want the read's error and the bind's", err)
+	}
+	if after := fresh().ResourceVersion; after != written {
+		t.Errorf("a pass that cannot read AccessReady from the server wrote the ControlPlane: resourceVersion %s, then %s", written, after)
+	}
+
+	if err := pass(apiReader); err == nil {
+		t.Fatal("a pass that could not reach the tenant succeeded")
+	}
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionTrue, lodiav1alpha1.ReasonBound)
+}
+
+func TestATrueKeptWithoutAnAnswerKeepsItsGeneration(t *testing.T) {
+	ctx := t.Context()
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "pki-kept-generation")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	u := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": lodiav1alpha1.GroupVersion.String(),
+		"kind":       "ControlPlane",
+		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
+		"status": map[string]any{"conditions": []any{map[string]any{
+			"type":               lodiav1alpha1.ConditionAccessReady,
+			"status":             string(metav1.ConditionTrue),
+			"reason":             lodiav1alpha1.ReasonBound,
+			"message":            "lodia:operator, lodia:cluster-admins and lodia:kubelet-api-admins are bound",
+			"observedGeneration": cp.Generation,
+			"lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
+		}}},
+	}}
+	if err := k8s.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(u), client.FieldOwner("test/access"), client.ForceOwnership); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Get(ctx, client.ObjectKeyFromObject(cp), cp); err != nil {
+		t.Fatal(err)
+	}
+	stale := cp.Generation
+	cp.Spec.Placement = &lodiav1alpha1.Placement{PriorityClassName: "system-cluster-critical"}
+	if err := k8s.Update(ctx, cp); err != nil {
+		t.Fatal(err)
+	}
+	setAPIServerReady(t, cp)
+	r.Dial = unreachable
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+		t.Fatal("a pass that could not reach the tenant succeeded")
+	}
+	expectConditionAt(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionTrue, lodiav1alpha1.ReasonBound, stale)
+}
+
+func applyAccess(t *testing.T, cp *lodiav1alpha1.ControlPlane, status metav1.ConditionStatus, reason, message string, generation int64) {
+	t.Helper()
+	u := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": lodiav1alpha1.GroupVersion.String(),
+		"kind":       "ControlPlane",
+		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
+		"status": map[string]any{"conditions": []any{map[string]any{
+			"type": lodiav1alpha1.ConditionAccessReady, "status": string(status), "reason": reason, "message": message,
+			"observedGeneration": generation, "lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
+		}}},
+	}}
+	if err := k8s.Status().Apply(t.Context(), client.ApplyConfigurationFromUnstructured(u), client.FieldOwner("test/access"), client.ForceOwnership); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAWaitComparesItsWriteWithTheServer(t *testing.T) {
+	ctx := t.Context()
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "pki-wait-compare")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	if err := k8s.Get(ctx, client.ObjectKeyFromObject(cp), cp); err != nil {
+		t.Fatal(err)
+	}
+	cp.Spec.Placement = &lodiav1alpha1.Placement{PriorityClassName: "system-cluster-critical"}
+	if err := k8s.Update(ctx, cp); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, cp)
+	applyAccess(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer, "APIServerReady is not True for this generation", cp.Generation)
+	stale := freshControlPlane(t, cp)
+	applyAccess(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonBound, "lodia:operator, lodia:cluster-admins and lodia:kubelet-api-admins are bound", cp.Generation)
+	withRead := newReconciler(time.Hour)
+	withRead.Client, withRead.Reader = snapshot{Client: controller, cp: stale}, apiReader
+	withRead.Dial = func(context.Context, string, string) (net.Conn, error) {
+		t.Error("the tenant was dialed while APIServerReady is missing")
+		return nil, errors.New("not dialed")
+	}
+	if _, err := withRead.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+		t.Fatal(err)
+	}
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer)
+}
+
+func TestANoAnswerComparesItsWriteWithTheServer(t *testing.T) {
+	ctx := t.Context()
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "pki-binding-compare")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	setAPIServerReady(t, cp)
+	r.Dial = unreachable
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+		t.Fatal("a pass that could not reach the tenant succeeded")
+	}
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding)
+	stale := freshControlPlane(t, cp)
+	applyAccess(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, "ClusterRoleBinding lodia:operator is refused by the tenant's API server; the reason is in Lodia's log", cp.Generation)
+	withRead := newReconciler(time.Hour)
+	withRead.Client, withRead.Reader, withRead.Dial = snapshot{Client: controller, cp: stale}, apiReader, unreachable
+	if _, err := withRead.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+		t.Fatal("a pass that could not reach the tenant succeeded")
+	}
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding)
+}
+
+type snapshot struct {
+	client.Client
+	cp *lodiav1alpha1.ControlPlane
+}
+
+func (c snapshot) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if cp, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
+		c.cp.DeepCopyInto(cp)
+		return nil
+	}
+	return c.Client.Get(ctx, key, obj, opts...)
 }
 
 func unreachable(context.Context, string, string) (net.Conn, error) {

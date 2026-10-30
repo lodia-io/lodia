@@ -39,6 +39,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/apistatus"
+	"go.lodia.io/lodia/internal/live"
 	"go.lodia.io/lodia/internal/ownership"
 	"go.lodia.io/lodia/internal/versions"
 )
@@ -57,7 +58,8 @@ const (
 // that changes nothing writes nothing.
 type Reconciler struct {
 	client.Client
-	// Reader reads what the label-filtered cache does not hold.
+	// Reader reads what the label-filtered cache does not hold, and
+	// APIServerReady while Workloads waits.
 	Reader client.Reader
 	// SignerImage is lodia-signer's image, the API server's sidecar.
 	SignerImage string
@@ -95,7 +97,7 @@ func restartOnlyNames(cp string) []string {
 	return names
 }
 
-// +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=list;watch
+// +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/status,verbs=patch
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=list;watch;create;patch;delete
@@ -183,11 +185,11 @@ func (r *Reconciler) reconcile(ctx context.Context, cp *lodiav1alpha1.ControlPla
 	} {
 		if c := meta.FindStatusCondition(cp.Status.Conditions, input.condition); c == nil || c.Status != metav1.ConditionTrue || c.ObservedGeneration != cp.Generation {
 			message := fmt.Sprintf("%s is not True for generation %d", input.condition, cp.Generation)
-			return endpoint, newCondition(metav1.ConditionFalse, input.reason, message), requeueAfter, nil
+			return r.wait(ctx, cp, endpoint, newCondition(metav1.ConditionFalse, input.reason, message), requeueAfter)
 		}
 	}
 	if cp.Status.Datastore == nil || len(cp.Status.Datastore.Endpoints) == 0 {
-		return endpoint, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, "waiting for the Datastore controller to publish status.datastore.endpoints"), requeueAfter, nil
+		return r.wait(ctx, cp, endpoint, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, "waiting for the Datastore controller to publish status.datastore.endpoints"), requeueAfter)
 	}
 	config, err := configMaps(cp)
 	if err != nil {
@@ -199,7 +201,7 @@ func (r *Reconciler) reconcile(ctx context.Context, cp *lodiav1alpha1.ControlPla
 	}
 	if len(unhashed) > 0 {
 		message := "waiting for PKI to write the Secrets the control plane reads once, with their data hash: " + strings.Join(unhashed, ", ")
-		return endpoint, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, message), requeueAfter, nil
+		return r.wait(ctx, cp, endpoint, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, message), requeueAfter)
 	}
 	deployments := rendering{
 		cp:          cp,
@@ -248,6 +250,33 @@ func refused(endpoint *lodiav1alpha1.EndpointStatus, obj client.Object, err erro
 	}
 	message := fmt.Sprintf("the API server refuses %s %s; the reason is in Lodia's log", obj.GetObjectKind().GroupVersionKind().Kind, obj.GetName())
 	return endpoint, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, message), 0, err
+}
+
+// wait decides from APIServerReady as the API server holds it. While that
+// reports availability, it counts the Deployments this ControlPlane controls
+// at the generation the condition names; otherwise it keeps a condition of an
+// older generation and returns waiting for one of cp's.
+func (r *Reconciler) wait(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, waiting metav1.Condition, requeueAfter time.Duration) (*lodiav1alpha1.EndpointStatus, metav1.Condition, time.Duration, error) {
+	if err := live.Conditions(ctx, r.Reader, cp, lodiav1alpha1.ConditionAPIServerReady); err != nil {
+		return nil, metav1.Condition{}, 0, err
+	}
+	previous := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady)
+	if previous == nil {
+		return endpoint, waiting, requeueAfter, nil
+	}
+	if slices.Contains([]string{lodiav1alpha1.ReasonReady, lodiav1alpha1.ReasonUnavailable, lodiav1alpha1.ReasonProgressDeadlineExceeded}, previous.Reason) {
+		controlled, err := r.controlled(ctx, cp)
+		if err != nil {
+			return nil, metav1.Condition{}, 0, err
+		}
+		counted := availability(slices.Collect(maps.Values(controlled)))
+		counted.ObservedGeneration = previous.ObservedGeneration
+		return endpoint, counted, requeueAfter, nil
+	}
+	if previous.ObservedGeneration < cp.Generation {
+		return endpoint, *previous, requeueAfter, nil
+	}
+	return endpoint, waiting, requeueAfter, nil
 }
 
 // unsupported names the fields phase 1 does not render, so a ControlPlane that
@@ -468,14 +497,22 @@ func restartHashes(cp string, data map[string]string, config []*corev1.ConfigMap
 	return out
 }
 
-// availability is True while each component has a ready replica.
+// availability is True while each component has a ready replica; one without
+// a Deployment has none.
 func availability(deployments []*appsv1.Deployment) metav1.Condition {
 	var short, stalled []string
 	unavailable := false
-	for _, d := range deployments {
+	for _, component := range components {
+		i := slices.IndexFunc(deployments, func(d *appsv1.Deployment) bool { return d.Labels[lodiav1alpha1.ComponentLabel] == component })
+		if i < 0 {
+			short = append(short, component+" has no Deployment")
+			unavailable = true
+			continue
+		}
+		d := deployments[i]
 		want := ptr.Deref(d.Spec.Replicas, 1)
 		if d.Status.ReadyReplicas < want {
-			short = append(short, fmt.Sprintf("%s has %d of %d replicas ready", d.Labels[lodiav1alpha1.ComponentLabel], d.Status.ReadyReplicas, want))
+			short = append(short, fmt.Sprintf("%s has %d of %d replicas ready", component, d.Status.ReadyReplicas, want))
 		}
 		unavailable = unavailable || d.Status.ReadyReplicas == 0
 		if d.Status.ObservedGeneration == d.Generation && slices.ContainsFunc(d.Status.Conditions, func(c appsv1.DeploymentCondition) bool {
@@ -495,10 +532,10 @@ func availability(deployments []*appsv1.Deployment) metav1.Condition {
 	return newCondition(metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "every replica of kube-apiserver, kube-controller-manager and kube-scheduler is ready")
 }
 
-// components counts the replicas of the Deployments this ControlPlane
-// controls, as the cache holds them.
-func (r *Reconciler) components(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*lodiav1alpha1.ComponentsStatus, error) {
-	var out *lodiav1alpha1.ComponentsStatus
+// controlled are the Deployments this ControlPlane controls, by component, as
+// the cache holds them.
+func (r *Reconciler) controlled(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (map[string]*appsv1.Deployment, error) {
+	out := map[string]*appsv1.Deployment{}
 	for _, component := range components {
 		d := &appsv1.Deployment{}
 		if err := r.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: deploymentName(cp.Name, component)}, d); err != nil {
@@ -507,12 +544,22 @@ func (r *Reconciler) components(ctx context.Context, cp *lodiav1alpha1.ControlPl
 			}
 			return nil, err
 		}
-		if !metav1.IsControlledBy(d, cp) {
-			continue
+		if metav1.IsControlledBy(d, cp) {
+			out[component] = d
 		}
-		if out == nil {
-			out = &lodiav1alpha1.ComponentsStatus{}
-		}
+	}
+	return out, nil
+}
+
+// components counts the replicas of the Deployments this ControlPlane
+// controls.
+func (r *Reconciler) components(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*lodiav1alpha1.ComponentsStatus, error) {
+	controlled, err := r.controlled(ctx, cp)
+	if err != nil || len(controlled) == 0 {
+		return nil, err
+	}
+	out := &lodiav1alpha1.ComponentsStatus{}
+	for component, d := range controlled {
 		status := &lodiav1alpha1.ComponentStatus{RolloutCount: rolloutCount(d)}
 		switch component {
 		case apiServer:
@@ -591,11 +638,13 @@ func dropNulls(m map[string]any) {
 	}
 }
 
-// applyStatus applies APIServerReady, status.components and, once both
-// addresses exist, status.endpoint whole; a nil endpoint or components drops
-// a published one.
+// applyStatus applies APIServerReady, at cp's generation unless it names one,
+// status.components and, once both addresses exist, status.endpoint whole; a
+// nil endpoint or components drops a published one.
 func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, components *lodiav1alpha1.ComponentsStatus, condition metav1.Condition) error {
-	condition.ObservedGeneration = cp.Generation
+	if condition.ObservedGeneration == 0 {
+		condition.ObservedGeneration = cp.Generation
+	}
 	previous := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady)
 	unchanged := previous != nil && previous.Status == condition.Status && previous.Reason == condition.Reason &&
 		previous.Message == condition.Message && previous.ObservedGeneration == condition.ObservedGeneration

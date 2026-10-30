@@ -26,6 +26,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -185,6 +186,437 @@ func TestTheFirstVisitWaitsForAccess(t *testing.T) {
 		}
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
 	})
+}
+
+func TestTheAddonsConditionsStayAsTheyWereUntilAccessTakesUpAChange(t *testing.T) {
+	cp, admin := servedTenant(t, "tenant-change")
+	eventually(t, 30*time.Second, func() error {
+		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied); err != nil {
+			return err
+		}
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonRolloutPending)
+	})
+	applied, available := *condition(t, cp, lodiav1alpha1.ConditionAddonsApplied), *condition(t, cp, lodiav1alpha1.ConditionAddonsAvailable)
+
+	setReplicas(t, cp, 3)
+	written := cp.ResourceVersion
+	time.Sleep(3 * time.Second)
+	for _, before := range []metav1.Condition{applied, available} {
+		if after := *condition(t, cp, before.Type); !equality.Semantic.DeepEqual(after, before) {
+			t.Errorf("generation %d, which AccessReady does not describe yet, changed %s from %+v to %+v", cp.Generation, before.Type, before, after)
+		}
+	}
+	if cp.ResourceVersion != written {
+		t.Errorf("the ControlPlane was written while AccessReady describes generation %d of %d", condition(t, cp, lodiav1alpha1.ConditionAccessReady).ObservedGeneration, cp.Generation)
+	}
+
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	eventually(t, 30*time.Second, func() error {
+		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied); err != nil {
+			return err
+		}
+		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonRolloutPending); err != nil {
+			return err
+		}
+		if replicas := get(t, admin, &appsv1.Deployment{}, "kube-system", "coredns").Spec.Replicas; replicas == nil || *replicas != 3 {
+			return fmt.Errorf("CoreDNS has %v replicas", replicas)
+		}
+		return nil
+	})
+
+	applyStatus(t, cp, "test/"+lodiav1alpha1.ConditionAccessReady, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer, cp.Generation),
+	}})
+	eventually(t, 10*time.Second, func() error {
+		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess); err != nil {
+			return err
+		}
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+	})
+}
+
+func TestOnlyAConditionAtTheGenerationWaitsForAccess(t *testing.T) {
+	cp := controlPlane(t, "tenant-one-waits")
+	eventually(t, 10*time.Second, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+	})
+	setReplicas(t, cp, 3)
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation-1),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, cp.Generation),
+	}})
+	applied := *condition(t, cp, lodiav1alpha1.ConditionAddonsApplied)
+
+	applyStatus(t, cp, "test/"+lodiav1alpha1.ConditionAccessReady, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer, cp.Generation),
+	}})
+	eventually(t, 10*time.Second, func() error {
+		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess); err != nil {
+			return err
+		}
+		if after := *condition(t, cp, lodiav1alpha1.ConditionAddonsApplied); !equality.Semantic.DeepEqual(after, applied) {
+			return fmt.Errorf("AddonsApplied went from %+v to %+v", applied, after)
+		}
+		return nil
+	})
+}
+
+func TestAWaitOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
+	cp := controlPlane(t, "tenant-stale")
+	eventually(t, 10*time.Second, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+	})
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	pass := func(at *lodiav1alpha1.ControlPlane, reader client.Reader) error {
+		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: at}, Reader: reader}
+		_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+		return err
+	}
+	written := cp.ResourceVersion
+	if err := pass(cp.DeepCopy(), k8s); err != nil {
+		t.Fatal(err)
+	}
+	if refresh(t, cp); cp.ResourceVersion != written {
+		t.Errorf("a pass that keeps both conditions wrote the ControlPlane: resourceVersion %s, then %s", written, cp.ResourceVersion)
+	}
+
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation-1),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, cp.Generation-1),
+	}})
+	applyStatus(t, cp, "test/"+lodiav1alpha1.ConditionAccessReady, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer, cp.Generation),
+	}})
+	refresh(t, cp)
+	stale := cp.DeepCopy()
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, cp.Generation),
+	}})
+
+	refresh(t, cp)
+	written = cp.ResourceVersion
+	if err := pass(stale, failingRead{Reader: k8s}); !errors.Is(err, errReadFailed) {
+		t.Errorf("a pass that cannot read its conditions from the server returned %v, want the read's error", err)
+	}
+	if refresh(t, cp); cp.ResourceVersion != written {
+		t.Errorf("a pass that cannot read its conditions from the server wrote the ControlPlane: resourceVersion %s, then %s", written, cp.ResourceVersion)
+	}
+
+	if err := pass(stale, k8s); err != nil {
+		t.Fatal(err)
+	}
+	expectNow(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+	expectNow(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+}
+
+func TestAConditionKeptWithoutAnAnswerOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
+	cp := controlPlane(t, "tenant-kept-stale")
+	publish(t, cp)
+	reconcilePKI(t, &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour}, cp)
+	eventually(t, 10*time.Second, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+	})
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation-1),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, cp.Generation-1),
+	}})
+	refresh(t, cp)
+	stale := cp.DeepCopy()
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable, cp.Generation),
+	}})
+	pass := func(reader client.Reader) error {
+		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: reader, ApplyPeriod: time.Hour, Dial: unreachable}
+		_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+		return err
+	}
+
+	refresh(t, cp)
+	written := cp.ResourceVersion
+	if err := pass(failingRead{Reader: k8s}); !errors.Is(err, errReadFailed) {
+		t.Errorf("a pass that cannot read its conditions from the server returned %v, want the read's error", err)
+	}
+	if refresh(t, cp); cp.ResourceVersion != written {
+		t.Errorf("a pass that cannot read its conditions from the server wrote the ControlPlane: resourceVersion %s, then %s", written, cp.ResourceVersion)
+	}
+
+	refresh(t, cp)
+	written = cp.ResourceVersion
+	if err := pass(k8s); err == nil {
+		t.Fatal("a pass that could not reach the tenant succeeded")
+	}
+	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied); err != nil {
+		t.Error(err)
+	}
+	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable); err != nil {
+		t.Error(err)
+	}
+	if cp.ResourceVersion != written {
+		t.Errorf("a pass that keeps both conditions as the server holds them wrote the ControlPlane: resourceVersion %s, then %s", written, cp.ResourceVersion)
+	}
+
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, cp.Generation),
+	}})
+	if err := pass(k8s); err == nil {
+		t.Fatal("a pass that could not reach the tenant succeeded")
+	}
+	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied); err != nil {
+		t.Error(err)
+	}
+	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestARolloutReadThatFailsOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
+	cp, admin := servedTenant(t, "tenant-rollout-stale")
+	eventually(t, 30*time.Second, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
+	})
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	ctx := t.Context()
+	rebindOperator(t, admin, []rbacv1.PolicyRule{
+		{APIGroups: []string{"", "discovery.k8s.io", rbacv1.GroupName}, Resources: []string{"*"}, Verbs: []string{"*"}},
+		{APIGroups: []string{appsv1.GroupName}, Resources: []string{"deployments", "daemonsets"}, Verbs: []string{"create", "patch", "update", "delete", "list", "watch"}},
+		{NonResourceURLs: []string{"*"}, Verbs: []string{"*"}},
+	}, authorizationv1.ResourceAttributes{Group: appsv1.GroupName, Resource: "deployments", Verb: "get", Namespace: "kube-system"})
+
+	refresh(t, cp)
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonRolloutPending, cp.Generation),
+	}})
+	refresh(t, cp)
+	stale := cp.DeepCopy()
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation-1),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable, cp.Generation),
+	}})
+	pass := func(reader client.Reader) error {
+		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: reader, ApplyPeriod: time.Hour, Dial: *dial.Load()}
+		_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+		return err
+	}
+
+	refresh(t, cp)
+	written := cp.ResourceVersion
+	if err := pass(failingRead{Reader: k8s}); !errors.Is(err, errReadFailed) || !apierrors.IsForbidden(err) {
+		t.Errorf("a pass whose rollout read and live read both failed returned %v, want both errors", err)
+	}
+	if refresh(t, cp); cp.ResourceVersion != written {
+		t.Errorf("a pass that cannot read its conditions from the server wrote the ControlPlane: resourceVersion %s, then %s", written, cp.ResourceVersion)
+	}
+
+	if err := pass(k8s); !apierrors.IsForbidden(err) {
+		t.Errorf("a pass whose rollout read was refused returned %v, want the refusal", err)
+	}
+	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable); err != nil {
+		t.Error(err)
+	}
+	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied); err != nil {
+		t.Error(err)
+	}
+
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation-1),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, cp.Generation-1),
+	}})
+	if err := pass(k8s); !apierrors.IsForbidden(err) {
+		t.Errorf("a pass whose rollout read was refused returned %v, want the refusal", err)
+	}
+	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied); err != nil {
+		t.Error(err)
+	}
+	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestARefusedApplyStopsThePass(t *testing.T) {
+	cp, admin := servedTenant(t, "tenant-refused-apply")
+	eventually(t, 30*time.Second, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
+	})
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	ctx := t.Context()
+	rebindOperator(t, admin, []rbacv1.PolicyRule{
+		{APIGroups: []string{"*"}, Resources: []string{"*"}, Verbs: []string{"get", "list", "watch"}},
+		{NonResourceURLs: []string{"*"}, Verbs: []string{"*"}},
+	}, authorizationv1.ResourceAttributes{Resource: "configmaps", Verb: "patch", Namespace: "kube-system"})
+	refresh(t, cp)
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation-1),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, cp.Generation-1),
+	}})
+	refresh(t, cp)
+	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, ApplyPeriod: time.Hour, Dial: *dial.Load()}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apierrors.IsForbidden(err) {
+		t.Errorf("a pass whose apply was refused returned %v, want the refusal", err)
+	}
+	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused); err != nil {
+		t.Error(err)
+	}
+	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestAnotherOwnersObjectKeepsApplyingThoughTheRolloutReadFails(t *testing.T) {
+	ctx := t.Context()
+	cp, admin := servedTenant(t, "tenant-owners-rollout")
+	setCoreDNS(t, cp, false)
+	eventually(t, 30*time.Second, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
+	})
+	for _, obj := range []client.Object{
+		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "coredns"}, Data: map[string]string{"Corefile": ".:53 { forward . 9.9.9.9 }"}},
+		&appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "coredns"},
+			Spec: appsv1.DeploymentSpec{
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "owners-dns"}},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "owners-dns"}},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "dns", Image: "owners/coredns"}}},
+				},
+			},
+		},
+	} {
+		if err := admin.Create(ctx, obj); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setCoreDNS(t, cp, true)
+	const others = "ConfigMap kube-system/coredns exists and is not Lodia's; delete it or disable the addon"
+	eventually(t, 30*time.Second, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying)
+	})
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	rebindOperator(t, admin, []rbacv1.PolicyRule{
+		{APIGroups: []string{"", "discovery.k8s.io", rbacv1.GroupName}, Resources: []string{"*"}, Verbs: []string{"*"}},
+		{APIGroups: []string{appsv1.GroupName}, Resources: []string{"deployments"}, Verbs: []string{"*"}},
+		{APIGroups: []string{appsv1.GroupName}, Resources: []string{"daemonsets"}, Verbs: []string{"create", "patch", "update", "delete", "list", "watch"}},
+		{NonResourceURLs: []string{"*"}, Verbs: []string{"*"}},
+	}, authorizationv1.ResourceAttributes{Group: appsv1.GroupName, Resource: "daemonsets", Verb: "get", Namespace: "kube-system"})
+	refresh(t, cp)
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation-1),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable, cp.Generation-1),
+	}})
+	refresh(t, cp)
+	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, ApplyPeriod: time.Hour, Dial: *dial.Load()}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apierrors.IsForbidden(err) {
+		t.Errorf("a pass whose rollout read was refused returned %v, want the refusal", err)
+	}
+	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying); err != nil {
+		t.Error(err)
+	}
+	if c := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied); c.Message != others {
+		t.Errorf("AddonsApplied says %q", c.Message)
+	}
+}
+
+func TestAWaitComparesItsWriteWithTheServer(t *testing.T) {
+	cp := controlPlane(t, "tenant-gate-compare")
+	eventually(t, 10*time.Second, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+	})
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	waiting := func(conditionType string) map[string]any {
+		return map[string]any{
+			"type": conditionType, "status": string(metav1.ConditionFalse), "reason": lodiav1alpha1.ReasonWaitingForAccess,
+			"message": "AccessReady is not True for this generation", "observedGeneration": cp.Generation,
+			"lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
+		}
+	}
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		waiting(lodiav1alpha1.ConditionAddonsApplied), waiting(lodiav1alpha1.ConditionAddonsAvailable),
+	}})
+	applyStatus(t, cp, "test/"+lodiav1alpha1.ConditionAccessReady, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding, cp.Generation),
+	}})
+	refresh(t, cp)
+	stale := cp.DeepCopy()
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable, cp.Generation),
+	}})
+	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: k8s}
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+		t.Fatal(err)
+	}
+	refresh(t, cp)
+	expectNow(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+	expectNow(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+}
+
+func TestAFailedSyncComparesItsWriteWithTheServer(t *testing.T) {
+	cp := controlPlane(t, "tenant-sync-compare")
+	publish(t, cp)
+	reconcilePKI(t, &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour}, cp)
+	eventually(t, 10*time.Second, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+	})
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	applying := func(conditionType string) map[string]any {
+		return map[string]any{
+			"type": conditionType, "status": string(metav1.ConditionFalse), "reason": lodiav1alpha1.ReasonApplying,
+			"message": "the tenant's API server does not answer; the error is in Lodia's log", "observedGeneration": cp.Generation,
+			"lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
+		}
+	}
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		applying(lodiav1alpha1.ConditionAddonsApplied), applying(lodiav1alpha1.ConditionAddonsAvailable),
+	}})
+	refresh(t, cp)
+	stale := cp.DeepCopy()
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, cp.Generation),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, cp.Generation),
+	}})
+	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: k8s, ApplyPeriod: time.Hour, Dial: unreachable}
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+		t.Fatal("a pass that could not reach the tenant succeeded")
+	}
+	refresh(t, cp)
+	expectNow(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying)
+	expectNow(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying)
+}
+
+type snapshot struct {
+	client.Client
+	cp *lodiav1alpha1.ControlPlane
+}
+
+func (c snapshot) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if cp, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
+		c.cp.DeepCopyInto(cp)
+		cp.Spec.Paused = false
+		return nil
+	}
+	return c.Client.Get(ctx, key, obj, opts...)
+}
+
+var errReadFailed = errors.New("injected: the API server did not answer")
+
+type failingRead struct {
+	client.Reader
+}
+
+func (r failingRead) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if _, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
+		return errReadFailed
+	}
+	return r.Reader.Get(ctx, key, obj, opts...)
 }
 
 func TestTheTenantGetsItsObjects(t *testing.T) {
@@ -546,6 +978,39 @@ func TestATenantThatDoesNotAnswerKeepsATrueAddonsApplied(t *testing.T) {
 	})
 }
 
+func TestATenantThatDoesNotAnswerAtANewGenerationKeepsWhatItDescribed(t *testing.T) {
+	cp := controlPlane(t, "tenant-unanswered-generation")
+	publish(t, cp)
+	issuer := &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour}
+	reconcilePKI(t, issuer, cp)
+	admin := startTenant(t, cp)
+	setDial(t, admin.host)
+	issuer.Dial = *dial.Load()
+	setCondition(t, cp, lodiav1alpha1.ConditionAPIServerReady, "Ready")
+	reconcilePKI(t, issuer, cp)
+	eventually(t, 30*time.Second, func() error {
+		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied); err != nil {
+			return err
+		}
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonRolloutPending)
+	})
+	applied, available := *condition(t, cp, lodiav1alpha1.ConditionAddonsApplied), *condition(t, cp, lodiav1alpha1.ConditionAddonsAvailable)
+
+	dial.Store(&unreachable)
+	setReplicas(t, cp, 2)
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	r := &tenant.Reconciler{Client: k8s, Reader: k8s, ApplyPeriod: time.Hour, Dial: unreachable}
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+		t.Fatal("a pass that could not reach the tenant succeeded")
+	}
+	for _, before := range []metav1.Condition{applied, available} {
+		after := *condition(t, cp, before.Type)
+		if after.Status != before.Status || after.Reason != before.Reason || after.Message != before.Message || after.ObservedGeneration != before.ObservedGeneration {
+			t.Errorf("a tenant that does not answer at generation %d changed %s from %+v to %+v", cp.Generation, before.Type, before, after)
+		}
+	}
+}
+
 func TestATenantThatNeverAnsweredIsApplying(t *testing.T) {
 	cp := controlPlane(t, "tenant-never-answered")
 	publish(t, cp)
@@ -732,6 +1197,35 @@ func TestAnInventoryReadTheTenantRefusesIsReported(t *testing.T) {
 	})
 }
 
+func rebindOperator(t *testing.T, admin *tenantClient, rules []rbacv1.PolicyRule, denied authorizationv1.ResourceAttributes) {
+	t.Helper()
+	ctx := t.Context()
+	role := &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: "lodia:operator-restricted"}, Rules: rules}
+	if err := admin.Create(ctx, role); err != nil {
+		t.Fatal(err)
+	}
+	if err := admin.Delete(ctx, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: "lodia:operator"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := admin.Create(ctx, &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "lodia:operator"},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: role.Name},
+		Subjects:   []rbacv1.Subject{{APIGroup: rbacv1.GroupName, Kind: rbacv1.UserKind, Name: "lodia:operator"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 30*time.Second, func() error {
+		review := &authorizationv1.SubjectAccessReview{Spec: authorizationv1.SubjectAccessReviewSpec{User: "lodia:operator", ResourceAttributes: &denied}}
+		if err := admin.Create(ctx, review); err != nil {
+			return err
+		}
+		if review.Status.Allowed {
+			return fmt.Errorf("lodia:operator may still %s %s", denied.Verb, denied.Resource)
+		}
+		return nil
+	})
+}
+
 func servedTenant(t *testing.T, namespace string) (*lodiav1alpha1.ControlPlane, *tenantClient) {
 	t.Helper()
 	cp := controlPlane(t, namespace)
@@ -904,14 +1398,18 @@ func publish(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 func setCondition(t *testing.T, cp *lodiav1alpha1.ControlPlane, conditionType, reason string) {
 	t.Helper()
 	refresh(t, cp)
-	applyStatus(t, cp, "test/"+conditionType, map[string]any{"conditions": []any{map[string]any{
+	applyStatus(t, cp, "test/"+conditionType, map[string]any{"conditions": []any{conditionAt(conditionType, metav1.ConditionTrue, reason, cp.Generation)}})
+}
+
+func conditionAt(conditionType string, status metav1.ConditionStatus, reason string, generation int64) map[string]any {
+	return map[string]any{
 		"type":               conditionType,
-		"status":             string(metav1.ConditionTrue),
+		"status":             string(status),
 		"reason":             reason,
 		"message":            "",
-		"observedGeneration": cp.Generation,
+		"observedGeneration": generation,
 		"lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
-	}}})
+	}
 }
 
 func setCoreDNS(t *testing.T, cp *lodiav1alpha1.ControlPlane, enabled bool) {

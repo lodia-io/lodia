@@ -104,6 +104,11 @@ func target(cp *lodiav1alpha1.ControlPlane, current string) (lodiav1alpha1.Targe
 		return lodiav1alpha1.Target{Version: current},
 			newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, message)
 	}
+	if lag := lagging(cp); len(lag) > 0 {
+		return lodiav1alpha1.Target{Version: want},
+			newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionTrue, lodiav1alpha1.ReasonLatestGenerationNotObserved,
+				fmt.Sprintf("generation %d is not taken up yet: %s", cp.Generation, strings.Join(lag, ", ")))
+	}
 	if rolling := rollingOut(cp); len(rolling) > 0 {
 		return lodiav1alpha1.Target{Version: want},
 			newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionTrue, lodiav1alpha1.ReasonRollingOut, strings.Join(rolling, "; "))
@@ -146,23 +151,51 @@ func rollingOut(cp *lodiav1alpha1.ControlPlane) []string {
 	return rolling
 }
 
+func lagging(cp *lodiav1alpha1.ControlPlane) []string {
+	var lag []string
+	for _, conditionType := range readiness {
+		if c := meta.FindStatusCondition(cp.Status.Conditions, conditionType); c != nil && c.ObservedGeneration < cp.Generation {
+			lag = append(lag, fmt.Sprintf("%s at %d", conditionType, c.ObservedGeneration))
+		}
+	}
+	return lag
+}
+
 func ready(cp *lodiav1alpha1.ControlPlane) *metav1.Condition {
+	next := newCondition(cp, lodiav1alpha1.ConditionReady, metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
+		strings.Join(readiness[:len(readiness)-1], ", ")+" and "+readiness[len(readiness)-1]+" are True")
 	for _, conditionType := range readiness {
 		c := meta.FindStatusCondition(cp.Status.Conditions, conditionType)
-		switch {
-		case c == nil || c.ObservedGeneration != cp.Generation:
-			return newCondition(cp, lodiav1alpha1.ConditionReady, metav1.ConditionUnknown, lodiav1alpha1.ReasonLatestGenerationNotObserved,
+		if c == nil {
+			next = newCondition(cp, lodiav1alpha1.ConditionReady, metav1.ConditionUnknown, lodiav1alpha1.ReasonLatestGenerationNotObserved,
 				fmt.Sprintf("%s is not reported for generation %d", conditionType, cp.Generation))
-		case c.Status != metav1.ConditionTrue:
+			break
+		}
+		if c.Status != metav1.ConditionTrue {
 			message := conditionType
 			if c.Message != "" {
 				message += ": " + c.Message
 			}
-			return newCondition(cp, lodiav1alpha1.ConditionReady, c.Status, c.Reason, message)
+			next = newCondition(cp, lodiav1alpha1.ConditionReady, c.Status, c.Reason, message)
+			break
 		}
 	}
-	return newCondition(cp, lodiav1alpha1.ConditionReady, metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
-		strings.Join(readiness[:len(readiness)-1], ", ")+" and "+readiness[len(readiness)-1]+" are True")
+	next.ObservedGeneration = oldest(cp)
+	return next
+}
+
+// oldest is what Ready describes, so that Ready True at the object's
+// generation means every change is taken up.
+func oldest(cp *lodiav1alpha1.ControlPlane) int64 {
+	generation := cp.Generation
+	for _, conditionType := range readiness {
+		c := meta.FindStatusCondition(cp.Status.Conditions, conditionType)
+		if c == nil {
+			return cp.Generation
+		}
+		generation = min(generation, c.ObservedGeneration)
+	}
+	return generation
 }
 
 func observed(cp *lodiav1alpha1.ControlPlane) bool {

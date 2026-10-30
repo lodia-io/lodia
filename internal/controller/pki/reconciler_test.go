@@ -1013,10 +1013,15 @@ func publishEndpointAt(t *testing.T, cp *lodiav1alpha1.ControlPlane, host string
 
 func setAPIServerReady(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 	t.Helper()
+	setAPIServer(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady)
+}
+
+func setAPIServer(t *testing.T, cp *lodiav1alpha1.ControlPlane, status metav1.ConditionStatus, reason string) {
+	t.Helper()
 	applyStatus(t, cp, map[string]any{"conditions": []any{map[string]any{
 		"type":               lodiav1alpha1.ConditionAPIServerReady,
-		"status":             string(metav1.ConditionTrue),
-		"reason":             lodiav1alpha1.ReasonReady,
+		"status":             string(status),
+		"reason":             reason,
 		"message":            "",
 		"observedGeneration": cp.Generation,
 		"lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
@@ -1034,6 +1039,11 @@ func condition(t *testing.T, cp *lodiav1alpha1.ControlPlane, conditionType strin
 
 func expectCondition(t *testing.T, cp *lodiav1alpha1.ControlPlane, conditionType string, status metav1.ConditionStatus, reason string) {
 	t.Helper()
+	expectConditionAt(t, cp, conditionType, status, reason, cp.Generation)
+}
+
+func expectConditionAt(t *testing.T, cp *lodiav1alpha1.ControlPlane, conditionType string, status metav1.ConditionStatus, reason string, generation int64) {
+	t.Helper()
 	c := condition(t, cp, conditionType)
 	if c == nil {
 		t.Fatalf("no %s condition", conditionType)
@@ -1041,8 +1051,8 @@ func expectCondition(t *testing.T, cp *lodiav1alpha1.ControlPlane, conditionType
 	if c.Status != status || c.Reason != reason {
 		t.Fatalf("%s is %s %s (%s), want %s %s", conditionType, c.Status, c.Reason, c.Message, status, reason)
 	}
-	if c.ObservedGeneration != cp.Generation {
-		t.Errorf("%s observed generation %d, want %d", conditionType, c.ObservedGeneration, cp.Generation)
+	if c.ObservedGeneration != generation {
+		t.Errorf("%s observed generation %d, want %d", conditionType, c.ObservedGeneration, generation)
 	}
 }
 
