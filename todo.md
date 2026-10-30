@@ -179,7 +179,10 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   Compare those applies with the live copy too, as the paths that decide from their own condition do ([independent-controllers](docs/decisions/independent-controllers.md)).
 - PKI carries `CAValidityAcceptable` over from the cache while another owner keeps one of its Secrets and while a CA cannot be read, so a stale cache can write an older value back, which stays while that path holds; the same on `main`.
   Read it live there too, as the waits and keeps do ([independent-controllers](docs/decisions/independent-controllers.md)).
-- `startTenant`'s cleanup in the Tenant tests times out stopping the tenant's kube-apiserver when several envtest packages run in parallel ("timeout waiting for process kube-apiserver to stop", seen while verifying #43), which fails a test that passed and leaves envtest processes behind.
+- Once, while verifying #43, `startTenant`'s cleanup failed a Tenant test that had passed: the tenant's kube-apiserver did not stop within envtest's 20 s ("timeout waiting for process kube-apiserver to stop").
+  On 6e32914 it did not reproduce: with three Tenant runs beside two runs of every envtest package, each stop took 14 ms to 1.1 s, and cutting the controller off the tenant before the stop changed nothing.
+  envtest kills a server that misses the limit and then stops its etcd ([process.go](https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/internal/testing/process/process.go#L249-L280), [plane.go](https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/internal/testing/controlplane/plane.go#L93-L108)), so the timeout leaves no process behind; one stays only when the test binary itself is killed.
+  If it recurs, keep the run's log.
 
 ## From KubeconfigRequest (2026-10-30)
 
