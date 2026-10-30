@@ -30,7 +30,7 @@ import (
 
 func TestKubeconfigRequestPolicy(t *testing.T) {
 	needsEnvtest(t)
-	ensureNamespaces(t, "team-a")
+	ensureNamespaces(t, "team-a", "team-b")
 	ctx := context.Background()
 	user := func(name string) rbacv1.Subject {
 		return rbacv1.Subject{APIGroup: rbacv1.GroupName, Kind: rbacv1.UserKind, Name: name}
@@ -47,6 +47,15 @@ func TestKubeconfigRequestPolicy(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Name: "kubeconfig-requesters", Namespace: "team-a"},
 			RoleRef:    role("kubeconfig-requesters"),
 			Subjects:   []rbacv1.Subject{user("alice"), user("carol")},
+		},
+		&rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{Name: "kubeconfig-requesters", Namespace: "team-b"},
+			Rules:      []rbacv1.PolicyRule{{APIGroups: []string{lodiav1alpha1.GroupVersion.Group}, Resources: []string{"kubeconfigrequests"}, Verbs: []string{"create"}}},
+		},
+		&rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: "kubeconfig-requesters", Namespace: "team-b"},
+			RoleRef:    role("kubeconfig-requesters"),
+			Subjects:   []rbacv1.Subject{user("carol")},
 		},
 		&rbacv1.Role{
 			ObjectMeta: metav1.ObjectMeta{Name: "prod-eu-admins", Namespace: "team-a"},
@@ -74,8 +83,9 @@ func TestKubeconfigRequestPolicy(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	request := func(user, controlPlane, access string) *unstructured.Unstructured {
+	request := func(namespace, user, controlPlane, access string) *unstructured.Unstructured {
 		obj := example(t, "kubeconfigrequest.yaml", "policy")
+		obj.SetNamespace(namespace)
 		set(t, obj, user, "spec", "user")
 		set(t, obj, controlPlane, "spec", "controlPlaneRef", "name")
 		unstructured.RemoveNestedField(obj.Object, "spec", "access")
@@ -105,41 +115,45 @@ func TestKubeconfigRequestPolicy(t *testing.T) {
 		}
 	})
 	err := wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (bool, error) {
-		err := clients["alice"].Create(ctx, request("bob", "prod-eu", ""), client.DryRunAll)
+		err := clients["alice"].Create(ctx, request("team-a", "bob", "prod-eu", ""), client.DryRunAll)
 		return err != nil && strings.Contains(err.Error(), "spec.user must be the requester, alice"), nil
 	})
 	if err != nil {
 		t.Fatalf("the policy never refused alice asking for bob: %v", err)
 	}
-	err = wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (bool, error) {
-		review := &authorizationv1.SubjectAccessReview{Spec: authorizationv1.SubjectAccessReviewSpec{
-			User: "carol",
-			ResourceAttributes: &authorizationv1.ResourceAttributes{
-				Namespace: "team-a", Group: lodiav1alpha1.GroupVersion.Group, Resource: "controlplanes", Subresource: "adminkubeconfig", Name: "prod-eu", Verb: "create",
-			},
-		}}
-		if err := k8s.Create(ctx, review); err != nil {
-			return false, err
+	for _, attributes := range []authorizationv1.ResourceAttributes{
+		{Namespace: "team-a", Group: lodiav1alpha1.GroupVersion.Group, Resource: "controlplanes", Subresource: "adminkubeconfig", Name: "prod-eu", Verb: "create"},
+		{Namespace: "team-b", Group: lodiav1alpha1.GroupVersion.Group, Resource: "kubeconfigrequests", Verb: "create"},
+	} {
+		err = wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (bool, error) {
+			review := &authorizationv1.SubjectAccessReview{Spec: authorizationv1.SubjectAccessReviewSpec{User: "carol", ResourceAttributes: &attributes}}
+			if err := k8s.Create(ctx, review); err != nil {
+				return false, err
+			}
+			return review.Status.Allowed, nil
+		})
+		if err != nil {
+			t.Fatalf("carol's Role in %s never took effect: %v", attributes.Namespace, err)
 		}
-		return review.Status.Allowed, nil
-	})
-	if err != nil {
-		t.Fatalf("carol's Role never took effect: %v", err)
 	}
 
 	cases := []struct {
-		name, as, user, controlPlane, access, want string
+		name, as, namespace, user, controlPlane, access, want string
 	}{
-		{"alice for alice", "alice", "alice", "prod-eu", "", ""},
-		{"alice for bob", "alice", "bob", "prod-eu", "", "spec.user must be the requester, alice"},
-		{"alice as a cluster admin of prod-eu", "alice", "alice", "prod-eu", "ClusterAdmin", "alice may not create controlplanes/adminkubeconfig for prod-eu"},
-		{"carol as a cluster admin of prod-eu", "carol", "carol", "prod-eu", "ClusterAdmin", ""},
-		{"carol as a cluster admin of prod-us", "carol", "carol", "prod-us", "ClusterAdmin", "carol may not create controlplanes/adminkubeconfig for prod-us"},
-		{"dave for dave", "dave", "dave", "prod-eu", "", `User "dave" cannot create resource "kubeconfigrequests" in API group "lodia.io" in the namespace "team-a"`},
+		{"alice for alice", "alice", "team-a", "alice", "prod-eu", "", ""},
+		{"alice for bob", "alice", "team-a", "bob", "prod-eu", "", "spec.user must be the requester, alice"},
+		{"alice for Alice", "alice", "team-a", "Alice", "prod-eu", "", "spec.user must be the requester, alice"},
+		{"alice for alice2", "alice", "team-a", "alice2", "prod-eu", "", "spec.user must be the requester, alice"},
+		{"alice for ali", "alice", "team-a", "ali", "prod-eu", "", "spec.user must be the requester, alice"},
+		{"alice as a cluster admin of prod-eu", "alice", "team-a", "alice", "prod-eu", "ClusterAdmin", "alice may not create controlplanes/adminkubeconfig for prod-eu"},
+		{"carol as a cluster admin of prod-eu", "carol", "team-a", "carol", "prod-eu", "ClusterAdmin", ""},
+		{"carol as a cluster admin of prod-us", "carol", "team-a", "carol", "prod-us", "ClusterAdmin", "carol may not create controlplanes/adminkubeconfig for prod-us"},
+		{"carol as a cluster admin of team-b's prod-eu", "carol", "team-b", "carol", "prod-eu", "ClusterAdmin", "carol may not create controlplanes/adminkubeconfig for prod-eu"},
+		{"dave for dave", "dave", "team-a", "dave", "prod-eu", "", `User "dave" cannot create resource "kubeconfigrequests" in API group "lodia.io" in the namespace "team-a"`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			err := clients[c.as].Create(ctx, request(c.user, c.controlPlane, c.access), client.DryRunAll)
+			err := clients[c.as].Create(ctx, request(c.namespace, c.user, c.controlPlane, c.access), client.DryRunAll)
 			switch {
 			case c.want == "" && err != nil:
 				t.Fatalf("want admitted, got %v", err)
