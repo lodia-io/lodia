@@ -66,6 +66,7 @@ type KubeconfigRequestSpec struct {
 	// public key only.
 	// +required
 	// +kubebuilder:validation:MaxLength=5120
+	// +kubebuilder:validation:XValidation:rule="string(self).startsWith('-----BEGIN CERTIFICATE REQUEST-----') && !string(self).contains('PRIVATE KEY')",message="must be a PEM certificate request, with no private key"
 	Request []byte `json:"request"`
 
 	// ExpirationSeconds counts from the request's creation.

@@ -4,8 +4,15 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"os"
@@ -875,6 +882,37 @@ func TestSmallerShapes(t *testing.T) {
 func TestKubeconfigRequestValidation(t *testing.T) {
 	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: "alice"}}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkcs8, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sec1, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spki, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := func(typ string, der []byte) []byte { return pem.EncodeToMemory(&pem.Block{Type: typ, Bytes: der}) }
+	sized := func(n int) []byte {
+		header := "-----BEGIN CERTIFICATE REQUEST-----\n"
+		return []byte(header + strings.Repeat("A", n-len(header)))
+	}
+	request := func(parts ...[]byte) func(*testing.T, *unstructured.Unstructured) {
+		return func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, base64.StdEncoding.EncodeToString(bytes.Join(parts, nil)), "spec", "request")
+		}
+	}
+	const notARequest = "must be a PEM certificate request, with no private key"
 	cases := []struct {
 		name   string
 		mutate func(*testing.T, *unstructured.Unstructured)
@@ -898,12 +936,13 @@ func TestKubeconfigRequestValidation(t *testing.T) {
 		{"no request", func(t *testing.T, o *unstructured.Unstructured) {
 			unstructured.RemoveNestedField(o.Object, "spec", "request")
 		}, "spec.request"},
-		{"a request of 5120 characters", func(t *testing.T, o *unstructured.Unstructured) {
-			set(t, o, base64.StdEncoding.EncodeToString(make([]byte, 3840)), "spec", "request")
-		}, ""},
-		{"a request of more than 5120 characters", func(t *testing.T, o *unstructured.Unstructured) {
-			set(t, o, base64.StdEncoding.EncodeToString(make([]byte, 3843)), "spec", "request")
-		}, "spec.request"},
+		{"a request of 5120 characters", request(sized(3840)), ""},
+		{"a request of more than 5120 characters", request(sized(3843)), "spec.request"},
+		{"a PKCS#8 key", request(block("PRIVATE KEY", pkcs8)), notARequest},
+		{"an EC key", request(block("EC PRIVATE KEY", sec1)), notARequest},
+		{"a request followed by its key", request(block("CERTIFICATE REQUEST", csr), block("PRIVATE KEY", pkcs8)), notARequest},
+		{"a public key", request(block("PUBLIC KEY", spki)), notARequest},
+		{"a request after a line of text", request([]byte("Certificate Request:\n"), block("CERTIFICATE REQUEST", csr)), notARequest},
 		{"an empty user", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, "", "spec", "user")
 		}, "spec.user"},
