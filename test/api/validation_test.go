@@ -930,6 +930,9 @@ func TestKubeconfigRequestValidation(t *testing.T) {
 		{"a day and a second", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, int64(86401), "spec", "expirationSeconds")
 		}, "spec.expirationSeconds"},
+		{"no controlPlaneRef", func(t *testing.T, o *unstructured.Unstructured) {
+			unstructured.RemoveNestedField(o.Object, "spec", "controlPlaneRef")
+		}, "spec.controlPlaneRef: Required value"},
 		{"an unknown access", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, "View", "spec", "access")
 		}, "spec.access"},
@@ -943,6 +946,9 @@ func TestKubeconfigRequestValidation(t *testing.T) {
 		{"a request followed by its key", request(block("CERTIFICATE REQUEST", csr), block("PRIVATE KEY", pkcs8)), notARequest},
 		{"a public key", request(block("PUBLIC KEY", spki)), notARequest},
 		{"a request after a line of text", request([]byte("Certificate Request:\n"), block("CERTIFICATE REQUEST", csr)), notARequest},
+		{"no user", func(t *testing.T, o *unstructured.Unstructured) {
+			unstructured.RemoveNestedField(o.Object, "spec", "user")
+		}, "spec.user: Required value"},
 		{"an empty user", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, "", "spec", "user")
 		}, "spec.user"},
@@ -959,6 +965,17 @@ func TestKubeconfigRequestValidation(t *testing.T) {
 			c.mutate(t, obj)
 			expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), c.want)
 		})
+	}
+}
+
+func TestKubeconfigRequestDefaults(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	obj := example(t, "kubeconfigrequest.yaml", "defaults")
+	unstructured.RemoveNestedField(obj.Object, "spec", "expirationSeconds")
+	expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), "")
+	if seconds, _, _ := unstructured.NestedInt64(obj.Object, "spec", "expirationSeconds"); seconds != 3600 {
+		t.Fatalf("expirationSeconds = %d, want 3600", seconds)
 	}
 }
 
