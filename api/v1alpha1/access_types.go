@@ -48,7 +48,7 @@ type KubeconfigRequestSpec struct {
 	ControlPlaneRef LocalReference `json:"controlPlaneRef"`
 
 	// User is the requester's own username, which the admission policy
-	// KubeconfigRequestPolicy requires; the certificate's user is
+	// kubeconfigrequests.lodia.io requires; the certificate's user is
 	// lodia:user:<user>.
 	// +required
 	// +kubebuilder:validation:MinLength=1
