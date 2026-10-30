@@ -55,7 +55,7 @@ Each renewal is a generation of five Secrets ([A tenant namespace](../README.md#
 | cluster CA (trust anchor) | CA₂ joins every bundle: `cluster-info`, `kube-root-ca.crt` (the controller manager restarts, its `--root-ca-file` is read once), the CA bundle Secret, kubeconfigs; node owners add CA₂ to `/etc/kubernetes/pki/ca.crt` and the kubelet's kubeconfig | serving, kubelet client, tunnel and konnectivity certificates move to CA₂; CA₁ leaves the bundles | **yes** | `-complete`, after the owner updated every node |
 
 Only the last row needs people.
-It is meant for a compromised or expiring trust anchor, once in a decade; every rotation done for hygiene is one of the first four.
+It is meant for a compromised or expiring trust anchor, once in a decade; every other rotation is routine.
 
 ## Why
 
