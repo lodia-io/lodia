@@ -962,6 +962,30 @@ func TestKubeconfigRequestValidation(t *testing.T) {
 	}
 }
 
+func TestKubeconfigRequestStatus(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	obj := example(t, "kubeconfigrequest.yaml", "status")
+	if err := k8s.Create(context.Background(), obj); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = k8s.Delete(context.Background(), obj) })
+	for _, c := range []struct {
+		name  string
+		bytes int
+		want  string
+	}{
+		{"a kubeconfig of 40960 characters", 30720, ""},
+		{"a kubeconfig of more than 40960 characters", 30723, "status.kubeconfig"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			written := obj.DeepCopy()
+			set(t, written, base64.StdEncoding.EncodeToString(make([]byte, c.bytes)), "status", "kubeconfig")
+			expect(t, k8s.Status().Update(context.Background(), written, client.DryRunAll), c.want)
+		})
+	}
+}
+
 func TestRequestsAndBackupsCannotChange(t *testing.T) {
 	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")

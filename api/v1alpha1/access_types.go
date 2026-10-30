@@ -87,6 +87,7 @@ type KubeconfigRequestStatus struct {
 	// Kubeconfig names the public endpoint and the cluster CA bundle and
 	// embeds the certificate; it has no key.
 	// +optional
+	// +kubebuilder:validation:MaxLength=40960
 	Kubeconfig []byte `json:"kubeconfig,omitempty"`
 
 	// ExpirationTimestamp is the certificate's NotAfter.
