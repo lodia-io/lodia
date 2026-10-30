@@ -162,9 +162,9 @@ The chart's admission policy `kubeconfigrequests.lodia.io` and the permission `c
 | field | written by | meaning |
 |---|---|---|
 | `spec.controlPlaneRef.name` | the requester | the `ControlPlane`, in the same namespace; the spec never changes (CEL) |
-| `spec.user` | the requester | their own username, 1 to 512 characters; the certificate's user is `lodia:user:<user>` |
+| `spec.user` | the requester | their own username, 1 to 512 characters, with no control character, U+FFFE or U+FFFF, which a kubeconfig's YAML cannot hold (CEL); the certificate's user is `lodia:user:<user>` |
 | `spec.access` | the requester | `ClusterAdmin` puts the certificate in `lodia:cluster-admins`; without it, it carries no group |
-| `spec.request` | the requester | a PEM PKCS#10 request, at most 5120 characters of base64, enough for an RSA-8192 key's; it begins with `-----BEGIN CERTIFICATE REQUEST-----` and holds no `PRIVATE KEY` (CEL); Lodia uses only its public key, which must be RSA of at least 2048 bits, ECDSA P-256, P-384 or P-521, or Ed25519 |
+| `spec.request` | the requester | a PEM PKCS#10 request, at most 5120 characters of base64, enough for an RSA-8192 key's; it is exactly one PEM block of that type (CEL), so no private key is stored with it; Lodia uses only its public key, which must be RSA of 2048 to 8192 bits, ECDSA P-256, P-384 or P-521, or Ed25519: the API server refuses a client certificate with a larger RSA key ([handshake_server.go](https://github.com/golang/go/blob/go1.26.10/src/crypto/tls/handshake_server.go#L955-L960), the Go that builds kube-apiserver 1.35 to 1.37) |
 | `spec.expirationSeconds` | the requester | 600 to 86400, 3600 by default; the request's deadline is `metadata.creationTimestamp` plus this |
 | `status.kubeconfig` | kubeconfig request reconciler | the public endpoint, the cluster CA bundle and the certificate, with no key: the requester adds theirs |
 | `status.expirationTimestamp` | kubeconfig request reconciler | the certificate's `NotAfter`: the deadline, or the request CA's `NotAfter` if that comes first |

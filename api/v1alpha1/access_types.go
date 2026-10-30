@@ -53,6 +53,7 @@ type KubeconfigRequestSpec struct {
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=512
+	// +kubebuilder:validation:XValidation:rule="!self.matches(r'[\\p{Cc}\\x{FFFE}\\x{FFFF}]')",message="must hold no control character"
 	User string `json:"user"`
 
 	// Access ClusterAdmin puts the certificate in lodia:cluster-admins, for
@@ -66,7 +67,7 @@ type KubeconfigRequestSpec struct {
 	// public key only.
 	// +required
 	// +kubebuilder:validation:MaxLength=5120
-	// +kubebuilder:validation:XValidation:rule="string(self).startsWith('-----BEGIN CERTIFICATE REQUEST-----') && !string(self).contains('PRIVATE KEY')",message="must be a PEM certificate request, with no private key"
+	// +kubebuilder:validation:XValidation:rule="string(self).matches(r'^-----BEGIN CERTIFICATE REQUEST-----\\r?\\n[A-Za-z0-9+/=\\r\\n]+-----END CERTIFICATE REQUEST-----[\\r\\n]*$')",message="must be one PEM certificate request"
 	Request []byte `json:"request"`
 
 	// ExpirationSeconds counts from the request's creation.

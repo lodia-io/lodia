@@ -904,15 +904,15 @@ func TestKubeconfigRequestValidation(t *testing.T) {
 	}
 	block := func(typ string, der []byte) []byte { return pem.EncodeToMemory(&pem.Block{Type: typ, Bytes: der}) }
 	sized := func(n int) []byte {
-		header := "-----BEGIN CERTIFICATE REQUEST-----\n"
-		return []byte(header + strings.Repeat("A", n-len(header)))
+		header, footer := "-----BEGIN CERTIFICATE REQUEST-----\n", "\n-----END CERTIFICATE REQUEST-----\n"
+		return []byte(header + strings.Repeat("A", n-len(header)-len(footer)) + footer)
 	}
 	request := func(parts ...[]byte) func(*testing.T, *unstructured.Unstructured) {
 		return func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, base64.StdEncoding.EncodeToString(bytes.Join(parts, nil)), "spec", "request")
 		}
 	}
-	const notARequest = "must be a PEM certificate request, with no private key"
+	const notARequest = "must be one PEM certificate request"
 	cases := []struct {
 		name   string
 		mutate func(*testing.T, *unstructured.Unstructured)
@@ -946,6 +946,10 @@ func TestKubeconfigRequestValidation(t *testing.T) {
 		{"a request followed by its key", request(block("CERTIFICATE REQUEST", csr), block("PRIVATE KEY", pkcs8)), notARequest},
 		{"a public key", request(block("PUBLIC KEY", spki)), notARequest},
 		{"a request after a line of text", request([]byte("Certificate Request:\n"), block("CERTIFICATE REQUEST", csr)), notARequest},
+		{"a request before a line of text", request(block("CERTIFICATE REQUEST", csr), []byte("Certificate Request:\n")), notARequest},
+		{"a request followed by its key unarmoured", request(block("CERTIFICATE REQUEST", csr), []byte(base64.StdEncoding.EncodeToString(pkcs8))), notARequest},
+		{"two requests", request(block("CERTIFICATE REQUEST", csr), block("CERTIFICATE REQUEST", csr)), notARequest},
+		{"a request with CRLF line ends", request(bytes.ReplaceAll(block("CERTIFICATE REQUEST", csr), []byte("\n"), []byte("\r\n"))), ""},
 		{"no user", func(t *testing.T, o *unstructured.Unstructured) {
 			unstructured.RemoveNestedField(o.Object, "spec", "user")
 		}, "spec.user: Required value"},
@@ -958,6 +962,18 @@ func TestKubeconfigRequestValidation(t *testing.T) {
 		{"a user of 513 characters", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, strings.Repeat("u", 513), "spec", "user")
 		}, "spec.user"},
+		{"a user with a letter beyond ASCII", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "åsa@example.com", "spec", "user")
+		}, ""},
+		{"a user with a DEL", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "alice\u007f", "spec", "user")
+		}, "must hold no control character"},
+		{"a user with a C1 control", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "alice\u0085", "spec", "user")
+		}, "must hold no control character"},
+		{"a user with U+FFFF", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "alice\uffff", "spec", "user")
+		}, "must hold no control character"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
