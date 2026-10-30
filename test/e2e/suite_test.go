@@ -19,14 +19,17 @@ import (
 
 	"github.com/distribution/reference"
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
+	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/e2e-framework/klient/decoder"
+	"sigs.k8s.io/e2e-framework/klient/k8s"
 	"sigs.k8s.io/e2e-framework/pkg/env"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
@@ -145,8 +148,18 @@ func TestExamplesOnAKindCluster(t *testing.T) {
 			}
 			return ctx
 		}).
-		Assess("every example is accepted by the installed CRDs", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			if err := decoder.DecodeEachFile(ctx, os.DirFS(examples), "*.yaml", decoder.CreateHandler(cfg.Client().Resources())); err != nil {
+		Assess("every example is accepted by the installed CRDs, the KubeconfigRequest from its own user", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			review := &authenticationv1.SelfSubjectReview{}
+			if err := newClient(t, cfg).Create(ctx, review); err != nil {
+				t.Fatal(err)
+			}
+			asRequester := decoder.MutateOption(func(obj k8s.Object) error {
+				if request, ok := obj.(*unstructured.Unstructured); ok && request.GetKind() == "KubeconfigRequest" {
+					return unstructured.SetNestedField(request.Object, review.Status.UserInfo.Username, "spec", "user")
+				}
+				return nil
+			})
+			if err := decoder.DecodeEachFile(ctx, os.DirFS(examples), "*.yaml", decoder.CreateHandler(cfg.Client().Resources()), asRequester); err != nil {
 				t.Fatal(err)
 			}
 			return ctx
