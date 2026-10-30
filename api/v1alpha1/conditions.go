@@ -137,6 +137,12 @@ const (
 	ReasonCompleted            = "Completed"
 )
 
+// A KubeconfigRequest's Ready.
+const (
+	ReasonRequestInvalid    = "RequestInvalid"
+	ReasonPolicyNotEnforced = "PolicyNotEnforced"
+)
+
 // ControllerManagerHeld.
 const (
 	ReasonNodesSilent = "NodesSilent"

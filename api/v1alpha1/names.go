@@ -179,6 +179,11 @@ func RestoreMarkerKey(controlPlane types.UID) string {
 	return "/lodia.io/restores/" + string(controlPlane)
 }
 
+// KubeconfigRequestPolicy names both the ValidatingAdmissionPolicy that
+// decides who may create a KubeconfigRequest and its binding, which the chart
+// writes and the kubeconfig request reconciler of PKI reads.
+const KubeconfigRequestPolicy = "kubeconfigrequests.lodia.io"
+
 // The values beside the names that one controller renders and another relies
 // on.
 const (

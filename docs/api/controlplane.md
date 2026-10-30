@@ -152,3 +152,26 @@ The `Backup`'s condition:
 | condition | writer | True, and its reason | False or Unknown reasons |
 |---|---|---|---|
 | `Ready` of a `Backup` | backup reconciler | the copy is sealed and complete (`Completed`), for good | `Reconciling`; `ControlPlaneNotFound` (no `ControlPlane` of that name); `Unsupported` (a shared datastore); `NoBackupStore` (the source's class has no backup store; final, and an upgrade goes on without its pre-upgrade `Backup`, as `Progressing` says); `WaitingForDatastore` (the source's `DatastoreReady` is not True); `Snapshotting` (the seal key is in the source's etcd, and a snapshot is on its way to its revision); `Copying`; `Failed` (final, the message saying what failed; a new `Backup` tries again) |
+
+## KubeconfigRequest
+
+`lodia.io/v1alpha1`, namespaced: a short-lived kubeconfig for a key of the requester's own, in their own name ([short-lived-kubeconfigs](../decisions/short-lived-kubeconfigs.md)).
+The kubeconfig request reconciler of the PKI controller, field manager `lodia/kubeconfigrequest`, writes the status and deletes the request at its deadline, all from wave 1b, KubeconfigRequest; until then the policy admits or refuses requests and nothing answers them.
+The chart's admission policy `kubeconfigrequests.lodia.io` and the permission `create` on `controlplanes/adminkubeconfig` decide who may create one, and with `ClusterAdmin` ([the rules](../decisions/short-lived-kubeconfigs.md#decision)).
+
+| field | written by | meaning |
+|---|---|---|
+| `spec.controlPlaneRef.name` | the requester | the `ControlPlane`, in the same namespace; the spec never changes (CEL) |
+| `spec.user` | the requester | their own username, 1 to 512 characters; the certificate's user is `lodia:user:<user>` |
+| `spec.access` | the requester | `ClusterAdmin` puts the certificate in `lodia:cluster-admins`; without it, it carries no group |
+| `spec.request` | the requester | a PEM PKCS#10 request, at most 5120 characters of base64, enough for an RSA-8192 key's; Lodia uses only its public key, which must be RSA of at least 2048 bits, ECDSA P-256, P-384 or P-521, or Ed25519 |
+| `spec.expirationSeconds` | the requester | 600 to 86400, 3600 by default; the request's deadline is `metadata.creationTimestamp` plus this |
+| `status.kubeconfig` | kubeconfig request reconciler | the public endpoint, the cluster CA bundle and the certificate, with no key: the requester adds theirs |
+| `status.expirationTimestamp` | kubeconfig request reconciler | the certificate's `NotAfter`: the deadline, or the request CA's `NotAfter` if that comes first |
+| `status.conditions[]` | kubeconfig request reconciler | `Ready`, below |
+
+The `KubeconfigRequest`'s condition:
+
+| condition | writer | True, and its reason | False or Unknown reasons |
+|---|---|---|---|
+| `Ready` of a `KubeconfigRequest` | kubeconfig request reconciler | `status.kubeconfig` holds the certificate (`Issued`), for good | `ControlPlaneNotFound` (no `ControlPlane` of that name); `WaitingForEndpoint` (no `status.endpoint.apiServer` yet); `WaitingForCertificates` (the request CA or `<cp>-ca-bundle` is not written yet); `RequestInvalid` (final: the request does not parse, its signature does not verify, or its key is none of the above); `PolicyNotEnforced` (final: the admission policy was not in place when the request was created, [short-lived-kubeconfigs](../decisions/short-lived-kubeconfigs.md)) |

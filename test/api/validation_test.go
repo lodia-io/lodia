@@ -5,6 +5,7 @@ package api
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -876,15 +877,39 @@ func TestKubeconfigRequestValidation(t *testing.T) {
 		mutate func(*testing.T, *unstructured.Unstructured)
 		want   string
 	}{
-		{"system:masters", func(t *testing.T, o *unstructured.Unstructured) {
-			set(t, o, []any{"system:masters"}, "spec", "groups")
-		}, "system:masters cannot be requested"},
-		{"five minutes", func(t *testing.T, o *unstructured.Unstructured) {
-			set(t, o, int64(300), "spec", "expirationSeconds")
+		{"ten minutes less a second", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, int64(599), "spec", "expirationSeconds")
 		}, "spec.expirationSeconds"},
-		{"two days", func(t *testing.T, o *unstructured.Unstructured) {
-			set(t, o, int64(172800), "spec", "expirationSeconds")
+		{"ten minutes", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, int64(600), "spec", "expirationSeconds")
+		}, ""},
+		{"a day", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, int64(86400), "spec", "expirationSeconds")
+		}, ""},
+		{"a day and a second", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, int64(86401), "spec", "expirationSeconds")
 		}, "spec.expirationSeconds"},
+		{"an unknown access", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "View", "spec", "access")
+		}, "spec.access"},
+		{"no request", func(t *testing.T, o *unstructured.Unstructured) {
+			unstructured.RemoveNestedField(o.Object, "spec", "request")
+		}, "spec.request"},
+		{"a request of 5120 characters", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, base64.StdEncoding.EncodeToString(make([]byte, 3840)), "spec", "request")
+		}, ""},
+		{"a request of more than 5120 characters", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, base64.StdEncoding.EncodeToString(make([]byte, 3843)), "spec", "request")
+		}, "spec.request"},
+		{"an empty user", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "", "spec", "user")
+		}, "spec.user"},
+		{"a user of 512 characters", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, strings.Repeat("u", 512), "spec", "user")
+		}, ""},
+		{"a user of 513 characters", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, strings.Repeat("u", 513), "spec", "user")
+		}, "spec.user"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

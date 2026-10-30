@@ -32,8 +32,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From deciding the design (2026-10-25)
 
-- `KubeconfigRequest`'s schema refuses only `system:masters`; [short-lived-kubeconfigs](docs/decisions/short-lived-kubeconfigs.md) now refuses every user and group under `system:` and every user under `lodia:`.
-  The rule and its envtest cases come with the controller that answers requests.
 - `loadBalancer` mode with a load balancer that reports only a host name (AWS NLB and CLB): `--advertise-address` takes an IP, so the `kubernetes` endpoint needs another source there; decide before that mode is supported on such a provider.
 - client-go reloads a kubeconfig's CA file only with `ClientsAllowCARotation`, on by default since 1.36 ([known_features.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/client-go/features/known_features.go#L115-L117)): on 1.35 a trust anchor rotation restarts every component whose kubeconfig names the CA file; plan it into the phase 3 rotation.
 - Phase 2: Argo CD has no generic health check for custom resources ([health checks](https://github.com/argoproj/argo-cd/blob/v3.5.6/docs/operator-manual/health.md#L61-L83)), and kstatus, through which Flux waits, keeps a permanently failing object InProgress until a timeout unless it reports `Stalled` ([kstatus](https://github.com/kubernetes-sigs/cli-utils/blob/v0.37.2/pkg/kstatus/status/status.go#L102-L183)); Lodia writes no kstatus `Reconciling`, so the docs ship an Argo CD Lua health check and a Flux `healthCheckExprs` entry ([kustomizations.md](https://github.com/fluxcd/kustomize-controller/blob/v1.10.1/docs/spec/v1/kustomizations.md#L351-L374)) for `ControlPlane`, both reading `status.observedGeneration` and `Ready`.
@@ -78,7 +76,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the contracts audit (2026-10-25)
 
-- Phase 2: `KubeconfigRequest` gets a named status writer.
 - Phase 3: `target.rotation.*`, which `Target` lacks, gets a stage enum of its own instead of sharing PKI's observed `RotationPhase`, and `rotation.ca` becomes `clusterCA`.
 - Phase 3: `Hibernated`, with Lifecycle as its writer, and the handled `lodia.io/operation` value recorded in `status`.
 
