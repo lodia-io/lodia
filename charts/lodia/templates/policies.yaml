@@ -1,0 +1,8 @@
+{{- range $path, $_ := .Files.Glob "files/policies/*.yaml" }}
+{{- range regexSplit "(?m)^---$" ($.Files.Get $path) -1 }}
+{{- $object := fromYaml . }}
+{{- $_ := set $object.metadata "labels" (include "lodia.labels" $ | fromYaml) }}
+---
+{{ toYaml $object }}
+{{- end }}
+{{- end }}

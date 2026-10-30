@@ -29,13 +29,16 @@ import (
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 )
 
-var k8s client.Client
+var (
+	k8s client.Client
+	env *envtest.Environment
+)
 
 func TestMain(m *testing.M) {
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
 		os.Exit(m.Run())
 	}
-	env := &envtest.Environment{
+	env = &envtest.Environment{
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "api", "crds")},
 		ErrorIfCRDPathMissing: true,
 		UseExistingCluster:    new(false),

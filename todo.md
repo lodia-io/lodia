@@ -180,3 +180,9 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - PKI carries `CAValidityAcceptable` over from the cache while another owner keeps one of its Secrets and while a CA cannot be read, so a stale cache can write an older value back, which stays while that path holds; the same on `main`.
   Read it live there too, as the waits and keeps do ([independent-controllers](docs/decisions/independent-controllers.md)).
 - `startTenant`'s cleanup in the Tenant tests times out stopping the tenant's kube-apiserver when several envtest packages run in parallel ("timeout waiting for process kube-apiserver to stop", seen while verifying #43), which fails a test that passed and leaves envtest processes behind.
+
+## From KubeconfigRequest (2026-10-30)
+
+- A kubectl exec credential plugin that generates the key, creates the request and caches the certificate, as gardenlogin caches Gardener's ([get_client_certificate.go](https://github.com/gardener/gardenlogin/blob/v0.11.0/cmd/get_client_certificate.go#L187-L188)); until then a person runs openssl and kubectl.
+- Requests on behalf of another user, for a platform's backend: the policy could admit them with `impersonate` on `lodia.io` `users`; additive.
+- A viewer level for `spec.access`: it needs a read-only role kept current with the tenant's resources; additive to the enum.
