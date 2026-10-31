@@ -1148,6 +1148,15 @@ func secretsOf(t *testing.T, cp *lodiav1alpha1.ControlPlane) map[string]*corev1.
 	return out
 }
 
+func secretOf(t *testing.T, cp *lodiav1alpha1.ControlPlane, name string) *corev1.Secret {
+	t.Helper()
+	s := secretsOf(t, cp)[name]
+	if s == nil {
+		t.Fatalf("no Secret %s", name)
+	}
+	return s
+}
+
 func resourceVersions(t *testing.T, cp *lodiav1alpha1.ControlPlane) (map[string]string, string) {
 	t.Helper()
 	versions := map[string]string{}

@@ -75,15 +75,15 @@ func TestASignerWriteRefusedForFivePassesLeavesTheBundleAsItWas(t *testing.T) {
 	cp := controlPlane(t, "signer-refused")
 	publishEndpoint(t, cp)
 	reconcile(t, r, cp)
-	before := secretsOf(t, cp)
-	if err := k8s.Delete(t.Context(), before["dev-kubelet-signer"]); err != nil {
+	before := secretOf(t, cp, "dev-client-ca").Data[lodiav1alpha1.CACertKey]
+	if err := k8s.Delete(t.Context(), secretOf(t, cp, "dev-kubelet-signer")); err != nil {
 		t.Fatal(err)
 	}
 	r.Client = failingApply{Client: failingApply{Client: controller, secret: "dev-kubelet-signer-next"}, secret: "dev-kubelet-signer"}
 	for range 5 {
 		reconcileFails(t, r, cp)
 	}
-	if got := secretsOf(t, cp)["dev-client-ca"].Data[lodiav1alpha1.CACertKey]; !bytes.Equal(got, before["dev-client-ca"].Data[lodiav1alpha1.CACertKey]) {
+	if got := secretOf(t, cp, "dev-client-ca").Data[lodiav1alpha1.CACertKey]; !bytes.Equal(got, before) {
 		bundle, _ := certs.ParseCerts(got)
 		t.Errorf("five passes that could not store a signer left the client CA bundle holding %v", subjects(bundle))
 	}
@@ -101,12 +101,12 @@ func TestEveryStateOfASignerReplacementSurvivesEachRefusedWrite(t *testing.T) {
 	}{
 		{"due", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) { dueSigner(t, cp) }, false},
 		{"lost", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
-			if err := k8s.Delete(t.Context(), secretsOf(t, cp)["dev-kubelet-signer"]); err != nil {
+			if err := k8s.Delete(t.Context(), secretOf(t, cp, "dev-kubelet-signer")); err != nil {
 				t.Fatal(err)
 			}
 		}, true},
 		{"unreadable", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
-			s := secretsOf(t, cp)["dev-kubelet-signer"]
+			s := secretOf(t, cp, "dev-kubelet-signer")
 			s.Data = map[string][]byte{lodiav1alpha1.TLSCertKey: []byte("garbage"), lodiav1alpha1.TLSPrivateKeyKey: []byte("garbage")}
 			if err := k8s.Update(t.Context(), s); err != nil {
 				t.Fatal(err)
@@ -115,7 +115,7 @@ func TestEveryStateOfASignerReplacementSurvivesEachRefusedWrite(t *testing.T) {
 		{"foreign", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 			dueSigner(t, cp)
 			secrets := secretsOf(t, cp)
-			bundle, err := certs.ParseCerts(secrets["dev-client-ca"].Data[lodiav1alpha1.CACertKey])
+			bundle, err := certs.ParseCerts(secretOf(t, cp, "dev-client-ca").Data[lodiav1alpha1.CACertKey])
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -131,7 +131,7 @@ func TestEveryStateOfASignerReplacementSurvivesEachRefusedWrite(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			s := secrets["dev-client-ca"]
+			s := secretOf(t, cp, "dev-client-ca")
 			s.Data = map[string][]byte{lodiav1alpha1.CACertKey: mustBundle(t, append(bundle, root.Cert, intermediate.Cert, expired.Cert, leafOf(t, secrets["dev-lodia-kubeconfig"]).Cert)...)}
 			if err := k8s.Update(t.Context(), s); err != nil {
 				t.Fatal(err)
@@ -332,7 +332,7 @@ func signerIssued(t *testing.T, cp *lodiav1alpha1.ControlPlane, at time.Time) *x
 	if err != nil {
 		t.Fatal(err)
 	}
-	bundle, err := certs.ParseCerts(secrets["dev-client-ca"].Data[lodiav1alpha1.CACertKey])
+	bundle, err := certs.ParseCerts(secretOf(t, cp, "dev-client-ca").Data[lodiav1alpha1.CACertKey])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +340,7 @@ func signerIssued(t *testing.T, cp *lodiav1alpha1.ControlPlane, at time.Time) *x
 		"dev-kubelet-signer": {lodiav1alpha1.TLSCertKey: mustPEM(t, due.Cert), lodiav1alpha1.TLSPrivateKeyKey: mustKeyPEM(t, due.Key)},
 		"dev-client-ca":      {lodiav1alpha1.CACertKey: mustBundle(t, append(bundle, due.Cert)...)},
 	} {
-		s := secrets[name]
+		s := secretOf(t, cp, name)
 		s.Data = content
 		if err := k8s.Update(t.Context(), s); err != nil {
 			t.Fatal(err)
@@ -383,7 +383,7 @@ func TestASignerIsPromotedOnceTheBundleHasHeldItUnchangedSincePKIsLastWrite(t *t
 	secrets := secretsOf(t, cp)
 	original := parseTLS(t, secrets["dev-kubelet-signer"]).Cert
 	clientCA := parseTLS(t, secrets["dev-cakey-client"]).Cert
-	if err := k8s.Delete(t.Context(), secrets["dev-kubelet-signer"]); err != nil {
+	if err := k8s.Delete(t.Context(), secretOf(t, cp, "dev-kubelet-signer")); err != nil {
 		t.Fatal(err)
 	}
 	reconcileOnce(t, r, cp)
@@ -395,7 +395,7 @@ func TestASignerIsPromotedOnceTheBundleHasHeldItUnchangedSincePKIsLastWrite(t *t
 	expectBundle(t, cp, clientCA, next, original, requests)
 	waits := func(want time.Duration) {
 		t.Helper()
-		at := appliedAt(t, secretsOf(t, cp)["dev-client-ca"]).Add(time.Second + 5*time.Minute)
+		at := appliedAt(t, secretOf(t, cp, "dev-client-ca")).Add(time.Second + 5*time.Minute)
 		result := reconcileOnce(t, r, cp)
 		if secretsOf(t, cp)["dev-kubelet-signer"] != nil {
 			t.Fatal("the staged signer was written early")
@@ -412,14 +412,14 @@ func TestASignerIsPromotedOnceTheBundleHasHeldItUnchangedSincePKIsLastWrite(t *t
 
 	backdate(t, cp, 4*time.Minute)
 	waits(time.Minute)
-	labelled := secretsOf(t, cp)["dev-client-ca"]
+	labelled := secretOf(t, cp, "dev-client-ca")
 	labelled.Labels["example.com/team"] = "a"
 	if err := k8s.Update(t.Context(), labelled); err != nil {
 		t.Fatal(err)
 	}
 	waits(time.Minute)
 
-	if err := k8s.Delete(t.Context(), secretsOf(t, cp)["dev-cakey-kubeconfig-requests"]); err != nil {
+	if err := k8s.Delete(t.Context(), secretOf(t, cp, "dev-cakey-kubeconfig-requests")); err != nil {
 		t.Fatal(err)
 	}
 	waits(time.Minute)
@@ -483,18 +483,18 @@ func TestABundleWithoutPKIsEntryPromotesTheStagedSignerAtOnce(t *testing.T) {
 	cp := controlPlane(t, "signer-entry-cleared")
 	publishEndpoint(t, cp)
 	reconcile(t, r, cp)
-	if err := k8s.Delete(t.Context(), secretsOf(t, cp)["dev-kubelet-signer"]); err != nil {
+	if err := k8s.Delete(t.Context(), secretOf(t, cp, "dev-kubelet-signer")); err != nil {
 		t.Fatal(err)
 	}
 	reconcileOnce(t, r, cp)
 	next := parseTLS(t, secretsOf(t, cp)["dev-kubelet-signer-next"]).Cert
 	reconcileOnce(t, r, cp)
-	bundle := secretsOf(t, cp)["dev-client-ca"]
+	bundle := secretOf(t, cp, "dev-client-ca")
 	bundle.ManagedFields = []metav1.ManagedFieldsEntry{{}}
 	if err := k8s.Update(t.Context(), bundle); err != nil {
 		t.Fatal(err)
 	}
-	if fields := secretsOf(t, cp)["dev-client-ca"].ManagedFields; len(fields) > 0 {
+	if fields := secretOf(t, cp, "dev-client-ca").ManagedFields; len(fields) > 0 {
 		t.Fatalf("the bundle's managed fields were not cleared: %v", fields)
 	}
 	reconcileOnce(t, r, cp)
@@ -513,7 +513,7 @@ func TestAStagedSignerOutlivesAPassWithoutTheClientCA(t *testing.T) {
 	reconcileOnce(t, r, cp)
 	reconcileOnce(t, r, cp)
 	next := parseTLS(t, secretsOf(t, cp)["dev-kubelet-signer-next"]).Cert
-	key := secretsOf(t, cp)["dev-cakey-client"]
+	key := secretOf(t, cp, "dev-cakey-client")
 	saved := key.Data
 	key.Data = map[string][]byte{lodiav1alpha1.TLSCertKey: []byte("garbage"), lodiav1alpha1.TLSPrivateKeyKey: []byte("garbage")}
 	if err := k8s.Update(t.Context(), key); err != nil {
@@ -524,7 +524,7 @@ func TestAStagedSignerOutlivesAPassWithoutTheClientCA(t *testing.T) {
 	if s := secretsOf(t, cp)["dev-kubelet-signer-next"]; s == nil || !parseTLS(t, s).Cert.Equal(next) {
 		t.Fatal("a pass that could not read the client CA deleted or replaced the staged signer")
 	}
-	key = secretsOf(t, cp)["dev-cakey-client"]
+	key = secretOf(t, cp, "dev-cakey-client")
 	key.Data = saved
 	if err := k8s.Update(t.Context(), key); err != nil {
 		t.Fatal(err)
@@ -552,7 +552,7 @@ func TestASignerWakesThePassAtItsRenewal(t *testing.T) {
 
 func backdate(t *testing.T, cp *lodiav1alpha1.ControlPlane, by time.Duration) {
 	t.Helper()
-	s := secretsOf(t, cp)["dev-client-ca"]
+	s := secretOf(t, cp, "dev-client-ca")
 	want := appliedAt(t, s).Add(-by)
 	for i := range s.ManagedFields {
 		if f := &s.ManagedFields[i]; f.Manager == "lodia/pki" && f.Operation == metav1.ManagedFieldsOperationApply {
@@ -563,7 +563,7 @@ func backdate(t *testing.T, cp *lodiav1alpha1.ControlPlane, by time.Duration) {
 	if err := k8s.Update(t.Context(), s); err != nil {
 		t.Fatal(err)
 	}
-	if got := appliedAt(t, secretsOf(t, cp)["dev-client-ca"]); !got.Equal(want) {
+	if got := appliedAt(t, secretOf(t, cp, "dev-client-ca")); !got.Equal(want) {
 		t.Fatalf("the entry of lodia/pki is at %s, want %s", got, want)
 	}
 }
@@ -579,7 +579,7 @@ func TestTheBundleKeepsTheTenNewestReplacedSigners(t *testing.T) {
 	replaced := replacedSigners(t, clientCA)
 	crowd := func() {
 		t.Helper()
-		s := secretsOf(t, cp)["dev-client-ca"]
+		s := secretOf(t, cp, "dev-client-ca")
 		s.Data = map[string][]byte{lodiav1alpha1.CACertKey: mustBundle(t, append([]*x509.Certificate{clientCA.Cert, signer, requests}, replaced...)...)}
 		if err := k8s.Update(t.Context(), s); err != nil {
 			t.Fatal(err)
@@ -590,7 +590,7 @@ func TestTheBundleKeepsTheTenNewestReplacedSigners(t *testing.T) {
 	expectBundle(t, cp, append([]*x509.Certificate{clientCA.Cert, signer, requests}, replaced[:10]...)...)
 
 	crowd()
-	if err := k8s.Delete(t.Context(), secretsOf(t, cp)["dev-kubelet-signer"]); err != nil {
+	if err := k8s.Delete(t.Context(), secretOf(t, cp, "dev-kubelet-signer")); err != nil {
 		t.Fatal(err)
 	}
 	reconcileOnce(t, r, cp)
@@ -620,7 +620,7 @@ func TestTheBundleKeepsTheTenNewestReplacedSignersWhileADueSignersSuccessorIsSta
 	replaced := replacedSigners(t, clientCA)
 	crowd := func() {
 		t.Helper()
-		s := secretsOf(t, cp)["dev-client-ca"]
+		s := secretOf(t, cp, "dev-client-ca")
 		s.Data = map[string][]byte{lodiav1alpha1.CACertKey: mustBundle(t, append([]*x509.Certificate{clientCA.Cert, due, requests}, replaced...)...)}
 		if err := k8s.Update(t.Context(), s); err != nil {
 			t.Fatal(err)
@@ -655,13 +655,13 @@ func TestABundleLostWhileASignerIsStagedTrustsTheStagedOne(t *testing.T) {
 	cp := controlPlane(t, "signer-bundle-lost")
 	publishEndpoint(t, cp)
 	reconcile(t, r, cp)
-	if err := k8s.Delete(t.Context(), secretsOf(t, cp)["dev-kubelet-signer"]); err != nil {
+	if err := k8s.Delete(t.Context(), secretOf(t, cp, "dev-kubelet-signer")); err != nil {
 		t.Fatal(err)
 	}
 	reconcileOnce(t, r, cp)
 	secrets := secretsOf(t, cp)
 	next := parseTLS(t, secrets["dev-kubelet-signer-next"]).Cert
-	if err := k8s.Delete(t.Context(), secrets["dev-client-ca"]); err != nil {
+	if err := k8s.Delete(t.Context(), secretOf(t, cp, "dev-client-ca")); err != nil {
 		t.Fatal(err)
 	}
 	reconcileOnce(t, r, cp)
@@ -671,7 +671,7 @@ func TestABundleLostWhileASignerIsStagedTrustsTheStagedOne(t *testing.T) {
 		t.Fatal("a lost bundle promoted the staged signer at once, or replaced it")
 	}
 	expectBundle(t, cp, parseTLS(t, secrets["dev-cakey-client"]).Cert, next, parseTLS(t, secrets["dev-cakey-kubeconfig-requests"]).Cert)
-	at := appliedAt(t, secrets["dev-client-ca"]).Add(time.Second + time.Hour)
+	at := appliedAt(t, secretOf(t, cp, "dev-client-ca")).Add(time.Second + time.Hour)
 	if c := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady); c.Reason != lodiav1alpha1.ReasonIssuing ||
 		c.Message != "dev-kubelet-signer holds no usable signer; its successor is written at "+at.UTC().Format(time.RFC3339) {
 		t.Errorf("CertificatesReady is %s: %s, want the promotion at %s", c.Reason, c.Message, at)
@@ -692,7 +692,7 @@ func TestAStagedSignerWithoutLabelsOrOwnerIsAdopted(t *testing.T) {
 	reconcile(t, r, cp)
 	dueSigner(t, cp)
 	reconcileOnce(t, r, cp)
-	s := secretsOf(t, cp)["dev-kubelet-signer-next"]
+	s := secretOf(t, cp, "dev-kubelet-signer-next")
 	next := parseTLS(t, s).Cert
 	s.Labels, s.OwnerReferences = nil, nil
 	if err := k8s.Update(t.Context(), s); err != nil {
@@ -703,7 +703,7 @@ func TestAStagedSignerWithoutLabelsOrOwnerIsAdopted(t *testing.T) {
 	if adopted == nil || !parseTLS(t, adopted).Cert.Equal(next) || !metav1.IsControlledBy(adopted, cp) {
 		t.Fatal("a staged signer without labels or owner was not adopted as it is")
 	}
-	bundle, err := certs.ParseCerts(secretsOf(t, cp)["dev-client-ca"].Data[lodiav1alpha1.CACertKey])
+	bundle, err := certs.ParseCerts(secretOf(t, cp, "dev-client-ca").Data[lodiav1alpha1.CACertKey])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -721,13 +721,13 @@ func TestATrustedPendingSignerMadeImmutableKeepsItsKey(t *testing.T) {
 	dueSigner(t, cp)
 	reconcileOnce(t, r, cp)
 	reconcileOnce(t, r, cp)
-	s := secretsOf(t, cp)["dev-kubelet-signer-next"]
+	s := secretOf(t, cp, "dev-kubelet-signer-next")
 	next := parseTLS(t, s).Cert
 	s.Immutable = new(true)
 	if err := k8s.Update(t.Context(), s); err != nil {
 		t.Fatal(err)
 	}
-	before := secretsOf(t, cp)["dev-client-ca"].Data[lodiav1alpha1.CACertKey]
+	before := secretOf(t, cp, "dev-client-ca").Data[lodiav1alpha1.CACertKey]
 	for range 3 {
 		reconcileOnce(t, r, cp)
 	}
@@ -735,7 +735,7 @@ func TestATrustedPendingSignerMadeImmutableKeepsItsKey(t *testing.T) {
 	if n := secrets["dev-kubelet-signer-next"]; n == nil || n.UID != s.UID {
 		t.Fatal("a trusted pending signer made immutable was deleted")
 	}
-	if got := secrets["dev-client-ca"].Data[lodiav1alpha1.CACertKey]; !bytes.Equal(got, before) {
+	if got := secretOf(t, cp, "dev-client-ca").Data[lodiav1alpha1.CACertKey]; !bytes.Equal(got, before) {
 		bundle, _ := certs.ParseCerts(got)
 		t.Errorf("the client CA bundle changed to %v while its pending signer was immutable", subjects(bundle))
 	}
@@ -755,7 +755,7 @@ func TestADueSignerRestoredWithoutLabelsIsAdoptedWhileItsSuccessorIsStaged(t *te
 	reconcile(t, r, cp)
 	dueSigner(t, cp)
 	reconcileOnce(t, r, cp)
-	s := secretsOf(t, cp)["dev-kubelet-signer"]
+	s := secretOf(t, cp, "dev-kubelet-signer")
 	if err := k8s.Delete(t.Context(), s); err != nil {
 		t.Fatal(err)
 	}
@@ -778,7 +778,7 @@ func TestAPendingSignerSecretAnApplyCannotOverwriteOutlivesAnEarlierRefusedWrite
 	publishEndpoint(t, cp)
 	reconcile(t, r, cp)
 	nextSecret(corev1.SecretTypeOpaque, false, false)(t, cp)
-	if err := k8s.Delete(t.Context(), secretsOf(t, cp)["dev-front-proxy-client"]); err != nil {
+	if err := k8s.Delete(t.Context(), secretOf(t, cp, "dev-front-proxy-client")); err != nil {
 		t.Fatal(err)
 	}
 	before := namespaceSecrets(t, cp.Namespace)["dev-kubelet-signer-next"]
@@ -806,12 +806,12 @@ func TestAPendingSignerNoReplacementNeedsIsDeleted(t *testing.T) {
 	if err := k8s.Create(t.Context(), leftover); err != nil {
 		t.Fatal(err)
 	}
-	before := secretsOf(t, cp)["dev-client-ca"]
+	before := secretOf(t, cp, "dev-client-ca")
 	reconcileOnce(t, r, cp)
 	if _, kept := namespaceSecrets(t, cp.Namespace)["dev-kubelet-signer-next"]; kept {
 		t.Error("a pending signer Secret no replacement needs was kept")
 	}
-	if secretsOf(t, cp)["dev-client-ca"].ResourceVersion != before.ResourceVersion {
+	if secretOf(t, cp, "dev-client-ca").ResourceVersion != before.ResourceVersion {
 		t.Error("a leftover pending signer changed the client CA bundle")
 	}
 }
@@ -824,7 +824,7 @@ func TestAPendingSignerIsDeletedOnceTheSignerIsUsableAgain(t *testing.T) {
 			cp := controlPlane(t, "signer-restored-"+strconv.FormatBool(trusted))
 			publishEndpoint(t, cp)
 			reconcile(t, r, cp)
-			original := secretsOf(t, cp)["dev-kubelet-signer"]
+			original := secretOf(t, cp, "dev-kubelet-signer")
 			if err := k8s.Delete(t.Context(), original); err != nil {
 				t.Fatal(err)
 			}
@@ -885,7 +885,7 @@ func TestASecretQuotaHoldsTheStagedSignerUntilItGoes(t *testing.T) {
 	settle := newReconciler(time.Hour)
 	reconcile(t, settle, cp)
 	due := dueSigner(t, cp)
-	before := secretsOf(t, cp)["dev-client-ca"].Data[lodiav1alpha1.CACertKey]
+	before := secretOf(t, cp, "dev-client-ca").Data[lodiav1alpha1.CACertKey]
 	quota := fillSecretQuota(t, cp)
 
 	options, err := operator.Cache()
@@ -926,7 +926,7 @@ func TestASecretQuotaHoldsTheStagedSignerUntilItGoes(t *testing.T) {
 		c := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady)
 		secrets := secretsOf(t, cp)
 		ips := parseTLS(t, secrets["dev-apiserver-serving"]).Cert.IPAddresses
-		admin, err := clientcmd.Load(secrets["dev-admin-kubeconfig"].Data[lodiav1alpha1.KubeconfigKey])
+		admin, err := clientcmd.Load(secretOf(t, cp, "dev-admin-kubeconfig").Data[lodiav1alpha1.KubeconfigKey])
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -935,8 +935,8 @@ func TestASecretQuotaHoldsTheStagedSignerUntilItGoes(t *testing.T) {
 	})
 	time.Sleep(2 * time.Second)
 	secrets := secretsOf(t, cp)
-	if !bytes.Equal(secrets["dev-client-ca"].Data[lodiav1alpha1.CACertKey], before) || !parseTLS(t, secrets["dev-kubelet-signer"]).Cert.Equal(due) {
-		bundle, _ := certs.ParseCerts(secrets["dev-client-ca"].Data[lodiav1alpha1.CACertKey])
+	if !bytes.Equal(secretOf(t, cp, "dev-client-ca").Data[lodiav1alpha1.CACertKey], before) || !parseTLS(t, secrets["dev-kubelet-signer"]).Cert.Equal(due) {
+		bundle, _ := certs.ParseCerts(secretOf(t, cp, "dev-client-ca").Data[lodiav1alpha1.CACertKey])
 		t.Fatalf("under the quota the client CA bundle changed to %v or the signer was replaced", subjects(bundle))
 	}
 
@@ -946,7 +946,7 @@ func TestASecretQuotaHoldsTheStagedSignerUntilItGoes(t *testing.T) {
 	waitFor(t, 30*time.Second, func() bool {
 		secrets := secretsOf(t, cp)
 		signer := parseTLS(t, secrets["dev-kubelet-signer"]).Cert
-		bundle, _ := certs.ParseCerts(secrets["dev-client-ca"].Data[lodiav1alpha1.CACertKey])
+		bundle, _ := certs.ParseCerts(secretOf(t, cp, "dev-client-ca").Data[lodiav1alpha1.CACertKey])
 		c := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady)
 		return !signer.Equal(due) && containsCert(bundle, signer) && secrets["dev-kubelet-signer-next"] == nil && c.Reason == lodiav1alpha1.ReasonIssued
 	})
@@ -969,7 +969,7 @@ func TestASecretQuotaRefusingTheStagedSignerLetsTheRequestCARenew(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := secretsOf(t, cp)["dev-cakey-kubeconfig-requests"]
+	s := secretOf(t, cp, "dev-cakey-kubeconfig-requests")
 	s.Data = map[string][]byte{lodiav1alpha1.TLSCertKey: mustPEM(t, requests.Cert), lodiav1alpha1.TLSPrivateKeyKey: mustKeyPEM(t, requests.Key)}
 	if err := k8s.Update(t.Context(), s); err != nil {
 		t.Fatal(err)
@@ -983,7 +983,7 @@ func TestASecretQuotaRefusingTheStagedSignerLetsTheRequestCARenew(t *testing.T) 
 	if renewed.Equal(requests.Cert) {
 		t.Fatal("a due request CA was not renewed while the quota refused the staged signer")
 	}
-	bundle, err := certs.ParseCerts(secrets["dev-client-ca"].Data[lodiav1alpha1.CACertKey])
+	bundle, err := certs.ParseCerts(secretOf(t, cp, "dev-client-ca").Data[lodiav1alpha1.CACertKey])
 	if err != nil {
 		t.Fatal(err)
 	}
