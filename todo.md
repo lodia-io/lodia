@@ -189,8 +189,3 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - A kubectl exec credential plugin that generates the key, creates the request and caches the certificate, as gardenlogin caches Gardener's ([get_client_certificate.go](https://github.com/gardener/gardenlogin/blob/v0.11.0/cmd/get_client_certificate.go#L187-L188)); until then a person runs openssl and kubectl.
 - Requests on behalf of another user, for a platform's backend: the policy could admit them with `impersonate` on `lodia.io` `users`; additive.
 - A viewer level for `spec.access`: it needs a read-only role kept current with the tenant's resources; additive to the enum.
-
-## From the staged kubelet signer (2026-10-31)
-
-- A new etcd certificate generation is five Secrets created in the middle of PKI's pass, so a Secret quota that refuses them skips every write after them, the staged kubelet signer and the request CA's renewal included, though the renewal is an update the quota admits; every renewal makes them all due at once, since one pass issues them.
-  Creating a generation among the late writes would let a refused generation block no other write.
