@@ -945,6 +945,12 @@ func controlPlaneAt(t *testing.T, namespace string, endpoint lodiav1alpha1.Endpo
 
 func reconcile(t *testing.T, r *pki.Reconciler, cp *lodiav1alpha1.ControlPlane) ctrl.Result {
 	t.Helper()
+	reconcileOnce(t, r, cp)
+	return reconcileOnce(t, r, cp)
+}
+
+func reconcileOnce(t *testing.T, r *pki.Reconciler, cp *lodiav1alpha1.ControlPlane) ctrl.Result {
+	t.Helper()
 	result, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 	if err != nil {
 		t.Fatal(err)

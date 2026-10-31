@@ -7,6 +7,8 @@ import (
 	"bytes"
 	"crypto"
 	"crypto/x509"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -264,45 +266,70 @@ func TestTheBundleKeepsTheNewestTenRequestCAs(t *testing.T) {
 	expectBundle(t, cp, want...)
 }
 
-func TestARequestCAIsWrittenBeforeTheBundleThatTrustsIt(t *testing.T) {
+func TestARequestCAIsWrittenLastAndJoinsTheBundleOnTheNextPass(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	r := newReconciler(time.Hour)
+	r := newReconciler(6 * time.Second)
 	cp := controlPlane(t, "kcr-request-ca-order")
+	publishEndpoint(t, cp)
 	reconcile(t, r, cp)
 	first := secretsOf(t, cp)
 	clientCA, signer := parseTLS(t, first["dev-cakey-client"]).Cert, parseTLS(t, first["dev-kubelet-signer"]).Cert
 	original := parseTLS(t, first["dev-cakey-kubeconfig-requests"]).Cert
-	if err := k8s.Delete(ctx, first["dev-cakey-kubeconfig-requests"]); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"dev-cakey-kubeconfig-requests", "dev-encryption-config"} {
+		if err := k8s.Delete(ctx, first[name]); err != nil {
+			t.Fatal(err)
+		}
 	}
+	time.Sleep(time.Until(certs.RenewalTime(signer)) + 300*time.Millisecond)
 
 	r.Client = failingApply{Client: controller, secret: "dev-cakey-kubeconfig-requests"}
 	for range 5 {
 		reconcileFails(t, r, cp)
 	}
-	if after := secretsOf(t, cp)["dev-client-ca"]; after.ResourceVersion != first["dev-client-ca"].ResourceVersion {
-		t.Error("a pass whose request CA was not written changed the client CA bundle")
+	refused := secretsOf(t, cp)
+	if refused["dev-cakey-kubeconfig-requests"] != nil || refused["dev-encryption-config"] == nil {
+		t.Fatal("five passes that cannot write the request CA wrote it, or not the encryption configuration")
 	}
-	expectBundle(t, cp, clientCA, signer, original)
-	c := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady)
-	if c.Reason != lodiav1alpha1.ReasonIssuing || !strings.Contains(c.Message, "dev-cakey-kubeconfig-requests") {
+	for name, s := range first {
+		if strings.Contains(name, "-cakey-") || s.Labels[lodiav1alpha1.EtcdCertificatesLabel] != "" ||
+			slices.Contains([]string{"dev-ca-bundle", "dev-client-ca", "dev-front-proxy-ca", "dev-etcd-ca", "dev-sa-keys", "dev-encryption-config"}, name) {
+			continue
+		}
+		if leafOf(t, refused[name]).Cert.Equal(leafOf(t, s).Cert) {
+			t.Errorf("%s was not renewed while the request CA could not be written", name)
+		}
+	}
+	expectGenerations(t, cp, 1, 2)
+	renewed := parseTLS(t, refused["dev-kubelet-signer"]).Cert
+	expectBundle(t, cp, clientCA, renewed, signer, original)
+	if c := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady); c.Reason != lodiav1alpha1.ReasonIssuing || c.Message != "not written yet: dev-cakey-kubeconfig-requests; the error is in the log" {
 		t.Fatalf("CertificatesReady is %s: %s", c.Reason, c.Message)
 	}
 
 	r.Client = failingApply{Client: controller, secret: "dev-client-ca"}
-	reconcileFails(t, r, cp)
+	reconcileOnce(t, r, cp)
 	stored := parseTLS(t, secretsOf(t, cp)["dev-cakey-kubeconfig-requests"]).Cert
 	if stored.Equal(original) {
-		t.Fatal("no request CA was written before the bundle")
+		t.Fatal("no request CA was stored")
 	}
-	expectBundle(t, cp, clientCA, signer, original)
+	expectBundle(t, cp, clientCA, renewed, signer, original)
+	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+	reconcileFails(t, r, cp)
+	if !parseTLS(t, secretsOf(t, cp)["dev-cakey-kubeconfig-requests"]).Cert.Equal(stored) {
+		t.Fatal("a pass whose bundle write failed replaced the stored request CA")
+	}
+	expectBundle(t, cp, clientCA, renewed, signer, original)
 
 	r.Client = controller
-	reconcile(t, r, cp)
-	if !parseTLS(t, secretsOf(t, cp)["dev-cakey-kubeconfig-requests"]).Cert.Equal(stored) {
-		t.Fatal("the request CA written before a failed bundle write was replaced")
+	reconcileOnce(t, r, cp)
+	expectBundle(t, cp, clientCA, renewed, signer, stored, original)
+	before, _ := resourceVersions(t, cp)
+	reconcileOnce(t, r, cp)
+	if after, _ := resourceVersions(t, cp); !maps.Equal(before, after) {
+		t.Error("a pass after the request CA joined the bundle wrote a Secret")
 	}
-	expectBundle(t, cp, clientCA, signer, stored, original)
+	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
 }
 
 func expectBundle(t *testing.T, cp *lodiav1alpha1.ControlPlane, want ...*x509.Certificate) {
