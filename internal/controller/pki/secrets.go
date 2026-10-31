@@ -305,9 +305,8 @@ func (t *tenant) leaf(certPEM, keyPEM []byte, ca *certs.Certificate, p certs.Pro
 }
 
 // issue writes the encryption configuration, then the kubelet signer's staged
-// writes and the request CA last, neither after the other's failure: an
-// unsupported provider blocks nothing else, and the staged signer's writes and
-// the request CA's do not block each other.
+// writes and the request CA last: an unsupported provider blocks nothing else,
+// and the staged signer's writes and the request CA's do not block each other.
 func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 	for _, ca := range caBundles {
 		if err := r.ca(ctx, t, ca.ca, ca.bundle); err != nil {
