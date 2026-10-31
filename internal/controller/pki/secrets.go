@@ -494,7 +494,7 @@ func (r *Reconciler) clientCAs(ctx context.Context, t *tenant) error {
 	current := signer != nil && t.current(signer, t.cas[clientCA], certs.Profile{CommonName: signer.Cert.Subject.CommonName, CA: true})
 	next := t.existing[t.name(kubeletSignerNext)]
 	pending := t.signer(next)
-	if current || pending != nil && (!overwritable(next) || signer != nil && pending.Cert.Equal(signer.Cert)) {
+	if current || pending != nil && !overwritable(next) {
 		pending = nil
 	}
 	t.next = pending
