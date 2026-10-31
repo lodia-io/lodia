@@ -48,6 +48,10 @@ type Reconciler struct {
 	// CAExpiryNotice is how long before a CA expires CAValidityAcceptable
 	// turns False.
 	CAExpiryNotice time.Duration
+	// SignerPropagation is how long the client CA bundle holds a new kubelet
+	// signer, unchanged, before the controller manager gets it: the kubelet's
+	// update of the mounted bundle and the API server's reload.
+	SignerPropagation time.Duration
 	// Dial, when set, opens every connection to a tenant's API server; tests
 	// set it, since envtest has no DNS for the tenant's Service.
 	Dial func(ctx context.Context, network, address string) (net.Conn, error)
@@ -144,8 +148,15 @@ func (t *tenant) certificatesReady() metav1.Condition {
 		c.Reason, c.Message = lodiav1alpha1.ReasonCAExpired, "expired CA: "+strings.Join(t.expiredCAs, ", ")+"; rotate it, nothing it signs is written"
 	case len(t.unreadable) > 0:
 		c.Reason, c.Message = lodiav1alpha1.ReasonSecretUnreadable, "unreadable: "+strings.Join(t.unreadable, ", ")+"; restore it, PKI never replaces a key it cannot read"
-	case len(t.pending) > 0:
-		c.Reason, c.Message = lodiav1alpha1.ReasonIssuing, "not written yet: "+listed(t.pending)+"; the error is in the log"
+	case len(t.pending) > 0 || t.signerLost:
+		var issuing []string
+		if len(t.pending) > 0 {
+			issuing = append(issuing, "not written yet: "+listed(t.pending)+"; the error is in the log")
+		}
+		if t.signerLost {
+			issuing = append(issuing, t.stagedSigner())
+		}
+		c.Reason, c.Message = lodiav1alpha1.ReasonIssuing, strings.Join(issuing, "; ")
 	case t.endpoint == nil:
 		c.Reason, c.Message = lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint"
 	case t.unsupportedProvider != "":
@@ -173,6 +184,15 @@ func (t *tenant) caValidity(notice time.Duration) (metav1.Condition, bool) {
 		c.Status, c.Reason, c.Message = metav1.ConditionUnknown, lodiav1alpha1.ReasonCAMissing, missingCAMessage(t.missingCAs)
 	}
 	return c, len(t.caCerts)+len(t.missingCAs) == len(caBundles)
+}
+
+// stagedSigner names the time a signer replacing one that cannot sign is
+// written, once its pass has found it in the client CA bundle.
+func (t *tenant) stagedSigner() string {
+	if t.promotion.IsZero() {
+		return t.secret(lodiav1alpha1.KubeletSignerSecret) + " holds no usable signer; its successor is written once " + t.secret(lodiav1alpha1.ClientCASecret) + " trusts it"
+	}
+	return t.secret(lodiav1alpha1.KubeletSignerSecret) + " holds no usable signer; its successor is written at " + t.promotion.UTC().Format(time.RFC3339)
 }
 
 func (t *tenant) controlledElsewhere() metav1.Condition {

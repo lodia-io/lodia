@@ -36,6 +36,7 @@ func TestReservedNames(t *testing.T) {
 		generation int
 	}{
 		{"dev-client-ca", true, 0},
+		{"dev-kubelet-signer-next", true, 0},
 		{"dev-encryption-config", true, 0},
 		{"dev-etcd-ca", true, 0},
 		{"dev-etcd-ca-1", true, 1},

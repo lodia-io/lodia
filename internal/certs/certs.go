@@ -31,8 +31,7 @@ import (
 const Backdate = 5 * time.Minute
 
 // KubeletClientLifetime is how long the controller manager signs kubelet
-// client certificates for, and so how long a replaced kubelet signer stays in
-// the client CA bundle.
+// client certificates for.
 const KubeletClientLifetime = 30 * 24 * time.Hour
 
 // KubeconfigRequestLifetime is the longest a KubeconfigRequest lives, the
