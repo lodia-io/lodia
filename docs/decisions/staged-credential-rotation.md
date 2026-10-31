@@ -71,7 +71,7 @@ It is meant for a compromised or expiring trust anchor, once in a decade; every 
   The controller manager holds only the kubelet signer, a one-year intermediate.
   That does not narrow what it can sign: the API server accepts any certificate that chains to its client bundle, with the user from its CN and the groups from its O ([x509.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/authentication/request/x509/x509.go#L288-L310)), so whoever holds the signer can sign any identity while it is in the bundle, that is until it is replaced and its 30 days beside the new one are over.
 - **The request CA is replaced at once, like the kubelet signer, where the other CAs never are while their bundle proves them.**
-  A new CA in place of a lost one cuts off whatever trusts or presents the old one; the client bundle keeps a replaced request CA while what it signed lives, so its replacement cuts off nothing, and refusing to replace a lost one would leave the tenant without access for people over one deleted Secret.
+  A new CA in place of a lost one cuts off whatever trusts or presents the old one; the client bundle keeps a replaced request CA while what it signed lives, so its replacement cuts off nothing unless more than ten come within a day, and refusing to replace a lost one would leave the tenant without access for people over one deleted Secret.
   The cap of ten keeps a Secret deleted again and again from growing the bundle without bound.
 - **Stages with both credentials valid** are how Gardener rotates without outage ([credentials rotation](https://github.com/gardener/gardener/blob/master/docs/usage/shoot-operations/shoot_credentials_rotation.md)); Lodia keeps the stages and their names.
 
@@ -88,7 +88,7 @@ It is meant for a compromised or expiring trust anchor, once in a decade; every 
 - The phase 3 gate runs every rotation with two nodes `Ready` and a workload calling the API with a projected token throughout ([roadmap](../roadmap.md)).
 - Kubelet serving certificates stay self-signed by default (no `serverTLSBootstrap`), so no CSR approver is needed in the tenant; turning it on is a later option with its own approver.
 - More than ten replacements of the request CA within a day drop the oldest kept one early, which cuts off the certificates it signed.
-- A certificate issued right after a new request CA is refused for a minute or two: the kubelet updates the mounted `<cp>-client-ca` within about a minute ([spike d](../hard-way.md#d-spike-serviceaccount-tokens-from-an-external-signer)), and the API server reloads it within another ([dynamic_cafile_content.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/server/dynamiccertificates/dynamic_cafile_content.go#L39)).
+- A certificate issued right after a new request CA is refused for up to a minute: the kubelet updates the mounted `<cp>-client-ca` within about a minute ([spike d](../hard-way.md#d-spike-serviceaccount-tokens-from-an-external-signer)), and the API server reloads it at once ([dynamic_cafile_content.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/server/dynamiccertificates/dynamic_cafile_content.go#L207-L220)).
 - Every CA but the kubelet signer and the request CA, which PKI renews, is announced a year before it expires, through [`CAValidityAcceptable`](../api/controlplane.md#conditions-and-their-reasons) and an alert, because its rotation is started by someone.
 
 ## Code
