@@ -608,6 +608,33 @@ func TestTheBundleKeepsTheTenNewestReplacedSigners(t *testing.T) {
 	expectBundle(t, cp, append([]*x509.Certificate{clientCA.Cert, next, signer, requests}, replaced[:9]...)...)
 }
 
+func TestTheBundleKeepsTheTenNewestReplacedSignersWhileADueSignersSuccessorIsStaged(t *testing.T) {
+	r := newReconciler(time.Hour)
+	r.SignerPropagation = time.Hour
+	cp := controlPlane(t, "signer-cap-due")
+	reconcile(t, r, cp)
+	secrets := secretsOf(t, cp)
+	clientCA := parseTLS(t, secrets["dev-cakey-client"])
+	requests := parseTLS(t, secrets["dev-cakey-kubeconfig-requests"]).Cert
+	due := dueSigner(t, cp)
+	replaced := replacedSigners(t, clientCA)
+	crowd := func() {
+		t.Helper()
+		s := secretsOf(t, cp)["dev-client-ca"]
+		s.Data = map[string][]byte{lodiav1alpha1.CACertKey: mustBundle(t, append([]*x509.Certificate{clientCA.Cert, due, requests}, replaced...)...)}
+		if err := k8s.Update(t.Context(), s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	crowd()
+	reconcileOnce(t, r, cp)
+	expectBundle(t, cp, append([]*x509.Certificate{clientCA.Cert, due, requests}, replaced[:10]...)...)
+	next := parseTLS(t, secretsOf(t, cp)["dev-kubelet-signer-next"]).Cert
+	crowd()
+	reconcileOnce(t, r, cp)
+	expectBundle(t, cp, append([]*x509.Certificate{clientCA.Cert, due, next, requests}, replaced[:10]...)...)
+}
+
 func replacedSigners(t *testing.T, clientCA *certs.Certificate) []*x509.Certificate {
 	t.Helper()
 	var replaced []*x509.Certificate
