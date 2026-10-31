@@ -650,7 +650,7 @@ func TestLeavesRenewAtTwoThirdsOfTheirLifetime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := after["dev-client-ca"].Data[lodiav1alpha1.CACertKey]; !bytes.Equal(got, want) {
+	if got := secretOf(t, cp, "dev-client-ca").Data[lodiav1alpha1.CACertKey]; !bytes.Equal(got, want) {
 		bundle, _ := certs.ParseCerts(got)
 		t.Errorf("the client CA bundle holds %v, want the client CA, the new signer and request CA and the old ones", subjects(bundle))
 	}
