@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -278,6 +279,7 @@ func TestARequestThatIsNoSignedCertificateRequestIsInvalidForGood(t *testing.T) 
 			if want := kr.CreationTimestamp.Add(time.Hour).Sub(now.Now()); result.RequeueAfter != want {
 				t.Errorf("requeue after %s, want the deadline in %s", result.RequeueAfter, want)
 			}
+			deletePolicy(t, true, true)
 			now.SetTime(now.Now().Add(time.Minute))
 			reconcileRequest(t, requestReconciler(now), kr)
 			if after := freshRequest(t, kr); after.ResourceVersion != kr.ResourceVersion {
@@ -294,13 +296,19 @@ func TestARequestWaitsForItsControlPlaneItsEndpointAndItsCertificates(t *testing
 	now := clocktesting.NewFakePassiveClock(kr.CreationTimestamp.Time)
 	r := requestReconciler(now)
 	deadline := kr.CreationTimestamp.Add(time.Hour)
+	since := metav1.NewTime(now.Now().Add(time.Second))
 	pass := func(reason string) {
 		t.Helper()
+		now.SetTime(now.Now().Add(time.Second))
 		result := reconcileRequest(t, r, kr)
 		if result.RequeueAfter != deadline.Sub(now.Now()) {
 			t.Errorf("requeue after %s, want the deadline in %s", result.RequeueAfter, deadline.Sub(now.Now()))
 		}
-		expectReady(t, freshRequest(t, kr), metav1.ConditionFalse, reason)
+		fresh := freshRequest(t, kr)
+		expectReady(t, fresh, metav1.ConditionFalse, reason)
+		if c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionReady); !c.LastTransitionTime.Equal(&since) {
+			t.Errorf("Ready, False since %s, moved its lastTransitionTime to %s at %s", since, c.LastTransitionTime, reason)
+		}
 	}
 
 	pass(lodiav1alpha1.ReasonControlPlaneNotFound)
@@ -324,7 +332,11 @@ func TestARequestWaitsForItsControlPlaneItsEndpointAndItsCertificates(t *testing
 	reconcile(t, newReconciler(time.Hour), cp)
 	now.SetTime(now.Now().Add(time.Minute))
 	reconcileRequest(t, r, kr)
-	issued(t, freshRequest(t, kr))
+	fresh := freshRequest(t, kr)
+	issued(t, fresh)
+	if c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionReady); !c.LastTransitionTime.Time.Equal(now.Now()) {
+		t.Errorf("Ready turned True with the lastTransitionTime %s, want the issuing pass's %s", c.LastTransitionTime, now.Now())
+	}
 }
 
 func TestAPredecessorsCertificatesAreNotUsed(t *testing.T) {
@@ -591,6 +603,103 @@ func TestTheWaitsEndOnTheirInputs(t *testing.T) {
 	waitForReady(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint)
 	publishEndpoint(t, cp)
 	waitForReady(metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+}
+
+func TestAWaitForTheRequestCAEndsOnItsSecrets(t *testing.T) {
+	enforce(t)
+	ctx := t.Context()
+	cp := issuable(t, "kcr-secret-watch")
+	options, err := operator.Cache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	options.DefaultNamespaces = map[string]cache.Config{cp.Namespace: {}}
+	options.ReaderFailOnMissingInformer = true
+	mgr, err := ctrl.NewManager(controllerCfg, ctrl.Options{
+		Scheme:                 scheme,
+		Metrics:                metricsserver.Options{BindAddress: "0"},
+		HealthProbeBindAddress: "0",
+		Cache:                  options,
+		Controller:             config.Controller{SkipNameValidation: new(true)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := &pki.KubeconfigRequestReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Clock: clocktesting.NewFakePassiveClock(time.Now())}
+	if err := requests.SetupWithManager(mgr, 1); err != nil {
+		t.Fatal(err)
+	}
+	managerCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() { done <- mgr.Start(managerCtx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+	})
+	waitForReady := func(kr *lodiav1alpha1.KubeconfigRequest, status metav1.ConditionStatus, reason string) {
+		t.Helper()
+		waitFor(t, 30*time.Second, func() bool {
+			c := meta.FindStatusCondition(freshRequest(t, kr).Status.Conditions, lodiav1alpha1.ConditionReady)
+			return c != nil && c.Status == status && c.Reason == reason
+		})
+	}
+	deleteRequestCA := func() *corev1.Secret {
+		t.Helper()
+		s := secretsOf(t, cp)["dev-cakey-kubeconfig-requests"]
+		if err := k8s.Delete(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+
+	saved := deleteRequestCA()
+	restored := kubeconfigRequest(t, cp, p256(t))
+	waitForReady(restored, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates)
+	if err := k8s.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: saved.Name, Namespace: saved.Namespace, Labels: saved.Labels, OwnerReferences: saved.OwnerReferences},
+		Type:       saved.Type,
+		Data:       saved.Data,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitForReady(restored, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+
+	deleteRequestCA()
+	replaced := kubeconfigRequest(t, cp, p256(t))
+	waitForReady(replaced, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates)
+	before := freshControlPlane(t, cp).ResourceVersion
+	reconcile(t, newReconciler(time.Hour), cp)
+	if after := freshControlPlane(t, cp).ResourceVersion; after != before {
+		t.Fatalf("PKI's pass wrote the ControlPlane: resourceVersion %s, then %s", before, after)
+	}
+	waitForReady(replaced, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+
+	untrusted, err := certs.NewCA("kubeconfig-requests-ca@"+strconv.FormatInt(time.Now().UnixNano(), 10), time.Now(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := secretsOf(t, cp)["dev-cakey-kubeconfig-requests"]
+	s.Data = map[string][]byte{lodiav1alpha1.TLSCertKey: mustPEM(t, untrusted.Cert), lodiav1alpha1.TLSPrivateKeyKey: mustKeyPEM(t, untrusted.Key)}
+	if err := k8s.Update(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	trusted := kubeconfigRequest(t, cp, p256(t))
+	waitForReady(trusted, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates)
+	bundle := secretsOf(t, cp)["dev-client-ca"]
+	held, err := certs.ParseCerts(bundle.Data[lodiav1alpha1.CACertKey])
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle.Data = map[string][]byte{lodiav1alpha1.CACertKey: mustBundle(t, append(held, untrusted.Cert)...)}
+	if err := k8s.Update(ctx, bundle); err != nil {
+		t.Fatal(err)
+	}
+	waitForReady(trusted, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+	if cert, _ := issued(t, freshRequest(t, trusted)); certs.Verify(cert, untrusted.Cert, time.Now()) != nil {
+		t.Error("the request was not signed by the request CA the bundle came to hold")
+	}
 }
 
 type staleRequest struct {
@@ -897,11 +1006,11 @@ func TestACertificateEndsWithItsRequestCA(t *testing.T) {
 func TestATransientErrorAnswersNothing(t *testing.T) {
 	enforce(t)
 	cp := issuable(t, "kcr-transient")
-	for _, read := range []string{"the policy", "a Secret"} {
+	for _, read := range []string{"the policy", "the binding", "the ControlPlane", "a Secret"} {
 		t.Run(read, func(t *testing.T) {
 			kr := kubeconfigRequest(t, cp, p256(t))
 			r := requestReconciler(clocktesting.NewFakePassiveClock(kr.CreationTimestamp.Time))
-			r.Reader = failingGet{Reader: apiReader, read: read}
+			r.Client, r.Reader = failingClient{Client: controller, read: read}, failingGet{Reader: apiReader, read: read}
 			if _, err := r.Reconcile(t.Context(), requestFor(kr)); err == nil || err.Error() != "the API server is down" {
 				t.Fatalf("a pass whose read failed returned %v, want the read's error", err)
 			}
@@ -946,11 +1055,36 @@ type failingGet struct {
 }
 
 func (f failingGet) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-	_, secret := obj.(*corev1.Secret)
-	if (secret && f.read == "a Secret") || (!secret && f.read == "the policy") {
+	if read(obj) == f.read {
 		return errors.New("the API server is down")
 	}
 	return f.Reader.Get(ctx, key, obj, opts...)
+}
+
+type failingClient struct {
+	client.Client
+	read string
+}
+
+func (f failingClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if read(obj) == f.read {
+		return errors.New("the API server is down")
+	}
+	return f.Client.Get(ctx, key, obj, opts...)
+}
+
+func read(obj client.Object) string {
+	switch obj.(type) {
+	case *admissionregistrationv1.ValidatingAdmissionPolicy:
+		return "the policy"
+	case *admissionregistrationv1.ValidatingAdmissionPolicyBinding:
+		return "the binding"
+	case *lodiav1alpha1.ControlPlane:
+		return "the ControlPlane"
+	case *corev1.Secret:
+		return "a Secret"
+	}
+	return ""
 }
 
 type failingStatus struct {
