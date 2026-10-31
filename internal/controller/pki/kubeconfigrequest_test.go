@@ -387,6 +387,37 @@ func TestARequestCAPKIWouldReplaceSignsNothing(t *testing.T) {
 	expectReady(t, freshRequest(t, kr), metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates)
 }
 
+func TestOnlyABundleThatParsesAndHoldsTheRequestCAItselfTrustsIt(t *testing.T) {
+	enforce(t)
+	for _, c := range []struct {
+		name, namespace, secret string
+		content                 func(t *testing.T, s *corev1.Secret) map[string][]byte
+	}{
+		{"a twin of the request CA in its Secret", "kcr-twin", "dev-cakey-kubeconfig-requests", func(t *testing.T, s *corev1.Secret) map[string][]byte {
+			twin, err := certs.NewCA(parseTLS(t, s).Cert.Subject.CommonName, time.Now(), time.Hour)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return map[string][]byte{lodiav1alpha1.TLSCertKey: mustPEM(t, twin.Cert), lodiav1alpha1.TLSPrivateKeyKey: mustKeyPEM(t, twin.Key)}
+		}},
+		{"a block that does not parse in the client CA bundle", "kcr-unparsed", "dev-client-ca", func(t *testing.T, s *corev1.Secret) map[string][]byte {
+			return map[string][]byte{lodiav1alpha1.CACertKey: append(slices.Clone(s.Data[lodiav1alpha1.CACertKey]), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("not DER")})...)}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cp := issuable(t, c.namespace)
+			s := secretsOf(t, cp)[c.secret]
+			s.Data = c.content(t, s)
+			if err := k8s.Update(t.Context(), s); err != nil {
+				t.Fatal(err)
+			}
+			kr := kubeconfigRequest(t, cp, p256(t))
+			reconcileRequest(t, requestReconciler(clocktesting.NewFakePassiveClock(kr.CreationTimestamp.Time)), kr)
+			expectReady(t, freshRequest(t, kr), metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates)
+		})
+	}
+}
+
 func TestAPausedOrDeletingControlPlaneIsAnsweredAndNotWritten(t *testing.T) {
 	enforce(t)
 	ctx := t.Context()
