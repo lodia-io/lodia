@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +27,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	clocktesting "k8s.io/utils/clock/testing"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -135,6 +137,57 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 			t.Errorf("%s binds %+v to %+v", b.name, binding.Subjects, binding.RoleRef)
 		}
 	}
+
+	enforce(t)
+	publishEndpoint(t, cp)
+	for _, access := range []lodiav1alpha1.KubeconfigAccess{"", "ClusterAdmin"} {
+		key := p256(t)
+		kr := kubeconfigRequest(t, cp, key, func(s *lodiav1alpha1.KubeconfigRequestSpec) { s.Access = access })
+		logs := &logLines{}
+		if _, err := requestReconciler(clocktesting.NewFakePassiveClock(time.Now())).Reconcile(logs.into(ctx), requestFor(kr)); err != nil {
+			t.Fatal(err)
+		}
+		issued(t, freshRequest(t, kr))
+		kubeconfig, err := clientcmd.Load(freshRequest(t, kr).Status.Kubeconfig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if kubeconfig.AuthInfos["lodia:user:"+requesterName(t)].ClientKeyData, err = certs.KeyPEM(key); err != nil {
+			t.Fatal(err)
+		}
+		requestCfg, err := clientcmd.NewDefaultClientConfig(*kubeconfig, nil).ClientConfig()
+		if err != nil {
+			t.Fatal(err)
+		}
+		requestCfg.Dial = dialer(t, tenantCfg.Host)
+		requestCfg.Proxy = http.ProxyURL(nil)
+		person, err := kubernetes.NewForConfig(requestCfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		review, err := person.AuthenticationV1().SelfSubjectReviews().Create(ctx, &authenticationv1.SelfSubjectReview{}, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		user := review.Status.UserInfo
+		groups := []string{"system:authenticated"}
+		if access != "" {
+			groups = []string{"lodia:cluster-admins", "system:authenticated"}
+		}
+		if user.Username != "lodia:user:"+requesterName(t) || !slices.Equal(user.Groups, groups) {
+			t.Errorf("a %q request's kubeconfig authenticates as %s in %v, want lodia:user:%s in %v", access, user.Username, user.Groups, requesterName(t), groups)
+		}
+		credential := user.Extra["authentication.kubernetes.io/credential-id"]
+		if len(credential) != 1 {
+			t.Fatalf("the tenant names the credential %v", credential)
+		}
+		logs.expect(t, "issued a certificate", "credential-id", credential[0])
+		_, err = person.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+		if access == "" && !apierrors.IsForbidden(err) || access != "" && err != nil {
+			t.Errorf("a %q request's kubeconfig lists nodes: %v", access, err)
+		}
+	}
+	setAPIServerReady(t, cp)
 
 	if err := admin.RbacV1().ClusterRoleBindings().Delete(ctx, "lodia:operator", metav1.DeleteOptions{}); err != nil {
 		t.Fatal(err)

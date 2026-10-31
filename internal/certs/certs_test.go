@@ -5,9 +5,16 @@ package certs_test
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/x509"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
+
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"sigs.k8s.io/yaml"
 
 	"go.lodia.io/lodia/internal/certs"
 )
@@ -115,5 +122,48 @@ func TestABundleDoesNotDependOnOrder(t *testing.T) {
 		if bytes.Compare(parsed[i-1].Raw, parsed[i].Raw) >= 0 {
 			t.Error("the bundle is not in DER order")
 		}
+	}
+}
+
+func TestACASignsAKeyItDoesNotHoldWithinItsOwnLifetime(t *testing.T) {
+	now := time.Now()
+	ca, err := certs.NewCA("kubeconfig-requests-ca@1", now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := ca.Sign(certs.Profile{CommonName: "lodia:user:alice", Usages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}, &key.PublicKey, now, 2*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !key.PublicKey.Equal(c.PublicKey) {
+		t.Error("the certificate is not for the given key")
+	}
+	if !c.NotAfter.Equal(ca.Cert.NotAfter) {
+		t.Errorf("the certificate ends at %s, want its CA's %s", c.NotAfter, ca.Cert.NotAfter)
+	}
+	if err := certs.Verify(c, ca.Cert, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ca.Sign(certs.Profile{CommonName: "lodia:user:alice"}, &key.PublicKey, ca.Cert.NotAfter, time.Minute); err == nil {
+		t.Error("the CA signed at its NotAfter")
+	}
+}
+
+func TestTheLongestRequestIsTheSchemas(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "api", "crds", "lodia.io_kubeconfigrequests.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	crd := &apiextensionsv1.CustomResourceDefinition{}
+	if err := yaml.Unmarshal(raw, crd); err != nil {
+		t.Fatal(err)
+	}
+	maximum := crd.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"].Properties["expirationSeconds"].Maximum
+	if maximum == nil || *maximum != certs.KubeconfigRequestLifetime.Seconds() {
+		t.Errorf("spec.expirationSeconds is at most %v, want KubeconfigRequestLifetime's %v seconds", maximum, certs.KubeconfigRequestLifetime.Seconds())
 	}
 }

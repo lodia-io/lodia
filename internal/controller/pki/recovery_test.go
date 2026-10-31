@@ -55,20 +55,20 @@ func TestALeafEndingWithItsCAIsIssuedOnceAndAnExpiredCAWritesNothing(t *testing.
 	result := reconcile(t, r, cp)
 	after, _ := resourceVersions(t, cp)
 	for name, version := range after {
-		if name != "dev-client-ca" && before[name] != version {
+		if name != "dev-client-ca" && name != "dev-cakey-kubeconfig-requests" && before[name] != version {
 			t.Errorf("%s, which ends with its CA, was issued again", name)
 		}
 	}
 	signer := parseTLS(t, clamped["dev-kubelet-signer"]).Cert
-	want, err := certs.Bundle(parseTLS(t, first["dev-cakey-client"]).Cert, signer)
-	if err != nil {
-		t.Fatal(err)
+	clientCA := parseTLS(t, first["dev-cakey-client"]).Cert
+	requests := parseTLS(t, secretsOf(t, cp)["dev-cakey-kubeconfig-requests"]).Cert
+	expectBundle(t, cp, clientCA, signer, parseTLS(t, first["dev-cakey-kubeconfig-requests"]).Cert, parseTLS(t, clamped["dev-cakey-kubeconfig-requests"]).Cert, requests)
+	due := ca.NotAfter
+	if renewal := certs.RenewalTime(requests); renewal.Before(due) {
+		due = renewal
 	}
-	if !bytes.Equal(secretsOf(t, cp)["dev-client-ca"].Data[lodiav1alpha1.CACertKey], want) {
-		t.Error("the client CA bundle still holds the expired previous signer")
-	}
-	if result.RequeueAfter < time.Until(ca.NotAfter) || result.RequeueAfter > ca.NotAfter.Sub(start)+time.Second {
-		t.Errorf("requeue after %s, want the CA's expiry in %s", result.RequeueAfter, time.Until(ca.NotAfter))
+	if result.RequeueAfter < time.Until(due) || result.RequeueAfter > due.Sub(start)+time.Second {
+		t.Errorf("requeue after %s, want the CA's expiry or the request CA's renewal in %s", result.RequeueAfter, time.Until(due))
 	}
 	expectGenerations(t, cp, 1, 2)
 

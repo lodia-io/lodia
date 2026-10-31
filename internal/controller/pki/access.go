@@ -24,15 +24,20 @@ import (
 	"go.lodia.io/lodia/internal/certs"
 )
 
-// bootstrapLifetime is how long the system:masters certificate that makes the
-// bindings lives; it exists in memory only.
-const bootstrapLifetime = 10 * time.Minute
+const (
+	// bootstrapLifetime is how long the system:masters certificate that makes
+	// the bindings lives; it exists in memory only.
+	bootstrapLifetime = 10 * time.Minute
+	// clusterAdmins is the group of the admin kubeconfig and of a
+	// ClusterAdmin request's certificate, bound to cluster-admin.
+	clusterAdmins = "lodia:cluster-admins"
+)
 
 var bindings = []struct {
 	name, kind, role string
 }{
 	{"lodia:operator", rbacv1.UserKind, "cluster-admin"},
-	{"lodia:cluster-admins", rbacv1.GroupKind, "cluster-admin"},
+	{clusterAdmins, rbacv1.GroupKind, "cluster-admin"},
 	{"lodia:kubelet-api-admins", rbacv1.GroupKind, "system:kubelet-api-admin"},
 }
 

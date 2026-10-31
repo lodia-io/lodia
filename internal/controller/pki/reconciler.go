@@ -40,7 +40,7 @@ type Reconciler struct {
 	// Reader reads Secrets whole, since the manager's cache holds their
 	// metadata only, and AccessReady when PKI waits or keeps it.
 	Reader client.Reader
-	// The kubelet signer lives LeafLifetime, the cluster CA
+	// The kubelet signer and the request CA live LeafLifetime, the cluster CA
 	// TrustAnchorLifetime, every other CA CALifetime.
 	LeafLifetime        time.Duration
 	CALifetime          time.Duration

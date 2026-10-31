@@ -82,6 +82,9 @@ type KubeconfigRequestSpec struct {
 // +kubebuilder:validation:Enum=ClusterAdmin
 type KubeconfigAccess string
 
+// KubeconfigAccessClusterAdmin puts the certificate in lodia:cluster-admins.
+const KubeconfigAccessClusterAdmin KubeconfigAccess = "ClusterAdmin"
+
 // KubeconfigRequestStatus is the issued kubeconfig. The kubeconfig request
 // reconciler of the PKI controller writes it.
 type KubeconfigRequestStatus struct {

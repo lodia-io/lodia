@@ -189,3 +189,8 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - A kubectl exec credential plugin that generates the key, creates the request and caches the certificate, as gardenlogin caches Gardener's ([get_client_certificate.go](https://github.com/gardener/gardenlogin/blob/v0.11.0/cmd/get_client_certificate.go#L187-L188)); until then a person runs openssl and kubectl.
 - Requests on behalf of another user, for a platform's backend: the policy could admit them with `impersonate` on `lodia.io` `users`; additive.
 - A viewer level for `spec.access`: it needs a read-only role kept current with the tenant's resources; additive to the enum.
+
+## From #45's review (2026-10-31)
+
+- The kubelet signer grows `<cp>-client-ca` as the request CA did: while `<cp>-kubelet-signer` is lost or due, and cannot be written, each pass writes the bundle with a new signer and then fails on the Secret (six signers after five passes, on `main` and on #45).
+  The controller manager, not Lodia, signs with it, so writing it first does not help: it needs a staged replacement, in a pull request of its own, next.

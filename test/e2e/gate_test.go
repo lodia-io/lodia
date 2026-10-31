@@ -143,6 +143,10 @@ func TestPhase1Gate(t *testing.T) {
 			node = joinNodes(ctx, t, cfg, k8s, key, access, 1)[0]
 			return ctx
 		}).
+		Assess("a ServiceAccount gets kubeconfigs for a key of its own, in its own name, and in lodia:cluster-admins only with the permission", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			requestKubeconfigs(ctx, t, cfg, k8s, key, node)
+			return ctx
+		}).
 		Assess("a pod runs on the node, and logs, exec and port-forward reach it through the konnectivity tunnel", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			leases := &coordinationv1.LeaseList{}
 			if err := access.client.List(ctx, leases, client.InNamespace(metav1.NamespaceSystem), client.MatchingLabels{"k8s-app": "konnectivity-server"}); err != nil {

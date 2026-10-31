@@ -9,6 +9,7 @@ require (
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/gardener/etcd-druid/api v0.39.0
 	github.com/go-jose/go-jose/v4 v4.1.6
+	github.com/go-logr/logr v1.4.4
 	github.com/prometheus/common v0.70.0
 	github.com/robfig/cron/v3 v3.0.1
 	go.lodia.io/lodia/api v0.0.0-00010101000000-000000000000
@@ -44,7 +45,6 @@ require (
 	github.com/fatih/color v1.19.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.1 // indirect
-	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-logr/zapr v1.3.0 // indirect
 	github.com/go-openapi/jsonpointer v1.0.0 // indirect
