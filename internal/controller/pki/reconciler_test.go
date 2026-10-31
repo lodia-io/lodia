@@ -756,7 +756,7 @@ func TestALostCAIsNeverReplaced(t *testing.T) {
 		}
 	}
 
-	corrupt := secretsOf(t, cp)["dev-cakey-client"]
+	corrupt := secretOf(t, cp, "dev-cakey-client")
 	corrupt.Data[lodiav1alpha1.TLSPrivateKeyKey] = []byte("not a key")
 	if err := k8s.Update(ctx, corrupt); err != nil {
 		t.Fatal(err)

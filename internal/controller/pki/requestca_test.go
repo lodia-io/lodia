@@ -174,7 +174,7 @@ func TestEachClientBundleRuleKeepsOnlyItsOwnPredecessors(t *testing.T) {
 				"dev-cakey-kubeconfig-requests": {lodiav1alpha1.TLSCertKey: mustPEM(t, requests.Cert), lodiav1alpha1.TLSPrivateKeyKey: mustKeyPEM(t, requests.Key)},
 				"dev-client-ca":                 {lodiav1alpha1.CACertKey: mustBundle(t, clientCA.Cert, signer.Cert, oldSigner.Cert, requests.Cert, oldRequests.Cert)},
 			} {
-				s := secrets[name]
+				s := secretOf(t, cp, name)
 				s.Data = content
 				if err := k8s.Update(ctx, s); err != nil {
 					t.Fatal(err)
