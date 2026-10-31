@@ -468,11 +468,12 @@ func TestASignerIsPromotedOnceTheBundleHasHeldItUnchangedSincePKIsLastWrite(t *t
 	waits := func(want time.Duration) {
 		t.Helper()
 		at := appliedAt(t, secretOf(t, cp, "dev-client-ca")).Add(time.Second + 5*time.Minute)
+		until := time.Until(at)
 		result := reconcileOnce(t, r, cp)
 		if secretsOf(t, cp)["dev-kubelet-signer"] != nil {
 			t.Fatal("the staged signer was written early")
 		}
-		if until := time.Until(at); until < want-2*time.Second || until > want+2*time.Second || result.RequeueAfter < until || result.RequeueAfter > until+2*time.Second {
+		if until < want-2*time.Second || until > want+2*time.Second || result.RequeueAfter < time.Until(at) || result.RequeueAfter >= until+time.Second {
 			t.Errorf("requeue after %s, want the promotion in %s, at %s", result.RequeueAfter, want, at)
 		}
 		if c := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady); c.Reason != lodiav1alpha1.ReasonIssuing ||
