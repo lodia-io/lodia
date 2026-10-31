@@ -237,6 +237,7 @@ func TestKeptGenerationsAreAdopted(t *testing.T) {
 	server := parseTLS(t, secretsOf(t, cp)["dev-etcd-server-1"])
 	time.Sleep(time.Until(certs.RenewalTime(server.Cert)) + 500*time.Millisecond)
 	reconcile(t, r, cp)
+	reconcile(t, r, cp)
 	expectGenerations(t, cp, 1, 2)
 
 	before := secretsOf(t, cp)

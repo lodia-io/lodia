@@ -609,6 +609,7 @@ func TestLeavesRenewAtTwoThirdsOfTheirLifetime(t *testing.T) {
 	time.Sleep(time.Until(certs.RenewalTime(serving.Cert)) + 500*time.Millisecond)
 
 	reconcile(t, r, cp)
+	reconcile(t, r, cp)
 	after := secretsOf(t, cp)
 	for name, s := range after {
 		prev := before[name]
@@ -664,6 +665,7 @@ func TestEtcdCertificatesRenewAsGenerations(t *testing.T) {
 	server := parseTLS(t, secretsOf(t, cp)["dev-etcd-server-1"])
 	time.Sleep(time.Until(certs.RenewalTime(server.Cert)) + 500*time.Millisecond)
 
+	reconcile(t, r, cp)
 	reconcile(t, r, cp)
 	expectGenerations(t, cp, 1, 2)
 	server = parseTLS(t, secretsOf(t, cp)["dev-etcd-server-2"])
@@ -980,9 +982,13 @@ func reconcile(t *testing.T, r *pki.Reconciler, cp *lodiav1alpha1.ControlPlane) 
 	if b, a := before[cp.Name+"-client-ca"], after[cp.Name+"-client-ca"]; b != nil && a != nil && b.ResourceVersion != a.ResourceVersion {
 		was, _ := certs.ParseCerts(b.Data[lodiav1alpha1.CACertKey])
 		is, _ := certs.ParseCerts(a.Data[lodiav1alpha1.CACertKey])
-		stored := parseTLS(t, after[cp.Name+"-cakey-kubeconfig-requests"]).Cert
+		stored := []*x509.Certificate{parseTLS(t, after[cp.Name+"-cakey-kubeconfig-requests"]).Cert}
+		if next := after[cp.Name+"-kubelet-signer-next"]; next != nil {
+			pending, _ := certs.ParseCerts(next.Data[lodiav1alpha1.TLSCertKey])
+			stored = append(stored, pending...)
+		}
 		for _, c := range is {
-			if !containsCert(was, c) && !c.Equal(stored) {
+			if !containsCert(was, c) && !containsCert(stored, c) {
 				t.Errorf("the pass after the first added %s to the client CA bundle", c.Subject.CommonName)
 			}
 		}

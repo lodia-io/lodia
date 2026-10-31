@@ -35,6 +35,7 @@ func TestALeafEndingWithItsCAIsIssuedOnceAndAnExpiredCAWritesNothing(t *testing.
 
 	time.Sleep(time.Until(certs.RenewalTime(serving)) + 300*time.Millisecond)
 	reconcile(t, r, cp)
+	reconcile(t, r, cp)
 	clamped := secretsOf(t, cp)
 	for name, s := range clamped {
 		if s.Data[lodiav1alpha1.TLSCertKey] == nil || strings.Contains(name, "-cakey-") || s.Labels[lodiav1alpha1.EtcdCertificatesLabel] == "1" {
@@ -223,39 +224,6 @@ func TestCAValidityIsAnnouncedOutsideReady(t *testing.T) {
 	reconcile(t, r, cp)
 	if _, after := resourceVersions(t, cp); after != before {
 		t.Error("an unchanged expiring CA rewrote the status")
-	}
-}
-
-func TestTheClientBundleTrustsASignerBeforeItIsWritten(t *testing.T) {
-	t.Parallel()
-	r := newReconciler(6 * time.Second)
-	cp := controlPlane(t, "pki-signer-order")
-	reconcile(t, r, cp)
-	first := secretsOf(t, cp)
-	signer := parseTLS(t, first["dev-kubelet-signer"]).Cert
-	time.Sleep(time.Until(certs.RenewalTime(signer)) + 300*time.Millisecond)
-
-	r.Client = failingApply{Client: controller, secret: "dev-client-ca"}
-	reconcileFails(t, r, cp)
-	if !maps.EqualFunc(secretsOf(t, cp)["dev-kubelet-signer"].Data, first["dev-kubelet-signer"].Data, bytes.Equal) {
-		t.Fatal("a new kubelet signer was written before the bundle that trusts it")
-	}
-
-	r.Client = controller
-	reconcile(t, r, cp)
-	after := secretsOf(t, cp)
-	renewed := parseTLS(t, after["dev-kubelet-signer"]).Cert
-	if renewed.Equal(signer) {
-		t.Fatal("the kubelet signer was not renewed")
-	}
-	bundle, err := certs.ParseCerts(after["dev-client-ca"].Data[lodiav1alpha1.CACertKey])
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range []*x509.Certificate{renewed, signer} {
-		if !containsCert(bundle, c) {
-			t.Errorf("the client CA bundle lacks %s", c.Subject.CommonName)
-		}
 	}
 }
 

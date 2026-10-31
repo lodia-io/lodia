@@ -135,12 +135,13 @@ func TestTheRequestCAIsKeptLikeTheKubeletSigner(t *testing.T) {
 func TestEachClientBundleRuleKeepsOnlyItsOwnPredecessors(t *testing.T) {
 	for _, c := range []struct {
 		name                      string
-		signerAge, requestCAAge   time.Duration
+		signerEnds, requestCAAge  time.Duration
 		keepsSigner, keepsRequest bool
 	}{
-		{"a request CA replaced 24 hours 2 minutes ago", 0, 24*time.Hour + 2*time.Minute, true, true},
-		{"a request CA replaced 24 hours 6 minutes ago", 0, 24*time.Hour + 6*time.Minute, true, false},
-		{"a kubelet signer replaced 31 days ago", 31 * 24 * time.Hour, 0, false, true},
+		{"a request CA replaced 24 hours 2 minutes ago", time.Hour, 24*time.Hour + 2*time.Minute, true, true},
+		{"a request CA replaced 24 hours 6 minutes ago", time.Hour, 24*time.Hour + 6*time.Minute, true, false},
+		{"a replaced kubelet signer valid for a minute", time.Minute, 0, true, true},
+		{"a replaced kubelet signer expired a minute ago", -time.Minute, 0, false, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			ctx := t.Context()
@@ -150,11 +151,11 @@ func TestEachClientBundleRuleKeepsOnlyItsOwnPredecessors(t *testing.T) {
 			secrets := secretsOf(t, cp)
 			clientCA := parseTLS(t, secrets["dev-cakey-client"])
 			now := time.Now()
-			oldSigner, err := clientCA.Issue(certs.Profile{CommonName: "kubelet-signer@1", CA: true}, now.Add(-c.signerAge-time.Hour), 100*24*time.Hour)
+			oldSigner, err := clientCA.Issue(certs.Profile{CommonName: "kubelet-signer@1", CA: true}, now.Add(-31*24*time.Hour), 31*24*time.Hour+c.signerEnds)
 			if err != nil {
 				t.Fatal(err)
 			}
-			signer, err := clientCA.Issue(certs.Profile{CommonName: "kubelet-signer@2", CA: true}, now.Add(-c.signerAge), 100*24*time.Hour)
+			signer, err := clientCA.Issue(certs.Profile{CommonName: "kubelet-signer@2", CA: true}, now, 100*24*time.Hour)
 			if err != nil {
 				t.Fatal(err)
 			}
