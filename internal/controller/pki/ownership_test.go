@@ -174,7 +174,7 @@ func TestLeftoversUnderPKINames(t *testing.T) {
 	}
 
 	secrets := secretsOf(t, cp)
-	for _, name := range []string{"dev-encryption-config", "dev-sa-keys"} {
+	for _, name := range []string{"dev-encryption-config", "dev-kubelet-signer", "dev-sa-keys"} {
 		restored := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cp.Namespace}, Type: secrets[name].Type, Data: secrets[name].Data}
 		if err := k8s.Delete(ctx, secrets[name]); err != nil {
 			t.Fatal(err)
@@ -185,7 +185,7 @@ func TestLeftoversUnderPKINames(t *testing.T) {
 	}
 	reconcile(t, r, cp)
 	adopted := secretsOf(t, cp)
-	for _, name := range []string{"dev-encryption-config", "dev-sa-keys"} {
+	for _, name := range []string{"dev-encryption-config", "dev-kubelet-signer", "dev-sa-keys"} {
 		if adopted[name] == nil || !metav1.IsControlledBy(adopted[name], cp) || !maps.EqualFunc(adopted[name].Data, secrets[name].Data, bytes.Equal) {
 			t.Errorf("%s restored without labels or owner was not adopted with its keys", name)
 		}

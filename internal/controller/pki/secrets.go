@@ -507,13 +507,8 @@ func (r *Reconciler) clientCAs(ctx context.Context, t *tenant) error {
 	}
 	t.wakeAt(certs.RenewalTime(t.requests.Cert))
 	bundle := t.existing[t.secret(lodiav1alpha1.ClientCASecret)]
-	if bundle == nil && (signer != nil || pending == nil) {
-		if signer == nil {
-			if signer, err = r.newSigner(t); err != nil {
-				return err
-			}
-		}
-		if err := r.applyTLS(ctx, t, signerName, signer, nil, false); err != nil {
+	if bundle == nil && signer == nil && pending == nil {
+		if signer, err = r.newSigner(t); err != nil {
 			return err
 		}
 	} else if !current {
@@ -521,7 +516,10 @@ func (r *Reconciler) clientCAs(ctx context.Context, t *tenant) error {
 			return err
 		}
 	}
-	if signer != nil {
+	if signer != nil && !t.promote {
+		if err := r.applyTLS(ctx, t, signerName, signer, nil, false); err != nil {
+			return err
+		}
 		t.renew(signer.Cert, t.cas[clientCA].Cert)
 	}
 	return r.bundle(ctx, t, t.secret(lodiav1alpha1.ClientCASecret), t.clientBundle(bundle, signer, pending, stored)...)
