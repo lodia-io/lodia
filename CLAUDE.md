@@ -54,7 +54,8 @@ the same change.
   commit). No source, no claim.
 - Other projects are described, never judged: `docs/analysis.md` states what
   each does and cites it; our reasons live in `docs/decisions/`.
-- No admission webhooks: validation is CEL in the CRD schema
+- No admission webhooks: validation is CEL in the CRD schema, and the
+  requester's check an admission policy the API server evaluates
   (`docs/decisions/no-admission-webhooks.md`).
 - Nothing in tests or tooling ever targets the current kube context; e2e
   takes a named kubeconfig or refuses to run.

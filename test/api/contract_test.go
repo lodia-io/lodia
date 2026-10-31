@@ -70,7 +70,7 @@ func table(t *testing.T, doc, after string) []string {
 
 func TestEveryReasonIsNamedByItsValueAndDocumented(t *testing.T) {
 	doc := filepath.Join("api", "controlplane.md")
-	rows := strings.Join(slices.Concat(table(t, doc, "## Conditions and their reasons"), table(t, doc, "The `Backup`'s condition:")), "")
+	rows := strings.Join(slices.Concat(table(t, doc, "## Conditions and their reasons"), table(t, doc, "The `Backup`'s condition:"), table(t, doc, "The `KubeconfigRequest`'s condition:")), "")
 	for _, c := range constants(t, "conditions.go") {
 		reason, ok := strings.CutPrefix(c.name, "Reason")
 		if !ok {

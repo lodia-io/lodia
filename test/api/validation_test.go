@@ -4,7 +4,15 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/base64"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"os"
@@ -28,13 +36,16 @@ import (
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 )
 
-var k8s client.Client
+var (
+	k8s client.Client
+	env *envtest.Environment
+)
 
 func TestMain(m *testing.M) {
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
 		os.Exit(m.Run())
 	}
-	env := &envtest.Environment{
+	env = &envtest.Environment{
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "api", "crds")},
 		ErrorIfCRDPathMissing: true,
 		UseExistingCluster:    new(false),
@@ -871,26 +882,142 @@ func TestSmallerShapes(t *testing.T) {
 func TestKubeconfigRequestValidation(t *testing.T) {
 	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: "alice"}}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkcs8, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sec1, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spki, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := func(typ string, der []byte) []byte { return pem.EncodeToMemory(&pem.Block{Type: typ, Bytes: der}) }
+	sized := func(n int) []byte {
+		header, footer := "-----BEGIN CERTIFICATE REQUEST-----\n", "\n-----END CERTIFICATE REQUEST-----\n"
+		return []byte(header + strings.Repeat("A", n-len(header)-len(footer)) + footer)
+	}
+	request := func(parts ...[]byte) func(*testing.T, *unstructured.Unstructured) {
+		return func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, base64.StdEncoding.EncodeToString(bytes.Join(parts, nil)), "spec", "request")
+		}
+	}
+	const notARequest = "must be one PEM certificate request"
 	cases := []struct {
 		name   string
 		mutate func(*testing.T, *unstructured.Unstructured)
 		want   string
 	}{
-		{"system:masters", func(t *testing.T, o *unstructured.Unstructured) {
-			set(t, o, []any{"system:masters"}, "spec", "groups")
-		}, "system:masters cannot be requested"},
-		{"five minutes", func(t *testing.T, o *unstructured.Unstructured) {
-			set(t, o, int64(300), "spec", "expirationSeconds")
+		{"ten minutes less a second", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, int64(599), "spec", "expirationSeconds")
 		}, "spec.expirationSeconds"},
-		{"two days", func(t *testing.T, o *unstructured.Unstructured) {
-			set(t, o, int64(172800), "spec", "expirationSeconds")
+		{"ten minutes", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, int64(600), "spec", "expirationSeconds")
+		}, ""},
+		{"a day", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, int64(86400), "spec", "expirationSeconds")
+		}, ""},
+		{"a day and a second", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, int64(86401), "spec", "expirationSeconds")
 		}, "spec.expirationSeconds"},
+		{"no controlPlaneRef", func(t *testing.T, o *unstructured.Unstructured) {
+			unstructured.RemoveNestedField(o.Object, "spec", "controlPlaneRef")
+		}, "spec.controlPlaneRef: Required value"},
+		{"an unknown access", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "View", "spec", "access")
+		}, "spec.access"},
+		{"no request", func(t *testing.T, o *unstructured.Unstructured) {
+			unstructured.RemoveNestedField(o.Object, "spec", "request")
+		}, "spec.request"},
+		{"a request of 5120 characters", request(sized(3840)), ""},
+		{"a request of more than 5120 characters", request(sized(3843)), "spec.request"},
+		{"a PKCS#8 key", request(block("PRIVATE KEY", pkcs8)), notARequest},
+		{"an EC key", request(block("EC PRIVATE KEY", sec1)), notARequest},
+		{"a request followed by its key", request(block("CERTIFICATE REQUEST", csr), block("PRIVATE KEY", pkcs8)), notARequest},
+		{"a public key", request(block("PUBLIC KEY", spki)), notARequest},
+		{"a request after a line of text", request([]byte("Certificate Request:\n"), block("CERTIFICATE REQUEST", csr)), notARequest},
+		{"a request before a line of text", request(block("CERTIFICATE REQUEST", csr), []byte("Certificate Request:\n")), notARequest},
+		{"a request followed by its key unarmoured", request(block("CERTIFICATE REQUEST", csr), []byte(base64.StdEncoding.EncodeToString(pkcs8))), notARequest},
+		{"two requests", request(block("CERTIFICATE REQUEST", csr), block("CERTIFICATE REQUEST", csr)), notARequest},
+		{"a request with CRLF line ends", request(bytes.ReplaceAll(block("CERTIFICATE REQUEST", csr), []byte("\n"), []byte("\r\n"))), ""},
+		{"no user", func(t *testing.T, o *unstructured.Unstructured) {
+			unstructured.RemoveNestedField(o.Object, "spec", "user")
+		}, "spec.user: Required value"},
+		{"an empty user", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "", "spec", "user")
+		}, "spec.user"},
+		{"a user of 512 characters", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, strings.Repeat("u", 512), "spec", "user")
+		}, ""},
+		{"a user of 513 characters", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, strings.Repeat("u", 513), "spec", "user")
+		}, "spec.user"},
+		{"a user with a letter beyond ASCII", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "åsa@example.com", "spec", "user")
+		}, ""},
+		{"a user with a DEL", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "alice\u007f", "spec", "user")
+		}, "must hold no control character"},
+		{"a user with a C1 control", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "alice\u0085", "spec", "user")
+		}, "must hold no control character"},
+		{"a user with U+FFFE", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "alice\ufffe", "spec", "user")
+		}, "must hold no control character"},
+		{"a user with U+FFFF", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "alice\uffff", "spec", "user")
+		}, "must hold no control character"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			obj := example(t, "kubeconfigrequest.yaml", "validation")
 			c.mutate(t, obj)
 			expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), c.want)
+		})
+	}
+}
+
+func TestKubeconfigRequestDefaults(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	obj := example(t, "kubeconfigrequest.yaml", "defaults")
+	unstructured.RemoveNestedField(obj.Object, "spec", "expirationSeconds")
+	expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), "")
+	if seconds, _, _ := unstructured.NestedInt64(obj.Object, "spec", "expirationSeconds"); seconds != 3600 {
+		t.Fatalf("expirationSeconds = %d, want 3600", seconds)
+	}
+}
+
+func TestKubeconfigRequestStatus(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	obj := example(t, "kubeconfigrequest.yaml", "status")
+	if err := k8s.Create(context.Background(), obj); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = k8s.Delete(context.Background(), obj) })
+	for _, c := range []struct {
+		name  string
+		bytes int
+		want  string
+	}{
+		{"a kubeconfig of 40960 characters", 30720, ""},
+		{"a kubeconfig of more than 40960 characters", 30723, "status.kubeconfig"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			written := obj.DeepCopy()
+			set(t, written, base64.StdEncoding.EncodeToString(make([]byte, c.bytes)), "status", "kubeconfig")
+			expect(t, k8s.Status().Update(context.Background(), written, client.DryRunAll), c.want)
 		})
 	}
 }

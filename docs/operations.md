@@ -7,7 +7,7 @@ Installation is in [`README.md`](README.md#installation).
 
 | task | how |
 |---|---|
-| Get access as a person | create a `KubeconfigRequest` ([example](api/examples/kubeconfigrequest.yaml)); read the Secret named in its `status.secretRef`; it expires on its own |
+| Get access as a person | create a `KubeconfigRequest` for a key of your own ([example](api/examples/kubeconfigrequest.yaml)); its `status.kubeconfig` works with that key until `status.expirationTimestamp` (wave 1b, KubeconfigRequest) |
 | Get access for automation | grant `get` on the Secret `<cp>-admin-kubeconfig` by `resourceNames`, never on the namespace's Secrets, which hold the class's backup credentials in `<cp>-etcd-backup`; read it; every copy is revoked by the client CA rotation (phase 3), not by deleting the ClusterRoleBinding `lodia:cluster-admins` in the tenant, which PKI applies again on its next pass |
 | Join a node | with an admin kubeconfig: `kubeadm token create --print-join-command --kubeconfig admin.kubeconfig`; run the printed `kubeadm join …` on the machine; it needs outbound 443 to the endpoint and nothing inbound |
 | Upgrade Kubernetes | set `spec.version`; watch `status.kubernetes.upgrade` and `Progressing`; nodes follow at the owner's pace, at most three minors behind. From phase 2's wave 2 Lodia goes one minor at a time ([upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md)); until then, a patch within the running minor only |

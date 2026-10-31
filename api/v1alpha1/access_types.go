@@ -7,13 +7,16 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// KubeconfigRequest asks for a short-lived kubeconfig. Lodia writes it into
-// the Secret named in status and deletes both after expiry.
+// KubeconfigRequest asks for a short-lived kubeconfig for a key of the
+// requester's own. Lodia answers in status and deletes the request at its
+// deadline.
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=kcr
 // +kubebuilder:printcolumn:name="ControlPlane",type=string,JSONPath=".spec.controlPlaneRef.name"
 // +kubebuilder:printcolumn:name="User",type=string,JSONPath=".spec.user"
+// +kubebuilder:printcolumn:name="Access",type=string,JSONPath=".spec.access"
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="Expires",type=date,JSONPath=".status.expirationTimestamp"
 type KubeconfigRequest struct {
 	metav1.TypeMeta `json:",inline"`
@@ -36,28 +39,38 @@ type KubeconfigRequestList struct {
 	Items           []KubeconfigRequest `json:"items"`
 }
 
-// KubeconfigRequestSpec is who asks for access to which ControlPlane, and for how long.
+// KubeconfigRequestSpec is who asks for access to which ControlPlane, with
+// which key, and for how long.
 // +kubebuilder:validation:XValidation:rule="self == oldSelf",message="a KubeconfigRequest cannot change; create another"
 type KubeconfigRequestSpec struct {
 	// ControlPlaneRef names a ControlPlane in this namespace.
 	// +required
 	ControlPlaneRef LocalReference `json:"controlPlaneRef"`
 
-	// User is the certificate's common name.
+	// User is the requester's own username, which the admission policy
+	// kubeconfigrequests.lodia.io requires; the certificate's user is
+	// lodia:user:<user>.
 	// +required
 	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=128
+	// +kubebuilder:validation:MaxLength=512
+	// +kubebuilder:validation:XValidation:rule="!self.matches(r'[\\p{Cc}\\x{FFFE}\\x{FFFF}]')",message="must hold no control character"
 	User string `json:"user"`
 
-	// Groups are the certificate's organizations; lodia:cluster-admins by default.
+	// Access ClusterAdmin puts the certificate in lodia:cluster-admins, for
+	// which the admission policy requires create on
+	// controlplanes/adminkubeconfig for the ControlPlane; without it the
+	// certificate carries the user only.
 	// +optional
-	// +listType=set
-	// +kubebuilder:validation:MaxItems=16
-	// +kubebuilder:validation:items:MaxLength=128
-	// +kubebuilder:validation:XValidation:rule="!self.exists(g, g == 'system:masters')",message="system:masters cannot be requested"
-	Groups []string `json:"groups,omitempty"`
+	Access KubeconfigAccess `json:"access,omitempty"`
 
-	// ExpirationSeconds is the kubeconfig's lifetime.
+	// Request is a PEM PKCS#10 certificate request, of which Lodia uses the
+	// public key only.
+	// +required
+	// +kubebuilder:validation:MaxLength=5120
+	// +kubebuilder:validation:XValidation:rule="string(self).matches(r'^-----BEGIN CERTIFICATE REQUEST-----\\r?\\n[A-Za-z0-9+/=\\r\\n]+-----END CERTIFICATE REQUEST-----[\\r\\n]*$')",message="must be one PEM certificate request"
+	Request []byte `json:"request"`
+
+	// ExpirationSeconds counts from the request's creation.
 	// +optional
 	// +kubebuilder:default=3600
 	// +kubebuilder:validation:Minimum=600
@@ -65,17 +78,24 @@ type KubeconfigRequestSpec struct {
 	ExpirationSeconds int64 `json:"expirationSeconds,omitempty"`
 }
 
-// KubeconfigRequestStatus is the issued kubeconfig.
-type KubeconfigRequestStatus struct {
-	// SecretRef names the Secret with the kubeconfig.
-	// +optional
-	SecretRef *LocalReference `json:"secretRef,omitempty"`
+// KubeconfigAccess is what a KubeconfigRequest's certificate carries beyond its user.
+// +kubebuilder:validation:Enum=ClusterAdmin
+type KubeconfigAccess string
 
-	// ExpirationTimestamp is when the certificate expires.
+// KubeconfigRequestStatus is the issued kubeconfig. The kubeconfig request
+// reconciler of the PKI controller writes it.
+type KubeconfigRequestStatus struct {
+	// Kubeconfig names the public endpoint and the cluster CA bundle and
+	// embeds the certificate; it has no key.
+	// +optional
+	// +kubebuilder:validation:MaxLength=40960
+	Kubeconfig []byte `json:"kubeconfig,omitempty"`
+
+	// ExpirationTimestamp is the certificate's NotAfter.
 	// +optional
 	ExpirationTimestamp *metav1.Time `json:"expirationTimestamp,omitempty"`
 
-	// Conditions, Issued among them.
+	// Conditions, Ready among them.
 	// +optional
 	// +listType=map
 	// +listMapKey=type

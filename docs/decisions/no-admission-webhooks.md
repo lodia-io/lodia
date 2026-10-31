@@ -1,13 +1,14 @@
-# Lodia runs no admission webhooks: validation and defaults live in the CRD schema
+# Lodia runs no admission webhooks: validation and defaults live in the CRD schema, and the requester's check in an admission policy
 
 Decided 2026-10-25.
-The schema rules, the defaults and the controllers' conditions are built; the tenant write lock comes with phase 3 ([roadmap](../roadmap.md)).
+The schema rules, the defaults, the controllers' conditions and the chart's admission policy for `KubeconfigRequest`s are built; the tenant write lock comes with phase 3 ([roadmap](../roadmap.md)).
 
 ## Decision
 
 - Every validation of a Lodia object is a CEL rule (`x-kubernetes-validations`) or an OpenAPI constraint in the CRD schema: formats, enums, unions ("exactly one of `dedicated` and `shared`"), immutability (`self == oldSelf`), and transitions such as "the Kubernetes minor never decreases".
 - Defaults are schema defaults.
 - What a schema cannot check (a `DatastoreClass` that does not exist, a Gateway that lacks a listener) is reported as a condition on the object with a reason, not rejected at admission.
+- What a schema cannot see, the requester, is checked in the management cluster by an admission policy the API server evaluates, shipped with the chart: the `ValidatingAdmissionPolicy` `kubeconfigrequests.lodia.io` ([short-lived-kubeconfigs](short-lived-kubeconfigs.md)).
 - Inside a tenant cluster, a write lock (for migration or maintenance) is a `ValidatingAdmissionPolicy` the Tenant controller applies, not a webhook that calls back into the operator.
 - `v1alpha1` is the only served and stored version; a later version is added only with a schema that converts with `strategy: None`, or with a conversion webhook as a deliberate, separately decided exception.
 
@@ -16,6 +17,7 @@ The schema rules, the defaults and the controllers' conditions are built; the te
 - A webhook with `failurePolicy: Fail` turns an operator outage into an API outage for its objects: nobody can change a cluster while the operator is down, which is exactly when they need to.
   `Ignore` is not better: it silently skips validation.
 - CEL in the schema is evaluated by the API server itself, versioned with the CRD and testable with envtest; transition rules and ratcheting cover the cases that used to need a webhook ([Validation rules](https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/#validation-rules)).
+- An admission policy is CEL too, evaluated by the API server with the requester and an `authorizer` at hand ([types.go](https://github.com/kubernetes/kubernetes/blob/v1.35.10/staging/src/k8s.io/api/admissionregistration/v1/types.go#L309-L324)); it calls nothing in the operator, so an operator outage stays out of the API path.
 - An operator without webhooks needs no serving certificate, no `MutatingWebhookConfiguration` and no special install order; the Helm chart stays plain.
 
 ## Rejected
@@ -28,8 +30,10 @@ The schema rules, the defaults and the controllers' conditions are built; the te
 - Some invalid states are accepted and then reported: `Ready=False`, reason `DatastoreClassNotFound`.
   Documentation and the CLI show conditions first.
 - The CEL cost budget bounds rule complexity; rules are kept per field.
+- An admission policy without its binding, or a binding without its policy, admits everything ([policy_source.go](https://github.com/kubernetes/kubernetes/blob/v1.35.10/staging/src/k8s.io/apiserver/pkg/admission/plugin/policy/generic/policy_source.go#L296-L322)), so the controller that relies on one refuses to act while it is not in place ([short-lived-kubeconfigs](short-lived-kubeconfigs.md)).
 
 ## Code
 
 - `api/v1alpha1/*_types.go` — every rule and default as a `+kubebuilder:validation` or `+kubebuilder:default` marker; `api/crds/` is generated from them.
 - `test/api/validation_test.go` — the envtest table of accepted and rejected manifests.
+- `charts/lodia/files/policies/` — the admission policies and their bindings; `test/api/policy_test.go` holds them in envtest.

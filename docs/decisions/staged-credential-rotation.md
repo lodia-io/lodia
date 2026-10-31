@@ -1,7 +1,7 @@
 # Credentials rotate in stages, and the routine ones never touch a node: the trust anchor is split from the client CA, and ServiceAccount tokens are signed by a sidecar
 
 Decided 2026-10-25.
-`lodia-signer` is built, and Workloads runs it beside the API server; the PKI controller issues the CA per purpose, the leaves, the kubeconfigs, the ServiceAccount key and the encryption configuration, renews leaves at two thirds and the etcd set as generations; the rotation operations are not built.
+`lodia-signer` is built, and Workloads runs it beside the API server; the PKI controller issues the CA per purpose, the leaves, the kubeconfigs, the ServiceAccount key and the encryption configuration, renews leaves at two thirds and the etcd set as generations; the request CA and the rotation operations are not built.
 
 ## Decision
 
@@ -11,7 +11,8 @@ Each tenant has:
 | CA | signs | who must trust it | lifetime |
 |---|---|---|---|
 | **cluster CA** (the trust anchor) | the API server's serving certificate, its kubelet client certificate, the tunnel and konnectivity serving certificates | every client and node: kubeconfigs, `cluster-info`, `kube-root-ca.crt`, the kubelet's `clientCAFile` | 10 years |
-| **client CA** | every client identity: admin, controller manager, scheduler, Lodia, `KubeconfigRequest`s; and an intermediate *kubelet signer* | only the API server, whose `--client-ca-file` bundle holds the client CA and the current kubelet signer | 5 years |
+| **client CA** | every client identity but a person's: admin, controller manager, scheduler, Lodia; and an intermediate *kubelet signer* | only the API server, whose `--client-ca-file` bundle holds the client CA, the current kubelet signer and the request CA | 5 years |
+| **request CA** | `KubeconfigRequest` certificates only ([short-lived-kubeconfigs](short-lived-kubeconfigs.md)) | only the API server, in its client bundle | 5 years |
 | **front-proxy CA** | the API server's aggregation client certificate | the API server and aggregated API servers | 5 years |
 | **etcd CA** | etcd server, peer and the API server's etcd client certificate | etcd and the API server | 5 years |
 | **tunnel CA** (gateway mode, from phase 2's wave 1b) | the short-lived client certificate of the in-cluster tunnel, which `apiserver-proxy` and Health present ([api-exposure](api-exposure.md)) | only the tunnel sidecar in each API server pod | 5 years |
@@ -50,10 +51,11 @@ Each renewal is a generation of five Secrets ([A tenant namespace](../README.md#
 | ServiceAccount key | K₂ is published as a verification key; once every replica serves it, K₂ signs and K₁ only verifies | K₁ is dropped after the owner confirms that no client holds an old token | no | `-complete` |
 | etcd encryption key | E₂ is added, then made first (the API server reloads the configuration every minute); the Tenant controller rewrites every encrypted resource | E₁ is removed | no | on its own |
 | etcd CA, front-proxy CA, tunnel CA | the new CA joins the bundles; certificates are re-issued; etcd and the API server roll where a CA file is read once | the old CA leaves the bundles | no | on its own |
+| request CA | CA₂ replaces CA₁ in the client bundle at once, and every `KubeconfigRequest` certificate stops working, which is how they are revoked | none | no | on its own |
 | cluster CA (trust anchor) | CA₂ joins every bundle: `cluster-info`, `kube-root-ca.crt` (the controller manager restarts, its `--root-ca-file` is read once), the CA bundle Secret, kubeconfigs; node owners add CA₂ to `/etc/kubernetes/pki/ca.crt` and the kubelet's kubeconfig | serving, kubelet client, tunnel and konnectivity certificates move to CA₂; CA₁ leaves the bundles | **yes** | `-complete`, after the owner updated every node |
 
 Only the last row needs people.
-It is meant for a compromised or expiring trust anchor, once in a decade; every rotation done for hygiene is one of the first four.
+It is meant for a compromised or expiring trust anchor, once in a decade; every other rotation is routine.
 
 ## Why
 

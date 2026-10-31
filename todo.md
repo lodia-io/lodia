@@ -32,8 +32,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From deciding the design (2026-10-25)
 
-- `KubeconfigRequest`'s schema refuses only `system:masters`; [short-lived-kubeconfigs](docs/decisions/short-lived-kubeconfigs.md) now refuses every user and group under `system:` and every user under `lodia:`.
-  The rule and its envtest cases come with the controller that answers requests.
 - `loadBalancer` mode with a load balancer that reports only a host name (AWS NLB and CLB): `--advertise-address` takes an IP, so the `kubernetes` endpoint needs another source there; decide before that mode is supported on such a provider.
 - client-go reloads a kubeconfig's CA file only with `ClientsAllowCARotation`, on by default since 1.36 ([known_features.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/client-go/features/known_features.go#L115-L117)): on 1.35 a trust anchor rotation restarts every component whose kubeconfig names the CA file; plan it into the phase 3 rotation.
 - Phase 2: Argo CD has no generic health check for custom resources ([health checks](https://github.com/argoproj/argo-cd/blob/v3.5.6/docs/operator-manual/health.md#L61-L83)), and kstatus, through which Flux waits, keeps a permanently failing object InProgress until a timeout unless it reports `Stalled` ([kstatus](https://github.com/kubernetes-sigs/cli-utils/blob/v0.37.2/pkg/kstatus/status/status.go#L102-L183)); Lodia writes no kstatus `Reconciling`, so the docs ship an Argo CD Lua health check and a Flux `healthCheckExprs` entry ([kustomizations.md](https://github.com/fluxcd/kustomize-controller/blob/v1.10.1/docs/spec/v1/kustomizations.md#L351-L374)) for `ControlPlane`, both reading `status.observedGeneration` and `Ready`.
@@ -78,7 +76,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the contracts audit (2026-10-25)
 
-- Phase 2: `KubeconfigRequest` gets a named status writer.
 - Phase 3: `target.rotation.*`, which `Target` lacks, gets a stage enum of its own instead of sharing PKI's observed `RotationPhase`, and `rotation.ca` becomes `clusterCA`.
 - Phase 3: `Hibernated`, with Lifecycle as its writer, and the handled `lodia.io/operation` value recorded in `status`.
 
@@ -182,4 +179,13 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   Compare those applies with the live copy too, as the paths that decide from their own condition do ([independent-controllers](docs/decisions/independent-controllers.md)).
 - PKI carries `CAValidityAcceptable` over from the cache while another owner keeps one of its Secrets and while a CA cannot be read, so a stale cache can write an older value back, which stays while that path holds; the same on `main`.
   Read it live there too, as the waits and keeps do ([independent-controllers](docs/decisions/independent-controllers.md)).
-- `startTenant`'s cleanup in the Tenant tests times out stopping the tenant's kube-apiserver when several envtest packages run in parallel ("timeout waiting for process kube-apiserver to stop", seen while verifying #43), which fails a test that passed and leaves envtest processes behind.
+- Once, while verifying #43, `startTenant`'s cleanup failed a Tenant test that had passed: the tenant's kube-apiserver did not stop within envtest's 20 s ("timeout waiting for process kube-apiserver to stop").
+  On 6e32914 it did not reproduce: with three Tenant runs beside two runs of every envtest package, each stop took 14 ms to 1.1 s, and cutting the controller off the tenant before the stop changed nothing.
+  envtest kills a server that misses the limit and then stops its etcd ([process.go](https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/internal/testing/process/process.go#L249-L280), [plane.go](https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/internal/testing/controlplane/plane.go#L93-L108)), so the timeout leaves no process behind; one stays only when the test binary itself is killed.
+  If it recurs, keep the run's log.
+
+## From KubeconfigRequest (2026-10-30)
+
+- A kubectl exec credential plugin that generates the key, creates the request and caches the certificate, as gardenlogin caches Gardener's ([get_client_certificate.go](https://github.com/gardener/gardenlogin/blob/v0.11.0/cmd/get_client_certificate.go#L187-L188)); until then a person runs openssl and kubectl.
+- Requests on behalf of another user, for a platform's backend: the policy could admit them with `impersonate` on `lodia.io` `users`; additive.
+- A viewer level for `spec.access`: it needs a read-only role kept current with the tenant's resources; additive to the enum.

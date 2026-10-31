@@ -35,10 +35,12 @@ test: ## unit and envtest tests; envtest runs a real API server and etcd
 	cd api && go test ./...
 
 .PHONY: chart
-chart: ## lint and render the chart with image tags, then with image digests
+chart: ## lint and render the chart with image tags, then with image digests; with crds.enabled=false it must still render the policy kubeconfigrequests.lodia.io and its binding
 	helm dependency build $(CHART)
 	helm lint --strict $(CHART)
 	helm template lodia $(CHART) --namespace lodia-system > /dev/null
+	@policies="$$(helm template lodia $(CHART) --namespace lodia-system --set crds.enabled=false | awk '/^---/ {kind = ""} /^kind: / {kind = $$2} /^  name: kubeconfigrequests\.lodia\.io$$/ {print kind}' | sort | tr '\n' ' ')"; \
+	[ "$$policies" = "ValidatingAdmissionPolicy ValidatingAdmissionPolicyBinding " ] || { echo "with crds.enabled=false the chart renders [$$policies] named kubeconfigrequests.lodia.io, want a ValidatingAdmissionPolicy and its binding"; exit 1; }
 	helm lint --strict $(CHART) --set image.digest=$(DIGEST),signerImage.digest=$(DIGEST)
 	helm template lodia $(CHART) --namespace lodia-system --set image.digest=$(DIGEST),signerImage.digest=$(DIGEST) > /dev/null
 
