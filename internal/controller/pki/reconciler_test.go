@@ -970,6 +970,10 @@ func reconcile(t *testing.T, r *pki.Reconciler, cp *lodiav1alpha1.ControlPlane) 
 	if err := client.IgnoreNotFound(k8s.Get(t.Context(), client.ObjectKey{Namespace: cp.Namespace, Name: cp.Name + "-kubelet-signer-next"}, initial)); err != nil {
 		t.Fatal(err)
 	}
+	initialRequests := &corev1.Secret{}
+	if err := client.IgnoreNotFound(k8s.Get(t.Context(), client.ObjectKey{Namespace: cp.Namespace, Name: cp.Name + "-cakey-kubeconfig-requests"}, initialRequests)); err != nil {
+		t.Fatal(err)
+	}
 	reconcileOnce(t, r, cp)
 	before := secretsOf(t, cp)
 	status := freshControlPlane(t, cp).ResourceVersion
@@ -988,7 +992,10 @@ func reconcile(t *testing.T, r *pki.Reconciler, cp *lodiav1alpha1.ControlPlane) 
 	if b, a := before[cp.Name+"-client-ca"], after[cp.Name+"-client-ca"]; b != nil && a != nil && b.ResourceVersion != a.ResourceVersion {
 		was, _ := certs.ParseCerts(b.Data[lodiav1alpha1.CACertKey])
 		is, _ := certs.ParseCerts(a.Data[lodiav1alpha1.CACertKey])
-		stored := []*x509.Certificate{parseTLS(t, after[cp.Name+"-cakey-kubeconfig-requests"]).Cert}
+		var stored []*x509.Certificate
+		if requests := after[cp.Name+"-cakey-kubeconfig-requests"]; requests == nil || !bytes.Equal(initialRequests.Data[lodiav1alpha1.TLSCertKey], requests.Data[lodiav1alpha1.TLSCertKey]) {
+			stored = append(stored, parseTLS(t, requests).Cert)
+		}
 		if next := after[cp.Name+"-kubelet-signer-next"]; next != nil && !bytes.Equal(initial.Data[lodiav1alpha1.TLSCertKey], next.Data[lodiav1alpha1.TLSCertKey]) {
 			pending, _ := certs.ParseCerts(next.Data[lodiav1alpha1.TLSCertKey])
 			stored = append(stored, pending...)
