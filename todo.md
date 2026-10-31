@@ -192,5 +192,5 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From #45's review (2026-10-31)
 
-- The kubelet signer grows `<cp>-client-ca` as the request CA did: while `<cp>-kubelet-signer` is lost and cannot be written, each pass writes the bundle with a new signer and then fails on the Secret (six signers after five passes, on `main` and on #45).
+- The kubelet signer grows `<cp>-client-ca` as the request CA did: while `<cp>-kubelet-signer` is lost or due, and cannot be written, each pass writes the bundle with a new signer and then fails on the Secret (six signers after five passes, on `main` and on #45).
   The controller manager, not Lodia, signs with it, so writing it first does not help: it needs a staged replacement, in a pull request of its own, next.
