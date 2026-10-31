@@ -382,3 +382,21 @@ func TestASecretQuotaRefusingAnEtcdGenerationLetsTheRequestCARenew(t *testing.T)
 	expectGenerations(t, cp, 2)
 	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
 }
+
+func TestAnEtcdGenerationRenewsWithoutAClientCA(t *testing.T) {
+	ctx := t.Context()
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "pki-etcd-no-client-ca")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	corrupt := secretOf(t, cp, "dev-cakey-client")
+	corrupt.Data[lodiav1alpha1.TLSPrivateKeyKey] = []byte("not a key")
+	if err := k8s.Update(ctx, corrupt); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Delete(ctx, secretOf(t, cp, "dev-etcd-client-1")); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, cp)
+	expectGenerations(t, cp, 2)
+}
