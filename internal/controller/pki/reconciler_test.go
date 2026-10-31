@@ -221,6 +221,23 @@ func TestALoadBalancerControlPlaneWaitsForItsEndpoint(t *testing.T) {
 		t.Errorf("CertificatesReady is %s at generation %d, want %s at %d", ready.Reason, ready.ObservedGeneration, lodiav1alpha1.ReasonIssued, fresh.Generation)
 	}
 	expectCondition(t, cp, lodiav1alpha1.ConditionCAValidityAcceptable, metav1.ConditionTrue, lodiav1alpha1.ReasonValid)
+	trusted := func(previous *x509.Certificate) func() bool {
+		return func() bool {
+			secrets := secretsOf(t, cp)
+			if secrets["dev-cakey-kubeconfig-requests"] == nil || secrets["dev-client-ca"] == nil {
+				return false
+			}
+			stored := parseTLS(t, secrets["dev-cakey-kubeconfig-requests"]).Cert
+			bundle, err := certs.ParseCerts(secrets["dev-client-ca"].Data[lodiav1alpha1.CACertKey])
+			return err == nil && !stored.Equal(previous) && containsCert(bundle, stored)
+		}
+	}
+	waitFor(t, 30*time.Second, trusted(nil))
+	lost := secretsOf(t, cp)["dev-cakey-kubeconfig-requests"]
+	if err := k8s.Delete(t.Context(), lost); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 30*time.Second, trusted(parseTLS(t, lost).Cert))
 	creds := fresh.Status.Credentials
 	if creds == nil || creds.AdminKubeconfigSecretRef == nil || creds.AdminKubeconfigSecretRef.Name != "dev-admin-kubeconfig" ||
 		creds.CABundleSecretRef == nil || creds.CABundleSecretRef.Name != "dev-ca-bundle" {
@@ -949,9 +966,30 @@ func reconcile(t *testing.T, r *pki.Reconciler, cp *lodiav1alpha1.ControlPlane) 
 	before := secretsOf(t, cp)
 	status := freshControlPlane(t, cp).ResourceVersion
 	result := reconcileOnce(t, r, cp)
-	for name, s := range secretsOf(t, cp) {
+	after := secretsOf(t, cp)
+	for name := range before {
+		if after[name] == nil {
+			t.Errorf("the pass after the first deleted %s", name)
+		}
+	}
+	for name, s := range after {
 		if name != cp.Name+"-client-ca" && (before[name] == nil || before[name].ResourceVersion != s.ResourceVersion) {
 			t.Errorf("the pass after the first wrote %s", name)
+		}
+	}
+	if b, a := before[cp.Name+"-client-ca"], after[cp.Name+"-client-ca"]; b != nil && a != nil && b.ResourceVersion != a.ResourceVersion {
+		was, _ := certs.ParseCerts(b.Data[lodiav1alpha1.CACertKey])
+		is, _ := certs.ParseCerts(a.Data[lodiav1alpha1.CACertKey])
+		stored := parseTLS(t, after[cp.Name+"-cakey-kubeconfig-requests"]).Cert
+		for _, c := range is {
+			if !containsCert(was, c) && !c.Equal(stored) {
+				t.Errorf("the pass after the first added %s to the client CA bundle", c.Subject.CommonName)
+			}
+		}
+		for _, c := range was {
+			if !containsCert(is, c) && !strings.HasPrefix(c.Subject.CommonName, "kubeconfig-requests-ca@") {
+				t.Errorf("the pass after the first dropped %s from the client CA bundle", c.Subject.CommonName)
+			}
 		}
 	}
 	if freshControlPlane(t, cp).ResourceVersion != status {
