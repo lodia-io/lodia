@@ -1133,7 +1133,7 @@ func TestATransientErrorAnswersNothing(t *testing.T) {
 		t.Errorf("a pass whose status write failed wrote the request or logged %v", logs.lines)
 	}
 
-	for _, after := range []error{errors.New("the connection broke before the API server answered"), apierrors.NewTimeoutError("the API server did not answer in time", 0)} {
+	for _, after := range []error{errors.New("the connection broke before the API server answered"), apierrors.NewTimeoutError("the API server did not answer in time", 0), apierrors.NewInternalError(errors.New("etcdserver: request timed out"))} {
 		stored := kubeconfigRequest(t, cp, p256(t))
 		r = requestReconciler(clocktesting.NewFakePassiveClock(stored.CreationTimestamp.Time))
 		r.Client = failingStatus{Client: controller, stored: after}
@@ -1141,8 +1141,8 @@ func TestATransientErrorAnswersNothing(t *testing.T) {
 		_, err := r.Reconcile(logs.into(t.Context()), requestFor(stored))
 		cert, _ := issued(t, freshRequest(t, stored))
 		fingerprint := sha256.Sum256(cert.Raw)
-		if err == nil || !strings.Contains(err.Error(), "credential-id X509SHA256="+hex.EncodeToString(fingerprint[:])) || len(logs.lines) > 0 {
-			t.Errorf("a write stored before %q returned %v and logged %v, want the error naming the stored certificate's credential-id", after, err, logs.lines)
+		if !errors.Is(err, after) || !strings.Contains(err.Error(), "credential-id X509SHA256="+hex.EncodeToString(fingerprint[:])) || len(logs.lines) > 0 {
+			t.Errorf("a write stored before %q returned %v and logged %v, want that error naming the stored certificate's credential-id", after, err, logs.lines)
 		}
 	}
 
