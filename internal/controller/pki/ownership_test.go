@@ -175,6 +175,9 @@ func TestLeftoversUnderPKINames(t *testing.T) {
 
 	secrets := secretsOf(t, cp)
 	for _, name := range []string{"dev-encryption-config", "dev-kubelet-signer", "dev-sa-keys"} {
+		if secrets[name] == nil {
+			t.Fatalf("no %s to restore", name)
+		}
 		restored := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cp.Namespace}, Type: secrets[name].Type, Data: secrets[name].Data}
 		if err := k8s.Delete(ctx, secrets[name]); err != nil {
 			t.Fatal(err)
