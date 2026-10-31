@@ -548,8 +548,8 @@ func TestAPassOnAStaleCacheDoesNotIssueTwice(t *testing.T) {
 	logs := &logLines{}
 	r := requestReconciler(now)
 	r.Client = staleRequest{Client: controller, kr: stale}
-	if _, err := r.Reconcile(logs.into(t.Context()), requestFor(kr)); !apierrors.IsConflict(err) {
-		t.Fatalf("a pass on a stale request returned %v, want a conflict", err)
+	if _, err := r.Reconcile(logs.into(t.Context()), requestFor(kr)); !apierrors.IsConflict(err) || strings.Contains(err.Error(), "credential-id") {
+		t.Fatalf("a pass on a stale request returned %v, want a conflict that names no credential-id", err)
 	}
 	if after := freshRequest(t, kr); after.ResourceVersion != written.ResourceVersion || !bytes.Equal(after.Status.Kubeconfig, written.Status.Kubeconfig) {
 		t.Error("a pass on a stale request replaced the issued certificate")
@@ -1084,22 +1084,24 @@ func TestATransientErrorAnswersNothing(t *testing.T) {
 	r := requestReconciler(clocktesting.NewFakePassiveClock(kr.CreationTimestamp.Time))
 	r.Client = failingStatus{Client: controller}
 	logs := &logLines{}
-	if _, err := r.Reconcile(logs.into(t.Context()), requestFor(kr)); err == nil {
-		t.Fatal("a pass whose status write failed succeeded")
+	if _, err := r.Reconcile(logs.into(t.Context()), requestFor(kr)); !apierrors.IsTooManyRequests(err) || strings.Contains(err.Error(), "credential-id") {
+		t.Fatalf("a pass whose status write was refused returned %v, want the refusal, naming no credential-id", err)
 	}
 	if after := freshRequest(t, kr); after.ResourceVersion != kr.ResourceVersion || len(logs.lines) > 0 {
 		t.Errorf("a pass whose status write failed wrote the request or logged %v", logs.lines)
 	}
 
-	stored := kubeconfigRequest(t, cp, p256(t))
-	r = requestReconciler(clocktesting.NewFakePassiveClock(stored.CreationTimestamp.Time))
-	r.Client = failingStatus{Client: controller, stored: true}
-	logs = &logLines{}
-	_, err := r.Reconcile(logs.into(t.Context()), requestFor(stored))
-	cert, _ := issued(t, freshRequest(t, stored))
-	fingerprint := sha256.Sum256(cert.Raw)
-	if err == nil || !strings.Contains(err.Error(), "credential-id X509SHA256="+hex.EncodeToString(fingerprint[:])) || len(logs.lines) > 0 {
-		t.Errorf("a write stored before its error returned %v and logged %v, want the error naming the stored certificate's credential-id", err, logs.lines)
+	for _, after := range []error{errors.New("the connection broke before the API server answered"), apierrors.NewTimeoutError("the API server did not answer in time", 0)} {
+		stored := kubeconfigRequest(t, cp, p256(t))
+		r = requestReconciler(clocktesting.NewFakePassiveClock(stored.CreationTimestamp.Time))
+		r.Client = failingStatus{Client: controller, stored: after}
+		logs = &logLines{}
+		_, err := r.Reconcile(logs.into(t.Context()), requestFor(stored))
+		cert, _ := issued(t, freshRequest(t, stored))
+		fingerprint := sha256.Sum256(cert.Raw)
+		if err == nil || !strings.Contains(err.Error(), "credential-id X509SHA256="+hex.EncodeToString(fingerprint[:])) || len(logs.lines) > 0 {
+			t.Errorf("a write stored before %q returned %v and logged %v, want the error naming the stored certificate's credential-id", after, err, logs.lines)
+		}
 	}
 
 	waiting := kubeconfigRequestFor(t, cp.Namespace, "absent", p256(t))
@@ -1150,7 +1152,7 @@ func read(key client.ObjectKey, obj client.Object) string {
 
 type failingStatus struct {
 	client.Client
-	stored bool
+	stored error
 }
 
 func (f failingStatus) Status() client.SubResourceWriter {
@@ -1159,15 +1161,15 @@ func (f failingStatus) Status() client.SubResourceWriter {
 
 type failingStatusWriter struct {
 	client.SubResourceWriter
-	stored bool
+	stored error
 }
 
 func (f failingStatusWriter) Apply(ctx context.Context, obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
-	if f.stored {
+	if f.stored != nil {
 		if err := f.SubResourceWriter.Apply(ctx, obj, opts...); err != nil {
 			return err
 		}
-		return errors.New("the connection broke before the API server answered")
+		return f.stored
 	}
-	return errors.New("the API server refused the apply")
+	return apierrors.NewTooManyRequests("the API server refused the apply", 1)
 }

@@ -14,6 +14,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -187,6 +188,11 @@ func (r *KubeconfigRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	fingerprint := sha256.Sum256(cert.Raw)
 	credential := "X509SHA256=" + hex.EncodeToString(fingerprint[:])
 	if err := r.applyStatus(ctx, kr, now, condition, kubeconfig, &cert.NotAfter); err != nil {
+		// An API server's 4xx answer, a conflict included, stored nothing.
+		var status apierrors.APIStatus
+		if errors.As(err, &status) && status.Status().Code >= 400 && status.Status().Code < 500 {
+			return ctrl.Result{}, err
+		}
 		return ctrl.Result{}, fmt.Errorf("%w; the write may have stored credential-id %s", err, credential)
 	}
 	logf.FromContext(ctx).Info("issued a certificate", "uid", kr.UID, "user", user, "access", kr.Spec.Access,
