@@ -79,7 +79,7 @@ const (
 	providerAESCBC    lodiav1alpha1.EncryptionProvider = "aescbc"
 
 	// requestCAPredecessors is how many replaced request CAs the client CA
-	// bundle keeps beside a stored one.
+	// bundle keeps at most beside a stored one.
 	requestCAPredecessors = 10
 )
 

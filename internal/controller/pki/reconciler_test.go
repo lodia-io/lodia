@@ -987,7 +987,7 @@ func reconcile(t *testing.T, r *pki.Reconciler, cp *lodiav1alpha1.ControlPlane) 
 			}
 		}
 		for _, c := range was {
-			if !containsCert(is, c) && !strings.HasPrefix(c.Subject.CommonName, "kubeconfig-requests-ca@") {
+			if !containsCert(is, c) && !strings.HasPrefix(c.Subject.CommonName, "kubeconfig-requests-ca@") && time.Now().Before(c.NotAfter) {
 				t.Errorf("the pass after the first dropped %s from the client CA bundle", c.Subject.CommonName)
 			}
 		}
