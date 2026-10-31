@@ -1085,6 +1085,43 @@ func TestASecretQuotaRefusingTheStagedSignerLetsTheRequestCARenew(t *testing.T) 
 	}
 }
 
+func TestASecretQuotaWithOneSlotLeftGivesItToTheStagedSigner(t *testing.T) {
+	ctx := t.Context()
+	r := newReconciler(time.Hour)
+	r.SignerPropagation = time.Hour
+	cp := controlPlane(t, "signer-quota-slot")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	dueSigner(t, cp)
+	if err := k8s.Delete(ctx, secretOf(t, cp, "dev-etcd-client-1")); err != nil {
+		t.Fatal(err)
+	}
+	leaveOneSlot(t, cp, fillSecretQuota(t, cp))
+	reconcileFails(t, r, cp)
+	secrets := secretsOf(t, cp)
+	if secrets["dev-kubelet-signer-next"] == nil || secrets["dev-etcd-ca-2"] != nil {
+		t.Error("the last slot went to etcd generation 2 rather than the staged signer")
+	}
+}
+
+func TestARefusedStagedSignerLetsTheEtcdGenerationRenew(t *testing.T) {
+	r := newReconciler(time.Hour)
+	r.SignerPropagation = time.Hour
+	cp := controlPlane(t, "signer-refused-etcd")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	dueSigner(t, cp)
+	if err := k8s.Delete(t.Context(), secretOf(t, cp, "dev-etcd-client-1")); err != nil {
+		t.Fatal(err)
+	}
+	r.Client = failingApply{Client: controller, secret: "dev-kubelet-signer-next"}
+	reconcileFails(t, r, cp)
+	if secretsOf(t, cp)["dev-kubelet-signer-next"] != nil {
+		t.Fatal("the staged signer was written although its apply failed")
+	}
+	expectGenerations(t, cp, 2)
+}
+
 func fillSecretQuota(t *testing.T, cp *lodiav1alpha1.ControlPlane) *corev1.ResourceQuota {
 	t.Helper()
 	ctx := t.Context()
@@ -1103,4 +1140,19 @@ func fillSecretQuota(t *testing.T, cp *lodiav1alpha1.ControlPlane) *corev1.Resou
 		return err != nil && strings.Contains(err.Error(), "exceeded quota")
 	})
 	return quota
+}
+
+func leaveOneSlot(t *testing.T, cp *lodiav1alpha1.ControlPlane, quota *corev1.ResourceQuota) {
+	t.Helper()
+	ctx := t.Context()
+	used := quota.Status.Used["count/secrets"]
+	used.Sub(resource.MustParse("1"))
+	quota.Status.Used = corev1.ResourceList{"count/secrets": used}
+	if err := k8s.Status().Update(ctx, quota); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 30*time.Second, func() bool {
+		probe := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: cp.Namespace}}
+		return k8s.Create(ctx, probe, client.DryRunAll) == nil
+	})
 }

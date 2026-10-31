@@ -427,7 +427,7 @@ func TestALostRequestCAKeepsEveryRequestCAUntilItsSuccessorIsStored(t *testing.T
 	}
 }
 
-func TestARequestCAIsWrittenLastAndJoinsTheBundleOnTheNextPass(t *testing.T) {
+func TestARequestCAIsWrittenLateAndJoinsTheBundleOnTheNextPass(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	r := newReconciler(6 * time.Second)
@@ -515,6 +515,25 @@ func mustBundle(t *testing.T, list ...*x509.Certificate) []byte {
 		t.Fatal(err)
 	}
 	return out
+}
+
+func TestASecretQuotaWithOneSlotLeftGivesItToALostRequestCA(t *testing.T) {
+	ctx := t.Context()
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "kcr-request-ca-slot")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	for _, name := range []string{"dev-cakey-kubeconfig-requests", "dev-etcd-client-1"} {
+		if err := k8s.Delete(ctx, secretOf(t, cp, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	leaveOneSlot(t, cp, fillSecretQuota(t, cp))
+	reconcileFails(t, r, cp)
+	secrets := secretsOf(t, cp)
+	if secrets["dev-cakey-kubeconfig-requests"] == nil || secrets["dev-etcd-ca-2"] != nil {
+		t.Error("the last slot went to etcd generation 2 rather than the lost request CA")
+	}
 }
 
 func mustPEM(t *testing.T, c *x509.Certificate) []byte {

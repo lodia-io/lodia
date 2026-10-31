@@ -8,12 +8,15 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"maps"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/certs"
@@ -324,4 +327,76 @@ func TestACANotWrittenIsNotCounted(t *testing.T) {
 	if c.Reason != lodiav1alpha1.ReasonIssuing || !strings.Contains(c.Message, "dev-cakey-client") {
 		t.Fatalf("CertificatesReady is %s: %s", c.Reason, c.Message)
 	}
+}
+
+func TestASecretQuotaRefusingAnEtcdGenerationLetsTheRequestCARenew(t *testing.T) {
+	ctx := t.Context()
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "pki-etcd-quota")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	issued := time.Now().Add(-50 * time.Minute)
+	requests, err := certs.NewCA("kubeconfig-requests-ca@"+strconv.FormatInt(issued.UnixNano(), 10), issued, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := secretOf(t, cp, "dev-cakey-kubeconfig-requests")
+	s.Data = map[string][]byte{lodiav1alpha1.TLSCertKey: mustPEM(t, requests.Cert), lodiav1alpha1.TLSPrivateKeyKey: mustKeyPEM(t, requests.Key)}
+	if err := k8s.Update(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Delete(ctx, secretOf(t, cp, "dev-etcd-client-1")); err != nil {
+		t.Fatal(err)
+	}
+	quota := fillSecretQuota(t, cp)
+	for range 3 {
+		reconcileFails(t, r, cp)
+	}
+	secrets := secretsOf(t, cp)
+	renewed := parseTLS(t, secrets["dev-cakey-kubeconfig-requests"]).Cert
+	if renewed.Equal(requests.Cert) {
+		t.Fatal("a due request CA was not renewed while the quota refused an etcd generation")
+	}
+	bundle, err := certs.ParseCerts(secretOf(t, cp, "dev-client-ca").Data[lodiav1alpha1.CACertKey])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsCert(bundle, renewed) {
+		t.Errorf("under the quota the bundle holds %v, without the renewed request CA", subjects(bundle))
+	}
+	if secrets["dev-etcd-ca-2"] != nil || secrets["dev-etcd-server-1"] == nil {
+		t.Error("under the quota generation 2 was written or generation 1 deleted")
+	}
+	want := "not written yet: dev-etcd-backup-restore-2, dev-etcd-ca-2, dev-etcd-client-2, dev-etcd-peer-2, dev-etcd-server-2; the error is in the log"
+	if c := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady); c.Reason != lodiav1alpha1.ReasonIssuing || c.Message != want {
+		t.Errorf("CertificatesReady is %s: %s", c.Reason, c.Message)
+	}
+
+	if err := k8s.Delete(ctx, quota); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 30*time.Second, func() bool {
+		_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+		return err == nil
+	})
+	expectGenerations(t, cp, 2)
+	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+}
+
+func TestAnEtcdGenerationRenewsWithoutAClientCA(t *testing.T) {
+	ctx := t.Context()
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "pki-etcd-no-client-ca")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	corrupt := secretOf(t, cp, "dev-cakey-client")
+	corrupt.Data[lodiav1alpha1.TLSPrivateKeyKey] = []byte("not a key")
+	if err := k8s.Update(ctx, corrupt); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Delete(ctx, secretOf(t, cp, "dev-etcd-client-1")); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, cp)
+	expectGenerations(t, cp, 2)
 }

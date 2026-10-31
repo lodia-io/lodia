@@ -116,7 +116,7 @@ type tenant struct {
 	unsupportedProvider lodiav1alpha1.EncryptionProvider
 	endpoint            *endpoint
 	konnectivityHost    string
-	// requests is the request CA the pass writes last.
+	// requests is the request CA the pass writes at its end.
 	requests *certs.Certificate
 	// next is what <cp>-kubelet-signer-next holds after the pass, which
 	// promote moves into <cp>-kubelet-signer; without one the pass deletes
@@ -126,8 +126,8 @@ type tenant struct {
 	promote    bool
 	signerLost bool
 	promotion  time.Time
-	// writeErr is the pass's first failed write, joined with a failed late
-	// write's. No write follows it but the other late write, and pending
+	// writeErr is the pass's first failed write, joined with the failed late
+	// writes'. No write follows it but the other late writes, and pending
 	// names what the pass had to change but did not write.
 	writeErr error
 	pending  []string
@@ -304,9 +304,9 @@ func (t *tenant) leaf(certPEM, keyPEM []byte, ca *certs.Certificate, p certs.Pro
 	return c, nil
 }
 
-// issue writes the encryption configuration, then the kubelet signer's staged
-// writes and the request CA last: an unsupported provider blocks nothing else,
-// and the staged signer's writes and the request CA's do not block each other.
+// issue writes the kubelet signer's staged writes, the request CA and the etcd
+// generations last, so that none of the three blocks another, and a
+// generation's five creates come after the single creates of the others.
 func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 	for _, ca := range caBundles {
 		if err := r.ca(ctx, t, ca.ca, ca.bundle); err != nil {
@@ -371,9 +371,6 @@ func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 		if err := r.tls(ctx, t, t.secret(lodiav1alpha1.APIServerEtcdClientSecret), etcd, certs.Profile{CommonName: "kube-apiserver-etcd-client", Usages: clientAuth}); err != nil {
 			return err
 		}
-		if err := r.etcd(ctx, t); err != nil {
-			return err
-		}
 	}
 
 	if err := r.serviceAccountKey(ctx, t); err != nil {
@@ -382,20 +379,26 @@ func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 	if err := r.encryptionConfig(ctx, t); err != nil {
 		return err
 	}
-	if t.requests == nil {
-		return nil
+	var late []func(context.Context, *tenant) error
+	if t.requests != nil {
+		late = append(late, r.kubeletSigner, func(ctx context.Context, t *tenant) error {
+			return r.applyTLS(ctx, t, t.name("cakey-"+requestCA), t.requests, nil, false)
+		})
+	}
+	if etcd != nil {
+		late = append(late, r.etcd)
 	}
 	early := t.writeErr
-	if err := r.kubeletSigner(ctx, t); err != nil {
-		return err
-	}
-	signerErr := t.writeErr
-	t.writeErr = early
-	if err := r.applyTLS(ctx, t, t.name("cakey-"+requestCA), t.requests, nil, false); err != nil {
-		return err
+	var failed []error
+	for _, write := range late {
+		t.writeErr = early
+		if err := write(ctx, t); err != nil {
+			return err
+		}
+		failed = append(failed, t.writeErr)
 	}
 	if early == nil {
-		t.writeErr = errors.Join(signerErr, t.writeErr)
+		t.writeErr = errors.Join(failed...)
 	}
 	return nil
 }
@@ -1074,8 +1077,8 @@ func (t *tenant) etcdProfiles() []etcdProfile {
 	}
 }
 
-// applySecret writes a Secret unless it already holds what PKI writes. After
-// the pass's first failed write it writes nothing, and records a Secret whose
+// applySecret writes a Secret unless it already holds what PKI writes. While
+// writeErr holds a failed write it writes nothing, and records a Secret whose
 // type or data had to change, or a generation whose labels or owner had to:
 // the Datastore sees a generation by them.
 func (r *Reconciler) applySecret(ctx context.Context, t *tenant, name string, typ corev1.SecretType, content map[string][]byte, labels map[string]string, immutable bool) {
