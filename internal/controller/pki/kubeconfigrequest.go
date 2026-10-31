@@ -157,7 +157,7 @@ func (r *KubeconfigRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	signer := readCA(ca)
+	signer := readRequestCA(ca)
 	trusted, err := r.input(ctx, cp, lodiav1alpha1.ClientCASecret.Name(cp.Name))
 	if err != nil {
 		return ctrl.Result{}, err

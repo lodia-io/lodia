@@ -5,6 +5,7 @@ package pki
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -76,6 +77,10 @@ const (
 	providerNone      lodiav1alpha1.EncryptionProvider = "None"
 	providerSecretbox lodiav1alpha1.EncryptionProvider = "secretbox"
 	providerAESCBC    lodiav1alpha1.EncryptionProvider = "aescbc"
+
+	// requestCAPredecessors is how many replaced request CAs the client CA
+	// bundle keeps at most.
+	requestCAPredecessors = 10
 )
 
 var (
@@ -406,6 +411,30 @@ func readCA(s *corev1.Secret) *certs.Certificate {
 	return c
 }
 
+// readRequestCA is readCA for the request CA, which also carries the stamp
+// of the pass that issued it.
+func readRequestCA(s *corev1.Secret) *certs.Certificate {
+	c := readCA(s)
+	if c == nil {
+		return nil
+	}
+	if _, ok := requestCAStamp(c.Cert); !ok {
+		return nil
+	}
+	return c
+}
+
+// requestCAStamp is the stamp in a request CA's subject, false for any other
+// certificate.
+func requestCAStamp(c *x509.Certificate) (int64, bool) {
+	stamp, ok := strings.CutPrefix(c.Subject.CommonName, requestCA+"-ca@")
+	if !ok {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(stamp, 10, 64)
+	return n, err == nil
+}
+
 func (r *Reconciler) notice(t *tenant, ca *x509.Certificate) {
 	t.wakeAt(ca.NotAfter.Add(-r.CAExpiryNotice))
 	t.wakeAt(ca.NotAfter)
@@ -430,7 +459,7 @@ func (r *Reconciler) clientCAs(ctx context.Context, t *tenant) error {
 		}
 	}
 	t.renew(signer.Cert, ca.Cert)
-	requests := readCA(t.existing[requestsName])
+	requests := readRequestCA(t.existing[requestsName])
 	if requests == nil || !t.now.Before(certs.RenewalTime(requests.Cert)) {
 		if requests, err = certs.NewCA(t.stamp(requestCA+"-ca"), t.now, r.LeafLifetime); err != nil {
 			return err
@@ -478,21 +507,41 @@ func (r *Reconciler) bundle(ctx context.Context, t *tenant, name string, bundle 
 }
 
 // clientBundle keeps each replaced signer for one signing duration, since
-// kubelets present only their leaf, and each replaced request CA, a root of
-// its own, for the longest a request lives.
+// kubelets present only their leaf. A replaced request CA, a root of its own
+// known by its subject, is kept until the longest request created before its
+// successor was issued has expired, plus the backdate for a verifier's clock
+// that lags; at most the newest requestCAPredecessors.
 func (t *tenant) clientBundle(signer, requests *certs.Certificate) []*x509.Certificate {
 	ca := t.cas[clientCA].Cert
 	bundle := []*x509.Certificate{ca, signer.Cert, requests.Cert}
 	previous, _ := certs.ParseCerts(data(t.existing[t.secret(lodiav1alpha1.ClientCASecret)], lodiav1alpha1.CACertKey))
-	signerReplaced, requestsReplaced := signer.Cert.NotBefore.Add(certs.Backdate), requests.Cert.NotBefore.Add(certs.Backdate)
+	replaced := signer.Cert.NotBefore.Add(certs.Backdate)
+	current, _ := requestCAStamp(requests.Cert)
+	var predecessors []*x509.Certificate
 	for _, c := range previous {
-		if !c.IsCA || c.Equal(ca) {
-			continue
-		}
-		if certs.Verify(c, ca, t.now) == nil && t.now.Before(signerReplaced.Add(certs.KubeletClientLifetime)) ||
-			c.CheckSignatureFrom(c) == nil && t.now.Before(requestsReplaced.Add(certs.KubeconfigRequestLifetime)) {
+		stamp, isRequestCA := requestCAStamp(c)
+		switch {
+		case !c.IsCA || c.Equal(ca):
+		case isRequestCA:
+			if stamp < current {
+				predecessors = append(predecessors, c)
+			}
+		case certs.Verify(c, ca, t.now) == nil && t.now.Before(replaced.Add(certs.KubeletClientLifetime)):
 			bundle = append(bundle, c)
 		}
+	}
+	slices.SortFunc(predecessors, func(a, b *x509.Certificate) int {
+		stampA, _ := requestCAStamp(a)
+		stampB, _ := requestCAStamp(b)
+		return cmp.Compare(stampB, stampA)
+	})
+	successor := requests.Cert
+	for _, c := range predecessors[:min(len(predecessors), requestCAPredecessors)] {
+		if issued := successor.NotBefore.Add(certs.Backdate); !t.now.Before(issued.Add(certs.KubeconfigRequestLifetime + certs.Backdate)) {
+			break
+		}
+		bundle = append(bundle, c)
+		successor = c
 	}
 	return bundle
 }

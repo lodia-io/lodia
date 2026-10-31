@@ -8,7 +8,6 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"maps"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -62,16 +61,10 @@ func TestALeafEndingWithItsCAIsIssuedOnceAndAnExpiredCAWritesNothing(t *testing.
 	}
 	signer := parseTLS(t, clamped["dev-kubelet-signer"]).Cert
 	clientCA := parseTLS(t, first["dev-cakey-client"]).Cert
-	bundle, err := certs.ParseCerts(secretsOf(t, cp)["dev-client-ca"].Data[lodiav1alpha1.CACertKey])
-	if err != nil {
-		t.Fatal(err)
-	}
-	signers := slices.DeleteFunc(bundle, func(c *x509.Certificate) bool { return !c.Equal(clientCA) && c.CheckSignatureFrom(c) == nil })
-	if len(signers) != 2 || !containsCert(signers, clientCA) || !containsCert(signers, signer) {
-		t.Errorf("the client CA bundle holds %v beside the request CAs, want the client CA and the current signer", subjects(signers))
-	}
+	requests := parseTLS(t, secretsOf(t, cp)["dev-cakey-kubeconfig-requests"]).Cert
+	expectBundle(t, cp, clientCA, signer, parseTLS(t, first["dev-cakey-kubeconfig-requests"]).Cert, parseTLS(t, clamped["dev-cakey-kubeconfig-requests"]).Cert, requests)
 	due := ca.NotAfter
-	if renewal := certs.RenewalTime(parseTLS(t, secretsOf(t, cp)["dev-cakey-kubeconfig-requests"]).Cert); renewal.Before(due) {
+	if renewal := certs.RenewalTime(requests); renewal.Before(due) {
 		due = renewal
 	}
 	if result.RequeueAfter < time.Until(due) || result.RequeueAfter > due.Sub(start)+time.Second {

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"crypto"
 	"crypto/x509"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -77,25 +78,46 @@ func TestTheRequestCAIsKeptLikeTheKubeletSigner(t *testing.T) {
 		t.Fatal("a request CA without labels or owner was not adopted as it is")
 	}
 
-	leaf := parseTLS(t, secretsOf(t, cp)["dev-apiserver-kubelet-client"])
-	for name, content := range map[string]map[string][]byte{
-		"an unreadable key": {lodiav1alpha1.TLSCertKey: secretsOf(t, cp)["dev-cakey-kubeconfig-requests"].Data[lodiav1alpha1.TLSCertKey], lodiav1alpha1.TLSPrivateKeyKey: []byte("not a key")},
-		"a leaf":            {lodiav1alpha1.TLSCertKey: mustPEM(t, leaf.Cert), lodiav1alpha1.TLSPrivateKeyKey: mustKeyPEM(t, leaf.Key)},
+	secrets := secretsOf(t, cp)
+	tls := func(c *certs.Certificate) map[string][]byte {
+		return map[string][]byte{lodiav1alpha1.TLSCertKey: mustPEM(t, c.Cert), lodiav1alpha1.TLSPrivateKeyKey: mustKeyPEM(t, c.Key)}
+	}
+	intermediate, err := parseTLS(t, secrets["dev-cakey-client"]).Issue(certs.Profile{CommonName: "kubeconfig-requests-ca@" + strconv.FormatInt(time.Now().UnixNano(), 10), CA: true}, time.Now(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign, err := certs.NewCA("someone-ca@1", time.Now(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name    string
+		content map[string][]byte
+	}{
+		{"an unreadable key", map[string][]byte{lodiav1alpha1.TLSCertKey: secrets["dev-cakey-kubeconfig-requests"].Data[lodiav1alpha1.TLSCertKey], lodiav1alpha1.TLSPrivateKeyKey: []byte("not a key")}},
+		{"a leaf", tls(parseTLS(t, secrets["dev-apiserver-kubelet-client"]))},
+		{"the kubelet signer", tls(parseTLS(t, secrets["dev-kubelet-signer"]))},
+		{"an intermediate under the request CA's name", tls(intermediate)},
+		{"a root under another name", tls(foreign)},
 	} {
+		written, err := certs.ParseCerts(c.content[lodiav1alpha1.TLSCertKey])
+		if err != nil {
+			t.Fatal(err)
+		}
 		previous := parseTLS(t, secretsOf(t, cp)["dev-cakey-kubeconfig-requests"]).Cert
 		kept, err := certs.ParseCerts(secretsOf(t, cp)["dev-client-ca"].Data[lodiav1alpha1.CACertKey])
 		if err != nil {
 			t.Fatal(err)
 		}
 		s := secretsOf(t, cp)["dev-cakey-kubeconfig-requests"]
-		s.Data = content
+		s.Data = c.content
 		if err := k8s.Update(ctx, s); err != nil {
 			t.Fatal(err)
 		}
 		reconcile(t, r, cp)
 		renewed := parseTLS(t, secretsOf(t, cp)["dev-cakey-kubeconfig-requests"]).Cert
-		if renewed.Equal(previous) || !renewed.IsCA {
-			t.Fatalf("a request CA Secret holding %s was not replaced by a CA", name)
+		if renewed.Equal(previous) || renewed.Equal(written[0]) || renewed.CheckSignatureFrom(renewed) != nil || !strings.HasPrefix(renewed.Subject.CommonName, "kubeconfig-requests-ca@") || !stamped.MatchString(renewed.Subject.CommonName) {
+			t.Fatalf("a request CA Secret holding %s was replaced by %s, want a new request CA", c.name, renewed.Subject.CommonName)
 		}
 		expectBundle(t, cp, append(kept, renewed)...)
 		expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
@@ -108,8 +130,8 @@ func TestEachClientBundleRuleKeepsOnlyItsOwnPredecessors(t *testing.T) {
 		signerAge, requestCAAge   time.Duration
 		keepsSigner, keepsRequest bool
 	}{
-		{"a request CA replaced 23 hours ago", 0, 23 * time.Hour, true, true},
-		{"a request CA replaced 25 hours ago", 0, 25 * time.Hour, true, false},
+		{"a request CA replaced 24 hours 2 minutes ago", 0, 24*time.Hour + 2*time.Minute, true, true},
+		{"a request CA replaced 24 hours 6 minutes ago", 0, 24*time.Hour + 6*time.Minute, true, false},
 		{"a kubelet signer replaced 31 days ago", 31 * 24 * time.Hour, 0, false, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -163,6 +185,80 @@ func TestEachClientBundleRuleKeepsOnlyItsOwnPredecessors(t *testing.T) {
 			expectBundle(t, cp, want...)
 		})
 	}
+}
+
+func TestOnlyARequestCAIsKeptAsARequestCAsPredecessor(t *testing.T) {
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "kcr-request-ca-foreign")
+	reconcile(t, r, cp)
+	secrets := secretsOf(t, cp)
+	clientCA, signer := parseTLS(t, secrets["dev-cakey-client"]).Cert, parseTLS(t, secrets["dev-kubelet-signer"]).Cert
+	requests := parseTLS(t, secrets["dev-cakey-kubeconfig-requests"]).Cert
+	var roots []*x509.Certificate
+	for _, name := range []string{"kubeconfig-requests-ca@1", "someone-ca@1", "client-ca@1"} {
+		c, err := certs.NewCA(name, time.Now().Add(-time.Hour), 2*time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		roots = append(roots, c.Cert)
+	}
+	leaf := leafOf(t, secrets["dev-lodia-kubeconfig"]).Cert
+	old := secrets["dev-client-ca"]
+	old.Data = map[string][]byte{lodiav1alpha1.CACertKey: mustBundle(t, clientCA, signer, requests, roots[0], roots[1], roots[2], leaf)}
+	if err := k8s.Update(t.Context(), old); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, cp)
+	expectBundle(t, cp, clientCA, signer, requests, roots[0])
+}
+
+func TestEachRequestCAIsKeptByItsOwnSuccessor(t *testing.T) {
+	ctx := t.Context()
+	r := newReconciler(100 * 24 * time.Hour)
+	cp := controlPlane(t, "kcr-request-ca-successor")
+	reconcile(t, r, cp)
+	secrets := secretsOf(t, cp)
+	clientCA, signer := parseTLS(t, secrets["dev-cakey-client"]).Cert, parseTLS(t, secrets["dev-kubelet-signer"]).Cert
+	now := time.Now()
+	var chain []*certs.Certificate
+	for i, age := range []time.Duration{48 * time.Hour, 24*time.Hour + 30*time.Minute, 10 * time.Minute, time.Minute} {
+		c, err := certs.NewCA("kubeconfig-requests-ca@"+strconv.Itoa(i+1), now.Add(-age), 100*24*time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		chain = append(chain, c)
+	}
+	current := chain[3]
+	for name, content := range map[string]map[string][]byte{
+		"dev-cakey-kubeconfig-requests": {lodiav1alpha1.TLSCertKey: mustPEM(t, current.Cert), lodiav1alpha1.TLSPrivateKeyKey: mustKeyPEM(t, current.Key)},
+		"dev-client-ca":                 {lodiav1alpha1.CACertKey: mustBundle(t, clientCA, signer, chain[0].Cert, chain[1].Cert, chain[2].Cert, current.Cert)},
+	} {
+		s := secrets[name]
+		s.Data = content
+		if err := k8s.Update(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reconcile(t, r, cp)
+	expectBundle(t, cp, clientCA, signer, current.Cert, chain[2].Cert, chain[1].Cert)
+}
+
+func TestTheBundleKeepsTheNewestTenRequestCAs(t *testing.T) {
+	ctx := t.Context()
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "kcr-request-ca-cap")
+	reconcile(t, r, cp)
+	secrets := secretsOf(t, cp)
+	clientCA, signer := parseTLS(t, secrets["dev-cakey-client"]).Cert, parseTLS(t, secrets["dev-kubelet-signer"]).Cert
+	replaced := []*x509.Certificate{parseTLS(t, secrets["dev-cakey-kubeconfig-requests"]).Cert}
+	for range 20 {
+		if err := k8s.Delete(ctx, secretsOf(t, cp)["dev-cakey-kubeconfig-requests"]); err != nil {
+			t.Fatal(err)
+		}
+		reconcile(t, r, cp)
+		replaced = append(replaced, parseTLS(t, secretsOf(t, cp)["dev-cakey-kubeconfig-requests"]).Cert)
+	}
+	expectBundle(t, cp, append([]*x509.Certificate{clientCA, signer}, replaced[len(replaced)-11:]...)...)
 }
 
 func TestARequestCAIsWrittenBeforeTheBundleThatTrustsIt(t *testing.T) {
