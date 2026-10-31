@@ -395,7 +395,7 @@ func TestASignerIsPromotedOnceTheBundleHasHeldItUnchangedSincePKIsLastWrite(t *t
 	expectBundle(t, cp, clientCA, next, original, requests)
 	waits := func(want time.Duration) {
 		t.Helper()
-		at := appliedAt(t, secretsOf(t, cp)["dev-client-ca"]).Add(5 * time.Minute)
+		at := appliedAt(t, secretsOf(t, cp)["dev-client-ca"]).Add(time.Second + 5*time.Minute)
 		result := reconcileOnce(t, r, cp)
 		if secretsOf(t, cp)["dev-kubelet-signer"] != nil {
 			t.Fatal("the staged signer was written early")
@@ -433,6 +433,48 @@ func TestASignerIsPromotedOnceTheBundleHasHeldItUnchangedSincePKIsLastWrite(t *t
 		t.Fatal("the staged signer was not promoted once the bundle had held it unchanged for the propagation")
 	}
 	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+}
+
+func TestAStagedSignerIsPromotedNoEarlierThanThePropagationAfterItsBundleWrite(t *testing.T) {
+	const propagation = 2 * time.Second
+	r := newReconciler(time.Hour)
+	r.SignerPropagation = propagation
+	cp := controlPlane(t, "signer-promotion-second")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	dueSigner(t, cp)
+	reconcileOnce(t, r, cp)
+	next := parseTLS(t, secretsOf(t, cp)["dev-kubelet-signer-next"]).Cert
+	var written time.Time
+	r.Client = lateInASecond{Client: controller, secret: "dev-client-ca", written: &written}
+	reconcileOnce(t, r, cp)
+	r.Client = controller
+	if written.IsZero() {
+		t.Fatal("the pass after the staging did not write the client CA bundle")
+	}
+	waitFor(t, 10*time.Second, func() bool {
+		reconcileOnce(t, r, cp)
+		end := time.Now()
+		promoted := parseTLS(t, secretsOf(t, cp)["dev-kubelet-signer"]).Cert.Equal(next)
+		if promoted && end.Before(written.Add(propagation)) {
+			t.Fatalf("the staged signer was promoted %s after its bundle's write began, before the propagation of %s", end.Sub(written), propagation)
+		}
+		return promoted
+	})
+}
+
+type lateInASecond struct {
+	client.Client
+	secret  string
+	written *time.Time
+}
+
+func (c lateInASecond) Apply(ctx context.Context, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+	if s, ok := obj.(*corev1ac.SecretApplyConfiguration); ok && *s.GetName() == c.secret {
+		time.Sleep(time.Until(time.Now().Truncate(time.Second).Add(1600 * time.Millisecond)))
+		*c.written = time.Now()
+	}
+	return c.Client.Apply(ctx, obj, opts...)
 }
 
 func TestABundleWithoutPKIsEntryPromotesTheStagedSignerAtOnce(t *testing.T) {
@@ -563,6 +605,7 @@ func TestTheBundleKeepsTheTenNewestReplacedSigners(t *testing.T) {
 	next := parseTLS(t, secretsOf(t, cp)["dev-kubelet-signer-next"]).Cert
 	reconcileOnce(t, r, cp)
 	expectBundle(t, cp, append([]*x509.Certificate{clientCA.Cert, next, signer, requests}, replaced[:10]...)...)
+	backdate(t, cp, time.Second)
 	reconcileOnce(t, r, cp)
 	if !parseTLS(t, secretsOf(t, cp)["dev-kubelet-signer"]).Cert.Equal(next) {
 		t.Fatal("the staged signer was not promoted")
@@ -594,12 +637,12 @@ func TestABundleLostWhileASignerIsStagedTrustsTheStagedOne(t *testing.T) {
 		t.Fatal("a lost bundle promoted the staged signer at once, or replaced it")
 	}
 	expectBundle(t, cp, parseTLS(t, secrets["dev-cakey-client"]).Cert, next, parseTLS(t, secrets["dev-cakey-kubeconfig-requests"]).Cert)
-	at := appliedAt(t, secrets["dev-client-ca"]).Add(time.Hour)
+	at := appliedAt(t, secrets["dev-client-ca"]).Add(time.Second + time.Hour)
 	if c := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady); c.Reason != lodiav1alpha1.ReasonIssuing ||
 		c.Message != "dev-kubelet-signer holds no usable signer; its successor is written at "+at.UTC().Format(time.RFC3339) {
 		t.Errorf("CertificatesReady is %s: %s, want the promotion at %s", c.Reason, c.Message, at)
 	}
-	backdate(t, cp, time.Hour)
+	backdate(t, cp, time.Hour+time.Second)
 	reconcileOnce(t, r, cp)
 	secrets = secretsOf(t, cp)
 	if s := secrets["dev-kubelet-signer"]; s == nil || !parseTLS(t, s).Cert.Equal(next) || secrets["dev-kubelet-signer-next"] != nil {

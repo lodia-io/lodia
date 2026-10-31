@@ -35,6 +35,7 @@ func TestALeafEndingWithItsCAIsIssuedOnceAndAnExpiredCAWritesNothing(t *testing.
 
 	time.Sleep(time.Until(certs.RenewalTime(serving)) + 300*time.Millisecond)
 	reconcile(t, r, cp)
+	backdate(t, cp, time.Second)
 	reconcile(t, r, cp)
 	clamped := secretsOf(t, cp)
 	for name, s := range clamped {

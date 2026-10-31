@@ -543,7 +543,9 @@ func (r *Reconciler) stage(t *tenant, signer, pending *certs.Certificate, bundle
 	case !slices.ContainsFunc(previous, pending.Cert.Equal):
 		t.wakeAt(t.now.Add(r.SignerPropagation))
 	default:
-		t.promotion = appliedAt(bundle).Add(r.SignerPropagation)
+		// The entry's time is kept to the second, so the change it records
+		// may have come up to a second later.
+		t.promotion = appliedAt(bundle).Add(time.Second + r.SignerPropagation)
 		t.promote = !t.now.Before(t.promotion)
 		t.wakeAt(t.promotion)
 	}

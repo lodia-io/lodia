@@ -609,6 +609,7 @@ func TestLeavesRenewAtTwoThirdsOfTheirLifetime(t *testing.T) {
 	time.Sleep(time.Until(certs.RenewalTime(serving.Cert)) + 500*time.Millisecond)
 
 	reconcile(t, r, cp)
+	backdate(t, cp, time.Second)
 	reconcile(t, r, cp)
 	after := secretsOf(t, cp)
 	for name, s := range after {
@@ -666,6 +667,7 @@ func TestEtcdCertificatesRenewAsGenerations(t *testing.T) {
 	time.Sleep(time.Until(certs.RenewalTime(server.Cert)) + 500*time.Millisecond)
 
 	reconcile(t, r, cp)
+	backdate(t, cp, time.Second)
 	reconcile(t, r, cp)
 	expectGenerations(t, cp, 1, 2)
 	server = parseTLS(t, secretsOf(t, cp)["dev-etcd-server-2"])

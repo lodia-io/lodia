@@ -431,7 +431,11 @@ func TestARequestCAIsWrittenLastAndJoinsTheBundleOnTheNextPass(t *testing.T) {
 	time.Sleep(time.Until(certs.RenewalTime(signer)) + 300*time.Millisecond)
 
 	r.Client = failingApply{Client: controller, secret: "dev-cakey-kubeconfig-requests"}
-	for range 5 {
+	for range 2 {
+		reconcileFails(t, r, cp)
+	}
+	backdate(t, cp, time.Second)
+	for range 3 {
 		reconcileFails(t, r, cp)
 	}
 	refused := secretsOf(t, cp)
