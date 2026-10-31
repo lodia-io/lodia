@@ -48,8 +48,6 @@ const (
 	// userPrefix comes before spec.user in a request's certificate, which
 	// keeps every requested name apart from Kubernetes' and Lodia's own.
 	userPrefix = "lodia:user:"
-
-	accessClusterAdmin lodiav1alpha1.KubeconfigAccess = "ClusterAdmin"
 )
 
 // KubeconfigRequestReconciler answers KubeconfigRequests with certificates
@@ -172,7 +170,7 @@ func (r *KubeconfigRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 
 	var groups []string
-	if kr.Spec.Access == accessClusterAdmin {
+	if kr.Spec.Access == lodiav1alpha1.KubeconfigAccessClusterAdmin {
 		groups = []string{clusterAdmins}
 	}
 	user := userPrefix + kr.Spec.User
