@@ -5,6 +5,8 @@ package certs_test
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/x509"
 	"testing"
 	"time"
@@ -117,3 +119,32 @@ func TestABundleDoesNotDependOnOrder(t *testing.T) {
 		}
 	}
 }
+
+func TestACASignsAKeyItDoesNotHoldWithinItsOwnLifetime(t *testing.T) {
+	now := time.Now()
+	ca, err := certs.NewCA("kubeconfig-requests-ca@1", now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := ca.Sign(certs.Profile{CommonName: "lodia:user:alice", Usages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}, &key.PublicKey, now, 2*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !key.PublicKey.Equal(c.PublicKey) {
+		t.Error("the certificate is not for the given key")
+	}
+	if !c.NotAfter.Equal(ca.Cert.NotAfter) {
+		t.Errorf("the certificate ends at %s, want its CA's %s", c.NotAfter, ca.Cert.NotAfter)
+	}
+	if err := certs.Verify(c, ca.Cert, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ca.Sign(certs.Profile{CommonName: "lodia:user:alice"}, &key.PublicKey, ca.Cert.NotAfter, time.Minute); err == nil {
+		t.Error("the CA signed at its NotAfter")
+	}
+}
+

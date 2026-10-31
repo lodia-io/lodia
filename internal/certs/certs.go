@@ -58,16 +58,30 @@ func NewCA(commonName string, now time.Time, lifetime time.Duration) (*Certifica
 	if err != nil {
 		return nil, err
 	}
-	return create(tmpl, tmpl, key, key)
+	cert, err := create(tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return nil, err
+	}
+	return &Certificate{Cert: cert, Key: key}, nil
 }
 
 func (c *Certificate) Issue(p Profile, now time.Time, lifetime time.Duration) (*Certificate, error) {
-	if !now.Before(c.Cert.NotAfter) {
-		return nil, fmt.Errorf("the CA %s expired at %s", c.Cert.Subject.CommonName, c.Cert.NotAfter.UTC().Format(time.RFC3339))
-	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err
+	}
+	cert, err := c.Sign(p, &key.PublicKey, now, lifetime)
+	if err != nil {
+		return nil, err
+	}
+	return &Certificate{Cert: cert, Key: key}, nil
+}
+
+// Sign issues a certificate for a public key whose private key stays with
+// its holder.
+func (c *Certificate) Sign(p Profile, public crypto.PublicKey, now time.Time, lifetime time.Duration) (*x509.Certificate, error) {
+	if !now.Before(c.Cert.NotAfter) {
+		return nil, fmt.Errorf("the CA %s expired at %s", c.Cert.Subject.CommonName, c.Cert.NotAfter.UTC().Format(time.RFC3339))
 	}
 	tmpl, err := template(p, now, lifetime)
 	if err != nil {
@@ -77,7 +91,7 @@ func (c *Certificate) Issue(p Profile, now time.Time, lifetime time.Duration) (*
 		tmpl.NotAfter = c.Cert.NotAfter
 	}
 	tmpl.MaxPathLenZero = p.CA
-	return create(tmpl, c.Cert, key, c.Key)
+	return create(tmpl, c.Cert, public, c.Key)
 }
 
 func template(p Profile, now time.Time, lifetime time.Duration) (*x509.Certificate, error) {
@@ -103,16 +117,12 @@ func template(p Profile, now time.Time, lifetime time.Duration) (*x509.Certifica
 	return tmpl, nil
 }
 
-func create(tmpl, parent *x509.Certificate, key, signer *ecdsa.PrivateKey) (*Certificate, error) {
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, parent, &key.PublicKey, signer)
+func create(tmpl, parent *x509.Certificate, public crypto.PublicKey, signer *ecdsa.PrivateKey) (*x509.Certificate, error) {
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, parent, public, signer)
 	if err != nil {
 		return nil, err
 	}
-	parsed, err := x509.ParseCertificate(der)
-	if err != nil {
-		return nil, err
-	}
-	return &Certificate{Cert: parsed, Key: key}, nil
+	return x509.ParseCertificate(der)
 }
 
 func Matches(c *x509.Certificate, p Profile) bool {
