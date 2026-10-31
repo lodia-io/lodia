@@ -22,12 +22,15 @@ import (
 	"testing"
 	"time"
 
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	certutil "k8s.io/client-go/util/cert"
@@ -206,4 +209,69 @@ func requestKubeconfigs(ctx context.Context, t *testing.T, cfg *envconf.Config, 
 	if !slices.ContainsFunc(nodes.Items, func(n corev1.Node) bool { return n.Name == node }) {
 		t.Errorf("the ClusterAdmin kubeconfig lists %d nodes, without %s", len(nodes.Items), node)
 	}
+
+	rendered := &admissionregistrationv1.ValidatingAdmissionPolicyBinding{}
+	if err := k8s.Get(ctx, client.ObjectKey{Name: lodiav1alpha1.KubeconfigRequestPolicy}, rendered); err != nil {
+		t.Fatal(err)
+	}
+	restore := func(ctx context.Context) error {
+		binding := &admissionregistrationv1.ValidatingAdmissionPolicyBinding{
+			TypeMeta:   metav1.TypeMeta{APIVersion: admissionregistrationv1.SchemeGroupVersion.String(), Kind: "ValidatingAdmissionPolicyBinding"},
+			ObjectMeta: metav1.ObjectMeta{Name: rendered.Name, Labels: rendered.Labels, Annotations: rendered.Annotations},
+			Spec:       rendered.Spec,
+		}
+		manager := rendered.ManagedFields[0]
+		if manager.Operation != metav1.ManagedFieldsOperationApply {
+			return client.IgnoreAlreadyExists(k8s.Create(ctx, binding, client.FieldOwner(manager.Manager)))
+		}
+		content, err := runtime.DefaultUnstructuredConverter.ToUnstructured(binding)
+		if err != nil {
+			return err
+		}
+		return k8s.Apply(ctx, client.ApplyConfigurationFromUnstructured(&unstructured.Unstructured{Object: content}), client.FieldOwner(manager.Manager))
+	}
+	defer func() {
+		if err := restore(context.Background()); err != nil {
+			t.Error(err)
+		}
+	}()
+	if err := k8s.Delete(ctx, rendered); err != nil {
+		t.Fatal(err)
+	}
+	until(ctx, t, time.Minute, "the chart's binding is gone", func(ctx context.Context) error {
+		err := k8s.Get(ctx, client.ObjectKeyFromObject(rendered), &admissionregistrationv1.ValidatingAdmissionPolicyBinding{})
+		if err == nil {
+			return errors.New("the binding is still there")
+		}
+		return client.IgnoreNotFound(err)
+	})
+	if err := restore(ctx); err != nil {
+		t.Fatal(err)
+	}
+	early, _, err := ask(username, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	until(ctx, t, time.Minute, "KubeconfigRequest "+early.Name+", created within the grace, is not answered", func(ctx context.Context) error {
+		if err := requester.Get(ctx, client.ObjectKeyFromObject(early), early); err != nil {
+			return err
+		}
+		if c := meta.FindStatusCondition(early.Status.Conditions, lodiav1alpha1.ConditionReady); c == nil || c.Reason != lodiav1alpha1.ReasonPolicyNotEnforced || !strings.Contains(c.Message, "after its binding") {
+			return fmt.Errorf("Ready is %+v", c)
+		}
+		return nil
+	})
+	if early.Status.Kubeconfig != nil {
+		t.Error("a request created within the grace holds a kubeconfig")
+	}
+	binding := &admissionregistrationv1.ValidatingAdmissionPolicyBinding{}
+	if err := k8s.Get(ctx, client.ObjectKeyFromObject(rendered), binding); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Until(binding.CreationTimestamp.Add(11 * time.Second)))
+	kr, privateKey, err = ask(username, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	answered(kr, privateKey)
 }
