@@ -114,31 +114,17 @@ func TestEveryStateOfASignerReplacementSurvivesEachRefusedWrite(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, true},
-		{"foreign", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
-			dueSigner(t, cp)
-			secrets := secretsOf(t, cp)
-			bundle, err := certs.ParseCerts(secretOf(t, cp, "dev-client-ca").Data[lodiav1alpha1.CACertKey])
-			if err != nil {
-				t.Fatal(err)
-			}
-			root, err := certs.NewCA("kubelet-signer@3", time.Now(), time.Hour)
-			if err != nil {
-				t.Fatal(err)
-			}
-			intermediate, err := root.Issue(certs.Profile{CommonName: "kubelet-signer@4", CA: true}, time.Now(), time.Hour)
-			if err != nil {
-				t.Fatal(err)
-			}
-			expired, err := parseTLS(t, secrets["dev-cakey-client"]).Issue(certs.Profile{CommonName: "kubelet-signer@5", CA: true}, time.Now().Add(-2*time.Hour), time.Hour)
-			if err != nil {
-				t.Fatal(err)
-			}
-			s := secretOf(t, cp, "dev-client-ca")
-			s.Data = map[string][]byte{lodiav1alpha1.CACertKey: mustBundle(t, append(bundle, root.Cert, intermediate.Cert, expired.Cert, leafOf(t, secrets["dev-lodia-kubeconfig"]).Cert)...)}
-			if err := k8s.Update(t.Context(), s); err != nil {
-				t.Fatal(err)
-			}
+		{"foreign", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) { dueSigner(t, cp); foreignCAs(t, cp) }, false},
+		{"foreign-pending-signer", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+			nextSecret(corev1.SecretTypeTLS, false, true)(t, cp)
+			foreignCAs(t, cp)
 		}, false},
+		{"foreign-lost", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+			if err := k8s.Delete(t.Context(), secretOf(t, cp, "dev-kubelet-signer")); err != nil {
+				t.Fatal(err)
+			}
+			foreignCAs(t, cp)
+		}, true},
 		{"garbage-next", nextSecret(corev1.SecretTypeTLS, false, false), false},
 		{"opaque-next", nextSecret(corev1.SecretTypeOpaque, false, false), false},
 		{"immutable-next", nextSecret(corev1.SecretTypeTLS, true, false), false},
@@ -151,17 +137,17 @@ func TestEveryStateOfASignerReplacementSurvivesEachRefusedWrite(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			createNext(t, cp, c, pem.EncodeToMemory(&pem.Block{Type: keyutil.ECPrivateKeyBlockType, Bytes: key}), true)
+			createNext(t, cp, append([]byte("subject=CN=kubelet-signer@2\n"), mustPEM(t, c.Cert)...), pem.EncodeToMemory(&pem.Block{Type: keyutil.ECPrivateKeyBlockType, Bytes: key}), true)
 		}, false},
 		{"foreign-pending", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 			dueSigner(t, cp)
 			c := foreignSigner(t)
-			createNext(t, cp, c, mustKeyPEM(t, c.Key), false)
+			createNext(t, cp, mustPEM(t, c.Cert), mustKeyPEM(t, c.Key), false)
 		}, false},
 		{"expired-pending", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 			dueSigner(t, cp)
 			c := clientSigner(t, cp, time.Now().Add(-2*time.Hour))
-			createNext(t, cp, c, mustKeyPEM(t, c.Key), false)
+			createNext(t, cp, mustPEM(t, c.Cert), mustKeyPEM(t, c.Key), false)
 		}, false},
 		{"foreign-signer", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) { storeSigner(t, cp, foreignSigner(t)) }, true},
 		{"expired-signer", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
@@ -178,6 +164,36 @@ func TestEveryStateOfASignerReplacementSurvivesEachRefusedWrite(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func foreignCAs(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+	t.Helper()
+	secrets := secretsOf(t, cp)
+	bundle, err := certs.ParseCerts(secretOf(t, cp, "dev-client-ca").Data[lodiav1alpha1.CACertKey])
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := certs.NewCA("kubelet-signer@3", time.Now(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intermediate, err := root.Issue(certs.Profile{CommonName: "kubelet-signer@4", CA: true}, time.Now(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expired, err := parseTLS(t, secrets["dev-cakey-client"]).Issue(certs.Profile{CommonName: "kubelet-signer@5", CA: true}, time.Now().Add(-2*time.Hour), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lapsed, err := parseTLS(t, secrets["dev-cakey-client"]).Issue(certs.Profile{CommonName: "kubelet-signer@6", CA: true}, time.Now().Add(-2*time.Second), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := secretOf(t, cp, "dev-client-ca")
+	s.Data = map[string][]byte{lodiav1alpha1.CACertKey: mustBundle(t, append(bundle, root.Cert, intermediate.Cert, expired.Cert, lapsed.Cert, leafOf(t, secrets["dev-lodia-kubeconfig"]).Cert)...)}
+	if err := k8s.Update(t.Context(), s); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -218,9 +234,9 @@ func foreignSigner(t *testing.T) *certs.Certificate {
 	return c
 }
 
-func createNext(t *testing.T, cp *lodiav1alpha1.ControlPlane, c *certs.Certificate, key []byte, immutable bool) {
+func createNext(t *testing.T, cp *lodiav1alpha1.ControlPlane, cert, key []byte, immutable bool) {
 	t.Helper()
-	s := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "dev-kubelet-signer-next", Namespace: cp.Namespace}, Type: corev1.SecretTypeTLS, Data: map[string][]byte{lodiav1alpha1.TLSCertKey: mustPEM(t, c.Cert), lodiav1alpha1.TLSPrivateKeyKey: key}, Immutable: &immutable}
+	s := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "dev-kubelet-signer-next", Namespace: cp.Namespace}, Type: corev1.SecretTypeTLS, Data: map[string][]byte{lodiav1alpha1.TLSCertKey: cert, lodiav1alpha1.TLSPrivateKeyKey: key}, Immutable: &immutable}
 	if err := k8s.Create(t.Context(), s); err != nil {
 		t.Fatal(err)
 	}
