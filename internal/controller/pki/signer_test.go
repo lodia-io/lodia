@@ -772,6 +772,28 @@ func TestADueSignerRestoredWithoutLabelsIsAdoptedWhileItsSuccessorIsStaged(t *te
 	}
 }
 
+func TestAPendingSignerSecretAnApplyCannotOverwriteOutlivesAnEarlierRefusedWrite(t *testing.T) {
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "signer-next-early-refusal")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	nextSecret(corev1.SecretTypeOpaque, false, false)(t, cp)
+	if err := k8s.Delete(t.Context(), secretsOf(t, cp)["dev-front-proxy-client"]); err != nil {
+		t.Fatal(err)
+	}
+	before := namespaceSecrets(t, cp.Namespace)["dev-kubelet-signer-next"]
+	r.Client = failingApply{Client: controller, secret: "dev-front-proxy-client"}
+	reconcileFails(t, r, cp)
+	if after, kept := namespaceSecrets(t, cp.Namespace)["dev-kubelet-signer-next"]; !kept || after != before {
+		t.Fatal("a pass whose earlier write failed deleted or wrote the dev-kubelet-signer-next it cannot overwrite")
+	}
+	r.Client = controller
+	reconcileOnce(t, r, cp)
+	if s := secretsOf(t, cp)["dev-kubelet-signer-next"]; s == nil || s.Type != corev1.SecretTypeTLS {
+		t.Error("the next pass did not stage a signer in place of the dev-kubelet-signer-next it cannot overwrite")
+	}
+}
+
 func TestAPendingSignerNoReplacementNeedsIsDeleted(t *testing.T) {
 	r := newReconciler(time.Hour)
 	cp := controlPlane(t, "signer-next-leftover")
