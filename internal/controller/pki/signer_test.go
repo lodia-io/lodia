@@ -576,14 +576,7 @@ func TestTheBundleKeepsTheTenNewestReplacedSigners(t *testing.T) {
 	clientCA := parseTLS(t, secrets["dev-cakey-client"])
 	signer := parseTLS(t, secrets["dev-kubelet-signer"]).Cert
 	requests := parseTLS(t, secrets["dev-cakey-kubeconfig-requests"]).Cert
-	var replaced []*x509.Certificate
-	for i := range 12 {
-		c, err := clientCA.Issue(certs.Profile{CommonName: "kubelet-signer@" + strconv.Itoa(12-i), CA: true}, time.Now().Add(-time.Duration(i+1)*time.Minute), time.Hour)
-		if err != nil {
-			t.Fatal(err)
-		}
-		replaced = append(replaced, c.Cert)
-	}
+	replaced := replacedSigners(t, clientCA)
 	crowd := func() {
 		t.Helper()
 		s := secretsOf(t, cp)["dev-client-ca"]
@@ -613,6 +606,20 @@ func TestTheBundleKeepsTheTenNewestReplacedSigners(t *testing.T) {
 	expectBundle(t, cp, append([]*x509.Certificate{clientCA.Cert, next, signer, requests}, replaced[:10]...)...)
 	reconcileOnce(t, r, cp)
 	expectBundle(t, cp, append([]*x509.Certificate{clientCA.Cert, next, signer, requests}, replaced[:9]...)...)
+}
+
+func replacedSigners(t *testing.T, clientCA *certs.Certificate) []*x509.Certificate {
+	t.Helper()
+	var replaced []*x509.Certificate
+	for i := range 12 {
+		age := time.Duration(i+1) * time.Minute
+		c, err := clientCA.Issue(certs.Profile{CommonName: "kubelet-signer@" + strconv.Itoa(12-i), CA: true}, time.Now().Add(-age), time.Hour+2*age)
+		if err != nil {
+			t.Fatal(err)
+		}
+		replaced = append(replaced, c.Cert)
+	}
+	return replaced
 }
 
 func TestABundleLostWhileASignerIsStagedTrustsTheStagedOne(t *testing.T) {
