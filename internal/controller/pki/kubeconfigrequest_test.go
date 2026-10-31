@@ -613,55 +613,22 @@ func TestADeadlineDeletesOnlyTheRequestItRead(t *testing.T) {
 
 func TestTheWaitsEndOnTheirInputs(t *testing.T) {
 	enforce(t)
-	ensureNamespace(t, "kcr-manager")
-	kr := kubeconfigRequestFor(t, "kcr-manager", "dev", p256(t))
-	options, err := operator.Cache()
-	if err != nil {
-		t.Fatal(err)
-	}
-	options.DefaultNamespaces = map[string]cache.Config{kr.Namespace: {}}
-	options.ReaderFailOnMissingInformer = true
-	mgr, err := ctrl.NewManager(controllerCfg, ctrl.Options{
-		Scheme:                 scheme,
-		Metrics:                metricsserver.Options{BindAddress: "0"},
-		HealthProbeBindAddress: "0",
-		Cache:                  options,
-		Controller:             config.Controller{SkipNameValidation: new(true)},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := newReconciler(time.Hour)
-	r.Client, r.Reader = mgr.GetClient(), mgr.GetAPIReader()
-	if err := r.SetupWithManager(mgr, 1); err != nil {
-		t.Fatal(err)
-	}
-	requests := &pki.KubeconfigRequestReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Clock: clocktesting.NewFakePassiveClock(kr.CreationTimestamp.Time)}
-	if err := requests.SetupWithManager(mgr, 1); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() { done <- mgr.Start(ctx) }()
-	t.Cleanup(func() {
-		cancel()
-		if err := <-done; err != nil {
-			t.Error(err)
-		}
-	})
-	waitForReady := func(status metav1.ConditionStatus, reason string) {
-		t.Helper()
-		waitFor(t, 30*time.Second, func() bool {
-			c := meta.FindStatusCondition(freshRequest(t, kr).Status.Conditions, lodiav1alpha1.ConditionReady)
-			return c != nil && c.Status == status && c.Reason == reason
-		})
-	}
+	cp := controlPlane(t, "kcr-manager")
+	reconcile(t, newReconciler(time.Hour), cp)
+	ensureNamespace(t, "kcr-manager-late")
+	reads := startRequests(t, cp.Namespace, "kcr-manager-late")
 
-	waitForReady(metav1.ConditionFalse, lodiav1alpha1.ReasonControlPlaneNotFound)
-	cp := controlPlane(t, kr.Namespace)
-	waitForReady(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint)
+	early := kubeconfigRequestFor(t, "kcr-manager-late", "dev", p256(t))
+	waitForReady(t, early, metav1.ConditionFalse, lodiav1alpha1.ReasonControlPlaneNotFound)
+	reads.after(t, early, "dev")
+	controlPlane(t, early.Namespace)
+	waitForReady(t, early, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint)
+
+	kr := kubeconfigRequest(t, cp, p256(t))
+	waitForReady(t, kr, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint)
+	reads.after(t, kr, "dev")
 	publishEndpoint(t, cp)
-	waitForReady(metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+	waitForReady(t, kr, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
 }
 
 func TestAWaitForCertificatesEndsOnEachOfItsSecrets(t *testing.T) {
@@ -761,6 +728,113 @@ func TestAWaitForCertificatesEndsOnEachOfItsSecrets(t *testing.T) {
 	if cert, _ := issued(t, freshRequest(t, trusted)); certs.Verify(cert, untrusted.Cert, time.Now()) != nil {
 		t.Error("the request was not signed by the request CA the bundle came to hold")
 	}
+}
+
+func startRequests(t *testing.T, namespaces ...string) *waitedReads {
+	t.Helper()
+	options, err := operator.Cache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	options.DefaultNamespaces = map[string]cache.Config{}
+	for _, namespace := range namespaces {
+		options.DefaultNamespaces[namespace] = cache.Config{}
+	}
+	options.ReaderFailOnMissingInformer = true
+	mgr, err := ctrl.NewManager(controllerCfg, ctrl.Options{
+		Scheme:                 scheme,
+		Metrics:                metricsserver.Options{BindAddress: "0"},
+		HealthProbeBindAddress: "0",
+		Cache:                  options,
+		Controller:             config.Controller{SkipNameValidation: new(true)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reads := &waitedReads{reads: map[string]int{}}
+	requests := &pki.KubeconfigRequestReconciler{Client: waitedClient{mgr.GetClient(), reads}, Reader: waitedReader{mgr.GetAPIReader(), reads}, Clock: clocktesting.NewFakePassiveClock(time.Now())}
+	if err := requests.SetupWithManager(mgr, 1); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- mgr.Start(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+	})
+	return reads
+}
+
+func waitForReady(t *testing.T, kr *lodiav1alpha1.KubeconfigRequest, status metav1.ConditionStatus, reason string) {
+	t.Helper()
+	waitFor(t, 30*time.Second, func() bool {
+		c := meta.FindStatusCondition(freshRequest(t, kr).Status.Conditions, lodiav1alpha1.ConditionReady)
+		return c != nil && c.Status == status && c.Reason == reason
+	})
+}
+
+type waitedReads struct {
+	mu      sync.Mutex
+	request string
+	waited  bool
+	reads   map[string]int
+}
+
+func (w *waitedReads) pass(request client.ObjectKey, kr *lodiav1alpha1.KubeconfigRequest) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.request, w.waited = request.String(), kr != nil && meta.FindStatusCondition(kr.Status.Conditions, lodiav1alpha1.ConditionReady) != nil
+}
+
+func (w *waitedReads) read(name string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.waited {
+		w.reads[w.request+"/"+name]++
+	}
+}
+
+func (w *waitedReads) after(t *testing.T, kr *lodiav1alpha1.KubeconfigRequest, name string) {
+	t.Helper()
+	waitFor(t, 30*time.Second, func() bool {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		return w.reads[client.ObjectKeyFromObject(kr).String()+"/"+name] > 0
+	})
+}
+
+type waitedClient struct {
+	client.Client
+	reads *waitedReads
+}
+
+func (c waitedClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	err := c.Client.Get(ctx, key, obj, opts...)
+	switch o := obj.(type) {
+	case *lodiav1alpha1.KubeconfigRequest:
+		if err != nil {
+			o = nil
+		}
+		c.reads.pass(key, o)
+	case *lodiav1alpha1.ControlPlane:
+		c.reads.read(key.Name)
+	}
+	return err
+}
+
+type waitedReader struct {
+	client.Reader
+	reads *waitedReads
+}
+
+func (r waitedReader) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if _, ok := obj.(*corev1.Secret); ok {
+		r.reads.read(key.Name)
+	}
+	return r.Reader.Get(ctx, key, obj, opts...)
 }
 
 type staleRequest struct {
