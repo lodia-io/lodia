@@ -946,7 +946,18 @@ func controlPlaneAt(t *testing.T, namespace string, endpoint lodiav1alpha1.Endpo
 func reconcile(t *testing.T, r *pki.Reconciler, cp *lodiav1alpha1.ControlPlane) ctrl.Result {
 	t.Helper()
 	reconcileOnce(t, r, cp)
-	return reconcileOnce(t, r, cp)
+	before := secretsOf(t, cp)
+	status := freshControlPlane(t, cp).ResourceVersion
+	result := reconcileOnce(t, r, cp)
+	for name, s := range secretsOf(t, cp) {
+		if name != cp.Name+"-client-ca" && (before[name] == nil || before[name].ResourceVersion != s.ResourceVersion) {
+			t.Errorf("the pass after the first wrote %s", name)
+		}
+	}
+	if freshControlPlane(t, cp).ResourceVersion != status {
+		t.Error("the pass after the first wrote the ControlPlane")
+	}
+	return result
 }
 
 func reconcileOnce(t *testing.T, r *pki.Reconciler, cp *lodiav1alpha1.ControlPlane) ctrl.Result {
