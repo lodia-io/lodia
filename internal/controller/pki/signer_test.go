@@ -748,6 +748,30 @@ func TestATrustedPendingSignerMadeImmutableKeepsItsKey(t *testing.T) {
 	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
 }
 
+func TestADueSignerRestoredWithoutLabelsIsAdoptedWhileItsSuccessorIsStaged(t *testing.T) {
+	r := newReconciler(time.Hour)
+	r.SignerPropagation = time.Hour
+	cp := controlPlane(t, "signer-due-restored")
+	reconcile(t, r, cp)
+	dueSigner(t, cp)
+	reconcileOnce(t, r, cp)
+	s := secretsOf(t, cp)["dev-kubelet-signer"]
+	if err := k8s.Delete(t.Context(), s); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Create(t.Context(), &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: s.Name, Namespace: s.Namespace}, Type: s.Type, Data: s.Data}); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, r, cp)
+	secrets := secretsOf(t, cp)
+	if adopted := secrets["dev-kubelet-signer"]; adopted == nil || !metav1.IsControlledBy(adopted, cp) || !maps.EqualFunc(adopted.Data, s.Data, bytes.Equal) {
+		t.Fatal("a due signer restored without labels or owner while its successor is staged was not adopted with its keys")
+	}
+	if secrets["dev-kubelet-signer-next"] == nil {
+		t.Error("the staged successor was lost")
+	}
+}
+
 func TestAPendingSignerNoReplacementNeedsIsDeleted(t *testing.T) {
 	r := newReconciler(time.Hour)
 	cp := controlPlane(t, "signer-next-leftover")
