@@ -240,22 +240,12 @@ func TestTheClientBundleTrustsASignerBeforeItIsWritten(t *testing.T) {
 	reconcile(t, r, cp)
 	first := secretsOf(t, cp)
 	signer := parseTLS(t, first["dev-kubelet-signer"]).Cert
-	requests := parseTLS(t, first["dev-cakey-kubeconfig-requests"]).Cert
 	time.Sleep(time.Until(certs.RenewalTime(signer)) + 300*time.Millisecond)
 
 	r.Client = failingApply{Client: controller, secret: "dev-client-ca"}
 	reconcileFails(t, r, cp)
-	for _, name := range []string{"dev-kubelet-signer", "dev-cakey-kubeconfig-requests"} {
-		if !maps.EqualFunc(secretsOf(t, cp)[name].Data, first[name].Data, bytes.Equal) {
-			t.Fatalf("a new %s was written before the bundle that trusts it", name)
-		}
-	}
-
-	r.Client = failingApply{Client: controller, secret: "dev-cakey-kubeconfig-requests"}
-	reconcileFails(t, r, cp)
-	c := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady)
-	if c.Reason != lodiav1alpha1.ReasonIssuing || !strings.Contains(c.Message, "dev-cakey-kubeconfig-requests") {
-		t.Fatalf("CertificatesReady is %s: %s", c.Reason, c.Message)
+	if !maps.EqualFunc(secretsOf(t, cp)["dev-kubelet-signer"].Data, first["dev-kubelet-signer"].Data, bytes.Equal) {
+		t.Fatal("a new kubelet signer was written before the bundle that trusts it")
 	}
 
 	r.Client = controller
@@ -265,20 +255,15 @@ func TestTheClientBundleTrustsASignerBeforeItIsWritten(t *testing.T) {
 	if renewed.Equal(signer) {
 		t.Fatal("the kubelet signer was not renewed")
 	}
-	renewedRequests := parseTLS(t, after["dev-cakey-kubeconfig-requests"]).Cert
-	if renewedRequests.Equal(requests) {
-		t.Fatal("the request CA was not renewed")
-	}
 	bundle, err := certs.ParseCerts(after["dev-client-ca"].Data[lodiav1alpha1.CACertKey])
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, c := range []*x509.Certificate{renewed, signer, renewedRequests, requests} {
+	for _, c := range []*x509.Certificate{renewed, signer} {
 		if !containsCert(bundle, c) {
 			t.Errorf("the client CA bundle lacks %s", c.Subject.CommonName)
 		}
 	}
-	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint)
 }
 
 func containsCert(list []*x509.Certificate, c *x509.Certificate) bool {

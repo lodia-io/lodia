@@ -165,6 +165,47 @@ func TestEachClientBundleRuleKeepsOnlyItsOwnPredecessors(t *testing.T) {
 	}
 }
 
+func TestARequestCAIsWrittenBeforeTheBundleThatTrustsIt(t *testing.T) {
+	ctx := t.Context()
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "kcr-request-ca-order")
+	reconcile(t, r, cp)
+	first := secretsOf(t, cp)
+	clientCA, signer := parseTLS(t, first["dev-cakey-client"]).Cert, parseTLS(t, first["dev-kubelet-signer"]).Cert
+	original := parseTLS(t, first["dev-cakey-kubeconfig-requests"]).Cert
+	if err := k8s.Delete(ctx, first["dev-cakey-kubeconfig-requests"]); err != nil {
+		t.Fatal(err)
+	}
+
+	r.Client = failingApply{Client: controller, secret: "dev-cakey-kubeconfig-requests"}
+	for range 5 {
+		reconcileFails(t, r, cp)
+	}
+	if after := secretsOf(t, cp)["dev-client-ca"]; after.ResourceVersion != first["dev-client-ca"].ResourceVersion {
+		t.Error("a pass whose request CA was not written changed the client CA bundle")
+	}
+	expectBundle(t, cp, clientCA, signer, original)
+	c := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady)
+	if c.Reason != lodiav1alpha1.ReasonIssuing || !strings.Contains(c.Message, "dev-cakey-kubeconfig-requests") {
+		t.Fatalf("CertificatesReady is %s: %s", c.Reason, c.Message)
+	}
+
+	r.Client = failingApply{Client: controller, secret: "dev-client-ca"}
+	reconcileFails(t, r, cp)
+	stored := parseTLS(t, secretsOf(t, cp)["dev-cakey-kubeconfig-requests"]).Cert
+	if stored.Equal(original) {
+		t.Fatal("no request CA was written before the bundle")
+	}
+	expectBundle(t, cp, clientCA, signer, original)
+
+	r.Client = controller
+	reconcile(t, r, cp)
+	if !parseTLS(t, secretsOf(t, cp)["dev-cakey-kubeconfig-requests"]).Cert.Equal(stored) {
+		t.Fatal("the request CA written before a failed bundle write was replaced")
+	}
+	expectBundle(t, cp, clientCA, signer, stored, original)
+}
+
 func expectBundle(t *testing.T, cp *lodiav1alpha1.ControlPlane, want ...*x509.Certificate) {
 	t.Helper()
 	got, err := certs.ParseCerts(secretsOf(t, cp)["dev-client-ca"].Data[lodiav1alpha1.CACertKey])

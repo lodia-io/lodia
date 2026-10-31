@@ -56,8 +56,8 @@ const (
 // from the request CA, and deletes each at its deadline.
 type KubeconfigRequestReconciler struct {
 	client.Client
-	// Reader reads the request CA, the cluster CA bundle and the admission
-	// policy as the API server holds them.
+	// Reader reads the request CA, the client and cluster CA bundles and the
+	// admission policy as the API server holds them.
 	Reader client.Reader
 	Clock  clock.PassiveClock
 	// PolicyGrace is how long after the admission policy and its binding a
@@ -74,7 +74,7 @@ func (r *KubeconfigRequestReconciler) SetupWithManager(mgr ctrl.Manager, workers
 	}
 	inputs := predicate.NewPredicateFuncs(func(secret client.Object) bool {
 		cp, ok := secret.GetLabels()[lodiav1alpha1.ControlPlaneLabel]
-		return ok && (secret.GetName() == cp+"-cakey-"+requestCA || secret.GetName() == lodiav1alpha1.CABundleSecret.Name(cp))
+		return ok && slices.Contains([]string{cp + "-cakey-" + requestCA, lodiav1alpha1.ClientCASecret.Name(cp), lodiav1alpha1.CABundleSecret.Name(cp)}, secret.GetName())
 	})
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("kubeconfigrequest").
@@ -158,12 +158,16 @@ func (r *KubeconfigRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 	signer := readCA(ca)
+	trusted, err := r.input(ctx, cp, lodiav1alpha1.ClientCASecret.Name(cp.Name))
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 	bundle, err := r.input(ctx, cp, lodiav1alpha1.CABundleSecret.Name(cp.Name))
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if signer == nil || !now.Before(signer.Cert.NotAfter) || len(data(bundle, lodiav1alpha1.CACertKey)) == 0 {
-		condition.Reason, condition.Message = lodiav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the request CA "+cp.Name+"-cakey-"+requestCA+" and the cluster CA bundle "+lodiav1alpha1.CABundleSecret.Name(cp.Name)
+	if signer == nil || !now.Before(signer.Cert.NotAfter) || !trusts(trusted, signer.Cert) || len(data(bundle, lodiav1alpha1.CACertKey)) == 0 {
+		condition.Reason, condition.Message = lodiav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the request CA "+cp.Name+"-cakey-"+requestCA+", the client CA bundle "+lodiav1alpha1.ClientCASecret.Name(cp.Name)+" that trusts it, and the cluster CA bundle "+lodiav1alpha1.CABundleSecret.Name(cp.Name)
 		return wait, r.applyStatus(ctx, kr, now, condition, nil, nil)
 	}
 
@@ -268,6 +272,13 @@ func (r *KubeconfigRequestReconciler) input(ctx context.Context, cp *lodiav1alph
 		return nil, nil
 	}
 	return s, nil
+}
+
+// trusts reports whether the client CA bundle holds ca, so that no certificate
+// is issued that the API server cannot verify.
+func trusts(bundle *corev1.Secret, ca *x509.Certificate) bool {
+	list, err := certs.ParseCerts(data(bundle, lodiav1alpha1.CACertKey))
+	return err == nil && slices.ContainsFunc(list, ca.Equal)
 }
 
 // requestKubeconfig names the user as the certificate does, and has no key:

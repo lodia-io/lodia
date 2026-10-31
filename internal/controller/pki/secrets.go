@@ -411,11 +411,14 @@ func (r *Reconciler) notice(t *tenant, ca *x509.Certificate) {
 	t.wakeAt(ca.NotAfter)
 }
 
-// clientCAs keeps the kubelet signer and the request CA like leaves, and
-// writes a new one only after the client CA bundle that trusts it. The signer
-// is matched by no subject, since every signer gets a new one. A request CA
-// that cannot be read is replaced at once: the bundle keeps the old one for
-// every certificate it signed.
+// clientCAs keeps the kubelet signer and the request CA like leaves. A new
+// signer is written only after the client CA bundle that trusts it, as the
+// controller manager signs with it at once; a new request CA before the
+// bundle, as the kubeconfig request reconciler signs only with one the bundle
+// holds, so a failed write adds nothing to the bundle. The signer is matched
+// by no subject, since every signer gets a new one. A request CA that cannot
+// be read is replaced at once: the bundle keeps the old one for every
+// certificate it signed.
 func (r *Reconciler) clientCAs(ctx context.Context, t *tenant) error {
 	signerName, requestsName := t.secret(lodiav1alpha1.KubeletSignerSecret), t.name("cakey-"+requestCA)
 	ca := t.cas[clientCA]
@@ -434,13 +437,13 @@ func (r *Reconciler) clientCAs(ctx context.Context, t *tenant) error {
 		}
 	}
 	t.wakeAt(certs.RenewalTime(requests.Cert))
+	if err := r.applyTLS(ctx, t, requestsName, requests, nil, false); err != nil {
+		return err
+	}
 	if err := r.bundle(ctx, t, t.secret(lodiav1alpha1.ClientCASecret), t.clientBundle(signer, requests)...); err != nil {
 		return err
 	}
-	if err := r.applyTLS(ctx, t, signerName, signer, nil, false); err != nil {
-		return err
-	}
-	return r.applyTLS(ctx, t, requestsName, requests, nil, false)
+	return r.applyTLS(ctx, t, signerName, signer, nil, false)
 }
 
 func (r *Reconciler) tls(ctx context.Context, t *tenant, name string, ca *certs.Certificate, p certs.Profile) error {

@@ -314,6 +314,14 @@ func TestARequestWaitsForItsControlPlaneItsEndpointAndItsCertificates(t *testing
 	}
 	pass(lodiav1alpha1.ReasonWaitingForCertificates)
 	reconcile(t, newReconciler(time.Hour), cp)
+	secrets := secretsOf(t, cp)
+	untrusted := secrets["dev-client-ca"]
+	untrusted.Data = map[string][]byte{lodiav1alpha1.CACertKey: mustBundle(t, parseTLS(t, secrets["dev-cakey-client"]).Cert, parseTLS(t, secrets["dev-kubelet-signer"]).Cert)}
+	if err := k8s.Update(t.Context(), untrusted); err != nil {
+		t.Fatal(err)
+	}
+	pass(lodiav1alpha1.ReasonWaitingForCertificates)
+	reconcile(t, newReconciler(time.Hour), cp)
 	now.SetTime(now.Now().Add(time.Minute))
 	reconcileRequest(t, r, kr)
 	issued(t, freshRequest(t, kr))
