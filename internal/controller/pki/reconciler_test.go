@@ -766,7 +766,7 @@ func TestALostCAIsNeverReplaced(t *testing.T) {
 	if c.Reason != lodiav1alpha1.ReasonCAMissing || !strings.Contains(c.Message, "cluster, client, etcd") {
 		t.Fatalf("CertificatesReady is %s: %s", c.Reason, c.Message)
 	}
-	if !bytes.Equal(secretsOf(t, cp)["dev-cakey-client"].Data[lodiav1alpha1.TLSPrivateKeyKey], []byte("not a key")) {
+	if !bytes.Equal(secretOf(t, cp, "dev-cakey-client").Data[lodiav1alpha1.TLSPrivateKeyKey], []byte("not a key")) {
 		t.Fatal("the unreadable client CA key was overwritten")
 	}
 	_, versionBefore := resourceVersions(t, cp)

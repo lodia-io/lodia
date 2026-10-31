@@ -181,9 +181,8 @@ func TestEachClientBundleRuleKeepsOnlyItsOwnPredecessors(t *testing.T) {
 				}
 			}
 			reconcile(t, r, cp)
-			after := secretsOf(t, cp)
-			if !bytes.Equal(after["dev-kubelet-signer"].Data[lodiav1alpha1.TLSCertKey], mustPEM(t, signer.Cert)) ||
-				!bytes.Equal(after["dev-cakey-kubeconfig-requests"].Data[lodiav1alpha1.TLSCertKey], mustPEM(t, requests.Cert)) {
+			if !bytes.Equal(secretOf(t, cp, "dev-kubelet-signer").Data[lodiav1alpha1.TLSCertKey], mustPEM(t, signer.Cert)) ||
+				!bytes.Equal(secretOf(t, cp, "dev-cakey-kubeconfig-requests").Data[lodiav1alpha1.TLSCertKey], mustPEM(t, requests.Cert)) {
 				t.Fatal("the current kubelet signer or request CA was replaced")
 			}
 			want := []*x509.Certificate{clientCA.Cert, signer.Cert, requests.Cert}
@@ -403,7 +402,7 @@ func TestALostRequestCAKeepsEveryRequestCAUntilItsSuccessorIsStored(t *testing.T
 			if c.age > 0 {
 				held, later = nil, nil
 			}
-			bundle := secrets["dev-client-ca"]
+			bundle := secretOf(t, cp, "dev-client-ca")
 			bundle.Data = map[string][]byte{lodiav1alpha1.CACertKey: mustBundle(t, append([]*x509.Certificate{clientCA, signer, lost}, kept...)...)}
 			if err := k8s.Update(ctx, bundle); err != nil {
 				t.Fatal(err)
