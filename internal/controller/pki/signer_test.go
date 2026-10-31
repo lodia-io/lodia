@@ -827,6 +827,7 @@ func TestADueSignerRestoredWithoutLabelsIsAdoptedWhileItsSuccessorIsStaged(t *te
 	reconcile(t, r, cp)
 	dueSigner(t, cp)
 	reconcileOnce(t, r, cp)
+	next := parseTLS(t, secretsOf(t, cp)["dev-kubelet-signer-next"]).Cert
 	s := secretOf(t, cp, "dev-kubelet-signer")
 	if err := k8s.Delete(t.Context(), s); err != nil {
 		t.Fatal(err)
@@ -839,8 +840,8 @@ func TestADueSignerRestoredWithoutLabelsIsAdoptedWhileItsSuccessorIsStaged(t *te
 	if adopted := secrets["dev-kubelet-signer"]; adopted == nil || !metav1.IsControlledBy(adopted, cp) || !maps.EqualFunc(adopted.Data, s.Data, bytes.Equal) {
 		t.Fatal("a due signer restored without labels or owner while its successor is staged was not adopted with its keys")
 	}
-	if secrets["dev-kubelet-signer-next"] == nil {
-		t.Error("the staged successor was lost")
+	if n := secrets["dev-kubelet-signer-next"]; n == nil || !parseTLS(t, n).Cert.Equal(next) {
+		t.Error("the staged successor was lost or replaced")
 	}
 }
 
