@@ -203,7 +203,7 @@ func TestOnlyAnOlderRootUnderTheRequestCAsNameIsAPredecessor(t *testing.T) {
 	signer := parseTLS(t, secrets["dev-kubelet-signer"]).Cert
 	requests := parseTLS(t, secrets["dev-cakey-kubeconfig-requests"]).Cert
 	var roots []*certs.Certificate
-	for _, name := range []string{"kubeconfig-requests-ca@1", "kubeconfig-requests-ca@9", "someone-ca@1", "client-ca@1", "kubeconfig-requests-ca@9223372036854775807", requests.Subject.CommonName} {
+	for _, name := range []string{"kubeconfig-requests-ca@1", "kubeconfig-requests-ca@9", "someone-ca@1", "client-ca@1", "kubeconfig-requests-ca@9223372036854775807", requests.Subject.CommonName, "kubeconfig-requests-ca@x"} {
 		c, err := certs.NewCA(name, time.Now().Add(-time.Hour), 2*time.Hour)
 		if err != nil {
 			t.Fatal(err)
