@@ -1065,7 +1065,7 @@ func TestACertificateEndsWithItsRequestCA(t *testing.T) {
 func TestATransientErrorAnswersNothing(t *testing.T) {
 	enforce(t)
 	cp := issuable(t, "kcr-transient")
-	for _, read := range []string{"the policy", "the binding", "the ControlPlane", "a Secret"} {
+	for _, read := range []string{"the policy", "the binding", "the ControlPlane", "dev-cakey-kubeconfig-requests", "dev-client-ca", "dev-ca-bundle"} {
 		t.Run(read, func(t *testing.T) {
 			kr := kubeconfigRequest(t, cp, p256(t))
 			r := requestReconciler(clocktesting.NewFakePassiveClock(kr.CreationTimestamp.Time))
@@ -1114,7 +1114,7 @@ type failingGet struct {
 }
 
 func (f failingGet) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-	if read(obj) == f.read {
+	if read(key, obj) == f.read {
 		return errors.New("the API server is down")
 	}
 	return f.Reader.Get(ctx, key, obj, opts...)
@@ -1126,13 +1126,13 @@ type failingClient struct {
 }
 
 func (f failingClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-	if read(obj) == f.read {
+	if read(key, obj) == f.read {
 		return errors.New("the API server is down")
 	}
 	return f.Client.Get(ctx, key, obj, opts...)
 }
 
-func read(obj client.Object) string {
+func read(key client.ObjectKey, obj client.Object) string {
 	switch obj.(type) {
 	case *admissionregistrationv1.ValidatingAdmissionPolicy:
 		return "the policy"
@@ -1141,7 +1141,7 @@ func read(obj client.Object) string {
 	case *lodiav1alpha1.ControlPlane:
 		return "the ControlPlane"
 	case *corev1.Secret:
-		return "a Secret"
+		return key.Name
 	}
 	return ""
 }
