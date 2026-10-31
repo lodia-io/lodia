@@ -248,6 +248,11 @@ func requestKubeconfigs(ctx context.Context, t *testing.T, cfg *envconf.Config, 
 	if err := restore(ctx); err != nil {
 		t.Fatal(err)
 	}
+	binding := &admissionregistrationv1.ValidatingAdmissionPolicyBinding{}
+	if err := k8s.Get(ctx, client.ObjectKeyFromObject(rendered), binding); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Until(binding.CreationTimestamp.Add(7 * time.Second)))
 	early, _, err := ask(username, "")
 	if err != nil {
 		t.Fatal(err)
@@ -263,10 +268,6 @@ func requestKubeconfigs(ctx context.Context, t *testing.T, cfg *envconf.Config, 
 	})
 	if early.Status.Kubeconfig != nil {
 		t.Error("a request created within the grace holds a kubeconfig")
-	}
-	binding := &admissionregistrationv1.ValidatingAdmissionPolicyBinding{}
-	if err := k8s.Get(ctx, client.ObjectKeyFromObject(rendered), binding); err != nil {
-		t.Fatal(err)
 	}
 	time.Sleep(time.Until(binding.CreationTimestamp.Add(11 * time.Second)))
 	kr, privateKey, err = ask(username, "")
