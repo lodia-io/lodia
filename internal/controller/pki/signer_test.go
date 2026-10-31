@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"maps"
 	"net"
@@ -22,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	corev1ac "k8s.io/client-go/applyconfigurations/core/v1"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/util/keyutil"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -142,6 +144,15 @@ func TestEveryStateOfASignerReplacementSurvivesEachRefusedWrite(t *testing.T) {
 		{"immutable-next", nextSecret(corev1.SecretTypeTLS, true, false), false},
 		{"opaque-pending", nextSecret(corev1.SecretTypeOpaque, false, true), false},
 		{"immutable-pending", nextSecret(corev1.SecretTypeTLS, true, true), false},
+		{"reencoded-pending", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+			dueSigner(t, cp)
+			c := clientSigner(t, cp, time.Now())
+			key, err := x509.MarshalECPrivateKey(c.Key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			createNext(t, cp, c, pem.EncodeToMemory(&pem.Block{Type: keyutil.ECPrivateKeyBlockType, Bytes: key}), true)
+		}, false},
 	} {
 		t.Run(state.name, func(t *testing.T) {
 			t.Parallel()
@@ -161,16 +172,30 @@ func nextSecret(typ corev1.SecretType, immutable, usable bool) func(*testing.T, 
 		dueSigner(t, cp)
 		content := map[string][]byte{lodiav1alpha1.TLSCertKey: []byte("garbage"), lodiav1alpha1.TLSPrivateKeyKey: []byte("garbage")}
 		if usable {
-			c, err := parseTLS(t, secretsOf(t, cp)["dev-cakey-client"]).Issue(certs.Profile{CommonName: "kubelet-signer@2", CA: true}, time.Now(), time.Hour)
-			if err != nil {
-				t.Fatal(err)
-			}
+			c := clientSigner(t, cp, time.Now())
 			content = map[string][]byte{lodiav1alpha1.TLSCertKey: mustPEM(t, c.Cert), lodiav1alpha1.TLSPrivateKeyKey: mustKeyPEM(t, c.Key)}
 		}
 		s := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "dev-kubelet-signer-next", Namespace: cp.Namespace}, Type: typ, Data: content, Immutable: &immutable}
 		if err := k8s.Create(t.Context(), s); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func clientSigner(t *testing.T, cp *lodiav1alpha1.ControlPlane, at time.Time) *certs.Certificate {
+	t.Helper()
+	c, err := parseTLS(t, secretsOf(t, cp)["dev-cakey-client"]).Issue(certs.Profile{CommonName: "kubelet-signer@2", CA: true}, at, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func createNext(t *testing.T, cp *lodiav1alpha1.ControlPlane, c *certs.Certificate, key []byte, immutable bool) {
+	t.Helper()
+	s := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "dev-kubelet-signer-next", Namespace: cp.Namespace}, Type: corev1.SecretTypeTLS, Data: map[string][]byte{lodiav1alpha1.TLSCertKey: mustPEM(t, c.Cert), lodiav1alpha1.TLSPrivateKeyKey: key}, Immutable: &immutable}
+	if err := k8s.Create(t.Context(), s); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -204,8 +229,12 @@ func replaceSigner(t *testing.T, namespace string, prepare func(*testing.T, *lod
 		before := readSigner(t, cp)
 		stored = append(stored, before.signer...)
 		stored = append(stored, before.next...)
+		previous := writes
 		result, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 		end := time.Now()
+		if err != nil && (nth <= previous || nth > writes) {
+			t.Errorf("pass %d failed though it refused no write: %v", pass, err)
+		}
 		after := readSigner(t, cp)
 		for _, c := range after.bundle {
 			if !containsCert(before.bundle, c) && c.IsCA && c.MaxPathLenZero && !containsCert(stored, c) {

@@ -587,8 +587,9 @@ func appliedAt(s *corev1.Secret) time.Time {
 // writes <cp>-kubelet-signer and then deletes <cp>-kubelet-signer-next, which a
 // restart in between leaves equal to it for the next pass to delete. A
 // <cp>-kubelet-signer-next that an apply cannot overwrite is deleted before
-// a new signer is staged in it; one that holds the pending signer is kept,
-// since the apply changes only its metadata.
+// a new signer is staged in it; one that holds the pending signer keeps the
+// bytes it stores, in whatever encoding, so the apply changes only its
+// metadata, which an immutable Secret admits.
 func (r *Reconciler) kubeletSigner(ctx context.Context, t *tenant) error {
 	if t.promote {
 		if err := r.applyTLS(ctx, t, t.secret(lodiav1alpha1.KubeletSignerSecret), t.next, nil, false); err != nil {
@@ -602,7 +603,11 @@ func (r *Reconciler) kubeletSigner(ctx context.Context, t *tenant) error {
 		r.remove(ctx, t, s)
 		return nil
 	}
-	if kept := t.signer(s); s != nil && !overwritable(s) && (kept == nil || !kept.Cert.Equal(t.next.Cert)) {
+	if kept := t.signer(s); kept != nil && kept.Cert.Equal(t.next.Cert) {
+		r.applySecret(ctx, t, name, corev1.SecretTypeTLS, map[string][]byte{lodiav1alpha1.TLSCertKey: s.Data[lodiav1alpha1.TLSCertKey], lodiav1alpha1.TLSPrivateKeyKey: s.Data[lodiav1alpha1.TLSPrivateKeyKey]}, nil, false)
+		return nil
+	}
+	if s != nil && !overwritable(s) {
 		r.remove(ctx, t, s)
 		delete(t.existing, name)
 	}
