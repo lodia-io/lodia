@@ -16,6 +16,15 @@ rules:
   - patch
   - watch
 - apiGroups:
+  - admissionregistration.k8s.io
+  resourceNames:
+  - kubeconfigrequests.lodia.io
+  resources:
+  - validatingadmissionpolicies
+  - validatingadmissionpolicybindings
+  verbs:
+  - get
+- apiGroups:
   - lodia.io
   resources:
   - controlplanes
@@ -33,5 +42,14 @@ rules:
   - lodia.io
   resources:
   - controlplanes/status
+  - kubeconfigrequests/status
   verbs:
   - patch
+- apiGroups:
+  - lodia.io
+  resources:
+  - kubeconfigrequests
+  verbs:
+  - delete
+  - list
+  - watch

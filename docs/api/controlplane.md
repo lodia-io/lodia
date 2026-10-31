@@ -156,7 +156,7 @@ The `Backup`'s condition:
 ## KubeconfigRequest
 
 `lodia.io/v1alpha1`, namespaced: a short-lived kubeconfig for a key of the requester's own, in their own name ([short-lived-kubeconfigs](../decisions/short-lived-kubeconfigs.md)).
-The kubeconfig request reconciler of the PKI controller, field manager `lodia/kubeconfigrequest`, writes the status and deletes the request at its deadline, all from wave 1b, KubeconfigRequest; until then the policy admits or refuses requests and nothing answers them.
+The kubeconfig request reconciler of the PKI controller, field manager `lodia/kubeconfigrequest`, writes the status and deletes the request at its deadline.
 The chart's admission policy `kubeconfigrequests.lodia.io` and the permission `create` on `controlplanes/adminkubeconfig` decide who may create one, and with `ClusterAdmin` ([the rules](../decisions/short-lived-kubeconfigs.md#decision)).
 
 | field | written by | meaning |

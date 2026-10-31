@@ -321,7 +321,7 @@ func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 			{lodiav1alpha1.LodiaKubeconfigSecret, "lodia:operator", nil, internal, true},
 		}
 		if t.endpoint != nil {
-			kubeconfigs = append(kubeconfigs, kubeconfig{lodiav1alpha1.AdminKubeconfigSecret, "kubernetes-admin", []string{"lodia:cluster-admins"}, t.endpoint.url(), true})
+			kubeconfigs = append(kubeconfigs, kubeconfig{lodiav1alpha1.AdminKubeconfigSecret, "kubernetes-admin", []string{clusterAdmins}, t.endpoint.url(), true})
 		}
 		for _, k := range kubeconfigs {
 			if err := r.kubeconfig(ctx, t, k); err != nil {

@@ -925,7 +925,7 @@ func controlPlane(t *testing.T, namespace string) *lodiav1alpha1.ControlPlane {
 
 func controlPlaneAt(t *testing.T, namespace string, endpoint lodiav1alpha1.Endpoint) *lodiav1alpha1.ControlPlane {
 	t.Helper()
-	if err := k8s.Create(t.Context(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}); err != nil {
+	if err := client.IgnoreAlreadyExists(k8s.Create(t.Context(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}})); err != nil {
 		t.Fatal(err)
 	}
 	cp := &lodiav1alpha1.ControlPlane{

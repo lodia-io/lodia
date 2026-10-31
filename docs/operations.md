@@ -7,7 +7,7 @@ Installation is in [`README.md`](README.md#installation).
 
 | task | how |
 |---|---|
-| Get access as a person | create a `KubeconfigRequest` for a key of your own ([example](api/examples/kubeconfigrequest.yaml)); its `status.kubeconfig` works with that key until `status.expirationTimestamp` (wave 1b, KubeconfigRequest) |
+| Get access as a person | create a `KubeconfigRequest` for a key of your own ([steps](#access-as-a-person)); its `status.kubeconfig` works with that key until `status.expirationTimestamp` |
 | Get access for automation | grant `get` on the Secret `<cp>-admin-kubeconfig` by `resourceNames`, never on the namespace's Secrets, which hold the class's backup credentials in `<cp>-etcd-backup`; read it; every copy is revoked by the client CA rotation (phase 3), not by deleting the ClusterRoleBinding `lodia:cluster-admins` in the tenant, which PKI applies again on its next pass |
 | Join a node | with an admin kubeconfig: `kubeadm token create --print-join-command --kubeconfig admin.kubeconfig`; run the printed `kubeadm join …` on the machine; it needs outbound 443 to the endpoint and nothing inbound |
 | Upgrade Kubernetes | set `spec.version`; watch `status.kubernetes.upgrade` and `Progressing`; nodes follow at the owner's pace, at most three minors behind. From phase 2's wave 2 Lodia goes one minor at a time ([upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md)); until then, a patch within the running minor only |
@@ -20,11 +20,41 @@ Installation is in [`README.md`](README.md#installation).
 | Hibernate and wake | `spec.hibernation.enabled: true` / `false`, or `spec.hibernation.schedules` |
 | Take a sealed copy | create a `Backup` ([example](api/examples/backup.yaml)); it is `Ready`, `Completed`, once sealed, and `status.snapshots` says where the copy is (phase 2's wave 1b, backups) |
 | Replace a cluster from a `Backup` | create a new `ControlPlane` with `spec.restoreFrom.backupRef`; delete the source, or create the new one `Released` if the source is gone already; nodes join it anew with a new token ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)). Built in wave 1b, backups |
-| Stop Lodia touching a cluster | `spec.paused: true`; everything keeps running, nothing is reconciled; deleting a paused `ControlPlane` waits until it is unpaused |
+| Stop Lodia touching a cluster | `spec.paused: true`; everything keeps running, nothing is reconciled but `KubeconfigRequest`s, which write nothing to the `ControlPlane`; deleting a paused `ControlPlane` waits until it is unpaused |
 | Turn the controller manager hold off for a cluster | `spec.health.holdControllerManager: false`; a hold in progress is released at once |
 | Change a `DatastoreClass` | edit it; [what the class refuses and what an edit rolls](README.md#a-tenant-namespace); the storage fields, the reclaim policy, `retention.afterDelete`, the credentials' `secretRef` and the region roll nothing ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md#consequences)) |
 | Rotate a backup store's credentials | create a new Secret with the new keys and point the class's `backup.store.secretRef` at it: the class edit reaches every tenant on the class at once and rolls nothing; once every tenant's `<cp>-etcd-backup` (labelled `lodia.io/control-plane`) holds the new keys, revoke the old ones ([the copy](README.md#a-tenant-namespace)) |
 | Delete a cluster | delete the `ControlPlane` ([what deletion does](README.md#deletion)); `kubectl get pvc -L lodia.io/control-plane-uid` shows whose each claim is; a lifecycle rule of the bucket expires old prefixes |
+
+### Access as a person
+
+The key stays on your machine; the request carries only its public half.
+For `prod-eu` in `team-a`, as cluster admin for an hour:
+
+```sh
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out prod-eu.key
+openssl req -new -key prod-eu.key -subj /CN=prod-eu -out prod-eu.csr
+user=$(kubectl auth whoami -o jsonpath='{.status.userInfo.username}')
+request=$(kubectl create -n team-a -o name -f - <<EOF
+apiVersion: lodia.io/v1alpha1
+kind: KubeconfigRequest
+metadata: {generateName: prod-eu-}
+spec:
+  controlPlaneRef: {name: prod-eu}
+  user: "$user"
+  access: ClusterAdmin
+  request: $(base64 < prod-eu.csr | tr -d '\n')
+EOF
+)
+kubectl wait -n team-a "$request" --for=condition=Ready --timeout=1m
+kubectl get -n team-a "$request" -o jsonpath='{.status.kubeconfig}' | base64 -d > prod-eu.kubeconfig
+kubectl config set-credentials "lodia:user:$user" --client-key=prod-eu.key --embed-certs --kubeconfig=prod-eu.kubeconfig
+kubectl get nodes --kubeconfig=prod-eu.kubeconfig
+```
+
+Without `access` the certificate carries no group, and the tenant's RBAC on `lodia:user:<user>` decides.
+`ClusterAdmin` needs `create` on `controlplanes/adminkubeconfig` for that `ControlPlane`; a request that is not `Ready` says why in its condition ([reasons](api/controlplane.md#kubeconfigrequest)).
+The request is deleted at its deadline; deleting it earlier revokes nothing, the certificate works until `status.expirationTimestamp`.
 
 ## What breaks, and how it shows
 

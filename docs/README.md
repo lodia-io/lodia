@@ -44,7 +44,7 @@ The field reference with every rule is [`api/controlplane.md`](api/controlplane.
 
 | controller | writes | condition | needs |
 |---|---|---|---|
-| PKI | Secrets with certificates, keys and kubeconfigs; the tenant's bindings for Lodia, the admin group and the kubelet client | `CertificatesReady`, `AccessReady`; `CAValidityAcceptable` outside `Ready` | `status.endpoint`; `APIServerReady` for the bindings |
+| PKI | Secrets with certificates, keys and kubeconfigs; the tenant's bindings for Lodia, the admin group and the kubelet client; the answers to `KubeconfigRequest`s, which it deletes at their deadline | `CertificatesReady`, `AccessReady`; `CAValidityAcceptable` outside `Ready`; a `KubeconfigRequest`'s `Ready` | `status.endpoint`; `APIServerReady` for the bindings; the admission policy `kubeconfigrequests.lodia.io` for requests |
 | Datastore | the `Etcd` of a dedicated etcd and its NetworkPolicy, or a user and role in a shared store; backups and defragmentation | `DatastoreReady`; `BackupReady` outside `Ready` from wave 1b | a complete generation of PKI's etcd certificates |
 | Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady` | `status.target`, `status.datastore`, `CertificatesReady`, `DatastoreReady`; `AddonsApplied` before it starts a restored `ControlPlane`'s controller manager, from wave 1b |
 | Tenant | objects inside the tenant cluster, with an inventory | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
@@ -267,7 +267,7 @@ The ports are etcd-druid's defaults, which the `Etcd` leaves unset ([constants.g
 A policy under the name is found uncached too, as the `Etcd` is; one without a controller is adopted, and one another owner keeps is never written over ([reasons](api/controlplane.md#conditions-and-their-reasons)).
 A policy the API server refuses is retried with backoff.
 
-Identities ([short-lived-kubeconfigs](decisions/short-lived-kubeconfigs.md), [staged-credential-rotation](decisions/staged-credential-rotation.md)): the API server's kubelet client is `kube-apiserver-kubelet-client` in the group `lodia:kubelet-api-admins`; konnectivity-server runs as `system:konnectivity-server`, bound to a Role on the Leases in `kube-system` and to `system:auth-delegator`, which lets it create TokenReviews and SubjectAccessReviews; the controller manager and scheduler use their standard identities; Lodia reaches the tenant as `lodia:operator`, bound to `cluster-admin` because it manages RBAC.
+Identities ([short-lived-kubeconfigs](decisions/short-lived-kubeconfigs.md), [staged-credential-rotation](decisions/staged-credential-rotation.md)): the API server's kubelet client is `kube-apiserver-kubelet-client` in the group `lodia:kubelet-api-admins`; konnectivity-server runs as `system:konnectivity-server`, bound to a Role on the Leases in `kube-system` and to `system:auth-delegator`, which lets it create TokenReviews and SubjectAccessReviews; the controller manager and scheduler use their standard identities; Lodia reaches the tenant as `lodia:operator`, bound to `cluster-admin` because it manages RBAC; a person with a `KubeconfigRequest`'s kubeconfig is `lodia:user:<user>`, in `lodia:cluster-admins` only with `access: ClusterAdmin`.
 
 Phase 2 default-denies the namespace, egress included, and allows exactly the arrows above: the endpoint → API server and konnectivity-server, controller manager and scheduler and Lodia → the API Service, API server → etcd, Lodia → etcd's client port (wave 2, observability), etcd ↔ etcd, etcd-druid → etcd and its backup-restore sidecar, etcd and its compaction Jobs → object storage, and every pod → the cluster DNS; a platform that scrapes the components admits its scraper itself ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)).
 
@@ -401,7 +401,7 @@ While most nodes are silent and the API server answers, Health holds the control
 ## Identity and tenancy
 
 - A `ControlPlane` is namespaced; the platform's RBAC on the namespace decides who creates clusters and who reads their Secrets.
-  Lodia's ClusterRoles, one per controller, are limited to its kinds, the workload kinds it renders, Secrets and ConfigMaps, the management nodes, Gateway API `TLSRoute`s and the Gateways they attach to, etcd-druid's `Etcd`, the StatefulSet etcd-druid runs for it and the claims of that StatefulSet, and `get` on the namespaces, whose UIDs go into the backup prefix; where they come from is below.
+  Lodia's ClusterRoles, one per controller, are limited to its kinds, the workload kinds it renders, Secrets and ConfigMaps, the management nodes, Gateway API `TLSRoute`s and the Gateways they attach to, etcd-druid's `Etcd`, the StatefulSet etcd-druid runs for it and the claims of that StatefulSet, `get` on the namespaces, whose UIDs go into the backup prefix, and `get` on the admission policy `kubeconfigrequests.lodia.io` and its binding, by name; where they come from is below.
 - Every field Lodia writes has a field manager `lodia/<controller>`; another manager's fields on the same object are left alone.
 - No cross-tenant object: every Secret, Service and route is in the tenant's namespace, and NetworkPolicies keep its pods to their own arrows.
   A shared `Datastore` is the one deliberate exception, labelled as such.

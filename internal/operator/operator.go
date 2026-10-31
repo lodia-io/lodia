@@ -78,6 +78,9 @@ func Setup(mgr ctrl.Manager, signerImage, etcdDruidNamespace string) error {
 	}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the pki controller: %w", err)
 	}
+	if err := (&pki.KubeconfigRequestReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Clock: clock.RealClock{}, PolicyGrace: 10 * time.Second}).SetupWithManager(mgr, workers); err != nil {
+		return fmt.Errorf("set up the kubeconfig request reconciler: %w", err)
+	}
 	if err := (&datastore.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdDruidNamespace: etcdDruidNamespace}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the datastore controller: %w", err)
 	}
