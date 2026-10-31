@@ -309,9 +309,14 @@ func appliedAt(t *testing.T, s *corev1.Secret) time.Time {
 
 func dueSigner(t *testing.T, cp *lodiav1alpha1.ControlPlane) *x509.Certificate {
 	t.Helper()
+	return signerIssued(t, cp, time.Now().Add(-50*time.Minute))
+}
+
+func signerIssued(t *testing.T, cp *lodiav1alpha1.ControlPlane, at time.Time) *x509.Certificate {
+	t.Helper()
 	secrets := secretsOf(t, cp)
 	clientCA := parseTLS(t, secrets["dev-cakey-client"])
-	due, err := clientCA.Issue(certs.Profile{CommonName: "kubelet-signer@1", CA: true}, time.Now().Add(-50*time.Minute), time.Hour)
+	due, err := clientCA.Issue(certs.Profile{CommonName: "kubelet-signer@1", CA: true}, at, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -371,7 +376,9 @@ func TestASignerIsPromotedOnceTheBundleHasHeldItUnchangedSincePKIsLastWrite(t *t
 	}
 	reconcileOnce(t, r, cp)
 	next := parseTLS(t, secretsOf(t, cp)["dev-kubelet-signer-next"]).Cert
-	reconcileOnce(t, r, cp)
+	if result := reconcileOnce(t, r, cp); result.RequeueAfter > 5*time.Minute {
+		t.Errorf("the pass that trusts the staged signer requeues after %s, want the propagation", result.RequeueAfter)
+	}
 	requests := parseTLS(t, secretsOf(t, cp)["dev-cakey-kubeconfig-requests"]).Cert
 	expectBundle(t, cp, clientCA, next, original, requests)
 	waits := func(want time.Duration) {
@@ -414,6 +421,77 @@ func TestASignerIsPromotedOnceTheBundleHasHeldItUnchangedSincePKIsLastWrite(t *t
 		t.Fatal("the staged signer was not promoted once the bundle had held it unchanged for the propagation")
 	}
 	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+}
+
+func TestABundleWithoutPKIsEntryPromotesTheStagedSignerAtOnce(t *testing.T) {
+	r := newReconciler(time.Hour)
+	r.SignerPropagation = time.Hour
+	cp := controlPlane(t, "signer-entry-cleared")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	if err := k8s.Delete(t.Context(), secretsOf(t, cp)["dev-kubelet-signer"]); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, r, cp)
+	next := parseTLS(t, secretsOf(t, cp)["dev-kubelet-signer-next"]).Cert
+	reconcileOnce(t, r, cp)
+	bundle := secretsOf(t, cp)["dev-client-ca"]
+	bundle.ManagedFields = []metav1.ManagedFieldsEntry{{}}
+	if err := k8s.Update(t.Context(), bundle); err != nil {
+		t.Fatal(err)
+	}
+	if fields := secretsOf(t, cp)["dev-client-ca"].ManagedFields; len(fields) > 0 {
+		t.Fatalf("the bundle's managed fields were not cleared: %v", fields)
+	}
+	reconcileOnce(t, r, cp)
+	if s := secretsOf(t, cp)["dev-kubelet-signer"]; s == nil || !parseTLS(t, s).Cert.Equal(next) {
+		t.Error("a bundle without an entry of lodia/pki did not promote the staged signer at once")
+	}
+}
+
+func TestAStagedSignerOutlivesAPassWithoutTheClientCA(t *testing.T) {
+	r := newReconciler(time.Hour)
+	r.SignerPropagation = time.Hour
+	cp := controlPlane(t, "signer-next-client-ca-lost")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	dueSigner(t, cp)
+	reconcileOnce(t, r, cp)
+	reconcileOnce(t, r, cp)
+	next := parseTLS(t, secretsOf(t, cp)["dev-kubelet-signer-next"]).Cert
+	key := secretsOf(t, cp)["dev-cakey-client"]
+	saved := key.Data
+	key.Data = map[string][]byte{lodiav1alpha1.TLSCertKey: []byte("garbage"), lodiav1alpha1.TLSPrivateKeyKey: []byte("garbage")}
+	if err := k8s.Update(t.Context(), key); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, r, cp)
+	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, lodiav1alpha1.ReasonCAMissing)
+	if s := secretsOf(t, cp)["dev-kubelet-signer-next"]; s == nil || !parseTLS(t, s).Cert.Equal(next) {
+		t.Fatal("a pass that could not read the client CA deleted or replaced the staged signer")
+	}
+	key = secretsOf(t, cp)["dev-cakey-client"]
+	key.Data = saved
+	if err := k8s.Update(t.Context(), key); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, r, cp)
+	if s := secretsOf(t, cp)["dev-kubelet-signer-next"]; s == nil || !parseTLS(t, s).Cert.Equal(next) {
+		t.Fatal("the staged signer was not kept once the client CA came back")
+	}
+	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+}
+
+func TestASignerWakesThePassAtItsRenewal(t *testing.T) {
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "signer-wake")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	soon := signerIssued(t, cp, time.Now().Add(-38*time.Minute))
+	result := reconcileOnce(t, r, cp)
+	if until := time.Until(certs.RenewalTime(soon)); result.RequeueAfter < until || result.RequeueAfter > until+2*time.Second {
+		t.Errorf("requeue after %s, want the signer's renewal in %s", result.RequeueAfter, until)
+	}
 }
 
 func backdate(t *testing.T, cp *lodiav1alpha1.ControlPlane, by time.Duration) {
