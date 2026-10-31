@@ -488,9 +488,11 @@ func TestASignerWakesThePassAtItsRenewal(t *testing.T) {
 	publishEndpoint(t, cp)
 	reconcile(t, r, cp)
 	soon := signerIssued(t, cp, time.Now().Add(-38*time.Minute))
+	renewal := certs.RenewalTime(soon)
+	before := time.Now()
 	result := reconcileOnce(t, r, cp)
-	if until := time.Until(certs.RenewalTime(soon)); result.RequeueAfter < until || result.RequeueAfter > until+2*time.Second {
-		t.Errorf("requeue after %s, want the signer's renewal in %s", result.RequeueAfter, until)
+	if after := time.Now(); result.RequeueAfter < renewal.Sub(after) || result.RequeueAfter > renewal.Sub(before)+time.Second {
+		t.Errorf("requeue after %s, want the signer's renewal at %s", result.RequeueAfter, renewal)
 	}
 }
 
