@@ -11,6 +11,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"maps"
 	"net"
@@ -45,6 +46,10 @@ const (
 	requestCA    = "kubeconfig-requests"
 )
 
+// kubeletSignerNext is <cp>-kubelet-signer-next, the kubelet signer PKI has
+// staged and no component mounts.
+const kubeletSignerNext = "kubelet-signer-next"
+
 // A CA's bundle proves the tenant had that CA, so a CA is created only when
 // neither the bundle nor its key Secret exists.
 var caBundles = []struct {
@@ -61,7 +66,7 @@ var caBundles = []struct {
 // <cp>-etcd-<role>-<g>. They are reserved: PKI finds them by name, labelled or
 // not.
 var names = func() []string {
-	names := []string{"cakey-cluster", "cakey-client", "cakey-front-proxy", "cakey-etcd", "cakey-kubeconfig-requests"}
+	names := []string{"cakey-cluster", "cakey-client", "cakey-front-proxy", "cakey-etcd", "cakey-kubeconfig-requests", kubeletSignerNext}
 	for _, s := range lodiav1alpha1.PKISecrets() {
 		names = append(names, string(s))
 	}
@@ -81,6 +86,9 @@ const (
 	// requestCAPredecessors is how many replaced request CAs the client CA
 	// bundle keeps at most beside a stored one.
 	requestCAPredecessors = 10
+	// signerPredecessors is how many replaced kubelet signers the client CA
+	// bundle keeps at most beside a usable one.
+	signerPredecessors = 10
 )
 
 var (
@@ -110,8 +118,17 @@ type tenant struct {
 	konnectivityHost    string
 	// requests is the request CA the pass writes last.
 	requests *certs.Certificate
-	// writeErr is the pass's first failed write. No write follows it, and
-	// pending names what the pass had to change but did not write.
+	// next is what <cp>-kubelet-signer-next holds after the pass, which
+	// promote moves into <cp>-kubelet-signer; without one the pass deletes
+	// that Secret. signerLost reports a staged signer replacing one that
+	// cannot sign, written at promotion if the pass knows that time.
+	next       *certs.Certificate
+	promote    bool
+	signerLost bool
+	promotion  time.Time
+	// writeErr is the pass's first failed write, joined with a failed late
+	// write's. No write follows it but the other late write, and pending
+	// names what the pass had to change but did not write.
 	writeErr error
 	pending  []string
 }
@@ -287,10 +304,9 @@ func (t *tenant) leaf(certPEM, keyPEM []byte, ca *certs.Certificate, p certs.Pro
 	return c, nil
 }
 
-// issue writes the encryption configuration and then the request CA last: an
-// unsupported provider blocks nothing else, and a refused write of the request
-// CA's Secret, the one new on upgrade and so the one a Secret quota refuses,
-// blocks no other.
+// issue writes the encryption configuration, then the kubelet signer's staged
+// writes and the request CA last: an unsupported provider blocks nothing else,
+// and the staged signer's writes and the request CA's do not block each other.
 func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 	for _, ca := range caBundles {
 		if err := r.ca(ctx, t, ca.ca, ca.bundle); err != nil {
@@ -369,7 +385,19 @@ func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 	if t.requests == nil {
 		return nil
 	}
-	return r.applyTLS(ctx, t, t.name("cakey-"+requestCA), t.requests, nil, false)
+	early := t.writeErr
+	if err := r.kubeletSigner(ctx, t); err != nil {
+		return err
+	}
+	signerErr := t.writeErr
+	t.writeErr = early
+	if err := r.applyTLS(ctx, t, t.name("cakey-"+requestCA), t.requests, nil, false); err != nil {
+		return err
+	}
+	if early == nil {
+		t.writeErr = errors.Join(signerErr, t.writeErr)
+	}
+	return nil
 }
 
 // ca creates a CA only for a tenant with neither its key Secret nor its
@@ -450,38 +478,145 @@ func (r *Reconciler) notice(t *tenant, ca *x509.Certificate) {
 	t.wakeAt(ca.NotAfter)
 }
 
-// clientCAs keeps the kubelet signer and the request CA like leaves. A new
-// signer is written only after the client CA bundle that trusts it, as the
-// controller manager signs with it at once. The bundle adds a request CA only
-// once its key is stored, as the kubeconfig request reconciler signs only with
-// one the bundle holds: a new one is written at the end of the pass, and the
-// next pass, which that write starts, adds it, so a failed write adds nothing.
-// The signer is matched by no subject, since every signer gets a new one. A
-// request CA that cannot be read is replaced at once: the bundle keeps the old
-// one for every certificate it signed.
+// clientCAs keeps the client CA bundle, the kubelet signer and the request CA.
+// The bundle adds a signer or a request CA only once its key is stored. A
+// tenant with neither the bundle, a usable signer nor a pending signer is a
+// fresh one: its first signer is written before the bundle that trusts it,
+// since no component runs before the bundle exists; every later one is
+// staged. A new request CA is written at the end of the pass, and the next
+// pass, which that write starts, adds it, as the kubeconfig request
+// reconciler signs only with one the bundle holds. A request CA that cannot
+// be read is replaced at once: the bundle keeps the old one for every
+// certificate it signed.
 func (r *Reconciler) clientCAs(ctx context.Context, t *tenant) error {
 	signerName := t.secret(lodiav1alpha1.KubeletSignerSecret)
-	ca := t.cas[clientCA]
-	s := t.existing[signerName]
-	signer, err := certs.Parse(data(s, lodiav1alpha1.TLSCertKey), data(s, lodiav1alpha1.TLSPrivateKeyKey))
-	if err != nil || !signer.Cert.MaxPathLenZero || !t.current(signer, ca, certs.Profile{CommonName: signer.Cert.Subject.CommonName, CA: true}) {
-		if signer, err = ca.Issue(certs.Profile{CommonName: t.stamp("kubelet-signer"), CA: true}, t.now, r.LeafLifetime); err != nil {
-			return err
-		}
+	signer := t.signer(t.existing[signerName])
+	current := signer != nil && t.current(signer, t.cas[clientCA], certs.Profile{CommonName: signer.Cert.Subject.CommonName, CA: true})
+	next := t.existing[t.name(kubeletSignerNext)]
+	pending := t.signer(next)
+	if current || pending != nil && next.Type != corev1.SecretTypeTLS {
+		pending = nil
 	}
-	t.renew(signer.Cert, ca.Cert)
+	t.next = pending
 	stored := readRequestCA(t.existing[t.name("cakey-"+requestCA)])
 	t.requests = stored
+	var err error
 	if stored == nil || !t.now.Before(certs.RenewalTime(stored.Cert)) {
 		if t.requests, err = certs.NewCA(t.stamp(requestCA+"-ca"), t.now, r.LeafLifetime); err != nil {
 			return err
 		}
 	}
 	t.wakeAt(certs.RenewalTime(t.requests.Cert))
-	if err := r.bundle(ctx, t, t.secret(lodiav1alpha1.ClientCASecret), t.clientBundle(signer, stored, t.requests)...); err != nil {
-		return err
+	bundle := t.existing[t.secret(lodiav1alpha1.ClientCASecret)]
+	if bundle == nil && signer == nil && pending == nil {
+		if signer, err = r.newSigner(t); err != nil {
+			return err
+		}
+	} else if !current {
+		if err := r.stage(t, signer, pending, bundle); err != nil {
+			return err
+		}
 	}
-	return r.applyTLS(ctx, t, signerName, signer, nil, false)
+	if signer != nil && !t.promote {
+		if err := r.applyTLS(ctx, t, signerName, signer, nil, false); err != nil {
+			return err
+		}
+		t.renew(signer.Cert, t.cas[clientCA].Cert)
+	}
+	return r.bundle(ctx, t, t.secret(lodiav1alpha1.ClientCASecret), t.clientBundle(bundle, signer, pending, stored)...)
+}
+
+// stage replaces a signer that is due or cannot sign in three passes, since
+// the controller manager signs with <cp>-kubelet-signer as soon as its file
+// changes, while each API server trusts a signer only once the kubelet has
+// updated its <cp>-client-ca. A new signer is written to
+// <cp>-kubelet-signer-next at the end of the pass; the next pass adds it to
+// the bundle; a pass that finds it in the bundle, unchanged by PKI for
+// SignerPropagation, promotes it. A stored pending signer is never issued
+// again.
+func (r *Reconciler) stage(t *tenant, signer, pending *certs.Certificate, bundle *corev1.Secret) error {
+	previous, _ := certs.ParseCerts(data(bundle, lodiav1alpha1.CACertKey))
+	var err error
+	switch {
+	case pending == nil:
+		t.next, err = r.newSigner(t)
+	case !slices.ContainsFunc(previous, pending.Cert.Equal):
+		t.wakeAt(t.now.Add(r.SignerPropagation))
+	default:
+		// The entry's time is kept to the second, so the change it records
+		// may have come up to a second later.
+		t.promotion = appliedAt(bundle).Add(time.Second + r.SignerPropagation)
+		t.promote = !t.now.Before(t.promotion)
+		t.wakeAt(t.promotion)
+	}
+	t.signerLost = signer == nil && !t.promote
+	return err
+}
+
+func (r *Reconciler) newSigner(t *tenant) (*certs.Certificate, error) {
+	return t.cas[clientCA].Issue(certs.Profile{CommonName: t.stamp("kubelet-signer"), CA: true}, t.now, r.LeafLifetime)
+}
+
+// signer reads a kubelet signer, matched by no subject: an intermediate the
+// client CA signed, valid now, that signs no further CA.
+func (t *tenant) signer(s *corev1.Secret) *certs.Certificate {
+	c, err := certs.Parse(data(s, lodiav1alpha1.TLSCertKey), data(s, lodiav1alpha1.TLSPrivateKeyKey))
+	if err != nil || !t.isSigner(c.Cert) {
+		return nil
+	}
+	return c
+}
+
+func (t *tenant) isSigner(c *x509.Certificate) bool {
+	return c.IsCA && c.MaxPathLenZero && certs.Verify(c, t.cas[clientCA].Cert, t.now) == nil
+}
+
+// appliedAt is when PKI last changed s, the time the API server keeps in PKI's
+// entry of its managed fields.
+func appliedAt(s *corev1.Secret) time.Time {
+	for _, f := range s.ManagedFields {
+		if f.Manager == fieldManager && f.Operation == metav1.ManagedFieldsOperationApply && f.Time != nil {
+			return f.Time.Time
+		}
+	}
+	return time.Time{}
+}
+
+// kubeletSigner writes what stage left for the end of the pass: a promotion
+// writes <cp>-kubelet-signer and then deletes <cp>-kubelet-signer-next, which a
+// restart in between leaves equal to it for the next pass to delete. A
+// <cp>-kubelet-signer-next that an apply cannot overwrite is deleted before
+// a new signer is staged in it; one that holds the pending signer keeps the
+// bytes it stores, in whatever encoding, so the apply changes only its
+// metadata, which an immutable Secret admits.
+func (r *Reconciler) kubeletSigner(ctx context.Context, t *tenant) error {
+	if t.promote {
+		if err := r.applyTLS(ctx, t, t.secret(lodiav1alpha1.KubeletSignerSecret), t.next, nil, false); err != nil {
+			return err
+		}
+		t.next = nil
+	}
+	name := t.name(kubeletSignerNext)
+	s := t.existing[name]
+	if t.next == nil {
+		r.remove(ctx, t, s)
+		return nil
+	}
+	if kept := t.signer(s); kept != nil && kept.Cert.Equal(t.next.Cert) {
+		r.applySecret(ctx, t, name, corev1.SecretTypeTLS, map[string][]byte{lodiav1alpha1.TLSCertKey: s.Data[lodiav1alpha1.TLSCertKey], lodiav1alpha1.TLSPrivateKeyKey: s.Data[lodiav1alpha1.TLSPrivateKeyKey]}, nil, false)
+		return nil
+	}
+	if s != nil && !overwritable(s) {
+		r.remove(ctx, t, s)
+		delete(t.existing, name)
+	}
+	return r.applyTLS(ctx, t, name, t.next, nil, false)
+}
+
+// overwritable reports whether an apply can put a new signer into s: a
+// Secret's type and an immutable Secret's data never change.
+func overwritable(s *corev1.Secret) bool {
+	return s.Type == corev1.SecretTypeTLS && !isImmutable(s)
 }
 
 func (r *Reconciler) tls(ctx context.Context, t *tenant, name string, ca *certs.Certificate, p certs.Profile) error {
@@ -515,38 +650,51 @@ func (r *Reconciler) bundle(ctx context.Context, t *tenant, name string, bundle 
 	return nil
 }
 
-// clientBundle keeps each replaced signer for one signing duration, since
-// kubelets present only their leaf. A replaced request CA, a root of its own
-// known by its subject, is kept until the longest request created before its
-// successor was issued has expired, plus the backdate for a verifier's clock
-// that lags; at most the newest requestCAPredecessors. Without a stored request
-// CA, the newest one's successor is the one the pass writes, and one more is
-// kept, so that a lost request CA drops no kept one before its successor is
-// stored.
-func (t *tenant) clientBundle(signer, stored, requests *certs.Certificate) []*x509.Certificate {
-	ca := t.cas[clientCA].Cert
-	bundle := []*x509.Certificate{ca, signer.Cert}
-	successor := requests.Cert
+// clientBundle holds the client CA, the signers and the request CAs. It keeps
+// every replaced signer the client CA signed until it expires, as the
+// controller manager ends each certificate a signer signs with it, the newest
+// signerPredecessors at most; without a usable signer, the one the controller
+// manager loaded is among them, and one more is kept. A replaced request CA, a
+// root of its own known by its subject, is kept until the longest request
+// created before its successor was issued has expired, plus the backdate for a
+// verifier's clock that lags; at most the newest requestCAPredecessors.
+// Without a stored request CA, the newest one's successor is the one the pass
+// writes, and one more is kept, so that a lost request CA drops no kept one
+// before its successor is stored.
+func (t *tenant) clientBundle(old *corev1.Secret, signer, pending, stored *certs.Certificate) []*x509.Certificate {
+	bundle := []*x509.Certificate{t.cas[clientCA].Cert}
+	for _, c := range []*certs.Certificate{signer, pending, stored} {
+		if c != nil {
+			bundle = append(bundle, c.Cert)
+		}
+	}
+	successor := t.requests.Cert
 	if stored != nil {
-		bundle = append(bundle, stored.Cert)
 		successor = stored.Cert
 	}
-	previous, _ := certs.ParseCerts(data(t.existing[t.secret(lodiav1alpha1.ClientCASecret)], lodiav1alpha1.CACertKey))
-	replaced := signer.Cert.NotBefore.Add(certs.Backdate)
+	previous, _ := certs.ParseCerts(data(old, lodiav1alpha1.CACertKey))
 	current, _ := requestCAStamp(successor)
-	var predecessors []*x509.Certificate
+	var replaced, predecessors []*x509.Certificate
 	for _, c := range previous {
 		stamp, isRequestCA := requestCAStamp(c)
 		switch {
-		case !c.IsCA || c.Equal(ca):
+		case !c.IsCA || slices.ContainsFunc(bundle, c.Equal):
 		case isRequestCA:
 			if stamp < current && c.CheckSignatureFrom(c) == nil {
 				predecessors = append(predecessors, c)
 			}
-		case certs.Verify(c, ca, t.now) == nil && t.now.Before(replaced.Add(certs.KubeletClientLifetime)):
-			bundle = append(bundle, c)
+		case t.isSigner(c):
+			replaced = append(replaced, c)
 		}
 	}
+	slices.SortFunc(replaced, func(a, b *x509.Certificate) int {
+		return cmp.Or(b.NotBefore.Compare(a.NotBefore), bytes.Compare(a.Raw, b.Raw))
+	})
+	kept := signerPredecessors
+	if signer == nil {
+		kept++
+	}
+	bundle = append(bundle, replaced[:min(len(replaced), kept)]...)
 	slices.SortFunc(predecessors, func(a, b *x509.Certificate) int {
 		stampA, _ := requestCAStamp(a)
 		stampB, _ := requestCAStamp(b)
@@ -810,18 +958,22 @@ func (r *Reconciler) etcd(ctx context.Context, t *tenant) error {
 			continue
 		}
 		for _, role := range lodiav1alpha1.EtcdCertificateRoles() {
-			s := t.existing[t.etcdName(role, g)]
-			if s == nil || s.DeletionTimestamp != nil || t.writeErr != nil {
-				continue
-			}
-			err := r.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: s.Name, Namespace: s.Namespace}},
-				client.Preconditions{UID: &s.UID, ResourceVersion: &s.ResourceVersion})
-			if client.IgnoreNotFound(err) != nil {
-				t.writeErr = fmt.Errorf("delete Secret %s: %w", s.Name, err)
-			}
+			r.remove(ctx, t, t.existing[t.etcdName(role, g)])
 		}
 	}
 	return nil
+}
+
+// remove deletes s as PKI read it, unless a write of the pass failed.
+func (r *Reconciler) remove(ctx context.Context, t *tenant, s *corev1.Secret) {
+	if s == nil || s.DeletionTimestamp != nil || t.writeErr != nil {
+		return
+	}
+	err := r.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: s.Name, Namespace: s.Namespace}},
+		client.Preconditions{UID: &s.UID, ResourceVersion: &s.ResourceVersion})
+	if client.IgnoreNotFound(err) != nil {
+		t.writeErr = fmt.Errorf("delete Secret %s: %w", s.Name, err)
+	}
 }
 
 // adopt applies a kept generation whole, its data unchanged, wherever it

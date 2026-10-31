@@ -609,6 +609,8 @@ func TestLeavesRenewAtTwoThirdsOfTheirLifetime(t *testing.T) {
 	time.Sleep(time.Until(certs.RenewalTime(serving.Cert)) + 500*time.Millisecond)
 
 	reconcile(t, r, cp)
+	backdate(t, cp, time.Second)
+	reconcile(t, r, cp)
 	after := secretsOf(t, cp)
 	for name, s := range after {
 		prev := before[name]
@@ -648,7 +650,7 @@ func TestLeavesRenewAtTwoThirdsOfTheirLifetime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := after["dev-client-ca"].Data[lodiav1alpha1.CACertKey]; !bytes.Equal(got, want) {
+	if got := secretOf(t, cp, "dev-client-ca").Data[lodiav1alpha1.CACertKey]; !bytes.Equal(got, want) {
 		bundle, _ := certs.ParseCerts(got)
 		t.Errorf("the client CA bundle holds %v, want the client CA, the new signer and request CA and the old ones", subjects(bundle))
 	}
@@ -664,6 +666,8 @@ func TestEtcdCertificatesRenewAsGenerations(t *testing.T) {
 	server := parseTLS(t, secretsOf(t, cp)["dev-etcd-server-1"])
 	time.Sleep(time.Until(certs.RenewalTime(server.Cert)) + 500*time.Millisecond)
 
+	reconcile(t, r, cp)
+	backdate(t, cp, time.Second)
 	reconcile(t, r, cp)
 	expectGenerations(t, cp, 1, 2)
 	server = parseTLS(t, secretsOf(t, cp)["dev-etcd-server-2"])
@@ -752,7 +756,7 @@ func TestALostCAIsNeverReplaced(t *testing.T) {
 		}
 	}
 
-	corrupt := secretsOf(t, cp)["dev-cakey-client"]
+	corrupt := secretOf(t, cp, "dev-cakey-client")
 	corrupt.Data[lodiav1alpha1.TLSPrivateKeyKey] = []byte("not a key")
 	if err := k8s.Update(ctx, corrupt); err != nil {
 		t.Fatal(err)
@@ -762,7 +766,7 @@ func TestALostCAIsNeverReplaced(t *testing.T) {
 	if c.Reason != lodiav1alpha1.ReasonCAMissing || !strings.Contains(c.Message, "cluster, client, etcd") {
 		t.Fatalf("CertificatesReady is %s: %s", c.Reason, c.Message)
 	}
-	if !bytes.Equal(secretsOf(t, cp)["dev-cakey-client"].Data[lodiav1alpha1.TLSPrivateKeyKey], []byte("not a key")) {
+	if !bytes.Equal(secretOf(t, cp, "dev-cakey-client").Data[lodiav1alpha1.TLSPrivateKeyKey], []byte("not a key")) {
 		t.Fatal("the unreadable client CA key was overwritten")
 	}
 	_, versionBefore := resourceVersions(t, cp)
@@ -962,6 +966,14 @@ func controlPlaneAt(t *testing.T, namespace string, endpoint lodiav1alpha1.Endpo
 
 func reconcile(t *testing.T, r *pki.Reconciler, cp *lodiav1alpha1.ControlPlane) ctrl.Result {
 	t.Helper()
+	initial := &corev1.Secret{}
+	if err := client.IgnoreNotFound(k8s.Get(t.Context(), client.ObjectKey{Namespace: cp.Namespace, Name: cp.Name + "-kubelet-signer-next"}, initial)); err != nil {
+		t.Fatal(err)
+	}
+	initialRequests := &corev1.Secret{}
+	if err := client.IgnoreNotFound(k8s.Get(t.Context(), client.ObjectKey{Namespace: cp.Namespace, Name: cp.Name + "-cakey-kubeconfig-requests"}, initialRequests)); err != nil {
+		t.Fatal(err)
+	}
 	reconcileOnce(t, r, cp)
 	before := secretsOf(t, cp)
 	status := freshControlPlane(t, cp).ResourceVersion
@@ -980,9 +992,16 @@ func reconcile(t *testing.T, r *pki.Reconciler, cp *lodiav1alpha1.ControlPlane) 
 	if b, a := before[cp.Name+"-client-ca"], after[cp.Name+"-client-ca"]; b != nil && a != nil && b.ResourceVersion != a.ResourceVersion {
 		was, _ := certs.ParseCerts(b.Data[lodiav1alpha1.CACertKey])
 		is, _ := certs.ParseCerts(a.Data[lodiav1alpha1.CACertKey])
-		stored := parseTLS(t, after[cp.Name+"-cakey-kubeconfig-requests"]).Cert
+		var stored []*x509.Certificate
+		if requests := after[cp.Name+"-cakey-kubeconfig-requests"]; requests == nil || !bytes.Equal(initialRequests.Data[lodiav1alpha1.TLSCertKey], requests.Data[lodiav1alpha1.TLSCertKey]) {
+			stored = append(stored, parseTLS(t, requests).Cert)
+		}
+		if next := after[cp.Name+"-kubelet-signer-next"]; next != nil && !bytes.Equal(initial.Data[lodiav1alpha1.TLSCertKey], next.Data[lodiav1alpha1.TLSCertKey]) {
+			pending, _ := certs.ParseCerts(next.Data[lodiav1alpha1.TLSCertKey])
+			stored = append(stored, pending...)
+		}
 		for _, c := range is {
-			if !containsCert(was, c) && !c.Equal(stored) {
+			if !containsCert(was, c) && !containsCert(stored, c) {
 				t.Errorf("the pass after the first added %s to the client CA bundle", c.Subject.CommonName)
 			}
 		}
@@ -1127,6 +1146,15 @@ func secretsOf(t *testing.T, cp *lodiav1alpha1.ControlPlane) map[string]*corev1.
 		out[list.Items[i].Name] = &list.Items[i]
 	}
 	return out
+}
+
+func secretOf(t *testing.T, cp *lodiav1alpha1.ControlPlane, name string) *corev1.Secret {
+	t.Helper()
+	s := secretsOf(t, cp)[name]
+	if s == nil {
+		t.Fatalf("no Secret %s", name)
+	}
+	return s
 }
 
 func resourceVersions(t *testing.T, cp *lodiav1alpha1.ControlPlane) (map[string]string, string) {
