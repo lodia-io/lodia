@@ -554,6 +554,42 @@ func TestAPendingSignerNoReplacementNeedsIsDeleted(t *testing.T) {
 	}
 }
 
+func TestAPendingSignerIsDeletedOnceTheSignerIsUsableAgain(t *testing.T) {
+	for _, trusted := range []bool{false, true} {
+		t.Run("trusted="+strconv.FormatBool(trusted), func(t *testing.T) {
+			r := newReconciler(time.Hour)
+			r.SignerPropagation = time.Hour
+			cp := controlPlane(t, "signer-restored-"+strconv.FormatBool(trusted))
+			publishEndpoint(t, cp)
+			reconcile(t, r, cp)
+			original := secretsOf(t, cp)["dev-kubelet-signer"]
+			if err := k8s.Delete(t.Context(), original); err != nil {
+				t.Fatal(err)
+			}
+			reconcileOnce(t, r, cp)
+			if trusted {
+				reconcileOnce(t, r, cp)
+			}
+			next := parseTLS(t, secretsOf(t, cp)["dev-kubelet-signer-next"]).Cert
+			restored := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: original.Name, Namespace: original.Namespace, Labels: original.Labels, OwnerReferences: original.OwnerReferences}, Type: original.Type, Data: original.Data}
+			if err := k8s.Create(t.Context(), restored); err != nil {
+				t.Fatal(err)
+			}
+			reconcile(t, r, cp)
+			secrets := secretsOf(t, cp)
+			if _, kept := namespaceSecrets(t, cp.Namespace)["dev-kubelet-signer-next"]; kept {
+				t.Error("a pending signer no replacement needs was kept")
+			}
+			want := []*x509.Certificate{parseTLS(t, secrets["dev-cakey-client"]).Cert, parseTLS(t, original).Cert, parseTLS(t, secrets["dev-cakey-kubeconfig-requests"]).Cert}
+			if trusted {
+				want = append(want, next)
+			}
+			expectBundle(t, cp, want...)
+			expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+		})
+	}
+}
+
 func TestASecretQuotaHoldsTheStagedSignerUntilItGoes(t *testing.T) {
 	ctx := t.Context()
 	cp := controlPlane(t, "signer-quota")

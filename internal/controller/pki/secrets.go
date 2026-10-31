@@ -491,8 +491,9 @@ func (r *Reconciler) notice(t *tenant, ca *x509.Certificate) {
 func (r *Reconciler) clientCAs(ctx context.Context, t *tenant) error {
 	signerName := t.secret(lodiav1alpha1.KubeletSignerSecret)
 	signer := t.signer(t.existing[signerName])
+	current := signer != nil && t.current(signer, t.cas[clientCA], certs.Profile{CommonName: signer.Cert.Subject.CommonName, CA: true})
 	pending := t.signer(t.existing[t.name(kubeletSignerNext)])
-	if pending != nil && signer != nil && pending.Cert.Equal(signer.Cert) {
+	if current || pending != nil && signer != nil && pending.Cert.Equal(signer.Cert) {
 		pending = nil
 	}
 	t.next = pending
@@ -515,8 +516,10 @@ func (r *Reconciler) clientCAs(ctx context.Context, t *tenant) error {
 		if err := r.applyTLS(ctx, t, signerName, signer, nil, false); err != nil {
 			return err
 		}
-	} else if err := r.stage(t, signer, pending, bundle); err != nil {
-		return err
+	} else if !current {
+		if err := r.stage(t, signer, pending, bundle); err != nil {
+			return err
+		}
 	}
 	if signer != nil {
 		t.renew(signer.Cert, t.cas[clientCA].Cert)
@@ -533,9 +536,6 @@ func (r *Reconciler) clientCAs(ctx context.Context, t *tenant) error {
 // SignerPropagation, promotes it. A stored pending signer is never issued
 // again.
 func (r *Reconciler) stage(t *tenant, signer, pending *certs.Certificate, bundle *corev1.Secret) error {
-	if signer != nil && t.current(signer, t.cas[clientCA], certs.Profile{CommonName: signer.Cert.Subject.CommonName, CA: true}) {
-		return nil
-	}
 	previous, _ := certs.ParseCerts(data(bundle, lodiav1alpha1.CACertKey))
 	var err error
 	switch {
