@@ -1106,6 +1106,19 @@ func TestACertificateEndsWithItsRequestCA(t *testing.T) {
 	expectReady(t, freshRequest(t, late), metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates)
 }
 
+func TestARequestCAPastItsRenewalTimeSignsUntilItExpires(t *testing.T) {
+	enforce(t)
+	cp := issuable(t, "kcr-due")
+	requestCA := parseTLS(t, secretsOf(t, cp)["dev-cakey-kubeconfig-requests"]).Cert
+	kr := kubeconfigRequest(t, cp, p256(t))
+	at := certs.RenewalTime(requestCA).Add(time.Minute)
+	reconcileRequest(t, requestReconciler(clocktesting.NewFakePassiveClock(at)), kr)
+	cert, _ := issued(t, freshRequest(t, kr))
+	if err := certs.Verify(cert, requestCA, at); err != nil || !cert.NotAfter.Equal(requestCA.NotAfter) {
+		t.Errorf("the certificate from a request CA past its renewal time verifies with %v and ends at %s, want nil and the request CA's %s", err, cert.NotAfter, requestCA.NotAfter)
+	}
+}
+
 func TestATransientErrorAnswersNothing(t *testing.T) {
 	enforce(t)
 	cp := issuable(t, "kcr-transient")
