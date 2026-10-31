@@ -153,6 +153,20 @@ func TestEveryStateOfASignerReplacementSurvivesEachRefusedWrite(t *testing.T) {
 			}
 			createNext(t, cp, c, pem.EncodeToMemory(&pem.Block{Type: keyutil.ECPrivateKeyBlockType, Bytes: key}), true)
 		}, false},
+		{"foreign-pending", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+			dueSigner(t, cp)
+			c := foreignSigner(t)
+			createNext(t, cp, c, mustKeyPEM(t, c.Key), false)
+		}, false},
+		{"expired-pending", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+			dueSigner(t, cp)
+			c := clientSigner(t, cp, time.Now().Add(-2*time.Hour))
+			createNext(t, cp, c, mustKeyPEM(t, c.Key), false)
+		}, false},
+		{"foreign-signer", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) { storeSigner(t, cp, foreignSigner(t)) }, true},
+		{"expired-signer", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+			storeSigner(t, cp, clientSigner(t, cp, time.Now().Add(-2*time.Hour)))
+		}, true},
 	} {
 		t.Run(state.name, func(t *testing.T) {
 			t.Parallel()
@@ -191,10 +205,32 @@ func clientSigner(t *testing.T, cp *lodiav1alpha1.ControlPlane, at time.Time) *c
 	return c
 }
 
+func foreignSigner(t *testing.T) *certs.Certificate {
+	t.Helper()
+	root, err := certs.NewCA("client-ca@1", time.Now(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := root.Issue(certs.Profile{CommonName: "kubelet-signer@2", CA: true}, time.Now(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
 func createNext(t *testing.T, cp *lodiav1alpha1.ControlPlane, c *certs.Certificate, key []byte, immutable bool) {
 	t.Helper()
 	s := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "dev-kubelet-signer-next", Namespace: cp.Namespace}, Type: corev1.SecretTypeTLS, Data: map[string][]byte{lodiav1alpha1.TLSCertKey: mustPEM(t, c.Cert), lodiav1alpha1.TLSPrivateKeyKey: key}, Immutable: &immutable}
 	if err := k8s.Create(t.Context(), s); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func storeSigner(t *testing.T, cp *lodiav1alpha1.ControlPlane, c *certs.Certificate) {
+	t.Helper()
+	s := secretOf(t, cp, "dev-kubelet-signer")
+	s.Data = map[string][]byte{lodiav1alpha1.TLSCertKey: mustPEM(t, c.Cert), lodiav1alpha1.TLSPrivateKeyKey: mustKeyPEM(t, c.Key)}
+	if err := k8s.Update(t.Context(), s); err != nil {
 		t.Fatal(err)
 	}
 }
