@@ -538,7 +538,7 @@ func (t *tenant) clientBundle(signer, stored, requests *certs.Certificate) []*x5
 		switch {
 		case !c.IsCA || c.Equal(ca):
 		case isRequestCA:
-			if stamp < current {
+			if stamp < current && c.CheckSignatureFrom(c) == nil {
 				predecessors = append(predecessors, c)
 			}
 		case certs.Verify(c, ca, t.now) == nil && t.now.Before(replaced.Add(certs.KubeletClientLifetime)):

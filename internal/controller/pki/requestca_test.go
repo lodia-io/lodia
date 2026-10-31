@@ -189,29 +189,40 @@ func TestEachClientBundleRuleKeepsOnlyItsOwnPredecessors(t *testing.T) {
 	}
 }
 
-func TestOnlyAnOlderRequestCAIsKeptAsAPredecessor(t *testing.T) {
+func TestOnlyAnOlderRootUnderTheRequestCAsNameIsAPredecessor(t *testing.T) {
 	r := newReconciler(time.Hour)
 	cp := controlPlane(t, "kcr-request-ca-foreign")
 	reconcile(t, r, cp)
 	secrets := secretsOf(t, cp)
-	clientCA, signer := parseTLS(t, secrets["dev-cakey-client"]).Cert, parseTLS(t, secrets["dev-kubelet-signer"]).Cert
+	client := parseTLS(t, secrets["dev-cakey-client"])
+	signer := parseTLS(t, secrets["dev-kubelet-signer"]).Cert
 	requests := parseTLS(t, secrets["dev-cakey-kubeconfig-requests"]).Cert
-	var roots []*x509.Certificate
-	for _, name := range []string{"kubeconfig-requests-ca@1", "someone-ca@1", "client-ca@1", "kubeconfig-requests-ca@9223372036854775807"} {
+	var roots []*certs.Certificate
+	for _, name := range []string{"kubeconfig-requests-ca@1", "kubeconfig-requests-ca@9", "someone-ca@1", "client-ca@1", "kubeconfig-requests-ca@9223372036854775807", requests.Subject.CommonName} {
 		c, err := certs.NewCA(name, time.Now().Add(-time.Hour), 2*time.Hour)
 		if err != nil {
 			t.Fatal(err)
 		}
-		roots = append(roots, c.Cert)
+		roots = append(roots, c)
 	}
-	leaf := leafOf(t, secrets["dev-lodia-kubeconfig"]).Cert
-	old := secrets["dev-client-ca"]
-	old.Data = map[string][]byte{lodiav1alpha1.CACertKey: mustBundle(t, clientCA, signer, requests, roots[0], roots[1], roots[2], roots[3], leaf)}
-	if err := k8s.Update(t.Context(), old); err != nil {
+	old := []*x509.Certificate{client.Cert, signer, requests, leafOf(t, secrets["dev-lodia-kubeconfig"]).Cert}
+	for _, c := range roots {
+		old = append(old, c.Cert)
+	}
+	for i, ca := range []*certs.Certificate{roots[2], client} {
+		c, err := ca.Issue(certs.Profile{CommonName: "kubeconfig-requests-ca@" + strconv.Itoa(i+2), CA: true}, time.Now(), time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		old = append(old, c.Cert)
+	}
+	bundle := secrets["dev-client-ca"]
+	bundle.Data = map[string][]byte{lodiav1alpha1.CACertKey: mustBundle(t, old...)}
+	if err := k8s.Update(t.Context(), bundle); err != nil {
 		t.Fatal(err)
 	}
 	reconcile(t, r, cp)
-	expectBundle(t, cp, clientCA, signer, requests, roots[0])
+	expectBundle(t, cp, client.Cert, signer, requests, roots[0].Cert, roots[1].Cert)
 }
 
 func TestEachRequestCAIsKeptByItsOwnSuccessor(t *testing.T) {
