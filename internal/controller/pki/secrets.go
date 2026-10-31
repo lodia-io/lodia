@@ -452,11 +452,11 @@ func (r *Reconciler) notice(t *tenant, ca *x509.Certificate) {
 
 // clientCAs keeps the kubelet signer and the request CA like leaves. A new
 // signer is written only after the client CA bundle that trusts it, as the
-// controller manager signs with it at once. The bundle holds only a stored
-// request CA, as the kubeconfig request reconciler signs only with one the
-// bundle holds: a new one is written at the end of the pass, and the next
-// pass, which that write starts, adds it, so a failed write adds nothing. The
-// signer is matched by no subject, since every signer gets a new one. A
+// controller manager signs with it at once. The bundle adds a request CA only
+// once its key is stored, as the kubeconfig request reconciler signs only with
+// one the bundle holds: a new one is written at the end of the pass, and the
+// next pass, which that write starts, adds it, so a failed write adds nothing.
+// The signer is matched by no subject, since every signer gets a new one. A
 // request CA that cannot be read is replaced at once: the bundle keeps the old
 // one for every certificate it signed.
 func (r *Reconciler) clientCAs(ctx context.Context, t *tenant) error {
