@@ -494,7 +494,7 @@ func (r *Reconciler) clientCAs(ctx context.Context, t *tenant) error {
 	current := signer != nil && t.current(signer, t.cas[clientCA], certs.Profile{CommonName: signer.Cert.Subject.CommonName, CA: true})
 	next := t.existing[t.name(kubeletSignerNext)]
 	pending := t.signer(next)
-	if current || pending != nil && !overwritable(next) {
+	if current || pending != nil && next.Type != corev1.SecretTypeTLS {
 		pending = nil
 	}
 	t.next = pending
@@ -584,7 +584,8 @@ func appliedAt(s *corev1.Secret) time.Time {
 // writes <cp>-kubelet-signer and then deletes <cp>-kubelet-signer-next, which a
 // restart in between leaves equal to it for the next pass to delete. A
 // <cp>-kubelet-signer-next that an apply cannot overwrite is deleted before
-// a new signer is staged in it.
+// a new signer is staged in it; one that holds the pending signer is kept,
+// since the apply changes only its metadata.
 func (r *Reconciler) kubeletSigner(ctx context.Context, t *tenant) error {
 	if t.promote {
 		if err := r.applyTLS(ctx, t, t.secret(lodiav1alpha1.KubeletSignerSecret), t.next, nil, false); err != nil {
@@ -598,7 +599,7 @@ func (r *Reconciler) kubeletSigner(ctx context.Context, t *tenant) error {
 		r.remove(ctx, t, s)
 		return nil
 	}
-	if s != nil && !overwritable(s) {
+	if kept := t.signer(s); s != nil && !overwritable(s) && (kept == nil || !kept.Cert.Equal(t.next.Cert)) {
 		r.remove(ctx, t, s)
 		delete(t.existing, name)
 	}

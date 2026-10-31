@@ -141,6 +141,7 @@ func TestEveryStateOfASignerReplacementSurvivesEachRefusedWrite(t *testing.T) {
 		{"opaque-next", nextSecret(corev1.SecretTypeOpaque, false, false), false},
 		{"immutable-next", nextSecret(corev1.SecretTypeTLS, true, false), false},
 		{"opaque-pending", nextSecret(corev1.SecretTypeOpaque, false, true), false},
+		{"immutable-pending", nextSecret(corev1.SecretTypeTLS, true, true), false},
 	} {
 		t.Run(state.name, func(t *testing.T) {
 			t.Parallel()
@@ -184,9 +185,12 @@ func replaceSigner(t *testing.T, namespace string, prepare func(*testing.T, *lod
 	prepare(t, cp)
 	clientCA := parseTLS(t, secretsOf(t, cp)["dev-cakey-client"]).Cert
 	start := readSigner(t, cp)
+	isSigner := func(c *x509.Certificate) bool {
+		return c.IsCA && c.MaxPathLenZero && certs.Verify(c, clientCA, time.Now()) == nil
+	}
 	var initial []*x509.Certificate
 	for _, c := range start.bundle {
-		if c.IsCA && c.MaxPathLenZero && certs.Verify(c, clientCA, time.Now()) == nil {
+		if isSigner(c) {
 			initial = append(initial, c)
 		}
 	}
@@ -222,6 +226,11 @@ func replaceSigner(t *testing.T, namespace string, prepare func(*testing.T, *lod
 				t.Errorf("pass %d dropped %s before it expired", pass, c.Subject.CommonName)
 			}
 		}
+		for _, c := range before.pending {
+			if isSigner(c) && !containsCert(after.next, c) && !containsCert(after.signer, c) {
+				t.Errorf("pass %d lost the pending signer %s", pass, c.Subject.CommonName)
+			}
+		}
 		if len(after.signer) == 1 && (len(before.signer) != 1 || !after.signer[0].Equal(before.signer[0])) {
 			if !containsCert(before.bundle, after.signer[0]) || end.Before(before.applied.Add(propagation)) {
 				t.Errorf("pass %d wrote %s to dev-kubelet-signer before the bundle had held it unchanged for %s", pass, after.signer[0].Subject.CommonName, propagation)
@@ -252,10 +261,10 @@ func replaceSigner(t *testing.T, namespace string, prepare func(*testing.T, *lod
 }
 
 type signerState struct {
-	signer, next, bundle []*x509.Certificate
-	staged               bool
-	applied              time.Time
-	versions             string
+	signer, next, pending, bundle []*x509.Certificate
+	staged                        bool
+	applied                       time.Time
+	versions                      string
 }
 
 func readSigner(t *testing.T, cp *lodiav1alpha1.ControlPlane) signerState {
@@ -279,6 +288,9 @@ func readSigner(t *testing.T, cp *lodiav1alpha1.ControlPlane) signerState {
 			state.staged = true
 			if c, err := certs.Parse(s.Data[lodiav1alpha1.TLSCertKey], s.Data[lodiav1alpha1.TLSPrivateKeyKey]); err == nil {
 				state.next = []*x509.Certificate{c.Cert}
+				if s.Type == corev1.SecretTypeTLS {
+					state.pending = state.next
+				}
 			}
 		default:
 			bundle, err := certs.ParseCerts(s.Data[lodiav1alpha1.CACertKey])
@@ -621,6 +633,42 @@ func TestAStagedSignerWithoutLabelsOrOwnerIsAdopted(t *testing.T) {
 	if !containsCert(bundle, next) {
 		t.Error("the adopted staged signer is not in the client CA bundle")
 	}
+}
+
+func TestATrustedPendingSignerMadeImmutableKeepsItsKey(t *testing.T) {
+	r := newReconciler(time.Hour)
+	r.SignerPropagation = time.Hour
+	cp := controlPlane(t, "signer-next-immutable")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	dueSigner(t, cp)
+	reconcileOnce(t, r, cp)
+	reconcileOnce(t, r, cp)
+	s := secretsOf(t, cp)["dev-kubelet-signer-next"]
+	next := parseTLS(t, s).Cert
+	s.Immutable = new(true)
+	if err := k8s.Update(t.Context(), s); err != nil {
+		t.Fatal(err)
+	}
+	before := secretsOf(t, cp)["dev-client-ca"].Data[lodiav1alpha1.CACertKey]
+	for range 3 {
+		reconcileOnce(t, r, cp)
+	}
+	secrets := secretsOf(t, cp)
+	if n := secrets["dev-kubelet-signer-next"]; n == nil || n.UID != s.UID {
+		t.Fatal("a trusted pending signer made immutable was deleted")
+	}
+	if got := secrets["dev-client-ca"].Data[lodiav1alpha1.CACertKey]; !bytes.Equal(got, before) {
+		bundle, _ := certs.ParseCerts(got)
+		t.Errorf("the client CA bundle changed to %v while its pending signer was immutable", subjects(bundle))
+	}
+	backdate(t, cp, time.Hour+time.Second)
+	reconcileOnce(t, r, cp)
+	secrets = secretsOf(t, cp)
+	if s := secrets["dev-kubelet-signer"]; !parseTLS(t, s).Cert.Equal(next) || secrets["dev-kubelet-signer-next"] != nil {
+		t.Fatal("the immutable pending signer was not promoted")
+	}
+	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
 }
 
 func TestAPendingSignerNoReplacementNeedsIsDeleted(t *testing.T) {
