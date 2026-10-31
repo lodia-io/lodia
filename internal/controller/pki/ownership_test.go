@@ -299,9 +299,14 @@ func TestKeyMaterialPKICannotReadIsNeverReplaced(t *testing.T) {
 			cp := controlPlane(t, fmt.Sprintf("pki-unreadable-%d", i))
 			publishEndpoint(t, cp)
 			reconcile(t, r, cp)
-			s := secretsOf(t, cp)[c.secret]
+			secrets := secretsOf(t, cp)
+			s := secrets[c.secret]
 			s.Data = c.data
 			if err := k8s.Update(t.Context(), s); err != nil {
+				t.Fatal(err)
+			}
+			lost := parseTLS(t, secrets["dev-cakey-kubeconfig-requests"]).Cert
+			if err := k8s.Delete(t.Context(), secrets["dev-cakey-kubeconfig-requests"]); err != nil {
 				t.Fatal(err)
 			}
 			reconcile(t, r, cp)
@@ -309,9 +314,15 @@ func TestKeyMaterialPKICannotReadIsNeverReplaced(t *testing.T) {
 			if got.Reason != lodiav1alpha1.ReasonSecretUnreadable || !strings.Contains(got.Message, c.secret) {
 				t.Fatalf("CertificatesReady is %s: %s", got.Reason, got.Message)
 			}
-			if !maps.EqualFunc(secretsOf(t, cp)[c.secret].Data, c.data, bytes.Equal) {
+			after := secretsOf(t, cp)
+			if !maps.EqualFunc(after[c.secret].Data, c.data, bytes.Equal) {
 				t.Errorf("%s, which PKI cannot read, was replaced", c.secret)
 			}
+			if after["dev-cakey-kubeconfig-requests"] == nil {
+				t.Fatalf("%s, which PKI cannot read, kept the lost request CA from being replaced", c.secret)
+			}
+			stored := parseTLS(t, after["dev-cakey-kubeconfig-requests"]).Cert
+			expectBundle(t, cp, parseTLS(t, after["dev-cakey-client"]).Cert, parseTLS(t, after["dev-kubelet-signer"]).Cert, stored, lost)
 		})
 	}
 }
