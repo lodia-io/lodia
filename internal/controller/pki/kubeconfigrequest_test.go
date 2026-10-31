@@ -635,42 +635,7 @@ func TestAWaitForCertificatesEndsOnEachOfItsSecrets(t *testing.T) {
 	enforce(t)
 	ctx := t.Context()
 	cp := issuable(t, "kcr-secret-watch")
-	options, err := operator.Cache()
-	if err != nil {
-		t.Fatal(err)
-	}
-	options.DefaultNamespaces = map[string]cache.Config{cp.Namespace: {}}
-	options.ReaderFailOnMissingInformer = true
-	mgr, err := ctrl.NewManager(controllerCfg, ctrl.Options{
-		Scheme:                 scheme,
-		Metrics:                metricsserver.Options{BindAddress: "0"},
-		HealthProbeBindAddress: "0",
-		Cache:                  options,
-		Controller:             config.Controller{SkipNameValidation: new(true)},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	requests := &pki.KubeconfigRequestReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Clock: clocktesting.NewFakePassiveClock(time.Now())}
-	if err := requests.SetupWithManager(mgr, 1); err != nil {
-		t.Fatal(err)
-	}
-	managerCtx, cancel := context.WithCancel(ctx)
-	done := make(chan error, 1)
-	go func() { done <- mgr.Start(managerCtx) }()
-	t.Cleanup(func() {
-		cancel()
-		if err := <-done; err != nil {
-			t.Error(err)
-		}
-	})
-	waitForReady := func(kr *lodiav1alpha1.KubeconfigRequest, status metav1.ConditionStatus, reason string) {
-		t.Helper()
-		waitFor(t, 30*time.Second, func() bool {
-			c := meta.FindStatusCondition(freshRequest(t, kr).Status.Conditions, lodiav1alpha1.ConditionReady)
-			return c != nil && c.Status == status && c.Reason == reason
-		})
-	}
+	reads := startRequests(t, cp.Namespace)
 	remove := func(name string) *corev1.Secret {
 		t.Helper()
 		s := secretsOf(t, cp)[name]
@@ -683,7 +648,8 @@ func TestAWaitForCertificatesEndsOnEachOfItsSecrets(t *testing.T) {
 	for _, name := range []string{"dev-cakey-kubeconfig-requests", "dev-ca-bundle"} {
 		saved := remove(name)
 		restored := kubeconfigRequest(t, cp, p256(t))
-		waitForReady(restored, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates)
+		waitForReady(t, restored, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates)
+		reads.after(t, restored, name)
 		if err := k8s.Create(ctx, &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: saved.Name, Namespace: saved.Namespace, Labels: saved.Labels, OwnerReferences: saved.OwnerReferences},
 			Type:       saved.Type,
@@ -691,18 +657,19 @@ func TestAWaitForCertificatesEndsOnEachOfItsSecrets(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		waitForReady(restored, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+		waitForReady(t, restored, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
 	}
 
 	remove("dev-cakey-kubeconfig-requests")
 	replaced := kubeconfigRequest(t, cp, p256(t))
-	waitForReady(replaced, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates)
+	waitForReady(t, replaced, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates)
+	reads.after(t, replaced, "dev-cakey-kubeconfig-requests")
 	before := freshControlPlane(t, cp).ResourceVersion
 	reconcile(t, newReconciler(time.Hour), cp)
 	if after := freshControlPlane(t, cp).ResourceVersion; after != before {
 		t.Fatalf("PKI's pass wrote the ControlPlane: resourceVersion %s, then %s", before, after)
 	}
-	waitForReady(replaced, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+	waitForReady(t, replaced, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
 
 	untrusted, err := certs.NewCA("kubeconfig-requests-ca@"+strconv.FormatInt(time.Now().UnixNano(), 10), time.Now(), time.Hour)
 	if err != nil {
@@ -714,7 +681,8 @@ func TestAWaitForCertificatesEndsOnEachOfItsSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	trusted := kubeconfigRequest(t, cp, p256(t))
-	waitForReady(trusted, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates)
+	waitForReady(t, trusted, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates)
+	reads.after(t, trusted, "dev-client-ca")
 	bundle := secretsOf(t, cp)["dev-client-ca"]
 	held, err := certs.ParseCerts(bundle.Data[lodiav1alpha1.CACertKey])
 	if err != nil {
@@ -724,7 +692,7 @@ func TestAWaitForCertificatesEndsOnEachOfItsSecrets(t *testing.T) {
 	if err := k8s.Update(ctx, bundle); err != nil {
 		t.Fatal(err)
 	}
-	waitForReady(trusted, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+	waitForReady(t, trusted, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
 	if cert, _ := issued(t, freshRequest(t, trusted)); certs.Verify(cert, untrusted.Cert, time.Now()) != nil {
 		t.Error("the request was not signed by the request CA the bundle came to hold")
 	}
