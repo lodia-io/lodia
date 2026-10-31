@@ -277,6 +277,13 @@ func replaceSigner(t *testing.T, namespace string, prepare func(*testing.T, *lod
 				t.Errorf("pass %d added %s, whose key was not stored when it began", pass, c.Subject.CommonName)
 			}
 		}
+		if !bytes.Equal(mustBundle(t, after.bundle...), mustBundle(t, before.bundle...)) {
+			for _, c := range after.bundle {
+				if !c.Equal(clientCA) && !strings.HasPrefix(c.Subject.CommonName, "kubeconfig-requests-ca@") && !isSigner(c) {
+					t.Errorf("after pass %d the bundle holds %s, no valid signer the client CA signed", pass, c.Subject.CommonName)
+				}
+			}
+		}
 		var gained []string
 		for _, c := range after.bundle {
 			if c.IsCA && c.MaxPathLenZero && !containsCert(start.bundle, c) {
