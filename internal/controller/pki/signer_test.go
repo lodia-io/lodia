@@ -547,21 +547,7 @@ func TestASecretQuotaHoldsTheStagedSignerUntilItGoes(t *testing.T) {
 	reconcile(t, settle, cp)
 	due := dueSigner(t, cp)
 	before := secretsOf(t, cp)["dev-client-ca"].Data[lodiav1alpha1.CACertKey]
-
-	full := corev1.ResourceList{"count/secrets": resource.MustParse(strconv.Itoa(len(namespaceSecrets(t, cp.Namespace))))}
-	quota := &corev1.ResourceQuota{ObjectMeta: metav1.ObjectMeta{Name: "secrets", Namespace: cp.Namespace}, Spec: corev1.ResourceQuotaSpec{Hard: full}}
-	if err := k8s.Create(ctx, quota); err != nil {
-		t.Fatal(err)
-	}
-	quota.Status = corev1.ResourceQuotaStatus{Hard: full, Used: full}
-	if err := k8s.Status().Update(ctx, quota); err != nil {
-		t.Fatal(err)
-	}
-	waitFor(t, 30*time.Second, func() bool {
-		probe := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: cp.Namespace}}
-		err := k8s.Create(ctx, probe, client.DryRunAll)
-		return err != nil && strings.Contains(err.Error(), "exceeded quota")
-	})
+	quota := fillSecretQuota(t, cp)
 
 	options, err := operator.Cache()
 	if err != nil {
@@ -630,4 +616,62 @@ func TestASecretQuotaHoldsTheStagedSignerUntilItGoes(t *testing.T) {
 		t.Fatal(err)
 	}
 	expectBundle(t, cp, append(was, parseTLS(t, secretsOf(t, cp)["dev-kubelet-signer"]).Cert)...)
+}
+
+func TestASecretQuotaRefusingTheStagedSignerLetsTheRequestCARenew(t *testing.T) {
+	r := newReconciler(time.Hour)
+	r.SignerPropagation = time.Hour
+	cp := controlPlane(t, "signer-quota-requests")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	due := dueSigner(t, cp)
+	issued := time.Now().Add(-50 * time.Minute)
+	requests, err := certs.NewCA("kubeconfig-requests-ca@"+strconv.FormatInt(issued.UnixNano(), 10), issued, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := secretsOf(t, cp)["dev-cakey-kubeconfig-requests"]
+	s.Data = map[string][]byte{lodiav1alpha1.TLSCertKey: mustPEM(t, requests.Cert), lodiav1alpha1.TLSPrivateKeyKey: mustKeyPEM(t, requests.Key)}
+	if err := k8s.Update(t.Context(), s); err != nil {
+		t.Fatal(err)
+	}
+	fillSecretQuota(t, cp)
+	for range 3 {
+		reconcileFails(t, r, cp)
+	}
+	secrets := secretsOf(t, cp)
+	renewed := parseTLS(t, secrets["dev-cakey-kubeconfig-requests"]).Cert
+	if renewed.Equal(requests.Cert) {
+		t.Fatal("a due request CA was not renewed while the quota refused the staged signer")
+	}
+	bundle, err := certs.ParseCerts(secrets["dev-client-ca"].Data[lodiav1alpha1.CACertKey])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsCert(bundle, renewed) || !parseTLS(t, secrets["dev-kubelet-signer"]).Cert.Equal(due) || secrets["dev-kubelet-signer-next"] != nil {
+		t.Errorf("under the quota the bundle holds %v, or the signer changed, or a pending signer was written", subjects(bundle))
+	}
+	if c := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady); c.Reason != lodiav1alpha1.ReasonIssuing || c.Message != "not written yet: dev-kubelet-signer-next; the error is in the log" {
+		t.Errorf("CertificatesReady is %s: %s", c.Reason, c.Message)
+	}
+}
+
+func fillSecretQuota(t *testing.T, cp *lodiav1alpha1.ControlPlane) *corev1.ResourceQuota {
+	t.Helper()
+	ctx := t.Context()
+	full := corev1.ResourceList{"count/secrets": resource.MustParse(strconv.Itoa(len(namespaceSecrets(t, cp.Namespace))))}
+	quota := &corev1.ResourceQuota{ObjectMeta: metav1.ObjectMeta{Name: "secrets", Namespace: cp.Namespace}, Spec: corev1.ResourceQuotaSpec{Hard: full}}
+	if err := k8s.Create(ctx, quota); err != nil {
+		t.Fatal(err)
+	}
+	quota.Status = corev1.ResourceQuotaStatus{Hard: full, Used: full}
+	if err := k8s.Status().Update(ctx, quota); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 30*time.Second, func() bool {
+		probe := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: cp.Namespace}}
+		err := k8s.Create(ctx, probe, client.DryRunAll)
+		return err != nil && strings.Contains(err.Error(), "exceeded quota")
+	})
+	return quota
 }

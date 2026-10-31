@@ -11,6 +11,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"maps"
 	"net"
@@ -125,8 +126,9 @@ type tenant struct {
 	promote    bool
 	signerLost bool
 	promotion  time.Time
-	// writeErr is the pass's first failed write. No write follows it, and
-	// pending names what the pass had to change but did not write.
+	// writeErr is the pass's first failed write, joined with a failed late
+	// write's. No write follows it but the other late write, and pending
+	// names what the pass had to change but did not write.
 	writeErr error
 	pending  []string
 }
@@ -303,9 +305,9 @@ func (t *tenant) leaf(certPEM, keyPEM []byte, ca *certs.Certificate, p certs.Pro
 }
 
 // issue writes the encryption configuration, then the kubelet signer's staged
-// writes, then the request CA last: an unsupported provider blocks nothing
-// else, and a refused write of a Secret a replacement creates, the one a
-// Secret quota refuses, blocks no other.
+// writes and the request CA last, neither after the other's failure: an
+// unsupported provider blocks nothing else, and a refused write of a Secret a
+// replacement creates, the one a Secret quota refuses, blocks no other.
 func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 	for _, ca := range caBundles {
 		if err := r.ca(ctx, t, ca.ca, ca.bundle); err != nil {
@@ -384,10 +386,19 @@ func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 	if t.requests == nil {
 		return nil
 	}
+	early := t.writeErr
 	if err := r.kubeletSigner(ctx, t); err != nil {
 		return err
 	}
-	return r.applyTLS(ctx, t, t.name("cakey-"+requestCA), t.requests, nil, false)
+	signerErr := t.writeErr
+	t.writeErr = early
+	if err := r.applyTLS(ctx, t, t.name("cakey-"+requestCA), t.requests, nil, false); err != nil {
+		return err
+	}
+	if early == nil {
+		t.writeErr = errors.Join(signerErr, t.writeErr)
+	}
+	return nil
 }
 
 // ca creates a CA only for a tenant with neither its key Secret nor its
