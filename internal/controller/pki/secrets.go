@@ -306,8 +306,8 @@ func (t *tenant) leaf(certPEM, keyPEM []byte, ca *certs.Certificate, p certs.Pro
 
 // issue writes the encryption configuration, then the kubelet signer's staged
 // writes and the request CA last, neither after the other's failure: an
-// unsupported provider blocks nothing else, and a refused write of a Secret a
-// replacement creates, the one a Secret quota refuses, blocks no other.
+// unsupported provider blocks nothing else, and the staged signer's writes and
+// the request CA's do not block each other.
 func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 	for _, ca := range caBundles {
 		if err := r.ca(ctx, t, ca.ca, ca.bundle); err != nil {
@@ -481,13 +481,14 @@ func (r *Reconciler) notice(t *tenant, ca *x509.Certificate) {
 
 // clientCAs keeps the client CA bundle, the kubelet signer and the request CA.
 // The bundle adds a signer or a request CA only once its key is stored. A
-// tenant with neither the bundle nor a pending signer is a fresh one: its
-// first signer is written before the bundle that trusts it, since no
-// component runs before the bundle exists; every later one is staged. A new
-// request CA is written at the end of the pass, and the next pass, which that
-// write starts, adds it, as the kubeconfig request reconciler signs only with
-// one the bundle holds. A request CA that cannot be read is replaced at once:
-// the bundle keeps the old one for every certificate it signed.
+// tenant with neither the bundle, a usable signer nor a pending signer is a
+// fresh one: its first signer is written before the bundle that trusts it,
+// since no component runs before the bundle exists; every later one is
+// staged. A new request CA is written at the end of the pass, and the next
+// pass, which that write starts, adds it, as the kubeconfig request
+// reconciler signs only with one the bundle holds. A request CA that cannot
+// be read is replaced at once: the bundle keeps the old one for every
+// certificate it signed.
 func (r *Reconciler) clientCAs(ctx context.Context, t *tenant) error {
 	signerName := t.secret(lodiav1alpha1.KubeletSignerSecret)
 	signer := t.signer(t.existing[signerName])

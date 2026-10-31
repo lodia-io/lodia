@@ -193,4 +193,4 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 ## From the staged kubelet signer (2026-10-31)
 
 - A new etcd certificate generation is five Secrets created in the middle of PKI's pass, so a Secret quota that refuses them skips every write after them, the staged kubelet signer and the request CA's renewal included, though the renewal is an update the quota admits; a tenant's first renewal makes them all due at once.
-  Creating a generation among the late writes would leave only the generation waiting.
+  Creating a generation among the late writes would let a refused generation block no other write.
