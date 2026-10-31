@@ -41,6 +41,7 @@ const (
 	clientCA     = "client"
 	frontProxyCA = "front-proxy"
 	etcdCA       = "etcd"
+	requestCA    = "kubeconfig-requests"
 )
 
 // A CA's bundle proves the tenant had that CA, so a CA is created only when
@@ -59,7 +60,7 @@ var caBundles = []struct {
 // <cp>-etcd-<role>-<g>. They are reserved: PKI finds them by name, labelled or
 // not.
 var names = func() []string {
-	names := []string{"cakey-cluster", "cakey-client", "cakey-front-proxy", "cakey-etcd"}
+	names := []string{"cakey-cluster", "cakey-client", "cakey-front-proxy", "cakey-etcd", "cakey-kubeconfig-requests"}
 	for _, s := range lodiav1alpha1.PKISecrets() {
 		names = append(names, string(s))
 	}
@@ -307,7 +308,7 @@ func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 	}
 
 	if cl != nil {
-		if err := r.kubeletSigner(ctx, t); err != nil {
+		if err := r.clientCAs(ctx, t); err != nil {
 			return err
 		}
 	}
@@ -410,23 +411,36 @@ func (r *Reconciler) notice(t *tenant, ca *x509.Certificate) {
 	t.wakeAt(ca.NotAfter)
 }
 
-// kubeletSigner compares no subject, since every signer gets a new one, and
-// writes a new signer only after the client CA bundle that trusts it.
-func (r *Reconciler) kubeletSigner(ctx context.Context, t *tenant) error {
-	name := t.secret(lodiav1alpha1.KubeletSignerSecret)
+// clientCAs keeps the kubelet signer and the request CA like leaves, and
+// writes a new one only after the client CA bundle that trusts it. The signer
+// is matched by no subject, since every signer gets a new one. A request CA
+// that cannot be read is replaced at once: the bundle keeps the old one for
+// every certificate it signed.
+func (r *Reconciler) clientCAs(ctx context.Context, t *tenant) error {
+	signerName, requestsName := t.secret(lodiav1alpha1.KubeletSignerSecret), t.name("cakey-"+requestCA)
 	ca := t.cas[clientCA]
-	s := t.existing[name]
-	c, err := certs.Parse(data(s, lodiav1alpha1.TLSCertKey), data(s, lodiav1alpha1.TLSPrivateKeyKey))
-	if err != nil || !c.Cert.MaxPathLenZero || !t.current(c, ca, certs.Profile{CommonName: c.Cert.Subject.CommonName, CA: true}) {
-		if c, err = ca.Issue(certs.Profile{CommonName: t.stamp("kubelet-signer"), CA: true}, t.now, r.LeafLifetime); err != nil {
+	s := t.existing[signerName]
+	signer, err := certs.Parse(data(s, lodiav1alpha1.TLSCertKey), data(s, lodiav1alpha1.TLSPrivateKeyKey))
+	if err != nil || !signer.Cert.MaxPathLenZero || !t.current(signer, ca, certs.Profile{CommonName: signer.Cert.Subject.CommonName, CA: true}) {
+		if signer, err = ca.Issue(certs.Profile{CommonName: t.stamp("kubelet-signer"), CA: true}, t.now, r.LeafLifetime); err != nil {
 			return err
 		}
 	}
-	t.renew(c.Cert, ca.Cert)
-	if err := r.bundle(ctx, t, t.secret(lodiav1alpha1.ClientCASecret), t.clientBundle(c)...); err != nil {
+	t.renew(signer.Cert, ca.Cert)
+	requests := readCA(t.existing[requestsName])
+	if requests == nil || !t.now.Before(certs.RenewalTime(requests.Cert)) {
+		if requests, err = certs.NewCA(t.stamp(requestCA+"-ca"), t.now, r.LeafLifetime); err != nil {
+			return err
+		}
+	}
+	t.wakeAt(certs.RenewalTime(requests.Cert))
+	if err := r.bundle(ctx, t, t.secret(lodiav1alpha1.ClientCASecret), t.clientBundle(signer, requests)...); err != nil {
 		return err
 	}
-	return r.applyTLS(ctx, t, name, c, nil, false)
+	if err := r.applyTLS(ctx, t, signerName, signer, nil, false); err != nil {
+		return err
+	}
+	return r.applyTLS(ctx, t, requestsName, requests, nil, false)
 }
 
 func (r *Reconciler) tls(ctx context.Context, t *tenant, name string, ca *certs.Certificate, p certs.Profile) error {
@@ -461,14 +475,19 @@ func (r *Reconciler) bundle(ctx context.Context, t *tenant, name string, bundle 
 }
 
 // clientBundle keeps each replaced signer for one signing duration, since
-// kubelets present only their leaf.
-func (t *tenant) clientBundle(signer *certs.Certificate) []*x509.Certificate {
+// kubelets present only their leaf, and each replaced request CA, a root of
+// its own, for the longest a request lives.
+func (t *tenant) clientBundle(signer, requests *certs.Certificate) []*x509.Certificate {
 	ca := t.cas[clientCA].Cert
-	bundle := []*x509.Certificate{ca, signer.Cert}
+	bundle := []*x509.Certificate{ca, signer.Cert, requests.Cert}
 	previous, _ := certs.ParseCerts(data(t.existing[t.secret(lodiav1alpha1.ClientCASecret)], lodiav1alpha1.CACertKey))
-	replaced := signer.Cert.NotBefore.Add(certs.Backdate)
+	signerReplaced, requestsReplaced := signer.Cert.NotBefore.Add(certs.Backdate), requests.Cert.NotBefore.Add(certs.Backdate)
 	for _, c := range previous {
-		if c.IsCA && !c.Equal(ca) && certs.Verify(c, ca, t.now) == nil && t.now.Before(replaced.Add(certs.KubeletClientLifetime)) {
+		if !c.IsCA || c.Equal(ca) {
+			continue
+		}
+		if certs.Verify(c, ca, t.now) == nil && t.now.Before(signerReplaced.Add(certs.KubeletClientLifetime)) ||
+			c.CheckSignatureFrom(c) == nil && t.now.Before(requestsReplaced.Add(certs.KubeconfigRequestLifetime)) {
 			bundle = append(bundle, c)
 		}
 	}

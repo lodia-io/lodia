@@ -281,7 +281,7 @@ func TestEveryCertificateVerifiesAgainstItsCA(t *testing.T) {
 		}
 		return c
 	}
-	cluster, clientCA, frontProxy, etcd := ca("cluster"), ca("client"), ca("front-proxy"), ca("etcd")
+	cluster, clientCA, frontProxy, etcd, requests := ca("cluster"), ca("client"), ca("front-proxy"), ca("etcd"), ca("kubeconfig-requests")
 	ns, n := cp.Namespace, "dev-etcd"
 	forms := func(names ...string) []string {
 		var out []string
@@ -358,7 +358,7 @@ func TestEveryCertificateVerifiesAgainstItsCA(t *testing.T) {
 			}
 		})
 	}
-	for name, c := range map[string]*x509.Certificate{"cluster": cluster, "client": clientCA, "front-proxy": frontProxy, "etcd": etcd} {
+	for name, c := range map[string]*x509.Certificate{"cluster": cluster, "client": clientCA, "front-proxy": frontProxy, "etcd": etcd, "kubeconfig-requests": requests} {
 		if issued := c.NotBefore.Add(certs.Backdate); issued.Before(start.Add(-time.Second)) || issued.After(time.Now()) {
 			t.Errorf("the %s CA is valid from %s, want five minutes before its issuance", name, c.NotBefore)
 		}
@@ -370,7 +370,7 @@ func TestEveryCertificateVerifiesAgainstItsCA(t *testing.T) {
 		certs  []*x509.Certificate
 	}{
 		{"dev-ca-bundle", []*x509.Certificate{cluster}},
-		{"dev-client-ca", []*x509.Certificate{signer, clientCA}},
+		{"dev-client-ca", []*x509.Certificate{signer, clientCA, requests}},
 		{"dev-front-proxy-ca", []*x509.Certificate{frontProxy}},
 		{"dev-etcd-ca", []*x509.Certificate{etcd}},
 		{"dev-etcd-ca-1", []*x509.Certificate{etcd}},
@@ -596,7 +596,7 @@ func TestLeavesRenewAtTwoThirdsOfTheirLifetime(t *testing.T) {
 	for name, s := range after {
 		prev := before[name]
 		generation := s.Labels[lodiav1alpha1.EtcdCertificatesLabel] != ""
-		unchanged := strings.Contains(name, "-cakey-") || generation ||
+		unchanged := strings.Contains(name, "-cakey-") && name != "dev-cakey-kubeconfig-requests" || generation ||
 			slices.Contains([]string{"dev-ca-bundle", "dev-front-proxy-ca", "dev-etcd-ca", "dev-sa-keys", "dev-encryption-config"}, name)
 		switch {
 		case prev == nil:
@@ -623,13 +623,17 @@ func TestLeavesRenewAtTwoThirdsOfTheirLifetime(t *testing.T) {
 		t.Fatalf("the kubelet signer was not re-issued under a new subject: %s", newSigner.Subject)
 	}
 	clientCA := parseTLS(t, after["dev-cakey-client"]).Cert
-	want, err := certs.Bundle(clientCA, newSigner, signer.Cert)
+	requests, newRequests := parseTLS(t, before["dev-cakey-kubeconfig-requests"]).Cert, parseTLS(t, after["dev-cakey-kubeconfig-requests"]).Cert
+	if newRequests.Subject.String() == requests.Subject.String() {
+		t.Fatalf("the request CA was not re-issued under a new subject: %s", newRequests.Subject)
+	}
+	want, err := certs.Bundle(clientCA, newSigner, signer.Cert, newRequests, requests)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := after["dev-client-ca"].Data[lodiav1alpha1.CACertKey]; !bytes.Equal(got, want) {
 		bundle, _ := certs.ParseCerts(got)
-		t.Errorf("the client CA bundle holds %v, want the client CA, the new signer and the old one", subjects(bundle))
+		t.Errorf("the client CA bundle holds %v, want the client CA, the new signer and request CA and the old ones", subjects(bundle))
 	}
 }
 
@@ -879,6 +883,7 @@ func secretTable(cp string) []secretRow {
 		{cp + "-cakey-client", corev1.SecretTypeTLS, tls, nil, false},
 		{cp + "-cakey-front-proxy", corev1.SecretTypeTLS, tls, nil, false},
 		{cp + "-cakey-etcd", corev1.SecretTypeTLS, tls, nil, false},
+		{cp + "-cakey-kubeconfig-requests", corev1.SecretTypeTLS, tls, nil, false},
 		{cp + "-ca-bundle", corev1.SecretTypeOpaque, []string{lodiav1alpha1.CACertKey}, nil, false},
 		{cp + "-client-ca", corev1.SecretTypeOpaque, []string{lodiav1alpha1.CACertKey}, nil, false},
 		{cp + "-kubelet-signer", corev1.SecretTypeTLS, tls, nil, false},

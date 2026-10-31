@@ -34,6 +34,11 @@ const Backdate = 5 * time.Minute
 // the client CA bundle.
 const KubeletClientLifetime = 30 * 24 * time.Hour
 
+// KubeconfigRequestLifetime is the longest a KubeconfigRequest lives, the
+// schema's maximum of spec.expirationSeconds, and so how long a replaced
+// request CA stays in the client CA bundle.
+const KubeconfigRequestLifetime = 24 * time.Hour
+
 type Certificate struct {
 	Cert *x509.Certificate
 	Key  *ecdsa.PrivateKey

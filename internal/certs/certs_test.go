@@ -8,8 +8,13 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
+
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"sigs.k8s.io/yaml"
 
 	"go.lodia.io/lodia/internal/certs"
 )
@@ -148,3 +153,17 @@ func TestACASignsAKeyItDoesNotHoldWithinItsOwnLifetime(t *testing.T) {
 	}
 }
 
+func TestTheLongestRequestIsTheSchemas(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "api", "crds", "lodia.io_kubeconfigrequests.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	crd := &apiextensionsv1.CustomResourceDefinition{}
+	if err := yaml.Unmarshal(raw, crd); err != nil {
+		t.Fatal(err)
+	}
+	maximum := crd.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"].Properties["expirationSeconds"].Maximum
+	if maximum == nil || *maximum != certs.KubeconfigRequestLifetime.Seconds() {
+		t.Errorf("spec.expirationSeconds is at most %v, want KubeconfigRequestLifetime's %v seconds", maximum, certs.KubeconfigRequestLifetime.Seconds())
+	}
+}

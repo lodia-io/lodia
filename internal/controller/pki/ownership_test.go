@@ -69,7 +69,7 @@ func TestAPredecessorsSecretsAreNeitherReadNorWritten(t *testing.T) {
 	reconcile(t, r, successor)
 	expectCondition(t, successor, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
 	fresh := secretsOf(t, successor)
-	for _, ca := range []string{"cluster", "client", "front-proxy", "etcd"} {
+	for _, ca := range []string{"cluster", "client", "front-proxy", "etcd", "kubeconfig-requests"} {
 		name := "dev-cakey-" + ca
 		if bytes.Equal(fresh[name].Data[lodiav1alpha1.TLSPrivateKeyKey], predecessor[name].Data[lodiav1alpha1.TLSPrivateKeyKey]) {
 			t.Errorf("the successor keeps the predecessor's %s CA key", ca)
