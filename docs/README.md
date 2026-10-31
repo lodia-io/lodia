@@ -473,7 +473,7 @@ Operator configuration (a file, mounted from a ConfigMap; the chart renders it f
 | `health.period` | how often Health probes each control plane and reads its leases; 10 seconds until the operator reads this file | 5s |
 | `health.failuresBeforeFalse` | failed passes in a row that turn `Reachable` False | 3 |
 | `health.silentAfter`, `health.holdFraction`, `health.releaseAfter` | when a node counts as silent, the share of silent nodes that starts the hold, how long the nodes must be back before it ends; the operator refuses to start when they break the margin of [controller-manager-hold](decisions/controller-manager-hold.md) | 20s, 0.6, 2m |
-| `pki.leafLifetime`, `pki.caLifetime`, `pki.trustAnchorLifetime` | leaf certificates and the kubelet signer; every CA but the cluster CA; the cluster CA ([staged-credential-rotation](decisions/staged-credential-rotation.md)) | 1 year, 5 years, 10 years |
+| `pki.leafLifetime`, `pki.caLifetime`, `pki.trustAnchorLifetime` | leaf certificates, the kubelet signer and the request CA; every other CA but the cluster CA; the cluster CA ([staged-credential-rotation](decisions/staged-credential-rotation.md)) | 1 year, 5 years, 10 years |
 | `kubeconfigRequests.maxExpiration` | the longest a `KubeconfigRequest`'s certificate lives, at most the schema's 24 h ([fields](api/controlplane.md#kubeconfigrequest)) | 24h |
 | `defaults.resources.<component>` | requests and limits per component | from the idle usage measured in phase 1 ([Capacity](operations.md#capacity)) |
 

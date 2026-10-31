@@ -1,7 +1,8 @@
 // Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package certs issues ECDSA P-256 CAs, leaf certificates and kubeconfigs.
+// Package certs issues CAs and leaf certificates with ECDSA P-256 keys, signs
+// certificates for keys it is given, and renders kubeconfigs.
 package certs
 
 import (
