@@ -965,7 +965,7 @@ func controlPlaneAt(t *testing.T, namespace string, endpoint lodiav1alpha1.Endpo
 func reconcile(t *testing.T, r *pki.Reconciler, cp *lodiav1alpha1.ControlPlane) ctrl.Result {
 	t.Helper()
 	initial := &corev1.Secret{}
-	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: cp.Namespace, Name: cp.Name + "-kubelet-signer-next"}, initial); client.IgnoreNotFound(err) != nil {
+	if err := client.IgnoreNotFound(k8s.Get(t.Context(), client.ObjectKey{Namespace: cp.Namespace, Name: cp.Name + "-kubelet-signer-next"}, initial)); err != nil {
 		t.Fatal(err)
 	}
 	reconcileOnce(t, r, cp)
