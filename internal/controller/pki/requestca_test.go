@@ -499,7 +499,7 @@ func TestARequestCAIsWrittenLastAndJoinsTheBundleOnTheNextPass(t *testing.T) {
 
 func expectBundle(t *testing.T, cp *lodiav1alpha1.ControlPlane, want ...*x509.Certificate) {
 	t.Helper()
-	got, err := certs.ParseCerts(secretsOf(t, cp)["dev-client-ca"].Data[lodiav1alpha1.CACertKey])
+	got, err := certs.ParseCerts(secretOf(t, cp, "dev-client-ca").Data[lodiav1alpha1.CACertKey])
 	if err != nil {
 		t.Fatal(err)
 	}
