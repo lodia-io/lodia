@@ -664,7 +664,7 @@ func TestTheWaitsEndOnTheirInputs(t *testing.T) {
 	waitForReady(metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
 }
 
-func TestAWaitForTheRequestCAEndsOnItsSecrets(t *testing.T) {
+func TestAWaitForCertificatesEndsOnEachOfItsSecrets(t *testing.T) {
 	enforce(t)
 	ctx := t.Context()
 	cp := issuable(t, "kcr-secret-watch")
@@ -704,28 +704,30 @@ func TestAWaitForTheRequestCAEndsOnItsSecrets(t *testing.T) {
 			return c != nil && c.Status == status && c.Reason == reason
 		})
 	}
-	deleteRequestCA := func() *corev1.Secret {
+	remove := func(name string) *corev1.Secret {
 		t.Helper()
-		s := secretsOf(t, cp)["dev-cakey-kubeconfig-requests"]
+		s := secretsOf(t, cp)[name]
 		if err := k8s.Delete(ctx, s); err != nil {
 			t.Fatal(err)
 		}
 		return s
 	}
 
-	saved := deleteRequestCA()
-	restored := kubeconfigRequest(t, cp, p256(t))
-	waitForReady(restored, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates)
-	if err := k8s.Create(ctx, &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: saved.Name, Namespace: saved.Namespace, Labels: saved.Labels, OwnerReferences: saved.OwnerReferences},
-		Type:       saved.Type,
-		Data:       saved.Data,
-	}); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"dev-cakey-kubeconfig-requests", "dev-ca-bundle"} {
+		saved := remove(name)
+		restored := kubeconfigRequest(t, cp, p256(t))
+		waitForReady(restored, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates)
+		if err := k8s.Create(ctx, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: saved.Name, Namespace: saved.Namespace, Labels: saved.Labels, OwnerReferences: saved.OwnerReferences},
+			Type:       saved.Type,
+			Data:       saved.Data,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		waitForReady(restored, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
 	}
-	waitForReady(restored, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
 
-	deleteRequestCA()
+	remove("dev-cakey-kubeconfig-requests")
 	replaced := kubeconfigRequest(t, cp, p256(t))
 	waitForReady(replaced, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates)
 	before := freshControlPlane(t, cp).ResourceVersion
