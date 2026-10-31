@@ -229,7 +229,7 @@ func (r *KubeconfigRequestReconciler) unenforced(ctx context.Context, kr *lodiav
 // parseRequest returns the request, or why it is refused.
 func parseRequest(request []byte) (*x509.CertificateRequest, string) {
 	block, _ := pem.Decode(request)
-	if block == nil || block.Type != "CERTIFICATE REQUEST" {
+	if block == nil {
 		return nil, "is not a PEM certificate request"
 	}
 	csr, err := x509.ParseCertificateRequest(block.Bytes)
