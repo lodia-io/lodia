@@ -971,6 +971,9 @@ func TestKubeconfigRequestValidation(t *testing.T) {
 		{"a user with a C1 control", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, "alice\u0085", "spec", "user")
 		}, "must hold no control character"},
+		{"a user with U+FFFE", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "alice\ufffe", "spec", "user")
+		}, "must hold no control character"},
 		{"a user with U+FFFF", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, "alice\uffff", "spec", "user")
 		}, "must hold no control character"},
