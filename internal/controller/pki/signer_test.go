@@ -137,17 +137,10 @@ func TestEveryStateOfASignerReplacementSurvivesEachRefusedWrite(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, false},
-		{"garbage-next", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
-			dueSigner(t, cp)
-			garbage := &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{Name: "dev-kubelet-signer-next", Namespace: cp.Namespace},
-				Type:       corev1.SecretTypeTLS,
-				Data:       map[string][]byte{lodiav1alpha1.TLSCertKey: []byte("garbage"), lodiav1alpha1.TLSPrivateKeyKey: []byte("garbage")},
-			}
-			if err := k8s.Create(t.Context(), garbage); err != nil {
-				t.Fatal(err)
-			}
-		}, false},
+		{"garbage-next", nextSecret(corev1.SecretTypeTLS, false, false), false},
+		{"opaque-next", nextSecret(corev1.SecretTypeOpaque, false, false), false},
+		{"immutable-next", nextSecret(corev1.SecretTypeTLS, true, false), false},
+		{"opaque-pending", nextSecret(corev1.SecretTypeOpaque, false, true), false},
 	} {
 		t.Run(state.name, func(t *testing.T) {
 			t.Parallel()
@@ -159,6 +152,24 @@ func TestEveryStateOfASignerReplacementSurvivesEachRefusedWrite(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func nextSecret(typ corev1.SecretType, immutable, usable bool) func(*testing.T, *lodiav1alpha1.ControlPlane) {
+	return func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+		dueSigner(t, cp)
+		content := map[string][]byte{lodiav1alpha1.TLSCertKey: []byte("garbage"), lodiav1alpha1.TLSPrivateKeyKey: []byte("garbage")}
+		if usable {
+			c, err := parseTLS(t, secretsOf(t, cp)["dev-cakey-client"]).Issue(certs.Profile{CommonName: "kubelet-signer@2", CA: true}, time.Now(), time.Hour)
+			if err != nil {
+				t.Fatal(err)
+			}
+			content = map[string][]byte{lodiav1alpha1.TLSCertKey: mustPEM(t, c.Cert), lodiav1alpha1.TLSPrivateKeyKey: mustKeyPEM(t, c.Key)}
+		}
+		s := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "dev-kubelet-signer-next", Namespace: cp.Namespace}, Type: typ, Data: content, Immutable: &immutable}
+		if err := k8s.Create(t.Context(), s); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -587,6 +598,32 @@ func TestAPendingSignerIsDeletedOnceTheSignerIsUsableAgain(t *testing.T) {
 			expectBundle(t, cp, want...)
 			expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
 		})
+	}
+}
+
+func TestAPendingSignerAnotherOwnerKeepsIsLeftAlone(t *testing.T) {
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "signer-next-held")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	dueSigner(t, cp)
+	held := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev-kubelet-signer-next", Namespace: cp.Namespace, OwnerReferences: []metav1.OwnerReference{
+			{APIVersion: lodiav1alpha1.GroupVersion.String(), Kind: "ControlPlane", Name: "dev", UID: "8f0c6f2e-0d6e-4f4e-9e44-0d6a7c1b5a21", Controller: new(true)},
+		}},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{"x": []byte("y")},
+	}
+	if err := k8s.Create(t.Context(), held); err != nil {
+		t.Fatal(err)
+	}
+	before := namespaceSecrets(t, cp.Namespace)
+	reconcile(t, r, cp)
+	if c := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady); c.Reason != lodiav1alpha1.ReasonSecretsControlledElsewhere || !strings.Contains(c.Message, "dev-kubelet-signer-next by ControlPlane dev") {
+		t.Errorf("CertificatesReady is %s: %s", c.Reason, c.Message)
+	}
+	if after := namespaceSecrets(t, cp.Namespace); !maps.Equal(before, after) {
+		t.Error("a Secret was written or deleted while another owner keeps the pending signer's")
 	}
 }
 

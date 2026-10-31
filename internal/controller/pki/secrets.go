@@ -492,8 +492,9 @@ func (r *Reconciler) clientCAs(ctx context.Context, t *tenant) error {
 	signerName := t.secret(lodiav1alpha1.KubeletSignerSecret)
 	signer := t.signer(t.existing[signerName])
 	current := signer != nil && t.current(signer, t.cas[clientCA], certs.Profile{CommonName: signer.Cert.Subject.CommonName, CA: true})
-	pending := t.signer(t.existing[t.name(kubeletSignerNext)])
-	if current || pending != nil && signer != nil && pending.Cert.Equal(signer.Cert) {
+	next := t.existing[t.name(kubeletSignerNext)]
+	pending := t.signer(next)
+	if current || pending != nil && (!overwritable(next) || signer != nil && pending.Cert.Equal(signer.Cert)) {
 		pending = nil
 	}
 	t.next = pending
@@ -581,7 +582,9 @@ func appliedAt(s *corev1.Secret) time.Time {
 
 // kubeletSigner writes what stage left for the end of the pass: a promotion
 // writes <cp>-kubelet-signer and then deletes <cp>-kubelet-signer-next, which a
-// restart in between leaves equal to it for the next pass to delete.
+// restart in between leaves equal to it for the next pass to delete. A
+// <cp>-kubelet-signer-next that an apply cannot overwrite is deleted before
+// a new signer is staged in it.
 func (r *Reconciler) kubeletSigner(ctx context.Context, t *tenant) error {
 	if t.promote {
 		if err := r.applyTLS(ctx, t, t.secret(lodiav1alpha1.KubeletSignerSecret), t.next, nil, false); err != nil {
@@ -590,11 +593,22 @@ func (r *Reconciler) kubeletSigner(ctx context.Context, t *tenant) error {
 		t.next = nil
 	}
 	name := t.name(kubeletSignerNext)
-	if t.next != nil {
-		return r.applyTLS(ctx, t, name, t.next, nil, false)
+	s := t.existing[name]
+	if t.next == nil {
+		r.remove(ctx, t, s)
+		return nil
 	}
-	r.remove(ctx, t, t.existing[name])
-	return nil
+	if s != nil && !overwritable(s) {
+		r.remove(ctx, t, s)
+		delete(t.existing, name)
+	}
+	return r.applyTLS(ctx, t, name, t.next, nil, false)
+}
+
+// overwritable reports whether an apply can put a new signer into s: a
+// Secret's type and an immutable Secret's data never change.
+func overwritable(s *corev1.Secret) bool {
+	return s.Type == corev1.SecretTypeTLS && !isImmutable(s)
 }
 
 func (r *Reconciler) tls(ctx context.Context, t *tenant, name string, ca *certs.Certificate, p certs.Profile) error {
