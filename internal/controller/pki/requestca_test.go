@@ -137,11 +137,13 @@ func TestEachClientBundleRuleKeepsOnlyItsOwnPredecessors(t *testing.T) {
 		name                      string
 		signerEnds, requestCAAge  time.Duration
 		keepsSigner, keepsRequest bool
+		signerAge                 time.Duration
 	}{
-		{"a request CA replaced 24 hours 2 minutes ago", time.Hour, 24*time.Hour + 2*time.Minute, true, true},
-		{"a request CA replaced 24 hours 6 minutes ago", time.Hour, 24*time.Hour + 6*time.Minute, true, false},
-		{"a replaced kubelet signer valid for a minute", time.Minute, 0, true, true},
-		{"a replaced kubelet signer expired a minute ago", -time.Minute, 0, false, true},
+		{"a request CA replaced 24 hours 2 minutes ago", time.Hour, 24*time.Hour + 2*time.Minute, true, true, 0},
+		{"a request CA replaced 24 hours 6 minutes ago", time.Hour, 24*time.Hour + 6*time.Minute, true, false, 0},
+		{"a replaced kubelet signer valid for a minute", time.Minute, 0, true, true, 0},
+		{"a replaced kubelet signer expired a minute ago", -time.Minute, 0, false, true, 0},
+		{"a kubelet signer replaced 30 days 1 hour ago", time.Hour, 0, true, true, 30*24*time.Hour + time.Hour},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			ctx := t.Context()
@@ -155,7 +157,7 @@ func TestEachClientBundleRuleKeepsOnlyItsOwnPredecessors(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			signer, err := clientCA.Issue(certs.Profile{CommonName: "kubelet-signer@2", CA: true}, now, 100*24*time.Hour)
+			signer, err := clientCA.Issue(certs.Profile{CommonName: "kubelet-signer@2", CA: true}, now.Add(-c.signerAge), 100*24*time.Hour)
 			if err != nil {
 				t.Fatal(err)
 			}
