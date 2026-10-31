@@ -471,7 +471,9 @@ func TestTheBundleKeepsTheTenNewestReplacedSigners(t *testing.T) {
 
 func TestABundleLostWhileASignerIsStagedTrustsTheStagedOne(t *testing.T) {
 	r := newReconciler(time.Hour)
+	r.SignerPropagation = time.Hour
 	cp := controlPlane(t, "signer-bundle-lost")
+	publishEndpoint(t, cp)
 	reconcile(t, r, cp)
 	if err := k8s.Delete(t.Context(), secretsOf(t, cp)["dev-kubelet-signer"]); err != nil {
 		t.Fatal(err)
@@ -482,12 +484,25 @@ func TestABundleLostWhileASignerIsStagedTrustsTheStagedOne(t *testing.T) {
 	if err := k8s.Delete(t.Context(), secrets["dev-client-ca"]); err != nil {
 		t.Fatal(err)
 	}
-	reconcile(t, r, cp)
+	reconcileOnce(t, r, cp)
+	reconcileOnce(t, r, cp)
 	secrets = secretsOf(t, cp)
-	if s := secrets["dev-kubelet-signer"]; s == nil || !parseTLS(t, s).Cert.Equal(next) || secrets["dev-kubelet-signer-next"] != nil {
-		t.Fatal("a tenant without a bundle did not take the staged signer as its first")
+	if s := secrets["dev-kubelet-signer-next"]; secrets["dev-kubelet-signer"] != nil || s == nil || !parseTLS(t, s).Cert.Equal(next) {
+		t.Fatal("a lost bundle promoted the staged signer at once, or replaced it")
 	}
 	expectBundle(t, cp, parseTLS(t, secrets["dev-cakey-client"]).Cert, next, parseTLS(t, secrets["dev-cakey-kubeconfig-requests"]).Cert)
+	at := appliedAt(t, secrets["dev-client-ca"]).Add(time.Hour)
+	if c := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady); c.Reason != lodiav1alpha1.ReasonIssuing ||
+		c.Message != "dev-kubelet-signer holds no usable signer; its successor is written at "+at.UTC().Format(time.RFC3339) {
+		t.Errorf("CertificatesReady is %s: %s, want the promotion at %s", c.Reason, c.Message, at)
+	}
+	backdate(t, cp, time.Hour)
+	reconcileOnce(t, r, cp)
+	secrets = secretsOf(t, cp)
+	if s := secrets["dev-kubelet-signer"]; s == nil || !parseTLS(t, s).Cert.Equal(next) || secrets["dev-kubelet-signer-next"] != nil {
+		t.Fatal("the staged signer was not promoted once the new bundle had held it for the propagation")
+	}
+	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
 }
 
 func TestAStagedSignerWithoutLabelsOrOwnerIsAdopted(t *testing.T) {

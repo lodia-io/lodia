@@ -481,7 +481,8 @@ func (r *Reconciler) notice(t *tenant, ca *x509.Certificate) {
 
 // clientCAs keeps the client CA bundle, the kubelet signer and the request CA.
 // The bundle adds a signer or a request CA only once its key is stored. A
-// tenant's first signer is written before the bundle that trusts it, since no
+// tenant with neither the bundle nor a pending signer is a fresh one: its
+// first signer is written before the bundle that trusts it, since no
 // component runs before the bundle exists; every later one is staged. A new
 // request CA is written at the end of the pass, and the next pass, which that
 // write starts, adds it, as the kubeconfig request reconciler signs only with
@@ -505,10 +506,7 @@ func (r *Reconciler) clientCAs(ctx context.Context, t *tenant) error {
 	}
 	t.wakeAt(certs.RenewalTime(t.requests.Cert))
 	bundle := t.existing[t.secret(lodiav1alpha1.ClientCASecret)]
-	if bundle == nil {
-		if signer == nil {
-			signer, pending, t.next = pending, nil, nil
-		}
+	if bundle == nil && (signer != nil || pending == nil) {
 		if signer == nil {
 			if signer, err = r.newSigner(t); err != nil {
 				return err
