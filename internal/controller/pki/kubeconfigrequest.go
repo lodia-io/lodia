@@ -184,12 +184,13 @@ func (r *KubeconfigRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 	condition := metav1.Condition{Type: lodiav1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonIssued, Message: "status.kubeconfig holds a certificate for " + user + " until " + cert.NotAfter.UTC().Format(time.RFC3339)}
-	if err := r.applyStatus(ctx, kr, now, condition, kubeconfig, &cert.NotAfter); err != nil {
-		return ctrl.Result{}, err
-	}
 	fingerprint := sha256.Sum256(cert.Raw)
+	credential := "X509SHA256=" + hex.EncodeToString(fingerprint[:])
+	if err := r.applyStatus(ctx, kr, now, condition, kubeconfig, &cert.NotAfter); err != nil {
+		return ctrl.Result{}, fmt.Errorf("%w; the write may have stored credential-id %s", err, credential)
+	}
 	logf.FromContext(ctx).Info("issued a certificate", "uid", kr.UID, "user", user, "access", kr.Spec.Access,
-		"credential-id", "X509SHA256="+hex.EncodeToString(fingerprint[:]), "notAfter", cert.NotAfter.UTC().Format(time.RFC3339))
+		"credential-id", credential, "notAfter", cert.NotAfter.UTC().Format(time.RFC3339))
 	return wait, nil
 }
 

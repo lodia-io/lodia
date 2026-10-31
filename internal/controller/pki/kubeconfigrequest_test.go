@@ -921,6 +921,17 @@ func TestATransientErrorAnswersNothing(t *testing.T) {
 		t.Errorf("a pass whose status write failed wrote the request or logged %v", logs.lines)
 	}
 
+	stored := kubeconfigRequest(t, cp, p256(t))
+	r = requestReconciler(clocktesting.NewFakePassiveClock(stored.CreationTimestamp.Time))
+	r.Client = failingStatus{Client: controller, stored: true}
+	logs = &logLines{}
+	_, err := r.Reconcile(logs.into(t.Context()), requestFor(stored))
+	cert, _ := issued(t, freshRequest(t, stored))
+	fingerprint := sha256.Sum256(cert.Raw)
+	if err == nil || !strings.Contains(err.Error(), "credential-id X509SHA256="+hex.EncodeToString(fingerprint[:])) || len(logs.lines) > 0 {
+		t.Errorf("a write stored before its error returned %v and logged %v, want the error naming the stored certificate's credential-id", err, logs.lines)
+	}
+
 	waiting := kubeconfigRequestFor(t, cp.Namespace, "absent", p256(t))
 	r = requestReconciler(clocktesting.NewFakePassiveClock(waiting.CreationTimestamp.Time))
 	r.Client = failingStatus{Client: controller}
@@ -944,16 +955,24 @@ func (f failingGet) Get(ctx context.Context, key client.ObjectKey, obj client.Ob
 
 type failingStatus struct {
 	client.Client
+	stored bool
 }
 
 func (f failingStatus) Status() client.SubResourceWriter {
-	return failingStatusWriter{f.Client.Status()}
+	return failingStatusWriter{f.Client.Status(), f.stored}
 }
 
 type failingStatusWriter struct {
 	client.SubResourceWriter
+	stored bool
 }
 
-func (failingStatusWriter) Apply(context.Context, runtime.ApplyConfiguration, ...client.SubResourceApplyOption) error {
+func (f failingStatusWriter) Apply(ctx context.Context, obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
+	if f.stored {
+		if err := f.SubResourceWriter.Apply(ctx, obj, opts...); err != nil {
+			return err
+		}
+		return errors.New("the connection broke before the API server answered")
+	}
 	return errors.New("the API server refused the apply")
 }
