@@ -258,7 +258,10 @@ func TestTheBundleKeepsTheNewestTenRequestCAs(t *testing.T) {
 		reconcile(t, r, cp)
 		replaced = append(replaced, parseTLS(t, secretsOf(t, cp)["dev-cakey-kubeconfig-requests"]).Cert)
 	}
-	expectBundle(t, cp, append([]*x509.Certificate{clientCA, signer}, replaced[len(replaced)-11:]...)...)
+	want := append([]*x509.Certificate{clientCA, signer}, replaced[len(replaced)-11:]...)
+	expectBundle(t, cp, want...)
+	reconcile(t, r, cp)
+	expectBundle(t, cp, want...)
 }
 
 func TestARequestCAIsWrittenBeforeTheBundleThatTrustsIt(t *testing.T) {

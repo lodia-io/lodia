@@ -359,6 +359,34 @@ func TestAPredecessorsCertificatesAreNotUsed(t *testing.T) {
 	expectReady(t, freshRequest(t, kr), metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates)
 }
 
+func TestARequestCAPKIWouldReplaceSignsNothing(t *testing.T) {
+	enforce(t)
+	ctx := t.Context()
+	cp := issuable(t, "kcr-unstamped")
+	foreign, err := certs.NewCA("someone-ca@1", time.Now(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets := secretsOf(t, cp)
+	held, err := certs.ParseCerts(secrets["dev-client-ca"].Data[lodiav1alpha1.CACertKey])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]map[string][]byte{
+		"dev-cakey-kubeconfig-requests": {lodiav1alpha1.TLSCertKey: mustPEM(t, foreign.Cert), lodiav1alpha1.TLSPrivateKeyKey: mustKeyPEM(t, foreign.Key)},
+		"dev-client-ca":                 {lodiav1alpha1.CACertKey: mustBundle(t, append(held, foreign.Cert)...)},
+	} {
+		s := secrets[name]
+		s.Data = content
+		if err := k8s.Update(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	kr := kubeconfigRequest(t, cp, p256(t))
+	reconcileRequest(t, requestReconciler(clocktesting.NewFakePassiveClock(kr.CreationTimestamp.Time)), kr)
+	expectReady(t, freshRequest(t, kr), metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates)
+}
+
 func TestAPausedOrDeletingControlPlaneIsAnsweredAndNotWritten(t *testing.T) {
 	enforce(t)
 	ctx := t.Context()
