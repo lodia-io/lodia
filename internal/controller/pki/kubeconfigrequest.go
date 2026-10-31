@@ -128,28 +128,30 @@ func (r *KubeconfigRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return wait, nil
 	}
 
-	condition := metav1.Condition{Type: lodiav1alpha1.ConditionReady, Status: metav1.ConditionFalse}
+	notReady := func(reason, message string) (ctrl.Result, error) {
+		condition := metav1.Condition{Type: lodiav1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: reason, Message: message}
+		if err := r.applyStatus(ctx, kr, now, condition, nil, nil); err != nil {
+			return ctrl.Result{}, err
+		}
+		return wait, nil
+	}
 	if why, err := r.unenforced(ctx, kr); err != nil {
 		return ctrl.Result{}, err
 	} else if why != "" {
-		condition.Reason, condition.Message = lodiav1alpha1.ReasonPolicyNotEnforced, "the admission policy "+lodiav1alpha1.KubeconfigRequestPolicy+" was not enforced when this request was created: "+why+"; nothing is issued for it, create another once the policy is in place"
-		return wait, r.applyStatus(ctx, kr, now, condition, nil, nil)
+		return notReady(lodiav1alpha1.ReasonPolicyNotEnforced, "the admission policy "+lodiav1alpha1.KubeconfigRequestPolicy+" was not enforced when this request was created: "+why+"; nothing is issued for it, create another once the policy is in place")
 	}
 	csr, why := parseRequest(kr.Spec.Request)
 	if why != "" {
-		condition.Reason, condition.Message = lodiav1alpha1.ReasonRequestInvalid, "spec.request "+why+"; create another request"
-		return wait, r.applyStatus(ctx, kr, now, condition, nil, nil)
+		return notReady(lodiav1alpha1.ReasonRequestInvalid, "spec.request "+why+"; create another request")
 	}
 	cp := &lodiav1alpha1.ControlPlane{}
 	if err := r.Get(ctx, types.NamespacedName{Namespace: kr.Namespace, Name: kr.Spec.ControlPlaneRef.Name}, cp); apierrors.IsNotFound(err) {
-		condition.Reason, condition.Message = lodiav1alpha1.ReasonControlPlaneNotFound, "no ControlPlane "+kr.Spec.ControlPlaneRef.Name+" in this namespace"
-		return wait, r.applyStatus(ctx, kr, now, condition, nil, nil)
+		return notReady(lodiav1alpha1.ReasonControlPlaneNotFound, "no ControlPlane "+kr.Spec.ControlPlaneRef.Name+" in this namespace")
 	} else if err != nil {
 		return ctrl.Result{}, err
 	}
 	if cp.Status.Endpoint == nil {
-		condition.Reason, condition.Message = lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint of ControlPlane "+cp.Name
-		return wait, r.applyStatus(ctx, kr, now, condition, nil, nil)
+		return notReady(lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint of ControlPlane "+cp.Name)
 	}
 	ca, err := r.input(ctx, cp, cp.Name+"-cakey-"+requestCA)
 	if err != nil {
@@ -165,8 +167,7 @@ func (r *KubeconfigRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 	if signer == nil || !now.Before(signer.Cert.NotAfter) || !trusts(trusted, signer.Cert) || len(data(bundle, lodiav1alpha1.CACertKey)) == 0 {
-		condition.Reason, condition.Message = lodiav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the request CA "+cp.Name+"-cakey-"+requestCA+", the client CA bundle "+lodiav1alpha1.ClientCASecret.Name(cp.Name)+" that trusts it, and the cluster CA bundle "+lodiav1alpha1.CABundleSecret.Name(cp.Name)
-		return wait, r.applyStatus(ctx, kr, now, condition, nil, nil)
+		return notReady(lodiav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the request CA "+cp.Name+"-cakey-"+requestCA+", the client CA bundle "+lodiav1alpha1.ClientCASecret.Name(cp.Name)+" that trusts it, and the cluster CA bundle "+lodiav1alpha1.CABundleSecret.Name(cp.Name))
 	}
 
 	var groups []string
@@ -182,7 +183,7 @@ func (r *KubeconfigRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	condition.Status, condition.Reason, condition.Message = metav1.ConditionTrue, lodiav1alpha1.ReasonIssued, "status.kubeconfig holds a certificate for "+user+" until "+cert.NotAfter.UTC().Format(time.RFC3339)
+	condition := metav1.Condition{Type: lodiav1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonIssued, Message: "status.kubeconfig holds a certificate for " + user + " until " + cert.NotAfter.UTC().Format(time.RFC3339)}
 	if err := r.applyStatus(ctx, kr, now, condition, kubeconfig, &cert.NotAfter); err != nil {
 		return ctrl.Result{}, err
 	}

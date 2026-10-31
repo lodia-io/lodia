@@ -920,6 +920,13 @@ func TestATransientErrorAnswersNothing(t *testing.T) {
 	if after := freshRequest(t, kr); after.ResourceVersion != kr.ResourceVersion || len(logs.lines) > 0 {
 		t.Errorf("a pass whose status write failed wrote the request or logged %v", logs.lines)
 	}
+
+	waiting := kubeconfigRequestFor(t, cp.Namespace, "absent", p256(t))
+	r = requestReconciler(clocktesting.NewFakePassiveClock(waiting.CreationTimestamp.Time))
+	r.Client = failingStatus{Client: controller}
+	if result, err := r.Reconcile(t.Context(), requestFor(waiting)); err == nil || result != (ctrl.Result{}) {
+		t.Errorf("a wait whose status write failed returned %+v and %v, want no requeue and the error", result, err)
+	}
 }
 
 type failingGet struct {
