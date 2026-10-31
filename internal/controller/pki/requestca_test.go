@@ -350,6 +350,48 @@ func TestARenewalKeepsEveryRequestCAUntilItsSuccessorIsStored(t *testing.T) {
 	expectBundle(t, cp, append([]*x509.Certificate{clientCA, signer, renewed, due.Cert}, kept[1:]...)...)
 }
 
+func TestALostRequestCAKeepsEveryRequestCAUntilItsSuccessorIsStored(t *testing.T) {
+	ctx := t.Context()
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "kcr-request-ca-lost")
+	reconcile(t, r, cp)
+	secrets := secretsOf(t, cp)
+	clientCA, signer := parseTLS(t, secrets["dev-cakey-client"]).Cert, parseTLS(t, secrets["dev-kubelet-signer"]).Cert
+	lost := parseTLS(t, secrets["dev-cakey-kubeconfig-requests"]).Cert
+	now := time.Now()
+	var kept []*x509.Certificate
+	for i := range 10 {
+		c, err := certs.NewCA("kubeconfig-requests-ca@"+strconv.Itoa(i+1), now.Add(-time.Hour), 2*time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		kept = append(kept, c.Cert)
+	}
+	bundle := secrets["dev-client-ca"]
+	bundle.Data = map[string][]byte{lodiav1alpha1.CACertKey: mustBundle(t, append([]*x509.Certificate{clientCA, signer, lost}, kept...)...)}
+	if err := k8s.Update(ctx, bundle); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Delete(ctx, secrets["dev-cakey-kubeconfig-requests"]); err != nil {
+		t.Fatal(err)
+	}
+
+	r.Client = failingApply{Client: controller, secret: "dev-cakey-kubeconfig-requests"}
+	for range 3 {
+		reconcileFails(t, r, cp)
+		expectBundle(t, cp, append([]*x509.Certificate{clientCA, signer, lost}, kept...)...)
+	}
+	r.Client = controller
+	reconcileOnce(t, r, cp)
+	successor := parseTLS(t, secretsOf(t, cp)["dev-cakey-kubeconfig-requests"]).Cert
+	if successor.Equal(lost) {
+		t.Fatal("the lost request CA was not replaced")
+	}
+	expectBundle(t, cp, append([]*x509.Certificate{clientCA, signer, lost}, kept...)...)
+	reconcileOnce(t, r, cp)
+	expectBundle(t, cp, append([]*x509.Certificate{clientCA, signer, successor, lost}, kept[1:]...)...)
+}
+
 func TestARequestCAIsWrittenLastAndJoinsTheBundleOnTheNextPass(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()

@@ -520,7 +520,9 @@ func (r *Reconciler) bundle(ctx context.Context, t *tenant, name string, bundle 
 // known by its subject, is kept until the longest request created before its
 // successor was issued has expired, plus the backdate for a verifier's clock
 // that lags; at most the newest requestCAPredecessors. Without a stored request
-// CA, the newest one's successor is the one the pass writes.
+// CA, the newest one's successor is the one the pass writes, and one more is
+// kept, so that a lost request CA drops no kept one before its successor is
+// stored.
 func (t *tenant) clientBundle(signer, stored, requests *certs.Certificate) []*x509.Certificate {
 	ca := t.cas[clientCA].Cert
 	bundle := []*x509.Certificate{ca, signer.Cert}
@@ -550,7 +552,11 @@ func (t *tenant) clientBundle(signer, stored, requests *certs.Certificate) []*x5
 		stampB, _ := requestCAStamp(b)
 		return cmp.Compare(stampB, stampA)
 	})
-	for _, c := range predecessors[:min(len(predecessors), requestCAPredecessors)] {
+	limit := requestCAPredecessors
+	if stored == nil {
+		limit++
+	}
+	for _, c := range predecessors[:min(len(predecessors), limit)] {
 		if issued := successor.NotBefore.Add(certs.Backdate); !t.now.Before(issued.Add(certs.KubeconfigRequestLifetime + certs.Backdate)) {
 			break
 		}
