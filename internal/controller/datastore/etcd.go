@@ -38,11 +38,13 @@ const allowUnhealthyPodEviction = "resources.druid.gardener.cloud/allow-unhealth
 // client TLS is on (docs/decisions/dedicated-etcd-by-default.md). The storage
 // class and size come from the current Etcd once it exists: the first is
 // immutable in the Etcd, the second a StatefulSet field that cannot change in
-// place. A nil class is a recorded class that is gone. The backup prefix holds
-// UIDs and no name: etcd-backup-restore takes the last v1/ anywhere in a key
-// for its layout and ignores the snapshots it misreads
+// place. Without one, the size is that of the smallest claim left, which the
+// StatefulSet binds again by name. The quota is capped at half the size. A nil
+// class is a recorded class that is gone. The backup prefix holds UIDs and no
+// name: etcd-backup-restore takes the last v1/ anywhere in a key for its
+// layout and ignores the snapshots it misreads
 // (etcd-backup-restore@v0.45.1 pkg/snapstore/snapshot.go#L39-L59).
-func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, namespaceUID types.UID, generation int, current *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) (*druidv1alpha1.Etcd, string) {
+func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, namespaceUID types.UID, generation int, current *druidv1alpha1.Etcd, claims []corev1.PersistentVolumeClaim, sts *appsv1.StatefulSet) (*druidv1alpha1.Etcd, string) {
 	secret := func(certificate lodiav1alpha1.EtcdCertificateRole) corev1.SecretReference {
 		return corev1.SecretReference{Name: lodiav1alpha1.EtcdCertificateSecretName(cp.Name, certificate, generation)}
 	}
@@ -99,29 +101,37 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 	spec := &class.Spec
 	metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, lodiav1alpha1.DatastoreClassAnnotation, class.Name)
 	metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, lodiav1alpha1.DatastoreClassGenerationAnnotation, strconv.FormatInt(class.Generation, 10))
-	etcd.Spec.StorageCapacity = new(spec.Storage.Size)
 	if spec.Storage.ClassName != "" {
 		etcd.Spec.StorageClass = new(spec.Storage.ClassName)
 	}
-	if current != nil {
+	volume := spec.Storage.Size
+	switch {
+	case current != nil:
 		etcd.Spec.StorageClass = current.Spec.StorageClass
-		etcd.Spec.StorageCapacity = current.Spec.StorageCapacity
+		volume = ptr.Deref(current.Spec.StorageCapacity, volume)
+	case len(claims) > 0:
+		volume = claimSize(claims[0])
+		for _, claim := range claims[1:] {
+			if size := claimSize(claim); size.Cmp(volume) < 0 {
+				volume = size
+			}
+		}
 	}
+	etcd.Spec.StorageCapacity = &volume
 	quota := resource.MustParse(lodiav1alpha1.DefaultQuotaBackendBytes)
 	if spec.Etcd != nil && spec.Etcd.QuotaBackendBytes != nil {
 		quota = spec.Etcd.QuotaBackendBytes.DeepCopy()
 	}
-	etcd.Spec.Etcd.Quota = &quota
-	var held string
-	if current != nil {
-		twice := quota.DeepCopy()
-		twice.Add(quota)
-		if capacity := ptr.Deref(current.Spec.StorageCapacity, resource.Quantity{}); twice.Cmp(capacity) > 0 {
-			etcd.Spec.Etcd.Quota = current.Spec.Etcd.Quota
-			held = fmt.Sprintf("DatastoreClass %s's quota %s is held at %s: it needs %s of volume and Etcd %s's is %s",
-				class.Name, quota.String(), current.Spec.Etcd.Quota.String(), twice.String(), current.Name, capacity.String())
-		}
+	var capped string
+	twice := quota.DeepCopy()
+	twice.Add(quota)
+	if twice.Cmp(volume) > 0 {
+		half := resource.NewQuantity(volume.Value()/2, volume.Format)
+		capped = fmt.Sprintf("DatastoreClass %s's quota %s is capped at %s: it needs %s of volume and Etcd %s's is %s",
+			class.Name, quota.String(), half.String(), twice.String(), etcd.Name, volume.String())
+		quota = *half
 	}
+	etcd.Spec.Etcd.Quota = &quota
 	if settings := spec.Etcd; settings != nil {
 		etcd.Spec.Etcd.Resources = settings.Resources
 		if settings.Defragmentation != nil {
@@ -164,7 +174,14 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 			etcd.Spec.SchedulingConstraints.Affinity = nodeAffinity(placement.NodeSelector)
 		}
 	}
-	return etcd, held
+	return etcd, capped
+}
+
+func claimSize(claim corev1.PersistentVolumeClaim) resource.Quantity {
+	if size, ok := claim.Status.Capacity[corev1.ResourceStorage]; ok {
+		return size
+	}
+	return claim.Spec.Resources.Requests[corev1.ResourceStorage]
 }
 
 func memberCount(cp *lodiav1alpha1.ControlPlane) int32 {

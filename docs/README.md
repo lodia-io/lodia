@@ -209,12 +209,12 @@ What each field of the class becomes ([etcd.go](https://github.com/gardener/etcd
 
 | `DatastoreClass` | `Etcd` | note |
 |---|---|---|
-| `etcd.quotaBackendBytes` | `spec.etcd.quota` | 4Gi when absent; at most half of `storage.size`, and of a running `Etcd`'s volume ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)) |
+| `etcd.quotaBackendBytes` | `spec.etcd.quota` | 4Gi when absent; capped at half the `Etcd`'s volume ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)) |
 | `etcd.autoCompaction.mode`, `.retention` | `spec.sharedConfig.autoCompactionMode`, `.autoCompactionRetention` | shared with the sidecar's embedded etcd |
 | `etcd.defragmentation.schedule` | `spec.etcd.defragmentationSchedule` | the sidecar defragments only above 3 GiB or with more than 1 GiB free ([etcd spike](etcd-spike-2026-10.md), finding 7) |
 | `etcd.resources` | `spec.etcd.resources` | the sidecar's `spec.backup.resources` stay etcd-druid's default: the class has no field for them |
 | `storage.className` | `spec.storageClass` | when the `Etcd` is created and not after: the field is immutable in the `Etcd` ([etcd.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/etcd.go#L627-L638)) |
-| `storage.size` | `spec.storageCapacity` | when the `Etcd` is created and not after: it is the StatefulSet's volume claim template, which cannot change in place ([validation.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/apis/apps/validation/validation.go#L262)) |
+| `storage.size` | `spec.storageCapacity` | when the `Etcd` is created and not after: it is the StatefulSet's volume claim template, which cannot change in place ([validation.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/apis/apps/validation/validation.go#L262)); an `Etcd` created again over this `ControlPlane`'s claims takes the smallest claim's size instead |
 | `storage.reclaimPolicy` | — | on deletion, `Delete` removes the claims etcd-druid's StatefulSet created and `Retain` leaves them ([deletion](#deletion)) |
 | `backup.store.provider`, `.bucket`, `.endpoint` | `spec.backup.store.provider`, `.container`, `.endpointOverride` | Lodia's four providers are among etcd-druid's; most S3-compatible stores also want `s3ForcePathStyle: "true"` in the credentials Secret |
 | `backup.store.prefix` | `spec.backup.store.prefix` | `<class prefix>/<namespace UID>/controlplanes/<ControlPlane UID>`; the schema refuses a class prefix that contains `v1/` or ends in `v1` ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)) |

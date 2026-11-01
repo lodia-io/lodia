@@ -273,9 +273,9 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.Contro
 		}
 		sts = nil
 	}
-	rendered, quotaHeld := render(cp, class, namespaceUID, generation, current, sts)
-	if quotaHeld != "" {
-		held = quotaHeld
+	rendered, capped := render(cp, class, namespaceUID, generation, current, claims, sts)
+	if capped != "" {
+		held = capped
 	}
 	etcd, err := r.apply(ctx, rendered)
 	if err != nil {

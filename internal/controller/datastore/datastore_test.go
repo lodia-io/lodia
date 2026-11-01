@@ -2231,7 +2231,6 @@ func TestQuotaFitsTheVolume(t *testing.T) {
 	if quota := quantity(waitEtcd(t, ns, cp, nil).Spec.Etcd.Quota); quota != "4Gi" {
 		t.Errorf("a class without etcd renders quota %q, want 4Gi", quota)
 	}
-	readyOn(t, ns, cp, 1)
 
 	edit := func(quota string) {
 		t.Helper()
@@ -2245,34 +2244,106 @@ func TestQuotaFitsTheVolume(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	edit("12Gi")
-	etcd := waitEtcd(t, ns, cp, func(etcd *druidv1alpha1.Etcd) error {
-		if recorded := etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation]; recorded != "2" {
-			return fmt.Errorf("class generation %s recorded, want 2", recorded)
+	recorded := func(generation string) func(*druidv1alpha1.Etcd) error {
+		return func(etcd *druidv1alpha1.Etcd) error {
+			if recorded := etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation]; recorded != generation {
+				return fmt.Errorf("class generation %s recorded, want %s", recorded, generation)
+			}
+			return nil
 		}
-		return nil
-	})
-	if quota, schedule := quantity(etcd.Spec.Etcd.Quota), ptr.Deref(etcd.Spec.Etcd.DefragmentationSchedule, ""); quota != "4Gi" || schedule != "0 4 * * *" {
-		t.Errorf("quota %s, defragmentation %q: want the quota held at 4Gi on a 20Gi volume and the rest of the edit applied", quota, schedule)
 	}
+	edit("12Gi")
+	etcd := waitEtcd(t, ns, cp, recorded("2"))
+	if quota, capacity, schedule := quantity(etcd.Spec.Etcd.Quota), quantity(etcd.Spec.StorageCapacity), ptr.Deref(etcd.Spec.Etcd.DefragmentationSchedule, ""); quota != "10Gi" || capacity != "20Gi" || schedule != "0 4 * * *" {
+		t.Errorf("quota %s, storageCapacity %s, defragmentation %q: want the quota capped at half the 20Gi volume of an Etcd that has not formed and the rest of the edit applied", quota, capacity, schedule)
+	}
+	runStatefulSet(t, ns, cp, 1)
 	setEtcdStatus(t, ns, cp, nil)
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
-		"has quorum, 1 of 1 members ready; DatastoreClass quota's quota 12Gi is held at 4Gi: it needs 24Gi of volume and Etcd quota-etcd's is 20Gi")
+		"has quorum, 1 of 1 members ready; DatastoreClass quota's quota 12Gi is capped at 10Gi: it needs 24Gi of volume and Etcd quota-etcd's is 20Gi")
+
+	binding := refuseEtcds(t, ns)
+	edit("11Gi")
+	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused,
+		"with the fields of DatastoreClass quota generation 3; the reason is in Lodia's log; DatastoreClass quota's quota 11Gi is capped at 10Gi: it needs 22Gi of volume and Etcd quota-etcd's is 20Gi")
+	if err := k8s.Delete(t.Context(), binding); err != nil {
+		t.Fatal(err)
+	}
 
 	edit("10Gi")
-	waitEtcd(t, ns, cp, func(etcd *druidv1alpha1.Etcd) error {
-		if quota := quantity(etcd.Spec.Etcd.Quota); quota != "10Gi" {
-			return fmt.Errorf("quota %s: half the volume is not applied", quota)
-		}
-		return nil
-	})
+	if quota := quantity(waitEtcd(t, ns, cp, recorded("4")).Spec.Etcd.Quota); quota != "10Gi" {
+		t.Errorf("quota %s: half the volume is not applied", quota)
+	}
 	setEtcdStatus(t, ns, cp, nil)
 	eventually(t, func() error {
 		if c := meta.FindStatusCondition(getControlPlane(t, ns, cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady); c == nil || c.Message != "Etcd quota-etcd has quorum, 1 of 1 members ready" {
-			return fmt.Errorf("DatastoreReady %+v, want the quota no longer held", c)
+			return fmt.Errorf("DatastoreReady %+v, want the quota no longer capped", c)
 		}
 		return nil
 	})
+}
+
+func TestQuotaFitsRetainedClaims(t *testing.T) {
+	ns := namespace(t)
+	const cp = "regrow"
+	createClass(t, newClass("regrow", "Retain"))
+	create(t, controlPlane(ns, cp, "regrow"))
+	writeGeneration(t, ns, cp, 1)
+	labels := druidv1alpha1.GetDefaultLabels(waitEtcd(t, ns, cp, nil).ObjectMeta)
+	first := claim(ns, "regrow-etcd-regrow-etcd-0", labels)
+	first.Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse("8Gi")
+	create(t, first)
+	settle(t, ns, cp)
+
+	class := &lodiav1alpha1.DatastoreClass{}
+	if err := k8s.Get(t.Context(), client.ObjectKey{Name: "regrow"}, class); err != nil {
+		t.Fatal(err)
+	}
+	class.Spec.Storage.Size = resource.MustParse("24Gi")
+	class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{QuotaBackendBytes: new(resource.MustParse("12Gi"))}
+	if err := k8s.Update(t.Context(), class); err != nil {
+		t.Fatal(err)
+	}
+	recreated := func(quota, capacity, note string) {
+		t.Helper()
+		previous := waitEtcd(t, ns, cp, func(etcd *druidv1alpha1.Etcd) error {
+			if recorded := etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation]; recorded != "2" {
+				return fmt.Errorf("class generation %s recorded, want 2", recorded)
+			}
+			return nil
+		})
+		if err := k8s.Delete(t.Context(), previous); err != nil {
+			t.Fatal(err)
+		}
+		waitEtcd(t, ns, cp, func(again *druidv1alpha1.Etcd) error {
+			if again.UID == previous.UID {
+				return errors.New("the Etcd has not been created again yet")
+			}
+			if got, size := quantity(again.Spec.Etcd.Quota), quantity(again.Spec.StorageCapacity); got != quota || size != capacity {
+				return fmt.Errorf("the Etcd created again over the claims has quota %s and storageCapacity %s, want %s and %s", got, size, quota, capacity)
+			}
+			return nil
+		})
+		eventually(t, func() error {
+			if c := meta.FindStatusCondition(getControlPlane(t, ns, cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady); c == nil || !strings.HasSuffix(c.Message, "; "+note) {
+				return fmt.Errorf("DatastoreReady %+v, want it to end with %q", c, note)
+			}
+			return nil
+		})
+	}
+	recreated("4Gi", "8Gi", "DatastoreClass regrow's quota 12Gi is capped at 4Gi: it needs 24Gi of volume and Etcd regrow-etcd's is 8Gi")
+
+	grown := getClaim(t, ns, "regrow-etcd-regrow-etcd-0")
+	grown.Status.Capacity = corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("10Gi")}
+	if err := k8s.Status().Update(t.Context(), grown); err != nil {
+		t.Fatal(err)
+	}
+	labels = maps.Clone(labels)
+	labels[lodiav1alpha1.ControlPlaneUIDLabel] = string(getControlPlane(t, ns, cp).UID)
+	second := claim(ns, "regrow-etcd-regrow-etcd-1", labels)
+	second.Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse("9Gi")
+	create(t, second)
+	recreated("4608Mi", "9Gi", "DatastoreClass regrow's quota 12Gi is capped at 4608Mi: it needs 24Gi of volume and Etcd regrow-etcd's is 9Gi")
 }
 
 func TestRecordedClass(t *testing.T) {
@@ -2358,8 +2429,8 @@ func TestClassSurvivesTheEtcd(t *testing.T) {
 		if again.UID == etcd.UID {
 			return errors.New("the Etcd has not been created again yet")
 		}
-		if class, size := again.Annotations[lodiav1alpha1.DatastoreClassAnnotation], quantity(again.Spec.StorageCapacity); class != "survivor-first" || size != "9Gi" {
-			return fmt.Errorf("the Etcd created again follows class %s with %s, want survivor-first, which its claims record, with 9Gi", class, size)
+		if class, size := again.Annotations[lodiav1alpha1.DatastoreClassAnnotation], quantity(again.Spec.StorageCapacity); class != "survivor-first" || size != "1Gi" {
+			return fmt.Errorf("the Etcd created again follows class %s with %s, want survivor-first, which its claims record, with their 1Gi", class, size)
 		}
 		return nil
 	})
