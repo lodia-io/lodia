@@ -737,6 +737,30 @@ func TestABackupThatCannotBeTaken(t *testing.T) {
 			t.Fatal("a Backup of a ControlPlane whose DatastoreReady describes an older generation started")
 		}
 	})
+	t.Run("WaitingForDatastore, a foreign Etcd", func(t *testing.T) {
+		src := &source{ns: namespace(t), etcd: testserver.RunEtcd(t, nil)}
+		create(t, &druidv1alpha1.Etcd{
+			ObjectMeta: metav1.ObjectMeta{Name: "src-etcd", Namespace: src.ns, Labels: map[string]string{lodiav1alpha1.ControlPlaneLabel: sourceName}},
+			Spec: druidv1alpha1.EtcdSpec{Replicas: 1, Labels: map[string]string{"app": "etcd"}, Backup: druidv1alpha1.BackupSpec{
+				Store: &druidv1alpha1.StoreSpec{Provider: new(druidv1alpha1.StorageProvider("S3")), Container: new("lodia-backups"), Prefix: "prod/another/controlplanes/another"},
+			}},
+		})
+		paused := controlPlane(src.ns, sourceName, src.ns)
+		paused.Spec.Paused = true
+		create(t, paused)
+		meta.SetStatusCondition(&paused.Status.Conditions, metav1.Condition{
+			Type: lodiav1alpha1.ConditionDatastoreReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonReady, Message: "written by the test", ObservedGeneration: paused.Generation,
+		})
+		if err := k8s.Status().Update(t.Context(), paused); err != nil {
+			t.Fatal(err)
+		}
+		r := src.reconciler(cached)
+		created := createBackup(t, src.ns, "b", nil)
+		passes(t, r, src.ns, "b", readyIs(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, "ControlPlane src controls no Etcd src-etcd"))
+		if getBackup(t, src.ns, "b").Status.StartedAt != nil || src.sealKeys(t) != 0 || getFlush(t, src.ns, created.UID) != nil {
+			t.Fatal("a Backup started on an Etcd its source does not control")
+		}
+	})
 	t.Run("Failed, the copy", func(t *testing.T) {
 		src := newSource(t, nil, nil)
 		r := src.reconciler(cached)
