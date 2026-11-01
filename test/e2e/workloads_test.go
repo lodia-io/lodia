@@ -33,7 +33,7 @@ func TestAPIServerOnKind(t *testing.T) {
 			create(ctx, t, k8s, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: apiTenant}})
 			create(ctx, t, k8s, &lodiav1alpha1.DatastoreClass{
 				ObjectMeta: metav1.ObjectMeta{Name: "e2e-api"},
-				Spec:       lodiav1alpha1.DatastoreClassSpec{Storage: lodiav1alpha1.EtcdStorage{Size: resource.MustParse("1Gi"), ReclaimPolicy: "Delete"}},
+				Spec:       lodiav1alpha1.DatastoreClassSpec{Storage: lodiav1alpha1.EtcdStorage{Size: resource.MustParse("8Gi"), ReclaimPolicy: "Delete"}},
 			})
 			create(ctx, t, k8s, &lodiav1alpha1.ControlPlane{
 				ObjectMeta: metav1.ObjectMeta{Name: controlPlane, Namespace: apiTenant},

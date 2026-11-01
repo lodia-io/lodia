@@ -15,6 +15,7 @@ import (
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -37,11 +38,13 @@ const allowUnhealthyPodEviction = "resources.druid.gardener.cloud/allow-unhealth
 // client TLS is on (docs/decisions/dedicated-etcd-by-default.md). The storage
 // class and size come from the current Etcd once it exists: the first is
 // immutable in the Etcd, the second a StatefulSet field that cannot change in
-// place. A nil class is a recorded class that is gone. The backup prefix holds
-// UIDs and no name: etcd-backup-restore takes the last v1/ anywhere in a key
-// for its layout and ignores the snapshots it misreads
+// place. Without one, the size is that of the smallest claim left, which the
+// StatefulSet binds again by name. The quota is capped at half the size. A nil
+// class is a recorded class that is gone. The backup prefix holds UIDs and no
+// name: etcd-backup-restore takes the last v1/ anywhere in a key for its
+// layout and ignores the snapshots it misreads
 // (etcd-backup-restore@v0.45.1 pkg/snapstore/snapshot.go#L39-L59).
-func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, namespaceUID types.UID, generation int, current *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) *druidv1alpha1.Etcd {
+func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, namespaceUID types.UID, generation int, current *druidv1alpha1.Etcd, claims []corev1.PersistentVolumeClaim, sts *appsv1.StatefulSet) (*druidv1alpha1.Etcd, string) {
 	secret := func(certificate lodiav1alpha1.EtcdCertificateRole) corev1.SecretReference {
 		return corev1.SecretReference{Name: lodiav1alpha1.EtcdCertificateSecretName(cp.Name, certificate, generation)}
 	}
@@ -93,21 +96,51 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 	}
 	if class == nil {
 		keep(etcd, current)
-		return etcd
+		return etcd, ""
 	}
 	spec := &class.Spec
 	metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, lodiav1alpha1.DatastoreClassAnnotation, class.Name)
 	metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, lodiav1alpha1.DatastoreClassGenerationAnnotation, strconv.FormatInt(class.Generation, 10))
-	etcd.Spec.StorageCapacity = new(spec.Storage.Size)
 	if spec.Storage.ClassName != "" {
 		etcd.Spec.StorageClass = new(spec.Storage.ClassName)
 	}
+	volume := spec.Storage.Size
 	if current != nil {
 		etcd.Spec.StorageClass = current.Spec.StorageClass
-		etcd.Spec.StorageCapacity = current.Spec.StorageCapacity
+		volume = ptr.Deref(current.Spec.StorageCapacity, volume)
+	} else {
+		var smallest *resource.Quantity
+		for _, claim := range claims {
+			// The StatefulSet never attaches a claim being deleted: it creates
+			// a new one from its template once the old one is gone
+			// (kubernetes/kubernetes@v1.35.0 pkg/controller/statefulset/stateful_pod_control.go#L337-L352).
+			if claim.DeletionTimestamp != nil {
+				continue
+			}
+			if size := claimSize(claim); smallest == nil || size.Cmp(*smallest) < 0 {
+				smallest = &size
+			}
+		}
+		if smallest != nil {
+			volume = *smallest
+		}
 	}
+	etcd.Spec.StorageCapacity = &volume
+	quota := resource.MustParse(lodiav1alpha1.DefaultQuotaBackendBytes)
+	if spec.Etcd != nil && spec.Etcd.QuotaBackendBytes != nil {
+		quota = spec.Etcd.QuotaBackendBytes.DeepCopy()
+	}
+	var capped string
+	twice := quota.DeepCopy()
+	twice.Add(quota)
+	if twice.Cmp(volume) > 0 {
+		half := resource.NewQuantity(volume.Value()/2, volume.Format)
+		capped = fmt.Sprintf("DatastoreClass %s's quota %s is capped at %s: it needs %s of volume and Etcd %s's is %s",
+			class.Name, quota.String(), half.String(), twice.String(), etcd.Name, volume.String())
+		quota = *half
+	}
+	etcd.Spec.Etcd.Quota = &quota
 	if settings := spec.Etcd; settings != nil {
-		etcd.Spec.Etcd.Quota = settings.QuotaBackendBytes
 		etcd.Spec.Etcd.Resources = settings.Resources
 		if settings.Defragmentation != nil {
 			etcd.Spec.Etcd.DefragmentationSchedule = new(string(settings.Defragmentation.Schedule))
@@ -149,7 +182,14 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 			etcd.Spec.SchedulingConstraints.Affinity = nodeAffinity(placement.NodeSelector)
 		}
 	}
-	return etcd
+	return etcd, capped
+}
+
+func claimSize(claim corev1.PersistentVolumeClaim) resource.Quantity {
+	if size, ok := claim.Status.Capacity[corev1.ResourceStorage]; ok {
+		return size
+	}
+	return claim.Spec.Resources.Requests[corev1.ResourceStorage]
 }
 
 func memberCount(cp *lodiav1alpha1.ControlPlane) int32 {

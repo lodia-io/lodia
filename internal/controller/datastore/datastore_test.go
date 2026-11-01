@@ -225,7 +225,7 @@ func createClass(t *testing.T, class *lodiav1alpha1.DatastoreClass) {
 func newClass(name string, reclaimPolicy string) *lodiav1alpha1.DatastoreClass {
 	return &lodiav1alpha1.DatastoreClass{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec:       lodiav1alpha1.DatastoreClassSpec{Storage: lodiav1alpha1.EtcdStorage{Size: resource.MustParse("1Gi"), ReclaimPolicy: reclaimPolicy}},
+		Spec:       lodiav1alpha1.DatastoreClassSpec{Storage: lodiav1alpha1.EtcdStorage{Size: resource.MustParse("8Gi"), ReclaimPolicy: reclaimPolicy}},
 	}
 }
 
@@ -906,7 +906,7 @@ func TestDatastoreClassNotFound(t *testing.T) {
 	for _, name := range []string{"default-a", "default-b"} {
 		class := newClass(name, "Retain")
 		class.Annotations = map[string]string{lodiav1alpha1.DefaultClassAnnotation: "true"}
-		class.Spec.Storage.Size = resource.MustParse("3Gi")
+		class.Spec.Storage.Size = resource.MustParse("9Gi")
 		createClass(t, class)
 	}
 	waitCondition(t, ns, "unnamed", metav1.ConditionFalse, lodiav1alpha1.ReasonDatastoreClassAmbiguous, "2 DatastoreClasses are annotated")
@@ -917,8 +917,8 @@ func TestDatastoreClassNotFound(t *testing.T) {
 	waitCondition(t, ns, "unnamed", metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "waiting for a complete generation")
 	writeGeneration(t, ns, "unnamed", 1)
 	waitEtcd(t, ns, "unnamed", func(etcd *druidv1alpha1.Etcd) error {
-		if size := quantity(etcd.Spec.StorageCapacity); size != "3Gi" {
-			return fmt.Errorf("storageCapacity %s is not the default class's 3Gi", size)
+		if size := quantity(etcd.Spec.StorageCapacity); size != "9Gi" {
+			return fmt.Errorf("storageCapacity %s is not the default class's 9Gi", size)
 		}
 		return nil
 	})
@@ -2201,7 +2201,7 @@ func TestStorageAtCreation(t *testing.T) {
 	if err := k8s.Get(t.Context(), client.ObjectKey{Name: "growing"}, class); err != nil {
 		t.Fatal(err)
 	}
-	class.Spec.Storage = lodiav1alpha1.EtcdStorage{ClassName: "fast", Size: resource.MustParse("2Gi"), ReclaimPolicy: "Retain"}
+	class.Spec.Storage = lodiav1alpha1.EtcdStorage{ClassName: "fast", Size: resource.MustParse("6Gi"), ReclaimPolicy: "Retain"}
 	class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{QuotaBackendBytes: new(resource.MustParse("3Gi"))}
 	if err := k8s.Update(t.Context(), class); err != nil {
 		t.Fatal(err)
@@ -2212,7 +2212,7 @@ func TestStorageAtCreation(t *testing.T) {
 		}
 		return nil
 	})
-	if etcd.Spec.StorageClass != nil || quantity(etcd.Spec.StorageCapacity) != "1Gi" {
+	if etcd.Spec.StorageClass != nil || quantity(etcd.Spec.StorageCapacity) != "8Gi" {
 		t.Errorf("storageClass %v, storageCapacity %s: storage changed after creation", etcd.Spec.StorageClass, quantity(etcd.Spec.StorageCapacity))
 	}
 	if got := etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation]; got != "2" {
@@ -2220,11 +2220,243 @@ func TestStorageAtCreation(t *testing.T) {
 	}
 }
 
+func TestQuotaFitsTheVolume(t *testing.T) {
+	ns := namespace(t)
+	const cp = "quota"
+	class := newClass("quota", "Retain")
+	class.Spec.Storage.Size = resource.MustParse("20Gi")
+	createClass(t, class)
+	create(t, controlPlane(ns, cp, "quota"))
+	writeGeneration(t, ns, cp, 1)
+	if quota := quantity(waitEtcd(t, ns, cp, nil).Spec.Etcd.Quota); quota != "4Gi" {
+		t.Errorf("a class without etcd renders quota %q, want 4Gi", quota)
+	}
+
+	edit := func(quota string) {
+		t.Helper()
+		class := &lodiav1alpha1.DatastoreClass{}
+		if err := k8s.Get(t.Context(), client.ObjectKey{Name: "quota"}, class); err != nil {
+			t.Fatal(err)
+		}
+		class.Spec.Storage.Size = resource.MustParse("24Gi")
+		class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{QuotaBackendBytes: new(resource.MustParse(quota)), Defragmentation: &lodiav1alpha1.Defragmentation{Schedule: "0 4 * * *"}}
+		if err := k8s.Update(t.Context(), class); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recorded := func(generation string) func(*druidv1alpha1.Etcd) error {
+		return func(etcd *druidv1alpha1.Etcd) error {
+			if recorded := etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation]; recorded != generation {
+				return fmt.Errorf("class generation %s recorded, want %s", recorded, generation)
+			}
+			return nil
+		}
+	}
+	edit("12Gi")
+	etcd := waitEtcd(t, ns, cp, recorded("2"))
+	if quota, capacity, schedule := quantity(etcd.Spec.Etcd.Quota), quantity(etcd.Spec.StorageCapacity), ptr.Deref(etcd.Spec.Etcd.DefragmentationSchedule, ""); quota != "10Gi" || capacity != "20Gi" || schedule != "0 4 * * *" {
+		t.Errorf("quota %s, storageCapacity %s, defragmentation %q: want the quota capped at half the 20Gi volume of an Etcd that has not formed and the rest of the edit applied", quota, capacity, schedule)
+	}
+	runStatefulSet(t, ns, cp, 1)
+	setEtcdStatus(t, ns, cp, nil)
+	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
+		"has quorum, 1 of 1 members ready; DatastoreClass quota's quota 12Gi is capped at 10Gi: it needs 24Gi of volume and Etcd quota-etcd's is 20Gi")
+
+	binding := refuseEtcds(t, ns)
+	edit("11Gi")
+	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused,
+		"with the fields of DatastoreClass quota generation 3; the reason is in Lodia's log; DatastoreClass quota's quota 11Gi is capped at 10Gi: it needs 22Gi of volume and Etcd quota-etcd's is 20Gi")
+	if err := k8s.Delete(t.Context(), binding); err != nil {
+		t.Fatal(err)
+	}
+
+	edit("10Gi")
+	if quota := quantity(waitEtcd(t, ns, cp, recorded("4")).Spec.Etcd.Quota); quota != "10Gi" {
+		t.Errorf("quota %s: half the volume is not applied", quota)
+	}
+	setEtcdStatus(t, ns, cp, nil)
+	eventually(t, func() error {
+		if c := meta.FindStatusCondition(getControlPlane(t, ns, cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady); c == nil || c.Message != "Etcd quota-etcd has quorum, 1 of 1 members ready" {
+			return fmt.Errorf("DatastoreReady %+v, want the quota no longer capped", c)
+		}
+		return nil
+	})
+}
+
+func TestQuotaFitsRetainedClaims(t *testing.T) {
+	ns := namespace(t)
+	const cp = "regrow"
+	createClass(t, newClass("regrow", "Retain"))
+	create(t, controlPlane(ns, cp, "regrow"))
+	writeGeneration(t, ns, cp, 1)
+	labels := druidv1alpha1.GetDefaultLabels(waitEtcd(t, ns, cp, nil).ObjectMeta)
+	first := claim(ns, "regrow-etcd-regrow-etcd-0", labels)
+	first.Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse("8Gi")
+	create(t, first)
+	settle(t, ns, cp)
+
+	class := &lodiav1alpha1.DatastoreClass{}
+	if err := k8s.Get(t.Context(), client.ObjectKey{Name: "regrow"}, class); err != nil {
+		t.Fatal(err)
+	}
+	class.Spec.Storage.Size = resource.MustParse("24Gi")
+	class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{QuotaBackendBytes: new(resource.MustParse("12Gi"))}
+	if err := k8s.Update(t.Context(), class); err != nil {
+		t.Fatal(err)
+	}
+	recreated := func(quota, capacity, note string) {
+		t.Helper()
+		previous := waitEtcd(t, ns, cp, func(etcd *druidv1alpha1.Etcd) error {
+			if recorded := etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation]; recorded != "2" {
+				return fmt.Errorf("class generation %s recorded, want 2", recorded)
+			}
+			return nil
+		})
+		if err := k8s.Delete(t.Context(), previous); err != nil {
+			t.Fatal(err)
+		}
+		waitEtcd(t, ns, cp, func(again *druidv1alpha1.Etcd) error {
+			if again.UID == previous.UID {
+				return errors.New("the Etcd has not been created again yet")
+			}
+			if again.Generation != 1 {
+				return fmt.Errorf("the Etcd created again is at generation %d, want the spec of its creating apply", again.Generation)
+			}
+			if got, size := quantity(again.Spec.Etcd.Quota), quantity(again.Spec.StorageCapacity); got != quota || size != capacity {
+				return fmt.Errorf("the Etcd created again over the claims has quota %s and storageCapacity %s, want %s and %s", got, size, quota, capacity)
+			}
+			return nil
+		})
+		eventually(t, func() error {
+			if c := meta.FindStatusCondition(getControlPlane(t, ns, cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady); c == nil || !strings.HasSuffix(c.Message, "; "+note) {
+				return fmt.Errorf("DatastoreReady %+v, want it to end with %q", c, note)
+			}
+			return nil
+		})
+	}
+	recreated("4Gi", "8Gi", "DatastoreClass regrow's quota 12Gi is capped at 4Gi: it needs 24Gi of volume and Etcd regrow-etcd's is 8Gi")
+
+	grown := getClaim(t, ns, "regrow-etcd-regrow-etcd-0")
+	grown.Status.Capacity = corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("10Gi")}
+	if err := k8s.Status().Update(t.Context(), grown); err != nil {
+		t.Fatal(err)
+	}
+	labels = maps.Clone(labels)
+	labels[lodiav1alpha1.ControlPlaneUIDLabel] = string(getControlPlane(t, ns, cp).UID)
+	second := claim(ns, "regrow-etcd-regrow-etcd-1", labels)
+	second.Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse("9Gi")
+	create(t, second)
+	third := claim(ns, "regrow-etcd-regrow-etcd-2", labels)
+	third.Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse("11Gi")
+	create(t, third)
+	recreated("4608Mi", "9Gi", "DatastoreClass regrow's quota 12Gi is capped at 4608Mi: it needs 24Gi of volume and Etcd regrow-etcd's is 9Gi")
+
+	odd := claim(ns, "regrow-etcd-regrow-etcd-3", labels)
+	odd.Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse("8589934593")
+	create(t, odd)
+	recreated("4294967296", "8589934593", "DatastoreClass regrow's quota 12Gi is capped at 4294967296: it needs 24Gi of volume and Etcd regrow-etcd's is 8589934593")
+}
+
+func TestTerminatingClaimIsSkipped(t *testing.T) {
+	ns := namespace(t)
+	const cp = "restart"
+	createClass(t, newClass("restart", "Retain"))
+	create(t, controlPlane(ns, cp, "restart"))
+	writeGeneration(t, ns, cp, 1)
+	previous := waitEtcd(t, ns, cp, nil)
+	labels := druidv1alpha1.GetDefaultLabels(previous.ObjectMeta)
+	labels[lodiav1alpha1.ControlPlaneUIDLabel] = string(getControlPlane(t, ns, cp).UID)
+	terminating := claim(ns, "restart-etcd-restart-etcd-0", labels)
+	terminating.Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse("2Gi")
+	terminating.Finalizers = []string{"lodia.io/test"}
+	create(t, terminating)
+	t.Cleanup(func() {
+		patch := client.MergeFrom(terminating.DeepCopy())
+		terminating.Finalizers = nil
+		if err := k8s.Patch(context.Background(), terminating, patch); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := k8s.Delete(t.Context(), terminating); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Delete(t.Context(), previous); err != nil {
+		t.Fatal(err)
+	}
+
+	waitEtcd(t, ns, cp, func(again *druidv1alpha1.Etcd) error {
+		if again.UID == previous.UID {
+			return errors.New("the Etcd has not been created again yet")
+		}
+		if got, size := quantity(again.Spec.Etcd.Quota), quantity(again.Spec.StorageCapacity); got != "4Gi" || size != "8Gi" {
+			return fmt.Errorf("the Etcd created again beside a terminating 2Gi claim has quota %s and storageCapacity %s, want the class's 4Gi and 8Gi", got, size)
+		}
+		return nil
+	})
+	if pvc := getClaim(t, ns, terminating.Name); pvc.DeletionTimestamp.IsZero() {
+		t.Errorf("claim %s is not being deleted", pvc.Name)
+	}
+}
+
+func TestTerminatingClaimBesideALiveOne(t *testing.T) {
+	ns := namespace(t)
+	const cp = "beside"
+	createClass(t, newClass("beside", "Retain"))
+	create(t, controlPlane(ns, cp, "beside"))
+	writeGeneration(t, ns, cp, 1)
+	previous := waitEtcd(t, ns, cp, nil)
+	labels := druidv1alpha1.GetDefaultLabels(previous.ObjectMeta)
+	labels[lodiav1alpha1.ControlPlaneUIDLabel] = string(getControlPlane(t, ns, cp).UID)
+	terminating := claim(ns, "beside-etcd-beside-etcd-0", labels)
+	terminating.Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse("2Gi")
+	terminating.Finalizers = []string{"lodia.io/test"}
+	create(t, terminating)
+	t.Cleanup(func() {
+		patch := client.MergeFrom(terminating.DeepCopy())
+		terminating.Finalizers = nil
+		if err := k8s.Patch(context.Background(), terminating, patch); err != nil {
+			t.Error(err)
+		}
+	})
+	live := claim(ns, "beside-etcd-beside-etcd-1", labels)
+	live.Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse("6Gi")
+	create(t, live)
+	if err := k8s.Delete(t.Context(), terminating); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Delete(t.Context(), previous); err != nil {
+		t.Fatal(err)
+	}
+
+	waitEtcd(t, ns, cp, func(again *druidv1alpha1.Etcd) error {
+		if again.UID == previous.UID {
+			return errors.New("the Etcd has not been created again yet")
+		}
+		if again.Generation != 1 {
+			return fmt.Errorf("the Etcd created again is at generation %d, want the spec of its creating apply", again.Generation)
+		}
+		if got, size := quantity(again.Spec.Etcd.Quota), quantity(again.Spec.StorageCapacity); got != "3Gi" || size != "6Gi" {
+			return fmt.Errorf("the Etcd created again beside a terminating 2Gi claim and a live 6Gi one has quota %s and storageCapacity %s, want 3Gi and 6Gi", got, size)
+		}
+		return nil
+	})
+	const note = "DatastoreClass beside's quota 4Gi is capped at 3Gi: it needs 8Gi of volume and Etcd beside-etcd's is 6Gi"
+	eventually(t, func() error {
+		if c := meta.FindStatusCondition(getControlPlane(t, ns, cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady); c == nil || !strings.HasSuffix(c.Message, "; "+note) {
+			return fmt.Errorf("DatastoreReady %+v, want it to end with %q", c, note)
+		}
+		return nil
+	})
+	if pvc := getClaim(t, ns, terminating.Name); pvc.DeletionTimestamp.IsZero() {
+		t.Errorf("claim %s is not being deleted", pvc.Name)
+	}
+}
+
 func TestRecordedClass(t *testing.T) {
 	ns := namespace(t)
 	first := newClass("default-first", "Retain")
 	first.Annotations = map[string]string{lodiav1alpha1.DefaultClassAnnotation: "true"}
-	first.Spec.Storage.Size = resource.MustParse("3Gi")
+	first.Spec.Storage.Size = resource.MustParse("9Gi")
 	createClass(t, first)
 	create(t, controlPlane(ns, "dev", ""))
 	writeGeneration(t, ns, "dev", 1)
@@ -2237,7 +2469,7 @@ func TestRecordedClass(t *testing.T) {
 
 	second := newClass("default-second", "Delete")
 	second.Annotations = map[string]string{lodiav1alpha1.DefaultClassAnnotation: "true"}
-	second.Spec.Storage.Size = resource.MustParse("5Gi")
+	second.Spec.Storage.Size = resource.MustParse("10Gi")
 	createClass(t, second)
 	if err := k8s.Get(t.Context(), client.ObjectKey{Name: "default-first"}, first); err != nil {
 		t.Fatal(err)
@@ -2248,8 +2480,8 @@ func TestRecordedClass(t *testing.T) {
 	}
 	settle(t, ns, "dev")
 	etcd = getEtcd(t, ns, "dev")
-	if etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation] != "default-first" || quantity(etcd.Spec.StorageCapacity) != "3Gi" {
-		t.Errorf("the Etcd follows class %s with %s, want default-first with 3Gi after the default moved", etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation], quantity(etcd.Spec.StorageCapacity))
+	if etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation] != "default-first" || quantity(etcd.Spec.StorageCapacity) != "9Gi" {
+		t.Errorf("the Etcd follows class %s with %s, want default-first with 9Gi after the default moved", etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation], quantity(etcd.Spec.StorageCapacity))
 	}
 	if pvc := getClaim(t, ns, "dev-etcd-dev-etcd-0"); pvc.Annotations[lodiav1alpha1.DatastoreClassAnnotation] != "default-first" {
 		t.Errorf("the claim records class %s, want default-first", pvc.Annotations[lodiav1alpha1.DatastoreClassAnnotation])
@@ -2277,7 +2509,7 @@ func TestClassSurvivesTheEtcd(t *testing.T) {
 	ns := namespace(t)
 	first := newClass("survivor-first", "Retain")
 	first.Annotations = map[string]string{lodiav1alpha1.DefaultClassAnnotation: "true"}
-	first.Spec.Storage.Size = resource.MustParse("3Gi")
+	first.Spec.Storage.Size = resource.MustParse("9Gi")
 	createClass(t, first)
 	create(t, controlPlane(ns, "dev", ""))
 	writeGeneration(t, ns, "dev", 1)
@@ -2287,7 +2519,7 @@ func TestClassSurvivesTheEtcd(t *testing.T) {
 
 	second := newClass("survivor-second", "Delete")
 	second.Annotations = map[string]string{lodiav1alpha1.DefaultClassAnnotation: "true"}
-	second.Spec.Storage.Size = resource.MustParse("5Gi")
+	second.Spec.Storage.Size = resource.MustParse("10Gi")
 	createClass(t, second)
 	if err := k8s.Get(t.Context(), client.ObjectKey{Name: "survivor-first"}, first); err != nil {
 		t.Fatal(err)
@@ -2303,8 +2535,8 @@ func TestClassSurvivesTheEtcd(t *testing.T) {
 		if again.UID == etcd.UID {
 			return errors.New("the Etcd has not been created again yet")
 		}
-		if class, size := again.Annotations[lodiav1alpha1.DatastoreClassAnnotation], quantity(again.Spec.StorageCapacity); class != "survivor-first" || size != "3Gi" {
-			return fmt.Errorf("the Etcd created again follows class %s with %s, want survivor-first, which its claims record, with 3Gi", class, size)
+		if class, size := again.Annotations[lodiav1alpha1.DatastoreClassAnnotation], quantity(again.Spec.StorageCapacity); class != "survivor-first" || size != "1Gi" {
+			return fmt.Errorf("the Etcd created again follows class %s with %s, want survivor-first, which its claims record, with their 1Gi", class, size)
 		}
 		return nil
 	})

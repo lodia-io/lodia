@@ -70,4 +70,4 @@ spec:
     - metadata: {name: data}
       spec:
         accessModes: [ReadWriteOnce]
-        resources: {requests: {storage: 4Gi}}
+        resources: {requests: {storage: 8Gi}}
