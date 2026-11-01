@@ -2350,6 +2350,11 @@ func TestQuotaFitsRetainedClaims(t *testing.T) {
 	third.Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse("11Gi")
 	create(t, third)
 	recreated("4608Mi", "9Gi", "DatastoreClass regrow's quota 12Gi is capped at 4608Mi: it needs 24Gi of volume and Etcd regrow-etcd's is 9Gi")
+
+	odd := claim(ns, "regrow-etcd-regrow-etcd-3", labels)
+	odd.Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse("8589934593")
+	create(t, odd)
+	recreated("4294967296", "8589934593", "DatastoreClass regrow's quota 12Gi is capped at 4294967296: it needs 24Gi of volume and Etcd regrow-etcd's is 8589934593")
 }
 
 func TestRecordedClass(t *testing.T) {
