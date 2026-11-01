@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -59,6 +60,8 @@ type BackupReconciler struct {
 	Reader client.Reader
 	// EtcdClient connects to the etcd of an Etcd; the caller closes it.
 	EtcdClient func(ctx context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client, error)
+	// Clock spaces the full snapshots a Backup asks for again.
+	Clock clock.PassiveClock
 }
 
 func (r *BackupReconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
@@ -212,11 +215,11 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	task := backupTaskPrefix + string(backup.UID)
-	if message, err := r.flush(ctx, backup, source, etcd, status.Seal.Revision); message != "" || err != nil {
+	if message, requeueAfter, err := r.flush(ctx, backup, source, etcd, status.Seal.Revision); message != "" || err != nil {
 		if err != nil {
 			return ctrl.Result{}, err
 		}
-		return report(metav1.ConditionUnknown, lodiav1alpha1.ReasonSnapshotting, message, 10*time.Second)
+		return report(metav1.ConditionUnknown, lodiav1alpha1.ReasonSnapshotting, message, requeueAfter)
 	}
 
 	copyTask := &druidv1alpha1.EtcdCopyBackupsTask{}
@@ -473,13 +476,18 @@ func (r *BackupReconciler) seal(ctx context.Context, etcd *druidv1alpha1.Etcd, u
 // which a store moved through the credentials holds until its next scheduled
 // full snapshot. A finished EtcdOpsTask names no revision
 // (etcd-druid@v0.39.0 api/core/v1alpha1/etcdopstask.go#L137-L161), so one
-// that finished short of the seal is deleted for the next.
-func (r *BackupReconciler) flush(ctx context.Context, backup *lodiav1alpha1.Backup, source *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, revision int64) (string, error) {
+// that finished short of the seal is deleted for the next, but only once the
+// time since the Backup started, at most an hour, has passed since it
+// finished (its lastTransitionTime, etcd-druid@v0.39.0
+// internal/controller/etcdopstask/utils.go#L95-L96): a Lease that never
+// reaches the seal costs a full snapshot each time.
+func (r *BackupReconciler) flush(ctx context.Context, backup *lodiav1alpha1.Backup, source *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, revision int64) (string, time.Duration, error) {
 	lease := druidv1alpha1.GetFullSnapshotLeaseName(etcd.ObjectMeta)
 	held, ignored, err := fullSnapshotRevision(ctx, r.Reader, etcd)
 	if err != nil || held >= revision {
-		return "", err
+		return "", 0, err
 	}
+	requeueAfter := 10 * time.Second
 	name := backupTaskPrefix + string(backup.UID)
 	task := &druidv1alpha1.EtcdOpsTask{}
 	var state string
@@ -494,16 +502,23 @@ func (r *BackupReconciler) flush(ctx context.Context, backup *lodiav1alpha1.Back
 			},
 		}
 		if err := r.Create(ctx, task, client.FieldOwner(BackupFieldManager)); err != nil && !apierrors.IsAlreadyExists(err) {
-			return "", fmt.Errorf("create EtcdOpsTask %s: %w", name, err)
+			return "", 0, fmt.Errorf("create EtcdOpsTask %s: %w", name, err)
 		}
 		state = "created"
 	case err != nil:
-		return "", err
+		return "", 0, err
 	case task.IsCompleted():
-		if err := client.IgnoreNotFound(r.Delete(ctx, task, client.Preconditions{UID: &task.UID})); err != nil {
-			return "", fmt.Errorf("delete EtcdOpsTask %s: %w", name, err)
+		finished := ptr.Deref(task.Status.LastTransitionTime, metav1.Time{}).Time
+		next := finished.Add(min(time.Hour, finished.Sub(backup.Status.StartedAt.Time)))
+		if wait := next.Sub(r.Clock.Now()); wait > 0 {
+			state = fmt.Sprintf("%s at %s; the next goes at %s", *task.Status.State, finished.UTC().Format(time.RFC3339), next.UTC().Format(time.RFC3339))
+			requeueAfter = min(requeueAfter, wait)
+		} else {
+			if err := client.IgnoreNotFound(r.Delete(ctx, task, client.Preconditions{UID: &task.UID})); err != nil {
+				return "", 0, fmt.Errorf("delete EtcdOpsTask %s: %w", name, err)
+			}
+			state = string(*task.Status.State) + ", deleted for another"
 		}
-		state = string(*task.Status.State) + ", deleted for another"
 	default:
 		state = string(ptr.Deref(task.Status.State, "not admitted yet"))
 	}
@@ -515,7 +530,7 @@ func (r *BackupReconciler) flush(ctx context.Context, backup *lodiav1alpha1.Back
 	if backupReady := meta.FindStatusCondition(source.Status.Conditions, lodiav1alpha1.ConditionBackupReady); backupReady != nil && backupReady.Status == metav1.ConditionFalse {
 		message = append(message, fmt.Sprintf("BackupReady of %s is False: %s", source.Name, backupReady.Message))
 	}
-	return strings.Join(message, "; "), nil
+	return strings.Join(message, "; "), requeueAfter, nil
 }
 
 // fullSnapshotRevision is the last revision of the newest full snapshot the

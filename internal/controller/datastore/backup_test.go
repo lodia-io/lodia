@@ -28,6 +28,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apiserver/pkg/storage/etcd3/testserver"
 	"k8s.io/client-go/util/retry"
+	"k8s.io/utils/clock"
+	clocktesting "k8s.io/utils/clock/testing"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -102,7 +104,7 @@ func setLease(t *testing.T, ns, name string, holder int64) {
 }
 
 func (s *source) reconciler(c client.Client) *datastore.BackupReconciler {
-	return &datastore.BackupReconciler{Client: c, Reader: apiReader, EtcdClient: s.dial}
+	return &datastore.BackupReconciler{Client: c, Reader: apiReader, EtcdClient: s.dial, Clock: clock.RealClock{}}
 }
 
 func (s *source) dial(context.Context, *druidv1alpha1.Etcd) (*clientv3.Client, error) {
@@ -148,7 +150,7 @@ func (s *source) actAsDruid(t *testing.T) {
 	for i := range tasks.Items {
 		if tasks.Items[i].Status.State == nil {
 			setLease(t, s.ns, fullLease, s.revision(t))
-			finishFlush(t, s.ns, tasks.Items[i].Name, druidv1alpha1.TaskStateSucceeded)
+			finishFlush(t, s.ns, tasks.Items[i].Name, druidv1alpha1.TaskStateSucceeded, time.Now())
 		}
 	}
 	copies := &druidv1alpha1.EtcdCopyBackupsTaskList{}
@@ -162,14 +164,14 @@ func (s *source) actAsDruid(t *testing.T) {
 	}
 }
 
-func finishFlush(t *testing.T, ns, name string, state druidv1alpha1.TaskState) {
+func finishFlush(t *testing.T, ns, name string, state druidv1alpha1.TaskState, at time.Time) {
 	t.Helper()
 	task := &druidv1alpha1.EtcdOpsTask{}
 	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: name}, task); err != nil {
 		t.Fatal(err)
 	}
 	task.Status.State = new(state)
-	task.Status.LastTransitionTime = new(metav1.Now())
+	task.Status.LastTransitionTime = new(metav1.NewTime(at))
 	if err := k8s.Status().Update(t.Context(), task); err != nil {
 		t.Fatal(err)
 	}
@@ -444,25 +446,46 @@ func TestOnlyTheFullSnapshotLeaseShowsTheSeal(t *testing.T) {
 
 func TestAFlushThatEndsShortOfTheSealIsSentAgain(t *testing.T) {
 	src := newSource(t, nil, nil)
+	now := clocktesting.NewFakePassiveClock(time.Now())
 	r := src.reconciler(cached)
+	r.Clock = now
 	for _, state := range []druidv1alpha1.TaskState{druidv1alpha1.TaskStateSucceeded, druidv1alpha1.TaskStateFailed, druidv1alpha1.TaskStateRejected} {
 		t.Run(string(state), func(t *testing.T) {
 			name := strings.ToLower(string(state))
 			created := createBackup(t, src.ns, name, nil)
-			passes(t, r, src.ns, name, func(*lodiav1alpha1.Backup) error {
+			backup := passes(t, r, src.ns, name, func(*lodiav1alpha1.Backup) error {
 				if getFlush(t, src.ns, created.UID) == nil {
 					return errors.New("no EtcdOpsTask yet")
 				}
 				return nil
 			})
-			first := getFlush(t, src.ns, created.UID)
-			finishFlush(t, src.ns, first.Name, state)
-			passes(t, r, src.ns, name, func(*lodiav1alpha1.Backup) error {
-				if again := getFlush(t, src.ns, created.UID); again == nil || again.UID == first.UID {
-					return fmt.Errorf("no EtcdOpsTask after the %s one", state)
+			started := backup.Status.StartedAt.Time
+			flush := getFlush(t, src.ns, created.UID)
+			for _, round := range []struct{ finished, interval time.Duration }{{10 * time.Minute, 10 * time.Minute}, {3 * time.Hour, time.Hour}} {
+				finished := started.Add(round.finished)
+				next := finished.Add(round.interval)
+				finishFlush(t, src.ns, flush.Name, state, finished)
+				now.SetTime(next.Add(-time.Second))
+				passes(t, r, src.ns, name, readyIs(metav1.ConditionUnknown, lodiav1alpha1.ReasonSnapshotting, fmt.Sprintf("EtcdOpsTask %s is %s at %s; the next goes at %s",
+					flush.Name, state, finished.UTC().Format(time.RFC3339), next.UTC().Format(time.RFC3339))))
+				for range 3 {
+					result, err := reconcileBackup(r, src.ns, name)
+					if err != nil || result.RequeueAfter != time.Second {
+						t.Fatalf("a pass a second before the next flush returned %+v, %v; want a requeue in 1s", result, err)
+					}
+					if again := getFlush(t, src.ns, created.UID); again == nil || again.UID != flush.UID {
+						t.Fatalf("the %s EtcdOpsTask, finished at %s, was replaced before %s", state, finished, next)
+					}
 				}
-				return nil
-			})
+				now.SetTime(next)
+				passes(t, r, src.ns, name, func(*lodiav1alpha1.Backup) error {
+					if again := getFlush(t, src.ns, created.UID); again == nil || again.UID == flush.UID {
+						return fmt.Errorf("no EtcdOpsTask at %s after the %s one", next, state)
+					}
+					return nil
+				})
+				flush = getFlush(t, src.ns, created.UID)
+			}
 			if getCopyTask(t, src.ns, created.UID) != nil {
 				t.Fatal("a flush short of the seal let the copy start")
 			}
@@ -1042,7 +1065,7 @@ func runBackupReconciler(t *testing.T, s *source) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := (&datastore.BackupReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdClient: s.dial}).SetupWithManager(mgr, 1); err != nil {
+	if err := (&datastore.BackupReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdClient: s.dial, Clock: clock.RealClock{}}).SetupWithManager(mgr, 1); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1079,7 +1102,7 @@ func TestTheWatchesBringTheNextPass(t *testing.T) {
 		return nil
 	})
 	setLease(t, src.ns, fullLease, early.Status.Seal.Revision)
-	finishFlush(t, src.ns, task(early.UID), druidv1alpha1.TaskStateSucceeded)
+	finishFlush(t, src.ns, task(early.UID), druidv1alpha1.TaskStateSucceeded, time.Now())
 	awaitBackup(t, src.ns, "early", readyIs(metav1.ConditionUnknown, lodiav1alpha1.ReasonCopying, ""))
 	finishCopy(t, src.ns, task(early.UID), druidv1alpha1.EtcdCopyBackupsTaskSucceeded, "")
 	awaitBackup(t, src.ns, "early", readyIs(metav1.ConditionTrue, lodiav1alpha1.ReasonCompleted, ""))
@@ -1374,7 +1397,7 @@ func (h hiding) Get(ctx context.Context, key client.ObjectKey, obj client.Object
 func TestABackupWaitsForTheCredentialsCopy(t *testing.T) {
 	src := newSource(t, nil, nil)
 	r := src.reconciler(cached)
-	hidden := &datastore.BackupReconciler{Client: cached, Reader: hiding{apiReader, "src-etcd-backup"}, EtcdClient: src.dial}
+	hidden := &datastore.BackupReconciler{Client: cached, Reader: hiding{apiReader, "src-etcd-backup"}, EtcdClient: src.dial, Clock: clock.RealClock{}}
 	created := createBackup(t, src.ns, "early", nil)
 	waiting := readyIs(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, "no Secret src-etcd-backup, whose keys name part of the store")
 	for _, sealedYet := range []bool{false, true} {

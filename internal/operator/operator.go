@@ -90,7 +90,7 @@ func Setup(mgr ctrl.Manager, signerImage, etcdDruidNamespace, operatorNamespace 
 	}
 	if err := (&datastore.BackupReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdClient: func(ctx context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client, error) {
 		return datastore.DialEtcd(ctx, mgr.GetAPIReader(), etcd)
-	}}).SetupWithManager(mgr, workers); err != nil {
+	}, Clock: clock.RealClock{}}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the backup reconciler: %w", err)
 	}
 	if err := (&lifecycle.Reconciler{Client: mgr.GetClient()}).SetupWithManager(mgr, workers); err != nil {
