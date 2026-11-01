@@ -2319,6 +2319,9 @@ func TestQuotaFitsRetainedClaims(t *testing.T) {
 			if again.UID == previous.UID {
 				return errors.New("the Etcd has not been created again yet")
 			}
+			if again.Generation != 1 {
+				return fmt.Errorf("the Etcd created again is at generation %d, want the spec of its creating apply", again.Generation)
+			}
 			if got, size := quantity(again.Spec.Etcd.Quota), quantity(again.Spec.StorageCapacity); got != quota || size != capacity {
 				return fmt.Errorf("the Etcd created again over the claims has quota %s and storageCapacity %s, want %s and %s", got, size, quota, capacity)
 			}
