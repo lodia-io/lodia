@@ -101,6 +101,7 @@ flowchart TB
     a -->|mTLS :2379| etcd
     etcd -->|":2379 :2380 :8080"| etcd
     etcd -->|snapshots| s3[(object storage)]
+    cj["copy Job of a Backup"] -->|snapshots| s3
   end
   ep["load balancer, node port<br/>or Gateway :443 by SNI"] --> svc
   op["Lodia"] --> svc
@@ -273,7 +274,7 @@ A policy the API server refuses is retried with backoff.
 
 Identities ([short-lived-kubeconfigs](decisions/short-lived-kubeconfigs.md), [staged-credential-rotation](decisions/staged-credential-rotation.md)): the API server's kubelet client is `kube-apiserver-kubelet-client` in the group `lodia:kubelet-api-admins`; konnectivity-server runs as `system:konnectivity-server`, bound to a Role on the Leases in `kube-system` and to `system:auth-delegator`, which lets it create TokenReviews and SubjectAccessReviews; the controller manager and scheduler use their standard identities; Lodia reaches the tenant as `lodia:operator`, bound to `cluster-admin` because it manages RBAC; a person with a `KubeconfigRequest`'s kubeconfig is `lodia:user:<user>`, in `lodia:cluster-admins` only with `access: ClusterAdmin`.
 
-Phase 2 default-denies the namespace, egress included, and allows exactly the arrows above: the endpoint → API server and konnectivity-server, controller manager and scheduler and Lodia → the API Service, API server → etcd, Lodia → etcd's client port, etcd ↔ etcd, etcd-druid → etcd and its backup-restore sidecar, etcd and its compaction Jobs → object storage, and every pod → the cluster DNS; a platform that scrapes the components admits its scraper itself ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)).
+Phase 2 default-denies the namespace, egress included, and allows exactly the arrows above: the endpoint → API server and konnectivity-server, controller manager and scheduler and Lodia → the API Service, API server → etcd, Lodia → etcd's client port, etcd ↔ etcd, etcd-druid → etcd and its backup-restore sidecar, etcd, its compaction Jobs and the copy Job a `Backup`'s `EtcdCopyBackupsTask` runs in the namespace ([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcdcopybackupstask/reconciler.go#L325-L330)) → object storage, and every pod → the cluster DNS; a platform that scrapes the components admits its scraper itself ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)).
 
 ## Networking
 
