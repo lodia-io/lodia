@@ -54,8 +54,8 @@ const (
 // (docs/decisions/restore-replaces-the-source.md).
 type BackupReconciler struct {
 	client.Client
-	// Reader reads the API server: the Backup in every pass, the snapshot
-	// Leases and the Secrets.
+	// Reader reads the API server: the Backup in every pass, the full
+	// snapshot Lease and the Secrets.
 	Reader client.Reader
 	// EtcdClient connects to the etcd of an Etcd; the caller closes it.
 	EtcdClient func(ctx context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client, error)
@@ -164,11 +164,12 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			return ctrl.Result{}, err
 		}
 		location = snapshotLocation(etcd.Spec.Backup.Store, fromSecret, backup.UID)
-		// The snapshot Leases describe the store the sidecar uploaded to, and
-		// their holders never fall, so a store that moved, even one moved back,
-		// may lack the seal. A copy task that exists is no exception: its Job
-		// reads the credentials Secret when it starts. A pass that waits for
-		// the datastore compares too, since a move restarts a single member.
+		// The full snapshot Lease describes the store the sidecar uploaded to,
+		// and its holder never falls, so a store that moved, even one moved
+		// back, may lack the seal. A copy task that exists is no exception:
+		// its Job reads the credentials Secret when it starts. A pass that
+		// waits for the datastore compares too, since a move restarts a single
+		// member.
 		if status.StartedAt != nil && !noCredentials {
 			if from, to := storeMoved(*status.Snapshots, location, credentials); from != "" {
 				return report(metav1.ConditionFalse, lodiav1alpha1.ReasonFailed, fmt.Sprintf("the source's backup store moved from %s to %s while the Backup was taken, and the snapshots that hold the seal are in the first; create another Backup", from, to), 0)
@@ -464,14 +465,17 @@ func (r *BackupReconciler) seal(ctx context.Context, etcd *druidv1alpha1.Etcd, u
 	return kvs[0].GetCreateRevision(), nil
 }
 
-// flush asks etcd-druid for a snapshot until a snapshot Lease shows the seal
-// in the store, and says what it waits for until then. A finished
-// EtcdOpsTask proves nothing, since a delta the sidecar skipped succeeds too
-// (etcd-druid@v0.39.0 internal/controller/etcdopstask/handler/ondemandsnapshot/ondemandsnapshot.go#L135-L153),
-// so one that finished short of the seal is deleted for the next.
+// flush asks etcd-druid for a full snapshot until the full snapshot Lease
+// shows the seal, and says what it waits for until then. The copy takes the
+// newest full snapshot with the deltas after it, and nothing from deltas alone
+// (etcd-backup-restore@v0.45.1 pkg/miscellaneous/miscellaneous.go#L196-L214),
+// which a store moved through the credentials holds until its next scheduled
+// full snapshot. A finished EtcdOpsTask names no revision
+// (etcd-druid@v0.39.0 api/core/v1alpha1/etcdopstask.go#L137-L161), so one
+// that finished short of the seal is deleted for the next.
 func (r *BackupReconciler) flush(ctx context.Context, backup *lodiav1alpha1.Backup, source *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, revision int64) (string, error) {
-	leases := []string{druidv1alpha1.GetFullSnapshotLeaseName(etcd.ObjectMeta), druidv1alpha1.GetDeltaSnapshotLeaseName(etcd.ObjectMeta)}
-	held, ignored, err := revisionInStore(ctx, r.Reader, etcd, leases...)
+	lease := druidv1alpha1.GetFullSnapshotLeaseName(etcd.ObjectMeta)
+	held, ignored, err := fullSnapshotRevision(ctx, r.Reader, etcd)
 	if err != nil || held >= revision {
 		return "", err
 	}
@@ -481,14 +485,10 @@ func (r *BackupReconciler) flush(ctx context.Context, backup *lodiav1alpha1.Back
 	err = r.Get(ctx, client.ObjectKey{Namespace: backup.Namespace, Name: name}, task)
 	switch {
 	case apierrors.IsNotFound(err):
-		snapshot := druidv1alpha1.OnDemandSnapshotTypeDelta
-		if period := etcd.Spec.Backup.DeltaSnapshotPeriod; period != nil && period.Duration < time.Second {
-			snapshot = druidv1alpha1.OnDemandSnapshotTypeFull
-		}
 		task = &druidv1alpha1.EtcdOpsTask{
 			ObjectMeta: taskMeta(backup, source, name),
 			Spec: druidv1alpha1.EtcdOpsTaskSpec{
-				Config:   druidv1alpha1.EtcdOpsTaskConfig{OnDemandSnapshot: &druidv1alpha1.OnDemandSnapshotConfig{Type: snapshot}},
+				Config:   druidv1alpha1.EtcdOpsTaskConfig{OnDemandSnapshot: &druidv1alpha1.OnDemandSnapshotConfig{Type: druidv1alpha1.OnDemandSnapshotTypeFull}},
 				EtcdName: new(etcd.Name),
 			},
 		}
@@ -506,9 +506,9 @@ func (r *BackupReconciler) flush(ctx context.Context, backup *lodiav1alpha1.Back
 	default:
 		state = string(ptr.Deref(task.Status.State, "not admitted yet"))
 	}
-	message := []string{fmt.Sprintf("the seal is at revision %d in %s's etcd; the store holds %d (Leases %s); EtcdOpsTask %s is %s",
-		revision, source.Name, held, strings.Join(leases, ", "), name, state)}
-	for _, lease := range ignored {
+	message := []string{fmt.Sprintf("the seal is at revision %d in %s's etcd; the store holds a full snapshot up to %d (Lease %s); EtcdOpsTask %s is %s",
+		revision, source.Name, held, lease, name, state)}
+	if ignored {
 		message = append(message, fmt.Sprintf("ignored Lease %s, created before Etcd %s", lease, etcd.Name))
 	}
 	if backupReady := meta.FindStatusCondition(source.Status.Conditions, lodiav1alpha1.ConditionBackupReady); backupReady != nil && backupReady.Status == metav1.ConditionFalse {
@@ -517,34 +517,29 @@ func (r *BackupReconciler) flush(ctx context.Context, backup *lodiav1alpha1.Back
 	return strings.Join(message, "; "), nil
 }
 
-// revisionInStore is the newest revision the snapshot Leases of the Etcd
-// show in its store. The sidecar sets a Lease's holder to the last revision
-// of a snapshot it uploaded and never lowers it; the full snapshot covers
-// every revision up to its holder, and the deltas after it are contiguous
-// (etcd-backup-restore@v0.45.1 pkg/health/heartbeat/heartbeat.go#L200-L289).
+// fullSnapshotRevision is the last revision of the newest full snapshot the
+// Etcd's full snapshot Lease shows in its store: the sidecar sets its holder
+// after each full snapshot it uploaded and never lowers it
+// (etcd-backup-restore@v0.45.1 pkg/health/heartbeat/heartbeat.go#L200-L222).
 // etcd-druid adopts a Lease of a predecessor of the same name with its holder,
-// so a Lease created before the Etcd counts for nothing; the second result
-// names those.
-func revisionInStore(ctx context.Context, reader client.Reader, etcd *druidv1alpha1.Etcd, names ...string) (int64, []string, error) {
-	var held int64
-	var ignored []string
-	for _, name := range names {
-		lease := &coordinationv1.Lease{}
-		if err := reader.Get(ctx, client.ObjectKey{Namespace: etcd.Namespace, Name: name}, lease); err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
-			}
-			return 0, nil, fmt.Errorf("read Lease %s: %w", name, err)
+// so a Lease created before the Etcd counts for nothing, which the second
+// result says.
+func fullSnapshotRevision(ctx context.Context, reader client.Reader, etcd *druidv1alpha1.Etcd) (int64, bool, error) {
+	name := druidv1alpha1.GetFullSnapshotLeaseName(etcd.ObjectMeta)
+	lease := &coordinationv1.Lease{}
+	if err := reader.Get(ctx, client.ObjectKey{Namespace: etcd.Namespace, Name: name}, lease); err != nil {
+		if apierrors.IsNotFound(err) {
+			return 0, false, nil
 		}
-		if lease.CreationTimestamp.Before(&etcd.CreationTimestamp) {
-			ignored = append(ignored, name)
-			continue
-		}
-		if revision, err := strconv.ParseInt(ptr.Deref(lease.Spec.HolderIdentity, ""), 10, 64); err == nil {
-			held = max(held, revision)
-		}
+		return 0, false, fmt.Errorf("read Lease %s: %w", name, err)
 	}
-	return held, ignored, nil
+	if lease.CreationTimestamp.Before(&etcd.CreationTimestamp) {
+		return 0, true, nil
+	}
+	if revision, err := strconv.ParseInt(ptr.Deref(lease.Spec.HolderIdentity, ""), 10, 64); err == nil {
+		return revision, false, nil
+	}
+	return 0, false, nil
 }
 
 func taskMeta(backup *lodiav1alpha1.Backup, source *lodiav1alpha1.ControlPlane, name string) metav1.ObjectMeta {

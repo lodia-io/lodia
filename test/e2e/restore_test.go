@@ -186,7 +186,7 @@ func TestRestoreGate(t *testing.T) {
 				var last int64
 				for _, key := range keys {
 					name := strings.Split(path.Base(key), "-")
-					if len(name) != 4 || name[0] != "Full" && name[0] != "Incr" {
+					if len(name) != 4 || name[0] != "Full" {
 						continue
 					}
 					if revision, err := strconv.ParseInt(name[2], 10, 64); err == nil {
@@ -194,7 +194,7 @@ func TestRestoreGate(t *testing.T) {
 					}
 				}
 				if last < status.Seal.Revision {
-					t.Errorf("the copy under %s holds snapshots up to revision %d, below the seal's %d: %v", status.Snapshots.Prefix, last, status.Seal.Revision, keys)
+					t.Errorf("the copy under %s holds full snapshots up to revision %d, below the seal's %d: %v", status.Snapshots.Prefix, last, status.Seal.Revision, keys)
 				}
 			}
 			return ctx

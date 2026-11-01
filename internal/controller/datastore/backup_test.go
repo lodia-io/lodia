@@ -147,7 +147,7 @@ func (s *source) actAsDruid(t *testing.T) {
 	}
 	for i := range tasks.Items {
 		if tasks.Items[i].Status.State == nil {
-			setLease(t, s.ns, deltaLease, s.revision(t))
+			setLease(t, s.ns, fullLease, s.revision(t))
 			finishFlush(t, s.ns, tasks.Items[i].Name, druidv1alpha1.TaskStateSucceeded)
 		}
 	}
@@ -298,7 +298,7 @@ func (s *source) toCopy(t *testing.T, r *datastore.BackupReconciler) *lodiav1alp
 	t.Helper()
 	createBackup(t, s.ns, "b", nil)
 	backup := passes(t, r, s.ns, "b", sealed)
-	setLease(t, s.ns, deltaLease, backup.Status.Seal.Revision)
+	setLease(t, s.ns, fullLease, backup.Status.Seal.Revision)
 	return passes(t, r, s.ns, "b", readyIs(metav1.ConditionUnknown, lodiav1alpha1.ReasonCopying, ""))
 }
 
@@ -337,15 +337,15 @@ func TestABackupIsSealedAndCopied(t *testing.T) {
 	}
 	revision := backup.Status.Seal.Revision
 
-	setLease(t, src.ns, deltaLease, revision-1)
+	setLease(t, src.ns, fullLease, revision-1)
 	passes(t, r, src.ns, created.Name, readyIs(metav1.ConditionUnknown, lodiav1alpha1.ReasonSnapshotting,
-		fmt.Sprintf("the seal is at revision %d in src's etcd; the store holds %d (Leases src-etcd-full-snap, src-etcd-delta-snap); EtcdOpsTask %s is ", revision, revision-1, task(created.UID))))
+		fmt.Sprintf("the seal is at revision %d in src's etcd; the store holds a full snapshot up to %d (Lease src-etcd-full-snap); EtcdOpsTask %s is ", revision, revision-1, task(created.UID))))
 	flush := getFlush(t, src.ns, created.UID)
 	if flush == nil {
 		t.Fatal("no EtcdOpsTask")
 	}
 	if want := (druidv1alpha1.EtcdOpsTaskSpec{
-		Config:                  druidv1alpha1.EtcdOpsTaskConfig{OnDemandSnapshot: &druidv1alpha1.OnDemandSnapshotConfig{Type: druidv1alpha1.OnDemandSnapshotTypeDelta, TimeoutSecondsDelta: new(int32(60)), TimeoutSecondsFull: new(int32(900))}},
+		Config:                  druidv1alpha1.EtcdOpsTaskConfig{OnDemandSnapshot: &druidv1alpha1.OnDemandSnapshotConfig{Type: druidv1alpha1.OnDemandSnapshotTypeFull, TimeoutSecondsDelta: new(int32(60)), TimeoutSecondsFull: new(int32(900))}},
 		TTLSecondsAfterFinished: new(int32(3600)),
 		EtcdName:                new("src-etcd"),
 	}); !reflect.DeepEqual(flush.Spec, want) {
@@ -356,7 +356,7 @@ func TestABackupIsSealedAndCopied(t *testing.T) {
 		if _, err := reconcileBackup(r, src.ns, created.Name); err != nil {
 			t.Fatal(err)
 		}
-		if err := readyIs(metav1.ConditionUnknown, lodiav1alpha1.ReasonSnapshotting, "the store holds "+strconv.FormatInt(revision-1, 10))(getBackup(t, src.ns, created.Name)); err != nil {
+		if err := readyIs(metav1.ConditionUnknown, lodiav1alpha1.ReasonSnapshotting, "the store holds a full snapshot up to "+strconv.FormatInt(revision-1, 10))(getBackup(t, src.ns, created.Name)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -364,7 +364,7 @@ func TestABackupIsSealedAndCopied(t *testing.T) {
 		t.Fatal("a Lease below the seal let the copy start")
 	}
 
-	setLease(t, src.ns, deltaLease, revision)
+	setLease(t, src.ns, fullLease, revision)
 	passes(t, r, src.ns, created.Name, readyIs(metav1.ConditionUnknown, lodiav1alpha1.ReasonCopying,
 		fmt.Sprintf("EtcdCopyBackupsTask %s copies the newest snapshots of src to lodia-backups/%s", task(created.UID), prefix)))
 	copyTask := getCopyTask(t, src.ns, created.UID)
@@ -420,21 +420,25 @@ func TestABackupIsSealedAndCopied(t *testing.T) {
 	})
 }
 
-func TestEitherSnapshotLeaseShowsTheSeal(t *testing.T) {
+func TestOnlyTheFullSnapshotLeaseShowsTheSeal(t *testing.T) {
 	src := newSource(t, nil, nil)
 	r := src.reconciler(cached)
-	for _, lease := range []string{deltaLease, fullLease} {
-		t.Run(lease, func(t *testing.T) {
-			setLease(t, src.ns, fullLease, 0)
-			setLease(t, src.ns, deltaLease, 0)
-			created := createBackup(t, src.ns, lease, nil)
-			backup := passes(t, r, src.ns, lease, sealed)
-			setLease(t, src.ns, lease, backup.Status.Seal.Revision)
-			passes(t, r, src.ns, lease, readyIs(metav1.ConditionUnknown, lodiav1alpha1.ReasonCopying, ""))
-			if getCopyTask(t, src.ns, created.UID) == nil {
-				t.Fatal("no EtcdCopyBackupsTask")
-			}
-		})
+	created := createBackup(t, src.ns, "full", nil)
+	backup := passes(t, r, src.ns, created.Name, sealed)
+	revision := backup.Status.Seal.Revision
+	setLease(t, src.ns, fullLease, revision-1)
+	for _, delta := range []int64{revision, revision + 1000} {
+		setLease(t, src.ns, deltaLease, delta)
+		passes(t, r, src.ns, created.Name, readyIs(metav1.ConditionUnknown, lodiav1alpha1.ReasonSnapshotting,
+			fmt.Sprintf("the seal is at revision %d in src's etcd; the store holds a full snapshot up to %d (Lease src-etcd-full-snap); EtcdOpsTask %s is ", revision, revision-1, task(created.UID))))
+		if getCopyTask(t, src.ns, created.UID) != nil {
+			t.Fatalf("a delta Lease at %d let the copy start", delta)
+		}
+	}
+	setLease(t, src.ns, fullLease, revision)
+	passes(t, r, src.ns, created.Name, readyIs(metav1.ConditionUnknown, lodiav1alpha1.ReasonCopying, ""))
+	if getCopyTask(t, src.ns, created.UID) == nil {
+		t.Fatal("no EtcdCopyBackupsTask")
 	}
 }
 
@@ -468,7 +472,6 @@ func TestAFlushThatEndsShortOfTheSealIsSentAgain(t *testing.T) {
 
 func TestALeaseOlderThanTheEtcdIsIgnored(t *testing.T) {
 	src := newSource(t, nil, func(s *source) {
-		createLease(t, s.ns, deltaLease, "1000000000")
 		createLease(t, s.ns, fullLease, "1000000000")
 		time.Sleep(1100 * time.Millisecond)
 	})
@@ -476,12 +479,10 @@ func TestALeaseOlderThanTheEtcdIsIgnored(t *testing.T) {
 	created := createBackup(t, src.ns, "leftover", nil)
 	backup := passes(t, r, src.ns, created.Name, sealed)
 	passes(t, r, src.ns, created.Name, readyIs(metav1.ConditionUnknown, lodiav1alpha1.ReasonSnapshotting,
-		"the store holds 0 (Leases src-etcd-full-snap, src-etcd-delta-snap); EtcdOpsTask "+task(created.UID)))
+		"the store holds a full snapshot up to 0 (Lease src-etcd-full-snap); EtcdOpsTask "+task(created.UID)))
 	ready := meta.FindStatusCondition(getBackup(t, src.ns, created.Name).Status.Conditions, lodiav1alpha1.ConditionReady)
-	for _, lease := range []string{fullLease, deltaLease} {
-		if want := "ignored Lease " + lease + ", created before Etcd src-etcd"; !strings.Contains(ready.Message, want) {
-			t.Errorf("Ready says %q, want %q", ready.Message, want)
-		}
+	if want := "ignored Lease src-etcd-full-snap, created before Etcd src-etcd"; !strings.Contains(ready.Message, want) {
+		t.Errorf("Ready says %q, want %q", ready.Message, want)
 	}
 	if backup.Status.Seal.Revision >= 1000000000 || getCopyTask(t, src.ns, created.UID) != nil {
 		t.Fatal("a predecessor's Lease let the copy start")
@@ -1077,13 +1078,13 @@ func TestTheWatchesBringTheNextPass(t *testing.T) {
 		}
 		return nil
 	})
-	setLease(t, src.ns, deltaLease, early.Status.Seal.Revision)
+	setLease(t, src.ns, fullLease, early.Status.Seal.Revision)
 	finishFlush(t, src.ns, task(early.UID), druidv1alpha1.TaskStateSucceeded)
 	awaitBackup(t, src.ns, "early", readyIs(metav1.ConditionUnknown, lodiav1alpha1.ReasonCopying, ""))
 	finishCopy(t, src.ns, task(early.UID), druidv1alpha1.EtcdCopyBackupsTaskSucceeded, "")
 	awaitBackup(t, src.ns, "early", readyIs(metav1.ConditionTrue, lodiav1alpha1.ReasonCompleted, ""))
 
-	setLease(t, src.ns, deltaLease, math.MaxInt64)
+	setLease(t, src.ns, fullLease, math.MaxInt64)
 	late := createBackup(t, src.ns, "late", nil)
 	awaitBackup(t, src.ns, "late", readyIs(metav1.ConditionUnknown, lodiav1alpha1.ReasonCopying, ""))
 	finishCopy(t, src.ns, task(late.UID), druidv1alpha1.EtcdCopyBackupsTaskSucceeded, "")
@@ -1120,7 +1121,7 @@ func TestAStoreMovedBeforeTheCopyFailsTheBackup(t *testing.T) {
 	r := src.reconciler(cached)
 	created := createBackup(t, src.ns, "moved", nil)
 	backup := passes(t, r, src.ns, created.Name, sealed)
-	setLease(t, src.ns, deltaLease, backup.Status.Seal.Revision)
+	setLease(t, src.ns, fullLease, backup.Status.Seal.Revision)
 	editClass(t, src.ns, func(class *lodiav1alpha1.DatastoreClass) {
 		class.Spec.Backup.Store.Prefix, class.Spec.Backup.Store.Bucket = "moved", "other-bucket"
 	})
@@ -1139,28 +1140,21 @@ func TestAStoreMovedBeforeTheCopyFailsTheBackup(t *testing.T) {
 	}
 }
 
-func TestTheFlushIsFullWithoutDeltas(t *testing.T) {
+func TestTheFlushIsAFullSnapshotWhateverTheDeltaPeriod(t *testing.T) {
 	src := newSource(t, nil, nil)
 	r := src.reconciler(cached)
-	for _, row := range []struct {
-		period   time.Duration
-		snapshot druidv1alpha1.OnDemandSnapshotType
-	}{
-		{0, druidv1alpha1.OnDemandSnapshotTypeFull},
-		{999 * time.Millisecond, druidv1alpha1.OnDemandSnapshotTypeFull},
-		{time.Second, druidv1alpha1.OnDemandSnapshotTypeDelta},
-	} {
-		t.Run(row.period.String(), func(t *testing.T) {
+	for _, period := range []time.Duration{0, 999 * time.Millisecond, time.Second, 5 * time.Minute} {
+		t.Run(period.String(), func(t *testing.T) {
 			editClass(t, src.ns, func(class *lodiav1alpha1.DatastoreClass) {
-				class.Spec.Backup.DeltaSnapshotPeriod = &metav1.Duration{Duration: row.period}
+				class.Spec.Backup.DeltaSnapshotPeriod = &metav1.Duration{Duration: period}
 			})
 			waitEtcd(t, src.ns, sourceName, func(etcd *druidv1alpha1.Etcd) error {
-				if period := etcd.Spec.Backup.DeltaSnapshotPeriod; period == nil || period.Duration != row.period {
-					return fmt.Errorf("the Etcd's deltaSnapshotPeriod is %v", period)
+				if got := etcd.Spec.Backup.DeltaSnapshotPeriod; got == nil || got.Duration != period {
+					return fmt.Errorf("the Etcd's deltaSnapshotPeriod is %v", got)
 				}
 				return nil
 			})
-			name := "period-" + strconv.FormatInt(row.period.Milliseconds(), 10)
+			name := "period-" + strconv.FormatInt(period.Milliseconds(), 10)
 			created := createBackup(t, src.ns, name, nil)
 			passes(t, r, src.ns, name, func(*lodiav1alpha1.Backup) error {
 				if getFlush(t, src.ns, created.UID) == nil {
@@ -1168,8 +1162,8 @@ func TestTheFlushIsFullWithoutDeltas(t *testing.T) {
 				}
 				return nil
 			})
-			if got := getFlush(t, src.ns, created.UID).Spec.Config.OnDemandSnapshot.Type; got != row.snapshot {
-				t.Errorf("the EtcdOpsTask asks for a %s snapshot, want %s", got, row.snapshot)
+			if got := getFlush(t, src.ns, created.UID).Spec.Config.OnDemandSnapshot.Type; got != druidv1alpha1.OnDemandSnapshotTypeFull {
+				t.Errorf("the EtcdOpsTask asks for a %s snapshot, want full", got)
 			}
 		})
 	}
@@ -1185,7 +1179,7 @@ func TestAStoreMovedAwayAndBackFailsTheBackup(t *testing.T) {
 	failed := readyIs(metav1.ConditionFalse, lodiav1alpha1.ReasonFailed, fmt.Sprintf(
 		"the source's backup store moved from S3 https://s3.example.test lodia-backups/prod/%s to S3 https://s3.example.test other-bucket/moved/%s while the Backup was taken", ns, ns))
 	passes(t, r, src.ns, created.Name, failed)
-	setLease(t, src.ns, deltaLease, backup.Status.Seal.Revision)
+	setLease(t, src.ns, fullLease, backup.Status.Seal.Revision)
 	moveStore(t, src.ns, "lodia-backups", "prod")
 	unmoved(t, r, src.ns, created.Name)
 	if err := failed(getBackup(t, src.ns, created.Name)); err != nil {
@@ -1207,7 +1201,7 @@ func TestAStoreMovedAwayAndBackWhileTheMemberRestartsFailsTheBackup(t *testing.T
 	if _, err := reconcileBackup(r, src.ns, created.Name); err != nil {
 		t.Fatal(err)
 	}
-	setLease(t, src.ns, deltaLease, backup.Status.Seal.Revision)
+	setLease(t, src.ns, fullLease, backup.Status.Seal.Revision)
 	moveStore(t, src.ns, "lodia-backups", "prod")
 	setEtcdStatus(t, src.ns, sourceName, nil)
 	waitCondition(t, src.ns, sourceName, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum, 1 of 1 members ready")
@@ -1326,7 +1320,7 @@ func TestAStoreMovedThroughTheCredentialsFailsTheBackup(t *testing.T) {
 				created := start("rotated")
 				useCredentials(t, src, "rotated", c.rotated)
 				backup := passes(t, r, src.ns, created.Name, sealed)
-				setLease(t, src.ns, deltaLease, backup.Status.Seal.Revision)
+				setLease(t, src.ns, fullLease, backup.Status.Seal.Revision)
 				passes(t, r, src.ns, created.Name, readyIs(metav1.ConditionUnknown, lodiav1alpha1.ReasonCopying, ""))
 				finishCopy(t, src.ns, task(created.UID), druidv1alpha1.EtcdCopyBackupsTaskSucceeded, "")
 				passes(t, r, src.ns, created.Name, readyIs(metav1.ConditionTrue, lodiav1alpha1.ReasonCompleted, ""))

@@ -22,8 +22,9 @@ Once `release` is `Released` and no `ControlPlane` with the source's UID exists,
 Were the held controller manager unavailable instead, `AccessReady` would wait on `APIServerReady`, Tenant on `AccessReady`, and the release on Tenant: a deadlock.
 
 **The seal.**
-Before it copies, the backup reconciler of the Datastore controller puts the key `/lodia.io/backups/<Backup UID>` (`BackupSealKey`) into the source's etcd, asks etcd-druid for a snapshot, and copies only once a snapshot Lease has reached that key's revision: an `EtcdCopyBackupsTask` with `maxBackups: 1` and no `maxBackupAge`, from the source's prefix to `<class prefix>/<namespace UID>/backups/<Backup UID>`, which nothing writes again.
-A finished `EtcdOpsTask` proves nothing, since one whose delta the sidecar skipped succeeds too ([ondemandsnapshot.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcdopstask/handler/ondemandsnapshot/ondemandsnapshot.go#L135-L153)), so the reconciler asks again until a Lease shows the revision; a Lease created before the source's `Etcd` is a predecessor's and counts for nothing.
+Before it copies, the backup reconciler of the Datastore controller puts the key `/lodia.io/backups/<Backup UID>` (`BackupSealKey`) into the source's etcd, asks etcd-druid for a full snapshot, and copies only once the full snapshot Lease `<cp>-etcd-full-snap` has reached that key's revision: an `EtcdCopyBackupsTask` with `maxBackups: 1` and no `maxBackupAge`, from the source's prefix to `<class prefix>/<namespace UID>/backups/<Backup UID>`, which nothing writes again.
+Deltas do not count: the copy takes the newest full snapshot with the deltas after it, and nothing from deltas alone ([miscellaneous.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/miscellaneous/miscellaneous.go#L196-L214)), which is all a store moved through `<cp>-etcd-backup` holds until its next scheduled full snapshot, and a copy that finds nothing succeeds ([copier.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapshot/copier/copier.go#L121-L125)).
+A finished `EtcdOpsTask` names no revision ([etcdopstask.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/etcdopstask.go#L137-L161)), so the reconciler asks again until the Lease shows the seal; a Lease created before the source's `Etcd` is a predecessor's and counts for nothing.
 The copy holds the source's data at least up to the seal.
 The `Backup` records where the copy is, the seal's revision, and the source's name, UID, version and network ([fields](../api/controlplane.md#backup)), and outlives its source.
 
@@ -90,6 +91,7 @@ A ValidatingAdmissionPolicy could require a `restore` verb on the named `Backup`
 ## Consequences
 
 - The restored cluster's `kube-system` UID, the cluster ID some tools use, is the source's.
+- Every `Backup` takes a full snapshot of its source's etcd.
 - `docs/operations.md` gets the replace checklist and a Velero recipe for a clone with the restore (`todo.md`).
 - The phase 2 gate restores a `Backup` ([roadmap](../roadmap.md)).
 
