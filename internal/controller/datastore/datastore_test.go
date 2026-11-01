@@ -2398,6 +2398,60 @@ func TestTerminatingClaimIsSkipped(t *testing.T) {
 	}
 }
 
+func TestTerminatingClaimBesideALiveOne(t *testing.T) {
+	ns := namespace(t)
+	const cp = "beside"
+	createClass(t, newClass("beside", "Retain"))
+	create(t, controlPlane(ns, cp, "beside"))
+	writeGeneration(t, ns, cp, 1)
+	previous := waitEtcd(t, ns, cp, nil)
+	labels := druidv1alpha1.GetDefaultLabels(previous.ObjectMeta)
+	labels[lodiav1alpha1.ControlPlaneUIDLabel] = string(getControlPlane(t, ns, cp).UID)
+	terminating := claim(ns, "beside-etcd-beside-etcd-0", labels)
+	terminating.Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse("2Gi")
+	terminating.Finalizers = []string{"lodia.io/test"}
+	create(t, terminating)
+	t.Cleanup(func() {
+		patch := client.MergeFrom(terminating.DeepCopy())
+		terminating.Finalizers = nil
+		if err := k8s.Patch(context.Background(), terminating, patch); err != nil {
+			t.Error(err)
+		}
+	})
+	live := claim(ns, "beside-etcd-beside-etcd-1", labels)
+	live.Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse("6Gi")
+	create(t, live)
+	if err := k8s.Delete(t.Context(), terminating); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Delete(t.Context(), previous); err != nil {
+		t.Fatal(err)
+	}
+
+	waitEtcd(t, ns, cp, func(again *druidv1alpha1.Etcd) error {
+		if again.UID == previous.UID {
+			return errors.New("the Etcd has not been created again yet")
+		}
+		if again.Generation != 1 {
+			return fmt.Errorf("the Etcd created again is at generation %d, want the spec of its creating apply", again.Generation)
+		}
+		if got, size := quantity(again.Spec.Etcd.Quota), quantity(again.Spec.StorageCapacity); got != "3Gi" || size != "6Gi" {
+			return fmt.Errorf("the Etcd created again beside a terminating 2Gi claim and a live 6Gi one has quota %s and storageCapacity %s, want 3Gi and 6Gi", got, size)
+		}
+		return nil
+	})
+	const note = "DatastoreClass beside's quota 4Gi is capped at 3Gi: it needs 8Gi of volume and Etcd beside-etcd's is 6Gi"
+	eventually(t, func() error {
+		if c := meta.FindStatusCondition(getControlPlane(t, ns, cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady); c == nil || !strings.HasSuffix(c.Message, "; "+note) {
+			return fmt.Errorf("DatastoreReady %+v, want it to end with %q", c, note)
+		}
+		return nil
+	})
+	if pvc := getClaim(t, ns, terminating.Name); pvc.DeletionTimestamp.IsZero() {
+		t.Errorf("claim %s is not being deleted", pvc.Name)
+	}
+}
+
 func TestRecordedClass(t *testing.T) {
 	ns := namespace(t)
 	first := newClass("default-first", "Retain")
