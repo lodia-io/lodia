@@ -722,6 +722,21 @@ func TestABackupThatCannotBeTaken(t *testing.T) {
 			t.Fatal("a Backup of a ControlPlane without a ready etcd started")
 		}
 	})
+	t.Run("WaitingForDatastore, an older generation", func(t *testing.T) {
+		src := newSource(t, nil, nil)
+		r := src.reconciler(cached)
+		setPaused(t, src.ns, sourceName, true)
+		cp := getControlPlane(t, src.ns, sourceName)
+		ready := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
+		if ready.Status != metav1.ConditionTrue || ready.ObservedGeneration == cp.Generation {
+			t.Fatalf("DatastoreReady is %s for generation %d of %d", ready.Status, ready.ObservedGeneration, cp.Generation)
+		}
+		created := createBackup(t, src.ns, "b", nil)
+		passes(t, r, src.ns, "b", readyIs(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, fmt.Sprintf("DatastoreReady of src is True (Ready) for generation %d", ready.ObservedGeneration)))
+		if getBackup(t, src.ns, "b").Status.StartedAt != nil || src.sealKey(t, created.UID) != nil {
+			t.Fatal("a Backup of a ControlPlane whose DatastoreReady describes an older generation started")
+		}
+	})
 	t.Run("Failed, the copy", func(t *testing.T) {
 		src := newSource(t, nil, nil)
 		r := src.reconciler(cached)
