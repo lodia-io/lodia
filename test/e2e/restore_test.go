@@ -18,6 +18,8 @@ import (
 	"maps"
 	"path"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,6 +35,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
@@ -177,6 +180,23 @@ func TestRestoreGate(t *testing.T) {
 				}
 				return nil
 			})
+			if status.Snapshots != nil && status.Seal != nil {
+				logs := kubernetes.NewForConfigOrDie(cfg.Client().RESTConfig())
+				keys := strings.Fields(string(awsOutput(ctx, t, k8s, logs, "list-"+backup.Name, "s3api", "list-objects-v2", "--bucket", s3Bucket, "--prefix", status.Snapshots.Prefix+"/", "--query", "Contents[].Key", "--output", "text")))
+				var last int64
+				for _, key := range keys {
+					name := strings.Split(path.Base(key), "-")
+					if len(name) != 4 || name[0] != "Full" && name[0] != "Incr" {
+						continue
+					}
+					if revision, err := strconv.ParseInt(name[2], 10, 64); err == nil {
+						last = max(last, revision)
+					}
+				}
+				if last < status.Seal.Revision {
+					t.Errorf("the copy under %s holds snapshots up to revision %d, below the seal's %d: %v", status.Snapshots.Prefix, last, status.Seal.Revision, keys)
+				}
+			}
 			return ctx
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
@@ -204,9 +224,6 @@ func startStore(ctx context.Context, t *testing.T, k8s client.Client) {
 	keys := map[string]string{"accessKeyID": access, "secretAccessKey": secret}
 	create(ctx, t, k8s, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: s3Namespace}})
 	create(ctx, t, k8s, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: s3Namespace, Name: "root"}, StringData: keys})
-	root := func(name, key string) corev1.EnvVar {
-		return corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "root"}, Key: key}}}
-	}
 	create(ctx, t, k8s, &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Namespace: s3Namespace, Name: "versitygw"},
 		Spec: appsv1.DeploymentSpec{
@@ -218,7 +235,7 @@ func startStore(ctx context.Context, t *testing.T, k8s client.Client) {
 						Name:           "versitygw",
 						Image:          versitygw,
 						Args:           []string{"--port", ":7070", "posix", "/data"},
-						Env:            []corev1.EnvVar{root("ROOT_ACCESS_KEY", "accessKeyID"), root("ROOT_SECRET_KEY", "secretAccessKey")},
+						Env:            []corev1.EnvVar{rootKey("ROOT_ACCESS_KEY", "accessKeyID"), rootKey("ROOT_SECRET_KEY", "secretAccessKey")},
 						Ports:          []corev1.ContainerPort{{Name: "s3", ContainerPort: 7070}},
 						ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromString("s3")}}},
 						VolumeMounts:   []corev1.VolumeMount{{Name: "data", MountPath: "/data"}},
@@ -244,8 +261,19 @@ func startStore(ctx context.Context, t *testing.T, k8s client.Client) {
 		}
 		return fmt.Errorf("conditions %+v", deployment.Status.Conditions)
 	})
-	bucket := &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{Namespace: s3Namespace, Name: "bucket"},
+	runAWS(ctx, t, k8s, "bucket", "s3api", "create-bucket", "--bucket", s3Bucket)
+	keys["region"], keys["s3ForcePathStyle"] = s3Region, "true"
+	create(ctx, t, k8s, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: operatorNamespace, Name: s3Secret}, StringData: keys})
+}
+
+func rootKey(name, key string) corev1.EnvVar {
+	return corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "root"}, Key: key}}}
+}
+
+func runAWS(ctx context.Context, t *testing.T, k8s client.Client, name string, args ...string) {
+	t.Helper()
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Namespace: s3Namespace, Name: name},
 		Spec: batchv1.JobSpec{
 			BackoffLimit: new(int32(3)),
 			Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
@@ -253,29 +281,47 @@ func startStore(ctx context.Context, t *testing.T, k8s client.Client) {
 				Containers: []corev1.Container{{
 					Name:  "aws",
 					Image: awsCLI,
-					Args:  []string{"--endpoint-url", s3Endpoint, "s3api", "create-bucket", "--bucket", s3Bucket},
+					Args:  append([]string{"--endpoint-url", s3Endpoint}, args...),
 					Env: []corev1.EnvVar{
-						root("AWS_ACCESS_KEY_ID", "accessKeyID"), root("AWS_SECRET_ACCESS_KEY", "secretAccessKey"),
+						rootKey("AWS_ACCESS_KEY_ID", "accessKeyID"), rootKey("AWS_SECRET_ACCESS_KEY", "secretAccessKey"),
 						{Name: "AWS_DEFAULT_REGION", Value: s3Region},
 					},
 				}},
 			}},
 		},
 	}
-	create(ctx, t, k8s, bucket)
-	until(ctx, t, 3*time.Minute, "the Job created bucket "+s3Bucket, func(ctx context.Context) error {
-		if err := k8s.Get(ctx, client.ObjectKeyFromObject(bucket), bucket); err != nil {
+	create(ctx, t, k8s, job)
+	until(ctx, t, 3*time.Minute, "the Job "+name+" completed", func(ctx context.Context) error {
+		if err := k8s.Get(ctx, client.ObjectKeyFromObject(job), job); err != nil {
 			return err
 		}
-		for _, c := range bucket.Status.Conditions {
+		for _, c := range job.Status.Conditions {
 			if c.Type == batchv1.JobComplete && c.Status == corev1.ConditionTrue {
 				return nil
 			}
 		}
-		return fmt.Errorf("conditions %+v", bucket.Status.Conditions)
+		return fmt.Errorf("conditions %+v", job.Status.Conditions)
 	})
-	keys["region"], keys["s3ForcePathStyle"] = s3Region, "true"
-	create(ctx, t, k8s, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: operatorNamespace, Name: s3Secret}, StringData: keys})
+}
+
+func awsOutput(ctx context.Context, t *testing.T, k8s client.Client, logs kubernetes.Interface, name string, args ...string) []byte {
+	t.Helper()
+	runAWS(ctx, t, k8s, name, args...)
+	pods := &corev1.PodList{}
+	if err := k8s.List(ctx, pods, client.InNamespace(s3Namespace), client.MatchingLabels{batchv1.JobNameLabel: name}); err != nil {
+		t.Fatal(err)
+	}
+	for _, pod := range pods.Items {
+		if pod.Status.Phase == corev1.PodSucceeded {
+			raw, err := logs.CoreV1().Pods(pod.Namespace).GetLogs(pod.Name, &corev1.PodLogOptions{}).DoRaw(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return raw
+		}
+	}
+	t.Fatalf("no pod of Job %s succeeded: %d pods", name, len(pods.Items))
+	return nil
 }
 
 func random(t *testing.T, n int) string {

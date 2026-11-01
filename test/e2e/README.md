@@ -83,6 +83,7 @@ The credentials go into `lodia-system` as `accessKeyID`, `secretAccessKey`, `reg
 1. The `ControlPlane` `a`, in `nodePort` mode, turns `Ready`, and `BackupReady` True, `BackupSucceeded`.
 2. In `a`, the test writes two namespaces with three Secrets of 32 random bytes and a ConfigMap each, whose data hashes it logs, a CRD and one object, a Role and its binding, and what binds a cluster to its world: a bootstrap token, a Node `source-node` with its Lease and a CSR, a LoadBalancer Service, a PersistentVolume with the `Delete` policy and a CronJob.
 3. The `Backup` `a-1` turns `Ready`, `Completed`: its `status.source` is `a`'s UID, its prefix `e2e/<namespace UID>/backups/<Backup UID>`, its seal at a revision; it carries its UID in `lodia.io/sealed-uid`, `a-1.encryption-config` is immutable and controlled by it, and its two tasks are gone.
+   An `amazon/aws-cli` Job lists the bucket under that prefix, which must hold a snapshot whose last revision, the third field of the object name `<Full|Incr>-<start>-<last>-<time>` ([snapstore.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/types/snapstore.go#L119-L121)), is at least the seal's.
 
 Every wait is bounded and waits for a condition; no duration is asserted.
 
