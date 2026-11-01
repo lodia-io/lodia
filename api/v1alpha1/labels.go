@@ -80,6 +80,13 @@ const (
 	// ControlPlane until its etcd is deleted and its claims reclaimed.
 	DatastoreFinalizer = "lodia.io/datastore"
 
+	// SealedUIDAnnotation, written by the backup reconciler of the Datastore
+	// controller once a Backup is Completed, holds the Backup's UID. A Backup
+	// that carries it under another UID, or without its Completed status, is
+	// a copy that came back without the status saying where its data is, and
+	// is never sealed again.
+	SealedUIDAnnotation = "lodia.io/sealed-uid"
+
 	// RestoreSourceFinalizer, held by the backup reconciler of the Datastore
 	// controller, keeps a Backup until every ControlPlane restoring from it
 	// has an encryption configuration of its own.

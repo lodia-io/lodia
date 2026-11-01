@@ -1,7 +1,7 @@
 # A ControlPlane restored from a Backup replaces the Backup's source, and runs no controller manager until it is released
 
 Decided 2026-10-27.
-Not built: phase 2's wave 1b (backups) builds it ([roadmap](../roadmap.md)).
+The `Backup`, its seal and its copy are built; the restore is not yet: phase 2's wave 1b (backups) builds it ([roadmap](../roadmap.md)).
 
 ## Decision
 
@@ -23,6 +23,7 @@ Were the held controller manager unavailable instead, `AccessReady` would wait o
 
 **The seal.**
 Before it copies, the backup reconciler of the Datastore controller puts the key `/lodia.io/backups/<Backup UID>` (`BackupSealKey`) into the source's etcd, asks etcd-druid for a snapshot, and copies only once a snapshot Lease has reached that key's revision: an `EtcdCopyBackupsTask` with `maxBackups: 1` and no `maxBackupAge`, from the source's prefix to `<class prefix>/<namespace UID>/backups/<Backup UID>`, which nothing writes again.
+A finished `EtcdOpsTask` proves nothing, since one whose delta the sidecar skipped succeeds too ([ondemandsnapshot.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcdopstask/handler/ondemandsnapshot/ondemandsnapshot.go#L135-L153)), so the reconciler asks again until a Lease shows the revision; a Lease created before the source's `Etcd` is a predecessor's and counts for nothing.
 The copy holds the source's data at least up to the seal.
 The `Backup` records where the copy is, the seal's revision, and the source's name, UID, version and network ([fields](../api/controlplane.md#backup)), and outlives its source.
 
@@ -50,6 +51,7 @@ The platform backs up Lodia's Secrets, as it must for the CAs; a KMS provider is
 **A management cluster comes back only with its UIDs.**
 Datastore refuses to start an empty etcd when the cluster CA PKI adopted was issued before the `ControlPlane` existed, `DatastoreReady=False`, `CAPredatesControlPlane`: that is an identity whose data is lost, and old kubelets would follow it to an empty cluster.
 Only a backup that keeps UIDs and status, an etcd snapshot of the management cluster, recovers one.
+A `Backup` carries its own UID in the annotation `lodia.io/sealed-uid` once it is `Completed`, since an annotation survives such a restore and a UID does not; one that carries another UID, or the annotation without its `Completed` status, has lost the status that says where its copy is, and is `SealLost` for good instead of being sealed again from a source that may be empty.
 
 **What platforms do.**
 They point nothing that holds credentials outside the cluster at a restored `ControlPlane` before its release: a cloud controller manager, CSI controllers, external-dns, Cluster API infrastructure.
@@ -93,4 +95,5 @@ A ValidatingAdmissionPolicy could require a `restore` verb on the named `Backup`
 
 ## Code
 
-- `api/v1alpha1` — `RestoreFrom` with `Release`, `BackupStatus` with its `Ready` condition, `RestoreStatus` and `SnapshotLocation`, the names `BackupEncryptionConfigSecretName`, `BackupSealKey` and `RestoreMarkerKey`, the finalizer `RestoreSourceFinalizer` and the reasons in `conditions.go`; `test/api/validation_test.go` holds their rules.
+- `api/v1alpha1` — `RestoreFrom` with `Release`, `BackupStatus` with its `Ready` condition, `RestoreStatus` and `SnapshotLocation`, the names `BackupEncryptionConfigSecretName`, `BackupSealKey` and `RestoreMarkerKey`, the annotation `SealedUIDAnnotation`, the finalizer `RestoreSourceFinalizer` and the reasons in `conditions.go`; `test/api/validation_test.go` holds their rules.
+- `internal/controller/datastore/backup.go` — the backup reconciler: the seal, the snapshot it waits for, the copy, the encryption keys and the mark; `etcdclient.go` dials a tenant's etcd for it.

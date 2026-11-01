@@ -201,6 +201,16 @@ spec:
               seal:
                 description: Seal is what the copy holds.
                 properties:
+                  quotaBackendBytes:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: |-
+                      QuotaBackendBytes is the source etcd's quota when it was sealed, the
+                      one bound Lodia has on the size of the copy: a ControlPlane restored
+                      from the Backup needs at least this quota.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
                   revision:
                     description: Revision of the seal key in the source's etcd.
                     format: int64

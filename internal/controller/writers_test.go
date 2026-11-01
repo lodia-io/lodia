@@ -38,6 +38,7 @@ var conditionWriters = map[string]string{
 	lodiav1alpha1.ConditionCAValidityAcceptable: "lodia/pki",
 	lodiav1alpha1.ConditionAccessReady:          "lodia/pki",
 	lodiav1alpha1.ConditionDatastoreReady:       "lodia/datastore",
+	lodiav1alpha1.ConditionBackupReady:          "lodia/datastore",
 	lodiav1alpha1.ConditionAPIServerReady:       "lodia/workloads",
 	lodiav1alpha1.ConditionAddonsApplied:        "lodia/tenant",
 	lodiav1alpha1.ConditionAddonsAvailable:      "lodia/tenant",
@@ -94,7 +95,11 @@ func TestEveryStatusFieldHasOneWriter(t *testing.T) {
 			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
 		},
 	}
-	for _, obj := range []client.Object{class, cp} {
+	backup := &lodiav1alpha1.Backup{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev-backup", Namespace: ns.Name},
+		Spec:       lodiav1alpha1.BackupSpec{ControlPlaneRef: lodiav1alpha1.LocalReference{Name: cp.Name}},
+	}
+	for _, obj := range []client.Object{class, cp, backup} {
 		if err := k8s.Create(t.Context(), obj); err != nil {
 			t.Fatal(err)
 		}
@@ -145,6 +150,21 @@ watching:
 			t.Errorf("status %s is written by %v, want %s alone", key, owners[key], writer)
 		}
 	}
+	if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(backup), backup); err != nil {
+		t.Fatal(err)
+	}
+	backupOwners, err := statusOwners(backup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backupOwners) == 0 {
+		t.Error("nothing wrote the Backup's status")
+	}
+	for key, managers := range backupOwners {
+		if !slices.Equal(managers, []string{"lodia/backup"}) {
+			t.Errorf("the Backup's status %s is written by %v, want lodia/backup alone", key, managers)
+		}
+	}
 }
 
 func complete(cp *lodiav1alpha1.ControlPlane) bool {
@@ -159,9 +179,9 @@ func complete(cp *lodiav1alpha1.ControlPlane) bool {
 	return true
 }
 
-func statusOwners(cp *lodiav1alpha1.ControlPlane) (map[string][]string, error) {
+func statusOwners(obj metav1.Object) (map[string][]string, error) {
 	owners := map[string][]string{}
-	for _, entry := range cp.ManagedFields {
+	for _, entry := range obj.GetManagedFields() {
 		if entry.Subresource != "status" || entry.FieldsV1 == nil {
 			continue
 		}
@@ -236,7 +256,7 @@ func start(t *testing.T) client.WithWatch {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := operator.Setup(mgr, "registry.example/lodia-signer:test", "etcd-druid"); err != nil {
+	if err := operator.Setup(mgr, "registry.example/lodia-signer:test", "etcd-druid", "lodia-system"); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())

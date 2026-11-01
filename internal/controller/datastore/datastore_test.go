@@ -57,9 +57,16 @@ import (
 	"go.lodia.io/lodia/internal/operator"
 )
 
-var k8s client.WithWatch
+var (
+	k8s       client.WithWatch
+	cached    client.Client
+	apiReader client.Reader
+)
 
-const druidNamespace = "druid-system"
+const (
+	druidNamespace    = "druid-system"
+	operatorNamespace = "lodia-system"
+)
 
 func TestMain(m *testing.M) {
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
@@ -111,12 +118,19 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		stop("manager", err)
 	}
-	if err := (&datastore.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdDruidNamespace: druidNamespace}).SetupWithManager(mgr, 1); err != nil {
+	if err := (&datastore.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace}).SetupWithManager(mgr, 1); err != nil {
 		stop("controller", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	started := make(chan error, 1)
 	go func() { started <- mgr.Start(ctx) }()
+	for _, obj := range []client.Object{&lodiav1alpha1.Backup{}, &druidv1alpha1.EtcdOpsTask{}, &druidv1alpha1.EtcdCopyBackupsTask{}} {
+		if _, err := mgr.GetCache().GetInformer(ctx, obj); err != nil {
+			cancel()
+			stop("informer", err)
+		}
+	}
+	cached, apiReader = mgr.GetClient(), mgr.GetAPIReader()
 	code := m.Run()
 	cancel()
 	if err := <-started; err != nil {
@@ -588,7 +602,7 @@ func TestConditionsFromState(t *testing.T) {
 			return c.Get(ctx, key, obj, opts...)
 		},
 	})
-	reconciler := &datastore.Reconciler{Client: failing, Reader: failing}
+	reconciler := &datastore.Reconciler{Client: failing, Reader: failing, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace}
 	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: "dev"}}); !errors.Is(err, injected) {
 		t.Fatalf("a pass whose Etcd read fails returned %v, want the read's error", err)
 	}
@@ -1014,7 +1028,7 @@ func TestBackupPrefixHoldsNoName(t *testing.T) {
 			return c.Get(ctx, key, obj, opts...)
 		},
 	})
-	reconciler := &datastore.Reconciler{Client: failing, Reader: failing, EtcdDruidNamespace: druidNamespace}
+	reconciler := &datastore.Reconciler{Client: failing, Reader: failing, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace}
 	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns.Name, Name: "v1"}}); !errors.Is(err, injected) {
 		t.Fatalf("a pass whose Namespace read fails returned %v, want the read's error", err)
 	}
@@ -1435,7 +1449,7 @@ func TestAPassFromAStaleCacheChangesNoEtcd(t *testing.T) {
 		},
 	})
 	pass := func() error {
-		_, err := (&datastore.Reconciler{Client: stale, Reader: stale, EtcdDruidNamespace: druidNamespace}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}})
+		_, err := (&datastore.Reconciler{Client: stale, Reader: stale, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}})
 		return err
 	}
 
@@ -1516,14 +1530,14 @@ func TestAFinalizingPassFromAStaleReadTouchesNoOtherEtcd(t *testing.T) {
 	}
 	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}
 
-	if _, err := (&datastore.Reconciler{Client: stale, Reader: stale, EtcdDruidNamespace: druidNamespace}).Reconcile(t.Context(), request); !apierrors.IsConflict(err) {
+	if _, err := (&datastore.Reconciler{Client: stale, Reader: stale, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace}).Reconcile(t.Context(), request); !apierrors.IsConflict(err) {
 		t.Errorf("a finalizing pass whose reads still return the deleted Etcd returned %v, want a conflict", err)
 	}
 	stands("a finalizing pass whose reads still return the deleted Etcd")
 
 	name := cp + "-etcd-" + cp + "-etcd-0"
 	create(t, claim(ns, name, nil))
-	if _, err := (&datastore.Reconciler{Client: stale, Reader: k8s, EtcdDruidNamespace: druidNamespace}).Reconcile(t.Context(), request); err != nil {
+	if _, err := (&datastore.Reconciler{Client: stale, Reader: k8s, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace}).Reconcile(t.Context(), request); err != nil {
 		t.Errorf("a finalizing pass from a cache that still holds the deleted Etcd returned %v", err)
 	}
 	stands("a finalizing pass from a cache that still holds the deleted Etcd")
@@ -1579,7 +1593,7 @@ func TestReclaimingFromAStaleListDeletesNoOtherClaim(t *testing.T) {
 			return nil
 		},
 	})
-	if _, err := (&datastore.Reconciler{Client: stale, Reader: stale, EtcdDruidNamespace: druidNamespace}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}); !apierrors.IsConflict(err) {
+	if _, err := (&datastore.Reconciler{Client: stale, Reader: stale, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}); !apierrors.IsConflict(err) {
 		t.Errorf("a finalizing pass whose list still returns the reclaimed claim returned %v, want a conflict", err)
 	}
 	if pvc := getClaim(t, ns, name); pvc.UID != successor.UID || !pvc.DeletionTimestamp.IsZero() {
@@ -1637,7 +1651,7 @@ func TestThreeMembersWithHighAvailability(t *testing.T) {
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "Etcd ha-etcd has quorum, 3 of 3 members ready")
 
 	policy := getPolicy(t, ns, cp)
-	if want := "[from 1 peers to [2379] from 1 peers to [2379 2380] from 1 peers to [2379]]"; describeIngress(policy) != want {
+	if want := "[from 1 peers to [2379] from 1 peers to [2379 2380] from 1 peers to [2379] from 1 peers to [2379]]"; describeIngress(policy) != want {
 		t.Errorf("the NetworkPolicy of three members admits %s, want %s", describeIngress(policy), want)
 	}
 
@@ -2498,7 +2512,7 @@ func TestRecordedClass(t *testing.T) {
 
 func reconcileNow(t *testing.T, ns, name string) time.Duration {
 	t.Helper()
-	result, err := (&datastore.Reconciler{Client: k8s, Reader: k8s, EtcdDruidNamespace: druidNamespace}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}})
+	result, err := (&datastore.Reconciler{Client: k8s, Reader: k8s, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2753,6 +2767,10 @@ func policySpec(cp string, store bool) networkingv1.NetworkPolicySpec {
 				From:  []networkingv1.NetworkPolicyPeer{{NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": druidNamespace}}}},
 				Ports: druidPorts,
 			},
+			{
+				From:  []networkingv1.NetworkPolicyPeer{{NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": operatorNamespace}}}},
+				Ports: []networkingv1.NetworkPolicyPort{tcp(2379)},
+			},
 		},
 		PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 	}
@@ -2977,7 +2995,7 @@ func TestAFailedNetworkPolicyCallLeavesTheStatus(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			failing := interceptor.NewClient(k8s, row.funcs)
-			reconciler := &datastore.Reconciler{Client: failing, Reader: failing, EtcdDruidNamespace: druidNamespace}
+			reconciler := &datastore.Reconciler{Client: failing, Reader: failing, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace}
 			if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}); !errors.Is(err, row.err) {
 				t.Fatalf("the pass returned %v, want %v", err, row.err)
 			}

@@ -135,6 +135,7 @@ const (
 	ReasonSnapshotting         = "Snapshotting"
 	ReasonCopying              = "Copying"
 	ReasonCompleted            = "Completed"
+	ReasonSealLost             = "SealLost"
 )
 
 // A KubeconfigRequest's Ready.

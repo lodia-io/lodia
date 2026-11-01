@@ -8,7 +8,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 - List the Gateway implementations whose conformance reports pass `TLSRoute` in passthrough (Envoy Gateway, Istio, Cilium, kgateway, NGINX Gateway Fabric, Traefik), for the install docs.
 - Check whether kube-apiserver reloads `--proxy-client-cert-file` and whether konnectivity-server reloads `--cluster-cert`; each proven reload removes a rollout from certificate renewal.
-- Propose upstream a task of etcd-druid that deletes a prefix in the store (dedicated-etcd-by-default): `retention.afterDelete`, a deleted `ControlPlane`'s last snapshots and a deleted `Backup`'s copy wait for it, and platforms use their bucket's lifecycle rules meanwhile.
+- Propose upstream a task of etcd-druid that deletes a prefix in the store (dedicated-etcd-by-default): `retention.afterDelete`, a deleted `ControlPlane`'s last snapshots and a deleted or failed `Backup`'s copy under `…/backups/<Backup UID>` wait for it, and platforms use their bucket's lifecycle rules meanwhile, which must spare the copy of a `Backup` that exists (`docs/operations.md`).
 - etcd-backup-restore restores without etcd's `RevisionBump` and `MarkCompacted`, so a member it restores keeps the snapshot's revisions; propose the bump upstream (dedicated-etcd-by-default; the etcd spike's finding 5 measured the stale cache).
 - etcd-druid's scale at ~1000 `Etcd` objects with its default `concurrentSyncs: 3` is not documented; measure in phase 4 or ask the maintainers.
 
@@ -28,6 +28,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 ## From the etcd spike (2026-10-24)
 
 - Upstream for etcd-druid: the etcd container's readiness probe takes its scheme from `backup.tls` while the wrapper serves HTTPS whenever client TLS is on; and a failing pre-scale snapshot shows only on its `EtcdOpsTask`, not on the `Etcd` (findings 1 and 4).
+  Those `presync-snapshot-*` tasks also make etcd-druid reject a `Backup`'s snapshot task while they run, which the backup reconciler sends again.
 - Upstream for etcd-backup-restore: the sidecar keeps serving its first serving certificate after the Secret changes (finding 3).
 
 ## From deciding the design (2026-10-25)
@@ -49,8 +50,8 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - A class edit that reaches the `Etcd` rolls its members at once; the decision wants it in the tenant's maintenance window, which Lifecycle gates in phase 2.
   The `Etcd` records the class generation it was rendered from for that.
 - `<cp>-etcd-backup` stays when a class drops its backup store; harmless, the `ControlPlane` garbage-collects it.
-- Whether etcd-backup-restore reads rotated store credentials without a restart: etcd-druid mounts `<cp>-etcd-backup` and puts no checksum of it in the pod template ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L219-L226)), so a new copy rolls nothing; the rotation in `docs/operations.md` revokes the old keys once every copy holds the new ones, which is safe only if the sidecar re-reads them.
 - Backup credentials scoped to one tenant's prefix, so a tenant namespace's `<cp>-etcd-backup` reaches only that tenant's snapshots and not every tenant's on the class (`docs/README.md`, Identity and tenancy).
+  A `Backup`'s copy, `<prefix>/<namespace UID>/backups/<Backup UID>`, sits under the same namespace UID as its source's snapshots, so one scope per namespace covers both.
 - `make e2e` could check for Docker and `helm` before it creates its cluster.
 - The cache keeps metadata only for Secrets because this controller watches them as `PartialObjectMetadata`; nothing stops a future controller from starting a typed Secret informer.
   A test or a cache transform should enforce the rule.
@@ -59,6 +60,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 - A changed `apiServer.encryption.provider` puts the new provider first with a new key and keeps the previous ones readable, but nothing rewrites the stored Secrets or drops the old provider, and with two API server replicas one may write with the new key before the other has reloaded the file (up to a minute).
   That is the etcd encryption key rotation of [staged-credential-rotation](docs/decisions/staged-credential-rotation.md); until it is built, document the change as unsupported, or refuse it in the schema.
+  A `Backup` is unaffected: it takes the source's configuration after the copy, and that holds every provider PKI ever wrote.
 - `apiServer.encryption.provider: kms` is accepted by the schema; PKI issues everything else and reports `CertificatesReady` False with `Unsupported`.
   Refuse it in CEL until the provider is built.
 - The kubelet signer narrows nothing: whoever holds it can sign any identity the API server accepts.
@@ -138,9 +140,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 ## From the phase 2 contracts (2026-10-27)
 
 - The `restore` verb (restore-replaces-the-source, not built): a ValidatingAdmissionPolicy in the chart could require `authorizer…check('restore')` on the `Backup` a new `ControlPlane`'s `restoreFrom` names, for platforms where the right to create `ControlPlane`s is wider than the right to read a namespace's Secrets.
-- A `Backup` that comes back without its status, from a restore of the management cluster that gives new UIDs, would be sealed again from a source that may be empty.
-  The restore's validation proposed the annotation `lodia.io/sealed-uid`, so that such a `Backup` is never sealed again; the decision recovers a management cluster only from a backup that keeps UIDs and did not take it.
-  Settle it with the backups of wave 1b.
 - `docs/operations.md` gets the replace checklist and a Velero recipe for a clone beside a live source, with the restore in wave 1b (restore-replaces-the-source).
 - Health's own metrics, which the availability research suggested and the decisions did not name: failed probes, silent nodes, and the lag of Health's pass, the watchdog of the hold's margin.
   Name them under metrics-are-part-of-the-api with wave 2, Health, or drop them; the hold itself is `lodia_controlplane_condition{type="ControllerManagerHeld"}`.
@@ -189,3 +188,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - A kubectl exec credential plugin that generates the key, creates the request and caches the certificate, as gardenlogin caches Gardener's ([get_client_certificate.go](https://github.com/gardener/gardenlogin/blob/v0.11.0/cmd/get_client_certificate.go#L187-L188)); until then a person runs openssl and kubectl.
 - Requests on behalf of another user, for a platform's backend: the policy could admit them with `impersonate` on `lodia.io` `users`; additive.
 - A viewer level for `spec.access`: it needs a read-only role kept current with the tenant's resources; additive to the enum.
+
+## From the backups (2026-11-01)
+
+- The backup reconciler dials the source's etcd in every pass that seals, and the restore will dial a restored etcd in every pass that checks it: a client per `Etcd`, kept across passes and closed when the `Etcd` names a new certificate generation or goes, would save a TLS handshake per pass once fleets grow.

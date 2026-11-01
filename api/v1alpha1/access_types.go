@@ -4,6 +4,7 @@
 package v1alpha1
 
 import (
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -198,4 +199,10 @@ type BackupSeal struct {
 	// +required
 	// +kubebuilder:validation:Minimum=1
 	Revision int64 `json:"revision"`
+
+	// QuotaBackendBytes is the source etcd's quota when it was sealed, the
+	// one bound Lodia has on the size of the copy: a ControlPlane restored
+	// from the Backup needs at least this quota.
+	// +optional
+	QuotaBackendBytes *resource.Quantity `json:"quotaBackendBytes,omitempty"`
 }
