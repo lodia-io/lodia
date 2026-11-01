@@ -316,7 +316,7 @@ func TestABackupIsSealedAndCopied(t *testing.T) {
 		Source:            &lodiav1alpha1.UIDReference{Name: sourceName, UID: cp.UID},
 		KubernetesVersion: "v1.37.1",
 		Network:           &cp.Spec.Network,
-		Snapshots:         &lodiav1alpha1.SnapshotLocation{Provider: "S3", Endpoint: "https://s3.example.test", Bucket: "lodia-backups", Prefix: prefix},
+		Snapshots:         &lodiav1alpha1.SnapshotLocation{Provider: "S3", Endpoint: "https://s3.example.test", Bucket: "lodia-backups", Prefix: prefix, FromSecret: &lodiav1alpha1.StoreSecretFields{Region: new("eu-central-1")}},
 		StartedAt:         started.Status.StartedAt,
 	}); started.Status.StartedAt == nil || !reflect.DeepEqual(started.Status, want) {
 		t.Fatalf("the started status is\n%+v\nwant\n%+v", started.Status, want)
@@ -1207,4 +1207,167 @@ func moveStore(t *testing.T, ns, bucket, prefix string) {
 		}
 		return nil
 	})
+}
+
+type storeKeyMove struct {
+	key, was, is string
+	data         map[string]string
+}
+
+func TestAStoreMovedThroughTheCredentialsFailsTheBackup(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		provider lodiav1alpha1.StoreProvider
+		data     map[string]string
+		want     lodiav1alpha1.StoreSecretFields
+		moves    []storeKeyMove
+		rotated  map[string]string
+	}{{
+		name:     "S3",
+		provider: "S3",
+		data:     map[string]string{"accessKeyID": "key-1", "secretAccessKey": "secret-1", "endpoint": "https://s3.a.test", "region": "eu-central-1"},
+		want:     lodiav1alpha1.StoreSecretFields{Endpoint: new("https://s3.a.test"), Region: new("eu-central-1")},
+		moves: []storeKeyMove{
+			{"endpoint", `"https://s3.a.test"`, `"https://s3.b.test"`, map[string]string{"accessKeyID": "key-1", "secretAccessKey": "secret-1", "endpoint": "https://s3.b.test", "region": "eu-central-1"}},
+			{"region", `"eu-central-1"`, `"cn-north-1"`, map[string]string{"accessKeyID": "key-1", "secretAccessKey": "secret-1", "endpoint": "https://s3.a.test", "region": "cn-north-1"}},
+		},
+		rotated: map[string]string{"accessKeyID": "key-2", "secretAccessKey": "secret-2", "endpoint": "https://s3.a.test", "region": "eu-central-1"},
+	}, {
+		name:     "S3 from a JSON key",
+		provider: "S3",
+		data:     map[string]string{"aws.json": `{"accessKeyID":"key-1","secretAccessKey":"secret-1","region":"eu-central-1"}`, "endpoint": "https://s3.ignored.test", "region": "us-east-1"},
+		want:     lodiav1alpha1.StoreSecretFields{Region: new("eu-central-1")},
+		moves: []storeKeyMove{
+			{"endpoint", "unset", `"https://s3.b.test"`, map[string]string{"aws.json": `{"accessKeyID":"key-1","secretAccessKey":"secret-1","region":"eu-central-1","endpoint":"https://s3.b.test"}`, "endpoint": "https://s3.ignored.test", "region": "us-east-1"}},
+		},
+		rotated: map[string]string{"aws.json": `{"accessKeyID":"key-2","secretAccessKey":"secret-2","region":"eu-central-1"}`, "endpoint": "https://s3.ignored.test", "region": "us-east-1"},
+	}, {
+		name:     "GCS",
+		provider: "GCS",
+		data:     map[string]string{"serviceaccount.json": `{"type":"service_account","project_id":"lodia-a","private_key":"key-1","storageAPIEndpoint":"https://ignored.test"}`, "storageAPIEndpoint": "https://storage.a.test/storage/v1/"},
+		want:     lodiav1alpha1.StoreSecretFields{StorageAPIEndpoint: new("https://storage.a.test/storage/v1/")},
+		moves: []storeKeyMove{
+			{"storageAPIEndpoint", `"https://storage.a.test/storage/v1/"`, `"https://storage.b.test/storage/v1/"`, map[string]string{"serviceaccount.json": `{"type":"service_account","project_id":"lodia-a","private_key":"key-1","storageAPIEndpoint":"https://ignored.test"}`, "storageAPIEndpoint": "https://storage.b.test/storage/v1/"}},
+		},
+		rotated: map[string]string{"serviceaccount.json": `{"type":"service_account","project_id":"lodia-a","private_key":"key-2"}`, "storageAPIEndpoint": "https://storage.a.test/storage/v1/"},
+	}, {
+		name:     "ABS",
+		provider: "ABS",
+		data:     map[string]string{"storageAccount": "account-a", "storageKey": "key-1"},
+		want:     lodiav1alpha1.StoreSecretFields{StorageAccount: new("account-a")},
+		moves: []storeKeyMove{
+			{"storageAccount", `"account-a"`, `"account-b"`, map[string]string{"storageAccount": "account-b", "storageKey": "key-1"}},
+			{"domain", "unset", `"blob.core.chinacloudapi.cn"`, map[string]string{"storageAccount": "account-a", "storageKey": "key-1", "domain": "blob.core.chinacloudapi.cn"}},
+		},
+		rotated: map[string]string{"storageAccount": "account-a", "storageKey": "key-2"},
+	}, {
+		name:     "Swift",
+		provider: "Swift",
+		data:     map[string]string{"authURL": "https://keystone.a.test/v3", "tenantName": "tenant-a", "domainName": "domain-a", "username": "lodia", "password": "password-1", "region": "RegionOne"},
+		want:     lodiav1alpha1.StoreSecretFields{AuthURL: new("https://keystone.a.test/v3"), TenantName: new("tenant-a"), DomainName: new("domain-a")},
+		moves: []storeKeyMove{
+			{"authURL", `"https://keystone.a.test/v3"`, `"https://keystone.b.test/v3"`, map[string]string{"authURL": "https://keystone.b.test/v3", "tenantName": "tenant-a", "domainName": "domain-a", "username": "lodia", "password": "password-1", "region": "RegionOne"}},
+			{"tenantName", `"tenant-a"`, `"tenant-b"`, map[string]string{"authURL": "https://keystone.a.test/v3", "tenantName": "tenant-b", "domainName": "domain-a", "username": "lodia", "password": "password-1", "region": "RegionOne"}},
+			{"domainName", `"domain-a"`, `"domain-b"`, map[string]string{"authURL": "https://keystone.a.test/v3", "tenantName": "tenant-a", "domainName": "domain-b", "username": "lodia", "password": "password-1", "region": "RegionOne"}},
+		},
+		rotated: map[string]string{"authURL": "https://keystone.a.test/v3", "tenantName": "tenant-a", "domainName": "domain-a", "username": "lodia", "password": "password-2", "region": "RegionTwo"},
+	}} {
+		t.Run(c.name, func(t *testing.T) {
+			src := newSource(t, nil, func(s *source) {
+				create(t, credentialsSecret(s, "first", c.data))
+				editClass(t, s.ns, func(class *lodiav1alpha1.DatastoreClass) {
+					class.Spec.Backup.Store.Provider, class.Spec.Backup.Store.Region, class.Spec.Backup.Store.SecretRef.Name = c.provider, "", "first"
+				})
+			})
+			r := src.reconciler(cached)
+			start := func(name string) *lodiav1alpha1.Backup {
+				createBackup(t, src.ns, name, nil)
+				started := passes(t, r, src.ns, name, readyIs(metav1.ConditionUnknown, lodiav1alpha1.ReasonSnapshotting, "sealing"))
+				if got := started.Status.Snapshots; got.Provider != c.provider || !reflect.DeepEqual(got.FromSecret, &c.want) {
+					t.Fatalf("status.snapshots is %s with fromSecret %+v, want %s with %+v", got.Provider, got.FromSecret, c.provider, c.want)
+				}
+				return started
+			}
+			for _, move := range c.moves {
+				t.Run(move.key, func(t *testing.T) {
+					created := start(strings.ToLower(move.key))
+					useCredentials(t, src, move.key, move.data)
+					passes(t, r, src.ns, created.Name, readyIs(metav1.ConditionFalse, lodiav1alpha1.ReasonFailed, fmt.Sprintf(
+						"the source's backup store moved from Secret src-etcd-backup's %s %s to %s while the Backup was taken, and the snapshots that hold the seal are in the first; create another Backup", move.key, move.was, move.is)))
+					unmoved(t, r, src.ns, created.Name)
+					useCredentials(t, src, "first", c.data)
+				})
+			}
+			t.Run("keys rotated", func(t *testing.T) {
+				created := start("rotated")
+				useCredentials(t, src, "rotated", c.rotated)
+				backup := passes(t, r, src.ns, created.Name, sealed)
+				setLease(t, src.ns, deltaLease, backup.Status.Seal.Revision)
+				passes(t, r, src.ns, created.Name, readyIs(metav1.ConditionUnknown, lodiav1alpha1.ReasonCopying, ""))
+				finishCopy(t, src.ns, task(created.UID), druidv1alpha1.EtcdCopyBackupsTaskSucceeded, "")
+				passes(t, r, src.ns, created.Name, readyIs(metav1.ConditionTrue, lodiav1alpha1.ReasonCompleted, ""))
+			})
+		})
+	}
+}
+
+func credentialsSecret(s *source, name string, data map[string]string) *corev1.Secret {
+	return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: strings.ToLower(name), Namespace: s.credentials}, StringData: data}
+}
+
+func useCredentials(t *testing.T, s *source, name string, data map[string]string) {
+	t.Helper()
+	secret := credentialsSecret(s, name, data)
+	if err := k8s.Create(t.Context(), secret); err != nil && !apierrors.IsAlreadyExists(err) {
+		t.Fatal(err)
+	}
+	editClass(t, s.ns, func(class *lodiav1alpha1.DatastoreClass) {
+		class.Spec.Backup.Store.SecretRef.Name = secret.Name
+	})
+	eventually(t, func() error {
+		copied := &corev1.Secret{}
+		if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: s.ns, Name: sourceName + "-etcd-backup"}, copied); err != nil {
+			return err
+		}
+		if len(copied.Data) != len(data) {
+			return fmt.Errorf("%s-etcd-backup holds %d keys, want %d", sourceName, len(copied.Data), len(data))
+		}
+		for key, value := range data {
+			if string(copied.Data[key]) != value {
+				return fmt.Errorf("%s-etcd-backup holds %s %q, want %q", sourceName, key, copied.Data[key], value)
+			}
+		}
+		return nil
+	})
+}
+
+type hiding struct {
+	client.Reader
+	name string
+}
+
+func (h hiding) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if _, secret := obj.(*corev1.Secret); secret && key.Name == h.name {
+		return apierrors.NewNotFound(corev1.Resource("secrets"), key.Name)
+	}
+	return h.Reader.Get(ctx, key, obj, opts...)
+}
+
+func TestABackupWaitsForTheCredentialsCopy(t *testing.T) {
+	src := newSource(t, nil, nil)
+	r := src.reconciler(cached)
+	hidden := &datastore.BackupReconciler{Client: cached, Reader: hiding{apiReader, "src-etcd-backup"}, EtcdClient: src.dial}
+	created := createBackup(t, src.ns, "early", nil)
+	waiting := readyIs(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, "no Secret src-etcd-backup, whose keys name part of the store")
+	for _, sealedYet := range []bool{false, true} {
+		passes(t, hidden, src.ns, created.Name, waiting)
+		result, err := reconcileBackup(hidden, src.ns, created.Name)
+		if err != nil || result.RequeueAfter != 10*time.Second {
+			t.Fatalf("a pass without the copy returned %+v, %v; want a requeue in 10s", result, err)
+		}
+		if backup := getBackup(t, src.ns, created.Name); (backup.Status.StartedAt != nil) != sealedYet || (backup.Status.Seal != nil) != sealedYet {
+			t.Fatalf("a pass without the copy left startedAt %v and seal %+v", backup.Status.StartedAt, backup.Status.Seal)
+		}
+		passes(t, r, src.ns, created.Name, sealed)
+	}
 }

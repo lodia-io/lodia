@@ -5,9 +5,12 @@ package datastore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -153,6 +156,15 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return report(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, waiting, 0)
 	}
 	store := etcd.Spec.Backup.Store
+	credentials := lodiav1alpha1.EtcdBackupSecret.Name(source.Name)
+	fromSecret, err := r.storeSecretFields(ctx, etcd, credentials)
+	switch {
+	case apierrors.IsNotFound(err):
+		return report(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, fmt.Sprintf("no Secret %s, whose keys name part of the store", credentials), 10*time.Second)
+	case err != nil:
+		return ctrl.Result{}, err
+	}
+	location := snapshotLocation(store, fromSecret, backup.UID)
 
 	if status.StartedAt == nil {
 		status.Source = &lodiav1alpha1.UIDReference{Name: source.Name, UID: source.UID}
@@ -162,7 +174,7 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			status.KubernetesVersion = source.Status.Target.Version
 		}
 		status.Network = source.Spec.Network.DeepCopy()
-		status.Snapshots = new(snapshotLocation(store, backup.UID))
+		status.Snapshots = &location
 		status.StartedAt = new(metav1.Now())
 		return report(metav1.ConditionUnknown, lodiav1alpha1.ReasonSnapshotting, "sealing", 0)
 	}
@@ -170,9 +182,8 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	// their holders never fall, so a store that moved, even one moved back,
 	// may lack the seal. A copy task that exists is no exception: its Job
 	// reads the credentials Secret when it starts.
-	if moved := snapshotLocation(store, backup.UID); moved != *status.Snapshots {
-		return report(metav1.ConditionFalse, lodiav1alpha1.ReasonFailed, fmt.Sprintf("the source's backup store moved from %s to %s while the Backup was taken, and the snapshots that hold the seal are in the first; create another Backup",
-			storeOf(*status.Snapshots), storeOf(moved)), 0)
+	if from, to := storeMoved(*status.Snapshots, location, credentials); from != "" {
+		return report(metav1.ConditionFalse, lodiav1alpha1.ReasonFailed, fmt.Sprintf("the source's backup store moved from %s to %s while the Backup was taken, and the snapshots that hold the seal are in the first; create another Backup", from, to), 0)
 	}
 
 	if status.Seal == nil {
@@ -293,13 +304,107 @@ func sealable(source *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) stri
 
 // snapshotLocation is where a Backup's copy of the snapshots in the store
 // goes.
-func snapshotLocation(store *druidv1alpha1.StoreSpec, backup types.UID) lodiav1alpha1.SnapshotLocation {
+func snapshotLocation(store *druidv1alpha1.StoreSpec, fromSecret *lodiav1alpha1.StoreSecretFields, backup types.UID) lodiav1alpha1.SnapshotLocation {
 	return lodiav1alpha1.SnapshotLocation{
-		Provider: lodiav1alpha1.StoreProvider(ptr.Deref(store.Provider, "")),
-		Endpoint: ptr.Deref(store.EndpointOverride, ""),
-		Bucket:   ptr.Deref(store.Container, ""),
-		Prefix:   backupPrefix(store.Prefix, backup),
+		Provider:   lodiav1alpha1.StoreProvider(ptr.Deref(store.Provider, "")),
+		Endpoint:   ptr.Deref(store.EndpointOverride, ""),
+		Bucket:     ptr.Deref(store.Container, ""),
+		Prefix:     backupPrefix(store.Prefix, backup),
+		FromSecret: fromSecret,
 	}
+}
+
+// storeMoved names the store recorded and the one now where they differ,
+// both empty where they do not.
+func storeMoved(recorded, now lodiav1alpha1.SnapshotLocation, credentials string) (string, string) {
+	if recorded.Provider != now.Provider || recorded.Endpoint != now.Endpoint || recorded.Bucket != now.Bucket || recorded.Prefix != now.Prefix {
+		return storeOf(recorded), storeOf(now)
+	}
+	was, is := ptr.Deref(recorded.FromSecret, lodiav1alpha1.StoreSecretFields{}), ptr.Deref(now.FromSecret, lodiav1alpha1.StoreSecretFields{})
+	before, after := secretFields(now.Provider, &was), secretFields(now.Provider, &is)
+	for i := range before {
+		if !ptr.Equal(*before[i].value, *after[i].value) {
+			return fmt.Sprintf("Secret %s's %s %s", credentials, before[i].key, secretValue(*before[i].value)), secretValue(*after[i].value)
+		}
+	}
+	return "", ""
+}
+
+func secretValue(value *string) string {
+	if value == nil {
+		return "unset"
+	}
+	return strconv.Quote(*value)
+}
+
+type secretField struct {
+	key   string
+	value **string
+}
+
+// secretFields are the keys of a provider's credentials that
+// etcd-backup-restore@v0.45.1 reads to find its store, never key material.
+func secretFields(provider lodiav1alpha1.StoreProvider, fields *lodiav1alpha1.StoreSecretFields) []secretField {
+	switch provider {
+	case "S3":
+		return []secretField{{"endpoint", &fields.Endpoint}, {"region", &fields.Region}}
+	case "GCS":
+		return []secretField{{"storageAPIEndpoint", &fields.StorageAPIEndpoint}}
+	case "ABS":
+		return []secretField{{"storageAccount", &fields.StorageAccount}, {"domain", &fields.Domain}}
+	case "Swift":
+		return []secretField{{"authURL", &fields.AuthURL}, {"tenantName", &fields.TenantName}, {"domainName", &fields.DomainName}}
+	}
+	return nil
+}
+
+// storeSecretFields reads the store's keys from the credentials Secret the
+// way the sidecar does: for every provider but GCS from the first key ending
+// in .json when one exists, else each from the key of its name
+// (etcd-backup-restore@v0.45.1 pkg/snapstore/s3_snapstore.go#L106-L139).
+func (r *BackupReconciler) storeSecretFields(ctx context.Context, etcd *druidv1alpha1.Etcd, name string) (*lodiav1alpha1.StoreSecretFields, error) {
+	secret := &corev1.Secret{}
+	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: etcd.Namespace, Name: name}, secret); err != nil {
+		return nil, err
+	}
+	provider := lodiav1alpha1.StoreProvider(ptr.Deref(etcd.Spec.Backup.Store.Provider, ""))
+	fields := &lodiav1alpha1.StoreSecretFields{}
+	wanted := secretFields(provider, fields)
+	file := ""
+	if provider != "GCS" {
+		file = jsonKey(secret.Data)
+	}
+	if file != "" {
+		parsed := &lodiav1alpha1.StoreSecretFields{}
+		if err := json.Unmarshal(secret.Data[file], parsed); err != nil {
+			return nil, fmt.Errorf("read the key %s of Secret %s: %w", file, name, err)
+		}
+		for i, field := range secretFields(provider, parsed) {
+			*wanted[i].value = *field.value
+		}
+	} else {
+		for _, field := range wanted {
+			if value, ok := secret.Data[field.key]; ok {
+				*field.value = new(string(value))
+			}
+		}
+	}
+	if *fields == (lodiav1alpha1.StoreSecretFields{}) {
+		return nil, nil
+	}
+	return fields, nil
+}
+
+// jsonKey is the key the sidecar takes for its credentials file: the first
+// file of the mounted Secret, in name order, ending in .json
+// (etcd-backup-restore@v0.45.1 pkg/snapstore/utils.go#L221-L235).
+func jsonKey(data map[string][]byte) string {
+	for _, key := range slices.Sorted(maps.Keys(data)) {
+		if path.Ext(key) == ".json" {
+			return key
+		}
+	}
+	return ""
 }
 
 // storeOf names the store of a location and the namespace's prefix in it.
