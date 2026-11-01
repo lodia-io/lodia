@@ -105,16 +105,24 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 		etcd.Spec.StorageClass = new(spec.Storage.ClassName)
 	}
 	volume := spec.Storage.Size
-	switch {
-	case current != nil:
+	if current != nil {
 		etcd.Spec.StorageClass = current.Spec.StorageClass
 		volume = ptr.Deref(current.Spec.StorageCapacity, volume)
-	case len(claims) > 0:
-		volume = claimSize(claims[0])
-		for _, claim := range claims[1:] {
-			if size := claimSize(claim); size.Cmp(volume) < 0 {
-				volume = size
+	} else {
+		var smallest *resource.Quantity
+		for _, claim := range claims {
+			// The StatefulSet never attaches a claim being deleted: it creates
+			// a new one from its template once the old one is gone
+			// (kubernetes/kubernetes@v1.35.0 pkg/controller/statefulset/stateful_pod_control.go#L337-L352).
+			if claim.DeletionTimestamp != nil {
+				continue
 			}
+			if size := claimSize(claim); smallest == nil || size.Cmp(*smallest) < 0 {
+				smallest = &size
+			}
+		}
+		if smallest != nil {
+			volume = *smallest
 		}
 	}
 	etcd.Spec.StorageCapacity = &volume

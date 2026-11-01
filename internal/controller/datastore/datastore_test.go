@@ -2357,6 +2357,47 @@ func TestQuotaFitsRetainedClaims(t *testing.T) {
 	recreated("4294967296", "8589934593", "DatastoreClass regrow's quota 12Gi is capped at 4294967296: it needs 24Gi of volume and Etcd regrow-etcd's is 8589934593")
 }
 
+func TestTerminatingClaimIsSkipped(t *testing.T) {
+	ns := namespace(t)
+	const cp = "restart"
+	createClass(t, newClass("restart", "Retain"))
+	create(t, controlPlane(ns, cp, "restart"))
+	writeGeneration(t, ns, cp, 1)
+	previous := waitEtcd(t, ns, cp, nil)
+	labels := druidv1alpha1.GetDefaultLabels(previous.ObjectMeta)
+	labels[lodiav1alpha1.ControlPlaneUIDLabel] = string(getControlPlane(t, ns, cp).UID)
+	terminating := claim(ns, "restart-etcd-restart-etcd-0", labels)
+	terminating.Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse("2Gi")
+	terminating.Finalizers = []string{"lodia.io/test"}
+	create(t, terminating)
+	t.Cleanup(func() {
+		patch := client.MergeFrom(terminating.DeepCopy())
+		terminating.Finalizers = nil
+		if err := k8s.Patch(context.Background(), terminating, patch); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := k8s.Delete(t.Context(), terminating); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Delete(t.Context(), previous); err != nil {
+		t.Fatal(err)
+	}
+
+	waitEtcd(t, ns, cp, func(again *druidv1alpha1.Etcd) error {
+		if again.UID == previous.UID {
+			return errors.New("the Etcd has not been created again yet")
+		}
+		if got, size := quantity(again.Spec.Etcd.Quota), quantity(again.Spec.StorageCapacity); got != "4Gi" || size != "8Gi" {
+			return fmt.Errorf("the Etcd created again beside a terminating 2Gi claim has quota %s and storageCapacity %s, want the class's 4Gi and 8Gi", got, size)
+		}
+		return nil
+	})
+	if pvc := getClaim(t, ns, terminating.Name); pvc.DeletionTimestamp.IsZero() {
+		t.Errorf("claim %s is not being deleted", pvc.Name)
+	}
+}
+
 func TestRecordedClass(t *testing.T) {
 	ns := namespace(t)
 	first := newClass("default-first", "Retain")
