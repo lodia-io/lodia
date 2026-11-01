@@ -1106,7 +1106,7 @@ func TestStorageHoldsTwiceTheQuota(t *testing.T) {
 	const refused = "storage.size must be at least twice the etcd quota, etcd.quotaBackendBytes or 4Gi: defragmentation writes a copy of the database beside it"
 	cases := []struct {
 		name string
-		size string
+		size any
 		etcd map[string]any
 		want string
 	}{
@@ -1118,6 +1118,10 @@ func TestStorageHoldsTwiceTheQuota(t *testing.T) {
 		{"2999Mi with 1.5Gi", "2999Mi", map[string]any{"quotaBackendBytes": "1.5Gi"}, refused},
 		{"8192Mi without etcd", "8192Mi", nil, ""},
 		{"16Gi with 8Gi", "16Gi", map[string]any{"quotaBackendBytes": "8Gi"}, ""},
+		{"8589934592 without etcd", int64(8589934592), nil, ""},
+		{"8589934591 without etcd", int64(8589934591), nil, refused},
+		{"2Gi with 1073741824", "2Gi", map[string]any{"quotaBackendBytes": int64(1073741824)}, ""},
+		{"2047Mi with 1073741824", "2047Mi", map[string]any{"quotaBackendBytes": int64(1073741824)}, refused},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

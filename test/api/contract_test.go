@@ -131,12 +131,15 @@ func TestTheDefaultQuotaIsOneValue(t *testing.T) {
 	}
 	literal := regexp.MustCompile(`quantity\('([^']*)'\)`)
 	var found int
-	for _, rule := range rules(at(t, class, "spec")) {
-		for _, m := range literal.FindAllStringSubmatch(rule, -1) {
+	for _, rule := range at(t, class, "spec").XValidations {
+		for _, m := range literal.FindAllStringSubmatch(rule.Rule, -1) {
 			found++
 			if m[1] != lodiav1alpha1.DefaultQuotaBackendBytes {
-				t.Errorf("the rule on spec names the quota %s, want %s: %s", m[1], lodiav1alpha1.DefaultQuotaBackendBytes, rule)
+				t.Errorf("the rule on spec names the quota %s, want %s: %s", m[1], lodiav1alpha1.DefaultQuotaBackendBytes, rule.Rule)
 			}
+		}
+		if literal.MatchString(rule.Rule) && !strings.Contains(rule.Message, "or "+lodiav1alpha1.DefaultQuotaBackendBytes+":") {
+			t.Errorf("the message of the rule on spec does not name the default quota %s: %s", lodiav1alpha1.DefaultQuotaBackendBytes, rule.Message)
 		}
 	}
 	if found == 0 {
