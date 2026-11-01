@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"strconv"
 	"strings"
@@ -27,11 +28,16 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apiserver/pkg/storage/etcd3/testserver"
 	"k8s.io/client-go/util/retry"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/config"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/controller/datastore"
+	"go.lodia.io/lodia/internal/operator"
 )
 
 const sourceName = "src"
@@ -42,33 +48,33 @@ type source struct {
 	keys            []byte
 }
 
-func newSource(t *testing.T, etcd *embed.Config, before func(ns string)) *source {
+func newSource(t *testing.T, etcd *embed.Config, before func(*source)) *source {
 	t.Helper()
-	ns, credentialsNamespace := namespace(t), namespace(t)
-	create(t, credentials(credentialsNamespace))
-	createClass(t, fullClass(ns, credentialsNamespace))
+	s := &source{ns: namespace(t), credentials: namespace(t), etcd: testserver.RunEtcd(t, etcd)}
+	create(t, credentials(s.credentials))
+	createClass(t, fullClass(s.ns, s.credentials))
 	if before != nil {
-		before(ns)
+		before(s)
 	}
-	create(t, controlPlane(ns, sourceName, ns))
-	writeGeneration(t, ns, sourceName, 1)
-	waitEtcd(t, ns, sourceName, namesGeneration(1))
-	readyOn(t, ns, sourceName, 1)
-	target := []byte(`{"status":{"target":{"version":"v1.37.1"}}}`)
-	if err := k8s.Status().Patch(t.Context(), getControlPlane(t, ns, sourceName), client.RawPatch(types.MergePatchType, target)); err != nil {
-		t.Fatal(err)
-	}
-	keys := []byte("apiVersion: apiserver.config.k8s.io/v1\nkind: EncryptionConfiguration\nresources:\n- resources: [secrets]\n  providers:\n  - aescbc: {keys: [{name: key-2, secret: c2Vjb25k}]}\n  - aescbc: {keys: [{name: key-1, secret: Zmlyc3Q=}]}\n")
-	create(t, &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: sourceName + "-encryption-config", Namespace: ns, Labels: map[string]string{lodiav1alpha1.ControlPlaneLabel: sourceName}},
-		Data:       map[string][]byte{lodiav1alpha1.EncryptionConfigKey: keys},
-	})
+	create(t, controlPlane(s.ns, sourceName, s.ns))
+	writeGeneration(t, s.ns, sourceName, 1)
+	waitEtcd(t, s.ns, sourceName, namesGeneration(1))
 	for _, lease := range []string{fullLease, deltaLease} {
-		if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: lease}, &coordinationv1.Lease{}); apierrors.IsNotFound(err) {
-			createLease(t, ns, lease, "0")
+		if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: s.ns, Name: lease}, &coordinationv1.Lease{}); apierrors.IsNotFound(err) {
+			createLease(t, s.ns, lease, "0")
 		}
 	}
-	return &source{ns: ns, credentials: credentialsNamespace, etcd: testserver.RunEtcd(t, etcd), keys: keys}
+	target := []byte(`{"status":{"target":{"version":"v1.37.1"}}}`)
+	if err := k8s.Status().Patch(t.Context(), getControlPlane(t, s.ns, sourceName), client.RawPatch(types.MergePatchType, target)); err != nil {
+		t.Fatal(err)
+	}
+	s.keys = []byte("apiVersion: apiserver.config.k8s.io/v1\nkind: EncryptionConfiguration\nresources:\n- resources: [secrets]\n  providers:\n  - aescbc: {keys: [{name: key-2, secret: c2Vjb25k}]}\n  - aescbc: {keys: [{name: key-1, secret: Zmlyc3Q=}]}\n")
+	create(t, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: sourceName + "-encryption-config", Namespace: s.ns, Labels: map[string]string{lodiav1alpha1.ControlPlaneLabel: sourceName}},
+		Data:       map[string][]byte{lodiav1alpha1.EncryptionConfigKey: s.keys},
+	})
+	readyOn(t, s.ns, sourceName, 1)
+	return s
 }
 
 const (
@@ -461,9 +467,9 @@ func TestAFlushThatEndsShortOfTheSealIsSentAgain(t *testing.T) {
 }
 
 func TestALeaseOlderThanTheEtcdIsIgnored(t *testing.T) {
-	src := newSource(t, nil, func(ns string) {
-		createLease(t, ns, deltaLease, "1000000000")
-		createLease(t, ns, fullLease, "1000000000")
+	src := newSource(t, nil, func(s *source) {
+		createLease(t, s.ns, deltaLease, "1000000000")
+		createLease(t, s.ns, fullLease, "1000000000")
 		time.Sleep(1100 * time.Millisecond)
 	})
 	r := src.reconciler(cached)
@@ -944,4 +950,81 @@ func TestTheCopyFollowsTheSourcesEtcdNotItsClass(t *testing.T) {
 	if got := copyTask.Spec.TargetStore; got.Prefix != prefix || *got.Container != "lodia-backups" {
 		t.Errorf("the copy's target is %s/%s, want lodia-backups/%s", *got.Container, got.Prefix, prefix)
 	}
+}
+
+func runBackupReconciler(t *testing.T, s *source) {
+	t.Helper()
+	options, err := operator.Cache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	options.DefaultNamespaces = map[string]cache.Config{s.ns: {}}
+	mgr, err := ctrl.NewManager(asDatastore, ctrl.Options{
+		Scheme:     k8s.Scheme(),
+		Metrics:    metricsserver.Options{BindAddress: "0"},
+		Cache:      options,
+		Controller: config.Controller{SkipNameValidation: new(true)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (&datastore.BackupReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdClient: s.dial}).SetupWithManager(mgr, 1); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan error, 1)
+	go func() { stopped <- mgr.Start(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-stopped; err != nil {
+			t.Error(err)
+		}
+	})
+}
+
+func awaitBackup(t *testing.T, ns, name string, check func(*lodiav1alpha1.Backup) error) *lodiav1alpha1.Backup {
+	t.Helper()
+	var backup *lodiav1alpha1.Backup
+	eventually(t, func() error {
+		backup = getBackup(t, ns, name)
+		return check(backup)
+	})
+	return backup
+}
+
+func TestTheWatchesBringTheNextPass(t *testing.T) {
+	src := newSource(t, nil, func(s *source) {
+		runBackupReconciler(t, s)
+		createBackup(t, s.ns, "early", nil)
+		awaitBackup(t, s.ns, "early", readyIs(metav1.ConditionFalse, lodiav1alpha1.ReasonControlPlaneNotFound, "no ControlPlane src"))
+	})
+	early := awaitBackup(t, src.ns, "early", func(b *lodiav1alpha1.Backup) error {
+		if getFlush(t, src.ns, b.UID) == nil {
+			return errors.New("no EtcdOpsTask yet")
+		}
+		return nil
+	})
+	setLease(t, src.ns, deltaLease, early.Status.Seal.Revision)
+	finishFlush(t, src.ns, task(early.UID), druidv1alpha1.TaskStateSucceeded)
+	awaitBackup(t, src.ns, "early", readyIs(metav1.ConditionUnknown, lodiav1alpha1.ReasonCopying, ""))
+	finishCopy(t, src.ns, task(early.UID), druidv1alpha1.EtcdCopyBackupsTaskSucceeded, "")
+	awaitBackup(t, src.ns, "early", readyIs(metav1.ConditionTrue, lodiav1alpha1.ReasonCompleted, ""))
+
+	setLease(t, src.ns, deltaLease, math.MaxInt64)
+	late := createBackup(t, src.ns, "late", nil)
+	awaitBackup(t, src.ns, "late", readyIs(metav1.ConditionUnknown, lodiav1alpha1.ReasonCopying, ""))
+	finishCopy(t, src.ns, task(late.UID), druidv1alpha1.EtcdCopyBackupsTaskSucceeded, "")
+	awaitBackup(t, src.ns, "late", readyIs(metav1.ConditionTrue, lodiav1alpha1.ReasonCompleted, ""))
+
+	ready := meta.FindStatusCondition(getControlPlane(t, src.ns, sourceName).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
+	setPaused(t, src.ns, sourceName, true)
+	createBackup(t, src.ns, "held", nil)
+	awaitBackup(t, src.ns, "held", readyIs(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, fmt.Sprintf("DatastoreReady of src is True (Ready) for generation %d", ready.ObservedGeneration)))
+	setPaused(t, src.ns, sourceName, false)
+	awaitBackup(t, src.ns, "held", func(b *lodiav1alpha1.Backup) error {
+		if b.Status.StartedAt == nil {
+			return errors.New("not started")
+		}
+		return nil
+	})
 }

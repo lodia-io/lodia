@@ -58,9 +58,10 @@ import (
 )
 
 var (
-	k8s       client.WithWatch
-	cached    client.Client
-	apiReader client.Reader
+	k8s         client.WithWatch
+	cached      client.Client
+	apiReader   client.Reader
+	asDatastore *rest.Config
 )
 
 const (
@@ -109,6 +110,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		stop("the controller's ClusterRole", err)
 	}
+	asDatastore = controller
 	cache, err := operator.Cache()
 	if err != nil {
 		stop("cache options", err)
