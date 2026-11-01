@@ -162,12 +162,7 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			status.KubernetesVersion = source.Status.Target.Version
 		}
 		status.Network = source.Spec.Network.DeepCopy()
-		status.Snapshots = &lodiav1alpha1.SnapshotLocation{
-			Provider: lodiav1alpha1.StoreProvider(ptr.Deref(store.Provider, "")),
-			Endpoint: ptr.Deref(store.EndpointOverride, ""),
-			Bucket:   ptr.Deref(store.Container, ""),
-			Prefix:   backupPrefix(store.Prefix, backup.UID),
-		}
+		status.Snapshots = new(snapshotLocation(store, backup.UID))
 		status.StartedAt = new(metav1.Now())
 		return report(metav1.ConditionUnknown, lodiav1alpha1.ReasonSnapshotting, "sealing", 0)
 	}
@@ -201,6 +196,12 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	copying := fmt.Sprintf("EtcdCopyBackupsTask %s copies the newest snapshots of %s to %s", task, name, destination)
 	switch {
 	case apierrors.IsNotFound(err):
+		// The snapshot Leases describe the store the sidecar uploaded to,
+		// and their holders never fall, so a moved store may lack the seal.
+		if moved := snapshotLocation(store, backup.UID); moved != *status.Snapshots {
+			return report(metav1.ConditionFalse, lodiav1alpha1.ReasonFailed, fmt.Sprintf("the source's backup store moved from %s to %s while the Backup was taken, and the snapshots that hold the seal are in the first; create another Backup",
+				storeOf(*status.Snapshots), storeOf(moved)), 0)
+		}
 		// The copy goes where the status says it is, which a restore reads,
 		// even if the source's store moved since the Backup started.
 		target := store.DeepCopy()
@@ -286,6 +287,26 @@ func sealable(source *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) stri
 		return fmt.Sprintf("ControlPlane %s controls no Etcd %s", source.Name, lodiav1alpha1.EtcdName(source.Name))
 	}
 	return ""
+}
+
+// snapshotLocation is where a Backup's copy of the snapshots in the store
+// goes.
+func snapshotLocation(store *druidv1alpha1.StoreSpec, backup types.UID) lodiav1alpha1.SnapshotLocation {
+	return lodiav1alpha1.SnapshotLocation{
+		Provider: lodiav1alpha1.StoreProvider(ptr.Deref(store.Provider, "")),
+		Endpoint: ptr.Deref(store.EndpointOverride, ""),
+		Bucket:   ptr.Deref(store.Container, ""),
+		Prefix:   backupPrefix(store.Prefix, backup),
+	}
+}
+
+// storeOf names the store of a location and the namespace's prefix in it.
+func storeOf(location lodiav1alpha1.SnapshotLocation) string {
+	store := string(location.Provider)
+	if location.Endpoint != "" {
+		store += " " + location.Endpoint
+	}
+	return store + " " + location.Bucket + "/" + path.Dir(path.Dir(location.Prefix))
 }
 
 // backupPrefix puts the Backup beside the ControlPlanes of the namespace in

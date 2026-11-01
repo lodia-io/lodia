@@ -1028,3 +1028,40 @@ func TestTheWatchesBringTheNextPass(t *testing.T) {
 		return nil
 	})
 }
+
+func editClass(t *testing.T, name string, edit func(*lodiav1alpha1.DatastoreClass)) {
+	t.Helper()
+	class := &lodiav1alpha1.DatastoreClass{}
+	if err := k8s.Get(t.Context(), client.ObjectKey{Name: name}, class); err != nil {
+		t.Fatal(err)
+	}
+	patch := client.MergeFrom(class.DeepCopy())
+	edit(class)
+	if err := k8s.Patch(t.Context(), class, patch); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAStoreMovedBeforeTheCopyFailsTheBackup(t *testing.T) {
+	src := newSource(t, nil, nil)
+	r := src.reconciler(cached)
+	created := createBackup(t, src.ns, "moved", nil)
+	backup := passes(t, r, src.ns, created.Name, sealed)
+	setLease(t, src.ns, deltaLease, backup.Status.Seal.Revision)
+	editClass(t, src.ns, func(class *lodiav1alpha1.DatastoreClass) {
+		class.Spec.Backup.Store.Prefix, class.Spec.Backup.Store.Bucket = "moved", "other-bucket"
+	})
+	waitEtcd(t, src.ns, sourceName, func(etcd *druidv1alpha1.Etcd) error {
+		if store := etcd.Spec.Backup.Store; *store.Container != "other-bucket" || !strings.HasPrefix(store.Prefix, "moved/") {
+			return fmt.Errorf("the Etcd's store is %s/%s", *store.Container, store.Prefix)
+		}
+		return nil
+	})
+	ns := string(namespaceUID(t, src.ns))
+	passes(t, r, src.ns, created.Name, readyIs(metav1.ConditionFalse, lodiav1alpha1.ReasonFailed, fmt.Sprintf(
+		"the source's backup store moved from S3 https://s3.example.test lodia-backups/prod/%s to S3 https://s3.example.test other-bucket/moved/%s while the Backup was taken, and the snapshots that hold the seal are in the first; create another Backup", ns, ns)))
+	unmoved(t, r, src.ns, created.Name)
+	if getCopyTask(t, src.ns, created.UID) != nil {
+		t.Fatal("a copy task from the moved store")
+	}
+}
