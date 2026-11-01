@@ -568,6 +568,9 @@ func seal(t *testing.T, src *source, name string, nth int) int {
 		if err != nil && (nth <= previous || nth > writes) {
 			t.Fatalf("pass %d failed though it refused no write: %v", pass, err)
 		}
+		if _, err := src.etcd.Put(t.Context(), "/registry/written-meanwhile", strconv.Itoa(pass)); err != nil {
+			t.Fatal(err)
+		}
 		backup := getBackup(t, src.ns, name)
 		if key := src.sealKey(t, created.UID); key != nil {
 			if revision == 0 {
