@@ -273,7 +273,10 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.Contro
 		}
 		sts = nil
 	}
-	rendered := render(cp, class, namespaceUID, generation, current, sts)
+	rendered, quotaHeld := render(cp, class, namespaceUID, generation, current, sts)
+	if quotaHeld != "" {
+		held = quotaHeld
+	}
 	etcd, err := r.apply(ctx, rendered)
 	if err != nil {
 		err = fmt.Errorf("apply Etcd %s: %w", rendered.Name, err)

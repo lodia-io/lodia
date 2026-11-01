@@ -209,7 +209,7 @@ What each field of the class becomes ([etcd.go](https://github.com/gardener/etcd
 
 | `DatastoreClass` | `Etcd` | note |
 |---|---|---|
-| `etcd.quotaBackendBytes` | `spec.etcd.quota` | |
+| `etcd.quotaBackendBytes` | `spec.etcd.quota` | 4Gi when absent; at most half of `storage.size`, and of a running `Etcd`'s volume ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)) |
 | `etcd.autoCompaction.mode`, `.retention` | `spec.sharedConfig.autoCompactionMode`, `.autoCompactionRetention` | shared with the sidecar's embedded etcd |
 | `etcd.defragmentation.schedule` | `spec.etcd.defragmentationSchedule` | the sidecar defragments only above 3 GiB or with more than 1 GiB free ([etcd spike](etcd-spike-2026-10.md), finding 7) |
 | `etcd.resources` | `spec.etcd.resources` | the sidecar's `spec.backup.resources` stay etcd-druid's default: the class has no field for them |

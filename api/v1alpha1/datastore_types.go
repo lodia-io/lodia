@@ -34,8 +34,12 @@ type DatastoreClassList struct {
 	Items           []DatastoreClass `json:"items"`
 }
 
+// DefaultQuotaBackendBytes is the quota of a class that sets none.
+const DefaultQuotaBackendBytes = "4Gi"
+
 // DatastoreClassSpec describes a dedicated etcd. Members follow the
 // ControlPlane: one, or three with high availability.
+// +kubebuilder:validation:XValidation:rule="!quantity(string(self.storage.size)).isLessThan((has(self.etcd) && has(self.etcd.quotaBackendBytes) ? quantity(string(self.etcd.quotaBackendBytes)) : quantity('4Gi')).add(has(self.etcd) && has(self.etcd.quotaBackendBytes) ? quantity(string(self.etcd.quotaBackendBytes)) : quantity('4Gi')))",message="storage.size must be at least twice the etcd quota, etcd.quotaBackendBytes or 4Gi: defragmentation writes a copy of the database beside it"
 type DatastoreClassSpec struct {
 	// Etcd configures the members.
 	// +optional

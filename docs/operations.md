@@ -136,7 +136,7 @@ If someone did and the Secrets are gone, a member that starts again cannot: the 
 
 1. Confirm the `NOSPACE` alarm in the member's logs or metrics (`etcd_server_quota_backend_bytes` against `etcd_mvcc_db_total_size_in_bytes`).
 2. Find what grew: usually Events or a controller writing large objects inside the tenant; `kubectl get --raw /metrics | grep apiserver_storage_objects` through the admin kubeconfig.
-3. Raise the class quota temporarily (`quotaBackendBytes`) or delete the offending objects; then compaction and defragmentation run, and the alarm is disarmed with `etcdctl alarm disarm`.
+3. Raise the class quota temporarily (`quotaBackendBytes`), up to half of the member's volume, past which the `Etcd` keeps its quota ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)), or delete the offending objects; then compaction and defragmentation run, and the alarm is disarmed with `etcdctl alarm disarm`.
 
 ### Restore a tenant from backup
 

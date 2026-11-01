@@ -83,7 +83,7 @@ func TestEveryStatusFieldHasOneWriter(t *testing.T) {
 	}
 	class := &lodiav1alpha1.DatastoreClass{
 		ObjectMeta: metav1.ObjectMeta{Name: "writers", Annotations: map[string]string{lodiav1alpha1.DefaultClassAnnotation: "true"}},
-		Spec:       lodiav1alpha1.DatastoreClassSpec{Storage: lodiav1alpha1.EtcdStorage{Size: resource.MustParse("1Gi"), ReclaimPolicy: "Delete"}},
+		Spec:       lodiav1alpha1.DatastoreClassSpec{Storage: lodiav1alpha1.EtcdStorage{Size: resource.MustParse("8Gi"), ReclaimPolicy: "Delete"}},
 	}
 	cp := &lodiav1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: ns.Name},

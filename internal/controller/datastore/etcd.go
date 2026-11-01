@@ -15,6 +15,7 @@ import (
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -41,7 +42,7 @@ const allowUnhealthyPodEviction = "resources.druid.gardener.cloud/allow-unhealth
 // UIDs and no name: etcd-backup-restore takes the last v1/ anywhere in a key
 // for its layout and ignores the snapshots it misreads
 // (etcd-backup-restore@v0.45.1 pkg/snapstore/snapshot.go#L39-L59).
-func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, namespaceUID types.UID, generation int, current *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) *druidv1alpha1.Etcd {
+func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, namespaceUID types.UID, generation int, current *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) (*druidv1alpha1.Etcd, string) {
 	secret := func(certificate lodiav1alpha1.EtcdCertificateRole) corev1.SecretReference {
 		return corev1.SecretReference{Name: lodiav1alpha1.EtcdCertificateSecretName(cp.Name, certificate, generation)}
 	}
@@ -93,7 +94,7 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 	}
 	if class == nil {
 		keep(etcd, current)
-		return etcd
+		return etcd, ""
 	}
 	spec := &class.Spec
 	metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, lodiav1alpha1.DatastoreClassAnnotation, class.Name)
@@ -106,8 +107,22 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 		etcd.Spec.StorageClass = current.Spec.StorageClass
 		etcd.Spec.StorageCapacity = current.Spec.StorageCapacity
 	}
+	quota := resource.MustParse(lodiav1alpha1.DefaultQuotaBackendBytes)
+	if spec.Etcd != nil && spec.Etcd.QuotaBackendBytes != nil {
+		quota = spec.Etcd.QuotaBackendBytes.DeepCopy()
+	}
+	etcd.Spec.Etcd.Quota = &quota
+	var held string
+	if current != nil {
+		twice := quota.DeepCopy()
+		twice.Add(quota)
+		if capacity := ptr.Deref(current.Spec.StorageCapacity, resource.Quantity{}); twice.Cmp(capacity) > 0 {
+			etcd.Spec.Etcd.Quota = current.Spec.Etcd.Quota
+			held = fmt.Sprintf("DatastoreClass %s's quota %s is held at %s: it needs %s of volume and Etcd %s's is %s",
+				class.Name, quota.String(), current.Spec.Etcd.Quota.String(), twice.String(), current.Name, capacity.String())
+		}
+	}
 	if settings := spec.Etcd; settings != nil {
-		etcd.Spec.Etcd.Quota = settings.QuotaBackendBytes
 		etcd.Spec.Etcd.Resources = settings.Resources
 		if settings.Defragmentation != nil {
 			etcd.Spec.Etcd.DefragmentationSchedule = new(string(settings.Defragmentation.Schedule))
@@ -149,7 +164,7 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 			etcd.Spec.SchedulingConstraints.Affinity = nodeAffinity(placement.NodeSelector)
 		}
 	}
-	return etcd
+	return etcd, held
 }
 
 func memberCount(cp *lodiav1alpha1.ControlPlane) int32 {

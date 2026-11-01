@@ -383,6 +383,13 @@ spec:
             required:
             - storage
             type: object
+            x-kubernetes-validations:
+            - message: 'storage.size must be at least twice the etcd quota, etcd.quotaBackendBytes
+                or 4Gi: defragmentation writes a copy of the database beside it'
+              rule: '!quantity(string(self.storage.size)).isLessThan((has(self.etcd)
+                && has(self.etcd.quotaBackendBytes) ? quantity(string(self.etcd.quotaBackendBytes))
+                : quantity(''4Gi'')).add(has(self.etcd) && has(self.etcd.quotaBackendBytes)
+                ? quantity(string(self.etcd.quotaBackendBytes)) : quantity(''4Gi'')))'
         required:
         - spec
         type: object

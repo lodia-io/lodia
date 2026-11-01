@@ -123,7 +123,7 @@ mk -n "$CP" exec "$CP-etcd-0" -- etcdctl --endpoints=https://127.0.0.1:2379 \
 ```
 
 One member, client TLS with its own CA, data on a PVC from kind's default StorageClass.
-The quota, 4 GiB, and periodic compaction every 15 minutes are the defaults of a `DatastoreClass`'s `etcd`; the volume holds the whole quota.
+The quota, 4 GiB, and periodic compaction every 15 minutes are the defaults of a `DatastoreClass`'s `etcd`; the volume is twice the quota.
 
 > **Lodia (Datastore):** an `Etcd` resource for etcd-druid instead of this StatefulSet, with continuous snapshots and the peer TLS three members need ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)).
 
