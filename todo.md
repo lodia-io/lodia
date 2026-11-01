@@ -193,4 +193,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the backups (2026-11-01)
 
+- A `Backup` started after the store moved through `<cp>-etcd-backup`, but before the sidecar's files hold the new keys, puts its full snapshot into the old store, while its copy Job reads the new keys when it starts and finds nothing there, which succeeds; the kubelet's update delay bounds the window ([secrets](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/concepts/configuration/secret.md#L549-L553)).
+  `docs/operations.md` has a person wait for that upload after the two moves no `Backup` sees; a move the `Backup` records is not covered.
 - The backup reconciler dials the source's etcd in every pass that seals, and the restore will dial a restored etcd in every pass that checks it: a client per `Etcd`, kept across passes and closed when the `Etcd` names a new certificate generation or goes, would save a TLS handshake per pass once fleets grow.
