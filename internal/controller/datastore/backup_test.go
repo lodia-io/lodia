@@ -1065,3 +1065,39 @@ func TestAStoreMovedBeforeTheCopyFailsTheBackup(t *testing.T) {
 		t.Fatal("a copy task from the moved store")
 	}
 }
+
+func TestTheFlushIsFullWithoutDeltas(t *testing.T) {
+	src := newSource(t, nil, nil)
+	r := src.reconciler(cached)
+	for _, row := range []struct {
+		period   time.Duration
+		snapshot druidv1alpha1.OnDemandSnapshotType
+	}{
+		{0, druidv1alpha1.OnDemandSnapshotTypeFull},
+		{999 * time.Millisecond, druidv1alpha1.OnDemandSnapshotTypeFull},
+		{time.Second, druidv1alpha1.OnDemandSnapshotTypeDelta},
+	} {
+		t.Run(row.period.String(), func(t *testing.T) {
+			editClass(t, src.ns, func(class *lodiav1alpha1.DatastoreClass) {
+				class.Spec.Backup.DeltaSnapshotPeriod = &metav1.Duration{Duration: row.period}
+			})
+			waitEtcd(t, src.ns, sourceName, func(etcd *druidv1alpha1.Etcd) error {
+				if period := etcd.Spec.Backup.DeltaSnapshotPeriod; period == nil || period.Duration != row.period {
+					return fmt.Errorf("the Etcd's deltaSnapshotPeriod is %v", period)
+				}
+				return nil
+			})
+			name := "period-" + strconv.FormatInt(row.period.Milliseconds(), 10)
+			created := createBackup(t, src.ns, name, nil)
+			passes(t, r, src.ns, name, func(*lodiav1alpha1.Backup) error {
+				if getFlush(t, src.ns, created.UID) == nil {
+					return errors.New("no EtcdOpsTask yet")
+				}
+				return nil
+			})
+			if got := getFlush(t, src.ns, created.UID).Spec.Config.OnDemandSnapshot.Type; got != row.snapshot {
+				t.Errorf("the EtcdOpsTask asks for a %s snapshot, want %s", got, row.snapshot)
+			}
+		})
+	}
+}
