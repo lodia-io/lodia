@@ -72,6 +72,20 @@ Two steps follow, the second once the first has recovered:
 In each step `Ready` must not leave `True` for longer than 5 seconds, Health's period in the gate, and neither loop may lose a request.
 The test logs each recorded change and, for each condition, the longest time it was not `True`.
 
+## Gate G3: a Backup and a restore
+
+`TestRestoreGate` checks the backup and restore item of the [phase 2 gate](../../docs/roadmap.md#phase-2--production).
+It sits behind a build tag of its own, `restore` with `e2e`, and `make e2e-restore` runs it on a kind cluster of its own as `make e2e-ha` runs G2; the `e2e-restore` job of [`ci.yml`](../../.github/workflows/ci.yml) runs that on every pull request.
+
+Before any class exists, the test runs versitygw v1.10.0, by digest, in the namespace `lodia-e2e-s3` with its posix backend on an emptyDir and random root keys, waits for its Deployment to be `Available`, and creates the bucket `lodia-e2e` with an `amazon/aws-cli` Job, by digest, that must be `Complete`.
+The credentials go into `lodia-system` as `accessKeyID`, `secretAccessKey`, `region` and `s3ForcePathStyle`, the keys etcd-backup-restore reads for S3 ([s3_snapstore.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapstore/s3_snapstore.go#L106-L244)), and the class `e2e-restore` stores at `http://versitygw.lodia-e2e-s3.svc:7070` under the prefix `e2e`, with a delta snapshot every 10 seconds.
+
+1. The `ControlPlane` `a`, in `nodePort` mode, turns `Ready`, and `BackupReady` True, `BackupSucceeded`.
+2. In `a`, the test writes two namespaces with three Secrets of 32 random bytes and a ConfigMap each, whose data hashes it logs, a CRD and one object, a Role and its binding, and what binds a cluster to its world: a bootstrap token, a Node `source-node` with its Lease and a CSR, a LoadBalancer Service, a PersistentVolume with the `Delete` policy and a CronJob.
+3. The `Backup` `a-1` turns `Ready`, `Completed`: its `status.source` is `a`'s UID, its prefix `e2e/<namespace UID>/backups/<Backup UID>`, its seal at a revision; it carries its UID in `lodia.io/sealed-uid`, `a-1.encryption-config` is immutable and controlled by it, and its two tasks are gone.
+
+Every wait is bounded and waits for a condition; no duration is asserted.
+
 ## Nightly: highAvailability removed and added back
 
 `TestHighAvailabilityRemovedAndRestored`, in the same build tag and on the same cluster shape as G2, runs every night in [`nightly-ha.yml`](../../.github/workflows/nightly-ha.yml), on demand, and on a pull request that changes the workflow or the test; `make e2e-ha E2E_HA_TEST=TestHighAvailabilityRemovedAndRestored` runs it locally.
