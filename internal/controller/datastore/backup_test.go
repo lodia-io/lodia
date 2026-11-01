@@ -1196,6 +1196,30 @@ func TestAStoreMovedAwayAndBackFailsTheBackup(t *testing.T) {
 	}
 }
 
+func TestAStoreMovedAwayAndBackWhileTheMemberRestartsFailsTheBackup(t *testing.T) {
+	src := newSource(t, nil, nil)
+	r := src.reconciler(k8s)
+	created := createBackup(t, src.ns, "restart", nil)
+	backup := passes(t, r, src.ns, created.Name, sealed)
+	setEtcdStatus(t, src.ns, sourceName, func(s *druidv1alpha1.EtcdStatus) { s.Ready, s.ReadyReplicas = new(false), 0 })
+	waitCondition(t, src.ns, sourceName, metav1.ConditionFalse, lodiav1alpha1.ReasonQuorumLost, "has 0 of 1 members ready")
+	moveStore(t, src.ns, "other-bucket", "moved")
+	if _, err := reconcileBackup(r, src.ns, created.Name); err != nil {
+		t.Fatal(err)
+	}
+	setLease(t, src.ns, deltaLease, backup.Status.Seal.Revision)
+	moveStore(t, src.ns, "lodia-backups", "prod")
+	setEtcdStatus(t, src.ns, sourceName, nil)
+	waitCondition(t, src.ns, sourceName, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum, 1 of 1 members ready")
+	ns := string(namespaceUID(t, src.ns))
+	passes(t, r, src.ns, created.Name, readyIs(metav1.ConditionFalse, lodiav1alpha1.ReasonFailed, fmt.Sprintf(
+		"the source's backup store moved from S3 https://s3.example.test lodia-backups/prod/%s to S3 https://s3.example.test other-bucket/moved/%s while the Backup was taken", ns, ns)))
+	unmoved(t, r, src.ns, created.Name)
+	if getCopyTask(t, src.ns, created.UID) != nil {
+		t.Fatal("a copy task from a store moved away and back while the member restarted")
+	}
+}
+
 func moveStore(t *testing.T, ns, bucket, prefix string) {
 	t.Helper()
 	editClass(t, ns, func(class *lodiav1alpha1.DatastoreClass) {

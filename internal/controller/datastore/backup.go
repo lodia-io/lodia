@@ -152,19 +152,36 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if etcd != nil && etcd.Spec.Backup.Store == nil {
 		return report(metav1.ConditionFalse, lodiav1alpha1.ReasonNoBackupStore, fmt.Sprintf("the ControlPlane's class %s has no backup store", etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation]), 0)
 	}
+	credentials := lodiav1alpha1.EtcdBackupSecret.Name(source.Name)
+	var location lodiav1alpha1.SnapshotLocation
+	var noCredentials bool
+	if etcd != nil {
+		fromSecret, err := r.storeSecretFields(ctx, etcd, credentials)
+		switch {
+		case apierrors.IsNotFound(err):
+			noCredentials = true
+		case err != nil:
+			return ctrl.Result{}, err
+		}
+		location = snapshotLocation(etcd.Spec.Backup.Store, fromSecret, backup.UID)
+		// The snapshot Leases describe the store the sidecar uploaded to, and
+		// their holders never fall, so a store that moved, even one moved back,
+		// may lack the seal. A copy task that exists is no exception: its Job
+		// reads the credentials Secret when it starts. A pass that waits for
+		// the datastore compares too, since a move restarts a single member.
+		if status.StartedAt != nil && !noCredentials {
+			if from, to := storeMoved(*status.Snapshots, location, credentials); from != "" {
+				return report(metav1.ConditionFalse, lodiav1alpha1.ReasonFailed, fmt.Sprintf("the source's backup store moved from %s to %s while the Backup was taken, and the snapshots that hold the seal are in the first; create another Backup", from, to), 0)
+			}
+		}
+	}
 	if waiting := sealable(source, etcd); waiting != "" {
 		return report(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, waiting, 0)
 	}
-	store := etcd.Spec.Backup.Store
-	credentials := lodiav1alpha1.EtcdBackupSecret.Name(source.Name)
-	fromSecret, err := r.storeSecretFields(ctx, etcd, credentials)
-	switch {
-	case apierrors.IsNotFound(err):
+	if noCredentials {
 		return report(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, fmt.Sprintf("no Secret %s, whose keys name part of the store", credentials), 10*time.Second)
-	case err != nil:
-		return ctrl.Result{}, err
 	}
-	location := snapshotLocation(store, fromSecret, backup.UID)
+	store := etcd.Spec.Backup.Store
 
 	if status.StartedAt == nil {
 		status.Source = &lodiav1alpha1.UIDReference{Name: source.Name, UID: source.UID}
@@ -178,14 +195,6 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		status.StartedAt = new(metav1.Now())
 		return report(metav1.ConditionUnknown, lodiav1alpha1.ReasonSnapshotting, "sealing", 0)
 	}
-	// The snapshot Leases describe the store the sidecar uploaded to, and
-	// their holders never fall, so a store that moved, even one moved back,
-	// may lack the seal. A copy task that exists is no exception: its Job
-	// reads the credentials Secret when it starts.
-	if from, to := storeMoved(*status.Snapshots, location, credentials); from != "" {
-		return report(metav1.ConditionFalse, lodiav1alpha1.ReasonFailed, fmt.Sprintf("the source's backup store moved from %s to %s while the Backup was taken, and the snapshots that hold the seal are in the first; create another Backup", from, to), 0)
-	}
-
 	if status.Seal == nil {
 		revision, err := r.seal(ctx, etcd, backup.UID)
 		if errors.Is(err, rpctypes.ErrNoSpace) {
