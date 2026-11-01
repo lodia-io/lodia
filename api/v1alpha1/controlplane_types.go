@@ -1041,49 +1041,6 @@ type SnapshotLocation struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=512
 	Prefix string `json:"prefix"`
-
-	// FromSecret is the part of the store that the provider reads from the
-	// credentials Secret.
-	// +optional
-	FromSecret *StoreSecretFields `json:"fromSecret,omitempty"`
-}
-
-// StoreSecretFields are the keys of a store's credentials Secret that name
-// the store rather than authenticate to it, as etcd-backup-restore reads
-// them; an absent key stays unset. Each is one provider's.
-type StoreSecretFields struct {
-	// Endpoint is S3's deprecated endpoint key.
-	// +optional
-	Endpoint *string `json:"endpoint,omitempty"`
-
-	// Region is S3's, which picks the partition, and with it the bucket of
-	// that name.
-	// +optional
-	Region *string `json:"region,omitempty"`
-
-	// StorageAPIEndpoint is GCS's deprecated endpoint key.
-	// +optional
-	StorageAPIEndpoint *string `json:"storageAPIEndpoint,omitempty"`
-
-	// StorageAccount is the ABS account.
-	// +optional
-	StorageAccount *string `json:"storageAccount,omitempty"`
-
-	// Domain is ABS's deprecated domain key.
-	// +optional
-	Domain *string `json:"domain,omitempty"`
-
-	// AuthURL is Swift's Keystone, whose catalog names the store.
-	// +optional
-	AuthURL *string `json:"authURL,omitempty"`
-
-	// TenantName is the Swift project, whose account holds the containers.
-	// +optional
-	TenantName *string `json:"tenantName,omitempty"`
-
-	// DomainName is the Keystone domain of the Swift project.
-	// +optional
-	DomainName *string `json:"domainName,omitempty"`
 }
 
 // RestoreStatus is a completed restore from a Backup: the Datastore

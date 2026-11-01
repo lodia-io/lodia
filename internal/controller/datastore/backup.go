@@ -153,7 +153,7 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return report(metav1.ConditionFalse, lodiav1alpha1.ReasonNoBackupStore, fmt.Sprintf("the ControlPlane's class %s has no backup store", etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation]), 0)
 	}
 	credentials := lodiav1alpha1.EtcdBackupSecret.Name(source.Name)
-	var location lodiav1alpha1.SnapshotLocation
+	var location lodiav1alpha1.BackupSnapshotLocation
 	var noCredentials bool
 	if etcd != nil {
 		fromSecret, err := r.storeSecretFields(ctx, etcd, credentials)
@@ -313,21 +313,23 @@ func sealable(source *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) stri
 
 // snapshotLocation is where a Backup's copy of the snapshots in the store
 // goes.
-func snapshotLocation(store *druidv1alpha1.StoreSpec, fromSecret *lodiav1alpha1.StoreSecretFields, backup types.UID) lodiav1alpha1.SnapshotLocation {
-	return lodiav1alpha1.SnapshotLocation{
-		Provider:   lodiav1alpha1.StoreProvider(ptr.Deref(store.Provider, "")),
-		Endpoint:   ptr.Deref(store.EndpointOverride, ""),
-		Bucket:     ptr.Deref(store.Container, ""),
-		Prefix:     backupPrefix(store.Prefix, backup),
+func snapshotLocation(store *druidv1alpha1.StoreSpec, fromSecret *lodiav1alpha1.StoreSecretFields, backup types.UID) lodiav1alpha1.BackupSnapshotLocation {
+	return lodiav1alpha1.BackupSnapshotLocation{
+		SnapshotLocation: lodiav1alpha1.SnapshotLocation{
+			Provider: lodiav1alpha1.StoreProvider(ptr.Deref(store.Provider, "")),
+			Endpoint: ptr.Deref(store.EndpointOverride, ""),
+			Bucket:   ptr.Deref(store.Container, ""),
+			Prefix:   backupPrefix(store.Prefix, backup),
+		},
 		FromSecret: fromSecret,
 	}
 }
 
 // storeMoved names the store recorded and the one now where they differ,
 // both empty where they do not.
-func storeMoved(recorded, now lodiav1alpha1.SnapshotLocation, credentials string) (string, string) {
+func storeMoved(recorded, now lodiav1alpha1.BackupSnapshotLocation, credentials string) (string, string) {
 	if recorded.Provider != now.Provider || recorded.Endpoint != now.Endpoint || recorded.Bucket != now.Bucket || recorded.Prefix != now.Prefix {
-		return storeOf(recorded), storeOf(now)
+		return storeOf(recorded.SnapshotLocation), storeOf(now.SnapshotLocation)
 	}
 	was, is := ptr.Deref(recorded.FromSecret, lodiav1alpha1.StoreSecretFields{}), ptr.Deref(now.FromSecret, lodiav1alpha1.StoreSecretFields{})
 	before, after := secretFields(now.Provider, &was), secretFields(now.Provider, &is)

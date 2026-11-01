@@ -1553,42 +1553,6 @@ spec:
                           the provider's own.
                         maxLength: 512
                         type: string
-                      fromSecret:
-                        description: |-
-                          FromSecret is the part of the store that the provider reads from the
-                          credentials Secret.
-                        properties:
-                          authURL:
-                            description: AuthURL is Swift's Keystone, whose catalog
-                              names the store.
-                            type: string
-                          domain:
-                            description: Domain is ABS's deprecated domain key.
-                            type: string
-                          domainName:
-                            description: DomainName is the Keystone domain of the
-                              Swift project.
-                            type: string
-                          endpoint:
-                            description: Endpoint is S3's deprecated endpoint key.
-                            type: string
-                          region:
-                            description: |-
-                              Region is S3's, which picks the partition, and with it the bucket of
-                              that name.
-                            type: string
-                          storageAPIEndpoint:
-                            description: StorageAPIEndpoint is GCS's deprecated endpoint
-                              key.
-                            type: string
-                          storageAccount:
-                            description: StorageAccount is the ABS account.
-                            type: string
-                          tenantName:
-                            description: TenantName is the Swift project, whose account
-                              holds the containers.
-                            type: string
-                        type: object
                       prefix:
                         maxLength: 512
                         minLength: 1

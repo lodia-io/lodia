@@ -316,7 +316,7 @@ func TestABackupIsSealedAndCopied(t *testing.T) {
 		Source:            &lodiav1alpha1.UIDReference{Name: sourceName, UID: cp.UID},
 		KubernetesVersion: "v1.37.1",
 		Network:           &cp.Spec.Network,
-		Snapshots:         &lodiav1alpha1.SnapshotLocation{Provider: "S3", Endpoint: "https://s3.example.test", Bucket: "lodia-backups", Prefix: prefix, FromSecret: &lodiav1alpha1.StoreSecretFields{Region: new("eu-central-1")}},
+		Snapshots:         &lodiav1alpha1.BackupSnapshotLocation{SnapshotLocation: lodiav1alpha1.SnapshotLocation{Provider: "S3", Endpoint: "https://s3.example.test", Bucket: "lodia-backups", Prefix: prefix}, FromSecret: &lodiav1alpha1.StoreSecretFields{Region: new("eu-central-1")}},
 		StartedAt:         started.Status.StartedAt,
 	}); started.Status.StartedAt == nil || !reflect.DeepEqual(started.Status, want) {
 		t.Fatalf("the started status is\n%+v\nwant\n%+v", started.Status, want)
