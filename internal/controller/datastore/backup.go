@@ -235,6 +235,7 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			target.EndpointOverride = new(status.Snapshots.Endpoint)
 		}
 		target.Prefix = status.Snapshots.Prefix
+		// @todo: until etcd-backup-restore orders snapshot sets by revision, the copy may take a compaction Job's set without the seal (todo.md).
 		copyTask = &druidv1alpha1.EtcdCopyBackupsTask{
 			ObjectMeta: taskMeta(backup, source, task),
 			Spec:       druidv1alpha1.EtcdCopyBackupsTaskSpec{SourceStore: *store.DeepCopy(), TargetStore: *target, MaxBackups: new(uint32(1))},
