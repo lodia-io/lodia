@@ -91,7 +91,7 @@ A ValidatingAdmissionPolicy could require a `restore` verb on the named `Backup`
 ## Consequences
 
 - The restored cluster's `kube-system` UID, the cluster ID some tools use, is the source's.
-- Every `Backup` takes a full snapshot of its source's etcd.
+- Every `Backup` takes a full snapshot of its source's etcd, which counts toward the class's `retention.fullSnapshots` ([what it keeps](../README.md#a-tenant-namespace)).
 - Until etcd-backup-restore orders snapshot sets by revision, a `Completed` `Backup` may lack its seal: its copier takes the set whose full snapshot was saved last ([miscellaneous.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/miscellaneous/miscellaneous.go#L175-L177)), which an etcd-druid compaction Job running across the `Backup`'s full snapshot saves below the seal; the restore's seal check refuses such a `Backup` (`todo.md`).
 - `docs/operations.md` gets the replace checklist and a Velero recipe for a clone with the restore (`todo.md`).
 - The phase 2 gate restores a `Backup` ([roadmap](../roadmap.md)).

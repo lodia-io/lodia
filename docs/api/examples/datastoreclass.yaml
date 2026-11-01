@@ -32,7 +32,7 @@ spec:
     fullSnapshotSchedule: "0 */24 * * *"  # passed to etcd-druid as written; "0 0 * * *" by default
     deltaSnapshotPeriod: 5m
     retention:
-      fullSnapshots: 30                   # the newest 30, one a day; deltas only after the newest
+      fullSnapshots: 30                   # the newest 30 full snapshots, each Backup's included; deltas only after the newest
       afterDelete: 720h                   # how long snapshots outlive their ControlPlane; not deleted by any release yet
   placement:
     nodeSelector: {node-role.example.com/control-planes: "true"}
