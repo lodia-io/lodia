@@ -1174,3 +1174,37 @@ func TestTheFlushIsFullWithoutDeltas(t *testing.T) {
 		})
 	}
 }
+
+func TestAStoreMovedAwayAndBackFailsTheBackup(t *testing.T) {
+	src := newSource(t, nil, nil)
+	r := src.reconciler(cached)
+	created := createBackup(t, src.ns, "away", nil)
+	backup := passes(t, r, src.ns, created.Name, sealed)
+	moveStore(t, src.ns, "other-bucket", "moved")
+	ns := string(namespaceUID(t, src.ns))
+	failed := readyIs(metav1.ConditionFalse, lodiav1alpha1.ReasonFailed, fmt.Sprintf(
+		"the source's backup store moved from S3 https://s3.example.test lodia-backups/prod/%s to S3 https://s3.example.test other-bucket/moved/%s while the Backup was taken", ns, ns))
+	passes(t, r, src.ns, created.Name, failed)
+	setLease(t, src.ns, deltaLease, backup.Status.Seal.Revision)
+	moveStore(t, src.ns, "lodia-backups", "prod")
+	unmoved(t, r, src.ns, created.Name)
+	if err := failed(getBackup(t, src.ns, created.Name)); err != nil {
+		t.Fatal(err)
+	}
+	if getCopyTask(t, src.ns, created.UID) != nil {
+		t.Fatal("a copy task from a store moved away and back")
+	}
+}
+
+func moveStore(t *testing.T, ns, bucket, prefix string) {
+	t.Helper()
+	editClass(t, ns, func(class *lodiav1alpha1.DatastoreClass) {
+		class.Spec.Backup.Store.Bucket, class.Spec.Backup.Store.Prefix = bucket, prefix
+	})
+	waitEtcd(t, ns, sourceName, func(etcd *druidv1alpha1.Etcd) error {
+		if store := etcd.Spec.Backup.Store; *store.Container != bucket || !strings.HasPrefix(store.Prefix, prefix+"/") {
+			return fmt.Errorf("the Etcd's store is %s/%s", *store.Container, store.Prefix)
+		}
+		return nil
+	})
+}

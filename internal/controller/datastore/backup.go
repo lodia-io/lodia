@@ -166,6 +166,14 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		status.StartedAt = new(metav1.Now())
 		return report(metav1.ConditionUnknown, lodiav1alpha1.ReasonSnapshotting, "sealing", 0)
 	}
+	// The snapshot Leases describe the store the sidecar uploaded to, and
+	// their holders never fall, so a store that moved, even one moved back,
+	// may lack the seal. A copy task that exists is no exception: its Job
+	// reads the credentials Secret when it starts.
+	if moved := snapshotLocation(store, backup.UID); moved != *status.Snapshots {
+		return report(metav1.ConditionFalse, lodiav1alpha1.ReasonFailed, fmt.Sprintf("the source's backup store moved from %s to %s while the Backup was taken, and the snapshots that hold the seal are in the first; create another Backup",
+			storeOf(*status.Snapshots), storeOf(moved)), 0)
+	}
 
 	if status.Seal == nil {
 		revision, err := r.seal(ctx, etcd, backup.UID)
@@ -196,12 +204,6 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	copying := fmt.Sprintf("EtcdCopyBackupsTask %s copies the newest snapshots of %s to %s", task, name, destination)
 	switch {
 	case apierrors.IsNotFound(err):
-		// The snapshot Leases describe the store the sidecar uploaded to,
-		// and their holders never fall, so a moved store may lack the seal.
-		if moved := snapshotLocation(store, backup.UID); moved != *status.Snapshots {
-			return report(metav1.ConditionFalse, lodiav1alpha1.ReasonFailed, fmt.Sprintf("the source's backup store moved from %s to %s while the Backup was taken, and the snapshots that hold the seal are in the first; create another Backup",
-				storeOf(*status.Snapshots), storeOf(moved)), 0)
-		}
 		// The copy goes where the status says it is, which a restore reads,
 		// even if the source's store moved since the Backup started.
 		target := store.DeepCopy()
