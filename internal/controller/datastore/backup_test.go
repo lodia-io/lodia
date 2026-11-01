@@ -833,6 +833,37 @@ func TestASealThatDidNotComeBack(t *testing.T) {
 	}
 }
 
+func TestACompletedBackupMarkedWithAnotherUIDIsSealLost(t *testing.T) {
+	src := newSource(t, nil, nil)
+	r := src.reconciler(cached)
+	created := createBackup(t, src.ns, "restored", nil)
+	backup := passes(t, r, src.ns, created.Name, func(b *lodiav1alpha1.Backup) error {
+		src.actAsDruid(t)
+		if err := readyIs(metav1.ConditionTrue, lodiav1alpha1.ReasonCompleted, "")(b); err != nil {
+			return err
+		}
+		if b.Annotations[lodiav1alpha1.SealedUIDAnnotation] != string(b.UID) || getFlush(t, src.ns, b.UID) != nil || getCopyTask(t, src.ns, b.UID) != nil {
+			return fmt.Errorf("not tidied: annotations %v", b.Annotations)
+		}
+		return nil
+	})
+	key := src.sealKey(t, created.UID)
+	const mark = "0b6c3a51-7c8e-4f3c-9d55-2e2f1f3c4a10"
+	patch := client.MergeFrom(backup.DeepCopy())
+	metav1.SetMetaDataAnnotation(&backup.ObjectMeta, lodiav1alpha1.SealedUIDAnnotation, mark)
+	if err := k8s.Patch(t.Context(), backup, patch); err != nil {
+		t.Fatal(err)
+	}
+	passes(t, r, src.ns, created.Name, readyIs(metav1.ConditionFalse, lodiav1alpha1.ReasonSealLost, "the Backup was sealed as "+mark))
+	unmoved(t, r, src.ns, created.Name)
+	if getFlush(t, src.ns, created.UID) != nil || getCopyTask(t, src.ns, created.UID) != nil {
+		t.Error("a task of the Backup is back")
+	}
+	if again := src.sealKey(t, created.UID); src.sealKeys(t) != 1 || again.GetModRevision() != key.GetModRevision() {
+		t.Errorf("the source's etcd holds %d seal keys, this one written at %d, first at %d", src.sealKeys(t), again.GetModRevision(), key.GetModRevision())
+	}
+}
+
 func TestAnOwnerlessKeySecretIsNotAdopted(t *testing.T) {
 	src := newSource(t, nil, nil)
 	r := src.reconciler(cached)
