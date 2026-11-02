@@ -393,7 +393,7 @@ The final snapshot when a backup store exists comes with backups in phase 2; not
 
 ## Health
 
-Built so far: the probe through the public endpoint and the leader Leases.
+Built so far: the probe through the public endpoint, the leader Leases and a restored `ControlPlane`'s release.
 Every 10 seconds Health asks `https://<status.endpoint.apiServer>/readyz` without credentials, which the API server's authentication allows for its health paths, and verifies it against `<cp>-ca-bundle`.
 `Reachable` is True on a 200 and turns False after three probes in a row that fail, so one blip does not drop `Ready` ([reasons](api/controlplane.md#conditions-and-their-reasons)).
 In the same pass, once `AccessReady` is True, at any generation, Health reads the leader Leases of the controller manager and the scheduler through the in-namespace Service, as `<cp>-lodia-kubeconfig`, each with a consistent GET.
