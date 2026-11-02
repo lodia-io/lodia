@@ -39,7 +39,8 @@ test: ## unit and envtest tests; envtest runs a real API server and etcd
 restore-keys: ## the etcd keys a restore's cleanup deletes, against the API server of each minor Lodia runs
 	@minors="$$(go run ./test/restorekeys/minors)" && [ -n "$$minors" ] || { echo "no minors to run"; exit 1; }; \
 	for minor in $$minors; do \
-		KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $$minor -p path)" go test -count=1 -v ./test/restorekeys || exit 1; \
+		assets="$$(go tool setup-envtest use $$minor -p path)" && \
+		KUBEBUILDER_ASSETS="$$assets" RESTORE_KEYS_MINOR="$$minor" go test -count=1 -v ./test/restorekeys || exit 1; \
 	done
 
 .PHONY: chart
