@@ -318,8 +318,14 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.Contro
 	// the restore is complete; an Etcd raised above one stays, whatever a
 	// check that could not run found.
 	members := memberCount(cp)
-	if cp.Spec.RestoreFrom != nil && check.restored == nil && (current == nil || current.Spec.Replicas <= 1) {
-		members = 1
+	if cp.Spec.RestoreFrom != nil && check.restored == nil && members > 1 {
+		raised, err := r.raised(ctx, current)
+		if err != nil {
+			return nil, nil, nil, metav1.Condition{}, 0, err
+		}
+		if !raised {
+			members = 1
+		}
 	}
 	rendered, capped := render(cp, class, namespaceUID, generation, current, claims, sts, members)
 	if capped != "" {
@@ -442,6 +448,23 @@ func (r *Reconciler) currentEtcd(ctx context.Context, cp *lodiav1alpha1.ControlP
 		return nil, err
 	}
 	return etcd, nil
+}
+
+// raised says whether the Etcd asks for more than one member. The cache can
+// lag Datastore's own scale-up, so an Etcd it holds at one is read again from
+// the API server.
+func (r *Reconciler) raised(ctx context.Context, current *druidv1alpha1.Etcd) (bool, error) {
+	if current == nil || current.Spec.Replicas > 1 {
+		return current != nil, nil
+	}
+	etcd := &druidv1alpha1.Etcd{}
+	if err := r.Reader.Get(ctx, client.ObjectKeyFromObject(current), etcd); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read Etcd %s: %w", current.Name, err)
+	}
+	return etcd.Spec.Replicas > 1, nil
 }
 
 // A class is resolved once and recorded on the Etcd, so a default that moves

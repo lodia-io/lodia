@@ -1313,6 +1313,55 @@ func TestAnEtcdCreatedAgainFromAStaleCacheNeedsNoBackup(t *testing.T) {
 	}
 }
 
+func TestAStalePassWhoseCheckCannotRunKeepsTheMembers(t *testing.T) {
+	r := newRestore(t, restoreSetup{controlPlane: func(cp *lodiav1alpha1.ControlPlane) {
+		cp.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+	}})
+	r.copied(t)
+	marker := r.cleanedUp(t)
+	before := getEtcd(t, r.ns, restoredCP)
+	r.complete(t, marker)
+	waitEtcd(t, r.ns, restoredCP, func(etcd *druidv1alpha1.Etcd) error {
+		if etcd.Spec.Replicas != 3 {
+			return fmt.Errorf("%d members", etcd.Spec.Replicas)
+		}
+		return nil
+	})
+	r.etcd.unreachable.Store(true)
+	stale := interceptor.NewClient(k8s, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if etcd, ok := obj.(*druidv1alpha1.Etcd); ok {
+				before.DeepCopyInto(etcd)
+				return nil
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	reconciler := &datastore.Reconciler{Client: stale, Reader: k8s, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, EtcdClient: dialRestored, Clock: clock.RealClock{}}
+	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}}); err != nil {
+		t.Fatal(err)
+	}
+	if n := getEtcd(t, r.ns, restoredCP).Spec.Replicas; n != 3 {
+		t.Errorf("a pass from a cache that holds the Etcd before its scale-up left %d members, want 3", n)
+	}
+	injected := errors.New("injected: the API server did not answer")
+	failing := interceptor.NewClient(k8s, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*druidv1alpha1.Etcd); ok {
+				return injected
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	reconciler.Reader = failing
+	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}}); !errors.Is(err, injected) {
+		t.Fatalf("a pass whose read of the Etcd failed returned %v, want %v", err, injected)
+	}
+	if n := getEtcd(t, r.ns, restoredCP).Spec.Replicas; n != 3 {
+		t.Errorf("a pass whose read of the Etcd failed left %d members, want 3", n)
+	}
+}
+
 func caBundle(t *testing.T, ns, cp string, notBefore time.Time) *corev1.Secret {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
