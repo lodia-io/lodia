@@ -708,7 +708,7 @@ func TestBackupStatus(t *testing.T) {
 				"provider": "S3", "bucket": "lodia-backups",
 				"prefix": "prod/8d2f2f7e-0c1a-4b7e-9d43-6a1f0b9e2c55/backups/3b9e0c2a-7d41-4f6e-8a5c-1e2d3f4a5b6c",
 			},
-			"seal":        map[string]any{"revision": revision},
+			"seal":        map[string]any{"revision": revision, "quotaBackendBytes": "4Gi"},
 			"startedAt":   "2026-10-27T02:00:00Z",
 			"completedAt": "2026-10-27T02:00:07Z",
 		}

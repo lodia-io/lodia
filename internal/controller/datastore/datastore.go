@@ -56,6 +56,9 @@ type Reconciler struct {
 	// EtcdDruidNamespace is where etcd-druid runs; the etcd's NetworkPolicy
 	// admits its pods to the backup-restore sidecar.
 	EtcdDruidNamespace string
+	// OperatorNamespace is where the operator runs; the etcd's NetworkPolicy
+	// admits its pods to the client port, which the backup reconciler dials.
+	OperatorNamespace string
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
@@ -133,7 +136,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		if !cp.DeletionTimestamp.IsZero() {
 			return ctrl.Result{}, nil
 		}
-		return ctrl.Result{}, r.applyStatus(ctx, cp, nil, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, "spec.datastore.shared is not supported yet"))
+		unsupported := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, "spec.datastore.shared is not supported yet")
+		backup := unsupported
+		backup.Type = lodiav1alpha1.ConditionBackupReady
+		return ctrl.Result{}, r.applyStatus(ctx, cp, nil, unsupported, backup)
 	}
 	if !cp.DeletionTimestamp.IsZero() {
 		requeueAfter, err := r.finalize(ctx, cp)
@@ -152,7 +158,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	if meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady) == nil {
 		first := newCondition(metav1.ConditionUnknown, lodiav1alpha1.ReasonReconciling, "the first pass has not finished")
-		if err := r.applyStatus(ctx, cp, cp.Status.Datastore, first); err != nil {
+		backup := first
+		backup.Type = lodiav1alpha1.ConditionBackupReady
+		if err := r.applyStatus(ctx, cp, cp.Status.Datastore, first, backup); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -175,7 +183,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		err = errors.Join(err, policyErr)
 	}
-	if statusErr := r.applyStatus(ctx, cp, datastoreStatus(etcd, sts), condition); statusErr != nil || err != nil {
+	if statusErr := r.applyStatus(ctx, cp, datastoreStatus(etcd, sts), condition, backupReady(etcd)); statusErr != nil || err != nil {
 		return ctrl.Result{}, errors.Join(err, statusErr)
 	}
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
@@ -631,7 +639,7 @@ func (r *Reconciler) finalize(ctx context.Context, cp *lodiav1alpha1.ControlPlan
 		etcd = nil
 	}
 	deleting := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonDeleting, "the ControlPlane is being deleted: the Etcd goes first, then its claims as the class says")
-	if err := r.applyStatus(ctx, cp, datastoreStatus(etcd, nil), deleting); err != nil {
+	if err := r.applyStatus(ctx, cp, datastoreStatus(etcd, nil), deleting, backupReady(etcd)); err != nil {
 		return 0, err
 	}
 	// A claim no pass has labelled yet can only be this Etcd's: VolumesExist
@@ -709,17 +717,15 @@ func (r *Reconciler) setFinalizer(ctx context.Context, cp *lodiav1alpha1.Control
 }
 
 // datastoreStatus says where the API server reaches the etcd: etcd-druid's
-// client Service (etcd-druid@v0.39.0 api/core/v1alpha1/helper.go#L27-L30).
+// client Service.
 func datastoreStatus(etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) *lodiav1alpha1.DatastoreStatus {
 	if etcd == nil {
 		return nil
 	}
+	host, port := clientEndpoint(etcd)
 	status := &lodiav1alpha1.DatastoreStatus{
-		Endpoints: []lodiav1alpha1.HostPort{{
-			Host: druidv1alpha1.GetClientServiceName(etcd.ObjectMeta) + "." + etcd.Namespace + ".svc",
-			Port: druidv1alpha1.GetClientPort(etcd),
-		}},
-		Members: lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: etcd.Spec.Replicas, Ready: min(etcd.Status.ReadyReplicas, etcd.Spec.Replicas)}, Updated: updatedMembers(etcd, sts)},
+		Endpoints: []lodiav1alpha1.HostPort{{Host: host, Port: port}},
+		Members:   lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: etcd.Spec.Replicas, Ready: min(etcd.Status.ReadyReplicas, etcd.Spec.Replicas)}, Updated: updatedMembers(etcd, sts)},
 	}
 	generation, err := strconv.ParseInt(etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation], 10, 64)
 	if name := etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation]; name != "" && err == nil {
@@ -728,21 +734,30 @@ func datastoreStatus(etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) *lodiav1
 	return status
 }
 
-func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, datastore *lodiav1alpha1.DatastoreStatus, condition metav1.Condition) error {
-	condition.ObservedGeneration = cp.Generation
-	previous := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
-	unchanged := previous != nil && previous.Status == condition.Status && previous.Reason == condition.Reason &&
-		previous.Message == condition.Message && previous.ObservedGeneration == condition.ObservedGeneration
-	if unchanged && equality.Semantic.DeepEqual(cp.Status.Datastore, datastore) {
+// applyStatus writes DatastoreReady and BackupReady together: the conditions
+// are a list keyed by type, and an apply that left one out would give up its
+// ownership.
+func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, datastore *lodiav1alpha1.DatastoreStatus, ready, backup metav1.Condition) error {
+	unchanged := equality.Semantic.DeepEqual(cp.Status.Datastore, datastore)
+	conditions := slices.Clone(cp.Status.Conditions)
+	var written []any
+	for _, condition := range []metav1.Condition{ready, backup} {
+		condition.ObservedGeneration = cp.Generation
+		previous := meta.FindStatusCondition(cp.Status.Conditions, condition.Type)
+		unchanged = unchanged && previous != nil && previous.Status == condition.Status && previous.Reason == condition.Reason &&
+			previous.Message == condition.Message && previous.ObservedGeneration == condition.ObservedGeneration
+		meta.SetStatusCondition(&conditions, condition)
+		current, err := runtime.DefaultUnstructuredConverter.ToUnstructured(meta.FindStatusCondition(conditions, condition.Type))
+		if err != nil {
+			return err
+		}
+		written = append(written, current)
+	}
+	if unchanged {
 		return nil
 	}
-	conditions := slices.Clone(cp.Status.Conditions)
-	meta.SetStatusCondition(&conditions, condition)
-	current, err := runtime.DefaultUnstructuredConverter.ToUnstructured(meta.FindStatusCondition(conditions, lodiav1alpha1.ConditionDatastoreReady))
-	if err != nil {
-		return err
-	}
-	status := map[string]any{"conditions": []any{current}}
+	var err error
+	status := map[string]any{"conditions": written}
 	if datastore != nil {
 		if status["datastore"], err = runtime.DefaultUnstructuredConverter.ToUnstructured(datastore); err != nil {
 			return err

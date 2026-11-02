@@ -1,7 +1,7 @@
 # A ControlPlane restored from a Backup replaces the Backup's source, and runs no controller manager until it is released
 
 Decided 2026-10-27.
-Not built: phase 2's wave 1b (backups) builds it ([roadmap](../roadmap.md)).
+The `Backup`, its seal and its copy are built; the restore is not yet: phase 2's wave 1b (backups) builds it ([roadmap](../roadmap.md)).
 
 ## Decision
 
@@ -22,8 +22,10 @@ Once `release` is `Released` and no `ControlPlane` with the source's UID exists,
 Were the held controller manager unavailable instead, `AccessReady` would wait on `APIServerReady`, Tenant on `AccessReady`, and the release on Tenant: a deadlock.
 
 **The seal.**
-Before it copies, the backup reconciler of the Datastore controller puts the key `/lodia.io/backups/<Backup UID>` (`BackupSealKey`) into the source's etcd, asks etcd-druid for a snapshot, and copies only once a snapshot Lease has reached that key's revision: an `EtcdCopyBackupsTask` with `maxBackups: 1` and no `maxBackupAge`, from the source's prefix to `<class prefix>/<namespace UID>/backups/<Backup UID>`, which nothing writes again.
-The copy holds the source's data at least up to the seal.
+Before it copies, the backup reconciler of the Datastore controller puts the key `/lodia.io/backups/<Backup UID>` (`BackupSealKey`) into the source's etcd, asks etcd-druid for a full snapshot, and copies only once the full snapshot Lease `<cp>-etcd-full-snap` has reached that key's revision: an `EtcdCopyBackupsTask` with `maxBackups: 1` and no `maxBackupAge`, from the source's prefix to `<class prefix>/<namespace UID>/backups/<Backup UID>`, which nothing writes again.
+Deltas do not count: the copy takes the newest full snapshot with the deltas after it, and nothing from deltas alone ([miscellaneous.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/miscellaneous/miscellaneous.go#L196-L214)), which is all a store moved through `<cp>-etcd-backup` holds until its next scheduled full snapshot, and a copy that finds nothing succeeds ([copier.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapshot/copier/copier.go#L121-L125)).
+A finished `EtcdOpsTask` names no revision ([etcdopstask.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/etcdopstask.go#L137-L161)), so the reconciler asks again until the Lease shows the seal, each time no sooner after the last task finished than the `Backup` has run, at most an hour, since each costs the source a full snapshot; a Lease created before the source's `Etcd` is a predecessor's and counts for nothing.
+The copy holds the source's data at least up to the seal, but for one race with etcd-druid's compaction ([Consequences](#consequences)).
 The `Backup` records where the copy is, the seal's revision, and the source's name, UID, version and network ([fields](../api/controlplane.md#backup)), and outlives its source.
 
 **The restore checks before it starts anything.**
@@ -50,6 +52,7 @@ The platform backs up Lodia's Secrets, as it must for the CAs; a KMS provider is
 **A management cluster comes back only with its UIDs.**
 Datastore refuses to start an empty etcd when the cluster CA PKI adopted was issued before the `ControlPlane` existed, `DatastoreReady=False`, `CAPredatesControlPlane`: that is an identity whose data is lost, and old kubelets would follow it to an empty cluster.
 Only a backup that keeps UIDs and status, an etcd snapshot of the management cluster, recovers one.
+A `Backup` carries its own UID in the annotation `lodia.io/sealed-uid` once it is `Completed`, since an annotation survives such a restore and a UID does not; one that carries another UID, or the annotation without its `Completed` status, has lost the status that says where its copy is, and is `SealLost` for good instead of being sealed again from a source that may be empty.
 
 **What platforms do.**
 They point nothing that holds credentials outside the cluster at a restored `ControlPlane` before its release: a cloud controller manager, CSI controllers, external-dns, Cluster API infrastructure.
@@ -88,9 +91,13 @@ A ValidatingAdmissionPolicy could require a `restore` verb on the named `Backup`
 ## Consequences
 
 - The restored cluster's `kube-system` UID, the cluster ID some tools use, is the source's.
+- Every `Backup` takes a full snapshot of its source's etcd, which counts toward the class's `retention.fullSnapshots` ([what it keeps](../README.md#a-tenant-namespace)).
+- Until etcd-backup-restore orders snapshot sets by revision, a `Completed` `Backup` may lack its seal: its copier takes the set whose full snapshot was saved last ([miscellaneous.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/miscellaneous/miscellaneous.go#L175-L177)), which an etcd-druid compaction Job running across the `Backup`'s full snapshot saves below the seal; the restore's seal check refuses such a `Backup` (`todo.md`).
 - `docs/operations.md` gets the replace checklist and a Velero recipe for a clone with the restore (`todo.md`).
 - The phase 2 gate restores a `Backup` ([roadmap](../roadmap.md)).
 
 ## Code
 
-- `api/v1alpha1` — `RestoreFrom` with `Release`, `BackupStatus` with its `Ready` condition, `RestoreStatus` and `SnapshotLocation`, the names `BackupEncryptionConfigSecretName`, `BackupSealKey` and `RestoreMarkerKey`, the finalizer `RestoreSourceFinalizer` and the reasons in `conditions.go`; `test/api/validation_test.go` holds their rules.
+- `api/v1alpha1` — `RestoreFrom` with `Release`, `BackupStatus` with its `Ready` condition, `RestoreStatus`, `SnapshotLocation` and `BackupSnapshotLocation` with `StoreSecretFields`, the names `BackupEncryptionConfigSecretName`, `BackupSealKey` and `RestoreMarkerKey`, the annotation `SealedUIDAnnotation`, the finalizer `RestoreSourceFinalizer` and the reasons in `conditions.go`; `test/api/validation_test.go` holds their rules.
+- `internal/controller/datastore/backup.go` — the backup reconciler: the seal, the snapshot it waits for, the copy, the encryption keys and the mark; `etcdclient.go` dials a tenant's etcd for it.
+- `test/e2e/restore_test.go` — the gate's `TestRestoreGate`, so far up to a `Completed` `Backup` on a real etcd-druid and S3 store.

@@ -8,7 +8,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 - List the Gateway implementations whose conformance reports pass `TLSRoute` in passthrough (Envoy Gateway, Istio, Cilium, kgateway, NGINX Gateway Fabric, Traefik), for the install docs.
 - Check whether kube-apiserver reloads `--proxy-client-cert-file` and whether konnectivity-server reloads `--cluster-cert`; each proven reload removes a rollout from certificate renewal.
-- Propose upstream a task of etcd-druid that deletes a prefix in the store (dedicated-etcd-by-default): `retention.afterDelete`, a deleted `ControlPlane`'s last snapshots and a deleted `Backup`'s copy wait for it, and platforms use their bucket's lifecycle rules meanwhile.
+- Propose upstream a task of etcd-druid that deletes a prefix in the store (dedicated-etcd-by-default): `retention.afterDelete`, a deleted `ControlPlane`'s last snapshots and a deleted or failed `Backup`'s copy under `…/backups/<Backup UID>` wait for it, and platforms use their bucket's lifecycle rules meanwhile, which must spare the copy of a `Backup` that exists (`docs/operations.md`).
 - etcd-backup-restore restores without etcd's `RevisionBump` and `MarkCompacted`, so a member it restores keeps the snapshot's revisions; propose the bump upstream (dedicated-etcd-by-default; the etcd spike's finding 5 measured the stale cache).
 - etcd-druid's scale at ~1000 `Etcd` objects with its default `concurrentSyncs: 3` is not documented; measure in phase 4 or ask the maintainers.
 
@@ -28,6 +28,9 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 ## From the etcd spike (2026-10-24)
 
 - Upstream for etcd-druid: the etcd container's readiness probe takes its scheme from `backup.tls` while the wrapper serves HTTPS whenever client TLS is on; and a failing pre-scale snapshot shows only on its `EtcdOpsTask`, not on the `Etcd` (findings 1 and 4).
+  Those `presync-snapshot-*` tasks also make etcd-druid reject a `Backup`'s snapshot task while they run, which the backup reconciler sends again.
+  In turn, a `Backup`'s task that has not completed makes etcd-druid reject its pre-sync task ([reconcile_task.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcdopstask/reconcile_task.go#L110-L115)), and after three rejected or failed attempts etcd-druid goes ahead without that snapshot, with only a warning event ([statefulset.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/statefulset.go#L216-L226)); a slow `Backup` flush, or one sent again while the full snapshot Lease stays short of the seal, can use them up.
+  etcd-druid takes that snapshot before every hibernation, every change of the replicas, Lodia's switch between 1 and 3 members included, and every change of the etcd-wrapper, backup-restore or init container's image ([statefulset.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/statefulset.go#L130-L183)).
 - Upstream for etcd-backup-restore: the sidecar keeps serving its first serving certificate after the Secret changes (finding 3).
 
 ## From deciding the design (2026-10-25)
@@ -49,8 +52,8 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - A class edit that reaches the `Etcd` rolls its members at once; the decision wants it in the tenant's maintenance window, which Lifecycle gates in phase 2.
   The `Etcd` records the class generation it was rendered from for that.
 - `<cp>-etcd-backup` stays when a class drops its backup store; harmless, the `ControlPlane` garbage-collects it.
-- Whether etcd-backup-restore reads rotated store credentials without a restart: etcd-druid mounts `<cp>-etcd-backup` and puts no checksum of it in the pod template ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L219-L226)), so a new copy rolls nothing; the rotation in `docs/operations.md` revokes the old keys once every copy holds the new ones, which is safe only if the sidecar re-reads them.
 - Backup credentials scoped to one tenant's prefix, so a tenant namespace's `<cp>-etcd-backup` reaches only that tenant's snapshots and not every tenant's on the class (`docs/README.md`, Identity and tenancy).
+  A `Backup`'s copy, `<prefix>/<namespace UID>/backups/<Backup UID>`, sits under the same namespace UID as its source's snapshots, so one scope per namespace covers both.
 - `make e2e` could check for Docker and `helm` before it creates its cluster.
 - The cache keeps metadata only for Secrets because this controller watches them as `PartialObjectMetadata`; nothing stops a future controller from starting a typed Secret informer.
   A test or a cache transform should enforce the rule.
@@ -59,6 +62,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 - A changed `apiServer.encryption.provider` puts the new provider first with a new key and keeps the previous ones readable, but nothing rewrites the stored Secrets or drops the old provider, and with two API server replicas one may write with the new key before the other has reloaded the file (up to a minute).
   That is the etcd encryption key rotation of [staged-credential-rotation](docs/decisions/staged-credential-rotation.md); until it is built, document the change as unsupported, or refuse it in the schema.
+  A `Backup` is unaffected: it takes the source's configuration after the copy, and that holds every provider PKI ever wrote.
 - `apiServer.encryption.provider: kms` is accepted by the schema; PKI issues everything else and reports `CertificatesReady` False with `Unsupported`.
   Refuse it in CEL until the provider is built.
 - The kubelet signer narrows nothing: whoever holds it can sign any identity the API server accepts.
@@ -138,9 +142,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 ## From the phase 2 contracts (2026-10-27)
 
 - The `restore` verb (restore-replaces-the-source, not built): a ValidatingAdmissionPolicy in the chart could require `authorizer…check('restore')` on the `Backup` a new `ControlPlane`'s `restoreFrom` names, for platforms where the right to create `ControlPlane`s is wider than the right to read a namespace's Secrets.
-- A `Backup` that comes back without its status, from a restore of the management cluster that gives new UIDs, would be sealed again from a source that may be empty.
-  The restore's validation proposed the annotation `lodia.io/sealed-uid`, so that such a `Backup` is never sealed again; the decision recovers a management cluster only from a backup that keeps UIDs and did not take it.
-  Settle it with the backups of wave 1b.
 - `docs/operations.md` gets the replace checklist and a Velero recipe for a clone beside a live source, with the restore in wave 1b (restore-replaces-the-source).
 - Health's own metrics, which the availability research suggested and the decisions did not name: failed probes, silent nodes, and the lag of Health's pass, the watchdog of the hold's margin.
   Name them under metrics-are-part-of-the-api with wave 2, Health, or drop them; the hold itself is `lodia_controlplane_condition{type="ControllerManagerHeld"}`.
@@ -189,3 +190,14 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - A kubectl exec credential plugin that generates the key, creates the request and caches the certificate, as gardenlogin caches Gardener's ([get_client_certificate.go](https://github.com/gardener/gardenlogin/blob/v0.11.0/cmd/get_client_certificate.go#L187-L188)); until then a person runs openssl and kubectl.
 - Requests on behalf of another user, for a platform's backend: the policy could admit them with `impersonate` on `lodia.io` `users`; additive.
 - A viewer level for `spec.access`: it needs a read-only role kept current with the tenant's resources; additive to the enum.
+
+## From the backups (2026-11-01)
+
+- Until etcd-backup-restore sorts snapshot sets by revision, a compaction Job of etcd-druid that lists the store before a `Backup`'s full snapshot lands and saves its own after it makes the copy take the compacted set, which ends below the seal, while the `Backup` reads `Completed`; the restore's seal check refuses such a `Backup` (`RestoreFailed`).
+  The copier sorts the sets by their full snapshot's `CreatedOn` ([miscellaneous.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/miscellaneous/miscellaneous.go#L175-L177), the same on `master` on 2026-11-02), while the restore and the compactor take the full snapshot with the highest revision ([miscellaneous.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/miscellaneous/miscellaneous.go#L129-L150)).
+  Propose upstream that it sort by the full snapshot's last revision, then by `CreatedOn`.
+  When the fix is released: bump the etcd-backup-restore image the copy Job runs, which comes from etcd-druid's image vector ([images.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/images/images.yaml#L20-L25)); remove the `@todo` at the copy task's creation in `internal/controller/datastore/backup.go`; and add a test that would have caught it if one is feasible, such as an e2e step that saves a full snapshot of a lower revision after the `Backup`'s and checks that the copy holds the seal.
+
+- A `Backup` started after the store moved through `<cp>-etcd-backup`, but before the sidecar's files hold the new keys, puts its full snapshot into the old store, while its copy Job reads the new keys when it starts and finds nothing there, which succeeds; the kubelet's update delay bounds the window ([secrets](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/concepts/configuration/secret.md#L549-L553)).
+  `docs/operations.md` has a person wait for that upload after the two moves no `Backup` sees; a move the `Backup` records is not covered.
+- The backup reconciler dials the source's etcd in every pass that seals, and the restore will dial a restored etcd in every pass that checks it: a client per `Etcd`, kept across passes and closed when the `Etcd` names a new certificate generation or goes, would save a TLS handshake per pass once fleets grow.

@@ -27,6 +27,7 @@ lint:
 	golangci-lint run --build-tags e2e ./test/e2e/...
 	golangci-lint run --build-tags e2e,conformance ./test/e2e/...
 	golangci-lint run --build-tags e2e,ha ./test/e2e/...
+	golangci-lint run --build-tags e2e,restore ./test/e2e/...
 	cd api && golangci-lint run ./...
 
 .PHONY: test
@@ -69,6 +70,14 @@ e2e-ha: ## gate G2 against a highly available tenant, on a kind cluster of its o
 	mkdir -p $(E2E_DIR)
 	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig --config test/e2e/testdata/kind-ha.yaml
 	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,ha -count=1 -timeout 40m -run '^$(E2E_HA_TEST)$$' ./test/e2e/...; status=$$?; \
+	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 || status=1; \
+	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
+
+.PHONY: e2e-restore
+e2e-restore: ## gate G3, a Backup of a tenant and a restore from it, against an S3 store in the cluster, on a kind cluster of its own that it deletes afterwards
+	mkdir -p $(E2E_DIR)
+	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig
+	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,restore -count=1 -timeout 40m -run '^TestRestoreGate$$' ./test/e2e/...; status=$$?; \
 	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 || status=1; \
 	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
 

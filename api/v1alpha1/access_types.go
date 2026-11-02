@@ -4,6 +4,7 @@
 package v1alpha1
 
 import (
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -176,9 +177,9 @@ type BackupStatus struct {
 	// Snapshots is where the copy is: the store it was sealed in and the
 	// Backup's own prefix there.
 	// +optional
-	Snapshots *SnapshotLocation `json:"snapshots,omitempty"`
+	Snapshots *BackupSnapshotLocation `json:"snapshots,omitempty"`
 
-	// Seal is what the copy holds.
+	// Seal is the key the copy is checked by.
 	// +optional
 	Seal *BackupSeal `json:"seal,omitempty"`
 
@@ -188,14 +189,68 @@ type BackupStatus struct {
 	CompletedAt *metav1.Time `json:"completedAt,omitempty"`
 }
 
+// BackupSnapshotLocation is where a Backup's copy is.
+type BackupSnapshotLocation struct {
+	SnapshotLocation `json:",inline"`
+
+	// FromSecret is the part of the store that the provider reads from the
+	// credentials Secret.
+	// +optional
+	FromSecret *StoreSecretFields `json:"fromSecret,omitempty"`
+}
+
+// StoreSecretFields are the keys of a store's credentials Secret that name
+// the store rather than authenticate to it, as etcd-backup-restore reads
+// them; an absent key stays unset. Each is one provider's.
+type StoreSecretFields struct {
+	// Endpoint is S3's deprecated endpoint key.
+	// +optional
+	Endpoint *string `json:"endpoint,omitempty"`
+
+	// Region is S3's, which picks the partition, and with it the bucket of
+	// that name.
+	// +optional
+	Region *string `json:"region,omitempty"`
+
+	// StorageAPIEndpoint is GCS's deprecated endpoint key.
+	// +optional
+	StorageAPIEndpoint *string `json:"storageAPIEndpoint,omitempty"`
+
+	// StorageAccount is the ABS account.
+	// +optional
+	StorageAccount *string `json:"storageAccount,omitempty"`
+
+	// Domain is ABS's deprecated domain key.
+	// +optional
+	Domain *string `json:"domain,omitempty"`
+
+	// AuthURL is Swift's Keystone, whose catalog names the store.
+	// +optional
+	AuthURL *string `json:"authURL,omitempty"`
+
+	// TenantName is the Swift project, whose account holds the containers.
+	// +optional
+	TenantName *string `json:"tenantName,omitempty"`
+
+	// DomainName is the Keystone domain of the Swift project.
+	// +optional
+	DomainName *string `json:"domainName,omitempty"`
+}
+
 // BackupSeal is the seal of a Backup: before the copy, the backup
 // reconciler puts the key BackupSealKey into the source's etcd and copies
-// only once a snapshot reached its revision, so the copy holds the source's
-// data at least up to it, and a restore proves it came from this Backup by
+// only once a full snapshot reached its revision, and a restore proves it
+// came from this Backup, and holds the source's data at least up to it, by
 // finding the key.
 type BackupSeal struct {
 	// Revision of the seal key in the source's etcd.
 	// +required
 	// +kubebuilder:validation:Minimum=1
 	Revision int64 `json:"revision"`
+
+	// QuotaBackendBytes is the source etcd's quota when it was sealed, the
+	// one bound Lodia has on the size of the copy: a ControlPlane restored
+	// from the Backup needs at least this quota.
+	// +optional
+	QuotaBackendBytes *resource.Quantity `json:"quotaBackendBytes,omitempty"`
 }

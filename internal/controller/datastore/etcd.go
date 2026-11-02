@@ -345,6 +345,31 @@ func readiness(etcd *druidv1alpha1.Etcd, missing []string) metav1.Condition {
 	return not(fmt.Sprintf("Etcd %s has %d of %d members ready", etcd.Name, ready, etcd.Spec.Replicas))
 }
 
+// backupReady reports etcd-druid's BackupReady of the Etcd the pass applied,
+// which reads the snapshot Leases' renewals
+// (etcd-druid@v0.39.0 internal/health/condition/check_backup_ready.go#L34-L125).
+func backupReady(etcd *druidv1alpha1.Etcd) metav1.Condition {
+	condition := func(status metav1.ConditionStatus, reason, message string) metav1.Condition {
+		return metav1.Condition{Type: lodiav1alpha1.ConditionBackupReady, Status: status, Reason: reason, Message: message}
+	}
+	if etcd == nil {
+		return condition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, "this ControlPlane has no Etcd yet")
+	}
+	if etcd.Spec.Backup.Store == nil {
+		return condition(metav1.ConditionFalse, lodiav1alpha1.ReasonNoBackupStore, fmt.Sprintf("Etcd %s has no backup store: its class has none", etcd.Name))
+	}
+	druid := druidv1alpha1.GetCondition(etcd, druidv1alpha1.ConditionTypeBackupReady)
+	switch {
+	case druid == nil:
+		return condition(metav1.ConditionUnknown, lodiav1alpha1.ReasonSnapshotsPending, fmt.Sprintf("etcd-druid reports no BackupReady of Etcd %s yet", etcd.Name))
+	case druid.Status == druidv1alpha1.ConditionTrue:
+		return condition(metav1.ConditionTrue, lodiav1alpha1.ReasonBackupSucceeded, fmt.Sprintf("etcd-druid reports of Etcd %s: %s", etcd.Name, druid.Message))
+	case druid.Status == druidv1alpha1.ConditionFalse:
+		return condition(metav1.ConditionFalse, lodiav1alpha1.ReasonBackupFailed, fmt.Sprintf("etcd-druid reports of Etcd %s: %s", etcd.Name, druid.Message))
+	}
+	return condition(metav1.ConditionUnknown, lodiav1alpha1.ReasonSnapshotsPending, fmt.Sprintf("etcd-druid reports BackupReady %s (%s) of Etcd %s: %s", druid.Status, druid.Reason, etcd.Name, druid.Message))
+}
+
 // updatedMembers counts, once etcd-druid and the StatefulSet controller have
 // observed the Etcd's spec, its members that are available: all available
 // ones less those of older revisions.

@@ -32,8 +32,9 @@ const (
 )
 
 // networkPolicy admits to the members of the Etcd what dials them, at any
-// member count (docs/README.md, A tenant namespace).
-func networkPolicy(cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, druidNamespace string) *networkingv1ac.NetworkPolicyApplyConfiguration {
+// member count (docs/README.md, A tenant namespace). The operator's namespace
+// gets a rule of its own only when etcd-druid's rule does not cover it.
+func networkPolicy(cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, druidNamespace, operatorNamespace string) *networkingv1ac.NetworkPolicyApplyConfiguration {
 	members := metav1ac.LabelSelector().WithMatchLabels(memberLabels(etcd))
 	apiServer := metav1ac.LabelSelector().WithMatchLabels(map[string]string{
 		lodiav1alpha1.ControlPlaneLabel: cp.Name,
@@ -49,11 +50,16 @@ func networkPolicy(cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, dru
 		memberPorts = append(memberPorts, tcp(etcdBackupRestorePort))
 		druidPorts = append(druidPorts, tcp(etcdBackupRestorePort))
 	}
-	druid := metav1ac.LabelSelector().WithMatchLabels(map[string]string{corev1.LabelMetadataName: druidNamespace})
+	namespace := func(name string) *metav1ac.LabelSelectorApplyConfiguration {
+		return metav1ac.LabelSelector().WithMatchLabels(map[string]string{corev1.LabelMetadataName: name})
+	}
 	rules := []*networkingv1ac.NetworkPolicyIngressRuleApplyConfiguration{
 		networkingv1ac.NetworkPolicyIngressRule().WithFrom(networkingv1ac.NetworkPolicyPeer().WithPodSelector(apiServer)).WithPorts(tcp(clientPort)),
 		networkingv1ac.NetworkPolicyIngressRule().WithFrom(networkingv1ac.NetworkPolicyPeer().WithPodSelector(members)).WithPorts(memberPorts...),
-		networkingv1ac.NetworkPolicyIngressRule().WithFrom(networkingv1ac.NetworkPolicyPeer().WithNamespaceSelector(druid)).WithPorts(druidPorts...),
+		networkingv1ac.NetworkPolicyIngressRule().WithFrom(networkingv1ac.NetworkPolicyPeer().WithNamespaceSelector(namespace(druidNamespace))).WithPorts(druidPorts...),
+	}
+	if operatorNamespace != druidNamespace {
+		rules = append(rules, networkingv1ac.NetworkPolicyIngressRule().WithFrom(networkingv1ac.NetworkPolicyPeer().WithNamespaceSelector(namespace(operatorNamespace))).WithPorts(tcp(clientPort)))
 	}
 	return networkingv1ac.NetworkPolicy(lodiav1alpha1.EtcdName(cp.Name), cp.Namespace).
 		WithLabels(map[string]string{lodiav1alpha1.ControlPlaneLabel: cp.Name}).
@@ -92,7 +98,7 @@ func (r *Reconciler) applyNetworkPolicy(ctx context.Context, cp *lodiav1alpha1.C
 			return &held, nil
 		}
 	}
-	if err := r.Apply(ctx, networkPolicy(cp, etcd, r.EtcdDruidNamespace), client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
+	if err := r.Apply(ctx, networkPolicy(cp, etcd, r.EtcdDruidNamespace, r.OperatorNamespace), client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
 		err = fmt.Errorf("apply NetworkPolicy %s: %w", key.Name, err)
 		if apistatus.Refused(err) {
 			refused := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, "the API server refuses NetworkPolicy "+key.Name+"; the reason is in Lodia's log")

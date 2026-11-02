@@ -36,6 +36,23 @@ rules:
   verbs:
   - get
 - apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
+- apiGroups:
+  - druid.gardener.cloud
+  resources:
+  - etcdcopybackupstasks
+  - etcdopstasks
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
   - druid.gardener.cloud
   resources:
   - etcds
@@ -49,23 +66,34 @@ rules:
 - apiGroups:
   - lodia.io
   resources:
-  - controlplanes
+  - backups
   verbs:
+  - get
   - list
   - patch
   - watch
 - apiGroups:
   - lodia.io
   resources:
+  - backups/finalizers
   - controlplanes/finalizers
   verbs:
   - update
 - apiGroups:
   - lodia.io
   resources:
+  - backups/status
   - controlplanes/status
   verbs:
   - patch
+- apiGroups:
+  - lodia.io
+  resources:
+  - controlplanes
+  verbs:
+  - list
+  - patch
+  - watch
 - apiGroups:
   - lodia.io
   resources:

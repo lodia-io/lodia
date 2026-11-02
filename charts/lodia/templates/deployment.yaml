@@ -38,6 +38,7 @@ spec:
             {{- else }}
             - --etcd-druid-namespace={{ required "etcdDruidNamespace must name the namespace etcd-druid runs in while etcdDruid.enabled is false" .Values.etcdDruidNamespace }}
             {{- end }}
+            - --operator-namespace={{ .Release.Namespace }}
             - --metrics-bind-address=:8443
             - --health-probe-bind-address=:8081
           ports:
