@@ -42,6 +42,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/apistatus"
+	"go.lodia.io/lodia/internal/live"
 	"go.lodia.io/lodia/internal/ownership"
 	"go.lodia.io/lodia/internal/restore"
 )
@@ -127,7 +128,7 @@ func (r *Reconciler) controlPlanesUsing(ctx context.Context, class client.Object
 	return requests
 }
 
-// +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=list;watch;patch
+// +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/status,verbs=patch
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/finalizers,verbs=update
 // +kubebuilder:rbac:groups=lodia.io,resources=datastoreclasses,verbs=list;watch
@@ -304,6 +305,14 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.Contro
 	if cp.Spec.RestoreFrom != nil && current != nil {
 		if check, err = r.checkRestore(ctx, cp, current); err != nil {
 			return nil, nil, nil, metav1.Condition{}, 0, err
+		}
+		// A check that could not run keeps the restore's status and decides
+		// from it: read live, since the cache can lag behind this
+		// controller's own last write.
+		if check.restored == nil && check.condition == nil {
+			if err := live.Datastore(ctx, r.Reader, cp, lodiav1alpha1.ConditionDatastoreReady, lodiav1alpha1.ConditionBackupReady); err != nil {
+				return nil, nil, nil, metav1.Condition{}, 0, fmt.Errorf("read ControlPlane %s: %w", cp.Name, err)
+			}
 		}
 	}
 	// One member restores, and etcd-druid adds the others as learners once

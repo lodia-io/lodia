@@ -67,6 +67,7 @@ rules:
   - lodia.io
   resources:
   - backups
+  - controlplanes
   verbs:
   - get
   - list
@@ -86,14 +87,6 @@ rules:
   - controlplanes/status
   verbs:
   - patch
-- apiGroups:
-  - lodia.io
-  resources:
-  - controlplanes
-  verbs:
-  - list
-  - patch
-  - watch
 - apiGroups:
   - lodia.io
   resources:
