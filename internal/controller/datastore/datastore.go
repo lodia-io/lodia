@@ -75,6 +75,10 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 		cp, ok := secret.GetLabels()[lodiav1alpha1.ControlPlaneLabel]
 		return ok && secret.GetName() == lodiav1alpha1.EtcdBackupSecret.Name(cp)
 	})
+	caBundle := predicate.NewPredicateFuncs(func(secret client.Object) bool {
+		cp, ok := secret.GetLabels()[lodiav1alpha1.ControlPlaneLabel]
+		return ok && secret.GetName() == lodiav1alpha1.CABundleSecret.Name(cp)
+	})
 	etcdPolicy := predicate.NewPredicateFuncs(func(policy client.Object) bool {
 		cp, ok := policy.GetLabels()[lodiav1alpha1.ControlPlaneLabel]
 		return ok && policy.GetName() == lodiav1alpha1.EtcdName(cp)
@@ -87,7 +91,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 		Owns(&networkingv1.NetworkPolicy{}, builder.WithPredicates(etcdPolicy)).
 		Owns(&druidv1alpha1.EtcdCopyBackupsTask{}).
 		Owns(&druidv1alpha1.EtcdOpsTask{}).
-		WatchesMetadata(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(controlPlaneOf), builder.WithPredicates(predicate.Or(certificates, backupCopy))).
+		WatchesMetadata(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(controlPlaneOf), builder.WithPredicates(predicate.Or(certificates, backupCopy, caBundle))).
 		Watches(&lodiav1alpha1.DatastoreClass{}, handler.EnqueueRequestsFromMapFunc(r.controlPlanesUsing)).
 		Watches(&lodiav1alpha1.Backup{}, handler.EnqueueRequestsFromMapFunc(r.restoringFrom)).
 		Complete(r)
@@ -311,8 +315,14 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.Contro
 	}
 	// Claims of this ControlPlane outlive an Etcd it had, whose data they
 	// hold.
-	if current == nil && len(claims) == 0 && cp.Spec.RestoreFrom != nil {
-		first, requeueAfter, err := r.restoreFirst(ctx, cp, class, rendered)
+	if current == nil && len(claims) == 0 {
+		var first *metav1.Condition
+		var requeueAfter time.Duration
+		if cp.Spec.RestoreFrom != nil {
+			first, requeueAfter, err = r.restoreFirst(ctx, cp, class, rendered)
+		} else {
+			first, err = r.caPredates(ctx, cp)
+		}
 		if first == nil && err != nil {
 			return nil, nil, nil, metav1.Condition{}, 0, errors.Join(err, refusal)
 		}

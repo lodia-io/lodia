@@ -5,10 +5,17 @@ package datastore_test
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"reflect"
 	"slices"
 	"strconv"
@@ -34,6 +41,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/certs"
 	"go.lodia.io/lodia/internal/controller/datastore"
 )
 
@@ -1040,4 +1048,70 @@ func TestALeftoverFullSnapshotLeaseCompletesNoRestore(t *testing.T) {
 	poke(t, r.ns)
 	waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRestoring, "the store holds 0; EtcdOpsTask")
 	waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRestoring, "ignored Lease b-etcd-full-snap, created before Etcd b-etcd")
+}
+
+func caBundle(t *testing.T, ns, cp string, notBefore time.Time) *corev1.Secret {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "cluster-ca@" + ns},
+		NotBefore: notBefore, NotAfter: notBefore.Add(24 * time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: cp + "-ca-bundle", Namespace: ns, Labels: map[string]string{lodiav1alpha1.ControlPlaneLabel: cp}},
+		Data:       map[string][]byte{lodiav1alpha1.CACertKey: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})},
+	}
+}
+
+func TestACAOlderThanItsControlPlaneStartsNoEmptyEtcd(t *testing.T) {
+	adopted := func(t *testing.T, issuedBefore time.Duration) (string, *corev1.Secret) {
+		t.Helper()
+		ns := namespace(t)
+		createClass(t, newClass(ns, "Retain"))
+		create(t, controlPlane(ns, "old", ns))
+		cp := getControlPlane(t, ns, "old")
+		bundle := caBundle(t, ns, "old", cp.CreationTimestamp.Add(-certs.Backdate-issuedBefore))
+		create(t, bundle)
+		return ns, bundle
+	}
+	t.Run("issued before", func(t *testing.T) {
+		ns, bundle := adopted(t, time.Second)
+		cp := getControlPlane(t, ns, "old")
+		writeGeneration(t, ns, "old", 1)
+		waitCondition(t, ns, "old", metav1.ConditionFalse, lodiav1alpha1.ReasonCAPredatesControlPlane, fmt.Sprintf(
+			"the cluster CA CN=cluster-ca@%s in old-ca-bundle was issued at %s, before this ControlPlane was created at %s: its Secrets came back and its data did not, and nodes that trust it would join an empty cluster. Restore the management cluster from a backup that keeps UIDs, or delete old-ca-bundle and old-cakey-cluster for a new identity",
+			ns, cp.CreationTimestamp.Add(-time.Second).UTC().Format(time.RFC3339), cp.CreationTimestamp.UTC().Format(time.RFC3339)))
+		if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "old-etcd"}, &druidv1alpha1.Etcd{}); !apierrors.IsNotFound(err) {
+			t.Fatalf("want no Etcd under an older CA, got %v", err)
+		}
+		if err := k8s.Delete(t.Context(), bundle); err != nil {
+			t.Fatal(err)
+		}
+		waitEtcd(t, ns, "old", nil)
+	})
+	t.Run("issued in the same second", func(t *testing.T) {
+		ns, _ := adopted(t, 0)
+		writeGeneration(t, ns, "old", 1)
+		waitEtcd(t, ns, "old", nil)
+	})
+	t.Run("over the ControlPlane's claims", func(t *testing.T) {
+		ns, _ := adopted(t, time.Second)
+		cp := getControlPlane(t, ns, "old")
+		create(t, claim(ns, "old-etcd-old-etcd-0", map[string]string{lodiav1alpha1.ControlPlaneUIDLabel: string(cp.UID)}))
+		writeGeneration(t, ns, "old", 1)
+		waitEtcd(t, ns, "old", nil)
+	})
+	t.Run("restoreFrom", func(t *testing.T) {
+		r := newRestore(t, restoreSetup{before: func(r *restore) {
+			create(t, caBundle(t, r.ns, restoredCP, time.Now().Add(-time.Hour)))
+		}})
+		r.waitCopyTask(t)
+	})
 }

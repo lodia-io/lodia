@@ -19,12 +19,14 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	certutil "k8s.io/client-go/util/cert"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/certs"
 	"go.lodia.io/lodia/internal/versions"
 )
 
@@ -449,6 +451,37 @@ func (r *Reconciler) tidyRestore(ctx context.Context, cp *lodiav1alpha1.ControlP
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// caPredates refuses the first Etcd of a ControlPlane whose cluster CA was
+// issued before the ControlPlane was created: PKI adopted CA Secrets that came
+// back without their data, and nodes that trust the CA would join an empty
+// cluster (docs/decisions/restore-replaces-the-source.md). PKI backdates
+// every certificate by certs.Backdate and x509 keeps seconds, so NotBefore
+// plus that is the second PKI issued it in, never before the second of the
+// ControlPlane it was issued for.
+func (r *Reconciler) caPredates(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*metav1.Condition, error) {
+	name := lodiav1alpha1.CABundleSecret.Name(cp.Name)
+	bundle := &corev1.Secret{}
+	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: name}, bundle); err != nil {
+		return nil, client.IgnoreNotFound(err)
+	}
+	if len(bundle.Data[lodiav1alpha1.CACertKey]) == 0 {
+		return nil, nil
+	}
+	cas, err := certutil.ParseCertsPEM(bundle.Data[lodiav1alpha1.CACertKey])
+	if err != nil {
+		return nil, fmt.Errorf("read the CAs in Secret %s: %w", name, err)
+	}
+	for _, ca := range cas {
+		if issued := ca.NotBefore.Add(certs.Backdate); issued.Before(cp.CreationTimestamp.Time) {
+			condition := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonCAPredatesControlPlane, fmt.Sprintf(
+				"the cluster CA %s in %s was issued at %s, before this ControlPlane was created at %s: its Secrets came back and its data did not, and nodes that trust it would join an empty cluster. Restore the management cluster from a backup that keeps UIDs, or delete %s and %s for a new identity",
+				ca.Subject.String(), name, issued.UTC().Format(time.RFC3339), cp.CreationTimestamp.UTC().Format(time.RFC3339), name, cp.Name+"-cakey-cluster"))
+			return &condition, nil
+		}
+	}
+	return nil, nil
 }
 
 func (r *Reconciler) restoringFrom(ctx context.Context, backup client.Object) []reconcile.Request {
