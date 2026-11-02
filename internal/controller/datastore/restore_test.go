@@ -19,6 +19,7 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -52,6 +53,7 @@ type restoredEtcd struct {
 	*clientv3.Client
 	unreachable                                atomic.Bool
 	refuseCounts, refuseCleanups, loseCleanups atomic.Int32
+	refusedGet                                 atomic.Value
 }
 
 var restoredEtcds sync.Map
@@ -78,6 +80,13 @@ func dialRestored(_ context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client
 type faultyKV struct {
 	clientv3.KV
 	e *restoredEtcd
+}
+
+func (kv faultyKV) Get(ctx context.Context, key string, opts ...clientv3.OpOption) (*clientv3.GetResponse, error) {
+	if refused, _ := kv.e.refusedGet.Load().(string); refused == key {
+		return nil, errUnanswered
+	}
+	return kv.KV.Get(ctx, key, opts...)
 }
 
 func (kv faultyKV) Txn(ctx context.Context) clientv3.Txn {
@@ -215,6 +224,7 @@ type restoreSetup struct {
 	backup       func(*lodiav1alpha1.Backup)
 	noBackup     bool
 	preload      func(*testing.T, *restoredEtcd)
+	quota        int64
 	before       func(*restore)
 	controlPlane func(*lodiav1alpha1.ControlPlane)
 }
@@ -228,7 +238,13 @@ func newRestore(t *testing.T, setup restoreSetup) *restore {
 		setup.class(class)
 	}
 	createClass(t, class)
-	r.etcd = &restoredEtcd{Client: testserver.RunEtcd(t, nil).Client}
+	if setup.quota == 0 {
+		r.etcd = &restoredEtcd{Client: testserver.RunEtcd(t, nil).Client}
+	} else {
+		config := testserver.NewTestConfig(t)
+		config.QuotaBackendBytes = setup.quota
+		r.etcd = &restoredEtcd{Client: testserver.RunEtcd(t, config).Client}
+	}
 	key := r.ns + "/" + restoredCP + "-etcd"
 	restoredEtcds.Store(key, r.etcd)
 	t.Cleanup(func() { restoredEtcds.Delete(key) })
@@ -536,6 +552,7 @@ func TestARestoreCopiesChecksCleansUpAndSnapshots(t *testing.T) {
 		return nil
 	})
 	completedAt := restored.Status.Datastore.Restore.CompletedAt
+	time.Sleep(time.Until(completedAt.Add(1100 * time.Millisecond)))
 	poke(t, r.ns)
 	consistently(t, func() error {
 		cp := r.controlPlane(t)
@@ -674,6 +691,10 @@ func TestARestoreStartsOnlyFromASealedCompatibleBackupInTheClasssStore(t *testin
 
 	t.Run("a Backup without a quota", func(t *testing.T) {
 		r := newRestore(t, restoreSetup{backup: func(b *lodiav1alpha1.Backup) { b.Status.Seal.QuotaBackendBytes = nil }})
+		r.waitCopyTask(t)
+	})
+	t.Run("another patch of the minor", func(t *testing.T) {
+		r := newRestore(t, restoreSetup{controlPlane: func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Version = "v1.37.2" }})
 		r.waitCopyTask(t)
 	})
 	t.Run("the store moved back", func(t *testing.T) {
@@ -1328,6 +1349,33 @@ func TestAnEtcdCreatedAgainFromAStaleCacheNeedsNoBackup(t *testing.T) {
 	}
 }
 
+func TestAnEtcdDeletedMidRestoreComesBackOverItsClaims(t *testing.T) {
+	r := newRestore(t, restoreSetup{})
+	r.etcd.unreachable.Store(true)
+	first := r.copied(t)
+	if err := k8s.Delete(t.Context(), r.copyTask(t)); err != nil {
+		t.Fatal(err)
+	}
+	pvc := claim(r.ns, "b-etcd-b-etcd-0", map[string]string{lodiav1alpha1.ControlPlaneUIDLabel: string(r.controlPlane(t).UID)})
+	pvc.Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse("20Gi")
+	create(t, pvc)
+	if err := k8s.Delete(t.Context(), first); err != nil {
+		t.Fatal(err)
+	}
+	waitEtcd(t, r.ns, restoredCP, func(etcd *druidv1alpha1.Etcd) error {
+		if etcd.UID == first.UID {
+			return errors.New("the deleted Etcd is still there")
+		}
+		return nil
+	})
+	consistently(t, func() error {
+		if task := r.copyTask(t); task != nil {
+			return fmt.Errorf("EtcdCopyBackupsTask %s copies the Backup again over the claims", task.Name)
+		}
+		return nil
+	})
+}
+
 func TestAStalePassWhoseCheckCannotRunKeepsTheMembers(t *testing.T) {
 	r := newRestore(t, restoreSetup{controlPlane: func(cp *lodiav1alpha1.ControlPlane) {
 		cp.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
@@ -1425,6 +1473,69 @@ func TestAFailedCopyStaysAMinute(t *testing.T) {
 		return nil
 	})
 	waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRestoring, "copying Backup a-1 into this ControlPlane's prefix")
+}
+
+func TestACleanupTheEtcdRefusesAtItsQuota(t *testing.T) {
+	r := newRestore(t, restoreSetup{quota: 1 << 20, preload: func(t *testing.T, e *restoredEtcd) {
+		e.put(t, append(slices.Clone(cleanedKeys), keptKeys...)...)
+		for i := 0; ; i++ {
+			if _, err := e.Put(t.Context(), fmt.Sprintf("/filler/%d", i), strings.Repeat("x", 256<<10)); err != nil {
+				break
+			}
+		}
+	}})
+	r.copied(t)
+	waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRestoring,
+		`etcd refuses the cleanup: etcdserver: mvcc: database space exceeded; see "etcd space quota" in docs/operations.md`)
+	if r.marker(t) != 0 {
+		t.Fatal("a cleanup the etcd refused left the marker")
+	}
+	r.etcd.present(t, append(slices.Clone(cleanedKeys), keptKeys...)...)
+}
+
+func TestARestoreCompletesOnItsFullSnapshotWithoutAnEvent(t *testing.T) {
+	r := newRestore(t, restoreSetup{})
+	r.copied(t)
+	marker := r.cleanedUp(t)
+	settled := "EtcdOpsTask " + r.taskName(t) + " is not admitted yet"
+	waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRestoring, settled)
+	consistently(t, func() error {
+		if ready := meta.FindStatusCondition(r.controlPlane(t).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady); !strings.Contains(ready.Message, settled) {
+			return fmt.Errorf("DatastoreReady moved to %s %q", ready.Reason, ready.Message)
+		}
+		return nil
+	})
+	createLease(t, r.ns, restoredCP+"-etcd-full-snap", strconv.FormatInt(marker, 10))
+	waitCondition(t, r.ns, restoredCP, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum")
+}
+
+func TestARestoreReadThatFailsIsNoAnswer(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		key  func(*testing.T, *restore) string
+	}{
+		{"the marker", func(t *testing.T, r *restore) string { return lodiav1alpha1.RestoreMarkerKey(r.controlPlane(t).UID) }},
+		{"the seal", func(_ *testing.T, r *restore) string { return lodiav1alpha1.BackupSealKey(r.backup.UID) }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newRestore(t, restoreSetup{})
+			r.etcd.refusedGet.Store(c.key(t, r))
+			r.copied(t)
+			waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRestoring, "waiting for etcd of b to answer")
+			poke(t, r.ns)
+			consistently(t, func() error {
+				if r.marker(t) != 0 {
+					return errors.New("cleaned up while a read failed")
+				}
+				return nil
+			})
+			r.etcd.present(t, cleanedKeys...)
+			waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRestoring, "waiting for etcd of b to answer")
+			r.etcd.refusedGet.Store("")
+			poke(t, r.ns)
+			r.complete(t, r.cleanedUp(t))
+		})
+	}
 }
 
 func caBundle(t *testing.T, ns, cp string, notBefore time.Time) *corev1.Secret {
