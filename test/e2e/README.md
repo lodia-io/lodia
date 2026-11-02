@@ -94,8 +94,8 @@ The credentials go into `lodia-system` as `accessKeyID`, `secretAccessKey`, `reg
 7. `b`, set to `release: Released`, reports `ControllersLeading` False, `SourceExists`, its controller manager still at 0 replicas.
 8. Once `a` is deleted and gone, `b`'s controller manager asks for one replica, `ControllersLeading` and `Ready` turn True, and `restore-a/kube-root-ca.crt` in `b` holds `b`'s CA and none of `a`'s.
 9. A node joins `b` with a token made in `b`, as in the phase 1 gate, CoreDNS turns available, and hydrophone runs the smoke subset (below) in `b`.
-10. The class's `Retain` kept `a`'s claims; a new `ControlPlane` `a`, restoring `a-1` and `Released` at creation, reports `DatastoreReady` False, `VolumesExist`, naming them, until the test deletes them and the new `a` creates its `Etcd`.
-11. The test deletes `a-1` then, while the new `a` restores it, and wants it not gone before `b` and the new `a` both have `status.datastore.restore` naming it; the log says whether it saw `a-1` held.
+10. The class's `Retain` kept `a`'s claims; a new `ControlPlane` `a`, restoring `a-1` and `Released` at creation, reports `DatastoreReady` False, `VolumesExist`, naming them; the test deletes `a-1` there, before the new `a` can have an `Etcd`, then the claims, and the new `a` creates its `Etcd`.
+11. `a-1` must not be gone before `b` and the new `a` both have `status.datastore.restore` naming it.
     The new `a` turns `DatastoreReady` and `APIServerReady` True and serves `restore-a/secret-0` with `a`'s hash; `a-1.encryption-config` and the tasks `restore-<ControlPlane UID>` of `b` and the new `a` are gone, and the bucket still holds the copy under `a-1`'s prefix.
     The delete waits for the new `Etcd`: until then the restore refuses a `Backup` being deleted, `BackupNotFound` ([reasons](../../docs/api/controlplane.md#conditions-and-their-reasons)), while the finalizer keeps the `Backup` for that restore.
 

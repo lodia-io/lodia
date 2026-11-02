@@ -529,7 +529,7 @@ func TestRestoreGate(t *testing.T) {
 			}
 			return ctx
 		}).
-		Assess("10. a, created again from the Backup over the claims the class kept, waits at VolumesExist until they are deleted", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("10. a, created again from the Backup over the claims the class kept, waits at VolumesExist until they are deleted, and restores the Backup deleted meanwhile", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			claims := &corev1.PersistentVolumeClaimList{}
 			if err := k8s.List(ctx, claims, client.InNamespace(key.Namespace), client.MatchingLabels{lodiav1alpha1.ControlPlaneUIDLabel: string(sourceUID)}); err != nil {
 				t.Fatal(err)
@@ -553,6 +553,9 @@ func TestRestoreGate(t *testing.T) {
 				}
 				return nil
 			})
+			if err := k8s.Delete(ctx, &lodiav1alpha1.Backup{ObjectMeta: metav1.ObjectMeta{Name: backup.Name, Namespace: backup.Namespace}}); err != nil {
+				t.Fatal(err)
+			}
 			for i := range claims.Items {
 				if err := k8s.Delete(ctx, &claims.Items[i]); err != nil {
 					t.Fatal(err)
@@ -574,21 +577,12 @@ func TestRestoreGate(t *testing.T) {
 			})
 			return ctx
 		}).
-		Assess("11. the Backup, deleted while a restores it, goes once both restores of it are complete, and leaves only its copy in the bucket", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			if err := k8s.Delete(ctx, &lodiav1alpha1.Backup{ObjectMeta: metav1.ObjectMeta{Name: backup.Name, Namespace: backup.Namespace}}); err != nil {
-				t.Fatal(err)
-			}
-			held := false
+		Assess("11. the Backup, deleted before the new a had an Etcd, goes once both restores of it are complete, and leaves only its copy in the bucket", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			var early []string
 			until(ctx, t, 5*time.Minute, "Backup "+backup.Name+" is gone", func(ctx context.Context) error {
 				left := &lodiav1alpha1.Backup{}
 				err := k8s.Get(ctx, client.ObjectKeyFromObject(backup), left)
 				if err == nil {
-					restoring := &lodiav1alpha1.ControlPlane{}
-					if err := k8s.Get(ctx, key, restoring); err != nil {
-						return err
-					}
-					held = held || restoredFrom(restoring, backup, sourceUID) != nil
 					return fmt.Errorf("it stays, being deleted %t, with the finalizers %v", !left.DeletionTimestamp.IsZero(), left.Finalizers)
 				}
 				if !apierrors.IsNotFound(err) {
@@ -609,7 +603,6 @@ func TestRestoreGate(t *testing.T) {
 			if len(early) > 0 {
 				t.Errorf("Backup %s went before every restore of it completed: %s", backup.Name, strings.Join(early, "; "))
 			}
-			t.Logf("Backup %s stayed while the new a was not complete: %t", backup.Name, held)
 			until(ctx, t, 5*time.Minute, "the new a's DatastoreReady=True", func(ctx context.Context) error {
 				_, _, err := conditionOf(ctx, k8s, key, lodiav1alpha1.ConditionDatastoreReady, metav1.ConditionTrue, lodiav1alpha1.ReasonReady)
 				return err
