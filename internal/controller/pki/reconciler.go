@@ -24,11 +24,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/live"
+	"go.lodia.io/lodia/internal/restore"
 )
 
 const (
@@ -65,27 +64,11 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 		Named("pki").
 		For(&lodiav1alpha1.ControlPlane{}).
 		Owns(&corev1.Secret{}, builder.OnlyMetadata).
-		Watches(&lodiav1alpha1.Backup{}, handler.EnqueueRequestsFromMapFunc(r.restoresOf)).
+		// A Backup turns Completed only once its <backup>.encryption-config is
+		// written, so its own events are the ones a restore waits for.
+		Watches(&lodiav1alpha1.Backup{}, handler.EnqueueRequestsFromMapFunc(restore.RestoresOf(r.Client))).
 		WithOptions(controller.Options{MaxConcurrentReconciles: workers, ReconciliationTimeout: time.Minute}).
 		Complete(r)
-}
-
-// restoresOf are the ControlPlanes restored from a Backup. A Backup turns
-// Completed only once its <backup>.encryption-config is written, so its own
-// events are the ones a restore waits for.
-func (r *Reconciler) restoresOf(ctx context.Context, backup client.Object) []reconcile.Request {
-	list := &lodiav1alpha1.ControlPlaneList{}
-	if err := r.List(ctx, list, client.InNamespace(backup.GetNamespace())); err != nil {
-		logf.FromContext(ctx).Error(err, "list the ControlPlanes restored from a Backup", "backup", backup.GetName())
-		return nil
-	}
-	var out []reconcile.Request
-	for i := range list.Items {
-		if from := list.Items[i].Spec.RestoreFrom; from != nil && from.BackupRef.Name == backup.GetName() {
-			out = append(out, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&list.Items[i])})
-		}
-	}
-	return out
 }
 
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=get;list;watch

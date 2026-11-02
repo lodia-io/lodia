@@ -42,6 +42,7 @@ import (
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/apistatus"
 	"go.lodia.io/lodia/internal/ownership"
+	"go.lodia.io/lodia/internal/restore"
 )
 
 const (
@@ -93,7 +94,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 		Owns(&druidv1alpha1.EtcdOpsTask{}).
 		WatchesMetadata(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(controlPlaneOf), builder.WithPredicates(predicate.Or(certificates, backupCopy, caBundle))).
 		Watches(&lodiav1alpha1.DatastoreClass{}, handler.EnqueueRequestsFromMapFunc(r.controlPlanesUsing)).
-		Watches(&lodiav1alpha1.Backup{}, handler.EnqueueRequestsFromMapFunc(r.restoringFrom)).
+		Watches(&lodiav1alpha1.Backup{}, handler.EnqueueRequestsFromMapFunc(restore.RestoresOf(r.Client))).
 		Complete(r)
 }
 

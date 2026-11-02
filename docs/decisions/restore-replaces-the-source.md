@@ -96,7 +96,6 @@ A ValidatingAdmissionPolicy could require a `restore` verb on the named `Backup`
 - The restored cluster's `kube-system` UID, the cluster ID some tools use, is the source's.
 - Every `Backup` takes a full snapshot of its source's etcd, which counts toward the class's `retention.fullSnapshots` ([what it keeps](../README.md#a-tenant-namespace)).
 - Until etcd-backup-restore orders snapshot sets by revision, a `Completed` `Backup` may lack its seal: its copier takes the set whose full snapshot was saved last ([miscellaneous.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/miscellaneous/miscellaneous.go#L175-L177)), which an etcd-druid compaction Job running across the `Backup`'s full snapshot saves below the seal; the restore's seal check refuses such a `Backup` (`todo.md`).
-- `docs/operations.md` gets the replace checklist and a Velero recipe for a clone with the restore (`todo.md`).
 - The phase 2 gate restores a `Backup` ([roadmap](../roadmap.md)).
 
 ## Code
@@ -105,8 +104,8 @@ A ValidatingAdmissionPolicy could require a `restore` verb on the named `Backup`
 - `internal/controller/datastore/backup.go` — the backup reconciler: the seal, the snapshot it waits for, the copy, the encryption keys, the mark and the finalizer; `etcdclient.go` dials a tenant's etcd for it and for the restore.
 - `internal/controller/datastore/restore.go` — the restore: the checks before the first `Etcd` and its copy, the seal check, `Cleanup`, the full snapshot it waits for and `status.datastore.restore`, and `CAPredatesControlPlane`; `datastore.go` runs them in a pass and keeps one member until the restore is complete; `restore_test.go` holds them.
 - `test/restorekeys` — the keys `Cleanup` deletes, against the API server of each minor Lodia runs (`make restore-keys`).
-- `internal/restore` — the source both Workloads and Health look for.
-- `internal/controller/pki/secrets.go` — `held`, which adopts nothing for a restore, and `backupKeys`, the `Backup`'s providers behind a new key in the first encryption configuration; `reconciler.go`'s `restoresOf` brings a pass for each change of the `Backup`; `restore_test.go` holds them.
+- `internal/restore` — the source both Workloads and Health look for, and the `ControlPlane`s a `Backup`'s events bring a pass for in Datastore and PKI.
+- `internal/controller/pki/secrets.go` — `held`, which adopts nothing for a restore, and `backupKeys`, the `Backup`'s providers behind a new key in the first encryption configuration; `restore_test.go` holds them.
 - `internal/controller/workloads/workloads.go` — `release`, the held message and the hold, `ran`, the record of the release, and `replacements`, which brings a pass for each `ControlPlane` whose source changes; `restore_test.go` holds them.
 - `internal/controller/health/health.go` — `AwaitingRelease`, with what `actedOn` lists in the tenant, and `SourceExists`; `restore_test.go` holds them.
-- `test/e2e/restore_test.go` — the gate's `TestRestoreGate`, so far up to a `Completed` `Backup` on a real etcd-druid and S3 store.
+- `test/e2e/restore_test.go` — the gate's `TestRestoreGate`, on a real etcd-druid and S3 store.

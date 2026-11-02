@@ -1,14 +1,17 @@
 // Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package restore holds what Workloads and Health both read to release a
-// restored ControlPlane (docs/decisions/restore-replaces-the-source.md).
+// Package restore holds what more than one controller reads to restore a
+// ControlPlane and to release it (docs/decisions/restore-replaces-the-source.md).
 package restore
 
 import (
 	"context"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 )
@@ -30,4 +33,23 @@ func Source(ctx context.Context, reader client.Reader, cp *lodiav1alpha1.Control
 		}
 	}
 	return nil, nil
+}
+
+// RestoresOf maps a Backup to the ControlPlanes of its namespace that name it
+// in restoreFrom.
+func RestoresOf(reader client.Reader) handler.MapFunc {
+	return func(ctx context.Context, backup client.Object) []reconcile.Request {
+		list := &lodiav1alpha1.ControlPlaneList{}
+		if err := reader.List(ctx, list, client.InNamespace(backup.GetNamespace())); err != nil {
+			logf.FromContext(ctx).Error(err, "list the ControlPlanes restored from a Backup", "backup", backup.GetName())
+			return nil
+		}
+		var requests []reconcile.Request
+		for i := range list.Items {
+			if from := list.Items[i].Spec.RestoreFrom; from != nil && from.BackupRef.Name == backup.GetName() {
+				requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&list.Items[i])})
+			}
+		}
+		return requests
+	}
 }

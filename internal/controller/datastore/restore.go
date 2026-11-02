@@ -23,7 +23,6 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/certs"
@@ -482,19 +481,4 @@ func (r *Reconciler) caPredates(ctx context.Context, cp *lodiav1alpha1.ControlPl
 		}
 	}
 	return nil, nil
-}
-
-func (r *Reconciler) restoringFrom(ctx context.Context, backup client.Object) []reconcile.Request {
-	controlPlanes := &lodiav1alpha1.ControlPlaneList{}
-	if err := r.List(ctx, controlPlanes, client.InNamespace(backup.GetNamespace())); err != nil {
-		logf.FromContext(ctx).Error(err, "list the ControlPlanes restoring from a Backup", "backup", backup.GetName())
-		return nil
-	}
-	var requests []reconcile.Request
-	for i := range controlPlanes.Items {
-		if from := controlPlanes.Items[i].Spec.RestoreFrom; from != nil && from.BackupRef.Name == backup.GetName() {
-			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&controlPlanes.Items[i])})
-		}
-	}
-	return requests
 }
