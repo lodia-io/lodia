@@ -41,7 +41,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the Datastore controller (2026-10-25)
 
-- When restore lands in phase 2's wave 1b, test the `VolumesExist` remedy end to end: the claims kept, a `Backup` of the old cluster, a new `ControlPlane` with `restoreFrom` that serves the old data.
 - The backup-restore sidecar's `spec.backup.resources` have no field in the `DatastoreClass` and stay etcd-druid's default (50m / 128Mi at v0.39.0); the operator configuration's `defaults.resources` should cover them once phase 1 measures.
 - The shared `Placement` and `resources` types get the rules of pod validation with Workloads, which renders them for the `ControlPlane` in phase 1: the class's `placement` and `etcd.resources` have none yet.
   Until then a class value the apps API refuses in etcd-druid's StatefulSet shows as `status.datastore.members.updated` absent, since etcd-druid returns before it stamps `observedGeneration` ([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcd/reconciler.go#L127-L144)).

@@ -82,7 +82,7 @@ Gate:
 
 - e2e: during a rolling update of the API server and during a minor upgrade (two kind node images), a client loop of 20 requests per second against the public endpoint, and one from a pod in the tenant through `kubernetes.default`, record zero failures.
 - e2e: delete an API server pod and an etcd pod of an HA control plane; `Ready` never turns False for longer than 5 seconds, and the same two loops record zero failures.
-- e2e: a `Backup` of A; B, created with `restoreFrom` it, stays inert while it serves A's namespaces and Secrets, and a `Released` B still waits, `SourceExists`; deleting A releases B, a node joins it, and the conformance smoke subset passes.
+- e2e: a `Backup` of A; B, created with `restoreFrom` it, stays inert while it serves A's namespaces and Secrets, and a `Released` B still waits, `SourceExists`; deleting A releases B, a node joins it, and the conformance smoke subset passes; every pull request checks it with [`TestRestoreGate`](../test/e2e/README.md#gate-g3-a-backup-and-a-restore).
 - e2e: cut both workers of a tenant off from the Gateway for 10 minutes; within 30 seconds Lodia holds the controller manager's lease and the controller manager exits; no node is tainted and every pod keeps its UID; reconnect, and the lease is released 2 minutes later.
   Cut one worker of two: no hold, and its pods move to the other after the toleration, as upstream does ([controller-manager-hold](decisions/controller-manager-hold.md)).
 - e2e: an operator upgrade re-renders a tenant only inside its window; outside it, `Progressing` is False, `WaitingForWindow`, and `status.target.scheduledFor` is the window's next start; an edit of the tenant's spec renders it at once.
