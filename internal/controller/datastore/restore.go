@@ -97,8 +97,7 @@ func Cleanup(ctx context.Context, kv clientv3.KV, controlPlane types.UID, value 
 	return keys, kvs[0].GetCreateRevision(), nil
 }
 
-// restoreMarker is the marker's value, from which status.datastore.restore
-// is rebuilt.
+// restoreMarker is the marker's value, from which status.restore is rebuilt.
 type restoreMarker struct {
 	Backup lodiav1alpha1.UIDReference `json:"backup"`
 	Source lodiav1alpha1.UIDReference `json:"source"`
@@ -351,7 +350,7 @@ func unanswered(ctx context.Context, etcd *druidv1alpha1.Etcd, err error) restor
 // the Backup, which may be gone.
 func (r *Reconciler) cleanUp(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, c *clientv3.Client) (restoreMarker, int64, *restoreCheck, error) {
 	var value restoreMarker
-	if recorded := restoreOf(cp); recorded != nil {
+	if recorded := cp.Status.Restore; recorded != nil {
 		value = restoreMarker{Backup: recorded.Backup, Source: recorded.Source}
 	} else {
 		name := cp.Spec.RestoreFrom.BackupRef.Name
@@ -433,17 +432,10 @@ func (r *Reconciler) snapshotRestore(ctx context.Context, cp *lodiav1alpha1.Cont
 // keeps the time it was first written for the same Backup.
 func restored(cp *lodiav1alpha1.ControlPlane, value restoreMarker) *lodiav1alpha1.RestoreStatus {
 	status := &lodiav1alpha1.RestoreStatus{Backup: value.Backup, Source: value.Source, CompletedAt: metav1.Now()}
-	if recorded := restoreOf(cp); recorded != nil && recorded.Backup.UID == value.Backup.UID {
+	if recorded := cp.Status.Restore; recorded != nil && recorded.Backup.UID == value.Backup.UID {
 		status.CompletedAt = recorded.CompletedAt
 	}
 	return status
-}
-
-func restoreOf(cp *lodiav1alpha1.ControlPlane) *lodiav1alpha1.RestoreStatus {
-	if cp.Status.Datastore == nil {
-		return nil
-	}
-	return cp.Status.Datastore.Restore
 }
 
 func (r *Reconciler) tidyRestore(ctx context.Context, cp *lodiav1alpha1.ControlPlane) error {

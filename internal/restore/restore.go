@@ -20,7 +20,7 @@ import (
 // with the UID of the source cp's completed restore replaces; nil while the
 // restore is not complete or once no such ControlPlane exists.
 func Source(ctx context.Context, reader client.Reader, cp *lodiav1alpha1.ControlPlane) (*lodiav1alpha1.ControlPlane, error) {
-	if cp.Status.Datastore == nil || cp.Status.Datastore.Restore == nil {
+	if cp.Status.Restore == nil {
 		return nil, nil
 	}
 	list := &lodiav1alpha1.ControlPlaneList{}
@@ -28,7 +28,7 @@ func Source(ctx context.Context, reader client.Reader, cp *lodiav1alpha1.Control
 		return nil, err
 	}
 	for i := range list.Items {
-		if list.Items[i].UID == cp.Status.Datastore.Restore.Source.UID {
+		if list.Items[i].UID == cp.Status.Restore.Source.UID {
 			return &list.Items[i], nil
 		}
 	}

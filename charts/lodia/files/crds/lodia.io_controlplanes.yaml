@@ -1488,58 +1488,6 @@ spec:
                       was rendered with.
                     maxLength: 128
                     type: string
-                  restore:
-                    description: |-
-                      Restore is the restore this ControlPlane's data came from, written
-                      once, when it completed.
-                    properties:
-                      backup:
-                        description: Backup is the Backup restored.
-                        properties:
-                          name:
-                            description: Name of the object.
-                            maxLength: 253
-                            minLength: 1
-                            type: string
-                          uid:
-                            description: UID of the object.
-                            maxLength: 36
-                            minLength: 1
-                            type: string
-                        required:
-                        - name
-                        - uid
-                        type: object
-                      completedAt:
-                        description: CompletedAt is when the restored data was cleaned
-                          up and snapshotted.
-                        format: date-time
-                        type: string
-                      source:
-                        description: |-
-                          Source is the ControlPlane the Backup was taken of, which this one
-                          replaces: while one with its UID exists in the namespace, the
-                          controller manager does not run.
-                        properties:
-                          name:
-                            description: Name of the object.
-                            maxLength: 253
-                            minLength: 1
-                            type: string
-                          uid:
-                            description: UID of the object.
-                            maxLength: 36
-                            minLength: 1
-                            type: string
-                        required:
-                        - name
-                        - uid
-                        type: object
-                    required:
-                    - backup
-                    - completedAt
-                    - source
-                    type: object
                   snapshots:
                     description: Snapshots is where the etcd's continuous snapshots
                       go.
@@ -1786,6 +1734,59 @@ spec:
                   has been reported for.
                 format: int64
                 type: integer
+              restore:
+                description: |-
+                  Restore is the restore this ControlPlane's data came from. The Datastore
+                  controller writes it and keeps it for the ControlPlane's life, with or
+                  without a store.
+                properties:
+                  backup:
+                    description: Backup is the Backup restored.
+                    properties:
+                      name:
+                        description: Name of the object.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      uid:
+                        description: UID of the object.
+                        maxLength: 36
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    - uid
+                    type: object
+                  completedAt:
+                    description: CompletedAt is when the restored data was cleaned
+                      up and snapshotted.
+                    format: date-time
+                    type: string
+                  source:
+                    description: |-
+                      Source is the ControlPlane the Backup was taken of, which this one
+                      replaces: while one with its UID exists in the namespace, the
+                      controller manager does not run.
+                    properties:
+                      name:
+                        description: Name of the object.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      uid:
+                        description: UID of the object.
+                        maxLength: 36
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    - uid
+                    type: object
+                required:
+                - backup
+                - completedAt
+                - source
+                type: object
               target:
                 description: Target is what Lifecycle rolls now.
                 properties:

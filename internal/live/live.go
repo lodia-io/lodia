@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package live reads a writer's own conditions, and Datastore's
-// status.datastore, as the API server holds them, for the waits and keeps
-// docs/decisions/independent-controllers.md names.
+// status.datastore and status.restore, as the API server holds them, for the
+// waits and keeps docs/decisions/independent-controllers.md names.
 package live
 
 import (
@@ -22,15 +22,15 @@ func Conditions(ctx context.Context, reader client.Reader, cp *lodiav1alpha1.Con
 	return err
 }
 
-// Datastore replaces cp's status.datastore and its conditions of the given
-// types with the API server's, read through reader, which must not be a
-// cache.
+// Datastore replaces cp's status.datastore, status.restore and its
+// conditions of the given types with the API server's, read through reader,
+// which must not be a cache.
 func Datastore(ctx context.Context, reader client.Reader, cp *lodiav1alpha1.ControlPlane, conditionTypes ...string) error {
 	current, err := conditions(ctx, reader, cp, conditionTypes)
 	if err != nil {
 		return err
 	}
-	cp.Status.Datastore = current.Status.Datastore
+	cp.Status.Datastore, cp.Status.Restore = current.Status.Datastore, current.Status.Restore
 	return nil
 }
 

@@ -55,6 +55,7 @@ var fieldWriters = map[string]string{
 	"endpoint.apiServer":    "lodia/workloads",
 	"endpoint.konnectivity": "lodia/workloads",
 	"endpoint.inCluster":    "lodia/workloads",
+	"restore":               "lodia/datastore",
 	"target":                "lodia/lifecycle",
 	"observedGeneration":    "lodia/lifecycle",
 }

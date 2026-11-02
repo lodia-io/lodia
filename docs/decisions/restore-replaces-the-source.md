@@ -44,7 +44,7 @@ The keys are the API server's own under its default prefix, Nodes as `minions` (
 **Durable before ready.**
 A full snapshot follows the transaction, and `DatastoreReady` turns True only once a snapshot Lease shows it in the store: a member that loses its volume afterwards restores the cleaned data, not the source's.
 Datastore asks for it again as the backup reconciler does for the seal's, timed from the `Etcd`'s creation instead of the `Backup`'s start.
-Datastore then writes `status.datastore.restore` ([field](../api/controlplane.md#status)), and from then on the restore needs the `Backup` no more: an `Etcd` created again restores from the `ControlPlane`'s prefix, and an etcd that lost the marker is checked against the seal of the `Backup` that status names.
+Datastore then writes `status.restore` ([field](../api/controlplane.md#status)), and from then on the restore needs the `Backup` no more: an `Etcd` created again restores from the `ControlPlane`'s prefix, and an etcd that lost the marker is checked against the seal of the `Backup` that status names.
 
 **The encryption key stays in the management cluster.**
 When it seals, the backup reconciler writes `<backup>.encryption-config` (`BackupEncryptionConfigSecretName`), owned by the `Backup`, immutable, with every key of the source's encryption configuration, and never puts a key in the bucket, whose credentials sit in every tenant namespace on the class.
@@ -90,6 +90,7 @@ A ValidatingAdmissionPolicy could require a `restore` verb on the named `Backup`
 - Fencing across management clusters — Gardener built owner checks for it and removed them as "very difficult to manage in a multi-node ETCD setup" ([#6302](https://github.com/gardener/gardener/issues/6302)).
 - Holding the controller manager through the lease, as the hold does — it fails open by design and races the controller manager's first start.
 - A release annotation in the style of `lodia.io/maintain-requested-at` — see Why.
+- The record in `status.datastore` — Datastore writes that whole only while an `Etcd` exists, its `endpoints` and `members` required, so every pass without one would drop the record; with both optional, `status.datastore` present would no longer mean the store exists, as Lifecycle, Workloads and the metrics read it.
 - Guarding the cleanup with a status field — a status is lost with a move, a stale cache or an operator rollback; the key in etcd is not.
 - A fixed marker key — a `Backup` of the restored cluster would carry it, and restoring from that `Backup` would skip the cleanup.
 - Detecting a restore and rolling the API server — a restored `ControlPlane` is new, so no client of the source holds its revisions ([dedicated-etcd-by-default](dedicated-etcd-by-default.md)).
@@ -105,7 +106,7 @@ A ValidatingAdmissionPolicy could require a `restore` verb on the named `Backup`
 
 - `api/v1alpha1` — `RestoreFrom` with `Release`, `BackupStatus` with its `Ready` condition, `RestoreStatus`, `SnapshotLocation` and `BackupSnapshotLocation` with `StoreSecretFields`, the names `BackupEncryptionConfigSecretName`, `BackupSealKey` and `RestoreMarkerKey`, the annotation `SealedUIDAnnotation`, the finalizer `RestoreSourceFinalizer` and the reasons in `conditions.go`; `test/api/validation_test.go` holds their rules.
 - `internal/controller/datastore/backup.go` — the backup reconciler: the seal, the snapshot it waits for, the copy, the encryption keys, the mark and the finalizer; `etcdclient.go` dials a tenant's etcd for it and for the restore.
-- `internal/controller/datastore/restore.go` — the restore: the checks before the first `Etcd` and its copy, the seal check, `Cleanup`, the full snapshot it waits for and `status.datastore.restore`, and `CAPredatesControlPlane`; `datastore.go` runs them in a pass and keeps one member until the restore is complete; `restore_test.go` holds them.
+- `internal/controller/datastore/restore.go` — the restore: the checks before the first `Etcd` and its copy, the seal check, `Cleanup`, the full snapshot it waits for and `status.restore`, and `CAPredatesControlPlane`; `datastore.go` runs them in a pass and keeps one member until the restore is complete; `restore_test.go` holds them.
 - `test/restorekeys` — the keys `Cleanup` deletes, against the API server of each minor Lodia runs (`make restore-keys`).
 - `internal/restore` — the source both Workloads and Health look for, and the `ControlPlane`s a `Backup`'s events bring a pass for in Datastore and PKI.
 - `internal/controller/pki/secrets.go` — `held`, which adopts nothing for a restore, and `backupKeys`, the `Backup`'s providers behind a new key in the first encryption configuration; `restore_test.go` holds them.

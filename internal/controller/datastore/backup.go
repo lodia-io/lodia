@@ -779,7 +779,7 @@ func (r *BackupReconciler) restoring(ctx context.Context, backup *lodiav1alpha1.
 			return false, err
 		}
 		ownKeys := err == nil && metav1.IsControlledBy(keys, cp)
-		if !ownKeys || cp.Status.Datastore == nil || cp.Status.Datastore.Restore == nil {
+		if !ownKeys || cp.Status.Restore == nil {
 			logf.FromContext(ctx).Info("keeping the Backup until the ControlPlane restoring from it has its own encryption configuration and a completed restore", "controlPlane", cp.Name)
 			return true, nil
 		}

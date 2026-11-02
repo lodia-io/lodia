@@ -96,7 +96,7 @@ func (r *Reconciler) replacements(ctx context.Context, source client.Object) []r
 	}
 	var out []reconcile.Request
 	for i := range list.Items {
-		if d := list.Items[i].Status.Datastore; d != nil && d.Restore != nil && d.Restore.Source.UID == source.GetUID() {
+		if restore := list.Items[i].Status.Restore; restore != nil && restore.Source.UID == source.GetUID() {
 			out = append(out, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&list.Items[i])})
 		}
 	}
@@ -287,7 +287,7 @@ func (r *Reconciler) release(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 	if restoring.Release != lodiav1alpha1.RestoreReleased {
 		unmet = append(unmet, "spec.restoreFrom.release is Held")
 	}
-	if cp.Status.Datastore == nil || cp.Status.Datastore.Restore == nil {
+	if cp.Status.Restore == nil {
 		unmet = append(unmet, "the restore is not complete")
 	} else if source, err := restore.Source(ctx, r.Client, cp); err != nil {
 		return nil, "", err
