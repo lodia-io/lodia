@@ -205,3 +205,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 - The `Compact` layout, once built, renders a held restore's pod without the controller-manager container on the hold the `Split` layout renders as 0 replicas (`release` and `ran` in `internal/controller/workloads/workloads.go`); `Compact` is `Unsupported` until then (restore-replaces-the-source, compact-layout).
 - Health lists seven kinds in a held restore's tenant every period, a page of 500 each (`actedOn` in `internal/controller/health/health.go`); if inert tenants grow large, list them less often than the probe runs.
+
+## From the restore (2026-11-02)
+
+- A controller's status apply names its `ControlPlane` by name, without the UID it read, so a pass on a cache that still holds a deleted predecessor can write the predecessor's state into its successor's status until the next pass corrects it; `internal/live` refuses such a read, but only the passes that read live use it. Carrying the read `metadata.uid` in every status apply would make the API server refuse it, as the `Etcd` apply already does (`replaced` in `internal/controller/datastore/datastore.go`).

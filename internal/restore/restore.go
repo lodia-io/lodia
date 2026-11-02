@@ -52,9 +52,10 @@ func Final(backup *lodiav1alpha1.Backup, ready *metav1.Condition) bool {
 	return false
 }
 
-// Failed says whether a Backup's Ready is one no restore waits out, so that
+// Failed says whether a Backup's Ready is one no restore waits for, so that
 // Datastore and PKI both tell a person to restore another Backup: Final, a
-// seal lost, or an object the Backup writes that another controls.
+// seal lost, or, until a person or the backup reconciler removes it, an
+// object the Backup writes that another controls.
 func Failed(backup *lodiav1alpha1.Backup, ready *metav1.Condition) bool {
 	if Final(backup, ready) {
 		return true
