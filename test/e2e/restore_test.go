@@ -413,6 +413,17 @@ func TestRestoreGate(t *testing.T) {
 					t.Errorf("%s: GET /api/v1/namespaces answers %d", request.what, status)
 				}
 			}
+			var signingKeys [][]byte
+			for _, k := range []client.ObjectKey{key, restoredKey} {
+				keys := &corev1.Secret{}
+				if err := k8s.Get(ctx, client.ObjectKey{Namespace: k.Namespace, Name: lodiav1alpha1.ServiceAccountKeysSecret.Name(k.Name)}, keys); err != nil {
+					t.Fatal(err)
+				}
+				signingKeys = append(signingKeys, keys.Data[lodiav1alpha1.SigningKeyKey])
+			}
+			if len(signingKeys[0]) == 0 || bytes.Equal(signingKeys[0], signingKeys[1]) {
+				t.Errorf("a and b sign ServiceAccount tokens with the same key, or a has none")
+			}
 			for _, reviewer := range []struct {
 				what          string
 				c             client.Client
@@ -461,6 +472,16 @@ func TestRestoreGate(t *testing.T) {
 			until(ctx, t, 3*time.Minute, "b's ControllersLeading=False, SourceExists", func(ctx context.Context) error {
 				_, _, err := conditionOf(ctx, k8s, restoredKey, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionFalse, lodiav1alpha1.ReasonSourceExists)
 				return err
+			})
+			until(ctx, t, 3*time.Minute, "b's APIServerReady=True, held while the source exists", func(ctx context.Context) error {
+				_, c, err := conditionOf(ctx, k8s, restoredKey, lodiav1alpha1.ConditionAPIServerReady, metav1.ConditionTrue, lodiav1alpha1.ReasonReady)
+				if err != nil {
+					return err
+				}
+				if !strings.Contains(c.Message, "the Backup's source, exists") || strings.Contains(c.Message, "spec.restoreFrom.release is Held") {
+					return fmt.Errorf("APIServerReady's message: %s", c.Message)
+				}
+				return nil
 			})
 			if err := controllerManagerAt(ctx, k8s, restoredKey, 0); err != nil {
 				t.Error(err)
