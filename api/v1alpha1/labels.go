@@ -91,7 +91,7 @@ const (
 	// controller, keeps a sealed Backup and its <backup>.encryption-config
 	// until every ControlPlane restoring from it has an encryption
 	// configuration of its own and a completed restore, or lacks one once
-	// those keys are gone; an unsealed Backup goes at once.
+	// those keys are gone; one deleted before it is Completed goes at once.
 	RestoreSourceFinalizer = "lodia.io/restore-source"
 )
 
