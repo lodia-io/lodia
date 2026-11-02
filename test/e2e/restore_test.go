@@ -478,7 +478,7 @@ func TestRestoreGate(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				if !strings.Contains(c.Message, "the Backup's source, exists") || strings.Contains(c.Message, "spec.restoreFrom.release is Held") {
+				if !strings.HasSuffix(c.Message, fmt.Sprintf("until the restore is released: ControlPlane %s (UID %s), the Backup's source, exists", restoreSource, sourceUID)) {
 					return fmt.Errorf("APIServerReady's message: %s", c.Message)
 				}
 				return nil
