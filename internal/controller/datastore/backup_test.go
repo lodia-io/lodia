@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apiserver/pkg/storage/etcd3/testserver"
 	"k8s.io/client-go/util/retry"
@@ -1555,6 +1556,50 @@ func (r unlistedControlPlanes) List(ctx context.Context, list client.ObjectList,
 	return r.Reader.List(ctx, list, opts...)
 }
 
+type unreadableSecret struct {
+	client.Reader
+	name string
+}
+
+var errUnreadable = errors.New("injected: the Secret cannot be read")
+
+func (r unreadableSecret) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if key.Name == r.name {
+		return errUnreadable
+	}
+	return r.Reader.Get(ctx, key, obj, opts...)
+}
+
+type uncachedSecret struct {
+	client.Client
+	name string
+}
+
+func (c uncachedSecret) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if key.Name == c.name {
+		return apierrors.NewNotFound(corev1.Resource("secrets"), key.Name)
+	}
+	return c.Client.Get(ctx, key, obj, opts...)
+}
+
+type conflictOnce struct {
+	client.Client
+	name   string
+	before func()
+	done   *bool
+}
+
+func (c conflictOnce) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+	if obj.GetName() != c.name || *c.done {
+		return c.Client.Patch(ctx, obj, patch, opts...)
+	}
+	*c.done = true
+	if c.before != nil {
+		c.before()
+	}
+	return apierrors.NewConflict(schema.GroupResource{}, c.name, errors.New("injected: the object changed"))
+}
+
 func TestTheRestoreSourceFinalizer(t *testing.T) {
 	ns := namespace(t)
 	r := &datastore.BackupReconciler{Client: cached, Reader: apiReader, Clock: clock.RealClock{}}
@@ -1577,12 +1622,21 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 			return gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: name}, &lodiav1alpha1.Backup{}))
 		})
 	}
-	backup := func(t *testing.T, name string, edit func(*lodiav1alpha1.Backup)) *lodiav1alpha1.Backup {
+	keysHeld := func(t *testing.T, keys *corev1.Secret) bool {
+		t.Helper()
+		got := &corev1.Secret{}
+		if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(keys), got); err != nil {
+			t.Fatal(err)
+		}
+		return controllerutil.ContainsFinalizer(got, lodiav1alpha1.RestoreSourceFinalizer)
+	}
+	backup := func(t *testing.T, name string, edit func(*lodiav1alpha1.Backup)) (*lodiav1alpha1.Backup, *corev1.Secret) {
 		t.Helper()
 		sealedBackup(t, ns, name, restoredSource, edit)
 		pass(t, r, name)
 		held(t, name)
-		return getBackup(t, ns, name)
+		b := getBackup(t, ns, name)
+		return b, heldKeys(t, b)
 	}
 	restoring := func(t *testing.T, name, backup string) *lodiav1alpha1.ControlPlane {
 		t.Helper()
@@ -1599,7 +1653,7 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 	}
 
 	t.Run("held until the keys and the restore are there", func(t *testing.T) {
-		b := backup(t, "kept", nil)
+		b, _ := backup(t, "kept", nil)
 		cp := restoring(t, "first", b.Name)
 		deleteBackup(t, b.Name)
 		pass(t, r, b.Name)
@@ -1612,7 +1666,7 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 		released(t, b.Name)
 	})
 	t.Run("held by a restore that completed without its keys", func(t *testing.T) {
-		b := backup(t, "keyless", nil)
+		b, _ := backup(t, "keyless", nil)
 		cp := restoring(t, "keyless", b.Name)
 		completeRestore(t, cp, b)
 		deleteBackup(t, b.Name)
@@ -1634,7 +1688,7 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 		{"ownerless", "beside-ownerless", func(*lodiav1alpha1.ControlPlane) *metav1.OwnerReference { return nil }},
 	} {
 		t.Run("held beside "+c.name+" keys", func(t *testing.T) {
-			b := backup(t, c.backup, nil)
+			b, _ := backup(t, c.backup, nil)
 			cp := restoring(t, c.backup, b.Name)
 			keysOf(t, cp, c.controller(cp))
 			completeRestore(t, cp, b)
@@ -1644,7 +1698,7 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 		})
 	}
 	t.Run("released by the ControlPlane's deletion", func(t *testing.T) {
-		b := backup(t, "orphaned", nil)
+		b, _ := backup(t, "orphaned", nil)
 		cp := controlPlane(ns, "deleted", "no-such-class")
 		cp.Spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: b.Name}}
 		cp.Finalizers = []string{"test.lodia.io/hold"}
@@ -1666,25 +1720,66 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 	})
 	t.Run("not held by a restore of another Backup", func(t *testing.T) {
 		restoring(t, "elsewhere", "another")
-		b := backup(t, "unnamed", nil)
+		b, _ := backup(t, "unnamed", nil)
 		deleteBackup(t, b.Name)
 		pass(t, r, b.Name)
 		released(t, b.Name)
 	})
 	t.Run("a ControlPlane the cache does not hold yet", func(t *testing.T) {
-		b := backup(t, "fresh", nil)
+		b, _ := backup(t, "fresh", nil)
 		restoring(t, "fresh", b.Name)
 		deleteBackup(t, b.Name)
 		blind := &datastore.BackupReconciler{Client: missingControlPlanes{Client: cached}, Reader: apiReader, Clock: clock.RealClock{}}
 		pass(t, blind, b.Name)
 		held(t, b.Name)
 	})
+	t.Run("keys the cache does not hold yet", func(t *testing.T) {
+		b, keys := backup(t, "uncached", nil)
+		cp := restoring(t, "uncached", b.Name)
+		deleteBackup(t, b.Name)
+		blind := &datastore.BackupReconciler{Client: uncachedSecret{Client: cached, name: keys.Name}, Reader: apiReader, Clock: clock.RealClock{}}
+		pass(t, blind, b.Name)
+		held(t, b.Name)
+		ownKeys(t, cp)
+		completeRestore(t, cp, b)
+		pass(t, blind, b.Name)
+		released(t, b.Name)
+		if keysHeld(t, keys) {
+			t.Fatalf("%s is held after its Backup went", keys.Name)
+		}
+	})
 	t.Run("held while the ControlPlanes cannot be listed", func(t *testing.T) {
-		b := backup(t, "unlisted", nil)
+		b, _ := backup(t, "unlisted", nil)
 		deleteBackup(t, b.Name)
 		down := &datastore.BackupReconciler{Client: cached, Reader: unlistedControlPlanes{apiReader}, Clock: clock.RealClock{}}
 		if _, err := reconcileBackup(down, ns, b.Name); !errors.Is(err, errUnlisted) {
 			t.Fatalf("a pass that cannot list the ControlPlanes returned %v, want the List's error", err)
+		}
+		held(t, b.Name)
+		pass(t, r, b.Name)
+		released(t, b.Name)
+	})
+	t.Run("held while its keys cannot be read", func(t *testing.T) {
+		b, keys := backup(t, "unreadable", nil)
+		deleteBackup(t, b.Name)
+		down := &datastore.BackupReconciler{Client: cached, Reader: unreadableSecret{Reader: apiReader, name: keys.Name}, Clock: clock.RealClock{}}
+		if _, err := reconcileBackup(down, ns, b.Name); !errors.Is(err, errUnreadable) {
+			t.Fatalf("a pass that cannot read %s returned %v, want the Get's error", keys.Name, err)
+		}
+		held(t, b.Name)
+		if !keysHeld(t, keys) {
+			t.Fatalf("a pass that cannot read %s let it go", keys.Name)
+		}
+		pass(t, r, b.Name)
+		released(t, b.Name)
+	})
+	t.Run("held while the release of its keys conflicts", func(t *testing.T) {
+		b, keys := backup(t, "conflicting", nil)
+		deleteBackup(t, b.Name)
+		done := false
+		racing := &datastore.BackupReconciler{Client: conflictOnce{Client: cached, name: keys.Name, done: &done}, Reader: apiReader, Clock: clock.RealClock{}}
+		if result, err := reconcileBackup(racing, ns, b.Name); err != nil || result.RequeueAfter != time.Second {
+			t.Fatalf("a pass whose release of %s conflicts returned %+v, %v; want a requeue after a second", keys.Name, result, err)
 		}
 		held(t, b.Name)
 		pass(t, r, b.Name)
@@ -1706,6 +1801,7 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 		{"marked with another UID", "unsealed-marked-elsewhere", func(b *lodiav1alpha1.Backup) {
 			b.Annotations[lodiav1alpha1.SealedUIDAnnotation] = "5e1f7c3a-0000-4000-8000-0000000000ff"
 		}},
+		{"whose seal is lost", "unsealed-seal-lost", readyAs(metav1.ConditionFalse, lodiav1alpha1.ReasonSealLost, "the status did not come back")},
 	} {
 		t.Run("an unsealed Backup "+c.name+" goes at once, its keys first", func(t *testing.T) {
 			b := sealedBackup(t, ns, c.backup, restoredSource, func(b *lodiav1alpha1.Backup) {
@@ -1727,6 +1823,7 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 			b.Annotations = nil
 			b.Finalizers = []string{lodiav1alpha1.RestoreSourceFinalizer}
 		})
+		keys := heldKeys(t, b)
 		cp := restoring(t, "unmarked", b.Name)
 		deleteBackup(t, b.Name)
 		writes := 0
@@ -1740,6 +1837,9 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 		held(t, b.Name)
 		pass(t, r, b.Name)
 		held(t, b.Name)
+		if !keysHeld(t, keys) {
+			t.Fatalf("the pass that marked Backup %s let %s go while a restore lacks it", b.Name, keys.Name)
+		}
 		if mark := getBackup(t, ns, b.Name).Annotations[lodiav1alpha1.SealedUIDAnnotation]; mark != string(b.UID) {
 			t.Fatalf("Backup %s is marked %q, want its UID %s", b.Name, mark, b.UID)
 		}
@@ -1749,8 +1849,7 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 		released(t, b.Name)
 	})
 	t.Run("its keys outlast a foreground deletion and go first", func(t *testing.T) {
-		b := backup(t, "foreground", nil)
-		keys := heldKeys(t, b)
+		b, keys := backup(t, "foreground", nil)
 		cp := restoring(t, "foreground", b.Name)
 		deleteBackup(t, b.Name, client.PropagationPolicy(metav1.DeletePropagationForeground))
 		if err := k8s.Delete(t.Context(), keys); err != nil {
@@ -1780,6 +1879,53 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 			t.Fatalf("Backup %s has finalizers %v, want only the garbage collector's", b.Name, finalizers)
 		}
 	})
+	t.Run("not held by a restore created once its keys went in a foreground deletion", func(t *testing.T) {
+		b, keys := backup(t, "late-foreground", nil)
+		deleteBackup(t, b.Name, client.PropagationPolicy(metav1.DeletePropagationForeground))
+		if err := k8s.Delete(t.Context(), keys); err != nil {
+			t.Fatal(err)
+		}
+		done := false
+		racing := &datastore.BackupReconciler{Client: conflictOnce{Client: cached, name: b.Name, before: func() { restoring(t, "late-foreground", b.Name) }, done: &done}, Reader: apiReader, Clock: clock.RealClock{}}
+		pass(t, racing, b.Name)
+		eventually(t, func() error { return gone(k8s.Get(t.Context(), client.ObjectKeyFromObject(keys), &corev1.Secret{})) })
+		completeRestore(t, getControlPlane(t, ns, "late-foreground"), b)
+		pass(t, r, b.Name)
+		if finalizers := getBackup(t, ns, b.Name).Finalizers; !reflect.DeepEqual(finalizers, []string{metav1.FinalizerDeleteDependents}) {
+			t.Fatalf("Backup %s has finalizers %v, want only the garbage collector's", b.Name, finalizers)
+		}
+	})
+	t.Run("held by a restore created once its keys were let go in a background deletion", func(t *testing.T) {
+		b, keys := backup(t, "late-background", nil)
+		deleteBackup(t, b.Name)
+		done := false
+		racing := &datastore.BackupReconciler{Client: conflictOnce{Client: cached, name: b.Name, before: func() { restoring(t, "late-background", b.Name) }, done: &done}, Reader: apiReader, Clock: clock.RealClock{}}
+		pass(t, racing, b.Name)
+		if keysHeld(t, keys) {
+			t.Fatalf("%s is still held after the release let it go", keys.Name)
+		}
+		late := getControlPlane(t, ns, "late-background")
+		pass(t, r, b.Name)
+		held(t, b.Name)
+		ownKeys(t, late)
+		pass(t, r, b.Name)
+		held(t, b.Name)
+		completeRestore(t, late, b)
+		pass(t, r, b.Name)
+		released(t, b.Name)
+	})
+	t.Run("not held by a restore without keys once its keys lost their controller", func(t *testing.T) {
+		b, keys := backup(t, "orphaned-keys", nil)
+		restoring(t, "orphaned-keys", b.Name)
+		deleteBackup(t, b.Name, client.PropagationPolicy(metav1.DeletePropagationOrphan))
+		if err := k8s.Patch(t.Context(), keys, client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"ownerReferences":null}}`))); err != nil {
+			t.Fatal(err)
+		}
+		pass(t, r, b.Name)
+		if finalizers := getBackup(t, ns, b.Name).Finalizers; !reflect.DeepEqual(finalizers, []string{metav1.FinalizerOrphanDependents}) {
+			t.Fatalf("Backup %s has finalizers %v, want only the garbage collector's", b.Name, finalizers)
+		}
+	})
 }
 
 type missingControlPlanes struct {
@@ -1799,6 +1945,7 @@ func TestTheRestoreSourceFinalizerFollowsItsEvents(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			s := &source{ns: namespace(t)}
 			backup := sealedBackup(t, s.ns, name, restoredSource, nil)
+			heldKeys(t, backup)
 			runBackupReconciler(t, s)
 			awaitBackup(t, s.ns, backup.Name, func(b *lodiav1alpha1.Backup) error {
 				if !controllerutil.ContainsFinalizer(b, lodiav1alpha1.RestoreSourceFinalizer) {
