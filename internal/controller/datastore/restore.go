@@ -122,8 +122,8 @@ func restoreTaskMeta(cp *lodiav1alpha1.ControlPlane) metav1.ObjectMeta {
 // restoreFrom may be created from rendered: the Backup is sealed, fits, and
 // is in the class's store, and its copy into the ControlPlane's prefix has
 // succeeded; an Etcd started on an empty prefix would start empty. Nil means
-// it may. A Backup being deleted restores too: its finalizer keeps it for the
-// restores that name it.
+// it may. A sealed Backup being deleted restores too: its finalizer keeps it
+// for the restores that name it.
 func (r *Reconciler) restoreFirst(ctx context.Context, cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, rendered *druidv1alpha1.Etcd) (*metav1.Condition, time.Duration, error) {
 	name := cp.Spec.RestoreFrom.BackupRef.Name
 	backup := &lodiav1alpha1.Backup{}

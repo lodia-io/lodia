@@ -88,8 +88,10 @@ const (
 	SealedUIDAnnotation = "lodia.io/sealed-uid"
 
 	// RestoreSourceFinalizer, held by the backup reconciler of the Datastore
-	// controller, keeps a Backup until every ControlPlane restoring from it
-	// has an encryption configuration of its own and a completed restore.
+	// controller, keeps a sealed Backup and its <backup>.encryption-config
+	// until every ControlPlane restoring from it has an encryption
+	// configuration of its own and a completed restore; an unsealed Backup
+	// goes at once.
 	RestoreSourceFinalizer = "lodia.io/restore-source"
 )
 

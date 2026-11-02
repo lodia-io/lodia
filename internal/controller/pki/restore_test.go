@@ -149,9 +149,32 @@ func TestARestoreWaitsForItsBackup(t *testing.T) {
 			setReady(t, b, metav1.ConditionUnknown, lodiav1alpha1.ReasonCopying)
 			writeBackupKeys(t, b, controllerOf(b), true, encryptionConfiguration(t, secretboxKey()))
 		}, notSealed},
+		{"a Backup waiting for its source", func(t *testing.T, namespace string) {
+			setReady(t, newBackup(t, namespace), metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore)
+		}, notSealed},
+		{"a Backup whose source is not created yet", func(t *testing.T, namespace string) {
+			setReady(t, newBackup(t, namespace), metav1.ConditionFalse, lodiav1alpha1.ReasonControlPlaneNotFound)
+		}, notSealed},
+		{"a Backup whose source is gone", func(t *testing.T, namespace string) {
+			b := newBackup(t, namespace)
+			b.Status.StartedAt = new(metav1.Now())
+			setReady(t, b, metav1.ConditionFalse, lodiav1alpha1.ReasonControlPlaneNotFound)
+		}, "Backup " + backupName + " is ControlPlaneNotFound: ControlPlaneNotFound; restore another Backup"},
 		{"a Backup that failed", func(t *testing.T, namespace string) {
 			setReady(t, newBackup(t, namespace), metav1.ConditionFalse, lodiav1alpha1.ReasonFailed)
-		}, notSealed},
+		}, "Backup " + backupName + " is Failed: Failed; restore another Backup"},
+		{"a Backup without a store", func(t *testing.T, namespace string) {
+			setReady(t, newBackup(t, namespace), metav1.ConditionFalse, lodiav1alpha1.ReasonNoBackupStore)
+		}, "Backup " + backupName + " is NoBackupStore: NoBackupStore; restore another Backup"},
+		{"an unsupported Backup", func(t *testing.T, namespace string) {
+			setReady(t, newBackup(t, namespace), metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported)
+		}, "Backup " + backupName + " is Unsupported: Unsupported; restore another Backup"},
+		{"a Backup whose seal is lost", func(t *testing.T, namespace string) {
+			setReady(t, newBackup(t, namespace), metav1.ConditionFalse, lodiav1alpha1.ReasonSealLost)
+		}, "Backup " + backupName + " is SealLost: SealLost; restore another Backup"},
+		{"a Backup whose keys another controls", func(t *testing.T, namespace string) {
+			setReady(t, newBackup(t, namespace), metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere)
+		}, "Backup " + backupName + " is ObjectsControlledElsewhere: ObjectsControlledElsewhere; restore another Backup"},
 		{"no keys", func(t *testing.T, namespace string) {
 			setReady(t, newBackup(t, namespace), metav1.ConditionTrue, lodiav1alpha1.ReasonCompleted)
 		}, notItsKeys},
@@ -284,6 +307,35 @@ func TestUnreadableBackupKeysAreNeverReplaced(t *testing.T) {
 	}
 }
 
+func TestARestoreTakesKeysBeingDeleted(t *testing.T) {
+	ctx := t.Context()
+	cp := controlPlane(t, "pki-restore-keys-deleted", restoring)
+	publishEndpoint(t, cp)
+	b := seal(t, cp.Namespace, encryptionConfiguration(t, aescbcKey(), secretboxKey()))
+	want := backupProviders(t, b)
+	keys := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: backupKeys, Namespace: cp.Namespace}}
+	patch := client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"finalizers":["`+lodiav1alpha1.RestoreSourceFinalizer+`"]}}`))
+	if err := k8s.Patch(ctx, keys, patch); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := k8s.Patch(context.Background(), keys, client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"finalizers":null}}`))); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := k8s.Delete(ctx, keys); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Get(ctx, client.ObjectKeyFromObject(keys), keys); err != nil || keys.DeletionTimestamp.IsZero() {
+		t.Fatalf("%s is not being deleted: %v", backupKeys, err)
+	}
+	reconcile(t, newReconciler(time.Hour), cp)
+	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+	if got := writtenProviders(t, cp)[1:]; !reflect.DeepEqual(got, want) {
+		t.Errorf("the configuration holds %+v after its new key, want the Backup's %+v", got, want)
+	}
+}
+
 func TestATransientErrorReadingTheBackupWritesNothing(t *testing.T) {
 	ctx := t.Context()
 	r := newReconciler(time.Hour)
@@ -315,7 +367,7 @@ func TestATransientErrorReadingTheBackupWritesNothing(t *testing.T) {
 }
 
 func TestARestoreGoesOnWhenItsBackupCompletes(t *testing.T) {
-	cp := controlPlane(t, "pki-restore-watch", restoring)
+	cp := controlPlane(t, "pki-restore-watch-"+strconv.FormatInt(time.Now().UnixNano(), 36), restoring)
 	publishEndpoint(t, cp)
 	b := newBackup(t, cp.Namespace)
 	setReady(t, b, metav1.ConditionUnknown, lodiav1alpha1.ReasonCopying)
@@ -354,6 +406,7 @@ func TestARestoreGoesOnWhenItsBackupCompletes(t *testing.T) {
 		c := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady)
 		return c != nil && c.Reason == lodiav1alpha1.ReasonWaitingForBackup && secretsOf(t, cp)["dev-etcd-ca-1"] != nil
 	})
+	settled(t, cp)
 	writeBackupKeys(t, b, controllerOf(b), true, encryptionConfiguration(t, secretboxKey()))
 	setReady(t, b, metav1.ConditionTrue, lodiav1alpha1.ReasonCompleted)
 	waitFor(t, 30*time.Second, func() bool {
@@ -363,6 +416,19 @@ func TestARestoreGoesOnWhenItsBackupCompletes(t *testing.T) {
 	if got := writtenProviders(t, cp)[1:]; !reflect.DeepEqual(got, backupProviders(t, b)) {
 		t.Errorf("the configuration holds %+v after its new key, want the Backup's", got)
 	}
+}
+
+func settled(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+	t.Helper()
+	secrets, status := resourceVersions(t, cp)
+	since := time.Now()
+	waitFor(t, 30*time.Second, func() bool {
+		after, afterStatus := resourceVersions(t, cp)
+		if !maps.Equal(after, secrets) || afterStatus != status {
+			secrets, status, since = after, afterStatus, time.Now()
+		}
+		return time.Since(since) >= 2*time.Second
+	})
 }
 
 type noBackupReads struct {
