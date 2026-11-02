@@ -1559,6 +1559,20 @@ func (r unlistedControlPlanes) List(ctx context.Context, list client.ObjectList,
 	return r.Reader.List(ctx, list, opts...)
 }
 
+type unreadableSecret struct {
+	client.Reader
+	name string
+}
+
+var errUnreadable = errors.New("injected: the Secret cannot be read")
+
+func (r unreadableSecret) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if key.Name == r.name {
+		return errUnreadable
+	}
+	return r.Reader.Get(ctx, key, obj, opts...)
+}
+
 type uncachedSecret struct {
 	client.Client
 	name string
@@ -1724,11 +1738,18 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 	})
 	t.Run("keys the cache does not hold yet", func(t *testing.T) {
 		b, keys := backup(t, "uncached", nil)
-		restoring(t, "uncached", b.Name)
+		cp := restoring(t, "uncached", b.Name)
 		deleteBackup(t, b.Name)
 		blind := &datastore.BackupReconciler{Client: uncachedSecret{Client: cached, name: keys.Name}, Reader: apiReader, Clock: clock.RealClock{}}
 		pass(t, blind, b.Name)
 		held(t, b.Name)
+		ownKeys(t, cp)
+		completeRestore(t, cp, b)
+		pass(t, blind, b.Name)
+		released(t, b.Name)
+		if keysHeld(t, keys) {
+			t.Fatalf("%s is held after its Backup went", keys.Name)
+		}
 	})
 	t.Run("held while the ControlPlanes cannot be listed", func(t *testing.T) {
 		b, _ := backup(t, "unlisted", nil)
@@ -1736,6 +1757,32 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 		down := &datastore.BackupReconciler{Client: cached, Reader: unlistedControlPlanes{apiReader}, Clock: clock.RealClock{}}
 		if _, err := reconcileBackup(down, ns, b.Name); !errors.Is(err, errUnlisted) {
 			t.Fatalf("a pass that cannot list the ControlPlanes returned %v, want the List's error", err)
+		}
+		held(t, b.Name)
+		pass(t, r, b.Name)
+		released(t, b.Name)
+	})
+	t.Run("held while its keys cannot be read", func(t *testing.T) {
+		b, keys := backup(t, "unreadable", nil)
+		deleteBackup(t, b.Name)
+		down := &datastore.BackupReconciler{Client: cached, Reader: unreadableSecret{Reader: apiReader, name: keys.Name}, Clock: clock.RealClock{}}
+		if _, err := reconcileBackup(down, ns, b.Name); !errors.Is(err, errUnreadable) {
+			t.Fatalf("a pass that cannot read %s returned %v, want the Get's error", keys.Name, err)
+		}
+		held(t, b.Name)
+		if !keysHeld(t, keys) {
+			t.Fatalf("a pass that cannot read %s let it go", keys.Name)
+		}
+		pass(t, r, b.Name)
+		released(t, b.Name)
+	})
+	t.Run("held while the release of its keys conflicts", func(t *testing.T) {
+		b, keys := backup(t, "conflicting", nil)
+		deleteBackup(t, b.Name)
+		done := false
+		racing := &datastore.BackupReconciler{Client: conflictOnce{Client: cached, name: keys.Name, done: &done}, Reader: apiReader, Clock: clock.RealClock{}}
+		if result, err := reconcileBackup(racing, ns, b.Name); err != nil || result.RequeueAfter != time.Second {
+			t.Fatalf("a pass whose release of %s conflicts returned %+v, %v; want a requeue after a second", keys.Name, result, err)
 		}
 		held(t, b.Name)
 		pass(t, r, b.Name)
@@ -1757,6 +1804,7 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 		{"marked with another UID", "unsealed-marked-elsewhere", func(b *lodiav1alpha1.Backup) {
 			b.Annotations[lodiav1alpha1.SealedUIDAnnotation] = "5e1f7c3a-0000-4000-8000-0000000000ff"
 		}},
+		{"whose seal is lost", "unsealed-seal-lost", readyAs(metav1.ConditionFalse, lodiav1alpha1.ReasonSealLost, "the status did not come back")},
 	} {
 		t.Run("an unsealed Backup "+c.name+" goes at once, its keys first", func(t *testing.T) {
 			b := sealedBackup(t, ns, c.backup, restoredSource, func(b *lodiav1alpha1.Backup) {
@@ -1778,7 +1826,7 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 			b.Annotations = nil
 			b.Finalizers = []string{lodiav1alpha1.RestoreSourceFinalizer}
 		})
-		heldKeys(t, b)
+		keys := heldKeys(t, b)
 		cp := restoring(t, "unmarked", b.Name)
 		deleteBackup(t, b.Name)
 		writes := 0
@@ -1792,6 +1840,9 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 		held(t, b.Name)
 		pass(t, r, b.Name)
 		held(t, b.Name)
+		if !keysHeld(t, keys) {
+			t.Fatalf("the pass that marked Backup %s let %s go while a restore lacks it", b.Name, keys.Name)
+		}
 		if mark := getBackup(t, ns, b.Name).Annotations[lodiav1alpha1.SealedUIDAnnotation]; mark != string(b.UID) {
 			t.Fatalf("Backup %s is marked %q, want its UID %s", b.Name, mark, b.UID)
 		}
