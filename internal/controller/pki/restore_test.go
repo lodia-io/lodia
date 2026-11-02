@@ -344,7 +344,7 @@ func TestATransientErrorReadingTheBackupWritesNothing(t *testing.T) {
 }
 
 func TestARestoreGoesOnWhenItsBackupCompletes(t *testing.T) {
-	cp := controlPlane(t, "pki-restore-watch", restoring)
+	cp := controlPlane(t, "pki-restore-watch-"+strconv.FormatInt(time.Now().UnixNano(), 36), restoring)
 	publishEndpoint(t, cp)
 	b := newBackup(t, cp.Namespace)
 	setReady(t, b, metav1.ConditionUnknown, lodiav1alpha1.ReasonCopying)
@@ -383,6 +383,7 @@ func TestARestoreGoesOnWhenItsBackupCompletes(t *testing.T) {
 		c := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady)
 		return c != nil && c.Reason == lodiav1alpha1.ReasonWaitingForBackup && secretsOf(t, cp)["dev-etcd-ca-1"] != nil
 	})
+	settled(t, cp)
 	writeBackupKeys(t, b, controllerOf(b), true, encryptionConfiguration(t, secretboxKey()))
 	setReady(t, b, metav1.ConditionTrue, lodiav1alpha1.ReasonCompleted)
 	waitFor(t, 30*time.Second, func() bool {
@@ -392,6 +393,19 @@ func TestARestoreGoesOnWhenItsBackupCompletes(t *testing.T) {
 	if got := writtenProviders(t, cp)[1:]; !reflect.DeepEqual(got, backupProviders(t, b)) {
 		t.Errorf("the configuration holds %+v after its new key, want the Backup's", got)
 	}
+}
+
+func settled(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+	t.Helper()
+	secrets, status := resourceVersions(t, cp)
+	since := time.Now()
+	waitFor(t, 30*time.Second, func() bool {
+		after, afterStatus := resourceVersions(t, cp)
+		if !maps.Equal(after, secrets) || afterStatus != status {
+			secrets, status, since = after, afterStatus, time.Now()
+		}
+		return time.Since(since) >= 2*time.Second
+	})
 }
 
 type noBackupReads struct {
