@@ -205,3 +205,4 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 ## From the restore's hold (2026-11-02)
 
 - The `Compact` layout, once built, renders a held restore's pod without the controller-manager container on the hold the `Split` layout renders as 0 replicas (`release` and `ran` in `internal/controller/workloads/workloads.go`); `Compact` is `Unsupported` until then (restore-replaces-the-source, compact-layout).
+- Health lists seven kinds in a held restore's tenant every period, a page of 500 each (`actedOn` in `internal/controller/health/health.go`); if inert tenants grow large, list them less often than the probe runs.

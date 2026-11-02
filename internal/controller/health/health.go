@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -29,9 +30,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilnet "k8s.io/apimachinery/pkg/util/net"
+	admissionregistrationv1client "k8s.io/client-go/kubernetes/typed/admissionregistration/v1"
+	batchv1client "k8s.io/client-go/kubernetes/typed/batch/v1"
 	coordinationv1client "k8s.io/client-go/kubernetes/typed/coordination/v1"
+	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	apiregistrationv1client "k8s.io/kube-aggregator/pkg/client/clientset_generated/clientset/typed/apiregistration/v1"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -45,6 +50,7 @@ import (
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/live"
 	"go.lodia.io/lodia/internal/ownership"
+	"go.lodia.io/lodia/internal/restore"
 )
 
 const (
@@ -73,13 +79,23 @@ type Reconciler struct {
 }
 
 // clients reach one control plane: the probe while its CA bundle stays the
-// same, the Leases while Lodia's kubeconfig does.
+// same, the tenant while Lodia's kubeconfig does.
 type clients struct {
 	bundle     []byte
 	probe      *http.Client
 	kubeconfig []byte
-	leases     coordinationv1client.LeaseInterface
+	tenant     *tenant
 	transport  *http.Client
+}
+
+// tenant reads inside a control plane as Lodia, every client over the same
+// transport.
+type tenant struct {
+	leases       coordinationv1client.LeaseInterface
+	core         corev1client.CoreV1Interface
+	admission    admissionregistrationv1client.AdmissionregistrationV1Interface
+	registration apiregistrationv1client.ApiregistrationV1Interface
+	batch        batchv1client.BatchV1Interface
 }
 
 // renewal is the version of a leader Lease Health saw last, and when it saw
@@ -217,9 +233,23 @@ func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 	if ref := ownership.ControlledElsewhere(secret, cp); ref != nil {
 		return waiting(fmt.Sprintf("Secret %s is kept by %s %s with UID %s", name, ref.Kind, ref.Name, ref.UID))
 	}
-	tenant, err := r.leases(key, secret.Data[lodiav1alpha1.KubeconfigKey])
+	tenant, err := r.tenant(key, secret.Data[lodiav1alpha1.KubeconfigKey])
 	if err != nil {
 		return nil, err
+	}
+	if restoring := cp.Spec.RestoreFrom; restoring != nil {
+		if restoring.Release != lodiav1alpha1.RestoreReleased {
+			return newCondition(cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionFalse, lodiav1alpha1.ReasonAwaitingRelease,
+				"spec.restoreFrom.release is Held; once released, the controller manager acts on: "+r.actedOn(ctx, tenant)), nil
+		}
+		source, err := restore.Source(ctx, r.Client, cp)
+		if err != nil {
+			return nil, err
+		}
+		if source != nil {
+			return newCondition(cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionFalse, lodiav1alpha1.ReasonSourceExists,
+				fmt.Sprintf("ControlPlane %s (UID %s), the Backup's source, still exists in the namespace; delete it to release this one", source.Name, source.UID)), nil
+		}
 	}
 	reading, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
@@ -229,7 +259,7 @@ func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 		{lodiav1alpha1.ControllerManagerLease, lodiav1alpha1.ReasonControllerManagerNotLeading},
 		{lodiav1alpha1.SchedulerLease, lodiav1alpha1.ReasonSchedulerNotLeading},
 	} {
-		lease, err := tenant.Get(reading, l.name, metav1.GetOptions{})
+		lease, err := tenant.leases.Get(reading, l.name, metav1.GetOptions{})
 		var message string
 		switch {
 		case apierrors.IsNotFound(err):
@@ -250,6 +280,167 @@ func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 	}
 	return newCondition(cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading,
 		"the leader Leases of kube-controller-manager and kube-scheduler are renewed"), nil
+}
+
+// listLimit is the page of each list actedOn reads; the kinds select by no
+// field it needs, so it filters on the client and counts the first page.
+const listLimit = 500
+
+// actedOn counts, kind by kind, what a held restore's controller manager acts
+// on outside the cluster once it runs, naming the first three by name; a kind
+// that cannot be listed says so in its place.
+func (r *Reconciler) actedOn(ctx context.Context, t *tenant) string {
+	page := metav1.ListOptions{Limit: listLimit}
+	type list struct {
+		kind string
+		read func(context.Context) (names []string, more bool, err error)
+	}
+	var out []string
+	for _, item := range []struct {
+		what  string
+		lists []list
+	}{
+		{"LoadBalancer Services", []list{{"Services", func(ctx context.Context) ([]string, bool, error) {
+			l, err := t.core.Services("").List(ctx, page)
+			if err != nil {
+				return nil, false, err
+			}
+			var names []string
+			for _, s := range l.Items {
+				if s.Spec.Type == corev1.ServiceTypeLoadBalancer {
+					names = append(names, s.Namespace+"/"+s.Name)
+				}
+			}
+			return names, l.Continue != "", nil
+		}}}},
+		{"PersistentVolumes with reclaimPolicy Delete", []list{{"PersistentVolumes", func(ctx context.Context) ([]string, bool, error) {
+			l, err := t.core.PersistentVolumes().List(ctx, page)
+			if err != nil {
+				return nil, false, err
+			}
+			var names []string
+			for _, v := range l.Items {
+				if v.Spec.PersistentVolumeReclaimPolicy == corev1.PersistentVolumeReclaimDelete {
+					names = append(names, v.Name)
+				}
+			}
+			return names, l.Continue != "", nil
+		}}}},
+		{"pending PersistentVolumeClaims", []list{{"PersistentVolumeClaims", func(ctx context.Context) ([]string, bool, error) {
+			l, err := t.core.PersistentVolumeClaims("").List(ctx, page)
+			if err != nil {
+				return nil, false, err
+			}
+			var names []string
+			for _, c := range l.Items {
+				if c.Status.Phase == corev1.ClaimPending {
+					names = append(names, c.Namespace+"/"+c.Name)
+				}
+			}
+			return names, l.Continue != "", nil
+		}}}},
+		{"webhooks that call a URL or fail closed", []list{
+			{"ValidatingWebhookConfigurations", func(ctx context.Context) ([]string, bool, error) {
+				l, err := t.admission.ValidatingWebhookConfigurations().List(ctx, page)
+				if err != nil {
+					return nil, false, err
+				}
+				var names []string
+				for _, c := range l.Items {
+					for _, w := range c.Webhooks {
+						if actsOutside(w.ClientConfig, w.FailurePolicy) {
+							names = append(names, c.Name+"/"+w.Name)
+						}
+					}
+				}
+				return names, l.Continue != "", nil
+			}},
+			{"MutatingWebhookConfigurations", func(ctx context.Context) ([]string, bool, error) {
+				l, err := t.admission.MutatingWebhookConfigurations().List(ctx, page)
+				if err != nil {
+					return nil, false, err
+				}
+				var names []string
+				for _, c := range l.Items {
+					for _, w := range c.Webhooks {
+						if actsOutside(w.ClientConfig, w.FailurePolicy) {
+							names = append(names, c.Name+"/"+w.Name)
+						}
+					}
+				}
+				return names, l.Continue != "", nil
+			}},
+		}},
+		{"APIServices served by a Service", []list{{"APIServices", func(ctx context.Context) ([]string, bool, error) {
+			l, err := t.registration.APIServices().List(ctx, page)
+			if err != nil {
+				return nil, false, err
+			}
+			var names []string
+			for _, a := range l.Items {
+				if a.Spec.Service != nil {
+					names = append(names, a.Name)
+				}
+			}
+			return names, l.Continue != "", nil
+		}}}},
+		{"CronJobs not suspended", []list{{"CronJobs", func(ctx context.Context) ([]string, bool, error) {
+			l, err := t.batch.CronJobs("").List(ctx, page)
+			if err != nil {
+				return nil, false, err
+			}
+			var names []string
+			for _, j := range l.Items {
+				if !ptr.Deref(j.Spec.Suspend, false) {
+					names = append(names, j.Namespace+"/"+j.Name)
+				}
+			}
+			return names, l.Continue != "", nil
+		}}}},
+	} {
+		var names, failed []string
+		more := false
+		for _, l := range item.lists {
+			listing, cancel := context.WithTimeout(ctx, r.Timeout)
+			got, next, err := l.read(listing)
+			cancel()
+			if err != nil {
+				logf.FromContext(ctx).Error(err, "list in the tenant", "kind", l.kind)
+				failed = append(failed, l.kind)
+				continue
+			}
+			names, more = append(names, got...), more || next
+		}
+		if len(failed) > 0 {
+			out = append(out, strings.Join(failed, " and ")+" could not be listed")
+			continue
+		}
+		out = append(out, counted(item.what, names, more))
+	}
+	return strings.Join(out, "; ")
+}
+
+// actsOutside says whether a webhook calls a URL, which may be outside the
+// cluster, or fails closed, Fail being admissionregistration/v1's default
+// (https://github.com/kubernetes/api/blob/v0.37.1/admissionregistration/v1/types.go#L814-L817).
+func actsOutside(config admissionregistrationv1.WebhookClientConfig, policy *admissionregistrationv1.FailurePolicyType) bool {
+	return config.URL != nil || ptr.Deref(policy, admissionregistrationv1.Fail) == admissionregistrationv1.Fail
+}
+
+func counted(what string, names []string, more bool) string {
+	n := strconv.Itoa(len(names))
+	if more {
+		n += " or more"
+	}
+	if len(names) == 0 {
+		return n + " " + what
+	}
+	slices.Sort(names)
+	shown := strings.Join(names[:min(3, len(names))], ", ")
+	if len(names) > 3 || more {
+		shown += "…"
+	}
+	return n + " " + what + " (" + shown + ")"
 }
 
 // stale says why lease does not lead, or nothing when it does.
@@ -328,15 +519,15 @@ func (r *Reconciler) prober(key types.NamespacedName, bundle []byte) *http.Clien
 	return c.probe
 }
 
-// leases reads the tenant's leader Leases as Lodia, through the in-namespace
-// Service, which is never behind a proxy from the environment. The client of
-// a previous kubeconfig closes its idle connections.
-func (r *Reconciler) leases(key types.NamespacedName, kubeconfig []byte) (coordinationv1client.LeaseInterface, error) {
+// tenant reads inside the tenant as Lodia, through the in-namespace Service,
+// which is never behind a proxy from the environment. The clients of a
+// previous kubeconfig close their idle connections.
+func (r *Reconciler) tenant(key types.NamespacedName, kubeconfig []byte) (*tenant, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	c := r.clientsOf(key)
-	if c.leases != nil && bytes.Equal(c.kubeconfig, kubeconfig) {
-		return c.leases, nil
+	if c.tenant != nil && bytes.Equal(c.kubeconfig, kubeconfig) {
+		return c.tenant, nil
 	}
 	cfg, err := clientcmd.RESTConfigFromKubeConfig(kubeconfig)
 	if err != nil {
@@ -348,15 +539,38 @@ func (r *Reconciler) leases(key types.NamespacedName, kubeconfig []byte) (coordi
 	if err != nil {
 		return nil, err
 	}
-	leases, err := coordinationv1client.NewForConfigAndClient(cfg, transport)
+	coordination, err := coordinationv1client.NewForConfigAndClient(cfg, transport)
+	if err != nil {
+		return nil, err
+	}
+	core, err := corev1client.NewForConfigAndClient(cfg, transport)
+	if err != nil {
+		return nil, err
+	}
+	admission, err := admissionregistrationv1client.NewForConfigAndClient(cfg, transport)
+	if err != nil {
+		return nil, err
+	}
+	registration, err := apiregistrationv1client.NewForConfigAndClient(cfg, transport)
+	if err != nil {
+		return nil, err
+	}
+	batch, err := batchv1client.NewForConfigAndClient(cfg, transport)
 	if err != nil {
 		return nil, err
 	}
 	if c.transport != nil {
 		utilnet.CloseIdleConnectionsFor(c.transport.Transport)
 	}
-	c.kubeconfig, c.leases, c.transport = kubeconfig, leases.Leases(lodiav1alpha1.LeaderElectionNamespace), transport
-	return c.leases, nil
+	c.kubeconfig, c.transport = kubeconfig, transport
+	c.tenant = &tenant{
+		leases:       coordination.Leases(lodiav1alpha1.LeaderElectionNamespace),
+		core:         core,
+		admission:    admission,
+		registration: registration,
+		batch:        batch,
+	}
+	return c.tenant, nil
 }
 
 // probe returns the status code the endpoint answered with, or 0 for none.

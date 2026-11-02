@@ -103,4 +103,5 @@ A ValidatingAdmissionPolicy could require a `restore` verb on the named `Backup`
 - `internal/controller/datastore/backup.go` — the backup reconciler: the seal, the snapshot it waits for, the copy, the encryption keys and the mark; `etcdclient.go` dials a tenant's etcd for it.
 - `internal/restore` — the source both Workloads and Health look for.
 - `internal/controller/workloads/workloads.go` — `release`, the held message and the hold, `ran`, the record of the release, and `replacements`, which brings a pass for each `ControlPlane` whose source changes; `restore_test.go` holds them.
+- `internal/controller/health/health.go` — `AwaitingRelease`, with what `actedOn` lists in the tenant, and `SourceExists`; `restore_test.go` holds them.
 - `test/e2e/restore_test.go` — the gate's `TestRestoreGate`, so far up to a `Completed` `Backup` on a real etcd-druid and S3 store.
