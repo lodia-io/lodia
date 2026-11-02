@@ -199,7 +199,7 @@ spec:
                 - serviceCIDRs
                 type: object
               seal:
-                description: Seal is what the copy holds.
+                description: Seal is the key the copy is checked by.
                 properties:
                   quotaBackendBytes:
                     anyOf:
