@@ -148,6 +148,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if cp.Spec.Paused {
 		return ctrl.Result{}, nil
 	}
+	// A restore decides from its own status and carries it into every apply,
+	// read live, since the cache can lag behind this controller's own last
+	// write.
+	if cp.Spec.RestoreFrom != nil {
+		if err := live.Datastore(ctx, r.Reader, cp, lodiav1alpha1.ConditionDatastoreReady, lodiav1alpha1.ConditionBackupReady); err != nil {
+			return ctrl.Result{}, fmt.Errorf("read ControlPlane %s: %w", cp.Name, err)
+		}
+	}
 	if cp.Spec.Datastore.Dedicated == nil {
 		if !cp.DeletionTimestamp.IsZero() {
 			return ctrl.Result{}, nil
@@ -155,7 +163,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		unsupported := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, "spec.datastore.shared is not supported yet")
 		backup := unsupported
 		backup.Type = lodiav1alpha1.ConditionBackupReady
-		return ctrl.Result{}, r.applyStatus(ctx, cp, nil, unsupported, backup)
+		return ctrl.Result{}, r.applyStatus(ctx, cp, nil, cp.Status.Restore, unsupported, backup)
 	}
 	if !cp.DeletionTimestamp.IsZero() {
 		requeueAfter, err := r.finalize(ctx, cp)
@@ -176,7 +184,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		first := newCondition(metav1.ConditionUnknown, lodiav1alpha1.ReasonReconciling, "the first pass has not finished")
 		backup := first
 		backup.Type = lodiav1alpha1.ConditionBackupReady
-		if err := r.applyStatus(ctx, cp, cp.Status.Datastore, first, backup); err != nil {
+		if err := r.applyStatus(ctx, cp, cp.Status.Datastore, cp.Status.Restore, first, backup); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -185,7 +193,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 	if restore == nil {
-		restore = restoreOf(cp)
+		restore = cp.Status.Restore
 	}
 	// The policy follows an Etcd of this ControlPlane's and is reported over
 	// the etcd's own state only when that is ready.
@@ -202,7 +210,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		err = errors.Join(err, policyErr)
 	}
-	if statusErr := r.applyStatus(ctx, cp, datastoreStatus(etcd, sts, restore), condition, backupReady(etcd)); statusErr != nil || err != nil {
+	if statusErr := r.applyStatus(ctx, cp, datastoreStatus(etcd, sts), restore, condition, backupReady(etcd)); statusErr != nil || err != nil {
 		return ctrl.Result{}, errors.Join(err, statusErr)
 	}
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
@@ -211,13 +219,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 // reconcileEtcd returns the restore's status when this pass found it
 // complete.
 func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*druidv1alpha1.Etcd, *appsv1.StatefulSet, *lodiav1alpha1.RestoreStatus, metav1.Condition, time.Duration, error) {
-	// A restore decides from its own status, read live, since the cache can
-	// lag behind this controller's own last write.
-	if cp.Spec.RestoreFrom != nil {
-		if err := live.Datastore(ctx, r.Reader, cp, lodiav1alpha1.ConditionDatastoreReady, lodiav1alpha1.ConditionBackupReady); err != nil {
-			return nil, nil, nil, metav1.Condition{}, 0, fmt.Errorf("read ControlPlane %s: %w", cp.Name, err)
-		}
-	}
 	current, err := r.currentEtcd(ctx, cp)
 	if err != nil {
 		return nil, nil, nil, metav1.Condition{}, 0, err
@@ -341,7 +342,7 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.Contro
 		switch {
 		case cp.Spec.RestoreFrom == nil:
 			first, err = r.caPredates(ctx, cp)
-		case restoreOf(cp) == nil:
+		case cp.Status.Restore == nil:
 			first, requeueAfter, err = r.restoreFirst(ctx, cp, class, rendered)
 		}
 		if first == nil && err != nil {
@@ -373,7 +374,7 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.Contro
 	switch {
 	case check.condition != nil:
 		condition = *check.condition
-	case cp.Spec.RestoreFrom == nil || check.restored != nil || restoreOf(cp) != nil:
+	case cp.Spec.RestoreFrom == nil || check.restored != nil || cp.Status.Restore != nil:
 	case check.unanswered:
 		condition = *restoring("waiting for etcd of " + cp.Name + " to answer")
 	default:
@@ -741,7 +742,7 @@ func (r *Reconciler) finalize(ctx context.Context, cp *lodiav1alpha1.ControlPlan
 		etcd = nil
 	}
 	deleting := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonDeleting, "the ControlPlane is being deleted: the Etcd goes first, then its claims as the class says")
-	if err := r.applyStatus(ctx, cp, datastoreStatus(etcd, nil, restoreOf(cp)), deleting, backupReady(etcd)); err != nil {
+	if err := r.applyStatus(ctx, cp, datastoreStatus(etcd, nil), cp.Status.Restore, deleting, backupReady(etcd)); err != nil {
 		return 0, err
 	}
 	// A claim no pass has labelled yet can only be this Etcd's: VolumesExist
@@ -819,9 +820,8 @@ func (r *Reconciler) setFinalizer(ctx context.Context, cp *lodiav1alpha1.Control
 }
 
 // datastoreStatus says where the API server reaches the etcd, etcd-druid's
-// client Service, and where the Etcd's snapshots go. The restore is carried
-// into every apply, which would drop it otherwise.
-func datastoreStatus(etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet, restore *lodiav1alpha1.RestoreStatus) *lodiav1alpha1.DatastoreStatus {
+// client Service, and where the Etcd's snapshots go.
+func datastoreStatus(etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) *lodiav1alpha1.DatastoreStatus {
 	if etcd == nil {
 		return nil
 	}
@@ -829,7 +829,6 @@ func datastoreStatus(etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet, restore 
 	status := &lodiav1alpha1.DatastoreStatus{
 		Endpoints: []lodiav1alpha1.HostPort{{Host: host, Port: port}},
 		Members:   lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: etcd.Spec.Replicas, Ready: min(etcd.Status.ReadyReplicas, etcd.Spec.Replicas)}, Updated: updatedMembers(etcd, sts)},
-		Restore:   restore,
 	}
 	if store := etcd.Spec.Backup.Store; store != nil {
 		status.Snapshots = new(storeLocation(store))
@@ -843,9 +842,9 @@ func datastoreStatus(etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet, restore 
 
 // applyStatus writes DatastoreReady and BackupReady together: the conditions
 // are a list keyed by type, and an apply that left one out would give up its
-// ownership.
-func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, datastore *lodiav1alpha1.DatastoreStatus, ready, backup metav1.Condition) error {
-	unchanged := equality.Semantic.DeepEqual(cp.Status.Datastore, datastore)
+// ownership. The restore is carried into every apply for the same reason.
+func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, datastore *lodiav1alpha1.DatastoreStatus, restore *lodiav1alpha1.RestoreStatus, ready, backup metav1.Condition) error {
+	unchanged := equality.Semantic.DeepEqual(cp.Status.Datastore, datastore) && equality.Semantic.DeepEqual(cp.Status.Restore, restore)
 	conditions := slices.Clone(cp.Status.Conditions)
 	var written []any
 	for _, condition := range []metav1.Condition{ready, backup} {
@@ -867,6 +866,11 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlP
 	status := map[string]any{"conditions": written}
 	if datastore != nil {
 		if status["datastore"], err = runtime.DefaultUnstructuredConverter.ToUnstructured(datastore); err != nil {
+			return err
+		}
+	}
+	if restore != nil {
+		if status["restore"], err = runtime.DefaultUnstructuredConverter.ToUnstructured(restore); err != nil {
 			return err
 		}
 	}

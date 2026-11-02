@@ -2,12 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package live reads a writer's own conditions, and Datastore's
-// status.datastore, as the API server holds them, for the waits and keeps
-// docs/decisions/independent-controllers.md names.
+// status.datastore and status.restore, as the API server holds them, for the
+// waits and keeps docs/decisions/independent-controllers.md names. A read
+// fails when the API server holds another object under the name, as when the
+// cache still holds a deleted predecessor, so that the pass is retried once
+// the cache has caught up.
 package live
 
 import (
 	"context"
+	"fmt"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -22,15 +26,15 @@ func Conditions(ctx context.Context, reader client.Reader, cp *lodiav1alpha1.Con
 	return err
 }
 
-// Datastore replaces cp's status.datastore and its conditions of the given
-// types with the API server's, read through reader, which must not be a
-// cache.
+// Datastore replaces cp's status.datastore, status.restore and its
+// conditions of the given types with the API server's, read through reader,
+// which must not be a cache.
 func Datastore(ctx context.Context, reader client.Reader, cp *lodiav1alpha1.ControlPlane, conditionTypes ...string) error {
 	current, err := conditions(ctx, reader, cp, conditionTypes)
 	if err != nil {
 		return err
 	}
-	cp.Status.Datastore = current.Status.Datastore
+	cp.Status.Datastore, cp.Status.Restore = current.Status.Datastore, current.Status.Restore
 	return nil
 }
 
@@ -38,6 +42,9 @@ func conditions(ctx context.Context, reader client.Reader, cp *lodiav1alpha1.Con
 	current := &lodiav1alpha1.ControlPlane{}
 	if err := reader.Get(ctx, client.ObjectKeyFromObject(cp), current); err != nil {
 		return nil, err
+	}
+	if current.UID != cp.UID {
+		return nil, fmt.Errorf("ControlPlane %s/%s has UID %s, not %s", cp.Namespace, cp.Name, current.UID, cp.UID)
 	}
 	for _, conditionType := range conditionTypes {
 		meta.RemoveStatusCondition(&cp.Status.Conditions, conditionType)

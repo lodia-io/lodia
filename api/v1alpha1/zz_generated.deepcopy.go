@@ -671,6 +671,11 @@ func (in *ControlPlaneStatus) DeepCopyInto(out *ControlPlaneStatus) {
 		*out = new(DatastoreStatus)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.Restore != nil {
+		in, out := &in.Restore, &out.Restore
+		*out = new(RestoreStatus)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.Nodes != nil {
 		in, out := &in.Nodes, &out.Nodes
 		*out = new(NodesStatus)
@@ -1017,11 +1022,6 @@ func (in *DatastoreStatus) DeepCopyInto(out *DatastoreStatus) {
 		in, out := &in.Snapshots, &out.Snapshots
 		*out = new(SnapshotLocation)
 		**out = **in
-	}
-	if in.Restore != nil {
-		in, out := &in.Restore, &out.Restore
-		*out = new(RestoreStatus)
-		(*in).DeepCopyInto(*out)
 	}
 }
 

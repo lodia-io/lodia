@@ -1520,10 +1520,7 @@ func completeRestore(t *testing.T, cp *lodiav1alpha1.ControlPlane, backup *lodia
 	t.Helper()
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		fresh := getControlPlane(t, cp.Namespace, cp.Name)
-		fresh.Status.Datastore = &lodiav1alpha1.DatastoreStatus{
-			Endpoints: []lodiav1alpha1.HostPort{{Host: cp.Name + "-etcd-client." + cp.Namespace + ".svc", Port: 2379}},
-			Restore:   &lodiav1alpha1.RestoreStatus{Backup: lodiav1alpha1.UIDReference{Name: backup.Name, UID: backup.UID}, Source: restoredSource, CompletedAt: metav1.Now()},
-		}
+		fresh.Status.Restore = &lodiav1alpha1.RestoreStatus{Backup: lodiav1alpha1.UIDReference{Name: backup.Name, UID: backup.UID}, Source: restoredSource, CompletedAt: metav1.Now()}
 		return k8s.Status().Update(t.Context(), fresh)
 	}); err != nil {
 		t.Fatal(err)

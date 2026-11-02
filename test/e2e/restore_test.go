@@ -273,7 +273,7 @@ func TestRestoreGate(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: restoredKey.Name, Namespace: restoredKey.Namespace},
 				Spec:       restoreSpec(t, &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: backup.Name}}),
 			})
-			until(ctx, t, 5*time.Minute, "b's DatastoreReady=True, its status.datastore.restore naming the Backup and its source", func(ctx context.Context) error {
+			until(ctx, t, 5*time.Minute, "b's DatastoreReady=True, its status.restore naming the Backup and its source", func(ctx context.Context) error {
 				cp, _, err := conditionOf(ctx, k8s, restoredKey, lodiav1alpha1.ConditionDatastoreReady, metav1.ConditionTrue, lodiav1alpha1.ReasonReady)
 				if err != nil {
 					return err
@@ -718,12 +718,9 @@ func conditionOf(ctx context.Context, k8s client.Client, key client.ObjectKey, c
 }
 
 func restoredFrom(cp *lodiav1alpha1.ControlPlane, backup *lodiav1alpha1.Backup, source types.UID) error {
-	var restore *lodiav1alpha1.RestoreStatus
-	if cp.Status.Datastore != nil {
-		restore = cp.Status.Datastore.Restore
-	}
+	restore := cp.Status.Restore
 	if restore == nil || restore.Backup.Name != backup.Name || restore.Backup.UID != backup.UID || restore.Source.Name != restoreSource || restore.Source.UID != source || restore.CompletedAt.IsZero() {
-		return fmt.Errorf("status.datastore.restore of %s is %+v, want Backup %s (UID %s) of ControlPlane %s (UID %s)", cp.Name, restore, backup.Name, backup.UID, restoreSource, source)
+		return fmt.Errorf("status.restore of %s is %+v, want Backup %s (UID %s) of ControlPlane %s (UID %s)", cp.Name, restore, backup.Name, backup.UID, restoreSource, source)
 	}
 	return nil
 }

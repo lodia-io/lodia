@@ -46,7 +46,7 @@ The field reference with every rule is [`api/controlplane.md`](api/controlplane.
 |---|---|---|---|
 | PKI | Secrets with certificates, keys and kubeconfigs; the tenant's bindings for Lodia, the admin group and the kubelet client; the answers to `KubeconfigRequest`s, which it deletes at their deadline | `CertificatesReady`, `AccessReady`; `CAValidityAcceptable` outside `Ready`; a `KubeconfigRequest`'s `Ready` | `status.endpoint`; `APIServerReady` for the bindings; the admission policy `kubeconfigrequests.lodia.io` for requests; for a restore without an encryption configuration, its `Backup` |
 | Datastore | the `Etcd` of a dedicated etcd and its NetworkPolicy, or a user and role in a shared store; backups and defragmentation; a `Backup`'s seal, its copy and its encryption keys | `DatastoreReady`; `BackupReady` outside `Ready`; a `Backup`'s `Ready` | a complete generation of PKI's etcd certificates; for a `Backup`, its source's `DatastoreReady` |
-| Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady` | `status.target`, `status.datastore`, `CertificatesReady`, `DatastoreReady`; `AddonsApplied` before it starts a restored `ControlPlane`'s controller manager |
+| Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady` | `status.target`, `status.datastore`, `CertificatesReady`, `DatastoreReady`; `status.restore` and `AddonsApplied` before it starts a restored `ControlPlane`'s controller manager |
 | Tenant | objects inside the tenant cluster, with an inventory | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
 | Health | status, and from phase 2's wave 2 the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable`, `ControllersLeading`; `ControllerManagerHeld` outside `Ready` from wave 2 | `status.endpoint` and the CA bundle; `AccessReady` and `<cp>-lodia-kubeconfig` for the leader Leases and a held restore's lists |
 | Lifecycle | `status.target`, `Progressing`, `Ready`; from phase 2's wave 2 `status.kubernetes`, `status.maintenance` and the pre-upgrade `Backup` | `Progressing` | the others |
@@ -212,7 +212,7 @@ A missing Secret or a copy another owner holds is checked again after a minute; 
 Before the first `Etcd` exists, the same cause is `Provisioning`, and nothing is created.
 
 Before the first `Etcd` of a `ControlPlane`, while none of its claims is left, Datastore checks what that etcd would start on ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)).
-With `restoreFrom`, it waits for the `Backup`'s copy in the `ControlPlane`'s prefix unless `status.datastore.restore` says the restore completed, and the `Etcd` runs one member until its etcd holds the cleaned data and a full snapshot of it is in the store; `DatastoreReady`'s reasons say what it waits for ([reasons](api/controlplane.md#conditions-and-their-reasons)).
+With `restoreFrom`, it waits for the `Backup`'s copy in the `ControlPlane`'s prefix unless `status.restore` says the restore completed, and the `Etcd` runs one member until its etcd holds the cleaned data and a full snapshot of it is in the store; `DatastoreReady`'s reasons say what it waits for ([reasons](api/controlplane.md#conditions-and-their-reasons)).
 Without, it refuses an empty etcd while `<cp>-ca-bundle` holds a CA older than the `ControlPlane` (`CAPredatesControlPlane`).
 
 An `Etcd` follows the class recorded on it when it was created ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)), and one created again over this `ControlPlane`'s claims, after someone deleted it, takes the class they record rather than `className` or the current default, which could give it another bucket and placement.
@@ -500,7 +500,7 @@ Upgrading Lodia: [`operations.md`](operations.md#upgrading-lodia); etcd-druid's 
 ## Conventions
 
 - Names: `<cp>-<component>` for workloads and Services, `<cp>-<purpose>` for Secrets, `lodia.io/*` for labels, annotations and the finalizer.
-- Fields: a field named `<x>Ref` names an object its reader follows, by name in the namespace (`backupRef`, `secretRef`, `parentRef`); an identity record, `{name, uid}`, says which object a fact is about and is not followed, since the object may be gone: a `Backup`'s `status.source`, `status.datastore.restore.{backup, source}`.
+- Fields: a field named `<x>Ref` names an object its reader follows, by name in the namespace (`backupRef`, `secretRef`, `parentRef`); an identity record, `{name, uid}`, says which object a fact is about and is not followed, since the object may be gone: a `Backup`'s `status.source`, `status.restore.{backup, source}`.
 - Every reconcile is idempotent and uses server-side apply; no controller reads an object it did not render except through status, or by a name in `api/v1alpha1/names.go`.
 
 ## Deliberately not offered — and owed

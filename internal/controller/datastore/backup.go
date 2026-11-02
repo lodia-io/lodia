@@ -40,6 +40,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/restore"
 )
 
 const (
@@ -165,7 +166,7 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return r.tidy(ctx, backup, marked)
 	case marked:
 		return report(metav1.ConditionFalse, lodiav1alpha1.ReasonSealLost, fmt.Sprintf("the Backup was sealed as %s; its status, which says where the copy is, did not come back with it, so it is never sealed again: restore the management cluster from a backup that keeps UIDs and status", mark), 0)
-	case final(backup, ready):
+	case restore.Final(backup, ready):
 		return ctrl.Result{}, nil
 	}
 
@@ -310,21 +311,6 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 	status.CompletedAt = new(metav1.Now())
 	return report(metav1.ConditionTrue, lodiav1alpha1.ReasonCompleted, fmt.Sprintf("sealed at revision %d and copied to %s", status.Seal.Revision, destination), 0)
-}
-
-// final says whether the Backup's Ready says it is over: a ControlPlane gone
-// once the Backup started counts, one that never existed is awaited.
-func final(backup *lodiav1alpha1.Backup, ready *metav1.Condition) bool {
-	if ready == nil || ready.Status != metav1.ConditionFalse {
-		return false
-	}
-	switch ready.Reason {
-	case lodiav1alpha1.ReasonUnsupported, lodiav1alpha1.ReasonNoBackupStore, lodiav1alpha1.ReasonFailed:
-		return true
-	case lodiav1alpha1.ReasonControlPlaneNotFound:
-		return backup.Status.StartedAt != nil
-	}
-	return false
 }
 
 func (r *BackupReconciler) sourceEtcd(ctx context.Context, source *lodiav1alpha1.ControlPlane) (*druidv1alpha1.Etcd, error) {
@@ -779,7 +765,7 @@ func (r *BackupReconciler) restoring(ctx context.Context, backup *lodiav1alpha1.
 			return false, err
 		}
 		ownKeys := err == nil && metav1.IsControlledBy(keys, cp)
-		if !ownKeys || cp.Status.Datastore == nil || cp.Status.Datastore.Restore == nil {
+		if !ownKeys || cp.Status.Restore == nil {
 			logf.FromContext(ctx).Info("keeping the Backup until the ControlPlane restoring from it has its own encryption configuration and a completed restore", "controlPlane", cp.Name)
 			return true, nil
 		}
