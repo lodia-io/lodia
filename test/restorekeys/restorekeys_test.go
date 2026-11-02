@@ -41,8 +41,12 @@ type object struct {
 }
 
 func TestTheCleanupDeletesWhatBindsTheDataToItsSource(t *testing.T) {
+	want := os.Getenv("RESTORE_KEYS_MINOR")
+	if want == "" {
+		t.Skip("RESTORE_KEYS_MINOR is not set; run make restore-keys")
+	}
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
-		t.Skip("KUBEBUILDER_ASSETS is not set; run make restore-keys")
+		t.Fatalf("KUBEBUILDER_ASSETS is not set for Kubernetes %s", want)
 	}
 	env := &envtest.Environment{UseExistingCluster: new(false)}
 	cfg, err := env.Start()
@@ -62,8 +66,8 @@ func TestTheCleanupDeletesWhatBindsTheDataToItsSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if minor, _ := versions.Minor(version.GitVersion); !slices.Contains(versions.Minors(), minor) {
-		t.Fatalf("the API server runs %s, of no minor Lodia runs: %v", version.GitVersion, versions.Minors())
+	if minor, _ := versions.Minor(version.GitVersion); minor != want {
+		t.Fatalf("the API server runs %s, not Kubernetes %s", version.GitVersion, want)
 	}
 	t.Logf("kube-apiserver %s", version.GitVersion)
 	c, err := client.New(cfg, client.Options{Scheme: clientgoscheme.Scheme})

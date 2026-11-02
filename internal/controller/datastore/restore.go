@@ -179,16 +179,21 @@ func (r *Reconciler) restoreFirst(ctx context.Context, cp *lodiav1alpha1.Control
 	}
 	// The copier copies only what the target lacks
 	// (etcd-backup-restore@v0.45.1 pkg/snapshot/copier/copier.go#L127-L151),
-	// so another task completes what a failed one left.
+	// so another task completes what a failed one left. The failed one stays a
+	// minute, so that its Job and status.lastError can be read.
 	if failed := copyCondition(task, druidv1alpha1.EtcdCopyBackupsTaskFailed); failed != nil {
-		if err := client.IgnoreNotFound(r.Delete(ctx, task, client.Preconditions{UID: &task.UID})); err != nil {
-			return nil, 0, fmt.Errorf("delete EtcdCopyBackupsTask %s: %w", key.Name, err)
-		}
 		why := failed.Message
 		if why == "" {
 			why = ptr.Deref(task.Status.LastError, failed.Reason)
 		}
-		return restoring(fmt.Sprintf("the copy of Backup %s failed: %s; copying again", name, why)), time.Minute, nil
+		condition := restoring(fmt.Sprintf("the copy of Backup %s failed: %s; copying again", name, why))
+		if wait := failed.LastTransitionTime.Add(time.Minute).Sub(r.Clock.Now()); wait > 0 {
+			return condition, wait, nil
+		}
+		if err := client.IgnoreNotFound(r.Delete(ctx, task, client.Preconditions{UID: &task.UID})); err != nil {
+			return nil, 0, fmt.Errorf("delete EtcdCopyBackupsTask %s: %w", key.Name, err)
+		}
+		return condition, 0, nil
 	}
 	if copyCondition(task, druidv1alpha1.EtcdCopyBackupsTaskSucceeded) == nil {
 		return restoring(copying), 0, nil
@@ -342,31 +347,37 @@ func unanswered(ctx context.Context, etcd *druidv1alpha1.Etcd, err error) restor
 
 // cleanUp checks the seal of the Backup in an etcd without the marker, then
 // cleans it up, and returns the marker's value and revision, or the check
-// that stops the restore here.
+// that stops the restore here. Once the restore is recorded, the status names
+// the Backup, which may be gone.
 func (r *Reconciler) cleanUp(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, c *clientv3.Client) (restoreMarker, int64, *restoreCheck, error) {
-	name := cp.Spec.RestoreFrom.BackupRef.Name
-	backup := &lodiav1alpha1.Backup{}
-	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: name}, backup); err != nil {
-		if apierrors.IsNotFound(err) {
-			condition := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonBackupNotFound, "no Backup "+name)
-			return restoreMarker{}, 0, &restoreCheck{condition: &condition}, nil
+	var value restoreMarker
+	if recorded := restoreOf(cp); recorded != nil {
+		value = restoreMarker{Backup: recorded.Backup, Source: recorded.Source}
+	} else {
+		name := cp.Spec.RestoreFrom.BackupRef.Name
+		backup := &lodiav1alpha1.Backup{}
+		if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: name}, backup); err != nil {
+			if apierrors.IsNotFound(err) {
+				condition := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonBackupNotFound, "no Backup "+name)
+				return restoreMarker{}, 0, &restoreCheck{condition: &condition}, nil
+			}
+			return restoreMarker{}, 0, nil, fmt.Errorf("read Backup %s: %w", name, err)
 		}
-		return restoreMarker{}, 0, nil, fmt.Errorf("read Backup %s: %w", name, err)
+		value = restoreMarker{Backup: lodiav1alpha1.UIDReference{Name: backup.Name, UID: backup.UID}, Source: ptr.Deref(backup.Status.Source, lodiav1alpha1.UIDReference{})}
 	}
 	var seal *clientv3.GetResponse
 	if err := request(ctx, func(ctx context.Context) (err error) {
-		seal, err = c.Get(ctx, lodiav1alpha1.BackupSealKey(backup.UID))
+		seal, err = c.Get(ctx, lodiav1alpha1.BackupSealKey(value.Backup.UID))
 		return err
 	}); err != nil {
 		return restoreMarker{}, 0, new(unanswered(ctx, etcd, err)), nil
 	}
-	if len(seal.Kvs) == 0 || string(seal.Kvs[0].GetValue()) != string(backup.UID) {
+	if len(seal.Kvs) == 0 || string(seal.Kvs[0].GetValue()) != string(value.Backup.UID) {
 		condition := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRestoreFailed, fmt.Sprintf(
 			"the restored etcd lacks %s, the seal of Backup %s: the copy is not that Backup's; nothing was cleaned up and no API server starts; delete this ControlPlane and restore another Backup",
-			lodiav1alpha1.BackupSealKey(backup.UID), name))
+			lodiav1alpha1.BackupSealKey(value.Backup.UID), value.Backup.Name))
 		return restoreMarker{}, 0, &restoreCheck{condition: &condition}, nil
 	}
-	value := restoreMarker{Backup: lodiav1alpha1.UIDReference{Name: backup.Name, UID: backup.UID}, Source: ptr.Deref(backup.Status.Source, lodiav1alpha1.UIDReference{})}
 	content, err := json.Marshal(value)
 	if err != nil {
 		return restoreMarker{}, 0, nil, err

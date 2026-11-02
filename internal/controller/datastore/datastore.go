@@ -65,7 +65,8 @@ type Reconciler struct {
 	OperatorNamespace string
 	// EtcdClient connects to the etcd of an Etcd; the caller closes it.
 	EtcdClient func(ctx context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client, error)
-	// Clock spaces the full snapshots a restore asks for again.
+	// Clock spaces the full snapshots a restore asks for again, and keeps a
+	// failed copy for a minute.
 	Clock clock.PassiveClock
 }
 
@@ -210,6 +211,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 // reconcileEtcd returns the restore's status when this pass found it
 // complete.
 func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*druidv1alpha1.Etcd, *appsv1.StatefulSet, *lodiav1alpha1.RestoreStatus, metav1.Condition, time.Duration, error) {
+	// A restore decides from its own status, read live, since the cache can
+	// lag behind this controller's own last write.
+	if cp.Spec.RestoreFrom != nil {
+		if err := live.Datastore(ctx, r.Reader, cp, lodiav1alpha1.ConditionDatastoreReady, lodiav1alpha1.ConditionBackupReady); err != nil {
+			return nil, nil, nil, metav1.Condition{}, 0, fmt.Errorf("read ControlPlane %s: %w", cp.Name, err)
+		}
+	}
 	current, err := r.currentEtcd(ctx, cp)
 	if err != nil {
 		return nil, nil, nil, metav1.Condition{}, 0, err
@@ -306,35 +314,35 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.Contro
 		if check, err = r.checkRestore(ctx, cp, current); err != nil {
 			return nil, nil, nil, metav1.Condition{}, 0, err
 		}
-		// A check that could not run keeps the restore's status and decides
-		// from it: read live, since the cache can lag behind this
-		// controller's own last write.
-		if check.restored == nil && check.condition == nil {
-			if err := live.Datastore(ctx, r.Reader, cp, lodiav1alpha1.ConditionDatastoreReady, lodiav1alpha1.ConditionBackupReady); err != nil {
-				return nil, nil, nil, metav1.Condition{}, 0, fmt.Errorf("read ControlPlane %s: %w", cp.Name, err)
-			}
-		}
 	}
 	// One member restores, and etcd-druid adds the others as learners once
 	// the restore is complete; an Etcd raised above one stays, whatever a
 	// check that could not run found.
 	members := memberCount(cp)
-	if cp.Spec.RestoreFrom != nil && check.restored == nil && (current == nil || current.Spec.Replicas <= 1) {
-		members = 1
+	if cp.Spec.RestoreFrom != nil && check.restored == nil && members > 1 {
+		raised, err := r.raised(ctx, current)
+		if err != nil {
+			return nil, nil, nil, metav1.Condition{}, 0, err
+		}
+		if !raised {
+			members = 1
+		}
 	}
 	rendered, capped := render(cp, class, namespaceUID, generation, current, claims, sts, members)
 	if capped != "" {
 		held = capped
 	}
 	// Claims of this ControlPlane outlive an Etcd it had, whose data they
-	// hold.
+	// hold, and a restore once recorded left its cleaned data and a full
+	// snapshot of it in this ControlPlane's prefix.
 	if current == nil && len(claims) == 0 {
 		var first *metav1.Condition
 		var requeueAfter time.Duration
-		if cp.Spec.RestoreFrom != nil {
-			first, requeueAfter, err = r.restoreFirst(ctx, cp, class, rendered)
-		} else {
+		switch {
+		case cp.Spec.RestoreFrom == nil:
 			first, err = r.caPredates(ctx, cp)
+		case restoreOf(cp) == nil:
+			first, requeueAfter, err = r.restoreFirst(ctx, cp, class, rendered)
 		}
 		if first == nil && err != nil {
 			return nil, nil, nil, metav1.Condition{}, 0, errors.Join(err, refusal)
@@ -441,6 +449,23 @@ func (r *Reconciler) currentEtcd(ctx context.Context, cp *lodiav1alpha1.ControlP
 		return nil, err
 	}
 	return etcd, nil
+}
+
+// raised says whether the Etcd asks for more than one member. The cache can
+// lag Datastore's own scale-up, so an Etcd it holds at one is read again from
+// the API server.
+func (r *Reconciler) raised(ctx context.Context, current *druidv1alpha1.Etcd) (bool, error) {
+	if current == nil || current.Spec.Replicas > 1 {
+		return current != nil, nil
+	}
+	etcd := &druidv1alpha1.Etcd{}
+	if err := r.Reader.Get(ctx, client.ObjectKeyFromObject(current), etcd); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read Etcd %s: %w", current.Name, err)
+	}
+	return etcd.Spec.Replicas > 1, nil
 }
 
 // A class is resolved once and recorded on the Etcd, so a default that moves
