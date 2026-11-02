@@ -1038,6 +1038,25 @@ func TestARestoreStatusRemovedComesBackFromTheMarker(t *testing.T) {
 	r.etcd.present(t, "/registry/minions/b-node")
 }
 
+func TestDataFromBeforeTheCleanupIsCleanedUpAgain(t *testing.T) {
+	r := newRestore(t, restoreSetup{})
+	r.copied(t)
+	first := r.cleanedUp(t)
+	r.complete(t, first)
+	if _, err := r.etcd.Delete(t.Context(), lodiav1alpha1.RestoreMarkerKey(r.controlPlane(t).UID)); err != nil {
+		t.Fatal(err)
+	}
+	r.etcd.put(t, cleanedKeys[0])
+	poke(t, r.ns)
+	waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRestoring, "cleaned up; waiting for a full snapshot of revision")
+	r.etcd.absent(t, cleanedKeys[0])
+	second := r.marker(t)
+	if second <= first {
+		t.Fatalf("the marker came back at revision %d, the first at %d", second, first)
+	}
+	r.complete(t, second)
+}
+
 func TestALeftoverFullSnapshotLeaseCompletesNoRestore(t *testing.T) {
 	r := newRestore(t, restoreSetup{before: func(r *restore) {
 		createLease(t, r.ns, restoredCP+"-etcd-full-snap", strconv.FormatInt(math.MaxInt64, 10))
