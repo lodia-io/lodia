@@ -667,6 +667,12 @@ func TestARestoreStartsOnlyFromASealedCompatibleBackupInTheClasssStore(t *testin
 	t.Run("sealed later", func(t *testing.T) {
 		r := newRestore(t, restoreSetup{backup: readyAs(metav1.ConditionUnknown, lodiav1alpha1.ReasonCopying, "copying")})
 		waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForBackup, "Backup a-1 is Copying: copying")
+		consistently(t, func() error {
+			if r.copyTask(t) != nil {
+				return errors.New("a copy of a Backup not sealed yet")
+			}
+			return nil
+		})
 		b := getBackup(t, r.ns, backupName)
 		readyAs(metav1.ConditionTrue, lodiav1alpha1.ReasonCompleted, "sealed")(b)
 		if err := k8s.Status().Update(t.Context(), b); err != nil {
@@ -1107,9 +1113,12 @@ func TestACAOlderThanItsControlPlaneStartsNoEmptyEtcd(t *testing.T) {
 		waitCondition(t, ns, "old", metav1.ConditionFalse, lodiav1alpha1.ReasonCAPredatesControlPlane, fmt.Sprintf(
 			"the cluster CA CN=cluster-ca@%s in old-ca-bundle was issued at %s, before this ControlPlane was created at %s: its Secrets came back and its data did not, and nodes that trust it would join an empty cluster. Restore the management cluster from a backup that keeps UIDs, or delete old-ca-bundle and old-cakey-cluster for a new identity",
 			ns, cp.CreationTimestamp.Add(-time.Second).UTC().Format(time.RFC3339), cp.CreationTimestamp.UTC().Format(time.RFC3339)))
-		if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "old-etcd"}, &druidv1alpha1.Etcd{}); !apierrors.IsNotFound(err) {
-			t.Fatalf("want no Etcd under an older CA, got %v", err)
-		}
+		consistently(t, func() error {
+			if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "old-etcd"}, &druidv1alpha1.Etcd{}); !apierrors.IsNotFound(err) {
+				return fmt.Errorf("want no Etcd under an older CA, got %w", err)
+			}
+			return nil
+		})
 		if err := k8s.Delete(t.Context(), bundle); err != nil {
 			t.Fatal(err)
 		}
