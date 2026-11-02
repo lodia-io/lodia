@@ -170,6 +170,9 @@ type rendering struct {
 	jwksURI     string
 	etcd        []lodiav1alpha1.HostPort
 	hashes      map[string]string
+	// held keeps a restored ControlPlane's controller manager at 0 replicas,
+	// with the pod template it runs once released.
+	held bool
 }
 
 func (r rendering) deployments() []*appsv1.Deployment {
@@ -390,7 +393,7 @@ func (r rendering) controllerManager() *appsv1.Deployment {
 		Resources:     resources(settings.Resources, "50m", "64Mi"),
 		VolumeMounts:  mounts("kubeconfig", "client-ca", "front-proxy-ca", "kubelet-signer", "ca-bundle"),
 	}
-	return r.deployment(controllerManager, defaultReplicas(cp), corev1.PodSpec{
+	d := r.deployment(controllerManager, defaultReplicas(cp), corev1.PodSpec{
 		Containers: []corev1.Container{container},
 		Volumes: secretVolumes(cp.Name, map[string]lodiav1alpha1.Secret{
 			"kubeconfig":     lodiav1alpha1.ControllerManagerKubeconfigSecret,
@@ -400,6 +403,10 @@ func (r rendering) controllerManager() *appsv1.Deployment {
 			"ca-bundle":      lodiav1alpha1.CABundleSecret,
 		}),
 	})
+	if r.held {
+		d.Spec.Replicas = new(int32(0))
+	}
+	return d
 }
 
 func (r rendering) scheduler() *appsv1.Deployment {

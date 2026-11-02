@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -41,6 +42,7 @@ import (
 	"go.lodia.io/lodia/internal/apistatus"
 	"go.lodia.io/lodia/internal/live"
 	"go.lodia.io/lodia/internal/ownership"
+	"go.lodia.io/lodia/internal/restore"
 	"go.lodia.io/lodia/internal/versions"
 )
 
@@ -80,7 +82,25 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 		Owns(&networkingv1.NetworkPolicy{}).
 		Owns(&policyv1.PodDisruptionBudget{}).
 		WatchesMetadata(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(controlPlaneOf), builder.WithPredicates(readOnce)).
+		Watches(&lodiav1alpha1.ControlPlane{}, handler.EnqueueRequestsFromMapFunc(r.replacements)).
 		Complete(r)
+}
+
+// replacements are the ControlPlanes whose completed restore replaces source,
+// so that its deletion brings the pass that releases them.
+func (r *Reconciler) replacements(ctx context.Context, source client.Object) []reconcile.Request {
+	list := &lodiav1alpha1.ControlPlaneList{}
+	if err := r.List(ctx, list, client.InNamespace(source.GetNamespace())); err != nil {
+		logf.FromContext(ctx).Error(err, "list the ControlPlanes that may replace a source", "source", source.GetName())
+		return nil
+	}
+	var out []reconcile.Request
+	for i := range list.Items {
+		if d := list.Items[i].Status.Datastore; d != nil && d.Restore != nil && d.Restore.Source.UID == source.GetUID() {
+			out = append(out, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&list.Items[i])})
+		}
+	}
+	return out
 }
 
 func controlPlaneOf(_ context.Context, secret client.Object) []reconcile.Request {
@@ -100,7 +120,7 @@ func restartOnlyNames(cp string) []string {
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/status,verbs=patch
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/finalizers,verbs=update
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=list;watch;create;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups="",resources=services;configmaps,verbs=list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=list;watch;create;patch;delete
@@ -203,6 +223,18 @@ func (r *Reconciler) reconcile(ctx context.Context, cp *lodiav1alpha1.ControlPla
 		message := "waiting for PKI to write the Secrets the control plane reads once, with their data hash: " + strings.Join(unhashed, ", ")
 		return r.wait(ctx, cp, endpoint, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, message), requeueAfter)
 	}
+	unmet, note, err := r.release(ctx, cp)
+	if err != nil {
+		return nil, metav1.Condition{}, 0, err
+	}
+	held := false
+	if len(unmet) > 0 {
+		ran, err := r.ran(ctx, cp)
+		if err != nil {
+			return nil, metav1.Condition{}, 0, err
+		}
+		held = !ran
+	}
 	deployments := rendering{
 		cp:          cp,
 		images:      images,
@@ -212,6 +244,7 @@ func (r *Reconciler) reconcile(ctx context.Context, cp *lodiav1alpha1.ControlPla
 		jwksURI:     publicURL(endpoint.APIServer) + jwksPath,
 		etcd:        cp.Status.Datastore.Endpoints,
 		hashes:      hashes,
+		held:        held,
 	}.deployments()
 	var objects []client.Object
 	for _, c := range config {
@@ -239,7 +272,53 @@ func (r *Reconciler) reconcile(ctx context.Context, cp *lodiav1alpha1.ControlPla
 			return nil, metav1.Condition{}, 0, err
 		}
 	}
-	return endpoint, availability(deployments), requeueAfter, nil
+	return endpoint, availability(deployments, note), requeueAfter, nil
+}
+
+// release names, in this order, what a restored ControlPlane's release still
+// waits for, and gives the note availability makes of its controller manager
+// at 0 replicas; both are empty for a ControlPlane that restores nothing.
+func (r *Reconciler) release(ctx context.Context, cp *lodiav1alpha1.ControlPlane) ([]string, string, error) {
+	restoring := cp.Spec.RestoreFrom
+	if restoring == nil {
+		return nil, "", nil
+	}
+	var unmet []string
+	if restoring.Release != lodiav1alpha1.RestoreReleased {
+		unmet = append(unmet, "spec.restoreFrom.release is Held")
+	}
+	if cp.Status.Datastore == nil || cp.Status.Datastore.Restore == nil {
+		unmet = append(unmet, "the restore is not complete")
+	} else if source, err := restore.Source(ctx, r.Client, cp); err != nil {
+		return nil, "", err
+	} else if source != nil {
+		unmet = append(unmet, fmt.Sprintf("ControlPlane %s (UID %s), the Backup's source, exists", source.Name, source.UID))
+	}
+	if c := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAddonsApplied); c == nil || c.Status != metav1.ConditionTrue || c.ObservedGeneration != cp.Generation {
+		unmet = append(unmet, fmt.Sprintf("%s is not True for generation %d", lodiav1alpha1.ConditionAddonsApplied, cp.Generation))
+	}
+	if len(unmet) == 0 {
+		return nil, controllerManager + " has 0 of 0 replicas ready", nil
+	}
+	return unmet, controllerManager + " is held at 0 replicas until the restore is released: " + strings.Join(unmet, "; "), nil
+}
+
+// ran says whether the Deployment of cp's controller manager has asked for
+// replicas, which records the release for good. The cache can lag Workloads'
+// own scale-up, so a Deployment it holds at 0 or not at all is read again
+// from the API server.
+func (r *Reconciler) ran(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (bool, error) {
+	for _, reader := range []client.Reader{r.Client, r.Reader} {
+		d := &appsv1.Deployment{}
+		err := reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: deploymentName(cp.Name, controllerManager)}, d)
+		if client.IgnoreNotFound(err) != nil {
+			return false, err
+		}
+		if err == nil && metav1.IsControlledBy(d, cp) && ptr.Deref(d.Spec.Replicas, 1) > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // refused says that the API server refuses obj, so that the status no longer
@@ -269,7 +348,11 @@ func (r *Reconciler) wait(ctx context.Context, cp *lodiav1alpha1.ControlPlane, e
 		if err != nil {
 			return nil, metav1.Condition{}, 0, err
 		}
-		counted := availability(slices.Collect(maps.Values(controlled)))
+		_, note, err := r.release(ctx, cp)
+		if err != nil {
+			return nil, metav1.Condition{}, 0, err
+		}
+		counted := availability(slices.Collect(maps.Values(controlled)), note)
 		counted.ObservedGeneration = previous.ObservedGeneration
 		return endpoint, counted, requeueAfter, nil
 	}
@@ -498,8 +581,9 @@ func restartHashes(cp string, data map[string]string, config []*corev1.ConfigMap
 }
 
 // availability is True while each component has a ready replica; one without
-// a Deployment has none.
-func availability(deployments []*appsv1.Deployment) metav1.Condition {
+// a Deployment has none. A restored ControlPlane's controller manager at 0
+// replicas counts as available, with the note release makes of it.
+func availability(deployments []*appsv1.Deployment, held string) metav1.Condition {
 	var short, stalled []string
 	unavailable := false
 	for _, component := range components {
@@ -511,6 +595,10 @@ func availability(deployments []*appsv1.Deployment) metav1.Condition {
 		}
 		d := deployments[i]
 		want := ptr.Deref(d.Spec.Replicas, 1)
+		if want == 0 && component == controllerManager && held != "" {
+			short = append(short, held)
+			continue
+		}
 		if d.Status.ReadyReplicas < want {
 			short = append(short, fmt.Sprintf("%s has %d of %d replicas ready", component, d.Status.ReadyReplicas, want))
 		}

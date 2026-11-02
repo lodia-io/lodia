@@ -102,29 +102,36 @@ func TestAvailabilityIsAReadyReplicaOfEachComponent(t *testing.T) {
 	}
 	stale := deployment(apiServer, 2, 2, true)
 	stale.Status.ObservedGeneration = 1
+	const held = "kube-controller-manager is held at 0 replicas until the restore is released: spec.restoreFrom.release is Held"
 	for _, row := range []struct {
 		name        string
 		deployments []*appsv1.Deployment
-		want        string
+		held, want  string
 	}{
-		{"every replica ready", []*appsv1.Deployment{deployment(apiServer, 2, 2, false), deployment(controllerManager, 2, 2, false), deployment(scheduler, 2, 2, false)},
+		{"every replica ready", []*appsv1.Deployment{deployment(apiServer, 2, 2, false), deployment(controllerManager, 2, 2, false), deployment(scheduler, 2, 2, false)}, "",
 			"True Ready every replica of kube-apiserver, kube-controller-manager and kube-scheduler is ready"},
-		{"one API server of two ready", []*appsv1.Deployment{deployment(apiServer, 2, 1, false), deployment(controllerManager, 2, 2, false), deployment(scheduler, 2, 2, false)},
+		{"a held controller manager", []*appsv1.Deployment{deployment(apiServer, 2, 1, false), deployment(controllerManager, 0, 0, false), deployment(scheduler, 2, 2, false)}, held,
+			"True Ready kube-apiserver has 1 of 2 replicas ready; " + held},
+		{"a held controller manager beside an unavailable scheduler", []*appsv1.Deployment{deployment(apiServer, 2, 2, false), deployment(controllerManager, 0, 0, false), deployment(scheduler, 2, 0, false)}, held,
+			"False Unavailable " + held + "; kube-scheduler has 0 of 2 replicas ready"},
+		{"a released controller manager", []*appsv1.Deployment{deployment(apiServer, 2, 2, false), deployment(controllerManager, 2, 2, false), deployment(scheduler, 2, 2, false)}, held,
+			"True Ready every replica of kube-apiserver, kube-controller-manager and kube-scheduler is ready"},
+		{"one API server of two ready", []*appsv1.Deployment{deployment(apiServer, 2, 1, false), deployment(controllerManager, 2, 2, false), deployment(scheduler, 2, 2, false)}, "",
 			"True Ready kube-apiserver has 1 of 2 replicas ready"},
-		{"a surge", []*appsv1.Deployment{deployment(apiServer, 2, 4, false), deployment(controllerManager, 1, 1, false), deployment(scheduler, 1, 2, false)},
+		{"a surge", []*appsv1.Deployment{deployment(apiServer, 2, 4, false), deployment(controllerManager, 1, 1, false), deployment(scheduler, 1, 2, false)}, "",
 			"True Ready every replica of kube-apiserver, kube-controller-manager and kube-scheduler is ready"},
-		{"a scheduler without a ready replica", []*appsv1.Deployment{deployment(apiServer, 2, 1, false), deployment(controllerManager, 2, 2, false), deployment(scheduler, 2, 0, false)},
+		{"a scheduler without a ready replica", []*appsv1.Deployment{deployment(apiServer, 2, 1, false), deployment(controllerManager, 2, 2, false), deployment(scheduler, 2, 0, false)}, "",
 			"False Unavailable kube-apiserver has 1 of 2 replicas ready; kube-scheduler has 0 of 2 replicas ready"},
-		{"a rollout past its deadline", []*appsv1.Deployment{deployment(apiServer, 2, 2, true), deployment(controllerManager, 2, 1, false), deployment(scheduler, 2, 2, false)},
+		{"a rollout past its deadline", []*appsv1.Deployment{deployment(apiServer, 2, 2, true), deployment(controllerManager, 2, 1, false), deployment(scheduler, 2, 2, false)}, "",
 			"True ProgressDeadlineExceeded the rollout of Deployment dev-kube-apiserver passed its progress deadline; kube-controller-manager has 1 of 2 replicas ready"},
-		{"a deadline of a generation not observed", []*appsv1.Deployment{stale, deployment(controllerManager, 2, 2, false), deployment(scheduler, 2, 2, false)},
+		{"a deadline of a generation not observed", []*appsv1.Deployment{stale, deployment(controllerManager, 2, 2, false), deployment(scheduler, 2, 2, false)}, "",
 			"True Ready every replica of kube-apiserver, kube-controller-manager and kube-scheduler is ready"},
-		{"a deadline and no ready replica", []*appsv1.Deployment{deployment(apiServer, 2, 0, true), deployment(controllerManager, 2, 2, false), deployment(scheduler, 2, 2, false)},
+		{"a deadline and no ready replica", []*appsv1.Deployment{deployment(apiServer, 2, 0, true), deployment(controllerManager, 2, 2, false), deployment(scheduler, 2, 2, false)}, "",
 			"False Unavailable kube-apiserver has 0 of 2 replicas ready"},
-		{"a scheduler without a Deployment", []*appsv1.Deployment{deployment(apiServer, 2, 1, false), deployment(controllerManager, 2, 2, false)},
+		{"a scheduler without a Deployment", []*appsv1.Deployment{deployment(apiServer, 2, 1, false), deployment(controllerManager, 2, 2, false)}, "",
 			"False Unavailable kube-apiserver has 1 of 2 replicas ready; kube-scheduler has no Deployment"},
 	} {
-		c := availability(row.deployments)
+		c := availability(row.deployments, row.held)
 		if got := fmt.Sprintf("%s %s %s", c.Status, c.Reason, c.Message); got != row.want {
 			t.Errorf("%s: APIServerReady is %q, want %q", row.name, got, row.want)
 		}
