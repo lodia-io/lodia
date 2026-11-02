@@ -766,6 +766,16 @@ func TestABackupThatCannotBeTaken(t *testing.T) {
 		})
 		create(t, controlPlane(src.ns, sourceName, src.ns))
 		replacement := getControlPlane(t, src.ns, sourceName)
+		eventually(t, func() error {
+			cp := &lodiav1alpha1.ControlPlane{}
+			if err := cached.Get(t.Context(), client.ObjectKey{Namespace: src.ns, Name: sourceName}, cp); err != nil {
+				return err
+			}
+			if cp.UID != replacement.UID {
+				return errors.New("the cache does not show the replacement yet")
+			}
+			return nil
+		})
 		passes(t, r, src.ns, "b", readyIs(metav1.ConditionFalse, lodiav1alpha1.ReasonControlPlaneNotFound,
 			fmt.Sprintf("ControlPlane src has UID %s, not %s, which this Backup started from", replacement.UID, started.Status.Source.UID)))
 		unmoved(t, r, src.ns, "b")
