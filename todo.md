@@ -141,7 +141,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 ## From the phase 2 contracts (2026-10-27)
 
 - The `restore` verb (restore-replaces-the-source, not built): a ValidatingAdmissionPolicy in the chart could require `authorizer…check('restore')` on the `Backup` a new `ControlPlane`'s `restoreFrom` names, for platforms where the right to create `ControlPlane`s is wider than the right to read a namespace's Secrets.
-- `docs/operations.md` gets the replace checklist and a Velero recipe for a clone beside a live source, with the restore in wave 1b (restore-replaces-the-source).
 - Health's own metrics, which the availability research suggested and the decisions did not name: failed probes, silent nodes, and the lag of Health's pass, the watchdog of the hold's margin.
   Name them under metrics-are-part-of-the-api with wave 2, Health, or drop them; the hold itself is `lodia_controlplane_condition{type="ControllerManagerHeld"}`.
 - An IPv6 advertise address Lodia draws: once gateway mode has users with an IPv6 first service range, Workloads could draw a unique local address per `ControlPlane` and keep it beside its CAs, which a platform backs up anyway.
