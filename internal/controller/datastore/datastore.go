@@ -65,7 +65,8 @@ type Reconciler struct {
 	OperatorNamespace string
 	// EtcdClient connects to the etcd of an Etcd; the caller closes it.
 	EtcdClient func(ctx context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client, error)
-	// Clock spaces the full snapshots a restore asks for again.
+	// Clock spaces the full snapshots a restore asks for again, and keeps a
+	// failed copy for a minute.
 	Clock clock.PassiveClock
 }
 

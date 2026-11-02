@@ -454,7 +454,7 @@ func TestARestoreCopiesChecksCleansUpAndSnapshots(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	finishCopy(t, r.ns, name, druidv1alpha1.EtcdCopyBackupsTaskFailed, "the bucket is gone")
+	failCopy(t, r.ns, name, "the bucket is gone", time.Now().Add(-time.Minute))
 	waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRestoring, "the copy of Backup a-1 failed: the bucket is gone; copying again")
 	r.noEtcd(t)
 	failed := r.copyTask(t)
@@ -561,6 +561,21 @@ func TestARestoreCopiesChecksCleansUpAndSnapshots(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func failCopy(t *testing.T, ns, name, message string, at time.Time) {
+	t.Helper()
+	task := &druidv1alpha1.EtcdCopyBackupsTask{}
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: name}, task); err != nil {
+		t.Fatal(err)
+	}
+	task.Status.Conditions = []druidv1alpha1.Condition{{
+		Type: druidv1alpha1.EtcdCopyBackupsTaskFailed, Status: druidv1alpha1.ConditionTrue, Reason: "JobFailed", Message: message,
+		LastTransitionTime: metav1.NewTime(at), LastUpdateTime: metav1.NewTime(at),
+	}}
+	if err := k8s.Status().Update(t.Context(), task); err != nil {
+		t.Fatal(err)
+	}
 }
 
 type restoreMarkerJSON struct {
@@ -1360,6 +1375,56 @@ func TestAStalePassWhoseCheckCannotRunKeepsTheMembers(t *testing.T) {
 	if n := getEtcd(t, r.ns, restoredCP).Spec.Replicas; n != 3 {
 		t.Errorf("a pass whose read of the Etcd failed left %d members, want 3", n)
 	}
+}
+
+func TestAFailedCopyStaysAMinute(t *testing.T) {
+	r := newRestore(t, restoreSetup{})
+	task := r.waitCopyTask(t)
+	failed := time.Now().Truncate(time.Second)
+	failCopy(t, r.ns, task.Name, "the bucket is gone", failed)
+	now := clocktesting.NewFakePassiveClock(failed.Add(time.Minute - time.Second))
+	reconciler := &datastore.Reconciler{Client: cached, Reader: apiReader, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, EtcdClient: dialRestored, Clock: now}
+	pass := func() (time.Duration, error) {
+		result, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}})
+		return result.RequeueAfter, err
+	}
+	eventually(t, func() error {
+		requeueAfter, err := pass()
+		if err == nil && requeueAfter != time.Second {
+			return fmt.Errorf("a pass a second before the minute returned a requeue in %v, want 1s", requeueAfter)
+		}
+		return err
+	})
+	waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRestoring, "the copy of Backup a-1 failed: the bucket is gone; copying again")
+	if again := r.copyTask(t); again == nil || again.UID != task.UID || !again.DeletionTimestamp.IsZero() {
+		t.Fatal("the failed copy task went before its minute")
+	}
+	now.SetTime(failed.Add(time.Minute))
+	refused := errors.New("injected: the API server refused the delete")
+	refusing := interceptor.NewClient(k8s, interceptor.Funcs{
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			if _, ok := obj.(*druidv1alpha1.EtcdCopyBackupsTask); ok {
+				return refused
+			}
+			return c.Delete(ctx, obj, opts...)
+		},
+	})
+	if _, err := (&datastore.Reconciler{Client: refusing, Reader: apiReader, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, EtcdClient: dialRestored, Clock: now}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}}); !errors.Is(err, refused) {
+		t.Fatalf("a pass whose delete was refused returned %v, want %v", err, refused)
+	}
+	if again := r.copyTask(t); again == nil || again.UID != task.UID || !again.DeletionTimestamp.IsZero() {
+		t.Fatal("the failed copy task went though its delete was refused")
+	}
+	if _, err := pass(); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() error {
+		if again := r.copyTask(t); again == nil || again.UID == task.UID {
+			return errors.New("no new copy task yet")
+		}
+		return nil
+	})
+	waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRestoring, "copying Backup a-1 into this ControlPlane's prefix")
 }
 
 func caBundle(t *testing.T, ns, cp string, notBefore time.Time) *corev1.Secret {

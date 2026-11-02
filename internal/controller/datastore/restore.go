@@ -179,16 +179,21 @@ func (r *Reconciler) restoreFirst(ctx context.Context, cp *lodiav1alpha1.Control
 	}
 	// The copier copies only what the target lacks
 	// (etcd-backup-restore@v0.45.1 pkg/snapshot/copier/copier.go#L127-L151),
-	// so another task completes what a failed one left.
+	// so another task completes what a failed one left. The failed one stays a
+	// minute, so that its Job and status.lastError can be read.
 	if failed := copyCondition(task, druidv1alpha1.EtcdCopyBackupsTaskFailed); failed != nil {
-		if err := client.IgnoreNotFound(r.Delete(ctx, task, client.Preconditions{UID: &task.UID})); err != nil {
-			return nil, 0, fmt.Errorf("delete EtcdCopyBackupsTask %s: %w", key.Name, err)
-		}
 		why := failed.Message
 		if why == "" {
 			why = ptr.Deref(task.Status.LastError, failed.Reason)
 		}
-		return restoring(fmt.Sprintf("the copy of Backup %s failed: %s; copying again", name, why)), time.Minute, nil
+		condition := restoring(fmt.Sprintf("the copy of Backup %s failed: %s; copying again", name, why))
+		if wait := failed.LastTransitionTime.Add(time.Minute).Sub(r.Clock.Now()); wait > 0 {
+			return condition, wait, nil
+		}
+		if err := client.IgnoreNotFound(r.Delete(ctx, task, client.Preconditions{UID: &task.UID})); err != nil {
+			return nil, 0, fmt.Errorf("delete EtcdCopyBackupsTask %s: %w", key.Name, err)
+		}
+		return condition, 0, nil
 	}
 	if copyCondition(task, druidv1alpha1.EtcdCopyBackupsTaskSucceeded) == nil {
 		return restoring(copying), 0, nil
