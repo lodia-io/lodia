@@ -26,7 +26,6 @@ jobs:
         with:
           version: v4.3.1
       - run: make verify
-      - run: make restore-keys
 
   e2e:
     runs-on: ubuntu-24.04

@@ -13,11 +13,11 @@ Every other tool runs through `go tool`.
 | command | does |
 |---|---|
 | `make generate` | deepcopy functions and CRDs from `api/`, their copies in the chart, and each controller's ClusterRole from its RBAC markers; commit the result |
-| `make verify` | the check that says a change is done: generated files current, the chart linted and rendered, lint, unit and envtest tests |
+| `make verify` | the check that says a change is done: generated files current, the chart linted and rendered, lint, unit and envtest tests, and the etcd keys a restore's cleanup deletes against each minor Lodia runs (`make restore-keys`) |
 | `make e2e` | the end-to-end suite on a kind cluster of its own ([`test/e2e/README.md`](test/e2e/README.md)) |
 | `make conformance` | the Kubernetes conformance suite against a tenant with two nodes, on a kind cluster of its own ([`test/e2e/README.md`](test/e2e/README.md#nightly-conformance-and-the-idle-control-plane)) |
 
-CI runs `make verify` and `make e2e` on every pull request, and `make conformance` every night.
+CI runs `make verify`, `make e2e`, `make e2e-ha` and `make e2e-restore` on every pull request, and `make conformance` every night.
 
 ## Docs
 
