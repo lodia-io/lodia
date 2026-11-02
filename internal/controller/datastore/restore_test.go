@@ -953,7 +953,20 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 	r := newRestore(t, restoreSetup{})
 	r.waitCopyTask(t)
 	time.Sleep(1100 * time.Millisecond)
+	r.etcd.unreachable.Store(true)
 	created := r.copied(t).CreationTimestamp.Time
+	readyAt := created.Add(time.Second)
+	time.Sleep(time.Until(created.Add(2 * time.Second)))
+	quorate := druidv1alpha1.Condition{Status: druidv1alpha1.ConditionTrue, Reason: "Quorate", Message: "The majority of ETCD members is ready", LastTransitionTime: metav1.NewTime(readyAt)}
+	setReady := func(condition druidv1alpha1.Condition) {
+		setEtcdStatus(t, r.ns, restoredCP, func(s *druidv1alpha1.EtcdStatus) {
+			condition.Type, condition.LastUpdateTime = druidv1alpha1.ConditionTypeReady, condition.LastTransitionTime
+			s.Conditions = append(s.Conditions, condition)
+		})
+	}
+	setReady(quorate)
+	r.etcd.unreachable.Store(false)
+	poke(t, r.ns)
 	marker := r.cleanedUp(t)
 	now := clocktesting.NewFakePassiveClock(time.Now())
 	reconciler := &datastore.Reconciler{Client: cached, Reader: apiReader, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, EtcdClient: dialRestored, Clock: now}
@@ -962,8 +975,21 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 		return result.RequeueAfter, err
 	}
 	ops := r.opsTask(t)
-	for _, round := range []struct{ finished, interval time.Duration }{{10 * time.Minute, 10 * time.Minute}, {3 * time.Hour, time.Hour}} {
-		finished := created.Add(round.finished)
+	if !ops.CreationTimestamp.After(readyAt) {
+		t.Fatalf("the first EtcdOpsTask was created at %s, not after the Etcd was ready at %s", ops.CreationTimestamp.UTC(), readyAt.UTC())
+	}
+	for _, round := range []struct {
+		ready              druidv1alpha1.Condition
+		start              time.Time
+		finished, interval time.Duration
+	}{
+		{quorate, readyAt, 10 * time.Minute, 10 * time.Minute},
+		{quorate, readyAt, 3 * time.Hour, time.Hour},
+		{druidv1alpha1.Condition{Status: druidv1alpha1.ConditionFalse, Reason: "QuorumLost", Message: "The majority of ETCD members is not ready", LastTransitionTime: metav1.NewTime(readyAt.Add(5 * time.Minute))},
+			created, 20 * time.Minute, 20 * time.Minute},
+	} {
+		setReady(round.ready)
+		finished := round.start.Add(round.finished)
 		next := finished.Add(round.interval)
 		finishFlush(t, r.ns, ops.Name, druidv1alpha1.TaskStateSucceeded, finished)
 		now.SetTime(next.Add(-time.Second))

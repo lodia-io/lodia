@@ -402,8 +402,11 @@ func (r *Reconciler) cleanUp(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 
 // snapshotRestore asks etcd-druid for a full snapshot of the restored etcd
 // until the full snapshot Lease shows the marker, as the backup reconciler
-// does for a seal, with resend timed from the Etcd's creation, and says the
-// task's state and how long it waits.
+// does for a seal, and says the task's state and how long it waits. resend
+// is timed from when the Etcd's Ready condition turned True, without which
+// etcd-druid takes no on-demand snapshot
+// (etcd-druid@v0.39.0 internal/controller/etcdopstask/handler/ondemandsnapshot/ondemandsnapshot.go#L181-L188),
+// or from the Etcd's creation while it is not True.
 func (r *Reconciler) snapshotRestore(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) (string, time.Duration, error) {
 	task := &druidv1alpha1.EtcdOpsTask{}
 	key := client.ObjectKey{Namespace: cp.Namespace, Name: restoreTaskPrefix + string(cp.UID)}
@@ -424,7 +427,11 @@ func (r *Reconciler) snapshotRestore(ctx context.Context, cp *lodiav1alpha1.Cont
 	case err != nil:
 		return "", 0, err
 	case task.IsCompleted():
-		return resend(ctx, r.Client, r.Clock.Now(), task, etcd.CreationTimestamp.Time)
+		start := etcd.CreationTimestamp.Time
+		if ready := druidv1alpha1.GetCondition(etcd, druidv1alpha1.ConditionTypeReady); ready != nil && ready.Status == druidv1alpha1.ConditionTrue {
+			start = ready.LastTransitionTime.Time
+		}
+		return resend(ctx, r.Client, r.Clock.Now(), task, start)
 	}
 	return string(ptr.Deref(task.Status.State, "not admitted yet")), 0, nil
 }

@@ -43,7 +43,7 @@ The keys are the API server's own under its default prefix, Nodes as `minions` (
 
 **Durable before ready.**
 A full snapshot follows the transaction, and `DatastoreReady` turns True only once a snapshot Lease shows it in the store: a member that loses its volume afterwards restores the cleaned data, not the source's.
-Datastore asks for it again as the backup reconciler does for the seal's, timed from the `Etcd`'s creation instead of the `Backup`'s start.
+Datastore asks for it again as the backup reconciler does for the seal's, timed from when the `Etcd`'s `Ready` condition turned True instead of from the `Backup`'s start, or from the `Etcd`'s creation while it is not True: etcd-druid takes no on-demand snapshot before ([ondemandsnapshot.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcdopstask/handler/ondemandsnapshot/ondemandsnapshot.go#L181-L188)).
 Datastore then writes `status.restore` ([field](../api/controlplane.md#status)), and from then on the restore needs the `Backup` no more: an `Etcd` created again restores from the `ControlPlane`'s prefix, and an etcd that lost the marker is checked against the seal of the `Backup` that status names.
 
 **The encryption key stays in the management cluster.**
