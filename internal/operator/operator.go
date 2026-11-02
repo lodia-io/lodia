@@ -88,7 +88,7 @@ func Setup(mgr ctrl.Manager, signerImage, etcdDruidNamespace, operatorNamespace 
 	dialEtcd := func(ctx context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client, error) {
 		return datastore.DialEtcd(ctx, mgr.GetAPIReader(), etcd)
 	}
-	if err := (&datastore.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdDruidNamespace: etcdDruidNamespace, OperatorNamespace: operatorNamespace, EtcdClient: dialEtcd}).SetupWithManager(mgr, workers); err != nil {
+	if err := (&datastore.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdDruidNamespace: etcdDruidNamespace, OperatorNamespace: operatorNamespace, EtcdClient: dialEtcd, Clock: clock.RealClock{}}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the datastore controller: %w", err)
 	}
 	if err := (&datastore.BackupReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdClient: dialEtcd, Clock: clock.RealClock{}}).SetupWithManager(mgr, workers); err != nil {

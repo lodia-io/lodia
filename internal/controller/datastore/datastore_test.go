@@ -41,6 +41,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/retry"
+	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -120,7 +121,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		stop("manager", err)
 	}
-	if err := (&datastore.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, EtcdClient: dialRestored}).SetupWithManager(mgr, 1); err != nil {
+	if err := (&datastore.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, EtcdClient: dialRestored, Clock: clock.RealClock{}}).SetupWithManager(mgr, 1); err != nil {
 		stop("controller", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -549,6 +550,7 @@ func TestFinalizerAndEtcdFromClass(t *testing.T) {
 			Endpoints: []lodiav1alpha1.HostPort{{Host: "dev-etcd-client." + ns + ".svc", Port: 2379}},
 			Class:     &lodiav1alpha1.DatastoreClassStatus{Name: "mapped", Generation: 1},
 			Members:   lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: 1}},
+			Snapshots: &lodiav1alpha1.SnapshotLocation{Provider: "S3", Endpoint: "https://s3.example.test", Bucket: "lodia-backups", Prefix: store.Prefix},
 		}},
 		{"the class → metadata.annotations[" + lodiav1alpha1.DatastoreClassAnnotation + "]", etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation], "mapped"},
 		{"the class's generation → metadata.annotations[" + lodiav1alpha1.DatastoreClassGenerationAnnotation + "]", etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation], "1"},
@@ -1092,6 +1094,74 @@ func TestHeldClass(t *testing.T) {
 	if c := meta.FindStatusCondition(getControlPlane(t, ns, cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady); strings.Contains(c.Message, "is held") {
 		t.Errorf("the class is still reported held: %s", c.Message)
 	}
+}
+
+func TestSnapshotsFollowTheEtcdsStore(t *testing.T) {
+	ns, credentialsNamespace := namespace(t), namespace(t)
+	const cp = "snapshotted"
+	create(t, credentials(credentialsNamespace))
+	createClass(t, fullClass("snapshotting", credentialsNamespace))
+	create(t, controlPlane(ns, cp, "snapshotting"))
+	writeGeneration(t, ns, cp, 1)
+	waitEtcd(t, ns, cp, nil)
+	reports := func(bucket string) lodiav1alpha1.SnapshotLocation {
+		t.Helper()
+		var location lodiav1alpha1.SnapshotLocation
+		eventually(t, func() error {
+			store := ptr.Deref(getEtcd(t, ns, cp).Spec.Backup.Store, druidv1alpha1.StoreSpec{})
+			if got := ptr.Deref(store.Container, ""); got != bucket {
+				return fmt.Errorf("the Etcd's store names bucket %q, want %q", got, bucket)
+			}
+			location = lodiav1alpha1.SnapshotLocation{Provider: "S3", Endpoint: "https://s3.example.test", Bucket: bucket, Prefix: store.Prefix}
+			if status := getControlPlane(t, ns, cp).Status.Datastore; status == nil || !reflect.DeepEqual(status.Snapshots, &location) {
+				return fmt.Errorf("status.datastore is %+v, want snapshots %+v", status, location)
+			}
+			return nil
+		})
+		return location
+	}
+	first := reports("lodia-backups")
+	if want := "prod/" + string(namespaceUID(t, ns)) + "/controlplanes/" + string(getControlPlane(t, ns, cp).UID); first.Prefix != want {
+		t.Errorf("status.datastore.snapshots.prefix is %q, want %q", first.Prefix, want)
+	}
+
+	moveStore := func(bucket string) {
+		t.Helper()
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			class := &lodiav1alpha1.DatastoreClass{}
+			if err := k8s.Get(t.Context(), client.ObjectKey{Name: "snapshotting"}, class); err != nil {
+				return err
+			}
+			class.Spec.Backup.Store.Bucket = bucket
+			return k8s.Update(t.Context(), class)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	moveStore("lodia-backups-2")
+	reports("lodia-backups-2")
+
+	if err := k8s.Delete(t.Context(), credentials(credentialsNamespace)); err != nil {
+		t.Fatal(err)
+	}
+	moveStore("lodia-backups-3")
+	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "DatastoreClass snapshotting is held: its credentials Secret "+credentialsNamespace+"/s3 is missing")
+	reports("lodia-backups-2")
+
+	createClass(t, newClass("storeless", "Retain"))
+	create(t, controlPlane(ns, "storeless", "storeless"))
+	writeGeneration(t, ns, "storeless", 1)
+	waitEtcd(t, ns, "storeless", nil)
+	eventually(t, func() error {
+		status := getControlPlane(t, ns, "storeless").Status.Datastore
+		switch {
+		case status == nil:
+			return errors.New("no status.datastore yet")
+		case status.Snapshots != nil:
+			return fmt.Errorf("a class without a store reports snapshots %+v", status.Snapshots)
+		}
+		return nil
+	})
 }
 
 func TestBackupCopyFollowsItsEvents(t *testing.T) {

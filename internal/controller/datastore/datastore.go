@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	corev1ac "k8s.io/client-go/applyconfigurations/core/v1"
 	metav1ac "k8s.io/client-go/applyconfigurations/meta/v1"
+	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -41,6 +42,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/apistatus"
+	"go.lodia.io/lodia/internal/live"
 	"go.lodia.io/lodia/internal/ownership"
 	"go.lodia.io/lodia/internal/restore"
 )
@@ -63,6 +65,8 @@ type Reconciler struct {
 	OperatorNamespace string
 	// EtcdClient connects to the etcd of an Etcd; the caller closes it.
 	EtcdClient func(ctx context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client, error)
+	// Clock spaces the full snapshots a restore asks for again.
+	Clock clock.PassiveClock
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
@@ -124,7 +128,7 @@ func (r *Reconciler) controlPlanesUsing(ctx context.Context, class client.Object
 	return requests
 }
 
-// +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=list;watch;patch
+// +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/status,verbs=patch
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/finalizers,verbs=update
 // +kubebuilder:rbac:groups=lodia.io,resources=datastoreclasses,verbs=list;watch
@@ -301,6 +305,14 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.Contro
 	if cp.Spec.RestoreFrom != nil && current != nil {
 		if check, err = r.checkRestore(ctx, cp, current); err != nil {
 			return nil, nil, nil, metav1.Condition{}, 0, err
+		}
+		// A check that could not run keeps the restore's status and decides
+		// from it: read live, since the cache can lag behind this
+		// controller's own last write.
+		if check.restored == nil && check.condition == nil {
+			if err := live.Datastore(ctx, r.Reader, cp, lodiav1alpha1.ConditionDatastoreReady, lodiav1alpha1.ConditionBackupReady); err != nil {
+				return nil, nil, nil, metav1.Condition{}, 0, fmt.Errorf("read ControlPlane %s: %w", cp.Name, err)
+			}
 		}
 	}
 	// One member restores, and etcd-druid adds the others as learners once
@@ -781,9 +793,9 @@ func (r *Reconciler) setFinalizer(ctx context.Context, cp *lodiav1alpha1.Control
 	return r.Patch(ctx, cp, patch, client.FieldOwner(FieldManager))
 }
 
-// datastoreStatus says where the API server reaches the etcd: etcd-druid's
-// client Service. The restore is carried into every apply, which would drop
-// it otherwise.
+// datastoreStatus says where the API server reaches the etcd, etcd-druid's
+// client Service, and where the Etcd's snapshots go. The restore is carried
+// into every apply, which would drop it otherwise.
 func datastoreStatus(etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet, restore *lodiav1alpha1.RestoreStatus) *lodiav1alpha1.DatastoreStatus {
 	if etcd == nil {
 		return nil
@@ -793,6 +805,9 @@ func datastoreStatus(etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet, restore 
 		Endpoints: []lodiav1alpha1.HostPort{{Host: host, Port: port}},
 		Members:   lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: etcd.Spec.Replicas, Ready: min(etcd.Status.ReadyReplicas, etcd.Spec.Replicas)}, Updated: updatedMembers(etcd, sts)},
 		Restore:   restore,
+	}
+	if store := etcd.Spec.Backup.Store; store != nil {
+		status.Snapshots = new(storeLocation(store))
 	}
 	generation, err := strconv.ParseInt(etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation], 10, 64)
 	if name := etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation]; name != "" && err == nil {
