@@ -26,6 +26,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/certs"
+	"go.lodia.io/lodia/internal/restore"
 	"go.lodia.io/lodia/internal/versions"
 )
 
@@ -213,7 +214,7 @@ func unsealed(backup *lodiav1alpha1.Backup) (string, string) {
 			return "", ""
 		}
 		return lodiav1alpha1.ReasonWaitingForBackup, fmt.Sprintf("Backup %s is Completed, and its %s does not name its UID yet", backup.Name, lodiav1alpha1.SealedUIDAnnotation)
-	case final(backup, ready) || ready.Status == metav1.ConditionFalse && (ready.Reason == lodiav1alpha1.ReasonSealLost || ready.Reason == lodiav1alpha1.ReasonObjectsControlledElsewhere):
+	case restore.Failed(backup, ready):
 		return lodiav1alpha1.ReasonRestoreFailed, fmt.Sprintf("Backup %s is %s: %s; restore another Backup", backup.Name, ready.Reason, ready.Message)
 	}
 	return lodiav1alpha1.ReasonWaitingForBackup, fmt.Sprintf("Backup %s is %s: %s", backup.Name, ready.Reason, ready.Message)
