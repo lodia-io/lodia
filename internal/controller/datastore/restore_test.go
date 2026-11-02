@@ -1542,7 +1542,9 @@ func TestAnEtcdCreatedAgainFromAStaleCacheNeedsNoBackup(t *testing.T) {
 }
 
 func TestAnEtcdDeletedMidRestoreComesBackOverItsClaims(t *testing.T) {
-	r := newRestore(t, restoreSetup{})
+	r := newRestore(t, restoreSetup{controlPlane: func(cp *lodiav1alpha1.ControlPlane) {
+		cp.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+	}})
 	r.etcd.unreachable.Store(true)
 	first := r.copied(t)
 	if err := k8s.Delete(t.Context(), r.copyTask(t)); err != nil {
@@ -1554,18 +1556,65 @@ func TestAnEtcdDeletedMidRestoreComesBackOverItsClaims(t *testing.T) {
 	if err := k8s.Delete(t.Context(), first); err != nil {
 		t.Fatal(err)
 	}
-	waitEtcd(t, r.ns, restoredCP, func(etcd *druidv1alpha1.Etcd) error {
+	again := waitEtcd(t, r.ns, restoredCP, func(etcd *druidv1alpha1.Etcd) error {
 		if etcd.UID == first.UID {
 			return errors.New("the deleted Etcd is still there")
 		}
 		return nil
 	})
+	if again.Spec.Replicas != 1 {
+		t.Errorf("the Etcd created again over the claim of its one member asks for %d members, want 1", again.Spec.Replicas)
+	}
 	consistently(t, func() error {
 		if task := r.copyTask(t); task != nil {
 			return fmt.Errorf("EtcdCopyBackupsTask %s copies the Backup again over the claims", task.Name)
 		}
 		return nil
 	})
+}
+
+func TestACompletedRestoreComesBackOverItsClaimsWithTheirMembers(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		ordinals []int
+	}{{"three claims", []int{0, 1, 2}}, {"claim 0 missing", []int{1, 2}}, {"a claim beyond highAvailability's members", []int{0, 1, 2, 3}}} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newRestore(t, restoreSetup{controlPlane: func(cp *lodiav1alpha1.ControlPlane) {
+				cp.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+			}})
+			r.copied(t)
+			r.complete(t, r.cleanedUp(t))
+			first := waitEtcd(t, r.ns, restoredCP, func(etcd *druidv1alpha1.Etcd) error {
+				if etcd.Spec.Replicas != 3 {
+					return fmt.Errorf("the completed restore's Etcd asks for %d members", etcd.Spec.Replicas)
+				}
+				return nil
+			})
+			uid := string(r.controlPlane(t).UID)
+			for _, ordinal := range c.ordinals {
+				create(t, claim(r.ns, fmt.Sprintf("b-etcd-b-etcd-%d", ordinal), map[string]string{lodiav1alpha1.ControlPlaneUIDLabel: uid}))
+			}
+			if err := k8s.Delete(t.Context(), first); err != nil {
+				t.Fatal(err)
+			}
+			again := waitEtcd(t, r.ns, restoredCP, func(etcd *druidv1alpha1.Etcd) error {
+				if etcd.UID == first.UID {
+					return errors.New("the deleted Etcd is still there")
+				}
+				return nil
+			})
+			if again.Spec.Replicas != 3 {
+				t.Fatalf("the Etcd created again over the claims of members %v asks for %d members, want 3", c.ordinals, again.Spec.Replicas)
+			}
+			poke(t, r.ns)
+			consistently(t, func() error {
+				if n := getEtcd(t, r.ns, restoredCP).Spec.Replicas; n != 3 {
+					return fmt.Errorf("the Etcd over the claims of members %v asks for %d members, want 3", c.ordinals, n)
+				}
+				return nil
+			})
+		})
+	}
 }
 
 func TestAStalePassWhoseCheckCannotRunKeepsTheMembers(t *testing.T) {

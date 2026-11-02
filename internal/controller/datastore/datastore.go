@@ -316,11 +316,17 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.Contro
 			return nil, nil, nil, metav1.Condition{}, 0, err
 		}
 	}
-	// One member restores, and etcd-druid adds the others as learners once
-	// the restore is complete; an Etcd raised above one stays, whatever a
-	// check that could not run found.
+	// An Etcd that starts on the store restores one member, and etcd-druid
+	// adds the others as learners once the restore is complete. One created
+	// again over this ControlPlane's claims asks for the members they held,
+	// each of which restarts with the members its data names; an Etcd raised
+	// above one stays, whatever a check that could not run found.
 	members := memberCount(cp)
-	if cp.Spec.RestoreFrom != nil && check.restored == nil && members > 1 {
+	switch {
+	case cp.Spec.RestoreFrom == nil || check.restored != nil || members == 1:
+	case current == nil:
+		members = claimedMembers(cp.Name, claims, members)
+	default:
 		raised, err := r.raised(ctx, current)
 		if err != nil {
 			return nil, nil, nil, metav1.Condition{}, 0, err
@@ -456,8 +462,8 @@ func (r *Reconciler) currentEtcd(ctx context.Context, cp *lodiav1alpha1.ControlP
 // lag Datastore's own scale-up, so an Etcd it holds at one is read again from
 // the API server.
 func (r *Reconciler) raised(ctx context.Context, current *druidv1alpha1.Etcd) (bool, error) {
-	if current == nil || current.Spec.Replicas > 1 {
-		return current != nil, nil
+	if current.Spec.Replicas > 1 {
+		return true, nil
 	}
 	etcd := &druidv1alpha1.Etcd{}
 	if err := r.Reader.Get(ctx, client.ObjectKeyFromObject(current), etcd); err != nil {
@@ -629,15 +635,31 @@ func (r *Reconciler) claims(ctx context.Context, cp *lodiav1alpha1.ControlPlane)
 	if err := r.Reader.List(ctx, list, client.InNamespace(cp.Namespace)); err != nil {
 		return nil, err
 	}
-	prefix := lodiav1alpha1.EtcdName(cp.Name) + "-" + lodiav1alpha1.EtcdName(cp.Name) + "-"
 	var claims []corev1.PersistentVolumeClaim
 	for _, claim := range list.Items {
-		ordinal, named := strings.CutPrefix(claim.Name, prefix)
-		if n, err := strconv.Atoi(ordinal); named && err == nil && n >= 0 && strconv.Itoa(n) == ordinal {
+		if _, ok := claimOrdinal(cp.Name, claim.Name); ok {
 			claims = append(claims, claim)
 		}
 	}
 	return claims, nil
+}
+
+func claimOrdinal(cp, claim string) (int, bool) {
+	ordinal, named := strings.CutPrefix(claim, lodiav1alpha1.EtcdName(cp)+"-"+lodiav1alpha1.EtcdName(cp)+"-")
+	n, err := strconv.Atoi(ordinal)
+	return n, named && err == nil && n >= 0 && strconv.Itoa(n) == ordinal
+}
+
+// claimedMembers is how many members the claims held, at most limit: a
+// member whose claim is gone still counts below the highest ordinal.
+func claimedMembers(cp string, claims []corev1.PersistentVolumeClaim, limit int32) int32 {
+	held := 1
+	for _, claim := range claims {
+		if ordinal, ok := claimOrdinal(cp, claim.Name); ok {
+			held = max(held, min(ordinal, int(limit)-1)+1)
+		}
+	}
+	return int32(held)
 }
 
 // Starting an etcd on a claim without this ControlPlane's UID would be a
