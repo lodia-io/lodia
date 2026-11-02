@@ -462,6 +462,17 @@ func TestARestoreCopiesChecksCleansUpAndSnapshots(t *testing.T) {
 	}
 	owned(t, task, cp)
 	r.noEtcd(t)
+	eventually(t, func() error {
+		return cached.Get(t.Context(), client.ObjectKeyFromObject(task), &druidv1alpha1.EtcdCopyBackupsTask{})
+	})
+	poke(t, r.ns)
+	consistently(t, func() error {
+		err := k8s.Get(t.Context(), client.ObjectKey{Namespace: r.ns, Name: restoredCP + "-etcd"}, &druidv1alpha1.Etcd{})
+		if err == nil {
+			return errors.New("an Etcd exists while the copy runs")
+		}
+		return client.IgnoreNotFound(err)
+	})
 
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		task := r.copyTask(t)
@@ -953,7 +964,20 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 	r := newRestore(t, restoreSetup{})
 	r.waitCopyTask(t)
 	time.Sleep(1100 * time.Millisecond)
+	r.etcd.unreachable.Store(true)
 	created := r.copied(t).CreationTimestamp.Time
+	readyAt := created.Add(time.Second)
+	time.Sleep(time.Until(created.Add(2 * time.Second)))
+	quorate := druidv1alpha1.Condition{Status: druidv1alpha1.ConditionTrue, Reason: "Quorate", Message: "The majority of ETCD members is ready", LastTransitionTime: metav1.NewTime(readyAt)}
+	setReady := func(condition druidv1alpha1.Condition) {
+		setEtcdStatus(t, r.ns, restoredCP, func(s *druidv1alpha1.EtcdStatus) {
+			condition.Type, condition.LastUpdateTime = druidv1alpha1.ConditionTypeReady, condition.LastTransitionTime
+			s.Conditions = append(s.Conditions, condition)
+		})
+	}
+	setReady(quorate)
+	r.etcd.unreachable.Store(false)
+	poke(t, r.ns)
 	marker := r.cleanedUp(t)
 	now := clocktesting.NewFakePassiveClock(time.Now())
 	reconciler := &datastore.Reconciler{Client: cached, Reader: apiReader, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, EtcdClient: dialRestored, Clock: now}
@@ -961,9 +985,31 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 		result, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}})
 		return result.RequeueAfter, err
 	}
+	refused := errors.New("injected: the API server refused the delete")
+	refusing := &datastore.Reconciler{Client: interceptor.NewClient(k8s, interceptor.Funcs{
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			if _, ok := obj.(*druidv1alpha1.EtcdOpsTask); ok {
+				return refused
+			}
+			return c.Delete(ctx, obj, opts...)
+		},
+	}), Reader: apiReader, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, EtcdClient: dialRestored, Clock: now}
 	ops := r.opsTask(t)
-	for _, round := range []struct{ finished, interval time.Duration }{{10 * time.Minute, 10 * time.Minute}, {3 * time.Hour, time.Hour}} {
-		finished := created.Add(round.finished)
+	if !ops.CreationTimestamp.After(readyAt) {
+		t.Fatalf("the first EtcdOpsTask was created at %s, not after the Etcd was ready at %s", ops.CreationTimestamp.UTC(), readyAt.UTC())
+	}
+	for _, round := range []struct {
+		ready              druidv1alpha1.Condition
+		start              time.Time
+		finished, interval time.Duration
+	}{
+		{quorate, readyAt, 10 * time.Minute, 10 * time.Minute},
+		{quorate, readyAt, 3 * time.Hour, time.Hour},
+		{druidv1alpha1.Condition{Status: druidv1alpha1.ConditionFalse, Reason: "QuorumLost", Message: "The majority of ETCD members is not ready", LastTransitionTime: metav1.NewTime(readyAt.Add(5 * time.Minute))},
+			created, 20 * time.Minute, 20 * time.Minute},
+	} {
+		setReady(round.ready)
+		finished := round.start.Add(round.finished)
 		next := finished.Add(round.interval)
 		finishFlush(t, r.ns, ops.Name, druidv1alpha1.TaskStateSucceeded, finished)
 		now.SetTime(next.Add(-time.Second))
@@ -988,6 +1034,12 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 			}
 		}
 		now.SetTime(next)
+		if _, err := refusing.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}}); !errors.Is(err, refused) {
+			t.Fatalf("a pass whose delete of the finished EtcdOpsTask was refused returned %v, want %v", err, refused)
+		}
+		if again := r.opsTask(t); again == nil || again.UID != ops.UID || !again.DeletionTimestamp.IsZero() {
+			t.Fatal("the finished EtcdOpsTask went though its delete was refused")
+		}
 		eventually(t, func() error {
 			if _, err := pass(); err != nil {
 				return err
@@ -1000,6 +1052,27 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 		ops = r.opsTask(t)
 	}
 	r.complete(t, marker)
+}
+
+func TestALeaseThatReachesTheMarkerWhileTheNextFullSnapshotWaitsCompletesTheRestore(t *testing.T) {
+	r := newRestore(t, restoreSetup{})
+	created := r.copied(t).CreationTimestamp.Time
+	marker := r.cleanedUp(t)
+	lease := restoredCP + "-etcd-full-snap"
+	createLease(t, r.ns, lease, strconv.FormatInt(marker-1, 10))
+	finished := created.Add(30 * time.Minute)
+	finishFlush(t, r.ns, r.taskName(t), druidv1alpha1.TaskStateSucceeded, finished)
+	settled := fmt.Sprintf("the store holds %d; EtcdOpsTask %s is Succeeded at %s; the next goes at %s",
+		marker-1, r.taskName(t), finished.UTC().Format(time.RFC3339), finished.Add(30*time.Minute).UTC().Format(time.RFC3339))
+	waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRestoring, settled)
+	consistently(t, func() error {
+		if ready := meta.FindStatusCondition(r.controlPlane(t).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady); !strings.Contains(ready.Message, settled) {
+			return fmt.Errorf("DatastoreReady moved to %s %q", ready.Reason, ready.Message)
+		}
+		return nil
+	})
+	setLease(t, r.ns, lease, marker)
+	waitCondition(t, r.ns, restoredCP, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum")
 }
 
 func TestARestoreSurvivesAFailureAtEachStep(t *testing.T) {
@@ -1370,6 +1443,7 @@ func TestACompletedRestoreKeepsItsRecordWithoutAnEtcd(t *testing.T) {
 		if etcd.Spec.Replicas != 1 || !reflect.DeepEqual(etcd.Spec.Backup.Store, first.Spec.Backup.Store) {
 			t.Errorf("the Etcd created again asks for %d members with store %+v, want 1 with %+v", etcd.Spec.Replicas, etcd.Spec.Backup.Store, first.Spec.Backup.Store)
 		}
+		waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "")
 		consistently(t, func() error {
 			if task := r.copyTask(t); task != nil {
 				return fmt.Errorf("EtcdCopyBackupsTask %s copies the Backup again", task.Name)
@@ -1542,7 +1616,9 @@ func TestAnEtcdCreatedAgainFromAStaleCacheNeedsNoBackup(t *testing.T) {
 }
 
 func TestAnEtcdDeletedMidRestoreComesBackOverItsClaims(t *testing.T) {
-	r := newRestore(t, restoreSetup{})
+	r := newRestore(t, restoreSetup{controlPlane: func(cp *lodiav1alpha1.ControlPlane) {
+		cp.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+	}})
 	r.etcd.unreachable.Store(true)
 	first := r.copied(t)
 	if err := k8s.Delete(t.Context(), r.copyTask(t)); err != nil {
@@ -1554,18 +1630,65 @@ func TestAnEtcdDeletedMidRestoreComesBackOverItsClaims(t *testing.T) {
 	if err := k8s.Delete(t.Context(), first); err != nil {
 		t.Fatal(err)
 	}
-	waitEtcd(t, r.ns, restoredCP, func(etcd *druidv1alpha1.Etcd) error {
+	again := waitEtcd(t, r.ns, restoredCP, func(etcd *druidv1alpha1.Etcd) error {
 		if etcd.UID == first.UID {
 			return errors.New("the deleted Etcd is still there")
 		}
 		return nil
 	})
+	if again.Spec.Replicas != 1 {
+		t.Errorf("the Etcd created again over the claim of its one member asks for %d members, want 1", again.Spec.Replicas)
+	}
 	consistently(t, func() error {
 		if task := r.copyTask(t); task != nil {
 			return fmt.Errorf("EtcdCopyBackupsTask %s copies the Backup again over the claims", task.Name)
 		}
 		return nil
 	})
+}
+
+func TestACompletedRestoreComesBackOverItsClaimsWithTheirMembers(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		ordinals []int
+	}{{"three claims", []int{0, 1, 2}}, {"claim 0 missing", []int{1, 2}}, {"a claim beyond highAvailability's members", []int{0, 1, 2, 3}}} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newRestore(t, restoreSetup{controlPlane: func(cp *lodiav1alpha1.ControlPlane) {
+				cp.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+			}})
+			r.copied(t)
+			r.complete(t, r.cleanedUp(t))
+			first := waitEtcd(t, r.ns, restoredCP, func(etcd *druidv1alpha1.Etcd) error {
+				if etcd.Spec.Replicas != 3 {
+					return fmt.Errorf("the completed restore's Etcd asks for %d members", etcd.Spec.Replicas)
+				}
+				return nil
+			})
+			uid := string(r.controlPlane(t).UID)
+			for _, ordinal := range c.ordinals {
+				create(t, claim(r.ns, fmt.Sprintf("b-etcd-b-etcd-%d", ordinal), map[string]string{lodiav1alpha1.ControlPlaneUIDLabel: uid}))
+			}
+			if err := k8s.Delete(t.Context(), first); err != nil {
+				t.Fatal(err)
+			}
+			again := waitEtcd(t, r.ns, restoredCP, func(etcd *druidv1alpha1.Etcd) error {
+				if etcd.UID == first.UID {
+					return errors.New("the deleted Etcd is still there")
+				}
+				return nil
+			})
+			if again.Spec.Replicas != 3 {
+				t.Fatalf("the Etcd created again over the claims of members %v asks for %d members, want 3", c.ordinals, again.Spec.Replicas)
+			}
+			poke(t, r.ns)
+			consistently(t, func() error {
+				if n := getEtcd(t, r.ns, restoredCP).Spec.Replicas; n != 3 {
+					return fmt.Errorf("the Etcd over the claims of members %v asks for %d members, want 3", c.ordinals, n)
+				}
+				return nil
+			})
+		})
+	}
 }
 
 func TestAStalePassWhoseCheckCannotRunKeepsTheMembers(t *testing.T) {
