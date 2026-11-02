@@ -37,6 +37,8 @@ import (
 	"k8s.io/apiserver/pkg/storage/etcd3/testserver"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/clock"
+	clocktesting "k8s.io/utils/clock/testing"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
@@ -504,7 +506,7 @@ func TestARestoreCopiesChecksCleansUpAndSnapshots(t *testing.T) {
 	poke(t, r.ns)
 	waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRestoring,
 		fmt.Sprintf("cleaned up; waiting for a full snapshot of revision %d: the store holds %d; EtcdOpsTask %s is ", marker, marker-1, name))
-	finishFlush(t, r.ns, name, druidv1alpha1.TaskStateSucceeded, time.Now())
+	finishFlush(t, r.ns, name, druidv1alpha1.TaskStateSucceeded, etcd.CreationTimestamp.Time)
 	poke(t, r.ns)
 	eventually(t, func() error {
 		if again := r.opsTask(t); again == nil || again.UID == ops.UID {
@@ -844,6 +846,59 @@ func TestARestoreCheckThatCannotRunHoldsTheRestore(t *testing.T) {
 	}
 	r.etcd.unreachable.Store(false)
 	r.complete(t, r.cleanedUp(t))
+}
+
+func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
+	r := newRestore(t, restoreSetup{})
+	r.waitCopyTask(t)
+	time.Sleep(1100 * time.Millisecond)
+	created := r.copied(t).CreationTimestamp.Time
+	marker := r.cleanedUp(t)
+	now := clocktesting.NewFakePassiveClock(time.Now())
+	reconciler := &datastore.Reconciler{Client: cached, Reader: apiReader, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, EtcdClient: dialRestored, Clock: now}
+	pass := func() (time.Duration, error) {
+		result, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}})
+		return result.RequeueAfter, err
+	}
+	ops := r.opsTask(t)
+	for _, round := range []struct{ finished, interval time.Duration }{{10 * time.Minute, 10 * time.Minute}, {3 * time.Hour, time.Hour}} {
+		finished := created.Add(round.finished)
+		next := finished.Add(round.interval)
+		finishFlush(t, r.ns, ops.Name, druidv1alpha1.TaskStateSucceeded, finished)
+		now.SetTime(next.Add(-time.Second))
+		want := fmt.Sprintf("cleaned up; waiting for a full snapshot of revision %d: the store holds 0; EtcdOpsTask %s is Succeeded at %s; the next goes at %s",
+			marker, ops.Name, finished.UTC().Format(time.RFC3339), next.UTC().Format(time.RFC3339))
+		eventually(t, func() error {
+			if _, err := pass(); err != nil {
+				return err
+			}
+			if ready := meta.FindStatusCondition(r.controlPlane(t).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady); ready.Reason != lodiav1alpha1.ReasonRestoring || ready.Message != want {
+				return fmt.Errorf("DatastoreReady is %s %q, want Restoring %q", ready.Reason, ready.Message, want)
+			}
+			return nil
+		})
+		for range 3 {
+			requeueAfter, err := pass()
+			if err != nil || requeueAfter != time.Second {
+				t.Fatalf("a pass a second before the next full snapshot returned %v, %v; want a requeue in 1s", requeueAfter, err)
+			}
+			if again := r.opsTask(t); again == nil || again.UID != ops.UID {
+				t.Fatalf("the EtcdOpsTask finished at %s was replaced before %s", finished, next)
+			}
+		}
+		now.SetTime(next)
+		eventually(t, func() error {
+			if _, err := pass(); err != nil {
+				return err
+			}
+			if again := r.opsTask(t); again == nil || again.UID == ops.UID {
+				return fmt.Errorf("no EtcdOpsTask at %s after the one finished at %s", next, finished)
+			}
+			return nil
+		})
+		ops = r.opsTask(t)
+	}
+	r.complete(t, marker)
 }
 
 func TestARestoreSurvivesAFailureAtEachStep(t *testing.T) {

@@ -317,7 +317,7 @@ func (r *Reconciler) checkRestore(ctx context.Context, cp *lodiav1alpha1.Control
 	if held >= revision {
 		return restoreCheck{restored: restored(cp, value)}, r.tidyRestore(ctx, cp)
 	}
-	state, err := r.snapshotRestore(ctx, cp, etcd)
+	state, wait, err := r.snapshotRestore(ctx, cp, etcd)
 	if err != nil {
 		return restoreCheck{}, err
 	}
@@ -326,7 +326,7 @@ func (r *Reconciler) checkRestore(ctx context.Context, cp *lodiav1alpha1.Control
 	if ignored {
 		message += fmt.Sprintf("; ignored Lease %s, created before Etcd %s", druidv1alpha1.GetFullSnapshotLeaseName(etcd.ObjectMeta), etcd.Name)
 	}
-	return restoreCheck{condition: restoring(message), requeueAfter: 10 * time.Second}, nil
+	return restoreCheck{condition: restoring(message), requeueAfter: sooner(10*time.Second, wait)}, nil
 }
 
 func request(ctx context.Context, call func(context.Context) error) error {
@@ -391,8 +391,9 @@ func (r *Reconciler) cleanUp(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 
 // snapshotRestore asks etcd-druid for a full snapshot of the restored etcd
 // until the full snapshot Lease shows the marker, as the backup reconciler
-// does for a seal, and says the task's state.
-func (r *Reconciler) snapshotRestore(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) (string, error) {
+// does for a seal, with resend timed from the Etcd's creation, and says the
+// task's state and how long it waits.
+func (r *Reconciler) snapshotRestore(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) (string, time.Duration, error) {
 	task := &druidv1alpha1.EtcdOpsTask{}
 	key := client.ObjectKey{Namespace: cp.Namespace, Name: restoreTaskPrefix + string(cp.UID)}
 	err := r.Get(ctx, key, task)
@@ -406,18 +407,15 @@ func (r *Reconciler) snapshotRestore(ctx context.Context, cp *lodiav1alpha1.Cont
 			},
 		}
 		if err := r.Create(ctx, task, client.FieldOwner(FieldManager)); err != nil && !apierrors.IsAlreadyExists(err) {
-			return "", fmt.Errorf("create EtcdOpsTask %s: %w", key.Name, err)
+			return "", 0, fmt.Errorf("create EtcdOpsTask %s: %w", key.Name, err)
 		}
-		return "created", nil
+		return "created", 0, nil
 	case err != nil:
-		return "", err
+		return "", 0, err
 	case task.IsCompleted():
-		if err := client.IgnoreNotFound(r.Delete(ctx, task, client.Preconditions{UID: &task.UID})); err != nil {
-			return "", fmt.Errorf("delete EtcdOpsTask %s: %w", key.Name, err)
-		}
-		return string(*task.Status.State) + ", deleted for another", nil
+		return resend(ctx, r.Client, r.Clock.Now(), task, etcd.CreationTimestamp.Time)
 	}
-	return string(ptr.Deref(task.Status.State, "not admitted yet")), nil
+	return string(ptr.Deref(task.Status.State, "not admitted yet")), 0, nil
 }
 
 // restored is the status of a complete restore, from the marker's value; it

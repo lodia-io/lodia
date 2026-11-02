@@ -512,13 +512,8 @@ func (r *BackupReconciler) seal(ctx context.Context, etcd *druidv1alpha1.Etcd, u
 // newest full snapshot with the deltas after it, and nothing from deltas alone
 // (etcd-backup-restore@v0.45.1 pkg/miscellaneous/miscellaneous.go#L196-L214),
 // which a store moved through the credentials holds until its next scheduled
-// full snapshot. A finished EtcdOpsTask names no revision
-// (etcd-druid@v0.39.0 api/core/v1alpha1/etcdopstask.go#L137-L161), so one
-// that finished short of the seal is deleted for the next, but only once the
-// time since the Backup started, at most an hour, has passed since it
-// finished (its lastTransitionTime, etcd-druid@v0.39.0
-// internal/controller/etcdopstask/utils.go#L95-L96): a Lease that never
-// reaches the seal costs a full snapshot each time.
+// full snapshot. A task that finishes short of the seal is sent again as
+// resend says, from the Backup's start.
 func (r *BackupReconciler) flush(ctx context.Context, backup *lodiav1alpha1.Backup, source *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, revision int64) (string, time.Duration, error) {
 	lease := druidv1alpha1.GetFullSnapshotLeaseName(etcd.ObjectMeta)
 	held, ignored, err := fullSnapshotRevision(ctx, r.Reader, etcd)
@@ -546,17 +541,11 @@ func (r *BackupReconciler) flush(ctx context.Context, backup *lodiav1alpha1.Back
 	case err != nil:
 		return "", 0, err
 	case task.IsCompleted():
-		finished := ptr.Deref(task.Status.LastTransitionTime, metav1.Time{}).Time
-		next := finished.Add(min(time.Hour, finished.Sub(backup.Status.StartedAt.Time)))
-		if wait := next.Sub(r.Clock.Now()); wait > 0 {
-			state = fmt.Sprintf("%s at %s; the next goes at %s", *task.Status.State, finished.UTC().Format(time.RFC3339), next.UTC().Format(time.RFC3339))
-			requeueAfter = min(requeueAfter, wait)
-		} else {
-			if err := client.IgnoreNotFound(r.Delete(ctx, task, client.Preconditions{UID: &task.UID})); err != nil {
-				return "", 0, fmt.Errorf("delete EtcdOpsTask %s: %w", name, err)
-			}
-			state = string(*task.Status.State) + ", deleted for another"
+		var wait time.Duration
+		if state, wait, err = resend(ctx, r.Client, r.Clock.Now(), task, backup.Status.StartedAt.Time); err != nil {
+			return "", 0, err
 		}
+		requeueAfter = sooner(requeueAfter, wait)
 	default:
 		state = string(ptr.Deref(task.Status.State, "not admitted yet"))
 	}
@@ -569,6 +558,26 @@ func (r *BackupReconciler) flush(ctx context.Context, backup *lodiav1alpha1.Back
 		message = append(message, fmt.Sprintf("BackupReady of %s is False: %s", source.Name, backupReady.Message))
 	}
 	return strings.Join(message, "; "), requeueAfter, nil
+}
+
+// resend deletes a finished EtcdOpsTask for the next once the time since
+// start, at most an hour, has passed since it finished (its
+// lastTransitionTime, etcd-druid@v0.39.0
+// internal/controller/etcdopstask/utils.go#L95-L96), and says the task's state
+// and how long it waits, 0 once it deleted it. A finished task names no
+// revision (etcd-druid@v0.39.0 api/core/v1alpha1/etcdopstask.go#L137-L161),
+// so one short of the revision it was sent for is sent again, and a Lease
+// that never reaches that revision costs a full snapshot each time.
+func resend(ctx context.Context, c client.Client, now time.Time, task *druidv1alpha1.EtcdOpsTask, start time.Time) (string, time.Duration, error) {
+	finished := ptr.Deref(task.Status.LastTransitionTime, metav1.Time{}).Time
+	next := finished.Add(min(time.Hour, finished.Sub(start)))
+	if wait := next.Sub(now); wait > 0 {
+		return fmt.Sprintf("%s at %s; the next goes at %s", *task.Status.State, finished.UTC().Format(time.RFC3339), next.UTC().Format(time.RFC3339)), wait, nil
+	}
+	if err := client.IgnoreNotFound(c.Delete(ctx, task, client.Preconditions{UID: &task.UID})); err != nil {
+		return "", 0, fmt.Errorf("delete EtcdOpsTask %s: %w", task.Name, err)
+	}
+	return string(*task.Status.State) + ", deleted for another", 0, nil
 }
 
 // fullSnapshotRevision is the last revision of the newest full snapshot the
