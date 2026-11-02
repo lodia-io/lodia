@@ -288,15 +288,15 @@ const listLimit = 500
 
 // actedOn counts, kind by kind, what a held restore's controller manager acts
 // on outside the cluster once it runs, naming the first three by name; a kind
-// that cannot be listed says so in its place.
+// that cannot be listed says so in its place. The lists run at once, so a
+// tenant that does not answer holds a worker for one Timeout, not seven.
 func (r *Reconciler) actedOn(ctx context.Context, t *tenant) string {
 	page := metav1.ListOptions{Limit: listLimit}
 	type list struct {
 		kind string
 		read func(context.Context) (names []string, more bool, err error)
 	}
-	var out []string
-	for _, item := range []struct {
+	items := []struct {
 		what  string
 		lists []list
 	}{
@@ -397,19 +397,38 @@ func (r *Reconciler) actedOn(ctx context.Context, t *tenant) string {
 			}
 			return names, l.Continue != "", nil
 		}}}},
-	} {
+	}
+	type listed struct {
+		names []string
+		more  bool
+		err   error
+	}
+	results := make([][]listed, len(items))
+	var wg sync.WaitGroup
+	for i, item := range items {
+		results[i] = make([]listed, len(item.lists))
+		for j, l := range item.lists {
+			wg.Go(func() {
+				listing, cancel := context.WithTimeout(ctx, r.Timeout)
+				defer cancel()
+				names, more, err := l.read(listing)
+				results[i][j] = listed{names, more, err}
+			})
+		}
+	}
+	wg.Wait()
+	var out []string
+	for i, item := range items {
 		var names, failed []string
 		more := false
-		for _, l := range item.lists {
-			listing, cancel := context.WithTimeout(ctx, r.Timeout)
-			got, next, err := l.read(listing)
-			cancel()
-			if err != nil {
-				logf.FromContext(ctx).Error(err, "list in the tenant", "kind", l.kind)
+		for j, l := range item.lists {
+			got := results[i][j]
+			if got.err != nil {
+				logf.FromContext(ctx).Error(got.err, "list in the tenant", "kind", l.kind)
 				failed = append(failed, l.kind)
 				continue
 			}
-			names, more = append(names, got...), more || next
+			names, more = append(names, got.names...), more || got.more
 		}
 		if len(failed) > 0 {
 			out = append(out, strings.Join(failed, " and ")+" could not be listed")

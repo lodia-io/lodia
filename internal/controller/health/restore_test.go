@@ -186,10 +186,35 @@ func TestEachListWaitsItsOwnTimeout(t *testing.T) {
 	}
 }
 
+func TestATenantThatDoesNotAnswerHoldsAPassForOneTimeout(t *testing.T) {
+	silent := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
+		<-req.Context().Done()
+	}))
+	t.Cleanup(silent.Close)
+	kubeconfig, err := kubeconfigOf(silent.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp := restoredControlPlane(t, lodiav1alpha1.RestoreHeld)
+	setAccess(t, cp)
+	writeKubeconfig(t, cp, kubeconfig)
+	timeout := 500 * time.Millisecond
+	started := time.Now()
+	reconcile(t, &health.Reconciler{Client: k8s, Reader: k8s, Period: time.Hour, Timeout: timeout, Clock: clock.RealClock{}}, cp)
+	if took := time.Since(started); took > 4*timeout {
+		t.Errorf("a pass against a tenant that does not answer took %s with a Timeout of %s", took, timeout)
+	}
+	if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonAwaitingRelease, actsOn+"Services could not be listed; PersistentVolumes could not be listed"+
+		"; PersistentVolumeClaims could not be listed; ValidatingWebhookConfigurations and MutatingWebhookConfigurations could not be listed"+
+		"; APIServices could not be listed; CronJobs could not be listed"); err != nil {
+		t.Error(err)
+	}
+}
+
 func TestARestoreLeadsOnceReleasedWithItsSourceGone(t *testing.T) {
 	cp := restoredControlPlane(t, lodiav1alpha1.RestoreHeld)
 	prod := &lodiav1alpha1.ControlPlane{
-		ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: cp.Namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: cp.Namespace, Finalizers: []string{"test.lodia.io/keep"}},
 		Spec:       *cp.Spec.DeepCopy(),
 	}
 	prod.Spec.RestoreFrom, prod.Spec.Paused = nil, true
