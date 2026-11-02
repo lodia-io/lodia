@@ -136,6 +136,7 @@ A reason that no other field reports comes before one that `status.kubernetes.up
 The name is at most 235 characters (CEL), so that `<name>.encryption-config`, the copy of the source's encryption keys, fits a Secret's name.
 The backup reconciler of the Datastore controller, field manager `lodia/backup`, writes the status and the annotation `lodia.io/sealed-uid`, and holds the finalizer `lodia.io/restore-source` on the `Backup` from its first pass and on `<name>.encryption-config` from its creation.
 A sealed `Backup`, `Completed` and marked with its UID, and its keys stay while they are deleted until every `ControlPlane` of the namespace that restores from it and is not being deleted has an encryption configuration of its own and a completed restore; the keys go first, and a `Backup` that is not sealed goes at once.
+A `ControlPlane` without that configuration holds them only while the keys exist and the `Backup` controls them.
 It seals and copies as [restore-replaces-the-source](../decisions/restore-replaces-the-source.md) says; a `Backup` being deleted gets no new step but the mark of one already `Completed`.
 
 | field | written by | meaning |

@@ -51,6 +51,7 @@ When it seals, the backup reconciler writes `<backup>.encryption-config` (`Backu
 PKI copies those providers once into the restored `ControlPlane`'s configuration, behind a new key of its own, and never reads the `Backup` again; while it has not, PKI reports `CertificatesReady=False`, `WaitingForBackup`.
 The finalizer `lodia.io/restore-source` keeps a sealed `Backup` until each `ControlPlane` restoring from it has that configuration and a completed restore, which reads the `Backup`'s store and seal.
 It holds `<backup>.encryption-config` as well, which the garbage collector deletes while a `Backup` deleted in the foreground still exists ([garbagecollector.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/controller/garbagecollector/garbagecollector.go#L634-L659)).
+A `ControlPlane` without that configuration holds the `Backup` only while those keys exist and the `Backup` controls them: one created once they are gone could never get them, and would hold it for good.
 A `Backup` deleted before it is sealed goes at once, since no restore can use it.
 PKI adopts no Secret under its names for a restored `ControlPlane`: one that exists is `SecretsExist`.
 The platform backs up Lodia's Secrets, as it must for the CAs; a KMS provider is the long-term path, its key wrapped beside the snapshots.

@@ -737,18 +737,19 @@ func (r *BackupReconciler) release(ctx context.Context, backup *lodiav1alpha1.Ba
 			return ctrl.Result{RequeueAfter: requeueOnConflict(conflict)}, client.IgnoreNotFound(err)
 		}
 	}
-	if completed && backup.Annotations[lodiav1alpha1.SealedUIDAnnotation] == string(backup.UID) {
-		if held, err := r.restoring(ctx, backup); err != nil || held {
-			return ctrl.Result{}, err
-		}
-	}
 	keys := &metav1.PartialObjectMetadata{}
 	keys.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Secret"))
 	err := r.Reader.Get(ctx, client.ObjectKey{Namespace: backup.Namespace, Name: lodiav1alpha1.BackupEncryptionConfigSecretName(backup.Name)}, keys)
 	if client.IgnoreNotFound(err) != nil {
 		return ctrl.Result{}, err
 	}
-	if err == nil && controllerutil.ContainsFinalizer(keys, lodiav1alpha1.RestoreSourceFinalizer) {
+	found := err == nil
+	if completed && backup.Annotations[lodiav1alpha1.SealedUIDAnnotation] == string(backup.UID) {
+		if held, err := r.restoring(ctx, backup, found && metav1.IsControlledBy(keys, backup)); err != nil || held {
+			return ctrl.Result{}, err
+		}
+	}
+	if found && controllerutil.ContainsFinalizer(keys, lodiav1alpha1.RestoreSourceFinalizer) {
 		if conflict, err := r.setFinalizer(ctx, keys, false); err != nil || conflict {
 			return ctrl.Result{RequeueAfter: requeueOnConflict(conflict)}, err
 		}
@@ -759,10 +760,12 @@ func (r *BackupReconciler) release(ctx context.Context, backup *lodiav1alpha1.Ba
 
 // restoring says whether a ControlPlane in the Backup's namespace that is
 // not being deleted and restores from it lacks an encryption configuration of
-// its own or a completed restore. The ControlPlanes and their Secrets are read
+// its own while the Backup's keys exist, or has one and lacks a completed
+// restore. One without its own once the keys are gone can never get them, and
+// would hold the Backup for good. The ControlPlanes and their Secrets are read
 // from the API server: a ControlPlane the cache does not hold yet would find
 // no Backup to restore.
-func (r *BackupReconciler) restoring(ctx context.Context, backup *lodiav1alpha1.Backup) (bool, error) {
+func (r *BackupReconciler) restoring(ctx context.Context, backup *lodiav1alpha1.Backup, backupKeys bool) (bool, error) {
 	controlPlanes := &lodiav1alpha1.ControlPlaneList{}
 	if err := r.Reader.List(ctx, controlPlanes, client.InNamespace(backup.Namespace)); err != nil {
 		return false, err
@@ -779,6 +782,9 @@ func (r *BackupReconciler) restoring(ctx context.Context, backup *lodiav1alpha1.
 			return false, err
 		}
 		ownKeys := err == nil && metav1.IsControlledBy(keys, cp)
+		if !ownKeys && !backupKeys {
+			continue
+		}
 		if !ownKeys || cp.Status.Datastore == nil || cp.Status.Datastore.Restore == nil {
 			logf.FromContext(ctx).Info("keeping the Backup until the ControlPlane restoring from it has its own encryption configuration and a completed restore", "controlPlane", cp.Name)
 			return true, nil
