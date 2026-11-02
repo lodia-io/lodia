@@ -61,7 +61,10 @@ var restartOnlySecrets = []lodiav1alpha1.Secret{
 	lodiav1alpha1.KonnectivityKubeconfigSecret, lodiav1alpha1.KonnectivityServerSecret,
 }
 
-var k8s client.WithWatch
+var (
+	k8s       client.WithWatch
+	apiReader client.Reader
+)
 
 func TestMain(m *testing.M) {
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
@@ -102,7 +105,8 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		stop("manager", err)
 	}
-	reconciler := &workloads.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), SignerImage: signerImage}
+	apiReader = mgr.GetAPIReader()
+	reconciler := &workloads.Reconciler{Client: mgr.GetClient(), Reader: apiReader, SignerImage: signerImage}
 	if err := reconciler.SetupWithManager(mgr, 1); err != nil {
 		stop("controller", err)
 	}

@@ -46,9 +46,9 @@ The field reference with every rule is [`api/controlplane.md`](api/controlplane.
 |---|---|---|---|
 | PKI | Secrets with certificates, keys and kubeconfigs; the tenant's bindings for Lodia, the admin group and the kubelet client; the answers to `KubeconfigRequest`s, which it deletes at their deadline | `CertificatesReady`, `AccessReady`; `CAValidityAcceptable` outside `Ready`; a `KubeconfigRequest`'s `Ready` | `status.endpoint`; `APIServerReady` for the bindings; the admission policy `kubeconfigrequests.lodia.io` for requests |
 | Datastore | the `Etcd` of a dedicated etcd and its NetworkPolicy, or a user and role in a shared store; backups and defragmentation; a `Backup`'s seal, its copy and its encryption keys | `DatastoreReady`; `BackupReady` outside `Ready`; a `Backup`'s `Ready` | a complete generation of PKI's etcd certificates; for a `Backup`, its source's `DatastoreReady` |
-| Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady` | `status.target`, `status.datastore`, `CertificatesReady`, `DatastoreReady`; `AddonsApplied` before it starts a restored `ControlPlane`'s controller manager, from wave 1b |
+| Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady` | `status.target`, `status.datastore`, `CertificatesReady`, `DatastoreReady`; `AddonsApplied` before it starts a restored `ControlPlane`'s controller manager |
 | Tenant | objects inside the tenant cluster, with an inventory | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
-| Health | status, and from phase 2's wave 2 the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable`, `ControllersLeading`; `ControllerManagerHeld` outside `Ready` from wave 2 | `status.endpoint` and the CA bundle; `AccessReady` and `<cp>-lodia-kubeconfig` for the leader Leases |
+| Health | status, and from phase 2's wave 2 the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable`, `ControllersLeading`; `ControllerManagerHeld` outside `Ready` from wave 2 | `status.endpoint` and the CA bundle; `AccessReady` and `<cp>-lodia-kubeconfig` for the leader Leases and a held restore's lists |
 | Lifecycle | `status.target`, `Progressing`, `Ready`; from phase 2's wave 2 `status.kubernetes`, `status.maintenance` and the pre-upgrade `Backup` | `Progressing` | the others |
 
 How they meet is [independent-controllers](decisions/independent-controllers.md).
@@ -194,6 +194,7 @@ More than one API server replica runs with `--goaway-chance=0.001`, upstream's s
 With `highAvailability` the API server's readiness probe runs every 2 seconds and allows five failures, so that an etcd leader election leaves it in its Service.
 Its liveness probe is `/livez?exclude=etcd`, so that an etcd outage restarts no replica, as HyperShift runs it ([deployment.yaml](https://github.com/openshift/hypershift/blob/v0.1.86/control-plane-operator/controllers/hostedcontrolplane/v2/assets/kube-apiserver/deployment.yaml#L36-L49)).
 `APIServerReady` is True while each component has a ready replica, and `status.components` counts each Deployment's replicas ([independent-controllers](decisions/independent-controllers.md)).
+A restored `ControlPlane`'s controller manager runs at 0 replicas until its release, which `APIServerReady` counts as available ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)).
 Adding `highAvailability` keeps the etcd's quorum, its new members joining as learners; removing it restarts the remaining member, since etcd-druid rolls the members whenever their count changes: its pod template carries a checksum of the ConfigMap ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L219-L226)) whose `initial-cluster` names every member ([etcdconfig.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/configmap/etcdconfig.go#L150-L160)).
 That restart leaves `Ready` False for about 20 seconds, in which the controller manager and the scheduler usually lose their leases and restart, since each exits when it loses its lease ([controllermanager.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kube-controller-manager/app/controllermanager.go#L412-L416), [server.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kube-scheduler/app/server.go#L328-L339)).
 A `ControlPlane` that asks for what Workloads does not render yet is `APIServerReady=False` (`Unsupported`, [reasons](api/controlplane.md#conditions-and-their-reasons)) rather than run without it.
@@ -392,12 +393,13 @@ The final snapshot when a backup store exists comes with backups in phase 2; not
 
 ## Health
 
-Built so far: the probe through the public endpoint and the leader Leases.
+Built so far: the probe through the public endpoint, the leader Leases and a restored `ControlPlane`'s release.
 Every 10 seconds Health asks `https://<status.endpoint.apiServer>/readyz` without credentials, which the API server's authentication allows for its health paths, and verifies it against `<cp>-ca-bundle`.
 `Reachable` is True on a 200 and turns False after three probes in a row that fail, so one blip does not drop `Ready` ([reasons](api/controlplane.md#conditions-and-their-reasons)).
 In the same pass, once `AccessReady` is True, at any generation, Health reads the leader Leases of the controller manager and the scheduler through the in-namespace Service, as `<cp>-lodia-kubeconfig`, each with a consistent GET.
 `ControllersLeading` is True while each Lease has changed, by the operator's clock, within its own `leaseDurationSeconds` and one period, a Lease its holder released too, which client-go leaves without a holder and with a duration of 1 second ([leaderelection.go](https://github.com/kubernetes/client-go/blob/v0.37.1/tools/leaderelection/leaderelection.go#L341-L347)); the clock lives in memory, so a Lease seen first counts as changed then, and what Health has seen goes only with `AccessReady`, with `<cp>-lodia-kubeconfig` missing or kept by another owner, or with the `ControlPlane`.
 A read that fails leaves `ControllersLeading` as it was, since reaching the API server is `Reachable`'s to report.
+For a restored `ControlPlane` Health reports `AwaitingRelease` or `SourceExists` in place of the Leases until the release ([reasons](api/controlplane.md#conditions-and-their-reasons)).
 The rest of this section comes with phase 2.
 
 From inside the management cluster the public probe reaches a load balancer's or a Gateway's address through kube-proxy, which captures traffic to such an address on every node, so it proves the cloud load balancer only in `nodePort` mode ([serviceport.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/proxy/serviceport.go#L222-L235)); the end-to-end signal from the nodes' side is their leases.

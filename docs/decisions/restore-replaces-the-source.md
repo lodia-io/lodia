@@ -1,7 +1,7 @@
 # A ControlPlane restored from a Backup replaces the Backup's source, and runs no controller manager until it is released
 
 Decided 2026-10-27.
-The `Backup`, its seal and its copy are built; the restore is not yet: phase 2's wave 1b (backups) builds it ([roadmap](../roadmap.md)).
+The `Backup`, its seal and its copy are built, and so is the hold until the release; the restore itself is not yet: phase 2's wave 1b (backups) builds it ([roadmap](../roadmap.md)).
 
 ## Decision
 
@@ -19,6 +19,7 @@ Health reports `ControllersLeading=False`, reason `AwaitingRelease`, or `SourceE
 
 **The release goes through published conditions.**
 Once `release` is `Released` and no `ControlPlane` with the source's UID exists, Workloads scales the controller manager up only when `AddonsApplied` is True for that generation: Tenant applies the cluster's objects first, and no controller calls another.
+Its Deployment asking for replicas records the release, so a later `AddonsApplied` that is not True never stops the controllers of a live cluster, and a person who scales the controller manager by hand releases the restore.
 Were the held controller manager unavailable instead, `AccessReady` would wait on `APIServerReady`, Tenant on `AccessReady`, and the release on Tenant: a deadlock.
 
 **The seal.**
@@ -100,4 +101,7 @@ A ValidatingAdmissionPolicy could require a `restore` verb on the named `Backup`
 
 - `api/v1alpha1` — `RestoreFrom` with `Release`, `BackupStatus` with its `Ready` condition, `RestoreStatus`, `SnapshotLocation` and `BackupSnapshotLocation` with `StoreSecretFields`, the names `BackupEncryptionConfigSecretName`, `BackupSealKey` and `RestoreMarkerKey`, the annotation `SealedUIDAnnotation`, the finalizer `RestoreSourceFinalizer` and the reasons in `conditions.go`; `test/api/validation_test.go` holds their rules.
 - `internal/controller/datastore/backup.go` — the backup reconciler: the seal, the snapshot it waits for, the copy, the encryption keys and the mark; `etcdclient.go` dials a tenant's etcd for it.
+- `internal/restore` — the source both Workloads and Health look for.
+- `internal/controller/workloads/workloads.go` — `release`, the held message and the hold, `ran`, the record of the release, and `replacements`, which brings a pass for each `ControlPlane` whose source changes; `restore_test.go` holds them.
+- `internal/controller/health/health.go` — `AwaitingRelease`, with what `actedOn` lists in the tenant, and `SourceExists`; `restore_test.go` holds them.
 - `test/e2e/restore_test.go` — the gate's `TestRestoreGate`, so far up to a `Completed` `Backup` on a real etcd-druid and S3 store.

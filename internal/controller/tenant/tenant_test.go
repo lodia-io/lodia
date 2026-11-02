@@ -763,6 +763,45 @@ func setInventory(t *testing.T, c client.Client, objects string) {
 	}
 }
 
+func TestAHeldControllerManagerLeavesTheAddonsToTheRelease(t *testing.T) {
+	cp := controlPlane(t, "tenant-restored", func(cp *lodiav1alpha1.ControlPlane) {
+		cp.Spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "prod-backup"}}
+	})
+	publish(t, cp)
+	issuer := &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour}
+	reconcilePKI(t, issuer, cp)
+	admin := startTenant(t, cp)
+	setDial(t, admin.host)
+	issuer.Dial = *dial.Load()
+	held := func() {
+		t.Helper()
+		refresh(t, cp)
+		ready := conditionAt(lodiav1alpha1.ConditionAPIServerReady, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, cp.Generation)
+		unmet := fmt.Sprintf("the restore is not complete; AddonsApplied is not True for generation %d", cp.Generation)
+		if cp.Spec.RestoreFrom.Release == lodiav1alpha1.RestoreHeld {
+			unmet = "spec.restoreFrom.release is Held; " + unmet
+		}
+		ready["message"] = "kube-controller-manager is held at 0 replicas until the restore is released: " + unmet
+		applyStatus(t, cp, "test/"+lodiav1alpha1.ConditionAPIServerReady, map[string]any{"conditions": []any{ready}})
+		reconcilePKI(t, issuer, cp)
+		expectNow(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionTrue, lodiav1alpha1.ReasonBound)
+	}
+	held()
+	eventually(t, 30*time.Second, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
+	})
+	get(t, admin, &corev1.ConfigMap{}, "kube-public", "cluster-info")
+
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.RestoreFrom.Release = lodiav1alpha1.RestoreReleased })
+	held()
+	eventually(t, 30*time.Second, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
+	})
+	if c := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied); c.ObservedGeneration != 2 {
+		t.Errorf("AddonsApplied names generation %d, want 2, the release edit's", c.ObservedGeneration)
+	}
+}
+
 func TestTheKubernetesEndpointsAreTheInClusterEndpoint(t *testing.T) {
 	cp, admin := servedTenant(t, "tenant-endpoints")
 	eventually(t, 30*time.Second, func() error {
@@ -1341,7 +1380,7 @@ func setDial(t *testing.T, host string) {
 	dial.Store(&to)
 }
 
-func controlPlane(t *testing.T, namespace string) *lodiav1alpha1.ControlPlane {
+func controlPlane(t *testing.T, namespace string, change ...func(*lodiav1alpha1.ControlPlane)) *lodiav1alpha1.ControlPlane {
 	t.Helper()
 	if k8s == nil {
 		t.Skip("KUBEBUILDER_ASSETS is not set; run make test")
@@ -1357,6 +1396,9 @@ func controlPlane(t *testing.T, namespace string) *lodiav1alpha1.ControlPlane {
 			Endpoint:  lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}},
 			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
 		},
+	}
+	for _, c := range change {
+		c(cp)
 	}
 	if err := k8s.Create(t.Context(), cp); err != nil {
 		t.Fatal(err)

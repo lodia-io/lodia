@@ -12,7 +12,6 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	coordinationv1client "k8s.io/client-go/kubernetes/typed/coordination/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
@@ -36,21 +35,26 @@ func TestAControlPlaneKeepsItsClientsWhileTheirInputsStay(t *testing.T) {
 		}
 		return out
 	}
-	leases := func(server string) coordinationv1client.LeaseInterface {
+	clients := func(server string) *tenant {
 		t.Helper()
-		l, err := r.leases(key, kubeconfig(server))
+		c, err := r.tenant(key, kubeconfig(server))
 		if err != nil {
 			t.Fatal(err)
 		}
-		return l
+		return c
 	}
-	first := leases("https://dev-kube-apiserver.team-a.svc:443")
-	if leases("https://dev-kube-apiserver.team-a.svc:443") != first {
-		t.Error("the same kubeconfig built a second Lease client")
+	first := clients("https://dev-kube-apiserver.team-a.svc:443")
+	for name, c := range map[string]rest.Interface{"core": first.core.RESTClient(), "admission": first.admission.RESTClient(), "registration": first.registration.RESTClient(), "batch": first.batch.RESTClient()} {
+		if c.(*rest.RESTClient).Client != r.clients[key].transport {
+			t.Errorf("the %s client does not use the transport forget closes", name)
+		}
 	}
-	second := leases("https://dev-kube-apiserver.team-a.svc:6443")
+	if clients("https://dev-kube-apiserver.team-a.svc:443") != first {
+		t.Error("the same kubeconfig built second tenant clients")
+	}
+	second := clients("https://dev-kube-apiserver.team-a.svc:6443")
 	if second == first {
-		t.Error("a new kubeconfig kept the previous Lease client")
+		t.Error("a new kubeconfig kept the previous tenant clients")
 	}
 
 	ca, err := certs.NewCA("health-clients", time.Now(), time.Hour)
@@ -70,8 +74,8 @@ func TestAControlPlaneKeepsItsClientsWhileTheirInputsStay(t *testing.T) {
 	}
 
 	r.forget(key)
-	if leases("https://dev-kube-apiserver.team-a.svc:6443") == second {
-		t.Error("a forgotten ControlPlane kept its Lease client")
+	if clients("https://dev-kube-apiserver.team-a.svc:6443") == second {
+		t.Error("a forgotten ControlPlane kept its tenant clients")
 	}
 }
 
@@ -92,11 +96,11 @@ func TestTheLeaseClientNamesItself(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := &Reconciler{}
-	leases, err := r.leases(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfig)
+	tenant, err := r.tenant(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfig)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _ = leases.Get(t.Context(), "kube-scheduler", metav1.GetOptions{})
+	_, _ = tenant.leases.Get(t.Context(), "kube-scheduler", metav1.GetOptions{})
 	if got, want := agent.Load(), rest.DefaultKubernetesUserAgent(); got != want {
 		t.Errorf("the Lease client sends the User-Agent %q, want %q", got, want)
 	}
