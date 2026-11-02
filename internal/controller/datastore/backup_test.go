@@ -493,6 +493,34 @@ func TestAFlushThatEndsShortOfTheSealIsSentAgain(t *testing.T) {
 	}
 }
 
+func TestALeaseThatReachesTheSealWhileTheNextFlushWaitsStartsTheCopy(t *testing.T) {
+	src := newSource(t, nil, nil)
+	now := clocktesting.NewFakePassiveClock(time.Now())
+	r := src.reconciler(cached)
+	r.Clock = now
+	created := createBackup(t, src.ns, "catches-up", nil)
+	backup := passes(t, r, src.ns, created.Name, func(*lodiav1alpha1.Backup) error {
+		if getFlush(t, src.ns, created.UID) == nil {
+			return errors.New("no EtcdOpsTask yet")
+		}
+		return nil
+	})
+	revision := backup.Status.Seal.Revision
+	finished := backup.Status.StartedAt.Add(10 * time.Minute)
+	finishFlush(t, src.ns, task(created.UID), druidv1alpha1.TaskStateSucceeded, finished)
+	now.SetTime(finished.Add(time.Minute))
+	passes(t, r, src.ns, created.Name, readyIs(metav1.ConditionUnknown, lodiav1alpha1.ReasonSnapshotting, "; the next goes at "))
+	result, err := reconcileBackup(r, src.ns, created.Name)
+	if err != nil || result.RequeueAfter != 10*time.Second {
+		t.Fatalf("a pass nine minutes before the next flush returned %+v, %v; want a requeue in 10s", result, err)
+	}
+	setLease(t, src.ns, fullLease, revision)
+	passes(t, r, src.ns, created.Name, readyIs(metav1.ConditionUnknown, lodiav1alpha1.ReasonCopying, ""))
+	if getCopyTask(t, src.ns, created.UID) == nil {
+		t.Fatal("no EtcdCopyBackupsTask")
+	}
+}
+
 func TestALeaseOlderThanTheEtcdIsIgnored(t *testing.T) {
 	src := newSource(t, nil, func(s *source) {
 		createLease(t, s.ns, fullLease, "1000000000")
