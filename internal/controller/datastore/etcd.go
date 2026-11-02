@@ -44,7 +44,7 @@ const allowUnhealthyPodEviction = "resources.druid.gardener.cloud/allow-unhealth
 // name: etcd-backup-restore takes the last v1/ anywhere in a key for its
 // layout and ignores the snapshots it misreads
 // (etcd-backup-restore@v0.45.1 pkg/snapstore/snapshot.go#L39-L59).
-func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, namespaceUID types.UID, generation int, current *druidv1alpha1.Etcd, claims []corev1.PersistentVolumeClaim, sts *appsv1.StatefulSet) (*druidv1alpha1.Etcd, string) {
+func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, namespaceUID types.UID, generation int, current *druidv1alpha1.Etcd, claims []corev1.PersistentVolumeClaim, sts *appsv1.StatefulSet, members int32) (*druidv1alpha1.Etcd, string) {
 	secret := func(certificate lodiav1alpha1.EtcdCertificateRole) corev1.SecretReference {
 		return corev1.SecretReference{Name: lodiav1alpha1.EtcdCertificateSecretName(cp.Name, certificate, generation)}
 	}
@@ -63,7 +63,7 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cp, lodiav1alpha1.GroupVersion.WithKind("ControlPlane"))},
 		},
 		Spec: druidv1alpha1.EtcdSpec{
-			Replicas: memberCount(cp),
+			Replicas: members,
 			Labels:   labels,
 			Etcd: druidv1alpha1.EtcdConfig{
 				ClientUrlTLS: &druidv1alpha1.TLSConfig{TLSCASecretRef: ca, ServerTLSSecretRef: secret(lodiav1alpha1.EtcdServerRole), ClientTLSSecretRef: secret(lodiav1alpha1.EtcdClientRole)},
@@ -81,7 +81,7 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 		etcd.UID = current.UID
 	}
 	switch ha := cp.Spec.HighAvailability; {
-	case membersHeld(cp, current, sts):
+	case membersHeld(members, current, sts):
 		etcd.Spec.Replicas = current.Spec.Replicas
 		etcd.Spec.SchedulingConstraints.TopologySpreadConstraints = current.Spec.SchedulingConstraints.TopologySpreadConstraints
 		if value, ok := current.Annotations[allowUnhealthyPodEviction]; ok {
@@ -201,19 +201,19 @@ func memberCount(cp *lodiav1alpha1.ControlPlane) int32 {
 
 // membersHeld keeps the Etcd's members, spread and eviction annotation as they
 // are (docs/README.md, the highAvailability row of the Etcd's fields).
-func membersHeld(cp *lodiav1alpha1.ControlPlane, current *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) bool {
+func membersHeld(members int32, current *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) bool {
 	if current == nil {
 		return false
 	}
 	if !druidv1alpha1.HasScaleOperationCompleted(current) {
 		return true
 	}
-	if memberCount(cp) < current.Spec.Replicas {
+	if members < current.Spec.Replicas {
 		_, ready := keptMember(current)
 		return !ready
 	}
 	updated := updatedMembers(current, sts)
-	return memberCount(cp) > current.Spec.Replicas && (updated == nil || *updated < current.Spec.Replicas)
+	return members > current.Spec.Replicas && (updated == nil || *updated < current.Spec.Replicas)
 }
 
 // keptMember names the member a removal of highAvailability keeps and says

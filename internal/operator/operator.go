@@ -85,12 +85,13 @@ func Setup(mgr ctrl.Manager, signerImage, etcdDruidNamespace, operatorNamespace 
 	if err := (&pki.KubeconfigRequestReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Clock: clock.RealClock{}, PolicyGrace: 10 * time.Second}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the kubeconfig request reconciler: %w", err)
 	}
-	if err := (&datastore.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdDruidNamespace: etcdDruidNamespace, OperatorNamespace: operatorNamespace}).SetupWithManager(mgr, workers); err != nil {
+	dialEtcd := func(ctx context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client, error) {
+		return datastore.DialEtcd(ctx, mgr.GetAPIReader(), etcd)
+	}
+	if err := (&datastore.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdDruidNamespace: etcdDruidNamespace, OperatorNamespace: operatorNamespace, EtcdClient: dialEtcd}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the datastore controller: %w", err)
 	}
-	if err := (&datastore.BackupReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdClient: func(ctx context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client, error) {
-		return datastore.DialEtcd(ctx, mgr.GetAPIReader(), etcd)
-	}, Clock: clock.RealClock{}}).SetupWithManager(mgr, workers); err != nil {
+	if err := (&datastore.BackupReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdClient: dialEtcd, Clock: clock.RealClock{}}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the backup reconciler: %w", err)
 	}
 	if err := (&lifecycle.Reconciler{Client: mgr.GetClient()}).SetupWithManager(mgr, workers); err != nil {

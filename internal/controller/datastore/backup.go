@@ -193,7 +193,7 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	var location lodiav1alpha1.BackupSnapshotLocation
 	var noCredentials bool
 	if etcd != nil {
-		fromSecret, err := r.storeSecretFields(ctx, etcd, credentials)
+		fromSecret, err := storeSecretFields(ctx, r.Reader, etcd, credentials)
 		switch {
 		case apierrors.IsNotFound(err):
 			noCredentials = true
@@ -208,7 +208,10 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		// waits for the datastore compares too, since a move restarts a single
 		// member.
 		if status.StartedAt != nil && !noCredentials {
-			if from, to := storeMoved(*status.Snapshots, location, credentials); from != "" {
+			if key, from, to := storeMoved(*status.Snapshots, location); from != "" {
+				if key != "" {
+					from = fmt.Sprintf("Secret %s's %s %s", credentials, key, from)
+				}
 				return report(metav1.ConditionFalse, lodiav1alpha1.ReasonFailed, fmt.Sprintf("the source's backup store moved from %s to %s while the Backup was taken, and the snapshots that hold the seal are in the first; create another Backup", from, to), 0)
 			}
 		}
@@ -365,19 +368,20 @@ func snapshotLocation(store *druidv1alpha1.StoreSpec, fromSecret *lodiav1alpha1.
 }
 
 // storeMoved names the store recorded and the one now where they differ,
-// both empty where they do not.
-func storeMoved(recorded, now lodiav1alpha1.BackupSnapshotLocation, credentials string) (string, string) {
+// both empty where they do not, and the key of the credentials Secret when
+// they differ there.
+func storeMoved(recorded, now lodiav1alpha1.BackupSnapshotLocation) (string, string, string) {
 	if recorded.Provider != now.Provider || recorded.Endpoint != now.Endpoint || recorded.Bucket != now.Bucket || recorded.Prefix != now.Prefix {
-		return storeOf(recorded.SnapshotLocation), storeOf(now.SnapshotLocation)
+		return "", storeOf(recorded.SnapshotLocation), storeOf(now.SnapshotLocation)
 	}
 	was, is := ptr.Deref(recorded.FromSecret, lodiav1alpha1.StoreSecretFields{}), ptr.Deref(now.FromSecret, lodiav1alpha1.StoreSecretFields{})
 	before, after := secretFields(now.Provider, &was), secretFields(now.Provider, &is)
 	for i := range before {
 		if !ptr.Equal(*before[i].value, *after[i].value) {
-			return fmt.Sprintf("Secret %s's %s %s", credentials, before[i].key, secretValue(*before[i].value)), secretValue(*after[i].value)
+			return before[i].key, secretValue(*before[i].value), secretValue(*after[i].value)
 		}
 	}
-	return "", ""
+	return "", "", ""
 }
 
 func secretValue(value *string) string {
@@ -412,9 +416,9 @@ func secretFields(provider lodiav1alpha1.StoreProvider, fields *lodiav1alpha1.St
 // way the sidecar does: for every provider but GCS from the first key ending
 // in .json when one exists, else each from the key of its name
 // (etcd-backup-restore@v0.45.1 pkg/snapstore/s3_snapstore.go#L106-L139).
-func (r *BackupReconciler) storeSecretFields(ctx context.Context, etcd *druidv1alpha1.Etcd, name string) (*lodiav1alpha1.StoreSecretFields, error) {
+func storeSecretFields(ctx context.Context, reader client.Reader, etcd *druidv1alpha1.Etcd, name string) (*lodiav1alpha1.StoreSecretFields, error) {
 	secret := &corev1.Secret{}
-	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: etcd.Namespace, Name: name}, secret); err != nil {
+	if err := reader.Get(ctx, client.ObjectKey{Namespace: etcd.Namespace, Name: name}, secret); err != nil {
 		return nil, err
 	}
 	provider := lodiav1alpha1.StoreProvider(ptr.Deref(etcd.Spec.Backup.Store.Provider, ""))
