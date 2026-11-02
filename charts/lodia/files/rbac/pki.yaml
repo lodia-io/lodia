@@ -27,6 +27,7 @@ rules:
 - apiGroups:
   - lodia.io
   resources:
+  - backups
   - controlplanes
   verbs:
   - get

@@ -23,6 +23,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apiserver/pkg/apis/apiserver"
 	apiserverv1 "k8s.io/apiserver/pkg/apis/apiserver/v1"
@@ -99,10 +100,12 @@ var (
 
 type tenant struct {
 	cp *lodiav1alpha1.ControlPlane
-	// existing holds PKI's Secrets that this ControlPlane or nobody controls;
-	// foreign, those another owner keeps.
+	// existing holds PKI's Secrets that this ControlPlane or nobody controls,
+	// for a restore only this ControlPlane's; foreign, those another owner
+	// keeps; unadopted, those a restore finds without its controller.
 	existing    map[string]*corev1.Secret
 	foreign     []foreign
+	unadopted   []string
 	generations map[int]bool
 	now         time.Time
 	// wake is the earliest renewal, CA notice or CA expiry still ahead.
@@ -114,8 +117,13 @@ type tenant struct {
 	expiredCAs          []string
 	unreadable          []string
 	unsupportedProvider lodiav1alpha1.EncryptionProvider
-	endpoint            *endpoint
-	konnectivityHost    string
+	// backupProviders are the providers of the Backup a restore without an
+	// encryption configuration copies; waitingForBackup says why there are
+	// none yet.
+	backupProviders  []apiserverv1.ProviderConfiguration
+	waitingForBackup string
+	endpoint         *endpoint
+	konnectivityHost string
 	// requests is the request CA the pass writes at its end.
 	requests *certs.Certificate
 	// next is what <cp>-kubelet-signer-next holds after the pass, which
@@ -219,13 +227,19 @@ func (r *Reconciler) read(ctx context.Context, t *tenant) error {
 	return nil
 }
 
-// held records a Secret another owner keeps.
+// held records a Secret another owner keeps, and one a restore does not
+// control: a restore adopts nothing
+// (docs/decisions/restore-replaces-the-source.md).
 func (t *tenant) held(obj metav1.Object) bool {
-	owner := ownership.ControlledElsewhere(obj, t.cp)
-	if owner != nil {
+	if owner := ownership.ControlledElsewhere(obj, t.cp); owner != nil {
 		t.foreign = append(t.foreign, foreign{name: obj.GetName(), owner: *owner})
+		return true
 	}
-	return owner != nil
+	if t.cp.Spec.RestoreFrom != nil && !metav1.IsControlledBy(obj, t.cp) {
+		t.unadopted = append(t.unadopted, obj.GetName())
+		return true
+	}
+	return false
 }
 
 func (t *tenant) stamp(prefix string) string {
@@ -259,6 +273,9 @@ func (t *tenant) requeueAfter() time.Duration {
 // foreignRequeue waits for the garbage collector when every foreign Secret
 // is a previous ControlPlane's of this name, and for a person otherwise.
 func (t *tenant) foreignRequeue() time.Duration {
+	if len(t.foreign) == 0 {
+		return time.Minute
+	}
 	for _, f := range t.foreign {
 		if !ownership.IsControlPlane(f.owner) || f.owner.Name != t.cp.Name {
 			return time.Minute
@@ -831,7 +848,8 @@ func isServiceAccountKey(pem []byte) bool {
 // keys under the names the API server wrote into every value they encrypted
 // (kubernetes@v1.37.0 staging/src/k8s.io/apiserver/pkg/server/options/encryptionconfig/config.go#L645-L661,
 // #L695-L711). A configuration it cannot read is never replaced: the data its
-// keys encrypted would be lost.
+// keys encrypted would be lost. A restore's first configuration puts the new
+// key before the Backup's providers, and identity once.
 func (r *Reconciler) encryptionConfig(ctx context.Context, t *tenant) error {
 	name := t.secret(lodiav1alpha1.EncryptionConfigSecret)
 	want := providerSecretbox
@@ -843,7 +861,8 @@ func (r *Reconciler) encryptionConfig(ctx context.Context, t *tenant) error {
 		return nil
 	}
 	var providers []apiserverv1.ProviderConfiguration
-	if s := t.existing[name]; s != nil {
+	switch s := t.existing[name]; {
+	case s != nil:
 		existing, ok := readEncryptionConfig(s.Data[lodiav1alpha1.EncryptionConfigKey])
 		if !ok {
 			t.unreadable = append(t.unreadable, name)
@@ -852,6 +871,14 @@ func (r *Reconciler) encryptionConfig(ctx context.Context, t *tenant) error {
 		if providers = existing.Resources[0].Providers; providerOf(providers[0]) == want {
 			r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, map[string][]byte{lodiav1alpha1.EncryptionConfigKey: s.Data[lodiav1alpha1.EncryptionConfigKey]}, nil, false)
 			return nil
+		}
+	case t.cp.Spec.RestoreFrom != nil:
+		if t.backupProviders == nil {
+			return nil
+		}
+		providers = t.backupProviders
+		if want == providerNone {
+			providers = slices.DeleteFunc(providers, func(p apiserverv1.ProviderConfiguration) bool { return p.Identity != nil })
 		}
 	}
 	first, err := newProvider(want, t.now)
@@ -867,6 +894,44 @@ func (r *Reconciler) encryptionConfig(ctx context.Context, t *tenant) error {
 		return err
 	}
 	r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, map[string][]byte{lodiav1alpha1.EncryptionConfigKey: rendered}, nil, false)
+	return nil
+}
+
+// backupKeys reads the providers a restore copies into its first encryption
+// configuration, and only for that one. A Get that finds nothing leaves its
+// object empty: an absent Backup is not Completed, an absent Secret not the
+// Backup's.
+func (r *Reconciler) backupKeys(ctx context.Context, t *tenant) error {
+	from := t.cp.Spec.RestoreFrom
+	if from == nil || t.existing[t.secret(lodiav1alpha1.EncryptionConfigSecret)] != nil {
+		return nil
+	}
+	name := from.BackupRef.Name
+	backup := &lodiav1alpha1.Backup{}
+	err := r.Get(ctx, client.ObjectKey{Namespace: t.cp.Namespace, Name: name}, backup)
+	if client.IgnoreNotFound(err) != nil {
+		return err
+	}
+	if ready := meta.FindStatusCondition(backup.Status.Conditions, lodiav1alpha1.ConditionReady); ready == nil || ready.Status != metav1.ConditionTrue || ready.Reason != lodiav1alpha1.ReasonCompleted {
+		t.waitingForBackup = "Backup " + name + " is not sealed yet"
+		return nil
+	}
+	keys := lodiav1alpha1.BackupEncryptionConfigSecretName(name)
+	s := &corev1.Secret{}
+	err = r.Reader.Get(ctx, client.ObjectKey{Namespace: t.cp.Namespace, Name: keys}, s)
+	if client.IgnoreNotFound(err) != nil {
+		return err
+	}
+	if !metav1.IsControlledBy(s, backup) || !isImmutable(s) {
+		t.waitingForBackup = keys + " does not exist, or is not Backup " + name + "'s"
+		return nil
+	}
+	cfg, ok := readEncryptionConfig(s.Data[lodiav1alpha1.EncryptionConfigKey])
+	if !ok {
+		t.unreadable = append(t.unreadable, keys)
+		return nil
+	}
+	t.backupProviders = cfg.Resources[0].Providers
 	return nil
 }
 

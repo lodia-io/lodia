@@ -939,12 +939,12 @@ func newReconciler(leafLifetime time.Duration) *pki.Reconciler {
 	return &pki.Reconciler{Client: controller, Reader: apiReader, LeafLifetime: leafLifetime, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour}
 }
 
-func controlPlane(t *testing.T, namespace string) *lodiav1alpha1.ControlPlane {
+func controlPlane(t *testing.T, namespace string, change ...func(*lodiav1alpha1.ControlPlaneSpec)) *lodiav1alpha1.ControlPlane {
 	t.Helper()
-	return controlPlaneAt(t, namespace, lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}, CertSANs: []lodiav1alpha1.Hostname{certSAN}})
+	return controlPlaneAt(t, namespace, lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}, CertSANs: []lodiav1alpha1.Hostname{certSAN}}, change...)
 }
 
-func controlPlaneAt(t *testing.T, namespace string, endpoint lodiav1alpha1.Endpoint) *lodiav1alpha1.ControlPlane {
+func controlPlaneAt(t *testing.T, namespace string, endpoint lodiav1alpha1.Endpoint, change ...func(*lodiav1alpha1.ControlPlaneSpec)) *lodiav1alpha1.ControlPlane {
 	t.Helper()
 	if err := client.IgnoreAlreadyExists(k8s.Create(t.Context(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}})); err != nil {
 		t.Fatal(err)
@@ -957,6 +957,9 @@ func controlPlaneAt(t *testing.T, namespace string, endpoint lodiav1alpha1.Endpo
 			Endpoint:  endpoint,
 			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
 		},
+	}
+	for _, c := range change {
+		c(&cp.Spec)
 	}
 	if err := k8s.Create(t.Context(), cp); err != nil {
 		t.Fatal(err)
