@@ -46,7 +46,8 @@ Datastore then writes `status.datastore.restore` ([field](../api/controlplane.md
 
 **The encryption key stays in the management cluster.**
 When it seals, the backup reconciler writes `<backup>.encryption-config` (`BackupEncryptionConfigSecretName`), owned by the `Backup`, immutable, with every key of the source's encryption configuration, and never puts a key in the bucket, whose credentials sit in every tenant namespace on the class.
-PKI copies those providers once into the restored `ControlPlane`'s configuration, behind a new key of its own, and never reads the `Backup` again; while it has not, the finalizer `lodia.io/restore-source` keeps the `Backup`, and PKI reports `CertificatesReady=False`, `WaitingForBackup`.
+PKI copies those providers once into the restored `ControlPlane`'s configuration, behind a new key of its own, and never reads the `Backup` again; while it has not, PKI reports `CertificatesReady=False`, `WaitingForBackup`.
+The finalizer `lodia.io/restore-source` keeps the `Backup` until each `ControlPlane` restoring from it has that configuration and a completed restore, which reads the `Backup`'s store and seal.
 PKI adopts no Secret under its names for a restored `ControlPlane`: one that exists is `SecretsExist`.
 The platform backs up Lodia's Secrets, as it must for the CAs; a KMS provider is the long-term path, its key wrapped beside the snapshots.
 
@@ -100,7 +101,7 @@ A ValidatingAdmissionPolicy could require a `restore` verb on the named `Backup`
 ## Code
 
 - `api/v1alpha1` — `RestoreFrom` with `Release`, `BackupStatus` with its `Ready` condition, `RestoreStatus`, `SnapshotLocation` and `BackupSnapshotLocation` with `StoreSecretFields`, the names `BackupEncryptionConfigSecretName`, `BackupSealKey` and `RestoreMarkerKey`, the annotation `SealedUIDAnnotation`, the finalizer `RestoreSourceFinalizer` and the reasons in `conditions.go`; `test/api/validation_test.go` holds their rules.
-- `internal/controller/datastore/backup.go` — the backup reconciler: the seal, the snapshot it waits for, the copy, the encryption keys and the mark; `etcdclient.go` dials a tenant's etcd for it.
+- `internal/controller/datastore/backup.go` — the backup reconciler: the seal, the snapshot it waits for, the copy, the encryption keys, the mark and the finalizer; `etcdclient.go` dials a tenant's etcd for it.
 - `internal/restore` — the source both Workloads and Health look for.
 - `internal/controller/workloads/workloads.go` — `release`, the held message and the hold, `ran`, the record of the release, and `replacements`, which brings a pass for each `ControlPlane` whose source changes; `restore_test.go` holds them.
 - `internal/controller/health/health.go` — `AwaitingRelease`, with what `actedOn` lists in the tenant, and `SourceExists`; `restore_test.go` holds them.

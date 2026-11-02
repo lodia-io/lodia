@@ -30,10 +30,13 @@ import (
 	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
@@ -72,24 +75,48 @@ func (r *BackupReconciler) SetupWithManager(mgr ctrl.Manager, workers int) error
 		Owns(&druidv1alpha1.EtcdOpsTask{}).
 		Owns(&druidv1alpha1.EtcdCopyBackupsTask{}).
 		Watches(&lodiav1alpha1.ControlPlane{}, handler.EnqueueRequestsFromMapFunc(r.backupsOf)).
+		WatchesMetadata(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.restoredKeys), builder.WithPredicates(predicate.NewPredicateFuncs(func(secret client.Object) bool {
+			cp, ok := secret.GetLabels()[lodiav1alpha1.ControlPlaneLabel]
+			return ok && secret.GetName() == lodiav1alpha1.EncryptionConfigSecret.Name(cp)
+		}))).
 		Complete(r)
 }
 
-// A Backup that is Ready waits for nothing from its source.
-func (r *BackupReconciler) backupsOf(ctx context.Context, cp client.Object) []reconcile.Request {
+// A Backup that is Ready waits for nothing from its source; one being deleted
+// waits for the ControlPlanes that restore from it.
+func (r *BackupReconciler) backupsOf(ctx context.Context, obj client.Object) []reconcile.Request {
+	cp, ok := obj.(*lodiav1alpha1.ControlPlane)
+	if !ok {
+		return nil
+	}
 	backups := &lodiav1alpha1.BackupList{}
-	if err := r.List(ctx, backups, client.InNamespace(cp.GetNamespace())); err != nil {
-		logf.FromContext(ctx).Error(err, "list the Backups of a ControlPlane", "controlPlane", cp.GetName())
+	if err := r.List(ctx, backups, client.InNamespace(cp.Namespace)); err != nil {
+		logf.FromContext(ctx).Error(err, "list the Backups of a ControlPlane", "controlPlane", cp.Name)
 		return nil
 	}
 	var requests []reconcile.Request
 	for i := range backups.Items {
 		backup := &backups.Items[i]
-		if backup.Spec.ControlPlaneRef.Name == cp.GetName() && !meta.IsStatusConditionTrue(backup.Status.Conditions, lodiav1alpha1.ConditionReady) {
+		source := backup.Spec.ControlPlaneRef.Name == cp.Name && !meta.IsStatusConditionTrue(backup.Status.Conditions, lodiav1alpha1.ConditionReady)
+		if source || cp.Spec.RestoreFrom != nil && cp.Spec.RestoreFrom.BackupRef.Name == backup.Name {
 			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(backup)})
 		}
 	}
 	return requests
+}
+
+func (r *BackupReconciler) restoredKeys(ctx context.Context, secret client.Object) []reconcile.Request {
+	cp := &lodiav1alpha1.ControlPlane{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: secret.GetNamespace(), Name: secret.GetLabels()[lodiav1alpha1.ControlPlaneLabel]}, cp); err != nil {
+		if !apierrors.IsNotFound(err) {
+			logf.FromContext(ctx).Error(err, "read the ControlPlane of an encryption configuration", "secret", secret.GetName())
+		}
+		return nil
+	}
+	if cp.Spec.RestoreFrom == nil {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: cp.Namespace, Name: cp.Spec.RestoreFrom.BackupRef.Name}}}
 }
 
 // +kubebuilder:rbac:groups=lodia.io,resources=backups,verbs=get;list;watch;patch
@@ -107,7 +134,14 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !backup.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, nil
+		return r.release(ctx, backup)
+	}
+	// The API server refuses a finalizer added once the deletion started
+	// (k8s.io/apimachinery@v0.37.1 pkg/api/validation/objectmeta.go#L126-L131).
+	if !controllerutil.ContainsFinalizer(backup, lodiav1alpha1.RestoreSourceFinalizer) {
+		if conflict, err := r.setFinalizer(ctx, backup, true); err != nil || conflict {
+			return ctrl.Result{RequeueAfter: requeueOnConflict(conflict)}, err
+		}
 	}
 	status := backup.Status.DeepCopy()
 	report := func(conditionStatus metav1.ConditionStatus, reason, message string, requeueAfter time.Duration) (ctrl.Result, error) {
@@ -652,6 +686,63 @@ func (r *BackupReconciler) tidy(ctx context.Context, backup *lodiav1alpha1.Backu
 		}
 	}
 	return ctrl.Result{}, nil
+}
+
+// release lets a Backup being deleted go once no ControlPlane in its
+// namespace that is not being deleted and restores from it lacks an
+// encryption configuration of its own or a completed restore. The
+// ControlPlanes and their Secrets are read from the API server: a
+// ControlPlane the cache does not hold yet would find no Backup to restore.
+func (r *BackupReconciler) release(ctx context.Context, backup *lodiav1alpha1.Backup) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(backup, lodiav1alpha1.RestoreSourceFinalizer) {
+		return ctrl.Result{}, nil
+	}
+	controlPlanes := &lodiav1alpha1.ControlPlaneList{}
+	if err := r.Reader.List(ctx, controlPlanes, client.InNamespace(backup.Namespace)); err != nil {
+		return ctrl.Result{}, err
+	}
+	for i := range controlPlanes.Items {
+		cp := &controlPlanes.Items[i]
+		if !cp.DeletionTimestamp.IsZero() || cp.Spec.RestoreFrom == nil || cp.Spec.RestoreFrom.BackupRef.Name != backup.Name {
+			continue
+		}
+		keys := &metav1.PartialObjectMetadata{}
+		keys.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Secret"))
+		err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.EncryptionConfigSecret.Name(cp.Name)}, keys)
+		if client.IgnoreNotFound(err) != nil {
+			return ctrl.Result{}, err
+		}
+		ownKeys := err == nil && metav1.IsControlledBy(keys, cp)
+		if !ownKeys || cp.Status.Datastore == nil || cp.Status.Datastore.Restore == nil {
+			logf.FromContext(ctx).Info("keeping the Backup until the ControlPlane restoring from it has its own encryption configuration and a completed restore", "controlPlane", cp.Name)
+			return ctrl.Result{}, nil
+		}
+	}
+	conflict, err := r.setFinalizer(ctx, backup, false)
+	return ctrl.Result{RequeueAfter: requeueOnConflict(conflict)}, err
+}
+
+// setFinalizer holds or releases the Backup through a patch locked on the
+// resourceVersion; the first result says the Backup changed since the read.
+func (r *BackupReconciler) setFinalizer(ctx context.Context, backup *lodiav1alpha1.Backup, held bool) (bool, error) {
+	patch := client.MergeFromWithOptions(backup.DeepCopy(), client.MergeFromWithOptimisticLock{})
+	if held {
+		controllerutil.AddFinalizer(backup, lodiav1alpha1.RestoreSourceFinalizer)
+	} else {
+		controllerutil.RemoveFinalizer(backup, lodiav1alpha1.RestoreSourceFinalizer)
+	}
+	err := r.Patch(ctx, backup, patch, client.FieldOwner(BackupFieldManager))
+	if apierrors.IsConflict(err) {
+		return true, nil
+	}
+	return false, client.IgnoreNotFound(err)
+}
+
+func requeueOnConflict(conflict bool) time.Duration {
+	if conflict {
+		return time.Second
+	}
+	return 0
 }
 
 // applyStatus applies the whole status, the recorded fields carried from the

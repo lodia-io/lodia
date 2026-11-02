@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/config"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -1439,4 +1440,167 @@ func TestABackupWaitsForTheCredentialsCopy(t *testing.T) {
 		}
 		passes(t, r, src.ns, created.Name, sealed)
 	}
+}
+
+func TestTheRestoreSourceFinalizer(t *testing.T) {
+	ns := namespace(t)
+	r := &datastore.BackupReconciler{Client: cached, Reader: apiReader, Clock: clock.RealClock{}}
+	pass := func(t *testing.T, r *datastore.BackupReconciler, name string) {
+		t.Helper()
+		if _, err := reconcileBackup(r, ns, name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	held := func(t *testing.T, name string) {
+		t.Helper()
+		b := getBackup(t, ns, name)
+		if !controllerutil.ContainsFinalizer(b, lodiav1alpha1.RestoreSourceFinalizer) {
+			t.Fatalf("Backup %s lacks %s: %v", name, lodiav1alpha1.RestoreSourceFinalizer, b.Finalizers)
+		}
+	}
+	released := func(t *testing.T, name string) {
+		t.Helper()
+		eventually(t, func() error {
+			return gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: name}, &lodiav1alpha1.Backup{}))
+		})
+	}
+	restoring := func(t *testing.T, name, backup string) *lodiav1alpha1.ControlPlane {
+		t.Helper()
+		cp := controlPlane(ns, name, "no-such-class")
+		cp.Spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: backup}}
+		create(t, cp)
+		return getControlPlane(t, ns, name)
+	}
+	keys := func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+		t.Helper()
+		create(t, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: cp.Name + "-encryption-config", Namespace: ns, Labels: map[string]string{lodiav1alpha1.ControlPlaneLabel: cp.Name},
+				OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cp, lodiav1alpha1.GroupVersion.WithKind("ControlPlane"))},
+			},
+			Data: map[string][]byte{lodiav1alpha1.EncryptionConfigKey: []byte("keys")},
+		})
+	}
+	complete := func(t *testing.T, cp *lodiav1alpha1.ControlPlane, backup *lodiav1alpha1.Backup) {
+		t.Helper()
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			fresh := getControlPlane(t, ns, cp.Name)
+			fresh.Status.Datastore = &lodiav1alpha1.DatastoreStatus{
+				Endpoints: []lodiav1alpha1.HostPort{{Host: cp.Name + "-etcd-client." + ns + ".svc", Port: 2379}},
+				Restore:   &lodiav1alpha1.RestoreStatus{Backup: lodiav1alpha1.UIDReference{Name: backup.Name, UID: backup.UID}, Source: lodiav1alpha1.UIDReference{Name: "src", UID: "5e1f7c3a-0000-4000-8000-000000000001"}, CompletedAt: metav1.Now()},
+			}
+			return k8s.Status().Update(t.Context(), fresh)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deleteBackup := func(t *testing.T, name string) {
+		t.Helper()
+		if err := k8s.Delete(t.Context(), getBackup(t, ns, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("held until the keys and the restore are there", func(t *testing.T) {
+		backup := createBackup(t, ns, "kept", nil)
+		pass(t, r, backup.Name)
+		held(t, backup.Name)
+		cp := restoring(t, "first", backup.Name)
+		deleteBackup(t, backup.Name)
+		pass(t, r, backup.Name)
+		held(t, backup.Name)
+		keys(t, cp)
+		pass(t, r, backup.Name)
+		held(t, backup.Name)
+		complete(t, cp, backup)
+		pass(t, r, backup.Name)
+		released(t, backup.Name)
+	})
+	t.Run("held by a restore that completed without its keys", func(t *testing.T) {
+		backup := createBackup(t, ns, "keyless", nil)
+		pass(t, r, backup.Name)
+		cp := restoring(t, "keyless", backup.Name)
+		complete(t, cp, backup)
+		deleteBackup(t, backup.Name)
+		pass(t, r, backup.Name)
+		held(t, backup.Name)
+		keys(t, cp)
+		pass(t, r, backup.Name)
+		released(t, backup.Name)
+	})
+	t.Run("released by the ControlPlane's deletion", func(t *testing.T) {
+		backup := createBackup(t, ns, "orphaned", nil)
+		pass(t, r, backup.Name)
+		cp := restoring(t, "deleted", backup.Name)
+		deleteBackup(t, backup.Name)
+		pass(t, r, backup.Name)
+		held(t, backup.Name)
+		if err := k8s.Delete(t.Context(), cp); err != nil {
+			t.Fatal(err)
+		}
+		pass(t, r, backup.Name)
+		released(t, backup.Name)
+	})
+	t.Run("a ControlPlane the cache does not hold yet", func(t *testing.T) {
+		backup := createBackup(t, ns, "fresh", nil)
+		pass(t, r, backup.Name)
+		restoring(t, "fresh", backup.Name)
+		deleteBackup(t, backup.Name)
+		blind := &datastore.BackupReconciler{Client: missingControlPlanes{Client: cached}, Reader: apiReader, Clock: clock.RealClock{}}
+		pass(t, blind, backup.Name)
+		held(t, backup.Name)
+	})
+}
+
+type missingControlPlanes struct {
+	client.Client
+}
+
+func (c missingControlPlanes) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if _, ok := list.(*lodiav1alpha1.ControlPlaneList); ok {
+		return nil
+	}
+	return c.Client.List(ctx, list, opts...)
+}
+
+func TestTheRestoreSourceFinalizerFollowsItsEvents(t *testing.T) {
+	s := &source{ns: namespace(t)}
+	runBackupReconciler(t, s)
+	backup := createBackup(t, s.ns, "watched", nil)
+	awaitBackup(t, s.ns, backup.Name, func(b *lodiav1alpha1.Backup) error {
+		if !controllerutil.ContainsFinalizer(b, lodiav1alpha1.RestoreSourceFinalizer) {
+			return errors.New("no finalizer yet")
+		}
+		return nil
+	})
+	exists := func() error {
+		return k8s.Get(t.Context(), client.ObjectKeyFromObject(backup), &lodiav1alpha1.Backup{})
+	}
+	cp := controlPlane(s.ns, "watching", "no-such-class")
+	cp.Spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: backup.Name}}
+	create(t, cp)
+	if err := k8s.Delete(t.Context(), getBackup(t, s.ns, backup.Name)); err != nil {
+		t.Fatal(err)
+	}
+	consistently(t, exists)
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		fresh := getControlPlane(t, s.ns, cp.Name)
+		fresh.Status.Datastore = &lodiav1alpha1.DatastoreStatus{
+			Endpoints: []lodiav1alpha1.HostPort{{Host: "watching-etcd-client." + s.ns + ".svc", Port: 2379}},
+			Restore:   &lodiav1alpha1.RestoreStatus{Backup: lodiav1alpha1.UIDReference{Name: backup.Name, UID: backup.UID}, Source: lodiav1alpha1.UIDReference{Name: "src", UID: "5e1f7c3a-0000-4000-8000-000000000001"}, CompletedAt: metav1.Now()},
+		}
+		return k8s.Status().Update(t.Context(), fresh)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	consistently(t, exists)
+	cp = getControlPlane(t, s.ns, cp.Name)
+	create(t, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: cp.Name + "-encryption-config", Namespace: s.ns, Labels: map[string]string{lodiav1alpha1.ControlPlaneLabel: cp.Name},
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cp, lodiav1alpha1.GroupVersion.WithKind("ControlPlane"))},
+		},
+		Data: map[string][]byte{lodiav1alpha1.EncryptionConfigKey: []byte("keys")},
+	})
+	eventually(t, func() error { return gone(exists()) })
 }

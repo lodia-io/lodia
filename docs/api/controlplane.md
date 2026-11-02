@@ -134,7 +134,7 @@ A reason that no other field reports comes before one that `status.kubernetes.up
 
 `lodia.io/v1alpha1`, namespaced: a sealed copy of a `ControlPlane`'s etcd, from which a new `ControlPlane` can start ([restore-replaces-the-source](../decisions/restore-replaces-the-source.md)).
 The name is at most 235 characters (CEL), so that `<name>.encryption-config`, the copy of the source's encryption keys, fits a Secret's name.
-The backup reconciler of the Datastore controller, field manager `lodia/backup`, writes the status and the annotation `lodia.io/sealed-uid`, and with the restore, wave 1b, backups, holds the finalizer `lodia.io/restore-source`.
+The backup reconciler of the Datastore controller, field manager `lodia/backup`, writes the status and the annotation `lodia.io/sealed-uid`, and holds the finalizer `lodia.io/restore-source` from its first pass until every `ControlPlane` of the namespace that restores from it and is not being deleted has an encryption configuration of its own and a completed restore.
 It seals and copies as [restore-replaces-the-source](../decisions/restore-replaces-the-source.md) says; a `Backup` being deleted gets no new step.
 
 | field | written by | meaning |
