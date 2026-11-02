@@ -667,14 +667,8 @@ func (r *BackupReconciler) writeKeys(ctx context.Context, backup *lodiav1alpha1.
 // status lost afterwards can no longer pass for a Backup never sealed.
 func (r *BackupReconciler) tidy(ctx context.Context, backup *lodiav1alpha1.Backup, marked bool) (ctrl.Result, error) {
 	if !marked {
-		patch := client.MergeFromWithOptions(backup.DeepCopy(), client.MergeFromWithOptimisticLock{})
-		metav1.SetMetaDataAnnotation(&backup.ObjectMeta, lodiav1alpha1.SealedUIDAnnotation, string(backup.UID))
-		err := r.Patch(ctx, backup, patch, client.FieldOwner(BackupFieldManager))
-		switch {
-		case apierrors.IsConflict(err):
-			return ctrl.Result{RequeueAfter: time.Second}, nil
-		case err != nil:
-			return ctrl.Result{}, client.IgnoreNotFound(err)
+		if conflict, err := r.mark(ctx, backup); err != nil || conflict {
+			return ctrl.Result{RequeueAfter: requeueOnConflict(conflict)}, client.IgnoreNotFound(err)
 		}
 	}
 	key := client.ObjectKey{Namespace: backup.Namespace, Name: backupTaskPrefix + string(backup.UID)}
@@ -692,18 +686,51 @@ func (r *BackupReconciler) tidy(ctx context.Context, backup *lodiav1alpha1.Backu
 	return ctrl.Result{}, nil
 }
 
-// release lets a Backup being deleted go once no ControlPlane in its
-// namespace that is not being deleted and restores from it lacks an
-// encryption configuration of its own or a completed restore. The
-// ControlPlanes and their Secrets are read from the API server: a
-// ControlPlane the cache does not hold yet would find no Backup to restore.
+// mark writes the Backup's UID into lodia.io/sealed-uid through a patch
+// locked on the resourceVersion; the first result says the Backup changed
+// since the read.
+func (r *BackupReconciler) mark(ctx context.Context, backup *lodiav1alpha1.Backup) (bool, error) {
+	patch := client.MergeFromWithOptions(backup.DeepCopy(), client.MergeFromWithOptimisticLock{})
+	metav1.SetMetaDataAnnotation(&backup.ObjectMeta, lodiav1alpha1.SealedUIDAnnotation, string(backup.UID))
+	err := r.Patch(ctx, backup, patch, client.FieldOwner(BackupFieldManager))
+	if apierrors.IsConflict(err) {
+		return true, nil
+	}
+	return false, err
+}
+
+// release lets a Backup being deleted go. One that is not sealed goes at
+// once, since no restore can use it and no seal step runs once its deletion
+// started; one Completed without its mark gets it first.
 func (r *BackupReconciler) release(ctx context.Context, backup *lodiav1alpha1.Backup) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(backup, lodiav1alpha1.RestoreSourceFinalizer) {
 		return ctrl.Result{}, nil
 	}
+	ready := meta.FindStatusCondition(backup.Status.Conditions, lodiav1alpha1.ConditionReady)
+	completed := ready != nil && ready.Status == metav1.ConditionTrue && ready.Reason == lodiav1alpha1.ReasonCompleted
+	if _, marked := backup.Annotations[lodiav1alpha1.SealedUIDAnnotation]; completed && !marked {
+		if conflict, err := r.mark(ctx, backup); err != nil || conflict {
+			return ctrl.Result{RequeueAfter: requeueOnConflict(conflict)}, client.IgnoreNotFound(err)
+		}
+	}
+	if completed && backup.Annotations[lodiav1alpha1.SealedUIDAnnotation] == string(backup.UID) {
+		if held, err := r.restoring(ctx, backup); err != nil || held {
+			return ctrl.Result{}, err
+		}
+	}
+	conflict, err := r.setFinalizer(ctx, backup, false)
+	return ctrl.Result{RequeueAfter: requeueOnConflict(conflict)}, err
+}
+
+// restoring says whether a ControlPlane in the Backup's namespace that is
+// not being deleted and restores from it lacks an encryption configuration of
+// its own or a completed restore. The ControlPlanes and their Secrets are read
+// from the API server: a ControlPlane the cache does not hold yet would find
+// no Backup to restore.
+func (r *BackupReconciler) restoring(ctx context.Context, backup *lodiav1alpha1.Backup) (bool, error) {
 	controlPlanes := &lodiav1alpha1.ControlPlaneList{}
 	if err := r.Reader.List(ctx, controlPlanes, client.InNamespace(backup.Namespace)); err != nil {
-		return ctrl.Result{}, err
+		return false, err
 	}
 	for i := range controlPlanes.Items {
 		cp := &controlPlanes.Items[i]
@@ -714,16 +741,15 @@ func (r *BackupReconciler) release(ctx context.Context, backup *lodiav1alpha1.Ba
 		keys.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Secret"))
 		err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.EncryptionConfigSecret.Name(cp.Name)}, keys)
 		if client.IgnoreNotFound(err) != nil {
-			return ctrl.Result{}, err
+			return false, err
 		}
 		ownKeys := err == nil && metav1.IsControlledBy(keys, cp)
 		if !ownKeys || cp.Status.Datastore == nil || cp.Status.Datastore.Restore == nil {
 			logf.FromContext(ctx).Info("keeping the Backup until the ControlPlane restoring from it has its own encryption configuration and a completed restore", "controlPlane", cp.Name)
-			return ctrl.Result{}, nil
+			return true, nil
 		}
 	}
-	conflict, err := r.setFinalizer(ctx, backup, false)
-	return ctrl.Result{RequeueAfter: requeueOnConflict(conflict)}, err
+	return false, nil
 }
 
 // setFinalizer holds or releases the Backup through a patch locked on the

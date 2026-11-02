@@ -48,7 +48,8 @@ Datastore then writes `status.datastore.restore` ([field](../api/controlplane.md
 **The encryption key stays in the management cluster.**
 When it seals, the backup reconciler writes `<backup>.encryption-config` (`BackupEncryptionConfigSecretName`), owned by the `Backup`, immutable, with every key of the source's encryption configuration, and never puts a key in the bucket, whose credentials sit in every tenant namespace on the class.
 PKI copies those providers once into the restored `ControlPlane`'s configuration, behind a new key of its own, and never reads the `Backup` again; while it has not, PKI reports `CertificatesReady=False`, `WaitingForBackup`.
-The finalizer `lodia.io/restore-source` keeps the `Backup` until each `ControlPlane` restoring from it has that configuration and a completed restore, which reads the `Backup`'s store and seal.
+The finalizer `lodia.io/restore-source` keeps a sealed `Backup` until each `ControlPlane` restoring from it has that configuration and a completed restore, which reads the `Backup`'s store and seal.
+A `Backup` deleted before it is sealed goes at once, since no restore can use it.
 PKI adopts no Secret under its names for a restored `ControlPlane`: one that exists is `SecretsExist`.
 The platform backs up Lodia's Secrets, as it must for the CAs; a KMS provider is the long-term path, its key wrapped beside the snapshots.
 
