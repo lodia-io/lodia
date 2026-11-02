@@ -149,9 +149,32 @@ func TestARestoreWaitsForItsBackup(t *testing.T) {
 			setReady(t, b, metav1.ConditionUnknown, lodiav1alpha1.ReasonCopying)
 			writeBackupKeys(t, b, controllerOf(b), true, encryptionConfiguration(t, secretboxKey()))
 		}, notSealed},
+		{"a Backup waiting for its source", func(t *testing.T, namespace string) {
+			setReady(t, newBackup(t, namespace), metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore)
+		}, notSealed},
+		{"a Backup whose source is not created yet", func(t *testing.T, namespace string) {
+			setReady(t, newBackup(t, namespace), metav1.ConditionFalse, lodiav1alpha1.ReasonControlPlaneNotFound)
+		}, notSealed},
+		{"a Backup whose source is gone", func(t *testing.T, namespace string) {
+			b := newBackup(t, namespace)
+			b.Status.StartedAt = new(metav1.Now())
+			setReady(t, b, metav1.ConditionFalse, lodiav1alpha1.ReasonControlPlaneNotFound)
+		}, "Backup " + backupName + " is ControlPlaneNotFound: ControlPlaneNotFound; restore another Backup"},
 		{"a Backup that failed", func(t *testing.T, namespace string) {
 			setReady(t, newBackup(t, namespace), metav1.ConditionFalse, lodiav1alpha1.ReasonFailed)
-		}, notSealed},
+		}, "Backup " + backupName + " is Failed: Failed; restore another Backup"},
+		{"a Backup without a store", func(t *testing.T, namespace string) {
+			setReady(t, newBackup(t, namespace), metav1.ConditionFalse, lodiav1alpha1.ReasonNoBackupStore)
+		}, "Backup " + backupName + " is NoBackupStore: NoBackupStore; restore another Backup"},
+		{"an unsupported Backup", func(t *testing.T, namespace string) {
+			setReady(t, newBackup(t, namespace), metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported)
+		}, "Backup " + backupName + " is Unsupported: Unsupported; restore another Backup"},
+		{"a Backup whose seal is lost", func(t *testing.T, namespace string) {
+			setReady(t, newBackup(t, namespace), metav1.ConditionFalse, lodiav1alpha1.ReasonSealLost)
+		}, "Backup " + backupName + " is SealLost: SealLost; restore another Backup"},
+		{"a Backup whose keys another controls", func(t *testing.T, namespace string) {
+			setReady(t, newBackup(t, namespace), metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere)
+		}, "Backup " + backupName + " is ObjectsControlledElsewhere: ObjectsControlledElsewhere; restore another Backup"},
 		{"no keys", func(t *testing.T, namespace string) {
 			setReady(t, newBackup(t, namespace), metav1.ConditionTrue, lodiav1alpha1.ReasonCompleted)
 		}, notItsKeys},

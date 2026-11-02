@@ -913,7 +913,12 @@ func (r *Reconciler) backupKeys(ctx context.Context, t *tenant) error {
 	if client.IgnoreNotFound(err) != nil {
 		return err
 	}
-	if ready := meta.FindStatusCondition(backup.Status.Conditions, lodiav1alpha1.ConditionReady); ready == nil || ready.Status != metav1.ConditionTrue || ready.Reason != lodiav1alpha1.ReasonCompleted {
+	ready := meta.FindStatusCondition(backup.Status.Conditions, lodiav1alpha1.ConditionReady)
+	switch {
+	case failed(backup, ready):
+		t.waitingForBackup = fmt.Sprintf("Backup %s is %s: %s; restore another Backup", name, ready.Reason, ready.Message)
+		return nil
+	case ready == nil || ready.Status != metav1.ConditionTrue || ready.Reason != lodiav1alpha1.ReasonCompleted:
 		t.waitingForBackup = "Backup " + name + " is not sealed yet"
 		return nil
 	}
@@ -934,6 +939,22 @@ func (r *Reconciler) backupKeys(ctx context.Context, t *tenant) error {
 	}
 	t.backupProviders = cfg.Resources[0].Providers
 	return nil
+}
+
+// failed says whether a Backup's Ready says it never completes, as
+// Datastore's restore reads it for RestoreFailed, so that both conditions
+// tell a person to restore another Backup.
+func failed(backup *lodiav1alpha1.Backup, ready *metav1.Condition) bool {
+	if ready == nil || ready.Status != metav1.ConditionFalse {
+		return false
+	}
+	switch ready.Reason {
+	case lodiav1alpha1.ReasonUnsupported, lodiav1alpha1.ReasonNoBackupStore, lodiav1alpha1.ReasonFailed, lodiav1alpha1.ReasonSealLost, lodiav1alpha1.ReasonObjectsControlledElsewhere:
+		return true
+	case lodiav1alpha1.ReasonControlPlaneNotFound:
+		return backup.Status.StartedAt != nil
+	}
+	return false
 }
 
 // readEncryptionConfig accepts what the API server's own validator accepts
