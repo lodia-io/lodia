@@ -356,14 +356,18 @@ func sealable(source *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) stri
 // snapshotLocation is where a Backup's copy of the snapshots in the store
 // goes.
 func snapshotLocation(store *druidv1alpha1.StoreSpec, fromSecret *lodiav1alpha1.StoreSecretFields, backup types.UID) lodiav1alpha1.BackupSnapshotLocation {
-	return lodiav1alpha1.BackupSnapshotLocation{
-		SnapshotLocation: lodiav1alpha1.SnapshotLocation{
-			Provider: lodiav1alpha1.StoreProvider(ptr.Deref(store.Provider, "")),
-			Endpoint: ptr.Deref(store.EndpointOverride, ""),
-			Bucket:   ptr.Deref(store.Container, ""),
-			Prefix:   backupPrefix(store.Prefix, backup),
-		},
-		FromSecret: fromSecret,
+	location := storeLocation(store)
+	location.Prefix = backupPrefix(store.Prefix, backup)
+	return lodiav1alpha1.BackupSnapshotLocation{SnapshotLocation: location, FromSecret: fromSecret}
+}
+
+// storeLocation is where an Etcd's store puts its snapshots.
+func storeLocation(store *druidv1alpha1.StoreSpec) lodiav1alpha1.SnapshotLocation {
+	return lodiav1alpha1.SnapshotLocation{
+		Provider: lodiav1alpha1.StoreProvider(ptr.Deref(store.Provider, "")),
+		Endpoint: ptr.Deref(store.EndpointOverride, ""),
+		Bucket:   ptr.Deref(store.Container, ""),
+		Prefix:   store.Prefix,
 	}
 }
 

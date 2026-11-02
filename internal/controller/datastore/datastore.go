@@ -793,9 +793,9 @@ func (r *Reconciler) setFinalizer(ctx context.Context, cp *lodiav1alpha1.Control
 	return r.Patch(ctx, cp, patch, client.FieldOwner(FieldManager))
 }
 
-// datastoreStatus says where the API server reaches the etcd: etcd-druid's
-// client Service. The restore is carried into every apply, which would drop
-// it otherwise.
+// datastoreStatus says where the API server reaches the etcd, etcd-druid's
+// client Service, and where the Etcd's snapshots go. The restore is carried
+// into every apply, which would drop it otherwise.
 func datastoreStatus(etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet, restore *lodiav1alpha1.RestoreStatus) *lodiav1alpha1.DatastoreStatus {
 	if etcd == nil {
 		return nil
@@ -805,6 +805,9 @@ func datastoreStatus(etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet, restore 
 		Endpoints: []lodiav1alpha1.HostPort{{Host: host, Port: port}},
 		Members:   lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: etcd.Spec.Replicas, Ready: min(etcd.Status.ReadyReplicas, etcd.Spec.Replicas)}, Updated: updatedMembers(etcd, sts)},
 		Restore:   restore,
+	}
+	if store := etcd.Spec.Backup.Store; store != nil {
+		status.Snapshots = new(storeLocation(store))
 	}
 	generation, err := strconv.ParseInt(etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation], 10, 64)
 	if name := etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation]; name != "" && err == nil {
