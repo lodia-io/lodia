@@ -210,6 +210,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 // reconcileEtcd returns the restore's status when this pass found it
 // complete.
 func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*druidv1alpha1.Etcd, *appsv1.StatefulSet, *lodiav1alpha1.RestoreStatus, metav1.Condition, time.Duration, error) {
+	// A restore decides from its own status, read live, since the cache can
+	// lag behind this controller's own last write.
+	if cp.Spec.RestoreFrom != nil {
+		if err := live.Datastore(ctx, r.Reader, cp, lodiav1alpha1.ConditionDatastoreReady, lodiav1alpha1.ConditionBackupReady); err != nil {
+			return nil, nil, nil, metav1.Condition{}, 0, fmt.Errorf("read ControlPlane %s: %w", cp.Name, err)
+		}
+	}
 	current, err := r.currentEtcd(ctx, cp)
 	if err != nil {
 		return nil, nil, nil, metav1.Condition{}, 0, err
@@ -306,14 +313,6 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.Contro
 		if check, err = r.checkRestore(ctx, cp, current); err != nil {
 			return nil, nil, nil, metav1.Condition{}, 0, err
 		}
-		// A check that could not run keeps the restore's status and decides
-		// from it: read live, since the cache can lag behind this
-		// controller's own last write.
-		if check.restored == nil && check.condition == nil {
-			if err := live.Datastore(ctx, r.Reader, cp, lodiav1alpha1.ConditionDatastoreReady, lodiav1alpha1.ConditionBackupReady); err != nil {
-				return nil, nil, nil, metav1.Condition{}, 0, fmt.Errorf("read ControlPlane %s: %w", cp.Name, err)
-			}
-		}
 	}
 	// One member restores, and etcd-druid adds the others as learners once
 	// the restore is complete; an Etcd raised above one stays, whatever a
@@ -327,14 +326,16 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.Contro
 		held = capped
 	}
 	// Claims of this ControlPlane outlive an Etcd it had, whose data they
-	// hold.
+	// hold, and a restore once recorded left its cleaned data and a full
+	// snapshot of it in this ControlPlane's prefix.
 	if current == nil && len(claims) == 0 {
 		var first *metav1.Condition
 		var requeueAfter time.Duration
-		if cp.Spec.RestoreFrom != nil {
-			first, requeueAfter, err = r.restoreFirst(ctx, cp, class, rendered)
-		} else {
+		switch {
+		case cp.Spec.RestoreFrom == nil:
 			first, err = r.caPredates(ctx, cp)
+		case restoreOf(cp) == nil:
+			first, requeueAfter, err = r.restoreFirst(ctx, cp, class, rendered)
 		}
 		if first == nil && err != nil {
 			return nil, nil, nil, metav1.Condition{}, 0, errors.Join(err, refusal)

@@ -212,7 +212,7 @@ A missing Secret or a copy another owner holds is checked again after a minute; 
 Before the first `Etcd` exists, the same cause is `Provisioning`, and nothing is created.
 
 Before the first `Etcd` of a `ControlPlane`, while none of its claims is left, Datastore checks what that etcd would start on ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)).
-With `restoreFrom`, it waits for the `Backup`'s copy in the `ControlPlane`'s prefix, and the `Etcd` runs one member until its etcd holds the cleaned data and a full snapshot of it is in the store; `DatastoreReady`'s reasons say what it waits for ([reasons](api/controlplane.md#conditions-and-their-reasons)).
+With `restoreFrom`, it waits for the `Backup`'s copy in the `ControlPlane`'s prefix unless `status.datastore.restore` says the restore completed, and the `Etcd` runs one member until its etcd holds the cleaned data and a full snapshot of it is in the store; `DatastoreReady`'s reasons say what it waits for ([reasons](api/controlplane.md#conditions-and-their-reasons)).
 Without, it refuses an empty etcd while `<cp>-ca-bundle` holds a CA older than the `ControlPlane` (`CAPredatesControlPlane`).
 
 An `Etcd` follows the class recorded on it when it was created ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)), and one created again over this `ControlPlane`'s claims, after someone deleted it, takes the class they record rather than `className` or the current default, which could give it another bucket and placement.

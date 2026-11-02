@@ -44,7 +44,7 @@ The keys are the API server's own under its default prefix, Nodes as `minions` (
 **Durable before ready.**
 A full snapshot follows the transaction, and `DatastoreReady` turns True only once a snapshot Lease shows it in the store: a member that loses its volume afterwards restores the cleaned data, not the source's.
 Datastore asks for it again as the backup reconciler does for the seal's, timed from the `Etcd`'s creation instead of the `Backup`'s start.
-Datastore then writes `status.datastore.restore` ([field](../api/controlplane.md#status)).
+Datastore then writes `status.datastore.restore` ([field](../api/controlplane.md#status)), and from then on the restore needs the `Backup` no more: an `Etcd` created again restores from the `ControlPlane`'s prefix, and an etcd that lost the marker is checked against the seal of the `Backup` that status names.
 
 **The encryption key stays in the management cluster.**
 When it seals, the backup reconciler writes `<backup>.encryption-config` (`BackupEncryptionConfigSecretName`), owned by the `Backup`, immutable, with every key of the source's encryption configuration, and never puts a key in the bucket, whose credentials sit in every tenant namespace on the class.

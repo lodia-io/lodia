@@ -1165,22 +1165,37 @@ func TestARestoreStatusRemovedComesBackFromTheMarker(t *testing.T) {
 }
 
 func TestDataFromBeforeTheCleanupIsCleanedUpAgain(t *testing.T) {
-	r := newRestore(t, restoreSetup{})
-	r.copied(t)
-	first := r.cleanedUp(t)
-	r.complete(t, first)
-	if _, err := r.etcd.Delete(t.Context(), lodiav1alpha1.RestoreMarkerKey(r.controlPlane(t).UID)); err != nil {
-		t.Fatal(err)
+	for _, c := range []struct {
+		name string
+		gone bool
+	}{{"the Backup kept", false}, {"the Backup gone", true}} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newRestore(t, restoreSetup{})
+			r.copied(t)
+			first := r.cleanedUp(t)
+			r.complete(t, first)
+			if c.gone {
+				if err := k8s.Delete(t.Context(), r.backup); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := r.etcd.Delete(t.Context(), lodiav1alpha1.RestoreMarkerKey(r.controlPlane(t).UID)); err != nil {
+				t.Fatal(err)
+			}
+			r.etcd.put(t, cleanedKeys[0])
+			poke(t, r.ns)
+			waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRestoring, "cleaned up; waiting for a full snapshot of revision")
+			r.etcd.absent(t, cleanedKeys[0])
+			second := r.marker(t)
+			if second <= first {
+				t.Fatalf("the marker came back at revision %d, the first at %d", second, first)
+			}
+			if value := restoreMarkerValue(t, r); value != (restoreMarkerJSON{Backup: lodiav1alpha1.UIDReference{Name: backupName, UID: r.backup.UID}, Source: r.source}) {
+				t.Errorf("the marker holds %+v", value)
+			}
+			r.complete(t, second)
+		})
 	}
-	r.etcd.put(t, cleanedKeys[0])
-	poke(t, r.ns)
-	waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRestoring, "cleaned up; waiting for a full snapshot of revision")
-	r.etcd.absent(t, cleanedKeys[0])
-	second := r.marker(t)
-	if second <= first {
-		t.Fatalf("the marker came back at revision %d, the first at %d", second, first)
-	}
-	r.complete(t, second)
 }
 
 func TestALeftoverFullSnapshotLeaseCompletesNoRestore(t *testing.T) {
@@ -1193,6 +1208,109 @@ func TestALeftoverFullSnapshotLeaseCompletesNoRestore(t *testing.T) {
 	poke(t, r.ns)
 	waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRestoring, "the store holds 0; EtcdOpsTask")
 	waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRestoring, "ignored Lease b-etcd-full-snap, created before Etcd b-etcd")
+}
+
+func TestACompletedRestoreNeedsItsBackupNoMore(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		gone bool
+	}{{"the Backup gone", true}, {"the Backup kept", false}} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newRestore(t, restoreSetup{})
+			r.copied(t)
+			marker := r.cleanedUp(t)
+			completed := r.complete(t, marker).Status.Datastore.Restore
+			if c.gone {
+				if err := k8s.Delete(t.Context(), r.backup); err != nil {
+					t.Fatal(err)
+				}
+			}
+			first := getEtcd(t, r.ns, restoredCP)
+			time.Sleep(1100 * time.Millisecond)
+			if err := k8s.Delete(t.Context(), first); err != nil {
+				t.Fatal(err)
+			}
+			kept := func() error {
+				cp := r.controlPlane(t)
+				if cp.Status.Datastore == nil || !reflect.DeepEqual(cp.Status.Datastore.Restore, completed) {
+					return fmt.Errorf("status.datastore is %+v, want the restore %+v", cp.Status.Datastore, completed)
+				}
+				if task := r.copyTask(t); task != nil {
+					return fmt.Errorf("EtcdCopyBackupsTask %s copies the Backup again", task.Name)
+				}
+				return nil
+			}
+			etcd := waitEtcd(t, r.ns, restoredCP, func(etcd *druidv1alpha1.Etcd) error {
+				if etcd.UID == first.UID {
+					return errors.New("the deleted Etcd is still there")
+				}
+				return nil
+			})
+			if etcd.Spec.Replicas != 1 || !reflect.DeepEqual(etcd.Spec.Backup.Store, first.Spec.Backup.Store) {
+				t.Errorf("the Etcd created again asks for %d members with store %+v, want 1 with %+v", etcd.Spec.Replicas, etcd.Spec.Backup.Store, first.Spec.Backup.Store)
+			}
+			consistently(t, kept)
+			setEtcdStatus(t, r.ns, restoredCP, nil)
+			waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRestoring, "ignored Lease b-etcd-full-snap, created before Etcd b-etcd")
+			if err := kept(); err != nil {
+				t.Fatal(err)
+			}
+			if err := k8s.Delete(t.Context(), &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Namespace: r.ns, Name: restoredCP + "-etcd-full-snap"}}); err != nil {
+				t.Fatal(err)
+			}
+			if again := r.complete(t, marker).Status.Datastore.Restore; !reflect.DeepEqual(again, completed) {
+				t.Errorf("the restore completed again as %+v, want %+v", again, completed)
+			}
+			if got := r.marker(t); got != marker {
+				t.Errorf("the marker moved from revision %d to %d", marker, got)
+			}
+		})
+	}
+}
+
+func TestAnEtcdCreatedAgainFromAStaleCacheNeedsNoBackup(t *testing.T) {
+	r := newRestore(t, restoreSetup{})
+	r.copied(t)
+	marker := r.cleanedUp(t)
+	before := r.controlPlane(t)
+	completed := r.complete(t, marker).Status.Datastore.Restore
+	if err := k8s.Delete(t.Context(), r.backup); err != nil {
+		t.Fatal(err)
+	}
+	setPaused(t, r.ns, restoredCP, true)
+	eventually(t, func() error {
+		cp := &lodiav1alpha1.ControlPlane{}
+		if err := cached.Get(t.Context(), client.ObjectKey{Namespace: r.ns, Name: restoredCP}, cp); err != nil {
+			return err
+		}
+		if !cp.Spec.Paused {
+			return errors.New("the cache does not show the pause yet")
+		}
+		return nil
+	})
+	if err := k8s.Delete(t.Context(), getEtcd(t, r.ns, restoredCP)); err != nil {
+		t.Fatal(err)
+	}
+	stale := interceptor.NewClient(k8s, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if cp, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
+				before.DeepCopyInto(cp)
+				return nil
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	reconciler := &datastore.Reconciler{Client: stale, Reader: apiReader, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, EtcdClient: dialRestored, Clock: clock.RealClock{}}
+	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}}); err != nil {
+		t.Fatal(err)
+	}
+	getEtcd(t, r.ns, restoredCP)
+	if cp := r.controlPlane(t); cp.Status.Datastore == nil || !reflect.DeepEqual(cp.Status.Datastore.Restore, completed) {
+		t.Errorf("a pass from a cache without status.datastore.restore left %+v, want the restore %+v", cp.Status.Datastore, completed)
+	}
+	if task := r.copyTask(t); task != nil {
+		t.Errorf("EtcdCopyBackupsTask %s copies the Backup again", task.Name)
+	}
 }
 
 func caBundle(t *testing.T, ns, cp string, notBefore time.Time) *corev1.Secret {
