@@ -71,12 +71,13 @@ func TestARestoreNotCompleteKeepsItsControllerManagerHeld(t *testing.T) {
 
 func TestTheSourcesDeletionAloneReleasesItsReplacement(t *testing.T) {
 	ns := namespace(t)
-	prod := source(t, ns)
+	prod := source(t, ns, "test.lodia.io/keep")
 	cp := restored(t, ns, lodiav1alpha1.RestoreReleased)
 	setRestore(t, cp, lodiav1alpha1.UIDReference{Name: prod.Name, UID: prod.UID})
 	setTrue(t, cp, lodiav1alpha1.ConditionAddonsApplied, lodiav1alpha1.ReasonApplied)
+	sourceExists := heldUntil + "ControlPlane prod (UID " + string(prod.UID) + "), the Backup's source, exists"
 	eventually(t, func() error {
-		return expectAt(cp, 1, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, heldUntil+"ControlPlane prod (UID "+string(prod.UID)+"), the Backup's source, exists")
+		return expectAt(cp, 1, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, sourceExists)
 	})
 	if n := controllerManagers(t, cp); n != 0 {
 		t.Fatalf("the controller manager runs %d replicas beside its source", n)
@@ -85,6 +86,22 @@ func TestTheSourcesDeletionAloneReleasesItsReplacement(t *testing.T) {
 	if err := k8s.Delete(t.Context(), prod); err != nil {
 		t.Fatal(err)
 	}
+	reconcileNow(t, cp)
+	if err := expectAt(cp, 1, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, sourceExists); err != nil {
+		t.Fatal(err)
+	}
+	if n := controllerManagers(t, cp); n != 0 {
+		t.Fatalf("the controller manager runs %d replicas while its source is being deleted", n)
+	}
+
+	eventually(t, func() error {
+		fresh := &lodiav1alpha1.ControlPlane{}
+		if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(prod), fresh); err != nil {
+			return err
+		}
+		fresh.Finalizers = nil
+		return k8s.Update(t.Context(), fresh)
+	})
 	eventually(t, func() error {
 		if n := controllerManagers(t, cp); n != 1 {
 			return fmt.Errorf("the controller manager runs %d replicas once its source is gone", n)
@@ -198,6 +215,47 @@ func TestHighAvailabilityRunsTwoControllerManagersOnceReleased(t *testing.T) {
 	}
 }
 
+func TestAnOrphanedControllerManagerReleasesNothing(t *testing.T) {
+	running := create(t, namespace(t), loadBalancer())
+	setIngress(t, running, corev1.LoadBalancerIngress{IP: lbAddress})
+	inputsReady(t, running)
+	kcm := eventuallyDeployment(t, running, "kube-controller-manager")
+	if *kcm.Spec.Replicas != 1 {
+		t.Fatalf("the controller manager of a ControlPlane that restores nothing runs %d replicas", *kcm.Spec.Replicas)
+	}
+	ns := namespace(t)
+	orphan := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: kcm.Name, Namespace: ns, Labels: kcm.Labels}, Spec: *kcm.Spec.DeepCopy()}
+	if err := k8s.Create(t.Context(), orphan); err != nil {
+		t.Fatal(err)
+	}
+
+	cp := restored(t, ns, lodiav1alpha1.RestoreHeld)
+	eventually(t, func() error {
+		d := deployment(t, cp, "kube-controller-manager")
+		if !metav1.IsControlledBy(d, cp) || *d.Spec.Replicas != 0 {
+			return fmt.Errorf("the orphaned controller manager runs %d replicas, owned by %+v", *d.Spec.Replicas, d.OwnerReferences)
+		}
+		return nil
+	})
+}
+
+func TestAMetReleaseInAWaitCountsTheControllerManagerAtZeroAvailable(t *testing.T) {
+	cp := restored(t, namespace(t), lodiav1alpha1.RestoreReleased)
+	setRestore(t, cp, gone)
+	eventually(t, func() error {
+		return expectAt(cp, 1, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, heldUntil+"AddonsApplied is not True for generation 1")
+	})
+	setFalse(t, cp, lodiav1alpha1.ConditionCertificatesReady, "Issuing")
+	setTrue(t, cp, lodiav1alpha1.ConditionAddonsApplied, lodiav1alpha1.ReasonApplied)
+	reconcileNow(t, cp)
+	if err := expectAt(cp, 1, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "kube-controller-manager has 0 of 0 replicas ready"); err != nil {
+		t.Error(err)
+	}
+	if n := controllerManagers(t, cp); n != 0 {
+		t.Errorf("the controller manager runs %d replicas while Workloads waits for CertificatesReady", n)
+	}
+}
+
 func TestAWaitKeepsTheHeldMessage(t *testing.T) {
 	cp := restored(t, namespace(t), lodiav1alpha1.RestoreHeld)
 	unmet := "spec.restoreFrom.release is Held; the restore is not complete; AddonsApplied is not True for generation "
@@ -286,10 +344,10 @@ func restored(t *testing.T, ns string, release lodiav1alpha1.RestoreRelease, cha
 	return cp
 }
 
-func source(t *testing.T, ns string) *lodiav1alpha1.ControlPlane {
+func source(t *testing.T, ns string, finalizers ...string) *lodiav1alpha1.ControlPlane {
 	t.Helper()
 	prod := &lodiav1alpha1.ControlPlane{
-		ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: ns},
+		ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: ns, Finalizers: finalizers},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
 			Version:   version,
 			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{}},

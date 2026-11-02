@@ -114,6 +114,8 @@ func TestAvailabilityIsAReadyReplicaOfEachComponent(t *testing.T) {
 			"True Ready kube-apiserver has 1 of 2 replicas ready; " + held},
 		{"a held controller manager beside an unavailable scheduler", []*appsv1.Deployment{deployment(apiServer, 2, 2, false), deployment(controllerManager, 0, 0, false), deployment(scheduler, 2, 0, false)}, held,
 			"False Unavailable " + held + "; kube-scheduler has 0 of 2 replicas ready"},
+		{"a scheduler at 0 beside a held controller manager", []*appsv1.Deployment{deployment(apiServer, 2, 2, false), deployment(controllerManager, 0, 0, false), deployment(scheduler, 0, 0, false)}, held,
+			"False Unavailable " + held},
 		{"a released controller manager", []*appsv1.Deployment{deployment(apiServer, 2, 2, false), deployment(controllerManager, 2, 2, false), deployment(scheduler, 2, 2, false)}, held,
 			"True Ready every replica of kube-apiserver, kube-controller-manager and kube-scheduler is ready"},
 		{"one API server of two ready", []*appsv1.Deployment{deployment(apiServer, 2, 1, false), deployment(controllerManager, 2, 2, false), deployment(scheduler, 2, 2, false)}, "",

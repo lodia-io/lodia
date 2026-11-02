@@ -226,6 +226,7 @@ func TestARestoreLeadsOnceReleasedWithItsSourceGone(t *testing.T) {
 	writeKubeconfig(t, cp, tenantKubeconfig)
 	removeLeases(t)
 	r := &health.Reconciler{Client: k8s, Reader: k8s, Period: 10 * time.Second, Timeout: 2 * time.Second, Clock: clock.RealClock{}}
+	sourceExists := "ControlPlane prod (UID " + string(prod.UID) + "), the Backup's source, still exists in the namespace; delete it to release this one"
 	reconcile(t, r, cp)
 	if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonAwaitingRelease, actsOn+"0 LoadBalancer Services; 0 PersistentVolumes with reclaimPolicy Delete"+
 		"; 0 pending PersistentVolumeClaims; 0 webhooks that call a URL or fail closed; 0 APIServices served by a Service; 0 CronJobs not suspended"); err != nil {
@@ -234,12 +235,23 @@ func TestARestoreLeadsOnceReleasedWithItsSourceGone(t *testing.T) {
 
 	releaseRestore(t, cp)
 	reconcile(t, r, cp)
-	if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonSourceExists,
-		"ControlPlane prod (UID "+string(prod.UID)+"), the Backup's source, still exists in the namespace; delete it to release this one"); err != nil {
+	if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonSourceExists, sourceExists); err != nil {
 		t.Fatal(err)
 	}
 
 	if err := k8s.Delete(t.Context(), prod); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, cp)
+	if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonSourceExists, sourceExists); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(prod), prod); err != nil {
+		t.Fatal(err)
+	}
+	prod.Finalizers = nil
+	if err := k8s.Update(t.Context(), prod); err != nil {
 		t.Fatal(err)
 	}
 	reconcile(t, r, cp)

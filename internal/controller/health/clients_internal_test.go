@@ -44,6 +44,11 @@ func TestAControlPlaneKeepsItsClientsWhileTheirInputsStay(t *testing.T) {
 		return c
 	}
 	first := clients("https://dev-kube-apiserver.team-a.svc:443")
+	for name, c := range map[string]rest.Interface{"core": first.core.RESTClient(), "admission": first.admission.RESTClient(), "registration": first.registration.RESTClient(), "batch": first.batch.RESTClient()} {
+		if c.(*rest.RESTClient).Client != r.clients[key].transport {
+			t.Errorf("the %s client does not use the transport forget closes", name)
+		}
+	}
 	if clients("https://dev-kube-apiserver.team-a.svc:443") != first {
 		t.Error("the same kubeconfig built second tenant clients")
 	}
