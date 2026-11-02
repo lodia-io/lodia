@@ -62,6 +62,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - A changed `apiServer.encryption.provider` puts the new provider first with a new key and keeps the previous ones readable, but nothing rewrites the stored Secrets or drops the old provider, and with two API server replicas one may write with the new key before the other has reloaded the file (up to a minute).
   That is the etcd encryption key rotation of [staged-credential-rotation](docs/decisions/staged-credential-rotation.md); until it is built, document the change as unsupported, or refuse it in the schema.
   A `Backup` is unaffected: it takes the source's configuration after the copy, and that holds every provider PKI ever wrote.
+  A change back to `None` puts a second `identity` behind the first (`encryptionConfig` in `internal/controller/pki/secrets.go`); harmless, and the rotation should drop it with the other old providers.
 - `apiServer.encryption.provider: kms` is accepted by the schema; PKI issues everything else and reports `CertificatesReady` False with `Unsupported`.
   Refuse it in CEL until the provider is built.
 - The kubelet signer narrows nothing: whoever holds it can sign any identity the API server accepts.
