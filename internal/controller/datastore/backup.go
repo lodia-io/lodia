@@ -731,7 +731,7 @@ func (r *BackupReconciler) release(ctx context.Context, backup *lodiav1alpha1.Ba
 	}
 	found := err == nil
 	if completed && backup.Annotations[lodiav1alpha1.SealedUIDAnnotation] == string(backup.UID) {
-		if held, err := r.restoring(ctx, backup, found && metav1.IsControlledBy(keys, backup)); err != nil || held {
+		if held, err := r.restoring(ctx, backup, found); err != nil || held {
 			return ctrl.Result{}, err
 		}
 	}

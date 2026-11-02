@@ -1914,7 +1914,7 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 		pass(t, r, b.Name)
 		released(t, b.Name)
 	})
-	t.Run("not held by a restore without keys once its keys lost their controller", func(t *testing.T) {
+	t.Run("held by a restore without keys while its keys that lost their controller exist", func(t *testing.T) {
 		b, keys := backup(t, "orphaned-keys", nil)
 		restoring(t, "orphaned-keys", b.Name)
 		deleteBackup(t, b.Name, client.PropagationPolicy(metav1.DeletePropagationOrphan))
@@ -1922,8 +1922,8 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 			t.Fatal(err)
 		}
 		pass(t, r, b.Name)
-		if finalizers := getBackup(t, ns, b.Name).Finalizers; !reflect.DeepEqual(finalizers, []string{metav1.FinalizerOrphanDependents}) {
-			t.Fatalf("Backup %s has finalizers %v, want only the garbage collector's", b.Name, finalizers)
+		if finalizers := getBackup(t, ns, b.Name).Finalizers; !slices.Contains(finalizers, lodiav1alpha1.RestoreSourceFinalizer) {
+			t.Fatalf("Backup %s has finalizers %v, want %s kept", b.Name, finalizers, lodiav1alpha1.RestoreSourceFinalizer)
 		}
 	})
 }
