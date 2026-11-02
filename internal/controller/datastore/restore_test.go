@@ -462,6 +462,17 @@ func TestARestoreCopiesChecksCleansUpAndSnapshots(t *testing.T) {
 	}
 	owned(t, task, cp)
 	r.noEtcd(t)
+	eventually(t, func() error {
+		return cached.Get(t.Context(), client.ObjectKeyFromObject(task), &druidv1alpha1.EtcdCopyBackupsTask{})
+	})
+	poke(t, r.ns)
+	consistently(t, func() error {
+		err := k8s.Get(t.Context(), client.ObjectKey{Namespace: r.ns, Name: restoredCP + "-etcd"}, &druidv1alpha1.Etcd{})
+		if err == nil {
+			return errors.New("an Etcd exists while the copy runs")
+		}
+		return client.IgnoreNotFound(err)
+	})
 
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		task := r.copyTask(t)
@@ -974,6 +985,15 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 		result, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}})
 		return result.RequeueAfter, err
 	}
+	refused := errors.New("injected: the API server refused the delete")
+	refusing := &datastore.Reconciler{Client: interceptor.NewClient(k8s, interceptor.Funcs{
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			if _, ok := obj.(*druidv1alpha1.EtcdOpsTask); ok {
+				return refused
+			}
+			return c.Delete(ctx, obj, opts...)
+		},
+	}), Reader: apiReader, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, EtcdClient: dialRestored, Clock: now}
 	ops := r.opsTask(t)
 	if !ops.CreationTimestamp.After(readyAt) {
 		t.Fatalf("the first EtcdOpsTask was created at %s, not after the Etcd was ready at %s", ops.CreationTimestamp.UTC(), readyAt.UTC())
@@ -1014,6 +1034,12 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 			}
 		}
 		now.SetTime(next)
+		if _, err := refusing.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}}); !errors.Is(err, refused) {
+			t.Fatalf("a pass whose delete of the finished EtcdOpsTask was refused returned %v, want %v", err, refused)
+		}
+		if again := r.opsTask(t); again == nil || again.UID != ops.UID || !again.DeletionTimestamp.IsZero() {
+			t.Fatal("the finished EtcdOpsTask went though its delete was refused")
+		}
 		eventually(t, func() error {
 			if _, err := pass(); err != nil {
 				return err
@@ -1026,6 +1052,27 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 		ops = r.opsTask(t)
 	}
 	r.complete(t, marker)
+}
+
+func TestALeaseThatReachesTheMarkerWhileTheNextFullSnapshotWaitsCompletesTheRestore(t *testing.T) {
+	r := newRestore(t, restoreSetup{})
+	created := r.copied(t).CreationTimestamp.Time
+	marker := r.cleanedUp(t)
+	lease := restoredCP + "-etcd-full-snap"
+	createLease(t, r.ns, lease, strconv.FormatInt(marker-1, 10))
+	finished := created.Add(30 * time.Minute)
+	finishFlush(t, r.ns, r.taskName(t), druidv1alpha1.TaskStateSucceeded, finished)
+	settled := fmt.Sprintf("the store holds %d; EtcdOpsTask %s is Succeeded at %s; the next goes at %s",
+		marker-1, r.taskName(t), finished.UTC().Format(time.RFC3339), finished.Add(30*time.Minute).UTC().Format(time.RFC3339))
+	waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRestoring, settled)
+	consistently(t, func() error {
+		if ready := meta.FindStatusCondition(r.controlPlane(t).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady); !strings.Contains(ready.Message, settled) {
+			return fmt.Errorf("DatastoreReady moved to %s %q", ready.Reason, ready.Message)
+		}
+		return nil
+	})
+	setLease(t, r.ns, lease, marker)
+	waitCondition(t, r.ns, restoredCP, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum")
 }
 
 func TestARestoreSurvivesAFailureAtEachStep(t *testing.T) {
@@ -1396,6 +1443,7 @@ func TestACompletedRestoreKeepsItsRecordWithoutAnEtcd(t *testing.T) {
 		if etcd.Spec.Replicas != 1 || !reflect.DeepEqual(etcd.Spec.Backup.Store, first.Spec.Backup.Store) {
 			t.Errorf("the Etcd created again asks for %d members with store %+v, want 1 with %+v", etcd.Spec.Replicas, etcd.Spec.Backup.Store, first.Spec.Backup.Store)
 		}
+		waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "")
 		consistently(t, func() error {
 			if task := r.copyTask(t); task != nil {
 				return fmt.Errorf("EtcdCopyBackupsTask %s copies the Backup again", task.Name)
