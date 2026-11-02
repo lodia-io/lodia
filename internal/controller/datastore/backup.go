@@ -629,6 +629,13 @@ func (r *BackupReconciler) writeKeys(ctx context.Context, backup *lodiav1alpha1.
 	case err == nil && metav1.IsControlledBy(existing, backup):
 		return "", "", nil
 	case err == nil:
+		// Keys held for another Backup of this name were left by one that went
+		// without its release: nothing else lets them go.
+		if controllerutil.ContainsFinalizer(existing, lodiav1alpha1.RestoreSourceFinalizer) {
+			if _, err := r.setFinalizer(ctx, existing, false); err != nil {
+				return "", "", err
+			}
+		}
 		owner := "it has no controller"
 		if ref := metav1.GetControllerOfNoCopy(existing); ref != nil {
 			owner = fmt.Sprintf("its controller is %s %s with UID %s", ref.Kind, ref.Name, ref.UID)
@@ -652,6 +659,7 @@ func (r *BackupReconciler) writeKeys(ctx context.Context, backup *lodiav1alpha1.
 			Namespace:       backup.Namespace,
 			Labels:          map[string]string{lodiav1alpha1.ControlPlaneLabel: source.Name},
 			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(backup, lodiav1alpha1.GroupVersion.WithKind("Backup"))},
+			Finalizers:      []string{lodiav1alpha1.RestoreSourceFinalizer},
 		},
 		Type:      corev1.SecretTypeOpaque,
 		Immutable: new(true),
@@ -699,9 +707,12 @@ func (r *BackupReconciler) mark(ctx context.Context, backup *lodiav1alpha1.Backu
 	return false, err
 }
 
-// release lets a Backup being deleted go. One that is not sealed goes at
-// once, since no restore can use it and no seal step runs once its deletion
-// started; one Completed without its mark gets it first.
+// release lets a Backup being deleted go, its keys first: the garbage
+// collector deletes them while a Backup deleted in the foreground still
+// exists (kubernetes@v1.37.0 pkg/controller/garbagecollector/garbagecollector.go#L634-L659).
+// One that is not sealed goes at once, since no restore can use it and no
+// seal step runs once its deletion started; one Completed without its mark
+// gets it first.
 func (r *BackupReconciler) release(ctx context.Context, backup *lodiav1alpha1.Backup) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(backup, lodiav1alpha1.RestoreSourceFinalizer) {
 		return ctrl.Result{}, nil
@@ -716,6 +727,17 @@ func (r *BackupReconciler) release(ctx context.Context, backup *lodiav1alpha1.Ba
 	if completed && backup.Annotations[lodiav1alpha1.SealedUIDAnnotation] == string(backup.UID) {
 		if held, err := r.restoring(ctx, backup); err != nil || held {
 			return ctrl.Result{}, err
+		}
+	}
+	keys := &metav1.PartialObjectMetadata{}
+	keys.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Secret"))
+	err := r.Reader.Get(ctx, client.ObjectKey{Namespace: backup.Namespace, Name: lodiav1alpha1.BackupEncryptionConfigSecretName(backup.Name)}, keys)
+	if client.IgnoreNotFound(err) != nil {
+		return ctrl.Result{}, err
+	}
+	if err == nil && controllerutil.ContainsFinalizer(keys, lodiav1alpha1.RestoreSourceFinalizer) {
+		if conflict, err := r.setFinalizer(ctx, keys, false); err != nil || conflict {
+			return ctrl.Result{RequeueAfter: requeueOnConflict(conflict)}, err
 		}
 	}
 	conflict, err := r.setFinalizer(ctx, backup, false)
@@ -752,16 +774,17 @@ func (r *BackupReconciler) restoring(ctx context.Context, backup *lodiav1alpha1.
 	return false, nil
 }
 
-// setFinalizer holds or releases the Backup through a patch locked on the
-// resourceVersion; the first result says the Backup changed since the read.
-func (r *BackupReconciler) setFinalizer(ctx context.Context, backup *lodiav1alpha1.Backup, held bool) (bool, error) {
-	patch := client.MergeFromWithOptions(backup.DeepCopy(), client.MergeFromWithOptimisticLock{})
+// setFinalizer holds or releases a Backup or its keys through a patch locked
+// on the resourceVersion; the first result says the object changed since the
+// read.
+func (r *BackupReconciler) setFinalizer(ctx context.Context, obj client.Object, held bool) (bool, error) {
+	patch := client.MergeFromWithOptions(obj.DeepCopyObject().(client.Object), client.MergeFromWithOptimisticLock{})
 	if held {
-		controllerutil.AddFinalizer(backup, lodiav1alpha1.RestoreSourceFinalizer)
+		controllerutil.AddFinalizer(obj, lodiav1alpha1.RestoreSourceFinalizer)
 	} else {
-		controllerutil.RemoveFinalizer(backup, lodiav1alpha1.RestoreSourceFinalizer)
+		controllerutil.RemoveFinalizer(obj, lodiav1alpha1.RestoreSourceFinalizer)
 	}
-	err := r.Patch(ctx, backup, patch, client.FieldOwner(BackupFieldManager))
+	err := r.Patch(ctx, obj, patch, client.FieldOwner(BackupFieldManager))
 	if apierrors.IsConflict(err) {
 		return true, nil
 	}

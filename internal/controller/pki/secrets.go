@@ -900,7 +900,8 @@ func (r *Reconciler) encryptionConfig(ctx context.Context, t *tenant) error {
 // backupKeys reads the providers a restore copies into its first encryption
 // configuration, and only for that one. A Get that finds nothing leaves its
 // object empty: an absent Backup is not Completed, an absent Secret not the
-// Backup's.
+// Backup's. Keys being deleted are taken: the backup reconciler holds them
+// until this restore has them.
 func (r *Reconciler) backupKeys(ctx context.Context, t *tenant) error {
 	from := t.cp.Spec.RestoreFrom
 	if from == nil || t.existing[t.secret(lodiav1alpha1.EncryptionConfigSecret)] != nil {
