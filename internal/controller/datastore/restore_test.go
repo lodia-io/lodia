@@ -1015,25 +1015,25 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 	}
 	for _, round := range []struct {
 		state              druidv1alpha1.TaskState
-		ready              []druidv1alpha1.Condition
+		ready              druidv1alpha1.Condition
+		after              []druidv1alpha1.Condition
 		start              time.Time
 		finished, interval time.Duration
 	}{
-		{druidv1alpha1.TaskStateSucceeded, []druidv1alpha1.Condition{quorate(readyAt)}, readyAt, 10 * time.Minute, 10 * time.Minute},
-		{druidv1alpha1.TaskStateSucceeded, []druidv1alpha1.Condition{quorate(readyAt)}, readyAt, 3 * time.Hour, time.Hour},
-		{druidv1alpha1.TaskStateSucceeded, []druidv1alpha1.Condition{lost(readyAt.Add(5 * time.Minute))}, created, 20 * time.Minute, 20 * time.Minute},
-		{druidv1alpha1.TaskStateFailed, []druidv1alpha1.Condition{lost(created.Add(51 * time.Minute)), quorate(created.Add(52 * time.Minute))}, created, 50 * time.Minute, 50 * time.Minute},
-		{druidv1alpha1.TaskStateFailed, []druidv1alpha1.Condition{quorate(created.Add(90 * time.Minute))}, created, 2 * time.Hour, time.Hour},
-		{druidv1alpha1.TaskStateRejected, []druidv1alpha1.Condition{lost(readyAt)}, created, 30 * time.Minute, 30 * time.Minute},
+		{druidv1alpha1.TaskStateSucceeded, quorate(readyAt), nil, readyAt, 10 * time.Minute, 10 * time.Minute},
+		{druidv1alpha1.TaskStateSucceeded, quorate(readyAt), nil, readyAt, 3 * time.Hour, time.Hour},
+		{druidv1alpha1.TaskStateSucceeded, lost(readyAt.Add(5 * time.Minute)), nil, created, 20 * time.Minute, 20 * time.Minute},
+		{druidv1alpha1.TaskStateFailed, lost(created.Add(51 * time.Minute)), []druidv1alpha1.Condition{quorate(created.Add(52 * time.Minute))}, created, 50 * time.Minute, 50 * time.Minute},
+		{druidv1alpha1.TaskStateFailed, quorate(created.Add(90 * time.Minute)), nil, created, 2 * time.Hour, time.Hour},
+		{druidv1alpha1.TaskStateRejected, lost(readyAt), nil, created, 30 * time.Minute, 30 * time.Minute},
 	} {
 		finished := round.start.Add(round.finished)
 		next := finished.Add(round.interval)
-		finishFlush(t, r.ns, ops.Name, round.state, finished)
 		now.SetTime(next.Add(-time.Second))
 		want := fmt.Sprintf("cleaned up; waiting for a full snapshot of revision %d: the store holds 0; EtcdOpsTask %s is %s at %s; the next goes at %s",
 			marker, ops.Name, round.state, finished.UTC().Format(time.RFC3339), next.UTC().Format(time.RFC3339))
-		for _, condition := range round.ready {
-			setReady(condition)
+		settled := func() {
+			t.Helper()
 			eventually(t, func() error {
 				if _, err := pass(); err != nil {
 					return err
@@ -1043,6 +1043,13 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 				}
 				return nil
 			})
+		}
+		setReady(round.ready)
+		finishFlush(t, r.ns, ops.Name, round.state, finished)
+		settled()
+		for _, condition := range round.after {
+			setReady(condition)
+			settled()
 		}
 		for range 3 {
 			requeueAfter, err := pass()
