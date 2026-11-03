@@ -1,7 +1,7 @@
 # A ControlPlane restored from a Backup replaces the Backup's source, and runs no controller manager until it is released
 
 Decided 2026-10-27.
-The `Backup`, its seal and its copy are built, and so is the hold until the release; the restore itself is not yet: phase 2's wave 1b (backups) builds it ([roadmap](../roadmap.md)).
+The `Backup`, its seal and its copy, the restore and the hold until the release are built.
 
 ## Decision
 
@@ -35,18 +35,24 @@ Otherwise it reports `DatastoreReady=False`, `RestoreFailed`, cleans up nothing 
 
 **One transaction unbinds the data from the source.**
 Before any API server reads the data, one conditional transaction keyed `/lodia.io/restores/<ControlPlane UID>` (`RestoreMarkerKey`) deletes the Nodes, the Leases in `kube-system` and `kube-node-lease`, the CertificateSigningRequests, PodCertificateRequests, bootstrap token Secrets and `extension-apiserver-authentication`, and creates the key.
-etcd compares a missing key as one created at revision 0 ([apply.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/etcdserver/apply.go#L562-L585)), so the transaction is sent on every pass and does nothing once done; no status says whether it ran.
+etcd compares a missing key as one created at revision 0 ([apply.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/etcdserver/apply.go#L562-L585)), so the transaction is sent on every pass that finds no marker and does nothing once done; no status says whether it ran.
+A pass that finds the marker sends none: etcd refuses a transaction with a Put at its space quota even when the comparison takes the other branch ([quota.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/etcdserver/quota.go#L160-L173)), which would stop a full but healthy tenant.
 Before it, the controller asserts that it deletes fewer than 10240 keys, the limit at which etcd-backup-restore could no longer replay the transaction from a delta snapshot ([restorer.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/types/restorer.go#L27)).
 VolumeAttachments stay: deleting them would leave the cloud's attachments behind, which the restored cluster then cannot detach.
 The keys are the API server's own under its default prefix, Nodes as `minions` ([default_storage_factory_builder.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/kubeapiserver/default_storage_factory_builder.go#L45-L53)), so `apiServer.extraArgs` refuses `etcd-prefix` and `etcd-servers-overrides`, and an envtest per supported minor pins them.
 
 **Durable before ready.**
 A full snapshot follows the transaction, and `DatastoreReady` turns True only once a snapshot Lease shows it in the store: a member that loses its volume afterwards restores the cleaned data, not the source's.
-Datastore then writes `status.datastore.restore` ([field](../api/controlplane.md#status)).
+Datastore asks for it again as the backup reconciler does for the seal's, timed from when the `Etcd`'s `Ready` condition turned True instead of from the `Backup`'s start, since etcd-druid takes no on-demand snapshot before ([ondemandsnapshot.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcdopstask/handler/ondemandsnapshot/ondemandsnapshot.go#L181-L188)), and from the `Etcd`'s creation while it is not True or, for a task etcd-druid ran rather than rejected at admission ([reconcile_task.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcdopstask/reconcile_task.go#L83-L121)), when it turned True after etcd-druid admitted the task ([utils.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcdopstask/utils.go#L91-L94)).
+Datastore then writes `status.restore` ([field](../api/controlplane.md#status)), and from then on the restore needs the `Backup` no more: an `Etcd` created again restores from the `ControlPlane`'s prefix, and an etcd that lost the marker is checked against the seal of the `Backup` that status names.
 
 **The encryption key stays in the management cluster.**
 When it seals, the backup reconciler writes `<backup>.encryption-config` (`BackupEncryptionConfigSecretName`), owned by the `Backup`, immutable, with every key of the source's encryption configuration, and never puts a key in the bucket, whose credentials sit in every tenant namespace on the class.
-PKI copies those providers once into the restored `ControlPlane`'s configuration, behind a new key of its own, and never reads the `Backup` again; while it has not, the finalizer `lodia.io/restore-source` keeps the `Backup`, and PKI reports `CertificatesReady=False`, `WaitingForBackup`.
+PKI copies those providers once into the restored `ControlPlane`'s configuration, behind a new key of its own, and never reads the `Backup` again; while it has not, PKI reports `CertificatesReady=False`, `WaitingForBackup`.
+The finalizer `lodia.io/restore-source` keeps a sealed `Backup` until each `ControlPlane` restoring from it has that configuration and a completed restore, which reads the `Backup`'s store and seal.
+It holds `<backup>.encryption-config` as well, which the garbage collector deletes while a `Backup` deleted in the foreground still exists ([garbagecollector.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/controller/garbagecollector/garbagecollector.go#L634-L659)).
+A `ControlPlane` without that configuration holds the `Backup` only while those keys exist, whoever controls them: one created once they are gone could never get them, and would hold it for good.
+A `Backup` deleted before it is `Completed` goes at once, since no restore can use it.
 PKI adopts no Secret under its names for a restored `ControlPlane`: one that exists is `SecretsExist`.
 The platform backs up Lodia's Secrets, as it must for the CAs; a KMS provider is the long-term path, its key wrapped beside the snapshots.
 
@@ -85,6 +91,7 @@ A ValidatingAdmissionPolicy could require a `restore` verb on the named `Backup`
 - Fencing across management clusters — Gardener built owner checks for it and removed them as "very difficult to manage in a multi-node ETCD setup" ([#6302](https://github.com/gardener/gardener/issues/6302)).
 - Holding the controller manager through the lease, as the hold does — it fails open by design and races the controller manager's first start.
 - A release annotation in the style of `lodia.io/maintain-requested-at` — see Why.
+- The record in `status.datastore` — Datastore writes that whole only while an `Etcd` exists, its `endpoints` and `members` required, so every pass without one would drop the record; with both optional, `status.datastore` present would no longer mean the store exists, as Lifecycle, Workloads and the metrics read it.
 - Guarding the cleanup with a status field — a status is lost with a move, a stale cache or an operator rollback; the key in etcd is not.
 - A fixed marker key — a `Backup` of the restored cluster would carry it, and restoring from that `Backup` would skip the cleanup.
 - Detecting a restore and rolling the API server — a restored `ControlPlane` is new, so no client of the source holds its revisions ([dedicated-etcd-by-default](dedicated-etcd-by-default.md)).
@@ -94,14 +101,16 @@ A ValidatingAdmissionPolicy could require a `restore` verb on the named `Backup`
 - The restored cluster's `kube-system` UID, the cluster ID some tools use, is the source's.
 - Every `Backup` takes a full snapshot of its source's etcd, which counts toward the class's `retention.fullSnapshots` ([what it keeps](../README.md#a-tenant-namespace)).
 - Until etcd-backup-restore orders snapshot sets by revision, a `Completed` `Backup` may lack its seal: its copier takes the set whose full snapshot was saved last ([miscellaneous.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/miscellaneous/miscellaneous.go#L175-L177)), which an etcd-druid compaction Job running across the `Backup`'s full snapshot saves below the seal; the restore's seal check refuses such a `Backup` (`todo.md`).
-- `docs/operations.md` gets the replace checklist and a Velero recipe for a clone with the restore (`todo.md`).
 - The phase 2 gate restores a `Backup` ([roadmap](../roadmap.md)).
 
 ## Code
 
 - `api/v1alpha1` — `RestoreFrom` with `Release`, `BackupStatus` with its `Ready` condition, `RestoreStatus`, `SnapshotLocation` and `BackupSnapshotLocation` with `StoreSecretFields`, the names `BackupEncryptionConfigSecretName`, `BackupSealKey` and `RestoreMarkerKey`, the annotation `SealedUIDAnnotation`, the finalizer `RestoreSourceFinalizer` and the reasons in `conditions.go`; `test/api/validation_test.go` holds their rules.
-- `internal/controller/datastore/backup.go` — the backup reconciler: the seal, the snapshot it waits for, the copy, the encryption keys and the mark; `etcdclient.go` dials a tenant's etcd for it.
-- `internal/restore` — the source both Workloads and Health look for.
+- `internal/controller/datastore/backup.go` — the backup reconciler: the seal, the snapshot it waits for, the copy, the encryption keys, the mark and the finalizer; `etcdclient.go` dials a tenant's etcd for it and for the restore.
+- `internal/controller/datastore/restore.go` — the restore: the checks before the first `Etcd` and its copy, the seal check, `Cleanup`, the full snapshot it waits for and `status.restore`, and `CAPredatesControlPlane`; `datastore.go` runs them in a pass and keeps an `Etcd` that starts on the store at one member until the restore is complete; `restore_test.go` holds them.
+- `test/restorekeys` — the keys `Cleanup` deletes, against the API server of each minor Lodia runs (`make restore-keys`).
+- `internal/restore` — the source both Workloads and Health look for, the `ControlPlane`s a `Backup`'s events bring a pass for in Datastore and PKI, and `Failed`, the `Backup`'s `Ready` that both report as `RestoreFailed` instead of waiting for it, which holds `Final`, where the backup reconciler stops.
+- `internal/controller/pki/secrets.go` — `held`, which adopts nothing for a restore, and `backupKeys`, the `Backup`'s providers behind a new key in the first encryption configuration; `restore_test.go` holds them.
 - `internal/controller/workloads/workloads.go` — `release`, the held message and the hold, `ran`, the record of the release, and `replacements`, which brings a pass for each `ControlPlane` whose source changes; `restore_test.go` holds them.
 - `internal/controller/health/health.go` — `AwaitingRelease`, with what `actedOn` lists in the tenant, and `SourceExists`; `restore_test.go` holds them.
-- `test/e2e/restore_test.go` — the gate's `TestRestoreGate`, so far up to a `Completed` `Backup` on a real etcd-druid and S3 store.
+- `test/e2e/restore_test.go` — the gate's `TestRestoreGate`, on a real etcd-druid and S3 store.

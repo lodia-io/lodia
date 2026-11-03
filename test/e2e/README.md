@@ -51,7 +51,7 @@ The suite starts a container of kind's node image, `<cluster>-tenant-node-1`, on
 `--ignore-preflight-errors` names the one check a container fails, `SystemVerification`: on GitHub's runners it finds the host kernel's configuration in none of the places it looks, and `modprobe configs` fails ([kernel_validator.go](https://github.com/kubernetes/system-validators/blob/v1.12.1/validators/kernel_validator.go#L191-L245), the version kubeadm v1.37.0 uses).
 Ignoring it skips kubeadm's OS and cgroups validators too, which run under the same name; a check's name is the finest grain kubeadm ignores by ([checks.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/cmd/kubeadm/app/preflight/checks.go#L573-L588), [checks_linux.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/cmd/kubeadm/app/preflight/checks_linux.go#L48-L54)).
 The CNI is kindnet from the node image's manifest, with the tenant's pod range.
-The suite removes the containers it started when it ends, pass or fail, and each one before it starts it; `make e2e`, `make e2e-ha` and `make conformance` remove them as well, since a `go test` timeout or a panic never reaches the suite's end.
+The suite removes the containers it started when it ends, pass or fail, and each one before it starts it; `make e2e`, `make e2e-ha`, `make e2e-restore` and `make conformance` remove them as well, since a `go test` timeout or a panic never reaches the suite's end.
 
 `make e2e` gives the suite 30 minutes.
 
@@ -82,8 +82,33 @@ The credentials go into `lodia-system` as `accessKeyID`, `secretAccessKey`, `reg
 
 1. The `ControlPlane` `a`, in `nodePort` mode, turns `Ready`, and `BackupReady` True, `BackupSucceeded`.
 2. In `a`, the test writes two namespaces with three Secrets of 32 random bytes and a ConfigMap each, whose data hashes it logs, a CRD and one object, a Role and its binding, and what binds a cluster to its world: a bootstrap token, a Node `source-node` with its Lease and a CSR, a LoadBalancer Service, a PersistentVolume with the `Delete` policy and a CronJob.
-3. The `Backup` `a-1` turns `Ready`, `Completed`: its `status.source` is `a`'s UID, its prefix `e2e/<namespace UID>/backups/<Backup UID>`, its seal at a revision; it carries its UID in `lodia.io/sealed-uid`, `a-1.encryption-config` is immutable and controlled by it, and its two tasks are gone.
+   It keeps `a`'s cluster and client CAs and a token of the ServiceAccount `restore-a/default`.
+3. The `Backup` `a-1` turns `Ready`, `Completed`: its `status.source` is `a`'s UID, its prefix `e2e/<namespace UID>/backups/<Backup UID>`, its seal at a revision; it carries its UID in `lodia.io/sealed-uid` and the finalizer `lodia.io/restore-source`, `a-1.encryption-config` is immutable and controlled by it, and its two tasks are gone.
    An `amazon/aws-cli` Job lists the bucket under that prefix, which must hold a full snapshot whose last revision, the third field of the object name `Full-<start>-<last>-<time>` ([snapstore.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/types/snapstore.go#L119-L121)), is at least the seal's.
+4. The test writes the ConfigMap `restore-a/after-backup` in `a`.
+5. The `ControlPlane` `b`, with `a`'s namespace, class, version and network and `restoreFrom.backupRef` `a-1`, `Held` by default, turns `DatastoreReady` True with `status.restore` naming `a-1` and `a`, and `APIServerReady` True with its controller manager held at 0 replicas; `AddonsApplied` turns True, `ControllersLeading` False, `AwaitingRelease`, naming the LoadBalancer Service, the PersistentVolume and the CronJob, and `Ready` is False.
+6. `b` serves the Secrets and ConfigMaps with `a`'s hashes, and the Widget, the Role and its binding with `a`'s UIDs and contents.
+   It lacks `after-backup`, `source-node`, its Lease, the CSR and the bootstrap token Secret, which `a` still holds, and its `extension-apiserver-authentication` holds its own client CA and none of `a`'s.
+   `a`'s admin certificate gets 401 from `b`, and `b`'s from `a`; `a`'s bootstrap token gets 401 from `b`, not from `a`; `a-sa-keys` and `b-sa-keys` hold different signing keys, and a TokenReview authenticates `a`'s ServiceAccount token on `a`, not on `b`.
+   A Secret written to `b` is read from its etcd through a port-forward to `b-etcd-0`, with the client certificate and CA the `Etcd` names: its value starts with the API server's secretbox prefix `k8s:enc:secretbox:v1:` ([config.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/server/options/encryptionconfig/config.go#L63)) and the name of the key with a colon ([config.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/server/options/encryptionconfig/config.go#L699)), the first key of `b-encryption-config`, which `a-1.encryption-config` lacks.
+7. `b`, set to `release: Released`, reports `ControllersLeading` False, `SourceExists`, and `APIServerReady` held for the source alone at that generation, its controller manager still at 0 replicas.
+8. Once `a` is deleted and gone, `b`'s controller manager asks for one replica, `ControllersLeading` and `Ready` turn True, and `restore-a/kube-root-ca.crt` in `b` holds `b`'s CA and none of `a`'s.
+9. A node joins `b` with a token made in `b`, as in the phase 1 gate, CoreDNS turns available, and hydrophone runs the smoke subset (below) in `b`.
+10. The class's `Retain` kept `a`'s claims; a new `ControlPlane` `a`, restoring `a-1` and `Released` at creation, reports `DatastoreReady` False, `VolumesExist`, naming them; the test deletes `a-1` there, before the new `a` can have an `Etcd`, then the claims, and the new `a` creates its `Etcd`.
+11. `a-1` must not be gone before `b` and the new `a` both have `status.restore` naming it.
+    The new `a` turns `DatastoreReady` and `APIServerReady` True and serves `restore-a/secret-0` with `a`'s hash; `a-1.encryption-config` and the tasks `restore-<ControlPlane UID>` of `b` and the new `a` are gone, and the bucket still holds the copy under `a-1`'s prefix.
+
+The smoke subset is 16 conformance specs, each matched by one pattern `\Q<text>\E.*\[Conformance\]` that matches exactly one spec of [conformance.yaml](https://github.com/kubernetes/kubernetes/blob/v1.37.0/test/conformance/testdata/conformance.yaml) at v1.37.0.
+The text `Projected secret should be consumable from pods in volume` begins four other specs, so its pattern quotes `[Conformance]` too, which the e2e framework appends to that text first, ahead of `[NodeConformance]` ([ginkgowrapper.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/test/e2e/framework/ginkgowrapper.go#L455-L480)).
+The patterns and the conformance image, by digest, are v1.37.0's, so the test stops at its start when kind's node image is of another version.
+Hydrophone runs as in the [nightly](#nightly-conformance-and-the-idle-control-plane), for at most 15 minutes, with:
+
+- `--busybox-image`, by digest, the image of the pod's container that hands out the results ([deploy.go](https://github.com/kubernetes-sigs/hydrophone/blob/v0.8.0/pkg/conformance/deploy.go#L177-L180));
+- `--focus`, the 16 patterns joined by `|`;
+- `--extra-ginkgo-args=--fail-on-empty=true`, so a focus that selects nothing fails ([suite.go](https://github.com/onsi/ginkgo/blob/v2.32.0/internal/suite.go#L527-L530)).
+
+It must exit 0, and `junit_01.xml` must hold 16 test cases `[It] <spec>` with the status `passed` ([junit_report.go](https://github.com/onsi/ginkgo/blob/v2.32.0/reporters/junit_report.go#L204-L234)), one for each pattern.
+The specs pull their own images, by the tags the conformance image names ([manifest.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/test/utils/image/manifest.go#L211-L245)).
 
 Every wait is bounded and waits for a condition; no duration is asserted.
 

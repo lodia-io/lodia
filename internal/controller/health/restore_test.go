@@ -367,14 +367,10 @@ func setRestore(t *testing.T, cp, source *lodiav1alpha1.ControlPlane) {
 		"apiVersion": lodiav1alpha1.GroupVersion.String(),
 		"kind":       "ControlPlane",
 		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
-		"status": map[string]any{"datastore": map[string]any{
-			"endpoints": []any{map[string]any{"host": "dev-etcd-client." + cp.Namespace + ".svc", "port": int64(2379)}},
-			"members":   map[string]any{"total": int64(1), "ready": int64(1)},
-			"restore": map[string]any{
-				"backup":      map[string]any{"name": "prod-backup", "uid": "5f3a9c1e-2b7d-4e8f-a6c0-d4b1e9f27a35"},
-				"source":      map[string]any{"name": source.Name, "uid": string(source.UID)},
-				"completedAt": time.Now().UTC().Format(time.RFC3339),
-			},
+		"status": map[string]any{"restore": map[string]any{
+			"backup":      map[string]any{"name": "prod-backup", "uid": "5f3a9c1e-2b7d-4e8f-a6c0-d4b1e9f27a35"},
+			"source":      map[string]any{"name": source.Name, "uid": string(source.UID)},
+			"completedAt": time.Now().UTC().Format(time.RFC3339),
 		}},
 	}}
 	if err := k8s.Status().Apply(t.Context(), client.ApplyConfigurationFromUnstructured(u), client.FieldOwner("test/datastore"), client.ForceOwnership); err != nil {

@@ -1,7 +1,7 @@
 # Every tenant gets its own etcd, run by etcd-druid; a shared etcd is an opt-in for density
 
 Decided 2026-10-24.
-The Datastore controller is built for the dedicated case, of one member or three: the `Etcd` from the class recorded at creation and the newest certificate generation, the finalizer with the reclaim policy, the NetworkPolicy, `VolumesExist` and `DatastoreReady`; hibernation, class edits held for the maintenance window, the final snapshot and the backups' retention after deletion, restore and the shared store are not.
+The Datastore controller is built for the dedicated case, of one member or three: the `Etcd` from the class recorded at creation and the newest certificate generation, the finalizer with the reclaim policy, the NetworkPolicy, `VolumesExist` and `DatastoreReady`; hibernation, class edits held for the maintenance window, the final snapshot and the backups' retention after deletion and the shared store are not.
 `Backup`s and the restore come with phase 2's wave 1b, backups ([restore-replaces-the-source](restore-replaces-the-source.md)).
 
 ## Decision

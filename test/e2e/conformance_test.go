@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -25,7 +24,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
@@ -38,7 +36,6 @@ const (
 	conformanceTenant = "team-conformance"
 	conformanceClass  = "e2e-conformance"
 	conformanceNodes  = 2
-	hydrophone        = "sigs.k8s.io/hydrophone@v0.8.0"
 	idle              = 3 * time.Minute
 	window            = 5 * time.Minute
 	cpuUsage          = "container_cpu_usage_seconds_total"
@@ -123,25 +120,13 @@ func TestConformance(t *testing.T) {
 			return ctx
 		}).
 		Assess("hydrophone runs the conformance suite in the tenant, and it passes", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
-			if err := clientcmd.WriteToFile(access.kubeconfig, kubeconfig); err != nil {
-				t.Fatal(err)
-			}
-			args := []string{"run", hydrophone, "--kubeconfig", kubeconfig, "--conformance-image", "registry.k8s.io/conformance:" + version,
-				"--output-dir", artifacts, "--parallel", "4", "--disable-progress-status"}
+			args := []string{"--conformance-image", "registry.k8s.io/conformance:" + version}
 			if focus := os.Getenv("CONFORMANCE_FOCUS"); focus != "" {
 				args = append(args, "--focus", focus)
 			} else {
 				args = append(args, "--conformance")
 			}
-			run := exec.CommandContext(ctx, "go", args...)
-			run.Stdout, run.Stderr = os.Stdout, os.Stderr
-			start := time.Now()
-			err := run.Run()
-			t.Logf("go %s ran for %s", strings.Join(args, " "), time.Since(start).Round(time.Second))
-			if err != nil {
-				t.Fatal(err)
-			}
+			runHydrophone(ctx, t, access, artifacts, args...)
 			return ctx
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {

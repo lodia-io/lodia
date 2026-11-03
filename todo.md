@@ -41,7 +41,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the Datastore controller (2026-10-25)
 
-- When restore lands in phase 2's wave 1b, test the `VolumesExist` remedy end to end: the claims kept, a `Backup` of the old cluster, a new `ControlPlane` with `restoreFrom` that serves the old data.
 - The backup-restore sidecar's `spec.backup.resources` have no field in the `DatastoreClass` and stay etcd-druid's default (50m / 128Mi at v0.39.0); the operator configuration's `defaults.resources` should cover them once phase 1 measures.
 - The shared `Placement` and `resources` types get the rules of pod validation with Workloads, which renders them for the `ControlPlane` in phase 1: the class's `placement` and `etcd.resources` have none yet.
   Until then a class value the apps API refuses in etcd-druid's StatefulSet shows as `status.datastore.members.updated` absent, since etcd-druid returns before it stamps `observedGeneration` ([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcd/reconciler.go#L127-L144)).
@@ -63,6 +62,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - A changed `apiServer.encryption.provider` puts the new provider first with a new key and keeps the previous ones readable, but nothing rewrites the stored Secrets or drops the old provider, and with two API server replicas one may write with the new key before the other has reloaded the file (up to a minute).
   That is the etcd encryption key rotation of [staged-credential-rotation](docs/decisions/staged-credential-rotation.md); until it is built, document the change as unsupported, or refuse it in the schema.
   A `Backup` is unaffected: it takes the source's configuration after the copy, and that holds every provider PKI ever wrote.
+  A change back to `None` puts a second `identity` behind the first (`encryptionConfig` in `internal/controller/pki/secrets.go`); harmless, and the rotation should drop it with the other old providers.
 - `apiServer.encryption.provider: kms` is accepted by the schema; PKI issues everything else and reports `CertificatesReady` False with `Unsupported`.
   Refuse it in CEL until the provider is built.
 - The kubelet signer narrows nothing: whoever holds it can sign any identity the API server accepts.
@@ -142,7 +142,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 ## From the phase 2 contracts (2026-10-27)
 
 - The `restore` verb (restore-replaces-the-source, not built): a ValidatingAdmissionPolicy in the chart could require `authorizer…check('restore')` on the `Backup` a new `ControlPlane`'s `restoreFrom` names, for platforms where the right to create `ControlPlane`s is wider than the right to read a namespace's Secrets.
-- `docs/operations.md` gets the replace checklist and a Velero recipe for a clone beside a live source, with the restore in wave 1b (restore-replaces-the-source).
 - Health's own metrics, which the availability research suggested and the decisions did not name: failed probes, silent nodes, and the lag of Health's pass, the watchdog of the hold's margin.
   Name them under metrics-are-part-of-the-api with wave 2, Health, or drop them; the hold itself is `lodia_controlplane_condition{type="ControllerManagerHeld"}`.
 - An IPv6 advertise address Lodia draws: once gateway mode has users with an IPv6 first service range, Workloads could draw a unique local address per `ControlPlane` and keep it beside its CAs, which a platform backs up anyway.
@@ -200,9 +199,14 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 - A `Backup` started after the store moved through `<cp>-etcd-backup`, but before the sidecar's files hold the new keys, puts its full snapshot into the old store, while its copy Job reads the new keys when it starts and finds nothing there, which succeeds; the kubelet's update delay bounds the window ([secrets](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/concepts/configuration/secret.md#L549-L553)).
   `docs/operations.md` has a person wait for that upload after the two moves no `Backup` sees; a move the `Backup` records is not covered.
-- The backup reconciler dials the source's etcd in every pass that seals, and the restore will dial a restored etcd in every pass that checks it: a client per `Etcd`, kept across passes and closed when the `Etcd` names a new certificate generation or goes, would save a TLS handshake per pass once fleets grow.
+- The backup reconciler dials the source's etcd in every pass that seals, and the Datastore controller dials a restored etcd in every pass of its `ControlPlane` once a member is ready: a client per `Etcd`, kept across passes and closed when the `Etcd` names a new certificate generation or goes, would save a TLS handshake per pass once fleets grow.
 
 ## From the restore's hold (2026-11-02)
 
 - The `Compact` layout, once built, renders a held restore's pod without the controller-manager container on the hold the `Split` layout renders as 0 replicas (`release` and `ran` in `internal/controller/workloads/workloads.go`); `Compact` is `Unsupported` until then (restore-replaces-the-source, compact-layout).
 - Health lists seven kinds in a held restore's tenant every period, a page of 500 each (`actedOn` in `internal/controller/health/health.go`); if inert tenants grow large, list them less often than the probe runs.
+
+## From the restore (2026-11-02)
+
+- A controller's status apply names its `ControlPlane` by name, without the UID it read, so a pass on a cache that still holds a deleted predecessor can write the predecessor's state into its successor's status until the next pass corrects it; `internal/live` refuses such a read, but only the passes that read live use it. Carrying the read `metadata.uid` in every status apply would make the API server refuse it, as the `Etcd` apply already does (`replaced` in `internal/controller/datastore/datastore.go`): an update takes the stored UID only when none is given ([update.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/registry/rest/update.go#L138-L141)), and `metadata.uid` is immutable ([objectmeta.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apimachinery/pkg/api/validation/objectmeta.go#L358)).
+- PKI copies a restore's keys from the `Backup` of `restoreFrom.backupRef`'s name, not from the `Backup` UID `status.restore` names: a `ControlPlane` restored from a `Backup` that went without its keys, which takes a person removing `lodia.io/restore-source` by hand, would take the keys of a successor `Backup` of the same name and hold that one while its keys exist (`backupKeys` in `internal/controller/pki/secrets.go`, `restoring` in `internal/controller/datastore/backup.go`; round 3, R3-P2).

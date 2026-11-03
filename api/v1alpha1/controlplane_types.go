@@ -778,6 +778,12 @@ type ControlPlaneStatus struct {
 	// +optional
 	Datastore *DatastoreStatus `json:"datastore,omitempty"`
 
+	// Restore is the restore this ControlPlane's data came from. The Datastore
+	// controller writes it and keeps it for the ControlPlane's life, with or
+	// without a store.
+	// +optional
+	Restore *RestoreStatus `json:"restore,omitempty"`
+
 	// Nodes summarise the tenant's nodes.
 	// +optional
 	Nodes *NodesStatus `json:"nodes,omitempty"`
@@ -1009,11 +1015,6 @@ type DatastoreStatus struct {
 	// Snapshots is where the etcd's continuous snapshots go.
 	// +optional
 	Snapshots *SnapshotLocation `json:"snapshots,omitempty"`
-
-	// Restore is the restore this ControlPlane's data came from, written
-	// once, when it completed.
-	// +optional
-	Restore *RestoreStatus `json:"restore,omitempty"`
 
 	// OperatorRevision is the operator revision the Etcd was rendered with.
 	// +optional

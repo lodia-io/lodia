@@ -35,6 +35,14 @@ test: ## unit and envtest tests; envtest runs a real API server and etcd
 	KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test ./...
 	cd api && go test ./...
 
+.PHONY: restore-keys
+restore-keys: ## the etcd keys a restore's cleanup deletes, against the API server of each minor Lodia runs
+	@minors="$$(go run ./test/restorekeys/minors)" && [ -n "$$minors" ] || { echo "no minors to run"; exit 1; }; \
+	for minor in $$minors; do \
+		assets="$$(go tool setup-envtest use $$minor -p path)" && \
+		KUBEBUILDER_ASSETS="$$assets" RESTORE_KEYS_MINOR="$$minor" go test -count=1 -v ./test/restorekeys || exit 1; \
+	done
+
 .PHONY: chart
 chart: ## lint and render the chart with image tags, then with image digests; with crds.enabled=false it must still render the policy kubeconfigrequests.lodia.io and its binding
 	helm dependency build $(CHART)
@@ -51,7 +59,7 @@ verify: ## the check that says a change is done
 	[ "$$before" = "$$(cat $(GENERATED) | cksum)" ] || { echo "make generate changed the generated files: review and commit them"; exit 1; }
 	go mod tidy -diff
 	cd api && go mod tidy -diff
-	$(MAKE) --no-print-directory chart lint test
+	$(MAKE) --no-print-directory chart lint test restore-keys
 
 .PHONY: e2e
 e2e: ## the e2e suite against E2E_KUBECONFIG, else against a kind cluster of its own that it deletes afterwards

@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -583,9 +584,14 @@ func get(t *testing.T, cp *lodiav1alpha1.ControlPlane) *lodiav1alpha1.ControlPla
 
 func update(t *testing.T, cp *lodiav1alpha1.ControlPlane, change func(*lodiav1alpha1.ControlPlane)) {
 	t.Helper()
-	fresh := get(t, cp)
-	change(fresh)
-	if err := k8s.Update(t.Context(), fresh); err != nil {
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		fresh := &lodiav1alpha1.ControlPlane{}
+		if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(cp), fresh); err != nil {
+			return err
+		}
+		change(fresh)
+		return k8s.Update(t.Context(), fresh)
+	}); err != nil {
 		t.Fatal(err)
 	}
 }

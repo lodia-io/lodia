@@ -816,11 +816,7 @@ func TestTheRestoreRecordIsWrittenWhole(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			written := obj.DeepCopy()
-			set(t, written, map[string]any{
-				"endpoints": []any{map[string]any{"host": "restore-record-etcd-client.team-a.svc", "port": int64(2379)}},
-				"members":   map[string]any{"total": int64(1), "ready": int64(1)},
-				"restore":   c.restore,
-			}, "status", "datastore")
+			set(t, written, c.restore, "status", "restore")
 			expect(t, k8s.Status().Update(context.Background(), written, client.DryRunAll), c.want)
 		})
 	}

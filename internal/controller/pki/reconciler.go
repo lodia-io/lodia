@@ -23,9 +23,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/live"
+	"go.lodia.io/lodia/internal/restore"
 )
 
 const (
@@ -62,6 +64,9 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 		Named("pki").
 		For(&lodiav1alpha1.ControlPlane{}).
 		Owns(&corev1.Secret{}, builder.OnlyMetadata).
+		// A Backup turns Completed only once its <backup>.encryption-config is
+		// written, so its own events are the ones a restore waits for.
+		Watches(&lodiav1alpha1.Backup{}, handler.EnqueueRequestsFromMapFunc(restore.RestoresOf(r.Client))).
 		WithOptions(controller.Options{MaxConcurrentReconciles: workers, ReconciliationTimeout: time.Minute}).
 		Complete(r)
 }
@@ -69,6 +74,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/status,verbs=patch
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/finalizers,verbs=update
+// +kubebuilder:rbac:groups=lodia.io,resources=backups,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;patch;delete
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -94,17 +100,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.read(ctx, t); err != nil {
 		return ctrl.Result{}, err
 	}
-	if len(t.foreign) > 0 {
+	if len(t.foreign) > 0 || len(t.unadopted) > 0 {
 		access, bindErr := r.access(ctx, t)
 		if access.Type == "" {
 			return ctrl.Result{}, bindErr
 		}
-		if err := r.applyStatus(ctx, cp, now, nil, t.controlledElsewhere(), previous(cp, lodiav1alpha1.ConditionCAValidityAcceptable), access); err != nil {
+		blocked := t.controlledElsewhere()
+		if len(t.foreign) == 0 {
+			blocked = t.secretsExist()
+		}
+		if err := r.applyStatus(ctx, cp, now, nil, blocked, previous(cp, lodiav1alpha1.ConditionCAValidityAcceptable), access); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: t.foreignRequeue()}, bindErr
 	}
 
+	if err := r.backupKeys(ctx, t); err != nil {
+		return ctrl.Result{}, err
+	}
 	if err := r.issue(ctx, t); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -161,6 +174,8 @@ func (t *tenant) certificatesReady() metav1.Condition {
 		c.Reason, c.Message = lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint"
 	case t.unsupportedProvider != "":
 		c.Reason, c.Message = lodiav1alpha1.ReasonUnsupported, "spec.apiServer.encryption.provider "+string(t.unsupportedProvider)+" is not supported yet"
+	case t.waitingForBackup != "":
+		c.Reason, c.Message = lodiav1alpha1.ReasonWaitingForBackup, t.waitingForBackup
 	default:
 		c.Status, c.Reason, c.Message = metav1.ConditionTrue, lodiav1alpha1.ReasonIssued, "every certificate verifies and is valid beyond its renewal time"
 	}
@@ -205,6 +220,15 @@ func (t *tenant) controlledElsewhere() metav1.Condition {
 		Status:  metav1.ConditionFalse,
 		Reason:  lodiav1alpha1.ReasonSecretsControlledElsewhere,
 		Message: "another owner keeps " + listed(held) + "; nothing is written until they are gone: the garbage collector deletes a previous ControlPlane's, any other owner's need a person",
+	}
+}
+
+func (t *tenant) secretsExist() metav1.Condition {
+	return metav1.Condition{
+		Type:    lodiav1alpha1.ConditionCertificatesReady,
+		Status:  metav1.ConditionFalse,
+		Reason:  lodiav1alpha1.ReasonSecretsExist,
+		Message: "a restored ControlPlane adopts no Secret it does not control: " + listed(t.unadopted) + "; nothing is written until they are deleted",
 	}
 }
 

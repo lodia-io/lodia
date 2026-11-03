@@ -364,15 +364,17 @@ func source(t *testing.T, ns string, finalizers ...string) *lodiav1alpha1.Contro
 
 func setRestore(t *testing.T, cp *lodiav1alpha1.ControlPlane, of lodiav1alpha1.UIDReference) {
 	t.Helper()
-	applyStatus(t, cp, "test/datastore", map[string]any{"datastore": map[string]any{
-		"endpoints": []any{map[string]any{"host": "dev-etcd-client." + cp.Namespace + ".svc", "port": int64(2379)}},
-		"members":   map[string]any{"total": int64(1), "ready": int64(1)},
+	applyStatus(t, cp, "test/datastore", map[string]any{
+		"datastore": map[string]any{
+			"endpoints": []any{map[string]any{"host": "dev-etcd-client." + cp.Namespace + ".svc", "port": int64(2379)}},
+			"members":   map[string]any{"total": int64(1), "ready": int64(1)},
+		},
 		"restore": map[string]any{
 			"backup":      map[string]any{"name": "prod-backup", "uid": "5f3a9c1e-2b7d-4e8f-a6c0-d4b1e9f27a35"},
 			"source":      map[string]any{"name": of.Name, "uid": string(of.UID)},
 			"completedAt": time.Now().UTC().Format(time.RFC3339),
 		},
-	}})
+	})
 }
 
 func setFalse(t *testing.T, cp *lodiav1alpha1.ControlPlane, conditionType, reason string) {
