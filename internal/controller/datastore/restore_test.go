@@ -1017,15 +1017,17 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 		state              druidv1alpha1.TaskState
 		ready              druidv1alpha1.Condition
 		after              []druidv1alpha1.Condition
-		start              time.Time
+		started, start     time.Time
 		finished, interval time.Duration
 	}{
-		{druidv1alpha1.TaskStateSucceeded, quorate(readyAt), nil, readyAt, 10 * time.Minute, 10 * time.Minute},
-		{druidv1alpha1.TaskStateSucceeded, quorate(readyAt), nil, readyAt, 3 * time.Hour, time.Hour},
-		{druidv1alpha1.TaskStateSucceeded, lost(readyAt.Add(5 * time.Minute)), nil, created, 20 * time.Minute, 20 * time.Minute},
-		{druidv1alpha1.TaskStateFailed, lost(created.Add(51 * time.Minute)), []druidv1alpha1.Condition{quorate(created.Add(52 * time.Minute))}, created, 50 * time.Minute, 50 * time.Minute},
-		{druidv1alpha1.TaskStateFailed, quorate(created.Add(90 * time.Minute)), nil, created, 2 * time.Hour, time.Hour},
-		{druidv1alpha1.TaskStateRejected, lost(readyAt), nil, created, 30 * time.Minute, 30 * time.Minute},
+		{druidv1alpha1.TaskStateSucceeded, quorate(readyAt), nil, time.Time{}, readyAt, 10 * time.Minute, 10 * time.Minute},
+		{druidv1alpha1.TaskStateSucceeded, quorate(readyAt), nil, time.Time{}, readyAt, 3 * time.Hour, time.Hour},
+		{druidv1alpha1.TaskStateSucceeded, lost(readyAt.Add(5 * time.Minute)), nil, time.Time{}, created, 20 * time.Minute, 20 * time.Minute},
+		{druidv1alpha1.TaskStateFailed, lost(created.Add(51 * time.Minute)), []druidv1alpha1.Condition{quorate(created.Add(52 * time.Minute))}, created.Add(time.Minute), created, 50 * time.Minute, 50 * time.Minute},
+		{druidv1alpha1.TaskStateFailed, quorate(created.Add(90 * time.Minute)), nil, created.Add(time.Hour), created, 2 * time.Hour, time.Hour},
+		{druidv1alpha1.TaskStateRejected, lost(readyAt), nil, time.Time{}, created, 30 * time.Minute, 30 * time.Minute},
+		{druidv1alpha1.TaskStateFailed, quorate(created.Add(4 * time.Hour)), nil, created.Add(4*time.Hour + time.Second), created.Add(4 * time.Hour), 10 * time.Minute, 10 * time.Minute},
+		{druidv1alpha1.TaskStateFailed, quorate(created.Add(5 * time.Hour)), nil, created.Add(5 * time.Hour), created.Add(5 * time.Hour), 20 * time.Minute, 20 * time.Minute},
 	} {
 		finished := round.start.Add(round.finished)
 		next := finished.Add(round.interval)
@@ -1045,6 +1047,12 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 			})
 		}
 		setReady(round.ready)
+		if !round.started.IsZero() {
+			ops.Status.State, ops.Status.StartedAt = new(druidv1alpha1.TaskStateInProgress), new(metav1.NewTime(round.started))
+			if err := k8s.Status().Update(t.Context(), ops); err != nil {
+				t.Fatal(err)
+			}
+		}
 		finishFlush(t, r.ns, ops.Name, round.state, finished)
 		settled()
 		for _, condition := range round.after {
