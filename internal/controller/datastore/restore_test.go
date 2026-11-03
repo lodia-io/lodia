@@ -975,9 +975,10 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 	lost := func(at time.Time) druidv1alpha1.Condition {
 		return druidv1alpha1.Condition{Status: druidv1alpha1.ConditionFalse, Reason: "QuorumLost", Message: "The majority of ETCD members is not ready", LastTransitionTime: metav1.NewTime(at)}
 	}
+	now := clocktesting.NewFakePassiveClock(time.Now())
 	setReady := func(condition druidv1alpha1.Condition) {
 		t.Helper()
-		condition.Type, condition.LastUpdateTime = druidv1alpha1.ConditionTypeReady, condition.LastTransitionTime
+		condition.Type, condition.LastUpdateTime = druidv1alpha1.ConditionTypeReady, metav1.NewTime(now.Now()).Rfc3339Copy()
 		setEtcdStatus(t, r.ns, restoredCP, func(s *druidv1alpha1.EtcdStatus) { s.Conditions = append(s.Conditions, condition) })
 		eventually(t, func() error {
 			etcd := &druidv1alpha1.Etcd{}
@@ -994,7 +995,6 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 	r.etcd.unreachable.Store(false)
 	poke(t, r.ns)
 	marker := r.cleanedUp(t)
-	now := clocktesting.NewFakePassiveClock(time.Now())
 	reconciler := &datastore.Reconciler{Client: cached, Reader: apiReader, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, EtcdClient: dialRestored, Clock: now}
 	pass := func() (time.Duration, error) {
 		result, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}})
@@ -1071,6 +1071,49 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 		ops = r.opsTask(t)
 	}
 	r.complete(t, marker)
+}
+
+func TestAFullSnapshotRejectedBeforeTheEtcdIsReadyGoesOnceItIs(t *testing.T) {
+	r := newRestore(t, restoreSetup{})
+	created := r.copied(t).CreationTimestamp.Time
+	marker := r.cleanedUp(t)
+	now := clocktesting.NewFakePassiveClock(time.Now())
+	reconciler := &datastore.Reconciler{Client: cached, Reader: apiReader, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, EtcdClient: dialRestored, Clock: now}
+	pass := func() error {
+		_, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}})
+		return err
+	}
+	ops := r.opsTask(t)
+	rejected := created.Add(20 * time.Minute)
+	finishFlush(t, r.ns, ops.Name, druidv1alpha1.TaskStateRejected, rejected)
+	now.SetTime(rejected.Add(5 * time.Second))
+	want := fmt.Sprintf("cleaned up; waiting for a full snapshot of revision %d: the store holds 0; EtcdOpsTask %s is Rejected at %s; the next goes at %s",
+		marker, ops.Name, rejected.UTC().Format(time.RFC3339), rejected.Add(20*time.Minute).UTC().Format(time.RFC3339))
+	eventually(t, func() error {
+		if err := pass(); err != nil {
+			return err
+		}
+		if ready := meta.FindStatusCondition(r.controlPlane(t).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady); ready.Reason != lodiav1alpha1.ReasonRestoring || ready.Message != want {
+			return fmt.Errorf("DatastoreReady is %s %q, want Restoring %q", ready.Reason, ready.Message, want)
+		}
+		return nil
+	})
+	now.SetTime(rejected.Add(40 * time.Second))
+	setEtcdStatus(t, r.ns, restoredCP, func(s *druidv1alpha1.EtcdStatus) {
+		s.Conditions = append(s.Conditions, druidv1alpha1.Condition{
+			Type: druidv1alpha1.ConditionTypeReady, Status: druidv1alpha1.ConditionTrue, Reason: "Quorate", Message: "The majority of ETCD members is ready",
+			LastTransitionTime: metav1.NewTime(rejected.Add(30 * time.Second)), LastUpdateTime: metav1.NewTime(now.Now()),
+		})
+	})
+	eventually(t, func() error {
+		if err := pass(); err != nil {
+			return err
+		}
+		if again := r.opsTask(t); again == nil || again.UID == ops.UID {
+			return fmt.Errorf("the EtcdOpsTask rejected at %s is not sent again once Ready turned True at %s", rejected.UTC(), rejected.Add(30*time.Second).UTC())
+		}
+		return nil
+	})
 }
 
 func TestALeaseThatReachesTheMarkerWhileTheNextFullSnapshotWaitsCompletesTheRestore(t *testing.T) {
@@ -1344,7 +1387,9 @@ func TestACompletedRestoreNeedsItsBackupNoMore(t *testing.T) {
 		gone bool
 	}{{"the Backup gone", true}, {"the Backup kept", false}} {
 		t.Run(c.name, func(t *testing.T) {
-			r := newRestore(t, restoreSetup{})
+			r := newRestore(t, restoreSetup{controlPlane: func(cp *lodiav1alpha1.ControlPlane) {
+				cp.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+			}})
 			r.copied(t)
 			marker := r.cleanedUp(t)
 			completed := r.complete(t, marker).Status.Restore
@@ -1670,7 +1715,13 @@ func TestACompletedRestoreComesBackOverItsClaimsWithTheirMembers(t *testing.T) {
 	for _, c := range []struct {
 		name     string
 		ordinals []int
-	}{{"three claims", []int{0, 1, 2}}, {"claim 0 missing", []int{1, 2}}, {"a claim beyond highAvailability's members", []int{0, 1, 2, 3}}} {
+		removed  bool
+	}{
+		{"three claims", []int{0, 1, 2}, false},
+		{"claim 0 missing", []int{1, 2}, false},
+		{"a claim beyond highAvailability's members", []int{0, 1, 2, 3}, false},
+		{"status.restore removed", []int{0, 1, 2}, true},
+	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := newRestore(t, restoreSetup{controlPlane: func(cp *lodiav1alpha1.ControlPlane) {
 				cp.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
@@ -1687,8 +1738,34 @@ func TestACompletedRestoreComesBackOverItsClaimsWithTheirMembers(t *testing.T) {
 			for _, ordinal := range c.ordinals {
 				create(t, claim(r.ns, fmt.Sprintf("b-etcd-b-etcd-%d", ordinal), map[string]string{lodiav1alpha1.ControlPlaneUIDLabel: uid}))
 			}
+			if c.removed {
+				setPaused(t, r.ns, restoredCP, true)
+				eventually(t, func() error {
+					cp := &lodiav1alpha1.ControlPlane{}
+					if err := cached.Get(t.Context(), client.ObjectKey{Namespace: r.ns, Name: restoredCP}, cp); err != nil {
+						return err
+					}
+					if !cp.Spec.Paused {
+						return errors.New("the cache does not show the pause yet")
+					}
+					return nil
+				})
+				remove := []byte(`[{"op":"remove","path":"/status/restore"}]`)
+				if err := k8s.Status().Patch(t.Context(), r.controlPlane(t), client.RawPatch(types.JSONPatchType, remove), client.FieldOwner("someone-else")); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if err := k8s.Delete(t.Context(), first); err != nil {
 				t.Fatal(err)
+			}
+			if c.removed {
+				eventually(t, func() error {
+					return gone(cached.Get(t.Context(), client.ObjectKey{Namespace: r.ns, Name: restoredCP + "-etcd"}, &druidv1alpha1.Etcd{}))
+				})
+				if restore := r.controlPlane(t).Status.Restore; restore != nil {
+					t.Fatalf("status.restore came back as %+v while the ControlPlane is paused", restore)
+				}
+				setPaused(t, r.ns, restoredCP, false)
 			}
 			again := waitEtcd(t, r.ns, restoredCP, func(etcd *druidv1alpha1.Etcd) error {
 				if etcd.UID == first.UID {
