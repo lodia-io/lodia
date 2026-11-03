@@ -406,7 +406,11 @@ func (r *Reconciler) cleanUp(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 // is timed from when the Etcd's Ready condition turned True, without which
 // etcd-druid takes no on-demand snapshot
 // (etcd-druid@v0.39.0 internal/controller/etcdopstask/handler/ondemandsnapshot/ondemandsnapshot.go#L181-L188),
-// or from the Etcd's creation while it is not True.
+// and from the Etcd's creation while it is not True or, for a task etcd-druid
+// ran rather than rejected at admission
+// (etcd-druid@v0.39.0 internal/controller/etcdopstask/reconcile_task.go#L83-L121),
+// when it turned True after the task was created, so that a member back from
+// an outage does not shorten the wait after a full snapshot.
 func (r *Reconciler) snapshotRestore(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) (string, time.Duration, error) {
 	task := &druidv1alpha1.EtcdOpsTask{}
 	key := client.ObjectKey{Namespace: cp.Namespace, Name: restoreTaskPrefix + string(cp.UID)}
@@ -428,7 +432,8 @@ func (r *Reconciler) snapshotRestore(ctx context.Context, cp *lodiav1alpha1.Cont
 		return "", 0, err
 	case task.IsCompleted():
 		start := etcd.CreationTimestamp.Time
-		if ready := druidv1alpha1.GetCondition(etcd, druidv1alpha1.ConditionTypeReady); ready != nil && ready.Status == druidv1alpha1.ConditionTrue {
+		if ready := druidv1alpha1.GetCondition(etcd, druidv1alpha1.ConditionTypeReady); ready != nil && ready.Status == druidv1alpha1.ConditionTrue &&
+			(*task.Status.State == druidv1alpha1.TaskStateRejected || !ready.LastTransitionTime.After(task.CreationTimestamp.Time)) {
 			start = ready.LastTransitionTime.Time
 		}
 		return resend(ctx, r.Client, r.Clock.Now(), task, start)
