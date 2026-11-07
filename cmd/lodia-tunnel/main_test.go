@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"syscall"
@@ -75,6 +76,23 @@ func TestUsageExitsTwo(t *testing.T) {
 func TestHelpExitsZero(t *testing.T) {
 	if code := run([]string{"serve", "-h"}, io.Discard); code != 0 {
 		t.Fatalf("exit %d", code)
+	}
+}
+
+func TestServeDefaultsToThePortsItsPodIsRenderedWith(t *testing.T) {
+	var stderr strings.Builder
+	if code := run([]string{"serve", "-h"}, &stderr); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	for name, value := range map[string]string{
+		"listen":                    ":6444",
+		"upstream":                  "127.0.0.1:6443",
+		"health-probe-bind-address": ":8135",
+	} {
+		want := regexp.MustCompile("-" + name + ` string\n.*\(default "` + regexp.QuoteMeta(value) + `"\)`)
+		if !want.MatchString(stderr.String()) {
+			t.Errorf("--%s does not default to %s:\n%s", name, value, stderr.String())
+		}
 	}
 }
 
