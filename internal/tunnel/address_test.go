@@ -422,6 +422,7 @@ func TestCheckAnswersForTheAddressOnLo(t *testing.T) {
 		{"on lo without its label", advertised, []HostAddress{{Interface: "lo", Prefix: prefix(advertised + "/32")}}, true},
 		{"IPv6 on lo", "fd00:10::1", []HostAddress{{Interface: "lo", Prefix: prefix("fd00:10::1/128")}}, true},
 		{"not there", advertised, []HostAddress{{Interface: "lo", Prefix: prefix("127.0.0.1/8")}}, false},
+		{"inside the prefix of another on lo", "127.0.0.2", []HostAddress{{Interface: "lo", Prefix: prefix("127.0.0.1/8")}}, false},
 		{"on another interface", advertised, []HostAddress{{Interface: "eth0", Prefix: prefix(advertised + "/32")}}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
