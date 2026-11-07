@@ -702,7 +702,7 @@ func inTenant(t *testing.T, admin *tenantClient) map[string]map[string]any {
 	return objects
 }
 
-func TestAMissingSecretIsReportedAndNothingIsWritten(t *testing.T) {
+func TestASecretTenantCannotUseIsReportedAndNothingIsWritten(t *testing.T) {
 	for _, c := range []struct {
 		namespace string
 		tenant    func(*testing.T, string) (*lodiav1alpha1.ControlPlane, *tenantClient)
@@ -733,33 +733,57 @@ func TestAMissingSecretIsReportedAndNothingIsWritten(t *testing.T) {
 			}
 			pass()
 			for _, name := range c.secrets {
-				secret := get(t, k8s, &corev1.Secret{}, cp.Namespace, name)
-				before := inTenant(t, admin)
-				if err := k8s.Delete(ctx, secret); err != nil {
-					t.Fatal(err)
-				}
-				result := pass()
-				after := inTenant(t, admin)
-				for entry, object := range before {
-					if !equality.Semantic.DeepEqual(object, after[entry]) {
-						t.Errorf("a pass without %s wrote %s", name, entry)
+				for _, breakage := range []struct {
+					message string
+					apply   func(*corev1.Secret) func()
+				}{
+					{"does not exist", func(secret *corev1.Secret) func() {
+						if err := k8s.Delete(ctx, secret); err != nil {
+							t.Fatal(err)
+						}
+						return func() {
+							secret.ObjectMeta = metav1.ObjectMeta{Namespace: cp.Namespace, Name: name, OwnerReferences: secret.OwnerReferences}
+							if err := k8s.Create(ctx, secret); err != nil {
+								t.Fatal(err)
+							}
+						}
+					}},
+					{"is not controlled by this ControlPlane", func(secret *corev1.Secret) func() {
+						own := secret.OwnerReferences
+						secret.OwnerReferences = nil
+						if err := k8s.Update(ctx, secret); err != nil {
+							t.Fatal(err)
+						}
+						return func() {
+							secret.OwnerReferences = own
+							if err := k8s.Update(ctx, secret); err != nil {
+								t.Fatal(err)
+							}
+						}
+					}},
+				} {
+					before := inTenant(t, admin)
+					restore := breakage.apply(get(t, k8s, &corev1.Secret{}, cp.Namespace, name))
+					result := pass()
+					after := inTenant(t, admin)
+					for entry, object := range before {
+						if !equality.Semantic.DeepEqual(object, after[entry]) {
+							t.Errorf("a pass whose %s %s wrote %s", name, breakage.message, entry)
+						}
 					}
-				}
-				if result.RequeueAfter != time.Minute {
-					t.Errorf("without %s the pass requeues after %s, want a minute", name, result.RequeueAfter)
-				}
-				for _, conditionType := range []string{lodiav1alpha1.ConditionAddonsApplied, lodiav1alpha1.ConditionAddonsAvailable} {
-					expectNow(t, cp, conditionType, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
-					if got := condition(t, cp, conditionType); got.Message != "Secret "+name+" does not exist" {
-						t.Errorf("without %s, %s says %q", name, conditionType, got.Message)
+					if result.RequeueAfter != time.Minute {
+						t.Errorf("while %s %s, the pass requeues after %s, want a minute", name, breakage.message, result.RequeueAfter)
 					}
+					for _, conditionType := range []string{lodiav1alpha1.ConditionAddonsApplied, lodiav1alpha1.ConditionAddonsAvailable} {
+						expectNow(t, cp, conditionType, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+						if got := condition(t, cp, conditionType); got.Message != "Secret "+name+" "+breakage.message {
+							t.Errorf("while %s %s, %s says %q", name, breakage.message, conditionType, got.Message)
+						}
+					}
+					restore()
+					pass()
+					expectNow(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
 				}
-				secret.ObjectMeta = metav1.ObjectMeta{Namespace: cp.Namespace, Name: name, OwnerReferences: secret.OwnerReferences}
-				if err := k8s.Create(ctx, secret); err != nil {
-					t.Fatal(err)
-				}
-				pass()
-				expectNow(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
 			}
 		})
 	}
@@ -885,7 +909,7 @@ func TestATenantThatAnswersNothingCostsThePassItsTimeoutsAndThePassReports(t *te
 			}
 			elapsed := time.Since(start)
 			t.Logf("the pass took %s", elapsed)
-			if elapsed < c.timeouts-5*time.Second || elapsed > c.timeouts+15*time.Second {
+			if elapsed < c.timeouts || elapsed > c.timeouts+5*time.Second {
 				t.Errorf("the pass took %s, want its timeouts' %s", elapsed, c.timeouts)
 			}
 			for _, conditionType := range []string{lodiav1alpha1.ConditionAddonsApplied, lodiav1alpha1.ConditionAddonsAvailable} {

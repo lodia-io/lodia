@@ -238,8 +238,8 @@ type secretRead struct {
 	obj    *corev1.Secret
 }
 
-// credentials also returns, when one of the Secrets is missing or another
-// owner's, what to report about it; its content is not used.
+// credentials also returns, when one of the Secrets cannot be used, what to
+// report about it; its content is not used.
 func (r *Reconciler) credentials(ctx context.Context, cp *lodiav1alpha1.ControlPlane) ([]byte, []byte, *corev1.Secret, string, error) {
 	bundle, kubeconfig, tunnelClient := &corev1.Secret{}, &corev1.Secret{}, &corev1.Secret{}
 	reads := []secretRead{{lodiav1alpha1.CABundleSecret, bundle}, {lodiav1alpha1.LodiaKubeconfigSecret, kubeconfig}}
@@ -253,8 +253,10 @@ func (r *Reconciler) credentials(ctx context.Context, cp *lodiav1alpha1.ControlP
 	return bundle.Data[lodiav1alpha1.CACertKey], kubeconfig.Data[lodiav1alpha1.KubeconfigKey], tunnelClient, "", nil
 }
 
-// readSecrets stops at the first Secret that is missing or that another owner
-// keeps, and returns what to report about it.
+// readSecrets stops at the first Secret that is missing, that another owner
+// keeps or that this ControlPlane does not control, and returns what to report
+// about it. AccessReady does not cover the last: PKI grants access while it
+// holds a Secret it has not adopted, and a restore adopts none.
 func (r *Reconciler) readSecrets(ctx context.Context, cp *lodiav1alpha1.ControlPlane, reads []secretRead) (string, error) {
 	for _, read := range reads {
 		obj, name := read.obj, read.secret.Name(cp.Name)
@@ -268,6 +270,9 @@ func (r *Reconciler) readSecrets(ctx context.Context, cp *lodiav1alpha1.ControlP
 		if ref := ownership.ControlledElsewhere(obj, cp); ref != nil {
 			return fmt.Sprintf("Secret %s is kept by %s %s with UID %s", obj.Name, ref.Kind, ref.Name, ref.UID), nil
 		}
+		if !metav1.IsControlledBy(obj, cp) {
+			return fmt.Sprintf("Secret %s is not controlled by this ControlPlane", obj.Name), nil
+		}
 	}
 	return "", nil
 }
@@ -275,16 +280,14 @@ func (r *Reconciler) readSecrets(ctx context.Context, cp *lodiav1alpha1.ControlP
 // deliverTunnelClient brings a renewed pair to the tenant before any condition
 // is read: none proves the API server cannot take it, and an expired pair takes
 // every pod's API. Failures stop nothing, and neither a Secret that does not
-// exist yet, the inventory's to write, nor another owner's gets a write. No
-// verdict of PKI's stands behind its reads, as AccessReady does behind
-// credentials, so it uses only Secrets this ControlPlane controls.
+// exist yet, the inventory's to write, nor another owner's gets a write.
 func (r *Reconciler) deliverTunnelClient(ctx context.Context, cp *lodiav1alpha1.ControlPlane) {
 	kubeconfig, pair := &corev1.Secret{}, &corev1.Secret{}
 	unusable, err := r.readSecrets(ctx, cp, []secretRead{{lodiav1alpha1.LodiaKubeconfigSecret, kubeconfig}, {lodiav1alpha1.TunnelClientSecret, pair}})
 	if unusable != "" {
 		return
 	}
-	if err == nil && metav1.IsControlledBy(kubeconfig, cp) && metav1.IsControlledBy(pair, cp) {
+	if err == nil {
 		err = r.applyTunnelClient(ctx, kubeconfig.Data[lodiav1alpha1.KubeconfigKey], pair)
 	}
 	if err != nil {

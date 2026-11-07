@@ -89,7 +89,7 @@ flowchart LR
   PKI has one: Secrets under its names that another owner keeps, which the cache does not show when they are unlabelled, after 10 seconds while they are a previous `ControlPlane`'s, which the garbage collector deletes, and after a minute otherwise.
   The Datastore controller's: `VolumesExist`, for claims, which nothing labels for the cache, and for an `Etcd` without the control-plane label; a class held because its credentials copy cannot be made (the class's Secret, which belongs to the platform, is missing, or another owner holds the copy, which may lack the label); a NetworkPolicy `<cp>-etcd` another owner keeps, which may lack it too; and `DatastoreClassNotFound` for a class the claims record, since deleting them to start empty brings no event; all after a minute.
   A StatefulSet that lags etcd-druid's report, read uncached, after 15 seconds; and an `Etcd` being deleted, which has left the cache if its label was removed, after 10 seconds.
-  The Tenant controller's: the addons' rollout in the tenant, which Lodia does not watch, every minute until it is complete, and a Secret it reads that is missing or that another owner keeps, every minute.
+  The Tenant controller's: the addons' rollout in the tenant, which Lodia does not watch, every minute until it is complete, and a Secret it reads that is missing or that the `ControlPlane` does not control, every minute.
   Workloads': a `nodePort` endpoint's management node, which no event reports, every minute; and an object under its names that another owner keeps, whose deletion reaches this `ControlPlane`'s queue only when that owner is a previous `ControlPlane` of the same name, after 10 seconds while it is one and after a minute otherwise.
 
 ## Code
