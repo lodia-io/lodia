@@ -671,6 +671,63 @@ func TestTheTunnelsClientCertificateRenewsAtDaySixty(t *testing.T) {
 	}
 }
 
+func TestATunnelCertificateOfAnotherProfileIsIssuedAgain(t *testing.T) {
+	clientAuth := []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
+	serverAuth := []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
+	both := []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}
+	client := certs.Profile{CommonName: "lodia-tunnel-client", Usages: clientAuth}
+	serving := certs.Profile{CommonName: "lodia-tunnel", DNSNames: []string{tunnelHost}, Usages: serverAuth}
+	for name, c := range map[string]struct {
+		secret, signer, ca string
+		want, stored       certs.Profile
+	}{
+		"a client for servers too": {"dev-tunnel-client", "dev-cakey-tunnel", "dev-cakey-tunnel", client, certs.Profile{CommonName: client.CommonName, Usages: both}},
+		"a client in a group":      {"dev-tunnel-client", "dev-cakey-tunnel", "dev-cakey-tunnel", client, certs.Profile{CommonName: client.CommonName, Organizations: []string{"lodia:cluster-admins"}, Usages: clientAuth}},
+		"a client of another name": {"dev-tunnel-client", "dev-cakey-tunnel", "dev-cakey-tunnel", client, certs.Profile{CommonName: "someone", Usages: clientAuth}},
+		"a client that is a CA":    {"dev-tunnel-client", "dev-cakey-tunnel", "dev-cakey-tunnel", client, certs.Profile{CommonName: client.CommonName, Usages: clientAuth, CA: true}},
+		"a client of another CA":   {"dev-tunnel-client", "dev-cakey-cluster", "dev-cakey-tunnel", client, client},
+		"a server of another SAN":  {"dev-tunnel-serving", "dev-cakey-cluster", "dev-cakey-cluster", serving, certs.Profile{CommonName: serving.CommonName, DNSNames: []string{tunnelHost, apiHost}, Usages: serverAuth}},
+		"a server for clients too": {"dev-tunnel-serving", "dev-cakey-cluster", "dev-cakey-cluster", serving, certs.Profile{CommonName: serving.CommonName, DNSNames: serving.DNSNames, Usages: both}},
+		"a server of another CA":   {"dev-tunnel-serving", "dev-cakey-tunnel", "dev-cakey-cluster", serving, serving},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			r := longLived()
+			cp := controlPlaneAt(t, "pki-tunnel-profile-"+strings.ToLower(strings.ReplaceAll(name, " ", "-")), gatewayEndpoint())
+			publishGatewayEndpoint(t, cp)
+			reconcile(t, r, cp)
+			first := secretsOf(t, cp)
+			stored, err := parseTLS(t, first[c.signer]).Issue(c.stored, time.Now(), 30*day)
+			if err != nil {
+				t.Fatal(err)
+			}
+			secret := first[c.secret]
+			if secret.Data[lodiav1alpha1.TLSCertKey], err = certs.CertPEM(stored.Cert); err != nil {
+				t.Fatal(err)
+			}
+			if secret.Data[lodiav1alpha1.TLSPrivateKeyKey], err = certs.KeyPEM(stored.Key); err != nil {
+				t.Fatal(err)
+			}
+			if err := k8s.Update(ctx, secret); err != nil {
+				t.Fatal(err)
+			}
+
+			reconcile(t, r, cp)
+			expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+			after := parseTLS(t, secretOf(t, cp, c.secret)).Cert
+			if after.SerialNumber.Cmp(stored.Cert.SerialNumber) == 0 {
+				t.Fatal("the certificate of another profile stayed")
+			}
+			if !certs.Matches(after, c.want) {
+				t.Errorf("issued again as %s %v %v %v", after.Subject, after.DNSNames, after.ExtKeyUsage, after.IsCA)
+			}
+			if err := after.CheckSignatureFrom(parseTLS(t, secretOf(t, cp, c.ca)).Cert); err != nil {
+				t.Errorf("not signed by %s: %v", c.ca, err)
+			}
+		})
+	}
+}
+
 func TestATunnelClientPastItsRenewalIsRenewedOnceAnOutageEnds(t *testing.T) {
 	start := time.Now()
 	now := clocktesting.NewFakePassiveClock(start)
