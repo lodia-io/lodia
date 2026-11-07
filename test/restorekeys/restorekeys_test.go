@@ -128,9 +128,9 @@ func TestTheCleanupDeletesWhatBindsTheDataToItsSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = etcd.Close() })
-	stored := func(key string) bool {
+	stored := func(key string, options ...clientv3.OpOption) bool {
 		t.Helper()
-		response, err := etcd.Get(ctx, key, clientv3.WithCountOnly())
+		response, err := etcd.Get(ctx, key, append(options, clientv3.WithCountOnly())...)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -147,12 +147,12 @@ func TestTheCleanupDeletesWhatBindsTheDataToItsSource(t *testing.T) {
 		t.Fatalf("the cleanup deleted %d keys at revision %d, %v; want at least %d", keys, revision, err, len(deleted))
 	}
 	for _, o := range deleted {
-		if stored(o.key) {
+		if stored(o.key, clientv3.WithRev(revision)) {
 			t.Errorf("the cleanup left %s", o.key)
 		}
 	}
 	for _, o := range kept {
-		if !stored(o.key) {
+		if !stored(o.key, clientv3.WithRev(revision)) {
 			t.Errorf("the cleanup deleted %s", o.key)
 		}
 	}

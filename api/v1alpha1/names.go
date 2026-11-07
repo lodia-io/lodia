@@ -44,12 +44,12 @@ const (
 	TLSPrivateKeyKey = corev1.TLSPrivateKeyKey
 )
 
-// The in-cluster tunnel's Secrets, which PKI writes from phase 2's wave 1b,
-// Gateway, and adds to PKISecrets then: TunnelServingSecret, from the cluster
-// CA, which the tunnel sidecar in every API server pod serves; TunnelCASecret,
-// the CA of the tunnel's clients under CACertKey, which the sidecar requires
-// a client certificate of; TunnelClientSecret, that client certificate, which
-// Tenant delivers to apiserver-proxy and Health presents.
+// The in-cluster tunnel's Secrets, which PKI writes for a ControlPlane with
+// endpoint.gateway only: TunnelServingSecret, from the cluster CA, which the
+// tunnel sidecar in every API server pod serves; TunnelCASecret, the CA of the
+// tunnel's clients under CACertKey, which the sidecar requires a client
+// certificate of; TunnelClientSecret, that client certificate, which Tenant
+// delivers to apiserver-proxy and Health presents.
 const (
 	TunnelServingSecret Secret = "tunnel-serving"
 	TunnelCASecret      Secret = "tunnel-ca"
@@ -88,8 +88,8 @@ const (
 // Written by the Datastore controller.
 const EtcdBackupSecret Secret = "etcd-backup"
 
-// PKISecrets are the Secrets PKI writes that others read, the etcd
-// certificate generations aside.
+// PKISecrets are the Secrets PKI writes for every ControlPlane that others
+// read, the etcd certificate generations aside.
 func PKISecrets() []Secret {
 	return []Secret{
 		CABundleSecret, ClientCASecret, FrontProxyCASecret, EtcdCASecret,

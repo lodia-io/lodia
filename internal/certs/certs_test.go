@@ -49,6 +49,25 @@ func TestALeafLivesWithinItsCAAndIsBackdated(t *testing.T) {
 	}
 }
 
+func TestTheTunnelsClientCertificateRenewsWithThirtyDaysLeft(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	ca, err := certs.NewCA("tunnel-ca@1", now, 5*365*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := ca.Issue(certs.Profile{CommonName: "lodia-tunnel-client", Usages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}, now, certs.TunnelClientLifetime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const day = 24 * time.Hour
+	if got := leaf.Cert.NotAfter.Sub(now); got != 90*day {
+		t.Errorf("it lives %s, want 90 days", got)
+	}
+	if got := certs.RenewalTime(leaf.Cert).Sub(now); got != 60*day {
+		t.Errorf("it renews after %s, want 60 days", got)
+	}
+}
+
 func TestOnePassIssuesFromOneClock(t *testing.T) {
 	now := time.Date(2030, 1, 1, 0, 0, 0, 999_999_999, time.UTC)
 	ca, err := certs.NewCA("cluster-ca@1", now, time.Hour)

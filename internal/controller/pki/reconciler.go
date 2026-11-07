@@ -19,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -54,6 +55,8 @@ type Reconciler struct {
 	// signer, unchanged, before the controller manager gets it: the kubelet's
 	// update of the mounted bundle and the API server's reload.
 	SignerPropagation time.Duration
+	// Clock is the time of a pass, which issues and verifies everything at it.
+	Clock clock.PassiveClock
 	// Dial, when set, opens every connection to a tenant's API server; tests
 	// set it, since envtest has no DNS for the tenant's Service.
 	Dial func(ctx context.Context, network, address string) (net.Conn, error)
@@ -85,7 +88,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if cp.DeletionTimestamp != nil || cp.Spec.Paused {
 		return ctrl.Result{}, nil
 	}
-	now := time.Now()
+	now := r.Clock.Now()
 	owned := []string{lodiav1alpha1.ConditionCertificatesReady, lodiav1alpha1.ConditionCAValidityAcceptable, lodiav1alpha1.ConditionAccessReady}
 	if slices.ContainsFunc(owned, func(c string) bool { return meta.FindStatusCondition(cp.Status.Conditions, c) == nil }) {
 		conditions := make([]metav1.Condition, 0, len(owned))
@@ -170,7 +173,7 @@ func (t *tenant) certificatesReady() metav1.Condition {
 			issuing = append(issuing, t.stagedSigner())
 		}
 		c.Reason, c.Message = lodiav1alpha1.ReasonIssuing, strings.Join(issuing, "; ")
-	case t.endpoint == nil:
+	case t.endpoint == nil || t.cp.Spec.Endpoint.Gateway != nil && t.tunnelHost == "":
 		c.Reason, c.Message = lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint"
 	case t.unsupportedProvider != "":
 		c.Reason, c.Message = lodiav1alpha1.ReasonUnsupported, "spec.apiServer.encryption.provider "+string(t.unsupportedProvider)+" is not supported yet"
@@ -187,7 +190,8 @@ func (t *tenant) certificatesReady() metav1.Condition {
 func (t *tenant) caValidity(notice time.Duration) (metav1.Condition, bool) {
 	c := metav1.Condition{Type: lodiav1alpha1.ConditionCAValidityAcceptable, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonValid, Message: "no CA expires within " + notice.String()}
 	var expiring []string
-	for _, ca := range caBundles {
+	bundles := caBundles(t.cp)
+	for _, ca := range bundles {
 		if cert := t.caCerts[ca.ca]; cert != nil && cert.NotAfter.Sub(t.now) <= notice {
 			expiring = append(expiring, ca.ca+" CA at "+cert.NotAfter.UTC().Format(time.RFC3339))
 		}
@@ -198,7 +202,7 @@ func (t *tenant) caValidity(notice time.Duration) (metav1.Condition, bool) {
 	case len(t.missingCAs) > 0:
 		c.Status, c.Reason, c.Message = metav1.ConditionUnknown, lodiav1alpha1.ReasonCAMissing, missingCAMessage(t.missingCAs)
 	}
-	return c, len(t.caCerts)+len(t.missingCAs) == len(caBundles)
+	return c, len(t.caCerts)+len(t.missingCAs) == len(bundles)
 }
 
 // stagedSigner names the time a signer replacing one that cannot sign is

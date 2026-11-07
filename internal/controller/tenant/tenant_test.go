@@ -37,6 +37,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -313,7 +314,7 @@ func TestAWaitOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
 func TestAConditionKeptWithoutAnAnswerOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
 	cp := controlPlane(t, "tenant-kept-stale")
 	publish(t, cp)
-	reconcilePKI(t, &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour}, cp)
+	reconcilePKI(t, &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour, Clock: clock.RealClock{}}, cp)
 	eventually(t, 10*time.Second, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
 	})
@@ -561,7 +562,7 @@ func TestAWaitComparesItsWriteWithTheServer(t *testing.T) {
 func TestAFailedSyncComparesItsWriteWithTheServer(t *testing.T) {
 	cp := controlPlane(t, "tenant-sync-compare")
 	publish(t, cp)
-	reconcilePKI(t, &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour}, cp)
+	reconcilePKI(t, &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour, Clock: clock.RealClock{}}, cp)
 	eventually(t, 10*time.Second, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
 	})
@@ -623,7 +624,7 @@ func TestTheTenantGetsItsObjects(t *testing.T) {
 	ctx := t.Context()
 	cp := controlPlane(t, "tenant-objects")
 	publish(t, cp)
-	issuer := &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour}
+	issuer := &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour, Clock: clock.RealClock{}}
 	reconcilePKI(t, issuer, cp)
 	admin := startTenant(t, cp)
 	setDial(t, admin.host)
@@ -768,7 +769,7 @@ func TestAHeldControllerManagerLeavesTheAddonsToTheRelease(t *testing.T) {
 		cp.Spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "prod-backup"}}
 	})
 	publish(t, cp)
-	issuer := &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour}
+	issuer := &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour, Clock: clock.RealClock{}}
 	reconcilePKI(t, issuer, cp)
 	admin := startTenant(t, cp)
 	setDial(t, admin.host)
@@ -901,7 +902,7 @@ func TestAnObjectTheTenantRefusesIsReportedAndNeverLeaks(t *testing.T) {
 	ctx := t.Context()
 	cp := controlPlane(t, "tenant-refused")
 	publish(t, cp)
-	issuer := &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour}
+	issuer := &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour, Clock: clock.RealClock{}}
 	reconcilePKI(t, issuer, cp)
 	admin := startTenant(t, cp)
 	setDial(t, admin.host)
@@ -985,7 +986,7 @@ func TestAnObjectTheTenantRefusesIsReportedAndNeverLeaks(t *testing.T) {
 func TestATenantThatDoesNotAnswerKeepsATrueAddonsApplied(t *testing.T) {
 	cp := controlPlane(t, "tenant-unanswered")
 	publish(t, cp)
-	issuer := &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour}
+	issuer := &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour, Clock: clock.RealClock{}}
 	reconcilePKI(t, issuer, cp)
 	admin := startTenant(t, cp)
 	setDial(t, admin.host)
@@ -1020,7 +1021,7 @@ func TestATenantThatDoesNotAnswerKeepsATrueAddonsApplied(t *testing.T) {
 func TestATenantThatDoesNotAnswerAtANewGenerationKeepsWhatItDescribed(t *testing.T) {
 	cp := controlPlane(t, "tenant-unanswered-generation")
 	publish(t, cp)
-	issuer := &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour}
+	issuer := &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour, Clock: clock.RealClock{}}
 	reconcilePKI(t, issuer, cp)
 	admin := startTenant(t, cp)
 	setDial(t, admin.host)
@@ -1053,7 +1054,7 @@ func TestATenantThatDoesNotAnswerAtANewGenerationKeepsWhatItDescribed(t *testing
 func TestATenantThatNeverAnsweredIsApplying(t *testing.T) {
 	cp := controlPlane(t, "tenant-never-answered")
 	publish(t, cp)
-	reconcilePKI(t, &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour}, cp)
+	reconcilePKI(t, &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour, Clock: clock.RealClock{}}, cp)
 	dial.Store(&unreachable)
 	eventually(t, 30*time.Second, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
@@ -1075,7 +1076,7 @@ func TestATenantThatNeverAnsweredIsApplying(t *testing.T) {
 func TestASecretAnotherOwnerKeepsIsNotUsed(t *testing.T) {
 	cp := controlPlane(t, "tenant-predecessor")
 	publish(t, cp)
-	reconcilePKI(t, &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour}, cp)
+	reconcilePKI(t, &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour, Clock: clock.RealClock{}}, cp)
 	dial.Store(&unreachable)
 	bundle := get(t, k8s, &corev1.Secret{}, cp.Namespace, "dev-ca-bundle")
 	own := bundle.OwnerReferences
@@ -1269,7 +1270,7 @@ func servedTenant(t *testing.T, namespace string) (*lodiav1alpha1.ControlPlane, 
 	t.Helper()
 	cp := controlPlane(t, namespace)
 	publish(t, cp)
-	issuer := &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour}
+	issuer := &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour, Clock: clock.RealClock{}}
 	reconcilePKI(t, issuer, cp)
 	admin := startTenant(t, cp)
 	setDial(t, admin.host)
