@@ -247,7 +247,9 @@ func render(v *values) ([]*unstructured.Unstructured, error) {
 }
 
 // apiserverProxyClient is the whole Secret apiserver-proxy reads its client
-// certificate from.
+// certificate from: render and deliverTunnelClient share a field manager, so an
+// apply without type would be refused, and one without a field would undo the
+// other's write every pass.
 func apiserverProxyClient(cert, key []byte) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "v1",

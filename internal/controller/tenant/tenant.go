@@ -16,6 +16,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -27,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
@@ -42,6 +44,12 @@ const (
 // waitPeriod is how often a pass runs while it waits on what no event
 // reports: the addons' pods on the nodes, and a Secret another owner keeps.
 const waitPeriod = time.Minute
+
+// deliveryTimeout bounds each request of deliverTunnelClient. It is on the
+// client because a new client's first read maps the kind through discovery,
+// which takes no context, and would spend the 30 s dial of a tenant that drops
+// packets.
+const deliveryTimeout = 10 * time.Second
 
 type Reconciler struct {
 	client.Client
@@ -107,6 +115,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if !cp.DeletionTimestamp.IsZero() || cp.Spec.Paused {
 		return ctrl.Result{}, nil
 	}
+	if cp.Spec.Endpoint.Gateway != nil {
+		r.deliverTunnelClient(ctx, cp)
+	}
 	applied, available := previous(cp, lodiav1alpha1.ConditionAddonsApplied), previous(cp, lodiav1alpha1.ConditionAddonsAvailable)
 	if meta.FindStatusCondition(cp.Status.Conditions, applied.Type) == nil || meta.FindStatusCondition(cp.Status.Conditions, available.Type) == nil {
 		if err := r.applyStatus(ctx, cp, applied, available); err != nil {
@@ -118,7 +129,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		if err := live.Conditions(ctx, r.Reader, cp, applied.Type, available.Type); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, r.applyStatus(ctx, cp, waitForAccess(cp, previous(cp, applied.Type)), waitForAccess(cp, previous(cp, available.Type)))
+		if err := r.applyStatus(ctx, cp, waitForAccess(cp, previous(cp, applied.Type)), waitForAccess(cp, previous(cp, available.Type))); err != nil {
+			return ctrl.Result{}, err
+		}
+		if cp.Spec.Endpoint.Gateway != nil {
+			return ctrl.Result{RequeueAfter: r.ApplyPeriod}, nil
+		}
+		return ctrl.Result{}, nil
 	}
 	clusterCA, kubeconfig, tunnelClient, keptElsewhere, err := r.credentials(ctx, cp)
 	if err != nil {
@@ -142,7 +159,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	tenant, err := r.tenantClient(kubeconfig)
+	tenant, err := r.tenantClient(kubeconfig, 0)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -224,19 +241,63 @@ func (r *Reconciler) credentials(ctx context.Context, cp *lodiav1alpha1.ControlP
 	if cp.Spec.Endpoint.Gateway != nil {
 		reads = append(reads, secretRead{lodiav1alpha1.TunnelClientSecret, tunnelClient})
 	}
-	for _, read := range reads {
-		obj := read.obj
-		if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: read.secret.Name(cp.Name)}, obj); err != nil {
-			return nil, nil, nil, "", err
-		}
-		if ref := ownership.ControlledElsewhere(obj, cp); ref != nil {
-			return nil, nil, nil, fmt.Sprintf("Secret %s is kept by %s %s with UID %s", obj.Name, ref.Kind, ref.Name, ref.UID), nil
-		}
+	keptElsewhere, err := r.readSecrets(ctx, cp, reads)
+	if err != nil || keptElsewhere != "" {
+		return nil, nil, nil, keptElsewhere, err
 	}
 	return bundle.Data[lodiav1alpha1.CACertKey], kubeconfig.Data[lodiav1alpha1.KubeconfigKey], tunnelClient, "", nil
 }
 
-func (r *Reconciler) tenantClient(kubeconfig []byte) (client.Client, error) {
+// readSecrets stops at the first Secret another owner keeps, and says which.
+func (r *Reconciler) readSecrets(ctx context.Context, cp *lodiav1alpha1.ControlPlane, reads []secretRead) (string, error) {
+	for _, read := range reads {
+		obj := read.obj
+		if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: read.secret.Name(cp.Name)}, obj); err != nil {
+			return "", err
+		}
+		if ref := ownership.ControlledElsewhere(obj, cp); ref != nil {
+			return fmt.Sprintf("Secret %s is kept by %s %s with UID %s", obj.Name, ref.Kind, ref.Name, ref.UID), nil
+		}
+	}
+	return "", nil
+}
+
+// deliverTunnelClient brings a renewed pair to the tenant before any condition
+// is read: none proves the API server cannot take it, and an expired pair takes
+// every pod's API. Failures stop nothing, and neither a Secret that does not
+// exist yet, the inventory's to write, nor another owner's gets a write.
+func (r *Reconciler) deliverTunnelClient(ctx context.Context, cp *lodiav1alpha1.ControlPlane) {
+	kubeconfig, pair := &corev1.Secret{}, &corev1.Secret{}
+	keptElsewhere, err := r.readSecrets(ctx, cp, []secretRead{{lodiav1alpha1.LodiaKubeconfigSecret, kubeconfig}, {lodiav1alpha1.TunnelClientSecret, pair}})
+	if keptElsewhere != "" || apierrors.IsNotFound(err) {
+		return
+	}
+	if err == nil {
+		err = r.applyTunnelClient(ctx, kubeconfig.Data[lodiav1alpha1.KubeconfigKey], pair)
+	}
+	if err != nil {
+		logf.FromContext(ctx).Error(err, "deliver the tunnel's client certificate")
+	}
+}
+
+func (r *Reconciler) applyTunnelClient(ctx context.Context, kubeconfig []byte, pair *corev1.Secret) error {
+	tenant, err := r.tenantClient(kubeconfig, deliveryTimeout)
+	if err != nil {
+		return err
+	}
+	existing := &corev1.Secret{}
+	switch err := tenant.Get(ctx, client.ObjectKey{Namespace: metav1.NamespaceSystem, Name: apiserverProxyClientSecret}, existing); {
+	case apierrors.IsNotFound(err):
+		return nil
+	case err != nil:
+		return err
+	case !appliedByLodia(existing):
+		return nil
+	}
+	return tenant.Apply(ctx, client.ApplyConfigurationFromUnstructured(apiserverProxyClient(pair.Data[corev1.TLSCertKey], pair.Data[corev1.TLSPrivateKeyKey])), client.FieldOwner(FieldManager), client.ForceOwnership)
+}
+
+func (r *Reconciler) tenantClient(kubeconfig []byte, timeout time.Duration) (client.Client, error) {
 	cfg, err := clientcmd.RESTConfigFromKubeConfig(kubeconfig)
 	if err != nil {
 		return nil, err
@@ -244,6 +305,7 @@ func (r *Reconciler) tenantClient(kubeconfig []byte) (client.Client, error) {
 	// The in-namespace Service is never behind a proxy from the environment.
 	cfg.Proxy = http.ProxyURL(nil)
 	cfg.Dial = r.Dial
+	cfg.Timeout = timeout
 	return client.New(cfg, client.Options{Scheme: clientgoscheme.Scheme})
 }
 

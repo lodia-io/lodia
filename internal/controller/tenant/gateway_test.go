@@ -7,14 +7,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -53,18 +59,29 @@ func gatewayIssuer() *pki.Reconciler {
 	return &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: year, CALifetime: 5 * year, TrustAnchorLifetime: 10 * year, CAExpiryNotice: year, Clock: clock.RealClock{}}
 }
 
-func gatewayTenant(t *testing.T, namespace string) (*lodiav1alpha1.ControlPlane, *tenantClient, *pki.Reconciler) {
+func gatewayTenantWithoutAccess(t *testing.T, namespace string) (*lodiav1alpha1.ControlPlane, *tenantClient) {
 	t.Helper()
 	cp := controlPlane(t, namespace, gatewayMode)
 	publishGateway(t, cp)
-	issuer := gatewayIssuer()
-	reconcilePKI(t, issuer, cp)
+	reconcilePKI(t, gatewayIssuer(), cp)
 	admin := startTenant(t, cp)
 	setDial(t, admin.host)
+	return cp, admin
+}
+
+func grantAccess(t *testing.T, cp *lodiav1alpha1.ControlPlane) *pki.Reconciler {
+	t.Helper()
+	issuer := gatewayIssuer()
 	issuer.Dial = *dial.Load()
 	setCondition(t, cp, lodiav1alpha1.ConditionAPIServerReady, lodiav1alpha1.ReasonReady)
 	reconcilePKI(t, issuer, cp)
-	return cp, admin, issuer
+	return issuer
+}
+
+func gatewayTenant(t *testing.T, namespace string) (*lodiav1alpha1.ControlPlane, *tenantClient, *pki.Reconciler) {
+	t.Helper()
+	cp, admin := gatewayTenantWithoutAccess(t, namespace)
+	return cp, admin, grantAccess(t, cp)
 }
 
 func TestAGatewayTenantGetsApiserverProxy(t *testing.T) {
@@ -200,11 +217,13 @@ func TestAGatewayTenantGetsApiserverProxy(t *testing.T) {
 
 type failingSecret struct {
 	client.Reader
-	name string
+	name  string
+	reads atomic.Int32
 }
 
-func (r failingSecret) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+func (r *failingSecret) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 	if _, ok := obj.(*corev1.Secret); ok && key.Name == r.name {
+		r.reads.Add(1)
 		return errReadFailed
 	}
 	return r.Reader.Get(ctx, key, obj, opts...)
@@ -229,10 +248,20 @@ func TestOnlyGatewayModeReadsTheTunnelsClient(t *testing.T) {
 		update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
 		setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 		refresh(t, cp)
-		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: failingSecret{Reader: k8s, name: "dev-tunnel-client"}, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: unreachable}
+		reader := &failingSecret{Reader: k8s, name: "dev-tunnel-client"}
+		waiting := cp.DeepCopy()
+		meta.RemoveStatusCondition(&waiting.Status.Conditions, lodiav1alpha1.ConditionAccessReady)
+		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: waiting}, Reader: reader, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: unreachable}
+		if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+			t.Errorf("%s: a pass waiting for access returned %v", c.namespace, err)
+		}
+		r.Client = snapshot{Client: k8s, cp: cp.DeepCopy()}
 		_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 		if got := errors.Is(err, errReadFailed); got != c.reads {
 			t.Errorf("%s: a pass whose read of the tunnel's client fails returned %v, want the read's error: %t", c.namespace, err, c.reads)
+		}
+		if got := reader.reads.Load() > 0; got != c.reads {
+			t.Errorf("%s: %d reads of the tunnel's client, want some: %t", c.namespace, reader.reads.Load(), c.reads)
 		}
 	}
 }
@@ -280,4 +309,361 @@ func TestAGatewayEndpointWithoutItsTunnelWaitsForEndpoint(t *testing.T) {
 		}
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint)
 	})
+}
+
+func renew(t *testing.T, cp *lodiav1alpha1.ControlPlane, pair string) {
+	t.Helper()
+	secret := get(t, k8s, &corev1.Secret{}, cp.Namespace, "dev-tunnel-client")
+	secret.Data["tls.crt"], secret.Data["tls.key"] = []byte(pair+" certificate"), []byte(pair+" key")
+	if err := k8s.Update(t.Context(), secret); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func holds(t *testing.T, admin *tenantClient, pair string) error {
+	t.Helper()
+	secret := get(t, admin, &corev1.Secret{}, "kube-system", clientSecret)
+	if string(secret.Data["tls.crt"]) != pair+" certificate" || string(secret.Data["tls.key"]) != pair+" key" {
+		return fmt.Errorf("the tenant's Secret holds %q, want %q", secret.Data["tls.crt"], pair)
+	}
+	return nil
+}
+
+func applied(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+	t.Helper()
+	eventually(t, 30*time.Second, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
+	})
+}
+
+func TestARenewalReachesTheTenantWhateverTheConditionsSay(t *testing.T) {
+	cp, admin, issuer := gatewayTenant(t, "tenant-delivery")
+	applied(t, cp)
+	arrives := func(pair string) {
+		t.Helper()
+		renew(t, cp, pair)
+		eventually(t, 30*time.Second, func() error { return holds(t, admin, pair) })
+	}
+
+	setReplicas(t, cp, 3)
+	edited := get(t, admin, &corev1.Secret{}, "kube-system", clientSecret)
+	edited.Data["tls.crt"] = []byte("another manager's edit")
+	if err := admin.Update(t.Context(), edited); err != nil {
+		t.Fatal(err)
+	}
+	arrives("while the generation is stuck")
+	if access := condition(t, cp, lodiav1alpha1.ConditionAccessReady); access.ObservedGeneration == cp.Generation {
+		t.Errorf("AccessReady describes generation %d, which is not stuck", access.ObservedGeneration)
+	}
+	if replicas := get(t, admin, &appsv1.Deployment{}, "kube-system", "coredns").Spec.Replicas; replicas == nil || *replicas == 3 {
+		t.Errorf("the ordinary apply ran while the generation is stuck: CoreDNS has %v replicas", replicas)
+	}
+
+	refresh(t, cp)
+	applyStatus(t, cp, "test/"+lodiav1alpha1.ConditionAPIServerReady, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAPIServerReady, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, cp.Generation),
+	}})
+	applyStatus(t, cp, "test/"+lodiav1alpha1.ConditionAccessReady, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAccessReady, metav1.ConditionTrue, lodiav1alpha1.ReasonBound, cp.Generation),
+	}})
+	reconcilePKI(t, issuer, cp)
+	expectNow(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer)
+	arrives("with APIServerReady False, Refused")
+	eventually(t, 30*time.Second, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+	})
+
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	rebindOperator(t, admin, []rbacv1.PolicyRule{
+		{APIGroups: []string{"*"}, Resources: []string{"*"}, Verbs: []string{"get", "list", "watch"}},
+		{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"patch"}},
+		{NonResourceURLs: []string{"*"}, Verbs: []string{"*"}},
+	}, authorizationv1.ResourceAttributes{Resource: "configmaps", Verb: "patch", Namespace: "kube-system"})
+	eventually(t, 30*time.Second, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused)
+	})
+	arrives("while an earlier object is refused")
+	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestAnotherOwnersSecretUnderThatNameIsLeftAlone(t *testing.T) {
+	cp, admin := gatewayTenantWithoutAccess(t, "tenant-delivery-foreign")
+	theirs := map[string][]byte{"tls.crt": []byte("the owner's certificate"), "tls.key": []byte("the owner's key")}
+	if err := admin.Create(t.Context(), &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: clientSecret},
+		Type:       corev1.SecretTypeTLS,
+		Data:       theirs,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := get(t, admin, &corev1.Secret{}, "kube-system", clientSecret).ResourceVersion
+	grantAccess(t, cp)
+	eventually(t, 30*time.Second, func() error {
+		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying); err != nil {
+			return err
+		}
+		if c := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied); c.Message != "Secret kube-system/"+clientSecret+" exists and is not Lodia's; delete it or disable the addon" {
+			return fmt.Errorf("AddonsApplied says %q", c.Message)
+		}
+		return nil
+	})
+	renew(t, cp, "renewed")
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	refresh(t, cp)
+	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: *dial.Load()}
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+		t.Fatal(err)
+	}
+	after := get(t, admin, &corev1.Secret{}, "kube-system", clientSecret)
+	if after.ResourceVersion != before || !equality.Semantic.DeepEqual(after.Data, theirs) {
+		t.Errorf("the owner's Secret went from resourceVersion %s to %s, holding %q", before, after.ResourceVersion, after.Data)
+	}
+	if slices.ContainsFunc(after.ManagedFields, func(f metav1.ManagedFieldsEntry) bool { return f.Manager == tenant.FieldManager }) {
+		t.Errorf("Lodia wrote the owner's Secret: %+v", after.ManagedFields)
+	}
+	if inventory := inventoryOf(t, admin); slices.Contains(inventory, "Secret kube-system/"+clientSecret) {
+		t.Errorf("the inventory lists the owner's Secret: %v", inventory)
+	}
+}
+
+func TestTheFirstWriteIsTheInventorys(t *testing.T) {
+	ctx := t.Context()
+	cp, admin := gatewayTenantWithoutAccess(t, "tenant-delivery-first")
+	if err := admin.Create(ctx, &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "lodia:operator"},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "cluster-admin"},
+		Subjects:   []rbacv1.Subject{{APIGroup: rbacv1.GroupName, Kind: rbacv1.UserKind, Name: "lodia:operator"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r := &tenant.Reconciler{Client: k8s, Reader: k8s, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: *dial.Load()}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+		t.Fatal(err)
+	}
+	if exists(t, admin, "Secret kube-system/"+clientSecret) {
+		t.Error("delivery wrote a Secret that did not exist")
+	}
+	if exists(t, admin, "ConfigMap kube-system/lodia-inventory") {
+		t.Error("a pass waiting for access wrote the inventory")
+	}
+
+	grantAccess(t, cp)
+	applied(t, cp)
+	if !slices.Contains(inventoryOf(t, admin), "Secret kube-system/"+clientSecret) {
+		t.Error("the inventory does not list the Secret it wrote")
+	}
+	pair := get(t, k8s, &corev1.Secret{}, cp.Namespace, "dev-tunnel-client")
+	if delivered := get(t, admin, &corev1.Secret{}, "kube-system", clientSecret); !equality.Semantic.DeepEqual(delivered.Data["tls.crt"], pair.Data["tls.crt"]) {
+		t.Error("the Secret does not hold the pair")
+	}
+}
+
+func TestAnUnchangedPairMovesNoResourceVersion(t *testing.T) {
+	cp, admin, _ := gatewayTenant(t, "tenant-delivery-unchanged")
+	applied(t, cp)
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	refresh(t, cp)
+	access := cp.DeepCopy()
+	waiting := cp.DeepCopy()
+	meta.RemoveStatusCondition(&waiting.Status.Conditions, lodiav1alpha1.ConditionAccessReady)
+	before := get(t, admin, &corev1.Secret{}, "kube-system", clientSecret)
+	for name, at := range map[string]*lodiav1alpha1.ControlPlane{"a pass that applies": access, "a pass that waits": waiting} {
+		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: at}, Reader: k8s, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: *dial.Load()}
+		for range 3 {
+			if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+		}
+		after := get(t, admin, &corev1.Secret{}, "kube-system", clientSecret)
+		if after.ResourceVersion != before.ResourceVersion || !equality.Semantic.DeepEqual(after.ManagedFields, before.ManagedFields) {
+			t.Errorf("%s moved the Secret: resourceVersion %s, then %s; managed fields %+v, then %+v", name, before.ResourceVersion, after.ResourceVersion, before.ManagedFields, after.ManagedFields)
+		}
+	}
+}
+
+func TestABlockingDialCostsDeliveryItsTimeoutAndThePassReports(t *testing.T) {
+	cp := controlPlane(t, "tenant-delivery-blocked", gatewayMode)
+	publishGateway(t, cp)
+	reconcilePKI(t, gatewayIssuer(), cp)
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable, cp.Generation),
+	}})
+	var dials atomic.Int32
+	dropsPackets := func(ctx context.Context, _, _ string) (net.Conn, error) {
+		dials.Add(1)
+		timeout, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		<-timeout.Done()
+		return nil, timeout.Err()
+	}
+	pass := func() (time.Duration, error) {
+		t.Helper()
+		refresh(t, cp)
+		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		defer cancel()
+		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: dropsPackets}
+		start := time.Now()
+		_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+		return time.Since(start), err
+	}
+
+	elapsed, err := pass()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("a pass that waits for access took %s", elapsed)
+	if elapsed < 9*time.Second || elapsed > 15*time.Second {
+		t.Errorf("a pass that waits for access took %s, want the delivery's 10 s", elapsed)
+	}
+	if dials.Load() == 0 {
+		t.Error("nothing dialled the tenant")
+	}
+	expectNow(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+	expectNow(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	elapsed, err = pass()
+	if err == nil {
+		t.Error("a pass that could not reach the tenant succeeded")
+	}
+	t.Logf("a pass that applies took %s", elapsed)
+	if elapsed < 35*time.Second || elapsed >= time.Minute {
+		t.Errorf("a pass that applies took %s, want the delivery's 10 s and the ordinary client's 30 s dial", elapsed)
+	}
+	expectNow(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying)
+	expectNow(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying)
+}
+
+func TestWhatStopsDelivery(t *testing.T) {
+	ctx := t.Context()
+	cp := controlPlane(t, "tenant-delivery-stops", gatewayMode)
+	publishGateway(t, cp)
+	reconcilePKI(t, gatewayIssuer(), cp)
+	var dials atomic.Int32
+	counting := func(context.Context, string, string) (net.Conn, error) {
+		dials.Add(1)
+		return nil, errors.New("connection refused")
+	}
+	r := &tenant.Reconciler{Client: k8s, Reader: k8s, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: counting}
+	pass := func() ctrl.Result {
+		t.Helper()
+		dials.Store(0)
+		result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+
+	if result := pass(); dials.Load() == 0 || result.RequeueAfter != time.Hour {
+		t.Fatalf("a pass waiting for access dialled %d times and requeues after %s, want a delivery and the apply period", dials.Load(), result.RequeueAfter)
+	}
+
+	for _, name := range []string{"dev-tunnel-client", "dev-lodia-kubeconfig"} {
+		secret := get(t, k8s, &corev1.Secret{}, cp.Namespace, name)
+		own := secret.OwnerReferences
+		secret.OwnerReferences = []metav1.OwnerReference{{
+			APIVersion: lodiav1alpha1.GroupVersion.String(), Kind: "ControlPlane", Name: "dev", UID: "predecessor", Controller: new(true),
+		}}
+		if err := k8s.Update(ctx, secret); err != nil {
+			t.Fatal(err)
+		}
+		if pass(); dials.Load() != 0 {
+			t.Errorf("a pass dialled the tenant while another owner keeps %s", name)
+		}
+		secret.OwnerReferences = own
+		if err := k8s.Update(ctx, secret); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := k8s.Delete(ctx, secret); err != nil {
+			t.Fatal(err)
+		}
+		if pass(); dials.Load() != 0 {
+			t.Errorf("a pass dialled the tenant without %s", name)
+		}
+		reconcilePKI(t, gatewayIssuer(), cp)
+	}
+
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	if result := pass(); dials.Load() != 0 || result.RequeueAfter != 0 {
+		t.Errorf("a paused pass dialled %d times and requeues after %s", dials.Load(), result.RequeueAfter)
+	}
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) {
+		cp.Spec.Paused = false
+		cp.Finalizers = append(cp.Finalizers, "test.lodia.io/hold")
+	})
+	if err := k8s.Delete(ctx, cp); err != nil {
+		t.Fatal(err)
+	}
+	if result := pass(); dials.Load() != 0 || result.RequeueAfter != 0 {
+		t.Errorf("a pass over a deleted ControlPlane dialled %d times and requeues after %s", dials.Load(), result.RequeueAfter)
+	}
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Finalizers = nil })
+
+	other := controlPlane(t, "tenant-delivery-other-mode")
+	publish(t, other)
+	reconcilePKI(t, gatewayIssuer(), other)
+	dials.Store(0)
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(other)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dials.Load() != 0 || result.RequeueAfter != 0 {
+		t.Errorf("a loadBalancer pass waiting for access dialled %d times and requeues after %s", dials.Load(), result.RequeueAfter)
+	}
+}
+
+func TestAFailedDeliveryStopsNothing(t *testing.T) {
+	ctx := t.Context()
+	cp, admin, _ := gatewayTenant(t, "tenant-delivery-fails")
+	applied(t, cp)
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	refresh(t, cp)
+	renew(t, cp, "through the ordinary apply")
+	reaches := *dial.Load()
+	var dials atomic.Int32
+	firstFails := func(ctx context.Context, network, address string) (net.Conn, error) {
+		if dials.Add(1) == 1 {
+			return nil, errors.New("connection refused")
+		}
+		return reaches(ctx, network, address)
+	}
+	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: firstFails}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := holds(t, admin, "through the ordinary apply"); err != nil {
+		t.Errorf("after a delivery that could not reach the tenant: %v", err)
+	}
+
+	waiting := cp.DeepCopy()
+	meta.RemoveStatusCondition(&waiting.Status.Conditions, lodiav1alpha1.ConditionAccessReady)
+	r = &tenant.Reconciler{Client: snapshot{Client: k8s, cp: waiting}, Reader: &failingSecret{Reader: k8s, name: "dev-tunnel-client"}, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: reaches}
+	if result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil || result.RequeueAfter != time.Hour {
+		t.Errorf("a pass whose delivery could not read the pair returned %+v, %v", result, err)
+	}
+	expectNow(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+
+	refresh(t, cp)
+	rebindOperator(t, admin, []rbacv1.PolicyRule{
+		{APIGroups: []string{"*"}, Resources: []string{"*"}, Verbs: []string{"get", "list", "watch"}},
+		{NonResourceURLs: []string{"*"}, Verbs: []string{"*"}},
+	}, authorizationv1.ResourceAttributes{Resource: "secrets", Verb: "patch", Namespace: "kube-system"})
+	renew(t, cp, "refused")
+	r = &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: reaches}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apierrors.IsForbidden(err) {
+		t.Errorf("a pass whose applies are refused returned %v, want the ordinary apply's refusal", err)
+	}
+	if err := holds(t, admin, "through the ordinary apply"); err != nil {
+		t.Error(err)
+	}
+	expectNow(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused)
 }
