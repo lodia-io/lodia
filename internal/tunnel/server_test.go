@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"io"
 	"net"
@@ -47,7 +46,6 @@ func TestServeSplicesAnAuthenticatedSession(t *testing.T) {
 func TestServeRefuses(t *testing.T) {
 	f := startServer(t, nil)
 	otherCA := newCA(t, "other")
-	clientProfile := certs.Profile{CommonName: "lodia-tunnel-client", Usages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}
 
 	for _, tc := range []struct {
 		name string
@@ -153,6 +151,163 @@ func TestAResumedSessionCannotChangeItsServerName(t *testing.T) {
 	}
 	if n := f.upstream.accepted.Load(); n != dialled {
 		t.Fatalf("the upstream was dialled %d more times", n-dialled)
+	}
+}
+
+func TestAnExpiredClientCertificateGetsNothingFromItsTicket(t *testing.T) {
+	f := startServer(t, nil)
+	leaf := shortLived(t, f.tunnelCA, clientProfile)
+	sessions := tls.NewLRUClientSessionCache(0)
+	cfg := f.config()
+	cfg.Certificates = []tls.Certificate{tlsPair(t, leaf)}
+	cfg.ClientSessionCache = sessions
+
+	first, err := dialTLS(t, f.Listen, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := roundTrip(first); err != nil {
+		t.Fatal(err)
+	}
+	second, err := dialTLS(t, f.Listen, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.ConnectionState().DidResume {
+		t.Fatal("no session to resume, so this test proves nothing")
+	}
+	if err := roundTrip(second); err != nil {
+		t.Fatal(err)
+	}
+	waitPastExpiry(leaf)
+
+	dialled := f.upstream.accepted.Load()
+	expiredClient, err := dialTLS(t, f.Listen, cfg)
+	if err == nil {
+		err = roundTrip(expiredClient)
+	}
+	if err == nil || !strings.Contains(err.Error(), "expired certificate") {
+		t.Fatalf("got %v, want a refusal with the expired certificate", err)
+	}
+	if n := f.upstream.accepted.Load(); n != dialled {
+		t.Fatalf("the upstream was dialled %d more times", n-dialled)
+	}
+
+	renewed := f.config()
+	renewed.ClientSessionCache = sessions
+	c, err := dialTLS(t, f.Listen, renewed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ConnectionState().DidResume {
+		t.Fatal("a session resumed past its certificate's expiry")
+	}
+	if err := roundTrip(c); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestATamperedTicketIsIgnored(t *testing.T) {
+	f := startServer(t, nil)
+	sessions := &anyKeySessions{}
+	cfg := f.config()
+	cfg.ClientSessionCache = sessions
+	c, err := dialTLS(t, f.Listen, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := roundTrip(c); err != nil {
+		t.Fatal(err)
+	}
+	state, _ := sessions.Get("")
+	ticket, session, err := state.ResumptionState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := bytes.Clone(ticket)
+	tampered[len(tampered)/2] ^= 0xff
+	forged, err := tls.NewResumptionState(tampered, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions.Put("", forged)
+
+	bare := f.config()
+	bare.Certificates = nil
+	bare.ClientSessionCache = sessions
+	dialled := f.upstream.accepted.Load()
+	got, err := dialTLS(t, f.Listen, bare)
+	if err == nil {
+		err = roundTrip(got)
+	}
+	if err == nil || !strings.Contains(err.Error(), "certificate required") {
+		t.Fatalf("got %v, want a tampered ticket to leave a certificate required", err)
+	}
+	if n := f.upstream.accepted.Load(); n != dialled {
+		t.Fatalf("the upstream was dialled %d more times", n-dialled)
+	}
+
+	sessions.Put("", forged)
+	full, err := dialTLS(t, f.Listen, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full.ConnectionState().DidResume {
+		t.Fatal("a session resumed on a tampered ticket")
+	}
+	if err := roundTrip(full); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestATicketOfAnotherReplicaIsIgnored(t *testing.T) {
+	cluster, tunnelCA := newCA(t, "cluster"), newCA(t, "tunnel")
+	replica := func() *serverFixture {
+		f := newServerFixture(t, nil, cluster, tunnelCA)
+		writeVolume(t, f.certDir, pairFiles(t, serving(t, cluster)))
+		writeVolume(t, f.caDir, caFiles(t, tunnelCA))
+		f.start(t)
+		f.waitHealthy(t)
+		return f
+	}
+	a, b := replica(), replica()
+
+	sessions := &anyKeySessions{}
+	cfg := a.config()
+	cfg.ClientSessionCache = sessions
+	c, err := dialTLS(t, a.Listen, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := roundTrip(c); err != nil {
+		t.Fatal(err)
+	}
+
+	bare := b.config()
+	bare.Certificates = nil
+	bare.ClientSessionCache = sessions
+	got, err := dialTLS(t, b.Listen, bare)
+	if err == nil {
+		err = roundTrip(got)
+	}
+	if err == nil || !strings.Contains(err.Error(), "certificate required") {
+		t.Fatalf("got %v, want another replica's ticket to leave a certificate required", err)
+	}
+	if n := b.upstream.accepted.Load(); n != 0 {
+		t.Fatalf("the upstream was dialled %d times", n)
+	}
+
+	withCertificate := b.config()
+	withCertificate.ClientSessionCache = sessions
+	full, err := dialTLS(t, b.Listen, withCertificate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full.ConnectionState().DidResume {
+		t.Fatal("a session resumed on another replica's ticket")
+	}
+	if err := roundTrip(full); err != nil {
+		t.Fatal(err)
 	}
 }
 

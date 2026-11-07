@@ -214,3 +214,4 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 ## From lodia-tunnel (2026-11-07)
 
 - `probes` in `cmd/lodia-signer/main.go` sets only `ReadHeaderTimeout`, so a stranger holds connections and goroutines without limit: give it the `ReadTimeout` and `WriteTimeout` of `lodia-tunnel serve`'s `/healthz`.
+- A live tunnel session is not re-checked when its certificate expires or its CA leaves the pool, so phase 3's rotation of the tunnel CA must restart the sidecars to cut stolen certificates' sessions.

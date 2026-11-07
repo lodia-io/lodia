@@ -27,7 +27,14 @@ const (
 	waitFor    = 10 * time.Second
 )
 
-var loopbackIP = net.IPv4(127, 0, 0, 1)
+var (
+	loopbackIP     = net.IPv4(127, 0, 0, 1)
+	servingProfile = certs.Profile{
+		CommonName: tunnelHost, DNSNames: []string{tunnelHost}, IPAddresses: []net.IP{loopbackIP},
+		Usages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	clientProfile = certs.Profile{CommonName: "lodia-tunnel-client", Usages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}
+)
 
 func newCA(t *testing.T, name string) *certs.Certificate {
 	t.Helper()
@@ -49,20 +56,30 @@ func issue(t *testing.T, ca *certs.Certificate, p certs.Profile, issued time.Tim
 
 func serving(t *testing.T, ca *certs.Certificate) *certs.Certificate {
 	t.Helper()
-	return issue(t, ca, certs.Profile{
-		CommonName: tunnelHost, DNSNames: []string{tunnelHost}, IPAddresses: []net.IP{loopbackIP},
-		Usages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	}, time.Now())
+	return issue(t, ca, servingProfile, time.Now())
 }
 
 func client(t *testing.T, ca *certs.Certificate) *certs.Certificate {
 	t.Helper()
-	return issue(t, ca, certs.Profile{CommonName: "lodia-tunnel-client", Usages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}, time.Now())
+	return issue(t, ca, clientProfile, time.Now())
 }
 
 func expired(t *testing.T, ca *certs.Certificate, p certs.Profile) *certs.Certificate {
 	t.Helper()
 	return issue(t, ca, p, time.Now().Add(-2*time.Hour))
+}
+
+func shortLived(t *testing.T, ca *certs.Certificate, p certs.Profile) *certs.Certificate {
+	t.Helper()
+	leaf, err := ca.Issue(p, time.Now(), 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return leaf
+}
+
+func waitPastExpiry(leaf *certs.Certificate) {
+	time.Sleep(time.Until(leaf.Cert.NotAfter) + 100*time.Millisecond)
 }
 
 func pairFiles(t *testing.T, leaf *certs.Certificate) map[string][]byte {

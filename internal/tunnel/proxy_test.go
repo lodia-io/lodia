@@ -476,6 +476,60 @@ func TestProxyPresentsANewPairToNewSessionsWhileAnOldOneKeepsWorking(t *testing.
 	}
 }
 
+func TestProxyPresentsANewPairOnceItsTicketStopsResuming(t *testing.T) {
+	ca := newCA(t, "cluster")
+	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+	first := shortLived(t, ca, clientProfile)
+	f := startProxy(t, upstream.addr, pairFiles(t, first), caFiles(t, ca), nil)
+	if err := tripThrough(t, f.Listen); err != nil {
+		t.Fatal(err)
+	}
+
+	renewed := client(t, ca)
+	writeVolume(t, f.certDir, pairFiles(t, renewed))
+	eventually(t, "the new pair", func() bool { return f.logs.count("loaded") >= 3 })
+	for range 3 {
+		if err := tripThrough(t, f.Listen); err != nil {
+			t.Fatal(err)
+		}
+		if got := upstream.lastSerial(); !upstream.lastResumed() || got != first.Cert.SerialNumber.String() {
+			t.Fatalf("resumed %t, presented %s, want the old pair through its ticket", upstream.lastResumed(), got)
+		}
+	}
+
+	waitPastExpiry(first)
+	if err := tripThrough(t, f.Listen); err != nil {
+		t.Fatalf("the first dial past the old pair's expiry: %v", err)
+	}
+	if got := upstream.lastSerial(); upstream.lastResumed() || got != renewed.Cert.SerialNumber.String() {
+		t.Fatalf("resumed %t, presented %s, want the new pair in a full handshake", upstream.lastResumed(), got)
+	}
+}
+
+func TestProxyRefusesACachedSessionOfAnExpiredServer(t *testing.T) {
+	ca := newCA(t, "cluster")
+	leaf := shortLived(t, ca, servingProfile)
+	upstream := startTLSUpstream(t, "127.0.0.1:0", leaf, nil)
+	f := startProxy(t, upstream.addr, pairFiles(t, client(t, ca)), caFiles(t, ca), nil)
+	for range 2 {
+		if err := tripThrough(t, f.Listen); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !upstream.lastResumed() {
+		t.Fatal("no session to resume, so this test proves nothing")
+	}
+
+	waitPastExpiry(leaf)
+	before := upstream.received.Load()
+	if err := tripThrough(t, f.Listen); err == nil {
+		t.Fatal("carried bytes to a server with an expired certificate")
+	}
+	if n := upstream.received.Load(); n != before {
+		t.Fatalf("the expired server got %d bytes", n-before)
+	}
+}
+
 func TestProxyUsesANewCAPoolForTheNextDial(t *testing.T) {
 	ca := newCA(t, "cluster")
 	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
