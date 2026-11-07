@@ -46,11 +46,15 @@ const (
 // another owner keeps.
 const waitPeriod = time.Minute
 
-// deliveryTimeout bounds each request of deliverTunnelClient. It is on the
-// client because a new client's first read maps the kind through discovery,
-// which takes no context, and would spend the 30 s dial of a tenant that drops
-// packets.
-const deliveryTimeout = 10 * time.Second
+// deliveryTimeout and applyTimeout bound each request of a tenant client. They
+// are on the client because a new client's first read maps the kind through
+// discovery, which takes no context. Delivery's is short of the 30 s dial of a
+// tenant that drops packets, and the two leave a pass on a tenant that answers
+// nothing its status write inside its minute.
+const (
+	deliveryTimeout = 10 * time.Second
+	applyTimeout    = 30 * time.Second
+)
 
 type Reconciler struct {
 	client.Client
@@ -160,7 +164,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	tenant, err := r.tenantClient(kubeconfig, 0)
+	tenant, err := r.tenantClient(kubeconfig, applyTimeout)
 	if err != nil {
 		return ctrl.Result{}, err
 	}

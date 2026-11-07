@@ -5,9 +5,12 @@ package tenant_test
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -486,6 +489,7 @@ func TestAnUnchangedPairMovesNoResourceVersion(t *testing.T) {
 }
 
 func TestABlockingDialCostsDeliveryItsTimeoutAndThePassReports(t *testing.T) {
+	t.Parallel()
 	cp := controlPlane(t, "tenant-delivery-blocked", gatewayMode)
 	publishGateway(t, cp)
 	reconcilePKI(t, gatewayIssuer(), cp)
@@ -790,5 +794,84 @@ func TestDeliveryUsesOnlyWhatThisControlPlaneControls(t *testing.T) {
 	pass(restored)
 	if err := holds(t, admin, "not delivered yet"); err != nil {
 		t.Error(err)
+	}
+}
+
+func answersNothing(t *testing.T, cp *lodiav1alpha1.ControlPlane) dialFunc {
+	t.Helper()
+	serving := get(t, k8s, &corev1.Secret{}, cp.Namespace, "dev-apiserver-serving")
+	pair, err := tls.X509KeyPair(serving.Data["tls.crt"], serving.Data["tls.key"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	server.EnableHTTP2 = true
+	server.TLS = &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}
+	server.StartTLS()
+	t.Cleanup(func() {
+		close(release)
+		server.CloseClientConnections()
+		server.Close()
+	})
+	address := server.Listener.Addr().String()
+	return func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, address)
+	}
+}
+
+func TestATenantThatAnswersNothingCostsThePassItsTimeoutsAndThePassReports(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		namespace string
+		mode      func(*lodiav1alpha1.ControlPlane)
+		published func(*testing.T, *lodiav1alpha1.ControlPlane)
+		timeouts  time.Duration
+	}{
+		{"tenant-answers-nothing-gateway", gatewayMode, publishGateway, 40 * time.Second},
+		{"tenant-answers-nothing-load-balancer", func(*lodiav1alpha1.ControlPlane) {}, publish, 30 * time.Second},
+	} {
+		t.Run(c.namespace, func(t *testing.T) {
+			t.Parallel()
+			cp := controlPlane(t, c.namespace, c.mode)
+			c.published(t, cp)
+			reconcilePKI(t, gatewayIssuer(), cp)
+			update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+			setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+			refresh(t, cp)
+			r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: answersNothing(t, cp)}
+			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+			defer cancel()
+			ended := make(chan error, 1)
+			start := time.Now()
+			go func() {
+				_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+				ended <- err
+			}()
+			select {
+			case err := <-ended:
+				if err == nil {
+					t.Error("a pass on a tenant that answers nothing succeeded")
+				}
+			case <-time.After(time.Minute):
+				t.Fatal("the pass is still running after its minute")
+			}
+			elapsed := time.Since(start)
+			t.Logf("the pass took %s", elapsed)
+			if elapsed < c.timeouts-5*time.Second || elapsed > c.timeouts+15*time.Second {
+				t.Errorf("the pass took %s, want its timeouts' %s", elapsed, c.timeouts)
+			}
+			for _, conditionType := range []string{lodiav1alpha1.ConditionAddonsApplied, lodiav1alpha1.ConditionAddonsAvailable} {
+				expectNow(t, cp, conditionType, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying)
+				if got := condition(t, cp, conditionType); !strings.Contains(got.Message, "does not answer") {
+					t.Errorf("%s says %q", conditionType, got.Message)
+				}
+			}
+		})
 	}
 }
