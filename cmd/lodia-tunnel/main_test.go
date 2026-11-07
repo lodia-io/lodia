@@ -231,12 +231,12 @@ func TestTheModesWorkUnderTheirFlags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	socket, err := os.MkdirTemp("/tmp", "lodia-tunnel-")
+	socketDir, err := os.MkdirTemp("/tmp", "lodia-tunnel-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(socket) })
-	socket = filepath.Join(socket, "health.sock")
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	socket := filepath.Join(socketDir, "health.sock")
 
 	if code := exitCode(t, "probe", "--socket="+socket); code != exitFailed {
 		t.Fatalf("probe before proxy exits %d", code)
