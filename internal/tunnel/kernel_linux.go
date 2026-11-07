@@ -25,46 +25,11 @@ func NewKernel() Kernel {
 }
 
 func (netlinkKernel) Addresses() ([]HostAddress, error) {
-	addresses, err := dump(func() ([]netlink.Addr, error) { return netlink.AddrList(nil, netlink.FAMILY_ALL) })
-	if err != nil {
-		return nil, err
-	}
-	names, err := linkNames()
-	if err != nil {
-		return nil, err
-	}
-	out := make([]HostAddress, 0, len(addresses))
-	for _, a := range addresses {
-		if prefix, ok := toPrefix(a.IPNet); ok {
-			out = append(out, HostAddress{Interface: names[a.LinkIndex], Prefix: prefix, Label: a.Label})
-		}
-	}
-	return out, nil
+	return hostAddresses(netlink.AddrList, netlink.LinkList)
 }
 
 func (netlinkKernel) Routes() ([]HostRoute, error) {
-	routes, err := dump(func() ([]netlink.Route, error) { return netlink.RouteList(nil, netlink.FAMILY_ALL) })
-	if err != nil {
-		return nil, err
-	}
-	names, err := linkNames()
-	if err != nil {
-		return nil, err
-	}
-	var out []HostRoute
-	for _, r := range routes {
-		prefix, ok := toPrefix(r.Dst)
-		if !ok || r.Type != unix.RTN_UNICAST {
-			continue
-		}
-		if r.LinkIndex != 0 {
-			out = append(out, HostRoute{Interface: names[r.LinkIndex], Prefix: prefix, Gateway: r.Gw != nil || r.Via != nil})
-		}
-		for _, hop := range r.MultiPath {
-			out = append(out, HostRoute{Interface: names[hop.LinkIndex], Prefix: prefix, Gateway: hop.Gw != nil || hop.Via != nil})
-		}
-	}
-	return out, nil
+	return hostRoutes(netlink.RouteList, netlink.LinkList)
 }
 
 func (netlinkKernel) AddAddress(a HostAddress) error {
@@ -117,8 +82,53 @@ func dump[T any](list func() ([]T, error)) ([]T, error) {
 	return nil, err
 }
 
-func linkNames() (map[int]string, error) {
-	links, err := dump(netlink.LinkList)
+// hostAddresses and hostRoutes take netlink's listings as arguments, so a test
+// can see what it asks for and answer what only root could set up.
+func hostAddresses(listAddresses func(netlink.Link, int) ([]netlink.Addr, error), listLinks func() ([]netlink.Link, error)) ([]HostAddress, error) {
+	addresses, err := dump(func() ([]netlink.Addr, error) { return listAddresses(nil, netlink.FAMILY_ALL) })
+	if err != nil {
+		return nil, err
+	}
+	names, err := linkNames(listLinks)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]HostAddress, 0, len(addresses))
+	for _, a := range addresses {
+		if prefix, ok := toPrefix(a.IPNet); ok {
+			out = append(out, HostAddress{Interface: names[a.LinkIndex], Prefix: prefix, Label: a.Label})
+		}
+	}
+	return out, nil
+}
+
+func hostRoutes(listRoutes func(netlink.Link, int) ([]netlink.Route, error), listLinks func() ([]netlink.Link, error)) ([]HostRoute, error) {
+	routes, err := dump(func() ([]netlink.Route, error) { return listRoutes(nil, netlink.FAMILY_ALL) })
+	if err != nil {
+		return nil, err
+	}
+	names, err := linkNames(listLinks)
+	if err != nil {
+		return nil, err
+	}
+	var out []HostRoute
+	for _, r := range routes {
+		prefix, ok := toPrefix(r.Dst)
+		if !ok || r.Type != unix.RTN_UNICAST {
+			continue
+		}
+		if r.LinkIndex != 0 {
+			out = append(out, HostRoute{Interface: names[r.LinkIndex], Prefix: prefix, Gateway: r.Gw != nil || r.Via != nil})
+		}
+		for _, hop := range r.MultiPath {
+			out = append(out, HostRoute{Interface: names[hop.LinkIndex], Prefix: prefix, Gateway: hop.Gw != nil || hop.Via != nil})
+		}
+	}
+	return out, nil
+}
+
+func linkNames(listLinks func() ([]netlink.Link, error)) (map[int]string, error) {
+	links, err := dump(listLinks)
 	if err != nil {
 		return nil, err
 	}
