@@ -19,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -54,6 +55,8 @@ type Reconciler struct {
 	// signer, unchanged, before the controller manager gets it: the kubelet's
 	// update of the mounted bundle and the API server's reload.
 	SignerPropagation time.Duration
+	// Clock is the time of a pass, which issues and verifies everything at it.
+	Clock clock.PassiveClock
 	// Dial, when set, opens every connection to a tenant's API server; tests
 	// set it, since envtest has no DNS for the tenant's Service.
 	Dial func(ctx context.Context, network, address string) (net.Conn, error)
@@ -85,7 +88,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if cp.DeletionTimestamp != nil || cp.Spec.Paused {
 		return ctrl.Result{}, nil
 	}
-	now := time.Now()
+	now := r.Clock.Now()
 	owned := []string{lodiav1alpha1.ConditionCertificatesReady, lodiav1alpha1.ConditionCAValidityAcceptable, lodiav1alpha1.ConditionAccessReady}
 	if slices.ContainsFunc(owned, func(c string) bool { return meta.FindStatusCondition(cp.Status.Conditions, c) == nil }) {
 		conditions := make([]metav1.Condition, 0, len(owned))
