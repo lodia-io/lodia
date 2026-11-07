@@ -1066,16 +1066,18 @@ func TestTheKonnectivityCertificateNamesTheKonnectivityHost(t *testing.T) {
 }
 
 func TestAGatewayControlPlaneWaitsForItsEndpoint(t *testing.T) {
-	cp := controlPlaneAt(t, "pki-gateway", lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
-		ParentRef: lodiav1alpha1.ParentReference{Name: "edge", Namespace: "gateways"},
-		Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.test", Konnectivity: "konnectivity.dev.example.test", Tunnel: "tunnel.dev.example.test"},
-	}})
+	cp := controlPlaneAt(t, "pki-gateway", gatewayEndpoint())
 	reconcile(t, newReconciler(time.Hour), cp)
 	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint)
 	secrets := secretsOf(t, cp)
-	for _, name := range []string{"dev-apiserver-serving", "dev-konnectivity-server", "dev-admin-kubeconfig"} {
+	for _, name := range []string{"dev-apiserver-serving", "dev-konnectivity-server", "dev-admin-kubeconfig", "dev-tunnel-serving"} {
 		if secrets[name] != nil {
 			t.Errorf("%s issued from spec.endpoint.gateway before status.endpoint", name)
+		}
+	}
+	for _, name := range []string{"dev-cakey-tunnel", "dev-tunnel-ca", "dev-tunnel-client"} {
+		if secrets[name] == nil {
+			t.Errorf("%s not issued while waiting for the endpoint", name)
 		}
 	}
 }

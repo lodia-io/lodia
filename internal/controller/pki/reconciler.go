@@ -173,7 +173,7 @@ func (t *tenant) certificatesReady() metav1.Condition {
 			issuing = append(issuing, t.stagedSigner())
 		}
 		c.Reason, c.Message = lodiav1alpha1.ReasonIssuing, strings.Join(issuing, "; ")
-	case t.endpoint == nil:
+	case t.endpoint == nil || t.cp.Spec.Endpoint.Gateway != nil && t.tunnelHost == "":
 		c.Reason, c.Message = lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint"
 	case t.unsupportedProvider != "":
 		c.Reason, c.Message = lodiav1alpha1.ReasonUnsupported, "spec.apiServer.encryption.provider "+string(t.unsupportedProvider)+" is not supported yet"
@@ -190,7 +190,8 @@ func (t *tenant) certificatesReady() metav1.Condition {
 func (t *tenant) caValidity(notice time.Duration) (metav1.Condition, bool) {
 	c := metav1.Condition{Type: lodiav1alpha1.ConditionCAValidityAcceptable, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonValid, Message: "no CA expires within " + notice.String()}
 	var expiring []string
-	for _, ca := range caBundles {
+	bundles := caBundles(t.cp)
+	for _, ca := range bundles {
 		if cert := t.caCerts[ca.ca]; cert != nil && cert.NotAfter.Sub(t.now) <= notice {
 			expiring = append(expiring, ca.ca+" CA at "+cert.NotAfter.UTC().Format(time.RFC3339))
 		}
@@ -201,7 +202,7 @@ func (t *tenant) caValidity(notice time.Duration) (metav1.Condition, bool) {
 	case len(t.missingCAs) > 0:
 		c.Status, c.Reason, c.Message = metav1.ConditionUnknown, lodiav1alpha1.ReasonCAMissing, missingCAMessage(t.missingCAs)
 	}
-	return c, len(t.caCerts)+len(t.missingCAs) == len(caBundles)
+	return c, len(t.caCerts)+len(t.missingCAs) == len(bundles)
 }
 
 // stagedSigner names the time a signer replacing one that cannot sign is

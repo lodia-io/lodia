@@ -811,7 +811,10 @@ spec:
                 - message: network is immutable
                   rule: self == oldSelf
               paused:
-                description: Paused stops reconciliation; everything keeps running.
+                description: |-
+                  Paused stops reconciliation; everything keeps running. In gateway mode
+                  nothing renews the tunnel's client certificate meanwhile: 30 days after
+                  its renewal time every pod of the tenant loses its API.
                 type: boolean
               placement:
                 description: Placement says where this control plane's pods run.
