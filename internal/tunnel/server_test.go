@@ -729,7 +729,7 @@ func TestHealthClosesAClientThatDoesNotRead(t *testing.T) {
 	c := dialTCP(t, f.HealthAddr)
 	requests := bytes.Repeat([]byte("GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n"), 1024)
 	for {
-		if err := c.SetWriteDeadline(time.Now().Add(waitFor)); err != nil {
+		if err := c.SetWriteDeadline(time.Now().Add(100 * time.Second)); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := c.Write(requests); err != nil {
