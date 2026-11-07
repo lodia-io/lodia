@@ -13,7 +13,7 @@ spec:
       name: pool-a                  # a Datastore
   endpoint:
     gateway:
-      parentRef: {name: tenants, namespace: gateway}
+      parentRef: {name: tenants, namespace: gateway, sectionName: tls}
       hostnames:
         apiServer: api.sandbox.k8s.example.com
         konnectivity: konnectivity.sandbox.k8s.example.com

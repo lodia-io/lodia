@@ -41,7 +41,7 @@ const (
 
 func gatewayMode(cp *lodiav1alpha1.ControlPlane) {
 	cp.Spec.Endpoint = lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
-		ParentRef: lodiav1alpha1.ParentReference{Name: "edge", Namespace: "gateways"},
+		ParentRef: lodiav1alpha1.ParentReference{Name: "edge", Namespace: "gateways", SectionName: "tls"},
 		Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.test", Konnectivity: "konnectivity.dev.example.test", Tunnel: "tunnel.dev.example.test"},
 	}}
 }

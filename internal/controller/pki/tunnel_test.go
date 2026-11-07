@@ -39,7 +39,7 @@ var tunnelSecrets = []string{"dev-cakey-tunnel", "dev-tunnel-ca", "dev-tunnel-se
 
 func gatewayEndpoint() lodiav1alpha1.Endpoint {
 	return lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
-		ParentRef: lodiav1alpha1.ParentReference{Name: "edge", Namespace: "gateways"},
+		ParentRef: lodiav1alpha1.ParentReference{Name: "edge", Namespace: "gateways", SectionName: "tls"},
 		Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: apiHost, Konnectivity: konnectivityHost, Tunnel: tunnelHost},
 	}}
 }
