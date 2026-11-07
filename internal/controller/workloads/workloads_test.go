@@ -96,7 +96,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		stop("the controller's ClusterRole", err)
 	}
-	cache, err := operator.Cache()
+	cache, err := operator.Cache(false)
 	if err != nil {
 		stop("cache", err)
 	}

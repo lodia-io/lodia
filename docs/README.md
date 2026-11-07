@@ -451,7 +451,7 @@ Prerequisites on the management cluster:
 | Kubernetes ≥ 1.35 | a maintained minor with the CEL features the schema uses ([releases-and-support](decisions/releases-and-support.md)) |
 | a StorageClass | etcd volumes; local or network, with low fsync latency |
 | etcd-druid | dedicated etcd (installed by the chart as a dependency, or separately) |
-| Gateway API ≥ 1.5 and an implementation that supports `TLSRoute` in passthrough | `endpoint.gateway` only, from phase 2's wave 1b ([api-exposure](decisions/api-exposure.md)) |
+| Gateway API ≥ 1.5 and an implementation that supports `TLSRoute` in passthrough | `endpoint.gateway` only, from phase 2's wave 1b ([api-exposure](decisions/api-exposure.md)); its CRDs installed before the operator starts, since it looks for `TLSRoute` and `Gateway` only then, or the operator restarted after |
 | an S3-compatible bucket and credentials | backups, strongly recommended |
 | a metrics stack | optional: the chart's monitoring, from phase 2's wave 2 ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)) |
 

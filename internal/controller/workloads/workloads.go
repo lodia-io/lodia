@@ -65,6 +65,9 @@ type Reconciler struct {
 	Reader client.Reader
 	// SignerImage is lodia-signer's image, the API server's sidecar.
 	SignerImage string
+	// GatewayAPI says whether the management cluster served TLSRoute and
+	// Gateway when the operator started.
+	GatewayAPI bool
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {

@@ -700,7 +700,7 @@ func TestAWaitForCertificatesEndsOnEachOfItsSecrets(t *testing.T) {
 
 func startRequests(t *testing.T, namespaces ...string) *waitedReads {
 	t.Helper()
-	options, err := operator.Cache()
+	options, err := operator.Cache(false)
 	if err != nil {
 		t.Fatal(err)
 	}

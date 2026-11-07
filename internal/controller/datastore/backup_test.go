@@ -1136,7 +1136,7 @@ func TestTheCopyFollowsTheSourcesEtcdNotItsClass(t *testing.T) {
 
 func runBackupReconciler(t *testing.T, s *source) {
 	t.Helper()
-	options, err := operator.Cache()
+	options, err := operator.Cache(false)
 	if err != nil {
 		t.Fatal(err)
 	}
