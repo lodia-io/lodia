@@ -4,8 +4,12 @@
 package tenant
 
 import (
+	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 
@@ -14,9 +18,73 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/yaml"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 )
+
+var updateGolden = flag.Bool("update-golden", false, "write testdata/render from the render instead of comparing with it")
+
+func TestTheRenderOutsideGatewayModeIsPinned(t *testing.T) {
+	network := lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}}
+	for golden, c := range map[string]struct {
+		addons *lodiav1alpha1.Addons
+		status lodiav1alpha1.EndpointStatus
+	}{
+		"defaults.yaml": {
+			status: lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 443}, Konnectivity: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 8132}, InCluster: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 6443}},
+		},
+		"agents-as-a-deployment.yaml": {
+			addons: &lodiav1alpha1.Addons{
+				KubeProxy:    &lodiav1alpha1.KubeProxy{Mode: "ipvs", HealthzBindAddress: "::", Conntrack: &lodiav1alpha1.KubeProxyConntrack{MaxPerCore: new(int32(0))}},
+				CoreDNS:      &lodiav1alpha1.CoreDNS{Replicas: new(int32(3))},
+				Konnectivity: &lodiav1alpha1.Konnectivity{Version: "v0.35.1", Agent: &lodiav1alpha1.KonnectivityAgent{Mode: "Deployment", Replicas: new(int32(2))}},
+			},
+			status: lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "api.dev.example.test", Port: 31443}, Konnectivity: lodiav1alpha1.HostPort{Host: "api.dev.example.test", Port: 31132}, InCluster: lodiav1alpha1.HostPort{Host: "2001:db8::10", Port: 31443}},
+		},
+	} {
+		for mode, endpoint := range map[string]lodiav1alpha1.Endpoint{
+			"loadBalancer": {LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}},
+			"nodePort":     {NodePort: &lodiav1alpha1.NodePortEndpoint{}},
+		} {
+			cp := &lodiav1alpha1.ControlPlane{
+				ObjectMeta: metav1.ObjectMeta{Name: "dev"},
+				Spec:       lodiav1alpha1.ControlPlaneSpec{Endpoint: endpoint, Network: network, Addons: c.addons},
+				Status:     lodiav1alpha1.ControlPlaneStatus{Target: &lodiav1alpha1.Target{Version: "v1.35.8"}, Endpoint: &c.status},
+			}
+			v, _, waiting, err := newValues(cp, []byte("the cluster CA"))
+			if err != nil || waiting != "" {
+				t.Fatalf("%s, %s: %v %s", golden, mode, err, waiting)
+			}
+			objects, err := render(v)
+			if err != nil {
+				t.Fatalf("%s, %s: %v", golden, mode, err)
+			}
+			var rendered bytes.Buffer
+			for _, obj := range objects {
+				doc, err := yaml.Marshal(obj.Object)
+				if err != nil {
+					t.Fatalf("%s, %s: %v", golden, mode, err)
+				}
+				rendered.WriteString("---\n")
+				rendered.Write(doc)
+			}
+			path := filepath.Join("testdata", "render", golden)
+			if *updateGolden {
+				if err := os.WriteFile(path, rendered.Bytes(), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			want, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(rendered.Bytes(), want) {
+				t.Errorf("%s renders other bytes than %s, which would roll every tenant in that mode:\n%s", mode, path, rendered.Bytes())
+			}
+		}
+	}
+}
 
 func TestKubeProxyServesItsHealthOnTheAddressGiven(t *testing.T) {
 	for address, want := range map[string]string{"": "127.0.0.1:10256", "0.0.0.0": "0.0.0.0:10256", "::": "[::]:10256"} {
