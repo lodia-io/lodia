@@ -170,11 +170,63 @@ func TestAFailedReloadIsRetriedWithoutAnEventUntilItLoads(t *testing.T) {
 	eventually(t, "the retry", func() bool { return s.current.Load() != first })
 
 	second := s.current.Load()
+	for range 2 {
+		select {
+		case events <- fsnotify.Event{}:
+		case <-time.After(waitFor):
+			t.Fatal("the watch is not listening")
+		}
+	}
 	writeVolume(t, dir, caFiles(t, newCA(t, "third")))
 	time.Sleep(100 * time.Millisecond)
 	if s.current.Load() != second {
 		t.Fatal("still retrying after a good load, with a watch to wake it")
 	}
+}
+
+func TestAFailedReadIsRetriedWithoutAnEvent(t *testing.T) {
+	dir := t.TempDir()
+	writeVolume(t, dir, caFiles(t, newCA(t, "first")))
+	log, logs := newLog(t)
+	s := caSource(dir, 10*time.Millisecond, log)
+	events := make(chan fsnotify.Event)
+	silent := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.watchWith(ctx, func(context.Context) *fsnotify.Watcher {
+			w, err := fsnotify.NewWatcher()
+			if err != nil {
+				t.Error(err)
+				return nil
+			}
+			if err := w.Add(silent); err != nil {
+				t.Error(err)
+			}
+			w.Events = events
+			return w
+		})
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	<-s.loaded
+	first := s.current.Load()
+
+	loopingData(t, dir)
+	select {
+	case events <- fsnotify.Event{}:
+	case <-time.After(waitFor):
+		t.Fatal("the watch is not listening")
+	}
+	eventually(t, "the failed read", func() bool { return logs.count("not loaded") > 0 })
+	if s.current.Load() != first {
+		t.Fatal("a failed read replaced the last good content")
+	}
+	writeVolume(t, dir, caFiles(t, newCA(t, "second")))
+	eventually(t, "the retry", func() bool { return s.current.Load() != first })
 }
 
 func TestItReadsThroughDataNotTheLinksBesideIt(t *testing.T) {

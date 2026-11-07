@@ -334,6 +334,35 @@ func TestAFailedFirstLookupIsRetriedBeforeTheRefreshPeriod(t *testing.T) {
 	}
 }
 
+func TestAFailedRefreshAfterAnAnswerWaitsForItsPeriod(t *testing.T) {
+	ca := newCA(t, "cluster")
+	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+	_, port, err := net.SplitHostPort(upstream.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var second, third atomic.Int64
+	resolver := &fakeResolver{answer: func(call int64) ([]netip.Addr, error) {
+		switch call {
+		case 1:
+			return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
+		case 2:
+			second.Store(time.Now().UnixNano())
+		case 3:
+			third.Store(time.Now().UnixNano())
+		}
+		return nil, errors.New("resolver gone")
+	}}
+	startProxy(t, net.JoinHostPort(tunnelHost, port), pairFiles(t, client(t, ca)), caFiles(t, ca), func(p *Proxy) {
+		p.Resolver = resolver
+		p.RefreshPeriod = 3 * firstLookupRetry
+	})
+	eventually(t, "the second failed refresh", func() bool { return third.Load() != 0 })
+	if gap := time.Duration(third.Load() - second.Load()); gap < 2*firstLookupRetry {
+		t.Fatalf("a failed refresh came back after %s, want it to wait for its period", gap)
+	}
+}
+
 func TestAFailedRefreshKeepsTheLastGoodAndAnAnswerReplacesIt(t *testing.T) {
 	ca := newCA(t, "cluster")
 	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
