@@ -738,19 +738,20 @@ func TestAMissingSecretIsReportedAndNothingIsWritten(t *testing.T) {
 				if err := k8s.Delete(ctx, secret); err != nil {
 					t.Fatal(err)
 				}
-				if result := pass(); result.RequeueAfter != time.Minute {
+				result := pass()
+				after := inTenant(t, admin)
+				for entry, object := range before {
+					if !equality.Semantic.DeepEqual(object, after[entry]) {
+						t.Errorf("a pass without %s wrote %s", name, entry)
+					}
+				}
+				if result.RequeueAfter != time.Minute {
 					t.Errorf("without %s the pass requeues after %s, want a minute", name, result.RequeueAfter)
 				}
 				for _, conditionType := range []string{lodiav1alpha1.ConditionAddonsApplied, lodiav1alpha1.ConditionAddonsAvailable} {
 					expectNow(t, cp, conditionType, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
 					if got := condition(t, cp, conditionType); got.Message != "Secret "+name+" does not exist" {
 						t.Errorf("without %s, %s says %q", name, conditionType, got.Message)
-					}
-				}
-				after := inTenant(t, admin)
-				for entry, object := range before {
-					if !equality.Semantic.DeepEqual(object, after[entry]) {
-						t.Errorf("a pass without %s wrote %s", name, entry)
 					}
 				}
 				secret.ObjectMeta = metav1.ObjectMeta{Namespace: cp.Namespace, Name: name, OwnerReferences: secret.OwnerReferences}
