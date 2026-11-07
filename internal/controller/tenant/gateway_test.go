@@ -738,3 +738,57 @@ func TestAMissingSecretIsReportedAndNothingIsWritten(t *testing.T) {
 		})
 	}
 }
+
+func TestDeliveryUsesOnlyWhatThisControlPlaneControls(t *testing.T) {
+	ctx := t.Context()
+	cp, admin, _ := gatewayTenant(t, "tenant-delivery-controlled")
+	applied(t, cp)
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	plain := func(*lodiav1alpha1.ControlPlane) {}
+	restored := func(cp *lodiav1alpha1.ControlPlane) {
+		cp.Spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "backup"}}
+	}
+	pass := func(shape func(*lodiav1alpha1.ControlPlane)) {
+		t.Helper()
+		refresh(t, cp)
+		waiting := cp.DeepCopy()
+		shape(waiting)
+		meta.SetStatusCondition(&waiting.Status.Conditions, metav1.Condition{Type: lodiav1alpha1.ConditionAccessReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonWaitingForAPIServer})
+		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: waiting}, Reader: k8s, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: *dial.Load()}
+		if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	renew(t, cp, "this ControlPlane's")
+	pass(plain)
+	if err := holds(t, admin, "this ControlPlane's"); err != nil {
+		t.Fatal(err)
+	}
+
+	renew(t, cp, "not delivered yet")
+	predecessor := metav1.OwnerReference{APIVersion: lodiav1alpha1.GroupVersion.String(), Kind: "ControlPlane", Name: "dev", UID: "predecessor"}
+	for _, name := range []string{"dev-tunnel-client", "dev-lodia-kubeconfig"} {
+		secret := get(t, k8s, &corev1.Secret{}, cp.Namespace, name)
+		own := secret.OwnerReferences
+		for _, owners := range [][]metav1.OwnerReference{nil, append(slices.Clone(own), predecessor)} {
+			secret.OwnerReferences = owners
+			if err := k8s.Update(ctx, secret); err != nil {
+				t.Fatal(err)
+			}
+			for shape, change := range map[string]func(*lodiav1alpha1.ControlPlane){"plain": plain, "restored": restored} {
+				pass(change)
+				if err := holds(t, admin, "this ControlPlane's"); err != nil {
+					t.Errorf("%s with the owners %+v, on a %s ControlPlane: %v", name, owners, shape, err)
+				}
+			}
+		}
+		secret.OwnerReferences = own
+		if err := k8s.Update(ctx, secret); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pass(restored)
+	if err := holds(t, admin, "not delivered yet"); err != nil {
+		t.Error(err)
+	}
+}

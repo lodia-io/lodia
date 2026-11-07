@@ -271,14 +271,16 @@ func (r *Reconciler) readSecrets(ctx context.Context, cp *lodiav1alpha1.ControlP
 // deliverTunnelClient brings a renewed pair to the tenant before any condition
 // is read: none proves the API server cannot take it, and an expired pair takes
 // every pod's API. Failures stop nothing, and neither a Secret that does not
-// exist yet, the inventory's to write, nor another owner's gets a write.
+// exist yet, the inventory's to write, nor another owner's gets a write. No
+// verdict of PKI's stands behind its reads, as AccessReady does behind
+// credentials, so it uses only Secrets this ControlPlane controls.
 func (r *Reconciler) deliverTunnelClient(ctx context.Context, cp *lodiav1alpha1.ControlPlane) {
 	kubeconfig, pair := &corev1.Secret{}, &corev1.Secret{}
 	unusable, err := r.readSecrets(ctx, cp, []secretRead{{lodiav1alpha1.LodiaKubeconfigSecret, kubeconfig}, {lodiav1alpha1.TunnelClientSecret, pair}})
 	if unusable != "" {
 		return
 	}
-	if err == nil {
+	if err == nil && metav1.IsControlledBy(kubeconfig, cp) && metav1.IsControlledBy(pair, cp) {
 		err = r.applyTunnelClient(ctx, kubeconfig.Data[lodiav1alpha1.KubeconfigKey], pair)
 	}
 	if err != nil {
