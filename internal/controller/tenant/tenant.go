@@ -52,6 +52,8 @@ type Reconciler struct {
 	// ApplyPeriod is how often the tenant gets every object again, so one
 	// deleted or edited there comes back.
 	ApplyPeriod time.Duration
+	// TunnelImage is lodia-tunnel's, which apiserver-proxy runs.
+	TunnelImage string
 	// Dial, when set, opens every connection to a tenant's API server; tests
 	// set it, since envtest has no DNS for the tenant's Service.
 	Dial func(ctx context.Context, network, address string) (net.Conn, error)

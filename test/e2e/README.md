@@ -17,7 +17,7 @@ go tool kind delete cluster --name lodia-e2e-dev --kubeconfig work/e2e/dev.kubec
 `--kubeconfig` makes kind write that file alone and leave `~/.kube/config` untouched.
 `go test` runs in the package directory, so it needs an absolute `E2E_KUBECONFIG`; `make e2e` resolves a relative one, and runs `go test -v` so that each scenario's lines are in the log.
 
-Before the first test, the suite installs Lodia as a user does, and needs Docker and `helm` on the `PATH` for it: it builds `cmd/lodia` and `cmd/lodia-signer` with ko straight into the kind cluster (`KO_DOCKER_REPO=kind.local`, as the hard way does), then runs `helm dependency build` and installs [`charts/lodia`](../../charts/lodia) into `lodia-system` with those two images.
+Before the first test, the suite installs Lodia as a user does, and needs Docker and `helm` on the `PATH` for it: it builds `cmd/lodia`, `cmd/lodia-signer` and `cmd/lodia-tunnel` with ko straight into the kind cluster (`KO_DOCKER_REPO=kind.local`, as the hard way does), then runs `helm dependency build` and installs [`charts/lodia`](../../charts/lodia) into `lodia-system` with those three images.
 The chart brings the CRDs and etcd-druid v0.39.0, its dependency; the operator runs in the cluster under the chart's RBAC, and every test asserts against it.
 The suite leaves the chart installed.
 

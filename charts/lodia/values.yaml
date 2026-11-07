@@ -8,6 +8,11 @@ signerImage:
   tag: ""
   digest: ""
 
+tunnelImage:
+  repository: ghcr.io/lodia-io/lodia-tunnel
+  tag: ""
+  digest: ""
+
 crds:
   enabled: true
   keep: true

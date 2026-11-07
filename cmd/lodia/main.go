@@ -19,12 +19,13 @@ import (
 )
 
 func main() {
-	var metricsAddr, probeAddr, signerImage, etcdDruidNamespace, operatorNamespace string
+	var metricsAddr, probeAddr, signerImage, tunnelImage, etcdDruidNamespace, operatorNamespace string
 	var leaderElect bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "Address of the metrics endpoint, served over HTTPS behind authentication and authorization.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Address of the health and readiness probes.")
 	flag.BoolVar(&leaderElect, "leader-elect", true, "Run controllers only in the replica that holds the leader lease.")
 	flag.StringVar(&signerImage, "signer-image", "", "Image of lodia-signer, the API server's ServiceAccount token signer; required.")
+	flag.StringVar(&tunnelImage, "tunnel-image", "", "Image of lodia-tunnel, a gateway tenant's in-cluster path to its API server; required.")
 	flag.StringVar(&etcdDruidNamespace, "etcd-druid-namespace", "", "Namespace etcd-druid runs in, whose pods each etcd's NetworkPolicy admits to the backup-restore sidecar; required.")
 	flag.StringVar(&operatorNamespace, "operator-namespace", "", "Namespace the operator runs in, whose pods each etcd's NetworkPolicy admits to the client port; required.")
 	opts := zap.Options{}
@@ -34,6 +35,10 @@ func main() {
 	log := ctrl.Log.WithName("setup")
 	if signerImage == "" {
 		log.Error(nil, "--signer-image is required")
+		os.Exit(1)
+	}
+	if tunnelImage == "" {
+		log.Error(nil, "--tunnel-image is required")
 		os.Exit(1)
 	}
 	if etcdDruidNamespace == "" {
@@ -66,7 +71,7 @@ func main() {
 		log.Error(err, "create the manager")
 		os.Exit(1)
 	}
-	if err := operator.Setup(mgr, signerImage, etcdDruidNamespace, operatorNamespace); err != nil {
+	if err := operator.Setup(mgr, signerImage, tunnelImage, etcdDruidNamespace, operatorNamespace); err != nil {
 		log.Error(err, "set up the controllers")
 		os.Exit(1)
 	}
