@@ -727,8 +727,9 @@ func dropNulls(m map[string]any) {
 }
 
 // applyStatus applies APIServerReady, at cp's generation unless it names one,
-// status.components and, once both addresses exist, status.endpoint whole; a
-// nil endpoint or components drops a published one.
+// in gateway mode RoutesReady, which says the same while the routes are not
+// built, status.components and, once both addresses exist, status.endpoint
+// whole; a nil endpoint or components drops a published one.
 func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, components *lodiav1alpha1.ComponentsStatus, condition metav1.Condition) error {
 	if condition.ObservedGeneration == 0 {
 		condition.ObservedGeneration = cp.Generation
@@ -736,6 +737,13 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlP
 	previous := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady)
 	unchanged := previous != nil && previous.Status == condition.Status && previous.Reason == condition.Reason &&
 		previous.Message == condition.Message && previous.ObservedGeneration == condition.ObservedGeneration
+	routes := condition
+	routes.Type = lodiav1alpha1.ConditionRoutesReady
+	if cp.Spec.Endpoint.Gateway != nil {
+		kept := meta.FindStatusCondition(cp.Status.Conditions, routes.Type)
+		unchanged = unchanged && kept != nil && kept.Status == routes.Status && kept.Reason == routes.Reason &&
+			kept.Message == routes.Message && kept.ObservedGeneration == routes.ObservedGeneration
+	}
 	if unchanged && sameEndpoint(cp.Status.Endpoint, endpoint) && equality.Semantic.DeepEqual(cp.Status.Components, components) {
 		return nil
 	}
@@ -746,6 +754,14 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlP
 		return err
 	}
 	status := map[string]any{"conditions": []any{current}}
+	if cp.Spec.Endpoint.Gateway != nil {
+		meta.SetStatusCondition(&conditions, routes)
+		applied, err := runtime.DefaultUnstructuredConverter.ToUnstructured(meta.FindStatusCondition(conditions, routes.Type))
+		if err != nil {
+			return err
+		}
+		status["conditions"] = []any{current, applied}
+	}
 	if endpoint != nil {
 		e, err := runtime.DefaultUnstructuredConverter.ToUnstructured(endpoint)
 		if err != nil {

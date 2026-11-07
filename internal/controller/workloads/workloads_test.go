@@ -460,14 +460,8 @@ func TestTheSpecIsRendered(t *testing.T) {
 }
 
 func TestWhatIsNotBuiltYetIsSaid(t *testing.T) {
-	gateway := controlPlane(t, lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
-		ParentRef: lodiav1alpha1.ParentReference{Name: "shared", Namespace: "gateways", SectionName: "tls"},
-		Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.com", Konnectivity: "konnectivity.dev.example.com", Tunnel: "tunnel.dev.example.com"},
-	}})
-	eventually(t, func() error { return expectCondition(gateway, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported) })
-	if c := condition(t, gateway); c.Message != "not built yet: endpoint.gateway" {
-		t.Errorf("APIServerReady says %q", c.Message)
-	}
+	gateway := controlPlane(t, gateway())
+	eventually(t, func() error { return expectRoutesUnsupported(gateway) })
 
 	ha := controlPlane(t, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) {
 		spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
@@ -487,6 +481,9 @@ func TestWhatIsNotBuiltYetIsSaid(t *testing.T) {
 	if getServiceOrNil(t, gateway) != nil {
 		t.Errorf("a Service was created in %s for a gateway endpoint", gateway.Namespace)
 	}
+	if c := meta.FindStatusCondition(get(t, ha).Status.Conditions, lodiav1alpha1.ConditionRoutesReady); c != nil {
+		t.Errorf("a loadBalancer ControlPlane has %+v", c)
+	}
 
 	ignored := controlPlane(t, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) {
 		spec.APIServer = &lodiav1alpha1.APIServer{Replicas: new(int32(2))}
@@ -496,6 +493,61 @@ func TestWhatIsNotBuiltYetIsSaid(t *testing.T) {
 	if c := condition(t, ignored); c.Message != "not built yet: serviceAccount.publicDiscovery" {
 		t.Errorf("APIServerReady says %q", c.Message)
 	}
+}
+
+func TestAGatewayControlPlaneWithoutRoutesReadyGetsIt(t *testing.T) {
+	cp := controlPlane(t, gateway())
+	eventually(t, func() error { return expectRoutesUnsupported(cp) })
+	fresh := get(t, cp)
+	kept, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&lodiav1alpha1.ControlPlaneStatus{
+		Conditions: []metav1.Condition{*meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady)},
+		Components: fresh.Status.Components,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyStatus(t, cp, workloads.FieldManager, kept)
+	reconcileNow(t, cp)
+	eventually(t, func() error { return expectRoutesUnsupported(cp) })
+}
+
+func TestAGatewayPassThatChangesNothingWritesNothing(t *testing.T) {
+	cp := controlPlane(t, gateway())
+	eventually(t, func() error { return expectRoutesUnsupported(cp) })
+	applies := 0
+	counting := interceptor.NewClient(k8s, interceptor.Funcs{
+		SubResourceApply: func(ctx context.Context, c client.Client, subResource string, obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
+			applies++
+			return c.SubResource(subResource).Apply(ctx, obj, opts...)
+		},
+	})
+	if _, err := (&workloads.Reconciler{Client: counting, Reader: k8s, SignerImage: signerImage}).Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+		t.Fatal(err)
+	}
+	if applies > 0 {
+		t.Errorf("a pass over an unchanged gateway ControlPlane sent %d status applies", applies)
+	}
+}
+
+func gateway() lodiav1alpha1.Endpoint {
+	return lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
+		ParentRef: lodiav1alpha1.ParentReference{Name: "shared", Namespace: "gateways", SectionName: "tls"},
+		Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.com", Konnectivity: "konnectivity.dev.example.com", Tunnel: "tunnel.dev.example.com"},
+	}}
+}
+
+func expectRoutesUnsupported(cp *lodiav1alpha1.ControlPlane) error {
+	fresh := &lodiav1alpha1.ControlPlane{}
+	if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(cp), fresh); err != nil {
+		return err
+	}
+	for _, conditionType := range []string{lodiav1alpha1.ConditionAPIServerReady, lodiav1alpha1.ConditionRoutesReady} {
+		c := meta.FindStatusCondition(fresh.Status.Conditions, conditionType)
+		if c == nil || c.Status != metav1.ConditionFalse || c.Reason != lodiav1alpha1.ReasonUnsupported || c.Message != "not built yet: endpoint.gateway" || c.ObservedGeneration != fresh.Generation {
+			return fmt.Errorf("%s is %+v, want False %s naming endpoint.gateway at generation %d", conditionType, c, lodiav1alpha1.ReasonUnsupported, fresh.Generation)
+		}
+	}
+	return nil
 }
 
 func TestAnUnsupportedFieldKeepsTheEndpoint(t *testing.T) {
