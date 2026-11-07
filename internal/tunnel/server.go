@@ -36,6 +36,7 @@ type Server struct {
 	MaxPending       int
 	MaxSessions      int64
 	DialTimeout      time.Duration
+	HealthTimeout    time.Duration
 	ReloadRetry      time.Duration
 
 	pair     *source[tls.Certificate]
@@ -56,6 +57,7 @@ func NewServer(listen, hostname, certDir, clientCADir, upstream, healthAddr stri
 		MaxPending:       256,
 		MaxSessions:      10_000,
 		DialTimeout:      2 * time.Second,
+		HealthTimeout:    5 * time.Second,
 		ReloadRetry:      reloadRetry,
 
 		evictLog:  everyMinute(),
@@ -99,7 +101,7 @@ func (s *Server) serve(ctx context.Context) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	health := &http.Server{Addr: s.HealthAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	health := &http.Server{Addr: s.HealthAddr, Handler: mux, ReadTimeout: s.HealthTimeout, WriteTimeout: s.HealthTimeout}
 
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return accept(ctx, ln, s.Log, s.admit(ctx)) })

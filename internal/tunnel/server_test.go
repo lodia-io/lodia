@@ -4,6 +4,7 @@
 package tunnel
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -24,8 +25,8 @@ import (
 
 func TestServerBoundsAreTheDesigns(t *testing.T) {
 	s := NewServer(":6444", tunnelHost, "c", "a", "127.0.0.1:6443", ":8135", nil)
-	if s.MaxPending != 256 || s.HandshakeTimeout != 10*time.Second || s.MaxSessions != 10_000 || s.DialTimeout != 2*time.Second {
-		t.Fatalf("pending %d, handshake %s, sessions %d, dial %s", s.MaxPending, s.HandshakeTimeout, s.MaxSessions, s.DialTimeout)
+	if s.MaxPending != 256 || s.HandshakeTimeout != 10*time.Second || s.MaxSessions != 10_000 || s.DialTimeout != 2*time.Second || s.HealthTimeout != 5*time.Second {
+		t.Fatalf("pending %d, handshake %s, sessions %d, dial %s, health %s", s.MaxPending, s.HandshakeTimeout, s.MaxSessions, s.DialTimeout, s.HealthTimeout)
 	}
 }
 
@@ -548,6 +549,40 @@ func TestServeClosesAtOnceOnItsSignal(t *testing.T) {
 	if c, err := net.DialTimeout("tcp", f.Listen, time.Second); err == nil {
 		_ = c.Close()
 		t.Fatal("still listening")
+	}
+}
+
+func TestHealthClosesAConnectionAtItsTimeout(t *testing.T) {
+	f := startServer(t, func(s *Server) { s.HealthTimeout = 200 * time.Millisecond })
+	for name, sent := range map[string]string{
+		"silent":                "",
+		"idle after a request":  "GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n",
+		"its body never coming": "POST /healthz HTTP/1.1\r\nHost: x\r\nContent-Length: 100000\r\n\r\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := dialTCP(t, f.HealthAddr)
+			if _, err := c.Write([]byte(sent)); err != nil {
+				t.Fatal(err)
+			}
+			requireClosedAfterData(t, c)
+		})
+	}
+}
+
+func TestHealthClosesAClientThatDoesNotRead(t *testing.T) {
+	f := startServer(t, func(s *Server) { s.HealthTimeout = 200 * time.Millisecond })
+	c := dialTCP(t, f.HealthAddr)
+	requests := bytes.Repeat([]byte("GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n"), 1024)
+	for {
+		if err := c.SetWriteDeadline(time.Now().Add(waitFor)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Write(requests); err != nil {
+			if isTimeout(err) {
+				t.Fatal("/healthz still holds a client that reads nothing")
+			}
+			return
+		}
 	}
 }
 
