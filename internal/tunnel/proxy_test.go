@@ -306,6 +306,34 @@ func TestProxyDialsNothingBeforeTheFirstAnswer(t *testing.T) {
 	}
 }
 
+func TestAFailedFirstLookupIsRetriedBeforeTheRefreshPeriod(t *testing.T) {
+	ca := newCA(t, "cluster")
+	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+	_, port, err := net.SplitHostPort(upstream.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := &fakeResolver{answer: func(call int64) ([]netip.Addr, error) {
+		if call == 1 {
+			return nil, errors.New("resolver not up yet")
+		}
+		return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
+	}}
+	f := startProxy(t, net.JoinHostPort(tunnelHost, port), pairFiles(t, client(t, ca)), caFiles(t, ca), func(p *Proxy) {
+		p.Resolver = resolver
+		p.RefreshPeriod = time.Hour
+	})
+	eventually(t, "the second lookup's answer", func() bool { return f.addrs.Load() != nil })
+	if err := tripThrough(t, f.Listen); err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(firstLookupRetry + 200*time.Millisecond)
+	if n := resolver.calls.Load(); n != 2 {
+		t.Fatalf("asked the resolver %d times, want no retry after the first answer", n)
+	}
+}
+
 func TestAFailedRefreshKeepsTheLastGoodAndAnAnswerReplacesIt(t *testing.T) {
 	ca := newCA(t, "cluster")
 	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)

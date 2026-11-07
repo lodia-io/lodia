@@ -23,7 +23,10 @@ import (
 	"golang.org/x/time/rate"
 )
 
-const lookupTimeout = 10 * time.Second
+const (
+	lookupTimeout    = 10 * time.Second
+	firstLookupRetry = time.Second
+)
 
 // Resolver answers the upstream host's addresses; net.Resolver is one.
 type Resolver interface {
@@ -114,7 +117,8 @@ func (p *Proxy) Run(ctx context.Context) error {
 }
 
 // refresh keeps the upstream's addresses, the last good ones when a lookup
-// fails. A dial reads them; none is made before the first answer.
+// fails. A dial reads them; none is made before the first answer, so until then
+// it also retries on a shorter timer.
 func (p *Proxy) refresh(ctx context.Context) {
 	if addr, err := netip.ParseAddr(p.host); err == nil {
 		p.addrs.Store(&[]netip.Addr{addr})
@@ -131,10 +135,15 @@ func (p *Proxy) refresh(ctx context.Context) {
 		} else {
 			p.addrs.Store(&addrs)
 		}
+		var retry <-chan time.Time
+		if p.addrs.Load() == nil {
+			retry = time.After(firstLookupRetry)
+		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
+		case <-retry:
 		}
 	}
 }
