@@ -139,8 +139,6 @@ func (s *Server) admit(ctx context.Context) func(net.Conn) {
 // skips choosing a certificate, so no check there would see it.
 func (s *Server) tlsConfig() *tls.Config {
 	return &tls.Config{
-		MinVersion: tls.VersionTLS13,
-		MaxVersion: tls.VersionTLS13,
 		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 			if hello.ServerName != s.Hostname {
 				return nil, fmt.Errorf("server name %q is not %s", hello.ServerName, s.Hostname)
