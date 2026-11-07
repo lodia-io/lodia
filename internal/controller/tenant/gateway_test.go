@@ -395,7 +395,7 @@ func TestAnotherOwnersSecretUnderThatNameIsLeftAlone(t *testing.T) {
 	cp, admin := gatewayTenantWithoutAccess(t, "tenant-delivery-foreign")
 	theirs := map[string][]byte{"tls.crt": []byte("the owner's certificate"), "tls.key": []byte("the owner's key")}
 	if err := admin.Create(t.Context(), &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: clientSecret},
+		ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: clientSecret, Labels: map[string]string{lodiav1alpha1.ManagedByLabel: lodiav1alpha1.ManagedBy}},
 		Type:       corev1.SecretTypeTLS,
 		Data:       theirs,
 	}); err != nil {
@@ -429,6 +429,27 @@ func TestAnotherOwnersSecretUnderThatNameIsLeftAlone(t *testing.T) {
 	}
 	if inventory := inventoryOf(t, admin); slices.Contains(inventory, "Secret kube-system/"+clientSecret) {
 		t.Errorf("the inventory lists the owner's Secret: %v", inventory)
+	}
+}
+
+func TestARenewalReachesATenantWhoseEndpointIsGone(t *testing.T) {
+	cp, admin, _ := gatewayTenant(t, "tenant-delivery-no-endpoint")
+	applied(t, cp)
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	applyStatus(t, cp, "test/endpoint", map[string]any{})
+	refresh(t, cp)
+	if cp.Status.Endpoint != nil {
+		t.Fatalf("status.endpoint is still %+v", cp.Status.Endpoint)
+	}
+	renew(t, cp, "without an endpoint")
+	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: *dial.Load()}
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+		t.Fatal(err)
+	}
+	expectNow(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint)
+	if err := holds(t, admin, "without an endpoint"); err != nil {
+		t.Error(err)
 	}
 }
 
