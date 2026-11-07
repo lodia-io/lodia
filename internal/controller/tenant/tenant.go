@@ -43,7 +43,7 @@ const (
 
 // waitPeriod is how often a pass runs while it waits on what no event
 // reports: the addons' pods on the nodes, and a Secret that is missing or that
-// another owner keeps.
+// this ControlPlane does not control.
 const waitPeriod = time.Minute
 
 // deliveryTimeout and applyTimeout bound each request of a tenant client. They

@@ -733,6 +733,21 @@ func TestASecretTenantCannotUseIsReportedAndNothingIsWritten(t *testing.T) {
 			}
 			pass()
 			for _, name := range c.secrets {
+				notControlled := func(owners func(own []metav1.OwnerReference) []metav1.OwnerReference) func(*corev1.Secret) func() {
+					return func(secret *corev1.Secret) func() {
+						own := secret.OwnerReferences
+						secret.OwnerReferences = owners(slices.Clone(own))
+						if err := k8s.Update(ctx, secret); err != nil {
+							t.Fatal(err)
+						}
+						return func() {
+							secret.OwnerReferences = own
+							if err := k8s.Update(ctx, secret); err != nil {
+								t.Fatal(err)
+							}
+						}
+					}
+				}
 				for _, breakage := range []struct {
 					message string
 					apply   func(*corev1.Secret) func()
@@ -748,19 +763,17 @@ func TestASecretTenantCannotUseIsReportedAndNothingIsWritten(t *testing.T) {
 							}
 						}
 					}},
-					{"is not controlled by this ControlPlane", func(secret *corev1.Secret) func() {
-						own := secret.OwnerReferences
-						secret.OwnerReferences = nil
-						if err := k8s.Update(ctx, secret); err != nil {
-							t.Fatal(err)
+					{"is not controlled by this ControlPlane", notControlled(func([]metav1.OwnerReference) []metav1.OwnerReference { return nil })},
+					{"is not controlled by this ControlPlane", notControlled(func([]metav1.OwnerReference) []metav1.OwnerReference {
+						return []metav1.OwnerReference{{APIVersion: "v1", Kind: "ConfigMap", Name: "other", UID: "other"}}
+					})},
+					{"is not controlled by this ControlPlane", notControlled(func(own []metav1.OwnerReference) []metav1.OwnerReference {
+						controller := false
+						for i := range own {
+							own[i].Controller = &controller
 						}
-						return func() {
-							secret.OwnerReferences = own
-							if err := k8s.Update(ctx, secret); err != nil {
-								t.Fatal(err)
-							}
-						}
-					}},
+						return own
+					})},
 				} {
 					before := inTenant(t, admin)
 					restore := breakage.apply(get(t, k8s, &corev1.Secret{}, cp.Namespace, name))
