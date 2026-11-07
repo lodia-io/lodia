@@ -60,7 +60,7 @@ Neither existing CA fits: kubelets accept the cluster CA for client authenticati
 Without it, anyone who reaches the Gateway could hold the sidecar's sessions and lock every pod of the tenant out of its API.
 
 **One image.**
-`lodia-tunnel` is a Go binary on `crypto/tls`, built by ko like `lodia-signer`, that reloads its certificate through `GetCertificate`; its modes `serve`, `addr` and `proxy` are the sidecar and the node's two containers.
+`lodia-tunnel` is a Go binary on `crypto/tls`, built by ko like `lodia-signer`, that reloads its certificates from their mounted directories; its modes `serve`, `addr` and `proxy` are the sidecar and the node's two containers.
 Workloads and Tenant render it ([Installation](../README.md#installation)).
 
 **One owner per hostname.**
