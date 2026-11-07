@@ -87,8 +87,9 @@ func parseCA(raw [][]byte) (*x509.CertPool, error) {
 }
 
 // watch loads the directory, then reloads it whenever it changes, until ctx is
-// done. Without a watch or anything loaded it retries on a timer. A watch error
-// reloads too, since the one inotify reports means it dropped events.
+// done. Without a watch or after a failed load it retries on a timer, since no
+// event may follow: the kubelet's swap is over. A watch error reloads too, since
+// the one inotify reports means it dropped events.
 func (s *source[T]) watch(ctx context.Context) {
 	s.watchWith(ctx, s.newWatcher)
 }
@@ -104,7 +105,7 @@ func (s *source[T]) watchWith(ctx context.Context, newWatcher func(context.Conte
 		if w == nil {
 			w = newWatcher(ctx)
 		}
-		s.reload(ctx)
+		ok := s.reload(ctx)
 
 		var events chan fsnotify.Event
 		var errs chan error
@@ -112,7 +113,7 @@ func (s *source[T]) watchWith(ctx context.Context, newWatcher func(context.Conte
 		if w != nil {
 			events, errs = w.Events, w.Errors
 		}
-		if w == nil || s.current.Load() == nil {
+		if w == nil || !ok {
 			retry = time.After(s.retry)
 		}
 		select {
@@ -138,10 +139,11 @@ func (s *source[T]) newWatcher(ctx context.Context) *fsnotify.Watcher {
 	return nil
 }
 
-func (s *source[T]) reload(ctx context.Context) {
+// reload returns whether the directory's content is the one in use.
+func (s *source[T]) reload(ctx context.Context) bool {
 	raw, err := s.read()
 	if err == nil && slices.EqualFunc(raw, s.raw, bytes.Equal) {
-		return
+		return true
 	}
 	var next *T
 	if err == nil {
@@ -149,7 +151,7 @@ func (s *source[T]) reload(ctx context.Context) {
 	}
 	if err != nil {
 		s.log.ErrorContext(ctx, "not loaded, keeping the last good content", "dir", s.dir, "error", err)
-		return
+		return false
 	}
 	first := s.current.Load() == nil
 	s.raw = raw
@@ -158,6 +160,7 @@ func (s *source[T]) reload(ctx context.Context) {
 	if first {
 		close(s.loaded)
 	}
+	return true
 }
 
 // read goes through one resolved ..data, the link the kubelet swaps, so a swap

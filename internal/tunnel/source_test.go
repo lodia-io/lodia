@@ -5,10 +5,12 @@ package tunnel
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"os"
 	"path/filepath"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -111,6 +113,67 @@ func TestItRetriesUntilLoadedWithoutAnEvent(t *testing.T) {
 	case <-s.loaded:
 	case <-time.After(waitFor):
 		t.Fatal("not loaded")
+	}
+}
+
+func TestAFailedReloadIsRetriedWithoutAnEventUntilItLoads(t *testing.T) {
+	dir := t.TempDir()
+	writeVolume(t, dir, caFiles(t, newCA(t, "first")))
+	log, logs := newLog(t)
+	s := caSource(dir, 10*time.Millisecond, log)
+	var failing atomic.Bool
+	parse := s.parse
+	s.parse = func(raw [][]byte) (*x509.CertPool, error) {
+		if failing.Load() {
+			return nil, syscall.EMFILE
+		}
+		return parse(raw)
+	}
+	events := make(chan fsnotify.Event)
+	silent := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.watchWith(ctx, func(context.Context) *fsnotify.Watcher {
+			w, err := fsnotify.NewWatcher()
+			if err != nil {
+				t.Error(err)
+				return nil
+			}
+			if err := w.Add(silent); err != nil {
+				t.Error(err)
+			}
+			w.Events = events
+			return w
+		})
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	<-s.loaded
+	first := s.current.Load()
+
+	failing.Store(true)
+	writeVolume(t, dir, caFiles(t, newCA(t, "second")))
+	select {
+	case events <- fsnotify.Event{}:
+	case <-time.After(waitFor):
+		t.Fatal("the watch is not listening")
+	}
+	eventually(t, "the failed reload", func() bool { return logs.count("not loaded") > 0 })
+	if s.current.Load() != first {
+		t.Fatal("a failed reload replaced the last good content")
+	}
+	failing.Store(false)
+	eventually(t, "the retry", func() bool { return s.current.Load() != first })
+
+	second := s.current.Load()
+	writeVolume(t, dir, caFiles(t, newCA(t, "third")))
+	time.Sleep(100 * time.Millisecond)
+	if s.current.Load() != second {
+		t.Fatal("still retrying after a good load, with a watch to wake it")
 	}
 }
 
