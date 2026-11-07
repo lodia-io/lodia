@@ -45,7 +45,7 @@ Lodia wraps it in a TLS session of its own, with the node half Segla's agent alr
 2. The Tenant controller runs `apiserver-proxy` as a `hostNetwork` DaemonSet in `kube-system` (priority `system-node-critical`, tolerating not-ready nodes, so it starts before the CNI), in two containers of one image, `lodia-tunnel`: `addr`, an init container and a restartable sidecar with `NET_ADMIN` and no listener, puts the address on the node's loopback and keeps it there; `proxy`, as UID 65532 with no capabilities and a read-only root filesystem, listens on the address and 6443.
    The pod mounts no ServiceAccount token; it reads `kube-root-ca.crt` as a ConfigMap volume.
 3. For each connection `proxy` opens TLS to `status.endpoint.tunnel` with the SNI `hostnames.tunnel`, verifying the server against the cluster CA, presents the tunnel client certificate, and copies the pod's bytes inside.
-   The pod's own TLS session with the API server travels untouched; the API server's serving certificate carries the `kubernetes` ClusterIP, the first address of the tenant's service range, as a SAN, as always.
+   The pod's own TLS session with the API server travels untouched; the API server's serving certificate carries the `kubernetes` ClusterIP, the first address of the tenant's service range, as a SAN, as always, and the advertise address for a client that dials it directly.
 4. The Gateway passes the outer session through by its SNI, a third passthrough `TLSRoute`, to the `tunnel` port of the API server's Service.
    There a native sidecar of every API server pod, `lodia-tunnel serve`, terminates it with `<cp>-tunnel-serving`, issued by PKI from the cluster CA, requires a client certificate of the tenant's tunnel CA, and splices the inner stream to `127.0.0.1:6443`.
    It counts only authenticated sessions against its cap, and bounds the handshakes still pending.
@@ -55,7 +55,8 @@ Kubelets and kube-proxy themselves use the public endpoint by name, so they neve
 
 **The tunnel's client.**
 The outer session is mutual TLS.
-A tunnel CA per tenant, a CA per purpose ([staged-credential-rotation](staged-credential-rotation.md)), signs a short-lived client certificate: PKI writes it as `<cp>-tunnel-client`, Tenant delivers it into a `kube-system` Secret for `apiserver-proxy`, which the kubelet fetches through the public endpoint, and Health presents it when it probes the tunnel.
+A tunnel CA per tenant, a CA per purpose ([staged-credential-rotation](staged-credential-rotation.md)), signs a client certificate of 90 days: PKI writes it as `<cp>-tunnel-client`, Tenant delivers it into a `kube-system` Secret for `apiserver-proxy`, which the kubelet fetches through the public endpoint, and Health presents it when it probes the tunnel.
+Ninety days, since a stolen one gives only sessions on the sidecar, until the tunnel CA rotates, while an expired one takes every pod's API, and the renewal at day 60 leaves [30 days without PKI](../operations.md#operator-down).
 Neither existing CA fits: kubelets accept the cluster CA for client authentication, and the API server accepts the client CA.
 Without it, anyone who reaches the Gateway could hold the sidecar's sessions and lock every pod of the tenant out of its API.
 
@@ -131,4 +132,5 @@ The kubelet's own listener address is a node flag (`--address`, `--node-ip`), wh
 - `api/v1alpha1` — the contracts of the gateway mode: `GatewayHostnames` with the tunnel required and the three distinct, `APIServer.AdvertiseAddress` with its rules and `DefaultAdvertiseAddress`, `EndpointStatus.Tunnel`, the tunnel's Secrets in `names.go` and the reasons of `APIServerReady` in `conditions.go`; `test/api/validation_test.go` holds the rules.
 - `internal/controller/workloads` — the Service of the `loadBalancer` and `nodePort` modes, `status.endpoint` with `inCluster`, the API server's advertise address and `--endpoint-reconciler-type=none`, and konnectivity-server beside it as a native sidecar on a Unix socket.
 - `internal/controller/tenant` — the `kubernetes` Endpoints and EndpointSlice in `manifests/endpoints.yaml`, and the agents' flags in `manifests/konnectivity.yaml`; `render_test.go` and `tenant_test.go` hold the objects, and `TestPhase1Gate` in `test/e2e` rolls the API server under requests from outside and inside the tenant.
+- `internal/controller/pki` — the tunnel's Secrets and the advertise address in the API server's serving certificate, in this mode only; `tunnel_test.go` holds them against the other modes.
 - `cmd/lodia-tunnel`, `internal/tunnel` — `lodia-tunnel`'s modes `serve`, `addr` and `proxy`, and `probe`, `proxy`'s health check; nothing renders them yet.

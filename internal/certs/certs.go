@@ -34,6 +34,11 @@ const Backdate = 5 * time.Minute
 // client certificates for.
 const KubeletClientLifetime = 30 * 24 * time.Hour
 
+// TunnelClientLifetime is how long the in-cluster tunnel's client certificate
+// lives. Renewed at two thirds, it outlasts 30 days without a renewal
+// (docs/decisions/api-exposure.md).
+const TunnelClientLifetime = 90 * 24 * time.Hour
+
 // KubeconfigRequestLifetime is the longest a KubeconfigRequest lives, the
 // schema's maximum of spec.expirationSeconds, and so how long a replaced
 // request CA stays in the client CA bundle.

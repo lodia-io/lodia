@@ -79,6 +79,7 @@ func Setup(mgr ctrl.Manager, signerImage, etcdDruidNamespace, operatorNamespace 
 		TrustAnchorLifetime: 10 * 365 * 24 * time.Hour,
 		CAExpiryNotice:      365 * 24 * time.Hour,
 		SignerPropagation:   5 * time.Minute,
+		Clock:               clock.RealClock{},
 	}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the pki controller: %w", err)
 	}

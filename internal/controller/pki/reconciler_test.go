@@ -38,6 +38,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -936,7 +937,7 @@ func immutable(s *corev1.Secret) bool {
 }
 
 func newReconciler(leafLifetime time.Duration) *pki.Reconciler {
-	return &pki.Reconciler{Client: controller, Reader: apiReader, LeafLifetime: leafLifetime, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour}
+	return &pki.Reconciler{Client: controller, Reader: apiReader, LeafLifetime: leafLifetime, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour, Clock: clock.RealClock{}}
 }
 
 func controlPlane(t *testing.T, namespace string, change ...func(*lodiav1alpha1.ControlPlaneSpec)) *lodiav1alpha1.ControlPlane {
@@ -1065,16 +1066,18 @@ func TestTheKonnectivityCertificateNamesTheKonnectivityHost(t *testing.T) {
 }
 
 func TestAGatewayControlPlaneWaitsForItsEndpoint(t *testing.T) {
-	cp := controlPlaneAt(t, "pki-gateway", lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
-		ParentRef: lodiav1alpha1.ParentReference{Name: "edge", Namespace: "gateways"},
-		Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.test", Konnectivity: "konnectivity.dev.example.test", Tunnel: "tunnel.dev.example.test"},
-	}})
+	cp := controlPlaneAt(t, "pki-gateway", gatewayEndpoint())
 	reconcile(t, newReconciler(time.Hour), cp)
 	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint)
 	secrets := secretsOf(t, cp)
-	for _, name := range []string{"dev-apiserver-serving", "dev-konnectivity-server", "dev-admin-kubeconfig"} {
+	for _, name := range []string{"dev-apiserver-serving", "dev-konnectivity-server", "dev-admin-kubeconfig", "dev-tunnel-serving"} {
 		if secrets[name] != nil {
 			t.Errorf("%s issued from spec.endpoint.gateway before status.endpoint", name)
+		}
+	}
+	for _, name := range []string{"dev-cakey-tunnel", "dev-tunnel-ca", "dev-tunnel-client"} {
+		if secrets[name] == nil {
+			t.Errorf("%s not issued while waiting for the endpoint", name)
 		}
 	}
 }

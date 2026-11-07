@@ -46,34 +46,49 @@ const (
 	frontProxyCA = "front-proxy"
 	etcdCA       = "etcd"
 	requestCA    = "kubeconfig-requests"
+	tunnelCA     = "tunnel"
 )
 
 // kubeletSignerNext is <cp>-kubelet-signer-next, the kubelet signer PKI has
 // staged and no component mounts.
 const kubeletSignerNext = "kubelet-signer-next"
 
-// A CA's bundle proves the tenant had that CA, so a CA is created only when
-// neither the bundle nor its key Secret exists.
-var caBundles = []struct {
+type caBundle struct {
 	ca     string
 	bundle lodiav1alpha1.Secret
-}{
-	{clusterCA, lodiav1alpha1.CABundleSecret},
-	{clientCA, lodiav1alpha1.ClientCASecret},
-	{frontProxyCA, lodiav1alpha1.FrontProxyCASecret},
-	{etcdCA, lodiav1alpha1.EtcdCASecret},
 }
 
-// names are PKI's Secrets, <cp>-<name>, beside the etcd generations
-// <cp>-etcd-<role>-<g>. They are reserved: PKI finds them by name, labelled or
-// not.
-var names = func() []string {
+// caBundles are the CAs of a ControlPlane. A CA's bundle proves the tenant had
+// that CA, so a CA is created only when neither the bundle nor its key Secret
+// exists.
+func caBundles(cp *lodiav1alpha1.ControlPlane) []caBundle {
+	bundles := []caBundle{
+		{clusterCA, lodiav1alpha1.CABundleSecret},
+		{clientCA, lodiav1alpha1.ClientCASecret},
+		{frontProxyCA, lodiav1alpha1.FrontProxyCASecret},
+		{etcdCA, lodiav1alpha1.EtcdCASecret},
+	}
+	if cp.Spec.Endpoint.Gateway != nil {
+		bundles = append(bundles, caBundle{tunnelCA, lodiav1alpha1.TunnelCASecret})
+	}
+	return bundles
+}
+
+// names are PKI's Secrets of a ControlPlane, <cp>-<name>, beside the etcd
+// generations <cp>-etcd-<role>-<g>. They are reserved: PKI finds them by name,
+// labelled or not. The tunnel's are reserved in gateway mode only, so that a
+// foreign Secret under a name a ControlPlane can never use, as endpoint is
+// immutable, stops none of its issuance.
+func names(cp *lodiav1alpha1.ControlPlane) []string {
 	names := []string{"cakey-cluster", "cakey-client", "cakey-front-proxy", "cakey-etcd", "cakey-kubeconfig-requests", kubeletSignerNext}
 	for _, s := range lodiav1alpha1.PKISecrets() {
 		names = append(names, string(s))
 	}
+	if cp.Spec.Endpoint.Gateway != nil {
+		names = append(names, "cakey-"+tunnelCA, string(lodiav1alpha1.TunnelCASecret), string(lodiav1alpha1.TunnelServingSecret), string(lodiav1alpha1.TunnelClientSecret))
+	}
 	return names
-}()
+}
 
 const (
 	// serviceAccountKeyBits is RSA 2048: OIDC makes RS256 mandatory for every
@@ -125,6 +140,8 @@ type tenant struct {
 	waitingForBackup string
 	endpoint         *endpoint
 	konnectivityHost string
+	// tunnelHost is status.endpoint.tunnel's, in gateway mode only.
+	tunnelHost string
 	// requests is the request CA the pass writes at its end.
 	requests *certs.Certificate
 	// next is what <cp>-kubelet-signer-next holds after the pass, which
@@ -161,6 +178,9 @@ func newTenant(cp *lodiav1alpha1.ControlPlane, now time.Time) *tenant {
 	if e := cp.Status.Endpoint; e != nil {
 		t.endpoint = &endpoint{host: e.APIServer.Host, port: e.APIServer.Port}
 		t.konnectivityHost = e.Konnectivity.Host
+		if cp.Spec.Endpoint.Gateway != nil && e.Tunnel != nil {
+			t.tunnelHost = e.Tunnel.Host
+		}
 	}
 	return t
 }
@@ -176,7 +196,7 @@ func (t *tenant) reserved(name string) (int, bool) {
 	if !ok {
 		return 0, false
 	}
-	if slices.Contains(names, suffix) {
+	if slices.Contains(names(t.cp), suffix) {
 		return 0, true
 	}
 	_, g, ok := lodiav1alpha1.ParseEtcdCertificateSecretName(t.cp.Name, name)
@@ -326,25 +346,30 @@ func (t *tenant) leaf(certPEM, keyPEM []byte, ca *certs.Certificate, p certs.Pro
 // generations last, so that none of the three blocks another, and a
 // generation's five creates come after the single creates of the others.
 func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
-	for _, ca := range caBundles {
+	for _, ca := range caBundles(t.cp) {
 		if err := r.ca(ctx, t, ca.ca, ca.bundle); err != nil {
 			return err
 		}
 	}
-	cluster, cl, frontProxy, etcd := t.cas[clusterCA], t.cas[clientCA], t.cas[frontProxyCA], t.cas[etcdCA]
+	cluster, cl, frontProxy, etcd, tunnel := t.cas[clusterCA], t.cas[clientCA], t.cas[frontProxyCA], t.cas[etcdCA], t.cas[tunnelCA]
 
 	if cluster != nil {
 		if err := r.bundle(ctx, t, t.secret(lodiav1alpha1.CABundleSecret), cluster.Cert); err != nil {
 			return err
 		}
-		if err := r.tls(ctx, t, t.secret(lodiav1alpha1.APIServerKubeletClientSecret), cluster, certs.Profile{CommonName: "kube-apiserver-kubelet-client", Organizations: []string{"lodia:kubelet-api-admins"}, Usages: clientAuth}); err != nil {
+		if err := r.tls(ctx, t, t.secret(lodiav1alpha1.APIServerKubeletClientSecret), cluster, certs.Profile{CommonName: "kube-apiserver-kubelet-client", Organizations: []string{"lodia:kubelet-api-admins"}, Usages: clientAuth}, r.LeafLifetime); err != nil {
 			return err
 		}
 		if t.endpoint != nil {
-			if err := r.tls(ctx, t, t.secret(lodiav1alpha1.APIServerServingSecret), cluster, t.servingProfile()); err != nil {
+			if err := r.tls(ctx, t, t.secret(lodiav1alpha1.APIServerServingSecret), cluster, t.servingProfile(), r.LeafLifetime); err != nil {
 				return err
 			}
-			if err := r.tls(ctx, t, t.secret(lodiav1alpha1.KonnectivityServerSecret), cluster, t.konnectivityProfile()); err != nil {
+			if err := r.tls(ctx, t, t.secret(lodiav1alpha1.KonnectivityServerSecret), cluster, t.konnectivityProfile(), r.LeafLifetime); err != nil {
+				return err
+			}
+		}
+		if t.tunnelHost != "" {
+			if err := r.tls(ctx, t, t.secret(lodiav1alpha1.TunnelServingSecret), cluster, t.tunnelServingProfile(), r.LeafLifetime); err != nil {
 				return err
 			}
 		}
@@ -377,7 +402,7 @@ func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 		if err := r.bundle(ctx, t, t.secret(lodiav1alpha1.FrontProxyCASecret), frontProxy.Cert); err != nil {
 			return err
 		}
-		if err := r.tls(ctx, t, t.secret(lodiav1alpha1.FrontProxyClientSecret), frontProxy, certs.Profile{CommonName: lodiav1alpha1.FrontProxyClientCommonName, Usages: clientAuth}); err != nil {
+		if err := r.tls(ctx, t, t.secret(lodiav1alpha1.FrontProxyClientSecret), frontProxy, certs.Profile{CommonName: lodiav1alpha1.FrontProxyClientCommonName, Usages: clientAuth}, r.LeafLifetime); err != nil {
 			return err
 		}
 	}
@@ -386,7 +411,16 @@ func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 		if err := r.bundle(ctx, t, t.secret(lodiav1alpha1.EtcdCASecret), etcd.Cert); err != nil {
 			return err
 		}
-		if err := r.tls(ctx, t, t.secret(lodiav1alpha1.APIServerEtcdClientSecret), etcd, certs.Profile{CommonName: "kube-apiserver-etcd-client", Usages: clientAuth}); err != nil {
+		if err := r.tls(ctx, t, t.secret(lodiav1alpha1.APIServerEtcdClientSecret), etcd, certs.Profile{CommonName: "kube-apiserver-etcd-client", Usages: clientAuth}, r.LeafLifetime); err != nil {
+			return err
+		}
+	}
+
+	if tunnel != nil {
+		if err := r.bundle(ctx, t, t.secret(lodiav1alpha1.TunnelCASecret), tunnel.Cert); err != nil {
+			return err
+		}
+		if err := r.tls(ctx, t, t.secret(lodiav1alpha1.TunnelClientSecret), tunnel, certs.Profile{CommonName: "lodia-tunnel-client", Usages: clientAuth}, certs.TunnelClientLifetime); err != nil {
 			return err
 		}
 	}
@@ -640,9 +674,9 @@ func overwritable(s *corev1.Secret) bool {
 	return s.Type == corev1.SecretTypeTLS && !isImmutable(s)
 }
 
-func (r *Reconciler) tls(ctx context.Context, t *tenant, name string, ca *certs.Certificate, p certs.Profile) error {
+func (r *Reconciler) tls(ctx context.Context, t *tenant, name string, ca *certs.Certificate, p certs.Profile, lifetime time.Duration) error {
 	s := t.existing[name]
-	c, err := t.leaf(data(s, lodiav1alpha1.TLSCertKey), data(s, lodiav1alpha1.TLSPrivateKeyKey), ca, p, r.LeafLifetime)
+	c, err := t.leaf(data(s, lodiav1alpha1.TLSCertKey), data(s, lodiav1alpha1.TLSPrivateKeyKey), ca, p, lifetime)
 	if err != nil {
 		return err
 	}
@@ -754,6 +788,9 @@ func (t *tenant) servingProfile() certs.Profile {
 	for _, name := range []string{api, api + "." + cp.Namespace, api + "." + cp.Namespace + ".svc", "localhost", "127.0.0.1", t.endpoint.host} {
 		p.SAN(name)
 	}
+	if cp.Spec.Endpoint.Gateway != nil {
+		p.SAN(cp.Status.Endpoint.InCluster.Host)
+	}
 	for _, san := range cp.Spec.Endpoint.CertSANs {
 		p.SAN(string(san))
 	}
@@ -765,6 +802,12 @@ func (t *tenant) konnectivityProfile() certs.Profile {
 	for _, name := range []string{"localhost", "127.0.0.1", t.konnectivityHost} {
 		p.SAN(name)
 	}
+	return p
+}
+
+func (t *tenant) tunnelServingProfile() certs.Profile {
+	p := certs.Profile{CommonName: "lodia-tunnel", Usages: serverAuth}
+	p.SAN(t.tunnelHost)
 	return p
 }
 

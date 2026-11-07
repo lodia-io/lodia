@@ -5,6 +5,7 @@ package pki
 
 import (
 	"crypto/x509"
+	"slices"
 	"strings"
 	"testing"
 
@@ -15,7 +16,7 @@ import (
 )
 
 func TestNoSecretNameOfOneControlPlaneIsAnothers(t *testing.T) {
-	suffixes := append([]string{string(lodiav1alpha1.EtcdBackupSecret)}, names...)
+	suffixes := append([]string{string(lodiav1alpha1.EtcdBackupSecret)}, names(gatewayControlPlane())...)
 	for _, role := range lodiav1alpha1.EtcdCertificateRoles() {
 		suffixes = append(suffixes, "etcd-"+string(role)+"-1", "etcd-"+string(role)+"-12")
 	}
@@ -25,6 +26,47 @@ func TestNoSecretNameOfOneControlPlaneIsAnothers(t *testing.T) {
 				t.Errorf("<n>-%s of a ControlPlane <n> is also <n>-%s-%s of a ControlPlane <n>-%s", a, prefix, b, prefix)
 			}
 		}
+	}
+}
+
+func gatewayControlPlane() *lodiav1alpha1.ControlPlane {
+	return &lodiav1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev"},
+		Spec:       lodiav1alpha1.ControlPlaneSpec{Endpoint: lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{}}},
+	}
+}
+
+func TestTheTunnelsNamesAndCABelongToGatewayModeOnly(t *testing.T) {
+	tunnel := []string{"cakey-tunnel", "tunnel-ca", "tunnel-serving", "tunnel-client"}
+	for mode, endpoint := range map[string]lodiav1alpha1.Endpoint{
+		"nodePort":     {NodePort: &lodiav1alpha1.NodePortEndpoint{}},
+		"loadBalancer": {LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}},
+	} {
+		cp := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "dev"}, Spec: lodiav1alpha1.ControlPlaneSpec{Endpoint: endpoint}}
+		if want, got := slices.Concat(names(cp), tunnel), names(gatewayControlPlane()); !slices.Equal(want, got) {
+			t.Errorf("%s has the names %v, gateway %v: they differ by more than the tunnel's", mode, names(cp), got)
+		}
+		if bundles := caBundles(cp); slices.ContainsFunc(bundles, func(b caBundle) bool { return b.ca == tunnelCA }) || len(bundles) != 4 {
+			t.Errorf("%s has the CAs %v", mode, bundles)
+		}
+		other := &tenant{cp: cp}
+		for _, name := range tunnel {
+			if _, ok := other.reserved("dev-" + name); ok {
+				t.Errorf("%s reserves dev-%s", mode, name)
+			}
+		}
+	}
+	if bundles := caBundles(gatewayControlPlane()); !slices.Contains(bundles, caBundle{tunnelCA, lodiav1alpha1.TunnelCASecret}) || len(bundles) != 5 {
+		t.Errorf("gateway has the CAs %v", bundles)
+	}
+	own := &tenant{cp: gatewayControlPlane()}
+	for _, name := range tunnel {
+		if _, ok := own.reserved("dev-" + name); !ok {
+			t.Errorf("gateway does not reserve dev-%s", name)
+		}
+	}
+	if _, ok := own.reserved("prod-tunnel-ca"); ok {
+		t.Error("gateway reserves another ControlPlane's prod-tunnel-ca")
 	}
 }
 

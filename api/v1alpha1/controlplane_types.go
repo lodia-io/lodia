@@ -129,7 +129,9 @@ type ControlPlaneSpec struct {
 	// +optional
 	RestoreFrom *RestoreFrom `json:"restoreFrom,omitempty"`
 
-	// Paused stops reconciliation; everything keeps running.
+	// Paused stops reconciliation; everything keeps running. In gateway mode
+	// nothing renews the tunnel's client certificate meanwhile: 30 days after
+	// its renewal time every pod of the tenant loses its API.
 	// +optional
 	Paused bool `json:"paused,omitempty"`
 }
