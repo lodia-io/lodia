@@ -219,4 +219,3 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 - In `gateway` mode a pass with `AccessReady` True that waits in `newValues` (no target, no endpoint, no tunnel) requeues nothing, unlike the wait for `AccessReady`, so a renewal waits for an input to change; it takes a published target or endpoint going away, which nothing does today.
   If something ever can, give that wait the same requeue.
-- A missing `<cp>-tunnel-client` with `AccessReady` True returns the read's error from every pass and reports nothing, as a missing `<cp>-ca-bundle` does; it lasts only while PKI cannot write it again, which takes a lost or expired tunnel CA (`CAMissing`, `CAExpired`), and it then stops every addon's apply too.

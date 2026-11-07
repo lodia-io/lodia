@@ -42,7 +42,8 @@ const (
 )
 
 // waitPeriod is how often a pass runs while it waits on what no event
-// reports: the addons' pods on the nodes, and a Secret another owner keeps.
+// reports: the addons' pods on the nodes, and a Secret that is missing or that
+// another owner keeps.
 const waitPeriod = time.Minute
 
 // deliveryTimeout bounds each request of deliverTunnelClient. It is on the
@@ -137,12 +138,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		return ctrl.Result{}, nil
 	}
-	clusterCA, kubeconfig, tunnelClient, keptElsewhere, err := r.credentials(ctx, cp)
+	clusterCA, kubeconfig, tunnelClient, unusable, err := r.credentials(ctx, cp)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if keptElsewhere != "" {
-		if err := r.wait(ctx, cp, lodiav1alpha1.ReasonWaitingForAccess, keptElsewhere); err != nil {
+	if unusable != "" {
+		if err := r.wait(ctx, cp, lodiav1alpha1.ReasonWaitingForAccess, unusable); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: min(waitPeriod, r.ApplyPeriod)}, nil
@@ -233,26 +234,31 @@ type secretRead struct {
 	obj    *corev1.Secret
 }
 
-// credentials also returns, when one of the Secrets is another owner's, which;
-// its content is not used.
+// credentials also returns, when one of the Secrets is missing or another
+// owner's, what to report about it; its content is not used.
 func (r *Reconciler) credentials(ctx context.Context, cp *lodiav1alpha1.ControlPlane) ([]byte, []byte, *corev1.Secret, string, error) {
 	bundle, kubeconfig, tunnelClient := &corev1.Secret{}, &corev1.Secret{}, &corev1.Secret{}
 	reads := []secretRead{{lodiav1alpha1.CABundleSecret, bundle}, {lodiav1alpha1.LodiaKubeconfigSecret, kubeconfig}}
 	if cp.Spec.Endpoint.Gateway != nil {
 		reads = append(reads, secretRead{lodiav1alpha1.TunnelClientSecret, tunnelClient})
 	}
-	keptElsewhere, err := r.readSecrets(ctx, cp, reads)
-	if err != nil || keptElsewhere != "" {
-		return nil, nil, nil, keptElsewhere, err
+	unusable, err := r.readSecrets(ctx, cp, reads)
+	if err != nil || unusable != "" {
+		return nil, nil, nil, unusable, err
 	}
 	return bundle.Data[lodiav1alpha1.CACertKey], kubeconfig.Data[lodiav1alpha1.KubeconfigKey], tunnelClient, "", nil
 }
 
-// readSecrets stops at the first Secret another owner keeps, and says which.
+// readSecrets stops at the first Secret that is missing or that another owner
+// keeps, and returns what to report about it.
 func (r *Reconciler) readSecrets(ctx context.Context, cp *lodiav1alpha1.ControlPlane, reads []secretRead) (string, error) {
 	for _, read := range reads {
-		obj := read.obj
-		if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: read.secret.Name(cp.Name)}, obj); err != nil {
+		obj, name := read.obj, read.secret.Name(cp.Name)
+		err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: name}, obj)
+		if apierrors.IsNotFound(err) {
+			return fmt.Sprintf("Secret %s does not exist", name), nil
+		}
+		if err != nil {
 			return "", err
 		}
 		if ref := ownership.ControlledElsewhere(obj, cp); ref != nil {
@@ -268,8 +274,8 @@ func (r *Reconciler) readSecrets(ctx context.Context, cp *lodiav1alpha1.ControlP
 // exist yet, the inventory's to write, nor another owner's gets a write.
 func (r *Reconciler) deliverTunnelClient(ctx context.Context, cp *lodiav1alpha1.ControlPlane) {
 	kubeconfig, pair := &corev1.Secret{}, &corev1.Secret{}
-	keptElsewhere, err := r.readSecrets(ctx, cp, []secretRead{{lodiav1alpha1.LodiaKubeconfigSecret, kubeconfig}, {lodiav1alpha1.TunnelClientSecret, pair}})
-	if keptElsewhere != "" || apierrors.IsNotFound(err) {
+	unusable, err := r.readSecrets(ctx, cp, []secretRead{{lodiav1alpha1.LodiaKubeconfigSecret, kubeconfig}, {lodiav1alpha1.TunnelClientSecret, pair}})
+	if unusable != "" {
 		return
 	}
 	if err == nil {

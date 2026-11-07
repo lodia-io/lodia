@@ -667,3 +667,74 @@ func TestAFailedDeliveryStopsNothing(t *testing.T) {
 	}
 	expectNow(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused)
 }
+
+func inTenant(t *testing.T, admin *tenantClient) map[string]map[string]any {
+	t.Helper()
+	objects := map[string]map[string]any{}
+	for _, entry := range append(inventoryOf(t, admin), "ConfigMap kube-system/lodia-inventory") {
+		objects[entry] = objectOf(t, admin, entry).Object
+	}
+	return objects
+}
+
+func TestAMissingSecretIsReportedAndNothingIsWritten(t *testing.T) {
+	for _, c := range []struct {
+		namespace string
+		tenant    func(*testing.T, string) (*lodiav1alpha1.ControlPlane, *tenantClient)
+		secrets   []string
+	}{
+		{"tenant-missing-gateway", func(t *testing.T, namespace string) (*lodiav1alpha1.ControlPlane, *tenantClient) {
+			t.Helper()
+			cp, admin, _ := gatewayTenant(t, namespace)
+			return cp, admin
+		}, []string{"dev-tunnel-client", "dev-ca-bundle", "dev-lodia-kubeconfig"}},
+		{"tenant-missing-load-balancer", servedTenant, []string{"dev-ca-bundle", "dev-lodia-kubeconfig"}},
+	} {
+		t.Run(c.namespace, func(t *testing.T) {
+			ctx := t.Context()
+			cp, admin := c.tenant(t, c.namespace)
+			applied(t, cp)
+			update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+			setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+			pass := func() ctrl.Result {
+				t.Helper()
+				refresh(t, cp)
+				r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: *dial.Load()}
+				result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return result
+			}
+			pass()
+			for _, name := range c.secrets {
+				secret := get(t, k8s, &corev1.Secret{}, cp.Namespace, name)
+				before := inTenant(t, admin)
+				if err := k8s.Delete(ctx, secret); err != nil {
+					t.Fatal(err)
+				}
+				if result := pass(); result.RequeueAfter != time.Minute {
+					t.Errorf("without %s the pass requeues after %s, want a minute", name, result.RequeueAfter)
+				}
+				for _, conditionType := range []string{lodiav1alpha1.ConditionAddonsApplied, lodiav1alpha1.ConditionAddonsAvailable} {
+					expectNow(t, cp, conditionType, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+					if got := condition(t, cp, conditionType); got.Message != "Secret "+name+" does not exist" {
+						t.Errorf("without %s, %s says %q", name, conditionType, got.Message)
+					}
+				}
+				after := inTenant(t, admin)
+				for entry, object := range before {
+					if !equality.Semantic.DeepEqual(object, after[entry]) {
+						t.Errorf("a pass without %s wrote %s", name, entry)
+					}
+				}
+				secret.ObjectMeta = metav1.ObjectMeta{Namespace: cp.Namespace, Name: name, OwnerReferences: secret.OwnerReferences}
+				if err := k8s.Create(ctx, secret); err != nil {
+					t.Fatal(err)
+				}
+				pass()
+				expectNow(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
+			}
+		})
+	}
+}
