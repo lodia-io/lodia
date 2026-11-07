@@ -53,6 +53,34 @@ metadata:
 roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: konnectivity-agent}
 subjects:
 - {kind: ServiceAccount, name: konnectivity-agent, namespace: kube-system}
+{{- if .Gateway }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: konnectivity-agent-kubeconfig
+  namespace: kube-system
+data:
+  kubeconfig: |-
+    apiVersion: v1
+    kind: Config
+    clusters:
+    - cluster:
+        certificate-authority: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        server: {{ quote .Server }}
+      name: default
+    contexts:
+    - context:
+        cluster: default
+        namespace: default
+        user: default
+      name: default
+    current-context: default
+    users:
+    - name: default
+      user:
+        tokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: {{ if .AgentDeployment }}Deployment{{ else }}DaemonSet{{ end }}
@@ -84,6 +112,9 @@ spec:
       - operator: Exists
 {{- end }}
       serviceAccountName: konnectivity-agent
+{{- if .Gateway }}
+      dnsPolicy: Default
+{{- end }}
       nodeSelector:
         kubernetes.io/os: linux
       containers:
@@ -98,6 +129,9 @@ spec:
         - --service-account-token-path=/var/run/secrets/tokens/konnectivity-agent-token
         - --count-server-leases
         - --keepalive-time=30s
+{{- if .Gateway }}
+        - --kubeconfig=/etc/konnectivity-agent/kubeconfig
+{{- end }}
 {{- if not .AgentDeployment }}
         - --agent-identifiers=ipv4=$(HOST_IP)
         env:
@@ -120,6 +154,10 @@ spec:
         volumeMounts:
         - name: konnectivity-agent-token
           mountPath: /var/run/secrets/tokens
+{{- if .Gateway }}
+        - name: kubeconfig
+          mountPath: /etc/konnectivity-agent
+{{- end }}
       volumes:
       - name: konnectivity-agent-token
         projected:
@@ -128,3 +166,8 @@ spec:
               path: konnectivity-agent-token
               audience: system:konnectivity-server
               expirationSeconds: 3600
+{{- if .Gateway }}
+      - name: kubeconfig
+        configMap:
+          name: konnectivity-agent-kubeconfig
+{{- end }}

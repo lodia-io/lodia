@@ -1,7 +1,7 @@
 # Objects inside a tenant cluster are applied with an inventory and pruned; Lodia keeps no informers in tenant clusters
 
 Decided 2026-10-25.
-Built for phase 1, without the apiserver-proxy.
+Built for phase 1.
 
 ## Decision
 

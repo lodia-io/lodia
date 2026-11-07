@@ -85,6 +85,9 @@ func inputs(cp *lodiav1alpha1.ControlPlane) string {
 	}
 	if e := cp.Status.Endpoint; e != nil {
 		fmt.Fprintf(&b, " %s:%d %s:%d %s:%d", e.APIServer.Host, e.APIServer.Port, e.Konnectivity.Host, e.Konnectivity.Port, e.InCluster.Host, e.InCluster.Port)
+		if e.Tunnel != nil {
+			fmt.Fprintf(&b, " %s:%d", e.Tunnel.Host, e.Tunnel.Port)
+		}
 	}
 	if c := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAccessReady); c != nil {
 		fmt.Fprintf(&b, " %s/%d", c.Status, c.ObservedGeneration)
@@ -117,7 +120,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		return ctrl.Result{}, r.applyStatus(ctx, cp, waitForAccess(cp, previous(cp, applied.Type)), waitForAccess(cp, previous(cp, available.Type)))
 	}
-	clusterCA, kubeconfig, keptElsewhere, err := r.credentials(ctx, cp)
+	clusterCA, kubeconfig, tunnelClient, keptElsewhere, err := r.credentials(ctx, cp)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -134,6 +137,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if waitingFor != "" {
 		return ctrl.Result{}, r.wait(ctx, cp, reason, waitingFor)
 	}
+	v.TunnelImage, v.tunnelCert, v.tunnelKey = r.TunnelImage, tunnelClient.Data[corev1.TLSCertKey], tunnelClient.Data[corev1.TLSPrivateKeyKey]
 	objects, err := render(v)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -207,23 +211,29 @@ func waitForAccess(cp *lodiav1alpha1.ControlPlane, c metav1.Condition) metav1.Co
 	return newCondition(cp, c.Type, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, "AccessReady is not True for this generation")
 }
 
-// credentials also returns, when one of the two Secrets is another owner's,
-// which; its content is not used.
-func (r *Reconciler) credentials(ctx context.Context, cp *lodiav1alpha1.ControlPlane) ([]byte, []byte, string, error) {
-	bundle, kubeconfig := &corev1.Secret{}, &corev1.Secret{}
-	for _, read := range []struct {
-		secret lodiav1alpha1.Secret
-		obj    *corev1.Secret
-	}{{lodiav1alpha1.CABundleSecret, bundle}, {lodiav1alpha1.LodiaKubeconfigSecret, kubeconfig}} {
+type secretRead struct {
+	secret lodiav1alpha1.Secret
+	obj    *corev1.Secret
+}
+
+// credentials also returns, when one of the Secrets is another owner's, which;
+// its content is not used.
+func (r *Reconciler) credentials(ctx context.Context, cp *lodiav1alpha1.ControlPlane) ([]byte, []byte, *corev1.Secret, string, error) {
+	bundle, kubeconfig, tunnelClient := &corev1.Secret{}, &corev1.Secret{}, &corev1.Secret{}
+	reads := []secretRead{{lodiav1alpha1.CABundleSecret, bundle}, {lodiav1alpha1.LodiaKubeconfigSecret, kubeconfig}}
+	if cp.Spec.Endpoint.Gateway != nil {
+		reads = append(reads, secretRead{lodiav1alpha1.TunnelClientSecret, tunnelClient})
+	}
+	for _, read := range reads {
 		obj := read.obj
 		if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: read.secret.Name(cp.Name)}, obj); err != nil {
-			return nil, nil, "", err
+			return nil, nil, nil, "", err
 		}
 		if ref := ownership.ControlledElsewhere(obj, cp); ref != nil {
-			return nil, nil, fmt.Sprintf("Secret %s is kept by %s %s with UID %s", obj.Name, ref.Kind, ref.Name, ref.UID), nil
+			return nil, nil, nil, fmt.Sprintf("Secret %s is kept by %s %s with UID %s", obj.Name, ref.Kind, ref.Name, ref.UID), nil
 		}
 	}
-	return bundle.Data[lodiav1alpha1.CACertKey], kubeconfig.Data[lodiav1alpha1.KubeconfigKey], "", nil
+	return bundle.Data[lodiav1alpha1.CACertKey], kubeconfig.Data[lodiav1alpha1.KubeconfigKey], tunnelClient, "", nil
 }
 
 func (r *Reconciler) tenantClient(kubeconfig []byte) (client.Client, error) {

@@ -1,7 +1,7 @@
 # Six controllers share one object and communicate only through status conditions
 
 Decided 2026-10-25.
-The manager, PKI, the Datastore controller, for a dedicated etcd, Lifecycle, for the target within a minor, the rollout in `Progressing` and `Ready`, Tenant, without the apiserver-proxy, Health, for the probe through the public endpoint and the leader Leases, and Workloads, behind a `loadBalancer` or `nodePort` endpoint, are built.
+The manager, PKI, the Datastore controller, for a dedicated etcd, Lifecycle, for the target within a minor, the rollout in `Progressing` and `Ready`, Tenant, Health, for the probe through the public endpoint and the leader Leases, and Workloads, behind a `loadBalancer` or `nodePort` endpoint, are built.
 
 ## Decision
 
