@@ -6,6 +6,9 @@ package tunnel
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -74,4 +77,115 @@ func TestAnUnchangedVolumeIsNotLoadedAgain(t *testing.T) {
 	if s.current.Load() != first {
 		t.Fatal("the same content was parsed and stored again")
 	}
+}
+
+func TestItRetriesUntilLoadedWithoutAnEvent(t *testing.T) {
+	dir := t.TempDir()
+	writeVolume(t, dir, map[string][]byte{caCertFile: []byte("garbage")})
+	log, _ := newLog(t)
+	s := caSource(dir, 10*time.Millisecond, log)
+	silent := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.watchWith(ctx, func(context.Context) *fsnotify.Watcher {
+			w, err := fsnotify.NewWatcher()
+			if err != nil {
+				t.Error(err)
+				return nil
+			}
+			if err := w.Add(silent); err != nil {
+				t.Error(err)
+			}
+			return w
+		})
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	writeVolume(t, dir, caFiles(t, newCA(t, "good")))
+	select {
+	case <-s.loaded:
+	case <-time.After(waitFor):
+		t.Fatal("not loaded")
+	}
+}
+
+func TestItReadsThroughDataNotTheLinksBesideIt(t *testing.T) {
+	dir := t.TempDir()
+	writeVolume(t, dir, caFiles(t, newCA(t, "good")))
+	link := filepath.Join(dir, caCertFile)
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(link, []byte("garbage"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	log, _ := newLog(t)
+	s := caSource(dir, time.Hour, log)
+	s.reload(context.Background())
+	if s.current.Load() == nil {
+		t.Fatal("read the file beside ..data")
+	}
+}
+
+func TestAMissingWatchIsRetriedAfterItHasLoaded(t *testing.T) {
+	dir := t.TempDir()
+	writeVolume(t, dir, caFiles(t, newCA(t, "first")))
+	log, _ := newLog(t)
+	s := caSource(dir, 10*time.Millisecond, log)
+	var attempts atomic.Int64
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.watchWith(ctx, func(ctx context.Context) *fsnotify.Watcher {
+			if attempts.Add(1) < 3 {
+				return nil
+			}
+			return s.newWatcher(ctx)
+		})
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	<-s.loaded
+	eventually(t, "a watch after the failed attempts", func() bool { return attempts.Load() == 3 })
+	first := s.current.Load()
+	writeVolume(t, dir, caFiles(t, newCA(t, "second")))
+	eventually(t, "the reload", func() bool { return s.current.Load() != first })
+}
+
+func TestADirectoryThatAppearsLateIsWatchedOnceItExists(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "volume")
+	log, _ := newLog(t)
+	s := caSource(dir, 10*time.Millisecond, log)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.watch(ctx)
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeVolume(t, dir, caFiles(t, newCA(t, "first")))
+	<-s.loaded
+	first := s.current.Load()
+	eventually(t, "a reload through the watch", func() bool {
+		if s.current.Load() != first {
+			return true
+		}
+		writeVolume(t, dir, caFiles(t, newCA(t, "second")))
+		return false
+	})
 }
