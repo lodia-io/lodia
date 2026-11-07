@@ -72,6 +72,10 @@ func installLodia(ctx context.Context, cfg *envconf.Config) (context.Context, er
 	if err != nil {
 		return ctx, err
 	}
+	tunnel, err := build(ctx, cfg.KubeconfigFile(), "./cmd/lodia-tunnel")
+	if err != nil {
+		return ctx, err
+	}
 	if out, err := exec.CommandContext(ctx, "helm", "dependency", "build", chart).CombinedOutput(); err != nil {
 		return ctx, fmt.Errorf("build the chart's dependencies: %w\n%s", err, out)
 	}
@@ -79,12 +83,13 @@ func installLodia(ctx context.Context, cfg *envconf.Config) (context.Context, er
 		helm.WithName(release), helm.WithChart(chart), helm.WithNamespace(operatorNamespace), helm.WithContext(ctx),
 		helm.WithArgs("--install", "--create-namespace",
 			"--set", "image.repository="+operator.Name(), "--set", "image.tag="+operator.Tag(),
-			"--set", "signerImage.repository="+signer.Name(), "--set", "signerImage.tag="+signer.Tag()),
+			"--set", "signerImage.repository="+signer.Name(), "--set", "signerImage.tag="+signer.Tag(),
+			"--set", "tunnelImage.repository="+tunnel.Name(), "--set", "tunnelImage.tag="+tunnel.Tag()),
 		helm.WithWait(), helm.WithTimeout("5m"))
 	if err != nil {
 		return ctx, fmt.Errorf("install the chart: %w", err)
 	}
-	fmt.Printf("the chart installed %s into %s with %s, %s and etcd-druid, after %s\n", release, operatorNamespace, operator, signer, time.Since(start).Round(time.Second))
+	fmt.Printf("the chart installed %s into %s with %s, %s, %s and etcd-druid, after %s\n", release, operatorNamespace, operator, signer, tunnel, time.Since(start).Round(time.Second))
 	return ctx, nil
 }
 

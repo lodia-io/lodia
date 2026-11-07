@@ -118,6 +118,7 @@ func TestMain(m *testing.M) {
 		Client:      mgr.GetClient(),
 		Reader:      mgr.GetAPIReader(),
 		ApplyPeriod: 2 * time.Second,
+		TunnelImage: tunnelImage,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
 			return (*dial.Load())(ctx, network, address)
 		},
@@ -1573,7 +1574,7 @@ func inventoryOf(t *testing.T, c client.Client) []string {
 }
 
 var kinds = map[string]string{
-	"ConfigMap": "v1", "ServiceAccount": "v1", "Service": "v1", "Endpoints": "v1",
+	"ConfigMap": "v1", "Secret": "v1", "ServiceAccount": "v1", "Service": "v1", "Endpoints": "v1",
 	"Deployment": "apps/v1", "DaemonSet": "apps/v1", "EndpointSlice": "discovery.k8s.io/v1",
 	"ClusterRole": "rbac.authorization.k8s.io/v1", "ClusterRoleBinding": "rbac.authorization.k8s.io/v1",
 	"Role": "rbac.authorization.k8s.io/v1", "RoleBinding": "rbac.authorization.k8s.io/v1",

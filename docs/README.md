@@ -331,7 +331,7 @@ The kubeadm objects use kubeadm's own names, so `kubeadm join` and `kubeadm toke
 | ConfigMap `kube-system/kubelet-config` (`KubeletConfiguration`); Role and RoleBinding `kubeadm:kubelet-config` | the kubelet configuration every node starts with |
 | kube-proxy: ServiceAccount, ConfigMap `kube-proxy`, DaemonSet, ClusterRoleBinding `kubeadm:node-proxier`, Role and RoleBinding `kube-proxy` | Services on nodes; off with `addons.kubeProxy.enabled: false` |
 | CoreDNS: ServiceAccount, ClusterRole and binding, ConfigMap, Deployment, Service `kube-dns` at the tenth service address | cluster DNS, the version kubeadm pins for the minor |
-| konnectivity-agent: ServiceAccount, DaemonSet, Role to list and watch server leases in `kube-system` | the tunnel to every API server replica ([api-exposure](decisions/api-exposure.md)) |
+| konnectivity-agent: ServiceAccount, DaemonSet, Role to list and watch server leases in `kube-system`; in `gateway` mode a ConfigMap `konnectivity-agent-kubeconfig` | the tunnel to every API server replica ([api-exposure](decisions/api-exposure.md)) |
 | Endpoints and EndpointSlice `default/kubernetes` (`status.endpoint.inCluster`, port `https`) | the `kubernetes` Service's endpoint, which the API server leaves alone (`--endpoint-reconciler-type=none`) |
 | `apiserver-proxy` DaemonSet (`lodia-tunnel` in its `addr` and `proxy` modes), and the Secret with its client certificate, from `<cp>-tunnel-client` | in-cluster API access in `gateway` mode ([api-exposure](decisions/api-exposure.md)); phase 2's wave 1b, Gateway |
 | ClusterRoleBinding for `system:konnectivity-server` (→ `system:auth-delegator`) with its lease Role; the bindings of `lodia:operator` and `lodia:cluster-admins` (→ `cluster-admin`) and `lodia:kubelet-api-admins` (→ `system:kubelet-api-admin`) are PKI's, since nothing can apply them before they exist (`AccessReady`) | the identities above |
@@ -341,8 +341,10 @@ The kubeadm objects use kubeadm's own names, so `kubeadm join` and `kubeadm toke
 The controller manager runs with `--use-service-account-credentials` and no cloud provider ([kube-controller-manager](https://kubernetes.io/docs/reference/command-line-tools-reference/kube-controller-manager/)).
 The pinned component versions per minor are those kubeadm pins: CoreDNS v1.13.1 and etcd 3.6.6 for 1.35, CoreDNS v1.14.2 for 1.36, CoreDNS v1.14.6 for 1.37, and konnectivity 0.NN for Kubernetes 1.NN (kubeadm's constants at [v1.35.0](https://github.com/kubernetes/kubernetes/blob/v1.35.0/cmd/kubeadm/app/constants/constants.go), [v1.36.0](https://github.com/kubernetes/kubernetes/blob/v1.36.0/cmd/kubeadm/app/constants/constants.go) and [v1.37.1](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kubeadm/app/constants/constants.go)).
 
-Built for phase 1, without `apiserver-proxy` and the write lock (`internal/controller/tenant`, the templates in its `manifests/`, taken from [kubeadm v1.35.0](https://github.com/kubernetes/kubernetes/tree/v1.35.0/cmd/kubeadm/app/phases) and [the hard way](hard-way.md)).
-Once `AccessReady` is True for the generation, the controller applies every object as `lodia/tenant` through `<cp>-lodia-kubeconfig`, on a change of the inputs it reads and every 10 minutes; until then both conditions stay as they were at an earlier generation, or are `WaitingForAccess` at the generation they describe, and it uses `<cp>-lodia-kubeconfig` and `<cp>-ca-bundle` only while no other owner keeps them, looking again every minute.
+Built for phase 1, without the write lock (`internal/controller/tenant`, the templates in its `manifests/`, taken from [kubeadm v1.35.0](https://github.com/kubernetes/kubernetes/tree/v1.35.0/cmd/kubeadm/app/phases) and [the hard way](hard-way.md)).
+Once `AccessReady` is True for the generation, the controller applies every object as `lodia/tenant` through `<cp>-lodia-kubeconfig`, on a change of the inputs it reads and every 10 minutes; until then both conditions stay as they were at an earlier generation, or are `WaitingForAccess` at the generation they describe, and it uses `<cp>-lodia-kubeconfig`, `<cp>-ca-bundle` and, in `gateway` mode, `<cp>-tunnel-client` only once they exist and this `ControlPlane` controls them, looking again every minute.
+In `gateway` mode a pass first delivers `<cp>-tunnel-client`, under the same rule, before it reads any condition, and every 10 minutes while it waits: none of them proves the API server cannot take the renewal, and an expired certificate takes every pod's API.
+With a 10-second timeout on each request, it applies the pair to `kube-system/apiserver-proxy-client` if that exists and `lodia/tenant` applied it, so the first write stays the inventory's and another owner's Secret stays theirs; a failure is logged and the pass goes on.
 It leaves another owner's objects as they are: an object no inventory names yet is read before its first apply and left alone when it exists without `lodia/tenant` among its field managers, and the prune deletes an entry that left the render only when `lodia/tenant` applied it, under the UID and resourceVersion it read, and otherwise drops the entry.
 The inventory names an object before it is first written, and is rewritten to what the render holds once the objects that left it are deleted, so a pass that stops anywhere leaves nothing to leak; an object at another API version is the same entry, pruned at the version the tenant serves, and one of a kind it no longer serves is gone.
 A tenant that stops answering leaves a True `AddonsApplied` as it was.
@@ -454,15 +456,16 @@ Prerequisites on the management cluster:
 | a metrics stack | optional: the chart's monitoring, from phase 2's wave 2 ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)) |
 
 The chart is [`charts/lodia`](../charts/lodia).
-The release workflow that publishes it to `oci://ghcr.io/lodia-io/charts/lodia` with the images is not built yet ([releases-and-support](decisions/releases-and-support.md)); until it is, build both images with ko and install from a checkout, into `lodia-system` or any namespace:
+The release workflow that publishes it to `oci://ghcr.io/lodia-io/charts/lodia` with the images is not built yet ([releases-and-support](decisions/releases-and-support.md)); until it is, build the images with ko and install from a checkout, into `lodia-system` or any namespace:
 
 ```sh
 KO_DOCKER_REPO=<registry> go run github.com/google/ko@v0.19.1 build \
-  --base-import-paths --platform=linux/amd64,linux/arm64 ./cmd/lodia ./cmd/lodia-signer
+  --base-import-paths --platform=linux/amd64,linux/arm64 ./cmd/lodia ./cmd/lodia-signer ./cmd/lodia-tunnel
 helm dependency build charts/lodia
 helm install lodia charts/lodia -n lodia-system --create-namespace \
   --set image.repository=<registry>/lodia,image.digest=sha256:… \
-  --set signerImage.repository=<registry>/lodia-signer,signerImage.digest=sha256:…
+  --set signerImage.repository=<registry>/lodia-signer,signerImage.digest=sha256:… \
+  --set tunnelImage.repository=<registry>/lodia-tunnel,tunnelImage.digest=sha256:…
 ```
 
 The phase 1 chart installs:
@@ -475,8 +478,8 @@ The phase 1 chart installs:
 - its RBAC: a ClusterRole per controller from [`charts/lodia/files/rbac/`](../charts/lodia/files/rbac/) ([Identity and tenancy](#identity-and-tenancy)), the ClusterRole the metrics filter needs (`create` on TokenReviews and SubjectAccessReviews), and a Role in the release namespace for the Lease and events;
 - the ValidatingAdmissionPolicy `kubeconfigrequests.lodia.io` and its binding of the same name from [`charts/lodia/files/policies/`](../charts/lodia/files/policies/), which decide who may ask for a kubeconfig ([short-lived-kubeconfigs](decisions/short-lived-kubeconfigs.md)); they keep their names in every release and stay with `crds.enabled=false`.
 
-`image` and `signerImage` each take a `repository` (`ghcr.io/lodia-io/lodia` and `ghcr.io/lodia-io/lodia-signer`), a `digest` and a `tag`, which defaults to the chart's `appVersion`: with a digest the chart renders `repository@digest`, otherwise `repository:tag`.
-The signer's image reaches the operator as `--signer-image`; from phase 2's wave 1b, Gateway, `tunnelImage` (`ghcr.io/lodia-io/lodia-tunnel`) brings `lodia-tunnel`'s as `--tunnel-image`.
+`image`, `signerImage` and `tunnelImage` each take a `repository` (`ghcr.io/lodia-io/lodia`, `ghcr.io/lodia-io/lodia-signer` and `ghcr.io/lodia-io/lodia-tunnel`), a `digest` and a `tag`, which defaults to the chart's `appVersion`: with a digest the chart renders `repository@digest`, otherwise `repository:tag`.
+The signer's image reaches the operator as `--signer-image`, and `lodia-tunnel`'s as `--tunnel-image`.
 
 Then a `DatastoreClass` with the bucket, and the first `ControlPlane`.
 Later phases bring the rest: the operator configuration below, which the operator does not read yet, in phase 2, whose fleet limit, controller manager hold and `KubeconfigRequest`s it configures; signed and attested images, and how to verify them, in phase 4 ([roadmap](roadmap.md), [releases-and-support](decisions/releases-and-support.md)).

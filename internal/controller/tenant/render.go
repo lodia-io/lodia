@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,7 +18,9 @@ import (
 	"strings"
 	"text/template"
 
+	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/tools/clientcmd"
@@ -27,6 +30,10 @@ import (
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/versions"
 )
+
+// apiserverProxyClientSecret is the Secret in the tenant's kube-system that
+// manifests/apiserver-proxy.yaml mounts.
+const apiserverProxyClientSecret = "apiserver-proxy-client"
 
 //go:embed manifests/*.yaml
 var manifests embed.FS
@@ -61,6 +68,11 @@ type values struct {
 	AddressType              string
 	AgentDeployment          bool
 	AgentReplicas            int32
+	Gateway                  bool
+	TunnelImage              string
+	TunnelListen             string
+	TunnelUpstream           string
+	tunnelCert, tunnelKey    []byte
 	kubeProxy, coreDNS       bool
 }
 
@@ -73,6 +85,8 @@ func newValues(cp *lodiav1alpha1.ControlPlane, clusterCA []byte) (*values, strin
 		return nil, lodiav1alpha1.ReasonWaitingForTarget, "status.target has no version", nil
 	case endpoint == nil:
 		return nil, lodiav1alpha1.ReasonWaitingForEndpoint, "status.endpoint is not published", nil
+	case cp.Spec.Endpoint.Gateway != nil && endpoint.Tunnel == nil:
+		return nil, lodiav1alpha1.ReasonWaitingForEndpoint, "status.endpoint has no tunnel", nil
 	}
 	images, ok := versions.For(cp.Status.Target.Version)
 	if !ok {
@@ -110,6 +124,11 @@ func newValues(cp *lodiav1alpha1.ControlPlane, clusterCA []byte) (*values, strin
 		v.Domain = "cluster.local"
 	}
 	v.Server = "https://" + v.Endpoint
+	if cp.Spec.Endpoint.Gateway != nil {
+		v.Gateway = true
+		v.TunnelListen = net.JoinHostPort(v.InClusterHost, strconv.Itoa(int(endpoint.InCluster.Port)))
+		v.TunnelUpstream = net.JoinHostPort(endpoint.Tunnel.Host, strconv.Itoa(int(endpoint.Tunnel.Port)))
+	}
 	var services, pods []string
 	for _, cidr := range cp.Spec.Network.ServiceCIDRs {
 		services = append(services, string(cidr))
@@ -187,6 +206,9 @@ func render(v *values) ([]*unstructured.Unstructured, error) {
 	if v.coreDNS {
 		files = append(files, "coredns.yaml")
 	}
+	if v.Gateway {
+		files = append(files, "apiserver-proxy.yaml")
+	}
 	var objects []*unstructured.Unstructured
 	for _, file := range files {
 		var b bytes.Buffer
@@ -218,5 +240,29 @@ func render(v *values) ([]*unstructured.Unstructured, error) {
 			objects = append(objects, obj)
 		}
 	}
+	if v.Gateway {
+		objects = append(objects, apiserverProxyClient(v.tunnelCert, v.tunnelKey))
+	}
 	return objects, nil
+}
+
+// apiserverProxyClient is the whole Secret apiserver-proxy reads its client
+// certificate from: render and deliverTunnelClient share a field manager, so an
+// apply without type would be refused, and one without a field would undo the
+// other's write every pass.
+func apiserverProxyClient(cert, key []byte) *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Secret",
+		"metadata": map[string]any{
+			"name":      apiserverProxyClientSecret,
+			"namespace": metav1.NamespaceSystem,
+			"labels":    map[string]any{lodiav1alpha1.ManagedByLabel: lodiav1alpha1.ManagedBy},
+		},
+		"type": string(corev1.SecretTypeTLS),
+		"data": map[string]any{
+			corev1.TLSCertKey:       base64.StdEncoding.EncodeToString(cert),
+			corev1.TLSPrivateKeyKey: base64.StdEncoding.EncodeToString(key),
+		},
+	}}
 }

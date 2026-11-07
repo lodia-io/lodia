@@ -67,10 +67,11 @@ func Cache() (cache.Options, error) {
 }
 
 // Setup registers every controller with the manager; signerImage is
-// lodia-signer's, which runs beside each API server, and etcdDruidNamespace
+// lodia-signer's, which runs beside each API server, tunnelImage lodia-tunnel's,
+// which runs on each node of a gateway tenant, and etcdDruidNamespace
 // etcd-druid's and operatorNamespace the operator's, which each etcd's
 // NetworkPolicy admits.
-func Setup(mgr ctrl.Manager, signerImage, etcdDruidNamespace, operatorNamespace string) error {
+func Setup(mgr ctrl.Manager, signerImage, tunnelImage, etcdDruidNamespace, operatorNamespace string) error {
 	if err := (&pki.Reconciler{
 		Client:              mgr.GetClient(),
 		Reader:              mgr.GetAPIReader(),
@@ -98,7 +99,7 @@ func Setup(mgr ctrl.Manager, signerImage, etcdDruidNamespace, operatorNamespace 
 	if err := (&lifecycle.Reconciler{Client: mgr.GetClient()}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the lifecycle controller: %w", err)
 	}
-	if err := (&tenant.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), ApplyPeriod: 10 * time.Minute}).SetupWithManager(mgr, workers); err != nil {
+	if err := (&tenant.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), ApplyPeriod: 10 * time.Minute, TunnelImage: tunnelImage}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the tenant controller: %w", err)
 	}
 	if err := (&health.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Period: 10 * time.Second, Timeout: 5 * time.Second, Clock: clock.RealClock{}}).SetupWithManager(mgr, workers); err != nil {

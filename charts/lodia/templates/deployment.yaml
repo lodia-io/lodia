@@ -33,6 +33,7 @@ spec:
           image: {{ include "lodia.image" (dict "image" .Values.image "appVersion" .Chart.AppVersion) }}
           args:
             - --signer-image={{ include "lodia.image" (dict "image" .Values.signerImage "appVersion" .Chart.AppVersion) }}
+            - --tunnel-image={{ include "lodia.image" (dict "image" .Values.tunnelImage "appVersion" .Chart.AppVersion) }}
             {{- if .Values.etcdDruid.enabled }}
             - --etcd-druid-namespace={{ .Release.Namespace }}
             {{- else }}

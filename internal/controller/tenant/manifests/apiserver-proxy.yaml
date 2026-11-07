@@ -1,0 +1,131 @@
+# apiserver-proxy, the node half of a gateway tenant's in-cluster path
+# (docs/decisions/api-exposure.md): lodia-tunnel's addr and proxy, whose flags
+# are in cmd/lodia-tunnel. Virtual Kubelet's nodes carry type=virtual-kubelet
+# (virtual-kubelet v1.14.1, node/nodeutil/controller.go).
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: apiserver-proxy
+  namespace: kube-system
+  labels:
+    k8s-app: apiserver-proxy
+spec:
+  selector:
+    matchLabels:
+      k8s-app: apiserver-proxy
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        k8s-app: apiserver-proxy
+    spec:
+      hostNetwork: true
+      dnsPolicy: Default
+      priorityClassName: system-node-critical
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 45
+      tolerations:
+      - operator: Exists
+      nodeSelector:
+        kubernetes.io/os: linux
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: type
+                operator: NotIn
+                values:
+                - virtual-kubelet
+      securityContext:
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+      - name: addr
+        image: {{ quote .TunnelImage }}
+        restartPolicy: Always
+        args:
+        - addr
+        - --address={{ .InClusterHost }}
+        resources:
+          requests:
+            cpu: 5m
+            memory: 15Mi
+        securityContext:
+          runAsUser: 0
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - NET_ADMIN
+        startupProbe:
+          exec:
+            command:
+            - /ko-app/lodia-tunnel
+            - addr
+            - --address={{ .InClusterHost }}
+            - --check
+          periodSeconds: 1
+          failureThreshold: 30
+      containers:
+      - name: proxy
+        image: {{ quote .TunnelImage }}
+        args:
+        - proxy
+        - --listen={{ .TunnelListen }}
+        - --upstream={{ .TunnelUpstream }}
+        - --cert-dir=/etc/lodia/client
+        - --ca=/etc/lodia/ca
+        - --socket=/run/lodia/proxy.sock
+        resources:
+          requests:
+            cpu: 5m
+            memory: 30Mi
+        securityContext:
+          runAsUser: 65532
+          runAsGroup: 65532
+          runAsNonRoot: true
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        readinessProbe:
+          exec:
+            command:
+            - /ko-app/lodia-tunnel
+            - probe
+            - --socket=/run/lodia/proxy.sock
+        livenessProbe:
+          exec:
+            command:
+            - /ko-app/lodia-tunnel
+            - probe
+            - --socket=/run/lodia/proxy.sock
+        volumeMounts:
+        - name: client
+          mountPath: /etc/lodia/client
+          readOnly: true
+        - name: ca
+          mountPath: /etc/lodia/ca
+          readOnly: true
+        - name: run
+          mountPath: /run/lodia
+      volumes:
+      - name: client
+        secret:
+          secretName: apiserver-proxy-client
+          defaultMode: 0440
+      - name: ca
+        configMap:
+          name: kube-root-ca.crt
+      - name: run
+        emptyDir: {}

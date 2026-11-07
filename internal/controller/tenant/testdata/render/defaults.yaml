@@ -1,0 +1,811 @@
+---
+apiVersion: v1
+data:
+  kubeconfig: |
+    apiVersion: v1
+    clusters:
+    - cluster:
+        certificate-authority-data: dGhlIGNsdXN0ZXIgQ0E=
+        server: https://203.0.113.10:443
+      name: ""
+    contexts: null
+    current-context: ""
+    kind: Config
+    users: null
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+  name: cluster-info
+  namespace: kube-public
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+  name: kubeadm:bootstrap-signer-clusterinfo
+  namespace: kube-public
+rules:
+- apiGroups:
+  - ""
+  resourceNames:
+  - cluster-info
+  resources:
+  - configmaps
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+  name: kubeadm:bootstrap-signer-clusterinfo
+  namespace: kube-public
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubeadm:bootstrap-signer-clusterinfo
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: User
+  name: system:anonymous
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+  name: kubeadm:kubelet-bootstrap
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:node-bootstrapper
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: system:bootstrappers:kubeadm:default-node-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+  name: kubeadm:node-autoapprove-bootstrap
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:certificates.k8s.io:certificatesigningrequests:nodeclient
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: system:bootstrappers:kubeadm:default-node-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+  name: kubeadm:node-autoapprove-certificate-rotation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:certificates.k8s.io:certificatesigningrequests:selfnodeclient
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: system:nodes
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+  name: kubeadm:get-nodes
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+  name: kubeadm:get-nodes
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubeadm:get-nodes
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: system:bootstrappers:kubeadm:default-node-token
+---
+apiVersion: v1
+data:
+  ClusterConfiguration: |
+    apiVersion: kubeadm.k8s.io/v1beta4
+    kind: ClusterConfiguration
+    clusterName: "dev"
+    kubernetesVersion: "v1.35.8"
+    controlPlaneEndpoint: "203.0.113.10:443"
+    networking:
+      serviceSubnet: "10.96.0.0/16"
+      podSubnet: "10.244.0.0/16"
+      dnsDomain: "cluster.local"
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+  name: kubeadm-config
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+  name: kubeadm:nodes-kubeadm-config
+  namespace: kube-system
+rules:
+- apiGroups:
+  - ""
+  resourceNames:
+  - kubeadm-config
+  resources:
+  - configmaps
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+  name: kubeadm:nodes-kubeadm-config
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubeadm:nodes-kubeadm-config
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: system:bootstrappers:kubeadm:default-node-token
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: system:nodes
+---
+apiVersion: v1
+data:
+  kubelet: |
+    apiVersion: kubelet.config.k8s.io/v1beta1
+    kind: KubeletConfiguration
+    authentication:
+      anonymous:
+        enabled: false
+      webhook:
+        enabled: true
+      x509:
+        clientCAFile: /etc/kubernetes/pki/ca.crt
+    authorization:
+      mode: Webhook
+    cgroupDriver: systemd
+    clusterDNS:
+    - "10.96.0.10"
+    clusterDomain: "cluster.local"
+    healthzBindAddress: 127.0.0.1
+    readOnlyPort: 0
+    rotateCertificates: true
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+  name: kubelet-config
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+  name: kubeadm:kubelet-config
+  namespace: kube-system
+rules:
+- apiGroups:
+  - ""
+  resourceNames:
+  - kubelet-config
+  resources:
+  - configmaps
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+  name: kubeadm:kubelet-config
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubeadm:kubelet-config
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: system:nodes
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: system:bootstrappers:kubeadm:default-node-token
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+    endpointslice.kubernetes.io/skip-mirror: "true"
+  name: kubernetes
+  namespace: default
+subsets:
+- addresses:
+  - ip: 203.0.113.10
+  ports:
+  - name: https
+    port: 6443
+    protocol: TCP
+---
+addressType: IPv4
+apiVersion: discovery.k8s.io/v1
+endpoints:
+- addresses:
+  - 203.0.113.10
+  conditions:
+    ready: true
+kind: EndpointSlice
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+    endpointslice.kubernetes.io/managed-by: lodia.io
+    kubernetes.io/service-name: kubernetes
+  name: kubernetes
+  namespace: default
+ports:
+- name: https
+  port: 6443
+  protocol: TCP
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+  name: system:konnectivity-server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: User
+  name: system:konnectivity-server
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+  name: system:konnectivity-server
+  namespace: kube-system
+rules:
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
+  - list
+  - create
+  - update
+  - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+  name: system:konnectivity-server
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: system:konnectivity-server
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: User
+  name: system:konnectivity-server
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+  name: konnectivity-agent
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+  name: konnectivity-agent
+  namespace: kube-system
+rules:
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+  name: konnectivity-agent
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: konnectivity-agent
+subjects:
+- kind: ServiceAccount
+  name: konnectivity-agent
+  namespace: kube-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+    k8s-app: konnectivity-agent
+  name: konnectivity-agent
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      k8s-app: konnectivity-agent
+  template:
+    metadata:
+      labels:
+        k8s-app: konnectivity-agent
+    spec:
+      containers:
+      - command:
+        - /proxy-agent
+        - --logtostderr=true
+        - --ca-cert=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        - --proxy-server-host=203.0.113.10
+        - --proxy-server-port=8132
+        - --service-account-token-path=/var/run/secrets/tokens/konnectivity-agent-token
+        - --count-server-leases
+        - --keepalive-time=30s
+        - --agent-identifiers=ipv4=$(HOST_IP)
+        env:
+        - name: HOST_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        image: registry.k8s.io/kas-network-proxy/proxy-agent:v0.35.0
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8093
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        name: konnectivity-agent
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8093
+          periodSeconds: 10
+        volumeMounts:
+        - mountPath: /var/run/secrets/tokens
+          name: konnectivity-agent-token
+      nodeSelector:
+        kubernetes.io/os: linux
+      priorityClassName: system-node-critical
+      serviceAccountName: konnectivity-agent
+      tolerations:
+      - operator: Exists
+      volumes:
+      - name: konnectivity-agent-token
+        projected:
+          sources:
+          - serviceAccountToken:
+              audience: system:konnectivity-server
+              expirationSeconds: 3600
+              path: konnectivity-agent-token
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+  name: kube-proxy
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+  name: kubeadm:node-proxier
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:node-proxier
+subjects:
+- kind: ServiceAccount
+  name: kube-proxy
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+  name: kube-proxy
+  namespace: kube-system
+rules:
+- apiGroups:
+  - ""
+  resourceNames:
+  - kube-proxy
+  resources:
+  - configmaps
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+  name: kube-proxy
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kube-proxy
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: system:bootstrappers:kubeadm:default-node-token
+---
+apiVersion: v1
+data:
+  config.conf: |-
+    apiVersion: kubeproxy.config.k8s.io/v1alpha1
+    kind: KubeProxyConfiguration
+    clientConnection:
+      kubeconfig: /var/lib/kube-proxy/kubeconfig.conf
+    clusterCIDR: "10.244.0.0/16"
+    healthzBindAddress: "127.0.0.1:10256"
+    metricsBindAddress: 127.0.0.1:10249
+    mode: "iptables"
+  kubeconfig.conf: |-
+    apiVersion: v1
+    kind: Config
+    clusters:
+    - cluster:
+        certificate-authority: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        server: "https://203.0.113.10:443"
+      name: default
+    contexts:
+    - context:
+        cluster: default
+        namespace: default
+        user: default
+      name: default
+    current-context: default
+    users:
+    - name: default
+      user:
+        tokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+kind: ConfigMap
+metadata:
+  labels:
+    app: kube-proxy
+    app.kubernetes.io/managed-by: lodia
+  name: kube-proxy
+  namespace: kube-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+    k8s-app: kube-proxy
+  name: kube-proxy
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      k8s-app: kube-proxy
+  template:
+    metadata:
+      labels:
+        k8s-app: kube-proxy
+    spec:
+      containers:
+      - command:
+        - /usr/local/bin/kube-proxy
+        - --config=/var/lib/kube-proxy/config.conf
+        - --hostname-override=$(NODE_NAME)
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        image: registry.k8s.io/kube-proxy:v1.35.8
+        imagePullPolicy: IfNotPresent
+        name: kube-proxy
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - mountPath: /var/lib/kube-proxy
+          name: kube-proxy
+        - mountPath: /run/xtables.lock
+          name: xtables-lock
+          readOnly: false
+        - mountPath: /lib/modules
+          name: lib-modules
+          readOnly: true
+      hostNetwork: true
+      nodeSelector:
+        kubernetes.io/os: linux
+      priorityClassName: system-node-critical
+      serviceAccountName: kube-proxy
+      tolerations:
+      - operator: Exists
+      volumes:
+      - configMap:
+          name: kube-proxy
+        name: kube-proxy
+      - hostPath:
+          path: /run/xtables.lock
+          type: FileOrCreate
+        name: xtables-lock
+      - hostPath:
+          path: /lib/modules
+        name: lib-modules
+  updateStrategy:
+    type: RollingUpdate
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+  name: coredns
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+  name: system:coredns
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - endpoints
+  - services
+  - pods
+  - namespaces
+  verbs:
+  - list
+  - watch
+- apiGroups:
+  - discovery.k8s.io
+  resources:
+  - endpointslices
+  verbs:
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+  name: system:coredns
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:coredns
+subjects:
+- kind: ServiceAccount
+  name: coredns
+  namespace: kube-system
+---
+apiVersion: v1
+data:
+  Corefile: |
+    .:53 {
+        errors
+        health {
+           lameduck 5s
+        }
+        ready
+        kubernetes cluster.local in-addr.arpa ip6.arpa {
+           pods insecure
+           fallthrough in-addr.arpa ip6.arpa
+           ttl 30
+        }
+        prometheus :9153
+        forward . /etc/resolv.conf {
+           max_concurrent 1000
+        }
+        cache 30 {
+           disable success cluster.local
+           disable denial cluster.local
+        }
+        loop
+        reload
+        loadbalance
+    }
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+  name: coredns
+  namespace: kube-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: lodia
+    k8s-app: kube-dns
+  name: coredns
+  namespace: kube-system
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      k8s-app: kube-dns
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 1
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        k8s-app: kube-dns
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: k8s-app
+                  operator: In
+                  values:
+                  - kube-dns
+              topologyKey: kubernetes.io/hostname
+            weight: 100
+      containers:
+      - args:
+        - -conf
+        - /etc/coredns/Corefile
+        image: registry.k8s.io/coredns/coredns:v1.13.1
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 5
+          httpGet:
+            path: /health
+            port: liveness-probe
+            scheme: HTTP
+          initialDelaySeconds: 60
+          successThreshold: 1
+          timeoutSeconds: 5
+        name: coredns
+        ports:
+        - containerPort: 53
+          name: dns
+          protocol: UDP
+        - containerPort: 53
+          name: dns-tcp
+          protocol: TCP
+        - containerPort: 9153
+          name: metrics
+          protocol: TCP
+        - containerPort: 8080
+          name: liveness-probe
+          protocol: TCP
+        - containerPort: 8181
+          name: readiness-probe
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: readiness-probe
+            scheme: HTTP
+        resources:
+          limits:
+            memory: 170Mi
+          requests:
+            cpu: 100m
+            memory: 70Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            add:
+            - NET_BIND_SERVICE
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - mountPath: /etc/coredns
+          name: config-volume
+          readOnly: true
+      dnsPolicy: Default
+      nodeSelector:
+        kubernetes.io/os: linux
+      priorityClassName: system-cluster-critical
+      serviceAccountName: coredns
+      tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+      - effect: NoSchedule
+        key: node-role.kubernetes.io/control-plane
+      volumes:
+      - configMap:
+          items:
+          - key: Corefile
+            path: Corefile
+          name: coredns
+        name: config-volume
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    prometheus.io/port: "9153"
+    prometheus.io/scrape: "true"
+  labels:
+    app.kubernetes.io/managed-by: lodia
+    k8s-app: kube-dns
+    kubernetes.io/cluster-service: "true"
+    kubernetes.io/name: CoreDNS
+  name: kube-dns
+  namespace: kube-system
+spec:
+  clusterIP: 10.96.0.10
+  ports:
+  - name: dns
+    port: 53
+    protocol: UDP
+    targetPort: 53
+  - name: dns-tcp
+    port: 53
+    protocol: TCP
+    targetPort: 53
+  - name: metrics
+    port: 9153
+    protocol: TCP
+    targetPort: 9153
+  selector:
+    k8s-app: kube-dns

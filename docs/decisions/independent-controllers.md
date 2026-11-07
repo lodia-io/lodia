@@ -1,7 +1,7 @@
 # Six controllers share one object and communicate only through status conditions
 
 Decided 2026-10-25.
-The manager, PKI, the Datastore controller, for a dedicated etcd, Lifecycle, for the target within a minor, the rollout in `Progressing` and `Ready`, Tenant, without the apiserver-proxy, Health, for the probe through the public endpoint and the leader Leases, and Workloads, behind a `loadBalancer` or `nodePort` endpoint, are built.
+The manager, PKI, the Datastore controller, for a dedicated etcd, Lifecycle, for the target within a minor, the rollout in `Progressing` and `Ready`, Tenant, Health, for the probe through the public endpoint and the leader Leases, and Workloads, behind a `loadBalancer` or `nodePort` endpoint, are built.
 
 ## Decision
 
@@ -89,7 +89,7 @@ flowchart LR
   PKI has one: Secrets under its names that another owner keeps, which the cache does not show when they are unlabelled, after 10 seconds while they are a previous `ControlPlane`'s, which the garbage collector deletes, and after a minute otherwise.
   The Datastore controller's: `VolumesExist`, for claims, which nothing labels for the cache, and for an `Etcd` without the control-plane label; a class held because its credentials copy cannot be made (the class's Secret, which belongs to the platform, is missing, or another owner holds the copy, which may lack the label); a NetworkPolicy `<cp>-etcd` another owner keeps, which may lack it too; and `DatastoreClassNotFound` for a class the claims record, since deleting them to start empty brings no event; all after a minute.
   A StatefulSet that lags etcd-druid's report, read uncached, after 15 seconds; and an `Etcd` being deleted, which has left the cache if its label was removed, after 10 seconds.
-  The Tenant controller's: the addons' rollout in the tenant, which Lodia does not watch, every minute until it is complete, and `<cp>-ca-bundle` or `<cp>-lodia-kubeconfig` while another owner keeps it, every minute.
+  The Tenant controller's: the addons' rollout in the tenant, which Lodia does not watch, every minute until it is complete, and a Secret it reads that is missing or that the `ControlPlane` does not control, every minute.
   Workloads': a `nodePort` endpoint's management node, which no event reports, every minute; and an object under its names that another owner keeps, whose deletion reaches this `ControlPlane`'s queue only when that owner is a previous `ControlPlane` of the same name, after 10 seconds while it is one and after a minute otherwise.
 
 ## Code
@@ -102,7 +102,7 @@ flowchart LR
   `datastore_test.go` runs it under the same cache with `ReaderFailOnMissingInformer`, as a user bound to exactly its rules, and holds the first visit and the pass that leaves the status alone on an API error (`TestConditionsFromState`) ([dedicated-etcd-by-default](dedicated-etcd-by-default.md)).
 - `internal/controller/lifecycle` — reads the `ControlPlane` alone and applies `status.target` (`version`), `Progressing`, `Ready` and `status.observedGeneration` as `lodia/lifecycle`, all of them on every write and only on a change; its pass reads nothing that can fail midway, so its first visit writes the conditions it computes rather than a separate `Unknown`.
   `lifecycle_test.go` runs it under the same cache with `ReaderFailOnMissingInformer`, as a user bound to exactly its rules; `internal/versions` holds the minors it supports.
-- `internal/controller/tenant` — waits on `AccessReady` at the current generation, applies the tenant's objects as `lodia/tenant` with the inventory in the tenant, and applies `AddonsApplied` and `AddonsAvailable`; a pass runs only when the target, the endpoint, `AccessReady` or the generation changes, and on its timers.
+- `internal/controller/tenant` — waits on `AccessReady` at the current generation, but for the renewal of the tunnel's client certificate, applies the tenant's objects as `lodia/tenant` with the inventory in the tenant, and applies `AddonsApplied` and `AddonsAvailable`; a pass runs only when the target, the endpoint, `AccessReady` or the generation changes, and on its timers.
   `tenant_test.go` runs it under the same cache with `ReaderFailOnMissingInformer`, as a user bound to exactly its rules, against a tenant kube-apiserver started from PKI's certificates ([tenant-resources-by-inventory](tenant-resources-by-inventory.md)).
 - `internal/controller/health` — reads the `ControlPlane` from the cache and `<cp>-ca-bundle` and `<cp>-lodia-kubeconfig` uncached, probes the public endpoint, reads the two leader Leases inside the tenant, and applies `Reachable` and `ControllersLeading` as `lodia/health`, only on a change: a failed read leaving them as they were, and the failed probes counted in memory, so a restart counts afresh.
   Only a change of the endpoint, of whether `AccessReady` is True, or of the generation brings a pass between the periodic ones, so failed probes count a period apart unless such a change comes between them.
