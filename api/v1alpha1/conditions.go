@@ -10,6 +10,7 @@ const (
 	ConditionCAValidityAcceptable  = "CAValidityAcceptable"  // PKI
 	ConditionDatastoreReady        = "DatastoreReady"        // Datastore
 	ConditionAPIServerReady        = "APIServerReady"        // Workloads
+	ConditionRoutesReady           = "RoutesReady"           // Workloads, in gateway mode only
 	ConditionAddonsApplied         = "AddonsApplied"         // Tenant
 	ConditionAddonsAvailable       = "AddonsAvailable"       // Tenant
 	ConditionReachable             = "Reachable"             // Health
@@ -91,10 +92,17 @@ const (
 	ReasonUnavailable                     = "Unavailable"
 	ReasonProgressDeadlineExceeded        = "ProgressDeadlineExceeded"
 	ReasonLoadBalancerHostnameUnsupported = "LoadBalancerHostnameUnsupported"
-	ReasonGatewayNotFound                 = "GatewayNotFound"
-	ReasonGatewayUnsupported              = "GatewayUnsupported"
-	ReasonRouteNotAccepted                = "RouteNotAccepted"
-	ReasonHostnameConflict                = "HostnameConflict"
+)
+
+// RoutesReady: Accepted, True, when every route of the ControlPlane is
+// applied, Accepted and ResolvedRefs at its generation; Refused,
+// ObjectsControlledElsewhere and Reconciling as above.
+const (
+	ReasonAccepted           = "Accepted"
+	ReasonGatewayNotFound    = "GatewayNotFound"
+	ReasonGatewayUnsupported = "GatewayUnsupported"
+	ReasonRouteNotAccepted   = "RouteNotAccepted"
+	ReasonHostnameConflict   = "HostnameConflict"
 )
 
 // AddonsApplied and AddonsAvailable.

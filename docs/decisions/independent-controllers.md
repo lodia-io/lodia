@@ -11,7 +11,7 @@ One operator binary, one controller-runtime manager, six controllers that all wa
 |---|---|---|---|
 | **PKI** | CAs, leaf certificates, kubeconfigs, ServiceAccount keys, encryption keys; renewal and staged rotation; the tenant's bindings for Lodia, the admin group and the kubelet client | `CertificatesReady`, `AccessReady`; `CAValidityAcceptable` outside `Ready` | `status.endpoint`; `APIServerReady` for the bindings; a restore's `Backup`, `Completed`, for its encryption keys |
 | **Datastore** | the tenant's etcd (dedicated through etcd-druid, with its NetworkPolicy, or a user and prefix in a shared store), backups, defragmentation; the only controller that talks to etcd | `DatastoreReady`; `BackupReady` outside `Ready` | a complete generation of PKI's etcd certificates; a restore's `Backup`, sealed |
-| **Workloads** | Deployments, Services, PodDisruptionBudgets, NetworkPolicies, ConfigMaps, Gateway routes in the tenant namespace | `APIServerReady` | `CertificatesReady`, `DatastoreReady`; `AddonsApplied` before it starts a restored `ControlPlane`'s controller manager |
+| **Workloads** | Deployments, Services, PodDisruptionBudgets, NetworkPolicies, ConfigMaps, Gateway routes in the tenant namespace | `APIServerReady`; `RoutesReady` in `gateway` mode | `CertificatesReady`, `DatastoreReady`; `AddonsApplied` before it starts a restored `ControlPlane`'s controller manager |
 | **Tenant** | objects inside the tenant cluster: kubeadm bootstrap objects, kube-proxy, CoreDNS, konnectivity-agent, apiserver-proxy, RBAC | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
 | **Health** | probes the API from outside and inside, samples the components' leader leases and the node leases; holds the controller manager's leader lease inside the tenant while most nodes cannot reach the API ([controller-manager-hold](controller-manager-hold.md)) | `Reachable`, `ControllersLeading`; `ControllerManagerHeld` outside `Ready` | `AccessReady` |
 | **Lifecycle** | the pace: which version to run now, whether to hibernate, which rotation stage is active, when a tenant's maintenance window is open and how many tenants roll at once | `status.target` and `Progressing` | the others' conditions |
@@ -50,7 +50,7 @@ flowchart LR
   CP[("ControlPlane<br/>spec · status")]
   PKI -->|CertificatesReady, AccessReady, CAValidityAcceptable| CP
   DS[Datastore] -->|DatastoreReady| CP
-  WL[Workloads] -->|APIServerReady| CP
+  WL[Workloads] -->|APIServerReady, RoutesReady| CP
   TN[Tenant] -->|AddonsApplied, AddonsAvailable| CP
   HL[Health] -->|Reachable, ControllersLeading, ControllerManagerHeld| CP
   LC[Lifecycle] -->|status.target, Progressing, Ready| CP

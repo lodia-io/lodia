@@ -29,7 +29,7 @@ A request that reaches it on a connection still open, as it starts to drain, is 
 Gateway API ≥ 1.5, where `TLSRoute` graduated to the Standard channel ([1.5-CHANGELOG.md](https://github.com/kubernetes-sigs/gateway-api/blob/v1.6.3/CHANGELOG/1.5-CHANGELOG.md#L16-L20)), and an implementation that supports `TLSRoute` in passthrough, its core feature ([tlsroute.go](https://github.com/kubernetes-sigs/gateway-api/blob/v1.6.3/pkg/features/tlsroute.go#L25-L51)): no `ListenerSet`, no `TLSRouteModeTerminate` and no `TLSRouteModeMixed`.
 The platform owns the Gateway: a `TLS` listener in `Passthrough` mode on 443 for a wildcard hostname, routes allowed from tenant namespaces by label.
 Lodia only attaches.
-Workloads reports what stops it in `APIServerReady` ([reasons](../api/controlplane.md#conditions-and-their-reasons)); whether the management cluster serves `TLSRoute` the operator detects when it starts.
+Workloads reports what stops it in `RoutesReady` ([reasons](../api/controlplane.md#conditions-and-their-reasons)); whether the management cluster serves `TLSRoute` the operator detects when it starts.
 
 **In-cluster access (the `gateway` mode).**
 A connection from a pod to the `kubernetes` ClusterIP carries no SNI, and every tenant's `kubernetes.default.svc` looks the same, so the shared Gateway cannot route it.
@@ -129,7 +129,7 @@ The kubelet's own listener address is a node flag (`--address`, `--node-ip`), wh
 
 ## Code
 
-- `api/v1alpha1` — the contracts of the gateway mode: `GatewayHostnames` with the tunnel required and the three distinct, `APIServer.AdvertiseAddress` with its rules and `DefaultAdvertiseAddress`, `EndpointStatus.Tunnel`, the tunnel's Secrets in `names.go` and the reasons of `APIServerReady` in `conditions.go`; `test/api/validation_test.go` holds the rules.
+- `api/v1alpha1` — the contracts of the gateway mode: `GatewayHostnames` with the tunnel required and the three distinct, `APIServer.AdvertiseAddress` with its rules and `DefaultAdvertiseAddress`, `EndpointStatus.Tunnel`, the tunnel's Secrets in `names.go` and `RoutesReady` with its reasons in `conditions.go`; `test/api/validation_test.go` holds the rules.
 - `internal/controller/workloads` — the Service of the `loadBalancer` and `nodePort` modes, `status.endpoint` with `inCluster`, the API server's advertise address and `--endpoint-reconciler-type=none`, and konnectivity-server beside it as a native sidecar on a Unix socket.
 - `internal/controller/tenant` — the `kubernetes` Endpoints and EndpointSlice in `manifests/endpoints.yaml`, the agents' flags in `manifests/konnectivity.yaml`, and `apiserver-proxy` in `manifests/apiserver-proxy.yaml`, with its Secret in `render.go`, which `deliverTunnelClient` in `tenant.go` applies whatever the conditions say; `render_test.go`, `gateway_test.go` and `tenant_test.go` hold the objects, and `TestPhase1Gate` in `test/e2e` rolls the API server under requests from outside and inside the tenant.
 - `internal/controller/pki` — the tunnel's Secrets and the advertise address in the API server's serving certificate, in this mode only; `tunnel_test.go` holds them against the other modes.
