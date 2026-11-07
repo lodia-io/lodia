@@ -5,9 +5,12 @@ package tunnel
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"io"
 	"net"
+	"regexp"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -32,18 +35,26 @@ func TestEveryTCPLegKeepsAlive(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = ln.Close() }()
-	dialled, err := tcpDialer().DialContext(context.Background(), "tcp", ln.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = dialled.Close() }()
+	dialTCP(t, ln.Addr().String())
 	accepted, err := ln.Accept()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = accepted.Close() }()
 
-	for name, c := range map[string]net.Conn{"accepted": accepted, "dialled": dialled} {
+	f := startTunnel(t, echo)
+	serveLeg, err := f.server.dial(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = serveLeg.Close() }()
+	proxyLeg, err := f.proxy.dial(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = proxyLeg.Close() }()
+
+	for name, c := range map[string]net.Conn{"accepted": accepted, "serve's upstream": serveLeg, "proxy's upstream": proxyLeg.(*tls.Conn).NetConn()} {
 		raw, err := c.(*net.TCPConn).SyscallConn()
 		if err != nil {
 			t.Fatal(err)
@@ -133,6 +144,14 @@ func TestEMFILEOnAcceptBacksOffAndAcceptingResumes(t *testing.T) {
 	}
 }
 
+func loggedBackoffs(logs *logBuffer) []string {
+	var got []string
+	for _, match := range regexp.MustCompile(`backoff=(\S+)`).FindAllStringSubmatch(logs.String(), -1) {
+		got = append(got, match[1])
+	}
+	return got
+}
+
 func TestAcceptBackoffStopsAtItsMaximumAndWithItsContext(t *testing.T) {
 	tcp, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -143,15 +162,16 @@ func TestAcceptBackoffStopsAtItsMaximumAndWithItsContext(t *testing.T) {
 		script[i] = syscall.EMFILE
 	}
 	ln := &scriptedListener{Listener: tcp, script: script}
+	log, logs := newLog(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- accept(ctx, ln, discardLog(), func(net.Conn) {}) }()
-	eventually(t, "the backoff to grow", func() bool {
-		ln.mu.Lock()
-		defer ln.mu.Unlock()
-		return len(ln.at) >= 8
-	})
+	go func() { done <- accept(ctx, ln, log, func(net.Conn) {}) }()
+	want := []string{"5ms", "10ms", "20ms", "40ms", "80ms", "160ms", "320ms", "640ms", "1s", "1s"}
+	eventually(t, "the backoff to reach its maximum", func() bool { return logs.count("accept failed") >= len(want) })
+	if got := loggedBackoffs(logs); !slices.Equal(got[:len(want)], want) {
+		t.Fatalf("backed off %v, want %v", got, want)
+	}
 	start := time.Now()
 	cancel()
 	if err := <-done; err != nil {
@@ -159,6 +179,29 @@ func TestAcceptBackoffStopsAtItsMaximumAndWithItsContext(t *testing.T) {
 	}
 	if took := time.Since(start); took > 500*time.Millisecond {
 		t.Fatalf("took %s to stop in a backoff", took)
+	}
+}
+
+func TestAcceptBackoffStartsOverAfterAConnection(t *testing.T) {
+	tcp, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln := &scriptedListener{Listener: tcp, script: []error{syscall.EMFILE, syscall.EMFILE, syscall.EMFILE, nil, syscall.EMFILE}}
+	log, logs := newLog(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- accept(ctx, ln, log, func(c net.Conn) { _ = c.Close() }) }()
+	dialTCP(t, tcp.Addr().String())
+	want := []string{"5ms", "10ms", "20ms", "5ms"}
+	eventually(t, "the failure after the connection", func() bool { return logs.count("accept failed") == len(want) })
+	if got := loggedBackoffs(logs); !slices.Equal(got, want) {
+		t.Fatalf("backed off %v, want %v", got, want)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 
