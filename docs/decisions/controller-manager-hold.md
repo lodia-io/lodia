@@ -1,7 +1,7 @@
 # While most of a tenant's nodes are silent, Lodia holds its controller manager's leader lease
 
 Decided 2026-10-25.
-Built; its end-to-end gate is phase 2's ([roadmap](../roadmap.md)).
+Built; gate G4 tests it every night ([roadmap](../roadmap.md)).
 
 ## Decision
 
@@ -103,3 +103,4 @@ One dead machine of two is 50%, and its pods are evicted as upstream does.
 - `internal/controller/health` — `health.go` reports `ControllersLeading` from the two leader Leases; `health_test.go` holds a Lease that stops renewing.
   `nodes.go` samples the node Leases and the Nodes on a queue of its own and reports `status.nodes` and `ControllerManagerHeld`; `nodes_test.go` holds the counting rules.
   `hold.go` selects the row of the hold's table and writes the Lease; `hold_test.go` holds every row, each write's outcomes and the timings of the release.
+- `test/e2e/hold_test.go` — gate G4: a highly available tenant behind the Gateway on a kind cluster, its two nodes cut off for 10 minutes, then one of them ([the gate](../../test/e2e/README.md#nightly-gate-g4-nodes-cut-off-from-the-gateway)).

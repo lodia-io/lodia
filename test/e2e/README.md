@@ -51,7 +51,7 @@ The suite starts a container of kind's node image, `<cluster>-tenant-node-1`, on
 `--ignore-preflight-errors` names the one check a container fails, `SystemVerification`: on GitHub's runners it finds the host kernel's configuration in none of the places it looks, and `modprobe configs` fails ([kernel_validator.go](https://github.com/kubernetes/system-validators/blob/v1.12.1/validators/kernel_validator.go#L191-L245), the version kubeadm v1.37.0 uses).
 Ignoring it skips kubeadm's OS and cgroups validators too, which run under the same name; a check's name is the finest grain kubeadm ignores by ([checks.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/cmd/kubeadm/app/preflight/checks.go#L573-L588), [checks_linux.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/cmd/kubeadm/app/preflight/checks_linux.go#L48-L54)).
 The CNI is kindnet from the node image's manifest, with the tenant's pod range.
-The suite removes the containers it started when it ends, pass or fail, and each one before it starts it; `make e2e`, `make e2e-ha`, `make e2e-restore`, `make e2e-gateway` and `make conformance` remove them as well, since a `go test` timeout or a panic never reaches the suite's end.
+The suite removes the containers it started when it ends, pass or fail, and each one before it starts it; `make e2e`, `make e2e-ha`, `make e2e-restore`, `make e2e-gateway`, `make e2e-hold` and `make conformance` remove them as well, since a `go test` timeout or a panic never reaches the suite's end.
 
 `make e2e` gives the suite 30 minutes.
 
@@ -168,6 +168,42 @@ A step ends once etcd-druid has completed its scale and the StatefulSet runs eve
 The recorder of G2 watches both steps and logs every change, with the events of the control plane's objects, every change of their pods and the last lines a restarted container logged.
 Removing `highAvailability` restarts the remaining etcd member ([A tenant namespace](../../docs/README.md#a-tenant-namespace)), so that step only logs the restarts and wants `Ready` back `True`.
 Adding it back must keep `Ready` and every condition it is built from `True` throughout; a restart of any control plane container fails it.
+
+## Nightly: gate G4, nodes cut off from the Gateway
+
+`TestControllerManagerHold` checks the hold item of the [phase 2 gate](../../docs/roadmap.md#phase-2--production) ([controller-manager-hold](../../docs/decisions/controller-manager-hold.md)).
+It sits behind the build tag `hold` with `e2e`, on the cluster shape of G2.
+[`nightly-hold.yml`](../../.github/workflows/nightly-hold.yml) runs it every night, on demand, and on a pull request that changes the workflow or the test; `make e2e-hold` runs it locally on a kind cluster of its own, without the other gates, since it creates the Gateway `gateway/tenants` as the gateway gate does.
+
+The Gateway's address is the control plane node's, and Envoy Gateway's Service takes `externalTrafficPolicy: Local` by default ([shared_types.go](https://github.com/envoyproxy/gateway/blob/v1.9.3/api/v1alpha1/shared_types.go#L376-L381)), so a node that runs no Envoy pod forwards nothing ([virtual IPs](https://kubernetes.io/docs/reference/networking/virtual-ips/#external-traffic-policy)), and kind removes the control plane taint only from a cluster of one node ([init.go](https://github.com/kubernetes-sigs/kind/blob/v0.33.0/pkg/cluster/internal/create/actions/kubeadminit/init.go#L124-L126)), so `kind-ha.yaml` keeps Envoy off that node.
+The test gives the GatewayClass an `EnvoyProxy` with `externalTrafficPolicy: Cluster`; the gates on one node keep the default.
+
+The tenant is `highAvailability.failureTolerance: Zone` behind the Gateway, and must turn `Ready` within 8 minutes.
+Two nodes join by hostname as in the gateway gate.
+The Deployment `web` (agnhost, four replicas, spread over the hostnames) runs on both, each pod with the tolerations for `not-ready` and `unreachable` of 300 seconds that admission adds ([admission.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/plugin/pkg/admission/defaulttolerationseconds/admission.go#L44-L45)).
+The test records the UID of every pod in the tenant, and from then on every change of the tenant's Nodes (`Ready`, taints), of the Lease `kube-system/kube-controller-manager`, of the pods, and of the `ControlPlane`'s `Ready`, its inputs and `ControllerManagerHeld`, each with the time the test receives it.
+
+A, both nodes cut:
+
+1. The two nodes are cut within a second of each other, with `iptables -t raw -I PREROUTING 1 -d <ip> -j DROP` and the same on `OUTPUT` in the node's container, towards each address the three endpoint hostnames resolve to.
+   A `curl` with a 2 second timeout from each node to each hostname must time out.
+2. The Lease's holder is `lodia` within 30 seconds of the later cut, and `ControllerManagerHeld` is True, `NodesSilent`, within a period (5 seconds) of that, with `status.health.controllerManagerHold` counting two of two nodes silent.
+3. The container of the controller manager that led has finished within 15 seconds of the holder changing, and no other identity holds the Lease until its release.
+4. After 10 minutes the nodes are reconnected.
+   The Lease is released, with no holder and a duration of 1 second, 2 minutes after `status.health` first counts fewer silent nodes than the fraction, and at most two periods later; a controller manager holds it within 10 seconds of that.
+5. From the cut to a minute after the release no node carries `node.kubernetes.io/unreachable` or `node.kubernetes.io/not-ready` or turns `Ready=Unknown`, every pod has the UID it had, and `Ready` stays True.
+
+B, one node cut, once the tenant has recovered:
+
+6. The Lease is never `lodia`'s and `ControllerManagerHeld` stays False, `NotHeld`.
+7. The node turns `Ready=Unknown` between 49.6 seconds and 70 seconds after the cut: the grace period of 60 seconds, less the 10.4 seconds by which the last renewal can precede the cut, and 10 seconds for the two periods of the node monitor, which sees a renewal up to a period late and marks the node on its next pass ([node_lifecycle_controller.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/controller/nodelifecycle/node_lifecycle_controller.go#L952-L962); [the margin](../../docs/decisions/controller-manager-hold.md#decision)).
+   It carries `node.kubernetes.io/unreachable:NoExecute` within 10 seconds of that.
+8. Its `web` pods are deleted 300 seconds, 15 either way, after the taint, and replaced by pods that run on the other node within a minute.
+   The DaemonSet pods of the node and the `web` pods of the other one are not deleted.
+9. Reconnected, the node turns `Ready` and the taints go within 5 minutes, and the operator's pods are those it had, none restarted.
+
+The bounds are those of the margin, not exact times, since kubelet jitter decides them.
+The test lifts the rules when a step ends, pass or fail, and once more when it ends; the node containers and the DNS container go as the gateway gate's do.
 
 ## Nightly: conformance and the idle control plane
 
