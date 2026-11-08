@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package health is the Health controller: it probes each control plane's
-// public endpoint and its in-namespace Service, and reads its components'
-// leader Leases inside the tenant.
+// public endpoint and its in-namespace Service, reads its components' leader
+// Leases inside the tenant, and, in NodesReconciler, samples the tenant's nodes.
 package health
 
 import (
@@ -98,6 +98,12 @@ type clients struct {
 	clientCert []byte
 	clientKey  []byte
 	prober     *prober
+	tenantClients
+}
+
+// tenantClients are the clients of one tenant over one transport, and the
+// kubeconfig they were built from.
+type tenantClients struct {
 	kubeconfig []byte
 	tenant     *tenant
 	transport  *http.Client
@@ -116,6 +122,7 @@ type prober struct {
 // transport.
 type tenant struct {
 	leases       coordinationv1client.LeaseInterface
+	nodeLeases   coordinationv1client.LeaseInterface
 	core         corev1client.CoreV1Interface
 	admission    admissionregistrationv1client.AdmissionregistrationV1Interface
 	registration apiregistrationv1client.ApiregistrationV1Interface
@@ -319,25 +326,15 @@ func answered(code int) string {
 // read of a Lease fails (docs/README.md, Health).
 func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*metav1.Condition, error) {
 	key := client.ObjectKeyFromObject(cp)
-	waiting := func(message string) (*metav1.Condition, error) {
-		r.forget(key)
-		return newCondition(cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, message), nil
-	}
-	if !access(cp) {
-		return waiting("AccessReady is not True")
-	}
-	name := lodiav1alpha1.LodiaKubeconfigSecret.Name(cp.Name)
-	secret := &corev1.Secret{}
-	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: name}, secret); err != nil {
-		if apierrors.IsNotFound(err) {
-			return waiting("waiting for PKI to write " + name)
-		}
+	kubeconfig, waiting, err := lodiaKubeconfig(ctx, r.Reader, cp)
+	if err != nil {
 		return nil, err
 	}
-	if ref := ownership.ControlledElsewhere(secret, cp); ref != nil {
-		return waiting(fmt.Sprintf("Secret %s is kept by %s %s with UID %s", name, ref.Kind, ref.Name, ref.UID))
+	if waiting != "" {
+		r.forget(key)
+		return newCondition(cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, waiting), nil
 	}
-	tenant, err := r.tenant(key, secret.Data[lodiav1alpha1.KubeconfigKey])
+	tenant, err := r.tenant(key, kubeconfig)
 	if err != nil {
 		return nil, err
 	}
@@ -384,6 +381,27 @@ func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 	}
 	return newCondition(cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading,
 		"the leader Leases of kube-controller-manager and kube-scheduler are renewed"), nil
+}
+
+// lodiaKubeconfig returns Lodia's kubeconfig for cp, or why it cannot be used
+// yet: AccessReady is not True, or <cp>-lodia-kubeconfig is missing or kept by
+// another owner.
+func lodiaKubeconfig(ctx context.Context, reader client.Reader, cp *lodiav1alpha1.ControlPlane) ([]byte, string, error) {
+	if !access(cp) {
+		return nil, "AccessReady is not True", nil
+	}
+	name := lodiav1alpha1.LodiaKubeconfigSecret.Name(cp.Name)
+	secret := &corev1.Secret{}
+	if err := reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: name}, secret); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, "waiting for PKI to write " + name, nil
+		}
+		return nil, "", err
+	}
+	if ref := ownership.ControlledElsewhere(secret, cp); ref != nil {
+		return nil, fmt.Sprintf("Secret %s is kept by %s %s with UID %s", name, ref.Kind, ref.Name, ref.UID), nil
+	}
+	return secret.Data[lodiav1alpha1.KubeconfigKey], "", nil
 }
 
 // listLimit is the page of each list actedOn reads; the kinds select by no
@@ -669,13 +687,16 @@ func noRedirects(*http.Request, []*http.Request) error {
 	return http.ErrUseLastResponse
 }
 
-// tenant reads inside the tenant as Lodia, through the in-namespace Service,
-// which is never behind a proxy from the environment. The clients of a
-// previous kubeconfig close their idle connections.
 func (r *Reconciler) tenant(key types.NamespacedName, kubeconfig []byte) (*tenant, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	c := r.clientsOf(key)
+	return r.clientsOf(key).of(kubeconfig)
+}
+
+// of returns the clients that read inside the tenant as Lodia, through the
+// in-namespace Service, which is never behind a proxy from the environment. The
+// clients of a previous kubeconfig close their idle connections.
+func (c *tenantClients) of(kubeconfig []byte) (*tenant, error) {
 	if c.tenant != nil && bytes.Equal(c.kubeconfig, kubeconfig) {
 		return c.tenant, nil
 	}
@@ -715,6 +736,7 @@ func (r *Reconciler) tenant(key types.NamespacedName, kubeconfig []byte) (*tenan
 	c.kubeconfig, c.transport = kubeconfig, transport
 	c.tenant = &tenant{
 		leases:       coordination.Leases(lodiav1alpha1.LeaderElectionNamespace),
+		nodeLeases:   coordination.Leases(corev1.NamespaceNodeLease),
 		core:         core,
 		admission:    admission,
 		registration: registration,
@@ -829,33 +851,50 @@ func previous(cp *lodiav1alpha1.ControlPlane, conditionType string) metav1.Condi
 // every time, since an apply that leaves one out removes it; it leaves cp
 // with what it wrote.
 func (r *Reconciler) apply(ctx context.Context, cp *lodiav1alpha1.ControlPlane, conditions ...metav1.Condition) error {
-	all := slices.Clone(cp.Status.Conditions)
-	changed := false
-	var applied []any
-	for _, c := range conditions {
-		if previous := meta.FindStatusCondition(cp.Status.Conditions, c.Type); previous == nil || previous.Status != c.Status ||
-			previous.Reason != c.Reason || previous.Message != c.Message || previous.ObservedGeneration != c.ObservedGeneration {
-			changed = true
-		}
-		meta.SetStatusCondition(&all, c)
-		u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(meta.FindStatusCondition(all, c.Type))
-		if err != nil {
-			return err
-		}
-		applied = append(applied, u)
+	all, applied, changed, err := conditionsApplied(cp, conditions)
+	if err != nil {
+		return err
 	}
 	if !changed {
 		return nil
 	}
-	u := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": lodiav1alpha1.GroupVersion.String(),
-		"kind":       "ControlPlane",
-		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
-		"status":     map[string]any{"conditions": applied},
-	}}
-	if err := r.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(u), client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
+	if err := applyStatus(ctx, r.Status(), FieldManager, cp, map[string]any{"conditions": applied}); err != nil {
 		return err
 	}
 	cp.Status.Conditions = all
 	return nil
+}
+
+// conditionsApplied sets conditions in a copy of cp's, and returns the copy,
+// the entries an apply of them carries, and whether any differs from cp's.
+func conditionsApplied(cp *lodiav1alpha1.ControlPlane, conditions []metav1.Condition) ([]metav1.Condition, []any, bool, error) {
+	all := slices.Clone(cp.Status.Conditions)
+	changed := false
+	var applied []any
+	for _, c := range conditions {
+		changed = changed || differs(meta.FindStatusCondition(cp.Status.Conditions, c.Type), c)
+		meta.SetStatusCondition(&all, c)
+		u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(meta.FindStatusCondition(all, c.Type))
+		if err != nil {
+			return nil, nil, false, err
+		}
+		applied = append(applied, u)
+	}
+	return all, applied, changed, nil
+}
+
+// differs says whether c is not what previous says already.
+func differs(previous *metav1.Condition, c metav1.Condition) bool {
+	return previous == nil || previous.Status != c.Status || previous.Reason != c.Reason || previous.Message != c.Message || previous.ObservedGeneration != c.ObservedGeneration
+}
+
+// applyStatus applies status as the field manager, over what others hold.
+func applyStatus(ctx context.Context, status client.SubResourceWriter, manager string, cp *lodiav1alpha1.ControlPlane, fields map[string]any) error {
+	u := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": lodiav1alpha1.GroupVersion.String(),
+		"kind":       "ControlPlane",
+		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
+		"status":     fields,
+	}}
+	return status.Apply(ctx, client.ApplyConfigurationFromUnstructured(u), client.FieldOwner(manager), client.ForceOwnership)
 }

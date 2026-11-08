@@ -41,6 +41,13 @@ import (
 // does not read yet (docs/README.md, Operator configuration).
 const workers = 10
 
+// nodesWorkers is health-nodes' workers: a tenant that hangs holds one for the
+// timeout, and it takes this many at once to delay another's samples
+// (docs/decisions/controller-manager-hold.md).
+const nodesWorkers = 100
+
+const healthTimeout = 5 * time.Second
+
 // Scheme holds the kinds the controllers read and write.
 func Scheme() *runtime.Scheme {
 	scheme := runtime.NewScheme()
@@ -143,6 +150,9 @@ func Setup(mgr ctrl.Manager, cfg Config, signerImage, tunnelImage, etcdDruidName
 	if err := newHealth(mgr.GetClient(), mgr.GetAPIReader(), cfg.Health).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the health controller: %w", err)
 	}
+	if err := newNodes(mgr.GetClient(), mgr.GetAPIReader(), cfg.Health).SetupWithManager(mgr, nodesWorkers); err != nil {
+		return fmt.Errorf("set up the health nodes reconciler: %w", err)
+	}
 	if err := (&workloads.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: gatewayAPI}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the workloads controller: %w", err)
 	}
@@ -150,5 +160,12 @@ func Setup(mgr ctrl.Manager, cfg Config, signerImage, tunnelImage, etcdDruidName
 }
 
 func newHealth(c client.Client, reader client.Reader, cfg HealthConfig) *health.Reconciler {
-	return &health.Reconciler{Client: c, Reader: reader, Period: cfg.Period.Duration, FailuresBeforeFalse: cfg.FailuresBeforeFalse, Timeout: 5 * time.Second, Clock: clock.RealClock{}}
+	return &health.Reconciler{Client: c, Reader: reader, Period: cfg.Period.Duration, FailuresBeforeFalse: cfg.FailuresBeforeFalse, Timeout: healthTimeout, Clock: clock.RealClock{}}
+}
+
+func newNodes(c client.Client, reader client.Reader, cfg HealthConfig) *health.NodesReconciler {
+	return &health.NodesReconciler{
+		Client: c, Reader: reader, Period: cfg.Period.Duration, Timeout: healthTimeout,
+		SilentAfter: cfg.SilentAfter.Duration, HoldFraction: int(cfg.HoldFraction), Clock: clock.RealClock{},
+	}
 }

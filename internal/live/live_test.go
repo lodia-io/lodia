@@ -49,6 +49,7 @@ func held(t *testing.T) (client.Reader, *lodiav1alpha1.ControlPlane) {
 				InCluster:    lodiav1alpha1.HostPort{Host: lodiav1alpha1.DefaultAdvertiseAddress, Port: 6443},
 				Tunnel:       &lodiav1alpha1.HostPort{Host: "tunnel.dev.example.com", Port: 443},
 			},
+			Nodes: &lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: 3, Ready: 2}, OldestKubelet: "v1.34.2"},
 		},
 	}
 	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(server.DeepCopy()).Build(), server
@@ -107,6 +108,29 @@ func TestEndpointTakesTheAPIServersStatus(t *testing.T) {
 	}
 }
 
+func TestNodesTakesTheAPIServersStatus(t *testing.T) {
+	reader, server := held(t)
+	cp := cachedAs(server.UID)
+	if err := live.Nodes(t.Context(), reader, cp, lodiav1alpha1.ConditionDatastoreReady); err != nil {
+		t.Fatal(err)
+	}
+	if !equality.Semantic.DeepEqual(cp.Status.Nodes, server.Status.Nodes) {
+		t.Errorf("status.nodes %+v, want the API server's %+v", cp.Status.Nodes, server.Status.Nodes)
+	}
+	for _, c := range []struct {
+		conditionType string
+		from          *lodiav1alpha1.ControlPlane
+	}{{lodiav1alpha1.ConditionDatastoreReady, server}, {lodiav1alpha1.ConditionAPIServerReady, cachedAs(server.UID)}} {
+		got, want := meta.FindStatusCondition(cp.Status.Conditions, c.conditionType), meta.FindStatusCondition(c.from.Status.Conditions, c.conditionType)
+		if !equality.Semantic.DeepEqual(got, want) {
+			t.Errorf("%s is %+v, want %+v", c.conditionType, got, want)
+		}
+	}
+	if cp.Status.Datastore != nil || cp.Status.Endpoint != nil {
+		t.Errorf("status.datastore %+v and status.endpoint %+v, want the cache's, none", cp.Status.Datastore, cp.Status.Endpoint)
+	}
+}
+
 func TestAReadOfAnotherObjectFails(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -120,6 +144,9 @@ func TestAReadOfAnotherObjectFails(t *testing.T) {
 		}},
 		{"Endpoint", func(reader client.Reader, cp *lodiav1alpha1.ControlPlane) error {
 			return live.Endpoint(t.Context(), reader, cp, lodiav1alpha1.ConditionAPIServerReady)
+		}},
+		{"Nodes", func(reader client.Reader, cp *lodiav1alpha1.ControlPlane) error {
+			return live.Nodes(t.Context(), reader, cp, lodiav1alpha1.ConditionControllerManagerHeld)
 		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {

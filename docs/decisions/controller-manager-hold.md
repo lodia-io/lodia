@@ -1,7 +1,7 @@
 # While most of a tenant's nodes are silent, Lodia holds its controller manager's leader lease
 
 Decided 2026-10-25.
-The timings and `ControllersLeading` are built; the hold comes with phase 2's wave 2 (Health) ([roadmap](../roadmap.md)).
+The timings, `ControllersLeading` and the sampling of the nodes are built; the hold comes with phase 2's wave 2 (Health) ([roadmap](../roadmap.md)).
 
 ## Decision
 
@@ -101,3 +101,4 @@ One dead machine of two is 50%, and its pods are evicted as upstream does.
 - `internal/controller/workloads` — `render.go` renders the controller manager's timings and the scheduler's lease from the constants in `api/v1alpha1/names.go`; `workloads_test.go` holds the flags.
 - `internal/operator` — `config.go` loads Health's settings from the operator's configuration file and refuses the ones that break the margin; `config_test.go` holds every refusal.
 - `internal/controller/health` — `health.go` reports `ControllersLeading` from the two leader Leases; `health_test.go` holds a Lease that stops renewing.
+  `nodes.go` samples the node Leases and the Nodes on a queue of its own and reports `status.nodes` and `ControllerManagerHeld`; `nodes_test.go` holds the counting rules.
