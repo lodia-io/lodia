@@ -396,6 +396,13 @@ type tenantAccess struct {
 
 func openTenant(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey) *tenantAccess {
 	t.Helper()
+	access := connect(t, adminKubeconfig(ctx, t, k8s, key))
+	t.Logf("the tenant's API server %s is reached through status.endpoint, as %s", access.cfg.Host, lodiav1alpha1.AdminKubeconfigSecret.Name(key.Name))
+	return access
+}
+
+func adminKubeconfig(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey) *clientcmdapi.Config {
+	t.Helper()
 	secret := &corev1.Secret{}
 	if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: lodiav1alpha1.AdminKubeconfigSecret.Name(key.Name)}, secret); err != nil {
 		t.Fatal(err)
@@ -404,6 +411,11 @@ func openTenant(ctx context.Context, t *testing.T, k8s client.Client, key client
 	if err != nil {
 		t.Fatal(err)
 	}
+	return kubeconfig
+}
+
+func connect(t *testing.T, kubeconfig *clientcmdapi.Config) *tenantAccess {
+	t.Helper()
 	cfg, err := clientcmd.NewNonInteractiveClientConfig(*kubeconfig, kubeconfig.CurrentContext, nil, nil).ClientConfig()
 	if err != nil {
 		t.Fatal(err)
@@ -416,7 +428,6 @@ func openTenant(ctx context.Context, t *testing.T, k8s client.Client, key client
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("the tenant's API server %s is reached through status.endpoint, as %s", cfg.Host, secret.Name)
 	return &tenantAccess{cfg: cfg, kubeconfig: *kubeconfig, client: c, resources: r}
 }
 
@@ -590,7 +601,11 @@ func joinNodes(ctx context.Context, t *testing.T, cfg *envconf.Config, k8s clien
 	return nodes
 }
 
-var startedNodes []string
+var (
+	startedNodes []string
+	nodeDNS      string
+	nodeImages   []reference.NamedTagged
+)
 
 func startNode(ctx context.Context, t *testing.T, kubeconfig string, i int) string {
 	t.Helper()
@@ -605,10 +620,14 @@ func startNode(ctx context.Context, t *testing.T, kubeconfig string, i int) stri
 	if _, err := docker(ctx, "rm", "--force", "--volumes", name); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := docker(ctx, "run", "--detach", "--tty", "--name", name, "--hostname", name, "--network", "kind",
+	run := []string{"run", "--detach", "--tty", "--name", name, "--hostname", name, "--network", "kind",
 		"--privileged", "--security-opt", "seccomp=unconfined", "--security-opt", "apparmor=unconfined",
 		"--cgroupns=private", "--tmpfs", "/tmp", "--tmpfs", "/run", "--volume", "/var",
-		"--volume", "/lib/modules:/lib/modules:ro", "--restart=on-failure:1", "--init=false", defaults.Image); err != nil {
+		"--volume", "/lib/modules:/lib/modules:ro", "--restart=on-failure:1", "--init=false"}
+	if nodeDNS != "" {
+		run = append(run, "--dns", nodeDNS)
+	}
+	if _, err := docker(ctx, append(run, defaults.Image)...); err != nil {
 		t.Fatal(err)
 	}
 	until(ctx, t, time.Minute, "container "+name+" booted", func(ctx context.Context) error {
@@ -623,6 +642,9 @@ func startNode(ctx context.Context, t *testing.T, kubeconfig string, i int) stri
 	})
 	if _, err := docker(ctx, "cp", filepath.Join("testdata", "kubeadm-patches"), name+":"+nodePatches); err != nil {
 		t.Fatal(err)
+	}
+	for _, image := range nodeImages {
+		loadImage(ctx, t, kubeconfig, name, image)
 	}
 	return name
 }
