@@ -3035,8 +3035,6 @@ func TestAFailedNetworkPolicyCallLeavesTheStatus(t *testing.T) {
 	waitEtcd(t, ns, cp, namesGeneration(1))
 	readyOn(t, ns, cp, 1)
 	waitPolicy(t, ns, cp, nil)
-	settle(t, ns, cp)
-	before := getControlPlane(t, ns, cp)
 	injected := errors.New("injected: the API server did not answer")
 	lagging := func(failPolicies bool) func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
 		return func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
@@ -3066,15 +3064,20 @@ func TestAFailedNetworkPolicyCallLeavesTheStatus(t *testing.T) {
 		}}, context.DeadlineExceeded},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			row.funcs.SubResource = func(c client.WithWatch, name string) client.SubResourceClient {
+				t.Errorf("the pass wrote the ControlPlane's %s", name)
+				return c.SubResource(name)
+			}
+			row.funcs.Patch = func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+				if _, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
+					t.Errorf("the pass patched ControlPlane %s", obj.GetName())
+				}
+				return c.Patch(ctx, obj, patch, opts...)
+			}
 			failing := interceptor.NewClient(k8s, row.funcs)
 			reconciler := &datastore.Reconciler{Client: failing, Reader: failing, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace}
 			if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}); !errors.Is(err, row.err) {
 				t.Fatalf("the pass returned %v, want %v", err, row.err)
-			}
-			if after := getControlPlane(t, ns, cp); after.ResourceVersion != before.ResourceVersion {
-				condition := meta.FindStatusCondition(after.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
-				t.Errorf("the pass moved the ControlPlane from resourceVersion %s to %s: DatastoreReady %s/%s %q",
-					before.ResourceVersion, after.ResourceVersion, condition.Status, condition.Reason, condition.Message)
 			}
 		})
 	}
