@@ -114,6 +114,49 @@ Without `access` the certificate carries no group, and the tenant's RBAC on `lod
 `ClusterAdmin` needs `create` on `controlplanes/adminkubeconfig` for that `ControlPlane`; a request that is not `Ready` says why in its condition ([reasons](api/controlplane.md#kubeconfigrequest)).
 The request is deleted at its deadline; deleting it earlier revokes nothing, the certificate works until `status.expirationTimestamp`.
 
+## The platform under the gateway mode
+
+What `endpoint.gateway` asks of the platform, beyond the [prerequisites](README.md#installation).
+
+### Gateway implementations
+
+The core of Gateway API's `GATEWAY-TLS` conformance profile is `TLSRoute` in passthrough ([profiles.go](https://github.com/kubernetes-sigs/gateway-api/blob/v1.6.3/conformance/utils/suite/profiles.go#L99-L110), [the test's listener](https://github.com/kubernetes-sigs/gateway-api/blob/v1.6.3/conformance/tests/tlsroute-simple-same-namespace.yaml#L34-L35)), which is all Lodia uses.
+These reports, kept in the Gateway API repository at v1.6.3, each the newest of its implementation, pass that core:
+
+| implementation | report (Gateway API version) |
+|---|---|
+| agentgateway | [v1.1.0](https://github.com/kubernetes-sigs/gateway-api/blob/v1.6.3/conformance/reports/v1.5/agentgateway-agentgateway/v1.1.0-report.yaml) (v1.5.1) |
+| Cilium | [v1.20.0-pre.2](https://github.com/kubernetes-sigs/gateway-api/blob/v1.6.3/conformance/reports/v1.5/cilium/experimental-v1.20.0-pre.2-default-report.yaml) (v1.5.1) |
+| Envoy Gateway | [v1.8.0](https://github.com/kubernetes-sigs/gateway-api/blob/v1.6.3/conformance/reports/v1.5/envoy-gateway/experimental-v1.8.0-default-report.yaml) (v1.5.1) |
+| Istio | [1.28](https://github.com/kubernetes-sigs/gateway-api/blob/v1.6.3/conformance/reports/v1.4.0/istio-istio/1.28.0-default-report.yaml) (v1.4.0) |
+| kgateway | [v2.3.0-beta.3](https://github.com/kubernetes-sigs/gateway-api/blob/v1.6.3/conformance/reports/v1.5/kgateway/v2.3.0-beta.3-report.yaml) (v1.5.1) |
+| NGINX Gateway Fabric | [v2.6.0](https://github.com/kubernetes-sigs/gateway-api/blob/v1.6.3/conformance/reports/v1.5/nginx-nginx-gateway-fabric/experimental-2.6.0-default-report.yaml) (v1.5.1) |
+| Traefik | [v3.7](https://github.com/kubernetes-sigs/gateway-api/blob/v1.6.3/conformance/reports/v1.5/traefik-traefik/experimental-v3.7.0-default-report.yaml) (v1.5.1) |
+
+Lodia's gates run on Envoy Gateway v1.9.3 ([the gate](../test/e2e/README.md#the-gateway-gate)).
+
+### What a tenant's cluster must allow
+
+- **Pod Security:** `kube-system` has to admit `apiserver-proxy`, whose `hostNetwork` and `NET_ADMIN` the Baseline level forbids ([pod-security-standards](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/concepts/security/pod-security-standards.md#baseline)), so a namespace label enforcing `baseline` or `restricted` there stops in-cluster API access.
+- **NetworkPolicy:** a tenant's egress policies must allow pods the advertise address and 6443, `240.0.0.1:6443` by default, which is what connections to the `kubernetes` Service resolve to ([api-exposure](decisions/api-exposure.md)).
+- **Windows and virtual-kubelet nodes:** they run no `apiserver-proxy`, so a pod there gets no in-cluster API path through `kubernetes.default`.
+- **HTTP egress proxies:** `apiserver-proxy` dials the tunnel directly, so a node that reaches the Gateway only through an HTTP proxy gets no in-cluster API path; support for that is undecided.
+
+### Audit
+
+Requests through the tunnel reach the API server from `127.0.0.1`, since the sidecar dials it on loopback, and external requests from the Gateway's address, so audit `sourceIPs` and the request log carry no client address ([request.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/audit/request.go#L55-L59)).
+In gateway mode requests are attributed by identity: a bound ServiceAccount token carries its pod and node into the user's extra fields, which the audit event records ([util.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/authentication/serviceaccount/util.go#L40-L47)).
+Where audit must rest on the source address, use `loadBalancer` mode.
+
+### Platform matrix
+
+The in-cluster path, `kubernetes` to `240.0.0.1:6443` through `apiserver-proxy` and the tunnel:
+
+| platform | how it was checked | result |
+|---|---|---|
+| kindnet and kube-proxy, Envoy Gateway v1.9.3, Kubernetes v1.37.0 | `TestGatewayGate`, every pull request ([the gate](../test/e2e/README.md#the-gateway-gate)) | passes |
+| Cilium v1.20.4, `kubeProxyReplacement=true`, tunnel routing, no kube-proxy (`addons.kubeProxy.enabled: false`), Kubernetes v1.37.0, kernel 6.12.54-linuxkit | once by hand on kind, repeated by no CI job: `helm upgrade --install cilium oci://quay.io/cilium/charts/cilium --version 1.20.4 --set kubeProxyReplacement=true,k8sServiceHost=<api host>,k8sServicePort=443,dnsPolicy=Default,ipam.mode=kubernetes,operator.replicas=1`; `dnsPolicy=Default` lets the agent resolve the API hostname before CoreDNS runs | socket load balancing on, `cilium-dbg service list` holds `10.32.0.1:443 => 240.0.0.1:6443` (`10.32.0.1` the tenant's `kubernetes` ClusterIP), and a pod's loop to `https://kubernetes.default` answered 600 new-connection and 600 reused-connection requests in a minute, none failed |
+
 ## What breaks, and how it shows
 
 | symptom | look at |
@@ -156,7 +199,9 @@ The request is deleted at its deadline; deleting it earlier revokes nothing, the
 | `AccessReady=False`, `Binding` | the tenant has not confirmed the bindings since its API server became ready; Lodia's log has the error. PKI recreates a missing binding with a ten-minute `system:masters` certificate on its next pass |
 | `ControllerManagerHeld=True`, `NodesSilent` (wave 2, Health); in the tenant, the Lease `kube-system/kube-controller-manager` held by `lodia` | most nodes cannot reach the API, so Health holds the controller manager; the [nodes cut off](#nodes-cut-off-from-the-control-plane) runbook |
 | `ControllerManagerHeld=False`, `HoldBlocked` (wave 2, Health) | nodes are silent but another component holds the controller manager's lease, named in the message, for example a platform's own watchdog; run one of the two, not both |
-| `Reachable=False`, `ExternalProbeFailed`, nodes fine | the public endpoint from the management cluster's side: Gateway listener, route status, certificate SANs |
+| `Reachable=False`, `ExternalProbeFailed`, nodes fine | the path the message names: `api:` the public endpoint, its Gateway listener, route status and certificate SANs; `tunnel:` the route `<cp>-tunnel`, the sidecar's `<cp>-tunnel-serving` and the tunnel's client certificate; `konnectivity:` the route `<cp>-konnectivity` and `<cp>-konnectivity-server`'s SANs |
+| Many tenants turn `Reachable=False` slowly behind one Gateway | a Gateway that does not answer costs a Health worker the 5-second timeout for each tenant, per pass, so a round over `N` tenants takes `N`/2 seconds on the 10 workers and the third failed probe comes that much later; tenants on other Gateways wait behind them, as they did behind a hung public probe |
+| `Reachable=False`, `WaitingForCertificates`, naming `<cp>-tunnel-client` | PKI has not issued it yet, or another owner keeps it ([the name](README.md#a-tenant-namespace)); Tenant delivering it to nodes is a separate path |
 | `AddonsApplied=False`, `Refused` | the tenant refuses the object the message names: an admission policy in the tenant, or `lodia:operator` without access there (`AccessReady`), which the inventory `kube-system/lodia-inventory` shows first; Lodia's log (`controller="tenant"`) has the answer |
 | `AddonsApplied=False`, `Applying` | the message names it: an object that exists and is not Lodia's, another owner's under a name Lodia renders, such as one's own CoreDNS (delete it, and Lodia applies its own within the apply period, or disable the addon), an inventory `kube-system/lodia-inventory` that cannot be read (delete it, and every object is applied again), or a tenant that has not answered yet; Lodia's log (`controller="tenant"`) has the answer |
 | `AddonsAvailable=False`, `RolloutPending` | the DaemonSet or Deployment inside the tenant; a node that cannot pull images; a CNI missing (pods of CoreDNS stay Pending until a CNI is installed) |

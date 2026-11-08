@@ -6,7 +6,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the design (2026-10-23)
 
-- List the Gateway implementations whose conformance reports pass `TLSRoute` in passthrough (Envoy Gateway, Istio, Cilium, kgateway, NGINX Gateway Fabric, Traefik), for the install docs.
 - Check whether kube-apiserver reloads `--proxy-client-cert-file` and whether konnectivity-server reloads `--cluster-cert`; each proven reload removes a rollout from certificate renewal.
 - Propose upstream a task of etcd-druid that deletes a prefix in the store (dedicated-etcd-by-default): `retention.afterDelete`, a deleted `ControlPlane`'s last snapshots and a deleted or failed `Backup`'s copy under `…/backups/<Backup UID>` wait for it, and platforms use their bucket's lifecycle rules meanwhile, which must spare the copy of a `Backup` that exists (`docs/operations.md`).
 - etcd-backup-restore restores without etcd's `RevisionBump` and `MarkCompacted`, so a member it restores keeps the snapshot's revisions; propose the bump upstream (dedicated-etcd-by-default; the etcd spike's finding 5 measured the stale cache).
