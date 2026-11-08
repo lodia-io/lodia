@@ -52,7 +52,7 @@ The field reference with every rule is [`api/controlplane.md`](api/controlplane.
 | Lifecycle | `status.target`, `Progressing`, `Ready`; from phase 2's wave 2 `status.kubernetes`, `status.maintenance` and the pre-upgrade `Backup` | `Progressing` | the others |
 
 How they meet is [independent-controllers](decisions/independent-controllers.md).
-PKI, the Datastore controller, a first Lifecycle, the Tenant controller, Health's external probe and Workloads are built (`internal/controller/pki`, `datastore`, `lifecycle`, `tenant`, `health` and `workloads`).
+PKI, the Datastore controller, a first Lifecycle, the Tenant controller, Health's probes and Workloads are built (`internal/controller/pki`, `datastore`, `lifecycle`, `tenant`, `health` and `workloads`).
 
 ```mermaid
 sequenceDiagram
@@ -410,10 +410,13 @@ The final snapshot when a backup store exists comes with backups in phase 2; not
 
 ## Health
 
-Built so far: the probe through the public endpoint, the leader Leases and a restored `ControlPlane`'s release.
+Built so far: the probes of the public endpoint and the in-namespace Service, the leader Leases and a restored `ControlPlane`'s release.
 Every `health.period`, 5 seconds by default, Health asks `https://<status.endpoint.apiServer>/readyz` without credentials, which the API server's authentication allows for its health paths, and verifies it against `<cp>-ca-bundle`.
-In `gateway` mode a probe also reads `/readyz` through the tunnel, the outer TLS with `<cp>-tunnel-client`, the inner verified against the bundle, and completes a TLS handshake with the konnectivity host; the three run at once, each within the timeout, so a dead Gateway holds a worker for one timeout, and a tenant whose `<cp>-tunnel-client` is missing or another owner's reads `WaitingForCertificates`.
-`Reachable` is True on a 200 and turns False after three probes in a row that fail, so one blip does not drop `Ready` ([reasons](api/controlplane.md#conditions-and-their-reasons)).
+It asks `https://<cp>-kube-apiserver.<namespace>.svc/readyz` the same way, through the in-namespace Service, which tells an API server that is down from a broken path to it.
+In `gateway` mode a probe also reads `/readyz` through the tunnel, the outer TLS with `<cp>-tunnel-client`, the inner verified against the bundle, and completes a TLS handshake with the konnectivity host; a tenant whose `<cp>-tunnel-client` is missing or another owner's reads `WaitingForCertificates`.
+The probes of a pass run at once, each within the timeout, the dial and the TLS handshake included, so a dead path holds a worker for one timeout.
+`Reachable` is True while every probe succeeds, and turns False after three passes in a row in which one fails, so one blip does not drop `Ready`.
+The reason is `InternalProbeFailed` when the Service failed in the last of them, `ExternalProbeFailed` otherwise, and the message names each path that failed ([reasons](api/controlplane.md#conditions-and-their-reasons)).
 In the same pass, once `AccessReady` is True, at any generation, Health reads the leader Leases of the controller manager and the scheduler through the in-namespace Service, as `<cp>-lodia-kubeconfig`, each with a consistent GET.
 `ControllersLeading` is True while each Lease has changed, by the operator's clock, within its own `leaseDurationSeconds` and 10 seconds, a Lease its holder released too, which client-go leaves without a holder and with a duration of 1 second ([leaderelection.go](https://github.com/kubernetes/client-go/blob/v0.37.1/tools/leaderelection/leaderelection.go#L341-L347)); the clock lives in memory, so a Lease seen first counts as changed then, and what Health has seen goes only with `AccessReady`, with `<cp>-lodia-kubeconfig` missing or kept by another owner, or with the `ControlPlane`.
 A read that fails leaves `ControllersLeading` as it was, since reaching the API server is `Reachable`'s to report.

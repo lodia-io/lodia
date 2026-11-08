@@ -1,7 +1,7 @@
 # Six controllers share one object and communicate only through status conditions
 
 Decided 2026-10-25.
-The manager, PKI, the Datastore controller, for a dedicated etcd, Lifecycle, for the target within a minor, the rollout in `Progressing` and `Ready`, Tenant, Health, for the probe through the public endpoint and the leader Leases, and Workloads are built.
+The manager, PKI, the Datastore controller, for a dedicated etcd, Lifecycle, for the target within a minor, the rollout in `Progressing` and `Ready`, Tenant, Health, for the probes of the public endpoint and of the in-namespace Service and for the leader Leases, and Workloads are built.
 
 ## Decision
 
@@ -104,7 +104,7 @@ flowchart LR
   `lifecycle_test.go` runs it under the same cache with `ReaderFailOnMissingInformer`, as a user bound to exactly its rules; `internal/versions` holds the minors it supports.
 - `internal/controller/tenant` — waits on `AccessReady` at the current generation, but for the renewal of the tunnel's client certificate, applies the tenant's objects as `lodia/tenant` with the inventory in the tenant, and applies `AddonsApplied` and `AddonsAvailable`; a pass runs only when the target, the endpoint, `AccessReady` or the generation changes, and on its timers.
   `tenant_test.go` runs it under the same cache with `ReaderFailOnMissingInformer`, as a user bound to exactly its rules, against a tenant kube-apiserver started from PKI's certificates ([tenant-resources-by-inventory](tenant-resources-by-inventory.md)).
-- `internal/controller/health` — reads the `ControlPlane` from the cache and `<cp>-ca-bundle` and `<cp>-lodia-kubeconfig` uncached, probes the public endpoint, reads the two leader Leases inside the tenant, and applies `Reachable` and `ControllersLeading` as `lodia/health`, only on a change: a failed read leaving them as they were, and the failed probes counted in memory, so a restart counts afresh.
+- `internal/controller/health` — reads the `ControlPlane` from the cache and `<cp>-ca-bundle` and `<cp>-lodia-kubeconfig` uncached, probes the public endpoint and the in-namespace Service, reads the two leader Leases inside the tenant, and applies `Reachable` and `ControllersLeading` as `lodia/health`, only on a change: a failed read leaving them as they were, and the failed probes counted in memory, so a restart counts afresh.
   Only a change of the endpoint, of whether `AccessReady` is True, or of the generation brings a pass between the periodic ones, so failed probes count a period apart unless such a change comes between them.
   `health_test.go` runs it under the same cache with `ReaderFailOnMissingInformer`, as a user bound to exactly its rules, against a second envtest API server as the tenant.
 - `internal/controller/workloads` — reads `spec`, `status.target`, `status.datastore.endpoints` and the conditions it waits on, the data hash of each restart-only Secret from its metadata in the cache, a `nodePort` endpoint's nodes uncached, and in `gateway` mode the Gateways and the `TLSRoute`s from the cache and the `TLSRoute`s uncached before it writes one; writes the Service, the ConfigMaps, the NetworkPolicies, the Deployments, with `highAvailability` their PodDisruptionBudgets and in `gateway` mode the `TLSRoute`s with server-side apply as `lodia/workloads`, none over an object another owner keeps, and applies `APIServerReady`, in `gateway` mode `RoutesReady`, `status.components` and `status.endpoint` through the status subresource (an API error left to the log unless the server refuses an object it is sent, which is `Refused`).

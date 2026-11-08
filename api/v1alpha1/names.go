@@ -153,6 +153,13 @@ func EtcdName(controlPlane string) string { return controlPlane + "-etcd" }
 // Workloads writes and PKI names in certificates and kubeconfigs.
 func APIServerServiceName(controlPlane string) string { return controlPlane + "-kube-apiserver" }
 
+// APIServerServiceURL is the address of APIServerServiceName's Service as the
+// pods of the namespace resolve it, which PKI's kubeconfigs dial and Health
+// probes.
+func APIServerServiceURL(namespace, controlPlane string) string {
+	return "https://" + APIServerServiceName(controlPlane) + "." + namespace + ".svc:" + strconv.Itoa(APIServerServicePort)
+}
+
 // PreUpgradeBackupName is "<ControlPlane>-pre-upgrade-<version>-<UID>", the
 // Backup Lifecycle takes before a minor step to version. A Backup outlives
 // its source, so the UID keeps a predecessor's of the same name from

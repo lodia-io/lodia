@@ -381,7 +381,7 @@ func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 		}
 	}
 	if cl != nil && cluster != nil {
-		internal := "https://" + lodiav1alpha1.APIServerServiceName(t.cp.Name) + "." + t.cp.Namespace + ".svc:" + strconv.Itoa(lodiav1alpha1.APIServerServicePort)
+		internal := lodiav1alpha1.APIServerServiceURL(t.cp.Namespace, t.cp.Name)
 		kubeconfigs := []kubeconfig{
 			{lodiav1alpha1.KonnectivityKubeconfigSecret, "system:konnectivity-server", nil, internal, false},
 			{lodiav1alpha1.ControllerManagerKubeconfigSecret, "system:kube-controller-manager", nil, internal, false},
