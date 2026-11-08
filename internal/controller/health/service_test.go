@@ -306,30 +306,34 @@ func TestTheMessageNamesEveryFailedPathAndTheInternalOneFirst(t *testing.T) {
 }
 
 func TestTheInternalProbeVerifiesTheBundleAndSendsNoCredentials(t *testing.T) {
-	p := modes[0].start(t)
-	probe := newReconciler(time.Second)
-	reconcile(t, probe, p.cp)
-	seen := p.api.service.requests()
-	if len(seen) == 0 {
-		t.Fatal("the Service saw no request")
-	}
-	host, _, _ := net.SplitHostPort(internalHost(p.cp))
-	for _, r := range seen {
-		if want := (request{method: http.MethodGet, host: internalHost(p.cp), path: "/readyz", serverName: host}); r != want {
-			t.Errorf("the Service saw %+v, want %+v: no credentials, the name it is reached by", r, want)
-		}
-	}
+	for _, m := range modes {
+		t.Run(m.name, func(t *testing.T) {
+			p := m.start(t)
+			probe := newReconciler(time.Second)
+			reconcile(t, probe, p.cp)
+			seen := p.api.service.requests()
+			if len(seen) == 0 {
+				t.Fatal("the Service saw no request")
+			}
+			host, _, _ := net.SplitHostPort(internalHost(p.cp))
+			for _, r := range seen {
+				if want := (request{method: http.MethodGet, host: internalHost(p.cp), path: "/readyz", serverName: host}); r != want {
+					t.Errorf("the Service saw %+v, want %+v: no credentials, the name it is reached by", r, want)
+				}
+			}
 
-	other, err := certs.NewCA("other-ca", time.Now(), time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p.api.service = serveService(t, p.cp, other)
-	for range failuresBeforeFalse {
-		reconcile(t, probe, p.cp)
-	}
-	if err := expect(t, p.cp, metav1.ConditionFalse, lodiav1alpha1.ReasonInternalProbeFailed, "internal: "+internalURL(p.cp)+" did not answer"); err != nil {
-		t.Fatal(err)
+			other, err := certs.NewCA("other-ca", time.Now(), time.Hour)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.api.service = serveService(t, p.cp, other)
+			for range failuresBeforeFalse {
+				reconcile(t, probe, p.cp)
+			}
+			if err := expect(t, p.cp, metav1.ConditionFalse, lodiav1alpha1.ReasonInternalProbeFailed, "internal: "+internalURL(p.cp)+" did not answer"); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
