@@ -291,7 +291,7 @@ func (f *gatewayFixture) allAnswered() string {
 }
 
 func (f *gatewayFixture) probe(timeout time.Duration) *health.Reconciler {
-	return &health.Reconciler{Client: k8s, Reader: k8s, Period: time.Hour, Timeout: timeout, Clock: clock.RealClock{}}
+	return &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, Period: time.Hour, Timeout: timeout, Clock: clock.RealClock{}}
 }
 
 func (f *gatewayFixture) probeAt(t *testing.T, timeout time.Duration, tunnel, konnectivity string) *health.Reconciler {
@@ -308,7 +308,7 @@ func (f *gatewayFixture) probeAt(t *testing.T, timeout time.Duration, tunnel, ko
 			return nil
 		},
 	})
-	return &health.Reconciler{Client: pointed, Reader: k8s, Period: time.Hour, Timeout: timeout, Clock: clock.RealClock{}}
+	return &health.Reconciler{Client: pointed, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, Period: time.Hour, Timeout: timeout, Clock: clock.RealClock{}}
 }
 
 func addressOf(t *testing.T, address string) lodiav1alpha1.HostPort {
@@ -416,7 +416,7 @@ func TestEachGatewayPathFailingAloneNamesItself(t *testing.T) {
 				publishGateway(t, f.cp, f.apiAddress(), konnectivity, tunnel)
 			}
 			probe := f.probe(500 * time.Millisecond)
-			for failed := 1; failed < health.FailuresBeforeFalse; failed++ {
+			for failed := 1; failed < failuresBeforeFalse; failed++ {
 				reconcile(t, probe, f.cp)
 				if err := expect(t, f.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, f.allAnswered()); err != nil {
 					t.Fatalf("after %d failed probes: %v", failed, err)
@@ -441,7 +441,7 @@ func TestTheMessageNamesEveryFailedPath(t *testing.T) {
 	konnectivity := deadAddress(t)
 	publishGateway(t, f.cp, f.apiAddress(), konnectivity, f.tunnel.address)
 	probe := f.probe(500 * time.Millisecond)
-	for range health.FailuresBeforeFalse {
+	for range failuresBeforeFalse {
 		reconcile(t, probe, f.cp)
 	}
 	want := fmt.Sprintf("api: %s answered 500; tunnel: %s through %s answered 502; konnectivity: %s did not complete a TLS handshake", f.api.url, f.api.url, f.tunnel.address, konnectivity)
@@ -603,7 +603,7 @@ func TestATunnelClientThatIsMissingOrKeptElsewhereWaitsForCertificates(t *testin
 	if err := k8s.Create(t.Context(), foreign); err != nil {
 		t.Fatal(err)
 	}
-	probe := &health.Reconciler{Client: k8s, Reader: k8s, Period: time.Hour, Timeout: 300 * time.Millisecond}
+	probe := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, Period: time.Hour, Timeout: 300 * time.Millisecond}
 	reconcile(t, probe, cp)
 	if err := expect(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "Secret "+name+" is kept by ExternalSecret stranger with UID abc"); err != nil {
 		t.Fatal(err)
@@ -654,7 +654,7 @@ func TestARotatedTunnelClientReachesTheNextProbe(t *testing.T) {
 	if err := k8s.Update(t.Context(), secret); err != nil {
 		t.Fatal(err)
 	}
-	for range health.FailuresBeforeFalse {
+	for range failuresBeforeFalse {
 		reconcile(t, probe, f.cp)
 	}
 	if err := expect(t, f.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, f.allAnswered()); err != nil {
@@ -688,7 +688,7 @@ func TestTheOtherModesAreProbedAsBefore(t *testing.T) {
 			return expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200")
 		})
 		reader, reads := readsOf(t)
-		probe := &health.Reconciler{Client: k8s, Reader: reader, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
+		probe := &health.Reconciler{Client: k8s, Reader: reader, FailuresBeforeFalse: failuresBeforeFalse, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
 		reconcile(t, probe, cp)
 		if got := strings.Join(*reads, ","); got != lodiav1alpha1.CABundleSecret.Name(cp.Name) {
 			t.Errorf("%+v: the pass read the Secrets [%s], want only the CA bundle", endpoint, got)
@@ -697,7 +697,7 @@ func TestTheOtherModesAreProbedAsBefore(t *testing.T) {
 			t.Error(err)
 		}
 		e.code.Store(http.StatusServiceUnavailable)
-		for range health.FailuresBeforeFalse {
+		for range failuresBeforeFalse {
 			reconcile(t, probe, cp)
 		}
 		if err := expect(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonExternalProbeFailed, e.url+" answered 503"); err != nil {
@@ -713,7 +713,7 @@ func TestGatewayModeReadsTheTunnelClientOncePerPass(t *testing.T) {
 		return expect(t, f.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, f.allAnswered())
 	})
 	reader, reads := readsOf(t)
-	r := &health.Reconciler{Client: k8s, Reader: reader, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
+	r := &health.Reconciler{Client: k8s, Reader: reader, FailuresBeforeFalse: failuresBeforeFalse, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(f.cp)}); err != nil {
 		t.Fatal(err)
 	}
@@ -738,8 +738,8 @@ func TestAFailedReadOfTheTunnelClientLeavesTheStatus(t *testing.T) {
 			return c.Get(ctx, key, obj, opts...)
 		},
 	})
-	probe := &health.Reconciler{Client: noControlPlaneWrite(t, k8s), Reader: failing, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
-	for range health.FailuresBeforeFalse {
+	probe := &health.Reconciler{Client: noControlPlaneWrite(t, k8s), Reader: failing, FailuresBeforeFalse: failuresBeforeFalse, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
+	for range failuresBeforeFalse {
 		if _, err := probe.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(f.cp)}); err == nil {
 			t.Fatalf("a pass whose read of %s failed returned no error", name)
 		}

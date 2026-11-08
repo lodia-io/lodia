@@ -56,9 +56,6 @@ import (
 const (
 	Name         = "health"
 	FieldManager = "lodia/" + Name
-	// FailuresBeforeFalse consecutive failed probes turn a True Reachable
-	// False, so that one blip does not drop Ready.
-	FailuresBeforeFalse = 3
 
 	// leaderSlack is how long past its duration a leader Lease may stay
 	// unchanged and still lead. A standby takes over from a leader that died
@@ -76,6 +73,9 @@ type Reconciler struct {
 	// Period is how often a control plane is probed and its leader Leases
 	// read, Timeout how long a probe or a read waits for an answer.
 	Period, Timeout time.Duration
+	// FailuresBeforeFalse consecutive failed probes turn a True Reachable
+	// False, so that one blip does not drop Ready.
+	FailuresBeforeFalse int
 	// Clock tells when a leader Lease was seen to change.
 	Clock clock.PassiveClock
 
@@ -190,7 +190,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 }
 
 // reachable returns nil to keep the condition as the API server holds it: a
-// True after fewer than FailuresBeforeFalse failed probes in a row. It also
+// True after fewer than r.FailuresBeforeFalse failed probes in a row. It also
 // says whether its probe failed: a success clears the count at once, and a
 // failure counts only once the pass has applied its conditions.
 func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*metav1.Condition, bool, error) {
@@ -237,7 +237,7 @@ func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPla
 	if passed {
 		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, answer), false, nil
 	}
-	if r.failed(key)+1 < FailuresBeforeFalse {
+	if r.failed(key)+1 < r.FailuresBeforeFalse {
 		if err := live.Conditions(ctx, r.Reader, cp, lodiav1alpha1.ConditionReachable); err != nil {
 			return nil, false, err
 		}
