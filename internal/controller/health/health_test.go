@@ -450,7 +450,7 @@ func TestControllersLeadingFollowsTheLeaderLeases(t *testing.T) {
 	})
 	start := time.Now().Truncate(time.Second)
 	now := clocktesting.NewFakePassiveClock(start)
-	r := &health.Reconciler{Client: k8s, Reader: k8s, Period: 10 * time.Second, Timeout: 2 * time.Second, Clock: now}
+	r := &health.Reconciler{Client: k8s, Reader: k8s, Period: 5 * time.Second, Timeout: 2 * time.Second, Clock: now}
 	writeKubeconfig(t, cp, tenantKubeconfig)
 	removeLeases(t)
 	reconcile(t, r, cp)
@@ -465,10 +465,15 @@ func TestControllersLeadingFollowsTheLeaderLeases(t *testing.T) {
 	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, "the leader Leases of kube-controller-manager and kube-scheduler are renewed"); err != nil {
 		t.Fatal(err)
 	}
+	now.SetTime(start.Add(24 * time.Second))
+	reconcile(t, r, cp)
+	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, "the leader Leases of kube-controller-manager and kube-scheduler are renewed"); err != nil {
+		t.Fatalf("24 seconds after the last renewal, at a period of 5 seconds: %v", err)
+	}
 	now.SetTime(start.Add(25 * time.Second))
 	reconcile(t, r, cp)
 	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, "the leader Leases of kube-controller-manager and kube-scheduler are renewed"); err != nil {
-		t.Fatalf("within each lease's 15 seconds and the period: %v", err)
+		t.Fatalf("25 seconds after the last renewal, each lease's 15 seconds and 10 more: %v", err)
 	}
 	now.SetTime(start.Add(26 * time.Second))
 	reconcile(t, r, cp)
@@ -500,12 +505,12 @@ func TestControllersLeadingFollowsTheLeaderLeases(t *testing.T) {
 	now.SetTime(start.Add(37 * time.Second))
 	reconcile(t, r, cp)
 	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, "the leader Leases of kube-controller-manager and kube-scheduler are renewed"); err != nil {
-		t.Fatalf("a pass within a period of a release: %v", err)
+		t.Fatalf("a pass 10 seconds after a release: %v", err)
 	}
 	now.SetTime(start.Add(38 * time.Second))
 	reconcile(t, r, cp)
 	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, "the leader Leases of kube-controller-manager and kube-scheduler are renewed"); err != nil {
-		t.Fatalf("within the released lease's 1 second and the period: %v", err)
+		t.Fatalf("within the released lease's 1 second and 10 more: %v", err)
 	}
 	now.SetTime(start.Add(39 * time.Second))
 	reconcile(t, r, cp)

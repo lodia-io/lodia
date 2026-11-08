@@ -59,6 +59,13 @@ const (
 	// FailuresBeforeFalse consecutive failed probes turn a True Reachable
 	// False, so that one blip does not drop Ready.
 	FailuresBeforeFalse = 3
+
+	// leaderSlack is how long past its duration a leader Lease may stay
+	// unchanged and still lead. A standby takes over from a leader that died
+	// without releasing up to 8.8 s after the duration: two polls of the 2 s
+	// retry period Workloads renders, each up to 2.2 times as long
+	// (https://github.com/kubernetes/client-go/blob/v0.37.1/tools/leaderelection/leaderelection.go#L259-L274).
+	leaderSlack = 10 * time.Second
 )
 
 type Reconciler struct {
@@ -542,7 +549,7 @@ func counted(what string, names []string, more bool) string {
 // stale says why lease does not lead, or nothing when it does.
 func (r *Reconciler) stale(key types.NamespacedName, lease *coordinationv1.Lease, now time.Time) string {
 	duration := time.Duration(ptr.Deref(lease.Spec.LeaseDurationSeconds, 0)) * time.Second
-	if now.Sub(r.changed(key, lease, now)) <= duration+r.Period {
+	if now.Sub(r.changed(key, lease, now)) <= duration+leaderSlack {
 		return ""
 	}
 	renewed := "never"
