@@ -71,7 +71,7 @@ func main() {
 	var o options
 	flag.StringVar(&o.direct, "direct", "", "the direct path's URL, without path")
 	flag.StringVar(&o.gateway, "gateway", "", "the Gateway path's URL")
-	flag.StringVar(&o.tunnel, "tunnel", "https://kubernetes.default", "the tunnel path's URL")
+	flag.StringVar(&o.tunnel, "tunnel", "", "the tunnel path's URL, with the kubernetes Service's ClusterIP")
 	flag.StringVar(&o.serverName, "server-name", "", "the TLS server name of the direct and Gateway paths")
 	flag.StringVar(&o.tokenFile, "token-file", "/var/run/secrets/kubernetes.io/serviceaccount/token", "the file of the bearer token")
 	flag.StringVar(&o.caFile, "ca-file", "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt", "the file of the CA certificates")

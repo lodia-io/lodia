@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -110,7 +111,12 @@ func TestGatewayOverhead(t *testing.T) {
 			}
 			direct := fmt.Sprintf("https://%s:%d", gatewayAddress, service.Spec.Ports[0].NodePort)
 			through := "https://" + gatewayAddress + ":443"
-			pod := g6Pod(image, host, direct, through, node)
+			kubernetesService := &corev1.Service{}
+			if err := access.client.Get(ctx, client.ObjectKey{Namespace: metav1.NamespaceDefault, Name: "kubernetes"}, kubernetesService); err != nil {
+				t.Fatal(err)
+			}
+			tunnel := "https://" + net.JoinHostPort(kubernetesService.Spec.ClusterIP, "443")
+			pod := g6Pod(image, host, direct, through, tunnel, node)
 			create(ctx, t, access.client, pod)
 			clientset := kubernetes.NewForConfigOrDie(access.cfg)
 			until(ctx, t, 15*time.Minute, "pod "+g6Client+" completes", func(ctx context.Context) error {
@@ -176,7 +182,7 @@ func g6DirectService(key client.ObjectKey) *corev1.Service {
 	}
 }
 
-func g6Pod(image reference.NamedTagged, host, direct, through, node string) *corev1.Pod {
+func g6Pod(image reference.NamedTagged, host, direct, through, tunnel, node string) *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Namespace: metav1.NamespaceDefault, Name: g6Client},
 		Spec: corev1.PodSpec{
@@ -186,7 +192,7 @@ func g6Pod(image reference.NamedTagged, host, direct, through, node string) *cor
 				Name:            g6Client,
 				Image:           image.String(),
 				ImagePullPolicy: corev1.PullNever,
-				Args:            []string{"--direct=" + direct, "--gateway=" + through, "--server-name=" + host},
+				Args:            []string{"--direct=" + direct, "--gateway=" + through, "--tunnel=" + tunnel, "--server-name=" + host},
 			}},
 		},
 	}
