@@ -1703,6 +1703,11 @@ func get(t *testing.T, cp *lodiav1alpha1.ControlPlane) *lodiav1alpha1.ControlPla
 	return fresh
 }
 
+func isControlPlane(obj client.Object) bool {
+	_, typed := obj.(*lodiav1alpha1.ControlPlane)
+	return typed || obj.GetObjectKind().GroupVersionKind().Kind == "ControlPlane"
+}
+
 func noControlPlaneWrite(t *testing.T, c client.WithWatch) client.WithWatch {
 	t.Helper()
 	return interceptor.NewClient(c, interceptor.Funcs{
@@ -1716,8 +1721,14 @@ func noControlPlaneWrite(t *testing.T, c client.WithWatch) client.WithWatch {
 			}
 			return c.Apply(ctx, obj, opts...)
 		},
+		Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			if isControlPlane(obj) {
+				t.Errorf("the pass updated ControlPlane %s", obj.GetName())
+			}
+			return c.Update(ctx, obj, opts...)
+		},
 		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
-			if _, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
+			if isControlPlane(obj) {
 				t.Errorf("the pass patched ControlPlane %s", obj.GetName())
 			}
 			return c.Patch(ctx, obj, patch, opts...)
