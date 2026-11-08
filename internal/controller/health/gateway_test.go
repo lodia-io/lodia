@@ -19,6 +19,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/utils/clock"
@@ -579,5 +580,32 @@ func TestGatewayModeReadsTheTunnelClientOncePerPass(t *testing.T) {
 	want := lodiav1alpha1.CABundleSecret.Name(f.cp.Name) + "," + lodiav1alpha1.TunnelClientSecret.Name(f.cp.Name)
 	if got := strings.Join(*reads, ","); got != want {
 		t.Errorf("the pass read the Secrets [%s], want [%s]", got, want)
+	}
+}
+
+func TestAFailedReadOfTheTunnelClientLeavesTheStatus(t *testing.T) {
+	f := newGateway(t)
+	f.publishWorking(t)
+	eventually(t, func() error {
+		return expect(t, f.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, f.allAnswered())
+	})
+	name := lodiav1alpha1.TunnelClientSecret.Name(f.cp.Name)
+	failing := interceptor.NewClient(k8s, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if key.Name == name {
+				return apierrors.NewServiceUnavailable("the API server is restarting")
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	before := get(t, f.cp).ResourceVersion
+	probe := &health.Reconciler{Client: k8s, Reader: failing, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
+	for range health.FailuresBeforeFalse {
+		if _, err := probe.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(f.cp)}); err == nil {
+			t.Fatalf("a pass whose read of %s failed returned no error", name)
+		}
+	}
+	if after := get(t, f.cp).ResourceVersion; after != before {
+		t.Errorf("a pass whose read failed wrote the status: resourceVersion %s, then %s", before, after)
 	}
 }
