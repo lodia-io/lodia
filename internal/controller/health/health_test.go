@@ -779,6 +779,7 @@ type endpoint struct {
 	*httptest.Server
 	url    string
 	bundle []byte
+	ca     *certs.Certificate
 	code   atomic.Int32
 	hang   atomic.Bool
 }
@@ -806,7 +807,7 @@ func serve(t *testing.T) *endpoint {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := &endpoint{}
+	e := &endpoint{ca: ca}
 	e.code.Store(http.StatusOK)
 	e.Server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if e.hang.Load() {
@@ -864,6 +865,11 @@ func publish(t *testing.T, cp *lodiav1alpha1.ControlPlane, e *endpoint) {
 
 func controlPlane(t *testing.T) *lodiav1alpha1.ControlPlane {
 	t.Helper()
+	return controlPlaneWith(t, lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}})
+}
+
+func controlPlaneWith(t *testing.T, endpoint lodiav1alpha1.Endpoint) *lodiav1alpha1.ControlPlane {
+	t.Helper()
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "health-"}}
 	if err := k8s.Create(t.Context(), ns); err != nil {
 		t.Fatal(err)
@@ -873,7 +879,7 @@ func controlPlane(t *testing.T) *lodiav1alpha1.ControlPlane {
 		Spec: lodiav1alpha1.ControlPlaneSpec{
 			Version:   "v1.35.0",
 			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{}},
-			Endpoint:  lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}},
+			Endpoint:  endpoint,
 			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
 		},
 	}
