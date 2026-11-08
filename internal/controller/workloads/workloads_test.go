@@ -511,6 +511,34 @@ func TestAGatewayControlPlaneWithoutRoutesReadyGetsIt(t *testing.T) {
 	eventually(t, func() error { return expectRoutesUnsupported(cp) })
 }
 
+func TestAGatewayControlPlanesFirstPassSaysRoutesReadyIsReconciling(t *testing.T) {
+	ns := namespace(t)
+	events, err := k8s.Watch(t.Context(), &lodiav1alpha1.ControlPlaneList{}, client.InNamespace(ns))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer events.Stop()
+	create(t, ns, gateway())
+	for {
+		select {
+		case event := <-events.ResultChan():
+			fresh, ok := event.Object.(*lodiav1alpha1.ControlPlane)
+			if !ok || event.Type != watch.Modified || meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady) == nil {
+				continue
+			}
+			for _, conditionType := range []string{lodiav1alpha1.ConditionAPIServerReady, lodiav1alpha1.ConditionRoutesReady} {
+				c := meta.FindStatusCondition(fresh.Status.Conditions, conditionType)
+				if c == nil || c.Status != metav1.ConditionUnknown || c.Reason != lodiav1alpha1.ReasonReconciling {
+					t.Errorf("the first status says %s %+v, want Unknown/%s", conditionType, c, lodiav1alpha1.ReasonReconciling)
+				}
+			}
+			return
+		case <-time.After(30 * time.Second):
+			t.Fatal("no APIServerReady condition was written")
+		}
+	}
+}
+
 func TestAGatewayPassThatChangesNothingWritesNothing(t *testing.T) {
 	cp := controlPlane(t, gateway())
 	eventually(t, func() error { return expectRoutesUnsupported(cp) })
