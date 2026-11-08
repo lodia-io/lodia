@@ -368,9 +368,12 @@ func notAccepted(route *gatewayv1.TLSRoute, ref lodiav1alpha1.ParentReference) s
 // held are the names route holds on gw at port: for each parentRef naming gw,
 // its hostnames intersected with the hostname of each listener at that port
 // the parentRef selects, by sectionName and port, or every one if neither is
-// set. That is the SNI the Gateway renders, and it merges the listeners of a
-// port into one. A wildcard holds no name, and a route the Gateway has not
-// accepted holds its names too.
+// set, since the Gateway merges the listeners of a port into one. That is
+// every SNI Envoy Gateway renders for the route and, so that no holder is
+// missed, a name another listener at the port names exactly, which it drops
+// (https://github.com/envoyproxy/gateway/blob/v1.9.3/internal/gatewayapi/helpers.go#L361-L381).
+// A wildcard holds no name, and a route the Gateway has not accepted holds
+// its names too.
 func held(route *gatewayv1.TLSRoute, gw *gatewayv1.Gateway, port int32) []string {
 	var out []string
 	for _, p := range route.Spec.ParentRefs {
