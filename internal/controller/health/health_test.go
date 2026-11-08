@@ -39,6 +39,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -55,6 +56,7 @@ var (
 	k8s              client.WithWatch
 	tenant           client.Client
 	tenantKubeconfig []byte
+	healthRole       *rest.Config
 )
 
 func TestMain(m *testing.M) {
@@ -99,31 +101,10 @@ func TestMain(m *testing.M) {
 		stop("tenant kubeconfig", err)
 	}
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
-	controller, err := asHealthController(cfg)
-	if err != nil {
+	if healthRole, err = asHealthController(cfg); err != nil {
 		stop("the controller's ClusterRole", err)
 	}
-	labelled, err := labels.NewRequirement(lodiav1alpha1.ControlPlaneLabel, selection.Exists, nil)
-	if err != nil {
-		stop("label selector", err)
-	}
-	everything := cache.ByObject{Label: labels.Everything()}
-	mgr, err := ctrl.NewManager(controller, ctrl.Options{
-		Scheme:  scheme,
-		Metrics: metricsserver.Options{BindAddress: "0"},
-		Cache: cache.Options{
-			DefaultLabelSelector:        labels.NewSelector().Add(*labelled),
-			DefaultTransform:            cache.TransformStripManagedFields(),
-			ReaderFailOnMissingInformer: true,
-			ByObject: map[client.Object]cache.ByObject{
-				&lodiav1alpha1.ControlPlane{}:      everything,
-				&lodiav1alpha1.DatastoreClass{}:    everything,
-				&lodiav1alpha1.Datastore{}:         everything,
-				&lodiav1alpha1.KubeconfigRequest{}: everything,
-				&lodiav1alpha1.Backup{}:            everything,
-			},
-		},
-	})
+	mgr, err := newManager(scheme, false)
 	if err != nil {
 		stop("manager", err)
 	}
@@ -146,6 +127,38 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "stop the tenant's envtest:", err)
 	}
 	os.Exit(code)
+}
+
+func newManager(scheme *runtime.Scheme, skipNameValidation bool, namespaces ...string) (ctrl.Manager, error) {
+	labelled, err := labels.NewRequirement(lodiav1alpha1.ControlPlaneLabel, selection.Exists, nil)
+	if err != nil {
+		return nil, err
+	}
+	everything := cache.ByObject{Label: labels.Everything()}
+	controlPlanes := everything
+	if len(namespaces) > 0 {
+		controlPlanes.Namespaces = map[string]cache.Config{}
+		for _, ns := range namespaces {
+			controlPlanes.Namespaces[ns] = cache.Config{}
+		}
+	}
+	return ctrl.NewManager(healthRole, ctrl.Options{
+		Scheme:     scheme,
+		Metrics:    metricsserver.Options{BindAddress: "0"},
+		Controller: config.Controller{SkipNameValidation: &skipNameValidation},
+		Cache: cache.Options{
+			DefaultLabelSelector:        labels.NewSelector().Add(*labelled),
+			DefaultTransform:            cache.TransformStripManagedFields(),
+			ReaderFailOnMissingInformer: true,
+			ByObject: map[client.Object]cache.ByObject{
+				&lodiav1alpha1.ControlPlane{}:      controlPlanes,
+				&lodiav1alpha1.DatastoreClass{}:    everything,
+				&lodiav1alpha1.Datastore{}:         everything,
+				&lodiav1alpha1.KubeconfigRequest{}: everything,
+				&lodiav1alpha1.Backup{}:            everything,
+			},
+		},
+	})
 }
 
 func asHealthController(cfg *rest.Config) (*rest.Config, error) {
@@ -835,12 +848,22 @@ func controlPlane(t *testing.T) *lodiav1alpha1.ControlPlane {
 
 func controlPlaneWith(t *testing.T, endpoint lodiav1alpha1.Endpoint) *lodiav1alpha1.ControlPlane {
 	t.Helper()
+	return controlPlaneIn(t, namespace(t), endpoint)
+}
+
+func namespace(t *testing.T) string {
+	t.Helper()
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "health-"}}
 	if err := k8s.Create(t.Context(), ns); err != nil {
 		t.Fatal(err)
 	}
+	return ns.Name
+}
+
+func controlPlaneIn(t *testing.T, ns string, endpoint lodiav1alpha1.Endpoint) *lodiav1alpha1.ControlPlane {
+	t.Helper()
 	cp := &lodiav1alpha1.ControlPlane{
-		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: ns.Name},
+		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: ns},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
 			Version:   "v1.35.0",
 			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{}},

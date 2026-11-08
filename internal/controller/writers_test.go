@@ -40,19 +40,20 @@ import (
 var managers atomic.Int32
 
 var conditionWriters = map[string]string{
-	lodiav1alpha1.ConditionCertificatesReady:    "lodia/pki",
-	lodiav1alpha1.ConditionCAValidityAcceptable: "lodia/pki",
-	lodiav1alpha1.ConditionAccessReady:          "lodia/pki",
-	lodiav1alpha1.ConditionDatastoreReady:       "lodia/datastore",
-	lodiav1alpha1.ConditionBackupReady:          "lodia/datastore",
-	lodiav1alpha1.ConditionAPIServerReady:       "lodia/workloads",
-	lodiav1alpha1.ConditionRoutesReady:          "lodia/workloads",
-	lodiav1alpha1.ConditionAddonsApplied:        "lodia/tenant",
-	lodiav1alpha1.ConditionAddonsAvailable:      "lodia/tenant",
-	lodiav1alpha1.ConditionReachable:            "lodia/health",
-	lodiav1alpha1.ConditionControllersLeading:   "lodia/health",
-	lodiav1alpha1.ConditionProgressing:          "lodia/lifecycle",
-	lodiav1alpha1.ConditionReady:                "lodia/lifecycle",
+	lodiav1alpha1.ConditionCertificatesReady:     "lodia/pki",
+	lodiav1alpha1.ConditionCAValidityAcceptable:  "lodia/pki",
+	lodiav1alpha1.ConditionAccessReady:           "lodia/pki",
+	lodiav1alpha1.ConditionDatastoreReady:        "lodia/datastore",
+	lodiav1alpha1.ConditionBackupReady:           "lodia/datastore",
+	lodiav1alpha1.ConditionAPIServerReady:        "lodia/workloads",
+	lodiav1alpha1.ConditionRoutesReady:           "lodia/workloads",
+	lodiav1alpha1.ConditionAddonsApplied:         "lodia/tenant",
+	lodiav1alpha1.ConditionAddonsAvailable:       "lodia/tenant",
+	lodiav1alpha1.ConditionReachable:             "lodia/health",
+	lodiav1alpha1.ConditionControllersLeading:    "lodia/health",
+	lodiav1alpha1.ConditionControllerManagerHeld: "lodia/health-nodes",
+	lodiav1alpha1.ConditionProgressing:           "lodia/lifecycle",
+	lodiav1alpha1.ConditionReady:                 "lodia/lifecycle",
 }
 
 var fieldWriters = map[string]string{
@@ -63,6 +64,7 @@ var fieldWriters = map[string]string{
 	"endpoint.konnectivity": "lodia/workloads",
 	"endpoint.inCluster":    "lodia/workloads",
 	"endpoint.tunnel":       "lodia/workloads",
+	"nodes":                 "lodia/health-nodes",
 	"restore":               "lodia/datastore",
 	"target":                "lodia/lifecycle",
 	"observedGeneration":    "lodia/lifecycle",

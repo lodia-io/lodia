@@ -48,11 +48,11 @@ The field reference with every rule is [`api/controlplane.md`](api/controlplane.
 | Datastore | the `Etcd` of a dedicated etcd and its NetworkPolicy, or a user and role in a shared store; backups and defragmentation; a `Backup`'s seal, its copy and its encryption keys | `DatastoreReady`; `BackupReady` outside `Ready`; a `Backup`'s `Ready` | a complete generation of PKI's etcd certificates; for a `Backup`, its source's `DatastoreReady` |
 | Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady`; `RoutesReady` in `gateway` mode | `status.target`, `status.datastore`, `CertificatesReady`, `DatastoreReady`; `status.restore` and `AddonsApplied` before it starts a restored `ControlPlane`'s controller manager |
 | Tenant | objects inside the tenant cluster, with an inventory | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
-| Health | status, and from phase 2's wave 2 the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable`, `ControllersLeading`; `ControllerManagerHeld` outside `Ready` from wave 2 | `status.endpoint`, the CA bundle and, in `gateway` mode, `<cp>-tunnel-client`; `AccessReady` and `<cp>-lodia-kubeconfig` for the leader Leases and a held restore's lists |
+| Health | status, and from phase 2's wave 2 the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable`, `ControllersLeading`; `ControllerManagerHeld` outside `Ready`; `status.nodes` | `status.endpoint`, the CA bundle and, in `gateway` mode, `<cp>-tunnel-client`; `AccessReady` and `<cp>-lodia-kubeconfig` for the leader Leases, the node Leases and a held restore's lists |
 | Lifecycle | `status.target`, `Progressing`, `Ready`; from phase 2's wave 2 `status.kubernetes`, `status.maintenance` and the pre-upgrade `Backup` | `Progressing` | the others |
 
 How they meet is [independent-controllers](decisions/independent-controllers.md).
-PKI, the Datastore controller, a first Lifecycle, the Tenant controller, Health's probes and Workloads are built (`internal/controller/pki`, `datastore`, `lifecycle`, `tenant`, `health` and `workloads`).
+PKI, the Datastore controller, a first Lifecycle, the Tenant controller, Health's probes and sampling and Workloads are built (`internal/controller/pki`, `datastore`, `lifecycle`, `tenant`, `health` and `workloads`).
 
 ```mermaid
 sequenceDiagram
@@ -410,7 +410,7 @@ The final snapshot when a backup store exists comes with backups in phase 2; not
 
 ## Health
 
-Built so far: the probes of the public endpoint and the in-namespace Service, the leader Leases and a restored `ControlPlane`'s release.
+Built so far: the probes of the public endpoint and the in-namespace Service, the leader Leases, a restored `ControlPlane`'s release and the sampling of the nodes.
 Every `health.period`, 5 seconds by default, Health asks `https://<status.endpoint.apiServer>/readyz` without credentials, which the API server's authentication allows for its health paths, and verifies it against `<cp>-ca-bundle`.
 It asks `https://<cp>-kube-apiserver.<namespace>.svc/readyz` the same way, through the in-namespace Service, which tells an API server that is down from a broken path to it.
 In `gateway` mode a probe also reads `/readyz` through the tunnel, the outer TLS with `<cp>-tunnel-client`, the inner verified against the bundle, and completes a TLS handshake with the konnectivity host; a tenant whose `<cp>-tunnel-client` is missing or another owner's reads `WaitingForCertificates`.
@@ -421,6 +421,10 @@ In the same pass, once `AccessReady` is True, at any generation, Health reads th
 `ControllersLeading` is True while each Lease has changed, by the operator's clock, within its own `leaseDurationSeconds` and 10 seconds, a Lease its holder released too, which client-go leaves without a holder and with a duration of 1 second ([leaderelection.go](https://github.com/kubernetes/client-go/blob/v0.37.1/tools/leaderelection/leaderelection.go#L341-L347)); the clock lives in memory, so a Lease seen first counts as changed then, and what Health has seen goes only with `AccessReady`, with `<cp>-lodia-kubeconfig` missing or kept by another owner, or with the `ControlPlane`.
 A read that fails leaves `ControllersLeading` as it was, since reaching the API server is `Reachable`'s to report.
 For a restored `ControlPlane` Health reports `AwaitingRelease` or `SourceExists` in place of the Leases until the release ([reasons](api/controlplane.md#conditions-and-their-reasons)).
+A second reconciler, `health-nodes`, with a queue of its own and 100 workers, samples the tenant's nodes once `AccessReady` is True.
+Every period it lists the Leases of `kube-node-lease` through the in-namespace Service with a list that sets no `resourceVersion`, which the API server must serve as a consistent read ([api-concepts.md](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/reference/using-api/api-concepts.md#L1652-L1654)), and every 30 seconds the Nodes.
+It never touches the public endpoint, so one that does not answer, which holds a `health` worker for the timeout, delays no sample.
+It reports `status.nodes`, and in `ControllerManagerHeld` how many of the nodes that count are silent ([controller-manager-hold](decisions/controller-manager-hold.md)): `NotHeld` while the hold is not built, `Disabled` with `holdControllerManager: false`.
 The rest of this section comes with phase 2.
 
 From inside the management cluster the public probe reaches a load balancer's or a Gateway's address through kube-proxy, which captures traffic to such an address on every node, so it proves the cloud load balancer only in `nodePort` mode ([serviceport.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/proxy/serviceport.go#L222-L235)); the end-to-end signal from the nodes' side is their leases.
@@ -499,12 +503,12 @@ Without `--config` the defaults apply.
 |---|---|---|
 | `versions` | the Kubernetes versions Lodia runs and, per minor, the images of kube-apiserver, controller manager, scheduler, kube-proxy, CoreDNS, konnectivity, etcd, the `latest` patch, which patch updates move to, and the end-of-support date | the table shipped with the release |
 | `registry` | a mirror prefix for every image, for air-gapped sites | `registry.k8s.io` |
-| `controllers.<name>.workers` | concurrent reconciles per controller | 10 |
+| `controllers.<name>.workers` | concurrent reconciles per controller | 10, and 100 for `health-nodes` |
 | `fleet.maxConcurrentRollouts` | tenants rolling a change Lodia started at once ([upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md)) | 5 |
 | `tenant.applyInterval` | the inventory re-apply period | 10m |
 | `health.period` | how often Health probes each control plane and reads its leases | 5s |
 | `health.failuresBeforeFalse` | failed passes in a row that turn `Reachable` False | 3 |
-| `health.silentAfter`, `health.holdFraction`, `health.releaseAfter` | when a node counts as silent, the share of silent nodes that starts the hold, how long the nodes must be back before it ends; the operator refuses to start when they break the margin of [controller-manager-hold](decisions/controller-manager-hold.md), and uses none of them before the hold is built | 20s, 0.6, 2m |
+| `health.silentAfter`, `health.holdFraction`, `health.releaseAfter` | when a node counts as silent, the share of silent nodes that starts the hold, how long the nodes must be back before it ends; the operator refuses to start when they break the margin of [controller-manager-hold](decisions/controller-manager-hold.md), and uses `releaseAfter` only once the hold is built | 20s, 0.6, 2m |
 | `pki.leafLifetime`, `pki.caLifetime`, `pki.trustAnchorLifetime` | leaf certificates, the kubelet signer and the request CA; every other CA but the cluster CA; the cluster CA ([staged-credential-rotation](decisions/staged-credential-rotation.md)) | 1 year, 5 years, 10 years |
 | `kubeconfigRequests.maxExpiration` | the longest a `KubeconfigRequest`'s certificate lives, at most the schema's 24 h ([fields](api/controlplane.md#kubeconfigrequest)) | 24h |
 | `defaults.resources.<component>` | requests and limits per component | from the idle usage measured in phase 1 ([Capacity](operations.md#capacity)) |

@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package health is the Health controller: it probes each control plane's
-// public endpoint and its in-namespace Service, and reads its components'
-// leader Leases inside the tenant.
+// public endpoint and its in-namespace Service, reads its components' leader
+// Leases inside the tenant, and, in NodesReconciler, samples the tenant's nodes.
 package health
 
 import (
@@ -122,6 +122,7 @@ type prober struct {
 // transport.
 type tenant struct {
 	leases       coordinationv1client.LeaseInterface
+	nodeLeases   coordinationv1client.LeaseInterface
 	core         corev1client.CoreV1Interface
 	admission    admissionregistrationv1client.AdmissionregistrationV1Interface
 	registration apiregistrationv1client.ApiregistrationV1Interface
@@ -735,6 +736,7 @@ func (c *tenantClients) of(kubeconfig []byte) (*tenant, error) {
 	c.kubeconfig, c.transport = kubeconfig, transport
 	c.tenant = &tenant{
 		leases:       coordination.Leases(lodiav1alpha1.LeaderElectionNamespace),
+		nodeLeases:   coordination.Leases(corev1.NamespaceNodeLease),
 		core:         core,
 		admission:    admission,
 		registration: registration,
