@@ -187,6 +187,36 @@ func TestTheAdvertiseAddressAndTheListenersPortArePublished(t *testing.T) {
 		"--service-account-issuer=https://api.dev."+zone+":8443", "--service-account-jwks-uri=https://api.dev."+zone+":8443/openid/v1/jwks")
 }
 
+func TestAFieldNotBuiltYetHidesNoneOfTheGatewayPath(t *testing.T) {
+	ns := namespace(t)
+	createGateway(t, ns)
+	cp := createNamed(t, ns, "dev", onGateway(ns, "dev"), func(spec *lodiav1alpha1.ControlPlaneSpec) {
+		spec.ServiceAccount = &lodiav1alpha1.ServiceAccount{PublicDiscovery: true}
+	})
+	accept(t, cp)
+	eventually(t, func() error {
+		if err := expectRoutes(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonAccepted); err != nil {
+			return err
+		}
+		return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported)
+	})
+	if c := condition(t, cp); c.Message != "not built yet: serviceAccount.publicDiscovery" {
+		t.Errorf("APIServerReady says %q", c.Message)
+	}
+	expectEndpoint(t, cp, lodiav1alpha1.EndpointStatus{
+		APIServer:    lodiav1alpha1.HostPort{Host: "api.dev." + zone, Port: 443},
+		Konnectivity: lodiav1alpha1.HostPort{Host: "konnectivity.dev." + zone, Port: 443},
+		InCluster:    lodiav1alpha1.HostPort{Host: "240.0.0.1", Port: 6443},
+		Tunnel:       &lodiav1alpha1.HostPort{Host: "tunnel.dev." + zone, Port: 443},
+	})
+	if svc := getService(t, cp); svc.Spec.Type != corev1.ServiceTypeClusterIP || !metav1.IsControlledBy(svc, cp) {
+		t.Errorf("the Service is %s, controlled by %v", svc.Spec.Type, metav1.GetControllerOf(svc))
+	}
+	if n := deployments(t, cp); n != 0 {
+		t.Errorf("%d Deployments for a ControlPlane with a field not built yet", n)
+	}
+}
+
 func TestEveryListenerCheckIsGatewayUnsupported(t *testing.T) {
 	terminate := passthrough("tls", "*."+zone, 443)
 	terminate.TLS = &gatewayv1.ListenerTLSConfig{Mode: new(gatewayv1.TLSModeTerminate), CertificateRefs: []gatewayv1.SecretObjectReference{{Name: "serving"}}}
@@ -401,33 +431,46 @@ func TestWithoutTheGatewayAPIServedAGatewayControlPlaneIsUnsupported(t *testing.
 func TestAStaleCacheNeverDropsThePublishedEndpoint(t *testing.T) {
 	cp := gatewayRunning(t)
 	published := get(t, cp).Status.Endpoint
-	var applied []*lodiav1alpha1.ControlPlane
-	stale := interceptor.NewClient(k8s, interceptor.Funcs{
-		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-			if err := c.Get(ctx, key, obj, opts...); err != nil {
-				return err
+	routes := routesReady(t, cp)
+	for name, held := range map[string]bool{"a pass past the Service": false, "a pass that stops at a held Service": true} {
+		t.Run(name, func(t *testing.T) {
+			var applied []*lodiav1alpha1.ControlPlane
+			stale := interceptor.NewClient(k8s, interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if err := c.Get(ctx, key, obj, opts...); err != nil {
+						return err
+					}
+					switch cached := obj.(type) {
+					case *lodiav1alpha1.ControlPlane:
+						cached.Status = lodiav1alpha1.ControlPlaneStatus{}
+					case *corev1.Service:
+						if held {
+							cached.OwnerReferences = []metav1.OwnerReference{foreignController()}
+						}
+					}
+					return nil
+				},
+				SubResourceApply: func(ctx context.Context, c client.Client, subResource string, obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
+					applied = append(applied, decoded(t, obj))
+					return nil
+				},
+			})
+			r := &workloads.Reconciler{Client: stale, Reader: k8s, SignerImage: signerImage, TunnelImage: tunnelImage}
+			if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+				t.Fatal(err)
 			}
-			if cached, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
-				cached.Status = lodiav1alpha1.ControlPlaneStatus{}
+			if len(applied) != 2 {
+				t.Fatalf("the pass applied %d statuses, want the first pass's and its own", len(applied))
 			}
-			return nil
-		},
-		SubResourceApply: func(ctx context.Context, c client.Client, subResource string, obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
-			applied = append(applied, decoded(t, obj))
-			return nil
-		},
-	})
-	r := &workloads.Reconciler{Client: stale, Reader: k8s, SignerImage: signerImage, TunnelImage: tunnelImage}
-	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
-		t.Fatal(err)
-	}
-	if len(applied) != 2 {
-		t.Fatalf("the pass applied %d statuses, want the first pass's and its own", len(applied))
-	}
-	for i, a := range applied {
-		if !equality.Semantic.DeepEqual(a.Status.Endpoint, published) {
-			t.Errorf("status apply %d carries the endpoint %+v, want the published %+v", i, a.Status.Endpoint, published)
-		}
+			for i, a := range applied {
+				if !equality.Semantic.DeepEqual(a.Status.Endpoint, published) {
+					t.Errorf("status apply %d carries the endpoint %+v, want the published %+v", i, a.Status.Endpoint, published)
+				}
+			}
+			if c := meta.FindStatusCondition(applied[1].Status.Conditions, lodiav1alpha1.ConditionRoutesReady); held && !equality.Semantic.DeepEqual(c, routes) {
+				t.Errorf("the pass applied RoutesReady %+v, want the one the API server holds, %+v", c, routes)
+			}
+		})
 	}
 }
 
