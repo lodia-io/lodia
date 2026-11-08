@@ -609,9 +609,66 @@ func TestARestartWhoseListOfNodesFailsKeepsStatusNodes(t *testing.T) {
 		return false
 	}))
 	restarted := nodesReconciler(now)
+	restarted.Client = interceptor.NewClient(k8s, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if err := c.Get(ctx, key, obj, opts...); err != nil {
+				return err
+			}
+			if plane, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
+				plane.Status.Nodes = nil
+			}
+			return nil
+		},
+	})
 	sample(t, restarted, cp)
 	expectNotHeld(t, cp, "the nodes are not listed yet")
 	expectNodes(t, cp, nodesOf(3, 2, 0, "v1.35.0"))
+}
+
+func TestAPassOnACacheHoldingAPredecessorLeavesTheSuccessorAlone(t *testing.T) {
+	cp := tenantControlPlane(t)
+	start := time.Now().Truncate(time.Second)
+	joined(t, "a", corev1.ConditionTrue, start)
+	joined(t, "b", corev1.ConditionTrue, start)
+	r := nodesReconciler(clocktesting.NewFakePassiveClock(start))
+	r.Client = interceptor.NewClient(k8s, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if err := c.Get(ctx, key, obj, opts...); err != nil {
+				return err
+			}
+			if plane, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
+				plane.UID = "5e1f7c3a-0000-4000-8000-00000000dead"
+				meta.SetStatusCondition(&plane.Status.Conditions, metav1.Condition{Type: lodiav1alpha1.ConditionControllerManagerHeld, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonNotHeld, Message: "the predecessor's"})
+			}
+			return nil
+		},
+	})
+	sample(t, r, cp)
+	got := &lodiav1alpha1.ControlPlane{}
+	if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(cp), got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Nodes != nil {
+		t.Errorf("the successor carries the predecessor's status.nodes: %+v", got.Status.Nodes)
+	}
+}
+
+func TestDisabledHoldsWithNoListOfNodes(t *testing.T) {
+	cp := tenantControlPlane(t)
+	updateSpec(t, cp, func(cp *lodiav1alpha1.ControlPlane) {
+		cp.Spec.Health = &lodiav1alpha1.Health{HoldControllerManager: new(false)}
+	})
+	writeKubeconfig(t, cp, throughProxy(t, func(w http.ResponseWriter, req *http.Request) bool {
+		if req.URL.Path == nodeListPath {
+			http.Error(w, "injected", http.StatusInternalServerError)
+			return true
+		}
+		return false
+	}))
+	sample(t, nodesReconciler(clocktesting.NewFakePassiveClock(time.Now())), cp)
+	if err := expectHeld(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonDisabled, "spec.health.holdControllerManager is false"); err != nil {
+		t.Error(err)
+	}
 }
 
 func TestWithNoListOfNodesAtAllThereIsNoStatusNodes(t *testing.T) {

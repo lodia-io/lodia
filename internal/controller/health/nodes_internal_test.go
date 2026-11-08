@@ -13,6 +13,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/clock"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
@@ -78,6 +83,39 @@ func TestOnlyAChangeOfWhetherAccessReadyIsTrueBringsAPassOfTheNodes(t *testing.T
 		if got := accessChanged().Update(event.UpdateEvent{ObjectOld: c.before, ObjectNew: c.after}); got != c.want {
 			t.Errorf("%s brings a pass: %t, want %t", c.name, got, c.want)
 		}
+	}
+}
+
+func TestANewGenerationBringsAPassOfTheNodes(t *testing.T) {
+	before := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Generation: 1}}
+	after := before.DeepCopy()
+	if passInputs().Update(event.UpdateEvent{ObjectOld: before, ObjectNew: after}) {
+		t.Error("an update of neither the generation nor AccessReady brought a pass")
+	}
+	after.Generation = 2
+	if !passInputs().Update(event.UpdateEvent{ObjectOld: before, ObjectNew: after}) {
+		t.Error("a new generation brought no pass, so an unpaused ControlPlane is never sampled again")
+	}
+}
+
+func TestADeletedControlPlaneIsForgotten(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := lodiav1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	key := types.NamespacedName{Namespace: "team-a", Name: "dev"}
+	r := &NodesReconciler{
+		Client:  fake.NewClientBuilder().WithScheme(scheme).Build(),
+		Clock:   clock.RealClock{},
+		samples: map[types.NamespacedName]*sampling{key: {uid: "gone"}},
+		clients: map[types.NamespacedName]*tenantClients{key: {}},
+	}
+	result, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key})
+	if err != nil || result.RequeueAfter != 0 {
+		t.Errorf("Reconcile = %+v, %v, want no requeue and no error", result, err)
+	}
+	if len(r.samples) != 0 || len(r.clients) != 0 {
+		t.Errorf("kept %d samples and %d clients of a deleted ControlPlane", len(r.samples), len(r.clients))
 	}
 }
 

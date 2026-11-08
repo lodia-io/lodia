@@ -97,8 +97,12 @@ func (r *NodesReconciler) SetupWithManager(mgr ctrl.Manager, workers int) error 
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(NodesName).
 		WithOptions(controller.Options{MaxConcurrentReconciles: workers, ReconciliationTimeout: time.Minute}).
-		For(&lodiav1alpha1.ControlPlane{}, builder.WithPredicates(predicate.Or[client.Object](predicate.GenerationChangedPredicate{}, accessChanged()))).
+		For(&lodiav1alpha1.ControlPlane{}, builder.WithPredicates(passInputs())).
 		Complete(r)
+}
+
+func passInputs() predicate.Predicate {
+	return predicate.Or[client.Object](predicate.GenerationChangedPredicate{}, accessChanged())
 }
 
 func accessChanged() predicate.Funcs {
@@ -331,20 +335,24 @@ func kubeletVersion(reported string) *version.Version {
 	return v
 }
 
-// report applies status.nodes and ControllerManagerHeld when either differs from
-// the cache's. An apply that leaves a field out removes it, so without a list
-// of Nodes of this run it carries the status the API server holds.
+// report applies status.nodes and ControllerManagerHeld when either differs
+// from the cache's, after a live read: the apply names the object by name, and
+// a cache still holding a deleted predecessor must not leave its list on the
+// successor, which carries it forward. An apply that leaves a field out
+// removes it, so without a list of Nodes of this run it carries the status
+// the API server holds.
 func (r *NodesReconciler) report(ctx context.Context, cp *lodiav1alpha1.ControlPlane, nodes *lodiav1alpha1.NodesStatus, c metav1.Condition) error {
 	if !changes(cp, nodes, c) {
 		return nil
 	}
+	if err := live.Nodes(ctx, r.Reader, cp, lodiav1alpha1.ConditionControllerManagerHeld); err != nil {
+		return err
+	}
 	if nodes == nil {
-		if err := live.Nodes(ctx, r.Reader, cp, lodiav1alpha1.ConditionControllerManagerHeld); err != nil {
-			return err
-		}
-		if nodes = cp.Status.Nodes; !changes(cp, nodes, c) {
-			return nil
-		}
+		nodes = cp.Status.Nodes
+	}
+	if !changes(cp, nodes, c) {
+		return nil
 	}
 	return r.apply(ctx, cp, nodes, c)
 }
