@@ -236,7 +236,7 @@ func run(t *testing.T, cfg *rest.Config, gatewayAPI bool) (client.Client, <-chan
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := operator.Setup(mgr, "registry.example/lodia-signer:test", "registry.example/lodia-tunnel:test", "etcd-druid", "lodia-system", gatewayAPI); err != nil {
+	if err := operator.Setup(mgr, operator.DefaultConfig(), "registry.example/lodia-signer:test", "registry.example/lodia-tunnel:test", "etcd-druid", "lodia-system", gatewayAPI); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())

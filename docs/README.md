@@ -411,11 +411,11 @@ The final snapshot when a backup store exists comes with backups in phase 2; not
 ## Health
 
 Built so far: the probe through the public endpoint, the leader Leases and a restored `ControlPlane`'s release.
-Every 10 seconds Health asks `https://<status.endpoint.apiServer>/readyz` without credentials, which the API server's authentication allows for its health paths, and verifies it against `<cp>-ca-bundle`.
+Every `health.period`, 5 seconds by default, Health asks `https://<status.endpoint.apiServer>/readyz` without credentials, which the API server's authentication allows for its health paths, and verifies it against `<cp>-ca-bundle`.
 In `gateway` mode a probe also reads `/readyz` through the tunnel, the outer TLS with `<cp>-tunnel-client`, the inner verified against the bundle, and completes a TLS handshake with the konnectivity host; the three run at once, each within the timeout, so a dead Gateway holds a worker for one timeout, and a tenant whose `<cp>-tunnel-client` is missing or another owner's reads `WaitingForCertificates`.
 `Reachable` is True on a 200 and turns False after three probes in a row that fail, so one blip does not drop `Ready` ([reasons](api/controlplane.md#conditions-and-their-reasons)).
 In the same pass, once `AccessReady` is True, at any generation, Health reads the leader Leases of the controller manager and the scheduler through the in-namespace Service, as `<cp>-lodia-kubeconfig`, each with a consistent GET.
-`ControllersLeading` is True while each Lease has changed, by the operator's clock, within its own `leaseDurationSeconds` and one period, a Lease its holder released too, which client-go leaves without a holder and with a duration of 1 second ([leaderelection.go](https://github.com/kubernetes/client-go/blob/v0.37.1/tools/leaderelection/leaderelection.go#L341-L347)); the clock lives in memory, so a Lease seen first counts as changed then, and what Health has seen goes only with `AccessReady`, with `<cp>-lodia-kubeconfig` missing or kept by another owner, or with the `ControlPlane`.
+`ControllersLeading` is True while each Lease has changed, by the operator's clock, within its own `leaseDurationSeconds` and 10 seconds, a Lease its holder released too, which client-go leaves without a holder and with a duration of 1 second ([leaderelection.go](https://github.com/kubernetes/client-go/blob/v0.37.1/tools/leaderelection/leaderelection.go#L341-L347)); the clock lives in memory, so a Lease seen first counts as changed then, and what Health has seen goes only with `AccessReady`, with `<cp>-lodia-kubeconfig` missing or kept by another owner, or with the `ControlPlane`.
 A read that fails leaves `ControllersLeading` as it was, since reaching the API server is `Reachable`'s to report.
 For a restored `ControlPlane` Health reports `AwaitingRelease` or `SourceExists` in place of the Leases until the release ([reasons](api/controlplane.md#conditions-and-their-reasons)).
 The rest of this section comes with phase 2.
@@ -478,6 +478,7 @@ The phase 1 chart installs:
   The operator gets etcd-druid's namespace, the release's or that one, as `--etcd-druid-namespace`, and its own as `--operator-namespace`, for each etcd's NetworkPolicy ([A tenant namespace](#a-tenant-namespace)).
   etcd-druid's CRDs are in its chart's `crds/` directory, which Helm applies only when it installs a release, skipping a CRD that exists, and never on an upgrade ([install.go](https://github.com/helm/helm/blob/v4.3.1/pkg/action/install.go#L206-L218), [install.go](https://github.com/helm/helm/blob/v4.3.1/pkg/action/install.go#L329-L338));
 - the operator: two replicas with leader election on the Lease `lodia.io` in the release namespace, spread across nodes by hostname, at `system-cluster-critical` priority, with a securityContext that passes Pod Security `restricted` (the release namespace cannot enforce it while `etcdDruid.enabled`: etcd-druid's pod sets only `allowPrivilegeEscalation: false`, [deployment.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/charts/templates/deployment.yaml#L112-L113)), liveness and readiness probes on port 8081, the metrics endpoint on 8443 behind controller-runtime's authentication and authorization filter, and a PodDisruptionBudget with `maxUnavailable: 1` and `unhealthyPodEvictionPolicy: AlwaysAllow`;
+- its configuration: the ConfigMap `<release>-config` renders the `health` values, with the keys and defaults of the table below, as `config.yaml`; the operator mounts it at `/etc/lodia` and reads it as `--config`, and a `checksum/config` annotation on its pods rolls it when a value changes;
 - its RBAC: a ClusterRole per controller from [`charts/lodia/files/rbac/`](../charts/lodia/files/rbac/) ([Identity and tenancy](#identity-and-tenancy)), the ClusterRole the metrics filter needs (`create` on TokenReviews and SubjectAccessReviews), and a Role in the release namespace for the Lease and events;
 - the ValidatingAdmissionPolicy `kubeconfigrequests.lodia.io` and its binding of the same name from [`charts/lodia/files/policies/`](../charts/lodia/files/policies/), which decide who may ask for a kubeconfig ([short-lived-kubeconfigs](decisions/short-lived-kubeconfigs.md)); they keep their names in every release and stay with `crds.enabled=false`.
 
@@ -485,9 +486,11 @@ The phase 1 chart installs:
 The signer's image reaches the operator as `--signer-image`, and `lodia-tunnel`'s as `--tunnel-image`.
 
 Then a `DatastoreClass` with the bucket, and the first `ControlPlane`.
-Later phases bring the rest: the operator configuration below, which the operator does not read yet, in phase 2, whose fleet limit, controller manager hold and `KubeconfigRequest`s it configures; signed and attested images, and how to verify them, in phase 4 ([roadmap](roadmap.md), [releases-and-support](decisions/releases-and-support.md)).
+Later phases bring the rest: the keys of the operator configuration below that the operator does not read yet, in phase 2, whose fleet limit, controller manager hold and `KubeconfigRequest`s they configure; signed and attested images, and how to verify them, in phase 4 ([roadmap](roadmap.md), [releases-and-support](decisions/releases-and-support.md)).
 
-Operator configuration (a file, mounted from a ConfigMap; the chart renders it from values):
+Operator configuration (a file, passed as `--config`, mounted from a ConfigMap; the chart renders it from values).
+The operator reads the `health` keys and nothing else yet: any other key, or a missing file, stops it from starting.
+Without `--config` the defaults apply.
 
 | key | meaning | default |
 |---|---|---|
@@ -496,9 +499,9 @@ Operator configuration (a file, mounted from a ConfigMap; the chart renders it f
 | `controllers.<name>.workers` | concurrent reconciles per controller | 10 |
 | `fleet.maxConcurrentRollouts` | tenants rolling a change Lodia started at once ([upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md)) | 5 |
 | `tenant.applyInterval` | the inventory re-apply period | 10m |
-| `health.period` | how often Health probes each control plane and reads its leases; 10 seconds until the operator reads this file | 5s |
+| `health.period` | how often Health probes each control plane and reads its leases | 5s |
 | `health.failuresBeforeFalse` | failed passes in a row that turn `Reachable` False | 3 |
-| `health.silentAfter`, `health.holdFraction`, `health.releaseAfter` | when a node counts as silent, the share of silent nodes that starts the hold, how long the nodes must be back before it ends; the operator refuses to start when they break the margin of [controller-manager-hold](decisions/controller-manager-hold.md) | 20s, 0.6, 2m |
+| `health.silentAfter`, `health.holdFraction`, `health.releaseAfter` | when a node counts as silent, the share of silent nodes that starts the hold, how long the nodes must be back before it ends; the operator refuses to start when they break the margin of [controller-manager-hold](decisions/controller-manager-hold.md), and uses none of them before the hold is built | 20s, 0.6, 2m |
 | `pki.leafLifetime`, `pki.caLifetime`, `pki.trustAnchorLifetime` | leaf certificates, the kubelet signer and the request CA; every other CA but the cluster CA; the cluster CA ([staged-credential-rotation](decisions/staged-credential-rotation.md)) | 1 year, 5 years, 10 years |
 | `kubeconfigRequests.maxExpiration` | the longest a `KubeconfigRequest`'s certificate lives, at most the schema's 24 h ([fields](api/controlplane.md#kubeconfigrequest)) | 24h |
 | `defaults.resources.<component>` | requests and limits per component | from the idle usage measured in phase 1 ([Capacity](operations.md#capacity)) |

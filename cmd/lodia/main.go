@@ -19,11 +19,12 @@ import (
 )
 
 func main() {
-	var metricsAddr, probeAddr, signerImage, tunnelImage, etcdDruidNamespace, operatorNamespace string
+	var metricsAddr, probeAddr, configPath, signerImage, tunnelImage, etcdDruidNamespace, operatorNamespace string
 	var leaderElect bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "Address of the metrics endpoint, served over HTTPS behind authentication and authorization.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Address of the health and readiness probes.")
 	flag.BoolVar(&leaderElect, "leader-elect", true, "Run controllers only in the replica that holds the leader lease.")
+	flag.StringVar(&configPath, "config", "", "Path to the operator's configuration file, YAML; without it the defaults apply.")
 	flag.StringVar(&signerImage, "signer-image", "", "Image of lodia-signer, the API server's ServiceAccount token signer; required.")
 	flag.StringVar(&tunnelImage, "tunnel-image", "", "Image of lodia-tunnel, a gateway tenant's in-cluster path to its API server; required.")
 	flag.StringVar(&etcdDruidNamespace, "etcd-druid-namespace", "", "Namespace etcd-druid runs in, whose pods each etcd's NetworkPolicy admits to the backup-restore sidecar; required.")
@@ -47,6 +48,11 @@ func main() {
 	}
 	if operatorNamespace == "" {
 		log.Error(nil, "--operator-namespace is required")
+		os.Exit(1)
+	}
+	config, err := operator.LoadConfig(configPath)
+	if err != nil {
+		log.Error(err, "load the configuration")
 		os.Exit(1)
 	}
 
@@ -82,7 +88,7 @@ func main() {
 		log.Error(err, "create the manager")
 		os.Exit(1)
 	}
-	if err := operator.Setup(mgr, signerImage, tunnelImage, etcdDruidNamespace, operatorNamespace, gatewayAPI); err != nil {
+	if err := operator.Setup(mgr, config, signerImage, tunnelImage, etcdDruidNamespace, operatorNamespace, gatewayAPI); err != nil {
 		log.Error(err, "set up the controllers")
 		os.Exit(1)
 	}

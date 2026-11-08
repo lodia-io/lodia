@@ -37,8 +37,8 @@ import (
 	"go.lodia.io/lodia/internal/controller/workloads"
 )
 
-// workers is the default of controllers.<name>.workers until the operator
-// configuration file is read (docs/README.md, Operator configuration).
+// workers is the default of controllers.<name>.workers, a key the operator
+// does not read yet (docs/README.md, Operator configuration).
 const workers = 10
 
 // Scheme holds the kinds the controllers read and write.
@@ -104,12 +104,12 @@ func Cache(gatewayAPI bool) (cache.Options, error) {
 	}, nil
 }
 
-// Setup registers every controller with the manager; signerImage is
-// lodia-signer's, which runs beside each API server, tunnelImage lodia-tunnel's,
-// which runs on each node of a gateway tenant, etcdDruidNamespace
-// etcd-druid's and operatorNamespace the operator's, which each etcd's
-// NetworkPolicy admits, and gatewayAPI what GatewayAPI found.
-func Setup(mgr ctrl.Manager, signerImage, tunnelImage, etcdDruidNamespace, operatorNamespace string, gatewayAPI bool) error {
+// Setup registers every controller with the manager; cfg is what LoadConfig
+// returned, signerImage is lodia-signer's, which runs beside each API server,
+// tunnelImage lodia-tunnel's, which runs on each node of a gateway tenant,
+// etcdDruidNamespace etcd-druid's and operatorNamespace the operator's, which
+// each etcd's NetworkPolicy admits, and gatewayAPI what GatewayAPI found.
+func Setup(mgr ctrl.Manager, cfg Config, signerImage, tunnelImage, etcdDruidNamespace, operatorNamespace string, gatewayAPI bool) error {
 	if err := (&pki.Reconciler{
 		Client:              mgr.GetClient(),
 		Reader:              mgr.GetAPIReader(),
@@ -140,11 +140,15 @@ func Setup(mgr ctrl.Manager, signerImage, tunnelImage, etcdDruidNamespace, opera
 	if err := (&tenant.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), ApplyPeriod: 10 * time.Minute, TunnelImage: tunnelImage}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the tenant controller: %w", err)
 	}
-	if err := (&health.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Period: 10 * time.Second, Timeout: 5 * time.Second, Clock: clock.RealClock{}}).SetupWithManager(mgr, workers); err != nil {
+	if err := newHealth(mgr.GetClient(), mgr.GetAPIReader(), cfg.Health).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the health controller: %w", err)
 	}
 	if err := (&workloads.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: gatewayAPI}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the workloads controller: %w", err)
 	}
 	return nil
+}
+
+func newHealth(c client.Client, reader client.Reader, cfg HealthConfig) *health.Reconciler {
+	return &health.Reconciler{Client: c, Reader: reader, Period: cfg.Period.Duration, FailuresBeforeFalse: cfg.FailuresBeforeFalse, Timeout: 5 * time.Second, Clock: clock.RealClock{}}
 }

@@ -116,7 +116,7 @@ func TestAHeldRestoreNamesWhatItsControllerManagerActsOn(t *testing.T) {
 	cp := restoredControlPlane(t, lodiav1alpha1.RestoreHeld)
 	setAccess(t, cp)
 	writeKubeconfig(t, cp, kubeconfig)
-	r := &health.Reconciler{Client: k8s, Reader: k8s, Period: time.Hour, Timeout: 2 * time.Second, Clock: clock.RealClock{}}
+	r := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, Period: time.Hour, Timeout: 2 * time.Second, Clock: clock.RealClock{}}
 	reconcile(t, r, cp)
 	rest := "; 2 PersistentVolumes with reclaimPolicy Delete (pv-a, pv-b); 1 pending PersistentVolumeClaims (shop/data)" +
 		"; 3 webhooks that call a URL or fail closed (audit/x.audit.example.com, guard/b.guard.example.com, guard/c.guard.example.com)" +
@@ -142,7 +142,7 @@ func TestAKindTheTenantDoesNotServeIsSaidInItsPlace(t *testing.T) {
 	cp := restoredControlPlane(t, lodiav1alpha1.RestoreHeld)
 	setAccess(t, cp)
 	writeKubeconfig(t, cp, kubeconfig)
-	reconcile(t, &health.Reconciler{Client: k8s, Reader: k8s, Period: time.Hour, Timeout: 2 * time.Second, Clock: clock.RealClock{}}, cp)
+	reconcile(t, &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, Period: time.Hour, Timeout: 2 * time.Second, Clock: clock.RealClock{}}, cp)
 	if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonAwaitingRelease, actsOn+"0 LoadBalancer Services; 0 PersistentVolumes with reclaimPolicy Delete"+
 		"; 0 pending PersistentVolumeClaims; 0 webhooks that call a URL or fail closed; 0 APIServices served by a Service; CronJobs could not be listed"); err != nil {
 		t.Error(err)
@@ -179,7 +179,7 @@ func TestEachListWaitsItsOwnTimeout(t *testing.T) {
 	cp := restoredControlPlane(t, lodiav1alpha1.RestoreHeld)
 	setAccess(t, cp)
 	writeKubeconfig(t, cp, kubeconfig)
-	reconcile(t, &health.Reconciler{Client: k8s, Reader: k8s, Period: time.Hour, Timeout: 500 * time.Millisecond, Clock: clock.RealClock{}}, cp)
+	reconcile(t, &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, Period: time.Hour, Timeout: 500 * time.Millisecond, Clock: clock.RealClock{}}, cp)
 	if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonAwaitingRelease, actsOn+"Services could not be listed; 0 PersistentVolumes with reclaimPolicy Delete"+
 		"; 0 pending PersistentVolumeClaims; 0 webhooks that call a URL or fail closed; 0 APIServices served by a Service; 0 CronJobs not suspended"); err != nil {
 		t.Error(err)
@@ -200,7 +200,7 @@ func TestATenantThatDoesNotAnswerHoldsAPassForOneTimeout(t *testing.T) {
 	writeKubeconfig(t, cp, kubeconfig)
 	timeout := 500 * time.Millisecond
 	started := time.Now()
-	reconcile(t, &health.Reconciler{Client: k8s, Reader: k8s, Period: time.Hour, Timeout: timeout, Clock: clock.RealClock{}}, cp)
+	reconcile(t, &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, Period: time.Hour, Timeout: timeout, Clock: clock.RealClock{}}, cp)
 	if took := time.Since(started); took > 4*timeout {
 		t.Errorf("a pass against a tenant that does not answer took %s with a Timeout of %s", took, timeout)
 	}
@@ -225,7 +225,7 @@ func TestARestoreLeadsOnceReleasedWithItsSourceGone(t *testing.T) {
 	setAccess(t, cp)
 	writeKubeconfig(t, cp, tenantKubeconfig)
 	removeLeases(t)
-	r := &health.Reconciler{Client: k8s, Reader: k8s, Period: 10 * time.Second, Timeout: 2 * time.Second, Clock: clock.RealClock{}}
+	r := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, Period: 10 * time.Second, Timeout: 2 * time.Second, Clock: clock.RealClock{}}
 	sourceExists := "ControlPlane prod (UID " + string(prod.UID) + "), the Backup's source, still exists in the namespace; delete it to release this one"
 	reconcile(t, r, cp)
 	if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonAwaitingRelease, actsOn+"0 LoadBalancer Services; 0 PersistentVolumes with reclaimPolicy Delete"+
@@ -266,7 +266,7 @@ func TestAReleasedRestoreNotCompleteReadsTheLeases(t *testing.T) {
 	setAccess(t, cp)
 	writeKubeconfig(t, cp, tenantKubeconfig)
 	removeLeases(t)
-	reconcile(t, &health.Reconciler{Client: k8s, Reader: k8s, Period: 10 * time.Second, Timeout: 2 * time.Second, Clock: clock.RealClock{}}, cp)
+	reconcile(t, &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, Period: 10 * time.Second, Timeout: 2 * time.Second, Clock: clock.RealClock{}}, cp)
 	if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonControllerManagerNotLeading,
 		"Lease kube-system/kube-controller-manager does not exist; Lease kube-system/kube-scheduler does not exist"); err != nil {
 		t.Error(err)

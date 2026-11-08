@@ -56,9 +56,13 @@ import (
 const (
 	Name         = "health"
 	FieldManager = "lodia/" + Name
-	// FailuresBeforeFalse consecutive failed probes turn a True Reachable
-	// False, so that one blip does not drop Ready.
-	FailuresBeforeFalse = 3
+
+	// leaderSlack is how long past its duration a leader Lease may stay
+	// unchanged and still lead. A standby takes over from a leader that died
+	// without releasing up to 8.8 s after the duration: two polls of the 2 s
+	// retry period Workloads renders, each up to 2.2 times as long
+	// (https://github.com/kubernetes/client-go/blob/v0.37.1/tools/leaderelection/leaderelection.go#L259-L274).
+	leaderSlack = 10 * time.Second
 )
 
 type Reconciler struct {
@@ -69,6 +73,9 @@ type Reconciler struct {
 	// Period is how often a control plane is probed and its leader Leases
 	// read, Timeout how long a probe or a read waits for an answer.
 	Period, Timeout time.Duration
+	// FailuresBeforeFalse consecutive failed probes turn a True Reachable
+	// False, so that one blip does not drop Ready.
+	FailuresBeforeFalse int
 	// Clock tells when a leader Lease was seen to change.
 	Clock clock.PassiveClock
 
@@ -183,7 +190,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 }
 
 // reachable returns nil to keep the condition as the API server holds it: a
-// True after fewer than FailuresBeforeFalse failed probes in a row. It also
+// True after fewer than r.FailuresBeforeFalse failed probes in a row. It also
 // says whether its probe failed: a success clears the count at once, and a
 // failure counts only once the pass has applied its conditions.
 func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*metav1.Condition, bool, error) {
@@ -230,7 +237,7 @@ func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPla
 	if passed {
 		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, answer), false, nil
 	}
-	if r.failed(key)+1 < FailuresBeforeFalse {
+	if r.failed(key)+1 < r.FailuresBeforeFalse {
 		if err := live.Conditions(ctx, r.Reader, cp, lodiav1alpha1.ConditionReachable); err != nil {
 			return nil, false, err
 		}
@@ -542,7 +549,7 @@ func counted(what string, names []string, more bool) string {
 // stale says why lease does not lead, or nothing when it does.
 func (r *Reconciler) stale(key types.NamespacedName, lease *coordinationv1.Lease, now time.Time) string {
 	duration := time.Duration(ptr.Deref(lease.Spec.LeaseDurationSeconds, 0)) * time.Second
-	if now.Sub(r.changed(key, lease, now)) <= duration+r.Period {
+	if now.Sub(r.changed(key, lease, now)) <= duration+leaderSlack {
 		return ""
 	}
 	renewed := "never"
