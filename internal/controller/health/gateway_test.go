@@ -738,14 +738,10 @@ func TestAFailedReadOfTheTunnelClientLeavesTheStatus(t *testing.T) {
 			return c.Get(ctx, key, obj, opts...)
 		},
 	})
-	before := get(t, f.cp).ResourceVersion
-	probe := &health.Reconciler{Client: k8s, Reader: failing, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
+	probe := &health.Reconciler{Client: noControlPlaneWrite(t, k8s), Reader: failing, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
 	for range health.FailuresBeforeFalse {
 		if _, err := probe.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(f.cp)}); err == nil {
 			t.Fatalf("a pass whose read of %s failed returned no error", name)
 		}
-	}
-	if after := get(t, f.cp).ResourceVersion; after != before {
-		t.Errorf("a pass whose read failed wrote the status: resourceVersion %s, then %s", before, after)
 	}
 }

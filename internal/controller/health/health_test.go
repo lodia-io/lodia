@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -242,18 +243,7 @@ func TestAPassThatChangesNothingWritesNothing(t *testing.T) {
 		return expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200")
 	})
 
-	applies := 0
-	counting := interceptor.NewClient(k8s, interceptor.Funcs{
-		SubResourceApply: func(ctx context.Context, c client.Client, subResource string, obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
-			applies++
-			return c.SubResource(subResource).Apply(ctx, obj, opts...)
-		},
-	})
-	before := get(t, cp).ResourceVersion
-	reconcile(t, &health.Reconciler{Client: counting, Reader: k8s, Period: time.Hour, Timeout: time.Second}, cp)
-	if after := get(t, cp).ResourceVersion; applies > 0 || after != before {
-		t.Errorf("a pass over an unchanged endpoint sent %d applies; resourceVersion %s, then %s", applies, before, after)
-	}
+	reconcile(t, &health.Reconciler{Client: noControlPlaneWrite(t, k8s), Reader: k8s, Period: time.Hour, Timeout: time.Second}, cp)
 }
 
 func TestAFailedReadLeavesTheStatus(t *testing.T) {
@@ -274,15 +264,11 @@ func TestAFailedReadLeavesTheStatus(t *testing.T) {
 			return c.Get(ctx, key, obj, opts...)
 		},
 	})
-	probe := &health.Reconciler{Client: k8s, Reader: failing, Period: time.Hour, Timeout: time.Second}
-	before := get(t, cp).ResourceVersion
+	probe := &health.Reconciler{Client: noControlPlaneWrite(t, k8s), Reader: failing, Period: time.Hour, Timeout: time.Second}
 	for range health.FailuresBeforeFalse {
 		if _, err := probe.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
 			t.Fatal("a pass whose read of the CA bundle failed returned no error")
 		}
-	}
-	if after := get(t, cp).ResourceVersion; after != before {
-		t.Errorf("a pass whose read failed wrote the status: resourceVersion %s, then %s", before, after)
 	}
 }
 
@@ -549,11 +535,9 @@ func TestAFailedLeaseReadKeepsControllersLeading(t *testing.T) {
 	}
 	writeKubeconfig(t, cp, unreachable)
 	now.SetTime(start.Add(time.Hour))
-	before := get(t, cp).ResourceVersion
+	r.Client = noControlPlaneWrite(t, k8s)
 	reconcile(t, r, cp)
-	if after := get(t, cp).ResourceVersion; after != before {
-		t.Errorf("a pass whose lease reads failed wrote the status: resourceVersion %s, then %s", before, after)
-	}
+	r.Client = k8s
 
 	writeKubeconfig(t, cp, tenantKubeconfig)
 	reconcile(t, r, cp)
@@ -644,10 +628,10 @@ func TestAKeptConditionIsDecidedFromTheServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	stale := get(t, cp)
-	pass := func(at *lodiav1alpha1.ControlPlane, reader client.Reader) error {
+	pass := func(at *lodiav1alpha1.ControlPlane, reader client.Reader, mayWrite bool) error {
 		held := at.DeepCopy()
 		held.Spec.Paused = false
-		r.Client = interceptor.NewClient(k8s, interceptor.Funcs{
+		holding := interceptor.NewClient(k8s, interceptor.Funcs{
 			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 				if plane, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
 					held.DeepCopyInto(plane)
@@ -656,6 +640,10 @@ func TestAKeptConditionIsDecidedFromTheServer(t *testing.T) {
 				return c.Get(ctx, key, obj, opts...)
 			},
 		})
+		if !mayWrite {
+			holding = noControlPlaneWrite(t, holding)
+		}
+		r.Client = holding
 		r.Reader = reader
 		_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 		return err
@@ -663,7 +651,7 @@ func TestAKeptConditionIsDecidedFromTheServer(t *testing.T) {
 
 	e.code.Store(http.StatusOK)
 	now.SetTime(start.Add(26 * time.Second))
-	if err := pass(get(t, cp), k8s); err != nil {
+	if err := pass(get(t, cp), k8s, true); err != nil {
 		t.Fatal(err)
 	}
 	renewed := start.UTC().Format(time.RFC3339)
@@ -690,7 +678,6 @@ func TestAKeptConditionIsDecidedFromTheServer(t *testing.T) {
 			return c.Get(ctx, key, obj, opts...)
 		},
 	})
-	written := get(t, cp).ResourceVersion
 	for _, kept := range []struct {
 		condition  string
 		code       int32
@@ -698,12 +685,9 @@ func TestAKeptConditionIsDecidedFromTheServer(t *testing.T) {
 	}{{lodiav1alpha1.ConditionControllersLeading, http.StatusOK, unreachable}, {lodiav1alpha1.ConditionReachable, http.StatusServiceUnavailable, tenantKubeconfig}} {
 		e.code.Store(kept.code)
 		writeKubeconfig(t, cp, kept.kubeconfig)
-		if err := pass(stale, failing); !errors.Is(err, injected) {
+		if err := pass(stale, failing, false); !errors.Is(err, injected) {
 			t.Errorf("a pass that keeps %s and cannot read it from the server returned %v, want the read's error", kept.condition, err)
 		}
-	}
-	if after := get(t, cp).ResourceVersion; after != written {
-		t.Errorf("a pass that cannot read what it keeps from the server wrote the ControlPlane: resourceVersion %s, then %s", written, after)
 	}
 
 	hanging := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
@@ -713,7 +697,7 @@ func TestAKeptConditionIsDecidedFromTheServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeKubeconfig(t, cp, timingOut)
-	if err := pass(stale, k8s); err != nil {
+	if err := pass(stale, k8s, true); err != nil {
 		t.Fatal(err)
 	}
 	if err := expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
@@ -887,6 +871,36 @@ func controlPlaneWith(t *testing.T, endpoint lodiav1alpha1.Endpoint) *lodiav1alp
 		t.Fatal(err)
 	}
 	return cp
+}
+
+func noControlPlaneWrite(t *testing.T, c client.WithWatch) client.WithWatch {
+	t.Helper()
+	return interceptor.NewClient(c, interceptor.Funcs{
+		SubResource: func(c client.WithWatch, name string) client.SubResourceClient {
+			t.Errorf("the pass wrote the ControlPlane's %s", name)
+			return c.SubResource(name)
+		},
+		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			if _, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
+				t.Errorf("the pass patched ControlPlane %s", obj.GetName())
+			}
+			return c.Patch(ctx, obj, patch, opts...)
+		},
+		Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+			raw, err := json.Marshal(obj)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var typed metav1.TypeMeta
+			if err := json.Unmarshal(raw, &typed); err != nil {
+				t.Fatal(err)
+			}
+			if typed.Kind == "ControlPlane" {
+				t.Error("the pass applied a ControlPlane")
+			}
+			return c.Apply(ctx, obj, opts...)
+		},
+	})
 }
 
 func reconcile(t *testing.T, r *health.Reconciler, cp *lodiav1alpha1.ControlPlane) {
