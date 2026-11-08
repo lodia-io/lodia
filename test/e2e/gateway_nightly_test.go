@@ -53,9 +53,6 @@ type g6Mix struct {
 	Paths []g6Path `json:"paths"`
 }
 
-// TestGatewayOverhead is gate G6 of the gateway mode: what the Gateway's and
-// the tunnel's paths add to a direct path to one API server replica, from one
-// node, at the 99th percentile.
 func TestGatewayOverhead(t *testing.T) {
 	var (
 		k8s    client.WithWatch
@@ -240,9 +237,6 @@ func g6Table(ctx context.Context, t *testing.T, c client.Client, nodeName string
 	return out.Bytes()
 }
 
-// TestGatewayConformance runs the Kubernetes conformance suite against a
-// tenant behind the Gateway; the pods reach their API through the tunnel, and
-// hydrophone reads the kubeconfig of the gateway gate.
 func TestGatewayConformance(t *testing.T) {
 	var (
 		k8s    client.WithWatch
