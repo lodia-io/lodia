@@ -279,23 +279,33 @@ func TestExtraArgsRefuseTheFlagsLodiaSets(t *testing.T) {
 	}
 }
 
-func TestExtraArgsRefuseBindAddressInEveryMode(t *testing.T) {
+func TestExtraArgsRefuseBindAddressInEverySpellingAndMode(t *testing.T) {
 	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")
+	const spelling = "a key must be a flag's name as the component spells it"
 	for mode, endpoint := range map[string]map[string]any{
 		"gateway":      nil,
 		"loadBalancer": {"loadBalancer": map[string]any{}},
 		"nodePort":     {"nodePort": map[string]any{}},
 	} {
-		for flag, want := range map[string]string{"bind-address": "Lodia sets this flag", "max-requests-inflight": ""} {
-			t.Run(mode+"/"+flag, func(t *testing.T) {
-				obj := example(t, "controlplane-ha.yaml", "bind")
-				if endpoint != nil {
-					set(t, obj, endpoint, "spec", "endpoint")
-				}
-				set(t, obj, map[string]any{flag: "127.0.0.1"}, "spec", "apiServer", "extraArgs")
-				expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), want)
-			})
+		for component, admitted := range map[string]string{
+			"apiServer":         "max-requests-inflight",
+			"controllerManager": "terminated-pod-gc-threshold",
+			"scheduler":         "leader-elect-lease-duration",
+		} {
+			for key, want := range map[string]string{
+				"bind-address": "Lodia sets this flag", "bind_address": spelling, "secure_port": spelling, "advertise_address": spelling,
+				"-bind-address": spelling, "Bind-Address": spelling, "etcd-prefix=x": spelling, admitted: "",
+			} {
+				t.Run(mode+"/"+component+"/"+key, func(t *testing.T) {
+					obj := example(t, "controlplane-ha.yaml", "bind")
+					if endpoint != nil {
+						set(t, obj, endpoint, "spec", "endpoint")
+					}
+					set(t, obj, map[string]any{key: "127.0.0.1"}, "spec", component, "extraArgs")
+					expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), want)
+				})
+			}
 		}
 	}
 }
@@ -352,15 +362,17 @@ func TestExtraArgsStoredBeforeTheirRefusalStayUntilTheMapChanges(t *testing.T) {
 	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")
 	stored := example(t, "controlplane-single.yaml", "ratcheting")
-	set(t, stored, map[string]any{"node-monitor-grace-period": "40s"}, "spec", "controllerManager", "extraArgs")
+	set(t, stored, map[string]any{"node-monitor-grace-period": "40s", "node_monitor_period": "5s"}, "spec", "controllerManager", "extraArgs")
 	storeUnderAnOlderSchema(t, "extraargs.ratcheting.lodia.io", stored, "Lodia sets this flag", func(schema map[string]any) {
 		unstructured.RemoveNestedField(schema, "properties", "spec", "properties", "controllerManager", "properties", "extraArgs", "x-kubernetes-validations")
 	})
 
 	set(t, stored, true, "spec", "paused")
 	expect(t, k8s.Update(context.Background(), stored), "")
-	set(t, stored, map[string]any{"node-monitor-grace-period": "40s", "terminated-pod-gc-threshold": "100"}, "spec", "controllerManager", "extraArgs")
-	expect(t, k8s.Update(context.Background(), stored), "Lodia sets this flag")
+	set(t, stored, map[string]any{"node-monitor-grace-period": "40s", "node_monitor_period": "5s", "terminated-pod-gc-threshold": "100"}, "spec", "controllerManager", "extraArgs")
+	err := k8s.Update(context.Background(), stored)
+	expect(t, err, "Lodia sets this flag")
+	expect(t, err, "a key must be a flag's name as the component spells it")
 }
 
 func TestAGatewayStoredWithoutATunnelStaysUntilItsHostnamesChange(t *testing.T) {

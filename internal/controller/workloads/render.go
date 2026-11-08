@@ -655,8 +655,8 @@ var merged = []string{"enable-admission-plugins", "controllers"}
 
 // command puts the flags Lodia sets and the tenant's extra ones in a fixed
 // order, so an unchanged ControlPlane renders the same pod template. An
-// extra entry never replaces a flag Lodia sets: one the schema refused only
-// after it was stored stays valid until it changes.
+// extra entry under the name of a flag Lodia sets never replaces it: one the
+// schema refused only after it was stored stays valid until it changes.
 func command(binary string, flags, extra map[string]string, gates map[string]bool) []string {
 	all := maps.Clone(flags)
 	for name, value := range extra {
