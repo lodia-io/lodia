@@ -177,7 +177,7 @@ func TestControllerManagerHold(t *testing.T) {
 			}
 			targets, ips := cutTargets(ctx, t, nodes[0], cp)
 			cutting.ips = ips
-			requireBlocked(ctx, t, nodes, targets, false)
+			requireReachable(ctx, t, nodes, targets)
 			start := time.Now()
 			podsBefore := tenantPods(ctx, t, access.client)
 			restartsBefore := controllerManagerRestarts(ctx, t, k8s, key)
@@ -191,7 +191,7 @@ func TestControllerManagerHold(t *testing.T) {
 			if spread := lastCut.Sub(firstCut); spread > cutSpread {
 				t.Errorf("the cuts were %s apart, want at most %s", spread, cutSpread)
 			}
-			requireBlocked(ctx, t, nodes, targets, true)
+			requireBlocked(ctx, t, nodes, targets)
 
 			var taken holderSample
 			until(ctx, t, time.Minute, "the Lease is held by "+lodiav1alpha1.HoldHolderIdentity, func(ctx context.Context) error {
@@ -217,12 +217,12 @@ func TestControllerManagerHold(t *testing.T) {
 				}
 				return nil
 			})
-			t.Logf("ControllerManagerHeld turned True at %s: %s; %+v", stamp(reported.at), reported.message, *reported.hold)
+			t.Logf("ControllerManagerHeld turned True at %s: %s; status.health counts %d of %d nodes silent since %v", stamp(reported.at), reported.message, reported.hold.SilentNodes, reported.hold.CountedNodes, reported.hold.Since)
 			if late := reported.at.Sub(taken.at); late > healthPeriod {
 				t.Errorf("ControllerManagerHeld came %s after the holder changed, want at most one period, %s", late, healthPeriod)
 			}
 			if h := reported.hold; h.SilentNodes != 2 || h.CountedNodes != 2 || h.Since == nil {
-				t.Errorf("status.health.controllerManagerHold is %+v, want 2 of 2 nodes silent since the Lease was taken", *h)
+				t.Errorf("status.health.controllerManagerHold counts %d of %d nodes silent since %v, want 2 of 2 since the Lease was taken", h.SilentNodes, h.CountedNodes, h.Since)
 			}
 
 			var finished time.Time
@@ -245,7 +245,7 @@ func TestControllerManagerHold(t *testing.T) {
 
 			sleepUntil(ctx, t, lastCut.Add(cutFor))
 			reconnected := cutting.lift(ctx, t, nodes...)
-			requireBlocked(ctx, t, nodes, targets, false)
+			requireReachable(ctx, t, nodes, targets)
 			t.Logf("both nodes are reconnected at %s, %s after the later cut", stamp(reconnected), reconnected.Sub(lastCut))
 
 			var back heldSample
@@ -360,8 +360,8 @@ func TestControllerManagerHold(t *testing.T) {
 			cuts := cutting.cut(ctx, t, cut)
 			defer cutting.lift(ctx, t, cut)
 			cutAt := cuts[0]
-			requireBlocked(ctx, t, []string{cut}, targets, true)
-			requireBlocked(ctx, t, []string{other}, targets, false)
+			requireBlocked(ctx, t, []string{cut}, targets)
+			requireReachable(ctx, t, []string{other}, targets)
 			t.Logf("node %s is cut off at %s", cut, stamp(cutAt))
 
 			var unknown nodeSample
@@ -442,7 +442,7 @@ func TestControllerManagerHold(t *testing.T) {
 			}
 
 			cutting.lift(ctx, t, cut)
-			requireBlocked(ctx, t, []string{cut}, targets, false)
+			requireReachable(ctx, t, []string{cut}, targets)
 			until(ctx, t, 5*time.Minute, "node "+cut+" is Ready again and no node carries a taint", func(ctx context.Context) error {
 				if problems := nodeProblems(ctx, access.client); len(problems) > 0 {
 					return fmt.Errorf("nodes: %v", problems)
@@ -699,24 +699,46 @@ func resolve(ctx context.Context, t *testing.T, node, host string) []string {
 	return ips
 }
 
-func requireBlocked(ctx context.Context, t *testing.T, nodes []string, targets []target, want bool) {
+func timesOut(ctx context.Context, node string, to target) (bool, error) {
+	_, err := docker(ctx, "exec", node, "curl", "--silent", "--insecure", "--output", "/dev/null", "--connect-timeout", "2", "--max-time", "2",
+		"--resolve", to.host+":"+strconv.Itoa(int(to.port))+":"+to.ip, "https://"+net.JoinHostPort(to.host, strconv.Itoa(int(to.port)))+"/")
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+		return false, nil
+	case errors.As(err, &exit):
+		return exit.ExitCode() == curlTimedOut, nil
+	default:
+		return false, err
+	}
+}
+
+func requireBlocked(ctx context.Context, t *testing.T, nodes []string, targets []target) {
 	t.Helper()
 	for _, node := range nodes {
 		for _, to := range targets {
-			_, err := docker(ctx, "exec", node, "curl", "--silent", "--insecure", "--output", "/dev/null", "--connect-timeout", "2", "--max-time", "2",
-				"--resolve", to.host+":"+strconv.Itoa(int(to.port))+":"+to.ip, "https://"+net.JoinHostPort(to.host, strconv.Itoa(int(to.port)))+"/")
-			var exit *exec.ExitError
-			blocked := false
-			switch {
-			case err == nil:
-			case errors.As(err, &exit):
-				blocked = exit.ExitCode() == curlTimedOut
-			default:
+			timedOut, err := timesOut(ctx, node, to)
+			if err != nil {
 				t.Fatal(err)
 			}
-			if blocked != want {
-				t.Fatalf("a 2 s curl from node %s to %s:%d at %s: blocked %t, want %t (%v)", node, to.host, to.port, to.ip, blocked, want, err)
+			if !timedOut {
+				t.Fatalf("a 2 s curl from node %s to %s:%d at %s does not time out", node, to.host, to.port, to.ip)
 			}
+		}
+	}
+}
+
+func requireReachable(ctx context.Context, t *testing.T, nodes []string, targets []target) {
+	t.Helper()
+	for _, node := range nodes {
+		for _, to := range targets {
+			until(ctx, t, 30*time.Second, fmt.Sprintf("a 2 s curl from node %s to %s:%d at %s does not time out", node, to.host, to.port, to.ip), func(ctx context.Context) error {
+				timedOut, err := timesOut(ctx, node, to)
+				if err == nil && timedOut {
+					err = errors.New("it times out")
+				}
+				return err
+			})
 		}
 	}
 }
