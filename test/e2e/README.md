@@ -146,6 +146,19 @@ The test, in order:
    `team-gw-c`, with hostnames of its own, then turns `Ready`, which Health's probe through the Gateway proves, while Envoy's `listener_manager.lds.update_rejected`, read through a port-forward from its admin interface on `127.0.0.1:19000` ([bootstrap.go](https://github.com/envoyproxy/gateway/blob/v1.9.3/internal/xds/bootstrap/bootstrap.go#L35-L38)), stays 0 and `update_success` rises; the test fails if either is missing.
    Deleting `team-gw-a` hands the hostnames to `team-gw-b`, whose `RoutesReady` turns True with its three routes, and which turns `Ready`.
 
+## Nightly: G6 and conformance behind the Gateway
+
+[`nightly-gateway.yml`](../../.github/workflows/nightly-gateway.yml) runs two tests in the same build tag and kind cluster setup as the gate, every night, on demand, and on a pull request that changes the workflow, `test/e2e/gateway_nightly_test.go` or `test/g6client`.
+Each is a job of its own.
+
+`TestGatewayOverhead` (`make e2e-gateway-g6`) is gate G6 ([roadmap](../../docs/roadmap.md#phase-2--production)): the `ControlPlane` `team-g6` behind the Gateway, one API server replica, one joined node, and a test-owned NodePort Service `dev-g6-direct` to the API server.
+[`test/g6client`](../g6client) runs in a pod on the node: authenticated `GET /version` over HTTP/2 to the three paths, sequentially, interleaved with the starting path rotated, on one reused connection per path (M1, 1,000 warm-up and 20,000 requests each) and on a new connection per request (M2, 200 and 3,000).
+The paths are the direct one, the management node's address and the NodePort; the Gateway, its address on 443 with the API hostname as TLS server name; and the tunnel, the `kubernetes` ClusterIP, through `apiserver-proxy`.
+p99 is the nearest rank, and the difference from the direct path has a 95% bootstrap interval of the pairs, 1,000 resamples with a fixed seed.
+It wants Δp99 under 5 ms for the Gateway and for the tunnel in both mixes, no error, and one dial per path in M1; the table, with the environment, goes to `g6-results.txt` in the artifacts.
+
+`TestGatewayConformance` (`make conformance-gateway`) is the conformance suite of the [nightly](#nightly-conformance-and-the-idle-control-plane) on a tenant behind the Gateway, two nodes as in the gate, with hydrophone given the gate's kubeconfig (`server` the Gateway's address, `tls-server-name` the API hostname); `CONFORMANCE_FOCUS` and the artifacts are the ones of that nightly.
+
 ## Nightly: highAvailability removed and added back
 
 `TestHighAvailabilityRemovedAndRestored`, in the same build tag and on the same cluster shape as G2, runs every night in [`nightly-ha.yml`](../../.github/workflows/nightly-ha.yml), on demand, and on a pull request that changes the workflow or the test; `make e2e-ha E2E_HA_TEST=TestHighAvailabilityRemovedAndRestored` runs it locally.

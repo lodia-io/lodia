@@ -47,4 +47,5 @@ The refusal, `make e2e`, kubeadm workers and the nightly conformance run are bui
 - `test/e2e/ha_nightly_test.go` — on the same cluster shape, `highAvailability` removed from a formed tenant and added back; `.github/workflows/nightly-ha.yml` runs it every night, on demand, and on a pull request that changes the workflow or the test.
 - `test/e2e/gateway_test.go` — the gateway gate, behind the `gateway` build tag with `e2e`: the Gateway API's CRDs, Envoy Gateway and a DNS container set up before the chart, tenants behind the Gateway by SNI, a node joined by hostname, pods reaching their API through `apiserver-proxy`, one owner per hostname.
   The `e2e-gateway` job of `.github/workflows/ci.yml` runs it on every pull request.
-- `Makefile` — the `e2e`, `e2e-ha`, `e2e-gateway` and `conformance` targets.
+- `test/e2e/gateway_nightly_test.go` — G6 and the conformance suite behind the Gateway, in the gate's build tag and `.github/workflows/nightly-gateway.yml`; `test/g6client` measures the three paths.
+- `Makefile` — the `e2e`, `e2e-ha`, `e2e-gateway`, `e2e-gateway-g6`, `conformance` and `conformance-gateway` targets.
