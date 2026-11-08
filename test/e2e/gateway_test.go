@@ -297,24 +297,18 @@ func TestGatewayGate(t *testing.T) {
 				name string
 				port string
 			}{{"tunnel", "6444"}, {"konnectivity", "8132"}} {
-				rule := []string{"FORWARD", "-p", "tcp", "--syn", "--dport", path.port, "-j", "REJECT", "--reject-with", "tcp-reset"}
-				if _, err := docker(ctx, append([]string{"exec", node, "iptables", "-I"}, rule...)...); err != nil {
-					t.Fatal(err)
-				}
-				t.Logf("new connections to port %s are refused on the management node", path.port)
-				until(ctx, t, 3*time.Minute, "Reachable=False, naming the "+path.name+" path", func(ctx context.Context) error {
-					cp, err := conditionAt(ctx, k8s, a, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonExternalProbeFailed)
-					if err != nil {
-						return err
-					}
-					if m := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionReachable).Message; !strings.HasPrefix(m, path.name+": ") {
-						return fmt.Errorf("the message does not start with %q: %s", path.name+": ", m)
-					}
-					return nil
+				refusing(ctx, t, node, path.port, func() {
+					until(ctx, t, 3*time.Minute, "Reachable=False, naming the "+path.name+" path", func(ctx context.Context) error {
+						cp, err := conditionAt(ctx, k8s, a, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonExternalProbeFailed)
+						if err != nil {
+							return err
+						}
+						if m := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionReachable).Message; !strings.HasPrefix(m, path.name+": ") {
+							return fmt.Errorf("the message does not start with %q: %s", path.name+": ", m)
+						}
+						return nil
+					})
 				})
-				if _, err := docker(ctx, append([]string{"exec", node, "iptables", "-D"}, rule...)...); err != nil {
-					t.Fatal(err)
-				}
 				until(ctx, t, 3*time.Minute, "Reachable=True once port "+path.port+" takes connections again", func(ctx context.Context) error {
 					_, err := conditionAt(ctx, k8s, a, lodiav1alpha1.ConditionReachable, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable)
 					return err
@@ -455,6 +449,23 @@ func managementNode(t *testing.T, cfg *envconf.Config) string {
 		t.Fatalf("the nodes of kind cluster %s: %d, %v", cluster, len(nodes), err)
 	}
 	return nodes[0].String()
+}
+
+func refusing(ctx context.Context, t *testing.T, node, port string, during func()) {
+	t.Helper()
+	rule := []string{"FORWARD", "-p", "tcp", "--syn", "--dport", port, "-j", "REJECT", "--reject-with", "tcp-reset"}
+	if _, err := docker(ctx, append([]string{"exec", node, "iptables", "-I"}, rule...)...); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		removal, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+		defer cancel()
+		if _, err := docker(removal, append([]string{"exec", node, "iptables", "-D"}, rule...)...); err != nil {
+			t.Errorf("the rule refusing port %s stays on the management node: %v", port, err)
+		}
+	}()
+	t.Logf("new connections to port %s are refused on the management node", port)
+	during()
 }
 
 func hostnamesOf(namespace string) lodiav1alpha1.GatewayHostnames {
