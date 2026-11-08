@@ -382,10 +382,6 @@ func TestAHungGatewayPathCostsOneTimeout(t *testing.T) {
 	for _, c := range []hang{
 		{"the public endpoint", func(f *gatewayFixture) { f.api.hang.Store(true) }},
 		{"behind the tunnel", func(f *gatewayFixture) { f.tunnel.hang.Store(true) }},
-		{"the three at once", func(f *gatewayFixture) {
-			f.api.hang.Store(true)
-			f.tunnel.hang.Store(true)
-		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newGateway(t)
@@ -413,6 +409,11 @@ func TestAHungGatewayPathCostsOneTimeout(t *testing.T) {
 			return f.apiAddress(), f.konnectivity, stalled
 		}},
 		{"a Gateway that accepts and never answers at konnectivity", func(f *gatewayFixture, stalled string) (string, string, string) {
+			return f.apiAddress(), stalled, f.tunnel.address
+		}},
+		{"the three at once", func(f *gatewayFixture, stalled string) (string, string, string) {
+			f.api.hang.Store(true)
+			f.tunnel.hang.Store(true)
 			return f.apiAddress(), stalled, f.tunnel.address
 		}},
 	} {
