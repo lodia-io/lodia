@@ -7,14 +7,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -41,22 +40,6 @@ import (
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/operator"
 )
-
-var gatewayAPICRDs = filepath.Join("..", "..", "test", "testdata", "gateway-api", "v1.6.3", "standard-install.yaml")
-
-func TestTheGatewayAPICRDsAreTheReleases(t *testing.T) {
-	const (
-		release = "https://github.com/kubernetes-sigs/gateway-api/releases/tag/v1.6.3"
-		digest  = "356c2b8e286a964dc20995435659ad1095386329974793af10bbfe3eff977fe5"
-	)
-	raw, err := os.ReadFile(gatewayAPICRDs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sum := sha256.Sum256(raw); hex.EncodeToString(sum[:]) != digest {
-		t.Errorf("%s has sha256 %x, want %s, the digest of standard-install.yaml at %s", gatewayAPICRDs, sum, digest, release)
-	}
-}
 
 func TestTheCacheHoldsTheGatewayAPIWholeOnlyWhereItIsServed(t *testing.T) {
 	for _, served := range []bool{false, true} {
@@ -196,28 +179,39 @@ func start(t *testing.T, extra ...*apiextensionsv1.CustomResourceDefinition) *re
 
 func gatewayAPI(t *testing.T) []*apiextensionsv1.CustomResourceDefinition {
 	t.Helper()
-	raw, err := os.ReadFile(gatewayAPICRDs)
+	module, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "sigs.k8s.io/gateway-api").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	reader := k8syaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(raw)))
+	files, err := filepath.Glob(filepath.Join(strings.TrimSpace(string(module)), "config", "crd", "standard", "*.yaml"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("the Gateway API module has no standard CRDs: %v", err)
+	}
 	var out []*apiextensionsv1.CustomResourceDefinition
-	for {
-		doc, err := reader.Read()
-		if errors.Is(err, io.EOF) {
-			return out
-		}
+	for _, file := range files {
+		raw, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatal(err)
 		}
-		crd := &apiextensionsv1.CustomResourceDefinition{}
-		if err := yaml.Unmarshal(doc, crd); err != nil {
-			t.Fatal(err)
-		}
-		if crd.Kind == "CustomResourceDefinition" {
-			out = append(out, crd)
+		reader := k8syaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(raw)))
+		for {
+			doc, err := reader.Read()
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			crd := &apiextensionsv1.CustomResourceDefinition{}
+			if err := yaml.Unmarshal(doc, crd); err != nil {
+				t.Fatal(err)
+			}
+			if crd.Kind == "CustomResourceDefinition" {
+				out = append(out, crd)
+			}
 		}
 	}
+	return out
 }
 
 func run(t *testing.T, cfg *rest.Config, gatewayAPI bool) client.Client {
