@@ -14,6 +14,8 @@ spec:
     metadata:
       labels:
         {{- include "lodia.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
     spec:
       serviceAccountName: {{ .Release.Name }}
       priorityClassName: system-cluster-critical
@@ -40,6 +42,7 @@ spec:
             - --etcd-druid-namespace={{ required "etcdDruidNamespace must name the namespace etcd-druid runs in while etcdDruid.enabled is false" .Values.etcdDruidNamespace }}
             {{- end }}
             - --operator-namespace={{ .Release.Namespace }}
+            - --config=/etc/lodia/config.yaml
             - --metrics-bind-address=:8443
             - --health-probe-bind-address=:8081
           ports:
@@ -55,8 +58,16 @@ spec:
             httpGet:
               path: /readyz
               port: health
+          volumeMounts:
+            - name: config
+              mountPath: /etc/lodia
+              readOnly: true
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
               drop: [ALL]
             readOnlyRootFilesystem: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ .Release.Name }}-config

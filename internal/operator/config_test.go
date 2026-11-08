@@ -13,6 +13,7 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/yaml"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/operator"
@@ -54,6 +55,22 @@ func TestTheDefaultsLeaveTheMarginAgainstTheGracePeriod(t *testing.T) {
 		lodiav1alpha1.ControllerManagerRenewDeadline + lodiav1alpha1.ControllerManagerRetryPeriod + 10*time.Second
 	if got != 57400*time.Millisecond || got > lodiav1alpha1.NodeMonitorGracePeriod || lodiav1alpha1.NodeMonitorGracePeriod != 60*time.Second {
 		t.Errorf("the defaults add up to %s against a grace period of %s, want 57.4s against 60s", got, lodiav1alpha1.NodeMonitorGracePeriod)
+	}
+}
+
+func TestTheChartsValuesAreTheDefaults(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "charts", "lodia", "values.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var values struct {
+		Health operator.HealthConfig `json:"health"`
+	}
+	if err := yaml.Unmarshal(raw, &values); err != nil {
+		t.Fatal(err)
+	}
+	if want := operator.DefaultConfig().Health; values.Health != want {
+		t.Errorf("the chart's health values are %+v, want the operator's defaults %+v", values.Health, want)
 	}
 }
 
