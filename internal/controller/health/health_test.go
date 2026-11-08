@@ -518,6 +518,9 @@ func TestControllersLeadingFollowsTheLeaderLeases(t *testing.T) {
 func TestAFailedLeaseReadKeepsControllersLeading(t *testing.T) {
 	cp := controlPlane(t)
 	setAccess(t, cp)
+	eventually(t, func() error {
+		return expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, "waiting for PKI to write dev-lodia-kubeconfig")
+	})
 	start := time.Now().Truncate(time.Second)
 	now := clocktesting.NewFakePassiveClock(start)
 	r := &health.Reconciler{Client: k8s, Reader: k8s, Period: 10 * time.Second, Timeout: 2 * time.Second, Clock: now}
