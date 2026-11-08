@@ -710,7 +710,7 @@ func TestTwoConcurrentCreationsOfOneHostnameYieldOneRoute(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "shared", Namespace: ns},
 		Spec:       gatewayv1.GatewaySpec{GatewayClassName: "example", Listeners: []gatewayv1.Listener{passthrough("tls", "*."+zone, 443)}},
 	}
-	var arrived atomic.Int32
+	var gets, lists, applies atomic.Int32
 	stale := interceptor.NewClient(k8s, interceptor.Funcs{
 		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 			switch o := obj.(type) {
@@ -718,6 +718,7 @@ func TestTwoConcurrentCreationsOfOneHostnameYieldOneRoute(t *testing.T) {
 				gw.DeepCopyInto(o)
 				return nil
 			case *gatewayv1.TLSRoute:
+				gets.Add(1)
 				return apierrors.NewNotFound(schema.GroupResource{Group: gatewayv1.GroupName, Resource: "tlsroutes"}, key.Name)
 			}
 			return c.Get(ctx, key, obj, opts...)
@@ -727,11 +728,25 @@ func TestTwoConcurrentCreationsOfOneHostnameYieldOneRoute(t *testing.T) {
 			case *lodiav1alpha1.ControlPlaneList:
 				return nil
 			case *gatewayv1.TLSRouteList:
-				if arrived.Add(1) == 1 {
-					waitFor(2*time.Second, func() bool { return arrived.Load() >= 2 })
+				if lists.Add(1) == 1 {
+					if err := c.List(ctx, list, opts...); err != nil {
+						return err
+					}
+					waitFor(time.Minute, func() bool { return gets.Load() >= 2 })
+					if waitFor(2*time.Second, func() bool { return lists.Load() >= 2 }) {
+						waitFor(time.Minute, func() bool { return applies.Load() >= 1 })
+					}
+					return nil
 				}
 			}
 			return c.List(ctx, list, opts...)
+		},
+		Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+			err := c.Apply(ctx, obj, opts...)
+			if kindOf(t, obj) == "TLSRoute" {
+				applies.Add(1)
+			}
+			return err
 		},
 	})
 	r := &workloads.Reconciler{Client: stale, Reader: stale, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
@@ -1618,11 +1633,15 @@ func kindOf(t *testing.T, obj runtime.ApplyConfiguration) string {
 	return typed.Kind
 }
 
-func waitFor(timeout time.Duration, done func() bool) {
+func waitFor(timeout time.Duration, done func() bool) bool {
 	deadline := time.Now().Add(timeout)
-	for !done() && time.Now().Before(deadline) {
+	for !done() {
+		if time.Now().After(deadline) {
+			return false
+		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	return true
 }
 
 func quiet(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
