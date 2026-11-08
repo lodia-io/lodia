@@ -166,6 +166,9 @@ func TestTheHealthSettingsAreCheckedBeforeTheManagerStarts(t *testing.T) {
 		{name: "the same at a period of 6s", content: "health:\n  period: 6s\n  silentAfter: 16.4s\n", refused: "health.silentAfter"},
 		{name: "just above it at a period of 6s", content: "health:\n  period: 6s\n  silentAfter: 16.401s\n"},
 		{name: "a zero silentAfter", content: "health:\n  silentAfter: 0s\n", refused: "health.silentAfter"},
+		{name: "values whose sum wraps past the longest duration", content: "health:\n  silentAfter: 2562047h47m\n  period: 2562047h47m10s\n", refused: "grace period"},
+		{name: "a period past the grace period", content: "health:\n  period: 61s\n", refused: "grace period"},
+		{name: "a silentAfter past the grace period", content: "health:\n  silentAfter: 61s\n", refused: "grace period"},
 
 		{name: "a margin of exactly the grace period", content: "health:\n  silentAfter: " + edge.String() + "\n"},
 		{name: "a millisecond over the grace period", content: "health:\n  silentAfter: " + (edge + time.Millisecond).String() + "\n", refused: "node monitor grace period"},

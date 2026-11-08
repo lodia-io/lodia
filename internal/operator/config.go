@@ -93,8 +93,6 @@ func LoadConfig(path string) (Config, error) {
 	return cfg, nil
 }
 
-// validate refuses what would break the hold's race against the node
-// lifecycle controller or make no sense.
 func (h HealthConfig) validate() error {
 	period, silentAfter := h.Period.Duration, h.SilentAfter.Duration
 	switch {
@@ -106,6 +104,8 @@ func (h HealthConfig) validate() error {
 		return fmt.Errorf("health.failuresBeforeFalse is %d, want a positive number", h.FailuresBeforeFalse)
 	case h.HoldFraction <= 500 || h.HoldFraction > 1000:
 		return fmt.Errorf("health.holdFraction is %d thousandths, want more than 500 and at most 1000: one dead machine of two must not start a hold", h.HoldFraction)
+	case max(period, silentAfter) > lodiav1alpha1.NodeMonitorGracePeriod:
+		return fmt.Errorf("health.period %s and health.silentAfter %s must each fit the node monitor grace period %s", period, silentAfter, lodiav1alpha1.NodeMonitorGracePeriod)
 	case silentAfter <= renewalSpread+period:
 		return fmt.Errorf("health.silentAfter is %s, want more than %s, the kubelets' renewals %s apart and one period, or a healthy node reads as silent", silentAfter, renewalSpread+period, renewalSpread)
 	}

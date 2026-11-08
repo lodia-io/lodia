@@ -37,8 +37,8 @@ import (
 	"go.lodia.io/lodia/internal/controller/workloads"
 )
 
-// workers is the default of controllers.<name>.workers until the operator
-// configuration file is read (docs/README.md, Operator configuration).
+// workers is the default of controllers.<name>.workers, a key the operator
+// does not read yet (docs/README.md, Operator configuration).
 const workers = 10
 
 // Scheme holds the kinds the controllers read and write.
@@ -140,11 +140,15 @@ func Setup(mgr ctrl.Manager, cfg Config, signerImage, tunnelImage, etcdDruidName
 	if err := (&tenant.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), ApplyPeriod: 10 * time.Minute, TunnelImage: tunnelImage}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the tenant controller: %w", err)
 	}
-	if err := (&health.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Period: cfg.Health.Period.Duration, FailuresBeforeFalse: cfg.Health.FailuresBeforeFalse, Timeout: 5 * time.Second, Clock: clock.RealClock{}}).SetupWithManager(mgr, workers); err != nil {
+	if err := newHealth(mgr.GetClient(), mgr.GetAPIReader(), cfg.Health).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the health controller: %w", err)
 	}
 	if err := (&workloads.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: gatewayAPI}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the workloads controller: %w", err)
 	}
 	return nil
+}
+
+func newHealth(c client.Client, reader client.Reader, cfg HealthConfig) *health.Reconciler {
+	return &health.Reconciler{Client: c, Reader: reader, Period: cfg.Period.Duration, FailuresBeforeFalse: cfg.FailuresBeforeFalse, Timeout: 5 * time.Second, Clock: clock.RealClock{}}
 }
