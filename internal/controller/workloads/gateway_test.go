@@ -53,7 +53,7 @@ func TestAGatewayControlPlaneRunsBehindItsListener(t *testing.T) {
 		InCluster:    lodiav1alpha1.HostPort{Host: "240.0.0.1", Port: 6443},
 		Tunnel:       &lodiav1alpha1.HostPort{Host: "tunnel.dev." + zone, Port: 443},
 	})
-	if c := routesReady(t, cp); c.Message != "every route is applied, Accepted and ResolvedRefs by Gateway "+ns+"/shared" {
+	if c := routesReady(t, cp); c.Message != "every route is applied and Accepted by Gateway "+ns+"/shared" {
 		t.Errorf("RoutesReady says %q", c.Message)
 	}
 

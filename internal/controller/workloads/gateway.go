@@ -207,7 +207,7 @@ func (r *Reconciler) attach(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 	}
 	if len(problems) == 0 {
 		return *asRoutes(newCondition(metav1.ConditionTrue, lodiav1alpha1.ReasonAccepted,
-			fmt.Sprintf("every route is applied, Accepted and ResolvedRefs by Gateway %s/%s", gw.Namespace, gw.Name))), nil
+			fmt.Sprintf("every route is applied and Accepted by Gateway %s/%s", gw.Namespace, gw.Name))), nil
 	}
 	reason := routeReasons[slices.IndexFunc(routeReasons, func(reason string) bool {
 		return slices.ContainsFunc(problems, func(p routeProblem) bool { return p.reason == reason })
@@ -340,8 +340,9 @@ func (r *Reconciler) semaphore(gateway types.NamespacedName) *semaphore.Weighted
 	return r.gateways[gateway]
 }
 
-// notAccepted says why route is not Accepted and ResolvedRefs at its
-// generation on the parent entry of ref, or nothing when it is.
+// notAccepted says why route is not Accepted, or its references not resolved,
+// at its generation on the parent entry of ref, or nothing when both hold;
+// noEndpoints says which ResolvedRefs False still counts as resolved.
 func notAccepted(route *gatewayv1.TLSRoute, ref lodiav1alpha1.ParentReference) string {
 	gateway := ref.Namespace + "/" + ref.Name
 	i := slices.IndexFunc(route.Status.Parents, func(p gatewayv1.RouteParentStatus) bool {
@@ -366,11 +367,13 @@ func notAccepted(route *gatewayv1.TLSRoute, ref lodiav1alpha1.ParentReference) s
 }
 
 // noEndpoints says whether c is a ResolvedRefs False with Envoy Gateway's
-// reason for a Service without a ready endpoint
+// reason for a Service without endpoints
 // (https://github.com/envoyproxy/gateway/blob/v1.9.3/internal/gatewayapi/status/error.go#L34),
-// which counts as resolved: it sets that on a TLSRoute whenever no API server
-// pod is ready, the availability APIServerReady reports.
-// @todo: remove once the Envoy Gateway release the gateway gate pins keeps a TLSRoute's ResolvedRefs True while its Service has no ready endpoint (todo.md).
+// which counts as resolved: it sets that on a TLSRoute while the Service's
+// EndpointSlices list no endpoint for its port, so while no API server pod has
+// an address, which APIServerReady reports
+// (https://github.com/envoyproxy/gateway/blob/v1.9.3/internal/gatewayapi/route.go#L3119-L3125).
+// @todo: remove once every Envoy Gateway release still supported upstream keeps a TLSRoute's ResolvedRefs True there, and the gateway gate pins one (todo.md).
 func noEndpoints(t gatewayv1.RouteConditionType, c *metav1.Condition) bool {
 	return t == gatewayv1.RouteConditionResolvedRefs && c.Status == metav1.ConditionFalse && c.Reason == "EndpointsNotFound"
 }
