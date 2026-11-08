@@ -356,13 +356,23 @@ func notAccepted(route *gatewayv1.TLSRoute, ref lodiav1alpha1.ParentReference) s
 		switch c := meta.FindStatusCondition(route.Status.Parents[i].Conditions, string(t)); {
 		case c == nil:
 			return fmt.Sprintf("TLSRoute %s has no %s from Gateway %s yet", route.Name, t, gateway)
-		case c.Status != metav1.ConditionTrue:
+		case c.Status != metav1.ConditionTrue && !noEndpoints(t, c):
 			return fmt.Sprintf("TLSRoute %s is not %s by Gateway %s: %s", route.Name, t, gateway, c.Reason)
 		case c.ObservedGeneration != route.Generation:
 			return fmt.Sprintf("TLSRoute %s's %s from Gateway %s describes generation %d, not %d", route.Name, t, gateway, c.ObservedGeneration, route.Generation)
 		}
 	}
 	return ""
+}
+
+// noEndpoints says whether c is a ResolvedRefs False with Envoy Gateway's
+// reason for a Service without a ready endpoint
+// (https://github.com/envoyproxy/gateway/blob/v1.9.3/internal/gatewayapi/status/error.go#L34),
+// which counts as resolved: it sets that on a TLSRoute whenever no API server
+// pod is ready, the availability APIServerReady reports.
+// @todo: remove once the Envoy Gateway release the gateway gate pins keeps a TLSRoute's ResolvedRefs True while its Service has no ready endpoint (todo.md).
+func noEndpoints(t gatewayv1.RouteConditionType, c *metav1.Condition) bool {
+	return t == gatewayv1.RouteConditionResolvedRefs && c.Status == metav1.ConditionFalse && c.Reason == "EndpointsNotFound"
 }
 
 // held are the names route holds on gw at port: for each parentRef naming gw,

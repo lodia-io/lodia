@@ -364,6 +364,56 @@ func TestARouteNotAcceptedSaysTheGatewaysReason(t *testing.T) {
 	}
 }
 
+func TestRoutesWithoutReadyEndpointsAreResolvedWhileTheAPIServerIsUnavailable(t *testing.T) {
+	ns := namespace(t)
+	createGateway(t, ns)
+	cp := createNamed(t, ns, "dev", onGateway(ns, "dev"))
+	inputsReady(t, cp)
+	for _, name := range routeNames(cp) {
+		eventually(t, func() error {
+			route := tlsRouteOrNil(t, ns, name)
+			if route == nil {
+				return fmt.Errorf("no TLSRoute %s yet", name)
+			}
+			return writeRouteStatus(route, metav1.ConditionTrue, metav1.ConditionFalse, "EndpointsNotFound", route.Generation)
+		})
+	}
+	eventually(t, func() error {
+		if err := expectRoutes(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonAccepted); err != nil {
+			return err
+		}
+		return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable)
+	})
+
+	route := tlsRoute(t, ns, "dev-konnectivity")
+	expectMessage := func(want string) {
+		t.Helper()
+		eventually(t, func() error {
+			if err := expectRoutes(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRouteNotAccepted); err != nil {
+				return err
+			}
+			if c := routesReady(t, cp); c.Message != want {
+				return fmt.Errorf("RoutesReady says %q, want %q", c.Message, want)
+			}
+			return nil
+		})
+	}
+	eventually(t, func() error {
+		fresh := tlsRoute(t, ns, route.Name)
+		if err := writeRouteStatus(fresh, metav1.ConditionTrue, metav1.ConditionFalse, "EndpointsNotFound", fresh.Generation); err != nil {
+			return err
+		}
+		fresh = tlsRoute(t, ns, route.Name)
+		fresh.Status.Parents[0].Conditions[1].ObservedGeneration = fresh.Generation - 1
+		return k8s.Status().Update(t.Context(), fresh)
+	})
+	expectMessage(fmt.Sprintf("TLSRoute dev-konnectivity's ResolvedRefs from Gateway %s/shared describes generation %d, not %d", ns, route.Generation-1, route.Generation))
+	setRouteStatus(t, route, metav1.ConditionTrue, metav1.ConditionUnknown, "EndpointsNotFound", route.Generation)
+	expectMessage("TLSRoute dev-konnectivity is not ResolvedRefs by Gateway " + ns + "/shared: EndpointsNotFound")
+	setRouteStatus(t, route, metav1.ConditionFalse, metav1.ConditionTrue, "EndpointsNotFound", route.Generation)
+	expectMessage("TLSRoute dev-konnectivity is not Accepted by Gateway " + ns + "/shared: EndpointsNotFound")
+}
+
 func TestWithoutTheGatewayAPIServedAGatewayControlPlaneIsUnsupported(t *testing.T) {
 	pass := func(t *testing.T, cp *lodiav1alpha1.ControlPlane) *lodiav1alpha1.ControlPlane {
 		t.Helper()

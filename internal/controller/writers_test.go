@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -78,32 +79,10 @@ func TestEveryStatusFieldHasOneWriter(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer updates.Stop()
-	class := &lodiav1alpha1.DatastoreClass{
-		ObjectMeta: metav1.ObjectMeta{Name: "writers", Annotations: map[string]string{lodiav1alpha1.DefaultClassAnnotation: "true"}},
-		Spec:       lodiav1alpha1.DatastoreClassSpec{Storage: lodiav1alpha1.EtcdStorage{Size: resource.MustParse("8Gi"), ReclaimPolicy: "Delete"}},
-	}
-	cp := &lodiav1alpha1.ControlPlane{
-		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: ns.Name},
-		Spec: lodiav1alpha1.ControlPlaneSpec{
-			Version:   "v1.35.0",
-			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{}},
-			Endpoint: lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
-				ParentRef: lodiav1alpha1.ParentReference{Name: "shared", Namespace: ns.Name, SectionName: "tls"},
-				Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.com", Konnectivity: "konnectivity.dev.example.com", Tunnel: "tunnel.dev.example.com"},
-			}},
-			Network: lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
-		},
-	}
+	class, gateway, cp := gatewayTenant(ns.Name)
 	backup := &lodiav1alpha1.Backup{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev-backup", Namespace: ns.Name},
 		Spec:       lodiav1alpha1.BackupSpec{ControlPlaneRef: lodiav1alpha1.LocalReference{Name: cp.Name}},
-	}
-	gateway := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Name: "shared", Namespace: ns.Name},
-		Spec: gatewayv1.GatewaySpec{GatewayClassName: "example", Listeners: []gatewayv1.Listener{{
-			Name: "tls", Port: 443, Protocol: gatewayv1.TLSProtocolType, Hostname: new(gatewayv1.Hostname("*.dev.example.com")),
-			TLS: &gatewayv1.ListenerTLSConfig{Mode: new(gatewayv1.TLSModePassthrough)},
-		}}},
 	}
 	for _, obj := range []client.Object{class, gateway, cp, backup} {
 		if err := k8s.Create(t.Context(), obj); err != nil {
@@ -171,6 +150,33 @@ watching:
 			t.Errorf("the Backup's status %s is written by %v, want lodia/backup alone", key, managers)
 		}
 	}
+}
+
+func gatewayTenant(ns string) (*lodiav1alpha1.DatastoreClass, *gatewayv1.Gateway, *lodiav1alpha1.ControlPlane) {
+	class := &lodiav1alpha1.DatastoreClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "writers", Annotations: map[string]string{lodiav1alpha1.DefaultClassAnnotation: "true"}},
+		Spec:       lodiav1alpha1.DatastoreClassSpec{Storage: lodiav1alpha1.EtcdStorage{Size: resource.MustParse("8Gi"), ReclaimPolicy: "Delete"}},
+	}
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "shared", Namespace: ns},
+		Spec: gatewayv1.GatewaySpec{GatewayClassName: "example", Listeners: []gatewayv1.Listener{{
+			Name: "tls", Port: 443, Protocol: gatewayv1.TLSProtocolType, Hostname: new(gatewayv1.Hostname("*.dev.example.com")),
+			TLS: &gatewayv1.ListenerTLSConfig{Mode: new(gatewayv1.TLSModePassthrough)},
+		}}},
+	}
+	cp := &lodiav1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: ns},
+		Spec: lodiav1alpha1.ControlPlaneSpec{
+			Version:   "v1.35.0",
+			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{}},
+			Endpoint: lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
+				ParentRef: lodiav1alpha1.ParentReference{Name: "shared", Namespace: ns, SectionName: "tls"},
+				Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.com", Konnectivity: "konnectivity.dev.example.com", Tunnel: "tunnel.dev.example.com"},
+			}},
+			Network: lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
+		},
+	}
+	return class, gateway, cp
 }
 
 func complete(cp *lodiav1alpha1.ControlPlane) bool {
@@ -262,7 +268,7 @@ func start(t *testing.T) client.WithWatch {
 		t.Fatal(err)
 	}
 	cache.ReaderFailOnMissingInformer = true
-	mgr, err := ctrl.NewManager(cfg, ctrl.Options{Scheme: scheme, Metrics: metricsserver.Options{BindAddress: "0"}, Cache: cache})
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{Scheme: scheme, Metrics: metricsserver.Options{BindAddress: "0"}, Cache: cache, Controller: config.Controller{SkipNameValidation: new(true)}})
 	if err != nil {
 		t.Fatal(err)
 	}
