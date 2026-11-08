@@ -225,7 +225,7 @@ type GatewayEndpoint struct {
 	Hostnames GatewayHostnames `json:"hostnames"`
 }
 
-// ParentReference names a Gateway and, optionally, one of its listeners.
+// ParentReference names a Gateway and one of its listeners.
 type ParentReference struct {
 	// Name of the Gateway.
 	// +required
@@ -239,10 +239,13 @@ type ParentReference struct {
 	// +kubebuilder:validation:MaxLength=63
 	Namespace string `json:"namespace"`
 
-	// SectionName is the listener's name.
-	// +optional
+	// SectionName is the listener's name, required since a route without it
+	// lands on every listener its hostname fits.
+	// +required
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
-	SectionName string `json:"sectionName,omitempty"`
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	SectionName string `json:"sectionName"`
 }
 
 // GatewayHostnames are the SNI names of one control plane.

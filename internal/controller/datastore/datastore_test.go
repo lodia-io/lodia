@@ -112,7 +112,7 @@ func TestMain(m *testing.M) {
 		stop("the controller's ClusterRole", err)
 	}
 	asDatastore = controller
-	cache, err := operator.Cache()
+	cache, err := operator.Cache(false)
 	if err != nil {
 		stop("cache options", err)
 	}

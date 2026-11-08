@@ -172,7 +172,7 @@ func gatewayControlPlane(inCluster, tunnel string) *lodiav1alpha1.ControlPlane {
 		ObjectMeta: metav1.ObjectMeta{Name: "dev"},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
 			Endpoint: lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
-				ParentRef: lodiav1alpha1.ParentReference{Name: "edge", Namespace: "gateways"},
+				ParentRef: lodiav1alpha1.ParentReference{Name: "edge", Namespace: "gateways", SectionName: "tls"},
 				Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.test", Konnectivity: "konnectivity.dev.example.test", Tunnel: "tunnel.dev.example.test"},
 			}},
 			Network: lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},

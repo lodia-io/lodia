@@ -50,12 +50,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	cache, err := operator.Cache()
+	cfg := ctrl.GetConfigOrDie()
+	gatewayAPI, err := operator.GatewayAPI(cfg)
+	if err != nil {
+		log.Error(err, "discover the Gateway API")
+		os.Exit(1)
+	}
+	if gatewayAPI {
+		log.Info("the management cluster serves TLSRoute and Gateway at gateway.networking.k8s.io/v1")
+	} else {
+		log.Info("the management cluster serves no TLSRoute or no Gateway at gateway.networking.k8s.io/v1; once it does, restart the operator")
+	}
+	cache, err := operator.Cache(gatewayAPI)
 	if err != nil {
 		log.Error(err, "build the cache options")
 		os.Exit(1)
 	}
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme: operator.Scheme(),
 		Metrics: metricsserver.Options{
 			BindAddress:    metricsAddr,
@@ -71,7 +82,7 @@ func main() {
 		log.Error(err, "create the manager")
 		os.Exit(1)
 	}
-	if err := operator.Setup(mgr, signerImage, tunnelImage, etcdDruidNamespace, operatorNamespace); err != nil {
+	if err := operator.Setup(mgr, signerImage, tunnelImage, etcdDruidNamespace, operatorNamespace, gatewayAPI); err != nil {
 		log.Error(err, "set up the controllers")
 		os.Exit(1)
 	}

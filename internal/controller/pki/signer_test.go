@@ -978,7 +978,7 @@ func TestASecretQuotaHoldsTheStagedSignerUntilItGoes(t *testing.T) {
 	before := secretOf(t, cp, "dev-client-ca").Data[lodiav1alpha1.CACertKey]
 	quota := fillSecretQuota(t, cp)
 
-	options, err := operator.Cache()
+	options, err := operator.Cache(false)
 	if err != nil {
 		t.Fatal(err)
 	}

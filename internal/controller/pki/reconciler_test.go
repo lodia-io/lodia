@@ -161,7 +161,7 @@ func asPKIController(cfg *rest.Config) (*rest.Config, error) {
 
 func TestALoadBalancerControlPlaneWaitsForItsEndpoint(t *testing.T) {
 	cp := controlPlane(t, "pki-manager")
-	options, err := operator.Cache()
+	options, err := operator.Cache(false)
 	if err != nil {
 		t.Fatal(err)
 	}

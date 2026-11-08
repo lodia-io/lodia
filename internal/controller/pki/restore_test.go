@@ -371,7 +371,7 @@ func TestARestoreGoesOnWhenItsBackupCompletes(t *testing.T) {
 	publishEndpoint(t, cp)
 	b := newBackup(t, cp.Namespace)
 	setReady(t, b, metav1.ConditionUnknown, lodiav1alpha1.ReasonCopying)
-	options, err := operator.Cache()
+	options, err := operator.Cache(false)
 	if err != nil {
 		t.Fatal(err)
 	}

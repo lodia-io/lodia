@@ -15,7 +15,7 @@ spec:
       className: fast-ssd           # a DatastoreClass; omitted → the default class
   endpoint:
     gateway:
-      parentRef: {name: tenants, namespace: gateway}
+      parentRef: {name: tenants, namespace: gateway, sectionName: tls}
       hostnames:
         apiServer: api.prod-eu.k8s.example.com
         konnectivity: konnectivity.prod-eu.k8s.example.com

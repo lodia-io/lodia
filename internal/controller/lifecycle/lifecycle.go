@@ -29,14 +29,22 @@ const (
 )
 
 // readiness is what Ready is made of, in the order its reason is taken from.
-var readiness = []string{
-	lodiav1alpha1.ConditionCertificatesReady,
-	lodiav1alpha1.ConditionDatastoreReady,
-	lodiav1alpha1.ConditionAPIServerReady,
-	lodiav1alpha1.ConditionAccessReady,
-	lodiav1alpha1.ConditionAddonsApplied,
-	lodiav1alpha1.ConditionReachable,
-	lodiav1alpha1.ConditionControllersLeading,
+// In gateway mode RoutesReady comes first: what stops the routes causes what
+// the others report then, a wait for the endpoint or a failed probe.
+func readiness(cp *lodiav1alpha1.ControlPlane) []string {
+	conditions := []string{
+		lodiav1alpha1.ConditionCertificatesReady,
+		lodiav1alpha1.ConditionDatastoreReady,
+		lodiav1alpha1.ConditionAPIServerReady,
+		lodiav1alpha1.ConditionAccessReady,
+		lodiav1alpha1.ConditionAddonsApplied,
+		lodiav1alpha1.ConditionReachable,
+		lodiav1alpha1.ConditionControllersLeading,
+	}
+	if cp.Spec.Endpoint.Gateway != nil {
+		return append([]string{lodiav1alpha1.ConditionRoutesReady}, conditions...)
+	}
+	return conditions
 }
 
 type Reconciler struct {
@@ -153,7 +161,7 @@ func rollingOut(cp *lodiav1alpha1.ControlPlane) []string {
 
 func lagging(cp *lodiav1alpha1.ControlPlane) []string {
 	var lag []string
-	for _, conditionType := range readiness {
+	for _, conditionType := range readiness(cp) {
 		if c := meta.FindStatusCondition(cp.Status.Conditions, conditionType); c != nil && c.ObservedGeneration < cp.Generation {
 			lag = append(lag, fmt.Sprintf("%s at %d", conditionType, c.ObservedGeneration))
 		}
@@ -162,9 +170,10 @@ func lagging(cp *lodiav1alpha1.ControlPlane) []string {
 }
 
 func ready(cp *lodiav1alpha1.ControlPlane) *metav1.Condition {
+	inputs := readiness(cp)
 	next := newCondition(cp, lodiav1alpha1.ConditionReady, metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
-		strings.Join(readiness[:len(readiness)-1], ", ")+" and "+readiness[len(readiness)-1]+" are True")
-	for _, conditionType := range readiness {
+		strings.Join(inputs[:len(inputs)-1], ", ")+" and "+inputs[len(inputs)-1]+" are True")
+	for _, conditionType := range inputs {
 		c := meta.FindStatusCondition(cp.Status.Conditions, conditionType)
 		if c == nil {
 			next = newCondition(cp, lodiav1alpha1.ConditionReady, metav1.ConditionUnknown, lodiav1alpha1.ReasonLatestGenerationNotObserved,
@@ -188,7 +197,7 @@ func ready(cp *lodiav1alpha1.ControlPlane) *metav1.Condition {
 // generation means every change is taken up.
 func oldest(cp *lodiav1alpha1.ControlPlane) int64 {
 	generation := cp.Generation
-	for _, conditionType := range readiness {
+	for _, conditionType := range readiness(cp) {
 		c := meta.FindStatusCondition(cp.Status.Conditions, conditionType)
 		if c == nil {
 			return cp.Generation
@@ -199,7 +208,7 @@ func oldest(cp *lodiav1alpha1.ControlPlane) int64 {
 }
 
 func observed(cp *lodiav1alpha1.ControlPlane) bool {
-	return !slices.ContainsFunc(readiness, func(conditionType string) bool {
+	return !slices.ContainsFunc(readiness(cp), func(conditionType string) bool {
 		c := meta.FindStatusCondition(cp.Status.Conditions, conditionType)
 		return c == nil || c.ObservedGeneration != cp.Generation
 	})

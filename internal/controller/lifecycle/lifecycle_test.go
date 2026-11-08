@@ -81,7 +81,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		stop("the controller's ClusterRole", err)
 	}
-	cache, err := operator.Cache()
+	cache, err := operator.Cache(false)
 	if err != nil {
 		stop("cache options", err)
 	}
@@ -504,6 +504,112 @@ func TestReadyDuringDeletion(t *testing.T) {
 	setFinalizers(t, cp)
 }
 
+func TestReadyInGatewayModeTakesRoutesReadyFirst(t *testing.T) {
+	const allTrue = "RoutesReady, CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied, Reachable and ControllersLeading are True"
+	cp := controlPlaneBehind(t, "v1.37.1", gateway())
+	for _, conditionType := range readiness {
+		setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
+	}
+	eventually(t, func() error {
+		return expectReady(t, cp, metav1.ConditionUnknown, lodiav1alpha1.ReasonLatestGenerationNotObserved, "RoutesReady is not reported for generation 1", 1, 0)
+	})
+
+	setCondition(t, cp, lodiav1alpha1.ConditionRoutesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonAccepted, "")
+	eventually(t, func() error {
+		return expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, allTrue, 1, 1)
+	})
+
+	setCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for status.endpoint")
+	for _, reason := range []string{
+		lodiav1alpha1.ReasonGatewayUnsupported,
+		lodiav1alpha1.ReasonGatewayNotFound,
+		lodiav1alpha1.ReasonHostnameConflict,
+		lodiav1alpha1.ReasonRouteNotAccepted,
+		lodiav1alpha1.ReasonRefused,
+		lodiav1alpha1.ReasonObjectsControlledElsewhere,
+	} {
+		setCondition(t, cp, lodiav1alpha1.ConditionRoutesReady, metav1.ConditionFalse, reason, "routes of dev: "+reason)
+		eventually(t, func() error {
+			return expectReady(t, cp, metav1.ConditionFalse, reason, "RoutesReady: routes of dev: "+reason, 1, 1)
+		})
+	}
+
+	setCondition(t, cp, lodiav1alpha1.ConditionRoutesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonAccepted, "")
+	eventually(t, func() error {
+		return expectReady(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint, "CertificatesReady: waiting for status.endpoint", 1, 1)
+	})
+}
+
+func TestGatewayModeCountsRoutesReadyAmongTheInputs(t *testing.T) {
+	const allTrue = "RoutesReady, CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied, Reachable and ControllersLeading are True"
+	cp := controlPlaneBehind(t, "v1.37.1", gateway())
+	for _, conditionType := range append([]string{lodiav1alpha1.ConditionRoutesReady}, readiness...) {
+		setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
+	}
+	eventually(t, func() error {
+		return expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, allTrue, 1, 1)
+	})
+
+	setVersion(t, cp, "v1.37.2")
+	for _, conditionType := range readiness {
+		setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
+	}
+	eventually(t, func() error {
+		if err := expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, allTrue, 1, 1); err != nil {
+			return err
+		}
+		return expectProgressing(t, cp, lodiav1alpha1.ReasonLatestGenerationNotObserved, "generation 2 is not taken up yet: RoutesReady at 1")
+	})
+
+	setCondition(t, cp, lodiav1alpha1.ConditionRoutesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonAccepted, "")
+	eventually(t, func() error {
+		if err := expect(t, cp, "v1.37.2", lodiav1alpha1.ReasonIdle); err != nil {
+			return err
+		}
+		return expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, allTrue, 2, 2)
+	})
+}
+
+func TestRoutesReadyIsNoInputOutsideGatewayMode(t *testing.T) {
+	const allTrue = "CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied, Reachable and ControllersLeading are True"
+	for _, c := range []struct {
+		name     string
+		endpoint lodiav1alpha1.Endpoint
+	}{
+		{"nodePort", lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}}},
+		{"loadBalancer", lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cp := controlPlaneBehind(t, "v1.37.1", c.endpoint)
+			setCondition(t, cp, lodiav1alpha1.ConditionRoutesReady, metav1.ConditionFalse, lodiav1alpha1.ReasonHostnameConflict, "api.dev.example.com is held")
+			for _, conditionType := range readiness {
+				setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
+			}
+			eventually(t, func() error {
+				return expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, allTrue, 1, 1)
+			})
+
+			setVersion(t, cp, "v1.37.2")
+			for _, conditionType := range readiness {
+				setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
+			}
+			eventually(t, func() error {
+				if err := expect(t, cp, "v1.37.2", lodiav1alpha1.ReasonIdle); err != nil {
+					return err
+				}
+				return expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, allTrue, 2, 2)
+			})
+		})
+	}
+}
+
+func gateway() lodiav1alpha1.Endpoint {
+	return lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
+		ParentRef: lodiav1alpha1.ParentReference{Name: "edge", Namespace: "gateways", SectionName: "tls"},
+		Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.com", Konnectivity: "konnectivity.dev.example.com", Tunnel: "tunnel.dev.example.com"},
+	}}
+}
+
 func setFinalizers(t *testing.T, cp *lodiav1alpha1.ControlPlane, finalizers ...string) {
 	t.Helper()
 	fresh := get(t, cp)
@@ -554,6 +660,11 @@ func expectNoWrite(t *testing.T, cp *lodiav1alpha1.ControlPlane, conditionType, 
 
 func controlPlane(t *testing.T, version string) *lodiav1alpha1.ControlPlane {
 	t.Helper()
+	return controlPlaneBehind(t, version, lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}})
+}
+
+func controlPlaneBehind(t *testing.T, version string, endpoint lodiav1alpha1.Endpoint) *lodiav1alpha1.ControlPlane {
+	t.Helper()
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "lifecycle-"}}
 	if err := k8s.Create(t.Context(), ns); err != nil {
 		t.Fatal(err)
@@ -563,7 +674,7 @@ func controlPlane(t *testing.T, version string) *lodiav1alpha1.ControlPlane {
 		Spec: lodiav1alpha1.ControlPlaneSpec{
 			Version:   version,
 			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{}},
-			Endpoint:  lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}},
+			Endpoint:  endpoint,
 			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
 		},
 	}

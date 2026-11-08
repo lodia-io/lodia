@@ -46,7 +46,7 @@ The field reference with every rule is [`api/controlplane.md`](api/controlplane.
 |---|---|---|---|
 | PKI | Secrets with certificates, keys and kubeconfigs; the tenant's bindings for Lodia, the admin group and the kubelet client; the answers to `KubeconfigRequest`s, which it deletes at their deadline | `CertificatesReady`, `AccessReady`; `CAValidityAcceptable` outside `Ready`; a `KubeconfigRequest`'s `Ready` | `status.endpoint`; `APIServerReady` for the bindings; the admission policy `kubeconfigrequests.lodia.io` for requests; for a restore without an encryption configuration, its `Backup` |
 | Datastore | the `Etcd` of a dedicated etcd and its NetworkPolicy, or a user and role in a shared store; backups and defragmentation; a `Backup`'s seal, its copy and its encryption keys | `DatastoreReady`; `BackupReady` outside `Ready`; a `Backup`'s `Ready` | a complete generation of PKI's etcd certificates; for a `Backup`, its source's `DatastoreReady` |
-| Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady` | `status.target`, `status.datastore`, `CertificatesReady`, `DatastoreReady`; `status.restore` and `AddonsApplied` before it starts a restored `ControlPlane`'s controller manager |
+| Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady`; `RoutesReady` in `gateway` mode | `status.target`, `status.datastore`, `CertificatesReady`, `DatastoreReady`; `status.restore` and `AddonsApplied` before it starts a restored `ControlPlane`'s controller manager |
 | Tenant | objects inside the tenant cluster, with an inventory | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
 | Health | status, and from phase 2's wave 2 the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable`, `ControllersLeading`; `ControllerManagerHeld` outside `Ready` from wave 2 | `status.endpoint` and the CA bundle; `AccessReady` and `<cp>-lodia-kubeconfig` for the leader Leases and a held restore's lists |
 | Lifecycle | `status.target`, `Progressing`, `Ready`; from phase 2's wave 2 `status.kubernetes`, `status.maintenance` and the pre-upgrade `Backup` | `Progressing` | the others |
@@ -451,7 +451,7 @@ Prerequisites on the management cluster:
 | Kubernetes ≥ 1.35 | a maintained minor with the CEL features the schema uses ([releases-and-support](decisions/releases-and-support.md)) |
 | a StorageClass | etcd volumes; local or network, with low fsync latency |
 | etcd-druid | dedicated etcd (installed by the chart as a dependency, or separately) |
-| Gateway API ≥ 1.5 and an implementation that supports `TLSRoute` in passthrough | `endpoint.gateway` only, from phase 2's wave 1b ([api-exposure](decisions/api-exposure.md)) |
+| Gateway API ≥ 1.5 and an implementation that supports `TLSRoute` in passthrough | `endpoint.gateway` only, from phase 2's wave 1b ([api-exposure](decisions/api-exposure.md)); its CRDs installed before the operator starts, since it looks for `TLSRoute` and `Gateway` only then, or the operator restarted after |
 | an S3-compatible bucket and credentials | backups, strongly recommended |
 | a metrics stack | optional: the chart's monitoring, from phase 2's wave 2 ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)) |
 

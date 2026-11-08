@@ -366,6 +366,26 @@ func TestAGatewayStoredWithoutATunnelStaysUntilItsHostnamesChange(t *testing.T) 
 	expect(t, k8s.Update(ctx, stored), "tunnel: Required value")
 }
 
+func TestAGatewayStoredWithoutASectionNameKeepsItsOtherUpdates(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	stored := example(t, "controlplane-ha.yaml", "section-ratcheting")
+	unstructured.RemoveNestedField(stored.Object, "spec", "endpoint", "gateway", "parentRef", "sectionName")
+	storeUnderAnOlderSchema(t, "section.ratcheting.lodia.io", stored, "sectionName: Required value", func(schema map[string]any) {
+		parentRef := []string{"properties", "spec", "properties", "endpoint", "properties", "gateway", "properties", "parentRef"}
+		if err := unstructured.SetNestedStringSlice(schema, []string{"name", "namespace"}, append(parentRef, "required")...); err != nil {
+			t.Fatal(err)
+		}
+	})
+	ctx := context.Background()
+	stored.SetFinalizers([]string{lodiav1alpha1.DatastoreFinalizer})
+	expect(t, k8s.Update(ctx, stored), "")
+	set(t, stored, true, "spec", "paused")
+	expect(t, k8s.Update(ctx, stored), "")
+	stored.SetFinalizers(nil)
+	expect(t, k8s.Update(ctx, stored), "")
+}
+
 func TestAnAdvertiseAddressStoredOutsideGatewayModeCanOnlyBeRemoved(t *testing.T) {
 	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")
@@ -505,6 +525,36 @@ func TestGatewayHostnames(t *testing.T) {
 			expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), c.want)
 		})
 	}
+}
+
+func TestGatewaySectionName(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	const pattern = "should match '^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$'"
+	for _, c := range []struct {
+		name, sectionName, want string
+	}{
+		{"a label", "tls", ""},
+		{"a subdomain", "tls-443.edge.example.com", ""},
+		{"253 characters", strings.Repeat("a", 253), ""},
+		{"empty", "", "sectionName in body should be at least 1 chars long"},
+		{"254 characters", strings.Repeat("a", 254), "sectionName: Too long: may not be more than 253 bytes"},
+		{"uppercase", "TLS", pattern},
+		{"a slash", "tls/443", pattern},
+		{"a leading hyphen", "-tls", pattern},
+		{"a trailing dot", "tls.", pattern},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			obj := example(t, "controlplane-ha.yaml", "section")
+			set(t, obj, c.sectionName, "spec", "endpoint", "gateway", "parentRef", "sectionName")
+			expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), c.want)
+		})
+	}
+	t.Run("absent", func(t *testing.T) {
+		obj := example(t, "controlplane-ha.yaml", "section")
+		unstructured.RemoveNestedField(obj.Object, "spec", "endpoint", "gateway", "parentRef", "sectionName")
+		expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), "spec.endpoint.gateway.parentRef.sectionName: Required value")
+	})
 }
 
 func TestAdvertiseAddress(t *testing.T) {
