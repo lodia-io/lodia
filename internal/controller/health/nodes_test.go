@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/clock"
 	clocktesting "k8s.io/utils/clock/testing"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -123,6 +124,21 @@ func renewNodeLease(t *testing.T, name string, at time.Time) {
 	} else {
 		err = tenant.Create(t.Context(), lease)
 	}
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func updateSpec(t *testing.T, cp *lodiav1alpha1.ControlPlane, change func(*lodiav1alpha1.ControlPlane)) {
+	t.Helper()
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		fresh := &lodiav1alpha1.ControlPlane{}
+		if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(cp), fresh); err != nil {
+			return err
+		}
+		change(fresh)
+		return k8s.Update(t.Context(), fresh)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -667,11 +683,9 @@ func TestTheHoldIsDisabledWithTheFieldFalse(t *testing.T) {
 	sample(t, r, cp)
 	expectNotHeld(t, cp, silent(0, 1)+fewerThanTwo)
 
-	off := get(t, cp)
-	off.Spec.Health = &lodiav1alpha1.Health{HoldControllerManager: new(false)}
-	if err := k8s.Update(t.Context(), off); err != nil {
-		t.Fatal(err)
-	}
+	updateSpec(t, cp, func(cp *lodiav1alpha1.ControlPlane) {
+		cp.Spec.Health = &lodiav1alpha1.Health{HoldControllerManager: new(false)}
+	})
 	now.SetTime(start.Add(5 * time.Second))
 	sample(t, r, cp)
 	if err := expectHeld(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonDisabled, "spec.health.holdControllerManager is false"); err != nil {
@@ -679,11 +693,7 @@ func TestTheHoldIsDisabledWithTheFieldFalse(t *testing.T) {
 	}
 	expectNodes(t, cp, nodesOf(1, 1, 0, "v1.35.0"))
 
-	on := get(t, cp)
-	on.Spec.Health.HoldControllerManager = new(true)
-	if err := k8s.Update(t.Context(), on); err != nil {
-		t.Fatal(err)
-	}
+	updateSpec(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Health.HoldControllerManager = new(true) })
 	now.SetTime(start.Add(10 * time.Second))
 	sample(t, r, cp)
 	expectNotHeld(t, cp, silent(0, 1)+fewerThanTwo)
@@ -774,11 +784,7 @@ func TestAPausedOrDeletedControlPlaneGetsNoPassAndNoRequeue(t *testing.T) {
 	sample(t, r, cp)
 	expectNotHeld(t, cp, silent(0, 2))
 
-	paused := get(t, cp)
-	paused.Spec.Paused = true
-	if err := k8s.Update(t.Context(), paused); err != nil {
-		t.Fatal(err)
-	}
+	updateSpec(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
 	r.Client = noControlPlaneWrite(t, k8s)
 	for _, at := range []int{10, 25} {
 		now.SetTime(start.Add(time.Duration(at) * time.Second))
@@ -788,20 +794,12 @@ func TestAPausedOrDeletedControlPlaneGetsNoPassAndNoRequeue(t *testing.T) {
 		}
 	}
 	r.Client = k8s
-	unpaused := get(t, cp)
-	unpaused.Spec.Paused = false
-	if err := k8s.Update(t.Context(), unpaused); err != nil {
-		t.Fatal(err)
-	}
+	updateSpec(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = false })
 	sample(t, r, cp)
 	expectNotHeld(t, cp, silent(0, 2))
 
-	holding := get(t, cp)
-	holding.Finalizers = []string{"test.lodia.io/keep"}
-	if err := k8s.Update(t.Context(), holding); err != nil {
-		t.Fatal(err)
-	}
-	if err := k8s.Delete(t.Context(), holding); err != nil {
+	updateSpec(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Finalizers = []string{"test.lodia.io/keep"} })
+	if err := k8s.Delete(t.Context(), cp); err != nil {
 		t.Fatal(err)
 	}
 	r.Client = noControlPlaneWrite(t, k8s)
@@ -809,11 +807,7 @@ func TestAPausedOrDeletedControlPlaneGetsNoPassAndNoRequeue(t *testing.T) {
 	if err != nil || result != (ctrl.Result{}) {
 		t.Fatalf("a pass over a ControlPlane being deleted returned %+v, %v, want no requeue and no error", result, err)
 	}
-	deleting := get(t, cp)
-	deleting.Finalizers = nil
-	if err := k8s.Update(t.Context(), deleting); err != nil {
-		t.Fatal(err)
-	}
+	updateSpec(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Finalizers = nil })
 	if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(cp), &lodiav1alpha1.ControlPlane{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("the ControlPlane is still there: %v", err)
 	}
