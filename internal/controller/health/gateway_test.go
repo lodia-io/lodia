@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -38,6 +39,8 @@ type tunnelEndpoint struct {
 	clientCAs atomic.Pointer[x509.CertPool]
 	code      atomic.Int32
 	hang      atomic.Bool
+	opened    atomic.Int32
+	closed    chan struct{}
 }
 
 type gatewayFixture struct {
@@ -83,7 +86,7 @@ func serveTunnelWithInnerCA(t *testing.T, ca, clientCA, innerCA *certs.Certifica
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := &tunnelEndpoint{address: listener.Addr().String()}
+	e := &tunnelEndpoint{address: listener.Addr().String(), closed: make(chan struct{}, 16)}
 	e.code.Store(http.StatusOK)
 	pool := x509.NewCertPool()
 	pool.AddCert(clientCA.Cert)
@@ -105,6 +108,17 @@ func serveTunnelWithInnerCA(t *testing.T, ca, clientCA, innerCA *certs.Certifica
 		}
 		w.WriteHeader(int(e.code.Load()))
 	}))
+	e.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			e.opened.Add(1)
+		}
+		if state == http.StateClosed {
+			select {
+			case e.closed <- struct{}{}:
+			default:
+			}
+		}
+	}
 	_ = e.Listener.Close()
 	e.Listener = outer
 	e.TLS = &tls.Config{Certificates: []tls.Certificate{apiServing}, MinVersion: tls.VersionTLS12}
@@ -142,6 +156,11 @@ func stallListener(t *testing.T) (string, <-chan struct{}) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return discard(t, listener)
+}
+
+func discard(t *testing.T, listener net.Listener) (string, <-chan struct{}) {
+	t.Helper()
 	t.Cleanup(func() { _ = listener.Close() })
 	closed := make(chan struct{}, 8)
 	go func() {
@@ -158,6 +177,34 @@ func stallListener(t *testing.T) (string, <-chan struct{}) {
 		}
 	}()
 	return listener.Addr().String(), closed
+}
+
+func stallInnerHandshake(t *testing.T, ca, clientCA *certs.Certificate) (string, <-chan struct{}) {
+	t.Helper()
+	serving, _, _ := leafPair(t, ca, x509.ExtKeyUsageServerAuth)
+	clients := x509.NewCertPool()
+	clients.AddCert(clientCA.Cert)
+	listener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{serving}, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: clients})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return discard(t, listener)
+}
+
+func serveUntilClosed(t *testing.T, ca *certs.Certificate) (string, <-chan struct{}) {
+	t.Helper()
+	pair, _, _ := leafPair(t, ca, x509.ExtKeyUsageServerAuth)
+	listener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return discard(t, listener)
+}
+
+func withoutGC(t *testing.T) {
+	t.Helper()
+	previous := debug.SetGCPercent(-1)
+	t.Cleanup(func() { debug.SetGCPercent(previous) })
 }
 
 func deadAddress(t *testing.T) string {
@@ -245,6 +292,36 @@ func (f *gatewayFixture) allAnswered() string {
 
 func (f *gatewayFixture) probe(timeout time.Duration) *health.Reconciler {
 	return &health.Reconciler{Client: k8s, Reader: k8s, Period: time.Hour, Timeout: timeout, Clock: clock.RealClock{}}
+}
+
+func (f *gatewayFixture) probeAt(t *testing.T, timeout time.Duration, tunnel, konnectivity string) *health.Reconciler {
+	t.Helper()
+	tunnelAt, konnectivityAt := addressOf(t, tunnel), addressOf(t, konnectivity)
+	pointed := interceptor.NewClient(k8s, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if err := c.Get(ctx, key, obj, opts...); err != nil {
+				return err
+			}
+			if cp, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
+				cp.Status.Endpoint.Tunnel, cp.Status.Endpoint.Konnectivity = &tunnelAt, konnectivityAt
+			}
+			return nil
+		},
+	})
+	return &health.Reconciler{Client: pointed, Reader: k8s, Period: time.Hour, Timeout: timeout, Clock: clock.RealClock{}}
+}
+
+func addressOf(t *testing.T, address string) lodiav1alpha1.HostPort {
+	t.Helper()
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := strconv.ParseInt(port, 10, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return lodiav1alpha1.HostPort{Host: host, Port: int32(p)}
 }
 
 func TestGatewayModeProbesTheThreePaths(t *testing.T) {
@@ -438,6 +515,68 @@ func TestAHungGatewayPathCostsOneTimeout(t *testing.T) {
 				t.Errorf("the probe left its stalled connection open longer than %s", 3*timeout)
 			}
 		})
+	}
+}
+
+func TestAStalledInnerHandshakeCostsOneTimeout(t *testing.T) {
+	const timeout = time.Second
+	f := newGateway(t)
+	f.publishWorking(t)
+	eventually(t, func() error {
+		return expect(t, f.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, f.allAnswered())
+	})
+	stalled, closed := stallInnerHandshake(t, f.api.ca, f.clientCA)
+	probe := f.probeAt(t, timeout, stalled, f.konnectivity)
+	start := time.Now()
+	reconcile(t, probe, f.cp)
+	if took := time.Since(start); took < timeout || took >= 2*timeout {
+		t.Errorf("a pass over a tunnel that stalls the inner handshake took %s, want one Timeout of %s", took, timeout)
+	}
+	select {
+	case <-closed:
+	case <-time.After(3 * timeout):
+		t.Errorf("the probe left the stalled inner handshake open longer than %s", 3*timeout)
+	}
+}
+
+func TestEveryTunnelProbeDialsAnewAndLeavesNoConnectionOpen(t *testing.T) {
+	const passes = 3
+	f := newGateway(t)
+	f.publishWorking(t)
+	eventually(t, func() error {
+		return expect(t, f.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, f.allAnswered())
+	})
+	counted := serveTunnel(t, f.api.ca, f.clientCA)
+	probe := f.probeAt(t, 5*time.Second, counted.address, f.konnectivity)
+	for range passes {
+		reconcile(t, probe, f.cp)
+	}
+	if got := counted.opened.Load(); got != passes {
+		t.Errorf("%d passes opened %d connections to the tunnel, want one each", passes, got)
+	}
+	for done := range passes {
+		select {
+		case <-counted.closed:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%d of %d connections to the tunnel closed within 10s of the passes", done, passes)
+		}
+	}
+}
+
+func TestEveryKonnectivityProbeClosesItsConnection(t *testing.T) {
+	withoutGC(t)
+	f := newGateway(t)
+	f.publishWorking(t)
+	eventually(t, func() error {
+		return expect(t, f.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, f.allAnswered())
+	})
+	address, closed := serveUntilClosed(t, f.api.ca)
+	probe := f.probeAt(t, 5*time.Second, f.tunnel.address, address)
+	reconcile(t, probe, f.cp)
+	select {
+	case <-closed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the connection to konnectivity stayed open for 10s after the pass")
 	}
 }
 
