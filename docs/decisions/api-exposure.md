@@ -47,7 +47,7 @@ Lodia wraps it in a TLS session of its own, with the node half Segla's agent alr
 3. For each connection `proxy` opens TLS to `status.endpoint.tunnel` with the SNI `hostnames.tunnel`, verifying the server against the cluster CA, presents the tunnel client certificate, and copies the pod's bytes inside.
    The pod's own TLS session with the API server travels untouched; the API server's serving certificate carries the `kubernetes` ClusterIP, the first address of the tenant's service range, as a SAN, as always, and the advertise address for a client that dials it directly.
 4. The Gateway passes the outer session through by its SNI, a third passthrough `TLSRoute`, to the `tunnel` port of the API server's Service.
-   There a native sidecar of every API server pod, `lodia-tunnel serve`, terminates it with `<cp>-tunnel-serving`, issued by PKI from the cluster CA, requires a client certificate of the tenant's tunnel CA, and splices the inner stream to `127.0.0.1:6443`.
+   There a native sidecar of every API server pod, `lodia-tunnel serve`, terminates it with `<cp>-tunnel-serving`, issued by PKI from the cluster CA, requires a client certificate of the tenant's tunnel CA, and splices the inner stream to `127.0.0.1:6443`, so `apiServer.extraArgs` refuses `bind-address`.
    It counts only authenticated sessions against its cap, and bounds the handshakes still pending.
 
 kube-proxy, or any CNI that replaces it, sees a normal Service with a normal endpoint; nothing on the node rewrites packets.

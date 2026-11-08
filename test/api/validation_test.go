@@ -279,6 +279,27 @@ func TestExtraArgsRefuseTheFlagsLodiaSets(t *testing.T) {
 	}
 }
 
+func TestExtraArgsRefuseBindAddressInEveryMode(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	for mode, endpoint := range map[string]map[string]any{
+		"gateway":      nil,
+		"loadBalancer": {"loadBalancer": map[string]any{}},
+		"nodePort":     {"nodePort": map[string]any{}},
+	} {
+		for flag, want := range map[string]string{"bind-address": "Lodia sets this flag", "max-requests-inflight": ""} {
+			t.Run(mode+"/"+flag, func(t *testing.T) {
+				obj := example(t, "controlplane-ha.yaml", "bind")
+				if endpoint != nil {
+					set(t, obj, endpoint, "spec", "endpoint")
+				}
+				set(t, obj, map[string]any{flag: "127.0.0.1"}, "spec", "apiServer", "extraArgs")
+				expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), want)
+			})
+		}
+	}
+}
+
 func TestControlPlaneNames(t *testing.T) {
 	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")

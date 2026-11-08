@@ -599,7 +599,7 @@ func TestEveryFlagLodiaRendersIsRefusedOrMerged(t *testing.T) {
 		alsoRefused []string
 		set         func(*lodiav1alpha1.ControlPlaneSpec, map[string]string)
 	}{
-		"kube-apiserver": {[]string{"anonymous-auth", "feature-gates", "service-account-key-file", "service-account-signing-key-file", "shutdown-send-retry-after"},
+		"kube-apiserver": {[]string{"anonymous-auth", "bind-address", "feature-gates", "service-account-key-file", "service-account-signing-key-file", "shutdown-send-retry-after"},
 			func(spec *lodiav1alpha1.ControlPlaneSpec, args map[string]string) {
 				spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: args}
 			}},
