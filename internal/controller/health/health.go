@@ -618,10 +618,14 @@ func (r *Reconciler) prober(key types.NamespacedName, bundle []byte, pair *corev
 	if !roots.AppendCertsFromPEM(bundle) {
 		return nil
 	}
-	public := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}, DisableKeepAlives: true}
+	public := &http.Transport{
+		DialContext:         (&net.Dialer{Timeout: r.Timeout}).DialContext,
+		TLSClientConfig:     &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
+		TLSHandshakeTimeout: r.Timeout,
+		DisableKeepAlives:   true,
+	}
 	p := &prober{public: &http.Client{Transport: public, CheckRedirect: noRedirects}, roots: roots}
 	if pair != nil {
-		public.DialContext, public.TLSHandshakeTimeout = (&net.Dialer{Timeout: r.Timeout}).DialContext, r.Timeout
 		if parsed, err := tls.X509KeyPair(clientCert, clientKey); err == nil {
 			p.client = &parsed
 		}
