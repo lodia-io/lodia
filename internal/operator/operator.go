@@ -143,7 +143,7 @@ func Setup(mgr ctrl.Manager, signerImage, tunnelImage, etcdDruidNamespace, opera
 	if err := (&health.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Period: 10 * time.Second, Timeout: 5 * time.Second, Clock: clock.RealClock{}}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the health controller: %w", err)
 	}
-	if err := (&workloads.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), SignerImage: signerImage, GatewayAPI: gatewayAPI}).SetupWithManager(mgr, workers); err != nil {
+	if err := (&workloads.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: gatewayAPI}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the workloads controller: %w", err)
 	}
 	return nil

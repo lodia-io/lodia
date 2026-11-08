@@ -59,9 +59,8 @@ func TestTheRenderOutsideGatewayModeIsPinned(t *testing.T) {
 			cp:          cp,
 			images:      images,
 			signerImage: "registry.example/lodia-signer:test",
-			advertise:   c.status.APIServer.Host,
-			issuer:      issuer(cp, c.status.APIServer),
-			jwksURI:     publicURL(c.status.APIServer) + jwksPath,
+			tunnelImage: "registry.example/lodia-tunnel:test",
+			endpoint:    &c.status,
 			etcd:        []lodiav1alpha1.HostPort{{Host: "dev-etcd-client.team-a.svc", Port: 2379}},
 			hashes:      map[string]string{apiServer: "api-hash", controllerManager: "cm-hash"},
 		}).deployments() {
@@ -149,7 +148,7 @@ func TestAnExtraArgumentNeverReplacesAFlagLodiaSets(t *testing.T) {
 			ControllerManager: &lodiav1alpha1.Component{ExtraArgs: map[string]string{"leader-elect": "false", "node-monitor-grace-period": "40s", "controllers": "-ttl-controller"}},
 		},
 	}
-	r := rendering{cp: cp, etcd: []lodiav1alpha1.HostPort{{Host: "dev-etcd-client.team.svc", Port: 2379}}}
+	r := rendering{cp: cp, endpoint: &lodiav1alpha1.EndpointStatus{}, etcd: []lodiav1alpha1.HostPort{{Host: "dev-etcd-client.team.svc", Port: 2379}}}
 	for component, want := range map[string][]string{
 		"kube-apiserver":          {"--endpoint-reconciler-type=none", "--shutdown-delay-duration=0s", "--enable-admission-plugins=NodeRestriction,PodSecurity", "--event-ttl=2h"},
 		"kube-controller-manager": {"--leader-elect=true", "--node-monitor-grace-period=60s", "--controllers=*,bootstrap-signer-controller,token-cleaner-controller,-ttl-controller"},

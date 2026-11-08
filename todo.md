@@ -217,7 +217,5 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From Tenant's apiserver-proxy (2026-11-07)
 
-- In `gateway` mode a pass with `AccessReady` True that waits in `newValues` (no target, no endpoint, no tunnel) requeues nothing, unlike the wait for `AccessReady`, so a renewal waits for an input to change; it takes a published target or endpoint going away, which nothing does today.
-  If something ever can, give that wait the same requeue.
 - A tenant that answers each request just under its timeout uses a pass's whole minute: measured on #54, a gateway tenant answering every request after 9.5 s ended the pass at 60.0 s, and the status write failed on the expired context, so no condition says why; the same on `main` without delivery.
   Give the status write a deadline of its own, apart from the pass's.

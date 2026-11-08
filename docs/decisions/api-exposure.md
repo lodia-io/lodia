@@ -1,7 +1,7 @@
 # Control planes are exposed through a shared Gateway by SNI; pods reach their API through a node-local proxy and a fixed advertise address
 
 Decided 2026-10-25.
-The `loadBalancer` and `nodePort` modes are built; `gateway`, the in-cluster `apiserver-proxy` and the tunnel come with phase 2's wave 1b, Gateway ([roadmap](../roadmap.md)).
+The three modes, the in-cluster `apiserver-proxy` and the tunnel are built; Health's probes through the tunnel come with the rest of phase 2's wave 1b, Gateway ([roadmap](../roadmap.md)).
 
 ## Decision
 
@@ -66,9 +66,10 @@ Workloads and Tenant render it ([Installation](../README.md#installation)).
 
 **One owner per hostname.**
 Two `TLSRoute`s that claim one SNI on a shared listener are not a conflict to Gateway API, which gives the older the traffic ([gateway_types.go](https://github.com/kubernetes-sigs/gateway-api/blob/v1.6.3/apis/v1/gateway_types.go#L459-L469)), but Envoy Gateway v1.9.3 renders one filter chain per route ([route.go](https://github.com/envoyproxy/gateway/blob/v1.9.3/internal/gatewayapi/route.go#L2433-L2461)), Envoy refuses a listener with two chains that match alike ([filter_chain_manager_impl.cc](https://github.com/envoyproxy/envoy/blob/v1.39.5/source/common/listener_manager/filter_chain_manager_impl.cc#L188-L194)), and the tunnel's red team saw the shared listener stop taking every tenant's changes, and vanish when Envoy restarted.
-So Workloads applies none of a `ControlPlane`'s three routes while one of its hostnames is held by another route on the same parent, or named in another `ControlPlane`'s spec in any namespace, and reports `HostnameConflict`, naming the holder.
-A hostname belongs to the `ControlPlane` that names it first, by `creationTimestamp` and then namespace and name, so neither a squatter's route nor the gap while a route is recreated takes it.
-Workloads creates the routes one at a time per parent Gateway, reading the routes again without the cache just before it creates one, and never deletes and recreates its own.
+So Workloads reports `HostnameConflict`, naming the holder, and applies none of a `ControlPlane`'s three routes while another `ControlPlane`, in any namespace, names one of its hostnames first on the same Gateway, deleting those it controls, and writes no route whose hostname another route on that Gateway holds.
+A hostname belongs to the `ControlPlane` that names it first, by `creationTimestamp` and then namespace and name, so neither a squatter's route nor the gap while a route is recreated takes it; two `ControlPlane`s on different Gateways never conflict, so a squatter on one stops no tenant on another.
+A route holds a hostname when its own, intersected with the hostname of a listener it selects at the tenant listener's port, is that name, the SNI Envoy Gateway renders ([helpers.go](https://github.com/envoyproxy/gateway/blob/v1.9.3/internal/gatewayapi/helpers.go#L296-L359)).
+Workloads writes a route only when the cache holds none or one that differs from its render, one at a time per parent Gateway, reading the routes again without the cache just before it writes, and never deletes and recreates its own.
 Only Lodia writes `TLSRoute`s in the namespaces the listener admits; a platform may bind each hostname to its namespace with a `ValidatingAdmissionPolicy`.
 
 **Konnectivity.**
@@ -130,7 +131,7 @@ The kubelet's own listener address is a node flag (`--address`, `--node-ip`), wh
 ## Code
 
 - `api/v1alpha1` — the contracts of the gateway mode: `GatewayHostnames` with the tunnel required and the three distinct, `APIServer.AdvertiseAddress` with its rules and `DefaultAdvertiseAddress`, `EndpointStatus.Tunnel`, the tunnel's Secrets in `names.go` and `RoutesReady` with its reasons in `conditions.go`; `test/api/validation_test.go` holds the rules.
-- `internal/controller/workloads` — the Service of the `loadBalancer` and `nodePort` modes, `status.endpoint` with `inCluster`, the API server's advertise address and `--endpoint-reconciler-type=none`, and konnectivity-server beside it as a native sidecar on a Unix socket.
+- `internal/controller/workloads` — the Service of each mode, `status.endpoint` with `inCluster`, the API server's advertise address and `--endpoint-reconciler-type=none`, and konnectivity-server beside it as a native sidecar on a Unix socket; in `gateway` mode, in `gateway.go`, the listener checks, the endpoint from the listener and kept once published, the three `TLSRoute`s with their owner by hostname and the read without the cache before each write, and in `render.go` the tunnel sidecar; `gateway_test.go` holds them against Gateways in envtest, the experimental channel's CRD included, and `testdata/render` pins the render of the other two modes.
 - `internal/controller/tenant` — the `kubernetes` Endpoints and EndpointSlice in `manifests/endpoints.yaml`, the agents' flags in `manifests/konnectivity.yaml`, and `apiserver-proxy` in `manifests/apiserver-proxy.yaml`, with its Secret in `render.go`, which `deliverTunnelClient` in `tenant.go` applies whatever the conditions say; `render_test.go`, `gateway_test.go` and `tenant_test.go` hold the objects, and `TestPhase1Gate` in `test/e2e` rolls the API server under requests from outside and inside the tenant.
 - `internal/controller/pki` — the tunnel's Secrets and the advertise address in the API server's serving certificate, in this mode only; `tunnel_test.go` holds them against the other modes.
 - `cmd/lodia-tunnel`, `internal/tunnel` — `lodia-tunnel`'s modes `serve`, `addr` and `proxy`, and `probe`, `proxy`'s health check.

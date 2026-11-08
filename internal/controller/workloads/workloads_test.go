@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -53,6 +54,7 @@ import (
 const (
 	version     = "v1.37.1"
 	signerImage = "registry.example/lodia-signer:test"
+	tunnelImage = "registry.example/lodia-tunnel:test"
 	lbAddress   = "203.0.113.10"
 )
 
@@ -71,8 +73,13 @@ func TestMain(m *testing.M) {
 		fmt.Println("skipping the workloads controller tests: KUBEBUILDER_ASSETS is not set; run make test")
 		os.Exit(0)
 	}
+	gatewayAPI, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "sigs.k8s.io/gateway-api").Output()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "find the Gateway API module:", err)
+		os.Exit(1)
+	}
 	env := &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "api", "crds")},
+		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "api", "crds"), filepath.Join(strings.TrimSpace(string(gatewayAPI)), "config", "crd", "standard")},
 		ErrorIfCRDPathMissing: true,
 		UseExistingCluster:    new(false),
 	}
@@ -96,7 +103,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		stop("the controller's ClusterRole", err)
 	}
-	cache, err := operator.Cache(false)
+	cache, err := operator.Cache(true)
 	if err != nil {
 		stop("cache", err)
 	}
@@ -106,7 +113,7 @@ func TestMain(m *testing.M) {
 		stop("manager", err)
 	}
 	apiReader = mgr.GetAPIReader()
-	reconciler := &workloads.Reconciler{Client: mgr.GetClient(), Reader: apiReader, SignerImage: signerImage}
+	reconciler := &workloads.Reconciler{Client: mgr.GetClient(), Reader: apiReader, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
 	if err := reconciler.SetupWithManager(mgr, 1); err != nil {
 		stop("controller", err)
 	}
@@ -460,9 +467,6 @@ func TestTheSpecIsRendered(t *testing.T) {
 }
 
 func TestWhatIsNotBuiltYetIsSaid(t *testing.T) {
-	gateway := controlPlane(t, gateway())
-	eventually(t, func() error { return expectRoutesUnsupported(gateway) })
-
 	ha := controlPlane(t, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) {
 		spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
 		spec.Scheduler = &lodiav1alpha1.Scheduler{ConfigRef: &lodiav1alpha1.LocalReference{Name: "profiles"}}
@@ -478,9 +482,6 @@ func TestWhatIsNotBuiltYetIsSaid(t *testing.T) {
 		}
 		return expectCondition(ha, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported)
 	})
-	if getServiceOrNil(t, gateway) != nil {
-		t.Errorf("a Service was created in %s for a gateway endpoint", gateway.Namespace)
-	}
 	if c := meta.FindStatusCondition(get(t, ha).Status.Conditions, lodiav1alpha1.ConditionRoutesReady); c != nil {
 		t.Errorf("a loadBalancer ControlPlane has %+v", c)
 	}
@@ -493,89 +494,6 @@ func TestWhatIsNotBuiltYetIsSaid(t *testing.T) {
 	if c := condition(t, ignored); c.Message != "not built yet: serviceAccount.publicDiscovery" {
 		t.Errorf("APIServerReady says %q", c.Message)
 	}
-}
-
-func TestAGatewayControlPlaneWithoutRoutesReadyGetsIt(t *testing.T) {
-	cp := controlPlane(t, gateway())
-	eventually(t, func() error { return expectRoutesUnsupported(cp) })
-	fresh := get(t, cp)
-	kept, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&lodiav1alpha1.ControlPlaneStatus{
-		Conditions: []metav1.Condition{*meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady)},
-		Components: fresh.Status.Components,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	applyStatus(t, cp, workloads.FieldManager, kept)
-	reconcileNow(t, cp)
-	eventually(t, func() error { return expectRoutesUnsupported(cp) })
-}
-
-func TestAGatewayControlPlanesFirstPassSaysRoutesReadyIsReconciling(t *testing.T) {
-	ns := namespace(t)
-	events, err := k8s.Watch(t.Context(), &lodiav1alpha1.ControlPlaneList{}, client.InNamespace(ns))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer events.Stop()
-	create(t, ns, gateway())
-	for {
-		select {
-		case event := <-events.ResultChan():
-			fresh, ok := event.Object.(*lodiav1alpha1.ControlPlane)
-			if !ok || event.Type != watch.Modified || meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady) == nil {
-				continue
-			}
-			for _, conditionType := range []string{lodiav1alpha1.ConditionAPIServerReady, lodiav1alpha1.ConditionRoutesReady} {
-				c := meta.FindStatusCondition(fresh.Status.Conditions, conditionType)
-				if c == nil || c.Status != metav1.ConditionUnknown || c.Reason != lodiav1alpha1.ReasonReconciling {
-					t.Errorf("the first status says %s %+v, want Unknown/%s", conditionType, c, lodiav1alpha1.ReasonReconciling)
-				}
-			}
-			return
-		case <-time.After(30 * time.Second):
-			t.Fatal("no APIServerReady condition was written")
-		}
-	}
-}
-
-func TestAGatewayPassThatChangesNothingWritesNothing(t *testing.T) {
-	cp := controlPlane(t, gateway())
-	eventually(t, func() error { return expectRoutesUnsupported(cp) })
-	applies := 0
-	counting := interceptor.NewClient(k8s, interceptor.Funcs{
-		SubResourceApply: func(ctx context.Context, c client.Client, subResource string, obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
-			applies++
-			return c.SubResource(subResource).Apply(ctx, obj, opts...)
-		},
-	})
-	if _, err := (&workloads.Reconciler{Client: counting, Reader: k8s, SignerImage: signerImage}).Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
-		t.Fatal(err)
-	}
-	if applies > 0 {
-		t.Errorf("a pass over an unchanged gateway ControlPlane sent %d status applies", applies)
-	}
-}
-
-func gateway() lodiav1alpha1.Endpoint {
-	return lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
-		ParentRef: lodiav1alpha1.ParentReference{Name: "shared", Namespace: "gateways", SectionName: "tls"},
-		Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.com", Konnectivity: "konnectivity.dev.example.com", Tunnel: "tunnel.dev.example.com"},
-	}}
-}
-
-func expectRoutesUnsupported(cp *lodiav1alpha1.ControlPlane) error {
-	fresh := &lodiav1alpha1.ControlPlane{}
-	if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(cp), fresh); err != nil {
-		return err
-	}
-	for _, conditionType := range []string{lodiav1alpha1.ConditionAPIServerReady, lodiav1alpha1.ConditionRoutesReady} {
-		c := meta.FindStatusCondition(fresh.Status.Conditions, conditionType)
-		if c == nil || c.Status != metav1.ConditionFalse || c.Reason != lodiav1alpha1.ReasonUnsupported || c.Message != "not built yet: endpoint.gateway" || c.ObservedGeneration != fresh.Generation {
-			return fmt.Errorf("%s is %+v, want False %s naming endpoint.gateway at generation %d", conditionType, c, lodiav1alpha1.ReasonUnsupported, fresh.Generation)
-		}
-	}
-	return nil
 }
 
 func TestAnUnsupportedFieldKeepsTheEndpoint(t *testing.T) {
@@ -1669,7 +1587,7 @@ func inputsReady(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 
 func reconcileNow(t *testing.T, cp *lodiav1alpha1.ControlPlane) ctrl.Result {
 	t.Helper()
-	reconciler := &workloads.Reconciler{Client: k8s, Reader: k8s, SignerImage: signerImage}
+	reconciler := &workloads.Reconciler{Client: k8s, Reader: k8s, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
 	result, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 	if err != nil {
 		t.Fatal(err)
