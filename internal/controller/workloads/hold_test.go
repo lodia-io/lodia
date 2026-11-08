@@ -67,10 +67,16 @@ func TestAHeldControllerManagerWithNoReadyReplicaLeavesAPIServerReadyThroughAWai
 	changeSpec(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) {
 		spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]string{"audit-log-maxage": "7"}}
 	})
-	expectAPIServerReady(t, cp, generation, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, heldByHealth)
+	reconcileNow(t, cp)
+	if err := expectAt(cp, generation, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, heldByHealth); err != nil {
+		t.Fatal(err)
+	}
 
 	setManagerHeld(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonNotHeld)
-	expectAPIServerReady(t, cp, generation, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, "kube-controller-manager has 0 of 1 replicas ready")
+	reconcileNow(t, cp)
+	if err := expectAt(cp, generation, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, "kube-controller-manager has 0 of 1 replicas ready"); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestABrokenAPIServerOrSchedulerIsStillUnavailableUnderAHold(t *testing.T) {
