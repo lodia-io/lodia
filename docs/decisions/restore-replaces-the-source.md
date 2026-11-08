@@ -79,6 +79,7 @@ A ValidatingAdmissionPolicy could require a `restore` verb on the named `Backup`
   Lodia sees a source on its own management cluster, so it checks cheaply; for one it cannot see, the owner's release is the assertion.
 - **The inert phase still pays.**
   The owner can check the copy while the source is intact, as Stork keeps a migrated application scaled to 0 until it is activated ([migration.go](https://github.com/libopenstorage/stork/blob/v25.1.0/pkg/migration/controllers/migration.go#L212-L215)), and it covers a source Lodia cannot see.
+  In `gateway` mode a copy with its source's hostnames holds no route while the source exists, so that check goes through a port-forward to the copy's Service ([operations](../operations.md#replace-a-cluster-from-a-backup)).
 - **The release is spec, not a token or a status.**
   A server-side apply drops an annotation its applier stops declaring, the schema's CEL cannot read annotations, and a status is lost on a move or a restore of the management cluster; a one-way field in spec fails a sync loudly instead.
 - **A seal key proves identity, not only completeness.**

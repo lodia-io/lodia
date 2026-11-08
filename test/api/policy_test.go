@@ -196,3 +196,116 @@ func policy(t *testing.T) []*unstructured.Unstructured {
 	}
 	return out
 }
+
+func TestTheHostnamePolicyOfOperationsBindsHostnamesToTheirNamespace(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "lodia-system", "team-a")
+	ctx := context.Background()
+	objects := hostnamePolicy(t)
+	zone, _, _ := unstructured.NestedString(objects[2].Object, "data", "zone")
+	controlPlane := func(api, konnectivity, tunnel string) *unstructured.Unstructured {
+		obj := example(t, "controlplane-ha.yaml", "hostnames")
+		set(t, obj, map[string]any{"apiServer": api, "konnectivity": konnectivity, "tunnel": tunnel}, "spec", "endpoint", "gateway", "hostnames")
+		return obj
+	}
+	own := ".prod-eu.team-a." + zone
+	stored := controlPlane("api"+own, "konnectivity"+own, "tunnel.prod-eu.team-b."+zone)
+	stored.SetName("stored")
+	if err := k8s.Create(ctx, stored); err != nil {
+		t.Fatal(err)
+	}
+	for _, obj := range objects {
+		if err := k8s.Create(ctx, obj); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		ctx := context.Background()
+		if err := k8s.Delete(ctx, stored); err != nil {
+			t.Error(err)
+		}
+		for _, i := range []int{1, 0, 2} {
+			if err := k8s.Delete(ctx, objects[i]); err != nil {
+				t.Error(err)
+			}
+		}
+		err := wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (bool, error) {
+			return k8s.Create(ctx, controlPlane("api.elsewhere.example.org", "konnectivity.elsewhere.example.org", "tunnel.elsewhere.example.org"), client.DryRunAll) == nil, nil
+		})
+		if err != nil {
+			t.Errorf("a ControlPlane is still refused after the policy was deleted: %v", err)
+		}
+	})
+	refused := "every hostname of endpoint.gateway must end in .team-a." + zone
+	err := wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (bool, error) {
+		err := k8s.Create(ctx, controlPlane("api"+own, "konnectivity"+own, "tunnel.prod-eu.team-b."+zone), client.DryRunAll)
+		return err != nil && strings.Contains(err.Error(), refused), nil
+	})
+	if err != nil {
+		t.Fatalf("the policy never refused a hostname of team-b: %v", err)
+	}
+	if err := k8s.Get(ctx, client.ObjectKeyFromObject(stored), stored); err != nil {
+		t.Fatal(err)
+	}
+	stored.SetLabels(map[string]string{"example.com/team": "a"})
+	if err := k8s.Update(ctx, stored); err != nil {
+		t.Errorf("an update of a ControlPlane stored before the policy: %v, want admitted", err)
+	}
+	loadBalancer := example(t, "controlplane-ha.yaml", "hostnames")
+	set(t, loadBalancer, map[string]any{"loadBalancer": map[string]any{}}, "spec", "endpoint")
+	for _, c := range []struct {
+		name string
+		obj  *unstructured.Unstructured
+		want string
+	}{
+		{"every hostname under its namespace", controlPlane("api"+own, "konnectivity"+own, "tunnel"+own), ""},
+		{"a hostname under another namespace", controlPlane("api"+own, "konnectivity.prod-eu.team-b."+zone, "tunnel"+own), refused},
+		{"the namespace's own name", controlPlane("team-a."+zone, "konnectivity"+own, "tunnel"+own), refused},
+		{"the zone inside another domain", controlPlane("api"+own+".example.org", "konnectivity"+own, "tunnel"+own), refused},
+		{"another mode", loadBalancer, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			err := k8s.Create(ctx, c.obj, client.DryRunAll)
+			switch {
+			case c.want == "" && err != nil:
+				t.Fatalf("want admitted, got %v", err)
+			case c.want != "" && (!apierrors.IsInvalid(err) || !strings.Contains(err.Error(), c.want)):
+				t.Fatalf("want Invalid with %q, got %v", c.want, err)
+			}
+		})
+	}
+}
+
+func hostnamePolicy(t *testing.T) []*unstructured.Unstructured {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "docs", "operations.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, section, ok := strings.Cut(string(raw), "### Hostnames on a shared Gateway\n")
+	_, block, found := strings.Cut(section, "```yaml\n")
+	block, _, closed := strings.Cut(block, "```")
+	if !ok || !found || !closed {
+		t.Fatal("docs/operations.md has no YAML block under Hostnames on a shared Gateway")
+	}
+	var out []*unstructured.Unstructured
+	docs := utilyaml.NewYAMLReader(bufio.NewReader(strings.NewReader(block)))
+	for {
+		doc, err := docs.Read()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, decode(t, string(doc)))
+	}
+	var kinds []string
+	for _, obj := range out {
+		kinds = append(kinds, obj.GetKind())
+	}
+	if strings.Join(kinds, " ") != "ValidatingAdmissionPolicy ValidatingAdmissionPolicyBinding ConfigMap" {
+		t.Fatalf("the block holds %v, want a policy, its binding and its ConfigMap", kinds)
+	}
+	return out
+}

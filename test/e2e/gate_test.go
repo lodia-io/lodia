@@ -148,84 +148,7 @@ func TestPhase1Gate(t *testing.T) {
 			return ctx
 		}).
 		Assess("a pod runs on the node, and logs, exec and port-forward reach it through the konnectivity tunnel", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			leases := &coordinationv1.LeaseList{}
-			if err := access.client.List(ctx, leases, client.InNamespace(metav1.NamespaceSystem), client.MatchingLabels{"k8s-app": "konnectivity-server"}); err != nil {
-				t.Fatal(err)
-			}
-			if len(leases.Items) == 0 {
-				t.Fatal("the tenant's kube-system holds no konnectivity server lease for the agents to count")
-			}
-			t.Logf("the agents count the server lease %s", leases.Items[0].Name)
-			web := &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{Namespace: metav1.NamespaceDefault, Name: "web"},
-				Spec: corev1.PodSpec{Containers: []corev1.Container{{
-					Name:  "web",
-					Image: agnhost,
-					Args:  []string{"netexec", "--http-port=8080"},
-					Ports: []corev1.ContainerPort{{ContainerPort: 8080}},
-				}}},
-			}
-			create(ctx, t, access.client, web)
-			until(ctx, t, 3*time.Minute, "pod web runs on node "+node, func(ctx context.Context) error {
-				if err := access.client.Get(ctx, client.ObjectKeyFromObject(web), web); err != nil {
-					return err
-				}
-				if web.Spec.NodeName != node {
-					return fmt.Errorf("pod web is scheduled to %q", web.Spec.NodeName)
-				}
-				return running(web)
-			})
-
-			metrics, stopMetrics := forward(t, cfg.Client().RESTConfig(), apiServerPod(ctx, t, k8s, key), konnectivityMetricsPort)
-			defer stopMetrics()
-			count := dials(ctx, t, metrics)
-			oneDial := func(call string) {
-				t.Helper()
-				after := dials(ctx, t, metrics)
-				t.Logf("konnectivity-server's dials: %d before %s, %d after", count, call, after)
-				if after != count+1 {
-					t.Errorf("%s took konnectivity-server's dials from %d to %d; want one dial", call, count, after)
-				}
-				count = after
-			}
-
-			logs, err := kubernetes.NewForConfigOrDie(access.cfg).CoreV1().Pods(web.Namespace).GetLogs(web.Name, &corev1.PodLogOptions{}).DoRaw(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !strings.Contains(string(logs), "Started HTTP server on port 8080") {
-				t.Errorf("the logs of pod web lack agnhost's start line:\n%s", logs)
-			}
-			oneDial("logs")
-			var stdout, stderr bytes.Buffer
-			if err := access.resources.ExecInPod(ctx, web.Namespace, web.Name, "web", []string{"hostname"}, &stdout, &stderr); err != nil {
-				t.Fatalf("exec hostname in pod web: %v\n%s", err, stderr.String())
-			}
-			if hostname := strings.TrimSpace(stdout.String()); hostname != web.Name {
-				t.Errorf("exec hostname in pod web printed %q", hostname)
-			}
-			oneDial("exec")
-			stdout.Reset()
-			stderr.Reset()
-			execURL := kubernetes.NewForConfigOrDie(access.cfg).CoreV1().RESTClient().Post().Resource("pods").Namespace(web.Namespace).Name(web.Name).SubResource("exec").
-				VersionedParams(&corev1.PodExecOptions{Container: "web", Command: []string{"hostname"}, Stdout: true, Stderr: true}, scheme.ParameterCodec).URL()
-			webSocket, err := remotecommand.NewWebSocketExecutor(access.cfg, http.MethodGet, execURL.String())
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := webSocket.StreamWithContext(ctx, remotecommand.StreamOptions{Stdout: &stdout, Stderr: &stderr}); err != nil {
-				t.Fatalf("exec hostname in pod web over WebSocket: %v\n%s", err, stderr.String())
-			}
-			if hostname := strings.TrimSpace(stdout.String()); hostname != web.Name {
-				t.Errorf("exec hostname in pod web over WebSocket printed %q", hostname)
-			}
-			oneDial("exec over WebSocket")
-			local, stopWeb := forward(t, access.cfg, web, 8080)
-			defer stopWeb()
-			if status, echo := httpGet(ctx, t, http.DefaultClient, "http://"+local+"/echo?msg=through-the-tunnel"); status != http.StatusOK || echo != "through-the-tunnel" {
-				t.Errorf("port-forward to pod web answered %d %q", status, echo)
-			}
-			oneDial("port-forward")
+			throughKonnectivity(ctx, t, cfg, k8s, key, access, node)
 			return ctx
 		}).
 		Assess("an API server rollout loses no request from outside or inside the tenant, whose kubernetes endpoints never go empty", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
@@ -234,33 +157,7 @@ func TestPhase1Gate(t *testing.T) {
 			})
 			loops := startLoops(ctx, t, cfg, k8s, access, key, node, loop)
 			before, _ := readLoops(ctx, t, "both loops answer on new and reused connections", loops)
-
-			cp := &lodiav1alpha1.ControlPlane{}
-			if err := k8s.Get(ctx, key, cp); err != nil {
-				t.Fatal(err)
-			}
-			old := apiServerPod(ctx, t, k8s, key)
-			patch := client.MergeFrom(cp.DeepCopy())
-			cp.Spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]string{"event-ttl": "1h0m0s"}}
-			if err := k8s.Patch(ctx, cp, patch); err != nil {
-				t.Fatal(err)
-			}
-			t.Logf("apiServer.extraArgs takes --event-ttl at generation %d, and pod %s rolls", cp.Generation, old.Name)
-			until(ctx, t, 4*time.Minute, "the API server rolled out and pod "+old.Name+" is gone", func(ctx context.Context) error {
-				if err := gone(k8s.Get(ctx, client.ObjectKeyFromObject(old), &corev1.Pod{})); err != nil {
-					return fmt.Errorf("pod %s: %w", old.Name, err)
-				}
-				fresh := &lodiav1alpha1.ControlPlane{}
-				if err := k8s.Get(ctx, key, fresh); err != nil {
-					return err
-				}
-				if c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady); c == nil || c.Status != metav1.ConditionTrue || c.ObservedGeneration != fresh.Generation {
-					return fmt.Errorf("APIServerReady is %+v at generation %d", c, fresh.Generation)
-				}
-				return nil
-			})
-			time.Sleep(5 * time.Second)
-
+			rollAPIServer(ctx, t, k8s, key)
 			after, logs := readLoops(ctx, t, "both loops' counts are read after the rollout", loops)
 			for i, l := range loops {
 				checkLoop(t, l.where, before[i], after[i], logs[i])
@@ -317,6 +214,117 @@ func TestPhase1Gate(t *testing.T) {
 		}).
 		Feature()
 	testenv.Test(t, f)
+}
+
+func throughKonnectivity(ctx context.Context, t *testing.T, cfg *envconf.Config, k8s client.Client, key client.ObjectKey, access *tenantAccess, node string) {
+	t.Helper()
+	leases := &coordinationv1.LeaseList{}
+	if err := access.client.List(ctx, leases, client.InNamespace(metav1.NamespaceSystem), client.MatchingLabels{"k8s-app": "konnectivity-server"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(leases.Items) == 0 {
+		t.Fatal("the tenant's kube-system holds no konnectivity server lease for the agents to count")
+	}
+	t.Logf("the agents count the server lease %s", leases.Items[0].Name)
+	web := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Namespace: metav1.NamespaceDefault, Name: "web"},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{
+			Name:  "web",
+			Image: agnhost,
+			Args:  []string{"netexec", "--http-port=8080"},
+			Ports: []corev1.ContainerPort{{ContainerPort: 8080}},
+		}}},
+	}
+	create(ctx, t, access.client, web)
+	until(ctx, t, 3*time.Minute, "pod web runs on node "+node, func(ctx context.Context) error {
+		if err := access.client.Get(ctx, client.ObjectKeyFromObject(web), web); err != nil {
+			return err
+		}
+		if web.Spec.NodeName != node {
+			return fmt.Errorf("pod web is scheduled to %q", web.Spec.NodeName)
+		}
+		return running(web)
+	})
+
+	metrics, stopMetrics := forward(t, cfg.Client().RESTConfig(), apiServerPod(ctx, t, k8s, key), konnectivityMetricsPort)
+	defer stopMetrics()
+	count := dials(ctx, t, metrics)
+	oneDial := func(call string) {
+		t.Helper()
+		after := dials(ctx, t, metrics)
+		t.Logf("konnectivity-server's dials: %d before %s, %d after", count, call, after)
+		if after != count+1 {
+			t.Errorf("%s took konnectivity-server's dials from %d to %d; want one dial", call, count, after)
+		}
+		count = after
+	}
+
+	logs, err := kubernetes.NewForConfigOrDie(access.cfg).CoreV1().Pods(web.Namespace).GetLogs(web.Name, &corev1.PodLogOptions{}).DoRaw(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logs), "Started HTTP server on port 8080") {
+		t.Errorf("the logs of pod web lack agnhost's start line:\n%s", logs)
+	}
+	oneDial("logs")
+	var stdout, stderr bytes.Buffer
+	if err := access.resources.ExecInPod(ctx, web.Namespace, web.Name, "web", []string{"hostname"}, &stdout, &stderr); err != nil {
+		t.Fatalf("exec hostname in pod web: %v\n%s", err, stderr.String())
+	}
+	if hostname := strings.TrimSpace(stdout.String()); hostname != web.Name {
+		t.Errorf("exec hostname in pod web printed %q", hostname)
+	}
+	oneDial("exec")
+	stdout.Reset()
+	stderr.Reset()
+	execURL := kubernetes.NewForConfigOrDie(access.cfg).CoreV1().RESTClient().Post().Resource("pods").Namespace(web.Namespace).Name(web.Name).SubResource("exec").
+		VersionedParams(&corev1.PodExecOptions{Container: "web", Command: []string{"hostname"}, Stdout: true, Stderr: true}, scheme.ParameterCodec).URL()
+	webSocket, err := remotecommand.NewWebSocketExecutor(access.cfg, http.MethodGet, execURL.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := webSocket.StreamWithContext(ctx, remotecommand.StreamOptions{Stdout: &stdout, Stderr: &stderr}); err != nil {
+		t.Fatalf("exec hostname in pod web over WebSocket: %v\n%s", err, stderr.String())
+	}
+	if hostname := strings.TrimSpace(stdout.String()); hostname != web.Name {
+		t.Errorf("exec hostname in pod web over WebSocket printed %q", hostname)
+	}
+	oneDial("exec over WebSocket")
+	local, stopWeb := forward(t, access.cfg, web, 8080)
+	defer stopWeb()
+	if status, echo := httpGet(ctx, t, http.DefaultClient, "http://"+local+"/echo?msg=through-the-tunnel"); status != http.StatusOK || echo != "through-the-tunnel" {
+		t.Errorf("port-forward to pod web answered %d %q", status, echo)
+	}
+	oneDial("port-forward")
+}
+
+func rollAPIServer(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey) {
+	t.Helper()
+	cp := &lodiav1alpha1.ControlPlane{}
+	if err := k8s.Get(ctx, key, cp); err != nil {
+		t.Fatal(err)
+	}
+	old := apiServerPod(ctx, t, k8s, key)
+	patch := client.MergeFrom(cp.DeepCopy())
+	cp.Spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]string{"event-ttl": "1h0m0s"}}
+	if err := k8s.Patch(ctx, cp, patch); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("apiServer.extraArgs takes --event-ttl at generation %d, and pod %s rolls", cp.Generation, old.Name)
+	until(ctx, t, 4*time.Minute, "the API server rolled out and pod "+old.Name+" is gone", func(ctx context.Context) error {
+		if err := gone(k8s.Get(ctx, client.ObjectKeyFromObject(old), &corev1.Pod{})); err != nil {
+			return fmt.Errorf("pod %s: %w", old.Name, err)
+		}
+		fresh := &lodiav1alpha1.ControlPlane{}
+		if err := k8s.Get(ctx, key, fresh); err != nil {
+			return err
+		}
+		if c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady); c == nil || c.Status != metav1.ConditionTrue || c.ObservedGeneration != fresh.Generation {
+			return fmt.Errorf("APIServerReady is %+v at generation %d", c, fresh.Generation)
+		}
+		return nil
+	})
+	time.Sleep(5 * time.Second)
 }
 
 func createTenant(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey, class string, change ...func(*lodiav1alpha1.ControlPlaneSpec)) {
@@ -388,6 +396,13 @@ type tenantAccess struct {
 
 func openTenant(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey) *tenantAccess {
 	t.Helper()
+	access := connect(t, adminKubeconfig(ctx, t, k8s, key))
+	t.Logf("the tenant's API server %s is reached through status.endpoint, as %s", access.cfg.Host, lodiav1alpha1.AdminKubeconfigSecret.Name(key.Name))
+	return access
+}
+
+func adminKubeconfig(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey) *clientcmdapi.Config {
+	t.Helper()
 	secret := &corev1.Secret{}
 	if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: lodiav1alpha1.AdminKubeconfigSecret.Name(key.Name)}, secret); err != nil {
 		t.Fatal(err)
@@ -396,6 +411,11 @@ func openTenant(ctx context.Context, t *testing.T, k8s client.Client, key client
 	if err != nil {
 		t.Fatal(err)
 	}
+	return kubeconfig
+}
+
+func connect(t *testing.T, kubeconfig *clientcmdapi.Config) *tenantAccess {
+	t.Helper()
 	cfg, err := clientcmd.NewNonInteractiveClientConfig(*kubeconfig, kubeconfig.CurrentContext, nil, nil).ClientConfig()
 	if err != nil {
 		t.Fatal(err)
@@ -408,7 +428,6 @@ func openTenant(ctx context.Context, t *testing.T, k8s client.Client, key client
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("the tenant's API server %s is reached through status.endpoint, as %s", cfg.Host, secret.Name)
 	return &tenantAccess{cfg: cfg, kubeconfig: *kubeconfig, client: c, resources: r}
 }
 
@@ -582,7 +601,11 @@ func joinNodes(ctx context.Context, t *testing.T, cfg *envconf.Config, k8s clien
 	return nodes
 }
 
-var startedNodes []string
+var (
+	startedNodes []string
+	nodeDNS      string
+	nodeImages   []reference.NamedTagged
+)
 
 func startNode(ctx context.Context, t *testing.T, kubeconfig string, i int) string {
 	t.Helper()
@@ -597,10 +620,14 @@ func startNode(ctx context.Context, t *testing.T, kubeconfig string, i int) stri
 	if _, err := docker(ctx, "rm", "--force", "--volumes", name); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := docker(ctx, "run", "--detach", "--tty", "--name", name, "--hostname", name, "--network", "kind",
+	run := []string{"run", "--detach", "--tty", "--name", name, "--hostname", name, "--network", "kind",
 		"--privileged", "--security-opt", "seccomp=unconfined", "--security-opt", "apparmor=unconfined",
 		"--cgroupns=private", "--tmpfs", "/tmp", "--tmpfs", "/run", "--volume", "/var",
-		"--volume", "/lib/modules:/lib/modules:ro", "--restart=on-failure:1", "--init=false", defaults.Image); err != nil {
+		"--volume", "/lib/modules:/lib/modules:ro", "--restart=on-failure:1", "--init=false"}
+	if nodeDNS != "" {
+		run = append(run, "--dns", nodeDNS)
+	}
+	if _, err := docker(ctx, append(run, defaults.Image)...); err != nil {
 		t.Fatal(err)
 	}
 	until(ctx, t, time.Minute, "container "+name+" booted", func(ctx context.Context) error {
@@ -615,6 +642,9 @@ func startNode(ctx context.Context, t *testing.T, kubeconfig string, i int) stri
 	})
 	if _, err := docker(ctx, "cp", filepath.Join("testdata", "kubeadm-patches"), name+":"+nodePatches); err != nil {
 		t.Fatal(err)
+	}
+	for _, image := range nodeImages {
+		loadImage(ctx, t, kubeconfig, name, image)
 	}
 	return name
 }

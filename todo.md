@@ -217,7 +217,11 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From Tenant's apiserver-proxy (2026-11-07)
 
-- In `gateway` mode a pass with `AccessReady` True that waits in `newValues` (no target, no endpoint, no tunnel) requeues nothing, unlike the wait for `AccessReady`, so a renewal waits for an input to change; it takes a published target or endpoint going away, which nothing does today.
-  If something ever can, give that wait the same requeue.
 - A tenant that answers each request just under its timeout uses a pass's whole minute: measured on #54, a gateway tenant answering every request after 9.5 s ended the pass at 60.0 s, and the status write failed on the expired context, so no condition says why; the same on `main` without delivery.
   Give the status write a deadline of its own, apart from the pass's.
+
+## From the gateway gate (2026-11-08)
+
+- Move the gateway gate to Envoy Gateway v1.10.x at its first patch release: v1.10.0 is the first whose compatibility matrix covers Kubernetes v1.37 ([matrix.md](https://github.com/envoyproxy/gateway/blob/v1.10.0/site/content/en/news/releases/matrix.md#L13-L14)), and v1.9.3 is the version every experiment behind the design ran on.
+- Workloads counts a `TLSRoute`'s `ResolvedRefs` False with reason `EndpointsNotFound` as resolved (the `@todo` in `internal/controller/workloads/gateway.go`): Envoy Gateway v1.9.3 sets it while the EndpointSlices of the route's Service list no endpoint for its port ([route.go](https://github.com/envoyproxy/gateway/blob/v1.9.3/internal/gatewayapi/route.go#L3119-L3125)), so while no API server pod has an address, and `Ready` would read `RouteNotAccepted` instead of `APIServerReady`'s reason; for an `HTTPRoute` it keeps `ResolvedRefs` True there, citing the Gateway API's conformance ([route.go](https://github.com/envoyproxy/gateway/blob/v1.9.3/internal/gatewayapi/route.go#L323-L330)).
+  Once every Envoy Gateway release still supported upstream keeps a `TLSRoute`'s `ResolvedRefs` True there, and the gateway gate pins one: remove `noEndpoints`, the clause in `RoutesReady`'s comment in `api/v1alpha1/conditions.go` and in its row of `docs/api/controlplane.md`, and the tests that write `EndpointsNotFound` (`TestRoutesWithoutReadyEndpointsAreResolvedWhileTheAPIServerIsUnavailable` in `internal/controller/workloads`, `TestReadyInGatewayModeSaysWhyTheAPIServerIsDownWhileItsRoutesHaveNoEndpoints` in `internal/controller`).

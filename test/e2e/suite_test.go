@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 	"sigs.k8s.io/e2e-framework/third_party/helm"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 )
@@ -50,6 +51,8 @@ var (
 	examples = filepath.Join(root, "docs", "api", "examples")
 )
 
+var beforeLodia, afterNodes []env.Func
+
 func TestMain(m *testing.M) {
 	path := os.Getenv("E2E_KUBECONFIG")
 	if err := RequireNamedCluster(path); err != nil {
@@ -57,8 +60,8 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	testenv = env.NewWithConfig(envconf.NewWithKubeConfig(path))
-	testenv.Setup(installLodia)
-	testenv.Finish(removeNodes)
+	testenv.Setup(append(beforeLodia, installLodia)...)
+	testenv.Finish(append([]env.Func{removeNodes}, afterNodes...)...)
 	os.Exit(testenv.Run(m))
 }
 
@@ -130,7 +133,7 @@ func kindCluster(kubeconfig string) (string, error) {
 func newClient(t *testing.T, cfg *envconf.Config) client.WithWatch {
 	t.Helper()
 	scheme := runtime.NewScheme()
-	for _, add := range []func(*runtime.Scheme) error{clientgoscheme.AddToScheme, lodiav1alpha1.AddToScheme, druidv1alpha1.AddToScheme} {
+	for _, add := range []func(*runtime.Scheme) error{clientgoscheme.AddToScheme, lodiav1alpha1.AddToScheme, druidv1alpha1.AddToScheme, gatewayv1.Install} {
 		if err := add(scheme); err != nil {
 			t.Fatal(err)
 		}

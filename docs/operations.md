@@ -25,7 +25,64 @@ Installation is in [`README.md`](README.md#installation).
 | Turn the controller manager hold off for a cluster | `spec.health.holdControllerManager: false`; a hold in progress is released at once |
 | Change a `DatastoreClass` | edit it; [what the class refuses and what an edit rolls](README.md#a-tenant-namespace); the storage fields, the reclaim policy, `retention.afterDelete`, the credentials' `secretRef` and the region roll nothing ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md#consequences)) |
 | Rotate a backup store's credentials | create a new Secret with the new keys and point the class's `backup.store.secretRef` at it: the class edit reaches every tenant on the class at once and rolls nothing; the keys that name the store ([which](api/controlplane.md#backup)) stay as they were, since a `Backup` taken meanwhile fails on a change of them; an application credential of another Swift project, or keys of another tenant of the store, are a store move that no `Backup` sees ([the two cases](api/controlplane.md#backup)), so make that change while no `Backup` is in progress, and start the next one only once that tenant's sidecar has uploaded with the new keys, as below, since a `Backup`'s full snapshot then goes to the store its copy reads; revoke the old keys only once every tenant's sidecar has uploaded with the new ones, since the kubelet updates its files some time after `<cp>-etcd-backup` changes ([secrets](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/concepts/configuration/secret.md#L549-L553)): in the `backup-restore` container of a `<cp>-etcd` pod, `Updated the snapstore object with new credentials` is followed by `Successfully saved delta snapshot` or `Successfully saved full snapshot` ([snapshotter.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapshot/snapshotter/snapshotter.go#L313-L326), [the copy](README.md#a-tenant-namespace)) |
+| Keep tenants off each other's hostnames on a shared Gateway | bind each `ControlPlane`'s hostnames to its namespace with [a policy](#hostnames-on-a-shared-gateway) |
 | Delete a cluster | delete the `ControlPlane` ([what deletion does](README.md#deletion)); `kubectl get pvc -L lodia.io/control-plane-uid` shows whose each claim is; a lifecycle rule of the bucket expires old prefixes, but never `<prefix>/<namespace UID>/backups/<Backup UID>` while that `Backup` exists: a restore of an emptied copy fails its seal check |
+
+### Hostnames on a shared Gateway
+
+Only Lodia writes `TLSRoute`s in the namespaces a tenant listener admits: another route there can take a tenant's hostname, and on Envoy Gateway two routes with one hostname stop the shared listener taking any tenant's change ([api-exposure](decisions/api-exposure.md)).
+A hostname belongs to the `ControlPlane` that named it first on its Gateway, so a stranger's `ControlPlane` that names a running tenant's hostname gets no route, but takes the name once that tenant is deleted or recreated, and holds the replacement at `HostnameConflict`.
+Where namespaces have owners who do not trust each other, bind every hostname to `*.<namespace>.<zone>` with this policy, the zone in its ConfigMap:
+
+```yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: controlplane-hostnames
+spec:
+  failurePolicy: Fail
+  paramKind:
+    apiVersion: v1
+    kind: ConfigMap
+  matchConstraints:
+    resourceRules:
+    - apiGroups: [lodia.io]
+      apiVersions: [v1alpha1]
+      operations: [CREATE]
+      resources: [controlplanes]
+  variables:
+  - name: hostnames
+    expression: >-
+      has(object.spec.endpoint.gateway) ? [
+        object.spec.endpoint.gateway.hostnames.apiServer,
+        object.spec.endpoint.gateway.hostnames.konnectivity,
+        object.spec.endpoint.gateway.hostnames.tunnel] : []
+  validations:
+  - expression: "variables.hostnames.all(h, h.endsWith('.' + object.metadata.namespace + '.' + params.data.zone))"
+    messageExpression: "'every hostname of endpoint.gateway must end in .' + object.metadata.namespace + '.' + params.data.zone"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: controlplane-hostnames
+spec:
+  policyName: controlplane-hostnames
+  validationActions: [Deny]
+  paramRef:
+    name: controlplane-hostnames
+    namespace: lodia-system
+    parameterNotFoundAction: Deny
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: controlplane-hostnames
+  namespace: lodia-system
+data:
+  zone: k8s.example.com
+```
+
+It checks creation alone: `endpoint` is immutable, and a refused update would also refuse the removal of a finalizer.
 
 ### Access as a person
 
@@ -162,19 +219,28 @@ With Lodia: set `spec.paused: true`, scale the API server Deployment to 0, resto
 A `ControlPlane` with `restoreFrom` takes its source's place with the source's objects, their UIDs, volumes and load balancers ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)).
 Until the release no controller manager runs, so most deletes wait for a finalizer and take effect once controllers run again: neutralize first, then release.
 `ControllersLeading`'s message, `AwaitingRelease`, counts what still acts outside the cluster ([reasons](api/controlplane.md#conditions-and-their-reasons)).
+In `gateway` mode a new `ControlPlane` with its source's hostnames holds no route while the source exists (`RoutesReady=False`, `HostnameConflict`), so the admin kubeconfig's server reaches the source; reach the new one through its Service, which serves the same certificate:
+
+```sh
+kubectl -n team-a get secret <cp>-admin-kubeconfig -o jsonpath='{.data.kubeconfig}' | base64 -d > admin.kubeconfig
+kubectl -n team-a port-forward service/<cp>-kube-apiserver 6443:443 &
+kubectl --kubeconfig admin.kubeconfig --server https://127.0.0.1:6443 --tls-server-name <hostnames.apiServer> get namespaces
+```
+
 With the new `ControlPlane`'s admin kubeconfig:
 
-1. Stop the source first: delete its `ControlPlane`, for which the release waits (`SourceExists`), or stop it wherever Lodia cannot see it.
-2. Delete the controllers that act outside the cluster with credentials of their own, such as a cloud controller manager, CSI controllers and external-dns, and their credentials: a cloud controller manager's route controller, for one, deletes every route of its cluster name that none of its nodes has ([route_controller.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/cloud-provider/controllers/route/route_controller.go#L383-L406)).
-3. Set every PersistentVolume's reclaim policy to `Retain`: deleting a `Delete` one deletes its disk ([persistent volumes](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/concepts/storage/persistent-volumes.md#L201-L210)), and the CSI provisioner drops its finalizer from a `Retain` one ([controller.go](https://github.com/kubernetes-csi/external-provisioner/blob/v6.4.0/vendor/sigs.k8s.io/sig-storage-lib-external-provisioner/v13/controller/controller.go#L1215-L1218)).
-4. Never delete a PersistentVolume with the `Delete` policy, nor a namespace, whose deletion deletes everything in it ([namespaces](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/tasks/administer-cluster/namespaces.md#L127-L137)).
-5. Never change a Service's type: a Service that no longer asks for a load balancer has it deleted ([controller.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/cloud-provider/controllers/service/controller.go#L374-L392)).
-6. Before deleting a Service of type `LoadBalancer`, remove its finalizer `service.kubernetes.io/load-balancer-cleanup`, or its load balancer goes with it ([controller.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/cloud-provider/controllers/service/controller.go#L539-L552)).
-7. Delete the pending PersistentVolumeClaims: the CSI provisioner names a volume after its claim's UID ([controller.go](https://github.com/kubernetes-csi/external-provisioner/blob/v6.4.0/pkg/controller/controller.go#L483-L498)), and the driver answers with the volume of that name that exists ([spec.md](https://github.com/container-storage-interface/spec/blob/v1.12.0/spec.md#L777-L778)), the one it made for the source.
-8. Set every VolumeSnapshotContent's `deletionPolicy` to `Retain`, or deleting its VolumeSnapshot deletes the snapshot ([volume snapshots](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/concepts/storage/volume-snapshots.md#L120-L125)).
-9. Delete the webhooks that call a URL, a service outside the cluster that sees every write they match ([URL](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/reference/access-authn-authz/extensible-admission-controllers.md#L962-L971)), and those with `failurePolicy: Fail`, which refuse the writes they match while their Service has no node to run on ([failure policy](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/reference/access-authn-authz/extensible-admission-controllers.md#L1123-L1130)): the release waits for Tenant's writes.
-10. Suspend the CronJobs ([suspension](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/concepts/workloads/controllers/cron-jobs.md#L145-L154)).
-11. Set `spec.restoreFrom.release: Released`.
+1. Confirm that no other `ControlPlane` names the source's hostnames on its Gateway, in any namespace: one older than the new `ControlPlane` takes them once the source is gone (`kubectl get controlplanes -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name} {.spec.endpoint.gateway.hostnames}{"\n"}{end}'`).
+2. Stop the source first: delete its `ControlPlane`, for which the release waits (`SourceExists`), or stop it wherever Lodia cannot see it.
+3. Delete the controllers that act outside the cluster with credentials of their own, such as a cloud controller manager, CSI controllers and external-dns, and their credentials: a cloud controller manager's route controller, for one, deletes every route of its cluster name that none of its nodes has ([route_controller.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/cloud-provider/controllers/route/route_controller.go#L383-L406)).
+4. Set every PersistentVolume's reclaim policy to `Retain`: deleting a `Delete` one deletes its disk ([persistent volumes](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/concepts/storage/persistent-volumes.md#L201-L210)), and the CSI provisioner drops its finalizer from a `Retain` one ([controller.go](https://github.com/kubernetes-csi/external-provisioner/blob/v6.4.0/vendor/sigs.k8s.io/sig-storage-lib-external-provisioner/v13/controller/controller.go#L1215-L1218)).
+5. Never delete a PersistentVolume with the `Delete` policy, nor a namespace, whose deletion deletes everything in it ([namespaces](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/tasks/administer-cluster/namespaces.md#L127-L137)).
+6. Never change a Service's type: a Service that no longer asks for a load balancer has it deleted ([controller.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/cloud-provider/controllers/service/controller.go#L374-L392)).
+7. Before deleting a Service of type `LoadBalancer`, remove its finalizer `service.kubernetes.io/load-balancer-cleanup`, or its load balancer goes with it ([controller.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/cloud-provider/controllers/service/controller.go#L539-L552)).
+8. Delete the pending PersistentVolumeClaims: the CSI provisioner names a volume after its claim's UID ([controller.go](https://github.com/kubernetes-csi/external-provisioner/blob/v6.4.0/pkg/controller/controller.go#L483-L498)), and the driver answers with the volume of that name that exists ([spec.md](https://github.com/container-storage-interface/spec/blob/v1.12.0/spec.md#L777-L778)), the one it made for the source.
+9. Set every VolumeSnapshotContent's `deletionPolicy` to `Retain`, or deleting its VolumeSnapshot deletes the snapshot ([volume snapshots](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/concepts/storage/volume-snapshots.md#L120-L125)).
+10. Delete the webhooks that call a URL, a service outside the cluster that sees every write they match ([URL](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/reference/access-authn-authz/extensible-admission-controllers.md#L962-L971)), and those with `failurePolicy: Fail`, which refuse the writes they match while their Service has no node to run on ([failure policy](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/reference/access-authn-authz/extensible-admission-controllers.md#L1123-L1130)): the release waits for Tenant's writes.
+11. Suspend the CronJobs ([suspension](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/concepts/workloads/controllers/cron-jobs.md#L145-L154)).
+12. Set `spec.restoreFrom.release: Released`.
 
 ### Clone a cluster beside its source
 

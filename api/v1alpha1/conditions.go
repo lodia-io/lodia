@@ -95,7 +95,8 @@ const (
 )
 
 // RoutesReady: Accepted, True, when every route of the ControlPlane is
-// applied, Accepted and ResolvedRefs at its generation; Refused,
+// applied, Accepted and ResolvedRefs at its generation, a ResolvedRefs False
+// with reason EndpointsNotFound counting as resolved; Refused,
 // ObjectsControlledElsewhere and Reconciling as above.
 const (
 	ReasonAccepted           = "Accepted"

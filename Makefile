@@ -28,6 +28,7 @@ lint:
 	golangci-lint run --build-tags e2e,conformance ./test/e2e/...
 	golangci-lint run --build-tags e2e,ha ./test/e2e/...
 	golangci-lint run --build-tags e2e,restore ./test/e2e/...
+	golangci-lint run --build-tags e2e,gateway ./test/e2e/...
 	cd api && golangci-lint run ./...
 
 .PHONY: test
@@ -87,6 +88,14 @@ e2e-restore: ## gate G3, a Backup of a tenant and a restore from it, against an 
 	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig
 	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,restore -count=1 -timeout 40m -run '^TestRestoreGate$$' ./test/e2e/...; status=$$?; \
 	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 || status=1; \
+	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
+
+.PHONY: e2e-gateway
+e2e-gateway: ## the gateway gate: tenants behind Envoy Gateway by SNI, a node joined by hostname, pods reaching their API through apiserver-proxy, hostname ownership, on a kind cluster of its own that it deletes afterwards with the DNS container the gate starts
+	mkdir -p $(E2E_DIR)
+	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig
+	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,gateway -count=1 -timeout 40m -run '^TestGatewayGate$$' ./test/e2e/...; status=$$?; \
+	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 $(E2E_CLUSTER)-dns || status=1; \
 	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
 
 .PHONY: conformance

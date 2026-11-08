@@ -51,7 +51,7 @@ The suite starts a container of kind's node image, `<cluster>-tenant-node-1`, on
 `--ignore-preflight-errors` names the one check a container fails, `SystemVerification`: on GitHub's runners it finds the host kernel's configuration in none of the places it looks, and `modprobe configs` fails ([kernel_validator.go](https://github.com/kubernetes/system-validators/blob/v1.12.1/validators/kernel_validator.go#L191-L245), the version kubeadm v1.37.0 uses).
 Ignoring it skips kubeadm's OS and cgroups validators too, which run under the same name; a check's name is the finest grain kubeadm ignores by ([checks.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/cmd/kubeadm/app/preflight/checks.go#L573-L588), [checks_linux.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/cmd/kubeadm/app/preflight/checks_linux.go#L48-L54)).
 The CNI is kindnet from the node image's manifest, with the tenant's pod range.
-The suite removes the containers it started when it ends, pass or fail, and each one before it starts it; `make e2e`, `make e2e-ha`, `make e2e-restore` and `make conformance` remove them as well, since a `go test` timeout or a panic never reaches the suite's end.
+The suite removes the containers it started when it ends, pass or fail, and each one before it starts it; `make e2e`, `make e2e-ha`, `make e2e-restore`, `make e2e-gateway` and `make conformance` remove them as well, since a `go test` timeout or a panic never reaches the suite's end.
 
 `make e2e` gives the suite 30 minutes.
 
@@ -111,6 +111,39 @@ It must exit 0, and `junit_01.xml` must hold 16 test cases `[It] <spec>` with th
 The specs pull their own images, by the tags the conformance image names ([manifest.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/test/utils/image/manifest.go#L211-L245)).
 
 Every wait is bounded and waits for a condition; no duration is asserted.
+
+## The gateway gate
+
+`TestGatewayGate` checks the `gateway` mode of [api-exposure](../../docs/decisions/api-exposure.md) on every pull request: tenants behind a shared Gateway by SNI, a node that joins by hostname, pods that reach their API through `apiserver-proxy` and the tunnel, and one owner per hostname.
+It sits behind a build tag of its own, `gateway` with `e2e`, since its setup runs before the chart's: the operator looks for `TLSRoute` and `Gateway` only when it starts.
+`make e2e-gateway` runs it on a kind cluster of its own as `make e2e-restore` runs G3, and the `e2e-gateway` job of [`ci.yml`](../../.github/workflows/ci.yml) runs that on every pull request.
+
+Before the chart, the suite:
+
+- applies the Gateway API's standard CRDs from the module `go.mod` requires, `config/crd/standard/` under `go list -m -f '{{.Dir}}' sigs.k8s.io/gateway-api`, so they follow the import and `go.sum` verifies them;
+- installs Envoy Gateway v1.9.3 as its docs do for Gateway API CRDs managed apart: its own CRDs rendered from `gateway-crds-helm` and applied server-side, then `gateway-helm` with `crds.enabled=false` ([install-helm.md](https://github.com/envoyproxy/gateway/blob/v1.9.3/site/content/en/v1.9/install/install-helm.md#L118-L136));
+  both charts and both images come by digest through `mirror.gcr.io`, since Docker Hub limits the pulls of shared runners, and each image is pulled into the kind node, up to five times, before the chart starts;
+- creates the GatewayClass `eg`;
+- starts a CoreDNS container, `<cluster>-dns`, on the docker network `kind`, which answers every name under `lodia.test` with the kind node's address and forwards the rest, checks that it does, and forwards `lodia.test` to it from the management cluster's CoreDNS, which Health's probe uses.
+
+The test, in order:
+
+1. The `ControlPlane` `team-gw-a`, with the hostnames `api.`, `konnectivity.` and `tunnel.team-gw-a.lodia.test` on the listener `tls` of the Gateway `gateway/tenants`, which does not exist yet, reports `RoutesReady` False, `GatewayNotFound`, `APIServerReady` False, `WaitingForEndpoint`, and no `status.endpoint`.
+2. The test creates the Gateway: a `TLS` listener in `Passthrough` mode on 443 for `*.lodia.test`, routes allowed from the three tenant namespaces by their `kubernetes.io/metadata.name` label, and `spec.addresses` the kind node's address, which Envoy Gateway puts in its Service's `externalIPs` ([resource_provider.go](https://github.com/envoyproxy/gateway/blob/v1.9.3/internal/infrastructure/kubernetes/proxy/resource_provider.go#L369-L379)), so that `<node>:443` reaches Envoy.
+   Once it is `Programmed`, the `ControlPlane` turns `Ready` with `RoutesReady` True, `Accepted`, and three `TLSRoute`s in its namespace, and the operator's pods are those it had before the Gateway, none restarted.
+3. The test reaches the tenant through the admin kubeconfig with the Gateway's address as its server and the API hostname as `tls-server-name`, since nothing on the runner resolves `lodia.test`; exec and port-forward ignore `rest.Config.Dial`, and every client honours `ServerName` ([spdy.go](https://github.com/kubernetes/client-go/blob/v0.37.1/transport/spdy/spdy.go#L39-L54), [roundtripper.go](https://github.com/kubernetes/client-go/blob/v0.37.1/transport/websocket/roundtripper.go#L113-L119)).
+   A node joins as in the phase 1 gate, at `status.endpoint.apiServer`, a hostname, its container started with `--dns` naming the DNS container, which kind's entrypoint also passes on to pods with `dnsPolicy: Default` ([entrypoint](https://github.com/kubernetes-sigs/kind/blob/v0.33.0/images/base/files/usr/local/bin/entrypoint#L446-L475)).
+   Before `kubeadm join` the test copies the image the tenant's `apiserver-proxy` DaemonSet names into the node's containerd, since ko builds it into the kind cluster and no registry serves it.
+   The `kubernetes` EndpointSlice then holds `240.0.0.1:6443`, and the node's `lo` holds `240.0.0.1/32` labelled `lo:lodia`.
+4. The phase 1 gate's pod `web` runs, and its logs, an `exec` over each transport and a port-forward each add one konnectivity dial.
+   The two loops of the phase 1 gate start, one in the management cluster dialing `status.endpoint.apiServer` through the Gateway, the other on the node dialing `https://kubernetes.default`, and on the node `lodia-tunnel` holds the listening socket at `240.0.0.1:6443`.
+5. G1: an API server rollout, as in the phase 1 gate, and neither loop may lose a request.
+6. A rollout of `apiserver-proxy`, which an annotation on its pod template starts, runs a new pod on the node beside the old one, the address is on `lo` in every sample, one each half second, and once the old pod is gone both of the in-cluster loop's clients get answers again.
+   The old proxy's exit cuts the connections it still holds, so the test logs the requests that failed meanwhile and asserts none.
+7. A TLS session to `tunnel.team-gw-a.lodia.test` through the Gateway, whose server verifies against the cluster CA, ends at its first read with the sidecar's `certificate required` alert, since it presents no client certificate, while the in-cluster loop loses no request.
+8. One owner per hostname: `team-gw-b`, with `team-gw-a`'s three hostnames, reports `RoutesReady` False, `HostnameConflict`, naming `team-gw-a`'s `ControlPlane`, by its UID, as their owner, and holds no `TLSRoute`, and each hostname has one route in the cluster.
+   `team-gw-c`, with hostnames of its own, then turns `Ready`, which Health's probe through the Gateway proves, while Envoy's `listener_manager.lds.update_rejected`, read through a port-forward from its admin interface on `127.0.0.1:19000` ([bootstrap.go](https://github.com/envoyproxy/gateway/blob/v1.9.3/internal/xds/bootstrap/bootstrap.go#L35-L38)), stays 0 and `update_success` rises; the test fails if either is missing.
+   Deleting `team-gw-a` hands the hostnames to `team-gw-b`, whose `RoutesReady` turns True with its three routes, and which turns `Ready`.
 
 ## Nightly: highAvailability removed and added back
 

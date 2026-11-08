@@ -37,7 +37,7 @@ The refusal, `make e2e`, kubeadm workers and the nightly conformance run are bui
 ## Code
 
 - `test/e2e/guard.go` — `RequireNamedCluster`, the refusal; `TestRequireNamedCluster` in `guard_test.go` holds it.
-- `test/e2e/suite_test.go` — the suite, behind the `e2e` build tag; before any test it builds the images with ko into the kind cluster and installs the chart with them.
+- `test/e2e/suite_test.go` — the suite, behind the `e2e` build tag; before any test it builds the images with ko into the kind cluster and installs the chart with them, after what another build tag sets up first.
 - `test/e2e/operator_test.go` — the operator from the chart: Available, a running replica holding the leader lease, its pod admitted where Pod Security `restricted` is enforced.
 - `test/e2e/gate_test.go` — the phase 1 gate: a container of kind's node image joins a `ControlPlane` with `kubeadm join`, and the suite removes the containers it started when it ends, pass or fail.
 - `test/e2e/conformance_test.go` — the nightly run, behind the `conformance` build tag with `e2e`: a tenant of the gate's shape with two joined nodes, the idle control plane's CPU and memory, then the conformance suite through hydrophone.
@@ -45,4 +45,6 @@ The refusal, `make e2e`, kubeadm workers and the nightly conformance run are bui
 - `test/e2e/ha_test.go` — gate G2, behind the `ha` build tag with `e2e`: a highly available tenant on a kind cluster with three zoned workers, `testdata/kind-ha.yaml`, loses an API server pod, then the etcd leader's pod.
   The `e2e-ha` job of `.github/workflows/ci.yml` runs it on every pull request.
 - `test/e2e/ha_nightly_test.go` — on the same cluster shape, `highAvailability` removed from a formed tenant and added back; `.github/workflows/nightly-ha.yml` runs it every night, on demand, and on a pull request that changes the workflow or the test.
-- `Makefile` — the `e2e`, `e2e-ha` and `conformance` targets.
+- `test/e2e/gateway_test.go` — the gateway gate, behind the `gateway` build tag with `e2e`: the Gateway API's CRDs, Envoy Gateway and a DNS container set up before the chart, tenants behind the Gateway by SNI, a node joined by hostname, pods reaching their API through `apiserver-proxy`, one owner per hostname.
+  The `e2e-gateway` job of `.github/workflows/ci.yml` runs it on every pull request.
+- `Makefile` — the `e2e`, `e2e-ha`, `e2e-gateway` and `conformance` targets.

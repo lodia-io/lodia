@@ -64,6 +64,8 @@ func TestTheCacheHoldsTheGatewayAPIWholeOnlyWhereItIsServed(t *testing.T) {
 	}
 }
 
+const cacheSyncTimeout = 3 * time.Second
+
 func TestWithoutTheGatewayAPIsCRDs(t *testing.T) {
 	cfg := start(t)
 	if served, err := operator.GatewayAPI(cfg); err != nil || served {
@@ -76,7 +78,9 @@ func TestWithoutTheGatewayAPIsCRDs(t *testing.T) {
 	if _, err := ctrl.NewManager(cfg, ctrl.Options{Scheme: operator.Scheme(), Metrics: metricsserver.Options{BindAddress: "0"}, Cache: options}); !meta.IsNoMatchError(err) {
 		t.Errorf("a manager whose cache holds the Gateway API without its CRDs: %v, want no match", err)
 	}
-	expectAPass(t, run(t, cfg, false))
+	k8s, stopped := run(t, cfg, false)
+	expectAPass(t, k8s, stopped, lodiav1alpha1.ReasonGatewayUnsupported,
+		"the management cluster did not serve TLSRoute and Gateway at gateway.networking.k8s.io/v1 when the operator started, the only time it looks: restart the operator once they are served")
 }
 
 func TestWithTheGatewayAPIsCRDs(t *testing.T) {
@@ -84,7 +88,8 @@ func TestWithTheGatewayAPIsCRDs(t *testing.T) {
 	if served, err := operator.GatewayAPI(cfg); err != nil || !served {
 		t.Fatalf("GatewayAPI says %t, %v with the CRDs, want true", served, err)
 	}
-	expectAPass(t, run(t, cfg, true))
+	k8s, stopped := run(t, cfg, true)
+	expectAPass(t, k8s, stopped, lodiav1alpha1.ReasonGatewayNotFound, "Gateway gateways/edge does not exist")
 }
 
 func TestTheGatewayAPIIsServedWithBothKindsAtV1(t *testing.T) {
@@ -214,7 +219,7 @@ func gatewayAPI(t *testing.T) []*apiextensionsv1.CustomResourceDefinition {
 	return out
 }
 
-func run(t *testing.T, cfg *rest.Config, gatewayAPI bool) client.Client {
+func run(t *testing.T, cfg *rest.Config, gatewayAPI bool) (client.Client, <-chan struct{}) {
 	t.Helper()
 	scheme := operator.Scheme()
 	options, err := operator.Cache(gatewayAPI)
@@ -226,7 +231,7 @@ func run(t *testing.T, cfg *rest.Config, gatewayAPI bool) client.Client {
 		Scheme:     scheme,
 		Metrics:    metricsserver.Options{BindAddress: "0"},
 		Cache:      options,
-		Controller: config.Controller{SkipNameValidation: new(true)},
+		Controller: config.Controller{SkipNameValidation: new(true), CacheSyncTimeout: cacheSyncTimeout},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -235,22 +240,27 @@ func run(t *testing.T, cfg *rest.Config, gatewayAPI bool) client.Client {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	started := make(chan error, 1)
-	go func() { started <- mgr.Start(ctx) }()
+	stopped := make(chan struct{})
+	var stopErr error
+	go func() {
+		stopErr = mgr.Start(ctx)
+		close(stopped)
+	}()
 	t.Cleanup(func() {
 		cancel()
-		if err := <-started; err != nil {
-			t.Errorf("manager: %v", err)
+		<-stopped
+		if stopErr != nil {
+			t.Errorf("manager: %v", stopErr)
 		}
 	})
 	k8s, err := client.New(cfg, client.Options{Scheme: scheme})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return k8s
+	return k8s, stopped
 }
 
-func expectAPass(t *testing.T, k8s client.Client) {
+func expectAPass(t *testing.T, k8s client.Client, stopped <-chan struct{}, reason, message string) {
 	t.Helper()
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "operator-"}}
 	if err := k8s.Create(t.Context(), ns); err != nil {
@@ -272,9 +282,8 @@ func expectAPass(t *testing.T, k8s client.Client) {
 		t.Fatal(err)
 	}
 	want := map[string]string{
-		lodiav1alpha1.ConditionAPIServerReady: "not built yet: endpoint.gateway",
-		lodiav1alpha1.ConditionRoutesReady:    "not built yet: endpoint.gateway",
-		lodiav1alpha1.ConditionReady:          "RoutesReady: not built yet: endpoint.gateway",
+		lodiav1alpha1.ConditionRoutesReady: message,
+		lodiav1alpha1.ConditionReady:       "RoutesReady: " + message,
 	}
 	var last error
 	if err := wait.PollUntilContextTimeout(t.Context(), 100*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (bool, error) {
@@ -283,12 +292,17 @@ func expectAPass(t *testing.T, k8s client.Client) {
 		}
 		last = nil
 		for conditionType, message := range want {
-			if c := meta.FindStatusCondition(cp.Status.Conditions, conditionType); c == nil || c.Status != metav1.ConditionFalse || c.Reason != lodiav1alpha1.ReasonUnsupported || c.Message != message {
-				last = errors.Join(last, fmt.Errorf("%s is %+v, want False %s %q", conditionType, c, lodiav1alpha1.ReasonUnsupported, message))
+			if c := meta.FindStatusCondition(cp.Status.Conditions, conditionType); c == nil || c.Status != metav1.ConditionFalse || c.Reason != reason || c.Message != message {
+				last = errors.Join(last, fmt.Errorf("%s is %+v, want False %s %q", conditionType, c, reason, message))
 			}
 		}
 		return last == nil, nil
 	}); err != nil {
 		t.Fatalf("%v: %v", err, last)
+	}
+	select {
+	case <-stopped:
+		t.Fatal("the manager stopped")
+	case <-time.After(cacheSyncTimeout + time.Second):
 	}
 }

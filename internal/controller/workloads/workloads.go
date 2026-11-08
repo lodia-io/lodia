@@ -15,8 +15,10 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"golang.org/x/sync/semaphore"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -37,6 +39,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/apistatus"
@@ -65,9 +68,15 @@ type Reconciler struct {
 	Reader client.Reader
 	// SignerImage is lodia-signer's image, the API server's sidecar.
 	SignerImage string
+	// TunnelImage is lodia-tunnel's image, the API server's sidecar in
+	// gateway mode.
+	TunnelImage string
 	// GatewayAPI says whether the management cluster served TLSRoute and
 	// Gateway when the operator started.
 	GatewayAPI bool
+
+	writes   sync.Mutex
+	gateways map[types.NamespacedName]*semaphore.Weighted
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
@@ -75,7 +84,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 		cp, ok := secret.GetLabels()[lodiav1alpha1.ControlPlaneLabel]
 		return ok && slices.Contains(restartOnlyNames(cp), secret.GetName())
 	})
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		Named(Name).
 		WithOptions(controller.Options{MaxConcurrentReconciles: workers, ReconciliationTimeout: time.Minute}).
 		For(&lodiav1alpha1.ControlPlane{}).
@@ -85,8 +94,14 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 		Owns(&networkingv1.NetworkPolicy{}).
 		Owns(&policyv1.PodDisruptionBudget{}).
 		WatchesMetadata(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(controlPlaneOf), builder.WithPredicates(readOnce)).
-		Watches(&lodiav1alpha1.ControlPlane{}, handler.EnqueueRequestsFromMapFunc(r.replacements)).
-		Complete(r)
+		Watches(&lodiav1alpha1.ControlPlane{}, handler.EnqueueRequestsFromMapFunc(r.replacements))
+	if r.GatewayAPI {
+		b = b.Owns(&gatewayv1.TLSRoute{}).
+			Watches(&gatewayv1.TLSRoute{}, handler.EnqueueRequestsFromMapFunc(r.holders)).
+			Watches(&gatewayv1.Gateway{}, handler.EnqueueRequestsFromMapFunc(r.parented), builder.WithPredicates(listenersChanged)).
+			Watches(&lodiav1alpha1.ControlPlane{}, handler.EnqueueRequestsFromMapFunc(r.sharers), builder.WithPredicates(createdOrDeleted))
+	}
+	return b.Complete(r)
 }
 
 // replacements are the ControlPlanes whose completed restore replaces source,
@@ -129,6 +144,8 @@ func restartOnlyNames(cp string) []string {
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=list;watch;create;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=list;watch
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=list
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=tlsroutes,verbs=list;watch;create;patch;delete
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=list;watch
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	cp := &lodiav1alpha1.ControlPlane{}
@@ -138,13 +155,22 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if !cp.DeletionTimestamp.IsZero() || cp.Spec.Paused {
 		return ctrl.Result{}, nil
 	}
-	if meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady) == nil {
-		first := newCondition(metav1.ConditionUnknown, lodiav1alpha1.ReasonReconciling, "the first pass has not finished")
-		if err := r.applyStatus(ctx, cp, cp.Status.Endpoint, cp.Status.Components, first); err != nil {
+	if cp.Spec.Endpoint.Gateway != nil {
+		if err := live.Endpoint(ctx, r.Reader, cp, lodiav1alpha1.ConditionRoutesReady); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
-	endpoint, condition, requeueAfter, err := r.reconcile(ctx, cp)
+	if meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady) == nil {
+		first := newCondition(metav1.ConditionUnknown, lodiav1alpha1.ReasonReconciling, "the first pass has not finished")
+		var routes *metav1.Condition
+		if cp.Spec.Endpoint.Gateway != nil {
+			routes = asRoutes(first)
+		}
+		if err := r.applyStatus(ctx, cp, cp.Status.Endpoint, cp.Status.Components, first, routes); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	endpoint, condition, routes, requeueAfter, err := r.reconcile(ctx, cp)
 	if condition.Type == "" {
 		return ctrl.Result{}, err
 	}
@@ -152,35 +178,60 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if readErr != nil {
 		return ctrl.Result{}, errors.Join(err, readErr)
 	}
-	if statusErr := r.applyStatus(ctx, cp, endpoint, components, condition); statusErr != nil || err != nil {
+	if statusErr := r.applyStatus(ctx, cp, endpoint, components, condition, routes); statusErr != nil || err != nil {
 		return ctrl.Result{}, errors.Join(err, statusErr)
+	}
+	if routes != nil && routes.Status != metav1.ConditionTrue && (requeueAfter == 0 || requeueAfter > time.Minute) {
+		requeueAfter = time.Minute
 	}
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
 // reconcile publishes the endpoint before it waits on anything or says what it
-// does not build, since PKI and Health need it; a gateway endpoint has no
-// Service to publish it from.
-func (r *Reconciler) reconcile(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*lodiav1alpha1.EndpointStatus, metav1.Condition, time.Duration, error) {
+// does not build, since PKI and Health need it. In gateway mode it also
+// returns RoutesReady, and a published endpoint stays on every path: an apply
+// without it would remove it.
+func (r *Reconciler) reconcile(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*lodiav1alpha1.EndpointStatus, metav1.Condition, *metav1.Condition, time.Duration, error) {
 	var notBuilt *metav1.Condition
 	if fields := unsupported(cp); len(fields) > 0 {
 		c := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, "not built yet: "+strings.Join(fields, ", "))
 		notBuilt = &c
 	}
-	if notBuilt != nil && cp.Spec.Endpoint.Gateway != nil {
-		return nil, *notBuilt, 0, nil
-	}
 	svc := service(cp)
 	if held, requeueAfter, err := r.controlledElsewhere(ctx, cp, svc); err != nil || held != nil {
-		return nil, ptr.Deref(held, metav1.Condition{}), requeueAfter, err
+		if err != nil {
+			return nil, metav1.Condition{}, nil, 0, err
+		}
+		var endpoint *lodiav1alpha1.EndpointStatus
+		if cp.Spec.Endpoint.Gateway != nil {
+			endpoint = cp.Status.Endpoint
+		}
+		return endpoint, *held, keptRoutes(cp, *held), requeueAfter, nil
 	}
 	if err := r.apply(ctx, svc); err != nil {
-		return refused(cp.Status.Endpoint, svc, err)
+		endpoint, condition, requeueAfter, err := refused(cp.Status.Endpoint, svc, err)
+		return endpoint, condition, keptRoutes(cp, condition), requeueAfter, err
 	}
-	endpoint, waiting, requeueAfter, err := r.endpoint(ctx, cp, svc)
-	if err != nil {
-		return nil, metav1.Condition{}, 0, err
+	if cp.Spec.Endpoint.Gateway == nil {
+		endpoint, waiting, requeueAfter, err := r.endpoint(ctx, cp, svc)
+		if err != nil {
+			return nil, metav1.Condition{}, nil, 0, err
+		}
+		endpoint, condition, requeueAfter, err := r.rollout(ctx, cp, endpoint, notBuilt, waiting, requeueAfter)
+		return endpoint, condition, nil, requeueAfter, err
 	}
+	endpoint, waiting, routes, routesErr := r.gateway(ctx, cp)
+	if routes.Type == "" {
+		return nil, metav1.Condition{}, nil, 0, routesErr
+	}
+	endpoint, condition, requeueAfter, err := r.rollout(ctx, cp, endpoint, notBuilt, waiting, 0)
+	return endpoint, condition, &routes, requeueAfter, errors.Join(routesErr, err)
+}
+
+// rollout waits for the inputs of the control plane's pods, then renders and
+// applies them.
+func (r *Reconciler) rollout(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, notBuilt, waiting *metav1.Condition, requeueAfter time.Duration) (*lodiav1alpha1.EndpointStatus, metav1.Condition, time.Duration, error) {
+	var err error
 	if notBuilt != nil {
 		return endpoint, *notBuilt, requeueAfter, nil
 	}
@@ -242,9 +293,8 @@ func (r *Reconciler) reconcile(ctx context.Context, cp *lodiav1alpha1.ControlPla
 		cp:          cp,
 		images:      images,
 		signerImage: r.SignerImage,
-		advertise:   endpoint.APIServer.Host,
-		issuer:      issuer(cp, endpoint.APIServer),
-		jwksURI:     publicURL(endpoint.APIServer) + jwksPath,
+		tunnelImage: r.TunnelImage,
+		endpoint:    endpoint,
 		etcd:        cp.Status.Datastore.Endpoints,
 		hashes:      hashes,
 		held:        held,
@@ -369,9 +419,6 @@ func (r *Reconciler) wait(ctx context.Context, cp *lodiav1alpha1.ControlPlane, e
 // sets them is not Ready instead of running without them.
 func unsupported(cp *lodiav1alpha1.ControlPlane) []string {
 	var fields []string
-	if cp.Spec.Endpoint.Gateway != nil {
-		fields = append(fields, "endpoint.gateway")
-	}
 	if cp.Spec.Layout == lodiav1alpha1.LayoutCompact {
 		fields = append(fields, "layout Compact")
 	}
@@ -729,42 +776,38 @@ func dropNulls(m map[string]any) {
 	}
 }
 
-// applyStatus applies APIServerReady, at cp's generation unless it names one,
-// in gateway mode RoutesReady, which says the same while the routes are not
-// built, status.components and, once both addresses exist, status.endpoint
-// whole; a nil endpoint or components drops a published one.
-func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, components *lodiav1alpha1.ComponentsStatus, condition metav1.Condition) error {
-	if condition.ObservedGeneration == 0 {
-		condition.ObservedGeneration = cp.Generation
+// applyStatus applies APIServerReady and, in gateway mode, RoutesReady, each
+// at cp's generation unless it names one, status.components and, once both
+// addresses exist, status.endpoint whole; a nil endpoint or components drops a
+// published one.
+func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, components *lodiav1alpha1.ComponentsStatus, condition metav1.Condition, routes *metav1.Condition) error {
+	applied := []metav1.Condition{condition}
+	if routes != nil {
+		applied = append(applied, *routes)
 	}
-	previous := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady)
-	unchanged := previous != nil && previous.Status == condition.Status && previous.Reason == condition.Reason &&
-		previous.Message == condition.Message && previous.ObservedGeneration == condition.ObservedGeneration
-	routes := condition
-	routes.Type = lodiav1alpha1.ConditionRoutesReady
-	if cp.Spec.Endpoint.Gateway != nil {
-		kept := meta.FindStatusCondition(cp.Status.Conditions, routes.Type)
-		unchanged = unchanged && kept != nil && kept.Status == routes.Status && kept.Reason == routes.Reason &&
-			kept.Message == routes.Message && kept.ObservedGeneration == routes.ObservedGeneration
+	unchanged := true
+	for i := range applied {
+		if applied[i].ObservedGeneration == 0 {
+			applied[i].ObservedGeneration = cp.Generation
+		}
+		c, previous := applied[i], meta.FindStatusCondition(cp.Status.Conditions, applied[i].Type)
+		unchanged = unchanged && previous != nil && previous.Status == c.Status && previous.Reason == c.Reason &&
+			previous.Message == c.Message && previous.ObservedGeneration == c.ObservedGeneration
 	}
 	if unchanged && sameEndpoint(cp.Status.Endpoint, endpoint) && equality.Semantic.DeepEqual(cp.Status.Components, components) {
 		return nil
 	}
 	conditions := slices.Clone(cp.Status.Conditions)
-	meta.SetStatusCondition(&conditions, condition)
-	current, err := runtime.DefaultUnstructuredConverter.ToUnstructured(meta.FindStatusCondition(conditions, lodiav1alpha1.ConditionAPIServerReady))
-	if err != nil {
-		return err
-	}
-	status := map[string]any{"conditions": []any{current}}
-	if cp.Spec.Endpoint.Gateway != nil {
-		meta.SetStatusCondition(&conditions, routes)
-		applied, err := runtime.DefaultUnstructuredConverter.ToUnstructured(meta.FindStatusCondition(conditions, routes.Type))
+	var written []any
+	for _, c := range applied {
+		meta.SetStatusCondition(&conditions, c)
+		u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(meta.FindStatusCondition(conditions, c.Type))
 		if err != nil {
 			return err
 		}
-		status["conditions"] = []any{current, applied}
+		written = append(written, u)
 	}
+	status := map[string]any{"conditions": written}
 	if endpoint != nil {
 		e, err := runtime.DefaultUnstructuredConverter.ToUnstructured(endpoint)
 		if err != nil {
@@ -792,9 +835,28 @@ func sameEndpoint(a, b *lodiav1alpha1.EndpointStatus) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
-	return *a == *b
+	return equality.Semantic.DeepEqual(*a, *b)
 }
 
 func newCondition(status metav1.ConditionStatus, reason, message string) metav1.Condition {
 	return metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: status, Reason: reason, Message: message}
+}
+
+func asRoutes(c metav1.Condition) *metav1.Condition {
+	c.Type = lodiav1alpha1.ConditionRoutesReady
+	return &c
+}
+
+// keptRoutes is RoutesReady in gateway mode on a pass that stops at the
+// Service, before the listener: as it was, or with none yet, or only the first
+// pass's, False with the Service's reason and message, since Reconciling would
+// come first in Ready and hide a Service held until a person acts.
+func keptRoutes(cp *lodiav1alpha1.ControlPlane, service metav1.Condition) *metav1.Condition {
+	if cp.Spec.Endpoint.Gateway == nil {
+		return nil
+	}
+	if kept := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionRoutesReady); kept != nil && kept.Reason != lodiav1alpha1.ReasonReconciling {
+		return kept.DeepCopy()
+	}
+	return asRoutes(service)
 }

@@ -292,22 +292,28 @@ spec:
                     additionalProperties:
                       type: string
                     description: |-
-                      ExtraArgs are flags passed to kube-apiserver. The flags Lodia sets are
-                      refused, but for enable-admission-plugins, whose entries follow
-                      Lodia's; featureGates sets feature-gates.
+                      ExtraArgs are flags passed to kube-apiserver, each under its name as
+                      kube-apiserver spells it. The flags Lodia sets are refused, but for
+                      enable-admission-plugins, whose entries follow Lodia's; featureGates sets
+                      feature-gates.
                     maxProperties: 64
                     type: object
                     x-kubernetes-validations:
+                    - message: 'a key must be a flag''s name as the component spells
+                        it: lowercase letters and digits in words joined by single
+                        dashes'
+                      rule: self.all(k, k.matches('^[a-z0-9]+(-[a-z0-9]+)*$'))
                     - message: Lodia sets this flag
                       rule: '!self.exists(k, k in [''advertise-address'', ''allow-privileged'',
                         ''anonymous-auth'', ''authentication-config'', ''authorization-mode'',
-                        ''client-ca-file'', ''egress-selector-config-file'', ''enable-bootstrap-token-auth'',
-                        ''encryption-provider-config'', ''encryption-provider-config-automatic-reload'',
-                        ''endpoint-reconciler-type'', ''etcd-cafile'', ''etcd-certfile'',
-                        ''etcd-keyfile'', ''etcd-prefix'', ''etcd-servers'', ''etcd-servers-overrides'',
-                        ''feature-gates'', ''goaway-chance'', ''kubelet-client-certificate'',
-                        ''kubelet-client-key'', ''kubelet-preferred-address-types'',
-                        ''proxy-client-cert-file'', ''proxy-client-key-file'', ''requestheader-allowed-names'',
+                        ''bind-address'', ''client-ca-file'', ''egress-selector-config-file'',
+                        ''enable-bootstrap-token-auth'', ''encryption-provider-config'',
+                        ''encryption-provider-config-automatic-reload'', ''endpoint-reconciler-type'',
+                        ''etcd-cafile'', ''etcd-certfile'', ''etcd-keyfile'', ''etcd-prefix'',
+                        ''etcd-servers'', ''etcd-servers-overrides'', ''feature-gates'',
+                        ''goaway-chance'', ''kubelet-client-certificate'', ''kubelet-client-key'',
+                        ''kubelet-preferred-address-types'', ''proxy-client-cert-file'',
+                        ''proxy-client-key-file'', ''requestheader-allowed-names'',
                         ''requestheader-client-ca-file'', ''requestheader-extra-headers-prefix'',
                         ''requestheader-group-headers'', ''requestheader-username-headers'',
                         ''secure-port'', ''service-account-issuer'', ''service-account-jwks-uri'',
@@ -396,12 +402,17 @@ spec:
                     additionalProperties:
                       type: string
                     description: |-
-                      ExtraArgs are flags passed to the component. The flags Lodia sets are
-                      refused, but for controllers, whose entries follow Lodia's;
-                      featureGates sets feature-gates.
+                      ExtraArgs are flags passed to the component, each under its name as the
+                      component spells it. The flags Lodia sets are refused, but for
+                      controllers, whose entries follow Lodia's; featureGates sets
+                      feature-gates.
                     maxProperties: 64
                     type: object
                     x-kubernetes-validations:
+                    - message: 'a key must be a flag''s name as the component spells
+                        it: lowercase letters and digits in words joined by single
+                        dashes'
+                      rule: self.all(k, k.matches('^[a-z0-9]+(-[a-z0-9]+)*$'))
                     - message: Lodia sets this flag
                       rule: '!self.exists(k, k in [''allocate-node-cidrs'', ''authentication-kubeconfig'',
                         ''authorization-kubeconfig'', ''bind-address'', ''client-ca-file'',
@@ -934,11 +945,16 @@ spec:
                     additionalProperties:
                       type: string
                     description: |-
-                      ExtraArgs are flags passed to kube-scheduler; the flags Lodia sets are
-                      refused, and featureGates sets feature-gates.
+                      ExtraArgs are flags passed to kube-scheduler, each under its name as
+                      kube-scheduler spells it; the flags Lodia sets are refused, and
+                      featureGates sets feature-gates.
                     maxProperties: 64
                     type: object
                     x-kubernetes-validations:
+                    - message: 'a key must be a flag''s name as the component spells
+                        it: lowercase letters and digits in words joined by single
+                        dashes'
+                      rule: self.all(k, k.matches('^[a-z0-9]+(-[a-z0-9]+)*$'))
                     - message: Lodia sets this flag
                       rule: '!self.exists(k, k in [''authentication-kubeconfig'',
                         ''authorization-kubeconfig'', ''bind-address'', ''config'',

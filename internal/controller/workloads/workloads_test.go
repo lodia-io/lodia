@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -23,6 +24,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -41,6 +43,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	"sigs.k8s.io/yaml"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
@@ -53,6 +56,7 @@ import (
 const (
 	version     = "v1.37.1"
 	signerImage = "registry.example/lodia-signer:test"
+	tunnelImage = "registry.example/lodia-tunnel:test"
 	lbAddress   = "203.0.113.10"
 )
 
@@ -71,8 +75,13 @@ func TestMain(m *testing.M) {
 		fmt.Println("skipping the workloads controller tests: KUBEBUILDER_ASSETS is not set; run make test")
 		os.Exit(0)
 	}
+	gatewayAPI, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "sigs.k8s.io/gateway-api").Output()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "find the Gateway API module:", err)
+		os.Exit(1)
+	}
 	env := &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "api", "crds")},
+		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "api", "crds"), filepath.Join(strings.TrimSpace(string(gatewayAPI)), "config", "crd", "standard")},
 		ErrorIfCRDPathMissing: true,
 		UseExistingCluster:    new(false),
 	}
@@ -96,7 +105,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		stop("the controller's ClusterRole", err)
 	}
-	cache, err := operator.Cache(false)
+	cache, err := operator.Cache(true)
 	if err != nil {
 		stop("cache", err)
 	}
@@ -106,7 +115,7 @@ func TestMain(m *testing.M) {
 		stop("manager", err)
 	}
 	apiReader = mgr.GetAPIReader()
-	reconciler := &workloads.Reconciler{Client: mgr.GetClient(), Reader: apiReader, SignerImage: signerImage}
+	reconciler := &workloads.Reconciler{Client: mgr.GetClient(), Reader: apiReader, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
 	if err := reconciler.SetupWithManager(mgr, 1); err != nil {
 		stop("controller", err)
 	}
@@ -460,9 +469,6 @@ func TestTheSpecIsRendered(t *testing.T) {
 }
 
 func TestWhatIsNotBuiltYetIsSaid(t *testing.T) {
-	gateway := controlPlane(t, gateway())
-	eventually(t, func() error { return expectRoutesUnsupported(gateway) })
-
 	ha := controlPlane(t, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) {
 		spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
 		spec.Scheduler = &lodiav1alpha1.Scheduler{ConfigRef: &lodiav1alpha1.LocalReference{Name: "profiles"}}
@@ -478,9 +484,6 @@ func TestWhatIsNotBuiltYetIsSaid(t *testing.T) {
 		}
 		return expectCondition(ha, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported)
 	})
-	if getServiceOrNil(t, gateway) != nil {
-		t.Errorf("a Service was created in %s for a gateway endpoint", gateway.Namespace)
-	}
 	if c := meta.FindStatusCondition(get(t, ha).Status.Conditions, lodiav1alpha1.ConditionRoutesReady); c != nil {
 		t.Errorf("a loadBalancer ControlPlane has %+v", c)
 	}
@@ -493,89 +496,6 @@ func TestWhatIsNotBuiltYetIsSaid(t *testing.T) {
 	if c := condition(t, ignored); c.Message != "not built yet: serviceAccount.publicDiscovery" {
 		t.Errorf("APIServerReady says %q", c.Message)
 	}
-}
-
-func TestAGatewayControlPlaneWithoutRoutesReadyGetsIt(t *testing.T) {
-	cp := controlPlane(t, gateway())
-	eventually(t, func() error { return expectRoutesUnsupported(cp) })
-	fresh := get(t, cp)
-	kept, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&lodiav1alpha1.ControlPlaneStatus{
-		Conditions: []metav1.Condition{*meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady)},
-		Components: fresh.Status.Components,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	applyStatus(t, cp, workloads.FieldManager, kept)
-	reconcileNow(t, cp)
-	eventually(t, func() error { return expectRoutesUnsupported(cp) })
-}
-
-func TestAGatewayControlPlanesFirstPassSaysRoutesReadyIsReconciling(t *testing.T) {
-	ns := namespace(t)
-	events, err := k8s.Watch(t.Context(), &lodiav1alpha1.ControlPlaneList{}, client.InNamespace(ns))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer events.Stop()
-	create(t, ns, gateway())
-	for {
-		select {
-		case event := <-events.ResultChan():
-			fresh, ok := event.Object.(*lodiav1alpha1.ControlPlane)
-			if !ok || event.Type != watch.Modified || meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady) == nil {
-				continue
-			}
-			for _, conditionType := range []string{lodiav1alpha1.ConditionAPIServerReady, lodiav1alpha1.ConditionRoutesReady} {
-				c := meta.FindStatusCondition(fresh.Status.Conditions, conditionType)
-				if c == nil || c.Status != metav1.ConditionUnknown || c.Reason != lodiav1alpha1.ReasonReconciling {
-					t.Errorf("the first status says %s %+v, want Unknown/%s", conditionType, c, lodiav1alpha1.ReasonReconciling)
-				}
-			}
-			return
-		case <-time.After(30 * time.Second):
-			t.Fatal("no APIServerReady condition was written")
-		}
-	}
-}
-
-func TestAGatewayPassThatChangesNothingWritesNothing(t *testing.T) {
-	cp := controlPlane(t, gateway())
-	eventually(t, func() error { return expectRoutesUnsupported(cp) })
-	applies := 0
-	counting := interceptor.NewClient(k8s, interceptor.Funcs{
-		SubResourceApply: func(ctx context.Context, c client.Client, subResource string, obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
-			applies++
-			return c.SubResource(subResource).Apply(ctx, obj, opts...)
-		},
-	})
-	if _, err := (&workloads.Reconciler{Client: counting, Reader: k8s, SignerImage: signerImage}).Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
-		t.Fatal(err)
-	}
-	if applies > 0 {
-		t.Errorf("a pass over an unchanged gateway ControlPlane sent %d status applies", applies)
-	}
-}
-
-func gateway() lodiav1alpha1.Endpoint {
-	return lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
-		ParentRef: lodiav1alpha1.ParentReference{Name: "shared", Namespace: "gateways", SectionName: "tls"},
-		Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.com", Konnectivity: "konnectivity.dev.example.com", Tunnel: "tunnel.dev.example.com"},
-	}}
-}
-
-func expectRoutesUnsupported(cp *lodiav1alpha1.ControlPlane) error {
-	fresh := &lodiav1alpha1.ControlPlane{}
-	if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(cp), fresh); err != nil {
-		return err
-	}
-	for _, conditionType := range []string{lodiav1alpha1.ConditionAPIServerReady, lodiav1alpha1.ConditionRoutesReady} {
-		c := meta.FindStatusCondition(fresh.Status.Conditions, conditionType)
-		if c == nil || c.Status != metav1.ConditionFalse || c.Reason != lodiav1alpha1.ReasonUnsupported || c.Message != "not built yet: endpoint.gateway" || c.ObservedGeneration != fresh.Generation {
-			return fmt.Errorf("%s is %+v, want False %s naming endpoint.gateway at generation %d", conditionType, c, lodiav1alpha1.ReasonUnsupported, fresh.Generation)
-		}
-	}
-	return nil
 }
 
 func TestAnUnsupportedFieldKeepsTheEndpoint(t *testing.T) {
@@ -599,7 +519,7 @@ func TestEveryFlagLodiaRendersIsRefusedOrMerged(t *testing.T) {
 		alsoRefused []string
 		set         func(*lodiav1alpha1.ControlPlaneSpec, map[string]string)
 	}{
-		"kube-apiserver": {[]string{"anonymous-auth", "feature-gates", "service-account-key-file", "service-account-signing-key-file", "shutdown-send-retry-after"},
+		"kube-apiserver": {[]string{"anonymous-auth", "bind-address", "feature-gates", "service-account-key-file", "service-account-signing-key-file", "shutdown-send-retry-after"},
 			func(spec *lodiav1alpha1.ControlPlaneSpec, args map[string]string) {
 				spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: args}
 			}},
@@ -1044,6 +964,94 @@ func TestAPredecessorsServiceIsNotWrittenOver(t *testing.T) {
 	})
 	if svc := getService(t, cp); !metav1.IsControlledBy(svc, cp) || svc.Spec.Type != corev1.ServiceTypeLoadBalancer {
 		t.Errorf("the Service is %s, controlled by %v", svc.Spec.Type, metav1.GetControllerOf(svc))
+	}
+}
+
+func TestOutsideGatewayModeAHeldServiceDropsThePublishedEndpointAndARefusedOneKeepsIt(t *testing.T) {
+	for mode, cp := range map[string]*lodiav1alpha1.ControlPlane{"loadBalancer": running(t), "nodePort": runningOnNodePort(t)} {
+		published := get(t, cp).Status.Endpoint
+		for exit, c := range map[string]struct {
+			funcs    interceptor.Funcs
+			reason   string
+			endpoint *lodiav1alpha1.EndpointStatus
+		}{
+			"held": {interceptor.Funcs{Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if err := c.Get(ctx, key, obj, opts...); err != nil {
+					return err
+				}
+				if svc, ok := obj.(*corev1.Service); ok {
+					svc.OwnerReferences = []metav1.OwnerReference{foreignController()}
+				}
+				return nil
+			}}, lodiav1alpha1.ReasonObjectsControlledElsewhere, nil},
+			"refused": {interceptor.Funcs{Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+				if kindOf(t, obj) == "Service" {
+					return apierrors.NewForbidden(corev1.Resource("services"), lodiav1alpha1.APIServerServiceName(cp.Name), errors.New("denied by a policy"))
+				}
+				return c.Apply(ctx, obj, opts...)
+			}}, lodiav1alpha1.ReasonRefused, published},
+		} {
+			t.Run(mode+"/"+exit, func(t *testing.T) {
+				var applied *lodiav1alpha1.ControlPlane
+				c.funcs.SubResourceApply = func(ctx context.Context, _ client.Client, _ string, obj runtime.ApplyConfiguration, _ ...client.SubResourceApplyOption) error {
+					applied = decoded(t, obj)
+					return nil
+				}
+				exits := interceptor.NewClient(k8s, c.funcs)
+				r := &workloads.Reconciler{Client: exits, Reader: exits, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
+				if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil && !apistatus.Refused(err) {
+					t.Fatal(err)
+				}
+				if applied == nil {
+					t.Fatal("the pass applied no status")
+				}
+				if a := meta.FindStatusCondition(applied.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady); a == nil || a.Reason != c.reason {
+					t.Errorf("APIServerReady is %+v, want %s", a, c.reason)
+				}
+				if !equality.Semantic.DeepEqual(applied.Status.Endpoint, c.endpoint) {
+					t.Errorf("the pass applied the endpoint %+v, want %+v", applied.Status.Endpoint, c.endpoint)
+				}
+			})
+		}
+	}
+}
+
+func TestOutsideGatewayModeAPassReadsNoEndpointLiveAndNothingOfTheGatewayAPI(t *testing.T) {
+	for mode, cp := range map[string]*lodiav1alpha1.ControlPlane{"loadBalancer": running(t), "nodePort": runningOnNodePort(t)} {
+		t.Run(mode, func(t *testing.T) {
+			var live, gatewayAPI atomic.Int32
+			read := func(obj runtime.Object) {
+				switch obj.(type) {
+				case *gatewayv1.Gateway, *gatewayv1.GatewayList, *gatewayv1.TLSRoute, *gatewayv1.TLSRouteList:
+					gatewayAPI.Add(1)
+				}
+			}
+			counting := func(reader bool) client.WithWatch {
+				return interceptor.NewClient(k8s, interceptor.Funcs{
+					Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+						if _, ok := obj.(*lodiav1alpha1.ControlPlane); ok && reader {
+							live.Add(1)
+						}
+						read(obj)
+						return c.Get(ctx, key, obj, opts...)
+					},
+					List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+						read(list)
+						return c.List(ctx, list, opts...)
+					},
+				})
+			}
+			r := &workloads.Reconciler{Client: counting(false), Reader: counting(true), SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
+			if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+				t.Fatal(err)
+			}
+			if live.Load() != 0 || gatewayAPI.Load() != 0 {
+				t.Errorf("the pass read the ControlPlane live %d times and the Gateway API %d times", live.Load(), gatewayAPI.Load())
+			}
+			if err := expectCondition(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady); err != nil {
+				t.Error(err)
+			}
+		})
 	}
 }
 
@@ -1657,6 +1665,20 @@ func running(t *testing.T, change ...func(*lodiav1alpha1.ControlPlaneSpec)) *lod
 	return cp
 }
 
+func runningOnNodePort(t *testing.T) *lodiav1alpha1.ControlPlane {
+	t.Helper()
+	if err := k8s.Get(t.Context(), client.ObjectKey{Name: "node-z"}, &corev1.Node{}); apierrors.IsNotFound(err) {
+		createNode(t, "node-z", true, "192.0.2.99")
+	}
+	cp := controlPlane(t, lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}})
+	inputsReady(t, cp)
+	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
+		markAvailable(t, eventuallyDeployment(t, cp, component))
+	}
+	eventually(t, func() error { return expectCondition(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady) })
+	return cp
+}
+
 func inputsReady(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 	t.Helper()
 	setTarget(t, cp)
@@ -1669,7 +1691,7 @@ func inputsReady(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 
 func reconcileNow(t *testing.T, cp *lodiav1alpha1.ControlPlane) ctrl.Result {
 	t.Helper()
-	reconciler := &workloads.Reconciler{Client: k8s, Reader: k8s, SignerImage: signerImage}
+	reconciler := &workloads.Reconciler{Client: k8s, Reader: k8s, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
 	result, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 	if err != nil {
 		t.Fatal(err)

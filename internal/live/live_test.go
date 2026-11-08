@@ -43,6 +43,12 @@ func held(t *testing.T) (client.Reader, *lodiav1alpha1.ControlPlane) {
 				Source:      lodiav1alpha1.UIDReference{Name: "a", UID: "5e1f7c3a-0000-4000-8000-000000000004"},
 				CompletedAt: at,
 			},
+			Endpoint: &lodiav1alpha1.EndpointStatus{
+				APIServer:    lodiav1alpha1.HostPort{Host: "api.dev.example.com", Port: 443},
+				Konnectivity: lodiav1alpha1.HostPort{Host: "konnectivity.dev.example.com", Port: 443},
+				InCluster:    lodiav1alpha1.HostPort{Host: lodiav1alpha1.DefaultAdvertiseAddress, Port: 6443},
+				Tunnel:       &lodiav1alpha1.HostPort{Host: "tunnel.dev.example.com", Port: 443},
+			},
 		},
 	}
 	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(server.DeepCopy()).Build(), server
@@ -78,6 +84,29 @@ func TestDatastoreTakesTheAPIServersStatus(t *testing.T) {
 	}
 }
 
+func TestEndpointTakesTheAPIServersStatus(t *testing.T) {
+	reader, server := held(t)
+	cp := cachedAs(server.UID)
+	if err := live.Endpoint(t.Context(), reader, cp, lodiav1alpha1.ConditionAPIServerReady); err != nil {
+		t.Fatal(err)
+	}
+	if !equality.Semantic.DeepEqual(cp.Status.Endpoint, server.Status.Endpoint) {
+		t.Errorf("status.endpoint %+v, want the API server's %+v", cp.Status.Endpoint, server.Status.Endpoint)
+	}
+	for _, c := range []struct {
+		conditionType string
+		from          *lodiav1alpha1.ControlPlane
+	}{{lodiav1alpha1.ConditionAPIServerReady, server}, {lodiav1alpha1.ConditionDatastoreReady, cachedAs(server.UID)}} {
+		got, want := meta.FindStatusCondition(cp.Status.Conditions, c.conditionType), meta.FindStatusCondition(c.from.Status.Conditions, c.conditionType)
+		if !equality.Semantic.DeepEqual(got, want) {
+			t.Errorf("%s is %+v, want %+v", c.conditionType, got, want)
+		}
+	}
+	if cp.Status.Datastore != nil || cp.Status.Restore != nil {
+		t.Errorf("status.datastore %+v and status.restore %+v, want the cache's, none", cp.Status.Datastore, cp.Status.Restore)
+	}
+}
+
 func TestAReadOfAnotherObjectFails(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -88,6 +117,9 @@ func TestAReadOfAnotherObjectFails(t *testing.T) {
 		}},
 		{"Datastore", func(reader client.Reader, cp *lodiav1alpha1.ControlPlane) error {
 			return live.Datastore(t.Context(), reader, cp, lodiav1alpha1.ConditionDatastoreReady)
+		}},
+		{"Endpoint", func(reader client.Reader, cp *lodiav1alpha1.ControlPlane) error {
+			return live.Endpoint(t.Context(), reader, cp, lodiav1alpha1.ConditionAPIServerReady)
 		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {

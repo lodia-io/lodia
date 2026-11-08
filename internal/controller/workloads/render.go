@@ -23,6 +23,7 @@ import (
 	apiserverv1beta1 "k8s.io/apiserver/pkg/apis/apiserver/v1beta1"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/utils/ptr"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	"sigs.k8s.io/yaml"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
@@ -37,6 +38,8 @@ const (
 
 	kubernetesPort   = 6443
 	konnectivityPort = 8132
+	tunnelPort       = 6444
+	tunnelHealthPort = 8135
 
 	shutdownDelay     = 15 * time.Second
 	watchGrace        = 10 * time.Second
@@ -110,7 +113,53 @@ func service(cp *lodiav1alpha1.ControlPlane) *corev1.Service {
 			svc.Spec.LoadBalancerSourceRanges = append(svc.Spec.LoadBalancerSourceRanges, string(cidr))
 		}
 	}
+	if cp.Spec.Endpoint.Gateway != nil {
+		svc.Spec.Type = corev1.ServiceTypeClusterIP
+		svc.Spec.Ports = append(svc.Spec.Ports, corev1.ServicePort{Name: "tunnel", Protocol: corev1.ProtocolTCP, Port: tunnelPort, TargetPort: intstr.FromString("tunnel")})
+	}
 	return svc
+}
+
+// routes are a gateway ControlPlane's TLSRoutes, one per hostname, to its
+// port of the Service. The render spells out what the API server defaults,
+// so that a route read back equals its render.
+func routes(cp *lodiav1alpha1.ControlPlane) []*gatewayv1.TLSRoute {
+	gateway := cp.Spec.Endpoint.Gateway
+	var out []*gatewayv1.TLSRoute
+	for _, route := range []struct {
+		suffix   string
+		hostname lodiav1alpha1.Hostname
+		port     int32
+	}{
+		{apiServer, gateway.Hostnames.APIServer, lodiav1alpha1.APIServerServicePort},
+		{"konnectivity", gateway.Hostnames.Konnectivity, konnectivityPort},
+		{"tunnel", gateway.Hostnames.Tunnel, tunnelPort},
+	} {
+		out = append(out, &gatewayv1.TLSRoute{
+			TypeMeta:   metav1.TypeMeta{APIVersion: gatewayv1.GroupVersion.String(), Kind: "TLSRoute"},
+			ObjectMeta: objectMeta(cp, cp.Name+"-"+route.suffix),
+			Spec: gatewayv1.TLSRouteSpec{
+				CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: []gatewayv1.ParentReference{{
+					Group:       new(gatewayv1.Group(gatewayv1.GroupName)),
+					Kind:        new(gatewayv1.Kind("Gateway")),
+					Namespace:   new(gatewayv1.Namespace(gateway.ParentRef.Namespace)),
+					Name:        gatewayv1.ObjectName(gateway.ParentRef.Name),
+					SectionName: new(gatewayv1.SectionName(gateway.ParentRef.SectionName)),
+				}}},
+				Hostnames: []gatewayv1.Hostname{gatewayv1.Hostname(route.hostname)},
+				Rules: []gatewayv1.TLSRouteRule{{BackendRefs: []gatewayv1.BackendRef{{
+					BackendObjectReference: gatewayv1.BackendObjectReference{
+						Group: new(gatewayv1.Group("")),
+						Kind:  new(gatewayv1.Kind("Service")),
+						Name:  gatewayv1.ObjectName(lodiav1alpha1.APIServerServiceName(cp.Name)),
+						Port:  new(route.port),
+					},
+					Weight: new(int32(1)),
+				}}}},
+			},
+		})
+	}
+	return out
 }
 
 func egressSelector() ([]byte, error) {
@@ -165,9 +214,8 @@ type rendering struct {
 	cp          *lodiav1alpha1.ControlPlane
 	images      versions.Images
 	signerImage string
-	advertise   string
-	issuer      string
-	jwksURI     string
+	tunnelImage string
+	endpoint    *lodiav1alpha1.EndpointStatus
 	etcd        []lodiav1alpha1.HostPort
 	hashes      map[string]string
 	// held keeps a restored ControlPlane's controller manager at 0 replicas,
@@ -188,7 +236,7 @@ func (r rendering) apiServer() *appsv1.Deployment {
 		etcd = append(etcd, "https://"+net.JoinHostPort(e.Host, strconv.Itoa(int(e.Port))))
 	}
 	flags := map[string]string{
-		"advertise-address":                           r.advertise,
+		"advertise-address":                           r.endpoint.InCluster.Host,
 		"allow-privileged":                            "true",
 		"authentication-config":                       "/etc/lodia/authentication/" + authenticationFile,
 		"authorization-mode":                          "Node,RBAC",
@@ -214,8 +262,8 @@ func (r rendering) apiServer() *appsv1.Deployment {
 		"requestheader-group-headers":                 "X-Remote-Group",
 		"requestheader-username-headers":              "X-Remote-User",
 		"secure-port":                                 strconv.Itoa(kubernetesPort),
-		"service-account-issuer":                      r.issuer,
-		"service-account-jwks-uri":                    r.jwksURI,
+		"service-account-issuer":                      issuer(cp, r.endpoint.APIServer),
+		"service-account-jwks-uri":                    publicURL(r.endpoint.APIServer) + jwksPath,
 		"service-account-signing-endpoint":            signerSocket,
 		"service-cluster-ip-range":                    joined(cp.Spec.Network.ServiceCIDRs),
 		"shutdown-delay-duration":                     "0s",
@@ -307,7 +355,8 @@ func (r rendering) apiServer() *appsv1.Deployment {
 			{Name: "sa-keys", MountPath: "/keys", ReadOnly: true},
 		},
 	}
-	volumes := append(secretVolumes(cp.Name, map[string]lodiav1alpha1.Secret{
+	sidecars := []corev1.Container{signer, konnectivity}
+	secrets := map[string]lodiav1alpha1.Secret{
 		"serving":                 lodiav1alpha1.APIServerServingSecret,
 		"client-ca":               lodiav1alpha1.ClientCASecret,
 		"kubelet-client":          lodiav1alpha1.APIServerKubeletClientSecret,
@@ -319,20 +368,60 @@ func (r rendering) apiServer() *appsv1.Deployment {
 		"konnectivity-server":     lodiav1alpha1.KonnectivityServerSecret,
 		"konnectivity-kubeconfig": lodiav1alpha1.KonnectivityKubeconfigSecret,
 		"sa-keys":                 lodiav1alpha1.ServiceAccountKeysSecret,
-	}),
+	}
+	if gateway := cp.Spec.Endpoint.Gateway; gateway != nil {
+		sidecars = append(sidecars, r.tunnel(gateway))
+		secrets["tunnel-serving"], secrets["tunnel-ca"] = lodiav1alpha1.TunnelServingSecret, lodiav1alpha1.TunnelCASecret
+	}
+	volumes := append(secretVolumes(cp.Name, secrets),
 		configMapVolume("authentication", cp.Name+"-authentication-config"),
 		configMapVolume("egress", cp.Name+"-egress-selector"),
 		corev1.Volume{Name: "konnectivity-socket", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		corev1.Volume{Name: "signer-socket", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 	)
 	d := r.deployment(apiServer, replicas, corev1.PodSpec{
-		InitContainers:                []corev1.Container{signer, konnectivity},
+		InitContainers:                sidecars,
 		Containers:                    []corev1.Container{container},
 		Volumes:                       volumes,
 		TerminationGracePeriodSeconds: new(int64((shutdownDelay + requestTimeout + konnectivityGrace + 5*time.Second) / time.Second)),
 	})
 	d.Spec.MinReadySeconds = 10
 	return d
+}
+
+// tunnel is lodia-tunnel serve, the inner end of a gateway tenant's
+// in-cluster path, which splices each session to the API server on loopback.
+// It has no readiness probe: one pod-wide Ready would take the replica's API
+// and konnectivity out of the Service with it.
+func (r rendering) tunnel(gateway *lodiav1alpha1.GatewayEndpoint) corev1.Container {
+	health := corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt32(tunnelHealthPort)}}
+	return corev1.Container{
+		Name:          "lodia-tunnel",
+		Image:         r.tunnelImage,
+		RestartPolicy: new(corev1.ContainerRestartPolicyAlways),
+		Args: []string{
+			"serve",
+			"--listen=:" + strconv.Itoa(tunnelPort),
+			"--hostname=" + string(gateway.Hostnames.Tunnel),
+			"--cert-dir=/etc/lodia/tunnel-serving",
+			"--client-ca=/etc/lodia/tunnel-ca",
+			"--upstream=127.0.0.1:" + strconv.Itoa(kubernetesPort),
+			"--health-probe-bind-address=:" + strconv.Itoa(tunnelHealthPort),
+		},
+		Ports:         []corev1.ContainerPort{{Name: "tunnel", ContainerPort: tunnelPort, Protocol: corev1.ProtocolTCP}},
+		StartupProbe:  &corev1.Probe{ProbeHandler: health, PeriodSeconds: 1, FailureThreshold: 30},
+		LivenessProbe: &corev1.Probe{ProbeHandler: *health.DeepCopy(), PeriodSeconds: 10},
+		Resources:     resources(nil, "10m", "32Mi"),
+		SecurityContext: &corev1.SecurityContext{
+			RunAsUser:                new(int64(65532)),
+			RunAsGroup:               new(int64(65532)),
+			RunAsNonRoot:             new(true),
+			AllowPrivilegeEscalation: new(false),
+			ReadOnlyRootFilesystem:   new(true),
+			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		},
+		VolumeMounts: mounts("tunnel-serving", "tunnel-ca"),
+	}
 }
 
 // konnectivityImage is the version table's konnectivity-server image, with the
@@ -523,11 +612,11 @@ func podDisruptionBudgets(cp *lodiav1alpha1.ControlPlane) []*policyv1.PodDisrupt
 }
 
 // networkPolicies isolate the ingress of each component's pods: the API
-// server's two ports are the public endpoint, and the controllers take
-// nothing; the kubelet's probes come from the node, which a NetworkPolicy
-// does not block
+// server's two ports, and the tunnel's in gateway mode, are the public
+// endpoint, and the controllers take nothing; the kubelet's probes come from
+// the node, which a NetworkPolicy does not block
 // (https://kubernetes.io/docs/concepts/services-networking/network-policies/).
-// konnectivity-server's port goes by number: implementations such as
+// konnectivity-server's and the tunnel's ports go by number: implementations such as
 // kube-network-policies, which kind's kindnetd runs, resolve a named port in
 // the main containers alone, not in a native sidecar
 // (https://github.com/kubernetes-sigs/kube-network-policies/blob/f67f0fb35e2b/pkg/api/helper.go#L17-L26).
@@ -546,7 +635,11 @@ func networkPolicies(cp *lodiav1alpha1.ControlPlane) []*networkingv1.NetworkPoli
 		}
 		if component == apiServer {
 			var ports []networkingv1.NetworkPolicyPort
-			for _, port := range []intstr.IntOrString{intstr.FromString("https"), intstr.FromInt32(konnectivityPort)} {
+			numbers := []intstr.IntOrString{intstr.FromString("https"), intstr.FromInt32(konnectivityPort)}
+			if cp.Spec.Endpoint.Gateway != nil {
+				numbers = append(numbers, intstr.FromInt32(tunnelPort))
+			}
+			for _, port := range numbers {
 				ports = append(ports, networkingv1.NetworkPolicyPort{Protocol: new(corev1.ProtocolTCP), Port: new(port)})
 			}
 			p.Spec.Ingress = []networkingv1.NetworkPolicyIngressRule{{Ports: ports}}
@@ -562,8 +655,8 @@ var merged = []string{"enable-admission-plugins", "controllers"}
 
 // command puts the flags Lodia sets and the tenant's extra ones in a fixed
 // order, so an unchanged ControlPlane renders the same pod template. An
-// extra entry never replaces a flag Lodia sets: one the schema refused only
-// after it was stored stays valid until it changes.
+// extra entry under the name of a flag Lodia sets never replaces it: one the
+// schema refused only after it was stored stays valid until it changes.
 func command(binary string, flags, extra map[string]string, gates map[string]bool) []string {
 	all := maps.Clone(flags)
 	for name, value := range extra {
