@@ -411,7 +411,7 @@ The final snapshot when a backup store exists comes with backups in phase 2; not
 ## Health
 
 Built so far: the probe through the public endpoint, the leader Leases and a restored `ControlPlane`'s release.
-Every 10 seconds Health asks `https://<status.endpoint.apiServer>/readyz` without credentials, which the API server's authentication allows for its health paths, and verifies it against `<cp>-ca-bundle`.
+Every `health.period`, 5 seconds by default, Health asks `https://<status.endpoint.apiServer>/readyz` without credentials, which the API server's authentication allows for its health paths, and verifies it against `<cp>-ca-bundle`.
 In `gateway` mode a probe also reads `/readyz` through the tunnel, the outer TLS with `<cp>-tunnel-client`, the inner verified against the bundle, and completes a TLS handshake with the konnectivity host; the three run at once, each within the timeout, so a dead Gateway holds a worker for one timeout, and a tenant whose `<cp>-tunnel-client` is missing or another owner's reads `WaitingForCertificates`.
 `Reachable` is True on a 200 and turns False after three probes in a row that fail, so one blip does not drop `Ready` ([reasons](api/controlplane.md#conditions-and-their-reasons)).
 In the same pass, once `AccessReady` is True, at any generation, Health reads the leader Leases of the controller manager and the scheduler through the in-namespace Service, as `<cp>-lodia-kubeconfig`, each with a consistent GET.
@@ -485,9 +485,11 @@ The phase 1 chart installs:
 The signer's image reaches the operator as `--signer-image`, and `lodia-tunnel`'s as `--tunnel-image`.
 
 Then a `DatastoreClass` with the bucket, and the first `ControlPlane`.
-Later phases bring the rest: the operator configuration below, which the operator does not read yet, in phase 2, whose fleet limit, controller manager hold and `KubeconfigRequest`s it configures; signed and attested images, and how to verify them, in phase 4 ([roadmap](roadmap.md), [releases-and-support](decisions/releases-and-support.md)).
+Later phases bring the rest: the keys of the operator configuration below that the operator does not read yet, in phase 2, whose fleet limit, controller manager hold and `KubeconfigRequest`s they configure; signed and attested images, and how to verify them, in phase 4 ([roadmap](roadmap.md), [releases-and-support](decisions/releases-and-support.md)).
 
-Operator configuration (a file, mounted from a ConfigMap; the chart renders it from values):
+Operator configuration (a file, passed as `--config`, mounted from a ConfigMap; the chart renders it from values).
+The operator reads the `health` keys and nothing else yet: any other key, or a missing file, stops it from starting.
+Without `--config` the defaults apply.
 
 | key | meaning | default |
 |---|---|---|
@@ -496,9 +498,9 @@ Operator configuration (a file, mounted from a ConfigMap; the chart renders it f
 | `controllers.<name>.workers` | concurrent reconciles per controller | 10 |
 | `fleet.maxConcurrentRollouts` | tenants rolling a change Lodia started at once ([upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md)) | 5 |
 | `tenant.applyInterval` | the inventory re-apply period | 10m |
-| `health.period` | how often Health probes each control plane and reads its leases; 10 seconds until the operator reads this file | 5s |
+| `health.period` | how often Health probes each control plane and reads its leases | 5s |
 | `health.failuresBeforeFalse` | failed passes in a row that turn `Reachable` False | 3 |
-| `health.silentAfter`, `health.holdFraction`, `health.releaseAfter` | when a node counts as silent, the share of silent nodes that starts the hold, how long the nodes must be back before it ends; the operator refuses to start when they break the margin of [controller-manager-hold](decisions/controller-manager-hold.md) | 20s, 0.6, 2m |
+| `health.silentAfter`, `health.holdFraction`, `health.releaseAfter` | when a node counts as silent, the share of silent nodes that starts the hold, how long the nodes must be back before it ends; the operator refuses to start when they break the margin of [controller-manager-hold](decisions/controller-manager-hold.md), and uses none of them before the hold is built | 20s, 0.6, 2m |
 | `pki.leafLifetime`, `pki.caLifetime`, `pki.trustAnchorLifetime` | leaf certificates, the kubelet signer and the request CA; every other CA but the cluster CA; the cluster CA ([staged-credential-rotation](decisions/staged-credential-rotation.md)) | 1 year, 5 years, 10 years |
 | `kubeconfigRequests.maxExpiration` | the longest a `KubeconfigRequest`'s certificate lives, at most the schema's 24 h ([fields](api/controlplane.md#kubeconfigrequest)) | 24h |
 | `defaults.resources.<component>` | requests and limits per component | from the idle usage measured in phase 1 ([Capacity](operations.md#capacity)) |

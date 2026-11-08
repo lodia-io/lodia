@@ -41,7 +41,11 @@ The Health controller protects a tenant's workloads from an outage between the c
   | `--leader-elect-retry-period` | 2s | `ControllerManagerRetryPeriod` |
   | `--leader-elect-resource-lock`, `-resource-name`, `-resource-namespace` | `leases`, `kube-controller-manager`, `kube-system` | `ControllerManagerLease`, `LeaderElectionNamespace` |
 
-  The operator refuses to start when its Health thresholds break the invariant below.
+  The operator refuses to start when:
+  - the margin below is under 10 seconds, kept for a delay in Health's queue, the API or a failover of the operator: `silentAfter`, the period, 10.4 seconds, the renew deadline, the retry period and those 10 seconds add up to more than the grace period;
+  - `silentAfter` is not above 10.4 seconds plus the period, which would call a healthy node silent;
+  - `holdFraction`, rounded to thousandths, is not above one half or is above one;
+  - the period, `releaseAfter` or `failuresBeforeFalse` is not positive.
 - **While Lodia holds the lease, `ControllersLeading` stays True**, reason `Held`: the hold is Lodia's own, so `Ready` does not drop for it.
 
 **The margin.**
@@ -95,4 +99,5 @@ One dead machine of two is 50%, and its pods are evicted as upstream does.
 ## Code
 
 - `internal/controller/workloads` — `render.go` renders the controller manager's timings and the scheduler's lease from the constants in `api/v1alpha1/names.go`; `workloads_test.go` holds the flags.
+- `internal/operator` — `config.go` loads Health's settings from the operator's configuration file and refuses the ones that break the margin; `config_test.go` holds every refusal.
 - `internal/controller/health` — `health.go` reports `ControllersLeading` from the two leader Leases; `health_test.go` holds a Lease that stops renewing.
