@@ -316,14 +316,19 @@ func TestGatewayGate(t *testing.T) {
 		}).
 		Assess("B1: a second ControlPlane naming the first's hostnames gets HostnameConflict and no route", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			envoy = readEnvoy(ctx, t, cfg, k8s)
+			owner := &lodiav1alpha1.ControlPlane{}
+			if err := k8s.Get(ctx, a, owner); err != nil {
+				t.Fatal(err)
+			}
+			named := fmt.Sprintf("by ControlPlane %s/%s (UID %s)", a.Namespace, a.Name, owner.UID)
 			createTenant(ctx, t, k8s, b, classes[b], behindTheGateway(a.Namespace))
-			until(ctx, t, 2*time.Minute, b.Namespace+"'s RoutesReady=False, HostnameConflict, naming "+a.Namespace+"/"+a.Name, func(ctx context.Context) error {
+			until(ctx, t, 2*time.Minute, b.Namespace+"'s RoutesReady=False, HostnameConflict, naming the ControlPlane "+a.Namespace+"/"+a.Name+" as the owner", func(ctx context.Context) error {
 				cp, err := conditionAt(ctx, k8s, b, lodiav1alpha1.ConditionRoutesReady, metav1.ConditionFalse, lodiav1alpha1.ReasonHostnameConflict)
 				if err != nil {
 					return err
 				}
-				if m := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionRoutesReady).Message; !strings.Contains(m, a.Namespace+"/"+a.Name) {
-					return fmt.Errorf("the message does not name %s: %s", a, m)
+				if m := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionRoutesReady).Message; !strings.Contains(m, named) {
+					return fmt.Errorf("the message does not say %q: %s", named, m)
 				}
 				return nil
 			})
