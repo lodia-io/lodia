@@ -24,6 +24,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -42,6 +43,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	"sigs.k8s.io/yaml"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
@@ -965,6 +967,94 @@ func TestAPredecessorsServiceIsNotWrittenOver(t *testing.T) {
 	}
 }
 
+func TestOutsideGatewayModeAHeldServiceDropsThePublishedEndpointAndARefusedOneKeepsIt(t *testing.T) {
+	for mode, cp := range map[string]*lodiav1alpha1.ControlPlane{"loadBalancer": running(t), "nodePort": runningOnNodePort(t)} {
+		published := get(t, cp).Status.Endpoint
+		for exit, c := range map[string]struct {
+			funcs    interceptor.Funcs
+			reason   string
+			endpoint *lodiav1alpha1.EndpointStatus
+		}{
+			"held": {interceptor.Funcs{Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if err := c.Get(ctx, key, obj, opts...); err != nil {
+					return err
+				}
+				if svc, ok := obj.(*corev1.Service); ok {
+					svc.OwnerReferences = []metav1.OwnerReference{foreignController()}
+				}
+				return nil
+			}}, lodiav1alpha1.ReasonObjectsControlledElsewhere, nil},
+			"refused": {interceptor.Funcs{Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+				if kindOf(t, obj) == "Service" {
+					return apierrors.NewForbidden(corev1.Resource("services"), lodiav1alpha1.APIServerServiceName(cp.Name), errors.New("denied by a policy"))
+				}
+				return c.Apply(ctx, obj, opts...)
+			}}, lodiav1alpha1.ReasonRefused, published},
+		} {
+			t.Run(mode+"/"+exit, func(t *testing.T) {
+				var applied *lodiav1alpha1.ControlPlane
+				c.funcs.SubResourceApply = func(ctx context.Context, _ client.Client, _ string, obj runtime.ApplyConfiguration, _ ...client.SubResourceApplyOption) error {
+					applied = decoded(t, obj)
+					return nil
+				}
+				exits := interceptor.NewClient(k8s, c.funcs)
+				r := &workloads.Reconciler{Client: exits, Reader: exits, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
+				if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil && !apistatus.Refused(err) {
+					t.Fatal(err)
+				}
+				if applied == nil {
+					t.Fatal("the pass applied no status")
+				}
+				if a := meta.FindStatusCondition(applied.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady); a == nil || a.Reason != c.reason {
+					t.Errorf("APIServerReady is %+v, want %s", a, c.reason)
+				}
+				if !equality.Semantic.DeepEqual(applied.Status.Endpoint, c.endpoint) {
+					t.Errorf("the pass applied the endpoint %+v, want %+v", applied.Status.Endpoint, c.endpoint)
+				}
+			})
+		}
+	}
+}
+
+func TestOutsideGatewayModeAPassReadsNoEndpointLiveAndNothingOfTheGatewayAPI(t *testing.T) {
+	for mode, cp := range map[string]*lodiav1alpha1.ControlPlane{"loadBalancer": running(t), "nodePort": runningOnNodePort(t)} {
+		t.Run(mode, func(t *testing.T) {
+			var live, gatewayAPI atomic.Int32
+			read := func(obj runtime.Object) {
+				switch obj.(type) {
+				case *gatewayv1.Gateway, *gatewayv1.GatewayList, *gatewayv1.TLSRoute, *gatewayv1.TLSRouteList:
+					gatewayAPI.Add(1)
+				}
+			}
+			counting := func(reader bool) client.WithWatch {
+				return interceptor.NewClient(k8s, interceptor.Funcs{
+					Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+						if _, ok := obj.(*lodiav1alpha1.ControlPlane); ok && reader {
+							live.Add(1)
+						}
+						read(obj)
+						return c.Get(ctx, key, obj, opts...)
+					},
+					List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+						read(list)
+						return c.List(ctx, list, opts...)
+					},
+				})
+			}
+			r := &workloads.Reconciler{Client: counting(false), Reader: counting(true), SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
+			if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+				t.Fatal(err)
+			}
+			if live.Load() != 0 || gatewayAPI.Load() != 0 {
+				t.Errorf("the pass read the ControlPlane live %d times and the Gateway API %d times", live.Load(), gatewayAPI.Load())
+			}
+			if err := expectCondition(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+}
+
 func TestAnObjectAnotherControlPlaneKeepsHoldsEveryWorkload(t *testing.T) {
 	ns := namespace(t)
 	other := types.UID("8f0c6f2e-0d6e-4f4e-9e44-0d6a7c1b5a21")
@@ -1567,6 +1657,20 @@ func running(t *testing.T, change ...func(*lodiav1alpha1.ControlPlaneSpec)) *lod
 	t.Helper()
 	cp := controlPlane(t, loadBalancer(), change...)
 	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
+	inputsReady(t, cp)
+	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
+		markAvailable(t, eventuallyDeployment(t, cp, component))
+	}
+	eventually(t, func() error { return expectCondition(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady) })
+	return cp
+}
+
+func runningOnNodePort(t *testing.T) *lodiav1alpha1.ControlPlane {
+	t.Helper()
+	if err := k8s.Get(t.Context(), client.ObjectKey{Name: "node-z"}, &corev1.Node{}); apierrors.IsNotFound(err) {
+		createNode(t, "node-z", true, "192.0.2.99")
+	}
+	cp := controlPlane(t, lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}})
 	inputsReady(t, cp)
 	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
 		markAvailable(t, eventuallyDeployment(t, cp, component))
