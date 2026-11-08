@@ -157,7 +157,7 @@ The paths are the direct one, the management node's address and the NodePort; th
 p99 is the nearest rank, and the difference from the direct path has a 95% bootstrap interval of the pairs, 1,000 resamples with a fixed seed.
 It wants Δp99 under 5 ms for the Gateway and for the tunnel in both mixes, no error, and one dial per path in M1; the table, with the environment, goes to `g6-results.txt` in the artifacts.
 
-`TestGatewayConformance` (`make conformance-gateway`) is the conformance suite of the [nightly](#nightly-conformance-and-the-idle-control-plane) on a tenant behind the Gateway, two nodes as in the gate, with hydrophone given the gate's kubeconfig (`server` the Gateway's address, `tls-server-name` the API hostname); `CONFORMANCE_FOCUS` and the artifacts are the ones of that nightly.
+`TestGatewayConformance` (`make conformance-gateway`) is the conformance suite of the [nightly](#nightly-conformance-and-the-idle-control-plane) on a tenant behind the Gateway, with the two nodes that nightly joins and hydrophone given the gate's kubeconfig (`server` the Gateway's address, `tls-server-name` the API hostname); `CONFORMANCE_FOCUS` and the artifacts are the ones of that nightly.
 
 ## Nightly: highAvailability removed and added back
 
