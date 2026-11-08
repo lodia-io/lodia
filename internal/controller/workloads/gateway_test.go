@@ -1089,10 +1089,8 @@ func TestAGatewayPassThatChangesNothingWritesNothing(t *testing.T) {
 		t.Fatalf("status.endpoint is %+v", e)
 	}
 	before := resourceVersions(t, cp.Namespace, &corev1.ServiceList{}, &gatewayv1.TLSRouteList{})
-	before["ControlPlane"] = get(t, cp).ResourceVersion
 	expectNoRouteWrites(t, cp, "an unchanged ControlPlane")
 	after := resourceVersions(t, cp.Namespace, &corev1.ServiceList{}, &gatewayv1.TLSRouteList{})
-	after["ControlPlane"] = get(t, cp).ResourceVersion
 	if fmt.Sprint(after) != fmt.Sprint(before) {
 		t.Errorf("a pass over an unchanged gateway ControlPlane wrote:\n%v\nthen\n%v", before, after)
 	}
@@ -1212,13 +1210,9 @@ func TestATransientErrorReturnsBeforeAnyStatus(t *testing.T) {
 		}}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			before := get(t, cp).ResourceVersion
-			r := &workloads.Reconciler{Client: interceptor.NewClient(k8s, c.client), Reader: interceptor.NewClient(k8s, c.reader), SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
+			r := &workloads.Reconciler{Client: noControlPlaneWrite(t, interceptor.NewClient(k8s, c.client)), Reader: interceptor.NewClient(k8s, c.reader), SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
 			if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apierrors.IsServiceUnavailable(err) {
 				t.Errorf("the pass returned %v, want the injected error", err)
-			}
-			if after := get(t, cp).ResourceVersion; after != before {
-				t.Errorf("the pass wrote the ControlPlane: resourceVersion %s, then %s", before, after)
 			}
 		})
 	}
@@ -1597,7 +1591,7 @@ func expectNoRouteWrites(t *testing.T, cp *lodiav1alpha1.ControlPlane, what stri
 			return c.SubResource(subResource).Apply(ctx, obj, opts...)
 		},
 	})
-	r := &workloads.Reconciler{Client: counting, Reader: counting, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
+	r := &workloads.Reconciler{Client: noControlPlaneWrite(t, counting), Reader: counting, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 		t.Fatal(err)
 	}

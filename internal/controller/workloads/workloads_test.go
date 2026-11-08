@@ -892,31 +892,25 @@ func TestConditionsFromState(t *testing.T) {
 		return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint)
 	})
 
-	before := get(t, cp).ResourceVersion
 	injected := errors.New("injected: the API server did not answer")
-	failing := interceptor.NewClient(k8s, interceptor.Funcs{
+	failing := noControlPlaneWrite(t, interceptor.NewClient(k8s, interceptor.Funcs{
 		Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
 			return injected
 		},
-	})
+	}))
 	reconciler := &workloads.Reconciler{Client: failing, Reader: failing, SignerImage: signerImage}
 	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: cp.Namespace, Name: cp.Name}}); !errors.Is(err, injected) {
 		t.Fatalf("a pass whose Service apply fails returned %v, want the apply's error", err)
-	}
-	if after := get(t, cp).ResourceVersion; after != before {
-		t.Errorf("a pass that failed wrote the ControlPlane: resourceVersion %s, then %s", before, after)
 	}
 }
 
 func TestAPassThatChangesNothingWritesNothing(t *testing.T) {
 	cp := running(t)
 	versionsOf := func() map[string]string {
-		out := resourceVersions(t, cp.Namespace, &appsv1.DeploymentList{}, &corev1.ServiceList{}, &corev1.ConfigMapList{}, &networkingv1.NetworkPolicyList{})
-		out["ControlPlane"] = get(t, cp).ResourceVersion
-		return out
+		return resourceVersions(t, cp.Namespace, &appsv1.DeploymentList{}, &corev1.ServiceList{}, &corev1.ConfigMapList{}, &networkingv1.NetworkPolicyList{})
 	}
 	before := versionsOf()
-	reconcileNow(t, cp)
+	reconcileThrough(t, cp, noControlPlaneWrite(t, k8s))
 	if after := versionsOf(); fmt.Sprint(after) != fmt.Sprint(before) {
 		t.Errorf("a pass over an unchanged ControlPlane wrote:\n%v\nthen\n%v", before, after)
 	}
@@ -1500,15 +1494,11 @@ func TestAWaitThatCannotReadWritesNothing(t *testing.T) {
 	deployments := failing(func(obj client.Object) bool { _, ok := obj.(*appsv1.Deployment); return ok && !failed.Swap(true) })
 	controlPlanes := failing(func(obj client.Object) bool { _, ok := obj.(*lodiav1alpha1.ControlPlane); return ok })
 	for name, reconciler := range map[string]*workloads.Reconciler{
-		"its Deployments":                {Client: deployments, Reader: k8s, SignerImage: signerImage},
-		"APIServerReady from the server": {Client: k8s, Reader: controlPlanes, SignerImage: signerImage},
+		"its Deployments":                {Client: noControlPlaneWrite(t, deployments), Reader: k8s, SignerImage: signerImage},
+		"APIServerReady from the server": {Client: noControlPlaneWrite(t, k8s), Reader: controlPlanes, SignerImage: signerImage},
 	} {
-		before := get(t, cp).ResourceVersion
 		if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !errors.Is(err, injected) {
 			t.Fatalf("a pass that cannot read %s returned %v, want the read's error", name, err)
-		}
-		if after := get(t, cp).ResourceVersion; after != before {
-			t.Errorf("a pass that cannot read %s wrote the ControlPlane: resourceVersion %s, then %s", name, before, after)
 		}
 	}
 }
@@ -1691,7 +1681,12 @@ func inputsReady(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 
 func reconcileNow(t *testing.T, cp *lodiav1alpha1.ControlPlane) ctrl.Result {
 	t.Helper()
-	reconciler := &workloads.Reconciler{Client: k8s, Reader: k8s, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
+	return reconcileThrough(t, cp, k8s)
+}
+
+func reconcileThrough(t *testing.T, cp *lodiav1alpha1.ControlPlane, c client.WithWatch) ctrl.Result {
+	t.Helper()
+	reconciler := &workloads.Reconciler{Client: c, Reader: k8s, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
 	result, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 	if err != nil {
 		t.Fatal(err)
@@ -1706,6 +1701,28 @@ func get(t *testing.T, cp *lodiav1alpha1.ControlPlane) *lodiav1alpha1.ControlPla
 		t.Fatal(err)
 	}
 	return fresh
+}
+
+func noControlPlaneWrite(t *testing.T, c client.WithWatch) client.WithWatch {
+	t.Helper()
+	return interceptor.NewClient(c, interceptor.Funcs{
+		SubResource: func(c client.WithWatch, name string) client.SubResourceClient {
+			t.Errorf("the pass wrote the ControlPlane's %s", name)
+			return c.SubResource(name)
+		},
+		Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+			if kindOf(t, obj) == "ControlPlane" {
+				t.Error("the pass applied a ControlPlane")
+			}
+			return c.Apply(ctx, obj, opts...)
+		},
+		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			if _, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
+				t.Errorf("the pass patched ControlPlane %s", obj.GetName())
+			}
+			return c.Patch(ctx, obj, patch, opts...)
+		},
+	})
 }
 
 func condition(t *testing.T, cp *lodiav1alpha1.ControlPlane) *metav1.Condition {
