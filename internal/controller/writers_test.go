@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,6 +36,8 @@ import (
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/operator"
 )
+
+var managers atomic.Int32
 
 var conditionWriters = map[string]string{
 	lodiav1alpha1.ConditionCertificatesReady:    "lodia/pki",
@@ -268,7 +271,7 @@ func start(t *testing.T) client.WithWatch {
 		t.Fatal(err)
 	}
 	cache.ReaderFailOnMissingInformer = true
-	mgr, err := ctrl.NewManager(cfg, ctrl.Options{Scheme: scheme, Metrics: metricsserver.Options{BindAddress: "0"}, Cache: cache, Controller: config.Controller{SkipNameValidation: new(true)}})
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{Scheme: scheme, Metrics: metricsserver.Options{BindAddress: "0"}, Cache: cache, Controller: config.Controller{SkipNameValidation: new(managers.Add(1) > 1)}})
 	if err != nil {
 		t.Fatal(err)
 	}
