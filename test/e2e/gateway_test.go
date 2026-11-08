@@ -791,8 +791,11 @@ func forwardZone(ctx context.Context, c client.Client, dns string) error {
 func eventually(ctx context.Context, timeout time.Duration, what string, check func(context.Context) error) error {
 	var last error
 	err := wait.PollUntilContextTimeout(ctx, time.Second, timeout, true, func(ctx context.Context) (bool, error) {
-		last = check(ctx)
-		return last == nil, nil
+		err := check(ctx)
+		if ctx.Err() == nil {
+			last = err
+		}
+		return err == nil, nil
 	})
 	if err != nil {
 		return fmt.Errorf("%s: %w", what, errors.Join(err, last))

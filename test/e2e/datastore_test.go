@@ -218,8 +218,11 @@ func until(ctx context.Context, t *testing.T, timeout time.Duration, what string
 	start := time.Now()
 	var last error
 	err := wait.PollUntilContextTimeout(ctx, 2*time.Second, timeout, true, func(ctx context.Context) (bool, error) {
-		last = check(ctx)
-		return last == nil, nil
+		err := check(ctx)
+		if ctx.Err() == nil {
+			last = err
+		}
+		return err == nil, nil
 	})
 	if err != nil {
 		t.Fatalf("%s: %v: %v", what, err, last)
