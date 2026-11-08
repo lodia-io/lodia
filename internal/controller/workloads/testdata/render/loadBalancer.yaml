@@ -1,0 +1,591 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    lodia.io/control-plane: dev
+  name: dev-kube-apiserver
+  namespace: team-a
+  ownerReferences:
+  - apiVersion: lodia.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: ControlPlane
+    name: dev
+    uid: 5e1f7c3a-0000-4000-8000-000000000001
+spec:
+  ports:
+  - name: https
+    port: 443
+    protocol: TCP
+    targetPort: https
+  - name: kubernetes
+    port: 6443
+    protocol: TCP
+    targetPort: https
+  - name: konnectivity
+    port: 8132
+    protocol: TCP
+    targetPort: konnectivity
+  selector:
+    app.kubernetes.io/name: kube-apiserver
+    lodia.io/control-plane: dev
+  type: LoadBalancer
+status:
+  loadBalancer: {}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    lodia.io/control-plane: dev
+  name: dev-kube-apiserver
+  namespace: team-a
+  ownerReferences:
+  - apiVersion: lodia.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: ControlPlane
+    name: dev
+    uid: 5e1f7c3a-0000-4000-8000-000000000001
+spec:
+  ingress:
+  - ports:
+    - port: https
+      protocol: TCP
+    - port: 8132
+      protocol: TCP
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kube-apiserver
+      lodia.io/control-plane: dev
+  policyTypes:
+  - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    lodia.io/control-plane: dev
+  name: dev-kube-controller-manager
+  namespace: team-a
+  ownerReferences:
+  - apiVersion: lodia.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: ControlPlane
+    name: dev
+    uid: 5e1f7c3a-0000-4000-8000-000000000001
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kube-controller-manager
+      lodia.io/control-plane: dev
+  policyTypes:
+  - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    lodia.io/control-plane: dev
+  name: dev-kube-scheduler
+  namespace: team-a
+  ownerReferences:
+  - apiVersion: lodia.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: ControlPlane
+    name: dev
+    uid: 5e1f7c3a-0000-4000-8000-000000000001
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kube-scheduler
+      lodia.io/control-plane: dev
+  policyTypes:
+  - Ingress
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/name: kube-apiserver
+    lodia.io/control-plane: dev
+  name: dev-kube-apiserver
+  namespace: team-a
+  ownerReferences:
+  - apiVersion: lodia.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: ControlPlane
+    name: dev
+    uid: 5e1f7c3a-0000-4000-8000-000000000001
+spec:
+  minReadySeconds: 10
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kube-apiserver
+      lodia.io/control-plane: dev
+  strategy:
+    rollingUpdate:
+      maxSurge: 100%
+      maxUnavailable: 0
+    type: RollingUpdate
+  template:
+    metadata:
+      annotations:
+        lodia.io/restart-hash: api-hash
+      labels:
+        app.kubernetes.io/name: kube-apiserver
+        lodia.io/control-plane: dev
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - command:
+        - kube-apiserver
+        - --advertise-address=203.0.113.10
+        - --allow-privileged=true
+        - --authentication-config=/etc/lodia/authentication/authentication-config.yaml
+        - --authorization-mode=Node,RBAC
+        - --client-ca-file=/etc/lodia/client-ca/ca.crt
+        - --egress-selector-config-file=/etc/lodia/egress/egress-selector.yaml
+        - --enable-admission-plugins=NodeRestriction
+        - --enable-bootstrap-token-auth=true
+        - --encryption-provider-config=/etc/lodia/encryption/encryption-config.yaml
+        - --encryption-provider-config-automatic-reload=true
+        - --endpoint-reconciler-type=none
+        - --etcd-cafile=/etc/lodia/etcd-ca/ca.crt
+        - --etcd-certfile=/etc/lodia/etcd-client/tls.crt
+        - --etcd-keyfile=/etc/lodia/etcd-client/tls.key
+        - --etcd-servers=https://dev-etcd-client.team-a.svc:2379
+        - --kubelet-client-certificate=/etc/lodia/kubelet-client/tls.crt
+        - --kubelet-client-key=/etc/lodia/kubelet-client/tls.key
+        - --kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname
+        - --proxy-client-cert-file=/etc/lodia/front-proxy-client/tls.crt
+        - --proxy-client-key-file=/etc/lodia/front-proxy-client/tls.key
+        - --requestheader-allowed-names=front-proxy-client
+        - --requestheader-client-ca-file=/etc/lodia/front-proxy-ca/ca.crt
+        - --requestheader-extra-headers-prefix=X-Remote-Extra-
+        - --requestheader-group-headers=X-Remote-Group
+        - --requestheader-username-headers=X-Remote-User
+        - --secure-port=6443
+        - --service-account-issuer=https://203.0.113.10
+        - --service-account-jwks-uri=https://203.0.113.10/openid/v1/jwks
+        - --service-account-signing-endpoint=/run/signer/signer.sock
+        - --service-cluster-ip-range=10.96.0.0/16
+        - --shutdown-delay-duration=0s
+        - --shutdown-watch-termination-grace-period=10s
+        - --tls-cert-file=/etc/lodia/serving/tls.crt
+        - --tls-private-key-file=/etc/lodia/serving/tls.key
+        image: registry.k8s.io/kube-apiserver:v1.37.1
+        lifecycle:
+          preStop:
+            sleep:
+              seconds: 15
+        livenessProbe:
+          failureThreshold: 8
+          httpGet:
+            path: /livez
+            port: https
+            scheme: HTTPS
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 15
+        name: kube-apiserver
+        ports:
+        - containerPort: 6443
+          name: https
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /readyz
+            port: https
+            scheme: HTTPS
+          periodSeconds: 1
+          timeoutSeconds: 15
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+        startupProbe:
+          failureThreshold: 24
+          httpGet:
+            path: /livez
+            port: https
+            scheme: HTTPS
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 15
+        volumeMounts:
+        - mountPath: /etc/lodia/serving
+          name: serving
+          readOnly: true
+        - mountPath: /etc/lodia/client-ca
+          name: client-ca
+          readOnly: true
+        - mountPath: /etc/lodia/kubelet-client
+          name: kubelet-client
+          readOnly: true
+        - mountPath: /etc/lodia/front-proxy-ca
+          name: front-proxy-ca
+          readOnly: true
+        - mountPath: /etc/lodia/front-proxy-client
+          name: front-proxy-client
+          readOnly: true
+        - mountPath: /etc/lodia/etcd-ca
+          name: etcd-ca
+          readOnly: true
+        - mountPath: /etc/lodia/etcd-client
+          name: etcd-client
+          readOnly: true
+        - mountPath: /etc/lodia/encryption
+          name: encryption
+          readOnly: true
+        - mountPath: /etc/lodia/authentication
+          name: authentication
+          readOnly: true
+        - mountPath: /etc/lodia/egress
+          name: egress
+          readOnly: true
+        - mountPath: /run/konnectivity
+          name: konnectivity-socket
+        - mountPath: /run/signer
+          name: signer-socket
+      enableServiceLinks: false
+      initContainers:
+      - args:
+        - --socket=/run/signer/signer.sock
+        - --keys-dir=/keys
+        image: registry.example/lodia-signer:test
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8081
+          periodSeconds: 10
+        name: lodia-signer
+        resources:
+          requests:
+            cpu: 10m
+            memory: 16Mi
+        restartPolicy: Always
+        startupProbe:
+          failureThreshold: 30
+          httpGet:
+            path: /readyz
+            port: 8081
+          periodSeconds: 1
+        volumeMounts:
+        - mountPath: /run/signer
+          name: signer-socket
+        - mountPath: /keys
+          name: sa-keys
+          readOnly: true
+      - command:
+        - /proxy-server
+        - --admin-port=8133
+        - --agent-namespace=kube-system
+        - --agent-port=8132
+        - --agent-service-account=konnectivity-agent
+        - --authentication-audience=system:konnectivity-server
+        - --cluster-cert=/etc/lodia/konnectivity-server/tls.crt
+        - --cluster-key=/etc/lodia/konnectivity-server/tls.key
+        - --delete-existing-uds-file=true
+        - --enable-lease-controller=true
+        - --graceful-shutdown-timeout=10s
+        - --health-port=8134
+        - --keepalive-time=30s
+        - --kubeconfig=/etc/lodia/konnectivity-kubeconfig/kubeconfig
+        - --mode=grpc
+        - --proxy-strategies=destHost,default
+        - --server-port=0
+        - --uds-name=/run/konnectivity/konnectivity-server.socket
+        image: registry.k8s.io/kas-network-proxy/proxy-server:v0.37.0
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8134
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        name: konnectivity-server
+        ports:
+        - containerPort: 8132
+          name: konnectivity
+          protocol: TCP
+        resources:
+          requests:
+            cpu: 20m
+            memory: 32Mi
+        restartPolicy: Always
+        startupProbe:
+          failureThreshold: 30
+          httpGet:
+            path: /healthz
+            port: 8134
+          periodSeconds: 1
+        volumeMounts:
+        - mountPath: /etc/lodia/konnectivity-server
+          name: konnectivity-server
+          readOnly: true
+        - mountPath: /etc/lodia/konnectivity-kubeconfig
+          name: konnectivity-kubeconfig
+          readOnly: true
+        - mountPath: /run/konnectivity
+          name: konnectivity-socket
+      terminationGracePeriodSeconds: 90
+      volumes:
+      - name: client-ca
+        secret:
+          secretName: dev-client-ca
+      - name: encryption
+        secret:
+          secretName: dev-encryption-config
+      - name: etcd-ca
+        secret:
+          secretName: dev-etcd-ca
+      - name: etcd-client
+        secret:
+          secretName: dev-apiserver-etcd-client
+      - name: front-proxy-ca
+        secret:
+          secretName: dev-front-proxy-ca
+      - name: front-proxy-client
+        secret:
+          secretName: dev-front-proxy-client
+      - name: konnectivity-kubeconfig
+        secret:
+          secretName: dev-konnectivity-kubeconfig
+      - name: konnectivity-server
+        secret:
+          secretName: dev-konnectivity-server
+      - name: kubelet-client
+        secret:
+          secretName: dev-apiserver-kubelet-client
+      - name: sa-keys
+        secret:
+          secretName: dev-sa-keys
+      - name: serving
+        secret:
+          secretName: dev-apiserver-serving
+      - configMap:
+          name: dev-authentication-config
+        name: authentication
+      - configMap:
+          name: dev-egress-selector
+        name: egress
+      - emptyDir: {}
+        name: konnectivity-socket
+      - emptyDir: {}
+        name: signer-socket
+status: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/name: kube-controller-manager
+    lodia.io/control-plane: dev
+  name: dev-kube-controller-manager
+  namespace: team-a
+  ownerReferences:
+  - apiVersion: lodia.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: ControlPlane
+    name: dev
+    uid: 5e1f7c3a-0000-4000-8000-000000000001
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kube-controller-manager
+      lodia.io/control-plane: dev
+  strategy:
+    rollingUpdate:
+      maxSurge: 100%
+      maxUnavailable: 0
+    type: RollingUpdate
+  template:
+    metadata:
+      annotations:
+        lodia.io/restart-hash: cm-hash
+      labels:
+        app.kubernetes.io/name: kube-controller-manager
+        lodia.io/control-plane: dev
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - command:
+        - kube-controller-manager
+        - --allocate-node-cidrs=true
+        - --authentication-kubeconfig=/etc/lodia/kubeconfig/kubeconfig
+        - --authorization-kubeconfig=/etc/lodia/kubeconfig/kubeconfig
+        - --bind-address=0.0.0.0
+        - --client-ca-file=/etc/lodia/client-ca/ca.crt
+        - --cluster-cidr=10.244.0.0/16
+        - --cluster-name=dev
+        - --cluster-signing-duration=720h0m0s
+        - --cluster-signing-kubelet-client-cert-file=/etc/lodia/kubelet-signer/tls.crt
+        - --cluster-signing-kubelet-client-key-file=/etc/lodia/kubelet-signer/tls.key
+        - --controllers=*,bootstrap-signer-controller,token-cleaner-controller
+        - --kubeconfig=/etc/lodia/kubeconfig/kubeconfig
+        - --leader-elect=true
+        - --leader-elect-lease-duration=15s
+        - --leader-elect-renew-deadline=10s
+        - --leader-elect-resource-lock=leases
+        - --leader-elect-resource-name=kube-controller-manager
+        - --leader-elect-resource-namespace=kube-system
+        - --leader-elect-retry-period=2s
+        - --node-monitor-grace-period=60s
+        - --node-monitor-period=5s
+        - --requestheader-client-ca-file=/etc/lodia/front-proxy-ca/ca.crt
+        - --root-ca-file=/etc/lodia/ca-bundle/ca.crt
+        - --service-cluster-ip-range=10.96.0.0/16
+        - --use-service-account-credentials=true
+        image: registry.k8s.io/kube-controller-manager:v1.37.1
+        livenessProbe:
+          failureThreshold: 8
+          httpGet:
+            path: /healthz
+            port: 10257
+            scheme: HTTPS
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 15
+        name: kube-controller-manager
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+        startupProbe:
+          failureThreshold: 24
+          httpGet:
+            path: /healthz
+            port: 10257
+            scheme: HTTPS
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 15
+        volumeMounts:
+        - mountPath: /etc/lodia/kubeconfig
+          name: kubeconfig
+          readOnly: true
+        - mountPath: /etc/lodia/client-ca
+          name: client-ca
+          readOnly: true
+        - mountPath: /etc/lodia/front-proxy-ca
+          name: front-proxy-ca
+          readOnly: true
+        - mountPath: /etc/lodia/kubelet-signer
+          name: kubelet-signer
+          readOnly: true
+        - mountPath: /etc/lodia/ca-bundle
+          name: ca-bundle
+          readOnly: true
+      enableServiceLinks: false
+      volumes:
+      - name: ca-bundle
+        secret:
+          secretName: dev-ca-bundle
+      - name: client-ca
+        secret:
+          secretName: dev-client-ca
+      - name: front-proxy-ca
+        secret:
+          secretName: dev-front-proxy-ca
+      - name: kubeconfig
+        secret:
+          secretName: dev-controller-manager-kubeconfig
+      - name: kubelet-signer
+        secret:
+          secretName: dev-kubelet-signer
+status: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/name: kube-scheduler
+    lodia.io/control-plane: dev
+  name: dev-kube-scheduler
+  namespace: team-a
+  ownerReferences:
+  - apiVersion: lodia.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: ControlPlane
+    name: dev
+    uid: 5e1f7c3a-0000-4000-8000-000000000001
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kube-scheduler
+      lodia.io/control-plane: dev
+  strategy:
+    rollingUpdate:
+      maxSurge: 100%
+      maxUnavailable: 0
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kube-scheduler
+        lodia.io/control-plane: dev
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - command:
+        - kube-scheduler
+        - --authentication-kubeconfig=/etc/lodia/kubeconfig/kubeconfig
+        - --authorization-kubeconfig=/etc/lodia/kubeconfig/kubeconfig
+        - --bind-address=0.0.0.0
+        - --kubeconfig=/etc/lodia/kubeconfig/kubeconfig
+        - --leader-elect=true
+        - --leader-elect-resource-lock=leases
+        - --leader-elect-resource-name=kube-scheduler
+        - --leader-elect-resource-namespace=kube-system
+        image: registry.k8s.io/kube-scheduler:v1.37.1
+        livenessProbe:
+          failureThreshold: 8
+          httpGet:
+            path: /livez
+            port: 10259
+            scheme: HTTPS
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 15
+        name: kube-scheduler
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /readyz
+            port: 10259
+            scheme: HTTPS
+          periodSeconds: 1
+          timeoutSeconds: 15
+        resources:
+          requests:
+            cpu: 20m
+            memory: 32Mi
+        startupProbe:
+          failureThreshold: 24
+          httpGet:
+            path: /livez
+            port: 10259
+            scheme: HTTPS
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 15
+        volumeMounts:
+        - mountPath: /etc/lodia/kubeconfig
+          name: kubeconfig
+          readOnly: true
+      enableServiceLinks: false
+      volumes:
+      - name: kubeconfig
+        secret:
+          secretName: dev-scheduler-kubeconfig
+status: {}

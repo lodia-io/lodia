@@ -4,7 +4,11 @@
 package workloads
 
 import (
+	"bytes"
+	"flag"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -12,9 +16,81 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/yaml"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/versions"
 )
+
+var updateGolden = flag.Bool("update-golden", false, "write testdata/render from the render instead of comparing with it")
+
+func TestTheRenderOutsideGatewayModeIsPinned(t *testing.T) {
+	images, ok := versions.For("v1.37.1")
+	if !ok {
+		t.Fatal("no images for v1.37.1")
+	}
+	for mode, c := range map[string]struct {
+		endpoint lodiav1alpha1.Endpoint
+		status   lodiav1alpha1.EndpointStatus
+	}{
+		"loadBalancer": {
+			endpoint: lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}},
+			status:   lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 443}, Konnectivity: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 8132}, InCluster: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 6443}},
+		},
+		"nodePort": {
+			endpoint: lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}},
+			status:   lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "192.0.2.11", Port: 31443}, Konnectivity: lodiav1alpha1.HostPort{Host: "192.0.2.11", Port: 31132}, InCluster: lodiav1alpha1.HostPort{Host: "192.0.2.11", Port: 31443}},
+		},
+	} {
+		cp := &lodiav1alpha1.ControlPlane{
+			ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: "team-a", UID: "5e1f7c3a-0000-4000-8000-000000000001"},
+			Spec: lodiav1alpha1.ControlPlaneSpec{
+				Version:  "v1.37.1",
+				Endpoint: c.endpoint,
+				Network:  lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
+			},
+		}
+		var objects []any
+		objects = append(objects, service(cp))
+		for _, p := range networkPolicies(cp) {
+			objects = append(objects, p)
+		}
+		for _, d := range (rendering{
+			cp:          cp,
+			images:      images,
+			signerImage: "registry.example/lodia-signer:test",
+			advertise:   c.status.APIServer.Host,
+			issuer:      issuer(cp, c.status.APIServer),
+			jwksURI:     publicURL(c.status.APIServer) + jwksPath,
+			etcd:        []lodiav1alpha1.HostPort{{Host: "dev-etcd-client.team-a.svc", Port: 2379}},
+			hashes:      map[string]string{apiServer: "api-hash", controllerManager: "cm-hash"},
+		}).deployments() {
+			objects = append(objects, d)
+		}
+		var rendered bytes.Buffer
+		for _, obj := range objects {
+			doc, err := yaml.Marshal(obj)
+			if err != nil {
+				t.Fatalf("%s: %v", mode, err)
+			}
+			rendered.WriteString("---\n")
+			rendered.Write(doc)
+		}
+		path := filepath.Join("testdata", "render", mode+".yaml")
+		if *updateGolden {
+			if err := os.WriteFile(path, rendered.Bytes(), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		want, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(rendered.Bytes(), want) {
+			t.Errorf("%s renders other bytes than %s, which would roll every tenant in that mode:\n%s", mode, path, rendered.Bytes())
+		}
+	}
+}
 
 func TestTheKonnectivityVersionReplacesTheTagOfAnyReference(t *testing.T) {
 	pinned := &lodiav1alpha1.ControlPlane{Spec: lodiav1alpha1.ControlPlaneSpec{
