@@ -5,8 +5,9 @@
 // fixed rate on new connections and at the same rate on reused ones. It
 // follows an answer's Retry-After once, as client-go does, and retries
 // nothing else. It prints each request that fails, finds the slice empty or
-// follows a Retry-After, and every second the counts so far, after "counts ",
-// as JSON; the e2e suite reads them from its log.
+// follows a Retry-After, with the failed answer's Retry-After and body, and
+// every second the counts so far, after "counts ", as JSON; the e2e suite reads
+// them from its log.
 package main
 
 import (
@@ -14,6 +15,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -27,7 +29,11 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-const slicePath = "/apis/discovery.k8s.io/v1/namespaces/default/endpointslices/kubernetes"
+const (
+	slicePath = "/apis/discovery.k8s.io/v1/namespaces/default/endpointslices/kubernetes"
+	// maxFailedBody bounds a failed answer's body in the pod's log.
+	maxFailedBody = 4096
+)
 
 // tally counts a loop's requests: sent, answered with the slice, failed,
 // answered with an empty slice, and, of all of them, those that followed a
@@ -114,7 +120,7 @@ func send(ctx context.Context, c *http.Client, url, name string, rate int, timeo
 		case start := <-tick.C:
 			n.sent.Add(1)
 			go func() {
-				empty, retried, err := get(ctx, c, url, timeout)
+				empty, followed, err := get(ctx, c, url, timeout)
 				switch {
 				case ctx.Err() != nil:
 					return
@@ -127,9 +133,9 @@ func send(ctx context.Context, c *http.Client, url, name string, rate int, timeo
 				default:
 					n.ok.Add(1)
 				}
-				if retried {
+				if followed != "" {
 					n.retried.Add(1)
-					fmt.Printf("retried %s %s\n", start.UTC().Format(time.RFC3339Nano), name)
+					fmt.Printf("retried %s %s: %s\n", start.UTC().Format(time.RFC3339Nano), name, followed)
 				}
 			}()
 		}
@@ -137,21 +143,23 @@ func send(ctx context.Context, c *http.Client, url, name string, rate int, timeo
 }
 
 // get follows a Retry-After on a 429 or a 5xx once, as client-go does
-// (https://github.com/kubernetes/client-go/blob/v0.37.1/rest/with_retry.go#L308-L318).
-func get(ctx context.Context, c *http.Client, url string, timeout time.Duration) (bool, bool, error) {
+// (https://github.com/kubernetes/client-go/blob/v0.37.1/rest/with_retry.go#L308-L318),
+// and returns the answer that asked for it.
+func get(ctx context.Context, c *http.Client, url string, timeout time.Duration) (bool, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	empty, wait, err := getOnce(ctx, c, url)
 	if wait < 0 {
-		return empty, false, err
+		return empty, "", err
 	}
+	followed := err.Error()
 	select {
 	case <-ctx.Done():
-		return false, true, ctx.Err()
+		return false, followed, ctx.Err()
 	case <-time.After(wait):
 	}
 	empty, _, err = getOnce(ctx, c, url)
-	return empty, true, err
+	return empty, followed, err
 }
 
 // getOnce returns the wait an answer's Retry-After asks for, or -1.
@@ -167,10 +175,15 @@ func getOnce(ctx context.Context, c *http.Client, url string) (bool, time.Durati
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		wait := time.Duration(-1)
-		if seconds, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError) {
+		retryAfter := resp.Header.Get("Retry-After")
+		if seconds, err := strconv.Atoi(retryAfter); err == nil && (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError) {
 			wait = time.Duration(seconds) * time.Second
 		}
-		return false, wait, fmt.Errorf("status %s", resp.Status)
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxFailedBody))
+		if err != nil {
+			body = fmt.Appendf(body, " (reading the body: %v)", err)
+		}
+		return false, wait, fmt.Errorf("status %s, Retry-After %q, body %q", resp.Status, retryAfter, body)
 	}
 	var slice discoveryv1.EndpointSlice
 	if err := json.NewDecoder(resp.Body).Decode(&slice); err != nil {

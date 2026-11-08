@@ -959,7 +959,7 @@ func checkLoop(t *testing.T, where string, before, after loopCounts, log string)
 	}
 	for line := range strings.Lines(log) {
 		fields := strings.Fields(line)
-		if len(fields) < 2 || fields[0] != "failed" && fields[0] != "empty" {
+		if len(fields) < 2 || fields[0] != "failed" && fields[0] != "empty" && fields[0] != "retried" {
 			continue
 		}
 		if at, err := time.Parse(time.RFC3339Nano, fields[1]); err == nil && !at.Before(before.Time) {
