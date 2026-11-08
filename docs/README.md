@@ -48,11 +48,11 @@ The field reference with every rule is [`api/controlplane.md`](api/controlplane.
 | Datastore | the `Etcd` of a dedicated etcd and its NetworkPolicy, or a user and role in a shared store; backups and defragmentation; a `Backup`'s seal, its copy and its encryption keys | `DatastoreReady`; `BackupReady` outside `Ready`; a `Backup`'s `Ready` | a complete generation of PKI's etcd certificates; for a `Backup`, its source's `DatastoreReady` |
 | Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady`; `RoutesReady` in `gateway` mode | `status.target`, `status.datastore`, `CertificatesReady`, `DatastoreReady`; `status.restore` and `AddonsApplied` before it starts a restored `ControlPlane`'s controller manager |
 | Tenant | objects inside the tenant cluster, with an inventory | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
-| Health | status, and from phase 2's wave 2 the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable`, `ControllersLeading`; `ControllerManagerHeld` outside `Ready`; `status.nodes` | `status.endpoint`, the CA bundle and, in `gateway` mode, `<cp>-tunnel-client`; `AccessReady` and `<cp>-lodia-kubeconfig` for the leader Leases, the node Leases and a held restore's lists |
+| Health | status, and the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable`, `ControllersLeading`; `ControllerManagerHeld` outside `Ready`; `status.nodes` | `status.endpoint`, the CA bundle and, in `gateway` mode, `<cp>-tunnel-client`; `AccessReady` and `<cp>-lodia-kubeconfig` for the leader Leases, the node Leases and a held restore's lists |
 | Lifecycle | `status.target`, `Progressing`, `Ready`; from phase 2's wave 2 `status.kubernetes`, `status.maintenance` and the pre-upgrade `Backup` | `Progressing` | the others |
 
 How they meet is [independent-controllers](decisions/independent-controllers.md).
-PKI, the Datastore controller, a first Lifecycle, the Tenant controller, Health's probes and sampling and Workloads are built (`internal/controller/pki`, `datastore`, `lifecycle`, `tenant`, `health` and `workloads`).
+PKI, the Datastore controller, a first Lifecycle, the Tenant controller, Health and Workloads are built (`internal/controller/pki`, `datastore`, `lifecycle`, `tenant`, `health` and `workloads`).
 
 ```mermaid
 sequenceDiagram
@@ -424,8 +424,7 @@ For a restored `ControlPlane` Health reports `AwaitingRelease` or `SourceExists`
 A second reconciler, `health-nodes`, with a queue of its own and 100 workers, samples the tenant's nodes once `AccessReady` is True.
 Every period it lists the Leases of `kube-node-lease` through the in-namespace Service with a list that sets no `resourceVersion`, which the API server must serve as a consistent read ([api-concepts.md](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/reference/using-api/api-concepts.md#L1652-L1654)), and every 30 seconds the Nodes.
 It never touches the public endpoint, so one that does not answer, which holds a `health` worker for the timeout, delays no sample.
-It reports `status.nodes`, and in `ControllerManagerHeld` how many of the nodes that count are silent ([controller-manager-hold](decisions/controller-manager-hold.md)): `NotHeld` while the hold is not built, `Disabled` with `holdControllerManager: false`.
-The rest of this section comes with phase 2.
+It reports `status.nodes`, and in `ControllerManagerHeld` how many of the nodes that count are silent ([controller-manager-hold](decisions/controller-manager-hold.md)).
 
 From inside the management cluster the public probe reaches a load balancer's or a Gateway's address through kube-proxy, which captures traffic to such an address on every node, so it proves the cloud load balancer only in `nodePort` mode ([serviceport.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/proxy/serviceport.go#L222-L235)); the end-to-end signal from the nodes' side is their leases.
 While most nodes are silent and the API server answers, Health holds the controller manager's leader Lease inside the tenant ([controller-manager-hold](decisions/controller-manager-hold.md)), so nothing evicts their pods.
@@ -508,7 +507,7 @@ Without `--config` the defaults apply.
 | `tenant.applyInterval` | the inventory re-apply period | 10m |
 | `health.period` | how often Health probes each control plane and reads its leases | 5s |
 | `health.failuresBeforeFalse` | failed passes in a row that turn `Reachable` False | 3 |
-| `health.silentAfter`, `health.holdFraction`, `health.releaseAfter` | when a node counts as silent, the share of silent nodes that starts the hold, how long the nodes must be back before it ends; the operator refuses to start when they break the margin of [controller-manager-hold](decisions/controller-manager-hold.md), and uses `releaseAfter` only once the hold is built | 20s, 0.6, 2m |
+| `health.silentAfter`, `health.holdFraction`, `health.releaseAfter` | when a node counts as silent, the share of silent nodes that starts the hold, how long the nodes must be back before it ends; the operator refuses to start when they break the margin of [controller-manager-hold](decisions/controller-manager-hold.md) | 20s, 0.6, 2m |
 | `pki.leafLifetime`, `pki.caLifetime`, `pki.trustAnchorLifetime` | leaf certificates, the kubelet signer and the request CA; every other CA but the cluster CA; the cluster CA ([staged-credential-rotation](decisions/staged-credential-rotation.md)) | 1 year, 5 years, 10 years |
 | `kubeconfigRequests.maxExpiration` | the longest a `KubeconfigRequest`'s certificate lives, at most the schema's 24 h ([fields](api/controlplane.md#kubeconfigrequest)) | 24h |
 | `defaults.resources.<component>` | requests and limits per component | from the idle usage measured in phase 1 ([Capacity](operations.md#capacity)) |

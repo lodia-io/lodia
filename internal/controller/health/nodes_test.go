@@ -41,23 +41,28 @@ import (
 )
 
 const (
-	leaseListPath = "/apis/coordination.k8s.io/v1/namespaces/kube-node-lease/leases"
-	nodeListPath  = "/api/v1/nodes"
-	fewerThanTwo  = "; fewer than 2 are counted"
+	leaseListPath  = "/apis/coordination.k8s.io/v1/namespaces/kube-node-lease/leases"
+	nodeListPath   = "/api/v1/nodes"
+	managerLeases  = "/apis/coordination.k8s.io/v1/namespaces/kube-system/leases"
+	managerLease   = managerLeases + "/kube-controller-manager"
+	fewerThanTwo   = "; fewer than 2 are counted"
+	atOrAbove      = ", at or above "
+	lodiaHoldsIt   = "; Lodia holds the controller manager's leader Lease"
+	failedLeaseMsg = "the Leases of kube-node-lease could not be listed"
 )
 
 func silent(n, of int) string {
 	return fmt.Sprintf("%d of %d counted nodes are silent", n, of)
 }
 
-func atFraction(percent string) string {
-	return "; at or above the hold fraction of " + percent + "%"
+func taken(n, of int, percent string) string {
+	return silent(n, of) + atOrAbove + percent + "%" + lodiaHoldsIt
 }
 
 func nodesReconciler(now clock.PassiveClock) *health.NodesReconciler {
 	return &health.NodesReconciler{
 		Client: k8s, Reader: k8s, Period: 5 * time.Second, Timeout: 2 * time.Second,
-		SilentAfter: 20 * time.Second, HoldFraction: 600, Clock: now,
+		SilentAfter: 20 * time.Second, HoldFraction: 600, ReleaseAfter: 2 * time.Minute, Clock: now,
 	}
 }
 
@@ -89,6 +94,7 @@ func clearNodes(t *testing.T) {
 	if err := tenant.DeleteAllOf(t.Context(), &coordinationv1.Lease{}, client.InNamespace(corev1.NamespaceNodeLease)); err != nil {
 		t.Fatal(err)
 	}
+	removeLeases(t)
 }
 
 func addNode(t *testing.T, name string, ready corev1.ConditionStatus, since time.Time, kubelet string) {
@@ -306,10 +312,8 @@ func TestAFailedLeaseListRestartsTheClockOfEveryLease(t *testing.T) {
 
 	failing.Store(true)
 	now.SetTime(start.Add(15 * time.Second))
-	r.Client = noControlPlaneWrite(t, k8s)
 	sample(t, r, cp)
-	r.Client = k8s
-	expectNotHeld(t, cp, silent(0, 3))
+	expectNotHeld(t, cp, failedLeaseMsg)
 
 	failing.Store(false)
 	now.SetTime(start.Add(25 * time.Second))
@@ -320,7 +324,9 @@ func TestAFailedLeaseListRestartsTheClockOfEveryLease(t *testing.T) {
 	expectNotHeld(t, cp, silent(0, 3))
 	now.SetTime(start.Add(45 * time.Second))
 	sample(t, r, cp)
-	expectNotHeld(t, cp, silent(3, 3)+atFraction("100"))
+	if err := expectHeld(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonNodesSilent, taken(3, 3, "100")); err != nil {
+		t.Error(err)
+	}
 }
 
 func TestANodeNamedLikeALeaderLeaseSharesNoClockWithIt(t *testing.T) {
@@ -375,20 +381,24 @@ func TestTheShareOfSilentNodesIsComparedInThousandths(t *testing.T) {
 	now.SetTime(start.Add(20 * time.Second))
 	for _, c := range []struct {
 		fraction int
+		status   metav1.ConditionStatus
+		reason   string
 		want     string
 	}{
-		{600, silent(3, 5) + atFraction("60")},
-		{601, silent(3, 5)},
-		{599, silent(3, 5) + atFraction("59.9")},
-		{1000, silent(3, 5)},
+		{600, metav1.ConditionTrue, lodiav1alpha1.ReasonNodesSilent, taken(3, 5, "60")},
+		{601, metav1.ConditionFalse, lodiav1alpha1.ReasonNotHeld, silent(3, 5)},
+		{599, metav1.ConditionTrue, lodiav1alpha1.ReasonNodesSilent, taken(3, 5, "59.9")},
+		{1000, metav1.ConditionFalse, lodiav1alpha1.ReasonNotHeld, silent(3, 5)},
 	} {
+		removeLeases(t)
 		r.HoldFraction = c.fraction
 		sample(t, r, cp)
-		if err := expectHeld(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonNotHeld, c.want); err != nil {
+		if err := expectHeld(t, cp, c.status, c.reason, c.want); err != nil {
 			t.Errorf("3 of 5 silent at %d thousandths: %v", c.fraction, err)
 		}
 	}
 
+	removeLeases(t)
 	r.HoldFraction = 600
 	renewNodeLease(t, "c", time.Now())
 	now.SetTime(start.Add(25 * time.Second))
@@ -417,7 +427,9 @@ func TestFewerThanTwoCountedNodesIsBelowTheFractionWhateverTheShare(t *testing.T
 	joined(t, "second", corev1.ConditionTrue, start)
 	now.SetTime(start.Add(90 * time.Second))
 	sample(t, r, cp)
-	expectNotHeld(t, cp, silent(1, 2)+atFraction("50"))
+	if err := expectHeld(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonNodesSilent, taken(1, 2, "50")); err != nil {
+		t.Error(err)
+	}
 }
 
 func TestNodesAreListedOnceIn30SecondsAndLeasesEveryPassConsistently(t *testing.T) {
@@ -478,7 +490,9 @@ func TestAFailedListOfNodesLeavesTheLastGoodOne(t *testing.T) {
 	now.SetTime(start.Add(30 * time.Second))
 	sample(t, r, cp)
 	expectNodes(t, cp, nodesOf(2, 2, 0, "v1.35.0"))
-	expectNotHeld(t, cp, silent(2, 2)+atFraction("60"))
+	if err := expectHeld(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonNodesSilent, taken(2, 2, "60")); err != nil {
+		t.Error(err)
+	}
 
 	failing.Store(false)
 	now.SetTime(start.Add(31 * time.Second))
@@ -698,7 +712,7 @@ func TestReconcilingIsAppliedBeforeATenantThatNeverAnswersIsCalled(t *testing.T)
 	setAccess(t, cp)
 	var asked, reconciling atomic.Bool
 	silentTenant := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
-		if sampling := req.URL.Path == leaseListPath || req.URL.Path == nodeListPath; sampling && asked.CompareAndSwap(false, true) {
+		if sampling := req.URL.Path == managerLease || req.URL.Path == leaseListPath || req.URL.Path == nodeListPath; sampling && asked.CompareAndSwap(false, true) {
 			fresh := &lodiav1alpha1.ControlPlane{}
 			if k8s.Get(req.Context(), client.ObjectKeyFromObject(cp), fresh) == nil {
 				c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionControllerManagerHeld)
@@ -712,8 +726,9 @@ func TestReconcilingIsAppliedBeforeATenantThatNeverAnswersIsCalled(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeKubeconfig(t, cp, kubeconfig)
+	writeKubeconfig(t, cp, tenantKubeconfig)
 	r := nodesReconciler(clock.RealClock{})
+	r.Reader = kubeconfigOverride{Reader: k8s, key: client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.LodiaKubeconfigSecret.Name(cp.Name)}, kubeconfig: kubeconfig}
 	r.Timeout = 500 * time.Millisecond
 	started := time.Now()
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
@@ -931,6 +946,22 @@ func TestAStaleCacheDoesNotPutReconcilingOverACondition(t *testing.T) {
 	expectNodes(t, cp, nodesOf(2, 2, 0, "v1.35.0"))
 }
 
+type kubeconfigOverride struct {
+	client.Reader
+	key        client.ObjectKey
+	kubeconfig []byte
+}
+
+func (o kubeconfigOverride) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if err := o.Reader.Get(ctx, key, obj, opts...); err != nil {
+		return err
+	}
+	if secret, ok := obj.(*corev1.Secret); ok && key == o.key {
+		secret.Data = map[string][]byte{lodiav1alpha1.KubeconfigKey: o.kubeconfig}
+	}
+	return nil
+}
+
 func startNodes(t *testing.T, namespaces []string, register func(ctrl.Manager) error) {
 	t.Helper()
 	mgr, err := newManager(k8s.Scheme(), true, namespaces...)
@@ -958,7 +989,7 @@ func TestATenantWhoseAPIServerHangsDoesNotStopAnothersSamples(t *testing.T) {
 	good := controlPlaneIn(t, healthy, lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}})
 	var firstAsked atomic.Int64
 	silentTenant := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
-		if req.URL.Path == leaseListPath || req.URL.Path == nodeListPath {
+		if req.URL.Path == managerLease || req.URL.Path == leaseListPath || req.URL.Path == nodeListPath {
 			firstAsked.CompareAndSwap(0, time.Now().UnixNano())
 		}
 		<-req.Context().Done()
@@ -974,18 +1005,19 @@ func TestATenantWhoseAPIServerHangsDoesNotStopAnothersSamples(t *testing.T) {
 	for _, cp := range []*lodiav1alpha1.ControlPlane{hung, good} {
 		setAccess(t, cp)
 	}
-	writeKubeconfig(t, hung, kubeconfig)
+	writeKubeconfig(t, hung, tenantKubeconfig)
 	writeKubeconfig(t, good, tenantKubeconfig)
 
 	const timeout = 5 * time.Second
 	startNodes(t, []string{hanging, healthy}, func(mgr ctrl.Manager) error {
 		return (&health.NodesReconciler{
-			Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Period: 100 * time.Millisecond, Timeout: timeout,
-			SilentAfter: time.Second, HoldFraction: 600, Clock: clock.RealClock{},
+			Client: mgr.GetClient(), Reader: kubeconfigOverride{Reader: mgr.GetAPIReader(), key: client.ObjectKey{Namespace: hung.Namespace, Name: lodiav1alpha1.LodiaKubeconfigSecret.Name(hung.Name)}, kubeconfig: kubeconfig},
+			Period: 100 * time.Millisecond, Timeout: timeout,
+			SilentAfter: time.Second, HoldFraction: 600, ReleaseAfter: time.Minute, Clock: clock.RealClock{},
 		}).SetupWithManager(mgr, 2)
 	})
 	eventually(t, func() error {
-		return expectHeld(t, good, metav1.ConditionFalse, lodiav1alpha1.ReasonNotHeld, silent(2, 2)+atFraction("60"))
+		return expectHeld(t, good, metav1.ConditionTrue, lodiav1alpha1.ReasonNodesSilent, taken(2, 2, "60"))
 	})
 	asked := firstAsked.Load()
 	if asked == 0 {

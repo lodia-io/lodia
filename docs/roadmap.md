@@ -80,6 +80,8 @@ Then wave 2: upgrades with maintenance windows, the fleet limit and the operator
 
 Done from wave 1b: the Gateway with in-cluster access, with its gate on every pull request and G6 and conformance behind the Gateway every night ([gates](../test/e2e/README.md#the-gateway-gate)).
 
+Done from wave 2: Health's internal probe, node sampling and the controller manager hold.
+
 Gate:
 
 - e2e: during a rolling update of the API server and during a minor upgrade (two kind node images), a client loop of 20 requests per second against the public endpoint, and one from a pod in the tenant through `kubernetes.default`, record zero failures.
