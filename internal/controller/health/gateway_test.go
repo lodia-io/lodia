@@ -43,6 +43,7 @@ type gatewayFixture struct {
 	api          *endpoint
 	tunnel       *tunnelEndpoint
 	konnectivity string
+	clientCA     *certs.Certificate
 	cp           *lodiav1alpha1.ControlPlane
 }
 
@@ -70,8 +71,13 @@ func leafPair(t *testing.T, ca *certs.Certificate, usages ...x509.ExtKeyUsage) (
 
 func serveTunnel(t *testing.T, ca, clientCA *certs.Certificate) *tunnelEndpoint {
 	t.Helper()
+	return serveTunnelWithInnerCA(t, ca, clientCA, ca)
+}
+
+func serveTunnelWithInnerCA(t *testing.T, ca, clientCA, innerCA *certs.Certificate) *tunnelEndpoint {
+	t.Helper()
 	serving, _, _ := leafPair(t, ca, x509.ExtKeyUsageServerAuth)
-	apiServing, _, _ := leafPair(t, ca, x509.ExtKeyUsageServerAuth)
+	apiServing, _, _ := leafPair(t, innerCA, x509.ExtKeyUsageServerAuth)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -182,7 +188,7 @@ func newGateway(t *testing.T) *gatewayFixture {
 		t.Fatal(err)
 	}
 	_, certPEM, keyPEM := leafPair(t, clientCA, x509.ExtKeyUsageClientAuth)
-	f := &gatewayFixture{api: api, tunnel: serveTunnel(t, ca, clientCA), konnectivity: serveTLS(t, ca), cp: cp}
+	f := &gatewayFixture{api: api, tunnel: serveTunnel(t, ca, clientCA), konnectivity: serveTLS(t, ca), clientCA: clientCA, cp: cp}
 	writeBundle(t, cp, api)
 	if err := k8s.Create(t.Context(), &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: lodiav1alpha1.TunnelClientSecret.Name(cp.Name), Namespace: cp.Namespace},
@@ -237,7 +243,7 @@ func (f *gatewayFixture) allAnswered() string {
 }
 
 func (f *gatewayFixture) probe(timeout time.Duration) *health.Reconciler {
-	return &health.Reconciler{Client: k8s, Reader: k8s, Period: time.Hour, Timeout: timeout}
+	return &health.Reconciler{Client: k8s, Reader: k8s, Period: time.Hour, Timeout: timeout, Clock: clock.RealClock{}}
 }
 
 func TestGatewayModeProbesTheThreePaths(t *testing.T) {
@@ -292,11 +298,16 @@ func TestEachGatewayPathFailingAloneNamesItself(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			clientCA, err := certs.NewCA("tunnel-ca", time.Now(), time.Hour)
+			return f.konnectivity, serveTunnelWithInnerCA(t, other, f.clientCA, f.api.ca).address
+		}, func(f *gatewayFixture, _, tunnel string) string {
+			return "tunnel: " + f.api.url + " through " + tunnel + " did not answer"
+		}},
+		{"the API server behind the tunnel is not the bundle's", func(t *testing.T, f *gatewayFixture) (string, string) {
+			other, err := certs.NewCA("other-ca", time.Now(), time.Hour)
 			if err != nil {
 				t.Fatal(err)
 			}
-			return f.konnectivity, serveTunnel(t, other, clientCA).address
+			return f.konnectivity, serveTunnelWithInnerCA(t, f.api.ca, f.clientCA, other).address
 		}, func(f *gatewayFixture, _, tunnel string) string {
 			return "tunnel: " + f.api.url + " through " + tunnel + " did not answer"
 		}},
@@ -392,10 +403,17 @@ func TestAHungGatewayPathCostsOneTimeout(t *testing.T) {
 	}
 	for _, c := range []struct {
 		name  string
-		apply func(f *gatewayFixture, stalled string) (string, string)
+		apply func(f *gatewayFixture, stalled string) (string, string, string)
 	}{
-		{"a Gateway that accepts and never answers at the tunnel", func(f *gatewayFixture, stalled string) (string, string) { return f.konnectivity, stalled }},
-		{"a Gateway that accepts and never answers at konnectivity", func(f *gatewayFixture, stalled string) (string, string) { return stalled, f.tunnel.address }},
+		{"a Gateway that accepts and never answers at the public endpoint", func(f *gatewayFixture, stalled string) (string, string, string) {
+			return stalled, f.konnectivity, f.tunnel.address
+		}},
+		{"a Gateway that accepts and never answers at the tunnel", func(f *gatewayFixture, stalled string) (string, string, string) {
+			return f.apiAddress(), f.konnectivity, stalled
+		}},
+		{"a Gateway that accepts and never answers at konnectivity", func(f *gatewayFixture, stalled string) (string, string, string) {
+			return f.apiAddress(), stalled, f.tunnel.address
+		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newGateway(t)
@@ -404,8 +422,8 @@ func TestAHungGatewayPathCostsOneTimeout(t *testing.T) {
 				return expect(t, f.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, f.allAnswered())
 			})
 			stalled, closed := stallListener(t)
-			konnectivity, tunnel := c.apply(f, stalled)
-			publishGateway(t, f.cp, f.apiAddress(), konnectivity, tunnel)
+			api, konnectivity, tunnel := c.apply(f, stalled)
+			publishGateway(t, f.cp, api, konnectivity, tunnel)
 			probe := f.probe(timeout)
 			start := time.Now()
 			reconcile(t, probe, f.cp)
@@ -471,6 +489,8 @@ func TestAGatewayEndpointWithoutTheTunnelWaitsForIt(t *testing.T) {
 func TestARotatedTunnelClientReachesTheNextProbe(t *testing.T) {
 	f := newGateway(t)
 	f.publishWorking(t)
+	setAccess(t, f.cp)
+	writeKubeconfig(t, f.cp, tenantKubeconfig)
 	probe := f.probe(2 * time.Second)
 	reconcile(t, probe, f.cp)
 	if err := expect(t, f.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, f.allAnswered()); err != nil {
@@ -493,7 +513,9 @@ func TestARotatedTunnelClientReachesTheNextProbe(t *testing.T) {
 	if err := k8s.Update(t.Context(), secret); err != nil {
 		t.Fatal(err)
 	}
-	reconcile(t, probe, f.cp)
+	for range health.FailuresBeforeFalse {
+		reconcile(t, probe, f.cp)
+	}
 	if err := expect(t, f.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, f.allAnswered()); err != nil {
 		t.Errorf("after the client pair rotated: %v", err)
 	}
