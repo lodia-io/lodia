@@ -98,6 +98,22 @@ e2e-gateway: ## the gateway gate: tenants behind Envoy Gateway by SNI, a node jo
 	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 $(E2E_CLUSTER)-dns || status=1; \
 	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
 
+.PHONY: e2e-gateway-g6
+e2e-gateway-g6: ## gate G6, what the Gateway and the tunnel add to the API's p99 over a direct path, on a kind cluster of its own that it deletes afterwards with the DNS container the gate starts; results in $(E2E_DIR)/_artifacts
+	mkdir -p $(E2E_DIR)
+	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig
+	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,gateway -count=1 -timeout 40m -run '^TestGatewayOverhead$$' -artifacts -outputdir $(E2E_DIR) ./test/e2e/...; status=$$?; \
+	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 $(E2E_CLUSTER)-dns || status=1; \
+	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
+
+.PHONY: conformance-gateway
+conformance-gateway: ## the Kubernetes conformance suite through hydrophone against a tenant with two nodes behind the Gateway, on a kind cluster of its own that it deletes afterwards with the DNS container the gate starts; results in $(E2E_DIR)/_artifacts; CONFORMANCE_FOCUS=<regexp> runs only the tests it matches
+	mkdir -p $(E2E_DIR)
+	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig
+	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,gateway -count=1 -timeout 110m -run '^TestGatewayConformance$$' -artifacts -outputdir $(E2E_DIR) ./test/e2e/...; status=$$?; \
+	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 $(E2E_CLUSTER)-tenant-node-2 $(E2E_CLUSTER)-dns || status=1; \
+	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
+
 .PHONY: conformance
 conformance: ## the Kubernetes conformance suite through hydrophone against a tenant with two nodes, on a kind cluster of its own that it deletes afterwards; results in $(E2E_DIR)/_artifacts; CONFORMANCE_FOCUS=<regexp> runs only the tests it matches
 	mkdir -p $(E2E_DIR)

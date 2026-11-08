@@ -78,6 +78,8 @@ Then the contracts: every field, condition, reason and shared name phase 2 decid
 Then, in parallel, wave 1b: HA, the Gateway with in-cluster access, backups with restore, and `KubeconfigRequest`s.
 Then wave 2: upgrades with maintenance windows, the fleet limit and the operator revision; Health's internal probe, node sampling and controller manager hold; observability.
 
+Done from wave 1b: the Gateway with in-cluster access, with its gate on every pull request and G6 and conformance behind the Gateway every night ([gates](../test/e2e/README.md#the-gateway-gate)).
+
 Gate:
 
 - e2e: during a rolling update of the API server and during a minor upgrade (two kind node images), a client loop of 20 requests per second against the public endpoint, and one from a pod in the tenant through `kubernetes.default`, record zero failures.
@@ -87,6 +89,7 @@ Gate:
   Cut one worker of two: no hold, and its pods move to the other after the toleration, as upstream does ([controller-manager-hold](decisions/controller-manager-hold.md)).
 - e2e: an operator upgrade re-renders a tenant only inside its window; outside it, `Progressing` is False, `WaitingForWindow`, and `status.target.scheduledFor` is the window's next start; an edit of the tenant's spec renders it at once.
 - Measured: API p99 latency through the Gateway against a direct Service, overhead under 5 ms on kind.
+  `TestGatewayOverhead` measures it in [`nightly-gateway`](../test/e2e/README.md#nightly-g6-and-conformance-behind-the-gateway); on 2026-11-08 on Docker Desktop's kernel 6.12.54-linuxkit with 16 CPUs, Δp99 was 0.06 ms through the Gateway and 0.17 ms through the tunnel on reused connections, and 0.11 and 0.99 ms on new ones, with no error.
 
 ## Phase 3 · Parity
 

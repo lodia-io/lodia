@@ -322,6 +322,22 @@ func getControlPlane(t *testing.T, ns, name string) *lodiav1alpha1.ControlPlane 
 	return cp
 }
 
+func noControlPlaneWrite(t *testing.T, c client.WithWatch) client.WithWatch {
+	t.Helper()
+	return interceptor.NewClient(c, interceptor.Funcs{
+		SubResource: func(c client.WithWatch, name string) client.SubResourceClient {
+			t.Errorf("the pass wrote the ControlPlane's %s", name)
+			return c.SubResource(name)
+		},
+		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			if _, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
+				t.Errorf("the pass patched ControlPlane %s", obj.GetName())
+			}
+			return c.Patch(ctx, obj, patch, opts...)
+		},
+	})
+}
+
 func consistently(t *testing.T, check func() error) {
 	t.Helper()
 	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
@@ -590,30 +606,18 @@ func TestConditionsFromState(t *testing.T) {
 
 	writeGeneration(t, ns, "dev", 1)
 	waitCondition(t, ns, "dev", metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd dev-etcd")
-	var before *lodiav1alpha1.ControlPlane
-	eventually(t, func() error {
-		if before = getControlPlane(t, ns, "dev"); before.Status.Datastore == nil {
-			return errors.New("status.datastore is not written yet")
-		}
-		return nil
-	})
 	injected := errors.New("injected: the API server did not answer")
-	failing := interceptor.NewClient(k8s, interceptor.Funcs{
+	failing := noControlPlaneWrite(t, interceptor.NewClient(k8s, interceptor.Funcs{
 		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 			if _, ok := obj.(*druidv1alpha1.Etcd); ok {
 				return injected
 			}
 			return c.Get(ctx, key, obj, opts...)
 		},
-	})
+	}))
 	reconciler := &datastore.Reconciler{Client: failing, Reader: failing, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace}
 	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: "dev"}}); !errors.Is(err, injected) {
 		t.Fatalf("a pass whose Etcd read fails returned %v, want the read's error", err)
-	}
-	if after := getControlPlane(t, ns, "dev"); after.ResourceVersion != before.ResourceVersion {
-		condition := meta.FindStatusCondition(after.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
-		t.Errorf("a pass whose Etcd read fails moved the ControlPlane from resourceVersion %s to %s: DatastoreReady %s/%s %q, status.datastore %+v",
-			before.ResourceVersion, after.ResourceVersion, condition.Status, condition.Reason, condition.Message, after.Status.Datastore)
 	}
 }
 
@@ -1021,23 +1025,18 @@ func TestBackupPrefixHoldsNoName(t *testing.T) {
 		}
 	}
 
-	settle(t, ns.Name, "v1")
-	before := getControlPlane(t, ns.Name, "v1")
 	injected := errors.New("injected: the API server did not answer")
-	failing := interceptor.NewClient(k8s, interceptor.Funcs{
+	failing := noControlPlaneWrite(t, interceptor.NewClient(k8s, interceptor.Funcs{
 		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 			if _, ok := obj.(*corev1.Namespace); ok {
 				return injected
 			}
 			return c.Get(ctx, key, obj, opts...)
 		},
-	})
+	}))
 	reconciler := &datastore.Reconciler{Client: failing, Reader: failing, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace}
 	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns.Name, Name: "v1"}}); !errors.Is(err, injected) {
 		t.Fatalf("a pass whose Namespace read fails returned %v, want the read's error", err)
-	}
-	if after := getControlPlane(t, ns.Name, "v1"); after.ResourceVersion != before.ResourceVersion {
-		t.Errorf("a pass whose Namespace read fails moved the ControlPlane from resourceVersion %s to %s", before.ResourceVersion, after.ResourceVersion)
 	}
 }
 
@@ -1520,8 +1519,8 @@ func TestAPassFromAStaleCacheChangesNoEtcd(t *testing.T) {
 			return c.Get(ctx, key, obj, opts...)
 		},
 	})
-	pass := func() error {
-		_, err := (&datastore.Reconciler{Client: stale, Reader: stale, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}})
+	pass := func(c client.WithWatch) error {
+		_, err := (&datastore.Reconciler{Client: c, Reader: c, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}})
 		return err
 	}
 
@@ -1532,7 +1531,7 @@ func TestAPassFromAStaleCacheChangesNoEtcd(t *testing.T) {
 	eventually(t, func() error {
 		return gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: cp + "-etcd"}, &druidv1alpha1.Etcd{}))
 	})
-	if err := pass(); !apierrors.IsConflict(err) {
+	if err := pass(stale); !apierrors.IsConflict(err) {
 		t.Fatalf("a pass from a cache that still holds the deleted Etcd returned %v, want a conflict", err)
 	}
 
@@ -1541,15 +1540,8 @@ func TestAPassFromAStaleCacheChangesNoEtcd(t *testing.T) {
 	}
 	recreated := waitEtcd(t, ns, cp, nil)
 	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd stale-etcd")
-	settle(t, ns, cp)
-	before := getControlPlane(t, ns, cp)
-	if err := pass(); !apierrors.IsInvalid(err) {
+	if err := pass(noControlPlaneWrite(t, stale)); !apierrors.IsInvalid(err) {
 		t.Fatalf("a pass from a cache that holds the replaced Etcd returned %v, want the UID refused", err)
-	}
-	if after := getControlPlane(t, ns, cp); after.ResourceVersion != before.ResourceVersion {
-		condition := meta.FindStatusCondition(after.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
-		t.Errorf("a pass from a cache that holds the replaced Etcd moved the ControlPlane from resourceVersion %s to %s: DatastoreReady %s/%s %q",
-			before.ResourceVersion, after.ResourceVersion, condition.Status, condition.Reason, condition.Message)
 	}
 	if etcd := getEtcd(t, ns, cp); etcd.ResourceVersion != recreated.ResourceVersion {
 		t.Errorf("a pass from a cache that holds the replaced Etcd moved its replacement from resourceVersion %s to %s", recreated.ResourceVersion, etcd.ResourceVersion)
@@ -3035,8 +3027,6 @@ func TestAFailedNetworkPolicyCallLeavesTheStatus(t *testing.T) {
 	waitEtcd(t, ns, cp, namesGeneration(1))
 	readyOn(t, ns, cp, 1)
 	waitPolicy(t, ns, cp, nil)
-	settle(t, ns, cp)
-	before := getControlPlane(t, ns, cp)
 	injected := errors.New("injected: the API server did not answer")
 	lagging := func(failPolicies bool) func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
 		return func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
@@ -3066,15 +3056,10 @@ func TestAFailedNetworkPolicyCallLeavesTheStatus(t *testing.T) {
 		}}, context.DeadlineExceeded},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			failing := interceptor.NewClient(k8s, row.funcs)
+			failing := noControlPlaneWrite(t, interceptor.NewClient(k8s, row.funcs))
 			reconciler := &datastore.Reconciler{Client: failing, Reader: failing, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace}
 			if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}); !errors.Is(err, row.err) {
 				t.Fatalf("the pass returned %v, want %v", err, row.err)
-			}
-			if after := getControlPlane(t, ns, cp); after.ResourceVersion != before.ResourceVersion {
-				condition := meta.FindStatusCondition(after.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
-				t.Errorf("the pass moved the ControlPlane from resourceVersion %s to %s: DatastoreReady %s/%s %q",
-					before.ResourceVersion, after.ResourceVersion, condition.Status, condition.Reason, condition.Message)
 			}
 		})
 	}

@@ -950,13 +950,9 @@ func TestARestoreCheckThatCannotRunKeepsTheStatusTheCacheLacks(t *testing.T) {
 				return c.Get(ctx, key, obj, opts...)
 			},
 		})
-		current := r.controlPlane(t)
-		reconciler := &datastore.Reconciler{Client: stale, Reader: failing, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, EtcdClient: dialRestored, Clock: clock.RealClock{}}
+		reconciler := &datastore.Reconciler{Client: noControlPlaneWrite(t, stale), Reader: failing, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, EtcdClient: dialRestored, Clock: clock.RealClock{}}
 		if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}}); !errors.Is(err, injected) {
 			t.Fatalf("the pass returned %v, want %v", err, injected)
-		}
-		if after := r.controlPlane(t); after.ResourceVersion != current.ResourceVersion {
-			t.Errorf("a pass whose live read failed moved the ControlPlane from resourceVersion %s to %s", current.ResourceVersion, after.ResourceVersion)
 		}
 	})
 }

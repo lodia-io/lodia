@@ -1,7 +1,7 @@
 // Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-//go:build e2e && (conformance || restore)
+//go:build e2e && (conformance || restore || gateway)
 
 package e2e
 

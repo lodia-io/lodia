@@ -78,14 +78,26 @@ type Reconciler struct {
 	clients  map[types.NamespacedName]*clients
 }
 
-// clients reach one control plane: the probe while its CA bundle stays the
-// same, the tenant while Lodia's kubeconfig does.
+// clients reach one control plane: the prober while its CA bundle and the
+// tunnel's client pair stay the same, the tenant while Lodia's kubeconfig
+// does.
 type clients struct {
 	bundle     []byte
-	probe      *http.Client
+	clientCert []byte
+	clientKey  []byte
+	prober     *prober
 	kubeconfig []byte
 	tenant     *tenant
 	transport  *http.Client
+}
+
+// prober holds what a control plane's probes verify and present: the client
+// of the public endpoint, the CAs of the bundle, and the tunnel's client
+// certificate, in gateway mode.
+type prober struct {
+	public *http.Client
+	roots  *x509.CertPool
+	client *tls.Certificate
 }
 
 // tenant reads inside a control plane as Lodia, every client over the same
@@ -180,6 +192,10 @@ func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPla
 	if url == "" {
 		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint"), false, nil
 	}
+	gateway := cp.Spec.Endpoint.Gateway != nil
+	if gateway && cp.Status.Endpoint.Tunnel == nil {
+		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint.tunnel"), false, nil
+	}
 	name := lodiav1alpha1.CABundleSecret.Name(cp.Name)
 	secret := &corev1.Secret{}
 	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: name}, secret); err != nil {
@@ -188,13 +204,31 @@ func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPla
 		}
 		return nil, false, err
 	}
-	prober := r.prober(key, secret.Data[lodiav1alpha1.CACertKey])
+	var pair *corev1.Secret
+	if gateway {
+		pair = &corev1.Secret{}
+		pairName := lodiav1alpha1.TunnelClientSecret.Name(cp.Name)
+		if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: pairName}, pair); err != nil {
+			if apierrors.IsNotFound(err) {
+				return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the tunnel's client certificate "+pairName), false, nil
+			}
+			return nil, false, err
+		}
+		if ref := ownership.ControlledElsewhere(pair, cp); ref != nil {
+			return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates,
+				fmt.Sprintf("Secret %s is kept by %s %s with UID %s", pairName, ref.Kind, ref.Name, ref.UID)), false, nil
+		}
+	}
+	prober := r.prober(key, secret.Data[lodiav1alpha1.CACertKey], pair)
 	if prober == nil {
 		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "the CA bundle "+name+" holds no certificate"), false, nil
 	}
-	code := r.probe(ctx, prober, url)
-	if code == http.StatusOK {
-		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, url+" answered 200"), false, nil
+	if gateway && prober.client == nil {
+		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "the tunnel's client certificate "+pair.Name+" holds no certificate and key"), false, nil
+	}
+	passed, answer := r.probes(ctx, cp, prober, url)
+	if passed {
+		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, answer), false, nil
 	}
 	if r.failed(key)+1 < FailuresBeforeFalse {
 		if err := live.Conditions(ctx, r.Reader, cp, lodiav1alpha1.ConditionReachable); err != nil {
@@ -204,11 +238,54 @@ func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPla
 			return nil, true, nil
 		}
 	}
-	answer := url + " did not answer"
-	if code != 0 {
-		answer = fmt.Sprintf("%s answered %d", url, code)
-	}
 	return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonExternalProbeFailed, answer), true, nil
+}
+
+// probes runs the control plane's probes and says whether all passed, and,
+// for the condition's message, what they answered: what each path that
+// failed answered, or what the three did. In gateway mode the three run at
+// once, each under Timeout, so a dead Gateway holds a worker for one Timeout,
+// not three.
+func (r *Reconciler) probes(ctx context.Context, cp *lodiav1alpha1.ControlPlane, p *prober, url string) (bool, string) {
+	if cp.Spec.Endpoint.Gateway == nil {
+		code, _ := r.probe(ctx, p.public, url)
+		return code == http.StatusOK, url + " " + answered(code)
+	}
+	e := cp.Status.Endpoint
+	var (
+		apiCode, tunnelCode        int
+		apiErr, tunnelErr, konnErr error
+		wg                         sync.WaitGroup
+	)
+	wg.Go(func() { apiCode, apiErr = r.probe(ctx, p.public, url) })
+	wg.Go(func() { tunnelCode, tunnelErr = r.probe(ctx, r.throughTunnel(p, *e.Tunnel), url) })
+	wg.Go(func() { konnErr = r.handshake(ctx, p, e.Konnectivity) })
+	wg.Wait()
+	log := logf.FromContext(ctx)
+	var failed []string
+	if apiCode != http.StatusOK {
+		log.Error(apiErr, "the probe of the public endpoint failed", "url", url, "code", apiCode)
+		failed = append(failed, "api: "+url+" "+answered(apiCode))
+	}
+	if tunnelCode != http.StatusOK {
+		log.Error(tunnelErr, "the probe through the tunnel failed", "tunnel", hostPort(*e.Tunnel), "code", tunnelCode)
+		failed = append(failed, "tunnel: "+url+" through "+hostPort(*e.Tunnel)+" "+answered(tunnelCode))
+	}
+	if konnErr != nil {
+		log.Error(konnErr, "the TLS handshake with konnectivity failed", "address", hostPort(e.Konnectivity))
+		failed = append(failed, "konnectivity: "+hostPort(e.Konnectivity)+" did not complete a TLS handshake")
+	}
+	if len(failed) > 0 {
+		return false, strings.Join(failed, "; ")
+	}
+	return true, url + " answered 200 at the public endpoint and through the tunnel " + hostPort(*e.Tunnel) + ", and " + hostPort(e.Konnectivity) + " completed a TLS handshake"
+}
+
+func answered(code int) string {
+	if code == 0 {
+		return "did not answer"
+	}
+	return fmt.Sprintf("answered %d", code)
 }
 
 // leading returns nil to keep the condition as the API server holds it when a
@@ -517,25 +594,37 @@ func (r *Reconciler) clientsOf(key types.NamespacedName) *clients {
 }
 
 // prober verifies the endpoint against bundle, or is nil when bundle holds no
-// certificate.
-func (r *Reconciler) prober(key types.NamespacedName, bundle []byte) *http.Client {
+// certificate. Its client pair is pair's, parsed once, and nil outside gateway
+// mode or when pair holds no certificate and key.
+func (r *Reconciler) prober(key types.NamespacedName, bundle []byte, pair *corev1.Secret) *prober {
+	var clientCert, clientKey []byte
+	if pair != nil {
+		clientCert, clientKey = pair.Data[lodiav1alpha1.TLSCertKey], pair.Data[lodiav1alpha1.TLSPrivateKeyKey]
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	c := r.clientsOf(key)
-	if c.probe != nil && bytes.Equal(c.bundle, bundle) {
-		return c.probe
+	if c.prober != nil && bytes.Equal(c.bundle, bundle) && bytes.Equal(c.clientCert, clientCert) && bytes.Equal(c.clientKey, clientKey) {
+		return c.prober
 	}
 	roots := x509.NewCertPool()
 	if !roots.AppendCertsFromPEM(bundle) {
 		return nil
 	}
-	c.bundle, c.probe = bundle, &http.Client{
-		Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}, DisableKeepAlives: true},
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+	public := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}, DisableKeepAlives: true}
+	p := &prober{public: &http.Client{Transport: public, CheckRedirect: noRedirects}, roots: roots}
+	if pair != nil {
+		public.DialContext, public.TLSHandshakeTimeout = (&net.Dialer{Timeout: r.Timeout}).DialContext, r.Timeout
+		if parsed, err := tls.X509KeyPair(clientCert, clientKey); err == nil {
+			p.client = &parsed
+		}
 	}
-	return c.probe
+	c.bundle, c.clientCert, c.clientKey, c.prober = bundle, clientCert, clientKey, p
+	return c.prober
+}
+
+func noRedirects(*http.Request, []*http.Request) error {
+	return http.ErrUseLastResponse
 }
 
 // tenant reads inside the tenant as Lodia, through the in-namespace Service,
@@ -592,20 +681,58 @@ func (r *Reconciler) tenant(key types.NamespacedName, kubeconfig []byte) (*tenan
 	return c.tenant, nil
 }
 
-// probe returns the status code the endpoint answered with, or 0 for none.
-func (r *Reconciler) probe(ctx context.Context, prober *http.Client, url string) int {
+// probe returns the status code the endpoint answered with, or 0 for none, and
+// the error that says why.
+func (r *Reconciler) probe(ctx context.Context, prober *http.Client, url string) (int, error) {
 	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return 0
+		return 0, err
 	}
 	resp, err := prober.Do(req)
 	if err != nil {
-		return 0
+		return 0, err
 	}
 	_ = resp.Body.Close()
-	return resp.StatusCode
+	return resp.StatusCode, nil
+}
+
+// throughTunnel reaches the API server through the tunnel: the outer TLS to
+// tunnel with the client certificate, and the inner TLS to the request's host
+// verified against the bundle, as a pod's own connection through
+// apiserver-proxy does.
+// net/http dials and hands the inner TLS over on a context of its own, detached
+// from the request's (https://github.com/golang/go/blob/go1.26.10/src/net/http/transport.go#L1524-L1529),
+// so the dial and both handshakes need Timeout's bound here: without them a
+// stalled Gateway would keep a goroutine for every probe.
+func (r *Reconciler) throughTunnel(p *prober, tunnel lodiav1alpha1.HostPort) *http.Client {
+	dialer := &tls.Dialer{
+		NetDialer: &net.Dialer{Timeout: r.Timeout},
+		Config:    &tls.Config{ServerName: tunnel.Host, RootCAs: p.roots, Certificates: []tls.Certificate{*p.client}, MinVersion: tls.VersionTLS13},
+	}
+	return &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return dialer.DialContext(ctx, "tcp", hostPort(tunnel))
+			},
+			TLSClientConfig:     &tls.Config{RootCAs: p.roots, MinVersion: tls.VersionTLS12},
+			TLSHandshakeTimeout: r.Timeout,
+			DisableKeepAlives:   true,
+		},
+		CheckRedirect: noRedirects,
+	}
+}
+
+// handshake completes a TLS handshake with the konnectivity host, verified
+// against the bundle.
+func (r *Reconciler) handshake(ctx context.Context, p *prober, target lodiav1alpha1.HostPort) error {
+	dialer := &tls.Dialer{NetDialer: &net.Dialer{Timeout: r.Timeout}, Config: &tls.Config{ServerName: target.Host, RootCAs: p.roots, MinVersion: tls.VersionTLS12}}
+	conn, err := dialer.DialContext(ctx, "tcp", hostPort(target))
+	if err != nil {
+		return err
+	}
+	return conn.Close()
 }
 
 // count counts a failed probe of a ControlPlane, or clears its count. Every
@@ -634,8 +761,11 @@ func endpoint(cp *lodiav1alpha1.ControlPlane) string {
 	if cp.Status.Endpoint == nil {
 		return ""
 	}
-	api := cp.Status.Endpoint.APIServer
-	return "https://" + net.JoinHostPort(api.Host, strconv.Itoa(int(api.Port))) + lodiav1alpha1.APIServerReadyzPath
+	return "https://" + hostPort(cp.Status.Endpoint.APIServer) + lodiav1alpha1.APIServerReadyzPath
+}
+
+func hostPort(address lodiav1alpha1.HostPort) string {
+	return net.JoinHostPort(address.Host, strconv.Itoa(int(address.Port)))
 }
 
 func newCondition(cp *lodiav1alpha1.ControlPlane, conditionType string, status metav1.ConditionStatus, reason, message string) *metav1.Condition {

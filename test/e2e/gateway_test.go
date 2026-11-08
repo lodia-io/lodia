@@ -93,25 +93,7 @@ func TestGatewayGate(t *testing.T) {
 	b := client.ObjectKey{Namespace: "team-gw-b", Name: controlPlane}
 	c := client.ObjectKey{Namespace: "team-gw-c", Name: controlPlane}
 	classes := map[client.ObjectKey]string{a: "e2e-gateway-a", b: "e2e-gateway-b", c: "e2e-gateway-c"}
-	gateway := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Namespace: gatewayNamespace, Name: gatewayName},
-		Spec: gatewayv1.GatewaySpec{
-			GatewayClassName: gatewayClassName,
-			Listeners: []gatewayv1.Listener{{
-				Name:     gatewayListener,
-				Port:     443,
-				Protocol: gatewayv1.TLSProtocolType,
-				Hostname: new(gatewayv1.Hostname("*." + gatewayZone)),
-				TLS:      &gatewayv1.ListenerTLSConfig{Mode: new(gatewayv1.TLSModePassthrough)},
-				AllowedRoutes: &gatewayv1.AllowedRoutes{Namespaces: &gatewayv1.RouteNamespaces{
-					From: new(gatewayv1.NamespacesFromSelector),
-					Selector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{
-						Key: corev1.LabelMetadataName, Operator: metav1.LabelSelectorOpIn, Values: []string{a.Namespace, b.Namespace, c.Namespace},
-					}}},
-				}},
-			}},
-		},
-	}
+	gateway := tenantsGateway(a.Namespace, b.Namespace, c.Namespace)
 	f := features.New("the gateway gate on kind: tenants behind Envoy Gateway by SNI, a node joined by hostname, pods reaching their API through apiserver-proxy and the tunnel").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			k8s = newClient(t, cfg)
@@ -139,24 +121,19 @@ func TestGatewayGate(t *testing.T) {
 			return ctx
 		}).
 		Assess("the Gateway, once created, brings the ControlPlane to Ready with RoutesReady True, without an operator restart", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			gateway.Spec.Addresses = []gatewayv1.GatewaySpecAddress{{Type: new(gatewayv1.IPAddressType), Value: gatewayAddress}}
-			create(ctx, t, k8s, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: gatewayNamespace}})
-			create(ctx, t, k8s, gateway)
-			until(ctx, t, 3*time.Minute, "Gateway "+gatewayNamespace+"/"+gatewayName+" is Programmed at "+gatewayAddress, func(ctx context.Context) error {
-				if err := k8s.Get(ctx, client.ObjectKeyFromObject(gateway), gateway); err != nil {
-					return err
-				}
-				if c := meta.FindStatusCondition(gateway.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed)); c == nil || c.Status != metav1.ConditionTrue || c.ObservedGeneration != gateway.Generation {
-					return fmt.Errorf("Programmed is %+v", c)
-				}
-				return nil
-			})
+			createGateway(ctx, t, k8s, gateway)
 			cp := &lodiav1alpha1.ControlPlane{}
 			until(ctx, t, 5*time.Minute, "Ready=True", func(ctx context.Context) error {
 				return controlPlaneReady(ctx, k8s, a, cp)
 			})
 			if _, err := conditionAt(ctx, k8s, a, lodiav1alpha1.ConditionRoutesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonAccepted); err != nil {
 				t.Error(err)
+			}
+			reachable := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionReachable)
+			for _, path := range []string{cp.Status.Endpoint.APIServer.Host, cp.Status.Endpoint.Tunnel.Host, cp.Status.Endpoint.Konnectivity.Host} {
+				if reachable == nil || !strings.Contains(reachable.Message, path) {
+					t.Errorf("Reachable does not name %s: %+v", path, reachable)
+				}
 			}
 			if ready := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionReady); ready != nil {
 				e := cp.Status.Endpoint
@@ -314,6 +291,34 @@ func TestGatewayGate(t *testing.T) {
 			stopLoops(ctx, t, loops)
 			return ctx
 		}).
+		Assess("Health: the tunnel's and konnectivity's paths, failing alone, turn Reachable False and name themselves", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			node := managementNode(t, cfg)
+			for _, path := range []struct {
+				name string
+				port string
+			}{{"tunnel", "6444"}, {"konnectivity", "8132"}} {
+				refusing(ctx, t, node, path.port, func() {
+					until(ctx, t, 3*time.Minute, "Reachable=False, naming the "+path.name+" path", func(ctx context.Context) error {
+						cp, err := conditionAt(ctx, k8s, a, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonExternalProbeFailed)
+						if err != nil {
+							return err
+						}
+						if m := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionReachable).Message; !strings.HasPrefix(m, path.name+": ") {
+							return fmt.Errorf("the message does not start with %q: %s", path.name+": ", m)
+						}
+						return nil
+					})
+				})
+				until(ctx, t, 3*time.Minute, "Reachable=True once port "+path.port+" takes connections again", func(ctx context.Context) error {
+					_, err := conditionAt(ctx, k8s, a, lodiav1alpha1.ConditionReachable, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable)
+					return err
+				})
+			}
+			until(ctx, t, 3*time.Minute, "Ready=True again", func(ctx context.Context) error {
+				return controlPlaneReady(ctx, k8s, a, &lodiav1alpha1.ControlPlane{})
+			})
+			return ctx
+		}).
 		Assess("B1: a second ControlPlane naming the first's hostnames gets HostnameConflict and no route", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			envoy = readEnvoy(ctx, t, cfg, k8s)
 			owner := &lodiav1alpha1.ControlPlane{}
@@ -393,6 +398,74 @@ func TestGatewayGate(t *testing.T) {
 		}).
 		Feature()
 	testenv.Test(t, f)
+}
+
+func tenantsGateway(namespaces ...string) *gatewayv1.Gateway {
+	return &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Namespace: gatewayNamespace, Name: gatewayName},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: gatewayClassName,
+			Listeners: []gatewayv1.Listener{{
+				Name:     gatewayListener,
+				Port:     443,
+				Protocol: gatewayv1.TLSProtocolType,
+				Hostname: new(gatewayv1.Hostname("*." + gatewayZone)),
+				TLS:      &gatewayv1.ListenerTLSConfig{Mode: new(gatewayv1.TLSModePassthrough)},
+				AllowedRoutes: &gatewayv1.AllowedRoutes{Namespaces: &gatewayv1.RouteNamespaces{
+					From: new(gatewayv1.NamespacesFromSelector),
+					Selector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{
+						Key: corev1.LabelMetadataName, Operator: metav1.LabelSelectorOpIn, Values: namespaces,
+					}}},
+				}},
+			}},
+		},
+	}
+}
+
+func createGateway(ctx context.Context, t *testing.T, k8s client.Client, gateway *gatewayv1.Gateway) {
+	t.Helper()
+	gateway.Spec.Addresses = []gatewayv1.GatewaySpecAddress{{Type: new(gatewayv1.IPAddressType), Value: gatewayAddress}}
+	create(ctx, t, k8s, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: gatewayNamespace}})
+	create(ctx, t, k8s, gateway)
+	until(ctx, t, 3*time.Minute, "Gateway "+gatewayNamespace+"/"+gatewayName+" is Programmed at "+gatewayAddress, func(ctx context.Context) error {
+		if err := k8s.Get(ctx, client.ObjectKeyFromObject(gateway), gateway); err != nil {
+			return err
+		}
+		if c := meta.FindStatusCondition(gateway.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed)); c == nil || c.Status != metav1.ConditionTrue || c.ObservedGeneration != gateway.Generation {
+			return fmt.Errorf("Programmed is %+v", c)
+		}
+		return nil
+	})
+}
+
+func managementNode(t *testing.T, cfg *envconf.Config) string {
+	t.Helper()
+	cluster, err := kindCluster(cfg.KubeconfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes, err := kindcluster.NewProvider().ListNodes(cluster)
+	if err != nil || len(nodes) == 0 {
+		t.Fatalf("the nodes of kind cluster %s: %d, %v", cluster, len(nodes), err)
+	}
+	return nodes[0].String()
+}
+
+func refusing(ctx context.Context, t *testing.T, node, port string, during func()) {
+	t.Helper()
+	rule := []string{"FORWARD", "-p", "tcp", "--syn", "--dport", port, "-j", "REJECT", "--reject-with", "tcp-reset"}
+	if _, err := docker(ctx, append([]string{"exec", node, "iptables", "-I"}, rule...)...); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		removal, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+		defer cancel()
+		if _, err := docker(removal, append([]string{"exec", node, "iptables", "-D"}, rule...)...); err != nil {
+			t.Errorf("the rule refusing port %s stays on the management node: %v", port, err)
+		}
+	}()
+	t.Logf("new connections to port %s are refused on the management node", port)
+	during()
 }
 
 func hostnamesOf(namespace string) lodiav1alpha1.GatewayHostnames {

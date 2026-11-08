@@ -1,7 +1,7 @@
 # Control planes are exposed through a shared Gateway by SNI; pods reach their API through a node-local proxy and a fixed advertise address
 
 Decided 2026-10-25.
-The three modes, the in-cluster `apiserver-proxy` and the tunnel are built; Health's probes through the tunnel come with the rest of phase 2's wave 1b, Gateway ([roadmap](../roadmap.md)).
+The three modes, the in-cluster `apiserver-proxy`, the tunnel and Health's probes through it are built.
 
 ## Decision
 
@@ -133,6 +133,7 @@ The kubelet's own listener address is a node flag (`--address`, `--node-ip`), wh
 - `api/v1alpha1` — the contracts of the gateway mode: `GatewayHostnames` with the tunnel required and the three distinct, `APIServer.AdvertiseAddress` with its rules and `DefaultAdvertiseAddress`, `EndpointStatus.Tunnel`, the tunnel's Secrets in `names.go` and `RoutesReady` with its reasons in `conditions.go`; `test/api/validation_test.go` holds the rules.
 - `internal/controller/workloads` — the Service of each mode, `status.endpoint` with `inCluster`, the API server's advertise address and `--endpoint-reconciler-type=none`, and konnectivity-server beside it as a native sidecar on a Unix socket; in `gateway` mode, in `gateway.go`, the listener checks, the endpoint from the listener and kept once published, the three `TLSRoute`s with their owner by hostname and the read without the cache before each write, and in `render.go` the tunnel sidecar; `gateway_test.go` holds them against Gateways in envtest, the experimental channel's CRD included, and `testdata/render` pins the render of the other two modes.
 - `internal/controller/tenant` — the `kubernetes` Endpoints and EndpointSlice in `manifests/endpoints.yaml`, the agents' flags in `manifests/konnectivity.yaml`, and `apiserver-proxy` in `manifests/apiserver-proxy.yaml`, with its Secret in `render.go`, which `deliverTunnelClient` in `tenant.go` applies whatever the conditions say; `render_test.go`, `gateway_test.go` and `tenant_test.go` hold the objects, and `TestPhase1Gate` in `test/e2e` rolls the API server under requests from outside and inside the tenant.
+- `internal/controller/health` — `Reachable`'s three paths in `gateway` mode in `probes`, at once and each within the timeout, the tunnel's two TLS sessions in `throughTunnel`, and `<cp>-tunnel-client` in the prober's cache key; `gateway_test.go` holds each path failing alone and a hung one.
 - `internal/controller/pki` — the tunnel's Secrets and the advertise address in the API server's serving certificate, in this mode only; `tunnel_test.go` holds them against the other modes.
 - `cmd/lodia-tunnel`, `internal/tunnel` — `lodia-tunnel`'s modes `serve`, `addr` and `proxy`, and `probe`, `proxy`'s health check.
 - `internal/operator` — `GatewayAPI`, whether `TLSRoute` and `Gateway` are served at `gateway.networking.k8s.io/v1`, which `cmd/lodia/main.go` asks before it builds the manager, since the cache can hold only kinds served then ([cache.go](https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/cache/cache.go#L505-L509)); `operator_test.go` runs it on envtest with and without the standard CRDs of the `sigs.k8s.io/gateway-api` module that `go.mod` requires.
