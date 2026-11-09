@@ -491,6 +491,7 @@ The chart installs:
 
 `image`, `signerImage` and `tunnelImage` each take a `repository` (`ghcr.io/lodia-io/lodia`, `ghcr.io/lodia-io/lodia-signer` and `ghcr.io/lodia-io/lodia-tunnel`), a `digest` and a `tag`, which defaults to the chart's `appVersion`: with a digest the chart renders `repository@digest`, otherwise `repository:tag`.
 The signer's image reaches the operator as `--signer-image`, and `lodia-tunnel`'s as `--tunnel-image`.
+Lodia reaches a tenant's API server through its in-namespace Service and ignores `HTTPS_PROXY` for that connection, so a site that sets a proxy on every pod needs no exception for it.
 
 Then a `DatastoreClass` with the bucket, and the first `ControlPlane`.
 Phase 4 brings signed and attested images, and how to verify them ([roadmap](roadmap.md), [releases-and-support](decisions/releases-and-support.md)).

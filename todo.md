@@ -64,7 +64,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   A change back to `None` puts a second `identity` behind the first (`encryptionConfig` in `internal/controller/pki/secrets.go`); harmless, and the rotation should drop it with the other old providers.
 - The kubelet signer narrows nothing: whoever holds it can sign any identity the API server accepts.
   A signer outside the controller manager, serving only kubelet CSRs (those for `kubernetes.io/kube-apiserver-client-kubelet`, [types.go](https://github.com/kubernetes/api/blob/v0.37.1/certificates/v1/types.go#L155-L158)), would make the narrowing true; decide before the client CA rotation is built.
-- Lodia reaches a tenant's API server through its in-namespace Service and ignores `HTTPS_PROXY` for that connection; the chart's documentation should say so for sites that set a proxy on every pod.
 
 ## From the PKI review (2026-10-25)
 
