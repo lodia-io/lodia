@@ -31,6 +31,7 @@ import (
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/certs"
 	"go.lodia.io/lodia/internal/controller/health"
+	"go.lodia.io/lodia/internal/testenv"
 )
 
 type tunnelEndpoint struct {
@@ -336,7 +337,7 @@ func addressOf(t *testing.T, address string) lodiav1alpha1.HostPort {
 func TestGatewayModeProbesTheThreePaths(t *testing.T) {
 	f := newGateway(t)
 	f.publishWorking(t)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return expect(t, f.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, f.allAnswered())
 	})
 }
@@ -427,7 +428,7 @@ func TestEachGatewayPathFailingAloneNamesItself(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			f := newGateway(t)
 			f.publishWorking(t)
-			eventually(t, func() error {
+			testenv.Eventually(t, func() error {
 				return expect(t, f.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, f.allAnswered())
 			})
 			konnectivity, tunnel := c.apply(t, f)
@@ -452,7 +453,7 @@ func TestEachGatewayPathFailingAloneNamesItself(t *testing.T) {
 func TestTheMessageNamesEveryFailedPath(t *testing.T) {
 	f := newGateway(t)
 	f.publishWorking(t)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return expect(t, f.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, f.allAnswered())
 	})
 	f.api.code.Store(http.StatusInternalServerError)
@@ -482,7 +483,7 @@ func TestAHungGatewayPathCostsOneTimeout(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			f := newGateway(t)
 			f.publishWorking(t)
-			eventually(t, func() error {
+			testenv.Eventually(t, func() error {
 				return expect(t, f.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, f.allAnswered())
 			})
 			c.apply(f)
@@ -517,7 +518,7 @@ func TestAHungGatewayPathCostsOneTimeout(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			f := newGateway(t)
 			f.publishWorking(t)
-			eventually(t, func() error {
+			testenv.Eventually(t, func() error {
 				return expect(t, f.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, f.allAnswered())
 			})
 			stalled, closed := stallListener(t)
@@ -542,7 +543,7 @@ func TestAStalledInnerHandshakeCostsOneTimeout(t *testing.T) {
 	const timeout = time.Second
 	f := newGateway(t)
 	f.publishWorking(t)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return expect(t, f.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, f.allAnswered())
 	})
 	stalled, closed := stallInnerHandshake(t, f.api.ca, f.clientCA)
@@ -563,7 +564,7 @@ func TestEveryTunnelProbeDialsAnewAndLeavesNoConnectionOpen(t *testing.T) {
 	const passes = 3
 	f := newGateway(t)
 	f.publishWorking(t)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return expect(t, f.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, f.allAnswered())
 	})
 	counted := serveTunnel(t, f.api.ca, f.clientCA)
@@ -587,7 +588,7 @@ func TestEveryKonnectivityProbeClosesItsConnection(t *testing.T) {
 	withoutGC(t)
 	f := newGateway(t)
 	f.publishWorking(t)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return expect(t, f.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, f.allAnswered())
 	})
 	address, closed := serveUntilClosed(t, f.api.ca)
@@ -609,7 +610,7 @@ func TestATunnelClientThatIsMissingOrKeptElsewhereWaitsForCertificates(t *testin
 	writeBundle(t, cp, api)
 	publishGateway(t, cp, api.Listener.Addr().String(), konnectivity, tunnel.address)
 	name := lodiav1alpha1.TunnelClientSecret.Name(cp.Name)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return expect(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the tunnel's client certificate "+name)
 	})
 
@@ -642,7 +643,7 @@ func TestATunnelClientThatIsMissingOrKeptElsewhereWaitsForCertificates(t *testin
 func TestAGatewayEndpointWithoutTheTunnelWaitsForIt(t *testing.T) {
 	f := newGateway(t)
 	publishGateway(t, f.cp, f.apiAddress(), f.konnectivity, "")
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return expect(t, f.cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint.tunnel")
 	})
 }
@@ -704,7 +705,7 @@ func TestTheOtherModesAreProbedAsBefore(t *testing.T) {
 		e := serve(t)
 		writeBundle(t, cp, e)
 		publish(t, cp, e)
-		eventually(t, func() error {
+		testenv.Eventually(t, func() error {
 			return expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200")
 		})
 		reader, reads := readsOf(t)
@@ -729,7 +730,7 @@ func TestTheOtherModesAreProbedAsBefore(t *testing.T) {
 func TestGatewayModeReadsTheTunnelClientOncePerPass(t *testing.T) {
 	f := newGateway(t)
 	f.publishWorking(t)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return expect(t, f.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, f.allAnswered())
 	})
 	reader, reads := readsOf(t)
@@ -746,7 +747,7 @@ func TestGatewayModeReadsTheTunnelClientOncePerPass(t *testing.T) {
 func TestAFailedReadOfTheTunnelClientLeavesTheStatus(t *testing.T) {
 	f := newGateway(t)
 	f.publishWorking(t)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return expect(t, f.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, f.allAnswered())
 	})
 	name := lodiav1alpha1.TunnelClientSecret.Name(f.cp.Name)
