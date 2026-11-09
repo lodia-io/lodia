@@ -54,6 +54,8 @@ type Reconciler struct {
 	// Reader reads the ControlPlane as the API server holds it, before a write.
 	Reader client.Reader
 	Clock  clock.PassiveClock
+	// Revision is the running operator revision, which every pass grants.
+	Revision string
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
@@ -111,7 +113,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 }
 
 func (r *Reconciler) gather(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (facts, error) {
-	f := facts{cp: cp, now: r.Clock.Now()}
+	f := facts{cp: cp, now: r.Clock.Now(), revision: r.Revision}
 	minor := backupMinor(cp)
 	if minor == "" {
 		return f, nil

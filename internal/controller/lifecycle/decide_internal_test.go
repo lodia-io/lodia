@@ -25,6 +25,7 @@ const uid = "11111111-2222-3333-4444-555555555555"
 
 type world struct {
 	spec, target        string
+	revision            string
 	step                lodiav1alpha1.UpgradeStep
 	since               *metav1.Time
 	reports             [4]string
@@ -58,8 +59,8 @@ func (w world) controlPlane() *lodiav1alpha1.ControlPlane {
 	if w.deleting {
 		cp.DeletionTimestamp = &started
 	}
-	if w.target != "" {
-		cp.Status.Target = &lodiav1alpha1.Target{Version: w.target}
+	if w.target != "" || w.revision != "" {
+		cp.Status.Target = &lodiav1alpha1.Target{Version: w.target, OperatorRevision: w.revision}
 	}
 	if w.step != "" {
 		since := started
@@ -502,5 +503,68 @@ func TestBackupMinor(t *testing.T) {
 		if got := backupMinor(c.w.controlPlane()); got != c.want {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+const revisionA, revisionB = "v1.0.0+aaaa", "v1.1.0+bbbb"
+
+func adopt(cp *lodiav1alpha1.ControlPlane, d decision) {
+	cp.Status.ObservedGeneration = d.status.ObservedGeneration
+	cp.Status.Target = d.status.Target
+	cp.Status.Kubernetes = d.status.Kubernetes
+	for _, c := range d.status.Conditions {
+		meta.SetStatusCondition(&cp.Status.Conditions, c)
+	}
+}
+
+func TestDecideWritesTheRunningRevision(t *testing.T) {
+	steady := world{spec: "v1.37.1", target: "v1.37.1", reports: at("v1.37.1")}
+	for _, c := range []struct {
+		name         string
+		w            world
+		was, running string
+		want         *lodiav1alpha1.Target
+		writes       bool
+	}{
+		{"a first pass grants it with the target", world{spec: "v1.37.1", reports: at("")}, "", revisionA,
+			&lodiav1alpha1.Target{Version: "v1.37.1", OperatorRevision: revisionA}, true},
+		{"a pass that finds it granted writes nothing", steady, revisionA, revisionA,
+			&lodiav1alpha1.Target{Version: "v1.37.1", OperatorRevision: revisionA}, false},
+		{"a new release replaces its predecessor's", steady, revisionA, revisionB,
+			&lodiav1alpha1.Target{Version: "v1.37.1", OperatorRevision: revisionB}, true},
+		{"a rollback is one more revision", steady, revisionB, revisionA,
+			&lodiav1alpha1.Target{Version: "v1.37.1", OperatorRevision: revisionA}, true},
+		{"a version change under way carries it", world{spec: "v1.37.1", target: "v1.36.6", step: lodiav1alpha1.UpgradeStepAddons, reports: at("v1.36.6")}, revisionA, revisionB,
+			&lodiav1alpha1.Target{Version: "v1.36.6", OperatorRevision: revisionB}, true},
+		{"a spec of a minor Lodia does not run has the revision and no version", world{spec: "v1.34.2", reports: at("")}, "", revisionA,
+			&lodiav1alpha1.Target{OperatorRevision: revisionA}, true},
+		{"a paused ControlPlane keeps the stored one", world{spec: "v1.37.1", target: "v1.37.1", revision: revisionA, paused: true, reports: at("v1.37.1")}, revisionA, revisionB,
+			&lodiav1alpha1.Target{Version: "v1.37.1", OperatorRevision: revisionA}, false},
+		{"a paused ControlPlane that holds none is granted none", world{spec: "v1.37.1", paused: true, reports: at("")}, revisionA, revisionB,
+			nil, false},
+		{"a deleting ControlPlane keeps the stored one", world{spec: "v1.37.1", target: "v1.37.1", revision: revisionA, deleting: true, reports: at("v1.37.1")}, revisionA, revisionB,
+			&lodiav1alpha1.Target{Version: "v1.37.1", OperatorRevision: revisionA}, false},
+		{"a deleting ControlPlane that holds none is granted none", world{spec: "v1.37.1", deleting: true, reports: at("")}, revisionA, revisionB,
+			nil, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := c.w.facts()
+			if c.was != "" {
+				f.revision = c.was
+				adopt(f.cp, decide(f))
+			}
+			f.revision = c.running
+			d := decide(f)
+			if !equality.Semantic.DeepEqual(d.status.Target, c.want) {
+				t.Errorf("target is %+v, want %+v", d.status.Target, c.want)
+			}
+			if got := d.differs(f.cp); got != c.writes {
+				t.Errorf("differs is %t, want %t", got, c.writes)
+			}
+			adopt(f.cp, d)
+			if again := decide(f); again.differs(f.cp) {
+				t.Errorf("a second pass over what the first wrote still differs: %+v", again.status)
+			}
+		})
 	}
 }

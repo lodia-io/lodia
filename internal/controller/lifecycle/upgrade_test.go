@@ -121,7 +121,11 @@ func reconcileQuiet(t *testing.T, c client.Client, reader client.Reader, now tim
 }
 
 func reconcileAt(ctx context.Context, c client.Client, reader client.Reader, now time.Time, cp *lodiav1alpha1.ControlPlane) error {
-	r := &lifecycle.Reconciler{Client: c, Reader: reader, Clock: clocktesting.NewFakePassiveClock(now)}
+	return reconcileAs(ctx, c, reader, runningRevision, now, cp)
+}
+
+func reconcileAs(ctx context.Context, c client.Client, reader client.Reader, revision string, now time.Time, cp *lodiav1alpha1.ControlPlane) error {
+	r := &lifecycle.Reconciler{Client: c, Reader: reader, Clock: clocktesting.NewFakePassiveClock(now), Revision: revision}
 	_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 	return err
 }
