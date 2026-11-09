@@ -162,9 +162,11 @@ func newValues(cp *lodiav1alpha1.ControlPlane, clusterCA []byte) (*values, strin
 			}
 		}
 		if k := addons.Konnectivity; k != nil {
-			if k.Version != "" {
-				v.AgentImage = v.AgentImage[:strings.LastIndexByte(v.AgentImage, ':')+1] + k.Version
+			pinned, err := versions.PinKonnectivity(images, k.Version)
+			if err != nil {
+				return nil, "", "", err
 			}
+			v.AgentImage = pinned.KonnectivityAgent
 			if a := k.Agent; a != nil && a.Mode == "Deployment" {
 				v.AgentDeployment = true
 				if a.Replicas != nil {

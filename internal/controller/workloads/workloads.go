@@ -250,8 +250,10 @@ func (r *Reconciler) rollout(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 		}
 		return endpoint, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget, message), requeueAfter, nil
 	}
-	if images.KonnectivityServer, err = konnectivityImage(cp, images.KonnectivityServer); err != nil {
-		return nil, metav1.Condition{}, 0, err
+	if a := cp.Spec.Addons; a != nil && a.Konnectivity != nil {
+		if images, err = versions.PinKonnectivity(images, a.Konnectivity.Version); err != nil {
+			return nil, metav1.Condition{}, 0, err
+		}
 	}
 	for _, input := range []struct{ condition, reason string }{
 		{lodiav1alpha1.ConditionCertificatesReady, lodiav1alpha1.ReasonWaitingForCertificates},

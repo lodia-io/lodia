@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/distribution/reference"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -422,24 +421,6 @@ func (r rendering) tunnel(gateway *lodiav1alpha1.GatewayEndpoint) corev1.Contain
 		},
 		VolumeMounts: mounts("tunnel-serving", "tunnel-ca"),
 	}
-}
-
-// konnectivityImage is the version table's konnectivity-server image, with the
-// tag of addons.konnectivity.version in place of its tag and digest.
-func konnectivityImage(cp *lodiav1alpha1.ControlPlane, image string) (string, error) {
-	k := cp.Spec.Addons
-	if k == nil || k.Konnectivity == nil || k.Konnectivity.Version == "" {
-		return image, nil
-	}
-	named, err := reference.ParseNormalizedNamed(image)
-	if err != nil {
-		return "", err
-	}
-	pinned, err := reference.WithTag(reference.TrimNamed(named), k.Konnectivity.Version)
-	if err != nil {
-		return "", err
-	}
-	return pinned.String(), nil
 }
 
 func (r rendering) controllerManager() *appsv1.Deployment {
