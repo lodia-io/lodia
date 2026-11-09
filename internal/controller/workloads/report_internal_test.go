@@ -48,6 +48,7 @@ func TestTheVersionIsTheTagOfTheComponentsOwnImage(t *testing.T) {
 		{image + ":v1.37.1-rc.1", ""},
 		{image + ":v1.37.1_build", ""},
 		{image + ":v1.37.x", ""},
+		{image + ":v1.37.01", ""},
 		{"registry.k8s.io/Kube-APIServer:v1.37.1", ""},
 		{"", ""},
 	} {

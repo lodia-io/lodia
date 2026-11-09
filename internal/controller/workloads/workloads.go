@@ -65,7 +65,7 @@ const (
 	maxVersion = 16
 )
 
-var releaseTag = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
+var releaseTag = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
 
 // Messages are built from the state alone, never from an error, so a pass
 // that changes nothing writes nothing.

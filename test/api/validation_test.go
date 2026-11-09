@@ -176,6 +176,8 @@ func TestControlPlaneValidation(t *testing.T) {
 	}{
 		{"version without v", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, "1.35.2", "spec", "version") }, "spec.version"},
 		{"major other than 1", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, "v2.0.0", "spec", "version") }, "spec.version"},
+		{"a minor with a leading zero", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, "v1.037.1", "spec", "version") }, "spec.version"},
+		{"a patch with a leading zero", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, "v1.37.01", "spec", "version") }, "spec.version"},
 		{"two datastores", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, map[string]any{"dedicated": map[string]any{}, "shared": map[string]any{"name": "pool-a"}}, "spec", "datastore")
 		}, "set exactly one of dedicated and shared"},
