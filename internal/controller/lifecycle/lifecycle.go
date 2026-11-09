@@ -166,7 +166,7 @@ func target(cp *lodiav1alpha1.ControlPlane, current string) (lodiav1alpha1.Targe
 
 // rollingOut names what status.components and status.datastore.members count
 // as not updated; a count of updated not reported yet is a spec its writer's
-// controller has not observed.
+// controller has not observed, or a Deployment that is gone.
 func rollingOut(cp *lodiav1alpha1.ControlPlane) []string {
 	type rollout struct {
 		name, unit string

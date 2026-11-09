@@ -93,7 +93,7 @@ func Minor(version string) (string, bool) {
 }
 
 // Oldest returns the oldest of the given Kubernetes versions, and false when
-// none is given or one is not vMAJOR.MINOR.PATCH: a version that cannot be
+// none is given or one is not a semantic version: a version that cannot be
 // compared says nothing of what runs.
 func Oldest(reported ...string) (string, bool) {
 	oldest, found := "", false
