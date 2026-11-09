@@ -260,7 +260,9 @@ func (f facts) takeBackup(c *change, next, minor string) {
 	ready := meta.FindStatusCondition(f.backup.Status.Conditions, lodiav1alpha1.ConditionReady)
 	switch {
 	case completed(ready), noBackupStore(ready):
-		c.target, c.upgrade = next, moved(c.upgrade, f.now)
+		if c.failure(f.cp) == "" {
+			c.target, c.upgrade = next, moved(c.upgrade, f.now)
+		}
 	case ready == nil:
 		c.backup = fmt.Sprintf("the Backup %s has reported nothing yet", name)
 	case ready.Status == metav1.ConditionFalse && slices.Contains(backupFailures, ready.Reason):
