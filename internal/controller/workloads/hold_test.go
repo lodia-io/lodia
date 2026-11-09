@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/testenv"
 )
 
 const heldByHealth = "kube-controller-manager has 0 of 1 replicas ready while Health holds its leader Lease"
@@ -31,7 +32,7 @@ func setManagerHeld(t *testing.T, cp *lodiav1alpha1.ControlPlane, status metav1.
 func stopReplicas(t *testing.T, cp *lodiav1alpha1.ControlPlane, component string) {
 	t.Helper()
 	d := eventuallyDeployment(t, cp, component)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		fresh := &appsv1.Deployment{}
 		if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(d), fresh); err != nil {
 			return err
@@ -43,7 +44,7 @@ func stopReplicas(t *testing.T, cp *lodiav1alpha1.ControlPlane, component string
 
 func expectAPIServerReady(t *testing.T, cp *lodiav1alpha1.ControlPlane, generation int64, status metav1.ConditionStatus, reason, message string) {
 	t.Helper()
-	eventually(t, func() error { return expectAt(cp, generation, status, reason, message) })
+	testenv.Eventually(t, func() error { return expectAt(cp, generation, status, reason, message) })
 }
 
 func TestAHeldControllerManagerWithNoReadyReplicaLeavesAPIServerReadyThroughARollout(t *testing.T) {

@@ -38,6 +38,7 @@ import (
 	"go.lodia.io/lodia/internal/apistatus"
 	"go.lodia.io/lodia/internal/controller/workloads"
 	"go.lodia.io/lodia/internal/operator"
+	"go.lodia.io/lodia/internal/testenv"
 )
 
 const zone = "gw.example.com"
@@ -175,7 +176,7 @@ func TestTheAdvertiseAddressAndTheListenersPortArePublished(t *testing.T) {
 		spec.APIServer = &lodiav1alpha1.APIServer{AdvertiseAddress: "198.51.100.7"}
 	})
 	inputsReady(t, cp)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return expectEndpointIs(cp, lodiav1alpha1.EndpointStatus{
 			APIServer:    lodiav1alpha1.HostPort{Host: "api.dev." + zone, Port: 8443},
 			Konnectivity: lodiav1alpha1.HostPort{Host: "konnectivity.dev." + zone, Port: 8443},
@@ -194,7 +195,7 @@ func TestAFieldNotBuiltYetHidesNoneOfTheGatewayPath(t *testing.T) {
 		spec.ServiceAccount = &lodiav1alpha1.ServiceAccount{PublicDiscovery: true}
 	})
 	accept(t, cp)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if err := expectRoutes(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonAccepted); err != nil {
 			return err
 		}
@@ -251,7 +252,7 @@ func TestEveryListenerCheckIsGatewayUnsupported(t *testing.T) {
 				setListenerStatus(t, gw, *c.status)
 			}
 			cp := createNamed(t, ns, "dev", onGateway(ns, "dev"))
-			eventually(t, func() error {
+			testenv.Eventually(t, func() error {
 				if err := expectRoutes(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonGatewayUnsupported); err != nil {
 					return err
 				}
@@ -280,19 +281,19 @@ func TestAListenersStatusAloneBringsAPass(t *testing.T) {
 	published := get(t, cp).Status.Endpoint
 	quiet(t, cp)
 	setListenerStatus(t, gw, listenerStatus([]gatewayv1.RouteGroupKind{tlsRouteKind}, metav1.ConditionTrue, metav1.ConditionFalse, "Pending"))
-	eventually(t, func() error { return expectRoutes(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonGatewayUnsupported) })
+	testenv.Eventually(t, func() error { return expectRoutes(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonGatewayUnsupported) })
 	if c := routesReady(t, cp); !strings.HasSuffix(c.Message, "is not Programmed: Pending") {
 		t.Errorf("RoutesReady says %q", c.Message)
 	}
 	expectEndpoint(t, cp, *published)
 	setListenerStatus(t, gw, listenerStatus([]gatewayv1.RouteGroupKind{tlsRouteKind}, metav1.ConditionTrue, metav1.ConditionTrue, "Programmed"))
-	eventually(t, func() error { return expectRoutes(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonAccepted) })
+	testenv.Eventually(t, func() error { return expectRoutes(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonAccepted) })
 }
 
 func TestAGatewayCreatedLaterBringsThePass(t *testing.T) {
 	ns := namespace(t)
 	cp := createNamed(t, ns, "dev", onGateway(ns, "dev"))
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if err := expectRoutes(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonGatewayNotFound); err != nil {
 			return err
 		}
@@ -306,7 +307,7 @@ func TestAGatewayCreatedLaterBringsThePass(t *testing.T) {
 	}
 	quiet(t, cp)
 	createGateway(t, ns)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if err := expectRoutes(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRouteNotAccepted); err != nil {
 			return err
 		}
@@ -325,18 +326,18 @@ func TestARouteNotAcceptedSaysTheGatewaysReason(t *testing.T) {
 	cp := gatewayRunning(t)
 	route := tlsRoute(t, cp.Namespace, "dev-konnectivity")
 	setRouteStatus(t, route, metav1.ConditionTrue, metav1.ConditionFalse, "BackendNotFound", route.Generation)
-	eventually(t, func() error { return expectRoutes(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRouteNotAccepted) })
+	testenv.Eventually(t, func() error { return expectRoutes(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRouteNotAccepted) })
 	if c := routesReady(t, cp); c.Message != "TLSRoute dev-konnectivity is not ResolvedRefs by Gateway "+cp.Namespace+"/shared: BackendNotFound" {
 		t.Errorf("RoutesReady says %q", c.Message)
 	}
 	setRouteStatus(t, route, metav1.ConditionFalse, metav1.ConditionTrue, "NotAllowedByListeners", route.Generation)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if c := routesReady(t, cp); c.Message != "TLSRoute dev-konnectivity is not Accepted by Gateway "+cp.Namespace+"/shared: NotAllowedByListeners" {
 			return fmt.Errorf("RoutesReady says %q", c.Message)
 		}
 		return nil
 	})
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		fresh := tlsRoute(t, route.Namespace, route.Name)
 		if err := writeRouteStatus(fresh, metav1.ConditionTrue, metav1.ConditionTrue, "Accepted", fresh.Generation); err != nil {
 			return err
@@ -345,14 +346,14 @@ func TestARouteNotAcceptedSaysTheGatewaysReason(t *testing.T) {
 		fresh.Status.Parents[0].ParentRef.SectionName = new(gatewayv1.SectionName("other"))
 		return k8s.Status().Update(t.Context(), fresh)
 	})
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if c := routesReady(t, cp); c.Message != "TLSRoute dev-konnectivity has no status from Gateway "+cp.Namespace+"/shared yet" {
 			return fmt.Errorf("with the status of another listener alone, RoutesReady says %q", c.Message)
 		}
 		return nil
 	})
 	setRouteStatus(t, route, metav1.ConditionTrue, metav1.ConditionTrue, "Accepted", route.Generation-1)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		want := fmt.Sprintf("TLSRoute dev-konnectivity's Accepted from Gateway %s/shared describes generation %d, not %d", cp.Namespace, route.Generation-1, route.Generation)
 		if c := routesReady(t, cp); c.Message != want {
 			return fmt.Errorf("RoutesReady says %q, want %q", c.Message, want)
@@ -370,7 +371,7 @@ func TestRoutesWithoutReadyEndpointsAreResolvedWhileTheAPIServerIsUnavailable(t 
 	cp := createNamed(t, ns, "dev", onGateway(ns, "dev"))
 	inputsReady(t, cp)
 	for _, name := range routeNames(cp) {
-		eventually(t, func() error {
+		testenv.Eventually(t, func() error {
 			route := tlsRouteOrNil(t, ns, name)
 			if route == nil {
 				return fmt.Errorf("no TLSRoute %s yet", name)
@@ -378,7 +379,7 @@ func TestRoutesWithoutReadyEndpointsAreResolvedWhileTheAPIServerIsUnavailable(t 
 			return writeRouteStatus(route, metav1.ConditionTrue, metav1.ConditionFalse, "EndpointsNotFound", route.Generation)
 		})
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if err := expectRoutes(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonAccepted); err != nil {
 			return err
 		}
@@ -388,7 +389,7 @@ func TestRoutesWithoutReadyEndpointsAreResolvedWhileTheAPIServerIsUnavailable(t 
 	route := tlsRoute(t, ns, "dev-konnectivity")
 	expectMessage := func(want string) {
 		t.Helper()
-		eventually(t, func() error {
+		testenv.Eventually(t, func() error {
 			if err := expectRoutes(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRouteNotAccepted); err != nil {
 				return err
 			}
@@ -398,7 +399,7 @@ func TestRoutesWithoutReadyEndpointsAreResolvedWhileTheAPIServerIsUnavailable(t 
 			return nil
 		})
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		fresh := tlsRoute(t, ns, route.Name)
 		if err := writeRouteStatus(fresh, metav1.ConditionTrue, metav1.ConditionFalse, "EndpointsNotFound", fresh.Generation); err != nil {
 			return err
@@ -456,7 +457,7 @@ func TestWithoutTheGatewayAPIServedAGatewayControlPlaneIsUnsupported(t *testing.
 	t.Run("a new ControlPlane", func(t *testing.T) {
 		ns := namespace(t)
 		cp := createNamed(t, ns, "dev", onGateway(ns, "dev"))
-		eventually(t, func() error { return expectRoutes(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonGatewayNotFound) })
+		testenv.Eventually(t, func() error { return expectRoutes(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonGatewayNotFound) })
 		applied := pass(t, cp)
 		if c := meta.FindStatusCondition(applied.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady); c == nil || c.Reason != lodiav1alpha1.ReasonWaitingForEndpoint {
 			t.Errorf("APIServerReady is %+v", c)
@@ -531,7 +532,7 @@ func TestAPublishedEndpointStays(t *testing.T) {
 	written := resourceVersions(t, ns, &gatewayv1.TLSRouteList{})
 	kept := func(t *testing.T, routes, apiServerReady string, message string) {
 		t.Helper()
-		eventually(t, func() error {
+		testenv.Eventually(t, func() error {
 			if err := expectRoutesAt(cp, routes); err != nil {
 				return err
 			}
@@ -579,7 +580,7 @@ func TestAPublishedEndpointStays(t *testing.T) {
 			t.Errorf("RoutesReady moved from %+v to %+v", before, after)
 		}
 		changeService(t, cp, func(svc *corev1.Service) { svc.OwnerReferences = nil })
-		eventually(t, func() error {
+		testenv.Eventually(t, func() error {
 			reconcileNow(t, cp)
 			return expectCondition(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady)
 		})
@@ -595,7 +596,7 @@ func TestAPublishedEndpointStays(t *testing.T) {
 		if err := k8s.Delete(t.Context(), binding); err != nil {
 			t.Fatal(err)
 		}
-		eventually(t, func() error {
+		testenv.Eventually(t, func() error {
 			_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 			return err
 		})
@@ -624,7 +625,7 @@ func TestRoutesReadyOnTheServicesExitsWithoutOneOfItsOwn(t *testing.T) {
 			}
 			return nil
 		}
-		eventually(t, sameAsTheService)
+		testenv.Eventually(t, sameAsTheService)
 		reconciling := map[string]any{
 			"type": lodiav1alpha1.ConditionRoutesReady, "status": string(metav1.ConditionUnknown), "reason": lodiav1alpha1.ReasonReconciling,
 			"message": "the first pass has not finished", "observedGeneration": int64(1), "lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
@@ -646,7 +647,7 @@ func TestRoutesReadyOnTheServicesExitsWithoutOneOfItsOwn(t *testing.T) {
 			Spec:       corev1.ServiceSpec{Ports: []corev1.ServicePort{{Port: 443}}},
 		})
 		cp := createNamed(t, ns, "dev", onGateway(ns, "dev"))
-		eventually(t, func() error {
+		testenv.Eventually(t, func() error {
 			if err := expectRoutes(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused); err != nil {
 				return err
 			}
@@ -662,12 +663,12 @@ func TestAYoungerControlPlaneDeletesOnlyTheRoutesItControls(t *testing.T) {
 	ns := namespace(t)
 	createGateway(t, ns)
 	a := createNamed(t, ns, "a", onGateway(ns, "same"))
-	eventually(t, func() error { return expectRoutes(a, metav1.ConditionFalse, lodiav1alpha1.ReasonRouteNotAccepted) })
+	testenv.Eventually(t, func() error { return expectRoutes(a, metav1.ConditionFalse, lodiav1alpha1.ReasonRouteNotAccepted) })
 	b := createNamed(t, ns, "b", onGateway(ns, "same"))
 	controlled := handmade(t, ns, "b-kube-apiserver", "api.same."+zone, ns, "tls", controllerOf(b))
 	orphan := handmade(t, ns, "b-konnectivity", "konnectivity.same."+zone, ns, "tls")
 	foreign := handmade(t, ns, "b-tunnel", "tunnel.same."+zone, ns, "tls", foreignController())
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if err := expectRoutes(b, metav1.ConditionFalse, lodiav1alpha1.ReasonHostnameConflict); err != nil {
 			return err
 		}
@@ -695,7 +696,7 @@ func TestAYoungerControlPlaneDeletesOnlyTheRoutesItControls(t *testing.T) {
 	if err := k8s.Delete(t.Context(), a); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if c := routesReady(t, b); !strings.HasPrefix(c.Message, "hostname api.same."+zone+" is held by TLSRoute "+ns+"/a-kube-apiserver") {
 			return fmt.Errorf("once the owner is gone, RoutesReady says %q", c.Message)
 		}
@@ -710,7 +711,7 @@ func TestAHolderOnAnotherListenerOfThePort(t *testing.T) {
 	holder := handmade(t, other, "holder", "*."+zone, ns, "exact")
 	handmade(t, other, "wildcard", "*."+zone, ns, "tls")
 	cp := createNamed(t, ns, "h", onGateway(ns, "h"))
-	eventually(t, func() error { return expectRoutes(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonHostnameConflict) })
+	testenv.Eventually(t, func() error { return expectRoutes(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonHostnameConflict) })
 	want := "hostname api.h." + zone + " is held by TLSRoute " + other + "/holder on Gateway " + ns + "/shared; Workloads writes no route for it until that one is gone; " +
 		"TLSRoute h-konnectivity has no status from Gateway " + ns + "/shared yet; TLSRoute h-tunnel has no status from Gateway " + ns + "/shared yet"
 	if c := routesReady(t, cp); c.Message != want {
@@ -723,7 +724,7 @@ func TestAHolderOnAnotherListenerOfThePort(t *testing.T) {
 	if err := k8s.Delete(t.Context(), holder); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if tlsRouteOrNil(t, ns, "h-kube-apiserver") == nil {
 			return errors.New("no h-kube-apiserver yet")
 		}
@@ -737,14 +738,14 @@ func TestARouteEditedAwayFromAHostnameReleasesIt(t *testing.T) {
 	other := namespace(t)
 	holder := handmade(t, other, "holder", "api.e."+zone, ns, "tls")
 	cp := createNamed(t, ns, "e", onGateway(ns, "e"))
-	eventually(t, func() error { return expectRoutes(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonHostnameConflict) })
+	testenv.Eventually(t, func() error { return expectRoutes(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonHostnameConflict) })
 	quiet(t, cp)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		fresh := tlsRoute(t, other, holder.Name)
 		fresh.Spec.Hostnames = []gatewayv1.Hostname{"elsewhere." + zone}
 		return k8s.Update(t.Context(), fresh)
 	})
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if tlsRouteOrNil(t, ns, "e-kube-apiserver") == nil {
 			return errors.New("no e-kube-apiserver yet")
 		}
@@ -832,7 +833,7 @@ func TestAnUnchangedRouteIsNotWritten(t *testing.T) {
 	cp := gatewayRunning(t)
 	expectNoRouteWrites(t, cp, "unchanged routes")
 	for _, name := range routeNames(cp) {
-		eventually(t, func() error {
+		testenv.Eventually(t, func() error {
 			route := tlsRoute(t, cp.Namespace, name)
 			route.Labels["example.com/team"] = "a"
 			route.OwnerReferences = append([]metav1.OwnerReference{{APIVersion: "v1", Kind: "ConfigMap", Name: "anchor", UID: "2b1c6a5e-9d4f-4f0e-8a3b-7c2d1e0f9a8b"}}, route.OwnerReferences...)
@@ -874,14 +875,14 @@ func TestAnEditedRouteIsRepaired(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			for _, route := range routeNames(cp) {
-				eventually(t, func() error {
+				testenv.Eventually(t, func() error {
 					fresh := tlsRoute(t, cp.Namespace, route)
 					edit(fresh)
 					return k8s.Update(t.Context(), fresh, client.FieldOwner("intruder"))
 				})
 			}
 			for _, route := range routeNames(cp) {
-				eventually(t, func() error {
+				testenv.Eventually(t, func() error {
 					fresh := tlsRoute(t, cp.Namespace, route)
 					if !equality.Semantic.DeepEqual(fresh.Spec, want[route].Spec) || fresh.Labels[lodiav1alpha1.ControlPlaneLabel] != cp.Name ||
 						!equality.Semantic.DeepEqual(fresh.OwnerReferences, want[route].OwnerReferences) {
@@ -979,7 +980,7 @@ func TestARoutingProblemLeavesTheAPIServerReady(t *testing.T) {
 	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
 		markAvailable(t, eventuallyDeployment(t, cp, component))
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if err := expectRoutes(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused); err != nil {
 			return err
 		}
@@ -999,21 +1000,21 @@ func TestARoutingProblemLeavesTheAPIServerReady(t *testing.T) {
 	if err := k8s.Delete(t.Context(), binding); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if tlsRouteOrNil(t, ns, "dev-tunnel") == nil {
 			return errors.New("no dev-tunnel yet")
 		}
 		return nil
 	})
 	accept(t, cp)
-	eventually(t, func() error { return expectRoutes(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonAccepted) })
+	testenv.Eventually(t, func() error { return expectRoutes(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonAccepted) })
 
 	held := tlsRoute(t, ns, "dev-konnectivity")
 	held.OwnerReferences = []metav1.OwnerReference{foreignController()}
 	if err := k8s.Update(t.Context(), held); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if err := expectRoutes(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere); err != nil {
 			return err
 		}
@@ -1043,7 +1044,7 @@ func TestASameHostnameRestoreWaitsForItsSource(t *testing.T) {
 	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
 		markAvailable(t, eventuallyDeployment(t, cp, component))
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if err := expectRoutes(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonHostnameConflict); err != nil {
 			return err
 		}
@@ -1062,7 +1063,7 @@ func TestASameHostnameRestoreWaitsForItsSource(t *testing.T) {
 	if err := k8s.Delete(t.Context(), prod); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if c := routesReady(t, cp); c.Reason != lodiav1alpha1.ReasonHostnameConflict || !strings.Contains(c.Message, "is held by TLSRoute "+ns+"/prod-kube-apiserver") {
 			return fmt.Errorf("RoutesReady is %+v", c)
 		}
@@ -1075,7 +1076,7 @@ func TestASameHostnameRestoreWaitsForItsSource(t *testing.T) {
 	if err := k8s.Delete(t.Context(), leftover); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if tlsRouteOrNil(t, ns, "restored-kube-apiserver") == nil {
 			return errors.New("no restored-kube-apiserver yet")
 		}
@@ -1127,7 +1128,7 @@ func TestAGatewayControlPlanesFirstPassSaysRoutesReadyIsReconciling(t *testing.T
 func TestAGatewayControlPlaneWithoutRoutesReadyGetsIt(t *testing.T) {
 	ns := namespace(t)
 	cp := createNamed(t, ns, "dev", onGateway(ns, "dev"))
-	eventually(t, func() error { return expectRoutes(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonGatewayNotFound) })
+	testenv.Eventually(t, func() error { return expectRoutes(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonGatewayNotFound) })
 	fresh := get(t, cp)
 	kept, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&lodiav1alpha1.ControlPlaneStatus{
 		Conditions: []metav1.Condition{*meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady)},
@@ -1137,7 +1138,7 @@ func TestAGatewayControlPlaneWithoutRoutesReadyGetsIt(t *testing.T) {
 	}
 	applyStatus(t, cp, workloads.FieldManager, kept)
 	reconcileNow(t, cp)
-	eventually(t, func() error { return expectRoutes(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonGatewayNotFound) })
+	testenv.Eventually(t, func() error { return expectRoutes(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonGatewayNotFound) })
 }
 
 func TestARestartBetweenWritesGoesThroughTheUncachedRead(t *testing.T) {
@@ -1225,7 +1226,7 @@ func TestAPredecessorsRoutesWaitForTheGarbageCollector(t *testing.T) {
 	sameName := handmade(t, ns, "dev-kube-apiserver", "api.dev."+zone, ns, "tls", predecessor)
 	otherName := handmade(t, ns, "old-konnectivity", "konnectivity.dev."+zone, ns, "tls", predecessor)
 	cp := createNamed(t, ns, "dev", onGateway(ns, "dev"))
-	eventually(t, func() error { return expectRoutes(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonHostnameConflict) })
+	testenv.Eventually(t, func() error { return expectRoutes(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonHostnameConflict) })
 	want := "another owner keeps TLSRoute dev-kube-apiserver by ControlPlane dev (UID 5d1e8a52-5f0e-4bd3-a1a8-0f3c0e6a8b11); Workloads writes no route over it; " +
 		"hostname konnectivity.dev." + zone + " is held by TLSRoute " + ns + "/old-konnectivity on Gateway " + ns + "/shared; Workloads writes no route for it until that one is gone; " +
 		"TLSRoute dev-tunnel has no status from Gateway " + ns + "/shared yet"
@@ -1259,7 +1260,7 @@ func TestAPredecessorsRoutesWaitForTheGarbageCollector(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		for _, name := range routeNames(cp) {
 			if route := tlsRouteOrNil(t, ns, name); route == nil || !metav1.IsControlledBy(route, cp) {
 				return fmt.Errorf("TLSRoute %s is %v", name, route)
@@ -1315,7 +1316,7 @@ func gatewayOf(t *testing.T, cp *lodiav1alpha1.ControlPlane) *gatewayv1.Gateway 
 
 func changeGateway(t *testing.T, cp *lodiav1alpha1.ControlPlane, change func(*gatewayv1.Gateway)) {
 	t.Helper()
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		gw := gatewayOf(t, cp)
 		change(gw)
 		return k8s.Update(t.Context(), gw)
@@ -1336,7 +1337,7 @@ func listenerStatus(kinds []gatewayv1.RouteGroupKind, accepted, programmed metav
 
 func setListenerStatus(t *testing.T, gw *gatewayv1.Gateway, statuses ...gatewayv1.ListenerStatus) {
 	t.Helper()
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		fresh := &gatewayv1.Gateway{}
 		if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(gw), fresh); err != nil {
 			return err
@@ -1381,7 +1382,7 @@ func gatewayRunning(t *testing.T) *lodiav1alpha1.ControlPlane {
 		markAvailable(t, eventuallyDeployment(t, cp, component))
 	}
 	accept(t, cp)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if err := expectCondition(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady); err != nil {
 			return err
 		}
@@ -1465,7 +1466,7 @@ func foreignController() metav1.OwnerReference {
 
 func changeService(t *testing.T, cp *lodiav1alpha1.ControlPlane, change func(*corev1.Service)) {
 	t.Helper()
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		svc := getService(t, cp)
 		change(svc)
 		return k8s.Update(t.Context(), svc)
@@ -1475,7 +1476,7 @@ func changeService(t *testing.T, cp *lodiav1alpha1.ControlPlane, change func(*co
 func accept(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 	t.Helper()
 	for _, name := range routeNames(cp) {
-		eventually(t, func() error {
+		testenv.Eventually(t, func() error {
 			route := tlsRouteOrNil(t, cp.Namespace, name)
 			if route == nil {
 				return fmt.Errorf("no TLSRoute %s yet", name)
@@ -1487,7 +1488,7 @@ func accept(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 
 func setRouteStatus(t *testing.T, route *gatewayv1.TLSRoute, accepted, resolved metav1.ConditionStatus, reason string, generation int64) {
 	t.Helper()
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		fresh := tlsRoute(t, route.Namespace, route.Name)
 		return writeRouteStatus(fresh, accepted, resolved, reason, generation)
 	})
@@ -1636,7 +1637,7 @@ func refuse(t *testing.T, ns, group, resource, name string, probe client.Object)
 			}
 		})
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		var err error
 		if probe.GetResourceVersion() == "" {
 			err = k8s.Create(t.Context(), probe.DeepCopyObject().(client.Object), client.DryRunAll)
@@ -1694,7 +1695,7 @@ func quiet(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 		return get(t, cp).ResourceVersion + fmt.Sprint(resourceVersions(t, cp.Namespace, &gatewayv1.TLSRouteList{}))
 	}
 	last, since := state(), time.Now()
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if now := state(); now != last {
 			last, since = now, time.Now()
 		}
