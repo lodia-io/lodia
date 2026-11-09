@@ -47,7 +47,9 @@ Datastore asks for it again as the backup reconciler does for the seal's, timed 
 Datastore then writes `status.restore` ([field](../api/controlplane.md#status)), and from then on the restore needs the `Backup` no more: an `Etcd` created again restores from the `ControlPlane`'s prefix, and an etcd that lost the marker is checked against the seal of the `Backup` that status names.
 
 **The encryption key stays in the management cluster.**
-When it seals, the backup reconciler writes `<backup>.encryption-config` (`BackupEncryptionConfigSecretName`), owned by the `Backup`, immutable, with every key of the source's encryption configuration, and never puts a key in the bucket, whose credentials sit in every tenant namespace on the class.
+Once the copy has succeeded, and before the `Backup` is `Completed`, the backup reconciler writes `<backup>.encryption-config` (`BackupEncryptionConfigSecretName`), owned by the `Backup`, immutable, with every key of the source's encryption configuration as it is then.
+PKI keeps every provider it ever wrote there, so it holds every key that encrypted anything in the copy.
+The reconciler never puts a key in the bucket, whose credentials sit in every tenant namespace on the class.
 PKI copies those providers once into the restored `ControlPlane`'s configuration, behind a new key of its own, and never reads the `Backup` again; while it has not, PKI reports `CertificatesReady=False`, `WaitingForBackup`.
 The finalizer `lodia.io/restore-source` keeps a sealed `Backup` until each `ControlPlane` restoring from it has that configuration and a completed restore, which reads the `Backup`'s store and seal.
 It holds `<backup>.encryption-config` as well, which the garbage collector deletes while a `Backup` deleted in the foreground still exists ([garbagecollector.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/controller/garbagecollector/garbagecollector.go#L634-L659)).
