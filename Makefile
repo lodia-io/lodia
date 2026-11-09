@@ -34,7 +34,8 @@ lint:
 
 .PHONY: test
 test: ## unit and envtest tests; envtest runs a real API server and etcd
-	KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test ./...
+	# @todo: 60 s until we know what holds an API server past SIGTERM; see todo.md.
+	KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT=60s KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test ./...
 	cd api && go test ./...
 
 .PHONY: restore-keys
