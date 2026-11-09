@@ -24,8 +24,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	corev1ac "k8s.io/client-go/applyconfigurations/core/v1"
 	metav1ac "k8s.io/client-go/applyconfigurations/meta/v1"
@@ -45,6 +43,7 @@ import (
 	"go.lodia.io/lodia/internal/live"
 	"go.lodia.io/lodia/internal/ownership"
 	"go.lodia.io/lodia/internal/restore"
+	"go.lodia.io/lodia/internal/statusapply"
 )
 
 const (
@@ -182,7 +181,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 	}
 	if meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady) == nil {
-		first := newCondition(metav1.ConditionUnknown, lodiav1alpha1.ReasonReconciling, "the first pass has not finished")
+		first := statusapply.FirstPass(cp, lodiav1alpha1.ConditionDatastoreReady)
 		backup := first
 		backup.Type = lodiav1alpha1.ConditionBackupReady
 		if err := r.applyStatus(ctx, cp, cp.Status.Datastore, cp.Status.Restore, first, backup); err != nil {
@@ -867,43 +866,9 @@ func datastoreStatus(etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) *lodiav1
 // are a list keyed by type, and an apply that left one out would give up its
 // ownership. The restore is carried into every apply for the same reason.
 func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, datastore *lodiav1alpha1.DatastoreStatus, restore *lodiav1alpha1.RestoreStatus, ready, backup metav1.Condition) error {
-	unchanged := equality.Semantic.DeepEqual(cp.Status.Datastore, datastore) && equality.Semantic.DeepEqual(cp.Status.Restore, restore)
-	conditions := slices.Clone(cp.Status.Conditions)
-	var written []any
-	for _, condition := range []metav1.Condition{ready, backup} {
-		condition.ObservedGeneration = cp.Generation
-		previous := meta.FindStatusCondition(cp.Status.Conditions, condition.Type)
-		unchanged = unchanged && previous != nil && previous.Status == condition.Status && previous.Reason == condition.Reason &&
-			previous.Message == condition.Message && previous.ObservedGeneration == condition.ObservedGeneration
-		meta.SetStatusCondition(&conditions, condition)
-		current, err := runtime.DefaultUnstructuredConverter.ToUnstructured(meta.FindStatusCondition(conditions, condition.Type))
-		if err != nil {
-			return err
-		}
-		written = append(written, current)
-	}
-	if unchanged {
-		return nil
-	}
-	var err error
-	status := map[string]any{"conditions": written}
-	if datastore != nil {
-		if status["datastore"], err = runtime.DefaultUnstructuredConverter.ToUnstructured(datastore); err != nil {
-			return err
-		}
-	}
-	if restore != nil {
-		if status["restore"], err = runtime.DefaultUnstructuredConverter.ToUnstructured(restore); err != nil {
-			return err
-		}
-	}
-	controlPlane := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": lodiav1alpha1.GroupVersion.String(),
-		"kind":       "ControlPlane",
-		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
-		"status":     status,
-	}}
-	return r.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(controlPlane), client.FieldOwner(FieldManager), client.ForceOwnership)
+	ready.ObservedGeneration, backup.ObservedGeneration = cp.Generation, cp.Generation
+	changed := !equality.Semantic.DeepEqual(cp.Status.Datastore, datastore) || !equality.Semantic.DeepEqual(cp.Status.Restore, restore)
+	return statusapply.Apply(ctx, r.Client, r.Reader, FieldManager, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{ready, backup}, Datastore: datastore, Restore: restore}, changed)
 }
 
 func newCondition(status metav1.ConditionStatus, reason, message string) metav1.Condition {
