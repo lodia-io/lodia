@@ -58,8 +58,9 @@ const (
 	Name         = "health"
 	FieldManager = "lodia/" + Name
 
-	// accessNotTrue is why a pass that waits for AccessReady reads nothing in
-	// the tenant.
+	// accessNotTrue is the message of a pass while AccessReady is not True:
+	// Reconciler reads nothing in the tenant then, and NodesReconciler reads only
+	// the controller manager's Lease, which it renews or releases if it holds it.
 	accessNotTrue = "AccessReady is not True"
 
 	// leaderSlack is how long past its duration a leader Lease may stay
