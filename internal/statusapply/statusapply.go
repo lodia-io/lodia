@@ -9,6 +9,7 @@ package statusapply
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"time"
 
@@ -97,13 +98,16 @@ func ApplyInto(ctx context.Context, writer client.StatusClient, reader client.Re
 
 // write returns the conditions it wrote among cp's, nil when it wrote none.
 func write(ctx context.Context, writer client.StatusClient, reader client.Reader, manager string, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed bool) ([]metav1.Condition, error) {
+	ctx, cancel, err := ownDeadline(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer cancel()
 	if !changed && !slices.ContainsFunc(desired.Conditions, func(c metav1.Condition) bool {
 		return Differs(meta.FindStatusCondition(cp.Status.Conditions, c.Type), c)
 	}) {
 		return nil, nil
 	}
-	ctx, cancel := ownDeadline(ctx)
-	defer cancel()
 	conditionTypes := make([]string, 0, len(desired.Conditions))
 	for _, c := range desired.Conditions {
 		conditionTypes = append(conditionTypes, c.Type)
@@ -134,15 +138,23 @@ func write(ctx context.Context, writer client.StatusClient, reader client.Reader
 // kind with one writer, whose watch requeues every update: a write computed
 // from a stale copy conflicts.
 func ApplyLocked(ctx context.Context, writer client.StatusClient, manager, kind string, obj client.Object, fields map[string]any) error {
-	ctx, cancel := ownDeadline(ctx)
+	ctx, cancel, err := ownDeadline(ctx)
+	if err != nil {
+		return err
+	}
 	defer cancel()
 	return apply(ctx, writer, manager, kind, map[string]any{"name": obj.GetName(), "namespace": obj.GetNamespace(), "resourceVersion": obj.GetResourceVersion()}, fields)
 }
 
-// ownDeadline detaches a status write from its pass: one that has used its
-// whole timeout still has to say why.
-func ownDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(ctx), writeTimeout)
+// ownDeadline detaches a status write from a pass that has used its whole
+// timeout, which still has to say why. A pass that was cancelled, by the
+// manager's shutdown, gets its error instead: it observed nothing to report.
+func ownDeadline(ctx context.Context) (context.Context, context.CancelFunc, error) {
+	if err := ctx.Err(); errors.Is(err, context.Canceled) {
+		return nil, nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), writeTimeout)
+	return ctx, cancel, nil
 }
 
 func apply(ctx context.Context, writer client.StatusClient, manager, kind string, metadata, fields map[string]any) error {

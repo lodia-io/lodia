@@ -289,6 +289,40 @@ func TestAConditionKeptWithoutAnAnswerOnAStaleReadIsDecidedFromTheServer(t *test
 	}
 }
 
+func TestAPassCancelledBeforeTheTenantAnswersWritesNothing(t *testing.T) {
+	cp := controlPlane(t, "tenant-cancelled")
+	publish(t, cp)
+	reconcilePKI(t, &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour, Clock: clock.RealClock{}}, cp)
+	testenv.EventuallyWithin(t, 10*time.Second, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+	})
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, cp.Generation),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, cp.Generation),
+	}})
+	refresh(t, cp)
+	written := cp.ResourceVersion
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var dialed atomic.Bool
+	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, ApplyPeriod: time.Hour, Dial: func(context.Context, string, string) (net.Conn, error) {
+		dialed.Store(true)
+		cancel()
+		return nil, context.Canceled
+	}}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !errors.Is(err, context.Canceled) {
+		t.Errorf("the pass returned %v, want the cancellation", err)
+	}
+	if !dialed.Load() {
+		t.Fatal("the pass never tried the tenant")
+	}
+	if refresh(t, cp); cp.ResourceVersion != written {
+		t.Errorf("a pass cancelled before the tenant answered wrote the ControlPlane: resourceVersion %s, then %s, conditions %+v", written, cp.ResourceVersion, cp.Status.Conditions)
+	}
+}
+
 func TestARolloutReadThatFailsOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
 	cp, admin := servedTenant(t, "tenant-rollout-stale")
 	testenv.Eventually(t, func() error {

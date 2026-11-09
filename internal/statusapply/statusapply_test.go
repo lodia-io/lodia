@@ -5,6 +5,7 @@ package statusapply_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -373,18 +374,96 @@ func TestAFieldThisWriterLeavesOutIsAnotherWritersToKeep(t *testing.T) {
 
 func TestAPassThatUsedItsWholeDeadlineStillWrites(t *testing.T) {
 	cp := controlPlane(t, namespace(t))
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	if err := apply(ctx, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{condition(metav1.ConditionFalse, "why the pass ended", earlier)}}, false); err != nil {
+	ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+	defer cancel()
+	var deadline time.Time
+	writer := recordsDeadline{SubResourceWriter: k8s.Status(), at: &deadline}
+	if err := statusapply.Apply(ctx, writer, k8s, manager, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{condition(metav1.ConditionFalse, "why the pass ended", earlier)}}, false); err != nil {
 		t.Fatal(err)
 	}
 	if c := meta.FindStatusCondition(stored(t, cp).Status.Conditions, lodiav1alpha1.ConditionReady); c == nil || c.Message != "why the pass ended" {
 		t.Errorf("Ready is %+v", c)
 	}
+	if left := time.Until(deadline); left <= 0 || left > 10*time.Second {
+		t.Errorf("the write had %s left, want its own 10 s", left)
+	}
+}
+
+func TestALockedApplyPastItsDeadlineStillWrites(t *testing.T) {
+	backup := newBackup(t, namespace(t))
+	ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+	defer cancel()
+	if err := statusapply.ApplyLocked(ctx, k8s, manager, "Backup", backup, backupConditions(t, "why the pass ended")); err != nil {
+		t.Fatal(err)
+	}
+	if c := meta.FindStatusCondition(storedBackup(t, backup).Status.Conditions, lodiav1alpha1.ConditionReady); c == nil || c.Message != "why the pass ended" {
+		t.Errorf("Ready is %+v", c)
+	}
+}
+
+func TestACancelledPassWritesNothingAndReturnsItsError(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	desired := lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{condition(metav1.ConditionFalse, "only the cancellation", earlier)}}
+	fields := backupConditions(t, "only the cancellation")
+	for name, write := range map[string]func(cp *lodiav1alpha1.ControlPlane, backup *lodiav1alpha1.Backup) error{
+		"Apply": func(cp *lodiav1alpha1.ControlPlane, _ *lodiav1alpha1.Backup) error {
+			return apply(ctx, cp, desired, false)
+		},
+		"Apply of another field": func(cp *lodiav1alpha1.ControlPlane, _ *lodiav1alpha1.Backup) error {
+			return apply(ctx, cp, lodiav1alpha1.ControlPlaneStatus{ObservedGeneration: 1}, true)
+		},
+		"Apply with no change": func(cp *lodiav1alpha1.ControlPlane, _ *lodiav1alpha1.Backup) error {
+			held := cp.DeepCopy()
+			held.Status.Conditions = desired.Conditions
+			return apply(ctx, held, desired, false)
+		},
+		"ApplyInto": func(cp *lodiav1alpha1.ControlPlane, _ *lodiav1alpha1.Backup) error {
+			return statusapply.ApplyInto(ctx, k8s, k8s, manager, cp, desired, false)
+		},
+		"ApplyLocked": func(_ *lodiav1alpha1.ControlPlane, backup *lodiav1alpha1.Backup) error {
+			return statusapply.ApplyLocked(ctx, k8s, manager, "Backup", backup, fields)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ns := namespace(t)
+			cp, backup := controlPlane(t, ns), newBackup(t, ns)
+			if err := write(cp, backup); !errors.Is(err, context.Canceled) {
+				t.Errorf("the write returned %v, want the cancellation", err)
+			}
+			if got := stored(t, cp); got.ResourceVersion != cp.ResourceVersion || len(got.Status.Conditions) != 0 {
+				t.Errorf("the ControlPlane was written: resourceVersion %s, then %s, conditions %+v", cp.ResourceVersion, got.ResourceVersion, got.Status.Conditions)
+			}
+			if got := storedBackup(t, backup); got.ResourceVersion != backup.ResourceVersion {
+				t.Errorf("the Backup was written: resourceVersion %s, then %s", backup.ResourceVersion, got.ResourceVersion)
+			}
+			if len(cp.Status.Conditions) != 0 {
+				t.Errorf("the caller's object was left with %+v", cp.Status.Conditions)
+			}
+		})
+	}
 }
 
 func TestALockedApplyConflictsOnAStaleResourceVersion(t *testing.T) {
-	ns := namespace(t)
+	backup := newBackup(t, namespace(t))
+	if err := statusapply.ApplyLocked(t.Context(), k8s, manager, "Backup", backup, backupConditions(t, "first")); err != nil {
+		t.Fatal(err)
+	}
+	err := statusapply.ApplyLocked(t.Context(), k8s, manager, "Backup", backup, backupConditions(t, "computed from a stale copy"))
+	if !apierrors.IsConflict(err) {
+		t.Fatalf("error %v, want a conflict", err)
+	}
+	got := storedBackup(t, backup)
+	if c := meta.FindStatusCondition(got.Status.Conditions, lodiav1alpha1.ConditionReady); c == nil || c.Message != "first" {
+		t.Errorf("Ready is %+v", c)
+	}
+	if err := statusapply.ApplyLocked(t.Context(), k8s, manager, "Backup", got, backupConditions(t, "from the latest copy")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func newBackup(t *testing.T, ns string) *lodiav1alpha1.Backup {
+	t.Helper()
 	backup := &lodiav1alpha1.Backup{
 		ObjectMeta: metav1.ObjectMeta{Name: "b", Namespace: ns},
 		Spec:       lodiav1alpha1.BackupSpec{ControlPlaneRef: lodiav1alpha1.LocalReference{Name: "dev"}},
@@ -392,30 +471,39 @@ func TestALockedApplyConflictsOnAStaleResourceVersion(t *testing.T) {
 	if err := k8s.Create(t.Context(), backup); err != nil {
 		t.Fatal(err)
 	}
-	fields := func(message string) map[string]any {
-		u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&metav1.Condition{Type: lodiav1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonReconciling, Message: message, LastTransitionTime: earlier})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return map[string]any{"conditions": []any{u}}
-	}
-	if err := statusapply.ApplyLocked(t.Context(), k8s, manager, "Backup", backup, fields("first")); err != nil {
-		t.Fatal(err)
-	}
-	err := statusapply.ApplyLocked(t.Context(), k8s, manager, "Backup", backup, fields("computed from a stale copy"))
-	if !apierrors.IsConflict(err) {
-		t.Fatalf("error %v, want a conflict", err)
-	}
+	return backup
+}
+
+func storedBackup(t *testing.T, backup *lodiav1alpha1.Backup) *lodiav1alpha1.Backup {
+	t.Helper()
 	got := &lodiav1alpha1.Backup{}
 	if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(backup), got); err != nil {
 		t.Fatal(err)
 	}
-	if c := meta.FindStatusCondition(got.Status.Conditions, lodiav1alpha1.ConditionReady); c == nil || c.Message != "first" {
-		t.Errorf("Ready is %+v", c)
-	}
-	if err := statusapply.ApplyLocked(t.Context(), k8s, manager, "Backup", got, fields("from the latest copy")); err != nil {
+	return got
+}
+
+func backupConditions(t *testing.T, message string) map[string]any {
+	t.Helper()
+	u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&metav1.Condition{Type: lodiav1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonReconciling, Message: message, LastTransitionTime: earlier})
+	if err != nil {
 		t.Fatal(err)
 	}
+	return map[string]any{"conditions": []any{u}}
+}
+
+type recordsDeadline struct {
+	client.SubResourceWriter
+	at *time.Time
+}
+
+func (w recordsDeadline) Status() client.SubResourceWriter {
+	return w
+}
+
+func (w recordsDeadline) Apply(ctx context.Context, obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
+	*w.at, _ = ctx.Deadline()
+	return w.SubResourceWriter.Apply(ctx, obj, opts...)
 }
 
 type noWrite struct {
