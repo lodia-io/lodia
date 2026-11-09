@@ -23,7 +23,7 @@ import (
 
 var updateGolden = flag.Bool("update-golden", false, "write testdata/render from the render instead of comparing with it")
 
-func TestTheRenderOutsideGatewayModeIsPinned(t *testing.T) {
+func TestTheRenderIsPinned(t *testing.T) {
 	images, ok := versions.For("v1.37.1")
 	if !ok {
 		t.Fatal("no images for v1.37.1")
@@ -40,6 +40,18 @@ func TestTheRenderOutsideGatewayModeIsPinned(t *testing.T) {
 			endpoint: lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}},
 			status:   lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "192.0.2.11", Port: 31443}, Konnectivity: lodiav1alpha1.HostPort{Host: "192.0.2.11", Port: 31132}, InCluster: lodiav1alpha1.HostPort{Host: "192.0.2.11", Port: 31443}},
 		},
+		"gateway": {
+			endpoint: lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
+				ParentRef: lodiav1alpha1.ParentReference{Name: "edge", Namespace: "gateways", SectionName: "tls"},
+				Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.test", Konnectivity: "konnectivity.dev.example.test", Tunnel: "tunnel.dev.example.test"},
+			}},
+			status: lodiav1alpha1.EndpointStatus{
+				APIServer:    lodiav1alpha1.HostPort{Host: "api.dev.example.test", Port: 443},
+				Konnectivity: lodiav1alpha1.HostPort{Host: "konnectivity.dev.example.test", Port: 443},
+				InCluster:    lodiav1alpha1.HostPort{Host: "240.0.0.1", Port: 6443},
+				Tunnel:       &lodiav1alpha1.HostPort{Host: "tunnel.dev.example.test", Port: 443},
+			},
+		},
 	} {
 		cp := &lodiav1alpha1.ControlPlane{
 			ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: "team-a", UID: "5e1f7c3a-0000-4000-8000-000000000001"},
@@ -51,6 +63,11 @@ func TestTheRenderOutsideGatewayModeIsPinned(t *testing.T) {
 		}
 		var objects []any
 		objects = append(objects, service(cp))
+		if cp.Spec.Endpoint.Gateway != nil {
+			for _, route := range routes(cp) {
+				objects = append(objects, route)
+			}
+		}
 		for _, p := range networkPolicies(cp) {
 			objects = append(objects, p)
 		}

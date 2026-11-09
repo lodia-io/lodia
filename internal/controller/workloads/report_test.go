@@ -75,18 +75,32 @@ func setTargetVersion(t *testing.T, cp *lodiav1alpha1.ControlPlane, to string) {
 	applyStatus(t, cp, "test/target", map[string]any{"target": map[string]any{"version": to}})
 }
 
-func eventuallyImages(t *testing.T, cp *lodiav1alpha1.ControlPlane, tag string) {
+func eventuallyImages(t *testing.T, cp *lodiav1alpha1.ControlPlane, tag string, components ...string) {
 	t.Helper()
-	testenv.Eventually(t, func() error {
-		for _, component := range componentNames {
-			for _, c := range deployment(t, cp, component).Spec.Template.Spec.Containers {
-				if c.Name == component && !strings.HasSuffix(c.Image, ":"+tag) {
-					return fmt.Errorf("%s runs %s, want the tag %s", component, c.Image, tag)
-				}
+	if len(components) == 0 {
+		components = componentNames
+	}
+	testenv.Eventually(t, func() error { return imagesAt(t, cp, tag, components) })
+}
+
+func expectImagesAfterAPass(t *testing.T, cp *lodiav1alpha1.ControlPlane, tag string, components ...string) {
+	t.Helper()
+	reconcileNow(t, cp)
+	if err := imagesAt(t, cp, tag, components); err != nil {
+		t.Error(err)
+	}
+}
+
+func imagesAt(t *testing.T, cp *lodiav1alpha1.ControlPlane, tag string, components []string) error {
+	t.Helper()
+	for _, component := range components {
+		for _, c := range deployment(t, cp, component).Spec.Template.Spec.Containers {
+			if c.Name == component && !strings.HasSuffix(c.Image, ":"+tag) {
+				return fmt.Errorf("%s runs %s, want the tag %s", component, c.Image, tag)
 			}
 		}
-		return nil
-	})
+	}
+	return nil
 }
 
 func pause(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
@@ -135,18 +149,21 @@ func TestAComponentReportsTheVersionOfItsImageOnceEveryReplicaRunsIt(t *testing.
 	expectComponents(t, cp, "2/2/2 2/2/2 2/2/2")
 
 	setTargetVersion(t, cp, "v1.37.2")
-	eventuallyImages(t, cp, "v1.37.2")
-	expectComponents(t, cp, "2/2/absent 2/2/absent 2/2/absent")
+	eventuallyImages(t, cp, "v1.37.2", "kube-apiserver")
+	expectImagesAfterAPass(t, cp, "v1.37.1", "kube-controller-manager", "kube-scheduler")
+	expectComponents(t, cp, "2/2/absent 2/2/2 2/2/2")
 	expectVersions(t, cp, "v1.37.1 v1.37.1 v1.37.1")
 
 	setDeploymentStatus(t, cp, "kube-apiserver", func(s *appsv1.DeploymentStatus) {
 		*s = appsv1.DeploymentStatus{ObservedGeneration: deployment(t, cp, "kube-apiserver").Generation, Replicas: 2, UpdatedReplicas: 1, ReadyReplicas: 2, AvailableReplicas: 2}
 	})
-	expectComponents(t, cp, "2/2/1 2/2/absent 2/2/absent")
+	expectComponents(t, cp, "2/2/1 2/2/2 2/2/2")
 	expectVersions(t, cp, "v1.37.1 v1.37.1 v1.37.1")
+	expectImagesAfterAPass(t, cp, "v1.37.1", "kube-controller-manager", "kube-scheduler")
 
 	markAvailable(t, deployment(t, cp, "kube-apiserver"))
 	expectVersions(t, cp, "v1.37.2 v1.37.1 v1.37.1")
+	eventuallyImages(t, cp, "v1.37.2", "kube-controller-manager", "kube-scheduler")
 	markAvailable(t, deployment(t, cp, "kube-controller-manager"))
 	markAvailable(t, deployment(t, cp, "kube-scheduler"))
 	expectVersions(t, cp, "v1.37.2 v1.37.2 v1.37.2")
@@ -173,11 +190,14 @@ func TestAnUnobservedTemplateOfAHeldControllerManagerReportsNothing(t *testing.T
 	cp := restored(t, namespace(t), lodiav1alpha1.RestoreHeld)
 	expectVersions(t, cp, "v1.37.1 v1.37.1 v1.37.1")
 	setTargetVersion(t, cp, "v1.37.2")
-	eventuallyImages(t, cp, "v1.37.2")
-	expectComponents(t, cp, "1/1/absent 0/0/absent 1/1/absent")
-	expectVersions(t, cp, "v1.37.1 v1.37.1 v1.37.1")
+	eventuallyImages(t, cp, "v1.37.2", "kube-apiserver")
+	markAvailable(t, deployment(t, cp, "kube-apiserver"))
+	expectVersions(t, cp, "v1.37.2 v1.37.1 v1.37.1")
+	eventuallyImages(t, cp, "v1.37.2", "kube-controller-manager", "kube-scheduler")
+	expectComponents(t, cp, "1/1/1 0/0/absent 1/1/absent")
+	expectVersions(t, cp, "v1.37.2 v1.37.1 v1.37.1")
 	markAvailable(t, deployment(t, cp, "kube-controller-manager"))
-	expectVersions(t, cp, "v1.37.1 v1.37.2 v1.37.1")
+	expectVersions(t, cp, "v1.37.2 v1.37.2 v1.37.1")
 }
 
 func TestAGoneDeploymentKeepsItsReportOnBothPaths(t *testing.T) {
