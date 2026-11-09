@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/controller/lifecycle"
 	"go.lodia.io/lodia/internal/controller/workloads"
 	"go.lodia.io/lodia/internal/testenv"
 )
@@ -56,6 +57,22 @@ func TestAHeldRestoreRunsNoControllerManagerAndCountsItAvailable(t *testing.T) {
 		}
 	}
 	expectComponents(t, cp, "1/1/1 0/0/0 1/1/1")
+}
+
+func TestARestoredControlPlaneWhoseControllerManagerIsHeldGetsAKubernetesVersion(t *testing.T) {
+	cp := restored(t, namespace(t), lodiav1alpha1.RestoreHeld)
+	expectComponents(t, cp, "1/1/1 0/0/0 1/1/1")
+	applyStatus(t, cp, "test/addons", map[string]any{"addons": map[string]any{"version": version}})
+	lifecycleReconciler := &lifecycle.Reconciler{Client: k8s, Reader: k8s}
+	testenv.Eventually(t, func() error {
+		if _, err := lifecycleReconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+			return err
+		}
+		if k := get(t, cp).Status.Kubernetes; k == nil || k.Version != version {
+			return fmt.Errorf("status.kubernetes is %+v, want version %s", k, version)
+		}
+		return nil
+	})
 }
 
 func TestARestoreNotCompleteKeepsItsControllerManagerHeld(t *testing.T) {

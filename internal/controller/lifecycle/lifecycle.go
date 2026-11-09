@@ -70,7 +70,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	next := desired(cp)
-	changed := next.ObservedGeneration != cp.Status.ObservedGeneration || !equality.Semantic.DeepEqual(next.Target, cp.Status.Target)
+	changed := next.ObservedGeneration != cp.Status.ObservedGeneration || !equality.Semantic.DeepEqual(next.Target, cp.Status.Target) ||
+		!equality.Semantic.DeepEqual(next.Kubernetes, cp.Status.Kubernetes)
 	return ctrl.Result{}, statusapply.Apply(ctx, r.Client, r.Reader, FieldManager, cp, next, changed)
 }
 
@@ -102,12 +103,36 @@ func desired(cp *lodiav1alpha1.ControlPlane) lodiav1alpha1.ControlPlaneStatus {
 	if version != "" {
 		status.Target = &lodiav1alpha1.Target{Version: version}
 	}
+	if reported := oldestReported(cp); reported != "" {
+		status.Kubernetes = &lodiav1alpha1.KubernetesStatus{Version: reported}
+	}
 	for _, c := range []*metav1.Condition{progressing, readyNow} {
 		if c != nil {
 			status.Conditions = append(status.Conditions, *c)
 		}
 	}
 	return status
+}
+
+// oldestReported is the oldest version the three components and the addons
+// report, and empty until all four do.
+func oldestReported(cp *lodiav1alpha1.ControlPlane) string {
+	var reported []string
+	if c := cp.Status.Components; c != nil {
+		for _, component := range []*lodiav1alpha1.ComponentStatus{c.APIServer, c.ControllerManager, c.Scheduler} {
+			if component != nil {
+				reported = append(reported, component.Version)
+			}
+		}
+	}
+	if a := cp.Status.Addons; a != nil {
+		reported = append(reported, a.Version)
+	}
+	if len(reported) < 4 {
+		return ""
+	}
+	oldest, _ := versions.Oldest(reported...)
+	return oldest
 }
 
 // target moves within a minor only: a minor upgrade needs the documented

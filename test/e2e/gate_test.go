@@ -120,6 +120,15 @@ func TestPhase1Gate(t *testing.T) {
 			if took >= 3*time.Minute {
 				t.Errorf("Ready took %s; the gate wants under 3 minutes", took)
 			}
+			until(ctx, t, time.Minute, "status.kubernetes.version is spec.version", func(ctx context.Context) error {
+				if err := k8s.Get(ctx, key, cp); err != nil {
+					return err
+				}
+				if k := cp.Status.Kubernetes; k == nil || k.Version != cp.Spec.Version {
+					return fmt.Errorf("status.kubernetes is %+v, want version %s", k, cp.Spec.Version)
+				}
+				return nil
+			})
 			return ctx
 		}).
 		Assess("anonymous requests reach the tenant's health paths and cluster-info, nothing else", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
