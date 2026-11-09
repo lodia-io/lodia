@@ -279,7 +279,7 @@ func start(t *testing.T) client.WithWatch {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := operator.Setup(mgr, operator.DefaultConfig(), "registry.example/lodia-signer:test", "registry.example/lodia-tunnel:test", "etcd-druid", "lodia-system", true); err != nil {
+	if err := operator.Setup(mgr, operator.Inputs{Config: operator.DefaultConfig(), SignerImage: "registry.example/lodia-signer:test", TunnelImage: "registry.example/lodia-tunnel:test", EtcdDruidNamespace: "etcd-druid", OperatorNamespace: "lodia-system", GatewayAPI: true}); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())

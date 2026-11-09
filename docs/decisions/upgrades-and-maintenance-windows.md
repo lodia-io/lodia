@@ -1,8 +1,8 @@
 # Upgrades follow the version skew policy step by step; changes Lodia initiates roll in each tenant's maintenance window, a bounded number of tenants at a time
 
 Decided 2026-10-25.
-Not built: phase 2's wave 2, upgrades, builds it ([roadmap](../roadmap.md)).
-Until then Lifecycle moves `status.target.version` within a minor only, and every renderer renders with the running operator at once.
+Built: the steps of a minor upgrade below, Lifecycle driving them.
+Not built yet: the operator revision, windows, the fleet and patch updates, which phase 2's wave 2 builds next ([roadmap](../roadmap.md)); until then every renderer renders with the running operator at once.
 
 ## Decision
 
@@ -18,9 +18,10 @@ Lifecycle writes one `status.target.version`: the version the API server rolls t
 
 **A minor step.**
 
-1. Preflight: the next minor is in the version table (else `Unsupported`); `DatastoreReady` (else `WaitingForDatastore`); every kubelet at most three minors older than the next minor, from `status.nodes.oldestKubelet` (else `WaitingForNodes`); no hold of the controller manager (else `ControllerManagerHeld`).
-2. The `Backup` `<cp>-pre-upgrade-<version>-<ControlPlane UID>` (`PreUpgradeBackupName`) completes; a `Backup` outlives its source, so the UID keeps a predecessor's of the same name from standing in for it.
-   The target moves once it completes, or once it reports that the class has no backup store, which `Progressing` then says.
+1. Preflight, once every part reports the current target (what rolled before it, a patch downgrade among them, finishes first): the next minor is in the version table (else `Unsupported`); `DatastoreReady` at the object's generation (else `WaitingForDatastore`); every kubelet at most three minors older than the next minor, from `status.nodes.oldestKubelet` (else `WaitingForNodes`, also while `status.nodes` is absent); no hold of the controller manager (else `ControllerManagerHeld`).
+2. `status.kubernetes.upgrade.step` becomes `Backup`, and the `Backup` `<cp>-pre-upgrade-v<minor>-<ControlPlane UID>` (`PreUpgradeBackupName`) completes; a tenant steps to a minor once, so a `Backup` named for the minor does not change with the patch the step goes to, and the name's UID keeps a predecessor's from standing in for it, since a `Backup` outlives its source.
+   A failed `Backup` is `Failed`, and deleting it takes another; it has no owner reference, since it must outlive the tenant.
+   The target moves once it completes, or once it reports that the class has no backup store, which `Progressing` then says, unless the upgrade stands `Failed` (below); `step` becomes `APIServer` in the same write.
 3. The API server rolls; the step is done when every replica runs the new template, updated and ready, since `/readyz` reports no version.
 4. The controller manager and the scheduler roll.
 5. In the tenant, kube-proxy, CoreDNS and konnectivity-agent move to the new minor's versions; done when they are applied.
@@ -28,7 +29,7 @@ Lifecycle writes one `status.target.version`: the version the API server rolls t
 6. `status.kubernetes.version` becomes the new version.
    Nodes are the owner's: `status.nodes` reports how many run an older kubelet, and nothing forces them.
 
-A patch step skips the `Backup`.
+A patch step has no preflight and no `Backup`: the target moves at once, keeping the `startedAt` of a change under way.
 No step waits for a leader: a hold of the controller manager blocks only the start of an upgrade.
 A step that fails — a Deployment past its progress deadline (`APIServerReady`, `ProgressDeadlineExceeded`), an object the API server refuses — stops the upgrade, `Progressing=False`, `Failed`, with the step in `status.kubernetes.upgrade`; it resumes when the cause is gone.
 Restoring the pre-upgrade `Backup` into a new `ControlPlane` at the old version is the documented rollback, and it replaces the cluster ([restore-replaces-the-source](restore-replaces-the-source.md)).
@@ -84,7 +85,7 @@ Lodia never removes the annotation, so a GitOps tool that keeps it does not figh
 
 - The [version skew policy](https://kubernetes.io/releases/version-skew-policy/) allows the controller manager and scheduler to lag the API server by one minor and kubelets by three, never the other way round; the order above is the only safe one, and in-tenant components cannot be newer than the API server.
 - A renderer that follows what runs keeps the skew by construction: kubeadm upgrades the addons only once every API server runs the new version ([addons.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kubeadm/app/cmd/phases/upgrade/addons.go#L62-L73)), and HyperShift rolls a component only once its dependencies are available at the desired version ([status.go](https://github.com/openshift/hypershift/blob/v0.1.86/support/controlplane-component/status.go#L59-L101)).
-  A bug in Lifecycle's sequencing then cannot break the skew, and the current step is derived from what runs on every pass; `status.kubernetes.upgrade` only reports it.
+  A bug in Lifecycle's sequencing then cannot break the skew, and the current step is derived from what runs on every pass, but for `Backup`, which is recorded: while the `Backup` is taken what runs is identical to a finished step, so nothing would derive it, and the preflight would run again.
 - A snapshot before every minor upgrade is the only rollback etcd allows: a minor downgrade of the API server is unsupported.
 - In the solutions we studied, a new operator release can re-render every cluster it manages at once; one bug or one changed default then becomes a fleet-wide rollout in the middle of a business day.
   Gardener answers with maintenance time windows ([shoot_maintenance.md](https://github.com/gardener/gardener/blob/v1.154.0/docs/usage/shoot/shoot_maintenance.md#L11-L20)) and a cap on the shoots each gardenlet reconciles at once ([types.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/apis/config/gardenlet/v1alpha1/types.go#L315-L319)); the same two levers are enough here.
@@ -113,7 +114,7 @@ Lodia never removes the annotation, so a GitOps tool that keeps it does not figh
 ## Code
 
 - `api/v1alpha1` — `Target`, `KubernetesStatus` with `UpgradeStep`, `ComponentStatus` and `Rendered`, `MaintenanceStatus`, the window's rule, the annotations `lodia.io/operator-revision` and `lodia.io/maintain-requested-at`, `PreUpgradeBackupName` and the reasons of `Progressing`; `test/api` holds the rules.
-- `internal/controller/lifecycle` — the target within a minor, as phase 1 built it, and `status.kubernetes.version`.
+- `internal/controller/lifecycle` — `decide` holds the steps above; the reconciler gathers its facts, the `ControlPlane` and the `Backup` of the minor step, decides on the cached object, and on a change decides again on the object read live before it writes.
 - `internal/controller/workloads` — `status.components.*.version`, the tag of each component's own image once every replica runs it, and the controller manager and the scheduler rendered at `components.apiServer.version`.
 - `internal/controller/tenant` — the render at the oldest component's version, and `status.addons.version`, the version of the render of a pass that applied it in full.
-- `internal/versions` — `Oldest`.
+- `internal/versions` — `Oldest`, `Latest`, `Next` and `MinorsAhead`, the version arithmetic of a step.

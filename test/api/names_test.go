@@ -57,14 +57,17 @@ func TestAPreUpgradeBackupNameIsABackupName(t *testing.T) {
 		t.Fatal(err)
 	}
 	digits := int(*at(t, crdSchema(t, manifest), "status.target.version").MaxLength) - len("v1..")
-	version := "v1." + strings.Repeat("9", digits/2) + "." + strings.Repeat("9", digits-digits/2)
+	minor := "1." + strings.Repeat("9", digits/2)
 	uid := types.UID(strings.Repeat("f", 8) + "-ffff-ffff-ffff-" + strings.Repeat("f", 12))
-	name := lodiav1alpha1.PreUpgradeBackupName(strings.Repeat("a", 32), version, uid)
+	name := lodiav1alpha1.PreUpgradeBackupName(strings.Repeat("a", 32), minor, uid)
 	if errs := validation.IsDNS1123Subdomain(name); len(errs) > 0 || len(name) > 235 {
 		t.Errorf("%s, %d characters, is no Backup name: %v", name, len(name), errs)
 	}
-	if len(name) != 32+len("-pre-upgrade-")+len(version)+1+len(uid) {
-		t.Errorf("%s does not carry the ControlPlane's name, the version and the UID", name)
+	if want := strings.Repeat("a", 32) + "-pre-upgrade-v" + minor + "-" + string(uid); name != want {
+		t.Errorf("the name is %s, want %s", name, want)
+	}
+	if got := lodiav1alpha1.PreUpgradeBackupName("dev", "1.37", "u"); got != "dev-pre-upgrade-v1.37-u" {
+		t.Errorf("the name of the example is %s", got)
 	}
 }
 

@@ -4,8 +4,9 @@
 // Package live reads a writer's own conditions, Datastore's status.datastore
 // and status.restore, Workloads' status.components and status.endpoint,
 // Tenant's status.addons, PKI's status.credentials and Health's status.nodes,
-// as the API server holds them, for the waits and keeps
-// docs/decisions/independent-controllers.md names. A read fails when the API
+// and for Lifecycle's decisions the whole object, as the API server holds
+// them, for the waits and keeps docs/decisions/independent-controllers.md
+// names. A read fails when the API
 // server holds another object under the name, as when the cache still holds a
 // deleted predecessor, so that the pass is retried once the cache has caught
 // up.
@@ -20,6 +21,12 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 )
+
+// Object returns the whole of cp as the API server holds it, read through
+// reader, which must not be a cache.
+func Object(ctx context.Context, reader client.Reader, cp *lodiav1alpha1.ControlPlane) (*lodiav1alpha1.ControlPlane, error) {
+	return conditions(ctx, reader, cp, nil)
+}
 
 // Conditions replaces cp's conditions of the given types with the API
 // server's, read through reader, which must not be a cache.

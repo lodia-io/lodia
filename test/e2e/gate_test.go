@@ -555,6 +555,20 @@ func bootstrapToken(ctx context.Context, t *testing.T, c client.Client) string {
 func joinNodes(ctx context.Context, t *testing.T, cfg *envconf.Config, k8s client.Client, key client.ObjectKey, access *tenantAccess, count int) []string {
 	t.Helper()
 	token := bootstrapToken(ctx, t, access.client)
+	nodes := make([]string, 0, count)
+	for i := 1; i <= count; i++ {
+		nodes = append(nodes, joinNode(ctx, t, cfg, k8s, key, access, token, i))
+	}
+	installCNI(ctx, t, access, nodes[0])
+	for _, node := range nodes {
+		waitForNode(ctx, t, access, node)
+	}
+	waitForAgents(ctx, t, access, count)
+	return nodes
+}
+
+func joinNode(ctx context.Context, t *testing.T, cfg *envconf.Config, k8s client.Client, key client.ObjectKey, access *tenantAccess, token string, i int) string {
+	t.Helper()
 	cp := &lodiav1alpha1.ControlPlane{}
 	if err := k8s.Get(ctx, key, cp); err != nil {
 		t.Fatal(err)
@@ -564,39 +578,41 @@ func joinNodes(ctx context.Context, t *testing.T, cfg *envconf.Config, k8s clien
 	if err != nil {
 		t.Fatal(err)
 	}
-	nodes := make([]string, 0, count)
-	for i := 1; i <= count; i++ {
-		node := startNode(ctx, t, cfg.KubeconfigFile(), i)
-		join := []string{"exec", node, "kubeadm", "join", endpoint, "--token", token, "--patches", nodePatches, "--ignore-preflight-errors=SystemVerification"}
-		for _, ca := range cas {
-			hash := sha256.Sum256(ca.RawSubjectPublicKeyInfo)
-			join = append(join, "--discovery-token-ca-cert-hash", "sha256:"+hex.EncodeToString(hash[:]))
-		}
-		out, err := docker(ctx, join...)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Logf("kubeadm join %s:\n%s", endpoint, out)
-		until(ctx, t, time.Minute, "node "+node+" is registered", func(ctx context.Context) error {
-			return access.client.Get(ctx, client.ObjectKey{Name: node}, &corev1.Node{})
-		})
-		nodes = append(nodes, node)
+	node := startNode(ctx, t, cfg.KubeconfigFile(), i)
+	join := []string{"exec", node, "kubeadm", "join", endpoint, "--token", token, "--patches", nodePatches, "--ignore-preflight-errors=SystemVerification"}
+	for _, ca := range cas {
+		hash := sha256.Sum256(ca.RawSubjectPublicKeyInfo)
+		join = append(join, "--discovery-token-ca-cert-hash", "sha256:"+hex.EncodeToString(hash[:]))
 	}
-	installCNI(ctx, t, access, nodes[0])
-	for _, node := range nodes {
-		until(ctx, t, 3*time.Minute, "node "+node+" is Ready", func(ctx context.Context) error {
-			joined := &corev1.Node{}
-			if err := access.client.Get(ctx, client.ObjectKey{Name: node}, joined); err != nil {
-				return err
-			}
-			for _, c := range joined.Status.Conditions {
-				if c.Type == corev1.NodeReady && c.Status == corev1.ConditionTrue {
-					return nil
-				}
-			}
-			return fmt.Errorf("node %s is not Ready: %+v", node, joined.Status.Conditions)
-		})
+	out, err := docker(ctx, join...)
+	if err != nil {
+		t.Fatal(err)
 	}
+	t.Logf("kubeadm join %s:\n%s", endpoint, out)
+	until(ctx, t, time.Minute, "node "+node+" is registered", func(ctx context.Context) error {
+		return access.client.Get(ctx, client.ObjectKey{Name: node}, &corev1.Node{})
+	})
+	return node
+}
+
+func waitForNode(ctx context.Context, t *testing.T, access *tenantAccess, node string) {
+	t.Helper()
+	until(ctx, t, 3*time.Minute, "node "+node+" is Ready", func(ctx context.Context) error {
+		joined := &corev1.Node{}
+		if err := access.client.Get(ctx, client.ObjectKey{Name: node}, joined); err != nil {
+			return err
+		}
+		for _, c := range joined.Status.Conditions {
+			if c.Type == corev1.NodeReady && c.Status == corev1.ConditionTrue {
+				return nil
+			}
+		}
+		return fmt.Errorf("node %s is not Ready: %+v", node, joined.Status.Conditions)
+	})
+}
+
+func waitForAgents(ctx context.Context, t *testing.T, access *tenantAccess, count int) {
+	t.Helper()
 	until(ctx, t, 3*time.Minute, fmt.Sprintf("the konnectivity agents on the %d nodes are ready", count), func(ctx context.Context) error {
 		agents := &appsv1.DaemonSet{}
 		if err := access.client.Get(ctx, client.ObjectKey{Namespace: metav1.NamespaceSystem, Name: "konnectivity-agent"}, agents); err != nil {
@@ -607,12 +623,12 @@ func joinNodes(ctx context.Context, t *testing.T, cfg *envconf.Config, k8s clien
 		}
 		return nil
 	})
-	return nodes
 }
 
 var (
 	startedNodes []string
 	nodeDNS      string
+	nodeImage    = defaults.Image
 	nodeImages   []reference.NamedTagged
 )
 
@@ -636,7 +652,7 @@ func startNode(ctx context.Context, t *testing.T, kubeconfig string, i int) stri
 	if nodeDNS != "" {
 		run = append(run, "--dns", nodeDNS)
 	}
-	if _, err := docker(ctx, append(run, defaults.Image)...); err != nil {
+	if _, err := docker(ctx, append(run, nodeImage)...); err != nil {
 		t.Fatal(err)
 	}
 	until(ctx, t, time.Minute, "container "+name+" booted", func(ctx context.Context) error {

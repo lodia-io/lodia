@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -63,7 +64,7 @@ func TestARestoredControlPlaneWhoseControllerManagerIsHeldGetsAKubernetesVersion
 	cp := restored(t, namespace(t), lodiav1alpha1.RestoreHeld)
 	expectComponents(t, cp, "1/1/1 0/0/0 1/1/1")
 	applyStatus(t, cp, "test/addons", map[string]any{"addons": map[string]any{"version": version}})
-	lifecycleReconciler := &lifecycle.Reconciler{Client: k8s, Reader: k8s}
+	lifecycleReconciler := &lifecycle.Reconciler{Client: k8s, Reader: k8s, Clock: clock.RealClock{}}
 	testenv.Eventually(t, func() error {
 		if _, err := lifecycleReconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 			return err

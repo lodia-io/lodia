@@ -1,7 +1,7 @@
 // Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-//go:build e2e && (ha || hold)
+//go:build e2e && (ha || hold || upgrade)
 
 package e2e
 
@@ -128,17 +128,6 @@ func (r *recorder) log(t *testing.T, from, to time.Time) {
 	}
 	for _, conditionType := range readyAndInputs {
 		t.Logf("%s was not True for at most %s in the %s of the step", conditionType, r.longestNotTrue(conditionType, from, to), to.Sub(from).Round(time.Second))
-	}
-}
-
-func (r *recorder) alwaysTrue(t *testing.T, from, to time.Time, conditionTypes ...string) {
-	t.Helper()
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for _, conditionType := range conditionTypes {
-		if longest := r.longestNotTrue(conditionType, from, to); longest > 0 {
-			t.Errorf("%s was not True for %s", conditionType, longest)
-		}
 	}
 }
 

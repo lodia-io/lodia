@@ -7,6 +7,15 @@ rules:
 - apiGroups:
   - lodia.io
   resources:
+  - backups
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+- apiGroups:
+  - lodia.io
+  resources:
   - controlplanes
   verbs:
   - get

@@ -96,6 +96,18 @@ func ApplyInto(ctx context.Context, writer client.StatusClient, reader client.Re
 	return err
 }
 
+// Live reads cp as the API server holds it for a writer that decides again from
+// that copy, under the deadline of the write it decides, so that a pass that
+// has used up its time can still say why.
+func Live(ctx context.Context, reader client.Reader, cp *lodiav1alpha1.ControlPlane) (*lodiav1alpha1.ControlPlane, error) {
+	ctx, cancel, err := ownDeadline(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer cancel()
+	return live.Object(ctx, reader, cp)
+}
+
 // write returns the conditions it wrote among cp's, nil when it wrote none.
 func write(ctx context.Context, writer client.StatusClient, reader client.Reader, manager string, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed bool) ([]metav1.Condition, error) {
 	ctx, cancel, err := ownDeadline(ctx)

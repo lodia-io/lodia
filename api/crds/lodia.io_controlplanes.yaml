@@ -1537,12 +1537,12 @@ spec:
                 properties:
                   upgrade:
                     description: |-
-                      Upgrade is present from the moment a version change passes its
-                      preflight until every component and the addons run target.version.
+                      Upgrade is present from the moment a version change starts, a patch
+                      moving the target or a minor step passing its preflight, until every
+                      component and the addons run target.version.
                     properties:
                       startedAt:
-                        description: StartedAt is when the version change passed its
-                          preflight.
+                        description: StartedAt is when the version change started.
                         format: date-time
                         type: string
                       step:

@@ -806,8 +806,9 @@ type KubernetesStatus struct {
 	// +kubebuilder:validation:MaxLength=16
 	Version string `json:"version,omitempty"`
 
-	// Upgrade is present from the moment a version change passes its
-	// preflight until every component and the addons run target.version.
+	// Upgrade is present from the moment a version change starts, a patch
+	// moving the target or a minor step passing its preflight, until every
+	// component and the addons run target.version.
 	// +optional
 	Upgrade *UpgradeStatus `json:"upgrade,omitempty"`
 }
@@ -820,7 +821,7 @@ type UpgradeStatus struct {
 	// +required
 	Step UpgradeStep `json:"step"`
 
-	// StartedAt is when the version change passed its preflight.
+	// StartedAt is when the version change started.
 	// +required
 	StartedAt metav1.Time `json:"startedAt"`
 }

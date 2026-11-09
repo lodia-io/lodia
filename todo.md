@@ -211,3 +211,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 - Health's own metrics, under metrics-are-part-of-the-api: the lag of Health's pass is the watchdog of the hold's margin, and the rest, failed probes and silent nodes, is to be named there.
   The hold itself is `lodia_controlplane_condition{type="ControllerManagerHeld"}`.
+
+## For the release that first drops a minor
+
+- A minor dropped from the version table stays renderable for one more release, as the source of an upgrade ([upgrades-and-maintenance-windows](docs/decisions/upgrades-and-maintenance-windows.md), "End of support"): build it in the release that first drops one, since no minor is dropped yet and the flag would have no data and no test that means anything.

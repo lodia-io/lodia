@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/util/retry"
+	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -35,34 +36,46 @@ var readiness = []string{
 	lodiav1alpha1.ConditionControllersLeading,
 }
 
-var k8s client.WithWatch
+var (
+	k8s   client.WithWatch
+	quiet client.WithWatch
+)
 
 func TestMain(m *testing.M) {
 	testenv.SkipUnlessAvailable("the lifecycle controller tests")
 	env := testenv.Start(testenv.Options{})
 	k8s = env.Client
 	mgr := env.Manager(env.AsController("lifecycle"), false)
-	if err := (&lifecycle.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader()}).SetupWithManager(mgr, 1); err != nil {
+	if err := (&lifecycle.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Clock: clock.RealClock{}}).SetupWithManager(mgr, 1); err != nil {
 		env.Fatal("controller", err)
 	}
 	env.StartManager(mgr)
-	os.Exit(env.Finish(m.Run()))
+	unmanaged := testenv.Start(testenv.Options{})
+	quiet = unmanaged.Client
+	code := m.Run()
+	unmanaged.Finish(0)
+	os.Exit(env.Finish(code))
 }
 
-func TestTheTargetFollowsTheVersionWithinAMinor(t *testing.T) {
+func TestTheTargetFollowsTheVersionWithinAMinorThroughAnUpgrade(t *testing.T) {
 	cp := controlPlane(t, "v1.35.0")
+	reportAll(t, cp, "v1.35.0")
 	testenv.Eventually(t, func() error { return expect(t, cp, "v1.35.0", lodiav1alpha1.ReasonIdle) })
 
 	setVersion(t, cp, "v1.35.1")
-	testenv.Eventually(t, func() error { return expect(t, cp, "v1.35.1", lodiav1alpha1.ReasonIdle) })
-
-	setVersion(t, cp, "v1.36.0")
 	testenv.Eventually(t, func() error {
-		return expect(t, cp, "v1.35.1", lodiav1alpha1.ReasonUnsupported)
+		return expectProgressing(t, cp, lodiav1alpha1.ReasonUpgrading, "upgrading to v1.35.1, step APIServer: kube-apiserver: reports v1.35.0, not v1.35.1; kube-controller-manager: reports v1.35.0, not v1.35.1; kube-scheduler: reports v1.35.0, not v1.35.1; the addons: reports v1.35.0, not v1.35.1")
 	})
-	if c := condition(t, cp, lodiav1alpha1.ConditionProgressing); c.Message != "spec.version v1.36.0 is another minor than the target v1.35.1, which stays until minor upgrades are supported" {
-		t.Errorf("Progressing says %q", c.Message)
+	if u := get(t, cp).Status.Kubernetes.Upgrade; u == nil || u.Step != lodiav1alpha1.UpgradeStepAPIServer {
+		t.Errorf("upgrade is %+v, want step APIServer", u)
 	}
+	reportAll(t, cp, "v1.35.1")
+	testenv.Eventually(t, func() error {
+		if k := get(t, cp).Status.Kubernetes; k == nil || k.Upgrade != nil {
+			return fmt.Errorf("status.kubernetes is %+v, want no upgrade", k)
+		}
+		return expect(t, cp, "v1.35.1", lodiav1alpha1.ReasonIdle)
+	})
 
 	setVersion(t, cp, "v1.38.0")
 	testenv.Eventually(t, func() error {
@@ -80,6 +93,7 @@ func TestAnUnsupportedMinorGetsNoTarget(t *testing.T) {
 	})
 
 	setVersion(t, cp, "v1.35.0")
+	reportAll(t, cp, "v1.35.0")
 	testenv.Eventually(t, func() error { return expect(t, cp, "v1.35.0", lodiav1alpha1.ReasonIdle) })
 }
 
@@ -172,6 +186,7 @@ func TestReadyStaysTrueWhileTheWritersTakeAChangeUp(t *testing.T) {
 	})
 
 	setCondition(t, cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionTrue, "Fine", "")
+	reportAll(t, cp, "v1.37.3")
 	testenv.Eventually(t, func() error {
 		if err := expect(t, cp, "v1.37.3", lodiav1alpha1.ReasonIdle); err != nil {
 			return err
@@ -205,32 +220,35 @@ func TestAMissingInputLeavesReadyAtTheObjectsGeneration(t *testing.T) {
 }
 
 func TestProgressingNamesTheLagAfterUnsupportedAndBeforeTheRollout(t *testing.T) {
+	const generationTwo = "generation 2 is not taken up yet: CertificatesReady at 1, DatastoreReady at 1, APIServerReady at 1, AccessReady at 1, AddonsApplied at 1, Reachable at 1, ControllersLeading at 1"
 	cp := controlPlane(t, "v1.35.0")
 	for _, conditionType := range readiness {
 		setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
 	}
-	applyStatus(t, cp, "test/components", map[string]any{"components": map[string]any{
-		"apiServer": map[string]any{"total": int64(2), "ready": int64(2), "updated": int64(1)},
-	}})
+	applyStatus(t, cp, "test/components", map[string]any{
+		"components": map[string]any{
+			"apiServer":         versioned("v1.35.0", 2, 2, 1),
+			"controllerManager": versioned("v1.35.0", 1, 1, 1),
+			"scheduler":         versioned("v1.35.0", 1, 1, 1),
+		},
+		"addons": map[string]any{"version": "v1.35.0"},
+	})
 	testenv.Eventually(t, func() error {
 		return expectProgressing(t, cp, lodiav1alpha1.ReasonRollingOut, "kube-apiserver: 1 of 2 replicas updated")
 	})
 
 	setVersion(t, cp, "v1.35.1")
 	testenv.Eventually(t, func() error {
-		return expectProgressing(t, cp, lodiav1alpha1.ReasonLatestGenerationNotObserved,
-			"generation 2 is not taken up yet: CertificatesReady at 1, DatastoreReady at 1, APIServerReady at 1, AccessReady at 1, AddonsApplied at 1, Reachable at 1, ControllersLeading at 1")
+		return expectProgressing(t, cp, lodiav1alpha1.ReasonLatestGenerationNotObserved, generationTwo)
 	})
 
 	for _, conditionType := range readiness {
 		setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
 	}
 	testenv.Eventually(t, func() error {
-		return expectProgressing(t, cp, lodiav1alpha1.ReasonRollingOut, "kube-apiserver: 1 of 2 replicas updated")
+		return expectProgressing(t, cp, lodiav1alpha1.ReasonUpgrading,
+			"upgrading to v1.35.1, step APIServer: kube-apiserver: 1 of 2 replicas updated; kube-apiserver: reports v1.35.0, not v1.35.1; kube-controller-manager: reports v1.35.0, not v1.35.1; kube-scheduler: reports v1.35.0, not v1.35.1; the addons: reports v1.35.0, not v1.35.1")
 	})
-
-	setVersion(t, cp, "v1.36.0")
-	testenv.Eventually(t, func() error { return expect(t, cp, "v1.35.1", lodiav1alpha1.ReasonUnsupported) })
 
 	setVersion(t, cp, "v1.38.0")
 	testenv.Eventually(t, func() error { return expect(t, cp, "v1.35.1", lodiav1alpha1.ReasonUnsupported) })
@@ -270,6 +288,7 @@ func TestAConditionOutsideReadyHoldsNoChange(t *testing.T) {
 	for _, conditionType := range readiness {
 		setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
 	}
+	reportAll(t, cp, "v1.37.2")
 	testenv.Eventually(t, func() error {
 		if err := expect(t, cp, "v1.37.2", lodiav1alpha1.ReasonIdle); err != nil {
 			return err
@@ -313,23 +332,31 @@ func TestAStuckInputKeepsTheChangeInProgress(t *testing.T) {
 }
 
 func TestProgressingSumsTheRollout(t *testing.T) {
-	cp := controlPlane(t, "v1.37.1")
-	testenv.Eventually(t, func() error { return expect(t, cp, "v1.37.1", lodiav1alpha1.ReasonIdle) })
+	const v = "v1.37.1"
+	cp := controlPlane(t, v)
+	reportAll(t, cp, v)
+	testenv.Eventually(t, func() error { return expect(t, cp, v, lodiav1alpha1.ReasonIdle) })
 
-	applyStatus(t, cp, "test/components", map[string]any{"components": map[string]any{
-		"apiServer":         map[string]any{"total": int64(2), "ready": int64(3), "updated": int64(1)},
-		"controllerManager": map[string]any{"total": int64(2), "ready": int64(2), "updated": int64(2)},
-		"scheduler":         map[string]any{"total": int64(2), "ready": int64(2)},
-	}})
+	applyStatus(t, cp, "test/reports", map[string]any{
+		"components": map[string]any{
+			"apiServer":         versioned(v, 2, 3, 1),
+			"controllerManager": versioned(v, 2, 2, 2),
+			"scheduler":         map[string]any{"total": int64(2), "ready": int64(2), "version": v},
+		},
+		"addons": map[string]any{"version": v},
+	})
 	testenv.Eventually(t, func() error {
 		return expectProgressing(t, cp, lodiav1alpha1.ReasonRollingOut,
 			"kube-apiserver: 1 of 2 replicas updated; kube-scheduler: its updated replicas are not reported yet")
 	})
-	applyStatus(t, cp, "test/components", map[string]any{"components": map[string]any{
-		"apiServer":         map[string]any{"total": int64(2), "ready": int64(2), "updated": int64(2)},
-		"controllerManager": map[string]any{"total": int64(2), "ready": int64(2), "updated": int64(2)},
-		"scheduler":         map[string]any{"total": int64(2), "ready": int64(1), "updated": int64(2)},
-	}})
+	applyStatus(t, cp, "test/reports", map[string]any{
+		"components": map[string]any{
+			"apiServer":         versioned(v, 2, 2, 2),
+			"controllerManager": versioned(v, 2, 2, 2),
+			"scheduler":         versioned(v, 2, 1, 2),
+		},
+		"addons": map[string]any{"version": v},
+	})
 	applyStatus(t, cp, "test/datastore", map[string]any{"datastore": map[string]any{
 		"endpoints": []any{map[string]any{"host": "dev-etcd-client.team.svc", "port": int64(2379)}},
 		"members":   map[string]any{"total": int64(3), "ready": int64(3), "updated": int64(2)},
@@ -356,6 +383,7 @@ func TestProgressingSumsTheRollout(t *testing.T) {
 
 func TestAPausedControlPlaneKeepsItsTarget(t *testing.T) {
 	cp := controlPlane(t, "v1.35.0")
+	reportAll(t, cp, "v1.35.0")
 	testenv.Eventually(t, func() error { return expect(t, cp, "v1.35.0", lodiav1alpha1.ReasonIdle) })
 
 	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) {
@@ -365,6 +393,7 @@ func TestAPausedControlPlaneKeepsItsTarget(t *testing.T) {
 	testenv.Eventually(t, func() error { return expect(t, cp, "v1.35.0", lodiav1alpha1.ReasonPaused) })
 
 	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = false })
+	reportAll(t, cp, "v1.35.1")
 	testenv.Eventually(t, func() error { return expect(t, cp, "v1.35.1", lodiav1alpha1.ReasonIdle) })
 }
 
@@ -464,6 +493,7 @@ func TestGatewayModeCountsRoutesReadyAmongTheInputs(t *testing.T) {
 	})
 
 	setCondition(t, cp, lodiav1alpha1.ConditionRoutesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonAccepted, "")
+	reportAll(t, cp, "v1.37.2")
 	testenv.Eventually(t, func() error {
 		if err := expect(t, cp, "v1.37.2", lodiav1alpha1.ReasonIdle); err != nil {
 			return err
@@ -495,6 +525,7 @@ func TestRoutesReadyIsNoInputOutsideGatewayMode(t *testing.T) {
 			for _, conditionType := range readiness {
 				setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
 			}
+			reportAll(t, cp, "v1.37.2")
 			testenv.Eventually(t, func() error {
 				if err := expect(t, cp, "v1.37.2", lodiav1alpha1.ReasonIdle); err != nil {
 					return err
@@ -510,6 +541,10 @@ func gateway() lodiav1alpha1.Endpoint {
 		ParentRef: lodiav1alpha1.ParentReference{Name: "edge", Namespace: "gateways", SectionName: "tls"},
 		Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.com", Konnectivity: "konnectivity.dev.example.com", Tunnel: "tunnel.dev.example.com"},
 	}}
+}
+
+func versioned(version string, total, ready, updated int64) map[string]any {
+	return map[string]any{"total": total, "ready": ready, "updated": updated, "version": version}
 }
 
 func setFinalizers(t *testing.T, cp *lodiav1alpha1.ControlPlane, finalizers ...string) {
@@ -552,7 +587,7 @@ func expectNoWrite(t *testing.T, cp *lodiav1alpha1.ControlPlane, conditionType, 
 			return c.SubResource(subResource).Apply(ctx, obj, opts...)
 		},
 	})
-	if _, err := (&lifecycle.Reconciler{Client: counting, Reader: k8s}).Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+	if _, err := (&lifecycle.Reconciler{Client: counting, Reader: k8s, Clock: clock.RealClock{}}).Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 		t.Fatal(err)
 	}
 	if after := get(t, cp).ResourceVersion; applies > 0 || after != settled {

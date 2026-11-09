@@ -173,6 +173,8 @@ func TestAvailabilityIsAReadyReplicaOfEachComponent(t *testing.T) {
 	}
 	stale := deployment(apiServer, 2, 2, true)
 	stale.Status.ObservedGeneration = 1
+	stale0 := deployment(apiServer, 2, 0, true)
+	stale0.Status.ObservedGeneration = 1
 	const held = "kube-controller-manager is held at 0 replicas until the restore is released: spec.restoreFrom.release is Held"
 	for _, row := range []struct {
 		name        string
@@ -200,6 +202,8 @@ func TestAvailabilityIsAReadyReplicaOfEachComponent(t *testing.T) {
 		{"a deadline of a generation not observed", []*appsv1.Deployment{stale, deployment(controllerManager, 2, 2, false), deployment(scheduler, 2, 2, false)}, "",
 			"True Ready every replica of kube-apiserver, kube-controller-manager and kube-scheduler is ready"},
 		{"a deadline and no ready replica", []*appsv1.Deployment{deployment(apiServer, 2, 0, true), deployment(controllerManager, 2, 2, false), deployment(scheduler, 2, 2, false)}, "",
+			"False ProgressDeadlineExceeded the rollout of Deployment dev-kube-apiserver passed its progress deadline; kube-apiserver has 0 of 2 replicas ready"},
+		{"a deadline of a generation not observed with no ready replica", []*appsv1.Deployment{stale0, deployment(controllerManager, 2, 2, false), deployment(scheduler, 2, 2, false)}, "",
 			"False Unavailable kube-apiserver has 0 of 2 replicas ready"},
 		{"a scheduler without a Deployment", []*appsv1.Deployment{deployment(apiServer, 2, 1, false), deployment(controllerManager, 2, 2, false)}, "",
 			"False Unavailable kube-apiserver has 1 of 2 replicas ready; kube-scheduler has no Deployment"},

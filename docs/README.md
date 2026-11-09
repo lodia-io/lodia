@@ -48,7 +48,7 @@ The field reference with every rule is [`api/controlplane.md`](api/controlplane.
 | Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady`; `RoutesReady` in `gateway` mode | `status.target`, `status.datastore`, `CertificatesReady`, `DatastoreReady`; `status.restore` and `AddonsApplied` before it starts a restored `ControlPlane`'s controller manager |
 | Tenant | objects inside the tenant cluster, with an inventory | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
 | Health | status, and the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable`, `ControllersLeading`; `ControllerManagerHeld` outside `Ready`; `status.nodes` | `status.endpoint`, the CA bundle and, in `gateway` mode, `<cp>-tunnel-client`; `AccessReady` and `<cp>-lodia-kubeconfig` for `ControllersLeading`'s leader Leases, the node Leases and a held restore's lists; the kubeconfig alone to read the controller manager's Lease and to renew or release a hold of it |
-| Lifecycle | `status.target`, `status.kubernetes.version`, `Progressing`, `Ready`; from phase 2's wave 2 `status.kubernetes.upgrade`, `status.maintenance` and the pre-upgrade `Backup` | `Progressing` | the others |
+| Lifecycle | `status.target`, `status.kubernetes`, `Progressing`, `Ready`, the pre-upgrade `Backup`; from phase 2's wave 2 `status.maintenance` | `Progressing` | the others |
 
 How they meet is [independent-controllers](decisions/independent-controllers.md).
 PKI, the Datastore controller, a first Lifecycle, the Tenant controller, Health and Workloads are built (`internal/controller/pki`, `datastore`, `lifecycle`, `tenant`, `health` and `workloads`).
@@ -354,11 +354,11 @@ A tenant that stops answering leaves a True `AddonsApplied` as it was.
 
 ## Lifecycle
 
-Built so far: the target within a minor, `status.kubernetes.version`, `Progressing` and `Ready`, as [`api/controlplane.md`](api/controlplane.md#status) defines them.
+Built so far: the version steps below, a minor at a time through a preflight and a `Backup`, `status.kubernetes`, `Progressing` and `Ready`, as [`api/controlplane.md`](api/controlplane.md#status) defines them.
 
 ### Upgrades and windows
 
-From phase 2's wave 2: one minor at a time, in the order the version skew policy allows, and changes Lodia initiates roll in each tenant's window ([decision](decisions/upgrades-and-maintenance-windows.md)), within the fleet limit.
+One minor at a time, in the order the version skew policy allows ([decision](decisions/upgrades-and-maintenance-windows.md)); from phase 2's wave 2 changes Lodia initiates roll in each tenant's window, within the fleet limit.
 
 ```mermaid
 flowchart LR
