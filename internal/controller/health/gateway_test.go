@@ -39,6 +39,7 @@ type tunnelEndpoint struct {
 	clientCAs atomic.Pointer[x509.CertPool]
 	code      atomic.Int32
 	hang      atomic.Bool
+	redirect  atomic.Bool
 	opened    atomic.Int32
 	closed    chan struct{}
 }
@@ -102,8 +103,15 @@ func serveTunnelWithInnerCA(t *testing.T, ca, clientCA, innerCA *certs.Certifica
 			<-r.Context().Done()
 			return
 		}
+		if r.URL.Path == "/redirected" {
+			return
+		}
 		if r.URL.Path != "/readyz" {
 			http.NotFound(w, r)
+			return
+		}
+		if e.redirect.Load() {
+			http.Redirect(w, r, "/redirected", http.StatusFound)
 			return
 		}
 		w.WriteHeader(int(e.code.Load()))
@@ -345,6 +353,10 @@ func TestEachGatewayPathFailingAloneNamesItself(t *testing.T) {
 			f.api.code.Store(http.StatusServiceUnavailable)
 			return unchanged(f)
 		}, func(f *gatewayFixture, _, _ string) string { return "api: " + f.api.url + " answered 503" }},
+		{"the public endpoint redirects to a path that answers 200", func(t *testing.T, f *gatewayFixture) (string, string) {
+			f.api.redirect.Store(true)
+			return unchanged(f)
+		}, func(f *gatewayFixture, _, _ string) string { return "api: " + f.api.url + " answered 302" }},
 		{"the public endpoint hangs", func(t *testing.T, f *gatewayFixture) (string, string) {
 			f.api.hang.Store(true)
 			return unchanged(f)
@@ -354,6 +366,12 @@ func TestEachGatewayPathFailingAloneNamesItself(t *testing.T) {
 			return unchanged(f)
 		}, func(f *gatewayFixture, _, tunnel string) string {
 			return "tunnel: " + f.api.url + " through " + tunnel + " answered 503"
+		}},
+		{"the API server behind the tunnel redirects to a path that answers 200", func(t *testing.T, f *gatewayFixture) (string, string) {
+			f.tunnel.redirect.Store(true)
+			return unchanged(f)
+		}, func(f *gatewayFixture, _, tunnel string) string {
+			return "tunnel: " + f.api.url + " through " + tunnel + " answered 302"
 		}},
 		{"nothing listens at the tunnel", func(t *testing.T, f *gatewayFixture) (string, string) {
 			return f.konnectivity, deadAddress(t)

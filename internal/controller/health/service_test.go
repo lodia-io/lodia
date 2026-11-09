@@ -30,8 +30,9 @@ import (
 )
 
 type readyz struct {
-	code atomic.Int32
-	hang atomic.Bool
+	code     atomic.Int32
+	hang     atomic.Bool
+	redirect atomic.Bool
 }
 
 func (s *readyz) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -39,8 +40,15 @@ func (s *readyz) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()
 		return
 	}
+	if r.URL.Path == "/redirected" {
+		return
+	}
 	if r.URL.Path != "/readyz" {
 		http.NotFound(w, r)
+		return
+	}
+	if s.redirect.Load() {
+		http.Redirect(w, r, "/redirected", http.StatusFound)
 		return
 	}
 	w.WriteHeader(int(s.code.Load()))
