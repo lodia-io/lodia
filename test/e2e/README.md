@@ -68,7 +68,7 @@ Both loops and two watches, of the `ControlPlane` and of the namespace's Deploym
 2. While the API server reports v1.37.1 and the addons still the old minor, `logs` and `exec` reach the pod, the agents having reconnected to the new konnectivity-server ([metrics.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/pkg/server/metrics/metrics.go#L126-L133)).
 3. The upgrade ends: `status.kubernetes.version` v1.37.1, no `upgrade`, `Progressing` False, `Idle`, `Ready` True, the tenant's kube-proxy at v1.37.1, the node kept at v1.36.4 and reported as outdated.
 
-The test wants the two watches never to have seen the controller manager or the scheduler newer than the API server, in `status.components` or in the Deployments' images, nor `status.addons` newer than the oldest component; and between the counts before the edit and after the end, no request failed, none found the `kubernetes` slice empty, and answers to at least 95% of the requests sent.
+The test wants the two watches to have seen the three Deployments and never the controller manager or the scheduler newer than the API server, in `status.components` or, in their images, than what `status.components.apiServer.version` reports, nor `status.addons` newer than the oldest component; and between the counts before the edit and counts each loop reports later than the end, no request failed, none found the `kubernetes` slice empty, and answers to at least 95% of the requests sent.
 The test does not ask `Ready` to stay `True` through the upgrade, and logs each change of it instead.
 
 ## Nightly: the chain and a highly available upgrade

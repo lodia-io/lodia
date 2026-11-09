@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/version"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
@@ -142,7 +143,7 @@ func TestMinorUpgradeGate(t *testing.T) {
 			})
 			end := time.Now()
 			history.log(t, start, end)
-			after, logs := readLoops(ctx, t, "both loops' counts are read after the end", loops)
+			after, logs := readLoopsPast(ctx, t, end, loops)
 			for i, l := range loops {
 				checkLoop(t, l.where, before[i], after[i], logs[i])
 			}
@@ -311,6 +312,24 @@ func runWeb(ctx context.Context, t *testing.T, access *tenantAccess, node string
 	return web
 }
 
+func readLoopsPast(ctx context.Context, t *testing.T, end time.Time, loops []apiLoopRun) ([]loopCounts, []string) {
+	t.Helper()
+	counts, logs := make([]loopCounts, len(loops)), make([]string, len(loops))
+	until(ctx, t, 2*time.Minute, "both loops report counts later than the end", func(ctx context.Context) error {
+		for i, l := range loops {
+			var err error
+			if counts[i], logs[i], err = readLoop(ctx, l.api, l.pod); err != nil {
+				return err
+			}
+			if !counts[i].Time.After(end) {
+				return fmt.Errorf("pod %s/%s last reported its counts at %s, not later than the end at %s", l.pod.Namespace, l.pod.Name, counts[i].Time, end)
+			}
+		}
+		return nil
+	})
+	return counts, logs
+}
+
 func expectLogsAndExec(ctx context.Context, t *testing.T, access *tenantAccess, web *corev1.Pod) {
 	t.Helper()
 	logs, err := kubernetes.NewForConfigOrDie(access.cfg).CoreV1().Pods(web.Namespace).GetLogs(web.Name, &corev1.PodLogOptions{}).DoRaw(ctx)
@@ -387,14 +406,14 @@ func watchUpgrade(ctx context.Context, t *testing.T, k8s client.WithWatch, key c
 	t.Helper()
 	u := &watchedUpgrade{moved: map[string]time.Time{}, images: map[string]string{}}
 	u.stops = append(u.stops,
-		watchList(ctx, t, k8s, &lodiav1alpha1.ControlPlaneList{}, key.Namespace, u.broke, func(event watch.Event) {
+		watchList(ctx, t, k8s, &lodiav1alpha1.ControlPlaneList{}, key.Namespace, u.broke, func(_ context.Context, event watch.Event) {
 			if cp, ok := event.Object.(*lodiav1alpha1.ControlPlane); ok && cp.Name == key.Name {
 				u.observe(cp)
 			}
 		}),
-		watchList(ctx, t, k8s, &appsv1.DeploymentList{}, key.Namespace, u.broke, func(event watch.Event) {
+		watchList(ctx, t, k8s, &appsv1.DeploymentList{}, key.Namespace, u.broke, func(ctx context.Context, event watch.Event) {
 			if d, ok := event.Object.(*appsv1.Deployment); ok && d.Labels[lodiav1alpha1.ControlPlaneLabel] == key.Name {
-				u.observeImage(d)
+				u.observeImage(ctx, k8s, key, d)
 			}
 		}),
 	)
@@ -439,7 +458,7 @@ func (u *watchedUpgrade) observe(cp *lodiav1alpha1.ControlPlane) {
 	}
 }
 
-func (u *watchedUpgrade) observeImage(d *appsv1.Deployment) {
+func (u *watchedUpgrade) observeImage(ctx context.Context, k8s client.Client, key client.ObjectKey, d *appsv1.Deployment) {
 	component := d.Labels[lodiav1alpha1.ComponentLabel]
 	i := slices.IndexFunc(d.Spec.Template.Spec.Containers, func(c corev1.Container) bool { return c.Name == component })
 	if i < 0 {
@@ -453,11 +472,22 @@ func (u *watchedUpgrade) observeImage(d *appsv1.Deployment) {
 	if !ok {
 		return
 	}
+	api := ""
+	if component != lodiav1alpha1.APIServerComponent {
+		cp := &lodiav1alpha1.ControlPlane{}
+		if err := k8s.Get(ctx, key, cp); err != nil {
+			u.broke(err)
+			return
+		}
+		if c := cp.Status.Components; c != nil && c.APIServer != nil {
+			api = c.APIServer.Version
+		}
+	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.images[component] = tagged.Tag()
-	if err := skewOK(u.images); err != nil {
-		u.violations = append(u.violations, fmt.Sprintf("Deployment images at resourceVersion %s: %v", d.ResourceVersion, err))
+	if newer(tagged.Tag(), api) {
+		u.violations = append(u.violations, fmt.Sprintf("Deployment %s at resourceVersion %s runs %s, newer than the API server's report %s", d.Name, d.ResourceVersion, tagged.Tag(), api))
 	}
 }
 
@@ -479,6 +509,11 @@ func (u *watchedUpgrade) check(t *testing.T) {
 	}
 	if len(u.moved) == 0 {
 		t.Error("no status was observed")
+	}
+	for _, component := range []string{lodiav1alpha1.APIServerComponent, "kube-controller-manager", "kube-scheduler"} {
+		if _, seen := u.images[component]; !seen {
+			t.Errorf("no Deployment of %s was observed", component)
+		}
 	}
 }
 
@@ -507,13 +542,20 @@ func newer(a, b string) bool {
 	return errA == nil && errB == nil && vb.LessThan(va)
 }
 
-func watchList(ctx context.Context, t *testing.T, k8s client.WithWatch, list client.ObjectList, namespace string, broke func(error), on func(watch.Event)) func() {
+func watchList(ctx context.Context, t *testing.T, k8s client.WithWatch, list client.ObjectList, namespace string, broke func(error), on func(context.Context, watch.Event)) func() {
 	t.Helper()
 	initial := list.DeepCopyObject().(client.ObjectList)
 	if err := k8s.List(ctx, initial, client.InNamespace(namespace)); err != nil {
 		t.Fatal(err)
 	}
 	watching, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	if err := meta.EachListItem(initial, func(item runtime.Object) error {
+		on(watching, watch.Event{Type: watch.Added, Object: item})
+		return nil
+	}); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
 	lw := &cache.ListWatch{WatchFuncWithContext: func(ctx context.Context, options metav1.ListOptions) (watch.Interface, error) {
 		return k8s.Watch(ctx, list.DeepCopyObject().(client.ObjectList), &client.ListOptions{Namespace: namespace, Raw: &options})
 	}}
@@ -531,7 +573,7 @@ func watchList(ctx context.Context, t *testing.T, k8s client.WithWatch, list cli
 				continue
 			}
 			if event.Type == watch.Added || event.Type == watch.Modified {
-				on(event)
+				on(watching, event)
 			}
 		}
 	}()

@@ -175,7 +175,7 @@ func TestHighAvailabilityUpgrade(t *testing.T) {
 			until(ctx, t, 15*time.Minute, "the upgrade ends at "+to, func(ctx context.Context) error {
 				return upgradeEnded(ctx, k8s, key, to)
 			})
-			after, logs := readLoops(ctx, t, "both loops' counts are read after the end", loops)
+			after, logs := readLoopsPast(ctx, t, time.Now(), loops)
 			for i, l := range loops {
 				checkLoop(t, l.where, before[i], after[i], logs[i])
 			}
