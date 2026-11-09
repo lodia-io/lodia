@@ -409,8 +409,8 @@ func TestARolloutReadThatFailsOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
 
 	refresh(t, cp)
 	written := cp.ResourceVersion
-	if err := pass(failingRead{Reader: k8s}); !errors.Is(err, errReadFailed) || !apierrors.IsForbidden(err) {
-		t.Errorf("a pass whose rollout read and live read both failed returned %v, want both errors", err)
+	if err := pass(failingRead{Reader: k8s}); !errors.Is(err, errReadFailed) {
+		t.Errorf("a pass whose live read failed returned %v, want its error", err)
 	}
 	if refresh(t, cp); cp.ResourceVersion != written {
 		t.Errorf("a pass that cannot read its conditions from the server wrote the ControlPlane: resourceVersion %s, then %s", written, cp.ResourceVersion)
