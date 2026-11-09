@@ -224,6 +224,10 @@ func (f facts) minorStep(c *change) {
 // (https://kubernetes.io/releases/version-skew-policy/#kubelet).
 const maxKubeletSkew = 3
 
+// clockSkew is how far the operator's clock, which writes upgrade.startedAt,
+// may be from the API server's, which writes a Backup's creationTimestamp.
+const clockSkew = time.Minute
+
 func notInTable(minor string) string {
 	return fmt.Sprintf("the next minor, %s, is not one Lodia runs: %s", minor, strings.Join(versions.Minors(), ", "))
 }
@@ -417,7 +421,7 @@ func (c change) upgradingMessage(f facts, rolling []string) string {
 	if len(rolling) > 0 {
 		message += ": " + strings.Join(rolling, "; ")
 	}
-	if ready := backupReady(f.backup); noBackupStore(ready) && !f.backup.CreationTimestamp.Before(&c.upgrade.StartedAt) {
+	if ready := backupReady(f.backup); noBackupStore(ready) && !f.backup.CreationTimestamp.Time.Before(c.upgrade.StartedAt.Add(-clockSkew)) {
 		message += "; no pre-upgrade Backup was taken: " + ready.Message
 	}
 	return message
