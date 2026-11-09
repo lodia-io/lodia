@@ -1416,6 +1416,59 @@ func TestAWaitThatCannotReadWritesNothing(t *testing.T) {
 	}
 }
 
+func TestAFailureAmongTheObjectsEndsThePassInAnErrorAndWritesNoStatus(t *testing.T) {
+	cp := running(t)
+	changeSpec(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.Paused = true })
+	setTrue(t, cp, lodiav1alpha1.ConditionCertificatesReady, "Issued")
+	setTrue(t, cp, lodiav1alpha1.ConditionDatastoreReady, "Ready")
+	held := get(t, cp)
+	held.Spec.Paused = false
+	budget := &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{Name: cp.Name + "-kube-apiserver", Namespace: cp.Namespace, OwnerReferences: []metav1.OwnerReference{
+			*metav1.NewControllerRef(held, lodiav1alpha1.GroupVersion.WithKind("ControlPlane")),
+		}},
+		Spec: policyv1.PodDisruptionBudgetSpec{MaxUnavailable: new(intstr.FromInt32(1)), Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "leftover"}}},
+	}
+	if err := k8s.Create(t.Context(), budget); err != nil {
+		t.Fatal(err)
+	}
+	unavailable := apierrors.NewServiceUnavailable("injected")
+	for name, row := range map[string]struct{ read, remove bool }{
+		"a NetworkPolicy's read":         {read: true},
+		"a PodDisruptionBudget's delete": {remove: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			failing := interceptor.NewClient(k8s, interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					switch o := obj.(type) {
+					case *lodiav1alpha1.ControlPlane:
+						held.DeepCopyInto(o)
+						return nil
+					case *networkingv1.NetworkPolicy:
+						if row.read {
+							return unavailable
+						}
+					}
+					return c.Get(ctx, key, obj, opts...)
+				},
+				Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+					if _, ok := obj.(*policyv1.PodDisruptionBudget); ok && row.remove {
+						return unavailable
+					}
+					return c.Delete(ctx, obj, opts...)
+				},
+			})
+			r := &workloads.Reconciler{Client: noControlPlaneWrite(t, failing), Reader: k8s, SignerImage: signerImage}
+			if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apierrors.IsServiceUnavailable(err) {
+				t.Errorf("the pass returned %v, want the injected error", err)
+			}
+		})
+	}
+	if b := budgetOrNil(t, cp, "kube-apiserver"); b == nil {
+		t.Error("the PodDisruptionBudget that could not be deleted is gone")
+	}
+}
+
 func TestAWaitOnAStaleReadKeepsTheGenerationItsConditionNames(t *testing.T) {
 	cp := running(t, func(spec *lodiav1alpha1.ControlPlaneSpec) {
 		spec.APIServer = &lodiav1alpha1.APIServer{Replicas: new(int32(2))}

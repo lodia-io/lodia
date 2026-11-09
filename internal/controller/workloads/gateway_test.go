@@ -18,6 +18,7 @@ import (
 	"time"
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -1203,6 +1204,12 @@ func TestATransientErrorReturnsBeforeAnyStatus(t *testing.T) {
 				}
 				return c.List(ctx, list, opts...)
 			}}},
+		"a Deployment's read": {client: interceptor.Funcs{Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*appsv1.Deployment); ok {
+				return unavailable
+			}
+			return c.Get(ctx, key, obj, opts...)
+		}}},
 		"a route's apply": {client: interceptor.Funcs{Get: notCached, Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
 			if kindOf(t, obj) == "TLSRoute" {
 				return unavailable
