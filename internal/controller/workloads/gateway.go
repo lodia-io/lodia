@@ -32,18 +32,18 @@ import (
 // gateway checks the listener the parentRef names, publishes the endpoint at
 // its port, and writes the routes once this ControlPlane owns its hostnames.
 // It returns the endpoint, the wait of APIServerReady while there is none,
-// and RoutesReady, empty on an error that stops the pass. A listener that
+// and RoutesReady, nil on an error that stops the pass. A listener that
 // cannot take the routes leaves those that exist and a published endpoint as
 // they are: the endpoint never moves, since the ServiceAccount issuer follows
 // its port and every kubelet dials it.
-func (r *Reconciler) gateway(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*lodiav1alpha1.EndpointStatus, *metav1.Condition, metav1.Condition, error) {
+func (r *Reconciler) gateway(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*lodiav1alpha1.EndpointStatus, *metav1.Condition, *metav1.Condition, error) {
 	published := cp.Status.Endpoint
-	gw, listener, reason, problem, err := r.listener(ctx, cp, published)
+	gw, listener, problem, err := r.listener(ctx, cp, published)
 	if err != nil {
-		return nil, nil, metav1.Condition{}, err
+		return nil, nil, nil, err
 	}
-	if problem != "" {
-		routes := *asRoutes(newCondition(metav1.ConditionFalse, reason, problem))
+	if problem != nil {
+		routes := routesCondition(metav1.ConditionFalse, problem.reason, problem.message)
 		if published != nil {
 			return published, nil, routes, nil
 		}
@@ -75,24 +75,24 @@ func gatewayEndpoint(cp *lodiav1alpha1.ControlPlane, port int32) *lodiav1alpha1.
 }
 
 // listener is the listener sectionName names on the cached Gateway, or the
-// reason and the message that say why the routes cannot attach to it. Whether
-// it admits the namespace is the Gateway's to answer, in the routes' status.
-func (r *Reconciler) listener(ctx context.Context, cp *lodiav1alpha1.ControlPlane, published *lodiav1alpha1.EndpointStatus) (*gatewayv1.Gateway, gatewayv1.Listener, string, string, error) {
+// problem that says why the routes cannot attach to it. Whether it admits the
+// namespace is the Gateway's to answer, in the routes' status.
+func (r *Reconciler) listener(ctx context.Context, cp *lodiav1alpha1.ControlPlane, published *lodiav1alpha1.EndpointStatus) (*gatewayv1.Gateway, gatewayv1.Listener, *routeProblem, error) {
 	ref := cp.Spec.Endpoint.Gateway.ParentRef
 	if !r.GatewayAPI {
-		return nil, gatewayv1.Listener{}, lodiav1alpha1.ReasonGatewayUnsupported,
-			"the management cluster did not serve TLSRoute and Gateway at gateway.networking.k8s.io/v1 when the operator started, the only time it looks: restart the operator once they are served", nil
+		return nil, gatewayv1.Listener{}, &routeProblem{lodiav1alpha1.ReasonGatewayUnsupported,
+			"the management cluster did not serve TLSRoute and Gateway at gateway.networking.k8s.io/v1 when the operator started, the only time it looks: restart the operator once they are served"}, nil
 	}
 	gw := &gatewayv1.Gateway{}
 	if err := r.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, gw); err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil, gatewayv1.Listener{}, lodiav1alpha1.ReasonGatewayNotFound, fmt.Sprintf("Gateway %s/%s does not exist", ref.Namespace, ref.Name), nil
+			return nil, gatewayv1.Listener{}, &routeProblem{lodiav1alpha1.ReasonGatewayNotFound, fmt.Sprintf("Gateway %s/%s does not exist", ref.Namespace, ref.Name)}, nil
 		}
-		return nil, gatewayv1.Listener{}, "", "", err
+		return nil, gatewayv1.Listener{}, nil, err
 	}
-	unsupported := func(format string, args ...any) (*gatewayv1.Gateway, gatewayv1.Listener, string, string, error) {
+	unsupported := func(format string, args ...any) (*gatewayv1.Gateway, gatewayv1.Listener, *routeProblem, error) {
 		name := fmt.Sprintf("listener %s of Gateway %s/%s ", ref.SectionName, ref.Namespace, ref.Name)
-		return nil, gatewayv1.Listener{}, lodiav1alpha1.ReasonGatewayUnsupported, name + fmt.Sprintf(format, args...), nil
+		return nil, gatewayv1.Listener{}, &routeProblem{lodiav1alpha1.ReasonGatewayUnsupported, name + fmt.Sprintf(format, args...)}, nil
 	}
 	i := slices.IndexFunc(gw.Spec.Listeners, func(l gatewayv1.Listener) bool { return string(l.Name) == ref.SectionName })
 	if i < 0 {
@@ -126,7 +126,7 @@ func (r *Reconciler) listener(ctx context.Context, cp *lodiav1alpha1.ControlPlan
 	if published != nil && listener.Port != published.APIServer.Port {
 		return unsupported("is at port %d, and the endpoint, which never moves, was published at port %d", listener.Port, published.APIServer.Port)
 	}
-	return gw, listener, "", "", nil
+	return gw, listener, nil, nil
 }
 
 func hostnames(cp *lodiav1alpha1.ControlPlane) []string {
@@ -152,14 +152,14 @@ var routeReasons = []string{
 // re-check; a route the cache holds as rendered gets none, so a pass that
 // changes nothing writes nothing on the Gateway. The error of a refused route
 // comes with its condition, for the backoff.
-func (r *Reconciler) attach(ctx context.Context, cp *lodiav1alpha1.ControlPlane, gw *gatewayv1.Gateway, port int32) (metav1.Condition, error) {
+func (r *Reconciler) attach(ctx context.Context, cp *lodiav1alpha1.ControlPlane, gw *gatewayv1.Gateway, port int32) (*metav1.Condition, error) {
 	owners, err := r.owners(ctx, cp)
 	if err != nil {
-		return metav1.Condition{}, err
+		return nil, err
 	}
 	if len(owners) > 0 {
 		if err := r.deleteRoutes(ctx, cp); err != nil {
-			return metav1.Condition{}, err
+			return nil, err
 		}
 		var named []string
 		for _, hostname := range hostnames(cp) {
@@ -167,8 +167,8 @@ func (r *Reconciler) attach(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 				named = append(named, fmt.Sprintf("%s by ControlPlane %s/%s (UID %s)", hostname, owner.Namespace, owner.Name, owner.UID))
 			}
 		}
-		return *asRoutes(newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonHostnameConflict,
-			fmt.Sprintf("hostnames named first on Gateway %s/%s by another ControlPlane: %s; no route of this ControlPlane is applied until they are free", gw.Namespace, gw.Name, strings.Join(named, ", ")))), nil
+		return routesCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonHostnameConflict,
+			fmt.Sprintf("hostnames named first on Gateway %s/%s by another ControlPlane: %s; no route of this ControlPlane is applied until they are free", gw.Namespace, gw.Name, strings.Join(named, ", "))), nil
 	}
 	var problems []routeProblem
 	var refusals error
@@ -176,7 +176,7 @@ func (r *Reconciler) attach(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 		current := &gatewayv1.TLSRoute{}
 		if err := r.Get(ctx, client.ObjectKeyFromObject(desired), current); err != nil {
 			if !apierrors.IsNotFound(err) {
-				return metav1.Condition{}, err
+				return nil, err
 			}
 			current = nil
 		}
@@ -194,7 +194,7 @@ func (r *Reconciler) attach(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 				refusals = errors.Join(refusals, err)
 				continue
 			case err != nil:
-				return metav1.Condition{}, err
+				return nil, err
 			case problem != nil:
 				problems = append(problems, *problem)
 				continue
@@ -206,8 +206,8 @@ func (r *Reconciler) attach(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 		}
 	}
 	if len(problems) == 0 {
-		return *asRoutes(newCondition(metav1.ConditionTrue, lodiav1alpha1.ReasonAccepted,
-			fmt.Sprintf("every route is applied and Accepted by Gateway %s/%s", gw.Namespace, gw.Name))), nil
+		return routesCondition(metav1.ConditionTrue, lodiav1alpha1.ReasonAccepted,
+			fmt.Sprintf("every route is applied and Accepted by Gateway %s/%s", gw.Namespace, gw.Name)), nil
 	}
 	reason := routeReasons[slices.IndexFunc(routeReasons, func(reason string) bool {
 		return slices.ContainsFunc(problems, func(p routeProblem) bool { return p.reason == reason })
@@ -216,7 +216,7 @@ func (r *Reconciler) attach(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 	for _, p := range problems {
 		messages = append(messages, p.message)
 	}
-	return *asRoutes(newCondition(metav1.ConditionFalse, reason, strings.Join(messages, "; "))), refusals
+	return routesCondition(metav1.ConditionFalse, reason, strings.Join(messages, "; ")), refusals
 }
 
 func heldElsewhere(route *gatewayv1.TLSRoute, owner *metav1.OwnerReference) routeProblem {

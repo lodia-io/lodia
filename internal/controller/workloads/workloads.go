@@ -171,74 +171,111 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			return ctrl.Result{}, err
 		}
 	}
-	endpoint, condition, routes, requeueAfter, err := r.reconcile(ctx, cp)
-	if condition.Type == "" {
+	out, err := r.reconcile(ctx, cp)
+	if out == nil {
 		return ctrl.Result{}, err
 	}
 	components, readErr := r.components(ctx, cp)
 	if readErr != nil {
 		return ctrl.Result{}, errors.Join(err, readErr)
 	}
-	if statusErr := r.applyStatus(ctx, cp, endpoint, components, condition, routes); statusErr != nil || err != nil {
+	if statusErr := r.applyStatus(ctx, cp, out.endpoint, components, out.condition, out.routes); statusErr != nil || err != nil {
 		return ctrl.Result{}, errors.Join(err, statusErr)
 	}
-	if routes != nil && routes.Status != metav1.ConditionTrue && (requeueAfter == 0 || requeueAfter > time.Minute) {
+	requeueAfter := out.requeueAfter
+	if out.routes != nil && out.routes.Status != metav1.ConditionTrue && (requeueAfter == 0 || requeueAfter > time.Minute) {
 		requeueAfter = time.Minute
 	}
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
+// outcome is what a pass reports. A nil outcome writes no status, and comes
+// with the error that stopped the pass; a refusal has both.
+type outcome struct {
+	endpoint     *lodiav1alpha1.EndpointStatus
+	condition    metav1.Condition
+	routes       *metav1.Condition
+	requeueAfter time.Duration
+}
+
 // reconcile publishes the endpoint before it waits on anything or says what it
 // does not build, since PKI and Health need it. In gateway mode it also
-// returns RoutesReady, and a published endpoint stays on every path: an apply
+// reports RoutesReady, and a published endpoint stays on every path: an apply
 // without it would remove it.
-func (r *Reconciler) reconcile(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*lodiav1alpha1.EndpointStatus, metav1.Condition, *metav1.Condition, time.Duration, error) {
-	var notBuilt *metav1.Condition
-	if fields := unsupported(cp); len(fields) > 0 {
-		c := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, "not built yet: "+strings.Join(fields, ", "))
-		notBuilt = &c
-	}
+func (r *Reconciler) reconcile(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*outcome, error) {
 	svc := service(cp)
 	if held, requeueAfter, err := r.controlledElsewhere(ctx, cp, svc); err != nil || held != nil {
 		if err != nil {
-			return nil, metav1.Condition{}, nil, 0, err
+			return nil, err
 		}
 		var endpoint *lodiav1alpha1.EndpointStatus
 		if cp.Spec.Endpoint.Gateway != nil {
 			endpoint = cp.Status.Endpoint
 		}
-		return endpoint, *held, keptRoutes(cp, *held), requeueAfter, nil
+		return &outcome{endpoint: endpoint, condition: *held, routes: keptRoutes(cp, *held), requeueAfter: requeueAfter}, nil
 	}
 	if err := r.apply(ctx, svc); err != nil {
-		endpoint, condition, requeueAfter, err := refused(cp.Status.Endpoint, svc, err)
-		return endpoint, condition, keptRoutes(cp, condition), requeueAfter, err
+		out, err := refused(cp.Status.Endpoint, svc, err)
+		if out != nil {
+			out.routes = keptRoutes(cp, out.condition)
+		}
+		return out, err
 	}
 	if cp.Spec.Endpoint.Gateway == nil {
 		endpoint, waiting, requeueAfter, err := r.endpoint(ctx, cp, svc)
 		if err != nil {
-			return nil, metav1.Condition{}, nil, 0, err
+			return nil, err
 		}
-		endpoint, condition, requeueAfter, err := r.rollout(ctx, cp, endpoint, notBuilt, waiting, requeueAfter)
-		return endpoint, condition, nil, requeueAfter, err
+		return r.rollout(ctx, cp, endpoint, waiting, requeueAfter)
 	}
 	endpoint, waiting, routes, routesErr := r.gateway(ctx, cp)
-	if routes.Type == "" {
-		return nil, metav1.Condition{}, nil, 0, routesErr
+	if routes == nil {
+		return nil, routesErr
 	}
-	endpoint, condition, requeueAfter, err := r.rollout(ctx, cp, endpoint, notBuilt, waiting, 0)
-	return endpoint, condition, &routes, requeueAfter, errors.Join(routesErr, err)
+	out, err := r.rollout(ctx, cp, endpoint, waiting, 0)
+	if out != nil {
+		out.routes = routes
+	}
+	return out, errors.Join(routesErr, err)
 }
 
-// rollout waits for the inputs of the control plane's pods, then renders and
-// applies them.
-func (r *Reconciler) rollout(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, notBuilt, waiting *metav1.Condition, requeueAfter time.Duration) (*lodiav1alpha1.EndpointStatus, metav1.Condition, time.Duration, error) {
-	var err error
-	if notBuilt != nil {
-		return endpoint, *notBuilt, requeueAfter, nil
+// rollout says what is not built, or waits on the endpoint and the inputs of
+// the control plane's pods, then renders and applies them.
+func (r *Reconciler) rollout(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, waiting *metav1.Condition, requeueAfter time.Duration) (*outcome, error) {
+	report := func(condition metav1.Condition) *outcome {
+		return &outcome{endpoint: endpoint, condition: condition, requeueAfter: requeueAfter}
+	}
+	if fields := unsupported(cp); len(fields) > 0 {
+		return report(newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, "not built yet: "+strings.Join(fields, ", "))), nil
 	}
 	if waiting != nil {
-		return endpoint, *waiting, requeueAfter, nil
+		return report(*waiting), nil
 	}
+	in, waiting, err := r.inputs(ctx, cp, endpoint)
+	if err != nil {
+		return nil, err
+	}
+	if waiting != nil {
+		return report(*waiting), nil
+	}
+	deployments, all := objects(in)
+	if stopped, err := r.writeObjects(ctx, cp, endpoint, all); stopped != nil || err != nil {
+		return stopped, err
+	}
+	return report(availability(deployments, in.note, controllerManagerHeld(cp))), nil
+}
+
+type inputs struct {
+	rendering rendering
+	config    []*corev1.ConfigMap
+	// note is what availability says of a controller manager at 0 replicas.
+	note string
+}
+
+// inputs waits, in this order, for the target, the two conditions, the
+// Datastore's endpoints and the hashes, and returns what the pods render from
+// or the condition that says what it waits for.
+func (r *Reconciler) inputs(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus) (*inputs, *metav1.Condition, error) {
 	target := ""
 	if cp.Status.Target != nil {
 		target = cp.Status.Target.Version
@@ -249,11 +286,12 @@ func (r *Reconciler) rollout(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 		if target != "" {
 			message = "status.target.version " + target + " is not a version Lodia runs"
 		}
-		return endpoint, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget, message), requeueAfter, nil
+		return nil, new(newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget, message)), nil
 	}
 	if a := cp.Spec.Addons; a != nil && a.Konnectivity != nil {
+		var err error
 		if images, err = versions.PinKonnectivity(images, a.Konnectivity.Version); err != nil {
-			return nil, metav1.Condition{}, 0, err
+			return nil, nil, err
 		}
 	}
 	for _, input := range []struct{ condition, reason string }{
@@ -262,61 +300,84 @@ func (r *Reconciler) rollout(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 	} {
 		if !statusapply.TrueAt(cp, input.condition) {
 			message := fmt.Sprintf("%s is not True for generation %d", input.condition, cp.Generation)
-			return r.wait(ctx, cp, endpoint, newCondition(metav1.ConditionFalse, input.reason, message), requeueAfter)
+			waiting, err := r.wait(ctx, cp, newCondition(metav1.ConditionFalse, input.reason, message))
+			return nil, waiting, err
 		}
 	}
 	if cp.Status.Datastore == nil || len(cp.Status.Datastore.Endpoints) == 0 {
-		return r.wait(ctx, cp, endpoint, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, "waiting for the Datastore controller to publish status.datastore.endpoints"), requeueAfter)
+		waiting, err := r.wait(ctx, cp, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, "waiting for the Datastore controller to publish status.datastore.endpoints"))
+		return nil, waiting, err
 	}
 	config, err := configMaps(cp)
 	if err != nil {
-		return nil, metav1.Condition{}, 0, err
+		return nil, nil, err
 	}
 	hashes, unhashed, err := r.hashes(ctx, cp, config)
 	if err != nil {
-		return nil, metav1.Condition{}, 0, err
+		return nil, nil, err
 	}
 	if len(unhashed) > 0 {
 		message := "waiting for PKI to write the Secrets the control plane reads once, with their data hash: " + strings.Join(unhashed, ", ")
-		return r.wait(ctx, cp, endpoint, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, message), requeueAfter)
+		waiting, err := r.wait(ctx, cp, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, message))
+		return nil, waiting, err
 	}
 	unmet, note, err := r.release(ctx, cp)
 	if err != nil {
-		return nil, metav1.Condition{}, 0, err
+		return nil, nil, err
 	}
 	held := false
 	if len(unmet) > 0 {
 		ran, err := r.ran(ctx, cp)
 		if err != nil {
-			return nil, metav1.Condition{}, 0, err
+			return nil, nil, err
 		}
 		held = !ran
 	}
-	deployments := rendering{
-		cp:          cp,
-		images:      images,
-		signerImage: r.SignerImage,
-		tunnelImage: r.TunnelImage,
-		endpoint:    endpoint,
-		etcd:        cp.Status.Datastore.Endpoints,
-		hashes:      hashes,
-		held:        held,
-	}.deployments()
-	var objects []client.Object
-	for _, c := range config {
-		objects = append(objects, c)
+	return &inputs{
+		rendering: rendering{
+			cp:          cp,
+			images:      images,
+			signerImage: r.SignerImage,
+			tunnelImage: r.TunnelImage,
+			endpoint:    endpoint,
+			etcd:        cp.Status.Datastore.Endpoints,
+			hashes:      hashes,
+			held:        held,
+		},
+		config: config,
+		note:   note,
+	}, nil, nil
+}
+
+// objects renders what the pass applies, in that order, and the Deployments
+// among them, which the apply fills with the API server's status.
+func objects(in *inputs) ([]*appsv1.Deployment, []client.Object) {
+	cp := in.rendering.cp
+	deployments := in.rendering.deployments()
+	var all []client.Object
+	for _, c := range in.config {
+		all = append(all, c)
 	}
 	for _, p := range networkPolicies(cp) {
-		objects = append(objects, p)
+		all = append(all, p)
 	}
 	for _, d := range deployments {
-		objects = append(objects, d)
+		all = append(all, d)
 	}
 	for _, b := range podDisruptionBudgets(cp) {
-		objects = append(objects, b)
+		all = append(all, b)
 	}
+	return deployments, all
+}
+
+// writeObjects applies objects once no other owner keeps one of them. A non-nil
+// outcome stops the pass at what it reports.
+func (r *Reconciler) writeObjects(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, objects []client.Object) (*outcome, error) {
 	if held, requeueAfter, err := r.controlledElsewhere(ctx, cp, objects...); err != nil || held != nil {
-		return endpoint, ptr.Deref(held, metav1.Condition{}), requeueAfter, err
+		if err != nil {
+			return nil, err
+		}
+		return &outcome{endpoint: endpoint, condition: *held, requeueAfter: requeueAfter}, nil
 	}
 	for _, obj := range objects {
 		if err := r.apply(ctx, obj); err != nil {
@@ -325,10 +386,10 @@ func (r *Reconciler) rollout(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 	}
 	if cp.Spec.HighAvailability == nil {
 		if err := r.deletePodDisruptionBudgets(ctx, cp); err != nil {
-			return nil, metav1.Condition{}, 0, err
+			return nil, err
 		}
 	}
-	return endpoint, availability(deployments, note, controllerManagerHeld(cp)), requeueAfter, nil
+	return nil, nil
 }
 
 // release names, in this order, what a restored ControlPlane's release still
@@ -379,40 +440,40 @@ func (r *Reconciler) ran(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (b
 
 // refused says that the API server refuses obj, so that the status no longer
 // tells of the pass before, and returns the error for the backoff either way.
-func refused(endpoint *lodiav1alpha1.EndpointStatus, obj client.Object, err error) (*lodiav1alpha1.EndpointStatus, metav1.Condition, time.Duration, error) {
+func refused(endpoint *lodiav1alpha1.EndpointStatus, obj client.Object, err error) (*outcome, error) {
 	if !apistatus.Refused(err) {
-		return nil, metav1.Condition{}, 0, err
+		return nil, err
 	}
 	message := fmt.Sprintf("the API server refuses %s %s; the reason is in Lodia's log", obj.GetObjectKind().GroupVersionKind().Kind, obj.GetName())
-	return endpoint, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, message), 0, err
+	return &outcome{endpoint: endpoint, condition: newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, message)}, err
 }
 
 // wait decides from APIServerReady as the API server holds it. While that
 // reports availability, it counts the Deployments this ControlPlane controls
 // at the generation the condition names; otherwise it keeps a condition of an
 // older generation and returns waiting for one of cp's.
-func (r *Reconciler) wait(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, waiting metav1.Condition, requeueAfter time.Duration) (*lodiav1alpha1.EndpointStatus, metav1.Condition, time.Duration, error) {
+func (r *Reconciler) wait(ctx context.Context, cp *lodiav1alpha1.ControlPlane, waiting metav1.Condition) (*metav1.Condition, error) {
 	if err := live.Conditions(ctx, r.Reader, cp, lodiav1alpha1.ConditionAPIServerReady); err != nil {
-		return nil, metav1.Condition{}, 0, err
+		return nil, err
 	}
 	previous := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady)
 	if previous == nil {
-		return endpoint, waiting, requeueAfter, nil
+		return &waiting, nil
 	}
 	if slices.Contains([]string{lodiav1alpha1.ReasonReady, lodiav1alpha1.ReasonUnavailable, lodiav1alpha1.ReasonProgressDeadlineExceeded}, previous.Reason) {
 		controlled, err := r.controlled(ctx, cp)
 		if err != nil {
-			return nil, metav1.Condition{}, 0, err
+			return nil, err
 		}
 		_, note, err := r.release(ctx, cp)
 		if err != nil {
-			return nil, metav1.Condition{}, 0, err
+			return nil, err
 		}
 		counted := availability(slices.Collect(maps.Values(controlled)), note, controllerManagerHeld(cp))
 		counted.ObservedGeneration = previous.ObservedGeneration
-		return endpoint, counted, requeueAfter, nil
+		return &counted, nil
 	}
-	return endpoint, statusapply.Wait(cp, previous, waiting), requeueAfter, nil
+	return new(statusapply.Wait(cp, previous, waiting)), nil
 }
 
 // unsupported names the fields this release does not render, so a ControlPlane that
@@ -812,6 +873,10 @@ func newCondition(status metav1.ConditionStatus, reason, message string) metav1.
 func asRoutes(c metav1.Condition) *metav1.Condition {
 	c.Type = lodiav1alpha1.ConditionRoutesReady
 	return &c
+}
+
+func routesCondition(status metav1.ConditionStatus, reason, message string) *metav1.Condition {
+	return asRoutes(newCondition(status, reason, message))
 }
 
 // keptRoutes is RoutesReady in gateway mode on a pass that stops at the
