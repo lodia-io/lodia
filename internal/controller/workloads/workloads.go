@@ -739,7 +739,9 @@ func controllerManagerHeld(cp *lodiav1alpha1.ControlPlane) bool {
 // availability is True while each component has a ready replica; one without
 // a Deployment has none. A restored ControlPlane's controller manager at 0
 // replicas counts as available, with the note release makes of it, and so does
-// one with no ready replica while Health holds its leader Lease.
+// one with no ready replica while Health holds its leader Lease. A rollout past
+// its deadline is reported whether or not a replica is ready, False when none
+// is, since it is what Lifecycle fails a change on.
 func availability(deployments []*appsv1.Deployment, held string, leaseHeld bool) metav1.Condition {
 	var short, stalled []string
 	unavailable := false
@@ -771,10 +773,14 @@ func availability(deployments []*appsv1.Deployment, held string, leaseHeld bool)
 		}
 	}
 	switch {
+	case len(stalled) > 0:
+		status := metav1.ConditionTrue
+		if unavailable {
+			status = metav1.ConditionFalse
+		}
+		return newCondition(status, lodiav1alpha1.ReasonProgressDeadlineExceeded, strings.Join(append(stalled, short...), "; "))
 	case unavailable:
 		return newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, strings.Join(short, "; "))
-	case len(stalled) > 0:
-		return newCondition(metav1.ConditionTrue, lodiav1alpha1.ReasonProgressDeadlineExceeded, strings.Join(append(stalled, short...), "; "))
 	case len(short) > 0:
 		return newCondition(metav1.ConditionTrue, lodiav1alpha1.ReasonReady, strings.Join(short, "; "))
 	}

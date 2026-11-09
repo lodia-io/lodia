@@ -1167,13 +1167,15 @@ func TestAWaitCountsTheDeploymentsWorkloadsControls(t *testing.T) {
 			})
 			setDeploymentStatus(t, cp, "kube-apiserver", func(s *appsv1.DeploymentStatus) { s.ReadyReplicas, s.AvailableReplicas = 0, 0 })
 			testenv.Eventually(t, func() error {
-				return expectAt(cp, kept, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, "kube-apiserver has 0 of 2 replicas ready")
+				return expectAt(cp, kept, metav1.ConditionFalse, lodiav1alpha1.ReasonProgressDeadlineExceeded,
+					"the rollout of Deployment dev-kube-controller-manager passed its progress deadline; kube-apiserver has 0 of 2 replicas ready")
 			})
 			if err := k8s.Delete(t.Context(), deployment(t, cp, "kube-scheduler")); err != nil {
 				t.Fatal(err)
 			}
 			testenv.Eventually(t, func() error {
-				return expectAt(cp, kept, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, "kube-apiserver has 0 of 2 replicas ready; kube-scheduler has no Deployment")
+				return expectAt(cp, kept, metav1.ConditionFalse, lodiav1alpha1.ReasonProgressDeadlineExceeded,
+					"the rollout of Deployment dev-kube-controller-manager passed its progress deadline; kube-apiserver has 0 of 2 replicas ready; kube-scheduler has no Deployment")
 			})
 			expectComponents(t, cp, "2/0/0 2/2/2 0/0/absent")
 			expectVersions(t, cp, "v1.37.1 v1.37.1 v1.37.1")
