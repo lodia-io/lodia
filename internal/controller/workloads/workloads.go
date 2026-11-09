@@ -46,6 +46,7 @@ import (
 	"go.lodia.io/lodia/internal/live"
 	"go.lodia.io/lodia/internal/ownership"
 	"go.lodia.io/lodia/internal/restore"
+	"go.lodia.io/lodia/internal/statusapply"
 	"go.lodia.io/lodia/internal/versions"
 )
 
@@ -161,7 +162,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 	}
 	if meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady) == nil {
-		first := newCondition(metav1.ConditionUnknown, lodiav1alpha1.ReasonReconciling, "the first pass has not finished")
+		first := statusapply.FirstPass(cp, lodiav1alpha1.ConditionAPIServerReady)
 		var routes *metav1.Condition
 		if cp.Spec.Endpoint.Gateway != nil {
 			routes = asRoutes(first)
@@ -259,7 +260,7 @@ func (r *Reconciler) rollout(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 		{lodiav1alpha1.ConditionCertificatesReady, lodiav1alpha1.ReasonWaitingForCertificates},
 		{lodiav1alpha1.ConditionDatastoreReady, lodiav1alpha1.ReasonWaitingForDatastore},
 	} {
-		if c := meta.FindStatusCondition(cp.Status.Conditions, input.condition); c == nil || c.Status != metav1.ConditionTrue || c.ObservedGeneration != cp.Generation {
+		if !statusapply.TrueAt(cp, input.condition) {
 			message := fmt.Sprintf("%s is not True for generation %d", input.condition, cp.Generation)
 			return r.wait(ctx, cp, endpoint, newCondition(metav1.ConditionFalse, input.reason, message), requeueAfter)
 		}
@@ -349,7 +350,7 @@ func (r *Reconciler) release(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 	} else if source != nil {
 		unmet = append(unmet, fmt.Sprintf("ControlPlane %s (UID %s), the Backup's source, exists", source.Name, source.UID))
 	}
-	if c := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAddonsApplied); c == nil || c.Status != metav1.ConditionTrue || c.ObservedGeneration != cp.Generation {
+	if !statusapply.TrueAt(cp, lodiav1alpha1.ConditionAddonsApplied) {
 		unmet = append(unmet, fmt.Sprintf("%s is not True for generation %d", lodiav1alpha1.ConditionAddonsApplied, cp.Generation))
 	}
 	if len(unmet) == 0 {
@@ -411,10 +412,7 @@ func (r *Reconciler) wait(ctx context.Context, cp *lodiav1alpha1.ControlPlane, e
 		counted.ObservedGeneration = previous.ObservedGeneration
 		return endpoint, counted, requeueAfter, nil
 	}
-	if previous.ObservedGeneration < cp.Generation {
-		return endpoint, *previous, requeueAfter, nil
-	}
-	return endpoint, waiting, requeueAfter, nil
+	return endpoint, statusapply.Wait(cp, previous, waiting), requeueAfter, nil
 }
 
 // unsupported names the fields this release does not render, so a ControlPlane that
@@ -794,54 +792,17 @@ func dropNulls(m map[string]any) {
 // addresses exist, status.endpoint whole; a nil endpoint or components drops a
 // published one.
 func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, components *lodiav1alpha1.ComponentsStatus, condition metav1.Condition, routes *metav1.Condition) error {
-	applied := []metav1.Condition{condition}
+	conditions := []metav1.Condition{condition}
 	if routes != nil {
-		applied = append(applied, *routes)
+		conditions = append(conditions, *routes)
 	}
-	unchanged := true
-	for i := range applied {
-		if applied[i].ObservedGeneration == 0 {
-			applied[i].ObservedGeneration = cp.Generation
+	for i := range conditions {
+		if conditions[i].ObservedGeneration == 0 {
+			conditions[i].ObservedGeneration = cp.Generation
 		}
-		c, previous := applied[i], meta.FindStatusCondition(cp.Status.Conditions, applied[i].Type)
-		unchanged = unchanged && previous != nil && previous.Status == c.Status && previous.Reason == c.Reason &&
-			previous.Message == c.Message && previous.ObservedGeneration == c.ObservedGeneration
 	}
-	if unchanged && equality.Semantic.DeepEqual(cp.Status.Endpoint, endpoint) && equality.Semantic.DeepEqual(cp.Status.Components, components) {
-		return nil
-	}
-	conditions := slices.Clone(cp.Status.Conditions)
-	var written []any
-	for _, c := range applied {
-		meta.SetStatusCondition(&conditions, c)
-		u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(meta.FindStatusCondition(conditions, c.Type))
-		if err != nil {
-			return err
-		}
-		written = append(written, u)
-	}
-	status := map[string]any{"conditions": written}
-	if endpoint != nil {
-		e, err := runtime.DefaultUnstructuredConverter.ToUnstructured(endpoint)
-		if err != nil {
-			return err
-		}
-		status["endpoint"] = e
-	}
-	if components != nil {
-		c, err := runtime.DefaultUnstructuredConverter.ToUnstructured(components)
-		if err != nil {
-			return err
-		}
-		status["components"] = c
-	}
-	controlPlane := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": lodiav1alpha1.GroupVersion.String(),
-		"kind":       "ControlPlane",
-		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
-		"status":     status,
-	}}
-	return r.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(controlPlane), client.FieldOwner(FieldManager), client.ForceOwnership)
+	changed := !equality.Semantic.DeepEqual(cp.Status.Endpoint, endpoint) || !equality.Semantic.DeepEqual(cp.Status.Components, components)
+	return statusapply.Apply(ctx, r.Client, r.Reader, FieldManager, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: conditions, Endpoint: endpoint, Components: components}, changed)
 }
 
 func newCondition(status metav1.ConditionStatus, reason, message string) metav1.Condition {
