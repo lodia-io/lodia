@@ -162,12 +162,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   Which of those two paths ends the call, and why a call sent milliseconds after the deletion meets it, is not pinned.
   `listen-client-http-urls` would give gRPC a listener of its own ([serve.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/embed/serve.go#L128)), but etcd-druid renders the configuration and does not offer it ([etcdconfig.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/configmap/etcdconfig.go#L55)).
   Decide whether G2 keeps holding zero failed requests across this step until upstream fixes it.
-- Tenant and Health compare each condition they apply with the cache unless they have just read it live, and their predicates ignore their own conditions, so a write the server holds and the cache does not yet, such as a refusal or a `Reachable` False, stays until their next pass; the same on `main`.
-  That pass comes after `health.period`, or Tenant's minute or `tenant.applyInterval`, but Tenant's wait for `status.target` or `status.endpoint` schedules none, so after it the write stays until a change Tenant's predicate passes.
-  Compare those applies with the live copy too, as the paths that decide from their own condition do ([independent-controllers](docs/decisions/independent-controllers.md)).
-- Datastore's status apply takes `lastTransitionTime` from the cached conditions, so a pass that starts before the cache holds the previous pass's write applies a transition a second time and moves only that timestamp, by the cache's lag, with an extra status write: a second in envtest, where a test that compared the `ControlPlane`'s resourceVersion right after a transition to True caught it once in fifteen runs; the same on `main`.
-  When the apply finds a change and the pass has not read live, read the conditions through `internal/live` and compute the transition from them, as the waits and keeps do ([independent-controllers](docs/decisions/independent-controllers.md)).
-  A carried `resourceVersion` would conflict with the writes of the other controllers to the same status.
+- Health compares each condition it applies with the cache unless it has just read it live, and its predicates ignore its own conditions, so a write the server holds and the cache does not yet, such as a `Reachable` False, stays until its next pass, a `health.period` (5 s by default) later.
 - PKI carries `CAValidityAcceptable` over from the cache while another owner keeps one of its Secrets and while a CA cannot be read, so a stale cache can write an older value back, which stays while that path holds; the same on `main`.
   Read it live there too, as the waits and keeps do ([independent-controllers](docs/decisions/independent-controllers.md)).
 
@@ -195,13 +190,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the restore (2026-11-02)
 
-- A controller's status apply names its `ControlPlane` by name, without the UID it read, so a pass on a cache that still holds a deleted predecessor can write the predecessor's state into its successor's status until the next pass corrects it; `internal/live` refuses such a read, but only the passes that read live use it. Carrying the read `metadata.uid` in every status apply would make the API server refuse it, as the `Etcd` apply already does (`replaced` in `internal/controller/datastore/datastore.go`): an update takes the stored UID only when none is given ([update.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/registry/rest/update.go#L138-L141)), and `metadata.uid` is immutable ([objectmeta.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apimachinery/pkg/api/validation/objectmeta.go#L358)).
 - PKI copies a restore's keys from the `Backup` of `restoreFrom.backupRef`'s name, not from the `Backup` UID `status.restore` names: a `ControlPlane` restored from a `Backup` that went without its keys, which takes a person removing `lodia.io/restore-source` by hand, would take the keys of a successor `Backup` of the same name and hold that one while its keys exist (`backupKeys` in `internal/controller/pki/secrets.go`, `restoring` in `internal/controller/datastore/backup.go`; round 3, R3-P2).
-
-## From Tenant's apiserver-proxy (2026-11-07)
-
-- A tenant that answers each request just under its timeout uses a pass's whole minute: measured on #54, a gateway tenant answering every request after 9.5 s ended the pass at 60.0 s, and the status write failed on the expired context, so no condition says why; the same on `main` without delivery.
-  Give the status write a deadline of its own, apart from the pass's.
 
 ## From the gateway gate (2026-11-08)
 

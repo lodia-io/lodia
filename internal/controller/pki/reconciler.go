@@ -15,10 +15,9 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -29,6 +28,7 @@ import (
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/live"
 	"go.lodia.io/lodia/internal/restore"
+	"go.lodia.io/lodia/internal/statusapply"
 )
 
 const (
@@ -95,7 +95,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		for _, c := range owned {
 			conditions = append(conditions, previous(cp, c))
 		}
-		if err := r.applyStatus(ctx, cp, now, nil, conditions...); err != nil {
+		if err := r.applyStatus(ctx, cp, now, credentialRefs(cp.Status.Credentials), conditions...); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -112,7 +112,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		if len(t.foreign) == 0 {
 			blocked = t.secretsExist()
 		}
-		if err := r.applyStatus(ctx, cp, now, nil, blocked, previous(cp, lodiav1alpha1.ConditionCAValidityAcceptable), access); err != nil {
+		if err := r.applyStatus(ctx, cp, now, credentialRefs(cp.Status.Credentials), blocked, previous(cp, lodiav1alpha1.ConditionCAValidityAcceptable), access); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: t.foreignRequeue()}, bindErr
@@ -146,7 +146,7 @@ func previous(cp *lodiav1alpha1.ControlPlane, conditionType string) metav1.Condi
 	if c := meta.FindStatusCondition(cp.Status.Conditions, conditionType); c != nil {
 		return *c
 	}
-	return metav1.Condition{Type: conditionType, Status: metav1.ConditionUnknown, Reason: lodiav1alpha1.ReasonReconciling, Message: "the first pass has not finished"}
+	return statusapply.FirstPass(cp, conditionType)
 }
 
 func missingCAMessage(cas []string) string {
@@ -250,15 +250,11 @@ func listed(items []string) string {
 // an empty condition, and the pass returns before its status apply.
 func (r *Reconciler) access(ctx context.Context, t *tenant) (metav1.Condition, error) {
 	c := metav1.Condition{Type: lodiav1alpha1.ConditionAccessReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonWaitingForAPIServer, Message: "APIServerReady is not True for this generation"}
-	ready := meta.FindStatusCondition(t.cp.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady)
-	if ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != t.cp.Generation || t.existing[t.secret(lodiav1alpha1.LodiaKubeconfigSecret)] == nil {
+	if !statusapply.TrueAt(t.cp, lodiav1alpha1.ConditionAPIServerReady) || t.existing[t.secret(lodiav1alpha1.LodiaKubeconfigSecret)] == nil {
 		if err := live.Conditions(ctx, r.Reader, t.cp, c.Type); err != nil {
 			return metav1.Condition{}, err
 		}
-		if prev := meta.FindStatusCondition(t.cp.Status.Conditions, c.Type); prev != nil && prev.ObservedGeneration < t.cp.Generation {
-			return *prev, nil
-		}
-		return c, nil
+		return statusapply.Wait(t.cp, meta.FindStatusCondition(t.cp.Status.Conditions, c.Type), c), nil
 	}
 	refused, err := r.bind(ctx, t)
 	if err == nil {
@@ -279,70 +275,29 @@ func (r *Reconciler) access(ctx context.Context, t *tenant) (metav1.Condition, e
 	return c, err
 }
 
-// applyStatus writes only on a change. Nil credentials keep the
-// ControlPlane's references, and a condition carried from an earlier pass
-// keeps its observedGeneration: an apply that leaves out a field PKI owns
-// removes it.
-func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, now time.Time, credentials map[string]any, conditions ...metav1.Condition) error {
-	if credentials == nil {
-		credentials = map[string]any{}
-		if c := cp.Status.Credentials; c != nil {
-			for field, ref := range map[string]*lodiav1alpha1.LocalReference{"adminKubeconfigSecretRef": c.AdminKubeconfigSecretRef, "caBundleSecretRef": c.CABundleSecretRef} {
-				if ref != nil {
-					credentials[field] = map[string]any{"name": ref.Name}
-				}
-			}
-		}
-	}
-	changed := false
+// applyStatus writes only on a change, always with the credentials it is
+// given, since an apply that leaves out a field PKI owns removes it. A
+// condition carried from an earlier pass keeps its observedGeneration, and
+// now is its transition time when its status changes.
+func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, now time.Time, credentials *lodiav1alpha1.CredentialsStatus, conditions ...metav1.Condition) error {
 	for i := range conditions {
-		c := &conditions[i]
-		if c.ObservedGeneration == 0 {
-			c.ObservedGeneration = cp.Generation
+		if conditions[i].ObservedGeneration == 0 {
+			conditions[i].ObservedGeneration = cp.Generation
 		}
-		c.LastTransitionTime = metav1.NewTime(now)
-		prev := meta.FindStatusCondition(cp.Status.Conditions, c.Type)
-		if prev != nil && prev.Status == c.Status {
-			c.LastTransitionTime = prev.LastTransitionTime
-		}
-		if prev == nil || prev.Status != c.Status || prev.Reason != c.Reason || prev.Message != c.Message || prev.ObservedGeneration != c.ObservedGeneration {
-			changed = true
-		}
+		conditions[i].LastTransitionTime = metav1.NewTime(now)
 	}
-	prev := cp.Status.Credentials
-	if prev == nil {
-		prev = &lodiav1alpha1.CredentialsStatus{}
-	}
-	for field, ref := range map[string]*lodiav1alpha1.LocalReference{"adminKubeconfigSecretRef": prev.AdminKubeconfigSecretRef, "caBundleSecretRef": prev.CABundleSecretRef} {
-		want, _ := credentials[field].(map[string]any)
-		if (ref == nil) != (want == nil) || (ref != nil && ref.Name != want["name"]) {
-			changed = true
-		}
-	}
-	if !changed {
-		return nil
-	}
-
-	list := make([]any, 0, len(conditions))
-	for i := range conditions {
-		c, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&conditions[i])
-		if err != nil {
-			return err
-		}
-		list = append(list, c)
-	}
-	status := map[string]any{"conditions": list}
-	if len(credentials) > 0 {
-		status["credentials"] = credentials
-	}
-	u := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": lodiav1alpha1.GroupVersion.String(),
-		"kind":       kind,
-		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
-		"status":     status,
-	}}
-	if err := r.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(u), client.FieldOwner(fieldManager), client.ForceOwnership); err != nil {
+	changed := !equality.Semantic.DeepEqual(credentialRefs(cp.Status.Credentials), credentials)
+	if err := statusapply.Apply(ctx, r.Client, r.Reader, fieldManager, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: conditions, Credentials: credentials}, changed); err != nil {
 		return fmt.Errorf("apply the status of %s: %w", cp.Name, err)
 	}
 	return nil
+}
+
+// credentialRefs is the part of status.credentials PKI writes, nil when it
+// names nothing.
+func credentialRefs(c *lodiav1alpha1.CredentialsStatus) *lodiav1alpha1.CredentialsStatus {
+	if c == nil || c.AdminKubeconfigSecretRef == nil && c.CABundleSecretRef == nil {
+		return nil
+	}
+	return &lodiav1alpha1.CredentialsStatus{AdminKubeconfigSecretRef: c.AdminKubeconfigSecretRef, CABundleSecretRef: c.CABundleSecretRef}
 }

@@ -304,14 +304,14 @@ func (t *tenant) foreignRequeue() time.Duration {
 	return 10 * time.Second
 }
 
-func (t *tenant) credentials() map[string]any {
-	out := map[string]any{}
-	for field, secret := range map[string]string{"adminKubeconfigSecretRef": t.secret(lodiav1alpha1.AdminKubeconfigSecret), "caBundleSecretRef": t.secret(lodiav1alpha1.CABundleSecret)} {
-		if t.existing[secret] != nil {
-			out[field] = map[string]any{"name": secret}
+func (t *tenant) credentials() *lodiav1alpha1.CredentialsStatus {
+	ref := func(secret lodiav1alpha1.Secret) *lodiav1alpha1.LocalReference {
+		if name := t.secret(secret); t.existing[name] != nil {
+			return &lodiav1alpha1.LocalReference{Name: name}
 		}
+		return nil
 	}
-	return out
+	return credentialRefs(&lodiav1alpha1.CredentialsStatus{AdminKubeconfigSecretRef: ref(lodiav1alpha1.AdminKubeconfigSecret), CABundleSecretRef: ref(lodiav1alpha1.CABundleSecret)})
 }
 
 func data(s *corev1.Secret, key string) []byte {
