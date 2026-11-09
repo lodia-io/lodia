@@ -1,7 +1,7 @@
 # Upgrades follow the version skew policy step by step; changes Lodia initiates roll in each tenant's maintenance window, a bounded number of tenants at a time
 
 Decided 2026-10-25.
-Built: the steps of a minor upgrade below, Lifecycle driving them, and the operator revision, which Lifecycle writes to `status.target.operatorRevision`, the running one, on every pass.
+Built: the steps of a minor upgrade below, Lifecycle driving them, and the operator revision, which Lifecycle writes to `status.target.operatorRevision`, the running one, on every pass but a paused or deleting one's.
 Not built yet: the stamp and the hold on the revision, windows, the fleet and patch updates, which phase 2's wave 2 builds next ([roadmap](../roadmap.md)); until then every renderer renders with the running operator at once.
 
 ## Decision
@@ -48,6 +48,7 @@ An operator release renders differently, and so does an operator with another co
 `operatorRevision` is `<build version>+<digest>`.
 The build version covers what is fixed at build: the version table, the registry and the default resources.
 The digest covers what a render reads at run time: the images of `lodia-signer` and `lodia-tunnel`, etcd-druid's version, and the namespaces of etcd-druid and of the operator, which each etcd's NetworkPolicy renders.
+Whether the management cluster serves Gateway API is left out: a tenant waiting for it must not then wait for a window.
 The configuration's `versions` and `registry` keys join the digest when something reads them ([operator configuration](../README.md#installation)).
 Revisions are compared for equality only, so a rollback of the operator is one more revision.
 Workloads, Tenant and the Datastore controller render with the running revision only while `status.target.operatorRevision` equals it ([what they hold until then](../api/controlplane.md#status)).

@@ -30,7 +30,7 @@ func main() {
 	flag.StringVar(&configPath, "config", "", "Path to the operator's configuration file, YAML; without it the defaults apply.")
 	flag.StringVar(&signerImage, "signer-image", "", "Image of lodia-signer, the API server's ServiceAccount token signer; required.")
 	flag.StringVar(&tunnelImage, "tunnel-image", "", "Image of lodia-tunnel, a gateway tenant's in-cluster path to its API server; required.")
-	flag.StringVar(&etcdDruidVersion, "etcd-druid-version", "", "Version of etcd-druid, the tag of its image, which the operator revision covers; required.")
+	flag.StringVar(&etcdDruidVersion, "etcd-druid-version", "", "Version of etcd-druid, what follows the repository and its colon in its image, a digest included, which the operator revision covers; required.")
 	flag.StringVar(&etcdDruidNamespace, "etcd-druid-namespace", "", "Namespace etcd-druid runs in, whose pods each etcd's NetworkPolicy admits to the backup-restore sidecar; required.")
 	flag.StringVar(&operatorNamespace, "operator-namespace", "", "Namespace the operator runs in, whose pods each etcd's NetworkPolicy admits to the client port; required.")
 	opts := zap.Options{}

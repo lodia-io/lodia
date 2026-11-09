@@ -54,7 +54,8 @@ type Reconciler struct {
 	// Reader reads the ControlPlane as the API server holds it, before a write.
 	Reader client.Reader
 	Clock  clock.PassiveClock
-	// Revision is the running operator revision, which every pass grants.
+	// Revision is the running operator revision, which every pass but a
+	// paused or deleting one's grants.
 	Revision string
 }
 
