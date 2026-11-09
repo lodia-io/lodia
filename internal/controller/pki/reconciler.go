@@ -41,7 +41,8 @@ const (
 type Reconciler struct {
 	client.Client
 	// Reader reads Secrets whole, since the manager's cache holds their
-	// metadata only, and PKI's conditions at the start of a pass.
+	// metadata only, and PKI's conditions and status.credentials at the start
+	// of a pass.
 	Reader client.Reader
 	// The kubelet signer and the request CA live LeafLifetime, the cluster CA
 	// TrustAnchorLifetime, every other CA CALifetime.
@@ -90,7 +91,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	now := r.Clock.Now()
 	owned := []string{lodiav1alpha1.ConditionCertificatesReady, lodiav1alpha1.ConditionCAValidityAcceptable, lodiav1alpha1.ConditionAccessReady}
-	if err := live.Conditions(ctx, r.Reader, cp, owned...); err != nil {
+	if err := live.Credentials(ctx, r.Reader, cp, owned...); err != nil {
 		return ctrl.Result{}, err
 	}
 	if slices.ContainsFunc(owned, func(c string) bool { return meta.FindStatusCondition(cp.Status.Conditions, c) == nil }) {

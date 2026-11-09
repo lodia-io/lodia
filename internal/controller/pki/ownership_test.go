@@ -18,6 +18,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -470,6 +471,42 @@ func namespaceSecrets(t *testing.T, namespace string) map[string]string {
 		versions[s.Name] = s.ResourceVersion
 	}
 	return versions
+}
+
+func TestABlockedPassOnAStaleCacheLeavesTheCredentialsAsTheServerHoldsThem(t *testing.T) {
+	ctx := t.Context()
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "pki-credentials-stale")
+	publishEndpoint(t, cp)
+	stale := freshControlPlane(t, cp)
+	reconcile(t, r, cp)
+	credentials := freshControlPlane(t, cp).Status.Credentials
+	if credentials == nil || credentials.AdminKubeconfigSecretRef == nil || credentials.CABundleSecretRef == nil {
+		t.Fatalf("a full pass left status.credentials %+v", credentials)
+	}
+
+	old := secretsOf(t, cp)["dev-front-proxy-client"]
+	if err := k8s.Delete(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	held := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: old.Name, Namespace: cp.Namespace, Labels: old.Labels, OwnerReferences: []metav1.OwnerReference{
+		{APIVersion: "v1", Kind: "ConfigMap", Name: "restore", UID: "8f0c6f2e-0d6e-4f4e-9e44-0d6a7c1b5a21", Controller: new(true)},
+	}}, Type: old.Type, Data: old.Data}
+	if err := k8s.Create(ctx, held); err != nil {
+		t.Fatal(err)
+	}
+
+	blocked := newReconciler(time.Hour)
+	blocked.Client = snapshot{Client: controller, cp: stale}
+	if _, err := blocked.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady); got.Reason != lodiav1alpha1.ReasonSecretsControlledElsewhere {
+		t.Fatalf("CertificatesReady is %s: %s", got.Reason, got.Message)
+	}
+	if fresh := freshControlPlane(t, cp).Status.Credentials; !equality.Semantic.DeepEqual(fresh, credentials) {
+		t.Errorf("a blocked pass on a cache older than the last write left status.credentials %+v, want the server's %+v", fresh, credentials)
+	}
 }
 
 func freshControlPlane(t *testing.T, cp *lodiav1alpha1.ControlPlane) *lodiav1alpha1.ControlPlane {
