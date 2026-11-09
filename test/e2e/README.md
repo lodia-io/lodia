@@ -51,9 +51,25 @@ The suite starts a container of kind's node image, `<cluster>-tenant-node-1`, on
 `--ignore-preflight-errors` names the one check a container fails, `SystemVerification`: on GitHub's runners it finds the host kernel's configuration in none of the places it looks, and `modprobe configs` fails ([kernel_validator.go](https://github.com/kubernetes/system-validators/blob/v1.12.1/validators/kernel_validator.go#L191-L245), the version kubeadm v1.37.0 uses).
 Ignoring it skips kubeadm's OS and cgroups validators too, which run under the same name; a check's name is the finest grain kubeadm ignores by ([checks.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/cmd/kubeadm/app/preflight/checks.go#L573-L588), [checks_linux.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/cmd/kubeadm/app/preflight/checks_linux.go#L48-L54)).
 The CNI is kindnet from the node image's manifest, with the tenant's pod range.
-The suite removes the containers it started when it ends, pass or fail, and each one before it starts it; `make e2e`, `make e2e-ha`, `make e2e-restore`, `make e2e-gateway`, `make e2e-hold` and `make conformance` remove them as well, since a `go test` timeout or a panic never reaches the suite's end.
+The suite removes the containers it started when it ends, pass or fail, and each one before it starts it; `make e2e`, `make e2e-ha`, `make e2e-restore`, `make e2e-gateway`, `make e2e-upgrade`, `make e2e-hold` and `make conformance` remove them as well, since a `go test` timeout or a panic never reaches the suite's end.
 
 `make e2e` gives the suite 30 minutes.
+
+## Gate G1: a minor upgrade
+
+`TestMinorUpgradeGate` checks the minor upgrade of [gate G1](../../docs/roadmap.md#phase-2--production) under the two loops of the phase 1 gate.
+It sits behind the build tag `upgrade` with `e2e`, and `make e2e-upgrade` runs it on a kind cluster of its own as `make e2e-restore` runs G3; the `e2e-upgrade` job of [`ci.yml`](../../.github/workflows/ci.yml) runs that on every pull request.
+It reuses G3's versitygw store ([Gate G3](#gate-g3-a-backup-and-a-restore)) for the class `e2e-upgrade`, and needs nothing else of G3.
+
+A `ControlPlane` at v1.36.4 turns `Ready`, a container of the kind node image `v1.36.4`, by digest, joins it, and a pod runs on it.
+Both loops and two watches, of the `ControlPlane` and of the namespace's Deployments, start before `spec.version` moves to v1.37.1:
+
+1. The `Backup` of 1.37 turns `Completed` with `status.kubernetesVersion` v1.36.4, no owner reference, before the target moves.
+2. While the API server reports v1.37.1 and the addons still the old minor, `logs` and `exec` reach the pod, the agents having reconnected to the new konnectivity-server ([metrics.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/pkg/server/metrics/metrics.go#L126-L133)).
+3. The upgrade ends: `status.kubernetes.version` v1.37.1, no `upgrade`, `Progressing` False, `Idle`, `Ready` True, the tenant's kube-proxy at v1.37.1, the node kept at v1.36.4 and reported as outdated.
+
+The test wants the two watches never to have seen the controller manager or the scheduler newer than the API server, in `status.components` or in the Deployments' images, nor `status.addons` newer than the oldest component; and between the counts before the edit and after the end, no request failed, none found the `kubernetes` slice empty, and answers to at least 95% of the requests sent.
+The test does not ask `Ready` to stay `True` through the upgrade, and logs each change of it instead.
 
 ## Gate G2: a highly available control plane
 
