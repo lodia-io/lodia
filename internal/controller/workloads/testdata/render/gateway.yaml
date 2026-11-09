@@ -214,6 +214,8 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
+  annotations:
+    lodia.io/operator-revision: v0.0.0-test+golden
   labels:
     app.kubernetes.io/name: kube-apiserver
     lodia.io/control-plane: dev
@@ -541,6 +543,8 @@ status: {}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
+  annotations:
+    lodia.io/operator-revision: v0.0.0-test+golden
   labels:
     app.kubernetes.io/name: kube-controller-manager
     lodia.io/control-plane: dev
@@ -663,6 +667,8 @@ status: {}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
+  annotations:
+    lodia.io/operator-revision: v0.0.0-test+golden
   labels:
     app.kubernetes.io/name: kube-scheduler
     lodia.io/control-plane: dev

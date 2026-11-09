@@ -214,6 +214,7 @@ type rendering struct {
 	images      versions.Images
 	signerImage string
 	tunnelImage string
+	revision    string
 	endpoint    *lodiav1alpha1.EndpointStatus
 	etcd        []lodiav1alpha1.HostPort
 	hashes      map[string]string
@@ -510,7 +511,9 @@ func (r rendering) scheduler() *appsv1.Deployment {
 }
 
 // deployment mounts no ServiceAccount token: the components talk to the
-// tenant's API server, never to the management cluster.
+// tenant's API server, never to the management cluster. The operator revision
+// is stamped on the Deployment, never on its pod template, so that a revision
+// that renders nothing new rolls no pod.
 func (r rendering) deployment(component string, replicas int32, pod corev1.PodSpec) *appsv1.Deployment {
 	cp := r.cp
 	labels := podLabels(cp.Name, component)
@@ -540,6 +543,7 @@ func (r rendering) deployment(component string, replicas int32, pod corev1.PodSp
 		},
 	}
 	maps.Copy(d.Labels, map[string]string{lodiav1alpha1.ComponentLabel: component})
+	d.Annotations = map[string]string{lodiav1alpha1.OperatorRevisionAnnotation: r.revision}
 	return d
 }
 

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -145,6 +146,52 @@ func editEveryObject(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 	accept(t, cp)
 }
 
+func revisions(c *lodiav1alpha1.ComponentsStatus) string {
+	if c == nil {
+		return "absent"
+	}
+	var got []string
+	for _, s := range []*lodiav1alpha1.ComponentStatus{c.APIServer, c.ControllerManager, c.Scheduler} {
+		switch {
+		case s == nil:
+			got = append(got, "absent")
+		case s.OperatorRevision == "":
+			got = append(got, "none")
+		default:
+			got = append(got, s.OperatorRevision)
+		}
+	}
+	return strings.Join(got, " ")
+}
+
+func expectRevisions(t *testing.T, cp *lodiav1alpha1.ControlPlane, want ...string) {
+	t.Helper()
+	testenv.Eventually(t, func() error {
+		if got := revisions(get(t, cp).Status.Components); got != strings.Join(want, " ") {
+			return fmt.Errorf("status.components reports the revisions %s, want %s", got, strings.Join(want, " "))
+		}
+		return nil
+	})
+}
+
+func expectStamps(t *testing.T, cp *lodiav1alpha1.ControlPlane, want string) {
+	t.Helper()
+	for _, component := range componentNames {
+		if stamp := deployment(t, cp, component).Annotations[lodiav1alpha1.OperatorRevisionAnnotation]; stamp != want {
+			t.Errorf("Deployment %s is stamped %q, want %s", component, stamp, want)
+		}
+	}
+}
+
+func templatesOf(t *testing.T, cp *lodiav1alpha1.ControlPlane) map[string]corev1.PodTemplateSpec {
+	t.Helper()
+	out := map[string]corev1.PodTemplateSpec{}
+	for _, component := range componentNames {
+		out[component] = deployment(t, cp, component).Spec.Template
+	}
+	return out
+}
+
 func written(obj client.Object) bool {
 	switch o := obj.(type) {
 	case *corev1.Service, *appsv1.Deployment, *networkingv1.NetworkPolicy, *policyv1.PodDisruptionBudget, *gatewayv1.TLSRoute:
@@ -203,8 +250,58 @@ func TestAHeldPassWritesNothingThatExistsAndReportsWhatRuns(t *testing.T) {
 					t.Errorf("the pass that sees the grant left %s at %s, though its render changes it", name, was)
 				}
 			}
+			expectStamps(t, cp, next)
 		})
 	}
+}
+
+func TestAGrantThatChangesNoTemplateRollsNoPod(t *testing.T) {
+	cp := running(t)
+	expectRevisions(t, cp, revision, revision, revision)
+	expectStamps(t, cp, revision)
+	templates := templatesOf(t, cp)
+
+	grant(t, cp, next)
+	granted := operatorAt(k8s, next)
+	passOf(t, granted, cp)
+	expectStamps(t, cp, next)
+	for component, template := range templatesOf(t, cp) {
+		if !equality.Semantic.DeepEqual(template, templates[component]) {
+			t.Errorf("a grant that renders nothing new changed the pod template of %s", component)
+		}
+	}
+	passOf(t, granted, cp)
+	if got := revisions(get(t, cp).Status.Components); got != strings.Join([]string{revision, revision, revision}, " ") {
+		t.Errorf("status.components reports the revisions %s before the Deployment controller observed the stamps", got)
+	}
+	for _, component := range componentNames {
+		markAvailable(t, deployment(t, cp, component))
+	}
+	expectRevisions(t, cp, next, next, next)
+}
+
+func TestARevisionIsReportedOnceItsTemplateHasRolledOut(t *testing.T) {
+	cp := running(t)
+	templates := templatesOf(t, cp)
+	grant(t, cp, next)
+	r := operatorAt(k8s, next)
+	r.SignerImage = "registry.example/lodia-signer:next"
+	passOf(t, r, cp)
+	after := templatesOf(t, cp)
+	for component, template := range templates {
+		if changed := !equality.Semantic.DeepEqual(after[component], template); changed != (component == "kube-apiserver") {
+			t.Fatalf("a new signer image changed the template of %s: %t, want the API server's alone", component, changed)
+		}
+	}
+	expectStamps(t, cp, next)
+	markAvailable(t, deployment(t, cp, "kube-controller-manager"))
+	markAvailable(t, deployment(t, cp, "kube-scheduler"))
+	setDeploymentStatus(t, cp, "kube-apiserver", func(s *appsv1.DeploymentStatus) {
+		*s = appsv1.DeploymentStatus{ObservedGeneration: deployment(t, cp, "kube-apiserver").Generation, Replicas: 2, UpdatedReplicas: 1, ReadyReplicas: 2, AvailableReplicas: 1}
+	})
+	expectRevisions(t, cp, revision, next, next)
+	markAvailable(t, deployment(t, cp, "kube-apiserver"))
+	expectRevisions(t, cp, next, next, next)
 }
 
 func TestAHeldPassCreatesWhatIsMissing(t *testing.T) {
@@ -237,6 +334,9 @@ func TestAHeldPassCreatesWhatIsMissing(t *testing.T) {
 		if _, ok := after[fmt.Sprintf("%T %s", obj, obj.GetName())]; !ok {
 			t.Errorf("a held pass did not create the missing %T %s", obj, obj.GetName())
 		}
+	}
+	if stamp := deployment(t, cp, "kube-scheduler").Annotations[lodiav1alpha1.OperatorRevisionAnnotation]; stamp != next {
+		t.Errorf("the Deployment a held pass created is stamped %q, want the running %s", stamp, next)
 	}
 }
 
@@ -456,6 +556,7 @@ func TestAStaleCacheWithAnOlderRevisionHoldsThePass(t *testing.T) {
 	if signer := deployment(t, cp, "kube-apiserver").Spec.Template.Spec.InitContainers[0].Image; signer != r.SignerImage {
 		t.Errorf("the signer runs %s once the cache holds the grant, want %s", signer, r.SignerImage)
 	}
+	expectStamps(t, cp, next)
 }
 
 func TestAHeldCreateThatFailsMidPassIsFinishedByTheNextPass(t *testing.T) {
@@ -493,8 +594,8 @@ func TestAHeldCreateThatFailsMidPassIsFinishedByTheNextPass(t *testing.T) {
 	if after["*v1.NetworkPolicy dev-kube-scheduler"] != created["*v1.NetworkPolicy dev-kube-scheduler"] {
 		t.Error("the next pass wrote the NetworkPolicy the failed pass created")
 	}
-	if _, ok := after["*v1.Deployment dev-kube-scheduler"]; !ok {
-		t.Error("the next pass did not create the Deployment")
+	if stamp := deployment(t, cp, "kube-scheduler").Annotations[lodiav1alpha1.OperatorRevisionAnnotation]; stamp != next {
+		t.Errorf("the scheduler is stamped %q, want %s", stamp, next)
 	}
 }
 
@@ -563,5 +664,26 @@ func TestAHeldPassWritesNothingOverAPredecessorsService(t *testing.T) {
 	}
 	if e := get(t, cp).Status.Endpoint; e != nil {
 		t.Errorf("status.endpoint is %+v, from the predecessor's Service", e)
+	}
+}
+
+func TestAStampThatDoesNotFitTheFieldIsNotReported(t *testing.T) {
+	cp := running(t)
+	expectRevisions(t, cp, revision, revision, revision)
+	pause(t, cp)
+	for _, row := range []struct{ stamp, want string }{{strings.Repeat("v", 129), revision}, {strings.Repeat("v", 128), strings.Repeat("v", 128)}} {
+		edited := interceptor.NewClient(unpaused(), interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if err := c.Get(ctx, key, obj, opts...); err != nil {
+					return err
+				}
+				if d, ok := obj.(*appsv1.Deployment); ok && key.Name == "dev-kube-apiserver" {
+					d.Annotations[lodiav1alpha1.OperatorRevisionAnnotation] = row.stamp
+				}
+				return nil
+			},
+		})
+		reconcileThrough(t, cp, edited)
+		expectRevisions(t, cp, row.want, revision, revision)
 	}
 }

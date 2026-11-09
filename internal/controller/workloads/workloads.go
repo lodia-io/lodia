@@ -63,6 +63,8 @@ const (
 
 	// maxVersion is the MaxLength of status.components.*.version.
 	maxVersion = 16
+	// maxRevision is the MaxLength of status.components.*.operatorRevision.
+	maxRevision = 128
 )
 
 var releaseTag = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
@@ -369,6 +371,7 @@ func (r *Reconciler) inputs(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 			images:      images,
 			signerImage: r.SignerImage,
 			tunnelImage: r.TunnelImage,
+			revision:    r.Revision,
 			endpoint:    endpoint,
 			etcd:        cp.Status.Datastore.Endpoints,
 			hashes:      hashes,
@@ -900,9 +903,11 @@ func slot(c *lodiav1alpha1.ComponentsStatus, component string) **lodiav1alpha1.C
 	return &c.Scheduler
 }
 
-// rolledOut is d's counts, with the version of its image once every replica
-// runs the template, 0 of 0 included, and previous's report until then. A
-// component with neither a Deployment nor a report is absent.
+// rolledOut is d's counts, with the version of its image and the revision of
+// its stamp once every replica runs the template, 0 of 0 included, and
+// previous's report until then. A component with neither a Deployment nor a
+// report is absent. A stamp longer than the field is not reported, as a
+// hand-edited image is not.
 func rolledOut(d *appsv1.Deployment, component string, previous *lodiav1alpha1.ComponentStatus) *lodiav1alpha1.ComponentStatus {
 	var report lodiav1alpha1.Rendered
 	if previous != nil {
@@ -918,6 +923,9 @@ func rolledOut(d *appsv1.Deployment, component string, previous *lodiav1alpha1.C
 	if status.Updated != nil && *status.Updated == status.Total {
 		if version := imageVersion(d, component); version != "" {
 			status.Version = version
+		}
+		if stamp := d.Annotations[lodiav1alpha1.OperatorRevisionAnnotation]; stamp != "" && len(stamp) <= maxRevision {
+			status.OperatorRevision = stamp
 		}
 	}
 	return status

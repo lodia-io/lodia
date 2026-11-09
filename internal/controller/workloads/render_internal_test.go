@@ -76,6 +76,7 @@ func TestTheRenderIsPinned(t *testing.T) {
 			images:      images,
 			signerImage: "registry.example/lodia-signer:test",
 			tunnelImage: "registry.example/lodia-tunnel:test",
+			revision:    "v0.0.0-test+golden",
 			endpoint:    &c.status,
 			etcd:        []lodiav1alpha1.HostPort{{Host: "dev-etcd-client.team-a.svc", Port: 2379}},
 			hashes:      map[string]string{apiServer: "api-hash", controllerManager: "cm-hash"},

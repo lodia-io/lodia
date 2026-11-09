@@ -59,8 +59,6 @@ func reported(c *lodiav1alpha1.ComponentsStatus) string {
 		switch {
 		case s == nil:
 			got = append(got, "absent")
-		case s.OperatorRevision != "":
-			got = append(got, "revision "+s.OperatorRevision)
 		case s.Version == "":
 			got = append(got, "none")
 		default:
