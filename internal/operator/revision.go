@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"unicode/utf8"
 )
 
 // maxRevisionLength is the MaxLength of the fields that hold a revision
@@ -19,6 +20,9 @@ const maxRevisionLength = 128
 func (in Inputs) Revision() (string, error) {
 	if in.Version == "" {
 		return "", errors.New("the operator was built without a version: set VERSION when building it with ko")
+	}
+	if !utf8.ValidString(in.Version) {
+		return "", fmt.Errorf("the operator's version %q is not UTF-8, which status fields would not hold as written", in.Version)
 	}
 	sum := sha256.Sum256(fmt.Appendf(nil, "%q", []string{in.SignerImage, in.TunnelImage, in.EtcdDruidVersion, in.EtcdDruidNamespace, in.OperatorNamespace}))
 	revision := in.Version + "+" + hex.EncodeToString(sum[:])
