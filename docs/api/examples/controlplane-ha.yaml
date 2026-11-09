@@ -38,7 +38,7 @@ spec:
     audit:
       policyRef: {name: audit-default}   # a ConfigMap in this namespace, key policy.yaml
     encryption:
-      provider: secretbox                 # None | secretbox | aescbc | kms
+      provider: secretbox                 # None | secretbox | aescbc
     featureGates: {}
     extraArgs:
       max-requests-inflight: "800"

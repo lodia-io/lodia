@@ -777,31 +777,6 @@ func TestALostCAIsNeverReplaced(t *testing.T) {
 	}
 }
 
-func TestAnUnsupportedEncryptionProviderBlocksNothingElse(t *testing.T) {
-	r := newReconciler(time.Hour)
-	cp := controlPlane(t, "pki-kms")
-	cp.Spec.APIServer = &lodiav1alpha1.APIServer{Encryption: &lodiav1alpha1.Encryption{Provider: "kms"}}
-	if err := k8s.Update(t.Context(), cp); err != nil {
-		t.Fatal(err)
-	}
-	publishEndpoint(t, cp)
-	reconcile(t, r, cp)
-	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported)
-	secrets := secretsOf(t, cp)
-	if secrets["dev-encryption-config"] != nil {
-		t.Error("an encryption configuration was written for kms")
-	}
-	if want := len(secretTable(cp.Name)) - 1; len(secrets) != want {
-		t.Errorf("%d Secrets, want %d: everything but the encryption configuration", len(secrets), want)
-	}
-	before, versionBefore := resourceVersions(t, cp)
-	reconcile(t, r, cp)
-	after, versionAfter := resourceVersions(t, cp)
-	if !maps.Equal(before, after) || versionBefore != versionAfter {
-		t.Error("a second pass wrote something")
-	}
-}
-
 func TestTheFirstVisitWritesUnknown(t *testing.T) {
 	cp := controlPlane(t, "pki-first-visit")
 	r := newReconciler(time.Hour)

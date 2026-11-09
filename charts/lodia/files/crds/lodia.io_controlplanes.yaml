@@ -280,12 +280,11 @@ spec:
                     properties:
                       provider:
                         default: secretbox
-                        description: Provider is None, secretbox, aescbc or kms.
+                        description: Provider is None, secretbox or aescbc.
                         enum:
                         - None
                         - secretbox
                         - aescbc
-                        - kms
                         type: string
                     type: object
                   extraArgs:

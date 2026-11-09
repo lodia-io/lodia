@@ -127,12 +127,11 @@ type tenant struct {
 	// wake is the earliest renewal, CA notice or CA expiry still ahead.
 	wake time.Time
 	// cas sign; caCerts holds every CA on the server, expired ones included.
-	cas                 map[string]*certs.Certificate
-	caCerts             map[string]*x509.Certificate
-	missingCAs          []string
-	expiredCAs          []string
-	unreadable          []string
-	unsupportedProvider lodiav1alpha1.EncryptionProvider
+	cas        map[string]*certs.Certificate
+	caCerts    map[string]*x509.Certificate
+	missingCAs []string
+	expiredCAs []string
+	unreadable []string
 	// backupProviders are the providers of the Backup a restore without an
 	// encryption configuration copies; waitingForBackup says why there are
 	// none yet.
@@ -899,10 +898,6 @@ func (r *Reconciler) encryptionConfig(ctx context.Context, t *tenant) error {
 	want := providerSecretbox
 	if api := t.cp.Spec.APIServer; api != nil && api.Encryption != nil && api.Encryption.Provider != "" {
 		want = api.Encryption.Provider
-	}
-	if !slices.Contains([]lodiav1alpha1.EncryptionProvider{providerNone, providerSecretbox, providerAESCBC}, want) {
-		t.unsupportedProvider = want
-		return nil
 	}
 	var providers []apiserverv1.ProviderConfiguration
 	switch s := t.existing[name]; {

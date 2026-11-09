@@ -62,8 +62,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   That is the etcd encryption key rotation of [staged-credential-rotation](docs/decisions/staged-credential-rotation.md); until it is built, document the change as unsupported, or refuse it in the schema.
   A `Backup` is unaffected: it takes the source's configuration after the copy, and that holds every provider PKI ever wrote.
   A change back to `None` puts a second `identity` behind the first (`encryptionConfig` in `internal/controller/pki/secrets.go`); harmless, and the rotation should drop it with the other old providers.
-- `apiServer.encryption.provider: kms` is accepted by the schema; PKI issues everything else and reports `CertificatesReady` False with `Unsupported`.
-  Refuse it in CEL until the provider is built.
 - The kubelet signer narrows nothing: whoever holds it can sign any identity the API server accepts.
   A signer outside the controller manager, serving only kubelet CSRs (those for `kubernetes.io/kube-apiserver-client-kubelet`, [types.go](https://github.com/kubernetes/api/blob/v0.37.1/certificates/v1/types.go#L155-L158)), would make the narrowing true; decide before the client CA rotation is built.
 - Lodia reaches a tenant's API server through its in-namespace Service and ignores `HTTPS_PROXY` for that connection; the chart's documentation should say so for sites that set a proxy on every pod.
@@ -74,7 +72,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - `TestAPredecessorsSecretsAreNeitherReadNorWritten` passes with the metadata lookup disabled, since the labelled predecessor Secrets mask its unlabelled CA key; give that path its own case.
 - In a blocked pass the CAs are never loaded: a forbidden `lodia:operator` then reports "client CA missing", and the bind error replaces the bounded requeue with exponential backoff.
   With `APIServerReady` True and `<cp>-lodia-kubeconfig` missing or foreign, `AccessReady` says "APIServerReady is not True for this generation", which the state contradicts.
-- `readEncryptionConfig` decodes leniently, while kube-apiserver decodes strictly and with defaults ([config.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/server/options/encryptionconfig/config.go#L140-L146), [loadConfig](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/server/options/encryptionconfig/config.go#L519-L536)); with `kms` requested, an unreadable configuration is reported as `Unsupported`, not `SecretUnreadable`.
+- `readEncryptionConfig` decodes leniently, while kube-apiserver decodes strictly and with defaults ([config.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/server/options/encryptionconfig/config.go#L140-L146), [loadConfig](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/server/options/encryptionconfig/config.go#L519-L536)).
 - The previous etcd generation is kept and adopted on completeness alone, even when it does not chain to the current etcd CA (a restored predecessor's generation, for instance); keep it only if it chains.
 
 ## From the contracts audit (2026-10-25)

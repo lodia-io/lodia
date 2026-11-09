@@ -175,8 +175,6 @@ func (t *tenant) certificatesReady() metav1.Condition {
 		c.Reason, c.Message = lodiav1alpha1.ReasonIssuing, strings.Join(issuing, "; ")
 	case t.endpoint == nil || t.cp.Spec.Endpoint.Gateway != nil && t.tunnelHost == "":
 		c.Reason, c.Message = lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint"
-	case t.unsupportedProvider != "":
-		c.Reason, c.Message = lodiav1alpha1.ReasonUnsupported, "spec.apiServer.encryption.provider "+string(t.unsupportedProvider)+" is not supported yet"
 	case t.waitingForBackup != "":
 		c.Reason, c.Message = lodiav1alpha1.ReasonWaitingForBackup, t.waitingForBackup
 	default:

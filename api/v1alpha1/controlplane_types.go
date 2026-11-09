@@ -434,14 +434,14 @@ type Audit struct {
 
 // Encryption is how Secrets are encrypted in the datastore.
 type Encryption struct {
-	// Provider is None, secretbox, aescbc or kms.
+	// Provider is None, secretbox or aescbc.
 	// +optional
 	// +kubebuilder:default=secretbox
 	Provider EncryptionProvider `json:"provider,omitempty"`
 }
 
 // EncryptionProvider is an encryption at rest provider.
-// +kubebuilder:validation:Enum=None;secretbox;aescbc;kms
+// +kubebuilder:validation:Enum=None;secretbox;aescbc
 type EncryptionProvider string
 
 // Admission names an admission configuration.
