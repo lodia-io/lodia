@@ -126,6 +126,14 @@ e2e-upgrade: ## gate G1, a minor upgrade under two loops, on a kind cluster of i
 	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 $(E2E_CLUSTER)-tenant-node-2 $(E2E_CLUSTER)-tenant-node-3 $(E2E_CLUSTER)-tenant-node-4 || status=1; \
 	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
 
+.PHONY: e2e-upgrade-ha
+e2e-upgrade-ha: ## the nightly upgrade of a highly available tenant, on a kind cluster of its own with three workers in three zones, that it deletes afterwards
+	mkdir -p $(E2E_DIR)
+	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig --config test/e2e/testdata/kind-ha.yaml
+	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,upgrade -count=1 -timeout 45m -run '^TestHighAvailabilityUpgrade$$' ./test/e2e/...; status=$$?; \
+	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 || status=1; \
+	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
+
 .PHONY: conformance-gateway
 conformance-gateway: ## the Kubernetes conformance suite through hydrophone against a tenant with two nodes behind the Gateway, on a kind cluster of its own that it deletes afterwards with the DNS container the gate starts; results in $(E2E_DIR)/_artifacts; CONFORMANCE_FOCUS=<regexp> runs only the tests it matches
 	mkdir -p $(E2E_DIR)
