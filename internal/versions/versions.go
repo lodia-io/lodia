@@ -6,6 +6,7 @@
 package versions
 
 import (
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -28,11 +29,12 @@ type Images struct {
 
 // CoreDNS is kubeadm's pin for each minor (kubernetes/kubernetes
 // cmd/kubeadm/app/constants/constants.go at v1.35.0, v1.36.0 and v1.37.1);
-// konnectivity 0.NN serves Kubernetes 1.NN (apiserver-network-proxy README).
-var minors = map[string]struct{ coreDNS, konnectivity string }{
-	"1.35": {"v1.13.1", "v0.35.0"},
-	"1.36": {"v1.14.2", "v0.36.0"},
-	"1.37": {"v1.14.6", "v0.37.0"},
+// konnectivity 0.NN serves Kubernetes 1.NN (apiserver-network-proxy README);
+// latest is the minor's newest patch, https://dl.k8s.io/release/stable-<minor>.txt.
+var minors = map[string]struct{ coreDNS, konnectivity, latest string }{
+	"1.35": {"v1.13.1", "v0.35.0", "v1.35.10"},
+	"1.36": {"v1.14.2", "v0.36.0", "v1.36.6"},
+	"1.37": {"v1.14.6", "v0.37.0", "v1.37.2"},
 }
 
 // For returns the images of a Kubernetes version vMAJOR.MINOR.PATCH, and
@@ -108,6 +110,37 @@ func Oldest(reported ...string) (string, bool) {
 		}
 	}
 	return oldest, found
+}
+
+// Latest returns the newest patch of minor in the table, and false when Lodia
+// does not run it.
+func Latest(minor string) (string, bool) {
+	m, ok := minors[minor]
+	return m.latest, ok
+}
+
+// Next returns the minor after minor ("1.37" for "1.36"), and false when Lodia
+// does not run it; minor may have left the table.
+func Next(minor string) (string, bool) {
+	v, err := version.ParseGeneric(minor)
+	if err != nil {
+		return "", false
+	}
+	next := fmt.Sprintf("%d.%d", v.Major(), v.Minor()+1)
+	_, ok := minors[next]
+	return next, ok
+}
+
+// MinorsAhead returns how many minors to is ahead of from, each a version or a
+// minor, negative when it is behind, and false when one does not parse or
+// their majors differ.
+func MinorsAhead(from, to string) (int, bool) {
+	a, errFrom := version.ParseGeneric(from)
+	b, errTo := version.ParseGeneric(to)
+	if errFrom != nil || errTo != nil || a.Major() != b.Major() {
+		return 0, false
+	}
+	return int(b.Minor()) - int(a.Minor()), true
 }
 
 // Minors are the minors Lodia runs, oldest first.

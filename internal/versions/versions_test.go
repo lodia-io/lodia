@@ -44,6 +44,63 @@ func TestMinors(t *testing.T) {
 	}
 }
 
+func TestLatestIsAPatchOfItsMinor(t *testing.T) {
+	for _, minor := range versions.Minors() {
+		latest, ok := versions.Latest(minor)
+		if !ok {
+			t.Fatalf("minor %s has no latest", minor)
+		}
+		if got, ok := versions.Minor(latest); !ok || got != minor {
+			t.Errorf("latest of %s is %s", minor, latest)
+		}
+		if _, ok := versions.For(latest); !ok {
+			t.Errorf("%s, the latest of %s, has no images", latest, minor)
+		}
+	}
+	if latest, ok := versions.Latest("1.34"); ok {
+		t.Errorf("1.34 has a latest, %s, and Lodia does not run it", latest)
+	}
+}
+
+func TestNext(t *testing.T) {
+	for _, c := range []struct {
+		minor, want string
+		ok          bool
+	}{
+		{"1.35", "1.36", true},
+		{"1.36", "1.37", true},
+		{"1.37", "1.38", false},
+		{"1.34", "1.35", true},
+		{"1.33", "1.34", false},
+		{"nonsense", "", false},
+	} {
+		if got, ok := versions.Next(c.minor); got != c.want || ok != c.ok {
+			t.Errorf("Next(%q) is %q, %t, want %q, %t", c.minor, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+func TestMinorsAhead(t *testing.T) {
+	for _, c := range []struct {
+		from, to string
+		want     int
+		ok       bool
+	}{
+		{"v1.36.6", "v1.36.1", 0, true},
+		{"v1.36.6", "v1.37.0", 1, true},
+		{"v1.9.0", "v1.10.0", 1, true},
+		{"v1.37.2", "v1.34.0", -3, true},
+		{"v1.33.9", "1.37", 4, true},
+		{"v1.34.2", "1.37", 3, true},
+		{"v1.36.6", "v2.0.0", 0, false},
+		{"v1.36.6", "latest", 0, false},
+	} {
+		if got, ok := versions.MinorsAhead(c.from, c.to); got != c.want || ok != c.ok {
+			t.Errorf("MinorsAhead(%q, %q) is %d, %t, want %d, %t", c.from, c.to, got, ok, c.want, c.ok)
+		}
+	}
+}
+
 func TestOldest(t *testing.T) {
 	for _, c := range []struct {
 		name     string
