@@ -27,8 +27,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilnet "k8s.io/apimachinery/pkg/util/net"
 	admissionregistrationv1client "k8s.io/client-go/kubernetes/typed/admissionregistration/v1"
@@ -51,6 +49,7 @@ import (
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/live"
 	"go.lodia.io/lodia/internal/ownership"
+	"go.lodia.io/lodia/internal/statusapply"
 	"go.lodia.io/lodia/internal/restore"
 )
 
@@ -833,57 +832,12 @@ func previous(cp *lodiav1alpha1.ControlPlane, conditionType string) metav1.Condi
 		kept.ObservedGeneration = cp.Generation
 		return kept
 	}
-	return *newCondition(cp, conditionType, metav1.ConditionUnknown, lodiav1alpha1.ReasonReconciling, "the first pass has not finished")
+	return statusapply.FirstPass(cp, conditionType)
 }
 
 // apply writes Reachable and ControllersLeading only on a change, and both
 // every time, since an apply that leaves one out removes it; it leaves cp
 // with what it wrote.
 func (r *Reconciler) apply(ctx context.Context, cp *lodiav1alpha1.ControlPlane, conditions ...metav1.Condition) error {
-	all, applied, changed, err := conditionsApplied(cp, conditions)
-	if err != nil {
-		return err
-	}
-	if !changed {
-		return nil
-	}
-	if err := applyStatus(ctx, r.Status(), FieldManager, cp, map[string]any{"conditions": applied}); err != nil {
-		return err
-	}
-	cp.Status.Conditions = all
-	return nil
-}
-
-// conditionsApplied sets conditions in a copy of cp's, and returns the copy,
-// the entries an apply of them carries, and whether any differs from cp's.
-func conditionsApplied(cp *lodiav1alpha1.ControlPlane, conditions []metav1.Condition) ([]metav1.Condition, []any, bool, error) {
-	all := slices.Clone(cp.Status.Conditions)
-	changed := false
-	var applied []any
-	for _, c := range conditions {
-		changed = changed || differs(meta.FindStatusCondition(cp.Status.Conditions, c.Type), c)
-		meta.SetStatusCondition(&all, c)
-		u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(meta.FindStatusCondition(all, c.Type))
-		if err != nil {
-			return nil, nil, false, err
-		}
-		applied = append(applied, u)
-	}
-	return all, applied, changed, nil
-}
-
-// differs says whether c is not what previous says already.
-func differs(previous *metav1.Condition, c metav1.Condition) bool {
-	return previous == nil || previous.Status != c.Status || previous.Reason != c.Reason || previous.Message != c.Message || previous.ObservedGeneration != c.ObservedGeneration
-}
-
-// applyStatus applies status as the field manager, over what others hold.
-func applyStatus(ctx context.Context, status client.SubResourceWriter, manager string, cp *lodiav1alpha1.ControlPlane, fields map[string]any) error {
-	u := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": lodiav1alpha1.GroupVersion.String(),
-		"kind":       "ControlPlane",
-		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
-		"status":     fields,
-	}}
-	return status.Apply(ctx, client.ApplyConfigurationFromUnstructured(u), client.FieldOwner(manager), client.ForceOwnership)
+	return statusapply.Apply(ctx, r.Client, r.Reader, FieldManager, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: conditions}, false)
 }

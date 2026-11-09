@@ -104,7 +104,7 @@ func stored(t *testing.T, cp *lodiav1alpha1.ControlPlane) *lodiav1alpha1.Control
 }
 
 func apply(ctx context.Context, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed bool) error {
-	return statusapply.Apply(ctx, k8s.Status(), k8s, manager, cp, desired, changed)
+	return statusapply.Apply(ctx, k8s, k8s, manager, cp, desired, changed)
 }
 
 func TestMerge(t *testing.T) {
@@ -303,8 +303,7 @@ func TestAWriteTheServerAlreadyHoldsIsNotRepeated(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := stored(t, cp).ResourceVersion
-	refusing := refusingWriter{SubResourceWriter: k8s.Status()}
-	if err := statusapply.Apply(t.Context(), refusing, k8s, manager, cached, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{held}}, false); err != nil {
+	if err := statusapply.Apply(t.Context(), noWrite{t}, k8s, manager, cached, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{held}}, false); err != nil {
 		t.Fatal(err)
 	}
 	if after := stored(t, cp).ResourceVersion; after != before {
@@ -333,7 +332,7 @@ func TestAnotherFieldThatChangedIsWrittenWithTheConditions(t *testing.T) {
 
 func TestAFieldThisWriterLeavesOutIsAnotherWritersToKeep(t *testing.T) {
 	cp := controlPlane(t, namespace(t))
-	if err := statusapply.Apply(t.Context(), k8s.Status(), k8s, "lodia/other", cp, lodiav1alpha1.ControlPlaneStatus{
+	if err := statusapply.Apply(t.Context(), k8s, k8s, "lodia/other", cp, lodiav1alpha1.ControlPlaneStatus{
 		Conditions: []metav1.Condition{{Type: lodiav1alpha1.ConditionProgressing, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonReconciling, ObservedGeneration: 1}},
 		Target:     &lodiav1alpha1.Target{Version: "v1.35.0"},
 	}, true); err != nil {
@@ -379,10 +378,10 @@ func TestALockedApplyConflictsOnAStaleResourceVersion(t *testing.T) {
 		}
 		return map[string]any{"conditions": []any{u}}
 	}
-	if err := statusapply.ApplyLocked(t.Context(), k8s.Status(), manager, "Backup", backup, fields("first")); err != nil {
+	if err := statusapply.ApplyLocked(t.Context(), k8s, manager, "Backup", backup, fields("first")); err != nil {
 		t.Fatal(err)
 	}
-	err := statusapply.ApplyLocked(t.Context(), k8s.Status(), manager, "Backup", backup, fields("computed from a stale copy"))
+	err := statusapply.ApplyLocked(t.Context(), k8s, manager, "Backup", backup, fields("computed from a stale copy"))
 	if !apierrors.IsConflict(err) {
 		t.Fatalf("error %v, want a conflict", err)
 	}
@@ -393,17 +392,18 @@ func TestALockedApplyConflictsOnAStaleResourceVersion(t *testing.T) {
 	if c := meta.FindStatusCondition(got.Status.Conditions, lodiav1alpha1.ConditionReady); c == nil || c.Message != "first" {
 		t.Errorf("Ready is %+v", c)
 	}
-	if err := statusapply.ApplyLocked(t.Context(), k8s.Status(), manager, "Backup", got, fields("from the latest copy")); err != nil {
+	if err := statusapply.ApplyLocked(t.Context(), k8s, manager, "Backup", got, fields("from the latest copy")); err != nil {
 		t.Fatal(err)
 	}
 }
 
-type refusingWriter struct {
-	client.SubResourceWriter
+type noWrite struct {
+	t *testing.T
 }
 
-func (refusingWriter) Apply(context.Context, runtime.ApplyConfiguration, ...client.SubResourceApplyOption) error {
-	return fmt.Errorf("the write was not expected")
+func (w noWrite) Status() client.SubResourceWriter {
+	w.t.Error("the status was written")
+	return nil
 }
 
 func managers(cp *lodiav1alpha1.ControlPlane) map[string]bool {

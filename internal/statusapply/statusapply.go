@@ -81,7 +81,7 @@ func Merge(current []metav1.Condition, conditions ...metav1.Condition) ([]metav1
 // successor. metadata.uid in the apply would not refuse it, since an update
 // of a custom resource's status takes the stored metadata
 // (k8s.io/apiextensions-apiserver@v0.37.0 pkg/registry/customresource/status_strategy.go#L81).
-func Apply(ctx context.Context, status client.SubResourceWriter, reader client.Reader, manager string, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed bool) error {
+func Apply(ctx context.Context, writer client.StatusClient, reader client.Reader, manager string, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed bool) error {
 	if !changed && !slices.ContainsFunc(desired.Conditions, func(c metav1.Condition) bool {
 		return Differs(meta.FindStatusCondition(cp.Status.Conditions, c.Type), c)
 	}) {
@@ -108,7 +108,7 @@ func Apply(ctx context.Context, status client.SubResourceWriter, reader client.R
 		return err
 	}
 	fields["conditions"] = applied
-	if err := apply(ctx, status, manager, "ControlPlane", map[string]any{"name": cp.Name, "namespace": cp.Namespace}, fields); err != nil {
+	if err := apply(ctx, writer, manager, "ControlPlane", map[string]any{"name": cp.Name, "namespace": cp.Namespace}, fields); err != nil {
 		return err
 	}
 	cp.Status.Conditions = all
@@ -118,10 +118,10 @@ func Apply(ctx context.Context, status client.SubResourceWriter, reader client.R
 // ApplyLocked writes fields under the resourceVersion obj was read at, for a
 // kind with one writer, whose watch requeues every update: a write computed
 // from a stale copy conflicts.
-func ApplyLocked(ctx context.Context, status client.SubResourceWriter, manager, kind string, obj client.Object, fields map[string]any) error {
+func ApplyLocked(ctx context.Context, writer client.StatusClient, manager, kind string, obj client.Object, fields map[string]any) error {
 	ctx, cancel := ownDeadline(ctx)
 	defer cancel()
-	return apply(ctx, status, manager, kind, map[string]any{"name": obj.GetName(), "namespace": obj.GetNamespace(), "resourceVersion": obj.GetResourceVersion()}, fields)
+	return apply(ctx, writer, manager, kind, map[string]any{"name": obj.GetName(), "namespace": obj.GetNamespace(), "resourceVersion": obj.GetResourceVersion()}, fields)
 }
 
 // ownDeadline detaches a status write from its pass: one that has used its
@@ -130,12 +130,12 @@ func ownDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), writeTimeout)
 }
 
-func apply(ctx context.Context, status client.SubResourceWriter, manager, kind string, metadata, fields map[string]any) error {
+func apply(ctx context.Context, writer client.StatusClient, manager, kind string, metadata, fields map[string]any) error {
 	u := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": lodiav1alpha1.GroupVersion.String(),
 		"kind":       kind,
 		"metadata":   metadata,
 		"status":     fields,
 	}}
-	return status.Apply(ctx, client.ApplyConfigurationFromUnstructured(u), client.FieldOwner(manager), client.ForceOwnership)
+	return writer.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(u), client.FieldOwner(manager), client.ForceOwnership)
 }
