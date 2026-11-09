@@ -92,18 +92,7 @@ type Reconciler struct {
 	mu       sync.Mutex
 	failures map[types.NamespacedName]int
 	renewals map[types.NamespacedName]map[string]renewal
-	clients  map[types.NamespacedName]*clients
-}
-
-// clients reach one control plane: the prober while its CA bundle and the
-// tunnel's client pair stay the same, the tenant while Lodia's kubeconfig
-// does.
-type clients struct {
-	bundle     []byte
-	clientCert []byte
-	clientKey  []byte
-	prober     *prober
-	tenantClients
+	clients  map[types.NamespacedName]*tenantClients
 }
 
 // tenantClients are the clients of one tenant over one transport, and the
@@ -247,7 +236,7 @@ func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPla
 				fmt.Sprintf("Secret %s is kept by %s %s with UID %s", pairName, ref.Kind, ref.Name, ref.UID)), false, nil
 		}
 	}
-	prober := r.prober(key, secret.Data[lodiav1alpha1.CACertKey], pair)
+	prober := r.prober(secret.Data[lodiav1alpha1.CACertKey], pair)
 	if prober == nil {
 		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "the CA bundle "+name+" holds no certificate"), false, nil
 	}
@@ -643,30 +632,10 @@ func (r *Reconciler) forget(key types.NamespacedName) {
 	delete(r.clients, key)
 }
 
-func (r *Reconciler) clientsOf(key types.NamespacedName) *clients {
-	if r.clients == nil {
-		r.clients = map[types.NamespacedName]*clients{}
-	}
-	if r.clients[key] == nil {
-		r.clients[key] = &clients{}
-	}
-	return r.clients[key]
-}
-
 // prober verifies the endpoint against bundle, or is nil when bundle holds no
-// certificate. Its client pair is pair's, parsed once, and nil outside gateway
-// mode or when pair holds no certificate and key.
-func (r *Reconciler) prober(key types.NamespacedName, bundle []byte, pair *corev1.Secret) *prober {
-	var clientCert, clientKey []byte
-	if pair != nil {
-		clientCert, clientKey = pair.Data[lodiav1alpha1.TLSCertKey], pair.Data[lodiav1alpha1.TLSPrivateKeyKey]
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	c := r.clientsOf(key)
-	if c.prober != nil && bytes.Equal(c.bundle, bundle) && bytes.Equal(c.clientCert, clientCert) && bytes.Equal(c.clientKey, clientKey) {
-		return c.prober
-	}
+// certificate. Its client pair is pair's, and nil outside gateway mode or when
+// pair holds no certificate and key.
+func (r *Reconciler) prober(bundle []byte, pair *corev1.Secret) *prober {
 	roots := x509.NewCertPool()
 	if !roots.AppendCertsFromPEM(bundle) {
 		return nil
@@ -679,12 +648,11 @@ func (r *Reconciler) prober(key types.NamespacedName, bundle []byte, pair *corev
 	}
 	p := &prober{direct: &http.Client{Transport: direct, CheckRedirect: noRedirects}, roots: roots}
 	if pair != nil {
-		if parsed, err := tls.X509KeyPair(clientCert, clientKey); err == nil {
+		if parsed, err := tls.X509KeyPair(pair.Data[lodiav1alpha1.TLSCertKey], pair.Data[lodiav1alpha1.TLSPrivateKeyKey]); err == nil {
 			p.client = &parsed
 		}
 	}
-	c.bundle, c.clientCert, c.clientKey, c.prober = bundle, clientCert, clientKey, p
-	return c.prober
+	return p
 }
 
 // dial is bounded by Timeout because net/http dials on a context detached from
@@ -705,7 +673,13 @@ func noRedirects(*http.Request, []*http.Request) error {
 func (r *Reconciler) tenant(key types.NamespacedName, kubeconfig []byte) (*tenant, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.clientsOf(key).of(kubeconfig)
+	if r.clients == nil {
+		r.clients = map[types.NamespacedName]*tenantClients{}
+	}
+	if r.clients[key] == nil {
+		r.clients[key] = &tenantClients{}
+	}
+	return r.clients[key].of(kubeconfig)
 }
 
 // of returns the clients that read inside the tenant as Lodia, through the

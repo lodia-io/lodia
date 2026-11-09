@@ -4,24 +4,19 @@
 package health
 
 import (
-	"crypto/x509"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
-	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
-
-	"go.lodia.io/lodia/internal/certs"
 )
 
-func TestAControlPlaneKeepsItsClientsWhileTheirInputsStay(t *testing.T) {
+func TestAControlPlaneKeepsItsTenantClientsWhileItsKubeconfigStays(t *testing.T) {
 	r := &Reconciler{}
 	key := types.NamespacedName{Namespace: "team-a", Name: "dev"}
 	kubeconfig := func(server string) []byte {
@@ -57,62 +52,6 @@ func TestAControlPlaneKeepsItsClientsWhileTheirInputsStay(t *testing.T) {
 	second := clients("https://dev-kube-apiserver.team-a.svc:6443")
 	if second == first {
 		t.Error("a new kubeconfig kept the previous tenant clients")
-	}
-
-	ca, err := certs.NewCA("health-clients", time.Now(), time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bundle, err := certs.CertPEM(ca.Cert)
-	if err != nil {
-		t.Fatal(err)
-	}
-	prober := r.prober(key, bundle, nil)
-	if prober == nil || r.prober(key, bundle, nil) != prober {
-		t.Error("the same CA bundle built a second prober")
-	}
-	if prober.client != nil {
-		t.Error("a prober without a client pair has a client certificate")
-	}
-	if r.prober(key, []byte("no certificate"), nil) != nil {
-		t.Error("a bundle without a certificate got a prober")
-	}
-
-	pair := func(cn string) *corev1.Secret {
-		t.Helper()
-		leaf, err := ca.Issue(certs.Profile{CommonName: cn, Usages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}, time.Now(), time.Hour)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cert, err := certs.CertPEM(leaf.Cert)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pem, err := certs.KeyPEM(leaf.Key)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return &corev1.Secret{Data: map[string][]byte{corev1.TLSCertKey: cert, corev1.TLSPrivateKeyKey: pem}}
-	}
-	original := pair("first")
-	withPair := r.prober(key, bundle, original)
-	if withPair == prober || withPair.client == nil {
-		t.Errorf("a prober for a client pair: %v, the previous prober %v", withPair, prober)
-	}
-	if r.prober(key, bundle, original) != withPair {
-		t.Error("the same CA bundle and client pair built a second prober")
-	}
-	rotated := pair("rotated")
-	withRotated := r.prober(key, bundle, rotated)
-	if withRotated == withPair {
-		t.Error("a rotated client pair kept the cached prober")
-	}
-	if withRotated.client == nil || withRotated.client == withPair.client {
-		t.Error("the rotated prober does not present the new client pair")
-	}
-	broken := &corev1.Secret{Data: map[string][]byte{corev1.TLSCertKey: []byte("no"), corev1.TLSPrivateKeyKey: []byte("pair")}}
-	if p := r.prober(key, bundle, broken); p == nil || p.client != nil {
-		t.Errorf("a prober over a client Secret without a pair: %v", p)
 	}
 
 	r.forget(key)
