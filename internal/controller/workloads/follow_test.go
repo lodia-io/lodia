@@ -6,16 +6,19 @@ package workloads_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"maps"
 	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -24,14 +27,14 @@ import (
 	"go.lodia.io/lodia/internal/controller/workloads"
 )
 
-func reports(apiServer, controllerManager, scheduler string) map[string]any {
+func reports(apiServer string) map[string]any {
 	report := func(version string) map[string]any {
 		return map[string]any{"total": int64(2), "ready": int64(2), "updated": int64(2), "version": version}
 	}
 	return map[string]any{"components": map[string]any{
 		"apiServer":         report(apiServer),
-		"controllerManager": report(controllerManager),
-		"scheduler":         report(scheduler),
+		"controllerManager": report("v1.37.1"),
+		"scheduler":         report("v1.37.1"),
 	}}
 }
 
@@ -88,11 +91,28 @@ func TestAReportOutsideTheTableRollsOnlyTheAPIServer(t *testing.T) {
 	expectVersions(t, cp, "v1.37.1 v1.37.1 v1.37.1")
 	pause(t, cp)
 	setTargetVersion(t, cp, "v1.37.2")
-	applyStatus(t, cp, workloads.FieldManager, reports("v1.33.2", "v1.37.1", "v1.37.1"))
+	applyStatus(t, cp, workloads.FieldManager, reports("v1.33.2"))
 	before := resourceVersions(t, cp.Namespace, &appsv1.DeploymentList{})
+	budget := &policyv1.PodDisruptionBudget{ObjectMeta: metav1.ObjectMeta{Namespace: cp.Namespace, Name: cp.Name + "-kube-apiserver"}}
+	if err := k8s.Delete(t.Context(), budget); err != nil {
+		t.Fatal(err)
+	}
+	setTrue(t, cp, lodiav1alpha1.ConditionAPIServerReady, "Ready")
+	update(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) {
+		spec.Health = &lodiav1alpha1.Health{HoldControllerManager: new(false)}
+	})
+	setTrue(t, cp, lodiav1alpha1.ConditionCertificatesReady, "Issued")
+	setTrue(t, cp, lodiav1alpha1.ConditionDatastoreReady, "Ready")
+	generation := get(t, cp).Generation
 
 	status := appliedStatus(t, cp, unpaused())
 	waiting := meta.FindStatusCondition(status.Conditions, lodiav1alpha1.ConditionAPIServerReady)
+	if waiting == nil || waiting.ObservedGeneration != generation {
+		t.Errorf("APIServerReady is %+v, want it at generation %d, which the pass rendered", waiting, generation)
+	}
+	if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(budget), budget); err != nil {
+		t.Errorf("the PodDisruptionBudget is not written back on this path: %v", err)
+	}
 	if waiting == nil || waiting.Status != metav1.ConditionFalse || waiting.Reason != lodiav1alpha1.ReasonWaitingForTarget ||
 		waiting.Message != "status.components.apiServer.version v1.33.2 is not a version Lodia runs" {
 		t.Errorf("APIServerReady is %+v, want False, WaitingForTarget naming v1.33.2", waiting)
@@ -111,11 +131,76 @@ func TestAReportOutsideTheTableRollsOnlyTheAPIServer(t *testing.T) {
 		t.Error(err)
 	}
 
-	applyStatus(t, cp, workloads.FieldManager, reports("v1.37.2", "v1.37.1", "v1.37.1"))
+	applyStatus(t, cp, workloads.FieldManager, reports("v1.37.2"))
 	reconcileThrough(t, cp, unpaused())
 	if err := imagesAt(t, cp, "v1.37.2", componentNames); err != nil {
 		t.Errorf("once the report is in the table: %v", err)
 	}
+}
+
+func TestAHeldOrRefusedAPIServerOutranksAReportOutsideTheTable(t *testing.T) {
+	setup := func(t *testing.T) *lodiav1alpha1.ControlPlane {
+		t.Helper()
+		cp := highlyAvailable(t)
+		for _, component := range componentNames {
+			markAvailable(t, eventuallyDeployment(t, cp, component))
+		}
+		expectVersions(t, cp, "v1.37.1 v1.37.1 v1.37.1")
+		pause(t, cp)
+		setTargetVersion(t, cp, "v1.37.2")
+		applyStatus(t, cp, workloads.FieldManager, reports("v1.33.2"))
+		return cp
+	}
+	reconcile := func(cp *lodiav1alpha1.ControlPlane, c client.WithWatch) error {
+		r := &workloads.Reconciler{Client: c, Reader: k8s, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
+		_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+		return err
+	}
+
+	t.Run("another owner keeps the API server's Deployment", func(t *testing.T) {
+		cp := setup(t)
+		held := deployment(t, cp, "kube-apiserver")
+		held.OwnerReferences[0].UID = types.UID("8f0c6f2e-0d6e-4f4e-9e44-0d6a7c1b5a21")
+		if err := k8s.Update(t.Context(), held); err != nil {
+			t.Fatal(err)
+		}
+		if err := reconcile(cp, unpaused()); err != nil {
+			t.Fatal(err)
+		}
+		if err := expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere); err != nil {
+			t.Error(err)
+		}
+		if err := imagesAt(t, cp, "v1.37.1", componentNames); err != nil {
+			t.Error(err)
+		}
+	})
+
+	t.Run("the API server refuses its Deployment", func(t *testing.T) {
+		cp := setup(t)
+		refused := apierrors.NewForbidden(appsv1.Resource("deployments"), "dev-kube-apiserver", errors.New("denied by a policy"))
+		err := reconcile(cp, interceptor.NewClient(unpaused(), interceptor.Funcs{
+			Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+				raw, err := json.Marshal(obj)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var applied metav1.PartialObjectMetadata
+				if err := json.Unmarshal(raw, &applied); err != nil {
+					t.Fatal(err)
+				}
+				if applied.Kind == "Deployment" && applied.Name == "dev-kube-apiserver" {
+					return refused
+				}
+				return c.Apply(ctx, obj, opts...)
+			},
+		}))
+		if !apierrors.IsForbidden(err) {
+			t.Fatalf("the pass returned %v, want the refusal for the backoff", err)
+		}
+		if err := expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused); err != nil {
+			t.Error(err)
+		}
+	})
 }
 
 func TestAStaleReportInTheCacheDoesNotRollTheControllerManagerBack(t *testing.T) {
@@ -131,7 +216,7 @@ func TestAStaleReportInTheCacheDoesNotRollTheControllerManagerBack(t *testing.T)
 		t.Fatalf("the cache holds the versions %s", got)
 	}
 
-	applyStatus(t, cp, workloads.FieldManager, reports("v1.37.2", "v1.37.1", "v1.37.1"))
+	applyStatus(t, cp, workloads.FieldManager, reports("v1.37.2"))
 	reconcileThrough(t, cp, unpaused())
 	if err := imagesAt(t, cp, "v1.37.2", componentNames); err != nil {
 		t.Fatalf("with the API server's report at v1.37.2: %v", err)
