@@ -220,7 +220,7 @@ func TestAPassWritesTheKubernetesVersionThroughAFailureAndADeadlineThatIsSpent(t
 				return c.SubResource(subResource).Apply(ctx, obj, opts...)
 			},
 		})
-		_, err := (&lifecycle.Reconciler{Client: c, Reader: reader, Clock: clock.RealClock{}}).Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+		_, err := (&lifecycle.Reconciler{Client: c, Reader: reader, Clock: clock.RealClock{}, Revision: runningRevision}).Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 		return err
 	}
 	wrote := func() bool { return len(applied) == 1 && applied[0] != nil && applied[0].Version == "v1.37.1" }

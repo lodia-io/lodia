@@ -21,9 +21,10 @@ import (
 // facts is everything a pass decides from. backup is the pre-upgrade Backup of
 // the minor step cp is at, by backupMinor: nil while it does not exist.
 type facts struct {
-	cp     *lodiav1alpha1.ControlPlane
-	backup *lodiav1alpha1.Backup
-	now    time.Time
+	cp       *lodiav1alpha1.ControlPlane
+	backup   *lodiav1alpha1.Backup
+	now      time.Time
+	revision string
 }
 
 // decision holds every status field Lifecycle owns and no other, since an
@@ -70,6 +71,7 @@ func decide(f facts) decision {
 	readyNow := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionReady)
 	observedGeneration := cp.Status.ObservedGeneration
 	c := change{target: targetOf(cp), upgrade: upgradeOf(cp)}
+	revision := revisionOf(cp)
 	switch {
 	case !cp.DeletionTimestamp.IsZero():
 		readyNow = newCondition(cp, lodiav1alpha1.ConditionReady, metav1.ConditionFalse, lodiav1alpha1.ReasonDeleting, "the ControlPlane is being deleted")
@@ -77,6 +79,7 @@ func decide(f facts) decision {
 		progressing = newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonPaused, "spec.paused is true: Lodia reconciles nothing")
 	default:
 		c = f.versionChange()
+		revision = f.revision
 		progressing = c.progressing(f)
 		readyNow = ready(cp)
 		if observed(cp) {
@@ -84,8 +87,8 @@ func decide(f facts) decision {
 		}
 	}
 	status := lodiav1alpha1.ControlPlaneStatus{ObservedGeneration: observedGeneration}
-	if c.target != "" {
-		status.Target = &lodiav1alpha1.Target{Version: c.target}
+	if c.target != "" || revision != "" {
+		status.Target = &lodiav1alpha1.Target{Version: c.target, OperatorRevision: revision}
 	}
 	if reported := oldestReported(cp); reported != "" || c.upgrade != nil {
 		status.Kubernetes = &lodiav1alpha1.KubernetesStatus{Version: reported, Upgrade: c.upgrade}
@@ -101,6 +104,13 @@ func decide(f facts) decision {
 func targetOf(cp *lodiav1alpha1.ControlPlane) string {
 	if cp.Status.Target != nil {
 		return cp.Status.Target.Version
+	}
+	return ""
+}
+
+func revisionOf(cp *lodiav1alpha1.ControlPlane) string {
+	if cp.Status.Target != nil {
+		return cp.Status.Target.OperatorRevision
 	}
 	return ""
 }

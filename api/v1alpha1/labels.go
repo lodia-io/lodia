@@ -71,9 +71,9 @@ const (
 	// each new value once, recorded in status.maintenance.lastHandled.
 	MaintainRequestedAtAnnotation = "lodia.io/maintain-requested-at"
 
-	// OperatorRevisionAnnotation, written by Workloads, Tenant and the
-	// Datastore controller on the objects they render, records the operator
-	// revision they were rendered with.
+	// OperatorRevisionAnnotation, written by Workloads on its Deployments and
+	// by the Datastore controller on the Etcd, records the operator revision
+	// they were rendered with.
 	OperatorRevisionAnnotation = "lodia.io/operator-revision"
 
 	// DatastoreFinalizer, held by the Datastore controller, keeps a

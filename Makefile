@@ -55,6 +55,8 @@ chart: ## lint and render the chart with image tags, then with image digests; wi
 	helm template lodia $(CHART) --namespace lodia-system > /dev/null
 	@policies="$$(helm template lodia $(CHART) --namespace lodia-system --set crds.enabled=false | awk '/^---/ {kind = ""} /^kind: / {kind = $$2} /^  name: kubeconfigrequests\.lodia\.io$$/ {print kind}' | sort | tr '\n' ' ')"; \
 	[ "$$policies" = "ValidatingAdmissionPolicy ValidatingAdmissionPolicyBinding " ] || { echo "with crds.enabled=false the chart renders [$$policies] named kubeconfigrequests.lodia.io, want a ValidatingAdmissionPolicy and its binding"; exit 1; }
+	helm template lodia $(CHART) --namespace lodia-system --set etcdDruid.image.tag=v0.0.0-check | grep -q -- '--etcd-druid-version=v0.0.0-check$$' || { echo "--etcd-druid-version does not follow etcdDruid.image.tag"; exit 1; }
+	! helm template lodia $(CHART) --namespace lodia-system --set etcdDruid.enabled=false,etcdDruidNamespace=druid > /dev/null 2>&1 || { echo "with etcdDruid.enabled=false the chart renders without etcdDruidVersion"; exit 1; }
 	helm lint --strict $(CHART) --set image.digest=$(DIGEST),signerImage.digest=$(DIGEST),tunnelImage.digest=$(DIGEST)
 	helm template lodia $(CHART) --namespace lodia-system --set image.digest=$(DIGEST),signerImage.digest=$(DIGEST),tunnelImage.digest=$(DIGEST) > /dev/null
 

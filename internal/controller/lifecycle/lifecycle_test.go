@@ -36,6 +36,8 @@ var readiness = []string{
 	lodiav1alpha1.ConditionControllersLeading,
 }
 
+const runningRevision = "v1.0.0+0123456789abcdef"
+
 var (
 	k8s   client.WithWatch
 	quiet client.WithWatch
@@ -46,7 +48,7 @@ func TestMain(m *testing.M) {
 	env := testenv.Start(testenv.Options{})
 	k8s = env.Client
 	mgr := env.Manager(env.AsController("lifecycle"), false)
-	if err := (&lifecycle.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Clock: clock.RealClock{}}).SetupWithManager(mgr, 1); err != nil {
+	if err := (&lifecycle.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Clock: clock.RealClock{}, Revision: runningRevision}).SetupWithManager(mgr, 1); err != nil {
 		env.Fatal("controller", err)
 	}
 	env.StartManager(mgr)
@@ -587,7 +589,7 @@ func expectNoWrite(t *testing.T, cp *lodiav1alpha1.ControlPlane, conditionType, 
 			return c.SubResource(subResource).Apply(ctx, obj, opts...)
 		},
 	})
-	if _, err := (&lifecycle.Reconciler{Client: counting, Reader: k8s, Clock: clock.RealClock{}}).Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+	if _, err := (&lifecycle.Reconciler{Client: counting, Reader: k8s, Clock: clock.RealClock{}, Revision: runningRevision}).Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 		t.Fatal(err)
 	}
 	if after := get(t, cp).ResourceVersion; applies > 0 || after != settled {

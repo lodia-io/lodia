@@ -18,8 +18,11 @@ import (
 	"go.lodia.io/lodia/internal/operator"
 )
 
+// version is set by ko from .ko.yaml.
+var version string
+
 func main() {
-	var metricsAddr, probeAddr, configPath, signerImage, tunnelImage, etcdDruidNamespace, operatorNamespace string
+	var metricsAddr, probeAddr, configPath, signerImage, tunnelImage, etcdDruidVersion, etcdDruidNamespace, operatorNamespace string
 	var leaderElect bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "Address of the metrics endpoint, served over HTTPS behind authentication and authorization.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Address of the health and readiness probes.")
@@ -27,6 +30,7 @@ func main() {
 	flag.StringVar(&configPath, "config", "", "Path to the operator's configuration file, YAML; without it the defaults apply.")
 	flag.StringVar(&signerImage, "signer-image", "", "Image of lodia-signer, the API server's ServiceAccount token signer; required.")
 	flag.StringVar(&tunnelImage, "tunnel-image", "", "Image of lodia-tunnel, a gateway tenant's in-cluster path to its API server; required.")
+	flag.StringVar(&etcdDruidVersion, "etcd-druid-version", "", "Version of etcd-druid, what follows the repository and its colon in its image, a digest included, which the operator revision covers; required.")
 	flag.StringVar(&etcdDruidNamespace, "etcd-druid-namespace", "", "Namespace etcd-druid runs in, whose pods each etcd's NetworkPolicy admits to the backup-restore sidecar; required.")
 	flag.StringVar(&operatorNamespace, "operator-namespace", "", "Namespace the operator runs in, whose pods each etcd's NetworkPolicy admits to the client port; required.")
 	opts := zap.Options{}
@@ -40,6 +44,10 @@ func main() {
 	}
 	if tunnelImage == "" {
 		log.Error(nil, "--tunnel-image is required")
+		os.Exit(1)
+	}
+	if etcdDruidVersion == "" {
+		log.Error(nil, "--etcd-druid-version is required")
 		os.Exit(1)
 	}
 	if etcdDruidNamespace == "" {
@@ -88,7 +96,7 @@ func main() {
 		log.Error(err, "create the manager")
 		os.Exit(1)
 	}
-	if err := operator.Setup(mgr, operator.Inputs{Config: config, SignerImage: signerImage, TunnelImage: tunnelImage, EtcdDruidNamespace: etcdDruidNamespace, OperatorNamespace: operatorNamespace, GatewayAPI: gatewayAPI}); err != nil {
+	if err := operator.Setup(mgr, operator.Inputs{Config: config, Version: version, SignerImage: signerImage, TunnelImage: tunnelImage, EtcdDruidVersion: etcdDruidVersion, EtcdDruidNamespace: etcdDruidNamespace, OperatorNamespace: operatorNamespace, GatewayAPI: gatewayAPI}); err != nil {
 		log.Error(err, "set up the controllers")
 		os.Exit(1)
 	}
