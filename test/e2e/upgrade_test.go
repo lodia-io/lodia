@@ -45,7 +45,7 @@ const (
 	upgradeFrom   = "v1.36.4"
 	upgradeTo     = "v1.37.1"
 	nodeImage136  = "kindest/node:v1.36.4@sha256:099e049362a1526b2db71494e1947aae99bd16290d7c895f2b7ea312e3cbfaed"
-	readyBackends = "konnectivity_network_proxy_server_ready_backend_connections"
+	readyBackends = "konnectivity_network_proxy_server_ready_backends"
 )
 
 func TestMinorUpgradeGate(t *testing.T) {
@@ -135,7 +135,9 @@ func TestMinorUpgradeGate(t *testing.T) {
 				return nil
 			})
 			expectLogsAndExec(ctx, t, access, web)
-			t.Logf("after logs and exec the addons report %s", getControlPlane(ctx, t, k8s, key).Status.Addons.Version)
+			if agent, want := daemonSetImage(ctx, t, access, "konnectivity-agent"), imagesOf(t, upgradeFrom).KonnectivityAgent; agent != want {
+				t.Errorf("the tenant's konnectivity-agent runs %s after logs and exec, want %s: the agents had moved, so the skew was not proved", agent, want)
+			}
 			return ctx
 		}).
 		Assess("the upgrade ends with every part at the new version, the older node kept, and neither loop lost a request", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
