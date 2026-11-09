@@ -271,6 +271,9 @@ func (r *Reconciler) rollout(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 	if stopped, err := r.writeObjects(ctx, cp, endpoint, all); stopped != nil || err != nil {
 		return stopped, err
 	}
+	if in.unknownReport != "" {
+		return report(newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget, in.unknownReport)), nil
+	}
 	return report(availability(deployments, in.note, controllerManagerHeld(cp))), nil
 }
 
@@ -279,22 +282,16 @@ type inputs struct {
 	config    []*corev1.ConfigMap
 	// note is what availability says of a controller manager at 0 replicas.
 	note string
+	// unknownReport says that only the API server's Deployment is written.
+	unknownReport string
 }
 
 // inputs waits, in this order, for the target, the two conditions, the
 // Datastore's endpoints and the hashes, and returns what the pods render from
 // or the condition that says what it waits for.
 func (r *Reconciler) inputs(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus) (*inputs, *metav1.Condition, error) {
-	target := ""
-	if cp.Status.Target != nil {
-		target = cp.Status.Target.Version
-	}
-	images, ok := versions.For(target)
-	if !ok {
-		message := "waiting for Lifecycle to set status.target.version"
-		if target != "" {
-			message = "status.target.version " + target + " is not a version Lodia runs"
-		}
+	images, message, unknownReport := imagesOf(cp)
+	if message != "" {
 		return nil, new(newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget, message)), nil
 	}
 	if a := cp.Spec.Addons; a != nil && a.Konnectivity != nil {
@@ -353,9 +350,39 @@ func (r *Reconciler) inputs(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 			hashes:      hashes,
 			held:        held,
 		},
-		config: config,
-		note:   note,
+		config:        config,
+		note:          note,
+		unknownReport: unknownReport,
 	}, nil, nil
+}
+
+// imagesOf renders the controller manager and the scheduler at the version the
+// API server runs, so that they never get ahead of it, and at the target while
+// none is reported. The first message stops the pass. The second names a report
+// outside the table, which leaves those two where they are and still rolls the
+// API server to the target, the one render that can move the report.
+func imagesOf(cp *lodiav1alpha1.ControlPlane) (versions.Images, string, string) {
+	target := ""
+	if cp.Status.Target != nil {
+		target = cp.Status.Target.Version
+	}
+	images, ok := versions.For(target)
+	if !ok {
+		if target == "" {
+			return versions.Images{}, "waiting for Lifecycle to set status.target.version", ""
+		}
+		return versions.Images{}, "status.target.version " + target + " is not a version Lodia runs", ""
+	}
+	running := target
+	if c := cp.Status.Components; c != nil && c.APIServer != nil && c.APIServer.Version != "" {
+		running = c.APIServer.Version
+	}
+	followed, ok := versions.For(running)
+	if !ok {
+		return images, "", "status.components.apiServer.version " + running + " is not a version Lodia runs"
+	}
+	images.ControllerManager, images.Scheduler = followed.ControllerManager, followed.Scheduler
+	return images, "", ""
 }
 
 // objects renders what the pass applies, in that order, and the Deployments
@@ -363,6 +390,9 @@ func (r *Reconciler) inputs(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 func objects(in *inputs) ([]*appsv1.Deployment, []client.Object) {
 	cp := in.rendering.cp
 	deployments := in.rendering.deployments()
+	if in.unknownReport != "" {
+		deployments = []*appsv1.Deployment{in.rendering.apiServer()}
+	}
 	var all []client.Object
 	for _, c := range in.config {
 		all = append(all, c)

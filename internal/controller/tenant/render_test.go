@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -22,22 +23,31 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/version"
 	"k8s.io/client-go/tools/clientcmd"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/yaml"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/versions"
 )
 
 var updateGolden = flag.Bool("update-golden", false, "write testdata/render from the render instead of comparing with it")
 
-func TestTheRenderOutsideGatewayModeIsPinned(t *testing.T) {
+func TestTheRenderIsPinned(t *testing.T) {
 	network := lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}}
+	outsideGateway := map[string]lodiav1alpha1.Endpoint{
+		"loadBalancer": {LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}},
+		"nodePort":     {NodePort: &lodiav1alpha1.NodePortEndpoint{}},
+	}
 	for golden, c := range map[string]struct {
-		addons *lodiav1alpha1.Addons
-		status lodiav1alpha1.EndpointStatus
+		addons    *lodiav1alpha1.Addons
+		status    lodiav1alpha1.EndpointStatus
+		endpoints map[string]lodiav1alpha1.Endpoint
 	}{
 		"defaults.yaml": {
-			status: lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 443}, Konnectivity: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 8132}, InCluster: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 6443}},
+			status:    lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 443}, Konnectivity: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 8132}, InCluster: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 6443}},
+			endpoints: outsideGateway,
 		},
 		"agents-as-a-deployment.yaml": {
 			addons: &lodiav1alpha1.Addons{
@@ -45,13 +55,23 @@ func TestTheRenderOutsideGatewayModeIsPinned(t *testing.T) {
 				CoreDNS:      &lodiav1alpha1.CoreDNS{Replicas: new(int32(3))},
 				Konnectivity: &lodiav1alpha1.Konnectivity{Version: "v0.35.1", Agent: &lodiav1alpha1.KonnectivityAgent{Mode: "Deployment", Replicas: new(int32(2))}},
 			},
-			status: lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "api.dev.example.test", Port: 31443}, Konnectivity: lodiav1alpha1.HostPort{Host: "api.dev.example.test", Port: 31132}, InCluster: lodiav1alpha1.HostPort{Host: "2001:db8::10", Port: 31443}},
+			status:    lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "api.dev.example.test", Port: 31443}, Konnectivity: lodiav1alpha1.HostPort{Host: "api.dev.example.test", Port: 31132}, InCluster: lodiav1alpha1.HostPort{Host: "2001:db8::10", Port: 31443}},
+			endpoints: outsideGateway,
+		},
+		"gateway.yaml": {
+			status: lodiav1alpha1.EndpointStatus{
+				APIServer:    lodiav1alpha1.HostPort{Host: "api.dev.example.test", Port: 443},
+				Konnectivity: lodiav1alpha1.HostPort{Host: "konnectivity.dev.example.test", Port: 443},
+				InCluster:    lodiav1alpha1.HostPort{Host: "240.0.0.1", Port: 6443},
+				Tunnel:       &lodiav1alpha1.HostPort{Host: "tunnel.dev.example.test", Port: 443},
+			},
+			endpoints: map[string]lodiav1alpha1.Endpoint{"gateway": {Gateway: &lodiav1alpha1.GatewayEndpoint{
+				ParentRef: lodiav1alpha1.ParentReference{Name: "edge", Namespace: "gateways", SectionName: "tls"},
+				Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.test", Konnectivity: "konnectivity.dev.example.test", Tunnel: "tunnel.dev.example.test"},
+			}}},
 		},
 	} {
-		for mode, endpoint := range map[string]lodiav1alpha1.Endpoint{
-			"loadBalancer": {LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}},
-			"nodePort":     {NodePort: &lodiav1alpha1.NodePortEndpoint{}},
-		} {
+		for mode, endpoint := range c.endpoints {
 			cp := &lodiav1alpha1.ControlPlane{
 				ObjectMeta: metav1.ObjectMeta{Name: "dev"},
 				Spec:       lodiav1alpha1.ControlPlaneSpec{Endpoint: endpoint, Network: network, Addons: c.addons},
@@ -61,6 +81,7 @@ func TestTheRenderOutsideGatewayModeIsPinned(t *testing.T) {
 			if err != nil || waiting != "" {
 				t.Fatalf("%s, %s: %v %s", golden, mode, err, waiting)
 			}
+			v.TunnelImage, v.tunnelCert, v.tunnelKey = tunnelImage, []byte(tunnelCert), []byte(tunnelKey)
 			objects, err := render(v)
 			if err != nil {
 				t.Fatalf("%s, %s: %v", golden, mode, err)
@@ -428,6 +449,166 @@ func TestTheTunnelIsAnInput(t *testing.T) {
 		change(changed.Status.Endpoint.Tunnel)
 		if inputs(changed) == before {
 			t.Errorf("a pass does not run for a change of the tunnel's %s", name)
+		}
+	}
+}
+
+func reporting(target, apiServer, controllerManager, scheduler string) *lodiav1alpha1.ControlPlane {
+	component := func(version string) *lodiav1alpha1.ComponentStatus {
+		return &lodiav1alpha1.ComponentStatus{Rendered: lodiav1alpha1.Rendered{Version: version}}
+	}
+	return &lodiav1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev"},
+		Spec:       lodiav1alpha1.ControlPlaneSpec{Network: lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}}},
+		Status: lodiav1alpha1.ControlPlaneStatus{
+			Target:     &lodiav1alpha1.Target{Version: target},
+			Endpoint:   &lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 443}, Konnectivity: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 8132}, InCluster: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 6443}},
+			Components: &lodiav1alpha1.ComponentsStatus{APIServer: component(apiServer), ControllerManager: component(controllerManager), Scheduler: component(scheduler)},
+		},
+	}
+}
+
+func TestTheAddonsRenderAtTheOldestOfTheComponents(t *testing.T) {
+	for name, c := range map[string]struct {
+		cp                             *lodiav1alpha1.ControlPlane
+		version, coreDNS, konnectivity string
+	}{
+		"a patch apart":                         {reporting("v1.35.9", "v1.35.9", "v1.35.8", "v1.35.9"), "v1.35.8", "v1.13.1", "v0.35.0"},
+		"a minor apart, the scheduler":          {reporting("v1.36.2", "v1.36.2", "v1.36.2", "v1.35.9"), "v1.35.9", "v1.13.1", "v0.35.0"},
+		"a minor apart, the controller manager": {reporting("v1.36.2", "v1.36.2", "v1.35.8", "v1.36.1"), "v1.35.8", "v1.13.1", "v0.35.0"},
+		"every component at the new minor":      {reporting("v1.36.2", "v1.36.2", "v1.36.2", "v1.36.2"), "v1.36.2", "v1.14.2", "v0.36.0"},
+		"no report":                             {reporting("v1.36.2", "", "", ""), "v1.36.2", "v1.14.2", "v0.36.0"},
+		"no components": {func() *lodiav1alpha1.ControlPlane {
+			cp := reporting("v1.37.1", "", "", "")
+			cp.Status.Components = nil
+			return cp
+		}(), "v1.37.1", "v1.14.6", "v0.37.0"},
+		"an absent report counts as the target": {reporting("v1.36.2", "v1.36.2", "", "v1.35.8"), "v1.35.8", "v1.13.1", "v0.35.0"},
+		"the target the oldest":                 {reporting("v1.35.8", "v1.35.9", "", "v1.35.9"), "v1.35.8", "v1.13.1", "v0.35.0"},
+		"a newer version outside the table":     {reporting("v1.37.1", "v1.37.1", "v1.37.1", "v1.38.0"), "v1.37.1", "v1.14.6", "v0.37.0"},
+	} {
+		objects := rendered(t, c.cp)
+		var kubeProxy, agent appsv1.DaemonSet
+		var coreDNS appsv1.Deployment
+		renderedObject(t, objects, entry{Group: "apps", Version: "v1", Kind: "DaemonSet", Namespace: "kube-system", Name: "kube-proxy"}, &kubeProxy)
+		renderedObject(t, objects, entry{Group: "apps", Version: "v1", Kind: "DaemonSet", Namespace: "kube-system", Name: "konnectivity-agent"}, &agent)
+		renderedObject(t, objects, entry{Group: "apps", Version: "v1", Kind: "Deployment", Namespace: "kube-system", Name: "coredns"}, &coreDNS)
+		var kubeadm corev1.ConfigMap
+		renderedObject(t, objects, entry{Version: "v1", Kind: "ConfigMap", Namespace: "kube-system", Name: "kubeadm-config"}, &kubeadm)
+		var cluster struct {
+			KubernetesVersion string `json:"kubernetesVersion"`
+		}
+		if err := yaml.Unmarshal([]byte(kubeadm.Data["ClusterConfiguration"]), &cluster); err != nil {
+			t.Fatal(err)
+		}
+		for what, got := range map[string][2]string{
+			"kube-proxy":         {kubeProxy.Spec.Template.Spec.Containers[0].Image, "registry.k8s.io/kube-proxy:" + c.version},
+			"CoreDNS":            {coreDNS.Spec.Template.Spec.Containers[0].Image, "registry.k8s.io/coredns/coredns:" + c.coreDNS},
+			"konnectivity-agent": {agent.Spec.Template.Spec.Containers[0].Image, "registry.k8s.io/kas-network-proxy/proxy-agent:" + c.konnectivity},
+			"kubeadm-config":     {cluster.KubernetesVersion, c.version},
+		} {
+			if got[0] != got[1] {
+				t.Errorf("%s: %s is %s, want %s", name, what, got[0], got[1])
+			}
+		}
+		if v, _, _, err := newValues(c.cp, nil); err != nil || v.Version != c.version {
+			t.Errorf("%s: the values carry the version %v (%v), want %s, which status.addons.version reports", name, v.Version, err, c.version)
+		}
+	}
+}
+
+func TestAVersionOutsideTheTableWaitsForTheTarget(t *testing.T) {
+	for name, c := range map[string]struct {
+		cp   *lodiav1alpha1.ControlPlane
+		said string
+	}{
+		"the oldest component below the table": {reporting("v1.37.1", "v1.37.1", "v1.34.2", "v1.37.1"), `"v1.34.2"`},
+		"every component above the table":      {reporting("v1.38.0", "v1.38.0", "v1.38.0", "v1.38.0"), `"v1.38.0"`},
+		"the target the oldest, outside":       {reporting("v1.34.2", "v1.37.1", "", "v1.37.1"), `"v1.34.2"`},
+		"a version that is none":               {reporting("v1.37.1", "v1.37.1", "latest", "v1.37.1"), `""`},
+	} {
+		_, reason, message, err := newValues(c.cp, nil)
+		if err != nil || reason != lodiav1alpha1.ReasonWaitingForTarget || !strings.Contains(message, c.said) || !strings.HasSuffix(message, "is not a version Lodia runs") {
+			t.Errorf("%s: newValues gives %q %q %v, want WaitingForTarget naming %s", name, reason, message, err, c.said)
+		}
+	}
+}
+
+func TestTheAddonsAreNeverNewerThanTheOldestComponent(t *testing.T) {
+	table := []string{"v1.35.8", "v1.35.9", "v1.36.0", "v1.36.2", "v1.37.1"}
+	reports := append([]string{""}, table...)
+	checked := 0
+	for _, target := range table {
+		for _, apiServer := range reports {
+			for _, controllerManager := range reports {
+				for _, scheduler := range reports {
+					cp := reporting(target, apiServer, controllerManager, scheduler)
+					v, reason, message, err := newValues(cp, nil)
+					if err != nil || reason != "" {
+						t.Fatalf("target %s, reports %q %q %q: %q %q %v", target, apiServer, controllerManager, scheduler, reason, message, err)
+					}
+					oldest := ""
+					for _, report := range []string{apiServer, controllerManager, scheduler} {
+						running := target
+						if report != "" {
+							running = report
+						}
+						if version.MustParseSemantic(v.Version).GreaterThan(version.MustParseSemantic(running)) {
+							t.Errorf("target %s, reports %q %q %q: the addons are at %s, newer than a component at %s", target, apiServer, controllerManager, scheduler, v.Version, running)
+						}
+						if oldest == "" || version.MustParseSemantic(running).LessThan(version.MustParseSemantic(oldest)) {
+							oldest = running
+						}
+					}
+					if v.Version != oldest {
+						t.Errorf("target %s, reports %q %q %q: the addons are at %s, want the oldest component's %s", target, apiServer, controllerManager, scheduler, v.Version, oldest)
+					}
+					images, _ := versions.For(v.Version)
+					if v.KubeProxyImage != images.KubeProxy || v.CoreDNSImage != images.CoreDNS || v.AgentImage != images.KonnectivityAgent {
+						t.Errorf("target %s, reports %q %q %q: the images %s %s %s are not those of %s", target, apiServer, controllerManager, scheduler, v.KubeProxyImage, v.CoreDNSImage, v.AgentImage, v.Version)
+					}
+					checked++
+				}
+			}
+		}
+	}
+	if want := len(table) * len(reports) * len(reports) * len(reports); checked != want {
+		t.Errorf("checked %d combinations, want %d", checked, want)
+	}
+}
+
+func TestTheComponentVersionsAreInputsAndTheReplicaCountsAreNot(t *testing.T) {
+	cp := reporting("v1.36.2", "v1.36.2", "v1.36.1", "v1.36.0")
+	cp.Status.Components.APIServer.RolloutCount = lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: 2, Ready: 2}, Updated: new(int32(2))}
+	runs := func(changed *lodiav1alpha1.ControlPlane) bool {
+		return inputsChanged().Update(event.UpdateEvent{ObjectOld: cp, ObjectNew: changed})
+	}
+	for name, change := range map[string]func(*lodiav1alpha1.ComponentsStatus){
+		"the API server's version":         func(c *lodiav1alpha1.ComponentsStatus) { c.APIServer.Version = "v1.36.1" },
+		"the controller manager's version": func(c *lodiav1alpha1.ComponentsStatus) { c.ControllerManager.Version = "v1.36.2" },
+		"the scheduler's version":          func(c *lodiav1alpha1.ComponentsStatus) { c.Scheduler.Version = "v1.36.1" },
+		"a report that goes":               func(c *lodiav1alpha1.ComponentsStatus) { c.ControllerManager = nil },
+		"a report from another component": func(c *lodiav1alpha1.ComponentsStatus) {
+			c.ControllerManager.Version, c.Scheduler.Version = "v1.36.0", "v1.36.1"
+		},
+		"the components that are all gone": func(c *lodiav1alpha1.ComponentsStatus) { *c = lodiav1alpha1.ComponentsStatus{} },
+	} {
+		changed := cp.DeepCopy()
+		change(changed.Status.Components)
+		if !runs(changed) {
+			t.Errorf("a pass does not run for a change of %s", name)
+		}
+	}
+	for name, change := range map[string]func(*lodiav1alpha1.ComponentStatus){
+		"total":         func(c *lodiav1alpha1.ComponentStatus) { c.Total = 3 },
+		"ready":         func(c *lodiav1alpha1.ComponentStatus) { c.Ready = 1 },
+		"updated":       func(c *lodiav1alpha1.ComponentStatus) { c.Updated = new(int32(1)) },
+		"updated, gone": func(c *lodiav1alpha1.ComponentStatus) { c.Updated = nil },
+	} {
+		changed := cp.DeepCopy()
+		change(changed.Status.Components.APIServer)
+		if runs(changed) {
+			t.Errorf("a pass runs for a change of the replica count %s", name)
 		}
 	}
 }

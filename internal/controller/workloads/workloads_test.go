@@ -1644,6 +1644,11 @@ func runningOnNodePort(t *testing.T) *lodiav1alpha1.ControlPlane {
 func inputsReady(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 	t.Helper()
 	setTarget(t, cp)
+	inputsReadyBesidesTheTarget(t, cp)
+}
+
+func inputsReadyBesidesTheTarget(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+	t.Helper()
 	setTrue(t, cp, lodiav1alpha1.ConditionCertificatesReady, "Issued")
 	setTrue(t, cp, lodiav1alpha1.ConditionDatastoreReady, "Ready")
 	setDatastore(t, cp, lodiav1alpha1.HostPort{Host: "dev-etcd-client." + cp.Namespace + ".svc", Port: 2379})

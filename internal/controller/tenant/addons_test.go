@@ -343,6 +343,28 @@ func TestEveryPathThatAppliesStatusKeepsTheAddons(t *testing.T) {
 		}
 		expectAddons(t, made, older)
 	})
+
+	t.Run("a component runs a version outside the table", func(t *testing.T) {
+		cp := controlPlane(t, "tenant-addons-outside")
+		publish(t, cp)
+		reconcilePKI(t, &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour, Clock: clock.RealClock{}}, cp)
+		testenv.EventuallyWithin(t, 10*time.Second, func() error {
+			return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+		})
+		update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+		setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+		setAddons(t, cp, older)
+		setComponents(t, cp, running(version), running("v1.34.2"), running(version))
+		refresh(t, cp)
+		made, err := pass(t, cp, cp.DeepCopy(), unreachable, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !appliedWith(made, lodiav1alpha1.ReasonWaitingForTarget, `"v1.34.2", is not a version Lodia runs`) {
+			t.Fatalf("the pass applied %+v, want a wait that names v1.34.2", made)
+		}
+		expectAddons(t, made, older)
+	})
 }
 
 func TestAPassThatCannotReadTheAddonsLiveWritesNothing(t *testing.T) {
