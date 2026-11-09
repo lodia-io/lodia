@@ -247,6 +247,38 @@ func TestReachableFollowsTheProbe(t *testing.T) {
 	}
 }
 
+func TestACABundleKeptElsewhereOrWithoutACertificateWaitsForCertificates(t *testing.T) {
+	cp := controlPlane(t)
+	e := serve(t)
+	publish(t, cp, e)
+	name := lodiav1alpha1.CABundleSecret.Name(cp.Name)
+	foreign := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name, Namespace: cp.Namespace,
+			OwnerReferences: []metav1.OwnerReference{{APIVersion: "external-secrets.io/v1", Kind: "ExternalSecret", Name: "stranger", UID: "abc", Controller: new(true)}},
+		},
+		Data: map[string][]byte{lodiav1alpha1.CACertKey: e.bundle},
+	}
+	if err := k8s.Create(t.Context(), foreign); err != nil {
+		t.Fatal(err)
+	}
+	probe := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: 300 * time.Millisecond}
+	reconcile(t, probe, cp)
+	if err := expect(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "Secret "+name+" is kept by ExternalSecret stranger with UID abc"); err != nil {
+		t.Fatal(err)
+	}
+
+	foreign.OwnerReferences = nil
+	foreign.Data = map[string][]byte{lodiav1alpha1.CACertKey: []byte("not a certificate")}
+	if err := k8s.Update(t.Context(), foreign); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, probe, cp)
+	if err := expect(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "the CA bundle "+name+" holds no certificate"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAPassThatChangesNothingWritesNothing(t *testing.T) {
 	cp := controlPlane(t)
 	e := serve(t)

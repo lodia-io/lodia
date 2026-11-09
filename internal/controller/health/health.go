@@ -228,6 +228,10 @@ func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPla
 		}
 		return nil, false, err
 	}
+	if ref := ownership.ControlledElsewhere(secret, cp); ref != nil {
+		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates,
+			fmt.Sprintf("Secret %s is kept by %s %s with UID %s", name, ref.Kind, ref.Name, ref.UID)), false, nil
+	}
 	var pair *corev1.Secret
 	if gateway {
 		pair = &corev1.Secret{}
