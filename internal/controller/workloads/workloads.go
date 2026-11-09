@@ -12,12 +12,14 @@ import (
 	"fmt"
 	"maps"
 	"net"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/distribution/reference"
 	"golang.org/x/sync/semaphore"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -58,7 +60,12 @@ const (
 	// its progress deadline
 	// (https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/deployment/util/deployment_util.go#L85-L86).
 	timedOutReason = "ProgressDeadlineExceeded"
+
+	// maxVersion is the MaxLength of status.components.*.version.
+	maxVersion = 16
 )
+
+var releaseTag = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
 
 // Messages are built from the state alone, never from an error, so a pass
 // that changes nothing writes nothing.
@@ -156,10 +163,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if !cp.DeletionTimestamp.IsZero() || cp.Spec.Paused {
 		return ctrl.Result{}, nil
 	}
+	var read []string
 	if cp.Spec.Endpoint.Gateway != nil {
-		if err := live.Endpoint(ctx, r.Reader, cp, lodiav1alpha1.ConditionRoutesReady); err != nil {
-			return ctrl.Result{}, err
-		}
+		read = append(read, lodiav1alpha1.ConditionRoutesReady)
+	}
+	if err := live.Components(ctx, r.Reader, cp, read...); err != nil {
+		return ctrl.Result{}, err
 	}
 	if meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady) == nil {
 		first := statusapply.FirstPass(cp, lodiav1alpha1.ConditionAPIServerReady)
@@ -761,26 +770,78 @@ func (r *Reconciler) controlled(ctx context.Context, cp *lodiav1alpha1.ControlPl
 	return out, nil
 }
 
-// components counts the replicas of the Deployments this ControlPlane
-// controls.
+// components counts the replicas of the Deployments this ControlPlane controls
+// and reports the version each runs. A component starts from its previous
+// report, which cp holds as the API server does, and a Deployment that is gone
+// keeps it: an apply that leaves a field out removes it.
 func (r *Reconciler) components(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*lodiav1alpha1.ComponentsStatus, error) {
 	controlled, err := r.controlled(ctx, cp)
-	if err != nil || len(controlled) == 0 {
+	if err != nil {
 		return nil, err
 	}
+	var previous lodiav1alpha1.ComponentsStatus
+	if cp.Status.Components != nil {
+		previous = *cp.Status.Components
+	}
 	out := &lodiav1alpha1.ComponentsStatus{}
-	for component, d := range controlled {
-		status := &lodiav1alpha1.ComponentStatus{RolloutCount: rolloutCount(d)}
-		switch component {
-		case apiServer:
-			out.APIServer = status
-		case controllerManager:
-			out.ControllerManager = status
-		case scheduler:
-			out.Scheduler = status
-		}
+	for _, component := range components {
+		*slot(out, component) = rolledOut(controlled[component], component, *slot(&previous, component))
+	}
+	if *out == (lodiav1alpha1.ComponentsStatus{}) {
+		return nil, nil
 	}
 	return out, nil
+}
+
+func slot(c *lodiav1alpha1.ComponentsStatus, component string) **lodiav1alpha1.ComponentStatus {
+	switch component {
+	case apiServer:
+		return &c.APIServer
+	case controllerManager:
+		return &c.ControllerManager
+	}
+	return &c.Scheduler
+}
+
+// rolledOut is d's counts, with the version of its image once every replica
+// runs the template, 0 of 0 included, and previous's report until then. A
+// component with neither a Deployment nor a report is absent.
+func rolledOut(d *appsv1.Deployment, component string, previous *lodiav1alpha1.ComponentStatus) *lodiav1alpha1.ComponentStatus {
+	var report lodiav1alpha1.Rendered
+	if previous != nil {
+		report = previous.Rendered
+	}
+	if d == nil {
+		if report == (lodiav1alpha1.Rendered{}) {
+			return nil
+		}
+		return &lodiav1alpha1.ComponentStatus{Rendered: report}
+	}
+	status := &lodiav1alpha1.ComponentStatus{RolloutCount: rolloutCount(d), Rendered: report}
+	if status.Updated != nil && *status.Updated == status.Total {
+		if version := imageVersion(d, component); version != "" {
+			status.Version = version
+		}
+	}
+	return status
+}
+
+// imageVersion is the tag of the component's own container when it is
+// vMAJOR.MINOR.PATCH and fits the field: a hand-edited image must not get the
+// whole status apply refused.
+func imageVersion(d *appsv1.Deployment, component string) string {
+	i := slices.IndexFunc(d.Spec.Template.Spec.Containers, func(c corev1.Container) bool { return c.Name == component })
+	if i < 0 {
+		return ""
+	}
+	named, err := reference.ParseNormalizedNamed(d.Spec.Template.Spec.Containers[i].Image)
+	if err != nil {
+		return ""
+	}
+	if tagged, ok := named.(reference.Tagged); ok && len(tagged.Tag()) <= maxVersion && releaseTag.MatchString(tagged.Tag()) {
+		return tagged.Tag()
+	}
+	return ""
 }
 
 // rolloutCount's updated counts, once the Deployment controller has observed

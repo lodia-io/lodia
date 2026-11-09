@@ -114,3 +114,5 @@ Lodia never removes the annotation, so a GitOps tool that keeps it does not figh
 
 - `api/v1alpha1` — `Target`, `KubernetesStatus` with `UpgradeStep`, `ComponentStatus` and `Rendered`, `MaintenanceStatus`, the window's rule, the annotations `lodia.io/operator-revision` and `lodia.io/maintain-requested-at`, `PreUpgradeBackupName` and the reasons of `Progressing`; `test/api` holds the rules.
 - `internal/controller/lifecycle` — the target within a minor, as phase 1 built it.
+- `internal/controller/workloads` — `status.components.*.version`, the tag of each component's own image once every replica runs it.
+- `internal/versions` — `Oldest`.

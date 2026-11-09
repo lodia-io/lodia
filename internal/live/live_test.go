@@ -49,6 +49,12 @@ func held(t *testing.T) (client.Reader, *lodiav1alpha1.ControlPlane) {
 				InCluster:    lodiav1alpha1.HostPort{Host: lodiav1alpha1.DefaultAdvertiseAddress, Port: 6443},
 				Tunnel:       &lodiav1alpha1.HostPort{Host: "tunnel.dev.example.com", Port: 443},
 			},
+			Components: &lodiav1alpha1.ComponentsStatus{
+				APIServer: &lodiav1alpha1.ComponentStatus{
+					RolloutCount: lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: 2, Ready: 2}, Updated: new(int32(2))},
+					Rendered:     lodiav1alpha1.Rendered{Version: "v1.37.1"},
+				},
+			},
 			Nodes: &lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: 3, Ready: 2}, OldestKubelet: "v1.34.2"},
 			Credentials: &lodiav1alpha1.CredentialsStatus{
 				AdminKubeconfigSecretRef: &lodiav1alpha1.LocalReference{Name: "dev-admin-kubeconfig"},
@@ -89,14 +95,15 @@ func TestDatastoreTakesTheAPIServersStatus(t *testing.T) {
 	}
 }
 
-func TestEndpointTakesTheAPIServersStatus(t *testing.T) {
+func TestComponentsTakesTheAPIServersStatus(t *testing.T) {
 	reader, server := held(t)
 	cp := cachedAs(server.UID)
-	if err := live.Endpoint(t.Context(), reader, cp, lodiav1alpha1.ConditionAPIServerReady); err != nil {
+	cp.Status.Components = &lodiav1alpha1.ComponentsStatus{APIServer: &lodiav1alpha1.ComponentStatus{Rendered: lodiav1alpha1.Rendered{Version: "v1.36.9"}}}
+	if err := live.Components(t.Context(), reader, cp, lodiav1alpha1.ConditionAPIServerReady); err != nil {
 		t.Fatal(err)
 	}
-	if !equality.Semantic.DeepEqual(cp.Status.Endpoint, server.Status.Endpoint) {
-		t.Errorf("status.endpoint %+v, want the API server's %+v", cp.Status.Endpoint, server.Status.Endpoint)
+	if !equality.Semantic.DeepEqual(cp.Status.Components, server.Status.Components) || !equality.Semantic.DeepEqual(cp.Status.Endpoint, server.Status.Endpoint) {
+		t.Errorf("status.components %+v and status.endpoint %+v, want the API server's %+v and %+v", cp.Status.Components, cp.Status.Endpoint, server.Status.Components, server.Status.Endpoint)
 	}
 	for _, c := range []struct {
 		conditionType string
@@ -169,8 +176,8 @@ func TestAReadOfAnotherObjectFails(t *testing.T) {
 		{"Datastore", func(reader client.Reader, cp *lodiav1alpha1.ControlPlane) error {
 			return live.Datastore(t.Context(), reader, cp, lodiav1alpha1.ConditionDatastoreReady)
 		}},
-		{"Endpoint", func(reader client.Reader, cp *lodiav1alpha1.ControlPlane) error {
-			return live.Endpoint(t.Context(), reader, cp, lodiav1alpha1.ConditionAPIServerReady)
+		{"Components", func(reader client.Reader, cp *lodiav1alpha1.ControlPlane) error {
+			return live.Components(t.Context(), reader, cp, lodiav1alpha1.ConditionAPIServerReady)
 		}},
 		{"Nodes", func(reader client.Reader, cp *lodiav1alpha1.ControlPlane) error {
 			return live.Nodes(t.Context(), reader, cp, lodiav1alpha1.ConditionControllerManagerHeld)
