@@ -122,9 +122,10 @@ func (r *NodesReconciler) readLease(ctx context.Context, t *tenant) (*coordinati
 	return lease, nil
 }
 
-// selectRow selects the first row that matches. Every pass that has no list of
-// the node Leases behind it restarts the clock and clears the count towards
-// the release, whichever row follows; a hold with no list goes on renewing.
+// selectRow selects the first row that matches. A pass that gets here with no
+// list of the node Leases behind it restarts the clock and clears the count
+// towards the release, whichever row follows; a hold with no list goes on
+// renewing.
 func (r *NodesReconciler) selectRow(ctx context.Context, cp *lodiav1alpha1.ControlPlane, s *sampling, lease *coordinationv1.Lease, readErr error, listed bool, now time.Time) (row, error) {
 	if readErr != nil || !listed {
 		s.restart()

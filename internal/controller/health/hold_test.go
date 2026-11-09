@@ -949,6 +949,30 @@ func TestAMissingKubeconfigClearsTheCount(t *testing.T) {
 	}
 }
 
+func TestAFailedReadOfTheKubeconfigRestartsTheCountAndKeepsTheClock(t *testing.T) {
+	h := holding(t, "a", "b", "c")
+	h.back(25, 55)
+	reader := h.r.Reader
+	h.r.Reader = interceptor.NewClient(k8s, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*corev1.Secret); ok {
+				return errors.New("injected")
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	h.at(80)
+	h.r.Reader = reader
+	h.back(85, 204)
+	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+		t.Fatalf("the count survived the failed read of the kubeconfig, holder %q", holder)
+	}
+	h.back(205)
+	if holder := h.holder(); holder != "" {
+		t.Fatalf("the hold did not end 2 minutes after the first pass past the failed read, holder %q", holder)
+	}
+}
+
 func TestAForeignFieldOfTheLeaseSurvivesEveryWrite(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
 	h.at(0)

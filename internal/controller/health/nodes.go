@@ -184,6 +184,9 @@ func (r *NodesReconciler) sample(ctx context.Context, cp *lodiav1alpha1.ControlP
 	}
 	kubeconfig, waiting, err := lodiaKubeconfig(ctx, r.Reader, cp)
 	if err != nil {
+		// No list stands behind this pass, so it clears the count; a failed read
+		// of a management Secret says nothing about the kubelets, so the clock runs on.
+		s.below = time.Time{}
 		return err
 	}
 	if waiting != "" {
