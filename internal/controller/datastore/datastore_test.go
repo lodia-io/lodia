@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
@@ -20,14 +19,10 @@ import (
 
 	druidapicommon "github.com/gardener/etcd-druid/api/common"
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
-	"github.com/gardener/etcd-druid/api/core/v1alpha1/crds"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
-	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -35,10 +30,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
 	networkingv1ac "k8s.io/client-go/applyconfigurations/networking/v1"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/clock"
@@ -47,15 +40,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/envtest"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
-	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/yaml"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/controller/datastore"
 	"go.lodia.io/lodia/internal/controller/datastore/datastoretest"
-	"go.lodia.io/lodia/internal/operator"
+	"go.lodia.io/lodia/internal/testenv"
 )
 
 var (
@@ -71,146 +61,31 @@ const (
 )
 
 func TestMain(m *testing.M) {
-	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
-		fmt.Println("skipping the datastore controller tests: KUBEBUILDER_ASSETS is not set; run make test")
-		os.Exit(0)
-	}
-	druidCRDs, err := druidCRDs()
+	testenv.SkipUnlessAvailable("the datastore controller tests")
+	druid, err := testenv.DruidCRDs()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "etcd-druid CRDs:", err)
 		os.Exit(1)
 	}
-	env := &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "api", "crds")},
-		ErrorIfCRDPathMissing: true,
-		CRDs:                  druidCRDs,
-		UseExistingCluster:    new(false),
-	}
-	env.ControlPlane.GetAPIServer().Configure().Append("enable-admission-plugins", "OwnerReferencesPermissionEnforcement")
-	cfg, err := env.Start()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "start envtest:", err)
-		os.Exit(1)
-	}
-	stop := func(what string, err error) {
-		fmt.Fprintln(os.Stderr, what+":", err)
-		_ = env.Stop()
-		os.Exit(1)
-	}
-	scheme := runtime.NewScheme()
-	for _, add := range []func(*runtime.Scheme) error{clientgoscheme.AddToScheme, lodiav1alpha1.AddToScheme, druidv1alpha1.AddToScheme} {
-		if err := add(scheme); err != nil {
-			stop("scheme", err)
-		}
-	}
-	if k8s, err = client.NewWithWatch(cfg, client.Options{Scheme: scheme}); err != nil {
-		stop("client", err)
-	}
-	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
-	controller, err := asDatastoreController(cfg)
-	if err != nil {
-		stop("the controller's ClusterRole", err)
-	}
-	asDatastore = controller
-	cache, err := operator.Cache(false)
-	if err != nil {
-		stop("cache options", err)
-	}
-	cache.ReaderFailOnMissingInformer = true
-	mgr, err := ctrl.NewManager(controller, ctrl.Options{Scheme: scheme, Metrics: metricsserver.Options{BindAddress: "0"}, Cache: cache})
-	if err != nil {
-		stop("manager", err)
-	}
+	env := testenv.Start(testenv.Options{
+		Scheme:                 testenv.Scheme(druidv1alpha1.AddToScheme),
+		CRDs:                   druid,
+		EnforceOwnerReferences: true,
+	})
+	k8s = env.Client
+	asDatastore = env.AsController("datastore")
+	mgr := env.Manager(asDatastore, false)
 	if err := (&datastore.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, EtcdClient: dialRestored, Clock: clock.RealClock{}}).SetupWithManager(mgr, 1); err != nil {
-		stop("controller", err)
+		env.Fatal("controller", err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	started := make(chan error, 1)
-	go func() { started <- mgr.Start(ctx) }()
+	ctx := env.StartManager(mgr)
 	for _, obj := range []client.Object{&lodiav1alpha1.Backup{}, &druidv1alpha1.EtcdOpsTask{}, &druidv1alpha1.EtcdCopyBackupsTask{}} {
 		if _, err := mgr.GetCache().GetInformer(ctx, obj); err != nil {
-			cancel()
-			stop("informer", err)
+			env.Fatal("informer", err)
 		}
 	}
 	cached, apiReader = mgr.GetClient(), mgr.GetAPIReader()
-	code := m.Run()
-	cancel()
-	if err := <-started; err != nil {
-		fmt.Fprintln(os.Stderr, "manager:", err)
-		code = 1
-	}
-	if err := env.Stop(); err != nil {
-		fmt.Fprintln(os.Stderr, "stop envtest:", err)
-	}
-	os.Exit(code)
-}
-
-func asDatastoreController(cfg *rest.Config) (*rest.Config, error) {
-	const user = "lodia-datastore"
-	ctx := context.Background()
-	manifest, err := os.ReadFile(filepath.Join("..", "..", "..", "charts", "lodia", "files", "rbac", "datastore.yaml"))
-	if err != nil {
-		return nil, err
-	}
-	role := &rbacv1.ClusterRole{}
-	if err := yaml.UnmarshalStrict(manifest, role); err != nil {
-		return nil, err
-	}
-	binding := &rbacv1.ClusterRoleBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: user},
-		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: role.Name},
-		Subjects:   []rbacv1.Subject{{APIGroup: rbacv1.GroupName, Kind: rbacv1.UserKind, Name: user}},
-	}
-	for _, obj := range []client.Object{role, binding} {
-		if err := k8s.Create(ctx, obj); err != nil {
-			return nil, err
-		}
-	}
-	err = wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (bool, error) {
-		review := &authorizationv1.SubjectAccessReview{Spec: authorizationv1.SubjectAccessReviewSpec{
-			User:               user,
-			ResourceAttributes: &authorizationv1.ResourceAttributes{Group: lodiav1alpha1.GroupVersion.Group, Resource: "controlplanes", Verb: "watch"},
-		}}
-		if err := k8s.Create(ctx, review); err != nil {
-			return false, err
-		}
-		return review.Status.Allowed, nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	controller := rest.CopyConfig(cfg)
-	controller.Impersonate = rest.ImpersonationConfig{UserName: user}
-	return controller, nil
-}
-
-func druidCRDs() ([]*apiextensionsv1.CustomResourceDefinition, error) {
-	manifests, err := crds.GetAll("1.35")
-	if err != nil {
-		return nil, err
-	}
-	var out []*apiextensionsv1.CustomResourceDefinition
-	for name, manifest := range manifests {
-		crd := &apiextensionsv1.CustomResourceDefinition{}
-		if err := yaml.Unmarshal([]byte(manifest), crd); err != nil {
-			return nil, fmt.Errorf("%s: %w", name, err)
-		}
-		out = append(out, crd)
-	}
-	return out, nil
-}
-
-func eventually(t *testing.T, check func() error) {
-	t.Helper()
-	var last error
-	err := wait.PollUntilContextTimeout(t.Context(), 100*time.Millisecond, 30*time.Second, true, func(context.Context) (bool, error) {
-		last = check()
-		return last == nil, nil
-	})
-	if err != nil {
-		t.Fatalf("%v: %v", err, last)
-	}
+	os.Exit(env.Finish(m.Run()))
 }
 
 func namespace(t *testing.T) string {
@@ -359,7 +234,7 @@ func setPaused(t *testing.T, ns, name string, paused bool) {
 
 func waitCondition(t *testing.T, ns, name string, status metav1.ConditionStatus, reason, message string) {
 	t.Helper()
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		cp := &lodiav1alpha1.ControlPlane{}
 		if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: name}, cp); err != nil {
 			return err
@@ -389,7 +264,7 @@ func getEtcd(t *testing.T, ns, cp string) *druidv1alpha1.Etcd {
 func waitEtcd(t *testing.T, ns, cp string, check func(*druidv1alpha1.Etcd) error) *druidv1alpha1.Etcd {
 	t.Helper()
 	etcd := &druidv1alpha1.Etcd{}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: cp + "-etcd"}, etcd); err != nil {
 			return err
 		}
@@ -456,7 +331,7 @@ func settle(t *testing.T, ns, name string) {
 	if err := k8s.Patch(t.Context(), cp, patch); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		current := getControlPlane(t, ns, name)
 		condition := meta.FindStatusCondition(current.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
 		if condition == nil || condition.ObservedGeneration != cp.Generation {
@@ -500,7 +375,7 @@ func TestFinalizerAndEtcdFromClass(t *testing.T) {
 	createClass(t, fullClass("mapped", credentialsNamespace))
 	create(t, controlPlane(ns, "dev", "mapped"))
 
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if !controllerutil.ContainsFinalizer(getControlPlane(t, ns, "dev"), lodiav1alpha1.DatastoreFinalizer) {
 			return fmt.Errorf("the finalizer %s is not on the ControlPlane", lodiav1alpha1.DatastoreFinalizer)
 		}
@@ -514,7 +389,7 @@ func TestFinalizerAndEtcdFromClass(t *testing.T) {
 	writeGeneration(t, ns, "dev", 1)
 	etcd := waitEtcd(t, ns, "dev", namesGeneration(1))
 	var cp *lodiav1alpha1.ControlPlane
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if cp = getControlPlane(t, ns, "dev"); cp.Status.Datastore == nil {
 			return errors.New("status.datastore is not written yet")
 		}
@@ -679,7 +554,7 @@ func refuse(t *testing.T, ns string, rule admissionregistrationv1.Rule, probe fu
 			}
 		})
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if err := k8s.Create(t.Context(), probe(), client.DryRunAll); err == nil {
 			return errors.New("the policy does not refuse " + resource + " yet")
 		}
@@ -734,7 +609,7 @@ func TestPaused(t *testing.T) {
 	})
 
 	setPaused(t, ns, "dev", false)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev"}, &lodiav1alpha1.ControlPlane{}))
 	})
 	if err := gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev-etcd"}, &druidv1alpha1.Etcd{})); err != nil {
@@ -786,7 +661,7 @@ func TestNewestCompleteGeneration(t *testing.T) {
 	if err := k8s.Patch(t.Context(), terminating, patch); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		err := k8s.Get(t.Context(), client.ObjectKeyFromObject(terminating), &corev1.Secret{})
 		switch {
 		case err == nil:
@@ -1106,7 +981,7 @@ func TestSnapshotsFollowTheEtcdsStore(t *testing.T) {
 	reports := func(bucket string) lodiav1alpha1.SnapshotLocation {
 		t.Helper()
 		var location lodiav1alpha1.SnapshotLocation
-		eventually(t, func() error {
+		testenv.Eventually(t, func() error {
 			store := ptr.Deref(getEtcd(t, ns, cp).Spec.Backup.Store, druidv1alpha1.StoreSpec{})
 			if got := ptr.Deref(store.Container, ""); got != bucket {
 				return fmt.Errorf("the Etcd's store names bucket %q, want %q", got, bucket)
@@ -1151,7 +1026,7 @@ func TestSnapshotsFollowTheEtcdsStore(t *testing.T) {
 	create(t, controlPlane(ns, "storeless", "storeless"))
 	writeGeneration(t, ns, "storeless", 1)
 	waitEtcd(t, ns, "storeless", nil)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		status := getControlPlane(t, ns, "storeless").Status.Datastore
 		switch {
 		case status == nil:
@@ -1180,7 +1055,7 @@ func TestBackupCopyFollowsItsEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	copied := &corev1.Secret{}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if err := k8s.Get(t.Context(), key, copied); err != nil {
 			return err
 		}
@@ -1202,7 +1077,7 @@ func TestBackupCopyFollowsItsEvents(t *testing.T) {
 	if err := k8s.Delete(t.Context(), copied); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if err := k8s.Get(t.Context(), key, copied); err != nil {
 			return err
 		}
@@ -1262,7 +1137,7 @@ func TestPredecessorsCopy(t *testing.T) {
 	if err := k8s.Delete(t.Context(), getCopy(t, ns, cp)); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: cp + "-etcd-backup"}, &corev1.Secret{}))
 	})
 	predecessors = leftover()
@@ -1448,7 +1323,7 @@ func TestDatastoreReadyIsQuorum(t *testing.T) {
 			setStatefulSetStatus(t, ns, cp, row.sts)
 			settle(t, ns, cp)
 			waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "Etcd reported-etcd has quorum, 1 of 1 members ready")
-			eventually(t, func() error {
+			testenv.Eventually(t, func() error {
 				updated := "absent"
 				if u := getControlPlane(t, ns, cp).Status.Datastore.Members.Updated; u != nil {
 					updated = strconv.Itoa(int(*u))
@@ -1528,7 +1403,7 @@ func TestAPassFromAStaleCacheChangesNoEtcd(t *testing.T) {
 	if err := k8s.Delete(t.Context(), predecessor); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: cp + "-etcd"}, &druidv1alpha1.Etcd{}))
 	})
 	if err := pass(stale); !apierrors.IsConflict(err) {
@@ -1562,7 +1437,7 @@ func TestAFinalizingPassFromAStaleReadTouchesNoOtherEtcd(t *testing.T) {
 	if err := k8s.Delete(t.Context(), predecessor); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: cp + "-etcd"}, &druidv1alpha1.Etcd{}))
 	})
 	foreign := &druidv1alpha1.Etcd{
@@ -1631,7 +1506,7 @@ func TestReclaimingFromAStaleListDeletesNoOtherClaim(t *testing.T) {
 	if err := k8s.Delete(t.Context(), etcd); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return gone(k8s.Get(t.Context(), client.ObjectKeyFromObject(etcd), &druidv1alpha1.Etcd{}))
 	})
 	removeClaim(t, ns, name)
@@ -1721,7 +1596,7 @@ func TestThreeMembersWithHighAvailability(t *testing.T) {
 
 	update := func(change func(*lodiav1alpha1.ControlPlane)) {
 		t.Helper()
-		eventually(t, func() error {
+		testenv.Eventually(t, func() error {
 			fresh := getControlPlane(t, ns, cp)
 			change(fresh)
 			return k8s.Update(t.Context(), fresh)
@@ -1783,7 +1658,7 @@ func TestHighAvailabilityOnAFormedEtcd(t *testing.T) {
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "Etcd growing-etcd has quorum, 1 of 1 members ready")
 	highAvailability := func(ha *lodiav1alpha1.HighAvailability) {
 		t.Helper()
-		eventually(t, func() error {
+		testenv.Eventually(t, func() error {
 			fresh := getControlPlane(t, ns, cp)
 			fresh.Spec.HighAvailability = ha
 			return k8s.Update(t.Context(), fresh)
@@ -1809,7 +1684,7 @@ func TestHighAvailabilityOnAFormedEtcd(t *testing.T) {
 	} {
 		t.Run("on: "+step.name, func(t *testing.T) {
 			druid(step.members, step.ready, step.pods, step.scaling)
-			eventually(t, func() error {
+			testenv.Eventually(t, func() error {
 				c := meta.FindStatusCondition(getControlPlane(t, ns, cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
 				if want := "Etcd growing-etcd " + step.want; c == nil || c.Status != metav1.ConditionTrue || c.Reason != lodiav1alpha1.ReasonReady || c.Message != want {
 					return fmt.Errorf("DatastoreReady is %+v, want True Ready %q", c, want)
@@ -1881,7 +1756,7 @@ func TestEtcdDruidKeepsTheClientPortThroughAScaleIn(t *testing.T) {
 	druid(3, 3, 3, "")
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum")
 
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		fresh := getControlPlane(t, ns, cp)
 		fresh.Spec.HighAvailability = nil
 		return k8s.Update(t.Context(), fresh)
@@ -2086,7 +1961,7 @@ func TestAHeldScaleOutResumesOnceTheStatefulSetSettles(t *testing.T) {
 
 func setHighAvailability(t *testing.T, ns, cp string, ha *lodiav1alpha1.HighAvailability) {
 	t.Helper()
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		fresh := getControlPlane(t, ns, cp)
 		fresh.Spec.HighAvailability = ha
 		return k8s.Update(t.Context(), fresh)
@@ -2155,7 +2030,7 @@ func removeClaim(t *testing.T, ns, name string) {
 	if err := k8s.Patch(t.Context(), pvc, patch); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: name}, &corev1.PersistentVolumeClaim{}))
 	})
 }
@@ -2258,7 +2133,7 @@ func TestForeignEtcd(t *testing.T) {
 			if err := k8s.Delete(t.Context(), getControlPlane(t, ns, row.cp)); err != nil {
 				t.Fatal(err)
 			}
-			eventually(t, func() error {
+			testenv.Eventually(t, func() error {
 				return gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: row.cp}, &lodiav1alpha1.ControlPlane{}))
 			})
 			if again := getEtcd(t, ns, row.cp); again.ResourceVersion != etcd.ResourceVersion || !again.DeletionTimestamp.IsZero() {
@@ -2353,7 +2228,7 @@ func TestQuotaFitsTheVolume(t *testing.T) {
 		t.Errorf("quota %s: half the volume is not applied", quota)
 	}
 	setEtcdStatus(t, ns, cp, nil)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if c := meta.FindStatusCondition(getControlPlane(t, ns, cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady); c == nil || c.Message != "Etcd quota-etcd has quorum, 1 of 1 members ready" {
 			return fmt.Errorf("DatastoreReady %+v, want the quota no longer capped", c)
 		}
@@ -2405,7 +2280,7 @@ func TestQuotaFitsRetainedClaims(t *testing.T) {
 			}
 			return nil
 		})
-		eventually(t, func() error {
+		testenv.Eventually(t, func() error {
 			if c := meta.FindStatusCondition(getControlPlane(t, ns, cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady); c == nil || !strings.HasSuffix(c.Message, "; "+note) {
 				return fmt.Errorf("DatastoreReady %+v, want it to end with %q", c, note)
 			}
@@ -2519,7 +2394,7 @@ func TestTerminatingClaimBesideALiveOne(t *testing.T) {
 		return nil
 	})
 	const note = "DatastoreClass beside's quota 4Gi is capped at 3Gi: it needs 8Gi of volume and Etcd beside-etcd's is 6Gi"
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if c := meta.FindStatusCondition(getControlPlane(t, ns, cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady); c == nil || !strings.HasSuffix(c.Message, "; "+note) {
 			return fmt.Errorf("DatastoreReady %+v, want it to end with %q", c, note)
 		}
@@ -2568,7 +2443,7 @@ func TestRecordedClass(t *testing.T) {
 	if err := k8s.Delete(t.Context(), getControlPlane(t, ns, "dev")); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev"}, &lodiav1alpha1.ControlPlane{}))
 	})
 	untouched(t, ns, "dev-etcd-dev-etcd-0")
@@ -2691,7 +2566,7 @@ func TestClassGone(t *testing.T) {
 	if err := k8s.Delete(t.Context(), getControlPlane(t, ns, cp)); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: cp}, &lodiav1alpha1.ControlPlane{}))
 	})
 	untouched(t, ns, "kept-etcd-kept-etcd-0")
@@ -2716,7 +2591,7 @@ func TestDeletionBeforeLabelling(t *testing.T) {
 	if err := k8s.Delete(t.Context(), getControlPlane(t, ns, "dev")); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev"}, &lodiav1alpha1.ControlPlane{}))
 	})
 	deleted(t, ns, "dev-etcd-dev-etcd-0")
@@ -2752,7 +2627,7 @@ func TestDeletion(t *testing.T) {
 			if err := k8s.Delete(t.Context(), cp); err != nil {
 				t.Fatal(err)
 			}
-			eventually(t, func() error {
+			testenv.Eventually(t, func() error {
 				if etcd = getEtcd(t, ns, "dev"); etcd.DeletionTimestamp.IsZero() {
 					return errors.New("the Etcd is not being deleted")
 				}
@@ -2773,7 +2648,7 @@ func TestDeletion(t *testing.T) {
 			if err := k8s.Patch(t.Context(), etcd, released); err != nil {
 				t.Fatal(err)
 			}
-			eventually(t, func() error {
+			testenv.Eventually(t, func() error {
 				return gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev"}, &lodiav1alpha1.ControlPlane{}))
 			})
 			if err := gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "dev-etcd"}, &druidv1alpha1.Etcd{})); err != nil {
@@ -2796,7 +2671,7 @@ func TestDeletion(t *testing.T) {
 func waitPolicy(t *testing.T, ns, cp string, check func(*networkingv1.NetworkPolicy) error) *networkingv1.NetworkPolicy {
 	t.Helper()
 	policy := &networkingv1.NetworkPolicy{}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: cp + "-etcd"}, policy); err != nil {
 			return err
 		}

@@ -48,6 +48,7 @@ import (
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/certs"
 	"go.lodia.io/lodia/internal/controller/datastore"
+	"go.lodia.io/lodia/internal/testenv"
 )
 
 type restoredEtcd struct {
@@ -375,7 +376,7 @@ func (r *restore) nothingCreated(t *testing.T) {
 func (r *restore) waitCopyTask(t *testing.T) *druidv1alpha1.EtcdCopyBackupsTask {
 	t.Helper()
 	var task *druidv1alpha1.EtcdCopyBackupsTask
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if task = r.copyTask(t); task == nil {
 			return errors.New("no EtcdCopyBackupsTask yet")
 		}
@@ -463,7 +464,7 @@ func TestARestoreCopiesChecksCleansUpAndSnapshots(t *testing.T) {
 	}
 	owned(t, task, cp)
 	r.noEtcd(t)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return cached.Get(t.Context(), client.ObjectKeyFromObject(task), &druidv1alpha1.EtcdCopyBackupsTask{})
 	})
 	poke(t, r.ns)
@@ -493,7 +494,7 @@ func TestARestoreCopiesChecksCleansUpAndSnapshots(t *testing.T) {
 	if err := k8s.Update(t.Context(), failed); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if again := r.copyTask(t); again == nil || again.UID == failed.UID {
 			return errors.New("no new copy task yet")
 		}
@@ -537,7 +538,7 @@ func TestARestoreCopiesChecksCleansUpAndSnapshots(t *testing.T) {
 		fmt.Sprintf("cleaned up; waiting for a full snapshot of revision %d: the store holds %d; EtcdOpsTask %s is ", marker, marker-1, name))
 	finishFlush(t, r.ns, name, druidv1alpha1.TaskStateSucceeded, etcd.CreationTimestamp.Time)
 	poke(t, r.ns)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if again := r.opsTask(t); again == nil || again.UID == ops.UID {
 			return errors.New("the finished EtcdOpsTask is not replaced yet")
 		}
@@ -557,7 +558,7 @@ func TestARestoreCopiesChecksCleansUpAndSnapshots(t *testing.T) {
 		}
 		return nil
 	})
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if r.copyTask(t) != nil || r.opsTask(t) != nil {
 			return errors.New("the restore's tasks are still there")
 		}
@@ -976,7 +977,7 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 		t.Helper()
 		condition.Type, condition.LastUpdateTime = druidv1alpha1.ConditionTypeReady, metav1.NewTime(now.Now()).Rfc3339Copy()
 		setEtcdStatus(t, r.ns, restoredCP, func(s *druidv1alpha1.EtcdStatus) { s.Conditions = append(s.Conditions, condition) })
-		eventually(t, func() error {
+		testenv.Eventually(t, func() error {
 			etcd := &druidv1alpha1.Etcd{}
 			if err := cached.Get(t.Context(), client.ObjectKey{Namespace: r.ns, Name: restoredCP + "-etcd"}, etcd); err != nil {
 				return err
@@ -1032,7 +1033,7 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 			marker, ops.Name, round.state, finished.UTC().Format(time.RFC3339), next.UTC().Format(time.RFC3339))
 		settled := func() {
 			t.Helper()
-			eventually(t, func() error {
+			testenv.Eventually(t, func() error {
 				if _, err := pass(); err != nil {
 					return err
 				}
@@ -1071,7 +1072,7 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 		if again := r.opsTask(t); again == nil || again.UID != ops.UID || !again.DeletionTimestamp.IsZero() {
 			t.Fatal("the finished EtcdOpsTask went though its delete was refused")
 		}
-		eventually(t, func() error {
+		testenv.Eventually(t, func() error {
 			if _, err := pass(); err != nil {
 				return err
 			}
@@ -1101,7 +1102,7 @@ func TestAFullSnapshotRejectedBeforeTheEtcdIsReadyGoesOnceItIs(t *testing.T) {
 	now.SetTime(rejected.Add(5 * time.Second))
 	want := fmt.Sprintf("cleaned up; waiting for a full snapshot of revision %d: the store holds 0; EtcdOpsTask %s is Rejected at %s; the next goes at %s",
 		marker, ops.Name, rejected.UTC().Format(time.RFC3339), rejected.Add(20*time.Minute).UTC().Format(time.RFC3339))
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if err := pass(); err != nil {
 			return err
 		}
@@ -1117,7 +1118,7 @@ func TestAFullSnapshotRejectedBeforeTheEtcdIsReadyGoesOnceItIs(t *testing.T) {
 			LastTransitionTime: metav1.NewTime(rejected.Add(30 * time.Second)), LastUpdateTime: metav1.NewTime(now.Now()),
 		})
 	})
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if err := pass(); err != nil {
 			return err
 		}
@@ -1242,7 +1243,7 @@ func TestARestoreSurvivesAFailureAtEachStep(t *testing.T) {
 		r := newRestore(t, restoreSetup{})
 		r.etcd.loseCleanups.Store(1)
 		r.copied(t)
-		eventually(t, func() error {
+		testenv.Eventually(t, func() error {
 			if r.marker(t) == 0 {
 				return errors.New("not cleaned up yet")
 			}
@@ -1262,7 +1263,7 @@ func TestARestoreSurvivesAFailureAtEachStep(t *testing.T) {
 			}}
 		})
 		r.copied(t)
-		eventually(t, func() error {
+		testenv.Eventually(t, func() error {
 			if r.marker(t) == 0 {
 				return errors.New("not cleaned up yet")
 			}
@@ -1302,7 +1303,7 @@ func TestARestoreSurvivesAFailureAtEachStep(t *testing.T) {
 		createLease(t, r.ns, restoredCP+"-etcd-full-snap", strconv.FormatInt(marker, 10))
 		poke(t, r.ns)
 		waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, "the API server refuses Etcd b-etcd")
-		eventually(t, func() error {
+		testenv.Eventually(t, func() error {
 			if cp := r.controlPlane(t); cp.Status.Restore == nil {
 				return errors.New("a complete restore whose scale-up is refused has no status")
 			}
@@ -1331,7 +1332,7 @@ func TestARestoreStatusRemovedComesBackFromTheMarker(t *testing.T) {
 	if err := k8s.Status().Patch(t.Context(), r.controlPlane(t), client.RawPatch(types.JSONPatchType, remove), client.FieldOwner("someone-else")); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		cp := r.controlPlane(t)
 		if cp.Status.Restore == nil {
 			return errors.New("status.restore is not back")
@@ -1531,7 +1532,7 @@ func TestACompletedRestoreKeepsItsRecordWithoutAnEtcd(t *testing.T) {
 	t.Run("a foreign Etcd", func(t *testing.T) {
 		r, record := completed(t)
 		setPaused(t, r.ns, restoredCP, true)
-		eventually(t, func() error {
+		testenv.Eventually(t, func() error {
 			cp := &lodiav1alpha1.ControlPlane{}
 			if err := cached.Get(t.Context(), client.ObjectKey{Namespace: r.ns, Name: restoredCP}, cp); err != nil {
 				return err
@@ -1544,7 +1545,7 @@ func TestACompletedRestoreKeepsItsRecordWithoutAnEtcd(t *testing.T) {
 		if err := k8s.Delete(t.Context(), getEtcd(t, r.ns, restoredCP)); err != nil {
 			t.Fatal(err)
 		}
-		eventually(t, func() error {
+		testenv.Eventually(t, func() error {
 			return gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: r.ns, Name: restoredCP + "-etcd"}, &druidv1alpha1.Etcd{}))
 		})
 		create(t, &druidv1alpha1.Etcd{
@@ -1592,7 +1593,7 @@ func TestACompletedRestoreKeepsItsRecordWithoutAnEtcd(t *testing.T) {
 		}
 
 		release(t, etcd)
-		eventually(t, func() error {
+		testenv.Eventually(t, func() error {
 			if cp := r.controlPlane(t); controllerutil.ContainsFinalizer(cp, lodiav1alpha1.DatastoreFinalizer) {
 				return errors.New("the Datastore finalizer is still there")
 			}
@@ -1656,7 +1657,7 @@ func TestAnEtcdCreatedAgainFromAStaleCacheNeedsNoBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 	setPaused(t, r.ns, restoredCP, true)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		cp := &lodiav1alpha1.ControlPlane{}
 		if err := cached.Get(t.Context(), client.ObjectKey{Namespace: r.ns, Name: restoredCP}, cp); err != nil {
 			return err
@@ -1752,7 +1753,7 @@ func TestACompletedRestoreComesBackOverItsClaimsWithTheirMembers(t *testing.T) {
 			}
 			if c.removed {
 				setPaused(t, r.ns, restoredCP, true)
-				eventually(t, func() error {
+				testenv.Eventually(t, func() error {
 					cp := &lodiav1alpha1.ControlPlane{}
 					if err := cached.Get(t.Context(), client.ObjectKey{Namespace: r.ns, Name: restoredCP}, cp); err != nil {
 						return err
@@ -1771,7 +1772,7 @@ func TestACompletedRestoreComesBackOverItsClaimsWithTheirMembers(t *testing.T) {
 				t.Fatal(err)
 			}
 			if c.removed {
-				eventually(t, func() error {
+				testenv.Eventually(t, func() error {
 					return gone(cached.Get(t.Context(), client.ObjectKey{Namespace: r.ns, Name: restoredCP + "-etcd"}, &druidv1alpha1.Etcd{}))
 				})
 				if restore := r.controlPlane(t).Status.Restore; restore != nil {
@@ -1859,7 +1860,7 @@ func TestAFailedCopyStaysAMinute(t *testing.T) {
 		result, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}})
 		return result.RequeueAfter, err
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		requeueAfter, err := pass()
 		if err == nil && requeueAfter != time.Second {
 			return fmt.Errorf("a pass a second before the minute returned a requeue in %v, want 1s", requeueAfter)
@@ -1889,7 +1890,7 @@ func TestAFailedCopyStaysAMinute(t *testing.T) {
 	if _, err := pass(); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if again := r.copyTask(t); again == nil || again.UID == task.UID {
 			return errors.New("no new copy task yet")
 		}
