@@ -19,7 +19,7 @@ Lifecycle writes one `status.target.version`: the version the API server rolls t
 **A minor step.**
 
 1. Preflight: the next minor is in the version table (else `Unsupported`); `DatastoreReady` (else `WaitingForDatastore`); every kubelet at most three minors older than the next minor, from `status.nodes.oldestKubelet` (else `WaitingForNodes`); no hold of the controller manager (else `ControllerManagerHeld`).
-2. The `Backup` `<cp>-pre-upgrade-<version>-<ControlPlane UID>` (`PreUpgradeBackupName`) completes; a `Backup` outlives its source, so the UID keeps a predecessor's of the same name from standing in for it.
+2. The `Backup` `<cp>-pre-upgrade-v<minor>-<ControlPlane UID>` (`PreUpgradeBackupName`) completes; a tenant steps to a minor once, so the name does not change with the patch the step goes to, and a `Backup` outlives its source, so the UID keeps a predecessor's of the same name from standing in for it.
    The target moves once it completes, or once it reports that the class has no backup store, which `Progressing` then says.
 3. The API server rolls; the step is done when every replica runs the new template, updated and ready, since `/readyz` reports no version.
 4. The controller manager and the scheduler roll.

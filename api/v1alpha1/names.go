@@ -160,12 +160,13 @@ func APIServerServiceURL(namespace, controlPlane string) string {
 	return "https://" + APIServerServiceName(controlPlane) + "." + namespace + ".svc:" + strconv.Itoa(APIServerServicePort)
 }
 
-// PreUpgradeBackupName is "<ControlPlane>-pre-upgrade-<version>-<UID>", the
-// Backup Lifecycle takes before a minor step to version. A Backup outlives
-// its source, so the UID keeps a predecessor's of the same name from
-// standing in for this ControlPlane's.
-func PreUpgradeBackupName(controlPlane, version string, uid types.UID) string {
-	return controlPlane + "-pre-upgrade-" + version + "-" + string(uid)
+// PreUpgradeBackupName is "<ControlPlane>-pre-upgrade-v<minor>-<UID>", the
+// Backup Lifecycle takes before a minor step to minor (1.37). A ControlPlane
+// steps to a minor once, so the name holds for every patch that step may go to.
+// A Backup outlives its source, so the UID keeps a predecessor's of the same
+// name from standing in for this ControlPlane's.
+func PreUpgradeBackupName(controlPlane, minor string, uid types.UID) string {
+	return controlPlane + "-pre-upgrade-v" + minor + "-" + string(uid)
 }
 
 // BackupEncryptionConfigSecretName is "<Backup>.encryption-config": the

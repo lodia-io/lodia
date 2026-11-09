@@ -306,12 +306,12 @@ A clone restores through the API, as Velero does, which gives every object a new
 From phase 2's wave 2, upgrades; until then Lifecycle follows `spec.version` within its minor only, and nothing here applies.
 
 1. `status.kubernetes.upgrade.step` says the step, `Progressing`'s message what failed; the upgrade resumes when the cause is gone.
-2. `Backup` step failing: the `Ready` message of the `Backup` `<cp>-pre-upgrade-<version>-<ControlPlane UID>`.
+2. `Backup` step failing: the `Ready` message of the `Backup` `<cp>-pre-upgrade-v<minor>-<ControlPlane UID>`.
    A failed `Backup` is final: delete it, and Lifecycle takes it again.
    A class without a backup store skips it, and `Progressing`'s message says so.
 3. API server step failing: a removed flag or feature gate in `extraArgs` or `featureGates` is the usual cause; fix `spec`, the step retries.
 4. In-tenant step failing: an object the tenant refuses, named in `AddonsApplied`; the addons' pods roll on the owner's nodes afterwards, and an image they cannot pull (air gap, registry mirror missing) shows in `AddonsAvailable`, not here.
-5. Rollback of a minor: create a new `ControlPlane` with `restoreFrom` the `Backup` `<cp>-pre-upgrade-<version>-<ControlPlane UID>` and the old `spec.version`; it replaces the cluster, so delete the old one, or create the new one `Released` once the old one is gone ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)).
+5. Rollback of a minor: create a new `ControlPlane` with `restoreFrom` the `Backup` `<cp>-pre-upgrade-v<minor>-<ControlPlane UID>` and the old `spec.version`; it replaces the cluster, so delete the old one, or create the new one `Released` once the old one is gone ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)).
    A downgrade in place is not supported by Kubernetes.
 
 ### Forced CA rotation
