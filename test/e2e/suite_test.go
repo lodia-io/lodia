@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -96,15 +97,29 @@ func installLodia(ctx context.Context, cfg *envconf.Config) (context.Context, er
 	return ctx, nil
 }
 
+var buildVersion = sync.OnceValues(func() (string, error) {
+	describe := exec.Command("git", "describe", "--tags", "--always", "--dirty")
+	describe.Dir = root
+	out, err := describe.Output()
+	if err != nil {
+		return "", fmt.Errorf("name the build: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+})
+
 func build(ctx context.Context, kubeconfig, command string) (reference.NamedTagged, error) {
 	cluster, err := kindCluster(kubeconfig)
+	if err != nil {
+		return nil, err
+	}
+	version, err := buildVersion()
 	if err != nil {
 		return nil, err
 	}
 	ko := exec.CommandContext(ctx, "go", "run", "github.com/google/ko@v0.19.1", "build",
 		"--base-import-paths", "--platform=linux/"+goruntime.GOARCH, command)
 	ko.Dir = root
-	ko.Env = append(os.Environ(), "KO_DOCKER_REPO=kind.local", "KIND_CLUSTER_NAME="+cluster)
+	ko.Env = append(os.Environ(), "KO_DOCKER_REPO=kind.local", "KIND_CLUSTER_NAME="+cluster, "VERSION="+version)
 	var stderr bytes.Buffer
 	ko.Stderr = &stderr
 	out, err := ko.Output()

@@ -120,6 +120,13 @@ func TestPhase1Gate(t *testing.T) {
 			if took >= 3*time.Minute {
 				t.Errorf("Ready took %s; the gate wants under 3 minutes", took)
 			}
+			version, err := buildVersion()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if target := cp.Status.Target; target == nil || !strings.HasPrefix(target.OperatorRevision, version+"+") {
+				t.Errorf("status.target.operatorRevision is %+v at Ready, want the build version %s and a digest", target, version)
+			}
 			until(ctx, t, time.Minute, "status.kubernetes.version is spec.version", func(ctx context.Context) error {
 				if err := k8s.Get(ctx, key, cp); err != nil {
 					return err

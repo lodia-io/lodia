@@ -112,15 +112,18 @@ func Cache(gatewayAPI bool) (cache.Options, error) {
 }
 
 // Inputs are what Setup registers the controllers with: Config is what
-// LoadConfig returned, SignerImage is lodia-signer's, which runs beside each
-// API server, TunnelImage lodia-tunnel's, which runs on each node of a gateway
-// tenant, EtcdDruidNamespace etcd-druid's and OperatorNamespace the
+// LoadConfig returned, Version the operator's build version, SignerImage
+// lodia-signer's, which runs beside each API server, TunnelImage
+// lodia-tunnel's, which runs on each node of a gateway tenant,
+// EtcdDruidVersion and EtcdDruidNamespace etcd-druid's, OperatorNamespace the
 // operator's, which each etcd's NetworkPolicy admits, and GatewayAPI what
 // GatewayAPI found.
 type Inputs struct {
 	Config             Config
+	Version            string
 	SignerImage        string
 	TunnelImage        string
+	EtcdDruidVersion   string
 	EtcdDruidNamespace string
 	OperatorNamespace  string
 	GatewayAPI         bool
@@ -128,6 +131,10 @@ type Inputs struct {
 
 // Setup registers every controller with the manager.
 func Setup(mgr ctrl.Manager, in Inputs) error {
+	revision, err := in.Revision()
+	if err != nil {
+		return err
+	}
 	if err := (&pki.Reconciler{
 		Client:              mgr.GetClient(),
 		Reader:              mgr.GetAPIReader(),
@@ -152,7 +159,7 @@ func Setup(mgr ctrl.Manager, in Inputs) error {
 	if err := (&datastore.BackupReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdClient: dialEtcd, Clock: clock.RealClock{}}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the backup reconciler: %w", err)
 	}
-	if err := (&lifecycle.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Clock: clock.RealClock{}}).SetupWithManager(mgr, workers); err != nil {
+	if err := (&lifecycle.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Clock: clock.RealClock{}, Revision: revision}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the lifecycle controller: %w", err)
 	}
 	if err := (&tenant.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), ApplyPeriod: 10 * time.Minute, TunnelImage: in.TunnelImage}).SetupWithManager(mgr, workers); err != nil {

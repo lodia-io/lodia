@@ -8,6 +8,7 @@ The chart is built; the release workflow that builds, signs, attests and publish
 **Build and publish**
 
 - Images are built with `ko` for `linux/amd64` and `linux/arm64` on `gcr.io/distroless/static:nonroot`, pinned by digest; `ko` attaches an SPDX SBOM to every image ([ko SBOMs](https://ko.build/features/sboms/), [multi-platform](https://ko.build/features/multi-platform/)).
+  The release workflow sets `VERSION`, the operator's build version, to the release tag ([configuration.md](https://github.com/google/ko/blob/v0.19.1/docs/configuration.md#L80-L89)).
 - Images and the chart are signed with cosign keyless signing from the release workflow's GitHub OIDC identity, and carry build provenance through GitHub artifact attestations ([cosign](https://docs.sigstore.dev/cosign/signing/overview/), [artifact attestations](https://docs.github.com/en/actions/concepts/security/artifact-attestations)).
 - The Helm chart is published to `oci://ghcr.io/lodia-io/charts/lodia` next to the images, and references images by digest.
   The CRDs are templates in the chart, installed and upgraded with it and kept on uninstall ([values](../README.md#installation)), the pattern cert-manager uses because Helm's `crds/` directory is never upgraded ([Helm CRD best practices](https://helm.sh/docs/chart_best_practices/custom_resource_definitions/), [cert-manager chart](https://cert-manager.io/docs/installation/helm/)).

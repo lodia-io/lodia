@@ -467,10 +467,11 @@ Prerequisites on the management cluster:
 | a metrics stack | optional: the chart's monitoring, from phase 2's wave 2 ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)) |
 
 The chart is [`charts/lodia`](../charts/lodia).
-The release workflow that publishes it to `oci://ghcr.io/lodia-io/charts/lodia` with the images is not built yet ([releases-and-support](decisions/releases-and-support.md)); until it is, build the images with ko and install from a checkout, into `lodia-system` or any namespace:
+The release workflow that publishes it to `oci://ghcr.io/lodia-io/charts/lodia` with the images is not built yet ([releases-and-support](decisions/releases-and-support.md)); until it is, build the images with ko and install from a checkout, into `lodia-system` or any namespace.
+`VERSION` is the operator's build version, which `.ko.yaml` passes to `cmd/lodia`; ko fails a build of it without `VERSION` ([applyTemplating](https://github.com/google/ko/blob/v0.19.1/pkg/build/gobuild.go#L936-L944)), and the operator refuses to start with an empty one.
 
 ```sh
-KO_DOCKER_REPO=<registry> go run github.com/google/ko@v0.19.1 build \
+VERSION="$(git describe --tags --always --dirty)" KO_DOCKER_REPO=<registry> go run github.com/google/ko@v0.19.1 build \
   --base-import-paths --platform=linux/amd64,linux/arm64 ./cmd/lodia ./cmd/lodia-signer ./cmd/lodia-tunnel
 helm dependency build charts/lodia
 helm install lodia charts/lodia -n lodia-system --create-namespace \
@@ -482,8 +483,9 @@ helm install lodia charts/lodia -n lodia-system --create-namespace \
 The chart installs:
 
 - the CRDs, as templates of the ones `make generate` writes, so they upgrade with the chart: `crds.enabled` (default `true`) leaves them out for those who manage CRDs themselves, and `crds.keep` (default `true`) keeps them on uninstall with `helm.sh/resource-policy: keep`;
-- etcd-druid v0.39.0 as a dependency, the chart etcd-druid's release workflow publishes to `oci://europe-docker.pkg.dev/gardener-project/releases/charts/gardener/etcd-druid` ([base.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/.github/workflows/base.yaml#L60-L84)), with `enableEtcdSpecAutoReconcile` on until phase 2's wave 2 turns it off ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)); `etcdDruid.enabled=false` skips it where etcd-druid is already installed, and `etcdDruidNamespace` then names the namespace it runs in.
+- etcd-druid v0.39.0 as a dependency, the chart etcd-druid's release workflow publishes to `oci://europe-docker.pkg.dev/gardener-project/releases/charts/gardener/etcd-druid` ([base.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/.github/workflows/base.yaml#L60-L84)), with `enableEtcdSpecAutoReconcile` on until phase 2's wave 2 turns it off ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)); `etcdDruid.enabled=false` skips it where etcd-druid is already installed, and `etcdDruidNamespace` and `etcdDruidVersion` then name the namespace it runs in and the version it runs.
   The operator gets etcd-druid's namespace, the release's or that one, as `--etcd-druid-namespace`, and its own as `--operator-namespace`, for each etcd's NetworkPolicy ([A tenant namespace](#a-tenant-namespace)).
+  It gets etcd-druid's version, `etcdDruid.image.tag` or `etcdDruidVersion`, as `--etcd-druid-version`, one of the inputs of the operator revision ([upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md)).
   etcd-druid's CRDs are in its chart's `crds/` directory, which Helm applies only when it installs a release, skipping a CRD that exists, and never on an upgrade ([install.go](https://github.com/helm/helm/blob/v4.3.1/pkg/action/install.go#L206-L218), [install.go](https://github.com/helm/helm/blob/v4.3.1/pkg/action/install.go#L329-L338));
 - the operator: two replicas with leader election on the Lease `lodia.io` in the release namespace, spread across nodes by hostname, at `system-cluster-critical` priority, with a securityContext that passes Pod Security `restricted` (the release namespace cannot enforce it while `etcdDruid.enabled`: etcd-druid's pod sets only `allowPrivilegeEscalation: false`, [deployment.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/charts/templates/deployment.yaml#L112-L113)), liveness and readiness probes on port 8081, the metrics endpoint on 8443 behind controller-runtime's authentication and authorization filter, and a PodDisruptionBudget with `maxUnavailable: 1` and `unhealthyPodEvictionPolicy: AlwaysAllow`;
 - its configuration: the ConfigMap `<release>-config` renders the `health` values, with the keys and defaults of the table below, as `config.yaml`; the operator mounts it at `/etc/lodia` and reads it as `--config`, and a `checksum/config` annotation on its pods rolls it when a value changes;

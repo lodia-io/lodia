@@ -236,7 +236,7 @@ func run(t *testing.T, cfg *rest.Config, gatewayAPI bool) (client.Client, <-chan
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := operator.Setup(mgr, operator.Inputs{Config: operator.DefaultConfig(), SignerImage: "registry.example/lodia-signer:test", TunnelImage: "registry.example/lodia-tunnel:test", EtcdDruidNamespace: "etcd-druid", OperatorNamespace: "lodia-system", GatewayAPI: gatewayAPI}); err != nil {
+	if err := operator.Setup(mgr, operator.Inputs{Config: operator.DefaultConfig(), Version: "v0.0.0-test", SignerImage: "registry.example/lodia-signer:test", TunnelImage: "registry.example/lodia-tunnel:test", EtcdDruidVersion: "v0.39.0", EtcdDruidNamespace: "etcd-druid", OperatorNamespace: "lodia-system", GatewayAPI: gatewayAPI}); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -295,6 +295,9 @@ func expectAPass(t *testing.T, k8s client.Client, stopped <-chan struct{}, reaso
 			if c := meta.FindStatusCondition(cp.Status.Conditions, conditionType); c == nil || c.Status != metav1.ConditionFalse || c.Reason != reason || c.Message != message {
 				last = errors.Join(last, fmt.Errorf("%s is %+v, want False %s %q", conditionType, c, reason, message))
 			}
+		}
+		if cp.Status.Target == nil || !strings.HasPrefix(cp.Status.Target.OperatorRevision, "v0.0.0-test+") {
+			last = errors.Join(last, fmt.Errorf("status.target is %+v, want the operator revision of the Inputs", cp.Status.Target))
 		}
 		return last == nil, nil
 	}); err != nil {

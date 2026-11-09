@@ -1,8 +1,8 @@
 # Upgrades follow the version skew policy step by step; changes Lodia initiates roll in each tenant's maintenance window, a bounded number of tenants at a time
 
 Decided 2026-10-25.
-Built: the steps of a minor upgrade below, Lifecycle driving them.
-Not built yet: the operator revision, windows, the fleet and patch updates, which phase 2's wave 2 builds next ([roadmap](../roadmap.md)); until then every renderer renders with the running operator at once.
+Built: the steps of a minor upgrade below, Lifecycle driving them, and the operator revision, which Lifecycle writes to `status.target.operatorRevision`, the running one, on every pass.
+Not built yet: the stamp and the hold on the revision, windows, the fleet and patch updates, which phase 2's wave 2 builds next ([roadmap](../roadmap.md)); until then every renderer renders with the running operator at once.
 
 ## Decision
 
@@ -45,10 +45,14 @@ A forced upgrade at the end of support, as Gardener forces the next minor of an 
 
 **The operator revision.**
 An operator release renders differently, and so does an operator with another configuration.
-`operatorRevision` is the operator's build version and a digest of what it renders from: the version table, the registry, the default resources, the images of `lodia-signer` and `lodia-tunnel`, and etcd-druid's version.
+`operatorRevision` is `<build version>+<digest>`.
+The build version covers what is fixed at build: the version table, the registry and the default resources.
+The digest covers what a render reads at run time: the images of `lodia-signer` and `lodia-tunnel`, etcd-druid's version, and the namespaces of etcd-druid and of the operator, which each etcd's NetworkPolicy renders.
+The configuration's `versions` and `registry` keys join the digest when something reads them ([operator configuration](../README.md#installation)).
 Revisions are compared for equality only, so a rollback of the operator is one more revision.
 Workloads, Tenant and the Datastore controller render with the running revision only while `status.target.operatorRevision` equals it ([what they hold until then](../api/controlplane.md#status)).
-Each stamps the revision on the objects it renders, in the annotation `lodia.io/operator-revision`, never in a pod template, so a revision that changes nothing rolls nothing.
+Workloads stamps the revision on its Deployments and the Datastore controller on the `Etcd`, in the annotation `lodia.io/operator-revision`, never in a pod template, so a revision that changes nothing rolls nothing.
+Tenant stamps nothing: `status.addons.operatorRevision` is the revision of a pass that applied in full.
 etcd-druid's automatic spec reconcile is off, and the Datastore controller asks for each reconcile ([dedicated-etcd-by-default](dedicated-etcd-by-default.md)).
 Lifecycle grants the running revision when a `ControlPlane` is created, when its spec changes, during an upgrade its owner started, and otherwise in the window, with a free slot of the fleet, while the tenant is `Ready`.
 A hand edit is not reverted while a tenant waits; storing the last render, as Gardener's ManagedResources do, stays a later option with the same contracts.
@@ -114,7 +118,8 @@ Lodia never removes the annotation, so a GitOps tool that keeps it does not figh
 ## Code
 
 - `api/v1alpha1` — `Target`, `KubernetesStatus` with `UpgradeStep`, `ComponentStatus` and `Rendered`, `MaintenanceStatus`, the window's rule, the annotations `lodia.io/operator-revision` and `lodia.io/maintain-requested-at`, `PreUpgradeBackupName` and the reasons of `Progressing`; `test/api` holds the rules.
-- `internal/controller/lifecycle` — `decide` holds the steps above; the reconciler gathers its facts, the `ControlPlane` and the `Backup` of the minor step, decides on the cached object, and on a change decides again on the object read live before it writes.
+- `cmd/lodia`, `.ko.yaml`, `internal/operator` — the build version, set by ko from `VERSION` (every build of `cmd/lodia` sets it), and `Inputs.Revision`, which adds the digest; the operator refuses to start on an empty version or a revision longer than the field's 128 characters.
+- `internal/controller/lifecycle` — `decide` holds the steps above and writes the running revision on every pass but a paused or deleting one's, which keep the stored one; the reconciler gathers its facts, the `ControlPlane` and the `Backup` of the minor step, decides on the cached object, and on a change decides again on the object read live before it writes.
 - `internal/controller/workloads` — `status.components.*.version`, the tag of each component's own image once every replica runs it, and the controller manager and the scheduler rendered at `components.apiServer.version`.
 - `internal/controller/tenant` — the render at the oldest component's version, and `status.addons.version`, the version of the render of a pass that applied it in full.
 - `internal/versions` — `Oldest`, `Latest`, `Next` and `MinorsAhead`, the version arithmetic of a step.

@@ -37,8 +37,10 @@ spec:
             - --signer-image={{ include "lodia.image" (dict "image" .Values.signerImage "appVersion" .Chart.AppVersion) }}
             - --tunnel-image={{ include "lodia.image" (dict "image" .Values.tunnelImage "appVersion" .Chart.AppVersion) }}
             {{- if .Values.etcdDruid.enabled }}
+            - --etcd-druid-version={{ .Values.etcdDruid.image.tag }}
             - --etcd-druid-namespace={{ .Release.Namespace }}
             {{- else }}
+            - --etcd-druid-version={{ required "etcdDruidVersion must name the version etcd-druid runs while etcdDruid.enabled is false" .Values.etcdDruidVersion }}
             - --etcd-druid-namespace={{ required "etcdDruidNamespace must name the namespace etcd-druid runs in while etcdDruid.enabled is false" .Values.etcdDruidNamespace }}
             {{- end }}
             - --operator-namespace={{ .Release.Namespace }}

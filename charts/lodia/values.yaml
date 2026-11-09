@@ -27,6 +27,7 @@ etcdDruid:
         enableEtcdSpecAutoReconcile: true
 
 etcdDruidNamespace: ""
+etcdDruidVersion: ""
 
 health:
   period: 5s
