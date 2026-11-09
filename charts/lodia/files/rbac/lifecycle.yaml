@@ -9,6 +9,7 @@ rules:
   resources:
   - controlplanes
   verbs:
+  - get
   - list
   - watch
 - apiGroups:

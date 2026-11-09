@@ -90,7 +90,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		stop("manager", err)
 	}
-	if err := (&lifecycle.Reconciler{Client: mgr.GetClient()}).SetupWithManager(mgr, 1); err != nil {
+	if err := (&lifecycle.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader()}).SetupWithManager(mgr, 1); err != nil {
 		stop("controller", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -650,7 +650,7 @@ func expectNoWrite(t *testing.T, cp *lodiav1alpha1.ControlPlane, conditionType, 
 			return c.SubResource(subResource).Apply(ctx, obj, opts...)
 		},
 	})
-	if _, err := (&lifecycle.Reconciler{Client: counting}).Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+	if _, err := (&lifecycle.Reconciler{Client: counting, Reader: k8s}).Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 		t.Fatal(err)
 	}
 	if after := get(t, cp).ResourceVersion; applies > 0 || after != settled {

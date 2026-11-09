@@ -11,15 +11,15 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/statusapply"
 	"go.lodia.io/lodia/internal/versions"
 )
 
@@ -49,6 +49,8 @@ func readiness(cp *lodiav1alpha1.ControlPlane) []string {
 
 type Reconciler struct {
 	client.Client
+	// Reader reads the ControlPlane as the API server holds it, before a write.
+	Reader client.Reader
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
@@ -59,13 +61,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 		Complete(r)
 }
 
-type owned struct {
-	progressing, ready *metav1.Condition
-	target             lodiav1alpha1.Target
-	observedGeneration int64
-}
-
-// +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=list;watch
+// +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/status,verbs=patch
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -73,27 +69,45 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.Get(ctx, req.NamespacedName, cp); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	next := owned{
-		progressing:        meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionProgressing),
-		ready:              meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionReady),
-		observedGeneration: cp.Status.ObservedGeneration,
-	}
+	next := desired(cp)
+	changed := next.ObservedGeneration != cp.Status.ObservedGeneration || !equality.Semantic.DeepEqual(next.Target, cp.Status.Target)
+	return ctrl.Result{}, statusapply.Apply(ctx, r.Client, r.Reader, FieldManager, cp, next, changed)
+}
+
+// desired holds every status field Lifecycle owns and no other: an apply that
+// leaves one out removes it.
+func desired(cp *lodiav1alpha1.ControlPlane) lodiav1alpha1.ControlPlaneStatus {
+	progressing := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionProgressing)
+	readyNow := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionReady)
+	observedGeneration := cp.Status.ObservedGeneration
+	version := ""
 	if cp.Status.Target != nil {
-		next.target = lodiav1alpha1.Target{Version: cp.Status.Target.Version}
+		version = cp.Status.Target.Version
 	}
 	switch {
 	case !cp.DeletionTimestamp.IsZero():
-		next.ready = newCondition(cp, lodiav1alpha1.ConditionReady, metav1.ConditionFalse, lodiav1alpha1.ReasonDeleting, "the ControlPlane is being deleted")
+		readyNow = newCondition(cp, lodiav1alpha1.ConditionReady, metav1.ConditionFalse, lodiav1alpha1.ReasonDeleting, "the ControlPlane is being deleted")
 	case cp.Spec.Paused:
-		next.progressing = newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonPaused, "spec.paused is true: Lodia reconciles nothing")
+		progressing = newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonPaused, "spec.paused is true: Lodia reconciles nothing")
 	default:
-		next.target, next.progressing = target(cp, next.target.Version)
-		next.ready = ready(cp)
+		var next lodiav1alpha1.Target
+		next, progressing = target(cp, version)
+		version = next.Version
+		readyNow = ready(cp)
 		if observed(cp) {
-			next.observedGeneration = cp.Generation
+			observedGeneration = cp.Generation
 		}
 	}
-	return ctrl.Result{}, r.apply(ctx, cp, next)
+	status := lodiav1alpha1.ControlPlaneStatus{ObservedGeneration: observedGeneration}
+	if version != "" {
+		status.Target = &lodiav1alpha1.Target{Version: version}
+	}
+	for _, c := range []*metav1.Condition{progressing, readyNow} {
+		if c != nil {
+			status.Conditions = append(status.Conditions, *c)
+		}
+	}
+	return status
 }
 
 // target moves within a minor only: a minor upgrade needs the documented
@@ -216,52 +230,4 @@ func observed(cp *lodiav1alpha1.ControlPlane) bool {
 
 func newCondition(cp *lodiav1alpha1.ControlPlane, conditionType string, status metav1.ConditionStatus, reason, message string) *metav1.Condition {
 	return &metav1.Condition{Type: conditionType, Status: status, Reason: reason, Message: message, ObservedGeneration: cp.Generation}
-}
-
-// apply writes only on a change, and always every field Lifecycle owns: an
-// apply that leaves one out removes it.
-func (r *Reconciler) apply(ctx context.Context, cp *lodiav1alpha1.ControlPlane, next owned) error {
-	previousTarget := lodiav1alpha1.Target{}
-	if cp.Status.Target != nil {
-		previousTarget = lodiav1alpha1.Target{Version: cp.Status.Target.Version}
-	}
-	changed := next.target != previousTarget || next.observedGeneration != cp.Status.ObservedGeneration
-	conditions := slices.Clone(cp.Status.Conditions)
-	var applied []any
-	for _, c := range []*metav1.Condition{next.progressing, next.ready} {
-		if c == nil {
-			continue
-		}
-		if previous := meta.FindStatusCondition(cp.Status.Conditions, c.Type); previous == nil || previous.Status != c.Status ||
-			previous.Reason != c.Reason || previous.Message != c.Message || previous.ObservedGeneration != c.ObservedGeneration {
-			changed = true
-		}
-		meta.SetStatusCondition(&conditions, *c)
-		u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(meta.FindStatusCondition(conditions, c.Type))
-		if err != nil {
-			return err
-		}
-		applied = append(applied, u)
-	}
-	if !changed {
-		return nil
-	}
-	fields := map[string]any{"conditions": applied}
-	target := map[string]any{}
-	if next.target.Version != "" {
-		target["version"] = next.target.Version
-	}
-	if len(target) > 0 {
-		fields["target"] = target
-	}
-	if next.observedGeneration > 0 {
-		fields["observedGeneration"] = next.observedGeneration
-	}
-	u := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": lodiav1alpha1.GroupVersion.String(),
-		"kind":       "ControlPlane",
-		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
-		"status":     fields,
-	}}
-	return r.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(u), client.FieldOwner(FieldManager), client.ForceOwnership)
 }
