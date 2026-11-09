@@ -127,8 +127,13 @@ func (f facts) versionChange() change {
 		c.target = want
 		return c
 	}
-	ahead, _ := versions.MinorsAhead(c.target, want)
+	ahead, ok := versions.MinorsAhead(c.target, want)
 	switch {
+	// CEL keeps spec's minor from decreasing, so this is a hand-edited status,
+	// and a minor is never rolled back.
+	case !ok || ahead < 0:
+		c.unsupported = fmt.Sprintf("spec.version %s is an older minor than the target %s, which stays", want, c.target)
+		c.settle(cp)
 	case ahead > 0:
 		f.minorStep(&c)
 	case want != c.target:
