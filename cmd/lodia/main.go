@@ -88,7 +88,7 @@ func main() {
 		log.Error(err, "create the manager")
 		os.Exit(1)
 	}
-	if err := operator.Setup(mgr, config, signerImage, tunnelImage, etcdDruidNamespace, operatorNamespace, gatewayAPI); err != nil {
+	if err := operator.Setup(mgr, operator.Inputs{Config: config, SignerImage: signerImage, TunnelImage: tunnelImage, EtcdDruidNamespace: etcdDruidNamespace, OperatorNamespace: operatorNamespace, GatewayAPI: gatewayAPI}); err != nil {
 		log.Error(err, "set up the controllers")
 		os.Exit(1)
 	}
