@@ -33,7 +33,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/config"
-	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
@@ -56,35 +55,24 @@ func TestMain(m *testing.M) {
 	testenv.SkipUnlessAvailable("the health controller tests")
 	env := testenv.Start(testenv.Options{})
 	k8s = env.Client
-	tenantEnv := &envtest.Environment{UseExistingCluster: new(false)}
-	stop := func(what string, err error) {
-		_ = tenantEnv.Stop()
-		env.Fatal(what, err)
-	}
-	tenantCfg, err := tenantEnv.Start()
-	if err != nil {
-		stop("start the tenant's envtest", err)
-	}
+	tenantCfg := env.StartSecond()
+	var err error
 	if tenant, err = client.New(tenantCfg, client.Options{Scheme: env.Scheme}); err != nil {
-		stop("tenant client", err)
+		env.Fatal("tenant client", err)
 	}
 	if tenantKubeconfig, err = kubeconfigOf(tenantCfg.Host, tenantCfg); err != nil {
-		stop("tenant kubeconfig", err)
+		env.Fatal("tenant kubeconfig", err)
 	}
 	healthRole = env.AsController("health")
 	mgr, err := newManager(env.Scheme, false)
 	if err != nil {
-		stop("manager", err)
+		env.Fatal("manager", err)
 	}
 	if err := (&health.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: 2 * time.Second, Clock: clock.RealClock{}}).SetupWithManager(mgr, 1); err != nil {
-		stop("controller", err)
+		env.Fatal("controller", err)
 	}
 	env.StartManager(mgr)
-	code := env.Finish(m.Run())
-	if err := tenantEnv.Stop(); err != nil {
-		fmt.Fprintln(os.Stderr, "stop the tenant's envtest:", err)
-	}
-	os.Exit(code)
+	os.Exit(env.Finish(m.Run()))
 }
 
 func newManager(scheme *runtime.Scheme, skipNameValidation bool, namespaces ...string) (ctrl.Manager, error) {

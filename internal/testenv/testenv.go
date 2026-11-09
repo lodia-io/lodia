@@ -11,6 +11,7 @@ package testenv
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -94,6 +95,7 @@ type Env struct {
 	Client client.WithWatch
 
 	env     *envtest.Environment
+	second  *envtest.Environment
 	cfg     *rest.Config
 	root    string
 	cancel  context.CancelFunc
@@ -128,13 +130,32 @@ func Start(opts Options) *Env {
 	return e
 }
 
-// Fatal stops the manager and the API server, if started, and exits 1.
+// StartSecond starts another API server beside this one, for a suite whose
+// tenant needs its own; Fatal and Finish stop it too.
+func (e *Env) StartSecond() *rest.Config {
+	e.second = &envtest.Environment{UseExistingCluster: new(false)}
+	cfg, err := e.second.Start()
+	if err != nil {
+		e.Fatal("start the second envtest", err)
+	}
+	return cfg
+}
+
+// Fatal stops the manager and the API servers, if started, and exits 1.
 func (e *Env) Fatal(what string, err error) {
 	if e.cancel != nil {
 		e.cancel()
 	}
-	_ = e.env.Stop()
+	_ = e.stopServers()
 	exit(what, err)
+}
+
+func (e *Env) stopServers() error {
+	var second error
+	if e.second != nil {
+		second = e.second.Stop()
+	}
+	return errors.Join(second, e.env.Stop())
 }
 
 // AsController returns a configuration that acts as the user lodia-<name>,
@@ -213,7 +234,7 @@ func (e *Env) StartManager(mgr ctrl.Manager) context.Context {
 	return ctx
 }
 
-// Finish stops the manager, if started, and the API server, and returns code
+// Finish stops the manager, if started, and the API servers, and returns code
 // as the exit code unless the manager failed.
 func (e *Env) Finish(code int) int {
 	if e.cancel != nil {
@@ -223,7 +244,7 @@ func (e *Env) Finish(code int) int {
 			code = 1
 		}
 	}
-	if err := e.env.Stop(); err != nil {
+	if err := e.stopServers(); err != nil {
 		fmt.Fprintln(os.Stderr, "stop envtest:", err)
 	}
 	return code
