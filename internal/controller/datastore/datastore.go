@@ -134,6 +134,7 @@ func (r *Reconciler) controlPlanesUsing(ctx context.Context, class client.Object
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/finalizers,verbs=update
 // +kubebuilder:rbac:groups=lodia.io,resources=datastoreclasses,verbs=list;watch
 // +kubebuilder:rbac:groups=druid.gardener.cloud,resources=etcds,verbs=get;list;watch;create;patch;delete
+// delete on secrets and networkpolicies serves no call: OwnerReferencesPermissionEnforcement refuses the ownerRef of an adoption on what the controller cannot delete.
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=list;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get
