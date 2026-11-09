@@ -5,14 +5,18 @@ package workloads_test
 
 import (
 	"context"
+	"encoding/json"
 	"maps"
 	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
@@ -149,5 +153,83 @@ func TestAStaleReportInTheCacheDoesNotRollTheControllerManagerBack(t *testing.T)
 	}
 	if got := reported(get(t, cp).Status.Components); got != "v1.37.2 v1.37.1 v1.37.1" {
 		t.Errorf("a pass on a cache older than the API server leaves the versions %s, want v1.37.2 v1.37.1 v1.37.1", got)
+	}
+}
+
+func TestAWriteThatFailsAfterTheAPIServerLeavesTheControllerManagerAtTheReport(t *testing.T) {
+	cp := highlyAvailable(t)
+	for _, component := range componentNames {
+		markAvailable(t, eventuallyDeployment(t, cp, component))
+	}
+	expectVersions(t, cp, "v1.37.1 v1.37.1 v1.37.1")
+	pause(t, cp)
+	setTargetVersion(t, cp, "v1.37.2")
+
+	injected := apierrors.NewServiceUnavailable("injected")
+	failing := interceptor.NewClient(unpaused(), interceptor.Funcs{
+		Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+			raw, err := json.Marshal(obj)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var applied metav1.PartialObjectMetadata
+			if err := json.Unmarshal(raw, &applied); err != nil {
+				t.Fatal(err)
+			}
+			if applied.Kind == "Deployment" && applied.Name == "dev-kube-controller-manager" {
+				return injected
+			}
+			return c.Apply(ctx, obj, opts...)
+		},
+	})
+	r := &workloads.Reconciler{Client: failing, Reader: k8s, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apierrors.IsServiceUnavailable(err) {
+		t.Fatalf("the pass returned %v, want the injected error", err)
+	}
+	if err := imagesAt(t, cp, "v1.37.2", []string{"kube-apiserver"}); err != nil {
+		t.Errorf("after the failed pass: %v", err)
+	}
+	if err := imagesAt(t, cp, "v1.37.1", []string{"kube-controller-manager", "kube-scheduler"}); err != nil {
+		t.Errorf("after the failed pass: %v", err)
+	}
+
+	reconcileThrough(t, cp, unpaused())
+	if err := imagesAt(t, cp, "v1.37.2", []string{"kube-apiserver"}); err != nil {
+		t.Errorf("after the pass that follows: %v", err)
+	}
+	if err := imagesAt(t, cp, "v1.37.1", []string{"kube-controller-manager", "kube-scheduler"}); err != nil {
+		t.Errorf("after the pass that follows: %v", err)
+	}
+}
+
+func TestAControllerManagerAheadOfTheAPIServersReportIsRenderedBackToIt(t *testing.T) {
+	cp := highlyAvailable(t)
+	for _, component := range componentNames {
+		markAvailable(t, eventuallyDeployment(t, cp, component))
+	}
+	expectVersions(t, cp, "v1.37.1 v1.37.1 v1.37.1")
+	pause(t, cp)
+	setTargetVersion(t, cp, "v1.37.2")
+	for _, component := range []string{"kube-controller-manager", "kube-scheduler"} {
+		d := deployment(t, cp, component)
+		for i := range d.Spec.Template.Spec.Containers {
+			if c := &d.Spec.Template.Spec.Containers[i]; c.Name == component {
+				c.Image = strings.Replace(c.Image, ":v1.37.1", ":v1.37.2", 1)
+			}
+		}
+		if err := k8s.Update(t.Context(), d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := imagesAt(t, cp, "v1.37.2", []string{"kube-controller-manager", "kube-scheduler"}); err != nil {
+		t.Fatalf("the leftover of a render at the target: %v", err)
+	}
+
+	reconcileThrough(t, cp, unpaused())
+	if err := imagesAt(t, cp, "v1.37.1", []string{"kube-controller-manager", "kube-scheduler"}); err != nil {
+		t.Error(err)
+	}
+	if err := imagesAt(t, cp, "v1.37.2", []string{"kube-apiserver"}); err != nil {
+		t.Error(err)
 	}
 }
