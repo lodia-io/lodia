@@ -39,6 +39,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/utils/clock"
+	clocktesting "k8s.io/utils/clock/testing"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -821,6 +822,20 @@ func replaceSecret(t *testing.T, s *corev1.Secret, content map[string][]byte) {
 	}
 	if err := k8s.Create(t.Context(), fresh); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAConditionsTransitionIsThePasssClock(t *testing.T) {
+	start := time.Now().Add(-10 * time.Minute).Truncate(time.Second)
+	r := longLived()
+	r.Clock = clocktesting.NewFakePassiveClock(start)
+	cp := controlPlane(t, "pki-transition-clock")
+	reconcileOnce(t, r, cp)
+	for _, conditionType := range []string{lodiav1alpha1.ConditionCertificatesReady, lodiav1alpha1.ConditionCAValidityAcceptable, lodiav1alpha1.ConditionAccessReady} {
+		c := meta.FindStatusCondition(freshControlPlane(t, cp).Status.Conditions, conditionType)
+		if c == nil || !c.LastTransitionTime.Time.Equal(start) {
+			t.Errorf("%s is %+v, want lastTransitionTime %s", conditionType, c, start)
+		}
 	}
 }
 
