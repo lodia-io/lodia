@@ -179,12 +179,14 @@ func staleClient(behind *lodiav1alpha1.ControlPlane, applies *int) client.WithWa
 
 func TestAStaleCacheCannotUndoLifecyclesOwnWrite(t *testing.T) {
 	for _, c := range []struct {
-		name   string
-		seed   func(cp *lodiav1alpha1.ControlPlane)
-		behind func(cp *lodiav1alpha1.ControlPlane)
+		name    string
+		seed    func(cp *lodiav1alpha1.ControlPlane)
+		behind  func(cp *lodiav1alpha1.ControlPlane)
+		backups int
 	}{
 		{
-			name: "the target and step already moved by a Backup that completed",
+			name:    "the target and step already moved by a Backup that completed",
+			backups: 1,
 			seed: func(cp *lodiav1alpha1.ControlPlane) {
 				seedQuiet(t, cp, "v1.37.1", lodiav1alpha1.UpgradeStepAPIServer, all("v1.36.6"), "")
 				createBackup(t, cp, preUpgrade(cp), metav1.ConditionTrue, lodiav1alpha1.ReasonCompleted)
@@ -195,7 +197,8 @@ func TestAStaleCacheCannotUndoLifecyclesOwnWrite(t *testing.T) {
 			},
 		},
 		{
-			name: "an upgrade the cache has not seen keeps its startedAt",
+			name:    "an upgrade the cache has not seen keeps its startedAt",
+			backups: 1,
 			seed: func(cp *lodiav1alpha1.ControlPlane) {
 				seedQuiet(t, cp, "v1.36.6", lodiav1alpha1.UpgradeStepBackup, all("v1.36.6"), "")
 				createBackup(t, cp, preUpgrade(cp), metav1.ConditionUnknown, lodiav1alpha1.ReasonCopying)
@@ -228,7 +231,33 @@ func TestAStaleCacheCannotUndoLifecyclesOwnWrite(t *testing.T) {
 			if applies != 0 || after.ResourceVersion != settled.ResourceVersion {
 				t.Errorf("a pass on a stale cache applied %d times, resourceVersion %s then %s", applies, settled.ResourceVersion, after.ResourceVersion)
 			}
+			list := &lodiav1alpha1.BackupList{}
+			if err := quiet.List(t.Context(), list, client.InNamespace(cp.Namespace)); err != nil {
+				t.Fatal(err)
+			}
+			if len(list.Items) != c.backups {
+				t.Errorf("%d Backups after a pass on a stale cache, want %d", len(list.Items), c.backups)
+			}
 		})
+	}
+}
+
+func TestTheLiveDecisionReadsTheBackupOfItsOwnMinor(t *testing.T) {
+	cp := quietControlPlane(t)
+	seedQuiet(t, cp, "v1.36.6", lodiav1alpha1.UpgradeStepBackup, all("v1.36.6"), "")
+	createBackup(t, cp, lodiav1alpha1.PreUpgradeBackupName(cp.Name, "1.36", cp.UID), metav1.ConditionTrue, lodiav1alpha1.ReasonCompleted)
+	behind := getQuiet(t, cp)
+	behind.Status.Target.Version = "v1.35.10"
+	applies := 0
+	if err := reconcileQuiet(t, staleClient(behind, &applies), quiet, later, cp); err != nil {
+		t.Fatal(err)
+	}
+	fresh := getQuiet(t, cp)
+	if fresh.Status.Target.Version != "v1.36.6" || fresh.Status.Kubernetes.Upgrade.Step != lodiav1alpha1.UpgradeStepBackup {
+		t.Errorf("target %s, upgrade %+v: the Backup of the cached minor moved the live one", fresh.Status.Target.Version, fresh.Status.Kubernetes.Upgrade)
+	}
+	if err := quiet.Get(t.Context(), client.ObjectKey{Namespace: cp.Namespace, Name: preUpgrade(cp)}, &lodiav1alpha1.Backup{}); err != nil {
+		t.Errorf("the Backup of the live minor: %v", err)
 	}
 }
 

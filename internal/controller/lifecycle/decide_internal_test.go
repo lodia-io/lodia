@@ -179,12 +179,23 @@ func check(t *testing.T, f facts, w want) {
 	if c == nil || c.Reason != w.reason {
 		t.Fatalf("Progressing is %+v, want %s", c, w.reason)
 	}
+	if status := progressingStatus(w.reason); c.Status != status {
+		t.Errorf("Progressing is %s with reason %s, want %s", c.Status, c.Reason, status)
+	}
 	if w.message != "" && !strings.Contains(c.Message, w.message) {
 		t.Errorf("Progressing's message is %q, want it to say %q", c.Message, w.message)
 	}
 	if w.lacks != "" && strings.Contains(c.Message, w.lacks) {
 		t.Errorf("Progressing's message is %q, which must not say %q", c.Message, w.lacks)
 	}
+}
+
+func progressingStatus(reason string) metav1.ConditionStatus {
+	switch reason {
+	case lodiav1alpha1.ReasonUpgrading, lodiav1alpha1.ReasonRollingOut, lodiav1alpha1.ReasonLatestGenerationNotObserved:
+		return metav1.ConditionTrue
+	}
+	return metav1.ConditionFalse
 }
 
 var startedNow = &now
@@ -248,6 +259,10 @@ func TestDecide(t *testing.T) {
 			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonUnsupported, step: lodiav1alpha1.UpgradeStepBackup, since: t0, version: "v1.36.6"}},
 		{"an edit to an unsupported minor leaves the rollout under way to finish", world{spec: "v1.38.0", target: "v1.37.1", step: lodiav1alpha1.UpgradeStepScheduler, reports: at4("v1.37.1", "v1.37.1", "v1.36.6", "v1.36.6")},
 			want{target: "v1.37.1", reason: lodiav1alpha1.ReasonUnsupported, step: lodiav1alpha1.UpgradeStepScheduler, since: t0, version: "v1.36.6"}},
+		{"an edit to an unsupported minor still derives the step", world{spec: "v1.38.0", target: "v1.37.1", step: lodiav1alpha1.UpgradeStepAPIServer, reports: at4("v1.37.1", "v1.36.6", "v1.36.6", "v1.36.6")},
+			want{target: "v1.37.1", reason: lodiav1alpha1.ReasonUnsupported, step: lodiav1alpha1.UpgradeStepControllerManager, since: t0, version: "v1.36.6"}},
+		{"an edit to an unsupported minor drops upgrade once all four are at the target", world{spec: "v1.38.0", target: "v1.37.1", step: lodiav1alpha1.UpgradeStepAPIServer, reports: at("v1.37.1")},
+			want{target: "v1.37.1", reason: lodiav1alpha1.ReasonUnsupported, noUpgrade: true, version: "v1.37.1"}},
 		{"a later minor waits until all four parts are at the target", world{spec: "v1.37.1", target: "v1.36.2", reports: at4("v1.36.2", "v1.36.4", "v1.36.4", "v1.36.2")},
 			want{target: "v1.36.2", reason: lodiav1alpha1.ReasonRollingOut, noUpgrade: true, message: "minor step towards v1.37.1 waits until every part runs v1.36.2", version: "v1.36.2"}},
 		{"a tenant waiting only for reports reads RollingOut", world{spec: "v1.37.1", target: "v1.36.6", reports: at4("v1.36.6", "v1.36.6", "v1.36.6", ""), oldestKubelet: "v1.36.6"},
