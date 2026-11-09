@@ -106,6 +106,7 @@ func seedQuiet(t *testing.T, cp *lodiav1alpha1.ControlPlane, target string, step
 		"addons":     map[string]any{"version": reports[3]},
 		"conditions": quietConditions(cp),
 	}
+	status["nodes"] = map[string]any{"total": int64(0), "ready": int64(0)}
 	if oldestKubelet != "" {
 		status["nodes"] = map[string]any{"total": int64(1), "ready": int64(1), "oldestKubelet": oldestKubelet}
 	}
@@ -483,6 +484,7 @@ func TestAMinorStepFromEditToEndThroughTheManager(t *testing.T) {
 		setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
 	}
 	reportAll(t, cp, "v1.36.6")
+	applyStatus(t, cp, "test/nodes", map[string]any{"nodes": map[string]any{"total": int64(0), "ready": int64(0)}})
 	testenv.Eventually(t, func() error { return expect(t, cp, "v1.36.6", lodiav1alpha1.ReasonIdle) })
 
 	setVersion(t, cp, "v1.37.1")

@@ -197,8 +197,12 @@ func (f facts) minorStep(c *change) {
 		c.preflight = newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore,
 			fmt.Sprintf("the minor step to %s waits for DatastoreReady", next))
 		return
+	case cp.Status.Nodes == nil:
+		c.preflight = newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForNodes,
+			fmt.Sprintf("the minor step to %s waits: the nodes are not listed yet", next))
+		return
 	}
-	if kubelet := oldestKubelet(cp); kubelet != "" {
+	if kubelet := cp.Status.Nodes.OldestKubelet; kubelet != "" {
 		if behind, ok := versions.MinorsAhead(kubelet, nextMinor); ok && behind > maxKubeletSkew {
 			c.preflight = newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForNodes,
 				fmt.Sprintf("the oldest kubelet, %s, is more than %d minors older than %s: upgrade the nodes first", kubelet, maxKubeletSkew, nextMinor))
@@ -217,13 +221,6 @@ func (f facts) minorStep(c *change) {
 // maxKubeletSkew is the kubelet's skew the version skew policy allows
 // (https://kubernetes.io/releases/version-skew-policy/#kubelet).
 const maxKubeletSkew = 3
-
-func oldestKubelet(cp *lodiav1alpha1.ControlPlane) string {
-	if cp.Status.Nodes != nil {
-		return cp.Status.Nodes.OldestKubelet
-	}
-	return ""
-}
 
 func notInTable(minor string) string {
 	return fmt.Sprintf("the next minor, %s, is not one Lodia runs: %s", minor, strings.Join(versions.Minors(), ", "))
