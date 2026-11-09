@@ -367,6 +367,8 @@ flowchart LR
 
 ### Hibernation
 
+Phase 3; `spec.hibernation` is not in the API until then.
+
 ```mermaid
 stateDiagram-v2
   Awake --> FallingAsleep: schedule start, or hibernation.enabled

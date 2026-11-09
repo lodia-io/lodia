@@ -9,7 +9,7 @@ Five custom resources in `lodia.io/v1alpha1`:
 
 | kind | scope | one per | holds |
 |---|---|---|---|
-| `ControlPlane` | namespaced | tenant cluster | the whole desired state of a control plane: version, availability, datastore choice, endpoint, network, component settings, addons, maintenance, hibernation |
+| `ControlPlane` | namespaced | tenant cluster | the whole desired state of a control plane: version, availability, datastore choice, endpoint, network, component settings, addons, maintenance and, from phase 3, hibernation |
 | `DatastoreClass` | cluster | kind of dedicated etcd | the template a dedicated etcd is built from: members, storage, quota, backup store and schedules, defragmentation |
 | `Datastore` | cluster | shared etcd pool | endpoints and credentials of an etcd that several tenants share by key prefix |
 | `KubeconfigRequest` | namespaced | request | a short-lived kubeconfig for a person's own key, in its status; the request is deleted when it expires |

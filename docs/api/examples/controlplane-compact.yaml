@@ -21,6 +21,3 @@ spec:
   network:
     serviceCIDRs: [10.96.0.0/16]
     podCIDRs: [10.244.0.0/16]
-  hibernation:
-    schedules:
-      - {start: "0 20 * * *", end: "0 8 * * 1-5", timeZone: Europe/Kyiv}

@@ -669,40 +669,6 @@ spec:
                       most nodes cannot reach the API, so nothing evicts their pods.
                     type: boolean
                 type: object
-              hibernation:
-                description: Hibernation puts the control plane to sleep, keeping
-                  its data.
-                properties:
-                  enabled:
-                    description: Enabled overrides the schedules; unset, the schedules
-                      decide.
-                    type: boolean
-                  schedules:
-                    description: Schedules put the control plane to sleep at Start
-                      and wake it at End.
-                    items:
-                      description: HibernationSchedule is a pair of cron expressions.
-                      properties:
-                        end:
-                          description: End is a cron expression for waking up.
-                          maxLength: 64
-                          type: string
-                        start:
-                          description: Start is a cron expression for falling asleep.
-                          maxLength: 64
-                          type: string
-                        timeZone:
-                          description: TimeZone is an IANA time zone; UTC by default.
-                          maxLength: 64
-                          type: string
-                      type: object
-                      x-kubernetes-validations:
-                      - message: set start, end or both
-                        rule: has(self.start) || has(self.end)
-                    maxItems: 8
-                    type: array
-                    x-kubernetes-list-type: atomic
-                type: object
               highAvailability:
                 description: |-
                   HighAvailability runs every component with more than one replica,
@@ -1289,7 +1255,7 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               credentials:
-                description: Credentials are the Secrets clients need and the rotations.
+                description: Credentials are the Secrets clients need.
                 properties:
                   adminKubeconfigSecretRef:
                     description: AdminKubeconfigSecretRef names the admin kubeconfig
@@ -1321,118 +1287,6 @@ spec:
                       this ControlPlane, its CAs among them.
                     format: date-time
                     type: string
-                  rotation:
-                    description: Rotation is the state of each credential's rotation.
-                    properties:
-                      ca:
-                        description: RotationStatus is one credential's rotation.
-                        properties:
-                          lastCompleted:
-                            format: date-time
-                            type: string
-                          lastInitiated:
-                            format: date-time
-                            type: string
-                          phase:
-                            description: Phase of the rotation.
-                            enum:
-                            - Idle
-                            - Preparing
-                            - Prepared
-                            - Completing
-                            type: string
-                        type: object
-                      clientCA:
-                        description: RotationStatus is one credential's rotation.
-                        properties:
-                          lastCompleted:
-                            format: date-time
-                            type: string
-                          lastInitiated:
-                            format: date-time
-                            type: string
-                          phase:
-                            description: Phase of the rotation.
-                            enum:
-                            - Idle
-                            - Preparing
-                            - Prepared
-                            - Completing
-                            type: string
-                        type: object
-                      etcdCA:
-                        description: RotationStatus is one credential's rotation.
-                        properties:
-                          lastCompleted:
-                            format: date-time
-                            type: string
-                          lastInitiated:
-                            format: date-time
-                            type: string
-                          phase:
-                            description: Phase of the rotation.
-                            enum:
-                            - Idle
-                            - Preparing
-                            - Prepared
-                            - Completing
-                            type: string
-                        type: object
-                      etcdEncryptionKey:
-                        description: RotationStatus is one credential's rotation.
-                        properties:
-                          lastCompleted:
-                            format: date-time
-                            type: string
-                          lastInitiated:
-                            format: date-time
-                            type: string
-                          phase:
-                            description: Phase of the rotation.
-                            enum:
-                            - Idle
-                            - Preparing
-                            - Prepared
-                            - Completing
-                            type: string
-                        type: object
-                      frontProxyCA:
-                        description: RotationStatus is one credential's rotation.
-                        properties:
-                          lastCompleted:
-                            format: date-time
-                            type: string
-                          lastInitiated:
-                            format: date-time
-                            type: string
-                          phase:
-                            description: Phase of the rotation.
-                            enum:
-                            - Idle
-                            - Preparing
-                            - Prepared
-                            - Completing
-                            type: string
-                        type: object
-                      serviceAccountKey:
-                        description: RotationStatus is one credential's rotation.
-                        properties:
-                          lastCompleted:
-                            format: date-time
-                            type: string
-                          lastInitiated:
-                            format: date-time
-                            type: string
-                          phase:
-                            description: Phase of the rotation.
-                            enum:
-                            - Idle
-                            - Preparing
-                            - Prepared
-                            - Completing
-                            type: string
-                        type: object
-                    type: object
                 type: object
               datastore:
                 description: Datastore is the store in use.
@@ -1813,9 +1667,6 @@ spec:
               target:
                 description: Target is what Lifecycle rolls now.
                 properties:
-                  hibernated:
-                    description: Hibernated is the desired sleep state.
-                    type: boolean
                   operatorRevision:
                     description: |-
                       OperatorRevision is the operator revision this tenant may be rendered
