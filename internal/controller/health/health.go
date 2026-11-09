@@ -606,7 +606,7 @@ func (r *Reconciler) stale(key types.NamespacedName, lease *coordinationv1.Lease
 		renewed = t.UTC().Format(time.RFC3339)
 	}
 	if holder := ptr.Deref(lease.Spec.HolderIdentity, ""); holder != "" {
-		return fmt.Sprintf("Lease %s/%s of %s was last renewed %s", lease.Namespace, lease.Name, holder, renewed)
+		return fmt.Sprintf("Lease %s/%s of %s was last renewed %s", lease.Namespace, lease.Name, quoted(holder), renewed)
 	}
 	return fmt.Sprintf("Lease %s/%s has no holder; it was last renewed %s", lease.Namespace, lease.Name, renewed)
 }

@@ -20,7 +20,7 @@ The Health controller protects a tenant's workloads from an outage between the c
   Nothing marks the nodes, nothing taints them, nothing evicts their pods.
 - **The release.**
   Once fewer than 60% have been silent for 2 minutes, Health releases the lease the way client-go steps down (no holder, a 1-second duration); the controller manager takes it within seconds and starts afresh, counting its grace periods from its own start.
-  A pass counts towards those 2 minutes only once the clock has run `silentAfter`, and a failed read or a return to 60% or more clears the count.
+  A pass counts towards those 2 minutes only once the clock has run `silentAfter`, and a failed read of the kubeconfig or of the node Leases, or a return to 60% or more, clears the count.
   A hold has no end of its own while `AccessReady` stays not True.
 - **It never fights.**
   Health takes the lease only when it has expired or when its holder's identity starts with the name of a pod Lodia runs for this `ControlPlane` (a leader's identity is `<pod name>_<uuid>`).
