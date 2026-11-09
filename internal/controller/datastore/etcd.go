@@ -216,6 +216,19 @@ func membersHeld(members int32, current *druidv1alpha1.Etcd, sts *appsv1.Statefu
 	return members > current.Spec.Replicas && (updated == nil || *updated < current.Spec.Replicas)
 }
 
+// memberNote says why the applied Etcd does not have the members asked for,
+// from the applied Etcd: its status can be newer than the cached one
+// membersHeld read.
+func memberNote(etcd *druidv1alpha1.Etcd, members int32) string {
+	if etcd.Spec.Replicas < members {
+		return fmt.Sprintf("highAvailability waits for Etcd %s to settle: every member on its current spec and available, etcd-druid's last scale completed", etcd.Name)
+	}
+	if kept, ready := keptMember(etcd); etcd.Spec.Replicas > members && !ready {
+		return fmt.Sprintf("removing highAvailability waits for etcd-druid to list member %s, the one it keeps, as ready", kept)
+	}
+	return ""
+}
+
 // keptMember names the member a removal of highAvailability keeps and says
 // whether etcd-druid lists it ready.
 func keptMember(etcd *druidv1alpha1.Etcd) (string, bool) {

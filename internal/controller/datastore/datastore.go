@@ -188,58 +188,116 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			return ctrl.Result{}, err
 		}
 	}
-	etcd, sts, restore, condition, requeueAfter, err := r.reconcileEtcd(ctx, cp)
-	if condition.Type == "" {
+	out, err := r.reconcileEtcd(ctx, cp)
+	if out == nil {
 		return ctrl.Result{}, err
-	}
-	if restore == nil {
-		restore = cp.Status.Restore
 	}
 	// The policy follows an Etcd of this ControlPlane's and is reported over
 	// the etcd's own state only when that is ready.
-	if etcd != nil {
-		blocked, policyErr := r.applyNetworkPolicy(ctx, cp, etcd)
+	if out.etcd != nil {
+		blocked, policyErr := r.applyNetworkPolicy(ctx, cp, out.etcd)
 		if blocked == nil && policyErr != nil {
 			return ctrl.Result{}, errors.Join(err, policyErr)
 		}
 		if blocked != nil {
-			requeueAfter = cmp.Or(requeueAfter, time.Minute)
-			if condition.Status == metav1.ConditionTrue {
-				condition = *blocked
+			out.requeueAfter = cmp.Or(out.requeueAfter, time.Minute)
+			if out.condition.Status == metav1.ConditionTrue {
+				out.condition = *blocked
 			}
 		}
 		err = errors.Join(err, policyErr)
 	}
-	if statusErr := r.applyStatus(ctx, cp, datastoreStatus(etcd, sts), restore, condition, backupReady(etcd)); statusErr != nil || err != nil {
+	if statusErr := r.applyStatus(ctx, cp, datastoreStatus(out.etcd, out.sts), out.restore, out.condition, backupReady(out.etcd)); statusErr != nil || err != nil {
 		return ctrl.Result{}, errors.Join(err, statusErr)
 	}
-	return ctrl.Result{RequeueAfter: requeueAfter}, nil
+	return ctrl.Result{RequeueAfter: out.requeueAfter}, nil
 }
 
-// reconcileEtcd returns the restore's status when this pass found it
-// complete.
-func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*druidv1alpha1.Etcd, *appsv1.StatefulSet, *lodiav1alpha1.RestoreStatus, metav1.Condition, time.Duration, error) {
+// outcome is what a pass reports. A nil outcome writes no status, and comes
+// with the error that stopped the pass; a refusal has both.
+type outcome struct {
+	etcd *druidv1alpha1.Etcd
+	sts  *appsv1.StatefulSet
+	// restore is carried into every apply: what this pass found complete, or
+	// what it read.
+	restore      *lodiav1alpha1.RestoreStatus
+	condition    metav1.Condition
+	requeueAfter time.Duration
+}
+
+// pass is what a pass has read and decided so far.
+type pass struct {
+	cp           *lodiav1alpha1.ControlPlane
+	current      *druidv1alpha1.Etcd
+	claims       []corev1.PersistentVolumeClaim
+	class        *lodiav1alpha1.DatastoreClass
+	secrets      []metav1.PartialObjectMetadata
+	generation   int
+	namespaceUID types.UID
+	sts          *appsv1.StatefulSet
+	check        restoreCheck
+	members      int32
+	rendered     *druidv1alpha1.Etcd
+	// held is the note on DatastoreReady of a class held or a quota capped; a
+	// held class renders no cap, so the two never meet. It and refusal, an
+	// apply of the credentials the API server refused, reach whichever step
+	// the pass ends on.
+	held    string
+	heldFor time.Duration
+	refusal error
+}
+
+func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*outcome, error) {
+	p := &pass{cp: cp}
+	out, err := r.takeSteps(ctx, p)
+	if out != nil {
+		out.restore = cmp.Or(out.restore, cp.Status.Restore)
+		out.condition.Message = note(out.condition.Message, p.held)
+	}
+	return out, errors.Join(err, p.refusal)
+}
+
+// takeSteps stops at the first step that has something to report: a nil
+// outcome and a nil error go on to the next.
+func (r *Reconciler) takeSteps(ctx context.Context, p *pass) (*outcome, error) {
+	if out, err := r.readInputs(ctx, p); out != nil || err != nil {
+		return out, err
+	}
+	if out, err := r.holdClass(ctx, p); out != nil || err != nil {
+		return out, err
+	}
+	if err := r.renderEtcd(ctx, p); err != nil {
+		return nil, err
+	}
+	if out, err := r.gateFirstEtcd(ctx, p); out != nil || err != nil {
+		return out, err
+	}
+	return r.applyEtcd(ctx, p)
+}
+
+func (r *Reconciler) readInputs(ctx context.Context, p *pass) (*outcome, error) {
+	cp := p.cp
 	current, err := r.currentEtcd(ctx, cp)
 	if err != nil {
-		return nil, nil, nil, metav1.Condition{}, 0, err
+		return nil, err
 	}
 	// An Etcd another ControlPlane or nobody controls, an orphan or a
 	// predecessor's the garbage collector has not removed yet, is never
 	// applied: the apply would take it over, and this ControlPlane would start
 	// on another tenant's data.
 	if current != nil && !metav1.IsControlledBy(current, cp) {
-		return nil, nil, nil, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonVolumesExist, foreignEtcd(current)), time.Minute, nil
+		return &outcome{condition: newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonVolumesExist, foreignEtcd(current)), requeueAfter: time.Minute}, nil
 	}
-	var claims []corev1.PersistentVolumeClaim
+	p.current = current
 	if current == nil {
-		if claims, err = r.claims(ctx, cp); err != nil {
-			return nil, nil, nil, metav1.Condition{}, 0, err
+		if p.claims, err = r.claims(ctx, cp); err != nil {
+			return nil, err
 		}
 	}
-	name, byClaims := className(cp, current, claims)
+	name, byClaims := className(cp, current, p.claims)
 	class, unresolved, err := r.class(ctx, name, byClaims)
 	if err != nil {
-		return nil, nil, nil, metav1.Condition{}, 0, err
+		return nil, err
 	}
 	// A recorded class that is gone stops only its own edits: the Etcd keeps
 	// what the class gave it and still takes new certificate generations.
@@ -249,13 +307,13 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.Contro
 		if byClaims {
 			requeueAfter = time.Minute
 		}
-		return nil, nil, nil, unresolved, requeueAfter, nil
+		return &outcome{condition: unresolved, requeueAfter: requeueAfter}, nil
 	}
-	secrets, err := r.secrets(ctx, cp)
-	if err != nil {
-		return nil, nil, nil, metav1.Condition{}, 0, err
+	p.class = class
+	if p.secrets, err = r.secrets(ctx, cp); err != nil {
+		return nil, err
 	}
-	generation, found := newestCompleteGeneration(cp, secrets)
+	generation, found := newestCompleteGeneration(cp, p.secrets)
 	if named, ok := namedGeneration(cp.Name, current); ok && (!found || named > generation) {
 		generation, found = named, true
 	}
@@ -266,138 +324,95 @@ func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.Contro
 		}
 		message := fmt.Sprintf("waiting for a complete generation of the etcd certificates that this ControlPlane controls: the Secrets %s-etcd-{%s}-<g> labelled %s=<g>",
 			cp.Name, strings.Join(roles, ","), lodiav1alpha1.EtcdCertificatesLabel)
-		return current, nil, nil, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, message), 0, nil
+		return &outcome{etcd: current, condition: newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, message)}, nil
 	}
+	p.generation = generation
 	if current == nil {
-		if foreign := foreignClaims(cp, claims); len(foreign) > 0 {
+		if foreign := foreignClaims(cp, p.claims); len(foreign) > 0 {
 			message := fmt.Sprintf("the claims %s of another ControlPlane stand where the etcd of %s would be created: delete them to start empty, or keep them, and this ControlPlane waits",
 				strings.Join(foreign, ", "), cp.Name)
-			return nil, nil, nil, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonVolumesExist, message), time.Minute, nil
+			return &outcome{condition: newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonVolumesExist, message), requeueAfter: time.Minute}, nil
 		}
 	}
-	var held string
-	var heldFor time.Duration
-	var refusal error
-	if class != nil && class.Spec.Backup != nil {
-		blocked, err := r.copyCredentials(ctx, cp, class, secrets)
-		if blocked == "" && err != nil {
-			return nil, nil, nil, metav1.Condition{}, 0, err
-		}
-		refusal = err
-		if blocked != "" && current == nil {
-			message := fmt.Sprintf("DatastoreClass %s cannot be applied yet: %s", class.Name, blocked)
-			return nil, nil, nil, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, message), time.Minute, refusal
-		}
-		// A class is held whole: applying the rest of an edit could add a store
-		// whose copy cannot be made, and the certificate generations still move.
-		if blocked != "" {
-			held = fmt.Sprintf("DatastoreClass %s is held: %s", class.Name, blocked)
-			class, heldFor = nil, time.Minute
-		}
+	return nil, nil
+}
+
+func (r *Reconciler) holdClass(ctx context.Context, p *pass) (*outcome, error) {
+	class := p.class
+	if class == nil || class.Spec.Backup == nil {
+		return nil, nil
 	}
-	var namespaceUID types.UID
-	if class != nil && class.Spec.Backup != nil {
+	blocked, err := r.copyCredentials(ctx, p.cp, class, p.secrets)
+	if blocked == "" && err != nil {
+		return nil, err
+	}
+	p.refusal = err
+	if blocked != "" && p.current == nil {
+		message := fmt.Sprintf("DatastoreClass %s cannot be applied yet: %s", class.Name, blocked)
+		return &outcome{condition: newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, message), requeueAfter: time.Minute}, nil
+	}
+	// A class is held whole: applying the rest of an edit could add a store
+	// whose copy cannot be made, and the certificate generations still move.
+	if blocked != "" {
+		p.held = fmt.Sprintf("DatastoreClass %s is held: %s", class.Name, blocked)
+		p.class, p.heldFor = nil, time.Minute
+	}
+	return nil, nil
+}
+
+func (r *Reconciler) renderEtcd(ctx context.Context, p *pass) error {
+	cp := p.cp
+	if p.class != nil && p.class.Spec.Backup != nil {
 		namespace := &corev1.Namespace{}
 		if err := r.Reader.Get(ctx, client.ObjectKey{Name: cp.Namespace}, namespace); err != nil {
-			return nil, nil, nil, metav1.Condition{}, 0, fmt.Errorf("read Namespace %s: %w", cp.Namespace, err)
+			return fmt.Errorf("read Namespace %s: %w", cp.Namespace, err)
 		}
-		namespaceUID = namespace.UID
+		p.namespaceUID = namespace.UID
 	}
-	sts := &appsv1.StatefulSet{}
-	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.EtcdName(cp.Name)}, sts); err != nil {
+	p.sts = &appsv1.StatefulSet{}
+	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.EtcdName(cp.Name)}, p.sts); err != nil {
 		if !apierrors.IsNotFound(err) {
-			return nil, nil, nil, metav1.Condition{}, 0, err
+			return err
 		}
-		sts = nil
+		p.sts = nil
 	}
-	var check restoreCheck
-	if cp.Spec.RestoreFrom != nil && current != nil {
-		if check, err = r.checkRestore(ctx, cp, current); err != nil {
-			return nil, nil, nil, metav1.Condition{}, 0, err
-		}
+	if err := r.restoreMembers(ctx, p); err != nil {
+		return err
 	}
-	// An Etcd that starts on the store restores one member, and etcd-druid
-	// adds the others as learners once the restore is complete. One created
-	// again over this ControlPlane's claims asks for the members they held,
-	// each of which restarts with the members its data names; an Etcd raised
-	// above one stays, whatever a check that could not run found.
-	members := memberCount(cp)
-	switch {
-	case cp.Spec.RestoreFrom == nil || check.restored != nil || members == 1:
-	case current == nil:
-		members = claimedMembers(cp.Name, claims, members)
-	default:
-		raised, err := r.raised(ctx, current)
-		if err != nil {
-			return nil, nil, nil, metav1.Condition{}, 0, err
-		}
-		if !raised {
-			members = 1
-		}
-	}
-	rendered, capped := render(cp, class, namespaceUID, generation, current, claims, sts, members)
+	var capped string
+	p.rendered, capped = render(cp, p.class, p.namespaceUID, p.generation, p.current, p.claims, p.sts, p.members)
 	if capped != "" {
-		held = capped
+		p.held = capped
 	}
-	// Claims of this ControlPlane outlive an Etcd it had, whose data they
-	// hold, and a restore once recorded left its cleaned data and a full
-	// snapshot of it in this ControlPlane's prefix.
-	if current == nil && len(claims) == 0 {
-		var first *metav1.Condition
-		var requeueAfter time.Duration
-		switch {
-		case cp.Spec.RestoreFrom == nil:
-			first, err = r.caPredates(ctx, cp)
-		case cp.Status.Restore == nil:
-			first, requeueAfter, err = r.restoreFirst(ctx, cp, class, rendered)
-		}
-		if first == nil && err != nil {
-			return nil, nil, nil, metav1.Condition{}, 0, errors.Join(err, refusal)
-		}
-		if first != nil {
-			first.Message = note(first.Message, held)
-			return nil, nil, nil, *first, requeueAfter, errors.Join(err, refusal)
-		}
-	}
+	return nil
+}
+
+func (r *Reconciler) applyEtcd(ctx context.Context, p *pass) (*outcome, error) {
+	cp, rendered := p.cp, p.rendered
 	etcd, err := r.apply(ctx, rendered)
 	if err != nil {
 		err = fmt.Errorf("apply Etcd %s: %w", rendered.Name, err)
 		if apistatus.Refused(err) && !replaced(err) {
-			message := note(fmt.Sprintf("the API server refuses Etcd %s on certificate generation %d with the fields of DatastoreClass %s generation %s; the reason is in Lodia's log",
-				rendered.Name, generation, rendered.Annotations[lodiav1alpha1.DatastoreClassAnnotation], rendered.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation]), held)
-			return current, nil, check.restored, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, message), 0, errors.Join(err, refusal)
+			message := fmt.Sprintf("the API server refuses Etcd %s on certificate generation %d with the fields of DatastoreClass %s generation %s; the reason is in Lodia's log",
+				rendered.Name, p.generation, rendered.Annotations[lodiav1alpha1.DatastoreClassAnnotation], rendered.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation])
+			return &outcome{etcd: p.current, restore: p.check.restored, condition: newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, message)}, err
 		}
-		return nil, nil, nil, metav1.Condition{}, 0, err
+		return nil, err
 	}
 	if err := r.labelClaims(ctx, cp, etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation]); err != nil {
-		return nil, nil, nil, metav1.Condition{}, 0, err
+		return nil, err
 	}
-	absent, err := r.missingSecrets(ctx, cp, etcd, secrets)
+	absent, err := r.missingSecrets(ctx, cp, etcd, p.secrets)
 	if err != nil {
-		return nil, nil, nil, metav1.Condition{}, 0, err
+		return nil, err
 	}
-	condition := readiness(etcd, absent)
-	switch {
-	case check.condition != nil:
-		condition = *check.condition
-	case cp.Spec.RestoreFrom == nil || check.restored != nil || cp.Status.Restore != nil:
-	case check.unanswered:
-		condition = *restoring("waiting for etcd of " + cp.Name + " to answer")
-	default:
-		condition = *restoring(condition.Message)
+	condition := p.check.reported(cp, readiness(etcd, absent))
+	condition.Message = note(condition.Message, memberNote(etcd, p.members))
+	requeueAfter := p.heldFor
+	if updated := updatedMembers(etcd, p.sts); updated == nil || *updated < etcd.Spec.Replicas {
+		requeueAfter = 15 * time.Second
 	}
-	requeueAfter := check.requeueAfter
-	if etcd.Spec.Replicas < members {
-		condition.Message = note(condition.Message, fmt.Sprintf("highAvailability waits for Etcd %s to settle: every member on its current spec and available, etcd-druid's last scale completed", etcd.Name))
-	}
-	if kept, ready := keptMember(etcd); etcd.Spec.Replicas > members && !ready {
-		condition.Message = note(condition.Message, fmt.Sprintf("removing highAvailability waits for etcd-druid to list member %s, the one it keeps, as ready", kept))
-	}
-	condition.Message = note(condition.Message, held)
-	if updated := updatedMembers(etcd, sts); updated == nil || *updated < etcd.Spec.Replicas {
-		return etcd, sts, check.restored, condition, sooner(15*time.Second, requeueAfter), refusal
-	}
-	return etcd, sts, check.restored, condition, sooner(heldFor, requeueAfter), refusal
+	return &outcome{etcd: etcd, sts: p.sts, restore: p.check.restored, condition: condition, requeueAfter: sooner(requeueAfter, p.check.requeueAfter)}, nil
 }
 
 // sooner is the earlier of two requeues, 0 being none.
