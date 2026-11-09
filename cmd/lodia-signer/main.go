@@ -22,6 +22,8 @@ import (
 	"go.lodia.io/lodia/internal/signer"
 )
 
+const probeTimeout = 5 * time.Second
+
 func main() {
 	var socket, keysDir, probeAddr string
 	var maxTokenExpiration, refreshHint time.Duration
@@ -70,7 +72,7 @@ func run(socket, keysDir, probeAddr string, maxTokenExpiration, refreshHint time
 		}
 		w.WriteHeader(http.StatusOK)
 	})
-	probes := &http.Server{Addr: probeAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	probes := &http.Server{Addr: probeAddr, Handler: mux, ReadHeaderTimeout: probeTimeout, ReadTimeout: probeTimeout, WriteTimeout: probeTimeout}
 
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return s.Watch(ctx) })
