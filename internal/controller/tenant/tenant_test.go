@@ -34,22 +34,19 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	rbacv1ac "k8s.io/client-go/applyconfigurations/rbac/v1"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
-	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/yaml"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/certs"
 	"go.lodia.io/lodia/internal/controller/pki"
 	"go.lodia.io/lodia/internal/controller/tenant"
-	"go.lodia.io/lodia/internal/operator"
+	"go.lodia.io/lodia/internal/testenv"
 )
 
 const (
@@ -64,7 +61,7 @@ type dialFunc = func(ctx context.Context, network, address string) (net.Conn, er
 
 var (
 	k8s    client.Client
-	scheme = runtime.NewScheme()
+	scheme *runtime.Scheme
 	dial   atomic.Pointer[dialFunc]
 
 	unreachable dialFunc = func(context.Context, string, string) (net.Conn, error) {
@@ -73,46 +70,12 @@ var (
 )
 
 func TestMain(m *testing.M) {
-	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
+	if !testenv.Available() {
 		os.Exit(m.Run())
 	}
-	env := &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "api", "crds")},
-		ErrorIfCRDPathMissing: true,
-		UseExistingCluster:    new(false),
-	}
-	cfg, err := env.Start()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "start envtest:", err)
-		os.Exit(1)
-	}
-	stop := func(what string, err error) {
-		fmt.Fprintln(os.Stderr, what+":", err)
-		_ = env.Stop()
-		os.Exit(1)
-	}
-	for _, add := range []func(*runtime.Scheme) error{clientgoscheme.AddToScheme, lodiav1alpha1.AddToScheme} {
-		if err := add(scheme); err != nil {
-			stop("scheme", err)
-		}
-	}
-	if k8s, err = client.New(cfg, client.Options{Scheme: scheme}); err != nil {
-		stop("client", err)
-	}
-	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
-	controller, err := asTenantController(cfg)
-	if err != nil {
-		stop("the controller's ClusterRole", err)
-	}
-	cache, err := operator.Cache(false)
-	if err != nil {
-		stop("cache options", err)
-	}
-	cache.ReaderFailOnMissingInformer = true
-	mgr, err := ctrl.NewManager(controller, ctrl.Options{Scheme: scheme, Metrics: metricsserver.Options{BindAddress: "0"}, Cache: cache})
-	if err != nil {
-		stop("manager", err)
-	}
+	env := testenv.Start(testenv.Options{})
+	k8s, scheme = env.Client, env.Scheme
+	mgr := env.Manager(env.AsController("tenant"), false)
 	dial.Store(&unreachable)
 	r := &tenant.Reconciler{
 		Client:      mgr.GetClient(),
@@ -124,65 +87,15 @@ func TestMain(m *testing.M) {
 		},
 	}
 	if err := r.SetupWithManager(mgr, 1); err != nil {
-		stop("controller", err)
+		env.Fatal("controller", err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	started := make(chan error, 1)
-	go func() { started <- mgr.Start(ctx) }()
-	code := m.Run()
-	cancel()
-	if err := <-started; err != nil {
-		fmt.Fprintln(os.Stderr, "manager:", err)
-		code = 1
-	}
-	if err := env.Stop(); err != nil {
-		fmt.Fprintln(os.Stderr, "stop envtest:", err)
-	}
-	os.Exit(code)
-}
-
-func asTenantController(cfg *rest.Config) (*rest.Config, error) {
-	const user = "lodia-tenant"
-	ctx := context.Background()
-	manifest, err := os.ReadFile(filepath.Join("..", "..", "..", "charts", "lodia", "files", "rbac", "tenant.yaml"))
-	if err != nil {
-		return nil, err
-	}
-	role := &rbacv1.ClusterRole{}
-	if err := yaml.UnmarshalStrict(manifest, role); err != nil {
-		return nil, err
-	}
-	binding := &rbacv1.ClusterRoleBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: user},
-		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: role.Name},
-		Subjects:   []rbacv1.Subject{{APIGroup: rbacv1.GroupName, Kind: rbacv1.UserKind, Name: user}},
-	}
-	for _, obj := range []client.Object{role, binding} {
-		if err := k8s.Create(ctx, obj); err != nil {
-			return nil, err
-		}
-	}
-	err = wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (bool, error) {
-		review := &authorizationv1.SubjectAccessReview{Spec: authorizationv1.SubjectAccessReviewSpec{
-			User:               user,
-			ResourceAttributes: &authorizationv1.ResourceAttributes{Group: lodiav1alpha1.GroupVersion.Group, Resource: "controlplanes", Verb: "watch"},
-		}}
-		if err := k8s.Create(ctx, review); err != nil {
-			return false, err
-		}
-		return review.Status.Allowed, nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	controller := rest.CopyConfig(cfg)
-	controller.Impersonate = rest.ImpersonationConfig{UserName: user}
-	return controller, nil
+	env.StartManager(mgr)
+	os.Exit(env.Finish(m.Run()))
 }
 
 func TestTheFirstVisitWaitsForAccess(t *testing.T) {
 	cp := controlPlane(t, "tenant-first-visit")
-	eventually(t, 10*time.Second, func() error {
+	testenv.EventuallyWithin(t, 10*time.Second, func() error {
 		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess); err != nil {
 			return err
 		}
@@ -192,7 +105,7 @@ func TestTheFirstVisitWaitsForAccess(t *testing.T) {
 
 func TestTheAddonsConditionsStayAsTheyWereUntilAccessTakesUpAChange(t *testing.T) {
 	cp, admin := servedTenant(t, "tenant-change")
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied); err != nil {
 			return err
 		}
@@ -213,7 +126,7 @@ func TestTheAddonsConditionsStayAsTheyWereUntilAccessTakesUpAChange(t *testing.T
 	}
 
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied); err != nil {
 			return err
 		}
@@ -229,7 +142,7 @@ func TestTheAddonsConditionsStayAsTheyWereUntilAccessTakesUpAChange(t *testing.T
 	applyStatus(t, cp, "test/"+lodiav1alpha1.ConditionAccessReady, map[string]any{"conditions": []any{
 		conditionAt(lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer, cp.Generation),
 	}})
-	eventually(t, 10*time.Second, func() error {
+	testenv.EventuallyWithin(t, 10*time.Second, func() error {
 		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess); err != nil {
 			return err
 		}
@@ -239,7 +152,7 @@ func TestTheAddonsConditionsStayAsTheyWereUntilAccessTakesUpAChange(t *testing.T
 
 func TestOnlyAConditionAtTheGenerationWaitsForAccess(t *testing.T) {
 	cp := controlPlane(t, "tenant-one-waits")
-	eventually(t, 10*time.Second, func() error {
+	testenv.EventuallyWithin(t, 10*time.Second, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
 	})
 	setReplicas(t, cp, 3)
@@ -252,7 +165,7 @@ func TestOnlyAConditionAtTheGenerationWaitsForAccess(t *testing.T) {
 	applyStatus(t, cp, "test/"+lodiav1alpha1.ConditionAccessReady, map[string]any{"conditions": []any{
 		conditionAt(lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer, cp.Generation),
 	}})
-	eventually(t, 10*time.Second, func() error {
+	testenv.EventuallyWithin(t, 10*time.Second, func() error {
 		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess); err != nil {
 			return err
 		}
@@ -265,7 +178,7 @@ func TestOnlyAConditionAtTheGenerationWaitsForAccess(t *testing.T) {
 
 func TestAWaitOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
 	cp := controlPlane(t, "tenant-stale")
-	eventually(t, 10*time.Second, func() error {
+	testenv.EventuallyWithin(t, 10*time.Second, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
 	})
 	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
@@ -316,7 +229,7 @@ func TestAConditionKeptWithoutAnAnswerOnAStaleReadIsDecidedFromTheServer(t *test
 	cp := controlPlane(t, "tenant-kept-stale")
 	publish(t, cp)
 	reconcilePKI(t, &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour, Clock: clock.RealClock{}}, cp)
-	eventually(t, 10*time.Second, func() error {
+	testenv.EventuallyWithin(t, 10*time.Second, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
 	})
 	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
@@ -378,7 +291,7 @@ func TestAConditionKeptWithoutAnAnswerOnAStaleReadIsDecidedFromTheServer(t *test
 
 func TestARolloutReadThatFailsOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
 	cp, admin := servedTenant(t, "tenant-rollout-stale")
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
 	})
 	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
@@ -443,7 +356,7 @@ func TestARolloutReadThatFailsOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
 
 func TestARefusedApplyStopsThePass(t *testing.T) {
 	cp, admin := servedTenant(t, "tenant-refused-apply")
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
 	})
 	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
@@ -475,7 +388,7 @@ func TestAnotherOwnersObjectKeepsApplyingThoughTheRolloutReadFails(t *testing.T)
 	ctx := t.Context()
 	cp, admin := servedTenant(t, "tenant-owners-rollout")
 	setCoreDNS(t, cp, false)
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
 	})
 	for _, obj := range []client.Object{
@@ -497,7 +410,7 @@ func TestAnotherOwnersObjectKeepsApplyingThoughTheRolloutReadFails(t *testing.T)
 	}
 	setCoreDNS(t, cp, true)
 	const others = "ConfigMap kube-system/coredns exists and is not Lodia's; delete it or disable the addon"
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying)
 	})
 	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
@@ -528,7 +441,7 @@ func TestAnotherOwnersObjectKeepsApplyingThoughTheRolloutReadFails(t *testing.T)
 
 func TestAWaitComparesItsWriteWithTheServer(t *testing.T) {
 	cp := controlPlane(t, "tenant-gate-compare")
-	eventually(t, 10*time.Second, func() error {
+	testenv.EventuallyWithin(t, 10*time.Second, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
 	})
 	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
@@ -564,7 +477,7 @@ func TestAFailedSyncComparesItsWriteWithTheServer(t *testing.T) {
 	cp := controlPlane(t, "tenant-sync-compare")
 	publish(t, cp)
 	reconcilePKI(t, &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour, Clock: clock.RealClock{}}, cp)
-	eventually(t, 10*time.Second, func() error {
+	testenv.EventuallyWithin(t, 10*time.Second, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
 	})
 	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
@@ -634,7 +547,7 @@ func TestTheTenantGetsItsObjects(t *testing.T) {
 	reconcilePKI(t, issuer, cp)
 	expectNow(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionTrue, lodiav1alpha1.ReasonBound)
 
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
 	})
 	expectNow(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonRolloutPending)
@@ -693,7 +606,7 @@ func TestTheTenantGetsItsObjects(t *testing.T) {
 	}
 
 	setCoreDNS(t, cp, false)
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		if inventory := inventoryOf(t, admin); slices.ContainsFunc(inventory, func(e string) bool { return strings.Contains(e, "coredns") || strings.Contains(e, "kube-dns") }) {
 			return fmt.Errorf("the inventory still lists CoreDNS: %v", inventory)
 		}
@@ -705,7 +618,7 @@ func TestTheTenantGetsItsObjects(t *testing.T) {
 		}
 	}
 	setCoreDNS(t, cp, true)
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		if !exists(t, admin, "Deployment kube-system/coredns") || !exists(t, admin, "Service kube-system/kube-dns") {
 			return errors.New("CoreDNS is not back")
 		}
@@ -715,7 +628,7 @@ func TestTheTenantGetsItsObjects(t *testing.T) {
 	if err := admin.Delete(ctx, &appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "kube-proxy"}}); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		if !exists(t, admin, "DaemonSet kube-system/kube-proxy") {
 			return errors.New("the deleted kube-proxy DaemonSet is not back")
 		}
@@ -734,12 +647,12 @@ func TestTheTenantGetsItsObjects(t *testing.T) {
 	if err := admin.Status().Update(ctx, coredns); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable)
 	})
 
 	setInventory(t, admin, "not a list")
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying); err != nil {
 			return err
 		}
@@ -751,7 +664,7 @@ func TestTheTenantGetsItsObjects(t *testing.T) {
 	if err := admin.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "lodia-inventory"}}); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
 	})
 }
@@ -789,14 +702,14 @@ func TestAHeldControllerManagerLeavesTheAddonsToTheRelease(t *testing.T) {
 		expectNow(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionTrue, lodiav1alpha1.ReasonBound)
 	}
 	held()
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
 	})
 	get(t, admin, &corev1.ConfigMap{}, "kube-public", "cluster-info")
 
 	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.RestoreFrom.Release = lodiav1alpha1.RestoreReleased })
 	held()
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
 	})
 	if c := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied); c.ObservedGeneration != 2 {
@@ -806,7 +719,7 @@ func TestAHeldControllerManagerLeavesTheAddonsToTheRelease(t *testing.T) {
 
 func TestTheKubernetesEndpointsAreTheInClusterEndpoint(t *testing.T) {
 	cp, admin := servedTenant(t, "tenant-endpoints")
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied); err != nil {
 			return err
 		}
@@ -824,7 +737,7 @@ func TestTheKubernetesEndpointsAreTheInClusterEndpoint(t *testing.T) {
 		"konnectivity": map[string]any{"host": endpointHost, "port": int64(konnectivityPort)},
 		"inCluster":    map[string]any{"host": endpointHost, "port": int64(31443)},
 	}})
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		return kubernetesEndpoints(t, admin, 31443)
 	})
 }
@@ -864,7 +777,7 @@ func kubernetesEndpoints(t *testing.T, c client.Client, port int32) error {
 
 func TestKubeProxyTakesConntrackMaxPerCore(t *testing.T) {
 	cp, admin := servedTenant(t, "tenant-conntrack")
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
 	})
 	if conntrack := kubeProxyConfig(t, admin).Conntrack; conntrack != nil {
@@ -875,7 +788,7 @@ func TestKubeProxyTakesConntrackMaxPerCore(t *testing.T) {
 		cp.Spec.Addons = &lodiav1alpha1.Addons{KubeProxy: &lodiav1alpha1.KubeProxy{Conntrack: &lodiav1alpha1.KubeProxyConntrack{MaxPerCore: new(int32(0))}}}
 	})
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		conntrack := kubeProxyConfig(t, admin).Conntrack
 		if conntrack == nil || conntrack.MaxPerCore == nil || *conntrack.MaxPerCore != 0 {
 			return fmt.Errorf("kube-proxy's configuration sets conntrack %+v, want maxPerCore 0", conntrack)
@@ -912,7 +825,7 @@ func TestAnObjectTheTenantRefusesIsReportedAndNeverLeaks(t *testing.T) {
 	reconcilePKI(t, issuer, cp)
 	setCoreDNS(t, cp, false)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
 	})
 
@@ -940,7 +853,7 @@ func TestAnObjectTheTenantRefusesIsReportedAndNeverLeaks(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		err := admin.Create(ctx, &appsv1.Deployment{
 			ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "coredns"},
 			Spec: appsv1.DeploymentSpec{
@@ -959,7 +872,7 @@ func TestAnObjectTheTenantRefusesIsReportedAndNeverLeaks(t *testing.T) {
 
 	setCoreDNS(t, cp, true)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused); err != nil {
 			return err
 		}
@@ -974,7 +887,7 @@ func TestAnObjectTheTenantRefusesIsReportedAndNeverLeaks(t *testing.T) {
 
 	setCoreDNS(t, cp, false)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
 	})
 	for _, gone := range []string{"ConfigMap kube-system/coredns", "ServiceAccount kube-system/coredns", "ClusterRole system:coredns"} {
@@ -994,7 +907,7 @@ func TestATenantThatDoesNotAnswerKeepsATrueAddonsApplied(t *testing.T) {
 	issuer.Dial = *dial.Load()
 	setCondition(t, cp, lodiav1alpha1.ConditionAPIServerReady, "Ready")
 	reconcilePKI(t, issuer, cp)
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
 	})
 	before := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied)
@@ -1008,7 +921,7 @@ func TestATenantThatDoesNotAnswerKeepsATrueAddonsApplied(t *testing.T) {
 	setDial(t, admin.host)
 	setReplicas(t, cp, 3)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied); err != nil {
 			return err
 		}
@@ -1029,7 +942,7 @@ func TestATenantThatDoesNotAnswerAtANewGenerationKeepsWhatItDescribed(t *testing
 	issuer.Dial = *dial.Load()
 	setCondition(t, cp, lodiav1alpha1.ConditionAPIServerReady, "Ready")
 	reconcilePKI(t, issuer, cp)
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied); err != nil {
 			return err
 		}
@@ -1057,11 +970,11 @@ func TestATenantThatNeverAnsweredIsApplying(t *testing.T) {
 	publish(t, cp)
 	reconcilePKI(t, &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour, Clock: clock.RealClock{}}, cp)
 	dial.Store(&unreachable)
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
 	})
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		for _, conditionType := range []string{lodiav1alpha1.ConditionAddonsApplied, lodiav1alpha1.ConditionAddonsAvailable} {
 			if err := expectCondition(t, cp, conditionType, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying); err != nil {
 				return err
@@ -1088,7 +1001,7 @@ func TestASecretAnotherOwnerKeepsIsNotUsed(t *testing.T) {
 		t.Fatal(err)
 	}
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess); err != nil {
 			return err
 		}
@@ -1102,7 +1015,7 @@ func TestASecretAnotherOwnerKeepsIsNotUsed(t *testing.T) {
 	if err := k8s.Update(t.Context(), bundle); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying)
 	})
 }
@@ -1110,7 +1023,7 @@ func TestASecretAnotherOwnerKeepsIsNotUsed(t *testing.T) {
 func TestThePruneDeletesOnlyWhatLodiaApplied(t *testing.T) {
 	ctx := t.Context()
 	cp, admin := servedTenant(t, "tenant-prune")
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
 	})
 	if err := admin.Create(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "precious"}}); err != nil {
@@ -1135,7 +1048,7 @@ func TestThePruneDeletesOnlyWhatLodiaApplied(t *testing.T) {
 	}
 	setInventory(t, admin, string(objects))
 
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		inventory := inventoryOf(t, admin)
 		for _, entry := range []string{"ConfigMap default/precious", "ClusterRoleBinding lodia:cluster-admins", "ClusterRole left-the-render", "Widget default/w"} {
 			if slices.Contains(inventory, entry) {
@@ -1159,7 +1072,7 @@ func TestAnotherOwnersObjectsAreNeitherAdoptedNorPruned(t *testing.T) {
 	ctx := t.Context()
 	cp, admin := servedTenant(t, "tenant-owners-dns")
 	setCoreDNS(t, cp, false)
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
 	})
 	corefile := ".:53 {\n    forward . 9.9.9.9\n}\n"
@@ -1182,7 +1095,7 @@ func TestAnotherOwnersObjectsAreNeitherAdoptedNorPruned(t *testing.T) {
 	}
 
 	setCoreDNS(t, cp, true)
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying); err != nil {
 			return err
 		}
@@ -1209,7 +1122,7 @@ func TestAnotherOwnersObjectsAreNeitherAdoptedNorPruned(t *testing.T) {
 	}
 
 	setCoreDNS(t, cp, false)
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
 	})
 	for _, entry := range owners {
@@ -1221,13 +1134,13 @@ func TestAnotherOwnersObjectsAreNeitherAdoptedNorPruned(t *testing.T) {
 
 func TestAnInventoryReadTheTenantRefusesIsReported(t *testing.T) {
 	cp, admin := servedTenant(t, "tenant-refuses-inventory")
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
 	})
 	if err := admin.Delete(t.Context(), &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: "lodia:operator"}}); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused); err != nil {
 			return err
 		}
@@ -1255,7 +1168,7 @@ func rebindOperator(t *testing.T, admin *tenantClient, rules []rbacv1.PolicyRule
 	}); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		review := &authorizationv1.SubjectAccessReview{Spec: authorizationv1.SubjectAccessReviewSpec{User: "lodia:operator", ResourceAttributes: &denied}}
 		if err := admin.Create(ctx, review); err != nil {
 			return err
@@ -1533,18 +1446,6 @@ func expectNow(t *testing.T, cp *lodiav1alpha1.ControlPlane, conditionType strin
 	t.Helper()
 	if err := expectCondition(t, cp, conditionType, status, reason); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func eventually(t *testing.T, timeout time.Duration, check func() error) {
-	t.Helper()
-	var last error
-	err := wait.PollUntilContextTimeout(t.Context(), 200*time.Millisecond, timeout, true, func(context.Context) (bool, error) {
-		last = check()
-		return last == nil, nil
-	})
-	if err != nil {
-		t.Fatal(last)
 	}
 }
 

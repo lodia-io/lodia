@@ -32,6 +32,7 @@ import (
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/controller/pki"
 	"go.lodia.io/lodia/internal/controller/tenant"
+	"go.lodia.io/lodia/internal/testenv"
 )
 
 const (
@@ -90,7 +91,7 @@ func gatewayTenant(t *testing.T, namespace string) (*lodiav1alpha1.ControlPlane,
 func TestAGatewayTenantGetsApiserverProxy(t *testing.T) {
 	ctx := t.Context()
 	cp, admin, _ := gatewayTenant(t, "tenant-gateway-objects")
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
 	})
 
@@ -162,7 +163,7 @@ func TestAGatewayTenantGetsApiserverProxy(t *testing.T) {
 	if err := admin.Status().Update(ctx, coredns); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonRolloutPending); err != nil {
 			return err
 		}
@@ -176,7 +177,7 @@ func TestAGatewayTenantGetsApiserverProxy(t *testing.T) {
 	if err := admin.Status().Update(ctx, ds); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		if c := condition(t, cp, lodiav1alpha1.ConditionAddonsAvailable); c.Message != "apiserver-proxy 1 of 2 available" {
 			return fmt.Errorf("AddonsAvailable says %q", c.Message)
 		}
@@ -187,7 +188,7 @@ func TestAGatewayTenantGetsApiserverProxy(t *testing.T) {
 	if err := admin.Status().Update(ctx, ds); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable); err != nil {
 			return err
 		}
@@ -283,7 +284,7 @@ func TestATunnelClientAnotherOwnerKeepsIsNotUsed(t *testing.T) {
 		t.Fatal(err)
 	}
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess); err != nil {
 			return err
 		}
@@ -296,7 +297,7 @@ func TestATunnelClientAnotherOwnerKeepsIsNotUsed(t *testing.T) {
 	if err := k8s.Update(t.Context(), pair); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying)
 	})
 }
@@ -306,7 +307,7 @@ func TestAGatewayEndpointWithoutItsTunnelWaitsForEndpoint(t *testing.T) {
 	publish(t, cp)
 	reconcilePKI(t, gatewayIssuer(), cp)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint); err != nil {
 			return err
 		}
@@ -334,7 +335,7 @@ func holds(t *testing.T, admin *tenantClient, pair string) error {
 
 func applied(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 	t.Helper()
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
 	})
 }
@@ -345,7 +346,7 @@ func TestARenewalReachesTheTenantWhateverTheConditionsSay(t *testing.T) {
 	arrives := func(pair string) {
 		t.Helper()
 		renew(t, cp, pair)
-		eventually(t, 30*time.Second, func() error { return holds(t, admin, pair) })
+		testenv.Eventually(t, func() error { return holds(t, admin, pair) })
 	}
 
 	setReplicas(t, cp, 3)
@@ -372,7 +373,7 @@ func TestARenewalReachesTheTenantWhateverTheConditionsSay(t *testing.T) {
 	reconcilePKI(t, issuer, cp)
 	expectNow(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer)
 	arrives("with APIServerReady False, Refused")
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
 	})
 
@@ -382,7 +383,7 @@ func TestARenewalReachesTheTenantWhateverTheConditionsSay(t *testing.T) {
 		{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"patch"}},
 		{NonResourceURLs: []string{"*"}, Verbs: []string{"*"}},
 	}, authorizationv1.ResourceAttributes{Resource: "configmaps", Verb: "patch", Namespace: "kube-system"})
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused)
 	})
 	arrives("while an earlier object is refused")
@@ -403,7 +404,7 @@ func TestAnotherOwnersSecretUnderThatNameIsLeftAlone(t *testing.T) {
 	}
 	before := get(t, admin, &corev1.Secret{}, "kube-system", clientSecret).ResourceVersion
 	grantAccess(t, cp)
-	eventually(t, 30*time.Second, func() error {
+	testenv.Eventually(t, func() error {
 		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying); err != nil {
 			return err
 		}
