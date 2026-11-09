@@ -236,7 +236,9 @@ func run(t *testing.T, cfg *rest.Config, gatewayAPI bool) (client.Client, <-chan
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := operator.Setup(mgr, operator.Inputs{Config: operator.DefaultConfig(), Version: "v0.0.0-test", SignerImage: "registry.example/lodia-signer:test", TunnelImage: "registry.example/lodia-tunnel:test", EtcdDruidVersion: "v0.39.0", EtcdDruidNamespace: "etcd-druid", OperatorNamespace: "lodia-system", GatewayAPI: gatewayAPI}); err != nil {
+	in := testInputs
+	in.GatewayAPI = gatewayAPI
+	if err := operator.Setup(mgr, in); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -260,6 +262,8 @@ func run(t *testing.T, cfg *rest.Config, gatewayAPI bool) (client.Client, <-chan
 	return k8s, stopped
 }
 
+var testInputs = operator.Inputs{Config: operator.DefaultConfig(), Version: "v0.0.0-test", SignerImage: "registry.example/lodia-signer:test", TunnelImage: "registry.example/lodia-tunnel:test", EtcdDruidVersion: "v0.39.0", EtcdDruidNamespace: "etcd-druid", OperatorNamespace: "lodia-system"}
+
 func expectAPass(t *testing.T, k8s client.Client, stopped <-chan struct{}, reason, message string) {
 	t.Helper()
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "operator-"}}
@@ -281,6 +285,10 @@ func expectAPass(t *testing.T, k8s client.Client, stopped <-chan struct{}, reaso
 	if err := k8s.Create(t.Context(), cp); err != nil {
 		t.Fatal(err)
 	}
+	revision, err := testInputs.Revision()
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := map[string]string{
 		lodiav1alpha1.ConditionRoutesReady: message,
 		lodiav1alpha1.ConditionReady:       "RoutesReady: " + message,
@@ -296,7 +304,7 @@ func expectAPass(t *testing.T, k8s client.Client, stopped <-chan struct{}, reaso
 				last = errors.Join(last, fmt.Errorf("%s is %+v, want False %s %q", conditionType, c, reason, message))
 			}
 		}
-		if cp.Status.Target == nil || !strings.HasPrefix(cp.Status.Target.OperatorRevision, "v0.0.0-test+") {
+		if cp.Status.Target == nil || cp.Status.Target.OperatorRevision != revision {
 			last = errors.Join(last, fmt.Errorf("status.target is %+v, want the operator revision of the Inputs", cp.Status.Target))
 		}
 		return last == nil, nil

@@ -99,6 +99,18 @@ func TestTheDigestTellsWhereOneInputEndsAndTheNextBegins(t *testing.T) {
 		if second := revisionOf(t, in); second == first {
 			t.Errorf(`"ab" and "c" in inputs %d and %d, then "a" and "bc", give one revision, %q`, i, i+1, first)
 		}
+		*neighbours[i], *neighbours[i+1] = "a b", "c"
+		first = revisionOf(t, in)
+		*neighbours[i], *neighbours[i+1] = "a", "b c"
+		if second := revisionOf(t, in); second == first {
+			t.Errorf(`"a b" and "c" in inputs %d and %d, then "a" and "b c", give one revision, %q`, i, i+1, first)
+		}
+		*neighbours[i], *neighbours[i+1] = "x", "y"
+		first = revisionOf(t, in)
+		*neighbours[i], *neighbours[i+1] = "y", "x"
+		if second := revisionOf(t, in); second == first {
+			t.Errorf("inputs %d and %d swapped give one revision, %q", i, i+1, first)
+		}
 	}
 }
 
@@ -155,6 +167,14 @@ func TestTheOperatorRefusesToStartWithoutAVersion(t *testing.T) {
 	}
 	if err := operator.Setup(nil, in); err == nil || !strings.Contains(err.Error(), "without a version") {
 		t.Errorf("Setup with an empty version returns %v, want the refusal before it touches the manager", err)
+	}
+}
+
+func TestTheOperatorRefusesAVersionThatIsNotUTF8(t *testing.T) {
+	in := revisionInputs()
+	in.Version = "v1.2.3\xff"
+	if revision, err := in.Revision(); err == nil {
+		t.Errorf("a version that is not UTF-8 gives the revision %q", revision)
 	}
 }
 
