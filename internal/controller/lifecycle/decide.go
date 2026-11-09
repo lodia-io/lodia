@@ -127,11 +127,8 @@ func (f facts) versionChange() change {
 		c.target = want
 		return c
 	}
-	ahead, ok := versions.MinorsAhead(c.target, want)
+	ahead, _ := versions.MinorsAhead(c.target, want)
 	switch {
-	case !ok || ahead < 0:
-		c.unsupported = fmt.Sprintf("spec.version %s is an older minor than the target %s, which stays", want, c.target)
-		c.settle(cp)
 	case ahead > 0:
 		f.minorStep(&c)
 	case want != c.target:
