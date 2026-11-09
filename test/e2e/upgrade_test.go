@@ -105,6 +105,7 @@ func TestMinorUpgradeGate(t *testing.T) {
 			return ctx
 		}).
 		Assess("the edit takes the upgrade through its preflight and a Backup that completes before the target moves", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			pullAddons(ctx, t, node, upgradeTo)
 			start = time.Now()
 			setVersionTo(ctx, t, k8s, key, upgradeTo)
 			backup := expectBackupCompleted(ctx, t, k8s, key, "1.37", upgradeFrom, upgradeTo, upgrade)
@@ -310,6 +311,26 @@ func runWeb(ctx context.Context, t *testing.T, access *tenantAccess, node string
 		return running(web)
 	})
 	return web
+}
+
+func imagesOf(t *testing.T, version string) versions.Images {
+	t.Helper()
+	images, ok := versions.For(version)
+	if !ok {
+		t.Fatalf("Lodia does not run %s", version)
+	}
+	return images
+}
+
+func pullAddons(ctx context.Context, t *testing.T, node, version string) {
+	t.Helper()
+	images := imagesOf(t, version)
+	for _, image := range []string{images.KubeProxy, images.CoreDNS} {
+		until(ctx, t, 2*time.Minute, image+" is pulled into node "+node, func(ctx context.Context) error {
+			_, err := docker(ctx, "exec", node, "crictl", "pull", image)
+			return err
+		})
+	}
 }
 
 func readLoopsPast(ctx context.Context, t *testing.T, end time.Time, loops []apiLoopRun) ([]loopCounts, []string) {

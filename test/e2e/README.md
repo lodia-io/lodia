@@ -62,7 +62,7 @@ It sits behind the build tag `upgrade` with `e2e`, and `make e2e-upgrade` runs i
 It reuses G3's versitygw store ([Gate G3](#gate-g3-a-backup-and-a-restore)) for the class `e2e-upgrade`, and needs nothing else of G3.
 
 A `ControlPlane` at v1.36.4 turns `Ready`, a container of the kind node image `v1.36.4`, by digest, joins it, and a pod runs on it.
-Both loops and two watches, of the `ControlPlane` and of the namespace's Deployments, start before `spec.version` moves to v1.37.1:
+kube-proxy's and CoreDNS's images of v1.37.1 are pulled into the node, and both loops and two watches, of the `ControlPlane` and of the namespace's Deployments, start before `spec.version` moves to v1.37.1:
 
 1. The `Backup` of 1.37 turns `Completed` with `status.kubernetesVersion` v1.36.4, no owner reference, before the target moves.
 2. While the API server reports v1.37.1 and the addons still the old minor, `logs` and `exec` reach the pod, the agents having reconnected to the new konnectivity-server ([metrics.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/pkg/server/metrics/metrics.go#L126-L133)).
