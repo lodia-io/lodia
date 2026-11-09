@@ -199,26 +199,3 @@ func TestAWriteWaitsForTheGatewaysSemaphoreUntilThePasssDeadline(t *testing.T) {
 		t.Error("two Gateways share a semaphore")
 	}
 }
-
-func TestTheEndpointIsComparedByValue(t *testing.T) {
-	endpoint := func(tunnel string) *lodiav1alpha1.EndpointStatus {
-		return &lodiav1alpha1.EndpointStatus{
-			APIServer: lodiav1alpha1.HostPort{Host: "api.x", Port: 443}, Konnectivity: lodiav1alpha1.HostPort{Host: "konnectivity.x", Port: 443},
-			InCluster: lodiav1alpha1.HostPort{Host: lodiav1alpha1.DefaultAdvertiseAddress, Port: 6443}, Tunnel: &lodiav1alpha1.HostPort{Host: tunnel, Port: 443},
-		}
-	}
-	for _, c := range []struct {
-		name string
-		a, b *lodiav1alpha1.EndpointStatus
-		want bool
-	}{
-		{"two copies", endpoint("tunnel.x"), endpoint("tunnel.x"), true},
-		{"another tunnel", endpoint("tunnel.x"), endpoint("tunnel.y"), false},
-		{"none and one", nil, endpoint("tunnel.x"), false},
-		{"none", nil, nil, true},
-	} {
-		if got := sameEndpoint(c.a, c.b); got != c.want {
-			t.Errorf("%s: sameEndpoint is %t, want %t", c.name, got, c.want)
-		}
-	}
-}

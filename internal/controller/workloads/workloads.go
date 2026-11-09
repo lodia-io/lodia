@@ -807,7 +807,7 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlP
 		unchanged = unchanged && previous != nil && previous.Status == c.Status && previous.Reason == c.Reason &&
 			previous.Message == c.Message && previous.ObservedGeneration == c.ObservedGeneration
 	}
-	if unchanged && sameEndpoint(cp.Status.Endpoint, endpoint) && equality.Semantic.DeepEqual(cp.Status.Components, components) {
+	if unchanged && equality.Semantic.DeepEqual(cp.Status.Endpoint, endpoint) && equality.Semantic.DeepEqual(cp.Status.Components, components) {
 		return nil
 	}
 	conditions := slices.Clone(cp.Status.Conditions)
@@ -842,13 +842,6 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlP
 		"status":     status,
 	}}
 	return r.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(controlPlane), client.FieldOwner(FieldManager), client.ForceOwnership)
-}
-
-func sameEndpoint(a, b *lodiav1alpha1.EndpointStatus) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	return equality.Semantic.DeepEqual(*a, *b)
 }
 
 func newCondition(status metav1.ConditionStatus, reason, message string) metav1.Condition {
