@@ -140,6 +140,34 @@ func TestTheAddonsVersionIsTheRenderOfAPassThatAppliedInFull(t *testing.T) {
 	})
 }
 
+func TestAPassThatAppliedInFullReportsEvenWhenTheRolloutCannotBeRead(t *testing.T) {
+	cp, admin := servedTenant(t, "tenant-addons-rollout")
+	testenv.Eventually(t, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
+	})
+	update(t, cp, paused)
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	rebindOperator(t, admin, []rbacv1.PolicyRule{
+		{APIGroups: []string{"", "discovery.k8s.io", "rbac.authorization.k8s.io"}, Resources: []string{"*"}, Verbs: []string{"*"}},
+		{APIGroups: []string{"apps"}, Resources: []string{"*"}, Verbs: []string{"patch"}},
+		{NonResourceURLs: []string{"*"}, Verbs: []string{"*"}},
+	}, authorizationv1.ResourceAttributes{Group: "apps", Resource: "deployments", Verb: "get", Namespace: "kube-system"})
+	setAddons(t, cp, older)
+	refresh(t, cp)
+
+	made, err := pass(t, cp, cp.DeepCopy(), *dial.Load(), nil)
+	if err == nil {
+		t.Fatal("a pass that cannot read the rollout succeeded")
+	}
+	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied); err != nil {
+		t.Error(err)
+	}
+	expectAddons(t, made, version)
+	if got := storedAddons(t, cp); got != version {
+		t.Errorf("status.addons.version is %s after a full apply, want %s", got, version)
+	}
+}
+
 func TestAPassThatDidNotApplyInFullKeepsTheAddonsVersion(t *testing.T) {
 	t.Run("the tenant refuses an object", func(t *testing.T) {
 		cp, admin := servedTenant(t, "tenant-addons-refused")
