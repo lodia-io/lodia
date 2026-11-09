@@ -16,12 +16,14 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -123,17 +125,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if cp.Spec.Endpoint.Gateway != nil {
 		r.deliverTunnelClient(ctx, cp)
 	}
-	if err := live.Conditions(ctx, r.Reader, cp, lodiav1alpha1.ConditionAddonsApplied, lodiav1alpha1.ConditionAddonsAvailable); err != nil {
+	if err := live.Addons(ctx, r.Reader, cp, lodiav1alpha1.ConditionAddonsApplied, lodiav1alpha1.ConditionAddonsAvailable); err != nil {
 		return ctrl.Result{}, err
 	}
 	applied, available := previous(cp, lodiav1alpha1.ConditionAddonsApplied), previous(cp, lodiav1alpha1.ConditionAddonsAvailable)
 	if meta.FindStatusCondition(cp.Status.Conditions, applied.Type) == nil || meta.FindStatusCondition(cp.Status.Conditions, available.Type) == nil {
-		if err := r.applyStatus(ctx, cp, applied, available); err != nil {
+		if err := r.applyStatus(ctx, cp, cp.Status.Addons, applied, available); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
 	if !statusapply.TrueAt(cp, lodiav1alpha1.ConditionAccessReady) {
-		if err := r.applyStatus(ctx, cp, waitForAccess(cp, applied), waitForAccess(cp, available)); err != nil {
+		if err := r.applyStatus(ctx, cp, cp.Status.Addons, waitForAccess(cp, applied), waitForAccess(cp, available)); err != nil {
 			return ctrl.Result{}, err
 		}
 		if cp.Spec.Endpoint.Gateway != nil {
@@ -183,6 +185,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		// No answer is no observation: a True stays, anything else says so.
 		applied = newCondition(cp, applied.Type, metav1.ConditionFalse, reason, message)
 	}
+	addons := cp.Status.Addons
+	if applyErr == nil && len(others) == 0 {
+		rendered := ptr.Deref(addons, lodiav1alpha1.Rendered{})
+		rendered.Version = v.Version
+		addons = &rendered
+	}
 	if syncErr == nil {
 		available = rolled
 	}
@@ -192,7 +200,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		reason, message, _ := outcome(syncErr)
 		available = newCondition(cp, available.Type, metav1.ConditionFalse, reason, message)
 	}
-	if err := r.applyStatus(ctx, cp, applied, available); err != nil || syncErr != nil {
+	if err := r.applyStatus(ctx, cp, addons, applied, available); err != nil || syncErr != nil {
 		return ctrl.Result{}, errors.Join(syncErr, err)
 	}
 	if available.Status != metav1.ConditionTrue {
@@ -212,7 +220,7 @@ func outcome(err error) (string, string, bool) {
 
 // wait says what both conditions wait for: neither can be observed yet.
 func (r *Reconciler) wait(ctx context.Context, cp *lodiav1alpha1.ControlPlane, reason, message string) error {
-	return r.applyStatus(ctx, cp,
+	return r.applyStatus(ctx, cp, cp.Status.Addons,
 		newCondition(cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, reason, message),
 		newCondition(cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, reason, message))
 }
@@ -374,8 +382,9 @@ func newCondition(cp *lodiav1alpha1.ControlPlane, conditionType string, status m
 	return metav1.Condition{Type: conditionType, Status: status, Reason: reason, Message: message, ObservedGeneration: cp.Generation}
 }
 
-// applyStatus writes only on a change, and both conditions every time: an
-// apply that leaves one out removes it.
-func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, conditions ...metav1.Condition) error {
-	return statusapply.ApplyInto(ctx, r.Client, r.Reader, FieldManager, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: conditions}, false)
+// applyStatus writes only on a change, and everything Tenant owns every time:
+// both conditions and addons, since an apply that leaves one out removes it.
+// A path that changes no addons passes cp's, which Reconcile read live.
+func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, addons *lodiav1alpha1.Rendered, conditions ...metav1.Condition) error {
+	return statusapply.ApplyInto(ctx, r.Client, r.Reader, FieldManager, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: conditions, Addons: addons}, !equality.Semantic.DeepEqual(cp.Status.Addons, addons))
 }

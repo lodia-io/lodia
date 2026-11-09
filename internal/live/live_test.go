@@ -49,6 +49,7 @@ func held(t *testing.T) (client.Reader, *lodiav1alpha1.ControlPlane) {
 				InCluster:    lodiav1alpha1.HostPort{Host: lodiav1alpha1.DefaultAdvertiseAddress, Port: 6443},
 				Tunnel:       &lodiav1alpha1.HostPort{Host: "tunnel.dev.example.com", Port: 443},
 			},
+			Addons: &lodiav1alpha1.Rendered{Version: "v1.37.1"},
 			Components: &lodiav1alpha1.ComponentsStatus{
 				APIServer: &lodiav1alpha1.ComponentStatus{
 					RolloutCount: lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: 2, Ready: 2}, Updated: new(int32(2))},
@@ -119,6 +120,30 @@ func TestComponentsTakesTheAPIServersStatus(t *testing.T) {
 	}
 }
 
+func TestAddonsTakesTheAPIServersStatus(t *testing.T) {
+	reader, server := held(t)
+	cp := cachedAs(server.UID)
+	cp.Status.Addons = &lodiav1alpha1.Rendered{Version: "v1.36.9"}
+	if err := live.Addons(t.Context(), reader, cp, lodiav1alpha1.ConditionAPIServerReady); err != nil {
+		t.Fatal(err)
+	}
+	if !equality.Semantic.DeepEqual(cp.Status.Addons, server.Status.Addons) {
+		t.Errorf("status.addons %+v, want the API server's %+v", cp.Status.Addons, server.Status.Addons)
+	}
+	for _, c := range []struct {
+		conditionType string
+		from          *lodiav1alpha1.ControlPlane
+	}{{lodiav1alpha1.ConditionAPIServerReady, server}, {lodiav1alpha1.ConditionDatastoreReady, cachedAs(server.UID)}} {
+		got, want := meta.FindStatusCondition(cp.Status.Conditions, c.conditionType), meta.FindStatusCondition(c.from.Status.Conditions, c.conditionType)
+		if !equality.Semantic.DeepEqual(got, want) {
+			t.Errorf("%s is %+v, want %+v", c.conditionType, got, want)
+		}
+	}
+	if cp.Status.Components != nil || cp.Status.Endpoint != nil {
+		t.Errorf("status.components %+v and status.endpoint %+v, want the cache's, none", cp.Status.Components, cp.Status.Endpoint)
+	}
+}
+
 func TestCredentialsTakesTheAPIServersStatus(t *testing.T) {
 	reader, server := held(t)
 	cp := cachedAs(server.UID)
@@ -178,6 +203,9 @@ func TestAReadOfAnotherObjectFails(t *testing.T) {
 		}},
 		{"Components", func(reader client.Reader, cp *lodiav1alpha1.ControlPlane) error {
 			return live.Components(t.Context(), reader, cp, lodiav1alpha1.ConditionAPIServerReady)
+		}},
+		{"Addons", func(reader client.Reader, cp *lodiav1alpha1.ControlPlane) error {
+			return live.Addons(t.Context(), reader, cp, lodiav1alpha1.ConditionAPIServerReady)
 		}},
 		{"Nodes", func(reader client.Reader, cp *lodiav1alpha1.ControlPlane) error {
 			return live.Nodes(t.Context(), reader, cp, lodiav1alpha1.ConditionControllerManagerHeld)
