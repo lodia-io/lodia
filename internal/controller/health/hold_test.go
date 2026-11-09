@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -109,11 +110,15 @@ func (h *holdRun) fail(path string, method string, code int, reason metav1.Statu
 }
 
 func refuse(w http.ResponseWriter, code int, reason metav1.StatusReason) {
+	refuseSaying(w, code, reason, "injected: "+string(reason))
+}
+
+func refuseSaying(w http.ResponseWriter, code int, reason metav1.StatusReason, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(metav1.Status{
 		TypeMeta: metav1.TypeMeta{Kind: "Status", APIVersion: "v1"},
-		Status:   metav1.StatusFailure, Reason: reason, Code: int32(code), Message: "injected: " + string(reason),
+		Status:   metav1.StatusFailure, Reason: reason, Code: int32(code), Message: message,
 	})
 }
 
@@ -1010,6 +1015,49 @@ func TestAHoldOfNoCountedNodeAfterTheOwnerDeletesThemEndsByTheRelease(t *testing
 	if holder := h.holder(); holder != "" {
 		t.Fatalf("a hold of no counted node did not end, holder %q", holder)
 	}
+}
+
+func TestALongHolderIsCutInTheMessageAndTheStatusIsApplied(t *testing.T) {
+	for name, letter := range map[string]string{"of ASCII": "h", "of two-byte characters": "я"} {
+		t.Run(name, func(t *testing.T) {
+			h := sampling(t, "a", "b", "c")
+			h.at(0)
+			renew(t, lodiav1alpha1.ControllerManagerLease, strings.Repeat(letter, 40000), time.Now())
+			before := h.lease()
+			h.at(20)
+			h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonHoldBlocked, silent(3, 3)+atOrAbove+"60%, but "+strings.Repeat(letter, 1024)+" holds Lease kube-system/kube-controller-manager")
+			h.expectUntouched(before)
+			expectNodes(t, h.cp, nodesOf(3, 3, 0, "v1.35.0"))
+			h.r.Client = noControlPlaneWrite(t, k8s)
+			h.at(25)
+		})
+	}
+}
+
+func TestALongRefusalIsCutInTheMessageAndTheStatusIsApplied(t *testing.T) {
+	deny := func(w http.ResponseWriter, req *http.Request) bool {
+		if req.URL.Path != managerLease || req.Method != http.MethodPut {
+			return false
+		}
+		refuseSaying(w, http.StatusForbidden, metav1.StatusReasonForbidden, strings.Repeat("d", 40000))
+		return true
+	}
+	denial := strings.Repeat("d", 1024)
+	t.Run("of a renewal", func(t *testing.T) {
+		h := holding(t, "a", "b", "c")
+		h.inject(deny)
+		h.at(25)
+		h.expectSilent("the API server refused the renewal of Lease kube-system/kube-controller-manager: " + denial)
+		h.expectHealth(3, 3)
+	})
+	t.Run("of a take", func(t *testing.T) {
+		h := sampling(t, "a", "b", "c")
+		h.at(0)
+		renew(t, lodiav1alpha1.ControllerManagerLease, "", time.Now())
+		h.inject(deny)
+		h.at(20)
+		h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonHoldBlocked, "the API server refused the take of Lease kube-system/kube-controller-manager: "+denial)
+	})
 }
 
 func TestARefusedTakeIsHoldBlockedAndNeverNodesSilent(t *testing.T) {

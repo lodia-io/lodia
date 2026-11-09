@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -31,6 +32,11 @@ const (
 	// releasedLeaseSeconds is the duration client-go leaves on a Lease its holder
 	// releases (https://github.com/kubernetes/client-go/blob/v0.37.1/tools/leaderelection/leaderelection.go#L341-L347).
 	releasedLeaseSeconds int32 = 1
+
+	// maxQuoted bounds what a message quotes from the tenant: a Lease's holder
+	// and a refusal have no limit, and a message over the schema's 32768 fails
+	// the whole status apply.
+	maxQuoted = 1024
 )
 
 type leaseWrite int
@@ -181,7 +187,7 @@ func (r *NodesReconciler) selectRow(ctx context.Context, cp *lodiav1alpha1.Contr
 				return row{}, fmt.Errorf("list the pods of the ControlPlane: %w", err)
 			}
 			if !pod {
-				return row{condition: held(cp, lodiav1alpha1.ReasonHoldBlocked, share+", but "+holder+" holds Lease "+lodiav1alpha1.LeaderElectionNamespace+"/"+lodiav1alpha1.ControllerManagerLease)}, nil
+				return row{condition: held(cp, lodiav1alpha1.ReasonHoldBlocked, share+", but "+quoted(holder)+" holds Lease "+lodiav1alpha1.LeaderElectionNamespace+"/"+lodiav1alpha1.ControllerManagerLease)}, nil
 			}
 		}
 		return decide(takeLease, nodesSilent(cp, share+holds))
@@ -215,12 +221,20 @@ func nodesSilent(cp *lodiav1alpha1.ControlPlane, message string) *metav1.Conditi
 // tells the refusal, and a renewal or a release keeps the Lease as it read it.
 func refusedRow(cp *lodiav1alpha1.ControlPlane, chosen row, err error) row {
 	verb := map[leaseWrite]string{takeLease: "take", renewLease: "renewal", releaseLease: "release"}[chosen.write]
-	message := "the API server refused the " + verb + " of Lease " + lodiav1alpha1.LeaderElectionNamespace + "/" + lodiav1alpha1.ControllerManagerLease + ": " + err.Error()
+	message := "the API server refused the " + verb + " of Lease " + lodiav1alpha1.LeaderElectionNamespace + "/" + lodiav1alpha1.ControllerManagerLease + ": " + quoted(err.Error())
 	if chosen.write == takeLease {
 		return row{condition: held(cp, lodiav1alpha1.ReasonHoldBlocked, message)}
 	}
 	chosen.condition = nodesSilent(cp, message)
 	return chosen
+}
+
+// quoted cuts text from the tenant to maxQuoted characters.
+func quoted(text string) string {
+	if utf8.RuneCountInString(text) <= maxQuoted {
+		return text
+	}
+	return string([]rune(text)[:maxQuoted])
 }
 
 func holdStatus(chosen row, lease *coordinationv1.Lease) *lodiav1alpha1.HealthStatus {
