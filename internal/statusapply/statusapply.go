@@ -72,8 +72,7 @@ func Merge(current []metav1.Condition, conditions ...metav1.Condition) ([]metav1
 
 // Apply writes desired, every status field and condition manager owns, since
 // an apply that leaves one out removes it, and only when a condition differs
-// from cp's or the caller says another field does; it leaves cp with the
-// conditions it wrote.
+// from cp's or the caller says another field does.
 //
 // A change is first read through reader, which must not be a cache: the
 // transitions come from the API server's copy, and the write stops on another
@@ -82,10 +81,26 @@ func Merge(current []metav1.Condition, conditions ...metav1.Condition) ([]metav1
 // of a custom resource's status takes the stored metadata
 // (k8s.io/apiextensions-apiserver@v0.37.0 pkg/registry/customresource/status_strategy.go#L81).
 func Apply(ctx context.Context, writer client.StatusClient, reader client.Reader, manager string, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed bool) error {
+	_, err := write(ctx, writer, reader, manager, cp, desired, changed)
+	return err
+}
+
+// ApplyInto is Apply for a writer that goes on from its own conditions in the
+// same pass: it leaves cp with the conditions it wrote.
+func ApplyInto(ctx context.Context, writer client.StatusClient, reader client.Reader, manager string, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed bool) error {
+	written, err := write(ctx, writer, reader, manager, cp, desired, changed)
+	if written != nil {
+		cp.Status.Conditions = written
+	}
+	return err
+}
+
+// write returns the conditions it wrote among cp's, nil when it wrote none.
+func write(ctx context.Context, writer client.StatusClient, reader client.Reader, manager string, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed bool) ([]metav1.Condition, error) {
 	if !changed && !slices.ContainsFunc(desired.Conditions, func(c metav1.Condition) bool {
 		return Differs(meta.FindStatusCondition(cp.Status.Conditions, c.Type), c)
 	}) {
-		return nil
+		return nil, nil
 	}
 	ctx, cancel := ownDeadline(ctx)
 	defer cancel()
@@ -93,26 +108,26 @@ func Apply(ctx context.Context, writer client.StatusClient, reader client.Reader
 	for _, c := range desired.Conditions {
 		conditionTypes = append(conditionTypes, c.Type)
 	}
-	if err := live.Conditions(ctx, reader, cp, conditionTypes...); err != nil {
-		return err
+	read := cp.DeepCopy()
+	if err := live.Conditions(ctx, reader, read, conditionTypes...); err != nil {
+		return nil, err
 	}
-	all, applied, conditionsChanged, err := Merge(cp.Status.Conditions, desired.Conditions...)
+	all, applied, conditionsChanged, err := Merge(read.Status.Conditions, desired.Conditions...)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !changed && !conditionsChanged {
-		return nil
+		return nil, nil
 	}
 	fields, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&desired)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	fields["conditions"] = applied
 	if err := apply(ctx, writer, manager, "ControlPlane", map[string]any{"name": cp.Name, "namespace": cp.Namespace}, fields); err != nil {
-		return err
+		return nil, err
 	}
-	cp.Status.Conditions = all
-	return nil
+	return all, nil
 }
 
 // ApplyLocked writes fields under the resourceVersion obj was read at, for a

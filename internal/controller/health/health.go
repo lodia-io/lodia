@@ -839,5 +839,5 @@ func previous(cp *lodiav1alpha1.ControlPlane, conditionType string) metav1.Condi
 // every time, since an apply that leaves one out removes it; it leaves cp
 // with what it wrote.
 func (r *Reconciler) apply(ctx context.Context, cp *lodiav1alpha1.ControlPlane, conditions ...metav1.Condition) error {
-	return statusapply.Apply(ctx, r.Client, r.Reader, FieldManager, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: conditions}, false)
+	return statusapply.ApplyInto(ctx, r.Client, r.Reader, FieldManager, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: conditions}, false)
 }

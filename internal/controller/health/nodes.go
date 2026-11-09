@@ -364,7 +364,7 @@ func changes(cp *lodiav1alpha1.ControlPlane, nodes *lodiav1alpha1.NodesStatus, h
 // apply writes every field each time, since an apply that leaves one out
 // removes it; it leaves cp with what it wrote.
 func (r *NodesReconciler) apply(ctx context.Context, cp *lodiav1alpha1.ControlPlane, nodes *lodiav1alpha1.NodesStatus, health *lodiav1alpha1.HealthStatus, c metav1.Condition) error {
-	if err := statusapply.Apply(ctx, r.Client, r.Reader, NodesFieldManager, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{c}, Nodes: nodes, Health: health}, true); err != nil {
+	if err := statusapply.ApplyInto(ctx, r.Client, r.Reader, NodesFieldManager, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{c}, Nodes: nodes, Health: health}, true); err != nil {
 		return err
 	}
 	cp.Status.Nodes, cp.Status.Health = nodes, health

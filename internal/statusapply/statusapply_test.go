@@ -282,7 +282,7 @@ func TestTheTransitionComesFromTheAPIServerNotTheCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	cached.Status.Conditions = []metav1.Condition{condition(metav1.ConditionFalse, "the cache lags", earlier)}
-	if err := apply(t.Context(), cached, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{condition(metav1.ConditionTrue, "after", later)}}, false); err != nil {
+	if err := statusapply.ApplyInto(t.Context(), k8s, k8s, manager, cached, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{condition(metav1.ConditionTrue, "after", later)}}, false); err != nil {
 		t.Fatal(err)
 	}
 	got := meta.FindStatusCondition(stored(t, cp).Status.Conditions, lodiav1alpha1.ConditionReady)
@@ -292,6 +292,27 @@ func TestTheTransitionComesFromTheAPIServerNotTheCache(t *testing.T) {
 	held := meta.FindStatusCondition(cached.Status.Conditions, lodiav1alpha1.ConditionReady)
 	if held.Message != "after" || !held.LastTransitionTime.Equal(&earlier) {
 		t.Errorf("the object is left with %+v, not what was written", held)
+	}
+}
+
+func TestApplyLeavesTheCallersConditionsAlone(t *testing.T) {
+	cp := controlPlane(t, namespace(t))
+	if err := apply(t.Context(), cp, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{condition(metav1.ConditionTrue, "server", earlier)}}, false); err != nil {
+		t.Fatal(err)
+	}
+	if len(cp.Status.Conditions) != 0 {
+		t.Errorf("the first apply left %+v", cp.Status.Conditions)
+	}
+	cached := condition(metav1.ConditionFalse, "cached", earlier)
+	cp.Status.Conditions = []metav1.Condition{cached}
+	if err := apply(t.Context(), cp, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{condition(metav1.ConditionTrue, "new", later)}}, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionReady); got.Message != "cached" {
+		t.Errorf("Ready became %+v, want the caller's", got)
+	}
+	if got := meta.FindStatusCondition(stored(t, cp).Status.Conditions, lodiav1alpha1.ConditionReady); got.Message != "new" {
+		t.Errorf("the server holds %+v", got)
 	}
 }
 
