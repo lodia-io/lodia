@@ -53,7 +53,10 @@ func TestMinorUpgradeChain(t *testing.T) {
 				return controlPlaneReady(ctx, k8s, key, &lodiav1alpha1.ControlPlane{})
 			})
 			access = openTenant(ctx, t, k8s, key)
-			joinNodes(ctx, t, cfg, k8s, key, access, 2)
+			node := joinNode(ctx, t, cfg, k8s, key, access, bootstrapToken(ctx, t, access.client), 1)
+			installCNI(ctx, t, access, node)
+			waitForNode(ctx, t, access, node)
+			waitForAgents(ctx, t, access, 1)
 			upgrade = watchUpgrade(ctx, t, k8s, key)
 			return ctx
 		}).
@@ -73,7 +76,7 @@ func TestMinorUpgradeChain(t *testing.T) {
 				return nil
 			})
 			nodeImage = nodeImage136
-			addNode(ctx, t, cfg, k8s, key, access, 3)
+			addNode(ctx, t, cfg, k8s, key, access, 2)
 			return ctx
 		}).
 		Assess("the second minor step ends at spec.version, through its own Backup, and a node of the last minor joins", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
@@ -82,11 +85,11 @@ func TestMinorUpgradeChain(t *testing.T) {
 				return upgradeEnded(ctx, k8s, key, to)
 			})
 			nodeImage = defaults.Image
-			addNode(ctx, t, cfg, k8s, key, access, 4)
+			addNode(ctx, t, cfg, k8s, key, access, 3)
 			upgrade.check(t)
 			for name, want := range map[string]string{
 				fmt.Sprintf("%s-tenant-node-1", clusterName(t, cfg)): from,
-				fmt.Sprintf("%s-tenant-node-3", clusterName(t, cfg)): "v1.36.4",
+				fmt.Sprintf("%s-tenant-node-2", clusterName(t, cfg)): "v1.36.4",
 			} {
 				node := &corev1.Node{}
 				if err := access.client.Get(ctx, client.ObjectKey{Name: name}, node); err != nil {

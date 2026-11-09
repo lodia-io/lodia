@@ -123,7 +123,7 @@ e2e-upgrade: ## gate G1, a minor upgrade under two loops, on a kind cluster of i
 	mkdir -p $(E2E_DIR)
 	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig
 	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,upgrade -count=1 -timeout 40m -run '^$(E2E_UPGRADE_TEST)$$' ./test/e2e/...; status=$$?; \
-	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 $(E2E_CLUSTER)-tenant-node-2 $(E2E_CLUSTER)-tenant-node-3 $(E2E_CLUSTER)-tenant-node-4 || status=1; \
+	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 $(E2E_CLUSTER)-tenant-node-2 $(E2E_CLUSTER)-tenant-node-3 || status=1; \
 	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
 
 .PHONY: e2e-upgrade-ha

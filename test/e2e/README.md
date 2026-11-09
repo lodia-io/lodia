@@ -76,7 +76,7 @@ The test does not ask `Ready` to stay `True` through the upgrade, and logs each 
 [`nightly-upgrade.yml`](../../.github/workflows/nightly-upgrade.yml) runs two tests under the same tag every night, on demand, and on a pull request that changes the workflow or `test/e2e/upgrade_nightly_test.go`.
 Each is a job of its own, with its own kind cluster.
 
-`TestMinorUpgradeChain` (`make e2e-upgrade E2E_UPGRADE_TEST=TestMinorUpgradeChain`) takes a tenant from v1.35.8 to v1.37.1, the table's `Latest` of 1.36 between them: a `Backup` of each minor completes before the target moves, two kind nodes of v1.35.8 join at the first minor, one of v1.36.4 after the first step, and one of v1.37.0 at the end, and all four stay.
+`TestMinorUpgradeChain` (`make e2e-upgrade E2E_UPGRADE_TEST=TestMinorUpgradeChain`) takes a tenant from v1.35.8 to v1.37.1, the table's `Latest` of 1.36 between them: a `Backup` of each minor completes before the target moves, a kind node of v1.35.8 joins at the first minor, one of v1.36.4 after the first step, and one of v1.37.0 at the end, and the first two keep their kubelets.
 
 `TestHighAvailabilityUpgrade` (`make e2e-upgrade-ha`, on the cluster shape of G2) is G1's edit on a tenant with `failureTolerance: Zone`, under the two loops.
 
