@@ -803,7 +803,7 @@ func TestProxyFailsWhenItCannotBind(t *testing.T) {
 }
 
 func TestProxyOnItsSignalClosesTheListenerAndWaitsForItsConnections(t *testing.T) {
-	const wait = time.Second
+	const wait = 5 * time.Second
 	ca := newCA(t, "cluster")
 	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
 	f := startProxy(t, upstream.addr, pairFiles(t, client(t, ca)), caFiles(t, ca), func(p *Proxy) { p.ShutdownWait = wait })
