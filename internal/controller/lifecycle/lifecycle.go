@@ -11,12 +11,14 @@ import (
 	"strings"
 	"time"
 
-	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/statusapply"
@@ -51,6 +53,7 @@ type Reconciler struct {
 	client.Client
 	// Reader reads the ControlPlane as the API server holds it, before a write.
 	Reader client.Reader
+	Clock  clock.PassiveClock
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
@@ -58,60 +61,68 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 		Named(Name).
 		WithOptions(controller.Options{MaxConcurrentReconciles: workers, ReconciliationTimeout: time.Minute}).
 		For(&lodiav1alpha1.ControlPlane{}).
+		Watches(&lodiav1alpha1.Backup{}, handler.EnqueueRequestsFromMapFunc(backupsOwner)).
 		Complete(r)
+}
+
+func backupsOwner(_ context.Context, obj client.Object) []reconcile.Request {
+	backup := obj.(*lodiav1alpha1.Backup)
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{Namespace: backup.Namespace, Name: backup.Spec.ControlPlaneRef.Name}}}
 }
 
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/status,verbs=patch
+// +kubebuilder:rbac:groups=lodia.io,resources=backups,verbs=get;list;watch;create
 
+// Reconcile decides from the cached object and, when that decision changes
+// something, from the object as the API server holds it, comparing the write
+// with that copy: a pass on a cache behind Lifecycle's own write would undo it
+// (docs/decisions/independent-controllers.md).
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	cp := &lodiav1alpha1.ControlPlane{}
-	if err := r.Get(ctx, req.NamespacedName, cp); err != nil {
+	cached := &lodiav1alpha1.ControlPlane{}
+	if err := r.Get(ctx, req.NamespacedName, cached); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	next := desired(cp)
-	changed := next.ObservedGeneration != cp.Status.ObservedGeneration || !equality.Semantic.DeepEqual(next.Target, cp.Status.Target) ||
-		!equality.Semantic.DeepEqual(next.Kubernetes, cp.Status.Kubernetes)
-	return ctrl.Result{}, statusapply.Apply(ctx, r.Client, r.Reader, FieldManager, cp, next, changed)
+	gathered, err := r.gather(ctx, cached)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if d := decide(gathered); d.createBackup == "" && !d.differs(cached) {
+		return ctrl.Result{}, nil
+	}
+	current, err := statusapply.Live(ctx, r.Reader, cached)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if gathered, err = r.gather(ctx, current); err != nil {
+		return ctrl.Result{}, err
+	}
+	d := decide(gathered)
+	if err := statusapply.Apply(ctx, r.Client, r.Reader, FieldManager, current, d.status, d.fieldsDiffer(current)); err != nil {
+		return ctrl.Result{}, err
+	}
+	if d.createBackup != "" {
+		return ctrl.Result{}, client.IgnoreAlreadyExists(r.Create(ctx, &lodiav1alpha1.Backup{
+			ObjectMeta: metav1.ObjectMeta{Name: d.createBackup, Namespace: current.Namespace},
+			Spec:       lodiav1alpha1.BackupSpec{ControlPlaneRef: lodiav1alpha1.LocalReference{Name: current.Name}},
+		}))
+	}
+	return ctrl.Result{}, nil
 }
 
-// desired holds every status field Lifecycle owns and no other: an apply that
-// leaves one out removes it.
-func desired(cp *lodiav1alpha1.ControlPlane) lodiav1alpha1.ControlPlaneStatus {
-	progressing := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionProgressing)
-	readyNow := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionReady)
-	observedGeneration := cp.Status.ObservedGeneration
-	version := ""
-	if cp.Status.Target != nil {
-		version = cp.Status.Target.Version
+func (r *Reconciler) gather(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (facts, error) {
+	f := facts{cp: cp, now: r.Clock.Now()}
+	minor := backupMinor(cp)
+	if minor == "" {
+		return f, nil
 	}
-	switch {
-	case !cp.DeletionTimestamp.IsZero():
-		readyNow = newCondition(cp, lodiav1alpha1.ConditionReady, metav1.ConditionFalse, lodiav1alpha1.ReasonDeleting, "the ControlPlane is being deleted")
-	case cp.Spec.Paused:
-		progressing = newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonPaused, "spec.paused is true: Lodia reconciles nothing")
-	default:
-		var next lodiav1alpha1.Target
-		next, progressing = target(cp, version)
-		version = next.Version
-		readyNow = ready(cp)
-		if observed(cp) {
-			observedGeneration = cp.Generation
-		}
+	backup := &lodiav1alpha1.Backup{}
+	err := r.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.PreUpgradeBackupName(cp.Name, minor, cp.UID)}, backup)
+	if err != nil {
+		return f, client.IgnoreNotFound(err)
 	}
-	status := lodiav1alpha1.ControlPlaneStatus{ObservedGeneration: observedGeneration}
-	if version != "" {
-		status.Target = &lodiav1alpha1.Target{Version: version}
-	}
-	if reported := oldestReported(cp); reported != "" {
-		status.Kubernetes = &lodiav1alpha1.KubernetesStatus{Version: reported}
-	}
-	for _, c := range []*metav1.Condition{progressing, readyNow} {
-		if c != nil {
-			status.Conditions = append(status.Conditions, *c)
-		}
-	}
-	return status
+	f.backup = backup
+	return f, nil
 }
 
 // oldestReported is the oldest version the three components and the addons
@@ -133,35 +144,6 @@ func oldestReported(cp *lodiav1alpha1.ControlPlane) string {
 	}
 	oldest, _ := versions.Oldest(reported...)
 	return oldest
-}
-
-// target moves within a minor only: a minor upgrade needs the documented
-// order, the API server before the controller manager and the scheduler,
-// which phase 2 builds (docs/decisions/upgrades-and-maintenance-windows.md).
-func target(cp *lodiav1alpha1.ControlPlane, current string) (lodiav1alpha1.Target, *metav1.Condition) {
-	want := cp.Spec.Version
-	if _, ok := versions.For(want); !ok {
-		message := fmt.Sprintf("spec.version %s is not of a minor Lodia runs: %s", want, strings.Join(versions.Minors(), ", "))
-		return lodiav1alpha1.Target{Version: current},
-			newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, message)
-	}
-	wantMinor, _ := versions.Minor(want)
-	if currentMinor, ok := versions.Minor(current); ok && currentMinor != wantMinor {
-		message := fmt.Sprintf("spec.version %s is another minor than the target %s, which stays until minor upgrades are supported", want, current)
-		return lodiav1alpha1.Target{Version: current},
-			newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, message)
-	}
-	if lag := lagging(cp); len(lag) > 0 {
-		return lodiav1alpha1.Target{Version: want},
-			newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionTrue, lodiav1alpha1.ReasonLatestGenerationNotObserved,
-				fmt.Sprintf("generation %d is not taken up yet: %s", cp.Generation, strings.Join(lag, ", ")))
-	}
-	if rolling := rollingOut(cp); len(rolling) > 0 {
-		return lodiav1alpha1.Target{Version: want},
-			newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionTrue, lodiav1alpha1.ReasonRollingOut, strings.Join(rolling, "; "))
-	}
-	return lodiav1alpha1.Target{Version: want},
-		newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonIdle, "no upgrade, rotation or hibernation is running")
 }
 
 // rollingOut names what status.components and status.datastore.members count

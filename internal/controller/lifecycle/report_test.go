@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -64,9 +65,19 @@ func expectKubernetes(t *testing.T, cp *lodiav1alpha1.ControlPlane, want string)
 	})
 }
 
+func reportAll(t *testing.T, cp *lodiav1alpha1.ControlPlane, version string) {
+	t.Helper()
+	report(t, cp, version, version, version, version)
+}
+
 func TestKubernetesVersionIsTheOldestOfTheFourReports(t *testing.T) {
 	cp := controlPlane(t, "v1.37.1")
-	testenv.Eventually(t, func() error { return expect(t, cp, "v1.37.1", lodiav1alpha1.ReasonIdle) })
+	testenv.Eventually(t, func() error {
+		if target := get(t, cp).Status.Target; target == nil || target.Version != "v1.37.1" {
+			return fmt.Errorf("status.target is %+v", target)
+		}
+		return nil
+	})
 	expectKubernetes(t, cp, "")
 
 	for _, c := range []struct {
@@ -160,10 +171,9 @@ func TestKubernetesVersionIsWrittenWhenNothingElseChanged(t *testing.T) {
 	report(t, cp, "v1.37.1", "v1.37.1", "v1.37.1", "v1.37.0")
 	expectKubernetes(t, cp, "v1.37.0")
 	fresh := get(t, cp)
-	for _, conditionType := range []string{lodiav1alpha1.ConditionProgressing, lodiav1alpha1.ConditionReady} {
-		if before, after := meta.FindStatusCondition(settled.Status.Conditions, conditionType), meta.FindStatusCondition(fresh.Status.Conditions, conditionType); before == nil || after == nil || !equality.Semantic.DeepEqual(before, after) {
-			t.Errorf("%s moved from %+v to %+v: only status.kubernetes should have changed", conditionType, before, after)
-		}
+	before, after := meta.FindStatusCondition(settled.Status.Conditions, lodiav1alpha1.ConditionReady), meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionReady)
+	if before == nil || after == nil || !equality.Semantic.DeepEqual(before, after) {
+		t.Errorf("Ready moved from %+v to %+v: a report does not change it", before, after)
 	}
 }
 
@@ -183,15 +193,17 @@ func TestAPassWritesTheKubernetesVersionThroughAFailureAndADeadlineThatIsSpent(t
 	expectKubernetes(t, cp, "v1.37.1")
 	behind := get(t, cp)
 	behind.Status.Kubernetes = nil
+	stale := interceptor.NewClient(k8s, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			behind.DeepCopyInto(obj.(*lodiav1alpha1.ControlPlane))
+			return nil
+		},
+	})
 
 	var applied []*lodiav1alpha1.KubernetesStatus
 	pass := func(ctx context.Context, reader client.Reader, apply error) error {
 		applied = nil
-		c := interceptor.NewClient(k8s, interceptor.Funcs{
-			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-				behind.DeepCopyInto(obj.(*lodiav1alpha1.ControlPlane))
-				return nil
-			},
+		c := interceptor.NewClient(stale, interceptor.Funcs{
 			SubResourceApply: func(ctx context.Context, c client.Client, subResource string, obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
 				raw, err := json.Marshal(obj)
 				if err != nil {
@@ -208,13 +220,13 @@ func TestAPassWritesTheKubernetesVersionThroughAFailureAndADeadlineThatIsSpent(t
 				return c.SubResource(subResource).Apply(ctx, obj, opts...)
 			},
 		})
-		_, err := (&lifecycle.Reconciler{Client: c, Reader: reader}).Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+		_, err := (&lifecycle.Reconciler{Client: c, Reader: reader, Clock: clock.RealClock{}}).Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 		return err
 	}
 	wrote := func() bool { return len(applied) == 1 && applied[0] != nil && applied[0].Version == "v1.37.1" }
 
 	injected := errors.New("injected: the API server did not answer")
-	if err := pass(t.Context(), k8s, injected); !errors.Is(err, injected) || !wrote() {
+	if err := pass(t.Context(), stale, injected); !errors.Is(err, injected) || !wrote() {
 		t.Errorf("a pass whose write fails returned %v after applying %+v, want the write's error", err, applied)
 	}
 
@@ -229,7 +241,7 @@ func TestAPassWritesTheKubernetesVersionThroughAFailureAndADeadlineThatIsSpent(t
 
 	expired, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
 	defer cancel()
-	if err := pass(expired, k8s, nil); err != nil || !wrote() {
+	if err := pass(expired, stale, nil); err != nil || !wrote() {
 		t.Errorf("a pass whose deadline is spent returned %v after applying %+v, want it to write the version", err, applied)
 	}
 }
