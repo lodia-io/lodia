@@ -49,8 +49,8 @@ import (
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/live"
 	"go.lodia.io/lodia/internal/ownership"
-	"go.lodia.io/lodia/internal/statusapply"
 	"go.lodia.io/lodia/internal/restore"
+	"go.lodia.io/lodia/internal/statusapply"
 )
 
 const (
