@@ -80,6 +80,8 @@ Then wave 2: upgrades with maintenance windows, the fleet limit and the operator
 
 Done from wave 1b: the Gateway with in-cluster access, with its gate on every pull request and G6 and conformance behind the Gateway every night ([gates](../test/e2e/README.md#the-gateway-gate)).
 
+Done from wave 2: Health's internal probe, node sampling and the controller manager hold, with gate G4 every night ([gate](../test/e2e/README.md#nightly-gate-g4-nodes-cut-off-from-the-gateway)).
+
 Gate:
 
 - e2e: during a rolling update of the API server and during a minor upgrade (two kind node images), a client loop of 20 requests per second against the public endpoint, and one from a pod in the tenant through `kubernetes.default`, record zero failures.
@@ -87,6 +89,7 @@ Gate:
 - e2e: a `Backup` of A; B, created with `restoreFrom` it, stays inert while it serves A's namespaces and Secrets, and a `Released` B still waits, `SourceExists`; deleting A releases B, a node joins it, and the conformance smoke subset passes; every pull request checks it with [`TestRestoreGate`](../test/e2e/README.md#gate-g3-a-backup-and-a-restore).
 - e2e: cut both workers of a tenant off from the Gateway for 10 minutes; within 30 seconds Lodia holds the controller manager's lease and the controller manager exits; no node is tainted and every pod keeps its UID; reconnect, and the lease is released 2 minutes later.
   Cut one worker of two: no hold, and its pods move to the other after the toleration, as upstream does ([controller-manager-hold](decisions/controller-manager-hold.md)).
+  `TestControllerManagerHold` checks both every night in [`nightly-hold`](../test/e2e/README.md#nightly-gate-g4-nodes-cut-off-from-the-gateway).
 - e2e: an operator upgrade re-renders a tenant only inside its window; outside it, `Progressing` is False, `WaitingForWindow`, and `status.target.scheduledFor` is the window's next start; an edit of the tenant's spec renders it at once.
 - Measured: API p99 latency through the Gateway against a direct Service, overhead under 5 ms on kind.
   `TestGatewayOverhead` measures it in [`nightly-gateway`](../test/e2e/README.md#nightly-g6-and-conformance-behind-the-gateway); on 2026-11-08 on Docker Desktop's kernel 6.12.54-linuxkit with 16 CPUs, Δp99 was 0.06 ms through the Gateway and 0.17 ms through the tunnel on reused connections, and 0.11 and 0.99 ms on new ones, with no error.

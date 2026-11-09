@@ -5,8 +5,6 @@ package health
 
 import (
 	"context"
-	"fmt"
-	"strconv"
 	"sync"
 	"time"
 
@@ -21,7 +19,6 @@ import (
 	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/apimachinery/pkg/util/version"
 	"k8s.io/utils/clock"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -50,8 +47,8 @@ const (
 	maxKubeletVersion = 64
 )
 
-// NodesReconciler samples a tenant's nodes: it reports status.nodes and, in
-// ControllerManagerHeld, how many of the nodes that count are silent. It has a
+// NodesReconciler samples a tenant's nodes, reports status.nodes, and holds the
+// controller manager's leader Lease while most of them are silent. It has a
 // queue of its own, and touches only the in-namespace Service, so a public
 // endpoint that does not answer, which holds a worker of Reconciler for
 // Timeout, delays no sample (docs/decisions/controller-manager-hold.md).
@@ -65,9 +62,11 @@ type NodesReconciler struct {
 	Period, Timeout time.Duration
 	// SilentAfter is how long a node's Lease may stay unchanged before the node
 	// is silent, HoldFraction the share of the counted nodes that are silent,
-	// in thousandths, at which the controller manager is to be held.
+	// in thousandths, at which the controller manager is held, and ReleaseAfter
+	// how long the nodes have to stay below it before the hold ends.
 	SilentAfter  time.Duration
 	HoldFraction int
+	ReleaseAfter time.Duration
 	// Clock tells when a Lease was seen to change, and how old the last list of
 	// Nodes is.
 	Clock clock.PassiveClock
@@ -84,6 +83,28 @@ type sampling struct {
 	leases   map[string]renewal
 	nodes    []node
 	listedAt time.Time
+	// restarted is when the clock of the node Leases last started.
+	restarted time.Time
+	// below is when a held pass the clock trusted first read the nodes below
+	// the hold fraction, zero while the count towards the release is clear.
+	below time.Time
+	// leader is the version of the controller manager's Lease the pass saw
+	// last, and when it saw that version first.
+	leader renewal
+}
+
+// restart forgets the clock of the node Leases and the count towards the
+// release: no list of the Leases stands behind this pass.
+func (s *sampling) restart() {
+	s.leases, s.below = nil, time.Time{}
+}
+
+// observe starts the clock, when it was forgotten, and notes the Leases listed.
+func (s *sampling) observe(leases []coordinationv1.Lease, now time.Time) {
+	if s.leases == nil {
+		s.restarted = now
+	}
+	s.leases = seen(s.leases, leases, now)
 }
 
 type node struct {
@@ -116,6 +137,7 @@ func accessChanged() predicate.Funcs {
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/status,verbs=patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get
+// +kubebuilder:rbac:groups="",resources=pods,verbs=list
 
 func (r *NodesReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	now := r.Clock.Now()
@@ -155,30 +177,28 @@ func (r *NodesReconciler) sample(ctx context.Context, cp *lodiav1alpha1.ControlP
 			return err
 		}
 		if meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionControllerManagerHeld) == nil {
-			if err := r.apply(ctx, cp, cp.Status.Nodes, previous(cp, lodiav1alpha1.ConditionControllerManagerHeld)); err != nil {
+			if err := r.apply(ctx, cp, cp.Status.Nodes, cp.Status.Health, previous(cp, lodiav1alpha1.ConditionControllerManagerHeld)); err != nil {
 				return err
 			}
 		}
 	}
 	kubeconfig, waiting, err := lodiaKubeconfig(ctx, r.Reader, cp)
 	if err != nil {
+		// No list stands behind this pass, so it clears the count; a failed read
+		// of a management Secret says nothing about the kubelets, so the clock runs on.
+		s.below = time.Time{}
 		return err
 	}
 	if waiting != "" {
-		s.leases = nil
-		return r.report(ctx, cp, s.status(cp), held(cp, lodiav1alpha1.ReasonWaitingForAccess, waiting))
+		s.restart()
+		return r.report(ctx, cp, s.status(cp), nil, *held(cp, lodiav1alpha1.ReasonWaitingForAccess, waiting))
 	}
 	tenant, err := r.tenant(key, kubeconfig)
 	if err != nil {
+		s.restart()
 		return err
 	}
-	leases, err := r.list(ctx, tenant, s, now)
-	if err != nil {
-		s.leases = nil
-		return fmt.Errorf("list the node Leases: %w", err)
-	}
-	s.leases = seen(s.leases, leases, now)
-	return r.report(ctx, cp, s.status(cp), r.notHeld(cp, s, now))
+	return r.holdOrRelease(ctx, cp, tenant, s, now)
 }
 
 // list reads the node Leases and, when the last list of Nodes is old, the
@@ -242,18 +262,19 @@ func summarize(nodes []corev1.Node) []node {
 }
 
 // counts says whether a node's silence counts: its kubelet reports it Ready,
-// or the controller manager marked it Unknown less than unknownGrace ago. A
-// node its kubelet reports NotReady does not.
-func (n node) counts(now time.Time) bool {
-	return n.ready == corev1.ConditionTrue || n.ready == corev1.ConditionUnknown && now.Sub(n.since) < unknownGrace
+// or the controller manager marked it Unknown less than unknownGrace before
+// began. A node its kubelet reports NotReady does not.
+func (n node) counts(began time.Time) bool {
+	return n.ready == corev1.ConditionTrue || n.ready == corev1.ConditionUnknown && began.Sub(n.since) < unknownGrace
 }
 
 // silence returns how many of the nodes that count have a Lease, and how many
-// of those have it unchanged for SilentAfter.
-func (r *NodesReconciler) silence(s *sampling, now time.Time) (silent, counted int) {
+// of those have it unchanged for SilentAfter; began is when the hold began, or
+// now without one.
+func (r *NodesReconciler) silence(s *sampling, now, began time.Time) (silent, counted int) {
 	for _, n := range s.nodes {
 		lease, ok := s.leases[n.name]
-		if !ok || !n.counts(now) {
+		if !ok || !n.counts(began) {
 			continue
 		}
 		counted++
@@ -264,29 +285,8 @@ func (r *NodesReconciler) silence(s *sampling, now time.Time) (silent, counted i
 	return silent, counted
 }
 
-// notHeld says why the controller manager is not held: the owner turned the
-// hold off, the nodes are not listed yet, or how many of the nodes that count
-// are silent.
-func (r *NodesReconciler) notHeld(cp *lodiav1alpha1.ControlPlane, s *sampling, now time.Time) metav1.Condition {
-	if cp.Spec.Health != nil && !ptr.Deref(cp.Spec.Health.HoldControllerManager, true) {
-		return held(cp, lodiav1alpha1.ReasonDisabled, "spec.health.holdControllerManager is false")
-	}
-	if s.listedAt.IsZero() {
-		return held(cp, lodiav1alpha1.ReasonNotHeld, "the nodes are not listed yet")
-	}
-	silent, counted := r.silence(s, now)
-	message := fmt.Sprintf("%d of %d counted nodes are silent", silent, counted)
-	switch {
-	case counted < 2:
-		message += "; fewer than 2 are counted"
-	case silent*1000 >= r.HoldFraction*counted:
-		message += "; at or above the hold fraction of " + strconv.FormatFloat(float64(r.HoldFraction)/10, 'f', -1, 64) + "%"
-	}
-	return held(cp, lodiav1alpha1.ReasonNotHeld, message)
-}
-
-func held(cp *lodiav1alpha1.ControlPlane, reason, message string) metav1.Condition {
-	return *newCondition(cp, lodiav1alpha1.ConditionControllerManagerHeld, metav1.ConditionFalse, reason, message)
+func held(cp *lodiav1alpha1.ControlPlane, reason, message string) *metav1.Condition {
+	return newCondition(cp, lodiav1alpha1.ConditionControllerManagerHeld, metav1.ConditionFalse, reason, message)
 }
 
 func (s *sampling) status(cp *lodiav1alpha1.ControlPlane) *lodiav1alpha1.NodesStatus {
@@ -341,8 +341,8 @@ func kubeletVersion(reported string) *version.Version {
 // successor, which carries it forward. An apply that leaves a field out
 // removes it, so without a list of Nodes of this run it carries the status
 // the API server holds.
-func (r *NodesReconciler) report(ctx context.Context, cp *lodiav1alpha1.ControlPlane, nodes *lodiav1alpha1.NodesStatus, c metav1.Condition) error {
-	if !changes(cp, nodes, c) {
+func (r *NodesReconciler) report(ctx context.Context, cp *lodiav1alpha1.ControlPlane, nodes *lodiav1alpha1.NodesStatus, health *lodiav1alpha1.HealthStatus, c metav1.Condition) error {
+	if !changes(cp, nodes, health, c) {
 		return nil
 	}
 	if err := live.Nodes(ctx, r.Reader, cp, lodiav1alpha1.ConditionControllerManagerHeld); err != nil {
@@ -351,19 +351,19 @@ func (r *NodesReconciler) report(ctx context.Context, cp *lodiav1alpha1.ControlP
 	if nodes == nil {
 		nodes = cp.Status.Nodes
 	}
-	if !changes(cp, nodes, c) {
+	if !changes(cp, nodes, health, c) {
 		return nil
 	}
-	return r.apply(ctx, cp, nodes, c)
+	return r.apply(ctx, cp, nodes, health, c)
 }
 
-func changes(cp *lodiav1alpha1.ControlPlane, nodes *lodiav1alpha1.NodesStatus, c metav1.Condition) bool {
-	return differs(meta.FindStatusCondition(cp.Status.Conditions, c.Type), c) || nodes != nil && !equality.Semantic.DeepEqual(nodes, cp.Status.Nodes)
+func changes(cp *lodiav1alpha1.ControlPlane, nodes *lodiav1alpha1.NodesStatus, health *lodiav1alpha1.HealthStatus, c metav1.Condition) bool {
+	return differs(meta.FindStatusCondition(cp.Status.Conditions, c.Type), c) || nodes != nil && !equality.Semantic.DeepEqual(nodes, cp.Status.Nodes) || !equality.Semantic.DeepEqual(health, cp.Status.Health)
 }
 
-// apply writes both fields every time, since an apply that leaves one out
+// apply writes every field each time, since an apply that leaves one out
 // removes it; it leaves cp with what it wrote.
-func (r *NodesReconciler) apply(ctx context.Context, cp *lodiav1alpha1.ControlPlane, nodes *lodiav1alpha1.NodesStatus, c metav1.Condition) error {
+func (r *NodesReconciler) apply(ctx context.Context, cp *lodiav1alpha1.ControlPlane, nodes *lodiav1alpha1.NodesStatus, health *lodiav1alpha1.HealthStatus, c metav1.Condition) error {
 	all, applied, _, err := conditionsApplied(cp, []metav1.Condition{c})
 	if err != nil {
 		return err
@@ -376,10 +376,17 @@ func (r *NodesReconciler) apply(ctx context.Context, cp *lodiav1alpha1.ControlPl
 		}
 		fields["nodes"] = u
 	}
+	if health != nil {
+		u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(health)
+		if err != nil {
+			return err
+		}
+		fields["health"] = u
+	}
 	if err := applyStatus(ctx, r.Status(), NodesFieldManager, cp, fields); err != nil {
 		return err
 	}
-	cp.Status.Conditions, cp.Status.Nodes = all, nodes
+	cp.Status.Conditions, cp.Status.Nodes, cp.Status.Health = all, nodes, health
 	return nil
 }
 

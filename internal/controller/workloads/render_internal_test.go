@@ -208,7 +208,29 @@ func TestAvailabilityIsAReadyReplicaOfEachComponent(t *testing.T) {
 		{"a scheduler without a Deployment", []*appsv1.Deployment{deployment(apiServer, 2, 1, false), deployment(controllerManager, 2, 2, false)}, "",
 			"False Unavailable kube-apiserver has 1 of 2 replicas ready; kube-scheduler has no Deployment"},
 	} {
-		c := availability(row.deployments, row.held)
+		c := availability(row.deployments, row.held, false)
+		if got := fmt.Sprintf("%s %s %s", c.Status, c.Reason, c.Message); got != row.want {
+			t.Errorf("%s: APIServerReady is %q, want %q", row.name, got, row.want)
+		}
+	}
+	for _, row := range []struct {
+		name        string
+		deployments []*appsv1.Deployment
+		held        bool
+		want        string
+	}{
+		{name: "a controller manager with no ready replica under a hold", deployments: []*appsv1.Deployment{deployment(apiServer, 2, 2, false), deployment(controllerManager, 1, 0, false), deployment(scheduler, 2, 2, false)}, held: true,
+			want: "True Ready kube-controller-manager has 0 of 1 replicas ready while Health holds its leader Lease"},
+		{name: "the same without the hold", deployments: []*appsv1.Deployment{deployment(apiServer, 2, 2, false), deployment(controllerManager, 1, 0, false), deployment(scheduler, 2, 2, false)},
+			want: "False Unavailable kube-controller-manager has 0 of 1 replicas ready"},
+		{name: "a controller manager with a ready replica under a hold is counted as usual", deployments: []*appsv1.Deployment{deployment(apiServer, 2, 2, false), deployment(controllerManager, 2, 1, false), deployment(scheduler, 2, 2, false)}, held: true,
+			want: "True Ready kube-controller-manager has 1 of 2 replicas ready"},
+		{name: "an API server with no ready replica under a hold", deployments: []*appsv1.Deployment{deployment(apiServer, 2, 0, false), deployment(controllerManager, 1, 0, false), deployment(scheduler, 2, 2, false)}, held: true,
+			want: "False Unavailable kube-apiserver has 0 of 2 replicas ready; kube-controller-manager has 0 of 1 replicas ready while Health holds its leader Lease"},
+		{name: "a scheduler with no ready replica under a hold", deployments: []*appsv1.Deployment{deployment(apiServer, 2, 2, false), deployment(controllerManager, 1, 0, false), deployment(scheduler, 2, 0, false)}, held: true,
+			want: "False Unavailable kube-controller-manager has 0 of 1 replicas ready while Health holds its leader Lease; kube-scheduler has 0 of 2 replicas ready"},
+	} {
+		c := availability(row.deployments, "", row.held)
 		if got := fmt.Sprintf("%s %s %s", c.Status, c.Reason, c.Message); got != row.want {
 			t.Errorf("%s: APIServerReady is %q, want %q", row.name, got, row.want)
 		}

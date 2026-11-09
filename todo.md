@@ -141,8 +141,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 ## From the phase 2 contracts (2026-10-27)
 
 - The `restore` verb (restore-replaces-the-source, not built): a ValidatingAdmissionPolicy in the chart could require `authorizer…check('restore')` on the `Backup` a new `ControlPlane`'s `restoreFrom` names, for platforms where the right to create `ControlPlane`s is wider than the right to read a namespace's Secrets.
-- Health's own metrics, which the availability research suggested and the decisions did not name: failed probes, silent nodes, and the lag of Health's pass, the watchdog of the hold's margin.
-  Name them under metrics-are-part-of-the-api with wave 2, Health, or drop them; the hold itself is `lodia_controlplane_condition{type="ControllerManagerHeld"}`.
 - An IPv6 advertise address Lodia draws: once gateway mode has users with an IPv6 first service range, Workloads could draw a unique local address per `ControlPlane` and keep it beside its CAs, which a platform backs up anyway.
   `apiServer.advertiseAddress` then becomes optional, which breaks no manifest (api-exposure).
 
@@ -236,3 +234,8 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 - `health-nodes` lists the Nodes every 30 seconds and the Leases every period, each in one response with no `limit`, so a response grows with the tenant's nodes.
   If tenants of thousands of nodes appear, page both lists.
+
+## For wave 2, observability
+
+- Health's own metrics, under metrics-are-part-of-the-api: the lag of Health's pass is the watchdog of the hold's margin, and the rest, failed probes and silent nodes, is to be named there.
+  The hold itself is `lodia_controlplane_condition{type="ControllerManagerHeld"}`.

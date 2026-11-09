@@ -166,6 +166,6 @@ func newHealth(c client.Client, reader client.Reader, cfg HealthConfig) *health.
 func newNodes(c client.Client, reader client.Reader, cfg HealthConfig) *health.NodesReconciler {
 	return &health.NodesReconciler{
 		Client: c, Reader: reader, Period: cfg.Period.Duration, Timeout: healthTimeout,
-		SilentAfter: cfg.SilentAfter.Duration, HoldFraction: int(cfg.HoldFraction), Clock: clock.RealClock{},
+		SilentAfter: cfg.SilentAfter.Duration, HoldFraction: int(cfg.HoldFraction), ReleaseAfter: cfg.ReleaseAfter.Duration, Clock: clock.RealClock{},
 	}
 }

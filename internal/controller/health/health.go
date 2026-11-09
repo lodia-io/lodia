@@ -58,6 +58,11 @@ const (
 	Name         = "health"
 	FieldManager = "lodia/" + Name
 
+	// accessNotTrue is the message of a pass while AccessReady is not True:
+	// Reconciler reads nothing in the tenant then, and NodesReconciler reads only
+	// the controller manager's Lease, which it renews or releases if it holds it.
+	accessNotTrue = "AccessReady is not True"
+
 	// leaderSlack is how long past its duration a leader Lease may stay
 	// unchanged and still lead. A standby takes over from a leader that died
 	// without releasing up to 8.8 s after the duration: two polls of the 2 s
@@ -326,6 +331,10 @@ func answered(code int) string {
 // read of a Lease fails (docs/README.md, Health).
 func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*metav1.Condition, error) {
 	key := client.ObjectKeyFromObject(cp)
+	if !access(cp) {
+		r.forget(key)
+		return newCondition(cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, accessNotTrue), nil
+	}
 	kubeconfig, waiting, err := lodiaKubeconfig(ctx, r.Reader, cp)
 	if err != nil {
 		return nil, err
@@ -355,7 +364,7 @@ func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 	reading, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
 	now := r.Clock.Now()
-	reason, messages := "", []string(nil)
+	reason, messages, held := "", []string(nil), false
 	for _, l := range []struct{ name, reason string }{
 		{lodiav1alpha1.ControllerManagerLease, lodiav1alpha1.ReasonControllerManagerNotLeading},
 		{lodiav1alpha1.SchedulerLease, lodiav1alpha1.ReasonSchedulerNotLeading},
@@ -368,6 +377,8 @@ func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 		case err != nil:
 			logf.FromContext(ctx).Error(err, "read a leader Lease", "lease", l.name)
 			return nil, live.Conditions(ctx, r.Reader, cp, lodiav1alpha1.ConditionControllersLeading)
+		case l.name == lodiav1alpha1.ControllerManagerLease && ptr.Deref(lease.Spec.HolderIdentity, "") == lodiav1alpha1.HoldHolderIdentity:
+			held = true
 		default:
 			message = r.stale(key, lease, now)
 		}
@@ -379,17 +390,17 @@ func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 	if reason != "" {
 		return newCondition(cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionFalse, reason, strings.Join(messages, "; ")), nil
 	}
+	if held {
+		return newCondition(cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionTrue, lodiav1alpha1.ReasonHeld,
+			"Lodia holds the leader Lease of kube-controller-manager, and that of kube-scheduler is renewed"), nil
+	}
 	return newCondition(cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading,
 		"the leader Leases of kube-controller-manager and kube-scheduler are renewed"), nil
 }
 
 // lodiaKubeconfig returns Lodia's kubeconfig for cp, or why it cannot be used
-// yet: AccessReady is not True, or <cp>-lodia-kubeconfig is missing or kept by
-// another owner.
+// yet: <cp>-lodia-kubeconfig is missing or kept by another owner.
 func lodiaKubeconfig(ctx context.Context, reader client.Reader, cp *lodiav1alpha1.ControlPlane) ([]byte, string, error) {
-	if !access(cp) {
-		return nil, "AccessReady is not True", nil
-	}
 	name := lodiav1alpha1.LodiaKubeconfigSecret.Name(cp.Name)
 	secret := &corev1.Secret{}
 	if err := reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: name}, secret); err != nil {
@@ -595,7 +606,7 @@ func (r *Reconciler) stale(key types.NamespacedName, lease *coordinationv1.Lease
 		renewed = t.UTC().Format(time.RFC3339)
 	}
 	if holder := ptr.Deref(lease.Spec.HolderIdentity, ""); holder != "" {
-		return fmt.Sprintf("Lease %s/%s of %s was last renewed %s", lease.Namespace, lease.Name, holder, renewed)
+		return fmt.Sprintf("Lease %s/%s of %s was last renewed %s", lease.Namespace, lease.Name, quoted(holder), renewed)
 	}
 	return fmt.Sprintf("Lease %s/%s has no holder; it was last renewed %s", lease.Namespace, lease.Name, renewed)
 }

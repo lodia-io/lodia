@@ -325,7 +325,7 @@ func (r *Reconciler) rollout(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 			return nil, metav1.Condition{}, 0, err
 		}
 	}
-	return endpoint, availability(deployments, note), requeueAfter, nil
+	return endpoint, availability(deployments, note, controllerManagerHeld(cp)), requeueAfter, nil
 }
 
 // release names, in this order, what a restored ControlPlane's release still
@@ -405,7 +405,7 @@ func (r *Reconciler) wait(ctx context.Context, cp *lodiav1alpha1.ControlPlane, e
 		if err != nil {
 			return nil, metav1.Condition{}, 0, err
 		}
-		counted := availability(slices.Collect(maps.Values(controlled)), note)
+		counted := availability(slices.Collect(maps.Values(controlled)), note, controllerManagerHeld(cp))
 		counted.ObservedGeneration = previous.ObservedGeneration
 		return endpoint, counted, requeueAfter, nil
 	}
@@ -630,10 +630,17 @@ func restartHashes(cp string, data map[string]string, config []*corev1.ConfigMap
 	return out
 }
 
+// controllerManagerHeld says whether Health holds the controller manager's
+// leader Lease, which stops it on purpose.
+func controllerManagerHeld(cp *lodiav1alpha1.ControlPlane) bool {
+	return meta.IsStatusConditionTrue(cp.Status.Conditions, lodiav1alpha1.ConditionControllerManagerHeld)
+}
+
 // availability is True while each component has a ready replica; one without
 // a Deployment has none. A restored ControlPlane's controller manager at 0
-// replicas counts as available, with the note release makes of it.
-func availability(deployments []*appsv1.Deployment, held string) metav1.Condition {
+// replicas counts as available, with the note release makes of it, and so does
+// one with no ready replica while Health holds its leader Lease.
+func availability(deployments []*appsv1.Deployment, held string, leaseHeld bool) metav1.Condition {
 	var short, stalled []string
 	unavailable := false
 	for _, component := range components {
@@ -647,6 +654,10 @@ func availability(deployments []*appsv1.Deployment, held string) metav1.Conditio
 		want := ptr.Deref(d.Spec.Replicas, 1)
 		if want == 0 && component == controllerManager && held != "" {
 			short = append(short, held)
+			continue
+		}
+		if leaseHeld && component == controllerManager && d.Status.ReadyReplicas == 0 {
+			short = append(short, fmt.Sprintf("%s has 0 of %d replicas ready while Health holds its leader Lease", component, want))
 			continue
 		}
 		if d.Status.ReadyReplicas < want {

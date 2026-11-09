@@ -1,7 +1,7 @@
 # While most of a tenant's nodes are silent, Lodia holds its controller manager's leader lease
 
 Decided 2026-10-25.
-The timings, `ControllersLeading` and the sampling of the nodes are built; the hold comes with phase 2's wave 2 (Health) ([roadmap](../roadmap.md)).
+Built; gate G4 tests it every night ([roadmap](../roadmap.md)).
 
 ## Decision
 
@@ -11,6 +11,7 @@ The Health controller protects a tenant's workloads from an outage between the c
   Every 5 seconds, Health's period, for every awake `ControlPlane`, it reads the `Lease`s in `kube-node-lease` through the in-namespace Service, never through the public endpoint the nodes use, and the tenant's `Node`s every 30 seconds, since nodes are large objects and the set it counts changes slowly ([KEP-589](https://github.com/kubernetes/enhancements/blob/7eef794bb549a50c6b08c457556ff0eac98a4c6b/keps/sig-node/589-efficient-node-heartbeats/README.md#L31-L49)).
 - **A node is silent** once its lease has not changed for 20 seconds by the operator's clock, not by `renewTime`: a node anywhere keeps its own time.
   The clock lives in memory: a lease seen for the first time counts as renewed then, and so does every lease after a read that failed, since the kubelets could not renew meanwhile either, and an operator that restarts counts afresh.
+  A failover of the operator inside a cut can therefore delay a hold past the grace period, the known limit of keeping the clock in memory.
 - **A node counts** if it has a lease and is `Ready`, or if the controller manager marked it `Unknown` less than 5 minutes before the hold began.
   A node its kubelet reports `NotReady` does not count, and a cluster with one counted node is never held: its silence cannot be told from a dead machine.
 - **The hold.**
@@ -19,11 +20,14 @@ The Health controller protects a tenant's workloads from an outage between the c
   Nothing marks the nodes, nothing taints them, nothing evicts their pods.
 - **The release.**
   Once fewer than 60% have been silent for 2 minutes, Health releases the lease the way client-go steps down (no holder, a 1-second duration); the controller manager takes it within seconds and starts afresh, counting its grace periods from its own start.
+  A pass counts towards those 2 minutes only once the clock has run `silentAfter`, and a failed read of the kubeconfig or of the node Leases, or a return to 60% or more, clears the count.
+  A hold has no end of its own while `AccessReady` stays not True.
 - **It never fights.**
   Health takes the lease only when it has expired or when its holder's identity starts with the name of a pod Lodia runs for this `ControlPlane` (a leader's identity is `<pod name>_<uuid>`).
   Any other holder, such as a platform's own watchdog, is left alone and named in the message of `ControllerManagerHeld=False`, reason `HoldBlocked`.
 - **It fails safe.**
   A Lodia that stops renewing gives the lease back after 60 seconds, to upstream behaviour; a Lodia that restarts keeps a hold it finds with holder `lodia`.
+  A failed read of the node leases restarts the clock, and a lease held by `lodia` is still renewed.
   A paused `ControlPlane` gets no writes, so its hold lapses within those 60 seconds.
 - **Settings.**
   On by default, off for one `ControlPlane` with `spec.health.holdControllerManager: false` ([the field](../api/controlplane.md#spec)).
@@ -42,7 +46,7 @@ The Health controller protects a tenant's workloads from an outage between the c
   | `--leader-elect-resource-lock`, `-resource-name`, `-resource-namespace` | `leases`, `kube-controller-manager`, `kube-system` | `ControllerManagerLease`, `LeaderElectionNamespace` |
 
   The operator refuses to start when:
-  - the margin below is under 10 seconds, kept for a delay in Health's queue, the API or a failover of the operator: `silentAfter`, the period, 10.4 seconds, the renew deadline, the retry period and those 10 seconds add up to more than the grace period;
+  - the margin below is under 10 seconds, kept for a delay in Health's queue or the API: `silentAfter`, the period, 10.4 seconds, the renew deadline, the retry period and those 10 seconds add up to more than the grace period;
   - `silentAfter` is not above 10.4 seconds plus the period, which would call a healthy node silent;
   - `holdFraction`, rounded to thousandths, is not above one half or is above one;
   - the period, `releaseAfter` or `failuresBeforeFalse` is not positive.
@@ -102,3 +106,5 @@ One dead machine of two is 50%, and its pods are evicted as upstream does.
 - `internal/operator` — `config.go` loads Health's settings from the operator's configuration file and refuses the ones that break the margin; `config_test.go` holds every refusal.
 - `internal/controller/health` — `health.go` reports `ControllersLeading` from the two leader Leases; `health_test.go` holds a Lease that stops renewing.
   `nodes.go` samples the node Leases and the Nodes on a queue of its own and reports `status.nodes` and `ControllerManagerHeld`; `nodes_test.go` holds the counting rules.
+  `hold.go` selects the row of the hold's table and writes the Lease; `hold_test.go` holds every row, each write's outcomes and the timings of the release.
+- `test/e2e/hold_test.go` — gate G4: a highly available tenant behind the Gateway on a kind cluster, its two nodes cut off for 10 minutes, then one of them ([the gate](../../test/e2e/README.md#nightly-gate-g4-nodes-cut-off-from-the-gateway)).

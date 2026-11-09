@@ -37,8 +37,7 @@ type Config struct {
 	Health HealthConfig `json:"health"`
 }
 
-// HealthConfig holds Health's settings. ReleaseAfter is the hold's: it is
-// loaded and checked, but nothing reads it yet.
+// HealthConfig holds Health's settings.
 type HealthConfig struct {
 	Period              metav1.Duration `json:"period"`
 	FailuresBeforeFalse int             `json:"failuresBeforeFalse"`

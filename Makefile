@@ -29,6 +29,7 @@ lint:
 	golangci-lint run --build-tags e2e,ha ./test/e2e/...
 	golangci-lint run --build-tags e2e,restore ./test/e2e/...
 	golangci-lint run --build-tags e2e,gateway ./test/e2e/...
+	golangci-lint run --build-tags e2e,hold ./test/e2e/...
 	cd api && golangci-lint run ./...
 
 .PHONY: test
@@ -104,6 +105,14 @@ e2e-gateway-g6: ## gate G6, what the Gateway and the tunnel add to the API's p99
 	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig
 	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,gateway -count=1 -timeout 40m -run '^TestGatewayOverhead$$' -artifacts -outputdir $(E2E_DIR) ./test/e2e/...; status=$$?; \
 	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 $(E2E_CLUSTER)-dns || status=1; \
+	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
+
+.PHONY: e2e-hold
+e2e-hold: ## gate G4: both nodes of a highly available tenant behind the Gateway cut off for 10 minutes, then one of them, on a kind cluster of its own from kind-ha.yaml that it deletes afterwards with the DNS container the gate starts
+	mkdir -p $(E2E_DIR)
+	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig --config test/e2e/testdata/kind-ha.yaml
+	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,hold -count=1 -timeout 45m -run '^TestControllerManagerHold$$' ./test/e2e/...; status=$$?; \
+	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 $(E2E_CLUSTER)-tenant-node-2 $(E2E_CLUSTER)-dns || status=1; \
 	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
 
 .PHONY: conformance-gateway

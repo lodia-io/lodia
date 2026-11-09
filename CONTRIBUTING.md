@@ -17,7 +17,7 @@ Every other tool runs through `go tool`.
 | `make e2e` | the end-to-end suite on a kind cluster of its own ([`test/e2e/README.md`](test/e2e/README.md)) |
 | `make conformance` | the Kubernetes conformance suite against a tenant with two nodes, on a kind cluster of its own ([`test/e2e/README.md`](test/e2e/README.md#nightly-conformance-and-the-idle-control-plane)) |
 
-CI runs `make verify`, `make e2e`, `make e2e-ha`, `make e2e-restore` and `make e2e-gateway` on every pull request, and `make conformance`, `make e2e-gateway-g6` and `make conformance-gateway` every night.
+CI runs `make verify`, `make e2e`, `make e2e-ha`, `make e2e-restore` and `make e2e-gateway` on every pull request, and `make conformance`, `make e2e-gateway-g6`, `make conformance-gateway` and `make e2e-hold` every night.
 
 ## Docs
 
