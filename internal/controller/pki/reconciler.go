@@ -41,7 +41,7 @@ const (
 type Reconciler struct {
 	client.Client
 	// Reader reads Secrets whole, since the manager's cache holds their
-	// metadata only, and AccessReady when PKI waits or keeps it.
+	// metadata only, and PKI's conditions at the start of a pass.
 	Reader client.Reader
 	// The kubelet signer and the request CA live LeafLifetime, the cluster CA
 	// TrustAnchorLifetime, every other CA CALifetime.
@@ -90,6 +90,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	now := r.Clock.Now()
 	owned := []string{lodiav1alpha1.ConditionCertificatesReady, lodiav1alpha1.ConditionCAValidityAcceptable, lodiav1alpha1.ConditionAccessReady}
+	if err := live.Conditions(ctx, r.Reader, cp, owned...); err != nil {
+		return ctrl.Result{}, err
+	}
 	if slices.ContainsFunc(owned, func(c string) bool { return meta.FindStatusCondition(cp.Status.Conditions, c) == nil }) {
 		conditions := make([]metav1.Condition, 0, len(owned))
 		for _, c := range owned {
@@ -104,18 +107,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 	if len(t.foreign) > 0 || len(t.unadopted) > 0 {
-		access, bindErr := r.access(ctx, t)
-		if access.Type == "" {
-			return ctrl.Result{}, bindErr
-		}
 		blocked := t.controlledElsewhere()
 		if len(t.foreign) == 0 {
 			blocked = t.secretsExist()
 		}
-		if err := r.applyStatus(ctx, cp, now, credentialRefs(cp.Status.Credentials), blocked, previous(cp, lodiav1alpha1.ConditionCAValidityAcceptable), access); err != nil {
+		if err := r.applyStatus(ctx, cp, now, credentialRefs(cp.Status.Credentials), blocked, previous(cp, lodiav1alpha1.ConditionCAValidityAcceptable), previous(cp, lodiav1alpha1.ConditionAccessReady)); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{RequeueAfter: t.foreignRequeue()}, bindErr
+		return ctrl.Result{RequeueAfter: t.foreignRequeue()}, nil
 	}
 
 	if err := r.backupKeys(ctx, t); err != nil {
@@ -130,9 +129,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		validity = previous(cp, lodiav1alpha1.ConditionCAValidityAcceptable)
 	}
 	access, bindErr := r.access(ctx, t)
-	if access.Type == "" {
-		return ctrl.Result{}, errors.Join(t.writeErr, bindErr)
-	}
 	if err := r.applyStatus(ctx, cp, now, t.credentials(), certificates, validity, access); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -245,16 +241,16 @@ func listed(items []string) string {
 // access counts a refusal from the tenant as an answer, which turns
 // AccessReady False, Refused; no answer keeps a True, since whether the
 // tenant can be reached is Health's to report, and leaves anything else
-// Binding. While it waits it keeps AccessReady at an older generation. What it
-// keeps is AccessReady as the API server holds it; a failed read of it returns
-// an empty condition, and the pass returns before its status apply.
+// Binding. While it waits it keeps AccessReady at an older generation.
 func (r *Reconciler) access(ctx context.Context, t *tenant) (metav1.Condition, error) {
 	c := metav1.Condition{Type: lodiav1alpha1.ConditionAccessReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonWaitingForAPIServer, Message: "APIServerReady is not True for this generation"}
-	if !statusapply.TrueAt(t.cp, lodiav1alpha1.ConditionAPIServerReady) || t.existing[t.secret(lodiav1alpha1.LodiaKubeconfigSecret)] == nil {
-		if err := live.Conditions(ctx, r.Reader, t.cp, c.Type); err != nil {
-			return metav1.Condition{}, err
-		}
-		return statusapply.Wait(t.cp, meta.FindStatusCondition(t.cp.Status.Conditions, c.Type), c), nil
+	kept := meta.FindStatusCondition(t.cp.Status.Conditions, c.Type)
+	if !statusapply.TrueAt(t.cp, lodiav1alpha1.ConditionAPIServerReady) {
+		return statusapply.Wait(t.cp, kept, c), nil
+	}
+	if kubeconfig := t.secret(lodiav1alpha1.LodiaKubeconfigSecret); t.existing[kubeconfig] == nil {
+		c.Message = kubeconfig + " is not written yet"
+		return statusapply.Wait(t.cp, kept, c), nil
 	}
 	refused, err := r.bind(ctx, t)
 	if err == nil {
@@ -265,11 +261,8 @@ func (r *Reconciler) access(ctx context.Context, t *tenant) (metav1.Condition, e
 		c.Reason, c.Message = lodiav1alpha1.ReasonRefused, "ClusterRoleBinding "+refused+" is refused by the tenant's API server; the reason is in Lodia's log"
 		return c, err
 	}
-	if readErr := live.Conditions(ctx, r.Reader, t.cp, c.Type); readErr != nil {
-		return metav1.Condition{}, errors.Join(err, readErr)
-	}
-	if prev := meta.FindStatusCondition(t.cp.Status.Conditions, c.Type); prev != nil && prev.Status == metav1.ConditionTrue {
-		return *prev, err
+	if kept != nil && kept.Status == metav1.ConditionTrue {
+		return *kept, err
 	}
 	c.Reason, c.Message = lodiav1alpha1.ReasonBinding, "the tenant has not confirmed the bindings since its API server became ready; the error is in the log"
 	return c, err

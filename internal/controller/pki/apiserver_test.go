@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -467,8 +468,8 @@ func TestAKeptAccessReadyOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
 	}
 
 	written := fresh().ResourceVersion
-	if err := pass(failingRead{Reader: apiReader, read: "the ControlPlane"}); err == nil || !strings.Contains(err.Error(), "the API server is down") || !strings.Contains(err.Error(), "connection refused") {
-		t.Errorf("a pass that cannot read AccessReady from the server returned %v, want the read's error and the bind's", err)
+	if err := pass(failingRead{Reader: apiReader, read: "the ControlPlane"}); err == nil || err.Error() != "the API server is down" {
+		t.Errorf("a pass that cannot read AccessReady from the server returned %v, want the read's error", err)
 	}
 	if after := fresh().ResourceVersion; after != written {
 		t.Errorf("a pass that cannot read AccessReady from the server wrote the ControlPlane: resourceVersion %s, then %s", written, after)
@@ -518,14 +519,14 @@ func TestATrueKeptWithoutAnAnswerKeepsItsGeneration(t *testing.T) {
 	expectConditionAt(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionTrue, lodiav1alpha1.ReasonBound, stale)
 }
 
-func applyAccess(t *testing.T, cp *lodiav1alpha1.ControlPlane, status metav1.ConditionStatus, reason, message string, generation int64) {
+func applyCondition(t *testing.T, cp *lodiav1alpha1.ControlPlane, conditionType string, status metav1.ConditionStatus, reason, message string, generation int64) {
 	t.Helper()
 	u := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": lodiav1alpha1.GroupVersion.String(),
 		"kind":       "ControlPlane",
 		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
 		"status": map[string]any{"conditions": []any{map[string]any{
-			"type": lodiav1alpha1.ConditionAccessReady, "status": string(status), "reason": reason, "message": message,
+			"type": conditionType, "status": string(status), "reason": reason, "message": message,
 			"observedGeneration": generation, "lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
 		}}},
 	}}
@@ -548,9 +549,9 @@ func TestAWaitComparesItsWriteWithTheServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	reconcile(t, r, cp)
-	applyAccess(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer, "APIServerReady is not True for this generation", cp.Generation)
+	applyCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer, "APIServerReady is not True for this generation", cp.Generation)
 	stale := freshControlPlane(t, cp)
-	applyAccess(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonBound, "lodia:operator, lodia:cluster-admins and lodia:kubelet-api-admins are bound", cp.Generation)
+	applyCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionTrue, lodiav1alpha1.ReasonBound, "lodia:operator, lodia:cluster-admins and lodia:kubelet-api-admins are bound", cp.Generation)
 	withRead := newReconciler(time.Hour)
 	withRead.Client, withRead.Reader = snapshot{Client: controller, cp: stale}, apiReader
 	withRead.Dial = func(context.Context, string, string) (net.Conn, error) {
@@ -576,13 +577,87 @@ func TestANoAnswerComparesItsWriteWithTheServer(t *testing.T) {
 	}
 	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding)
 	stale := freshControlPlane(t, cp)
-	applyAccess(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, "ClusterRoleBinding lodia:operator is refused by the tenant's API server; the reason is in Lodia's log", cp.Generation)
+	applyCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, "ClusterRoleBinding lodia:operator is refused by the tenant's API server; the reason is in Lodia's log", cp.Generation)
 	withRead := newReconciler(time.Hour)
 	withRead.Client, withRead.Reader, withRead.Dial = snapshot{Client: controller, cp: stale}, apiReader, unreachable
 	if _, err := withRead.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
 		t.Fatal("a pass that could not reach the tenant succeeded")
 	}
 	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding)
+}
+
+func TestABlockedPassLeavesAccessReadyAndDialsNothing(t *testing.T) {
+	const bound = "lodia:operator, lodia:cluster-admins and lodia:kubelet-api-admins are bound"
+	const unanswered = "the tenant has not confirmed the bindings since its API server became ready; the error is in the log"
+	another := []metav1.OwnerReference{{APIVersion: "v1", Kind: "ConfigMap", Name: "restore", UID: "8f0c6f2e-0d6e-4f4e-9e44-0d6a7c1b5a21", Controller: new(true)}}
+	for i, c := range []struct {
+		name                  string
+		change                []func(*lodiav1alpha1.ControlPlaneSpec)
+		owners                []metav1.OwnerReference
+		status                metav1.ConditionStatus
+		reason, message       string
+		olderGeneration       bool
+		wantCertificatesReady string
+	}{
+		{"True", nil, another, metav1.ConditionTrue, lodiav1alpha1.ReasonBound, bound, false, lodiav1alpha1.ReasonSecretsControlledElsewhere},
+		{"True at an older generation", nil, another, metav1.ConditionTrue, lodiav1alpha1.ReasonBound, bound, true, lodiav1alpha1.ReasonSecretsControlledElsewhere},
+		{"False", nil, another, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding, unanswered, false, lodiav1alpha1.ReasonSecretsControlledElsewhere},
+		{"a restore's True", []func(*lodiav1alpha1.ControlPlaneSpec){restoring}, nil, metav1.ConditionTrue, lodiav1alpha1.ReasonBound, bound, false, lodiav1alpha1.ReasonSecretsExist},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := t.Context()
+			r := newReconciler(time.Hour)
+			cp := controlPlane(t, fmt.Sprintf("pki-blocked-access-%d", i), c.change...)
+			publishEndpoint(t, cp)
+			reconcile(t, r, cp)
+			if secretsOf(t, cp)["dev-lodia-kubeconfig"] == nil {
+				t.Fatal("no dev-lodia-kubeconfig to dial with")
+			}
+			holdSecret(t, cp, "dev-front-proxy-client", c.owners)
+			applyCondition(t, cp, lodiav1alpha1.ConditionAccessReady, c.status, c.reason, c.message, cp.Generation)
+			if c.olderGeneration {
+				if err := k8s.Get(ctx, client.ObjectKeyFromObject(cp), cp); err != nil {
+					t.Fatal(err)
+				}
+				cp.Spec.Placement = &lodiav1alpha1.Placement{PriorityClassName: "system-cluster-critical"}
+				if err := k8s.Update(ctx, cp); err != nil {
+					t.Fatal(err)
+				}
+			}
+			setAPIServerReady(t, cp)
+			want := condition(t, cp, lodiav1alpha1.ConditionAccessReady)
+
+			r.Dial = func(context.Context, string, string) (net.Conn, error) {
+				t.Error("the tenant was dialed in a blocked pass")
+				return nil, errors.New("not dialed")
+			}
+			result := reconcile(t, r, cp)
+			expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, c.wantCertificatesReady)
+			if got := condition(t, cp, lodiav1alpha1.ConditionAccessReady); !equality.Semantic.DeepEqual(got, want) {
+				t.Errorf("AccessReady is %+v, want it left as %+v", got, want)
+			}
+			if result.RequeueAfter != time.Minute {
+				t.Errorf("requeue after %s, want the bounded 1m0s", result.RequeueAfter)
+			}
+		})
+	}
+}
+
+func TestAMissingLodiaKubeconfigIsNamedOnceTheAPIServerIsReady(t *testing.T) {
+	r := newReconciler(time.Hour)
+	r.Client = failingApply{Client: controller, secret: "dev-lodia-kubeconfig"}
+	r.Dial = func(context.Context, string, string) (net.Conn, error) {
+		t.Error("the tenant was dialed without a kubeconfig")
+		return nil, errors.New("not dialed")
+	}
+	cp := controlPlane(t, "pki-access-no-kubeconfig")
+	publishEndpoint(t, cp)
+	setAPIServerReady(t, cp)
+	reconcileFails(t, r, cp)
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer)
+	if c := condition(t, cp, lodiav1alpha1.ConditionAccessReady); c.Message != "dev-lodia-kubeconfig is not written yet" {
+		t.Errorf("AccessReady says %q", c.Message)
+	}
 }
 
 type snapshot struct {

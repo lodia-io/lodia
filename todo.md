@@ -67,8 +67,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the PKI review (2026-10-25)
 
-- In a blocked pass the CAs are never loaded: a forbidden `lodia:operator` then reports "client CA missing", and the bind error replaces the bounded requeue with exponential backoff.
-  With `APIServerReady` True and `<cp>-lodia-kubeconfig` missing or foreign, `AccessReady` says "APIServerReady is not True for this generation", which the state contradicts.
 - `readEncryptionConfig` decodes leniently, while kube-apiserver decodes strictly and with defaults ([config.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/server/options/encryptionconfig/config.go#L140-L146), [loadConfig](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/server/options/encryptionconfig/config.go#L519-L536)).
 - The previous etcd generation is kept and adopted on completeness alone, even when it does not chain to the current etcd CA (a restored predecessor's generation, for instance); keep it only if it chains.
 
@@ -163,8 +161,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   `listen-client-http-urls` would give gRPC a listener of its own ([serve.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/embed/serve.go#L128)), but etcd-druid renders the configuration and does not offer it ([etcdconfig.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/configmap/etcdconfig.go#L55)).
   Decide whether G2 keeps holding zero failed requests across this step until upstream fixes it.
 - Health compares each condition it applies with the cache unless it has just read it live, and its predicates ignore its own conditions, so a write the server holds and the cache does not yet, such as a `Reachable` False, stays until its next pass, a `health.period` (5 s by default) later.
-- PKI carries `CAValidityAcceptable` over from the cache while another owner keeps one of its Secrets and while a CA cannot be read, so a stale cache can write an older value back, which stays while that path holds; the same on `main`.
-  Read it live there too, as the waits and keeps do ([independent-controllers](docs/decisions/independent-controllers.md)).
 
 ## From KubeconfigRequest (2026-10-30)
 

@@ -152,6 +152,82 @@ func TestASecretAnotherOwnerKeepsBlocksEveryWrite(t *testing.T) {
 	}
 }
 
+func TestAStaleCacheWritesNoOlderCAValidityBack(t *testing.T) {
+	other := []metav1.OwnerReference{{APIVersion: "v1", Kind: "ConfigMap", Name: "restore", UID: "8f0c6f2e-0d6e-4f4e-9e44-0d6a7c1b5a21", Controller: new(true)}}
+	for i, c := range []struct {
+		name  string
+		block func(t *testing.T, cp *lodiav1alpha1.ControlPlane)
+		apply func(client.Client) client.Client
+	}{
+		{"while another owner keeps a Secret", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+			holdSecret(t, cp, "dev-front-proxy-client", other)
+		}, func(c client.Client) client.Client { return c }},
+		{"while a CA cannot be read", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+			secrets := secretsOf(t, cp)
+			for _, name := range []string{"dev-cakey-front-proxy", "dev-front-proxy-ca"} {
+				if err := k8s.Delete(t.Context(), secrets[name]); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}, func(c client.Client) client.Client { return failingApply{Client: c, secret: "dev-cakey-front-proxy"} }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newReconciler(time.Hour)
+			cp := controlPlane(t, fmt.Sprintf("pki-validity-stale-%d", i))
+			publishEndpoint(t, cp)
+			reconcile(t, r, cp)
+			expectCondition(t, cp, lodiav1alpha1.ConditionCAValidityAcceptable, metav1.ConditionTrue, lodiav1alpha1.ReasonValid)
+			stale := freshControlPlane(t, cp)
+			applyCondition(t, cp, lodiav1alpha1.ConditionCAValidityAcceptable, metav1.ConditionFalse, lodiav1alpha1.ReasonCAExpiring, "the API server's", cp.Generation)
+			c.block(t, cp)
+
+			r.Client = c.apply(snapshot{Client: controller, cp: stale})
+			if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil && !strings.Contains(err.Error(), "refused the apply") {
+				t.Fatal(err)
+			}
+			expectCondition(t, cp, lodiav1alpha1.ConditionCAValidityAcceptable, metav1.ConditionFalse, lodiav1alpha1.ReasonCAExpiring)
+			if got := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady); got.Reason == lodiav1alpha1.ReasonIssued {
+				t.Errorf("CertificatesReady stayed %s, so the pass wrote no status", got.Reason)
+			}
+		})
+	}
+}
+
+func TestACacheHoldingADeletedPredecessorStopsThePass(t *testing.T) {
+	ctx := t.Context()
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "pki-predecessor-cached")
+	publishEndpoint(t, cp)
+	stale := freshControlPlane(t, cp)
+	stale.UID = "8f0c6f2e-0d6e-4f4e-9e44-0d6a7c1b5a22"
+	for _, conditionType := range []string{lodiav1alpha1.ConditionCertificatesReady, lodiav1alpha1.ConditionCAValidityAcceptable, lodiav1alpha1.ConditionAccessReady} {
+		stale.Status.Conditions = append(stale.Status.Conditions, metav1.Condition{Type: conditionType, Status: metav1.ConditionUnknown, Reason: lodiav1alpha1.ReasonReconciling, ObservedGeneration: stale.Generation})
+	}
+	r.Client = snapshot{Client: controller, cp: stale}
+	written := freshControlPlane(t, cp).ResourceVersion
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+		t.Fatal("a pass on a predecessor's cached copy succeeded")
+	}
+	if secrets := namespaceSecrets(t, cp.Namespace); len(secrets) != 0 {
+		t.Errorf("a pass on a predecessor's cached copy wrote %v", secrets)
+	}
+	if after := freshControlPlane(t, cp).ResourceVersion; after != written {
+		t.Errorf("a pass on a predecessor's cached copy wrote the status: resourceVersion %s, then %s", written, after)
+	}
+}
+
+func holdSecret(t *testing.T, cp *lodiav1alpha1.ControlPlane, name string, owners []metav1.OwnerReference) {
+	t.Helper()
+	old := secretsOf(t, cp)[name]
+	if err := k8s.Delete(t.Context(), old); err != nil {
+		t.Fatal(err)
+	}
+	held := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cp.Namespace, Labels: old.Labels, OwnerReferences: owners}, Type: old.Type, Data: old.Data}
+	if err := k8s.Create(t.Context(), held); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLeftoversUnderPKINames(t *testing.T) {
 	ctx := t.Context()
 	r := newReconciler(time.Hour)
