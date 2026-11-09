@@ -193,7 +193,7 @@ func (f facts) minorStep(c *change) {
 	case !inTable:
 		c.unsupported = notInTable(nextMinor)
 		return
-	case !meta.IsStatusConditionTrue(cp.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady):
+	case !statusapply.TrueAt(cp, lodiav1alpha1.ConditionDatastoreReady):
 		c.preflight = newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore,
 			fmt.Sprintf("the minor step to %s waits for DatastoreReady", next))
 		return

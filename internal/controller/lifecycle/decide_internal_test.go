@@ -86,6 +86,9 @@ func (w world) controlPlane() *lodiav1alpha1.ControlPlane {
 		lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ConditionAddonsApplied, lodiav1alpha1.ConditionReachable, lodiav1alpha1.ConditionControllersLeading,
 	} {
 		c := metav1.Condition{Type: conditionType, Status: metav1.ConditionTrue, Reason: "Fine", ObservedGeneration: w.condGen}
+		if conditionType == lodiav1alpha1.ConditionDatastoreReady {
+			c.ObservedGeneration = w.generation
+		}
 		if conditionType == w.notReady {
 			c.Status, c.Reason = metav1.ConditionFalse, "NotYet"
 		}
@@ -190,6 +193,7 @@ func TestDecide(t *testing.T) {
 	const v1361, v1362 = "v1.36.1", "v1.36.2"
 	refused := &metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonRefused, ObservedGeneration: 3, Message: "the tenant refuses"}
 	pastDeadline := &metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonProgressDeadlineExceeded, ObservedGeneration: 3, Message: "past the deadline"}
+	staleDatastore := &metav1.Condition{Type: lodiav1alpha1.ConditionDatastoreReady, Status: metav1.ConditionTrue, Reason: "Fine", ObservedGeneration: 2}
 	cases := []struct {
 		name string
 		w    world
@@ -250,6 +254,8 @@ func TestDecide(t *testing.T) {
 		{"the next minor outside the table is the preflight's first", world{spec: "v1.35.1", target: "v1.33.9", reports: at("v1.33.9"), notReady: lodiav1alpha1.ConditionDatastoreReady, held: true},
 			want{target: "v1.33.9", reason: lodiav1alpha1.ReasonUnsupported, noUpgrade: true, message: "the next minor, 1.34", version: "v1.33.9"}},
 		{"DatastoreReady not True is the second", world{spec: "v1.37.1", target: "v1.36.6", reports: at("v1.36.6"), notReady: lodiav1alpha1.ConditionDatastoreReady, oldestKubelet: "v1.30.0", held: true},
+			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonWaitingForDatastore, noUpgrade: true, version: "v1.36.6"}},
+		{"DatastoreReady True at an older generation is not enough", world{spec: "v1.37.1", target: "v1.36.6", reports: at("v1.36.6"), cond: staleDatastore},
 			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonWaitingForDatastore, noUpgrade: true, version: "v1.36.6"}},
 		{"a kubelet four minors older is the third", world{spec: "v1.37.1", target: "v1.36.6", reports: at("v1.36.6"), oldestKubelet: "v1.33.2", held: true},
 			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonWaitingForNodes, noUpgrade: true, version: "v1.36.6"}},
