@@ -80,7 +80,7 @@ func TestAnAbsentReportRendersTheTarget(t *testing.T) {
 	eventuallyImages(t, cp, "v1.37.2")
 }
 
-func TestAReportOutsideTheTableWaitsAndWritesNoDeployment(t *testing.T) {
+func TestAReportOutsideTheTableRollsOnlyTheAPIServer(t *testing.T) {
 	cp := highlyAvailable(t)
 	for _, component := range componentNames {
 		markAvailable(t, eventuallyDeployment(t, cp, component))
@@ -97,20 +97,24 @@ func TestAReportOutsideTheTableWaitsAndWritesNoDeployment(t *testing.T) {
 		waiting.Message != "status.components.apiServer.version v1.33.2 is not a version Lodia runs" {
 		t.Errorf("APIServerReady is %+v, want False, WaitingForTarget naming v1.33.2", waiting)
 	}
-	if after := resourceVersions(t, cp.Namespace, &appsv1.DeploymentList{}); !maps.Equal(before, after) {
-		t.Errorf("the pass wrote Deployments: resourceVersions %v, then %v", before, after)
+	after := resourceVersions(t, cp.Namespace, &appsv1.DeploymentList{})
+	for _, component := range []string{"kube-controller-manager", "kube-scheduler"} {
+		name := cp.Name + "-" + component
+		if before[name] != after[name] {
+			t.Errorf("the pass wrote Deployment %s: resourceVersion %s, then %s", name, before[name], after[name])
+		}
 	}
-	if err := imagesAt(t, cp, "v1.37.1", componentNames); err != nil {
+	if err := imagesAt(t, cp, "v1.37.2", []string{"kube-apiserver"}); err != nil {
+		t.Errorf("the render that moves the report: %v", err)
+	}
+	if err := imagesAt(t, cp, "v1.37.1", []string{"kube-controller-manager", "kube-scheduler"}); err != nil {
 		t.Error(err)
 	}
 
-	applyStatus(t, cp, workloads.FieldManager, reports("v1.37.1", "v1.37.1", "v1.37.1"))
+	applyStatus(t, cp, workloads.FieldManager, reports("v1.37.2", "v1.37.1", "v1.37.1"))
 	reconcileThrough(t, cp, unpaused())
-	if err := imagesAt(t, cp, "v1.37.2", []string{"kube-apiserver"}); err != nil {
-		t.Errorf("with a report in the table: %v", err)
-	}
-	if err := imagesAt(t, cp, "v1.37.1", []string{"kube-controller-manager", "kube-scheduler"}); err != nil {
-		t.Errorf("with a report in the table: %v", err)
+	if err := imagesAt(t, cp, "v1.37.2", componentNames); err != nil {
+		t.Errorf("once the report is in the table: %v", err)
 	}
 }
 

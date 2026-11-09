@@ -32,22 +32,29 @@ func TestTheImagesFollowTheTargetAndTheAPIServersReport(t *testing.T) {
 		target, apiServer string
 		kubeAPIServer     string
 		followers         string
-		message           string
+		message, unknown  string
 	}{
-		"no report":                   {target: "v1.37.2", kubeAPIServer: "v1.37.2", followers: "v1.37.2"},
-		"a report a patch behind":     {target: "v1.37.2", apiServer: "v1.37.1", kubeAPIServer: "v1.37.2", followers: "v1.37.1"},
-		"a report a minor behind":     {target: "v1.37.1", apiServer: "v1.36.4", kubeAPIServer: "v1.37.1", followers: "v1.36.4"},
-		"a report at the target":      {target: "v1.37.2", apiServer: "v1.37.2", kubeAPIServer: "v1.37.2", followers: "v1.37.2"},
-		"a report outside the table":  {target: "v1.37.1", apiServer: "v1.33.2", message: "status.components.apiServer.version v1.33.2 is not a version Lodia runs"},
-		"a report that is no version": {target: "v1.37.1", apiServer: "latest", message: "status.components.apiServer.version latest is not a version Lodia runs"},
-		"no target":                   {apiServer: "v1.37.1", message: "waiting for Lifecycle to set status.target.version"},
-		"a target outside the table":  {target: "v1.34.1", apiServer: "v1.37.1", message: "status.target.version v1.34.1 is not a version Lodia runs"},
+		"no report":                    {target: "v1.37.2", kubeAPIServer: "v1.37.2", followers: "v1.37.2"},
+		"a report a patch behind":      {target: "v1.37.2", apiServer: "v1.37.1", kubeAPIServer: "v1.37.2", followers: "v1.37.1"},
+		"a report a minor behind":      {target: "v1.37.1", apiServer: "v1.36.4", kubeAPIServer: "v1.37.1", followers: "v1.36.4"},
+		"a report at the target":       {target: "v1.37.2", apiServer: "v1.37.2", kubeAPIServer: "v1.37.2", followers: "v1.37.2"},
+		"a report ahead of the target": {target: "v1.37.1", apiServer: "v1.37.2", kubeAPIServer: "v1.37.1", followers: "v1.37.2"},
+		"a report outside the table":   {target: "v1.37.1", apiServer: "v1.33.2", kubeAPIServer: "v1.37.1", unknown: "status.components.apiServer.version v1.33.2 is not a version Lodia runs"},
+		"a report that is no version":  {target: "v1.37.1", apiServer: "latest", kubeAPIServer: "v1.37.1", unknown: "status.components.apiServer.version latest is not a version Lodia runs"},
+		"no target":                    {apiServer: "v1.37.1", message: "waiting for Lifecycle to set status.target.version"},
+		"a target outside the table":   {target: "v1.34.1", apiServer: "v1.37.1", message: "status.target.version v1.34.1 is not a version Lodia runs"},
 	} {
-		images, message := imagesOf(controlPlaneAt(c.target, c.apiServer))
-		if message != c.message {
-			t.Errorf("%s: the message is %q, want %q", name, message, c.message)
+		images, message, unknown := imagesOf(controlPlaneAt(c.target, c.apiServer))
+		if message != c.message || unknown != c.unknown {
+			t.Errorf("%s: the messages are %q and %q, want %q and %q", name, message, unknown, c.message, c.unknown)
 		}
 		if c.message != "" {
+			continue
+		}
+		if c.unknown != "" {
+			if got := tagOf(images.APIServer); got != c.kubeAPIServer {
+				t.Errorf("%s: kube-apiserver is at %s, want %s", name, got, c.kubeAPIServer)
+			}
 			continue
 		}
 		for component, got := range map[string]string{
@@ -82,9 +89,9 @@ func TestTheControllerManagerAndSchedulerAreNeverNewerThanTheAPIServersReport(t 
 							Scheduler:         &lodiav1alpha1.ComponentStatus{Rendered: lodiav1alpha1.Rendered{Version: scheduler}},
 						},
 					}}
-					images, message := imagesOf(cp)
-					if message != "" {
-						t.Fatalf("target %s, reports %q %q %q: %s", target, apiServer, controllerManager, scheduler, message)
+					images, message, unknown := imagesOf(cp)
+					if message != "" || unknown != "" {
+						t.Fatalf("target %s, reports %q %q %q: %s%s", target, apiServer, controllerManager, scheduler, message, unknown)
 					}
 					running := version.MustParseSemantic(target)
 					if apiServer != "" {
