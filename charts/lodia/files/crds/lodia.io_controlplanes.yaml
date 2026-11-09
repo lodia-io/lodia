@@ -1193,8 +1193,9 @@ spec:
                     type: object
                 type: object
               conditions:
-                description: Conditions, one per controller, plus Progressing, Hibernated
-                  and Ready.
+                description: |-
+                  Conditions, each written by the one controller that owns its type, and
+                  Progressing and Ready by Lifecycle.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

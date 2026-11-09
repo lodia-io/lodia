@@ -717,7 +717,8 @@ type ControlPlaneStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// Conditions, one per controller, plus Progressing, Hibernated and Ready.
+	// Conditions, each written by the one controller that owns its type, and
+	// Progressing and Ready by Lifecycle.
 	// +optional
 	// +listType=map
 	// +listMapKey=type

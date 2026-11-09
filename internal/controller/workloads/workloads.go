@@ -417,7 +417,7 @@ func (r *Reconciler) wait(ctx context.Context, cp *lodiav1alpha1.ControlPlane, e
 	return endpoint, waiting, requeueAfter, nil
 }
 
-// unsupported names the fields phase 1 does not render, so a ControlPlane that
+// unsupported names the fields this release does not render, so a ControlPlane that
 // sets them is not Ready instead of running without them.
 func unsupported(cp *lodiav1alpha1.ControlPlane) []string {
 	var fields []string
