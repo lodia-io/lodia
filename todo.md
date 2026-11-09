@@ -13,14 +13,14 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the skeleton (2026-10-24)
 
-- kube-api-linter on `api/`, as `releases-and-support` lists; it is not in `.golangci.yml` yet.
-- The workflow's actions are pinned by commit with nothing to bump them; Dependabot or Renovate for `github-actions` and `gomod`, leaving the API module's `k8s.io` floor alone (releases-and-support).
+- kube-api-linter on `api/`, as `releases-and-support` lists: the header of `.golangci.yml` says the file is identical in every Segla repository, so the linter needs a run of its own, not a line in that file.
+- Nothing bumps what is pinned by digest or commit: the workflow's actions and the base image in `.ko.yaml`; `.github/` has no Renovate or Dependabot configuration.
+  Add one for `github-actions`, `gomod` and the base images, leaving the API module's `k8s.io` floor alone (releases-and-support).
 
 ## From lodia-signer (2026-10-23)
 
 - The signer's socket is mode 0600 and owned by the signer's user (65532 on distroless `nonroot`); kube-apiserver can dial it only as that user or as root.
   When the Workloads controller runs the API server as non-root, both containers need the same user.
-- `.ko.yaml` pins the base image by digest with nothing to bump it; add it to the Renovate configuration with the other base images.
 - The signer logs a failed load at error level when it reads a Secret volume while the kubelet removes the previous version; the next event reloads the complete set.
   If that noise matters, retry once before logging.
 
@@ -34,14 +34,15 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From deciding the design (2026-10-25)
 
-- `loadBalancer` mode with a load balancer that reports only a host name (AWS NLB and CLB): `--advertise-address` takes an IP, so the `kubernetes` endpoint needs another source there; decide before that mode is supported on such a provider.
+- A `loadBalancer` Service that reports only a host name (AWS NLB and CLB) is `LoadBalancerHostnameUnsupported`; `--advertise-address` takes an IP, so the `kubernetes` endpoint needs another source there.
+  Decide whether such a provider is supported, and how.
 - client-go reloads a kubeconfig's CA file only with `ClientsAllowCARotation`, on by default since 1.36 ([known_features.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/client-go/features/known_features.go#L115-L117)): on 1.35 a trust anchor rotation restarts every component whose kubeconfig names the CA file; plan it into the phase 3 rotation.
 - Phase 2: Argo CD has no generic health check for custom resources ([health checks](https://github.com/argoproj/argo-cd/blob/v3.5.6/docs/operator-manual/health.md#L61-L83)), and kstatus, through which Flux waits, keeps a permanently failing object InProgress until a timeout unless it reports `Stalled` ([kstatus](https://github.com/kubernetes-sigs/cli-utils/blob/v0.37.2/pkg/kstatus/status/status.go#L102-L183)); Lodia writes no kstatus `Reconciling`, so the docs ship an Argo CD Lua health check and a Flux `healthCheckExprs` entry ([kustomizations.md](https://github.com/fluxcd/kustomize-controller/blob/v1.10.1/docs/spec/v1/kustomizations.md#L351-L374)) for `ControlPlane`, both reading `status.observedGeneration` and `Ready`.
 
 ## From the Datastore controller (2026-10-25)
 
 - The backup-restore sidecar's `spec.backup.resources` have no field in the `DatastoreClass` and stay etcd-druid's default (50m / 128Mi at v0.39.0); the operator configuration's `defaults.resources` should cover them once phase 1 measures.
-- The shared `Placement` and `resources` types get the rules of pod validation with Workloads, which renders them for the `ControlPlane` in phase 1: the class's `placement` and `etcd.resources` have none yet.
+- The shared `Placement` and `resources` types carry only size limits (`api/v1alpha1/controlplane_types.go`), not the rules of pod validation: the class's `placement` and `etcd.resources` have none yet.
   Until then a class value the apps API refuses in etcd-druid's StatefulSet shows as `status.datastore.members.updated` absent, since etcd-druid returns before it stamps `observedGeneration` ([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcd/reconciler.go#L127-L144)).
   The running members stay, later certificate generations stop reaching them until the class is fixed, and the reason is in the `Etcd`'s `status.lastErrors`.
 - No schema can check what pod admission refuses in a pod the StatefulSet API accepted: a `priorityClassName` that names no PriorityClass, or one deleted later, and a LimitRange or ResourceQuota in the tenant namespace.
@@ -49,7 +50,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   `docs/operations.md` names the symptom.
 - A class edit that reaches the `Etcd` rolls its members at once; the decision wants it in the tenant's maintenance window, which Lifecycle gates in phase 2.
   The `Etcd` records the class generation it was rendered from for that.
-- `<cp>-etcd-backup` stays when a class drops its backup store; harmless, the `ControlPlane` garbage-collects it.
 - Backup credentials scoped to one tenant's prefix, so a tenant namespace's `<cp>-etcd-backup` reaches only that tenant's snapshots and not every tenant's on the class (`docs/README.md`, Identity and tenancy).
   A `Backup`'s copy, `<prefix>/<namespace UID>/backups/<Backup UID>`, sits under the same namespace UID as its source's snapshots, so one scope per namespace covers both.
 - `make e2e` could check for Docker and `helm` before it creates its cluster.
@@ -67,8 +67,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the PKI review (2026-10-25)
 
-- No PKI-level test pins one clock per pass: `leaf()` issuing at `time.Now()` passes the whole suite; a test that delays one apply past a second boundary would pin it.
-- `TestAPredecessorsSecretsAreNeitherReadNorWritten` passes with the metadata lookup disabled, since the labelled predecessor Secrets mask its unlabelled CA key; give that path its own case.
 - In a blocked pass the CAs are never loaded: a forbidden `lodia:operator` then reports "client CA missing", and the bind error replaces the bounded requeue with exponential backoff.
   With `APIServerReady` True and `<cp>-lodia-kubeconfig` missing or foreign, `AccessReady` says "APIServerReady is not True for this generation", which the state contradicts.
 - `readEncryptionConfig` decodes leniently, while kube-apiserver decodes strictly and with defaults ([config.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/server/options/encryptionconfig/config.go#L140-L146), [loadConfig](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/server/options/encryptionconfig/config.go#L519-L536)).
@@ -82,7 +80,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 ## From the Tenant controller (2026-10-25)
 
 - Nothing watches `<cp>-ca-bundle`: a rotated cluster CA reaches `cluster-info` within the apply period; the CA rotation of phase 3 should bring a Tenant pass.
-- `addons.konnectivity.version` pins the agents' image here; the server's is Workloads'.
 - A tenant's own admission webhook that fails with a 5xx counts as no answer, so a True `AddonsApplied` stays while it keeps an object out.
 - The one-minute requeue while the rollout is pending runs the full apply, not only the rollout read.
 - Every pass builds a new tenant client, transport and RESTMapper.
@@ -92,8 +89,8 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the Workloads controller (2026-10-25)
 
-- JWT authentication, an audit policy, an admission and a scheduler configuration, `serviceAccount.publicDiscovery` and `apiServer.advertiseAddress` outside gateway mode are not rendered: they turn `APIServerReady` False with `Unsupported` until phase 2 builds them.
-- The NetworkPolicies isolate each component's ingress alone; the default-deny set and egress, the README's arrows, come in phase 2.
+- JWT authentication, an audit policy, an admission and a scheduler configuration and `serviceAccount.publicDiscovery` are not rendered: they turn `APIServerReady` False with `Unsupported` until they are built.
+- The NetworkPolicies isolate each component's ingress alone; the default-deny set and egress, the README's arrows, come later.
 - The control plane pods set no securityContext: give them one that passes Pod Security `restricted`, the API server and the signer under one user (From lodia-signer, above).
 - Workloads lists the management nodes uncached on every pass of a `nodePort` `ControlPlane`; an informer on Nodes, which carry no control-plane label and so need a cache rule of their own, would serve them from memory.
 - In `nodePort` mode the Service takes a node port for 443 as well, which nothing dials: the endpoint names the node ports of 6443 and 8132, and in-namespace clients use the cluster IP.
@@ -104,7 +101,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 ## From the etcd NetworkPolicy (2026-10-26)
 
 - The etcd's policy admits no metrics scraper, as the controller manager's and the scheduler's do not: a ServiceMonitor for the etcd and sidecar metrics needs its scraper admitted, the phase 2 arrow from the metrics scrapers to the health ports.
-- The Datastore controller reads its previous `DatastoreReady` from the cache: a pass that starts before the cache holds the previous pass's write applies a transition a second time, moving `lastTransitionTime` by the gap, a second in envtest, where a test that compared the ControlPlane's resourceVersion right after a transition to True caught it once in fifteen runs.
 
 ## From the chart (2026-10-26)
 
@@ -113,7 +109,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From #29's review (2026-10-26)
 
-- The local serial run's one failure needs no chasing: the pod generation spec's 20 s wait for `observedGeneration` ([pods.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/test/e2e/node/pods.go#L531)) ran out while that network pulled `nginx:1.27.0-2` in 28.8 s, and the spec passed with the images pulled beforehand and in CI.
 - Measure a highly available control plane's idle footprint; phase 2's scope and gate do not list it.
 
 ## From the backup prefix (2026-10-26)
@@ -129,7 +124,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - Requests through the tunnel (logs, exec, webhooks, aggregated APIs) can fail for 1–3 s after a new API server pod turns ready: the agents reach its konnectivity-server through the Service, which sends them to ready pods only, so they connect only once the pod already takes requests, and a webhook with `failurePolicy: Fail` turns that into refused writes.
   The agents should connect before the pod turns ready, through an agent port that reaches pods not yet ready, and the pod's readiness should wait for them; konnectivity-server's `/readyz` waits for one agent ([readiness_manager.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/pkg/server/readiness_manager.go#L28-L33)), which a tenant without nodes never has.
   The gate's loop should send such a request too.
-- With no `status.endpoint.inCluster` yet, Tenant should report `WaitingForEndpoint` instead of returning the error of parsing an empty address.
 
 ## From the phase 2 contracts (2026-10-27)
 
@@ -171,14 +165,11 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - Tenant and Health compare each condition they apply with the cache unless they have just read it live, and their predicates ignore their own conditions, so a write the server holds and the cache does not yet, such as a refusal or a `Reachable` False, stays until their next pass; the same on `main`.
   That pass comes after `health.period`, or Tenant's minute or `tenant.applyInterval`, but Tenant's wait for `status.target` or `status.endpoint` schedules none, so after it the write stays until a change Tenant's predicate passes.
   Compare those applies with the live copy too, as the paths that decide from their own condition do ([independent-controllers](docs/decisions/independent-controllers.md)).
-- Datastore's status apply takes `lastTransitionTime` from the cached conditions and carries no `resourceVersion`, so a pass on a cache behind the API server moves only that timestamp, by the cache's lag and back, with an extra status write each time; the same on `main`.
-  Carry the `resourceVersion` it read, as `Backup`'s status apply does ([conditions](.claude/rules/conditions.md)).
+- Datastore's status apply takes `lastTransitionTime` from the cached conditions, so a pass that starts before the cache holds the previous pass's write applies a transition a second time and moves only that timestamp, by the cache's lag, with an extra status write: a second in envtest, where a test that compared the `ControlPlane`'s resourceVersion right after a transition to True caught it once in fifteen runs; the same on `main`.
+  When the apply finds a change and the pass has not read live, read the conditions through `internal/live` and compute the transition from them, as the waits and keeps do ([independent-controllers](docs/decisions/independent-controllers.md)).
+  A carried `resourceVersion` would conflict with the writes of the other controllers to the same status.
 - PKI carries `CAValidityAcceptable` over from the cache while another owner keeps one of its Secrets and while a CA cannot be read, so a stale cache can write an older value back, which stays while that path holds; the same on `main`.
   Read it live there too, as the waits and keeps do ([independent-controllers](docs/decisions/independent-controllers.md)).
-- Once, while verifying #43, `startTenant`'s cleanup failed a Tenant test that had passed: the tenant's kube-apiserver did not stop within envtest's 20 s ("timeout waiting for process kube-apiserver to stop").
-  On 6e32914 it did not reproduce: with three Tenant runs beside two runs of every envtest package, each stop took 14 ms to 1.1 s, and cutting the controller off the tenant before the stop changed nothing.
-  envtest kills a server that misses the limit and then stops its etcd ([process.go](https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/internal/testing/process/process.go#L249-L280), [plane.go](https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/internal/testing/controlplane/plane.go#L93-L108)), so the timeout leaves no process behind; one stays only when the test binary itself is killed.
-  If it recurs, keep the run's log.
 
 ## From KubeconfigRequest (2026-10-30)
 
