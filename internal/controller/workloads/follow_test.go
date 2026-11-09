@@ -152,7 +152,7 @@ func TestAHeldOrRefusedAPIServerOutranksAReportOutsideTheTable(t *testing.T) {
 		return cp
 	}
 	reconcile := func(cp *lodiav1alpha1.ControlPlane, c client.WithWatch) error {
-		r := &workloads.Reconciler{Client: c, Reader: k8s, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
+		r := &workloads.Reconciler{Client: c, Reader: k8s, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: revision}
 		_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 		return err
 	}
@@ -271,7 +271,7 @@ func TestAWriteThatFailsAfterTheAPIServerLeavesTheControllerManagerAtTheReport(t
 			return c.Apply(ctx, obj, opts...)
 		},
 	})
-	r := &workloads.Reconciler{Client: failing, Reader: k8s, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
+	r := &workloads.Reconciler{Client: failing, Reader: k8s, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: revision}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apierrors.IsServiceUnavailable(err) {
 		t.Fatalf("the pass returned %v, want the injected error", err)
 	}

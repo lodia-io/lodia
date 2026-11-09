@@ -48,6 +48,7 @@ import (
 
 const (
 	version     = "v1.37.1"
+	revision    = "v0.0.0-test+running"
 	signerImage = "registry.example/lodia-signer:test"
 	tunnelImage = "registry.example/lodia-tunnel:test"
 	lbAddress   = "203.0.113.10"
@@ -78,7 +79,7 @@ func TestMain(m *testing.M) {
 	k8s = env.Client
 	mgr := env.Manager(env.AsController("workloads"), true)
 	apiReader = mgr.GetAPIReader()
-	reconciler := &workloads.Reconciler{Client: mgr.GetClient(), Reader: apiReader, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
+	reconciler := &workloads.Reconciler{Client: mgr.GetClient(), Reader: apiReader, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: revision}
 	if err := reconciler.SetupWithManager(mgr, 1); err != nil {
 		env.Fatal("controller", err)
 	}
@@ -759,6 +760,7 @@ func TestOrphansUnderWorkloadsNamesAreAdopted(t *testing.T) {
 		}
 	}
 	cp := create(t, ns, loadBalancer())
+	setTarget(t, cp)
 	testenv.Eventually(t, func() error {
 		if svc := getService(t, cp); !metav1.IsControlledBy(svc, cp) || svc.Spec.Type != corev1.ServiceTypeLoadBalancer {
 			return fmt.Errorf("the Service is %s, controlled by %v; APIServerReady %+v", svc.Spec.Type, metav1.GetControllerOf(svc), condition(t, cp))
@@ -804,6 +806,7 @@ func TestConditionsFromState(t *testing.T) {
 	testenv.Eventually(t, func() error {
 		return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint)
 	})
+	setTarget(t, cp)
 
 	injected := errors.New("injected: the API server did not answer")
 	failing := noControlPlaneWrite(t, interceptor.NewClient(k8s, interceptor.Funcs{
@@ -811,7 +814,7 @@ func TestConditionsFromState(t *testing.T) {
 			return injected
 		},
 	}))
-	reconciler := &workloads.Reconciler{Client: failing, Reader: failing, SignerImage: signerImage}
+	reconciler := &workloads.Reconciler{Client: failing, Reader: failing, SignerImage: signerImage, Revision: revision}
 	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: cp.Namespace, Name: cp.Name}}); !errors.Is(err, injected) {
 		t.Fatalf("a pass whose Service apply fails returned %v, want the apply's error", err)
 	}
@@ -905,7 +908,7 @@ func TestOutsideGatewayModeAHeldServiceDropsThePublishedEndpointAndARefusedOneKe
 					return nil
 				}
 				exits := interceptor.NewClient(k8s, c.funcs)
-				r := &workloads.Reconciler{Client: exits, Reader: exits, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
+				r := &workloads.Reconciler{Client: exits, Reader: exits, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: revision}
 				if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil && !apistatus.Refused(err) {
 					t.Fatal(err)
 				}
@@ -948,7 +951,7 @@ func TestOutsideGatewayModeAPassReadsTheControlPlaneLiveOnceAndNothingOfTheGatew
 					},
 				})
 			}
-			r := &workloads.Reconciler{Client: counting(false), Reader: counting(true), SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
+			r := &workloads.Reconciler{Client: counting(false), Reader: counting(true), SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: revision}
 			if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 				t.Fatal(err)
 			}
@@ -1054,7 +1057,7 @@ func TestAQuotaThatRefusesTheServiceIsSaid(t *testing.T) {
 	if c := condition(t, cp); c.Message != "the API server refuses Service dev-kube-apiserver; the reason is in Lodia's log" {
 		t.Errorf("APIServerReady says %q", c.Message)
 	}
-	reconciler := &workloads.Reconciler{Client: k8s, Reader: k8s, SignerImage: signerImage}
+	reconciler := &workloads.Reconciler{Client: k8s, Reader: k8s, SignerImage: signerImage, Revision: revision}
 	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apistatus.Refused(err) {
 		t.Errorf("a pass whose Service is refused returned %v, want the refusal for the backoff", err)
 	}
@@ -1087,7 +1090,7 @@ func TestAPolicyThatRefusesADeploymentIsSaid(t *testing.T) {
 	if err := k8s.Delete(t.Context(), binding); err != nil {
 		t.Fatal(err)
 	}
-	reconciler := &workloads.Reconciler{Client: k8s, Reader: k8s, SignerImage: signerImage}
+	reconciler := &workloads.Reconciler{Client: k8s, Reader: k8s, SignerImage: signerImage, Revision: revision}
 	testenv.Eventually(t, func() error {
 		if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 			return err
@@ -1339,7 +1342,7 @@ func TestAWaitComparesItsWriteWithTheServer(t *testing.T) {
 			return c.Get(ctx, key, obj, opts...)
 		},
 	})
-	if _, err := (&workloads.Reconciler{Client: cached, Reader: k8s, SignerImage: signerImage}).Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+	if _, err := (&workloads.Reconciler{Client: cached, Reader: k8s, SignerImage: signerImage, Revision: revision}).Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := expectAt(cp, kept.ObservedGeneration, kept.Status, kept.Reason, kept.Message); err != nil {
@@ -1415,8 +1418,8 @@ func TestAWaitThatCannotReadWritesNothing(t *testing.T) {
 	deployments := failing(func(obj client.Object) bool { _, ok := obj.(*appsv1.Deployment); return ok && !failed.Swap(true) })
 	controlPlanes := failing(func(obj client.Object) bool { _, ok := obj.(*lodiav1alpha1.ControlPlane); return ok })
 	for name, reconciler := range map[string]*workloads.Reconciler{
-		"its Deployments":                {Client: noControlPlaneWrite(t, deployments), Reader: k8s, SignerImage: signerImage},
-		"APIServerReady from the server": {Client: noControlPlaneWrite(t, k8s), Reader: controlPlanes, SignerImage: signerImage},
+		"its Deployments":                {Client: noControlPlaneWrite(t, deployments), Reader: k8s, SignerImage: signerImage, Revision: revision},
+		"APIServerReady from the server": {Client: noControlPlaneWrite(t, k8s), Reader: controlPlanes, SignerImage: signerImage, Revision: revision},
 	} {
 		if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !errors.Is(err, injected) {
 			t.Fatalf("a pass that cannot read %s returned %v, want the read's error", name, err)
@@ -1466,7 +1469,7 @@ func TestAFailureAmongTheObjectsEndsThePassInAnErrorAndWritesNoStatus(t *testing
 					return c.Delete(ctx, obj, opts...)
 				},
 			})
-			r := &workloads.Reconciler{Client: noControlPlaneWrite(t, failing), Reader: k8s, SignerImage: signerImage}
+			r := &workloads.Reconciler{Client: noControlPlaneWrite(t, failing), Reader: k8s, SignerImage: signerImage, Revision: revision}
 			if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apierrors.IsServiceUnavailable(err) {
 				t.Errorf("the pass returned %v, want the injected error", err)
 			}
@@ -1507,7 +1510,7 @@ func TestAWaitOnAStaleReadKeepsTheGenerationItsConditionNames(t *testing.T) {
 				return c.Get(ctx, key, obj, opts...)
 			},
 		})
-		if _, err := (&workloads.Reconciler{Client: cached, Reader: k8s, SignerImage: signerImage}).Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+		if _, err := (&workloads.Reconciler{Client: cached, Reader: k8s, SignerImage: signerImage, Revision: revision}).Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1629,12 +1632,12 @@ func running(t *testing.T, change ...func(*lodiav1alpha1.ControlPlaneSpec)) *lod
 	return cp
 }
 
-func runningOnNodePort(t *testing.T) *lodiav1alpha1.ControlPlane {
+func runningOnNodePort(t *testing.T, change ...func(*lodiav1alpha1.ControlPlaneSpec)) *lodiav1alpha1.ControlPlane {
 	t.Helper()
 	if err := k8s.Get(t.Context(), client.ObjectKey{Name: "node-z"}, &corev1.Node{}); apierrors.IsNotFound(err) {
 		createNode(t, "node-z", true, "192.0.2.99")
 	}
-	cp := controlPlane(t, lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}})
+	cp := controlPlane(t, lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}}, change...)
 	inputsReady(t, cp)
 	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
 		markAvailable(t, eventuallyDeployment(t, cp, component))
@@ -1665,7 +1668,7 @@ func reconcileNow(t *testing.T, cp *lodiav1alpha1.ControlPlane) ctrl.Result {
 
 func reconcileThrough(t *testing.T, cp *lodiav1alpha1.ControlPlane, c client.WithWatch) ctrl.Result {
 	t.Helper()
-	reconciler := &workloads.Reconciler{Client: c, Reader: k8s, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
+	reconciler := &workloads.Reconciler{Client: c, Reader: k8s, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: revision}
 	result, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 	if err != nil {
 		t.Fatal(err)
@@ -1747,7 +1750,16 @@ func applyStatus(t *testing.T, cp *lodiav1alpha1.ControlPlane, owner string, sta
 
 func setTarget(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 	t.Helper()
-	applyStatus(t, cp, "test/target", map[string]any{"target": map[string]any{"version": version}})
+	setTargetAt(t, cp, version, revision)
+}
+
+func setTargetAt(t *testing.T, cp *lodiav1alpha1.ControlPlane, version, revision string) {
+	t.Helper()
+	target := map[string]any{"version": version}
+	if revision != "" {
+		target["operatorRevision"] = revision
+	}
+	applyStatus(t, cp, "test/target", map[string]any{"target": target})
 }
 
 func setDatastore(t *testing.T, cp *lodiav1alpha1.ControlPlane, endpoints ...lodiav1alpha1.HostPort) {

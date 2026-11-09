@@ -207,6 +207,10 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   `verify` now keeps the log and the goroutines of a tenant API server still running 20 s into its stop, in the artifact `apiserver-dumps` (`testenv.StartDumping`, the `@todo` in `internal/controller/tenant/tenant_test.go`).
   Read the first dump, fix what holds it past SIGTERM, then remove `KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT` from `make test`, `StartDumping` and the artifact's step.
 
+## From Workloads' hold (2026-11-09)
+
+- A renewed restart-only certificate rolls its component at once, or at the grant on a tenant Workloads holds, not in the tenant's window ([upgrades-and-maintenance-windows](docs/decisions/upgrades-and-maintenance-windows.md), "Who waits for the window"): holding it for the window is for phase 3's rotations, and takes a field each way between Workloads and Lifecycle, a digest of the restart hashes and a clock of the certificate the pods still run.
+
 ## For wave 2, observability
 
 - Health's own metrics, under metrics-are-part-of-the-api: the lag of Health's pass is the watchdog of the hold's margin, and the rest, failed probes and silent nodes, is to be named there.

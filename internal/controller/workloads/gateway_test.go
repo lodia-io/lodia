@@ -441,7 +441,7 @@ func TestWithoutTheGatewayAPIServedAGatewayControlPlaneIsUnsupported(t *testing.
 				return nil
 			},
 		})
-		r := &workloads.Reconciler{Client: blind, Reader: blind, SignerImage: signerImage, TunnelImage: tunnelImage}
+		r := &workloads.Reconciler{Client: blind, Reader: blind, SignerImage: signerImage, TunnelImage: tunnelImage, Revision: revision}
 		if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 			t.Fatal(err)
 		}
@@ -507,7 +507,7 @@ func TestAStaleCacheNeverDropsThePublishedEndpoint(t *testing.T) {
 					return nil
 				},
 			})
-			r := &workloads.Reconciler{Client: stale, Reader: k8s, SignerImage: signerImage, TunnelImage: tunnelImage}
+			r := &workloads.Reconciler{Client: stale, Reader: k8s, SignerImage: signerImage, TunnelImage: tunnelImage, Revision: revision}
 			if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 				t.Fatal(err)
 			}
@@ -589,7 +589,7 @@ func TestAPublishedEndpointStays(t *testing.T) {
 	})
 	t.Run("the Service is refused", func(t *testing.T) {
 		binding := refuse(t, ns, "", "services", "dev-kube-apiserver", getService(t, cp))
-		r := &workloads.Reconciler{Client: k8s, Reader: k8s, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
+		r := &workloads.Reconciler{Client: k8s, Reader: k8s, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: revision}
 		if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apistatus.Refused(err) {
 			t.Errorf("a pass whose Service is refused returned %v, want the refusal", err)
 		}
@@ -801,7 +801,7 @@ func TestTwoConcurrentCreationsOfOneHostnameYieldOneRoute(t *testing.T) {
 			return err
 		},
 	})
-	r := &workloads.Reconciler{Client: stale, Reader: stale, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
+	r := &workloads.Reconciler{Client: stale, Reader: stale, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: revision}
 	errs := make([]error, 2)
 	var passes sync.WaitGroup
 	for i, cp := range []*lodiav1alpha1.ControlPlane{a, b} {
@@ -934,6 +934,10 @@ func TestUseDefaultGatewaysOnTheExperimentalCRDIsLeftAlone(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	cp.Status.Target = &lodiav1alpha1.Target{Version: version, OperatorRevision: revision}
+	if err := experimental.Status().Update(t.Context(), cp); err != nil {
+		t.Fatal(err)
+	}
 	var lists atomic.Int32
 	reader := interceptor.NewClient(experimental, interceptor.Funcs{
 		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
@@ -943,7 +947,7 @@ func TestUseDefaultGatewaysOnTheExperimentalCRDIsLeftAlone(t *testing.T) {
 			return c.List(ctx, list, opts...)
 		},
 	})
-	r := &workloads.Reconciler{Client: experimental, Reader: reader, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
+	r := &workloads.Reconciler{Client: experimental, Reader: reader, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: revision}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 		t.Fatal(err)
 	}
@@ -993,7 +997,7 @@ func TestARoutingProblemLeavesTheAPIServerReady(t *testing.T) {
 	if tlsRouteOrNil(t, ns, "dev-kube-apiserver") == nil || tlsRouteOrNil(t, ns, "dev-konnectivity") == nil || tlsRouteOrNil(t, ns, "dev-tunnel") != nil {
 		t.Error("want the two routes before the refused one, and not the refused one")
 	}
-	r := &workloads.Reconciler{Client: k8s, Reader: k8s, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
+	r := &workloads.Reconciler{Client: k8s, Reader: k8s, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: revision}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apistatus.Refused(err) {
 		t.Errorf("a pass whose route is refused returned %v, want the refusal for the backoff", err)
 	}
@@ -1160,7 +1164,7 @@ func TestARestartBetweenWritesGoesThroughTheUncachedRead(t *testing.T) {
 			return c.List(ctx, list, opts...)
 		},
 	})
-	r := &workloads.Reconciler{Client: restarted, Reader: restarted, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
+	r := &workloads.Reconciler{Client: restarted, Reader: restarted, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: revision}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 		t.Fatal(err)
 	}
@@ -1218,7 +1222,7 @@ func TestATransientErrorReturnsBeforeAnyStatus(t *testing.T) {
 		}}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			r := &workloads.Reconciler{Client: noControlPlaneWrite(t, interceptor.NewClient(k8s, c.client)), Reader: interceptor.NewClient(k8s, c.reader), SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
+			r := &workloads.Reconciler{Client: noControlPlaneWrite(t, interceptor.NewClient(k8s, c.client)), Reader: interceptor.NewClient(k8s, c.reader), SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: revision}
 			if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apierrors.IsServiceUnavailable(err) {
 				t.Errorf("the pass returned %v, want the injected error", err)
 			}
@@ -1254,7 +1258,7 @@ func TestAPredecessorsRoutesWaitForTheGarbageCollector(t *testing.T) {
 			return c.Get(ctx, key, obj, opts...)
 		},
 	})
-	r := &workloads.Reconciler{Client: uncached, Reader: k8s, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
+	r := &workloads.Reconciler{Client: uncached, Reader: k8s, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: revision}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 		t.Fatal(err)
 	}
@@ -1379,11 +1383,11 @@ func sourceOnGateway(t *testing.T, ns string) *lodiav1alpha1.ControlPlane {
 	return createNamed(t, ns, "prod", onGateway(ns, "prod"), func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.Paused = true })
 }
 
-func gatewayRunning(t *testing.T) *lodiav1alpha1.ControlPlane {
+func gatewayRunning(t *testing.T, change ...func(*lodiav1alpha1.ControlPlaneSpec)) *lodiav1alpha1.ControlPlane {
 	t.Helper()
 	ns := namespace(t)
 	createGateway(t, ns)
-	cp := createNamed(t, ns, "dev", onGateway(ns, "dev"))
+	cp := createNamed(t, ns, "dev", onGateway(ns, "dev"), change...)
 	inputsReady(t, cp)
 	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
 		markAvailable(t, eventuallyDeployment(t, cp, component))
@@ -1599,7 +1603,7 @@ func expectNoRouteWrites(t *testing.T, cp *lodiav1alpha1.ControlPlane, what stri
 			return c.SubResource(subResource).Apply(ctx, obj, opts...)
 		},
 	})
-	r := &workloads.Reconciler{Client: noControlPlaneWrite(t, counting), Reader: counting, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
+	r := &workloads.Reconciler{Client: noControlPlaneWrite(t, counting), Reader: counting, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: revision}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 		t.Fatal(err)
 	}

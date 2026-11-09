@@ -72,7 +72,7 @@ func reported(c *lodiav1alpha1.ComponentsStatus) string {
 
 func setTargetVersion(t *testing.T, cp *lodiav1alpha1.ControlPlane, to string) {
 	t.Helper()
-	applyStatus(t, cp, "test/target", map[string]any{"target": map[string]any{"version": to}})
+	setTargetAt(t, cp, to, revision)
 }
 
 func eventuallyImages(t *testing.T, cp *lodiav1alpha1.ControlPlane, tag string, components ...string) {
@@ -338,7 +338,7 @@ func TestAGatewayPassReadsTheControlPlaneLiveOnce(t *testing.T) {
 			return c.Get(ctx, key, obj, opts...)
 		},
 	})
-	r := &workloads.Reconciler{Client: k8s, Reader: counting, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
+	r := &workloads.Reconciler{Client: k8s, Reader: counting, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: revision}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +374,7 @@ func TestAPassThatCannotReadTheControlPlaneLiveWritesNothing(t *testing.T) {
 					return c.Get(ctx, key, obj, opts...)
 				},
 			})
-			r := &workloads.Reconciler{Client: cached, Reader: c.reader, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true}
+			r := &workloads.Reconciler{Client: cached, Reader: c.reader, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: revision}
 			if _, err := r.Reconcile(c.ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !c.want(err) {
 				t.Errorf("the pass returned %v", err)
 			}

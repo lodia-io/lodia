@@ -171,7 +171,7 @@ func Setup(mgr ctrl.Manager, in Inputs) error {
 	if err := newNodes(mgr.GetClient(), mgr.GetAPIReader(), in.Config.Health).SetupWithManager(mgr, nodesWorkers); err != nil {
 		return fmt.Errorf("set up the health nodes reconciler: %w", err)
 	}
-	if err := (&workloads.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), SignerImage: in.SignerImage, TunnelImage: in.TunnelImage, GatewayAPI: in.GatewayAPI}).SetupWithManager(mgr, workers); err != nil {
+	if err := (&workloads.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), SignerImage: in.SignerImage, TunnelImage: in.TunnelImage, GatewayAPI: in.GatewayAPI, Revision: revision}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the workloads controller: %w", err)
 	}
 	return nil
