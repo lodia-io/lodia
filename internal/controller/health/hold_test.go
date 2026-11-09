@@ -149,6 +149,16 @@ func (h *holdRun) holder() string {
 	return ptr.Deref(lease.Spec.HolderIdentity, "")
 }
 
+func (h *holdRun) acquiredBy(holder string, at time.Time) {
+	h.t.Helper()
+	renew(h.t, lodiav1alpha1.ControllerManagerLease, holder, time.Now())
+	lease := h.lease()
+	lease.Spec.AcquireTime = &metav1.MicroTime{Time: at}
+	if err := tenant.Update(h.t.Context(), lease); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
 func (h *holdRun) renewedAt(seconds int) {
 	h.t.Helper()
 	lease := h.lease()
@@ -446,6 +456,19 @@ func TestRow12TakesAFreeLeaseOrAnExpiredOneOrAPodsOwn(t *testing.T) {
 	})
 }
 
+func TestATakeWritesItsOwnAcquireTimeOverTheLeaders(t *testing.T) {
+	h := sampling(t, "a", "b", "c")
+	h.at(0)
+	createManagerPod(t, h.cp, "dev-kube-controller-manager-7d9")
+	h.acquiredBy("dev-kube-controller-manager-7d9_1", h.start.Add(-time.Hour))
+	h.at(20)
+	h.expectSilent(taken(3, 3, "60"))
+	h.expectHealth(3, 3)
+	if at := h.lease().Spec.AcquireTime; !at.Time.Equal(h.start.Add(20 * time.Second)) {
+		t.Errorf("the take left acquireTime %v, want the time of the take", at)
+	}
+}
+
 func TestRow13AnotherHolderIsNamedAndLeftAlone(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
 	h.at(0)
@@ -607,6 +630,18 @@ func TestAnUnknownNodeCountsBackFromTheHoldsAcquireTime(t *testing.T) {
 	h.at(60)
 	h.expectSilent(taken(2, 2, "60"))
 	h.expectHealth(2, 2)
+}
+
+func TestAnotherHoldersAcquireTimeDecidesNoUnknownNode(t *testing.T) {
+	h := sampling(t, "a")
+	joined(t, "unknown", corev1.ConditionUnknown, h.start.Add(-4*time.Minute-50*time.Second))
+	h.at(0)
+	createManagerPod(t, h.cp, "dev-kube-controller-manager-7d9")
+	h.acquiredBy("dev-kube-controller-manager-7d9_1", h.start)
+	before := h.lease()
+	h.at(20)
+	h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonNotHeld, silent(1, 1)+fewerThanTwo)
+	h.expectUntouched(before)
 }
 
 func TestWithoutAHoldUnknownCountsFromNow(t *testing.T) {
@@ -784,6 +819,45 @@ func TestTheReleaseComesAtExactlyReleaseAfterAndNotBefore(t *testing.T) {
 		t.Fatalf("the hold did not end at exactly releaseAfter, holder %q", holder)
 	}
 	h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonNotHeld, silent(0, 3))
+}
+
+func TestASecondHoldCountsTowardsItsReleaseAfresh(t *testing.T) {
+	released := func(t *testing.T) *holdRun {
+		t.Helper()
+		h := holding(t, "a", "b", "c")
+		h.back(25, 145)
+		if holder := h.holder(); holder != "" {
+			t.Fatalf("the first hold did not end, holder %q", holder)
+		}
+		return h
+	}
+	t.Run("after a take", func(t *testing.T) {
+		h := released(t)
+		h.at(165)
+		h.expectSilent(taken(3, 3, "60"))
+		h.back(170)
+		h.expectSilent(silent(0, 3) + ", below 60%" + holdsUntil)
+		h.back(289)
+		if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+			t.Fatalf("the second hold ended on the first one's count, holder %q", holder)
+		}
+		h.back(290)
+		if holder := h.holder(); holder != "" {
+			t.Fatalf("the second hold did not end 2 minutes after its first pass below the fraction, holder %q", holder)
+		}
+	})
+	t.Run("after another holder blocked it", func(t *testing.T) {
+		h := released(t)
+		renew(t, lodiav1alpha1.ControllerManagerLease, "a-watchdog_1", time.Now())
+		h.at(165)
+		h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonHoldBlocked, silent(3, 3)+atOrAbove+"60%, but a-watchdog_1 holds Lease kube-system/kube-controller-manager")
+		renew(t, lodiav1alpha1.ControllerManagerLease, lodiav1alpha1.HoldHolderIdentity, time.Now())
+		h.back(170)
+		h.expectSilent(silent(0, 3) + ", below 60%" + holdsUntil)
+		if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+			t.Fatalf("the hold ended on a count from before the blocked pass, holder %q", holder)
+		}
+	})
 }
 
 func TestAReturnAboveTheFractionRestartsTheTwoMinutes(t *testing.T) {
