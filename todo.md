@@ -203,7 +203,9 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 ## From the CI of the refactoring (2026-11-09)
 
 - `make test` gives envtest's API servers 60 s to stop instead of the default 20 s (the `@todo` in `Makefile`): a tenant API server in `internal/controller/tenant` twice took longer, after its test's checks had passed, and nobody has measured why.
-  Find what holds it past SIGTERM; when it stops within 20 s, remove `KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT` from `make test`.
+  768 stops in loaded Linux containers took at most 1.12 s, so it did not reproduce outside CI.
+  `verify` now keeps the log and the goroutines of a tenant API server still running 20 s into its stop, in the artifact `apiserver-dumps` (`testenv.StartDumping`, the `@todo` in `internal/controller/tenant/tenant_test.go`).
+  Read the first dump, fix what holds it past SIGTERM, then remove `KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT` from `make test`, `StartDumping` and the artifact's step.
 
 ## For wave 2, observability
 
