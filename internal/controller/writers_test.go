@@ -57,6 +57,7 @@ var conditionWriters = map[string]string{
 }
 
 var fieldWriters = map[string]string{
+	"addons":                "lodia/tenant",
 	"components":            "lodia/workloads",
 	"credentials":           "lodia/pki",
 	"datastore":             "lodia/datastore",
@@ -64,6 +65,7 @@ var fieldWriters = map[string]string{
 	"endpoint.konnectivity": "lodia/workloads",
 	"endpoint.inCluster":    "lodia/workloads",
 	"endpoint.tunnel":       "lodia/workloads",
+	"kubernetes":            "lodia/lifecycle",
 	"nodes":                 "lodia/health-nodes",
 	"restore":               "lodia/datastore",
 	"target":                "lodia/lifecycle",

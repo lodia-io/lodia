@@ -923,7 +923,7 @@ func TestOutsideGatewayModeAHeldServiceDropsThePublishedEndpointAndARefusedOneKe
 	}
 }
 
-func TestOutsideGatewayModeAPassReadsNoEndpointLiveAndNothingOfTheGatewayAPI(t *testing.T) {
+func TestOutsideGatewayModeAPassReadsTheControlPlaneLiveOnceAndNothingOfTheGatewayAPI(t *testing.T) {
 	for mode, cp := range map[string]*lodiav1alpha1.ControlPlane{"loadBalancer": running(t), "nodePort": runningOnNodePort(t)} {
 		t.Run(mode, func(t *testing.T) {
 			var live, gatewayAPI atomic.Int32
@@ -952,8 +952,8 @@ func TestOutsideGatewayModeAPassReadsNoEndpointLiveAndNothingOfTheGatewayAPI(t *
 			if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 				t.Fatal(err)
 			}
-			if live.Load() != 0 || gatewayAPI.Load() != 0 {
-				t.Errorf("the pass read the ControlPlane live %d times and the Gateway API %d times", live.Load(), gatewayAPI.Load())
+			if live.Load() != 1 || gatewayAPI.Load() != 0 {
+				t.Errorf("the pass read the ControlPlane live %d times and the Gateway API %d times, want once and never", live.Load(), gatewayAPI.Load())
 			}
 			if err := expectCondition(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady); err != nil {
 				t.Error(err)
@@ -1010,6 +1010,9 @@ func TestAnObjectAnotherControlPlaneKeepsHoldsEveryWorkload(t *testing.T) {
 	}
 	if e := get(t, cp).Status.Endpoint; e == nil || e.APIServer.Host != lbAddress {
 		t.Errorf("status.endpoint is %+v, want it published from the ControlPlane's own Service", e)
+	}
+	if c := get(t, cp).Status.Components; c != nil {
+		t.Errorf("status.components is %+v, from a Deployment another ControlPlane controls", c)
 	}
 
 	if err := k8s.Delete(t.Context(), held); err != nil {
@@ -1172,7 +1175,8 @@ func TestAWaitCountsTheDeploymentsWorkloadsControls(t *testing.T) {
 			testenv.Eventually(t, func() error {
 				return expectAt(cp, kept, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, "kube-apiserver has 0 of 2 replicas ready; kube-scheduler has no Deployment")
 			})
-			expectComponents(t, cp, "2/0/0 2/2/2 absent")
+			expectComponents(t, cp, "2/0/0 2/2/2 0/0/absent")
+			expectVersions(t, cp, "v1.37.1 v1.37.1 v1.37.1")
 			if n := deployments(t, cp); n != 2 {
 				t.Errorf("%d Deployments while Workloads waits, want the two it kept", n)
 			}
@@ -1185,6 +1189,8 @@ func TestAWaitCountsTheDeploymentsWorkloadsControls(t *testing.T) {
 				return expectAt(cp, kept, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable,
 					"kube-apiserver has no Deployment; kube-controller-manager has no Deployment; kube-scheduler has no Deployment")
 			})
+			expectComponents(t, cp, "0/0/absent 0/0/absent 0/0/absent")
+			expectVersions(t, cp, "v1.37.1 v1.37.1 v1.37.1")
 
 			input.catchUp(t, cp)
 			for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {

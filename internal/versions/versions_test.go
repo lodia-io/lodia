@@ -44,6 +44,32 @@ func TestMinors(t *testing.T) {
 	}
 }
 
+func TestOldest(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		reported []string
+		want     string
+		ok       bool
+	}{
+		{"one", []string{"v1.36.2"}, "v1.36.2", true},
+		{"equal", []string{"v1.36.2", "v1.36.2", "v1.36.2"}, "v1.36.2", true},
+		{"a patch apart", []string{"v1.36.3", "v1.36.2", "v1.36.10", "v1.36.4"}, "v1.36.2", true},
+		{"a minor apart", []string{"v1.37.0", "v1.36.9", "v1.37.1", "v1.36.10"}, "v1.36.9", true},
+		{"a minor above a patch", []string{"v1.37.0", "v1.36.9", "v1.36.12"}, "v1.36.9", true},
+		{"numbers, not text", []string{"v1.9.0", "v1.10.0"}, "v1.9.0", true},
+		{"none", nil, "", false},
+		{"one of them empty", []string{"v1.36.2", "", "v1.36.3"}, "", false},
+		{"one without a patch", []string{"v1.36.2", "v1.35", "v1.36.3"}, "", false},
+		{"one that is not a version", []string{"v1.36.2", "latest"}, "", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got, ok := versions.Oldest(c.reported...); got != c.want || ok != c.ok {
+				t.Errorf("the oldest of %q is %q, %t; want %q, %t", c.reported, got, ok, c.want, c.ok)
+			}
+		})
+	}
+}
+
 func TestTheKonnectivityPinReplacesTheTagOfAnyReference(t *testing.T) {
 	digest := "@sha256:" + strings.Repeat("ab", 32)
 	for image, repinned := range map[string]string{

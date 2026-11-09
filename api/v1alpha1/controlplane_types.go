@@ -57,7 +57,7 @@ type ControlPlaneSpec struct {
 	// at a time towards it.
 	// +required
 	// +kubebuilder:validation:MaxLength=16
-	// +kubebuilder:validation:Pattern=`^v1\.[0-9]+\.[0-9]+$`
+	// +kubebuilder:validation:Pattern=`^v1\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`
 	// +kubebuilder:validation:XValidation:rule="int(self.split('.')[1]) >= int(oldSelf.split('.')[1])",message="the Kubernetes minor version cannot decrease"
 	Version string `json:"version"`
 
