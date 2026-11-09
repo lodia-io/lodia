@@ -79,6 +79,15 @@ func TestAHeldControllerManagerWithNoReadyReplicaLeavesAPIServerReadyThroughAWai
 	}
 }
 
+func TestAHeldRestoreUnderAHoldKeepsWhatItsReleaseWaitsFor(t *testing.T) {
+	cp := restored(t, namespace(t), lodiav1alpha1.RestoreHeld)
+	setManagerHeld(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonNodesSilent)
+	reconcileNow(t, cp)
+	if err := expectAt(cp, 1, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, heldUntil+"spec.restoreFrom.release is Held; the restore is not complete; AddonsApplied is not True for generation 1"); err != nil {
+		t.Error(err)
+	}
+}
+
 func TestABrokenAPIServerOrSchedulerIsStillUnavailableUnderAHold(t *testing.T) {
 	for _, c := range []struct {
 		component string
