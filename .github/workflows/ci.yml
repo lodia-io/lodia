@@ -26,6 +26,14 @@ jobs:
         with:
           version: v4.3.1
       - run: make verify
+        env:
+          LODIA_APISERVER_DUMPS: ${{ runner.temp }}/apiserver-dumps
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: apiserver-dumps
+          path: ${{ runner.temp }}/apiserver-dumps
+          if-no-files-found: ignore
 
   e2e:
     runs-on: ubuntu-24.04

@@ -69,6 +69,8 @@ linters:
     rules:
       - path: _test\.go
         linters: [bodyclose, errchkjson, fatcontext, forbidigo, gosec, noctx, perfsprint]
+      - path: internal/testenv/
+        linters: [gosec]
 
 formatters:
   enable:

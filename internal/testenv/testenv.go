@@ -14,7 +14,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -139,6 +141,42 @@ func (e *Env) StartSecond() *rest.Config {
 		e.Fatal("start the second envtest", err)
 	}
 	return cfg
+}
+
+// StartDumping starts env and returns its stop. Where LODIA_APISERVER_DUMPS
+// names a directory, an API server still running after the given time since
+// its stop began is sent SIGQUIT, and the directory keeps its log and its
+// goroutines. The stop then returns nil: the dump is what was wanted of it.
+func StartDumping(t testing.TB, env *envtest.Environment, after time.Duration) (*rest.Config, func() error, error) {
+	dir := os.Getenv("LODIA_APISERVER_DUMPS")
+	if dir == "" {
+		cfg, err := env.Start()
+		return cfg, env.Stop, err
+	}
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return nil, nil, err
+	}
+	output, err := os.CreateTemp(dir, strings.ReplaceAll(t.Name(), "/", "_")+"-*.log")
+	if err != nil {
+		return nil, nil, err
+	}
+	api := env.ControlPlane.GetAPIServer()
+	api.Out, api.Err = output, output
+	api.Configure().Set("v", "1")
+	cfg, err := env.Start()
+	if err != nil {
+		return nil, nil, errors.Join(err, output.Close())
+	}
+	return cfg, func() error {
+		dump := time.AfterFunc(after, func() {
+			_ = exec.CommandContext(context.Background(), "pkill", "-QUIT", "-f", "--", "--secure-port="+api.SecureServing.Port).Run()
+		})
+		err := env.Stop()
+		if dump.Stop() {
+			err = errors.Join(err, os.Remove(output.Name()))
+		}
+		return errors.Join(err, output.Close())
+	}, nil
 }
 
 // Fatal stops the manager and the API servers, if started, and exits 1.
