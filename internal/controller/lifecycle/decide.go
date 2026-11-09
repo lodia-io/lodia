@@ -415,7 +415,7 @@ func (c change) upgradingMessage(f facts, rolling []string) string {
 	if len(rolling) > 0 {
 		message += ": " + strings.Join(rolling, "; ")
 	}
-	if ready := backupReady(f.backup); noBackupStore(ready) {
+	if ready := backupReady(f.backup); noBackupStore(ready) && !f.backup.CreationTimestamp.Before(&c.upgrade.StartedAt) {
 		message += "; no pre-upgrade Backup was taken: " + ready.Message
 	}
 	return message

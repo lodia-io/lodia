@@ -110,7 +110,7 @@ func (w world) controlPlane() *lodiav1alpha1.ControlPlane {
 func (w world) facts() facts {
 	f := facts{cp: w.controlPlane(), now: present}
 	if w.backupReason != "" || w.backupAbsentReady || w.backupDeleting {
-		backup := &lodiav1alpha1.Backup{ObjectMeta: metav1.ObjectMeta{Name: lodiav1alpha1.PreUpgradeBackupName("dev", backupMinor(f.cp), uid), Namespace: "team"}}
+		backup := &lodiav1alpha1.Backup{ObjectMeta: metav1.ObjectMeta{Name: lodiav1alpha1.PreUpgradeBackupName("dev", backupMinor(f.cp), uid), Namespace: "team", CreationTimestamp: started}}
 		if w.backupDeleting {
 			backup.DeletionTimestamp = &started
 		}
@@ -128,7 +128,7 @@ func (w world) facts() facts {
 
 type want struct {
 	target, reason string
-	message        string
+	message, lacks string
 	step           lodiav1alpha1.UpgradeStep
 	since          *metav1.Time
 	noUpgrade      bool
@@ -181,6 +181,9 @@ func check(t *testing.T, f facts, w want) {
 	}
 	if w.message != "" && !strings.Contains(c.Message, w.message) {
 		t.Errorf("Progressing's message is %q, want it to say %q", c.Message, w.message)
+	}
+	if w.lacks != "" && strings.Contains(c.Message, w.lacks) {
+		t.Errorf("Progressing's message is %q, which must not say %q", c.Message, w.lacks)
 	}
 }
 
@@ -287,6 +290,8 @@ func TestDecide(t *testing.T) {
 			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonFailed, step: lodiav1alpha1.UpgradeStepBackup, since: t0, message: "the tenant refuses", version: "v1.36.6"}},
 		{"Backup NoBackupStore moves the target and says so", world{spec: "v1.37.1", target: "v1.36.6", step: lodiav1alpha1.UpgradeStepBackup, reports: at("v1.36.6"), backupReason: lodiav1alpha1.ReasonNoBackupStore, backupStatus: metav1.ConditionFalse},
 			want{target: "v1.37.1", reason: lodiav1alpha1.ReasonUpgrading, step: lodiav1alpha1.UpgradeStepAPIServer, since: t0, version: "v1.36.6", message: "no pre-upgrade Backup was taken"}},
+		{"a later patch of that minor does not repeat that no Backup was taken", world{spec: "v1.37.2", target: "v1.37.2", step: lodiav1alpha1.UpgradeStepAPIServer, since: startedNow, reports: at("v1.37.1"), backupReason: lodiav1alpha1.ReasonNoBackupStore, backupStatus: metav1.ConditionFalse},
+			want{target: "v1.37.2", reason: lodiav1alpha1.ReasonUpgrading, step: lodiav1alpha1.UpgradeStepAPIServer, since: startedNow, version: "v1.37.1", lacks: "no pre-upgrade Backup was taken"}},
 		{"Backup Failed is Failed, and deleting it takes another", world{spec: "v1.37.1", target: "v1.36.6", step: lodiav1alpha1.UpgradeStepBackup, reports: at("v1.36.6"), backupReason: lodiav1alpha1.ReasonFailed, backupStatus: metav1.ConditionFalse},
 			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonFailed, step: lodiav1alpha1.UpgradeStepBackup, since: t0, message: "delete it", version: "v1.36.6"}},
 		{"Backup SealLost is Failed", world{spec: "v1.37.1", target: "v1.36.6", step: lodiav1alpha1.UpgradeStepBackup, reports: at("v1.36.6"), backupReason: lodiav1alpha1.ReasonSealLost, backupStatus: metav1.ConditionFalse},
