@@ -88,9 +88,13 @@ func newValues(cp *lodiav1alpha1.ControlPlane, clusterCA []byte) (*values, strin
 	case cp.Spec.Endpoint.Gateway != nil && endpoint.Tunnel == nil:
 		return nil, lodiav1alpha1.ReasonWaitingForEndpoint, "status.endpoint has no tunnel", nil
 	}
-	images, ok := versions.For(cp.Status.Target.Version)
+	oldest, ok := versions.Oldest(runningVersions(cp)...)
+	var images versions.Images
+	if ok {
+		images, ok = versions.For(oldest)
+	}
 	if !ok {
-		return nil, "", "", fmt.Errorf("the version table has no minor of Kubernetes %s", cp.Status.Target.Version)
+		return nil, lodiav1alpha1.ReasonWaitingForTarget, fmt.Sprintf("the oldest version the components run, %q, is not a version Lodia runs", oldest), nil
 	}
 	inCluster, err := netip.ParseAddr(endpoint.InCluster.Host)
 	if err != nil {
@@ -102,7 +106,7 @@ func newValues(cp *lodiav1alpha1.ControlPlane, clusterCA []byte) (*values, strin
 	}
 	v := &values{
 		Name:             cp.Name,
-		Version:          cp.Status.Target.Version,
+		Version:          oldest,
 		Domain:           string(cp.Spec.Network.ClusterDomain),
 		Endpoint:         net.JoinHostPort(endpoint.APIServer.Host, strconv.Itoa(int(endpoint.APIServer.Port))),
 		KonnectivityHost: endpoint.Konnectivity.Host,
@@ -181,6 +185,32 @@ func newValues(cp *lodiav1alpha1.ControlPlane, clusterCA []byte) (*values, strin
 	}
 	v.ClusterInfo = string(info)
 	return v, "", "", nil
+}
+
+// reported are the versions the API server, the controller manager and the
+// scheduler report, empty for one that reports none.
+func reported(cp *lodiav1alpha1.ControlPlane) [3]string {
+	var out [3]string
+	if c := cp.Status.Components; c != nil {
+		for i, s := range []*lodiav1alpha1.ComponentStatus{c.APIServer, c.ControllerManager, c.Scheduler} {
+			if s != nil {
+				out[i] = s.Version
+			}
+		}
+	}
+	return out
+}
+
+// runningVersions are the versions of the three components, an absent report
+// counting as the target: no earlier full rollout exists to stay behind.
+func runningVersions(cp *lodiav1alpha1.ControlPlane) []string {
+	out := reported(cp)
+	for i := range out {
+		if out[i] == "" {
+			out[i] = cp.Status.Target.Version
+		}
+	}
+	return out[:]
 }
 
 // tenthAddress is CoreDNS's ClusterIP, as kubeadm takes it (kubernetes@v1.35.0

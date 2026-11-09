@@ -98,6 +98,7 @@ func inputs(cp *lodiav1alpha1.ControlPlane) string {
 	if t := cp.Status.Target; t != nil {
 		fmt.Fprintf(&b, " target=%s", t.Version)
 	}
+	fmt.Fprintf(&b, " components=%q", reported(cp))
 	if e := cp.Status.Endpoint; e != nil {
 		fmt.Fprintf(&b, " %s:%d %s:%d %s:%d", e.APIServer.Host, e.APIServer.Port, e.Konnectivity.Host, e.Konnectivity.Port, e.InCluster.Host, e.InCluster.Port)
 		if e.Tunnel != nil {
