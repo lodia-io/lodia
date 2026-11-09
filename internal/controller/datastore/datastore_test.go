@@ -43,6 +43,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/apistatus"
 	"go.lodia.io/lodia/internal/controller/datastore"
 	"go.lodia.io/lodia/internal/controller/datastore/datastoretest"
 	"go.lodia.io/lodia/internal/testenv"
@@ -516,6 +517,51 @@ func TestEtcdRefused(t *testing.T) {
 	waitCondition(t, ns, "dev", metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd dev-etcd")
 }
 
+func TestARefusedApplyKeepsTheDatastoreThatRuns(t *testing.T) {
+	ns := namespace(t)
+	const cp = "kept"
+	createClass(t, newClass("keeps-running", "Retain"))
+	create(t, controlPlane(ns, cp, "keeps-running"))
+	writeGeneration(t, ns, cp, 1)
+	waitEtcd(t, ns, cp, namesGeneration(1))
+	readyOn(t, ns, cp, 1)
+	running := getControlPlane(t, ns, cp).Status.Datastore
+	if running == nil || len(running.Endpoints) != 1 {
+		t.Fatalf("a running Etcd left status.datastore %+v", running)
+	}
+
+	refuseEtcds(t, ns)
+	writeGeneration(t, ns, cp, 2)
+	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, "the API server refuses Etcd "+cp+"-etcd on certificate generation 2")
+	got := getControlPlane(t, ns, cp)
+	if got.Status.Datastore == nil || !reflect.DeepEqual(got.Status.Datastore.Endpoints, running.Endpoints) {
+		t.Errorf("a refused apply left status.datastore %+v, want the running Etcd's endpoints %+v", got.Status.Datastore, running.Endpoints)
+	}
+	if backup := meta.FindStatusCondition(got.Status.Conditions, lodiav1alpha1.ConditionBackupReady); backup == nil || backup.Reason != lodiav1alpha1.ReasonNoBackupStore {
+		t.Errorf("a refused apply left BackupReady %+v, want the running Etcd's NoBackupStore", backup)
+	}
+}
+
+func TestACredentialsCopyTheAPIServerRefusesIsThePasssError(t *testing.T) {
+	ns, credentialsNamespace := namespace(t), namespace(t)
+	const cp = "copy-refused"
+	create(t, credentials(credentialsNamespace))
+	createClass(t, fullClass("refused-copy", credentialsNamespace))
+	create(t, controlPlane(ns, cp, "refused-copy"))
+	writeGeneration(t, ns, cp, 1)
+	waitEtcd(t, ns, cp, namesGeneration(1))
+	readyOn(t, ns, cp, 1)
+
+	refuse(t, ns, admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"secrets"}}, func() client.Object {
+		return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: ns}}
+	})
+	reconciler := &datastore.Reconciler{Client: k8s, Reader: k8s, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace}
+	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}); !apistatus.Refused(err) {
+		t.Fatalf("a pass whose credentials copy is refused returned %v, want the refusal, which the log then holds", err)
+	}
+	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "DatastoreClass refused-copy is held: the API server refuses "+cp+"-etcd-backup; the reason is in Lodia's log")
+}
+
 func refuseEtcds(t *testing.T, ns string) *admissionregistrationv1.ValidatingAdmissionPolicyBinding {
 	t.Helper()
 	return refuse(t, ns, admissionregistrationv1.Rule{APIGroups: []string{druidv1alpha1.SchemeGroupVersion.Group}, APIVersions: []string{"v1alpha1"}, Resources: []string{"etcds"}}, func() client.Object {
@@ -827,6 +873,9 @@ func TestBackupCredentialsCopied(t *testing.T) {
 	create(t, controlPlane(ns, "backed", "backed-up"))
 	writeGeneration(t, ns, "backed", 1)
 	waitCondition(t, ns, "backed", metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "DatastoreClass backed-up cannot be applied yet: its credentials Secret "+credentialsNamespace+"/s3 is missing")
+	if after := reconcileNow(t, ns, "backed"); after != time.Minute {
+		t.Errorf("a class waiting on its credentials requeues after %s, want a minute: the class's Secret is outside the cache", after)
+	}
 
 	source := credentials(credentialsNamespace)
 	create(t, source)
@@ -2122,6 +2171,9 @@ func TestForeignEtcd(t *testing.T) {
 			create(t, controlPlane(ns, row.cp, "foreign"))
 			writeGeneration(t, ns, row.cp, 1)
 			waitCondition(t, ns, row.cp, metav1.ConditionFalse, lodiav1alpha1.ReasonVolumesExist, row.message)
+			if after := reconcileNow(t, ns, row.cp); after != time.Minute {
+				t.Errorf("a foreign Etcd requeues after %s, want a minute: nothing reports its deletion", after)
+			}
 			settle(t, ns, row.cp)
 			if datastore := getControlPlane(t, ns, row.cp).Status.Datastore; datastore != nil {
 				t.Errorf("status.datastore %+v describes an Etcd of another ControlPlane", datastore)
