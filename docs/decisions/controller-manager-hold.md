@@ -69,6 +69,46 @@ A grace period of 60 seconds marks a node that really died 10 seconds later than
 It does not tell whose side broke: 60% of a cluster silent at once is a cut from the control plane, the provider's or the customer's, and there is nowhere to evict to either way.
 One dead machine of two is 50%, and its pods are evicted as upstream does.
 
+**The rows.**
+A pass reads the Lease first, with a consistent GET, then takes the first row that matches.
+"Held" is holder `lodia` on the Lease just read, "below" includes fewer than 2 counted nodes, "free" is no Lease or no holder, and "expired" is no change for its `leaseDurationSeconds` by the operator's clock.
+
+| # | when | condition | write |
+|---|---|---|---|
+| 1 | the read failed, `AccessReady` not True | `WaitingForAccess` | none |
+| 2 | the read failed | kept, nothing applied | none |
+| 3 | disabled, held | `Disabled` | release at once |
+| 4 | disabled | `Disabled` | none |
+| 5 | `AccessReady` not True, held | `NodesSilent` | renew |
+| 6 | `AccessReady` not True | `WaitingForAccess` | none |
+| 7 | the Lease list failed, held | `NodesSilent` | renew |
+| 8 | the Lease list failed | `NotHeld`, saying the Leases could not be listed | none |
+| 9 | no Node list of this run, held | `NodesSilent` | renew |
+| 10 | no Node list of this run | `NotHeld`, saying the nodes are not listed yet | none |
+| 11 | at or above the fraction, held | `NodesSilent` | renew, `acquireTime` kept |
+| 12 | at or above, the Lease free or expired, or held by a pod of this `ControlPlane` | `NodesSilent` | take: holder `lodia`, 60 s, `acquireTime` and `renewTime` now, transitions + 1 |
+| 13 | at or above | `HoldBlocked`, naming the holder | none |
+| 14 | below, held, for less than `releaseAfter` | `NodesSilent` | renew, or the Lease would lapse at 60 s |
+| 15 | below, held, for `releaseAfter` | `NotHeld` | release: no holder, 1 s, as client-go does |
+| 16 | below | `NotHeld` | none |
+
+A pass with no Lease list behind it restarts the clock and clears the count towards the release, whichever row follows: rows 1, 2 and 5-8, rows 3 and 4 when the list failed or `AccessReady` is not True, and a missing or foreign `<cp>-lodia-kubeconfig`.
+Rows 11-13 clear the count, and rows 9 and 10 neither grow nor clear it.
+A write that is refused or fails changes the row's condition:
+
+| the write | then |
+|---|---|
+| succeeded | the row's condition |
+| a conflict | the Lease is read again and **the row is selected again** from what it says, so a retry never writes over a holder row 12 does not allow; when the retries run out, as "failed otherwise" |
+| a take refused (`apistatus.Refused`: a webhook, `Forbidden`) | `HoldBlocked`, naming the refusal; the next pass tries again |
+| a renewal or a release refused | `NodesSilent`, the Lease still `lodia`'s; the next pass tries again, and a refused renewal lapses at 60 s if it lasts |
+| failed otherwise (a timeout, a 5xx, `NotFound`) | kept, nothing applied; the next pass reads what the Lease says |
+| a create meets `AlreadyExists` | nothing applied; the next pass reads it |
+| row 12's pod list failed | kept, nothing applied, no take |
+
+`NodesSilent` is therefore written only after a write that held the Lease, or with the Lease read as `lodia`'s.
+`status.health.controllerManagerHold` goes with it, its counts absent on any row that has no list to count from.
+
 ## Why
 
 - **A hosted control plane turns the provider's outage into the tenant's.**
@@ -106,5 +146,5 @@ One dead machine of two is 50%, and its pods are evicted as upstream does.
 - `internal/operator` — `config.go` loads Health's settings from the operator's configuration file and refuses the ones that break the margin; `config_test.go` holds every refusal.
 - `internal/controller/health` — `health.go` reports `ControllersLeading` from the two leader Leases; `health_test.go` holds a Lease that stops renewing.
   `nodes.go` samples the node Leases and the Nodes on a queue of its own and reports `status.nodes` and `ControllerManagerHeld`; `nodes_test.go` holds the counting rules.
-  `hold.go` selects the row of the hold's table and writes the Lease; `hold_test.go` holds every row, each write's outcomes and the timings of the release.
+  `hold.go` selects the row of the table above and writes the Lease; `hold_test.go` holds every row, each write's outcomes and the timings of the release.
 - `test/e2e/hold_test.go` — gate G4: a highly available tenant behind the Gateway on a kind cluster, its two nodes cut off for 10 minutes, then one of them ([the gate](../../test/e2e/README.md#nightly-gate-g4-nodes-cut-off-from-the-gateway)).

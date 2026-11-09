@@ -21,6 +21,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/controller/workloads"
+	"go.lodia.io/lodia/internal/testenv"
 )
 
 const heldUntil = "kube-controller-manager is held at 0 replicas until the restore is released: "
@@ -47,7 +48,7 @@ func TestAHeldRestoreRunsNoControllerManagerAndCountsItAvailable(t *testing.T) {
 		}},
 	} {
 		step.change()
-		eventually(t, func() error {
+		testenv.Eventually(t, func() error {
 			return expectAt(cp, 1, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, heldUntil+step.unmet)
 		})
 		if n := controllerManagers(t, cp); n != 0 {
@@ -76,7 +77,7 @@ func TestTheSourcesDeletionAloneReleasesItsReplacement(t *testing.T) {
 	setRestore(t, cp, lodiav1alpha1.UIDReference{Name: prod.Name, UID: prod.UID})
 	setTrue(t, cp, lodiav1alpha1.ConditionAddonsApplied, lodiav1alpha1.ReasonApplied)
 	sourceExists := heldUntil + "ControlPlane prod (UID " + string(prod.UID) + "), the Backup's source, exists"
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return expectAt(cp, 1, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, sourceExists)
 	})
 	if n := controllerManagers(t, cp); n != 0 {
@@ -94,7 +95,7 @@ func TestTheSourcesDeletionAloneReleasesItsReplacement(t *testing.T) {
 		t.Fatalf("the controller manager runs %d replicas while its source is being deleted", n)
 	}
 
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		fresh := &lodiav1alpha1.ControlPlane{}
 		if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(prod), fresh); err != nil {
 			return err
@@ -102,7 +103,7 @@ func TestTheSourcesDeletionAloneReleasesItsReplacement(t *testing.T) {
 		fresh.Finalizers = nil
 		return k8s.Update(t.Context(), fresh)
 	})
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if n := controllerManagers(t, cp); n != 1 {
 			return fmt.Errorf("the controller manager runs %d replicas once its source is gone", n)
 		}
@@ -119,7 +120,7 @@ func TestTheReleaseWaitsForAddonsAppliedAtItsGenerationAndHoldsForGood(t *testin
 	if err := k8s.Delete(t.Context(), prod); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return expectAt(cp, 1, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, heldUntil+"spec.restoreFrom.release is Held")
 	})
 
@@ -133,14 +134,14 @@ func TestTheReleaseWaitsForAddonsAppliedAtItsGenerationAndHoldsForGood(t *testin
 	}
 
 	setTrue(t, cp, lodiav1alpha1.ConditionAddonsApplied, lodiav1alpha1.ReasonApplied)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if n := controllerManagers(t, cp); n != 1 {
 			return fmt.Errorf("the released controller manager runs %d replicas", n)
 		}
 		return nil
 	})
 	markAvailable(t, deployment(t, cp, "kube-controller-manager"))
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return expectAt(cp, 2, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "every replica of kube-apiserver, kube-controller-manager and kube-scheduler is ready")
 	})
 
@@ -163,7 +164,7 @@ func TestAControllerManagerScaledByHandIsReleased(t *testing.T) {
 	cp := restored(t, namespace(t), lodiav1alpha1.RestoreHeld)
 	update(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.Paused = true })
 	r := &workloads.Reconciler{Client: unpaused(), Reader: k8s, SignerImage: signerImage}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if d := deployment(t, cp, "kube-controller-manager"); *d.Spec.Replicas == 0 {
 			d.Spec.Replicas = new(int32(1))
 			if err := k8s.Update(t.Context(), d); err != nil {
@@ -194,7 +195,7 @@ func TestHighAvailabilityRunsTwoControllerManagersOnceReleased(t *testing.T) {
 		spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"}
 	})
 	setRestore(t, cp, gone)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return expectAt(cp, 1, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, heldUntil+"AddonsApplied is not True for generation 1")
 	})
 	held := deployment(t, cp, "kube-controller-manager")
@@ -204,7 +205,7 @@ func TestHighAvailabilityRunsTwoControllerManagersOnceReleased(t *testing.T) {
 	expectSpread(t, held, map[string]int32{"kubernetes.io/hostname": 2, "topology.kubernetes.io/zone": 2})
 
 	setTrue(t, cp, lodiav1alpha1.ConditionAddonsApplied, lodiav1alpha1.ReasonApplied)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if n := controllerManagers(t, cp); n != 2 {
 			return fmt.Errorf("the released controller manager runs %d replicas", n)
 		}
@@ -230,7 +231,7 @@ func TestAnOrphanedControllerManagerReleasesNothing(t *testing.T) {
 	}
 
 	cp := restored(t, ns, lodiav1alpha1.RestoreHeld)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		d := deployment(t, cp, "kube-controller-manager")
 		if !metav1.IsControlledBy(d, cp) || *d.Spec.Replicas != 0 {
 			return fmt.Errorf("the orphaned controller manager runs %d replicas, owned by %+v", *d.Spec.Replicas, d.OwnerReferences)
@@ -242,7 +243,7 @@ func TestAnOrphanedControllerManagerReleasesNothing(t *testing.T) {
 func TestAMetReleaseInAWaitCountsTheControllerManagerAtZeroAvailable(t *testing.T) {
 	cp := restored(t, namespace(t), lodiav1alpha1.RestoreReleased)
 	setRestore(t, cp, gone)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return expectAt(cp, 1, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, heldUntil+"AddonsApplied is not True for generation 1")
 	})
 	setFalse(t, cp, lodiav1alpha1.ConditionCertificatesReady, "Issuing")
@@ -259,7 +260,7 @@ func TestAMetReleaseInAWaitCountsTheControllerManagerAtZeroAvailable(t *testing.
 func TestAWaitKeepsTheHeldMessage(t *testing.T) {
 	cp := restored(t, namespace(t), lodiav1alpha1.RestoreHeld)
 	unmet := "spec.restoreFrom.release is Held; the restore is not complete; AddonsApplied is not True for generation "
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return expectAt(cp, 1, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, heldUntil+unmet+"1")
 	})
 	changeSpec(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) {
@@ -277,7 +278,7 @@ func TestAStaleCacheNeverStopsAReleasedControllerManager(t *testing.T) {
 	})
 	setRestore(t, cp, gone)
 	setTrue(t, cp, lodiav1alpha1.ConditionAddonsApplied, lodiav1alpha1.ReasonApplied)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if n := controllerManagers(t, cp); n != 2 {
 			return fmt.Errorf("the released controller manager runs %d replicas", n)
 		}

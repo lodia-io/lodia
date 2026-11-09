@@ -48,10 +48,11 @@ const (
 	releaseLease
 )
 
-// row is what selectRow decides: what the pass writes in the tenant, and what
-// it reports once that is written. A nil condition applies nothing. silent and
-// counted are status.health's, when counts says the row has a list to count
-// from.
+// row is what selectRow decides, a row of the table in
+// docs/decisions/controller-manager-hold.md: what the pass writes in the
+// tenant, and what it reports once that is written. A nil condition applies
+// nothing. silent and counted are status.health's, when counts says the row
+// has a list to count from.
 type row struct {
 	write           leaseWrite
 	condition       *metav1.Condition
@@ -122,7 +123,7 @@ func (r *NodesReconciler) readLease(ctx context.Context, t *tenant) (*coordinati
 	return lease, nil
 }
 
-// selectRow selects the first row that matches. A pass that gets here with no
+// selectRow selects the first row of that table that matches. A pass that gets here with no
 // list of the node Leases behind it restarts the clock and clears the count
 // towards the release, whichever row follows; a hold with no list goes on
 // renewing.

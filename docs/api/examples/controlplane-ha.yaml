@@ -1,6 +1,6 @@
 # A production ControlPlane: highly available, exposed through a shared
 # Gateway by SNI, OIDC for people, audit and encryption at rest, a maintenance
-# window at night and hibernation outside working hours.
+# window at night.
 apiVersion: lodia.io/v1alpha1
 kind: ControlPlane
 metadata:
@@ -38,7 +38,7 @@ spec:
     audit:
       policyRef: {name: audit-default}   # a ConfigMap in this namespace, key policy.yaml
     encryption:
-      provider: secretbox                 # None | secretbox | aescbc | kms
+      provider: secretbox                 # None | secretbox | aescbc
     featureGates: {}
     extraArgs:
       max-requests-inflight: "800"
@@ -58,6 +58,3 @@ spec:
     window: {begin: "02:00", end: "04:00", timeZone: Europe/Kyiv}
     autoUpdate:
       kubernetesPatch: true
-  hibernation:
-    schedules:
-      - {start: "0 20 * * 1-5", end: "0 7 * * 1-5", timeZone: Europe/Kyiv}

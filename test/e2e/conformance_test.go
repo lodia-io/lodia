@@ -82,7 +82,15 @@ func TestConformance(t *testing.T) {
 			if err := k8s.List(ctx, list, client.InNamespace(key.Namespace)); err != nil {
 				t.Fatal(err)
 			}
-			pods := slices.DeleteFunc(list.Items, func(pod corev1.Pod) bool { return !pod.DeletionTimestamp.IsZero() || running(&pod) != nil })
+			pods := slices.DeleteFunc(list.Items, func(pod corev1.Pod) bool { return !pod.DeletionTimestamp.IsZero() })
+			if len(pods) == 0 {
+				t.Fatalf("no pod in namespace %s", key.Namespace)
+			}
+			for i := range pods {
+				if err := running(&pods[i]); err != nil {
+					t.Fatal(err)
+				}
+			}
 			management := kubernetes.NewForConfigOrDie(cfg.Client().RESTConfig())
 			first := containerUsage(ctx, t, management, pods)
 			time.Sleep(window)
@@ -120,11 +128,9 @@ func TestConformance(t *testing.T) {
 			return ctx
 		}).
 		Assess("hydrophone runs the conformance suite in the tenant, and it passes", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			args := []string{"--conformance-image", "registry.k8s.io/conformance:" + version}
+			args := []string{"--conformance"}
 			if focus := os.Getenv("CONFORMANCE_FOCUS"); focus != "" {
-				args = append(args, "--focus", focus)
-			} else {
-				args = append(args, "--conformance")
+				args = []string{"--focus", focus, "--extra-ginkgo-args=--fail-on-empty=true"}
 			}
 			runHydrophone(ctx, t, access, artifacts, args...)
 			return ctx

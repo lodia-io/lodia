@@ -9,6 +9,8 @@ import (
 	"maps"
 	"slices"
 	"strings"
+
+	"github.com/distribution/reference"
 )
 
 const registry = "registry.k8s.io"
@@ -49,6 +51,37 @@ func For(version string) (Images, bool) {
 		KonnectivityServer: registry + "/kas-network-proxy/proxy-server:" + m.konnectivity,
 		KonnectivityAgent:  registry + "/kas-network-proxy/proxy-agent:" + m.konnectivity,
 	}, true
+}
+
+// PinKonnectivity returns images with both konnectivity images at the tag
+// pin, in place of their tag and digest: the agents and the server follow one
+// pin. An empty pin leaves them as they are.
+func PinKonnectivity(images Images, pin string) (Images, error) {
+	if pin == "" {
+		return images, nil
+	}
+	server, err := withTag(images.KonnectivityServer, pin)
+	if err != nil {
+		return Images{}, err
+	}
+	agent, err := withTag(images.KonnectivityAgent, pin)
+	if err != nil {
+		return Images{}, err
+	}
+	images.KonnectivityServer, images.KonnectivityAgent = server, agent
+	return images, nil
+}
+
+func withTag(image, tag string) (string, error) {
+	named, err := reference.ParseNormalizedNamed(image)
+	if err != nil {
+		return "", err
+	}
+	tagged, err := reference.WithTag(reference.TrimNamed(named), tag)
+	if err != nil {
+		return "", err
+	}
+	return tagged.String(), nil
 }
 
 // Minor returns "1.35" for "v1.35.8".

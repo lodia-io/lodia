@@ -5,6 +5,7 @@ package versions_test
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"go.lodia.io/lodia/internal/versions"
@@ -40,5 +41,36 @@ func TestUnsupportedVersions(t *testing.T) {
 func TestMinors(t *testing.T) {
 	if got, want := versions.Minors(), []string{"1.35", "1.36", "1.37"}; !slices.Equal(got, want) {
 		t.Errorf("minors are %v, want %v", got, want)
+	}
+}
+
+func TestTheKonnectivityPinReplacesTheTagOfAnyReference(t *testing.T) {
+	digest := "@sha256:" + strings.Repeat("ab", 32)
+	for image, repinned := range map[string]string{
+		"registry.k8s.io/kas-network-proxy/%s:v0.37.0":                "registry.k8s.io/kas-network-proxy/%s:v0.37.2",
+		"registry.example:5000/kas-network-proxy/%s:v0.37.0":          "registry.example:5000/kas-network-proxy/%s:v0.37.2",
+		"registry.example:5000/kas-network-proxy/%s:v0.37.0" + digest: "registry.example:5000/kas-network-proxy/%s:v0.37.2",
+		"registry.example:5000/kas-network-proxy/%s" + digest:         "registry.example:5000/kas-network-proxy/%s:v0.37.2",
+	} {
+		images := versions.Images{
+			APIServer:          "registry.k8s.io/kube-apiserver:v1.37.0",
+			KonnectivityServer: strings.Replace(image, "%s", "proxy-server", 1),
+			KonnectivityAgent:  strings.Replace(image, "%s", "proxy-agent", 1),
+		}
+		pinned, err := versions.PinKonnectivity(images, "v0.37.2")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := versions.Images{
+			APIServer:          images.APIServer,
+			KonnectivityServer: strings.Replace(repinned, "%s", "proxy-server", 1),
+			KonnectivityAgent:  strings.Replace(repinned, "%s", "proxy-agent", 1),
+		}
+		if pinned != want {
+			t.Errorf("%s pinned to v0.37.2:\n got %+v\nwant %+v", image, pinned, want)
+		}
+		if unpinned, err := versions.PinKonnectivity(images, ""); err != nil || unpinned != images {
+			t.Errorf("%s without a pin is %+v, %v", image, unpinned, err)
+		}
 	}
 }

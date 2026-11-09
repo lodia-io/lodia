@@ -27,11 +27,13 @@ import (
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/certs"
 	"go.lodia.io/lodia/internal/controller/health"
+	"go.lodia.io/lodia/internal/testenv"
 )
 
 type readyz struct {
-	code atomic.Int32
-	hang atomic.Bool
+	code     atomic.Int32
+	hang     atomic.Bool
+	redirect atomic.Bool
 }
 
 func (s *readyz) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -39,8 +41,15 @@ func (s *readyz) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()
 		return
 	}
+	if r.URL.Path == "/redirected" {
+		return
+	}
 	if r.URL.Path != "/readyz" {
 		http.NotFound(w, r)
+		return
+	}
+	if s.redirect.Load() {
+		http.Redirect(w, r, "/redirected", http.StatusFound)
 		return
 	}
 	w.WriteHeader(int(s.code.Load()))
@@ -191,13 +200,13 @@ var modes = []struct {
 		writeBundle(t, cp, e)
 		publish(t, cp, e)
 		p := &paths{cp: cp, api: e, answered: e.url + " answered 200"}
-		eventually(t, func() error { return expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, p.answered) })
+		testenv.Eventually(t, func() error { return expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, p.answered) })
 		return p
 	}},
 	{"gateway", func(t *testing.T) *paths {
 		f := newGateway(t)
 		f.publishWorking(t)
-		eventually(t, func() error {
+		testenv.Eventually(t, func() error {
 			return expect(t, f.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, f.allAnswered())
 		})
 		return &paths{cp: f.cp, api: f.api, prefix: "api: ", answered: f.allAnswered()}
@@ -286,7 +295,7 @@ func TestFailuresOnEitherPathCountTogether(t *testing.T) {
 func TestTheMessageNamesEveryFailedPathAndTheInternalOneFirst(t *testing.T) {
 	f := newGateway(t)
 	f.publishWorking(t)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return expect(t, f.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, f.allAnswered())
 	})
 	f.api.code.Store(http.StatusInternalServerError)
@@ -417,7 +426,7 @@ func TestAServerThatAcceptsAndNeverAnswersEndsWithinTimeoutInEveryMode(t *testin
 			e := serve(t)
 			writeBundle(t, cp, e)
 			publish(t, cp, e)
-			eventually(t, func() error {
+			testenv.Eventually(t, func() error {
 				return expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200")
 			})
 			stalled, closed := stallListener(t)

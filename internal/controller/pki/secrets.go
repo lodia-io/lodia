@@ -127,12 +127,11 @@ type tenant struct {
 	// wake is the earliest renewal, CA notice or CA expiry still ahead.
 	wake time.Time
 	// cas sign; caCerts holds every CA on the server, expired ones included.
-	cas                 map[string]*certs.Certificate
-	caCerts             map[string]*x509.Certificate
-	missingCAs          []string
-	expiredCAs          []string
-	unreadable          []string
-	unsupportedProvider lodiav1alpha1.EncryptionProvider
+	cas        map[string]*certs.Certificate
+	caCerts    map[string]*x509.Certificate
+	missingCAs []string
+	expiredCAs []string
+	unreadable []string
 	// backupProviders are the providers of the Backup a restore without an
 	// encryption configuration copies; waitingForBackup says why there are
 	// none yet.
@@ -305,14 +304,14 @@ func (t *tenant) foreignRequeue() time.Duration {
 	return 10 * time.Second
 }
 
-func (t *tenant) credentials() map[string]any {
-	out := map[string]any{}
-	for field, secret := range map[string]string{"adminKubeconfigSecretRef": t.secret(lodiav1alpha1.AdminKubeconfigSecret), "caBundleSecretRef": t.secret(lodiav1alpha1.CABundleSecret)} {
-		if t.existing[secret] != nil {
-			out[field] = map[string]any{"name": secret}
+func (t *tenant) credentials() *lodiav1alpha1.CredentialsStatus {
+	ref := func(secret lodiav1alpha1.Secret) *lodiav1alpha1.LocalReference {
+		if name := t.secret(secret); t.existing[name] != nil {
+			return &lodiav1alpha1.LocalReference{Name: name}
 		}
+		return nil
 	}
-	return out
+	return credentialRefs(&lodiav1alpha1.CredentialsStatus{AdminKubeconfigSecretRef: ref(lodiav1alpha1.AdminKubeconfigSecret), CABundleSecretRef: ref(lodiav1alpha1.CABundleSecret)})
 }
 
 func data(s *corev1.Secret, key string) []byte {
@@ -899,10 +898,6 @@ func (r *Reconciler) encryptionConfig(ctx context.Context, t *tenant) error {
 	want := providerSecretbox
 	if api := t.cp.Spec.APIServer; api != nil && api.Encryption != nil && api.Encryption.Provider != "" {
 		want = api.Encryption.Provider
-	}
-	if !slices.Contains([]lodiav1alpha1.EncryptionProvider{providerNone, providerSecretbox, providerAESCBC}, want) {
-		t.unsupportedProvider = want
-		return nil
 	}
 	var providers []apiserverv1.ProviderConfiguration
 	switch s := t.existing[name]; {

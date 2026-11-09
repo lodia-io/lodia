@@ -25,8 +25,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -40,6 +38,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/certs"
+	"go.lodia.io/lodia/internal/statusapply"
 )
 
 const (
@@ -302,29 +301,19 @@ func requestKubeconfig(controlPlane string, e *endpoint, caBundle []byte, user s
 func (r *KubeconfigRequestReconciler) applyStatus(ctx context.Context, kr *lodiav1alpha1.KubeconfigRequest, now time.Time, c metav1.Condition, kubeconfig []byte, expiration *time.Time) error {
 	c.ObservedGeneration = kr.Generation
 	c.LastTransitionTime = metav1.NewTime(now)
-	prev := meta.FindStatusCondition(kr.Status.Conditions, c.Type)
-	if prev != nil && prev.Status == c.Status {
-		if prev.Reason == c.Reason && prev.Message == c.Message && prev.ObservedGeneration == c.ObservedGeneration {
-			return nil
-		}
-		c.LastTransitionTime = prev.LastTransitionTime
-	}
-	condition, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&c)
+	_, applied, changed, err := statusapply.Merge(kr.Status.Conditions, c)
 	if err != nil {
 		return err
 	}
-	status := map[string]any{"conditions": []any{condition}}
+	if !changed {
+		return nil
+	}
+	status := map[string]any{"conditions": applied}
 	if kubeconfig != nil {
 		status["kubeconfig"] = base64.StdEncoding.EncodeToString(kubeconfig)
 		status["expirationTimestamp"] = expiration.UTC().Format(time.RFC3339)
 	}
-	u := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": lodiav1alpha1.GroupVersion.String(),
-		"kind":       "KubeconfigRequest",
-		"metadata":   map[string]any{"name": kr.Name, "namespace": kr.Namespace, "resourceVersion": kr.ResourceVersion},
-		"status":     status,
-	}}
-	if err := r.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(u), client.FieldOwner(kubeconfigRequestFieldManager), client.ForceOwnership); err != nil {
+	if err := statusapply.ApplyLocked(ctx, r.Client, kubeconfigRequestFieldManager, "KubeconfigRequest", kr, status); err != nil {
 		return fmt.Errorf("apply the status of KubeconfigRequest %s: %w", kr.Name, err)
 	}
 	return nil

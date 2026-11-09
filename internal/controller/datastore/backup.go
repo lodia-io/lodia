@@ -24,7 +24,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/clock"
@@ -41,6 +40,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/restore"
+	"go.lodia.io/lodia/internal/statusapply"
 )
 
 const (
@@ -819,13 +819,7 @@ func (r *BackupReconciler) applyStatus(ctx context.Context, backup *lodiav1alpha
 		return false, err
 	}
 	content["conditions"] = []any{ready}
-	applied := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": lodiav1alpha1.GroupVersion.String(),
-		"kind":       "Backup",
-		"metadata":   map[string]any{"name": backup.Name, "namespace": backup.Namespace, "resourceVersion": backup.ResourceVersion},
-		"status":     content,
-	}}
-	err = r.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(applied), client.FieldOwner(BackupFieldManager), client.ForceOwnership)
+	err = statusapply.ApplyLocked(ctx, r.Client, BackupFieldManager, "Backup", backup, content)
 	if apierrors.IsConflict(err) {
 		return true, nil
 	}

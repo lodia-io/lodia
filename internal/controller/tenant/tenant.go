@@ -20,7 +20,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -34,6 +33,7 @@ import (
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/live"
 	"go.lodia.io/lodia/internal/ownership"
+	"go.lodia.io/lodia/internal/statusapply"
 )
 
 const (
@@ -123,18 +123,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if cp.Spec.Endpoint.Gateway != nil {
 		r.deliverTunnelClient(ctx, cp)
 	}
+	if err := live.Conditions(ctx, r.Reader, cp, lodiav1alpha1.ConditionAddonsApplied, lodiav1alpha1.ConditionAddonsAvailable); err != nil {
+		return ctrl.Result{}, err
+	}
 	applied, available := previous(cp, lodiav1alpha1.ConditionAddonsApplied), previous(cp, lodiav1alpha1.ConditionAddonsAvailable)
 	if meta.FindStatusCondition(cp.Status.Conditions, applied.Type) == nil || meta.FindStatusCondition(cp.Status.Conditions, available.Type) == nil {
 		if err := r.applyStatus(ctx, cp, applied, available); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
-	access := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAccessReady)
-	if access == nil || access.Status != metav1.ConditionTrue || access.ObservedGeneration != cp.Generation {
-		if err := live.Conditions(ctx, r.Reader, cp, applied.Type, available.Type); err != nil {
-			return ctrl.Result{}, err
-		}
-		if err := r.applyStatus(ctx, cp, waitForAccess(cp, previous(cp, applied.Type)), waitForAccess(cp, previous(cp, available.Type))); err != nil {
+	if !statusapply.TrueAt(cp, lodiav1alpha1.ConditionAccessReady) {
+		if err := r.applyStatus(ctx, cp, waitForAccess(cp, applied), waitForAccess(cp, available)); err != nil {
 			return ctrl.Result{}, err
 		}
 		if cp.Spec.Endpoint.Gateway != nil {
@@ -174,12 +173,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	var rolled metav1.Condition
 	if applyErr == nil {
 		rolled, syncErr = rollout(ctx, tenant, cp, objects, others)
-	}
-	if syncErr != nil {
-		if err := live.Conditions(ctx, r.Reader, cp, applied.Type, available.Type); err != nil {
-			return ctrl.Result{}, errors.Join(syncErr, err)
-		}
-		applied, available = previous(cp, applied.Type), previous(cp, available.Type)
 	}
 	switch reason, message, answered := outcome(applyErr); {
 	case applyErr == nil && len(others) > 0:
@@ -227,10 +220,7 @@ func (r *Reconciler) wait(ctx context.Context, cp *lodiav1alpha1.ControlPlane, r
 // waitForAccess leaves a condition at the earlier generation it describes:
 // Tenant has not acted on this one.
 func waitForAccess(cp *lodiav1alpha1.ControlPlane, c metav1.Condition) metav1.Condition {
-	if c.ObservedGeneration < cp.Generation {
-		return c
-	}
-	return newCondition(cp, c.Type, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, "AccessReady is not True for this generation")
+	return statusapply.Wait(cp, &c, newCondition(cp, c.Type, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, "AccessReady is not True for this generation"))
 }
 
 type secretRead struct {
@@ -377,7 +367,7 @@ func previous(cp *lodiav1alpha1.ControlPlane, conditionType string) metav1.Condi
 	if c := meta.FindStatusCondition(cp.Status.Conditions, conditionType); c != nil {
 		return *c
 	}
-	return newCondition(cp, conditionType, metav1.ConditionUnknown, lodiav1alpha1.ReasonReconciling, "the first pass has not finished")
+	return statusapply.FirstPass(cp, conditionType)
 }
 
 func newCondition(cp *lodiav1alpha1.ControlPlane, conditionType string, status metav1.ConditionStatus, reason, message string) metav1.Condition {
@@ -387,33 +377,5 @@ func newCondition(cp *lodiav1alpha1.ControlPlane, conditionType string, status m
 // applyStatus writes only on a change, and both conditions every time: an
 // apply that leaves one out removes it.
 func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, conditions ...metav1.Condition) error {
-	all := slices.Clone(cp.Status.Conditions)
-	changed := false
-	var applied []any
-	for _, c := range conditions {
-		prev := meta.FindStatusCondition(cp.Status.Conditions, c.Type)
-		if prev == nil || prev.Status != c.Status || prev.Reason != c.Reason || prev.Message != c.Message || prev.ObservedGeneration != c.ObservedGeneration {
-			changed = true
-		}
-		meta.SetStatusCondition(&all, c)
-		u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(meta.FindStatusCondition(all, c.Type))
-		if err != nil {
-			return err
-		}
-		applied = append(applied, u)
-	}
-	if !changed {
-		return nil
-	}
-	u := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": lodiav1alpha1.GroupVersion.String(),
-		"kind":       "ControlPlane",
-		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
-		"status":     map[string]any{"conditions": applied},
-	}}
-	if err := r.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(u), client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
-		return err
-	}
-	cp.Status.Conditions = all
-	return nil
+	return statusapply.ApplyInto(ctx, r.Client, r.Reader, FieldManager, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: conditions}, false)
 }

@@ -12,11 +12,9 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"errors"
-	"fmt"
 	"maps"
 	"net"
 	"os"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -24,25 +22,20 @@ import (
 	"testing"
 	"time"
 
-	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/apimachinery/pkg/util/wait"
 	apiserverv1 "k8s.io/apiserver/pkg/apis/apiserver/v1"
 	corev1ac "k8s.io/client-go/applyconfigurations/core/v1"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/utils/clock"
+	clocktesting "k8s.io/utils/clock/testing"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/yaml"
 
@@ -50,6 +43,7 @@ import (
 	"go.lodia.io/lodia/internal/certs"
 	"go.lodia.io/lodia/internal/controller/pki"
 	"go.lodia.io/lodia/internal/operator"
+	"go.lodia.io/lodia/internal/testenv"
 )
 
 const (
@@ -63,7 +57,7 @@ var (
 	controller    client.Client
 	apiReader     client.Reader
 	controllerCfg *rest.Config
-	scheme        = runtime.NewScheme()
+	scheme        *runtime.Scheme
 
 	serverAuth       = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
 	clientAuth       = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
@@ -72,91 +66,18 @@ var (
 )
 
 func TestMain(m *testing.M) {
-	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
-		fmt.Println("skipping the PKI controller: KUBEBUILDER_ASSETS is not set; run make test")
-		os.Exit(0)
+	testenv.SkipUnlessAvailable("the PKI controller")
+	env := testenv.Start(testenv.Options{EnforceOwnerReferences: true})
+	k8s, scheme = env.Client, env.Scheme
+	controllerCfg = env.AsController("pki")
+	var err error
+	if controller, err = client.New(controllerCfg, client.Options{Scheme: scheme, Cache: &client.CacheOptions{Reader: k8s}}); err != nil {
+		env.Fatal("the controller's client", err)
 	}
-	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(lodiav1alpha1.AddToScheme(scheme))
-	env := &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "api", "crds")},
-		ErrorIfCRDPathMissing: true,
-		UseExistingCluster:    new(false),
+	if apiReader, err = client.New(controllerCfg, client.Options{Scheme: scheme}); err != nil {
+		env.Fatal("the controller's reader", err)
 	}
-	env.ControlPlane.GetAPIServer().Configure().Append("enable-admission-plugins", "OwnerReferencesPermissionEnforcement")
-	cfg, err := env.Start()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "start envtest:", err)
-		os.Exit(1)
-	}
-	k8s, err = client.New(cfg, client.Options{Scheme: scheme})
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "client:", err)
-		_ = env.Stop()
-		os.Exit(1)
-	}
-	controllerCfg, err = asPKIController(cfg)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "the controller's ClusterRole:", err)
-		_ = env.Stop()
-		os.Exit(1)
-	}
-	controller, err = client.New(controllerCfg, client.Options{Scheme: scheme, Cache: &client.CacheOptions{Reader: k8s}})
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "the controller's client:", err)
-		_ = env.Stop()
-		os.Exit(1)
-	}
-	apiReader, err = client.New(controllerCfg, client.Options{Scheme: scheme})
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "the controller's reader:", err)
-		_ = env.Stop()
-		os.Exit(1)
-	}
-	code := m.Run()
-	if err := env.Stop(); err != nil {
-		fmt.Fprintln(os.Stderr, "stop envtest:", err)
-	}
-	os.Exit(code)
-}
-
-func asPKIController(cfg *rest.Config) (*rest.Config, error) {
-	const user = "lodia-pki"
-	ctx := context.Background()
-	manifest, err := os.ReadFile(filepath.Join("..", "..", "..", "charts", "lodia", "files", "rbac", "pki.yaml"))
-	if err != nil {
-		return nil, err
-	}
-	role := &rbacv1.ClusterRole{}
-	if err := yaml.UnmarshalStrict(manifest, role); err != nil {
-		return nil, err
-	}
-	binding := &rbacv1.ClusterRoleBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: user},
-		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: role.Name},
-		Subjects:   []rbacv1.Subject{{APIGroup: rbacv1.GroupName, Kind: rbacv1.UserKind, Name: user}},
-	}
-	for _, obj := range []client.Object{role, binding} {
-		if err := k8s.Create(ctx, obj); err != nil {
-			return nil, err
-		}
-	}
-	err = wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (bool, error) {
-		review := &authorizationv1.SubjectAccessReview{Spec: authorizationv1.SubjectAccessReviewSpec{
-			User:               user,
-			ResourceAttributes: &authorizationv1.ResourceAttributes{Group: lodiav1alpha1.GroupVersion.Group, Resource: "controlplanes", Verb: "watch"},
-		}}
-		if err := k8s.Create(ctx, review); err != nil {
-			return false, err
-		}
-		return review.Status.Allowed, nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	controller := rest.CopyConfig(cfg)
-	controller.Impersonate = rest.ImpersonationConfig{UserName: user}
-	return controller, nil
+	os.Exit(env.Finish(m.Run()))
 }
 
 func TestALoadBalancerControlPlaneWaitsForItsEndpoint(t *testing.T) {
@@ -777,31 +698,6 @@ func TestALostCAIsNeverReplaced(t *testing.T) {
 	}
 }
 
-func TestAnUnsupportedEncryptionProviderBlocksNothingElse(t *testing.T) {
-	r := newReconciler(time.Hour)
-	cp := controlPlane(t, "pki-kms")
-	cp.Spec.APIServer = &lodiav1alpha1.APIServer{Encryption: &lodiav1alpha1.Encryption{Provider: "kms"}}
-	if err := k8s.Update(t.Context(), cp); err != nil {
-		t.Fatal(err)
-	}
-	publishEndpoint(t, cp)
-	reconcile(t, r, cp)
-	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported)
-	secrets := secretsOf(t, cp)
-	if secrets["dev-encryption-config"] != nil {
-		t.Error("an encryption configuration was written for kms")
-	}
-	if want := len(secretTable(cp.Name)) - 1; len(secrets) != want {
-		t.Errorf("%d Secrets, want %d: everything but the encryption configuration", len(secrets), want)
-	}
-	before, versionBefore := resourceVersions(t, cp)
-	reconcile(t, r, cp)
-	after, versionAfter := resourceVersions(t, cp)
-	if !maps.Equal(before, after) || versionBefore != versionAfter {
-		t.Error("a second pass wrote something")
-	}
-}
-
 func TestTheFirstVisitWritesUnknown(t *testing.T) {
 	cp := controlPlane(t, "pki-first-visit")
 	r := newReconciler(time.Hour)
@@ -846,6 +742,20 @@ func replaceSecret(t *testing.T, s *corev1.Secret, content map[string][]byte) {
 	}
 	if err := k8s.Create(t.Context(), fresh); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAConditionsTransitionIsThePasssClock(t *testing.T) {
+	start := time.Now().Add(-10 * time.Minute).Truncate(time.Second)
+	r := longLived()
+	r.Clock = clocktesting.NewFakePassiveClock(start)
+	cp := controlPlane(t, "pki-transition-clock")
+	reconcileOnce(t, r, cp)
+	for _, conditionType := range []string{lodiav1alpha1.ConditionCertificatesReady, lodiav1alpha1.ConditionCAValidityAcceptable, lodiav1alpha1.ConditionAccessReady} {
+		c := meta.FindStatusCondition(freshControlPlane(t, cp).Status.Conditions, conditionType)
+		if c == nil || !c.LastTransitionTime.Time.Equal(start) {
+			t.Errorf("%s is %+v, want lastTransitionTime %s", conditionType, c, start)
+		}
 	}
 }
 

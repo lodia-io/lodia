@@ -13,11 +13,11 @@ Installation is in [`README.md`](README.md#installation).
 | Upgrade Kubernetes | set `spec.version`; watch `status.kubernetes.upgrade` and `Progressing`; nodes follow at the owner's pace, at most three minors behind. From phase 2's wave 2 Lodia goes one minor at a time ([upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md)); until then, a patch within the running minor only |
 | Get patch updates automatically | `spec.maintenance.autoUpdate.kubernetesPatch: true` and a `maintenance.window` ([the field](api/controlplane.md#spec), wave 2) |
 | Roll pending maintenance now | `kubectl annotate controlplane <cp> lodia.io/maintain-requested-at="$(date -u +%FT%TZ)" --overwrite`; `status.maintenance.lastHandled` shows the value handled ([the annotation](api/controlplane.md#spec), wave 2) |
-| Rotate client identities (yearly, or after a leaked kubeconfig) | `kubectl annotate controlplane <cp> lodia.io/operation=rotate-client-ca-start`; it completes on its own after one kubelet signing duration (30 days), nodes untouched |
-| Rotate the ServiceAccount key | `…=rotate-serviceaccount-key-start`; when `status.credentials.rotation.serviceAccountKey.phase` is `Prepared` and no client holds an old token, `…=rotate-serviceaccount-key-complete` |
-| Rotate the etcd encryption key, the etcd CA, the front-proxy CA, the tunnel CA in `gateway` mode | `…=rotate-etcd-encryption-key-start`, `…=rotate-etcd-ca-start`, `…=rotate-front-proxy-ca-start`, `…=rotate-tunnel-ca-start`; each completes on its own |
-| Rotate the trust anchor (the cluster CA) | `…=rotate-ca-start`; when the phase is `Prepared`, add the new bundle (`<cp>-ca-bundle`) to every node's `/etc/kubernetes/pki/ca.crt` and kubelet kubeconfig, then `…=rotate-ca-complete` |
-| Hibernate and wake | `spec.hibernation.enabled: true` / `false`, or `spec.hibernation.schedules` |
+| Rotate client identities (yearly, or after a leaked kubeconfig) | phase 3, not built: `kubectl annotate controlplane <cp> lodia.io/operation=rotate-client-ca-start`; it completes on its own after one kubelet signing duration (30 days), nodes untouched |
+| Rotate the ServiceAccount key | phase 3, not built: `…=rotate-serviceaccount-key-start`; when `status.credentials.rotation.serviceAccountKey.phase` is `Prepared` and no client holds an old token, `…=rotate-serviceaccount-key-complete` |
+| Rotate the etcd encryption key, the etcd CA, the front-proxy CA, the tunnel CA in `gateway` mode | phase 3, not built: `…=rotate-etcd-encryption-key-start`, `…=rotate-etcd-ca-start`, `…=rotate-front-proxy-ca-start`, `…=rotate-tunnel-ca-start`; each completes on its own |
+| Rotate the trust anchor (the cluster CA) | phase 3, not built: `…=rotate-ca-start`; when the phase is `Prepared`, add the new bundle (`<cp>-ca-bundle`) to every node's `/etc/kubernetes/pki/ca.crt` and kubelet kubeconfig, then `…=rotate-ca-complete` |
+| Hibernate and wake | phase 3, not built: `spec.hibernation.enabled: true` / `false`, or `spec.hibernation.schedules` |
 | Take a sealed copy | create a `Backup` ([example](api/examples/backup.yaml)); it is `Ready`, `Completed`, once sealed, and `status.snapshots` says where the copy is |
 | Replace a cluster from a `Backup` | create a new `ControlPlane` with `spec.restoreFrom.backupRef`; go through the [replace checklist](#replace-a-cluster-from-a-backup), or create the new one `Released` if the source is gone already; nodes join it anew with a new token ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)) |
 | Clone a cluster beside its source | through the API with Velero ([recipe](#clone-a-cluster-beside-its-source)), not with `restoreFrom`, which replaces its source |
@@ -189,9 +189,9 @@ The in-cluster path, `kubernetes` to `240.0.0.1:6443` through `apiserver-proxy` 
 | `ControllersLeading=False`, `AwaitingRelease` or `SourceExists` | a restored `ControlPlane` waits for `spec.restoreFrom.release: Released`, the message listing what will act outside the cluster then, or for its source `ControlPlane` to be deleted |
 | `APIServerReady=False`, `Unavailable` | a component without a ready replica, named in the message: its pods' events and logs |
 | `ControllersLeading=False`, `ControllerManagerNotLeading` or `SchedulerNotLeading` | the component's pods and logs; its leader Lease inside the tenant, `kube-system/kube-controller-manager` or `kube-system/kube-scheduler`, names the last holder |
-| `CAValidityAcceptable=False`, `CAExpiring` | a CA expires within a year; the message names it and when; start a [CA rotation](#forced-ca-rotation) |
-| `CertificatesReady=False`, `CAExpired` | a CA is past its `NotAfter`, and every certificate it signed with it; nothing is issued under it until a [CA rotation](#forced-ca-rotation) |
-| `CertificatesReady=False`, `CAMissing` | a CA's key Secret `<cp>-cakey-<ca>` is missing or unreadable while its bundle exists; restore it from a backup without its `metadata.ownerReferences` (it is found by name, labels or not) or rotate the CA; PKI never replaces it on its own |
+| `CAValidityAcceptable=False`, `CAExpiring` | a CA expires within a year; the message names it and when; a [CA rotation](#forced-ca-rotation) mends it, from phase 3 |
+| `CertificatesReady=False`, `CAExpired` | a CA is past its `NotAfter`, and every certificate it signed with it; nothing is issued under it until a [CA rotation](#forced-ca-rotation), from phase 3 |
+| `CertificatesReady=False`, `CAMissing` | a CA's key Secret `<cp>-cakey-<ca>` is missing or unreadable while its bundle exists; restore it from a backup without its `metadata.ownerReferences` (it is found by name, labels or not), or a [CA rotation](#forced-ca-rotation) mends it, from phase 3; PKI never replaces it on its own |
 | `CertificatesReady=False`, `SecretsControlledElsewhere` | the message names each Secret under PKI's names that another owner keeps, and the owner; PKI writes no Secret until they are gone. A previous `ControlPlane` of the same name: the garbage collector deletes its Secrets, except those an `Etcd` still references, on which etcd-druid holds its finalizer ([runbook](#a-secret-the-etcd-mounts-is-gone)). Any other owner: release the Secret or delete it; PKI's names are its own |
 | `CertificatesReady=False`, `SecretUnreadable` | `<cp>-encryption-config` or `<cp>-sa-keys` cannot be read; restore it from a backup. PKI never replaces it ([A tenant namespace](README.md#a-tenant-namespace)) |
 | `CertificatesReady=False`, `Issuing` | a Secret PKI has to change could not be written; the message names it and Lodia's log (`controller="pki"`) has the error; PKI retries with backoff |
@@ -303,6 +303,8 @@ A clone restores through the API, as Velero does, which gives every object a new
 
 ### Stuck upgrade
 
+From phase 2's wave 2, upgrades; until then Lifecycle follows `spec.version` within its minor only, and nothing here applies.
+
 1. `status.kubernetes.upgrade.step` says the step, `Progressing`'s message what failed; the upgrade resumes when the cause is gone.
 2. `Backup` step failing: the `Ready` message of the `Backup` `<cp>-pre-upgrade-<version>-<ControlPlane UID>`.
    A failed `Backup` is final: delete it, and Lifecycle takes it again.
@@ -313,6 +315,8 @@ A clone restores through the API, as Velero does, which gives every object a new
    A downgrade in place is not supported by Kubernetes.
 
 ### Forced CA rotation
+
+Phase 3, not built: no controller reads `lodia.io/operation`, so the steps below do nothing yet.
 
 - **A kubeconfig or client certificate leaked:** rotate the client CA and complete it at once (`rotate-client-ca-start`, then `rotate-client-ca-complete`); every client certificate Lodia holds is already re-issued, and kubelets whose certificates are still under the old CA re-bootstrap with a new token (`kubeadm token create`, then on the node `kubeadm reset` and `kubeadm join`), or wait for the automatic completion after 30 days if the leak allows it.
 - **A tunnel client certificate leaked:** rotate the tunnel CA (`rotate-tunnel-ca-start`), which also restarts the sidecars to cut the sessions already open ([staged-credential-rotation](decisions/staged-credential-rotation.md)).

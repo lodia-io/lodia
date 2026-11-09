@@ -7,8 +7,7 @@ Six independent controllers keep every control plane certified, stored, running,
 Go, controller-runtime; runs as a Deployment (`lodia-system`, two replicas, leader election) on a management cluster with a maintained Kubernetes minor (1.35 or newer today).
 Dedicated etcd clusters are managed through etcd-druid ([decision](decisions/dedicated-etcd-by-default.md)); backups go to S3-compatible object storage.
 
-**Status: design, 2026-10-23.**
-This document describes the intended system; [`roadmap.md`](roadmap.md) says what exists at each phase.
+A wave or a phase named beside a feature is where it is built, and until then it is not; [`roadmap.md`](roadmap.md) says what exists at each phase.
 
 ## What it owns
 
@@ -133,7 +132,7 @@ The objects of a tenant namespace, who writes and who reads each, and what a cha
 | `<cp>-tunnel-client` (`kubernetes.io/tls`: from the tunnel CA, 90 days), in `gateway` mode | PKI | Tenant, which delivers it to `apiserver-proxy`, and Health, which presents it through the tunnel | reloaded by `apiserver-proxy` ([api-exposure](decisions/api-exposure.md)) |
 | `<cp>-controller-manager-kubeconfig`, `<cp>-scheduler-kubeconfig` (`kubeconfig`, `tls.crt`, `tls.key`, `ca.crt`; server `https://<cp>-kube-apiserver.<ns>.svc:443`) | PKI | Workloads, for each its own component; the kubeconfig names its certificates as files beside it | reloaded by client-go |
 | `<cp>-admin-kubeconfig` (`kubeconfig`, certificates embedded; server `status.endpoint.apiServer`) | PKI | the platform, through `status.credentials.adminKubeconfigSecretRef`, as `lodia:cluster-admins` | nothing restarts |
-| `<cp>-lodia-kubeconfig` (`kubeconfig`, certificates embedded; `lodia:operator`, dialling the in-namespace Service) | PKI | Lodia inside the tenant: PKI, for its bindings; Tenant; Health from phase 2 | nothing restarts |
+| `<cp>-lodia-kubeconfig` (`kubeconfig`, certificates embedded; `lodia:operator`, dialling the in-namespace Service) | PKI | Lodia inside the tenant: PKI, for its bindings; Tenant; Health | nothing restarts |
 | `Etcd` `<cp>-etcd` | Datastore | PKI, whose etcd certificates name its members and Services; etcd-druid | etcd-druid rolls the members |
 | `<cp>-etcd-backup` (the class's backup credentials, copied) | Datastore | etcd-druid, through the `Etcd`, for the backup sidecar, and through the `EtcdCopyBackupsTask` of a `Backup` or a restore, for its copy Job; the backup reconciler and the Datastore controller, for the keys that name the store ([`status.snapshots.fromSecret`](api/controlplane.md#backup)) | the sidecar rebuilds its store client with the new keys before its next snapshot ([snapshotter.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapshot/snapshotter/snapshotter.go#L313-L326)) and at every garbage collection ([garbagecollector.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapshot/snapshotter/garbagecollector.go#L38-L44)); a copy Job reads them when it starts |
 | `<backup>.encryption-config` (`encryption-config.yaml`: every key of the source's encryption configuration when the `Backup` was sealed; immutable, owned by the `Backup`) | the backup reconciler of the Datastore controller | PKI, once, for each `ControlPlane` restored from the `Backup` | never changes ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)) |
@@ -142,7 +141,7 @@ The objects of a tenant namespace, who writes and who reads each, and what a cha
 | Service `<cp>-kube-apiserver` | Workloads | PKI, which names it in certificates and kubeconfigs | — |
 | TLSRoutes `<cp>-kube-apiserver`, `<cp>-konnectivity` and `<cp>-tunnel`, in `gateway` mode: each one hostname to its port of the Service, on the listener `parentRef` names | Workloads | the Gateway | written only when one differs from its render, and deleted while another `ControlPlane` owns one of the hostnames ([api-exposure](decisions/api-exposure.md)) |
 | ConfigMap `<cp>-authentication-config` (an `AuthenticationConfiguration` whose anonymous section admits only `cluster-info` and the health paths) | Workloads | the API server | the API server restarts: a reload never changes the anonymous section ([authentication.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/kubeapiserver/options/authentication.go#L797-L799)) |
-| ConfigMap `<cp>-egress-selector` (the cluster's traffic through konnectivity-server's socket); `audit-policy`, `admission-config` / `scheduler-config` from phase 2 | Workloads | the API server / the scheduler | that component restarts |
+| ConfigMap `<cp>-egress-selector` (the cluster's traffic through konnectivity-server's socket); `audit-policy`, `admission-config` / `scheduler-config` later | Workloads | the API server / the scheduler | that component restarts |
 
 Sources: the reload behaviour of each flag is in the [kube-apiserver](https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/) and [kube-controller-manager](https://kubernetes.io/docs/reference/command-line-tools-reference/kube-controller-manager/) references and their dynamic certificate controllers in [apiserver](https://github.com/kubernetes/kubernetes/tree/release-1.35/staging/src/k8s.io/apiserver/pkg/server/dynamiccertificates).
 Every key is ECDSA P-256 except the ServiceAccount signing key, and a PKI pass over an unchanged `ControlPlane` writes nothing.
@@ -290,7 +289,7 @@ A policy the API server refuses is retried with backoff.
 
 Identities ([short-lived-kubeconfigs](decisions/short-lived-kubeconfigs.md), [staged-credential-rotation](decisions/staged-credential-rotation.md)): the API server's kubelet client is `kube-apiserver-kubelet-client` in the group `lodia:kubelet-api-admins`; konnectivity-server runs as `system:konnectivity-server`, bound to a Role on the Leases in `kube-system` and to `system:auth-delegator`, which lets it create TokenReviews and SubjectAccessReviews; the controller manager and scheduler use their standard identities; Lodia reaches the tenant as `lodia:operator`, bound to `cluster-admin` because it manages RBAC; a person with a `KubeconfigRequest`'s kubeconfig is `lodia:user:<user>`, in `lodia:cluster-admins` only with `access: ClusterAdmin`.
 
-Phase 2 default-denies the namespace, egress included, and allows exactly the arrows above: the endpoint → API server and konnectivity-server, controller manager and scheduler and Lodia → the API Service, API server → etcd, Lodia → etcd's client port, etcd ↔ etcd, etcd-druid → etcd and its backup-restore sidecar, etcd, its compaction Jobs and the copy Job a `Backup`'s `EtcdCopyBackupsTask` runs in the namespace ([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcdcopybackupstask/reconciler.go#L325-L330)) → object storage, and every pod → the cluster DNS; a platform that scrapes the components admits its scraper itself ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)).
+Later, a default-deny of the namespace, egress included, allows exactly the arrows above: the endpoint → API server and konnectivity-server, controller manager and scheduler and Lodia → the API Service, API server → etcd, Lodia → etcd's client port, etcd ↔ etcd, etcd-druid → etcd and its backup-restore sidecar, etcd, its compaction Jobs and the copy Job a `Backup`'s `EtcdCopyBackupsTask` runs in the namespace ([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcdcopybackupstask/reconciler.go#L325-L330)) → object storage, and every pod → the cluster DNS; a platform that scrapes the components admits its scraper itself ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)).
 
 ## Networking
 
@@ -343,7 +342,7 @@ The kubeadm objects use kubeadm's own names, so `kubeadm join` and `kubeadm toke
 The controller manager runs with `--use-service-account-credentials` and no cloud provider ([kube-controller-manager](https://kubernetes.io/docs/reference/command-line-tools-reference/kube-controller-manager/)).
 The pinned component versions per minor are those kubeadm pins: CoreDNS v1.13.1 and etcd 3.6.6 for 1.35, CoreDNS v1.14.2 for 1.36, CoreDNS v1.14.6 for 1.37, and konnectivity 0.NN for Kubernetes 1.NN (kubeadm's constants at [v1.35.0](https://github.com/kubernetes/kubernetes/blob/v1.35.0/cmd/kubeadm/app/constants/constants.go), [v1.36.0](https://github.com/kubernetes/kubernetes/blob/v1.36.0/cmd/kubeadm/app/constants/constants.go) and [v1.37.1](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kubeadm/app/constants/constants.go)).
 
-Built for phase 1, without the write lock (`internal/controller/tenant`, the templates in its `manifests/`, taken from [kubeadm v1.35.0](https://github.com/kubernetes/kubernetes/tree/v1.35.0/cmd/kubeadm/app/phases) and [the hard way](hard-way.md)).
+Built without the write lock, which is phase 3's (`internal/controller/tenant`, the templates in its `manifests/`, taken from [kubeadm v1.35.0](https://github.com/kubernetes/kubernetes/tree/v1.35.0/cmd/kubeadm/app/phases) and [the hard way](hard-way.md)).
 Once `AccessReady` is True for the generation, the controller applies every object as `lodia/tenant` through `<cp>-lodia-kubeconfig`, on a change of the inputs it reads and every 10 minutes; until then both conditions stay as they were at an earlier generation, or are `WaitingForAccess` at the generation they describe, and it uses `<cp>-lodia-kubeconfig`, `<cp>-ca-bundle` and, in `gateway` mode, `<cp>-tunnel-client` only once they exist and this `ControlPlane` controls them, looking again every minute.
 In `gateway` mode a pass first delivers `<cp>-tunnel-client`, under the same rule, before it reads any condition, and every 10 minutes while it waits: none of them proves the API server cannot take the renewal, and an expired certificate takes every pod's API.
 With a 10-second timeout on each request, it applies the pair to `kube-system/apiserver-proxy-client` if that exists and `lodia/tenant` applied it, so the first write stays the inventory's and another owner's Secret stays theirs; a failure is logged and the pass goes on.
@@ -366,6 +365,8 @@ flowchart LR
 ```
 
 ### Hibernation
+
+Phase 3; `spec.hibernation` is not in the API until then.
 
 ```mermaid
 stateDiagram-v2
@@ -406,7 +407,7 @@ A claim of another `ControlPlane` is never touched, and neither is an `Etcd` `<c
 Deletion reads the `Etcd` from the API server, not the cache: a deleted `Etcd` the cache still held would have the claims of one standing under the name since labelled as this `ControlPlane`'s, and reclaimed.
 Each delete, of the `Etcd` and of a claim, names the UID it read, so what stands under the name since is not deleted: the API server answers with a conflict ([delete.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/registry/rest/delete.go#L83-L87)).
 Then the finalizer goes and the owner references garbage-collect the rest of the namespace objects.
-The final snapshot when a backup store exists comes with backups in phase 2; nothing deletes the snapshots of a deleted `ControlPlane` (`retention.afterDelete` is not built, [dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)).
+Deletion takes no final snapshot, so the last snapshots of a deleted `ControlPlane` are the continuous ones, and nothing deletes them (`retention.afterDelete` is not built, [dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)).
 
 ## Health
 
@@ -477,7 +478,7 @@ helm install lodia charts/lodia -n lodia-system --create-namespace \
   --set tunnelImage.repository=<registry>/lodia-tunnel,tunnelImage.digest=sha256:…
 ```
 
-The phase 1 chart installs:
+The chart installs:
 
 - the CRDs, as templates of the ones `make generate` writes, so they upgrade with the chart: `crds.enabled` (default `true`) leaves them out for those who manage CRDs themselves, and `crds.keep` (default `true`) keeps them on uninstall with `helm.sh/resource-policy: keep`;
 - etcd-druid v0.39.0 as a dependency, the chart etcd-druid's release workflow publishes to `oci://europe-docker.pkg.dev/gardener-project/releases/charts/gardener/etcd-druid` ([base.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/.github/workflows/base.yaml#L60-L84)), with `enableEtcdSpecAutoReconcile` on until phase 2's wave 2 turns it off ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)); `etcdDruid.enabled=false` skips it where etcd-druid is already installed, and `etcdDruidNamespace` then names the namespace it runs in.
@@ -490,13 +491,22 @@ The phase 1 chart installs:
 
 `image`, `signerImage` and `tunnelImage` each take a `repository` (`ghcr.io/lodia-io/lodia`, `ghcr.io/lodia-io/lodia-signer` and `ghcr.io/lodia-io/lodia-tunnel`), a `digest` and a `tag`, which defaults to the chart's `appVersion`: with a digest the chart renders `repository@digest`, otherwise `repository:tag`.
 The signer's image reaches the operator as `--signer-image`, and `lodia-tunnel`'s as `--tunnel-image`.
+Lodia reaches a tenant's API server through its in-namespace Service and ignores `HTTPS_PROXY` for that connection, so a site that sets a proxy on every pod needs no exception for it.
 
 Then a `DatastoreClass` with the bucket, and the first `ControlPlane`.
-Later phases bring the rest: the keys of the operator configuration below that the operator does not read yet, in phase 2, whose fleet limit, controller manager hold and `KubeconfigRequest`s they configure; signed and attested images, and how to verify them, in phase 4 ([roadmap](roadmap.md), [releases-and-support](decisions/releases-and-support.md)).
+Phase 4 brings signed and attested images, and how to verify them ([roadmap](roadmap.md), [releases-and-support](decisions/releases-and-support.md)).
 
 Operator configuration (a file, passed as `--config`, mounted from a ConfigMap; the chart renders it from values).
-The operator reads the `health` keys and nothing else yet: any other key, or a missing file, stops it from starting.
 Without `--config` the defaults apply.
+A key outside the first table, or a missing file, stops the operator from starting.
+
+| key | meaning | default |
+|---|---|---|
+| `health.period` | how often Health probes each control plane and reads its leases | 5s |
+| `health.failuresBeforeFalse` | failed passes in a row that turn `Reachable` False | 3 |
+| `health.silentAfter`, `health.holdFraction`, `health.releaseAfter` | when a node counts as silent, the share of silent nodes that starts the hold, how long the nodes must be back before it ends; the operator refuses to start when they break the margin of [controller-manager-hold](decisions/controller-manager-hold.md) | 20s, 0.6, 2m |
+
+The keys below are owed: nothing reads them yet, and the operator refuses to start with one until the feature that reads it is built.
 
 | key | meaning | default |
 |---|---|---|
@@ -505,9 +515,6 @@ Without `--config` the defaults apply.
 | `controllers.<name>.workers` | concurrent reconciles per controller | 10, and 100 for `health-nodes` |
 | `fleet.maxConcurrentRollouts` | tenants rolling a change Lodia started at once ([upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md)) | 5 |
 | `tenant.applyInterval` | the inventory re-apply period | 10m |
-| `health.period` | how often Health probes each control plane and reads its leases | 5s |
-| `health.failuresBeforeFalse` | failed passes in a row that turn `Reachable` False | 3 |
-| `health.silentAfter`, `health.holdFraction`, `health.releaseAfter` | when a node counts as silent, the share of silent nodes that starts the hold, how long the nodes must be back before it ends; the operator refuses to start when they break the margin of [controller-manager-hold](decisions/controller-manager-hold.md) | 20s, 0.6, 2m |
 | `pki.leafLifetime`, `pki.caLifetime`, `pki.trustAnchorLifetime` | leaf certificates, the kubelet signer and the request CA; every other CA but the cluster CA; the cluster CA ([staged-credential-rotation](decisions/staged-credential-rotation.md)) | 1 year, 5 years, 10 years |
 | `kubeconfigRequests.maxExpiration` | the longest a `KubeconfigRequest`'s certificate lives, at most the schema's 24 h ([fields](api/controlplane.md#kubeconfigrequest)) | 24h |
 | `defaults.resources.<component>` | requests and limits per component | from the idle usage measured in phase 1 ([Capacity](operations.md#capacity)) |

@@ -14,7 +14,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/apimachinery/pkg/util/version"
@@ -29,6 +28,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/live"
+	"go.lodia.io/lodia/internal/statusapply"
 )
 
 const (
@@ -358,35 +358,16 @@ func (r *NodesReconciler) report(ctx context.Context, cp *lodiav1alpha1.ControlP
 }
 
 func changes(cp *lodiav1alpha1.ControlPlane, nodes *lodiav1alpha1.NodesStatus, health *lodiav1alpha1.HealthStatus, c metav1.Condition) bool {
-	return differs(meta.FindStatusCondition(cp.Status.Conditions, c.Type), c) || nodes != nil && !equality.Semantic.DeepEqual(nodes, cp.Status.Nodes) || !equality.Semantic.DeepEqual(health, cp.Status.Health)
+	return statusapply.Differs(meta.FindStatusCondition(cp.Status.Conditions, c.Type), c) || nodes != nil && !equality.Semantic.DeepEqual(nodes, cp.Status.Nodes) || !equality.Semantic.DeepEqual(health, cp.Status.Health)
 }
 
 // apply writes every field each time, since an apply that leaves one out
 // removes it; it leaves cp with what it wrote.
 func (r *NodesReconciler) apply(ctx context.Context, cp *lodiav1alpha1.ControlPlane, nodes *lodiav1alpha1.NodesStatus, health *lodiav1alpha1.HealthStatus, c metav1.Condition) error {
-	all, applied, _, err := conditionsApplied(cp, []metav1.Condition{c})
-	if err != nil {
+	if err := statusapply.ApplyInto(ctx, r.Client, r.Reader, NodesFieldManager, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{c}, Nodes: nodes, Health: health}, true); err != nil {
 		return err
 	}
-	fields := map[string]any{"conditions": applied}
-	if nodes != nil {
-		u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(nodes)
-		if err != nil {
-			return err
-		}
-		fields["nodes"] = u
-	}
-	if health != nil {
-		u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(health)
-		if err != nil {
-			return err
-		}
-		fields["health"] = u
-	}
-	if err := applyStatus(ctx, r.Status(), NodesFieldManager, cp, fields); err != nil {
-		return err
-	}
-	cp.Status.Conditions, cp.Status.Nodes, cp.Status.Health = all, nodes, health
+	cp.Status.Nodes, cp.Status.Health = nodes, health
 	return nil
 }
 

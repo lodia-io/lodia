@@ -112,10 +112,6 @@ type ControlPlaneSpec struct {
 	// +optional
 	Maintenance *Maintenance `json:"maintenance,omitempty"`
 
-	// Hibernation puts the control plane to sleep, keeping its data.
-	// +optional
-	Hibernation *Hibernation `json:"hibernation,omitempty"`
-
 	// Health configures how Lodia protects the tenant's workloads.
 	// +optional
 	Health *Health `json:"health,omitempty"`
@@ -434,14 +430,14 @@ type Audit struct {
 
 // Encryption is how Secrets are encrypted in the datastore.
 type Encryption struct {
-	// Provider is None, secretbox, aescbc or kms.
+	// Provider is None, secretbox or aescbc.
 	// +optional
 	// +kubebuilder:default=secretbox
 	Provider EncryptionProvider `json:"provider,omitempty"`
 }
 
 // EncryptionProvider is an encryption at rest provider.
-// +kubebuilder:validation:Enum=None;secretbox;aescbc;kms
+// +kubebuilder:validation:Enum=None;secretbox;aescbc
 type EncryptionProvider string
 
 // Admission names an admission configuration.
@@ -659,38 +655,6 @@ type AutoUpdate struct {
 	KubernetesPatch bool `json:"kubernetesPatch,omitempty"`
 }
 
-// Hibernation puts the control plane to sleep.
-type Hibernation struct {
-	// Enabled overrides the schedules; unset, the schedules decide.
-	// +optional
-	Enabled *bool `json:"enabled,omitempty"`
-
-	// Schedules put the control plane to sleep at Start and wake it at End.
-	// +optional
-	// +listType=atomic
-	// +kubebuilder:validation:MaxItems=8
-	Schedules []HibernationSchedule `json:"schedules,omitempty"`
-}
-
-// HibernationSchedule is a pair of cron expressions.
-// +kubebuilder:validation:XValidation:rule="has(self.start) || has(self.end)",message="set start, end or both"
-type HibernationSchedule struct {
-	// Start is a cron expression for falling asleep.
-	// +optional
-	// +kubebuilder:validation:MaxLength=64
-	Start string `json:"start,omitempty"`
-
-	// End is a cron expression for waking up.
-	// +optional
-	// +kubebuilder:validation:MaxLength=64
-	End string `json:"end,omitempty"`
-
-	// TimeZone is an IANA time zone; UTC by default.
-	// +optional
-	// +kubebuilder:validation:MaxLength=64
-	TimeZone string `json:"timeZone,omitempty"`
-}
-
 // Health configures the protection of the tenant's workloads.
 type Health struct {
 	// HoldControllerManager holds the controller manager's leader lease while
@@ -753,7 +717,8 @@ type ControlPlaneStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// Conditions, one per controller, plus Progressing, Hibernated and Ready.
+	// Conditions, each written by the one controller that owns its type, and
+	// Progressing and Ready by Lifecycle.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
@@ -781,7 +746,7 @@ type ControlPlaneStatus struct {
 	// +optional
 	Endpoint *EndpointStatus `json:"endpoint,omitempty"`
 
-	// Credentials are the Secrets clients need and the rotations.
+	// Credentials are the Secrets clients need.
 	// +optional
 	Credentials *CredentialsStatus `json:"credentials,omitempty"`
 
@@ -824,10 +789,6 @@ type Target struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=128
 	OperatorRevision string `json:"operatorRevision,omitempty"`
-
-	// Hibernated is the desired sleep state.
-	// +optional
-	Hibernated bool `json:"hibernated,omitempty"`
 
 	// ScheduledFor is when a change Lodia initiates may roll: while it waits
 	// for the window, the window's next start; while it waits for a slot of
@@ -954,7 +915,7 @@ type HostPort struct {
 	Port int32 `json:"port"`
 }
 
-// CredentialsStatus names the Secrets clients need and tracks rotations.
+// CredentialsStatus names the Secrets clients need.
 type CredentialsStatus struct {
 	// AdminKubeconfigSecretRef names the admin kubeconfig Secret.
 	// +optional
@@ -964,46 +925,11 @@ type CredentialsStatus struct {
 	// +optional
 	CABundleSecretRef *LocalReference `json:"caBundleSecretRef,omitempty"`
 
-	// Rotation is the state of each credential's rotation.
-	// +optional
-	Rotation *Rotations `json:"rotation,omitempty"`
-
 	// NotAfter is the earliest expiry of the certificates PKI writes for
 	// this ControlPlane, its CAs among them.
 	// +optional
 	NotAfter *metav1.Time `json:"notAfter,omitempty"`
 }
-
-// Rotations is the rotation state per credential.
-type Rotations struct {
-	// +optional
-	ClientCA *RotationStatus `json:"clientCA,omitempty"`
-	// +optional
-	CA *RotationStatus `json:"ca,omitempty"`
-	// +optional
-	ServiceAccountKey *RotationStatus `json:"serviceAccountKey,omitempty"`
-	// +optional
-	EtcdEncryptionKey *RotationStatus `json:"etcdEncryptionKey,omitempty"`
-	// +optional
-	EtcdCA *RotationStatus `json:"etcdCA,omitempty"`
-	// +optional
-	FrontProxyCA *RotationStatus `json:"frontProxyCA,omitempty"`
-}
-
-// RotationStatus is one credential's rotation.
-type RotationStatus struct {
-	// Phase of the rotation.
-	// +optional
-	Phase RotationPhase `json:"phase,omitempty"`
-	// +optional
-	LastInitiated *metav1.Time `json:"lastInitiated,omitempty"`
-	// +optional
-	LastCompleted *metav1.Time `json:"lastCompleted,omitempty"`
-}
-
-// RotationPhase is a stage of a credential rotation.
-// +kubebuilder:validation:Enum=Idle;Preparing;Prepared;Completing
-type RotationPhase string
 
 // DatastoreStatus is the store the API server uses. The Datastore
 // controller writes it whole once the store exists.

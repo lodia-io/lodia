@@ -43,6 +43,7 @@ import (
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/controller/datastore"
 	"go.lodia.io/lodia/internal/operator"
+	"go.lodia.io/lodia/internal/testenv"
 )
 
 const sourceName = "src"
@@ -221,7 +222,7 @@ func reconcileBackup(r *datastore.BackupReconciler, ns, name string) (reconcile.
 func passes(t *testing.T, r *datastore.BackupReconciler, ns, name string, check func(*lodiav1alpha1.Backup) error) *lodiav1alpha1.Backup {
 	t.Helper()
 	var backup *lodiav1alpha1.Backup
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if _, err := reconcileBackup(r, ns, name); err != nil {
 			return err
 		}
@@ -683,7 +684,7 @@ func TestTheMarkIsWrittenAfterTheSourceIsGone(t *testing.T) {
 	if err := k8s.Delete(t.Context(), getControlPlane(t, src.ns, sourceName)); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: src.ns, Name: sourceName}, &lodiav1alpha1.ControlPlane{}))
 	})
 	passes(t, r, src.ns, created.Name, func(b *lodiav1alpha1.Backup) error {
@@ -762,12 +763,12 @@ func TestABackupThatCannotBeTaken(t *testing.T) {
 		if err := k8s.Delete(t.Context(), getControlPlane(t, src.ns, sourceName)); err != nil {
 			t.Fatal(err)
 		}
-		eventually(t, func() error {
+		testenv.Eventually(t, func() error {
 			return gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: src.ns, Name: sourceName}, &lodiav1alpha1.ControlPlane{}))
 		})
 		create(t, controlPlane(src.ns, sourceName, src.ns))
 		replacement := getControlPlane(t, src.ns, sourceName)
-		eventually(t, func() error {
+		testenv.Eventually(t, func() error {
 			cp := &lodiav1alpha1.ControlPlane{}
 			if err := cached.Get(t.Context(), client.ObjectKey{Namespace: src.ns, Name: sourceName}, cp); err != nil {
 				return err
@@ -972,7 +973,7 @@ func TestKeysHeldForAPredecessorBackupAreLetGo(t *testing.T) {
 	finishCopy(t, src.ns, task(backup.UID), druidv1alpha1.EtcdCopyBackupsTaskSucceeded, "")
 	passes(t, r, src.ns, "b", readyIs(metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere,
 		"Secret b.encryption-config exists and its controller is Backup b with UID "+predecessor))
-	eventually(t, func() error { return gone(k8s.Get(t.Context(), client.ObjectKeyFromObject(left), &corev1.Secret{})) })
+	testenv.Eventually(t, func() error { return gone(k8s.Get(t.Context(), client.ObjectKeyFromObject(left), &corev1.Secret{})) })
 	passes(t, r, src.ns, "b", readyIs(metav1.ConditionTrue, lodiav1alpha1.ReasonCompleted, ""))
 }
 
@@ -992,7 +993,7 @@ func TestABackupDeletedBeforeItIsSealedGoesAtOnce(t *testing.T) {
 	if _, err := reconcileBackup(r, src.ns, backup.Name); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return gone(k8s.Get(t.Context(), client.ObjectKeyFromObject(backup), &lodiav1alpha1.Backup{}))
 	})
 	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: src.ns, Name: "b.encryption-config"}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
@@ -1025,7 +1026,7 @@ func TestASealTheEtcdRefuses(t *testing.T) {
 
 func waitBackupReady(t *testing.T, ns, name string, status metav1.ConditionStatus, reason, message string) {
 	t.Helper()
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		cp := getControlPlane(t, ns, name)
 		condition := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionBackupReady)
 		switch {
@@ -1167,7 +1168,7 @@ func runBackupReconciler(t *testing.T, s *source) {
 func awaitBackup(t *testing.T, ns, name string, check func(*lodiav1alpha1.Backup) error) *lodiav1alpha1.Backup {
 	t.Helper()
 	var backup *lodiav1alpha1.Backup
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		backup = getBackup(t, ns, name)
 		return check(backup)
 	})
@@ -1450,7 +1451,7 @@ func useCredentials(t *testing.T, s *source, name string, data map[string]string
 	editClass(t, s.ns, func(class *lodiav1alpha1.DatastoreClass) {
 		class.Spec.Backup.Store.SecretRef.Name = secret.Name
 	})
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		copied := &corev1.Secret{}
 		if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: s.ns, Name: sourceName + "-etcd-backup"}, copied); err != nil {
 			return err
@@ -1618,7 +1619,7 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 	}
 	released := func(t *testing.T, name string) {
 		t.Helper()
-		eventually(t, func() error {
+		testenv.Eventually(t, func() error {
 			return gone(k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: name}, &lodiav1alpha1.Backup{}))
 		})
 	}
@@ -1873,7 +1874,7 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 			}
 			held(t, b.Name)
 		}
-		eventually(t, func() error { return gone(k8s.Get(t.Context(), client.ObjectKeyFromObject(keys), &corev1.Secret{})) })
+		testenv.Eventually(t, func() error { return gone(k8s.Get(t.Context(), client.ObjectKeyFromObject(keys), &corev1.Secret{})) })
 		pass(t, r, b.Name)
 		if finalizers := getBackup(t, ns, b.Name).Finalizers; !reflect.DeepEqual(finalizers, []string{metav1.FinalizerDeleteDependents}) {
 			t.Fatalf("Backup %s has finalizers %v, want only the garbage collector's", b.Name, finalizers)
@@ -1888,7 +1889,7 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 		done := false
 		racing := &datastore.BackupReconciler{Client: conflictOnce{Client: cached, name: b.Name, before: func() { restoring(t, "late-foreground", b.Name) }, done: &done}, Reader: apiReader, Clock: clock.RealClock{}}
 		pass(t, racing, b.Name)
-		eventually(t, func() error { return gone(k8s.Get(t.Context(), client.ObjectKeyFromObject(keys), &corev1.Secret{})) })
+		testenv.Eventually(t, func() error { return gone(k8s.Get(t.Context(), client.ObjectKeyFromObject(keys), &corev1.Secret{})) })
 		completeRestore(t, getControlPlane(t, ns, "late-foreground"), b)
 		pass(t, r, b.Name)
 		if finalizers := getBackup(t, ns, b.Name).Finalizers; !reflect.DeepEqual(finalizers, []string{metav1.FinalizerDeleteDependents}) {
@@ -2039,7 +2040,7 @@ func TestTheRestoreSourceFinalizerFollowsItsEvents(t *testing.T) {
 			steps[0]()
 			consistently(t, exists)
 			steps[1]()
-			eventually(t, func() error { return gone(exists()) })
+			testenv.Eventually(t, func() error { return gone(exists()) })
 		})
 	}
 }

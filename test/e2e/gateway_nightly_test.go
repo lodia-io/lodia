@@ -274,11 +274,9 @@ func TestGatewayConformance(t *testing.T) {
 			return ctx
 		}).
 		Assess("hydrophone runs the conformance suite in the tenant, and it passes", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			args := []string{"--conformance-image", "registry.k8s.io/conformance:" + kindNodeVersion(t)}
+			args := []string{"--conformance"}
 			if focus := os.Getenv("CONFORMANCE_FOCUS"); focus != "" {
-				args = append(args, "--focus", focus)
-			} else {
-				args = append(args, "--conformance")
+				args = []string{"--focus", focus, "--extra-ginkgo-args=--fail-on-empty=true"}
 			}
 			runHydrophone(ctx, t, access, artifacts, args...)
 			return ctx

@@ -237,6 +237,9 @@ func TestControlPlaneValidation(t *testing.T) {
 		{"a window that ends where it begins", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, map[string]any{"begin": "02:00", "end": "02:00"}, "spec", "maintenance", "window")
 		}, "begin and end must differ"},
+		{"an encryption provider that is not built", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "kms", "spec", "apiServer", "encryption", "provider")
+		}, "spec.apiServer.encryption.provider: Unsupported value"},
 		{"a window across midnight", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, map[string]any{"begin": "22:00", "end": "02:00", "timeZone": "Europe/Kyiv"}, "spec", "maintenance", "window")
 		}, ""},

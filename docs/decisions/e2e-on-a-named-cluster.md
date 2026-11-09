@@ -1,7 +1,7 @@
 # End-to-end tests run only against a cluster named on the command line, and never the current kube context
 
 Decided 2026-10-25.
-The refusal, `make e2e`, kubeadm workers and the nightly conformance run are built; the subset on every pull request comes with the restore in phase 2's wave 1b, and upgrade tests with wave 2.
+The refusal, `make e2e`, kubeadm workers, the nightly conformance run and the subset on every pull request are built; upgrade tests come with phase 2's wave 2.
 
 ## Decision
 

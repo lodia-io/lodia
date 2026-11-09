@@ -50,6 +50,10 @@ func held(t *testing.T) (client.Reader, *lodiav1alpha1.ControlPlane) {
 				Tunnel:       &lodiav1alpha1.HostPort{Host: "tunnel.dev.example.com", Port: 443},
 			},
 			Nodes: &lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: 3, Ready: 2}, OldestKubelet: "v1.34.2"},
+			Credentials: &lodiav1alpha1.CredentialsStatus{
+				AdminKubeconfigSecretRef: &lodiav1alpha1.LocalReference{Name: "dev-admin-kubeconfig"},
+				CABundleSecretRef:        &lodiav1alpha1.LocalReference{Name: "dev-ca-bundle"},
+			},
 		},
 	}
 	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(server.DeepCopy()).Build(), server
@@ -105,6 +109,29 @@ func TestEndpointTakesTheAPIServersStatus(t *testing.T) {
 	}
 	if cp.Status.Datastore != nil || cp.Status.Restore != nil {
 		t.Errorf("status.datastore %+v and status.restore %+v, want the cache's, none", cp.Status.Datastore, cp.Status.Restore)
+	}
+}
+
+func TestCredentialsTakesTheAPIServersStatus(t *testing.T) {
+	reader, server := held(t)
+	cp := cachedAs(server.UID)
+	if err := live.Credentials(t.Context(), reader, cp, lodiav1alpha1.ConditionDatastoreReady); err != nil {
+		t.Fatal(err)
+	}
+	if !equality.Semantic.DeepEqual(cp.Status.Credentials, server.Status.Credentials) {
+		t.Errorf("status.credentials %+v, want the API server's %+v", cp.Status.Credentials, server.Status.Credentials)
+	}
+	for _, c := range []struct {
+		conditionType string
+		from          *lodiav1alpha1.ControlPlane
+	}{{lodiav1alpha1.ConditionDatastoreReady, server}, {lodiav1alpha1.ConditionAPIServerReady, cachedAs(server.UID)}} {
+		got, want := meta.FindStatusCondition(cp.Status.Conditions, c.conditionType), meta.FindStatusCondition(c.from.Status.Conditions, c.conditionType)
+		if !equality.Semantic.DeepEqual(got, want) {
+			t.Errorf("%s is %+v, want %+v", c.conditionType, got, want)
+		}
+	}
+	if cp.Status.Datastore != nil || cp.Status.Endpoint != nil {
+		t.Errorf("status.datastore %+v and status.endpoint %+v, want the cache's, none", cp.Status.Datastore, cp.Status.Endpoint)
 	}
 }
 

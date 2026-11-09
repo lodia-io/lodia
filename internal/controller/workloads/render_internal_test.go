@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -87,26 +86,6 @@ func TestTheRenderOutsideGatewayModeIsPinned(t *testing.T) {
 		}
 		if !bytes.Equal(rendered.Bytes(), want) {
 			t.Errorf("%s renders other bytes than %s, which would roll every tenant in that mode:\n%s", mode, path, rendered.Bytes())
-		}
-	}
-}
-
-func TestTheKonnectivityVersionReplacesTheTagOfAnyReference(t *testing.T) {
-	pinned := &lodiav1alpha1.ControlPlane{Spec: lodiav1alpha1.ControlPlaneSpec{
-		Addons: &lodiav1alpha1.Addons{Konnectivity: &lodiav1alpha1.Konnectivity{Version: "v0.37.2"}},
-	}}
-	digest := "@sha256:" + strings.Repeat("ab", 32)
-	for image, want := range map[string]string{
-		"registry.k8s.io/kas-network-proxy/proxy-server:v0.37.0":                "registry.k8s.io/kas-network-proxy/proxy-server:v0.37.2",
-		"registry.example:5000/kas-network-proxy/proxy-server:v0.37.0":          "registry.example:5000/kas-network-proxy/proxy-server:v0.37.2",
-		"registry.example:5000/kas-network-proxy/proxy-server:v0.37.0" + digest: "registry.example:5000/kas-network-proxy/proxy-server:v0.37.2",
-		"registry.example:5000/kas-network-proxy/proxy-server" + digest:         "registry.example:5000/kas-network-proxy/proxy-server:v0.37.2",
-	} {
-		if got, err := konnectivityImage(pinned, image); err != nil || got != want {
-			t.Errorf("%s pinned to v0.37.2 is %q, %v; want %s", image, got, err, want)
-		}
-		if got, err := konnectivityImage(&lodiav1alpha1.ControlPlane{}, image); err != nil || got != image {
-			t.Errorf("%s without a pin is %q, %v", image, got, err)
 		}
 	}
 }

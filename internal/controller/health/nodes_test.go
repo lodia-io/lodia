@@ -38,6 +38,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/controller/health"
+	"go.lodia.io/lodia/internal/testenv"
 )
 
 const (
@@ -1016,7 +1017,7 @@ func TestATenantWhoseAPIServerHangsDoesNotStopAnothersSamples(t *testing.T) {
 			SilentAfter: time.Second, HoldFraction: 600, ReleaseAfter: time.Minute, Clock: clock.RealClock{},
 		}).SetupWithManager(mgr, 2)
 	})
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return expectHeld(t, good, metav1.ConditionTrue, lodiav1alpha1.ReasonNodesSilent, taken(2, 2, "60"))
 	})
 	asked := firstAsked.Load()
@@ -1056,7 +1057,7 @@ func TestAPassDoesNotDependOnThePublicEndpoint(t *testing.T) {
 			SilentAfter: 20 * time.Second, HoldFraction: 600, Clock: clock.RealClock{},
 		}).SetupWithManager(mgr, 1)
 	})
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return expect(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint")
 	})
 	address := map[string]any{"host": "127.0.0.1", "port": int64(1)}
@@ -1069,14 +1070,14 @@ func TestAPassDoesNotDependOnThePublicEndpoint(t *testing.T) {
 	if err := k8s.Status().Apply(t.Context(), client.ApplyConfigurationFromUnstructured(endpoint), client.FieldOwner("test/endpoint"), client.ForceOwnership); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		if dialing.Load() == 0 {
 			return errors.New("Health has not dialled the endpoint yet")
 		}
 		return nil
 	})
 	setAccess(t, cp)
-	eventually(t, func() error {
+	testenv.Eventually(t, func() error {
 		return expectHeld(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonNotHeld, silent(0, 2))
 	})
 	if dialed.Load() != 0 {

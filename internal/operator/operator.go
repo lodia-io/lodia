@@ -141,7 +141,7 @@ func Setup(mgr ctrl.Manager, cfg Config, signerImage, tunnelImage, etcdDruidName
 	if err := (&datastore.BackupReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdClient: dialEtcd, Clock: clock.RealClock{}}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the backup reconciler: %w", err)
 	}
-	if err := (&lifecycle.Reconciler{Client: mgr.GetClient()}).SetupWithManager(mgr, workers); err != nil {
+	if err := (&lifecycle.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader()}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the lifecycle controller: %w", err)
 	}
 	if err := (&tenant.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), ApplyPeriod: 10 * time.Minute, TunnelImage: tunnelImage}).SetupWithManager(mgr, workers); err != nil {

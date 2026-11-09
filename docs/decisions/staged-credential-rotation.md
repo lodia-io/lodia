@@ -15,7 +15,7 @@ Each tenant has:
 | **request CA** | `KubeconfigRequest` certificates only ([short-lived-kubeconfigs](short-lived-kubeconfigs.md)) | only the API server, in its client bundle, which keeps a replaced request CA, at most the ten newest beside a stored one, until 24 h 5 min after its successor's issuance: the longest a request lives and the backdate | 1 year, as a leaf: renewed at two thirds, and replaced at once when its key Secret is missing or unreadable |
 | **front-proxy CA** | the API server's aggregation client certificate | the API server and aggregated API servers | 5 years |
 | **etcd CA** | etcd server, peer and the API server's etcd client certificate | etcd and the API server | 5 years |
-| **tunnel CA** (gateway mode, from phase 2's wave 1b) | the 90-day client certificate of the in-cluster tunnel, which `apiserver-proxy` and Health present ([api-exposure](api-exposure.md)) | only the tunnel sidecar in each API server pod | 5 years |
+| **tunnel CA** (gateway mode) | the 90-day client certificate of the in-cluster tunnel, which `apiserver-proxy` and Health present ([api-exposure](api-exposure.md)) | only the tunnel sidecar in each API server pod | 5 years |
 
 The controller manager signs kubelet client certificates with the kubelet signer intermediate only, through the per-signer flags `--cluster-signing-kubelet-client-cert-file` and `-key-file`; no root CA key is ever mounted into a control plane pod.
 It does not sign other signers' requests.

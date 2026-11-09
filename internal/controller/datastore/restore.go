@@ -276,8 +276,73 @@ type restoreCheck struct {
 	restored *lodiav1alpha1.RestoreStatus
 	// condition is DatastoreReady while the restore is not complete.
 	condition    *metav1.Condition
-	unanswered   bool
 	requeueAfter time.Duration
+}
+
+// reported is DatastoreReady of an Etcd that exists: the check's, or the
+// Etcd's readiness, Restoring until the restore is recorded or found complete.
+func (c restoreCheck) reported(cp *lodiav1alpha1.ControlPlane, readiness metav1.Condition) metav1.Condition {
+	switch {
+	case c.condition != nil:
+		return *c.condition
+	case cp.Spec.RestoreFrom == nil || c.restored != nil || cp.Status.Restore != nil:
+		return readiness
+	}
+	return *restoring(readiness.Message)
+}
+
+// restoreMembers runs a restore's check, once its Etcd exists, and says how
+// many members the Etcd asks for. An Etcd that starts on the store restores
+// one member, and etcd-druid adds the others as learners once the restore is
+// complete. One created again over this ControlPlane's claims asks for the
+// members they held, each of which restarts with the members its data names;
+// an Etcd raised above one stays, whatever a check that could not run found.
+func (r *Reconciler) restoreMembers(ctx context.Context, p *pass) error {
+	cp := p.cp
+	if cp.Spec.RestoreFrom != nil && p.current != nil {
+		var err error
+		if p.check, err = r.checkRestore(ctx, cp, p.current); err != nil {
+			return err
+		}
+	}
+	p.members = memberCount(cp)
+	switch {
+	case cp.Spec.RestoreFrom == nil || p.check.restored != nil || p.members == 1:
+	case p.current == nil:
+		p.members = claimedMembers(cp.Name, p.claims, p.members)
+	default:
+		raised, err := r.raised(ctx, p.current)
+		if err != nil {
+			return err
+		}
+		if !raised {
+			p.members = 1
+		}
+	}
+	return nil
+}
+
+// gateFirstEtcd decides whether the Etcd a pass is about to create may be
+// created. Claims of this ControlPlane outlive an Etcd it had, whose data they
+// hold, and a restore once recorded left its cleaned data and a full snapshot
+// of it in this ControlPlane's prefix.
+func (r *Reconciler) gateFirstEtcd(ctx context.Context, p *pass) (*outcome, error) {
+	if p.current != nil || len(p.claims) > 0 {
+		return nil, nil
+	}
+	var first *metav1.Condition
+	var requeueAfter time.Duration
+	var err error
+	switch {
+	case p.cp.Spec.RestoreFrom == nil:
+		first, err = r.caPredates(ctx, p.cp)
+	case p.cp.Status.Restore == nil:
+		first, requeueAfter, err = r.restoreFirst(ctx, p.cp, p.class, p.rendered)
+	}
+	if first == nil {
+		return nil, err
+	}
+	return &outcome{condition: *first, requeueAfter: requeueAfter}, err
 }
 
 // checkRestore reads, in the etcd of a restoring ControlPlane, whether its
@@ -291,7 +356,7 @@ func (r *Reconciler) checkRestore(ctx context.Context, cp *lodiav1alpha1.Control
 	}
 	c, err := r.EtcdClient(ctx, etcd)
 	if err != nil {
-		return unanswered(ctx, etcd, fmt.Errorf("connect to the etcd of Etcd %s: %w", etcd.Name, err)), nil
+		return unanswered(ctx, cp, etcd, fmt.Errorf("connect to the etcd of Etcd %s: %w", etcd.Name, err)), nil
 	}
 	defer func() { _ = c.Close() }()
 	var marker *clientv3.GetResponse
@@ -299,7 +364,7 @@ func (r *Reconciler) checkRestore(ctx context.Context, cp *lodiav1alpha1.Control
 		marker, err = c.Get(ctx, lodiav1alpha1.RestoreMarkerKey(cp.UID))
 		return err
 	}); err != nil {
-		return unanswered(ctx, etcd, err), nil
+		return unanswered(ctx, cp, etcd, err), nil
 	}
 	var value restoreMarker
 	var revision int64
@@ -340,9 +405,15 @@ func request(ctx context.Context, call func(context.Context) error) error {
 	return call(ctx)
 }
 
-func unanswered(ctx context.Context, etcd *druidv1alpha1.Etcd, err error) restoreCheck {
+// unanswered changes nothing of a recorded restore: its Etcd's readiness
+// stands.
+func unanswered(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, err error) restoreCheck {
 	logf.FromContext(ctx).Error(err, "check the restore in the etcd", "etcd", etcd.Name)
-	return restoreCheck{unanswered: true, requeueAfter: 10 * time.Second}
+	check := restoreCheck{requeueAfter: 10 * time.Second}
+	if cp.Status.Restore == nil {
+		check.condition = restoring("waiting for etcd of " + cp.Name + " to answer")
+	}
+	return check
 }
 
 // cleanUp checks the seal of the Backup in an etcd without the marker, then
@@ -370,7 +441,7 @@ func (r *Reconciler) cleanUp(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 		seal, err = c.Get(ctx, lodiav1alpha1.BackupSealKey(value.Backup.UID))
 		return err
 	}); err != nil {
-		return restoreMarker{}, 0, new(unanswered(ctx, etcd, err)), nil
+		return restoreMarker{}, 0, new(unanswered(ctx, cp, etcd, err)), nil
 	}
 	if len(seal.Kvs) == 0 || string(seal.Kvs[0].GetValue()) != string(value.Backup.UID) {
 		condition := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRestoreFailed, fmt.Sprintf(
@@ -391,7 +462,7 @@ func (r *Reconciler) cleanUp(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 	case errors.Is(err, rpctypes.ErrNoSpace):
 		return restoreMarker{}, 0, &restoreCheck{condition: restoring(fmt.Sprintf(`etcd refuses the cleanup: %v; see "etcd space quota" in docs/operations.md`, err)), requeueAfter: time.Minute}, nil
 	case err != nil:
-		return restoreMarker{}, 0, new(unanswered(ctx, etcd, err)), nil
+		return restoreMarker{}, 0, new(unanswered(ctx, cp, etcd, err)), nil
 	case revision == 0:
 		condition := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRestoreFailed, fmt.Sprintf(
 			"the cleanup would delete %d keys; etcd-backup-restore replays a revision as one transaction of at most %d operations (pkg/types/restorer.go:27)", keys, cleanupBound))
