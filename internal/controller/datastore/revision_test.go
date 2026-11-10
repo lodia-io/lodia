@@ -4,6 +4,7 @@
 package datastore_test
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	druidapicommon "github.com/gardener/etcd-druid/api/common"
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -23,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/uuid"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -65,13 +68,31 @@ func mustPass(t *testing.T, r *datastore.Reconciler, ns, name string) ctrl.Resul
 	return result
 }
 
-func answer(t *testing.T, ns, cp string) {
+func druidRuns(t *testing.T, ns, cp, run string, state druidapicommon.LastOperationState) {
+	t.Helper()
+	last, err := json.Marshal(druidapicommon.LastOperation{RunID: run, Type: druidv1alpha1.LastOperationTypeReconcile, State: state, Description: "etcd-druid's stand-in", LastUpdateTime: metav1.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	etcd := &druidv1alpha1.Etcd{ObjectMeta: metav1.ObjectMeta{Name: cp + "-etcd", Namespace: ns}}
+	if err := k8s.Status().Patch(t.Context(), etcd, client.RawPatch(types.MergePatchType, []byte(`{"status":{"lastOperation":`+string(last)+`}}`)), client.FieldOwner("etcd-druid")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func removeDruidAnnotation(t *testing.T, ns, cp string) {
 	t.Helper()
 	etcd := &druidv1alpha1.Etcd{ObjectMeta: metav1.ObjectMeta{Name: cp + "-etcd", Namespace: ns}}
 	patch := client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"annotations":{"`+druidv1alpha1.DruidOperationAnnotation+`":null}}}`))
 	if err := k8s.Patch(t.Context(), etcd, patch, client.FieldOwner("etcd-druid")); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func answer(t *testing.T, ns, cp string) {
+	t.Helper()
+	druidRuns(t, ns, cp, string(uuid.NewUUID()), druidv1alpha1.LastOperationStateSucceeded)
+	removeDruidAnnotation(t, ns, cp)
 }
 
 func reconciled(t *testing.T, ns, cp string) *druidv1alpha1.Etcd {
@@ -85,10 +106,11 @@ func reconciled(t *testing.T, ns, cp string) *druidv1alpha1.Etcd {
 	})
 }
 
-func requestedAs(record string, pending bool) func(*druidv1alpha1.Etcd) error {
+func requestedAs(request string, pending bool) func(*druidv1alpha1.Etcd) error {
 	return func(etcd *druidv1alpha1.Etcd) error {
-		if got := etcd.Annotations[lodiav1alpha1.EtcdReconcileRequestedAnnotation]; got != record {
-			return fmt.Errorf("the request recorded is %q, want %q", got, record)
+		record := etcd.Annotations[lodiav1alpha1.EtcdReconcileRequestedAnnotation]
+		if got := record[:max(0, strings.LastIndex(record, "/"))]; got != request {
+			return fmt.Errorf("the request recorded is %q, want %q and a run ID", record, request)
 		}
 		if got := druidv1alpha1.HasReconcileOperationAnnotation(etcd.ObjectMeta); got != pending {
 			return fmt.Errorf("etcd-druid's annotation is there: %t, want %t", got, pending)
@@ -545,9 +567,9 @@ func TestAGrantAsksEtcdDruidOnceItRunsTheGivenVersion(t *testing.T) {
 	}
 }
 
-func reportedRevision(t *testing.T, ns string) string {
+func reportedRevision(t *testing.T, ns, cp string) string {
 	t.Helper()
-	datastore := getControlPlane(t, ns, "reported-revision").Status.Datastore
+	datastore := getControlPlane(t, ns, cp).Status.Datastore
 	if datastore == nil {
 		t.Fatal("no status.datastore")
 	}
@@ -559,7 +581,7 @@ func TestTheOperatorRevisionIsReportedOnceEtcdDruidRolledItOut(t *testing.T) {
 	const cp = "reported-revision"
 	createClass(t, newClass("reported-revision", "Retain"))
 	heldTenant(t, ns, cp, "reported-revision", nil)
-	if got := reportedRevision(t, ns); got != previousRevision {
+	if got := reportedRevision(t, ns, cp); got != previousRevision {
 		t.Fatalf("status.datastore.operatorRevision is %q once etcd-druid reconciled the Etcd and the member runs it, want %s", got, previousRevision)
 	}
 	grant(t, getControlPlane(t, ns, cp), revision)
@@ -567,7 +589,7 @@ func TestTheOperatorRevisionIsReportedOnceEtcdDruidRolledItOut(t *testing.T) {
 	keeps := func(t *testing.T) {
 		t.Helper()
 		mustPass(t, r, ns, cp)
-		if got := reportedRevision(t, ns); got != previousRevision {
+		if got := reportedRevision(t, ns, cp); got != previousRevision {
 			t.Errorf("status.datastore.operatorRevision is %q, want %s kept", got, previousRevision)
 		}
 	}
@@ -578,7 +600,7 @@ func TestTheOperatorRevisionIsReportedOnceEtcdDruidRolledItOut(t *testing.T) {
 		if result := mustPass(t, waiting, ns, cp); result.RequeueAfter != 15*time.Second {
 			t.Errorf("a pass whose record differs from a settled Etcd requeues after %s, want 15s", result.RequeueAfter)
 		}
-		if got := reportedRevision(t, ns); got != previousRevision {
+		if got := reportedRevision(t, ns, cp); got != previousRevision {
 			t.Errorf("status.datastore.operatorRevision is %q, want %s kept", got, previousRevision)
 		}
 	})
@@ -598,7 +620,7 @@ func TestTheOperatorRevisionIsReportedOnceEtcdDruidRolledItOut(t *testing.T) {
 		waiting.EtcdDruidDeployment = "absent"
 		setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) { s.AvailableReplicas = 0 })
 		mustPass(t, waiting, ns, cp)
-		if got := reportedRevision(t, ns); got != previousRevision {
+		if got := reportedRevision(t, ns, cp); got != previousRevision {
 			t.Errorf("status.datastore.operatorRevision is %q, want %s, as the API server holds it", got, previousRevision)
 		}
 		setStatefulSetStatus(t, ns, cp, nil)
@@ -626,8 +648,140 @@ func TestTheOperatorRevisionIsReportedOnceEtcdDruidRolledItOut(t *testing.T) {
 	})
 	setStatefulSetStatus(t, ns, cp, nil)
 	mustPass(t, r, ns, cp)
-	if got := reportedRevision(t, ns); got != revision {
+	if got := reportedRevision(t, ns, cp); got != revision {
 		t.Errorf("status.datastore.operatorRevision is %q once every part holds, want %s", got, revision)
+	}
+}
+
+func recordedRun(t *testing.T, ns, cp string) string {
+	t.Helper()
+	record := getEtcd(t, ns, cp).Annotations[lodiav1alpha1.EtcdReconcileRequestedAnnotation]
+	return record[strings.LastIndex(record, "/")+1:]
+}
+
+func druidEnds(t *testing.T, ns, cp, run string) {
+	t.Helper()
+	druidRuns(t, ns, cp, run, druidv1alpha1.LastOperationStateSucceeded)
+	setEtcdStatus(t, ns, cp, nil)
+	removeDruidAnnotation(t, ns, cp)
+}
+
+func asksAgain(t *testing.T, r *datastore.Reconciler, ns, cp, request, run string) {
+	t.Helper()
+	if result := mustPass(t, r, ns, cp); result.RequeueAfter != 15*time.Second {
+		t.Errorf("a pass over a request that is not served requeues after %s, want 15s", result.RequeueAfter)
+	}
+	if err := requestedAs(request, true)(getEtcd(t, ns, cp)); err != nil {
+		t.Errorf("a request etcd-druid's annotation is gone from, not served: %v", err)
+	}
+	if got := recordedRun(t, ns, cp); got != run {
+		t.Errorf("the request asked again records run ID %q, want %q", got, run)
+	}
+}
+
+func TestARequestConsumedByAReconcileThatStartedBeforeItIsAskedAgain(t *testing.T) {
+	t.Run("etcd-druid's first reconcile of a new Etcd", func(t *testing.T) {
+		ns := namespace(t)
+		const cp = "new-etcd-request"
+		createClass(t, newClass(cp, "Retain"))
+		plane := controlPlane(ns, cp, cp)
+		plane.Spec.Paused = true
+		create(t, plane)
+		writeGeneration(t, ns, cp, 1)
+		first := interceptor.NewClient(unpaused(k8s), interceptor.Funcs{
+			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+				if _, ok := obj.(*druidv1alpha1.Etcd); ok {
+					druidRuns(t, ns, cp, "first", druidv1alpha1.LastOperationStateProcessing)
+				}
+				return c.Patch(ctx, obj, patch, opts...)
+			},
+		})
+		mustPass(t, operatorAt(first, revision), ns, cp)
+		if err := requestedAs("", false)(getEtcd(t, ns, cp)); err != nil {
+			t.Fatalf("a request that conflicts with etcd-druid's first status write: %v", err)
+		}
+		writeGeneration(t, ns, cp, 2)
+		r := operatorAt(unpaused(k8s), revision)
+		mustPass(t, r, ns, cp)
+		request := fmt.Sprintf("%d/%s", getEtcd(t, ns, cp).Generation, revision)
+		if err := requestedAs(request, true)(getEtcd(t, ns, cp)); err != nil || recordedRun(t, ns, cp) != "first" {
+			t.Fatalf("the request made while etcd-druid's first reconcile runs records run ID %q: %v", recordedRun(t, ns, cp), err)
+		}
+		runStatefulSet(t, ns, cp, 1)
+		druidEnds(t, ns, cp, "first")
+		asksAgain(t, r, ns, cp, request, "first")
+		answer(t, ns, cp)
+		mustPass(t, r, ns, cp)
+		if err := requestedAs(request, false)(getEtcd(t, ns, cp)); err != nil {
+			t.Errorf("a request etcd-druid served: %v", err)
+		}
+	})
+
+	ns := namespace(t)
+	const cp = "served-request"
+	createClass(t, newClass(cp, "Retain"))
+	heldTenant(t, ns, cp, cp, nil)
+	r := operatorAt(unpaused(k8s), revision)
+	t.Run("a reconcile etcd-druid started on a stale cache", func(t *testing.T) {
+		druidRuns(t, ns, cp, "stale", druidv1alpha1.LastOperationStateProcessing)
+		grant(t, getControlPlane(t, ns, cp), revision)
+		mustPass(t, r, ns, cp)
+		request := fmt.Sprintf("%d/%s", getEtcd(t, ns, cp).Generation, revision)
+		if err := requestedAs(request, true)(getEtcd(t, ns, cp)); err != nil || recordedRun(t, ns, cp) != "stale" {
+			t.Fatalf("the grant's request records run ID %q: %v", recordedRun(t, ns, cp), err)
+		}
+		druidEnds(t, ns, cp, "stale")
+		asksAgain(t, r, ns, cp, request, "stale")
+		if got := reportedRevision(t, ns, cp); got != previousRevision {
+			t.Errorf("status.datastore.operatorRevision is %q while the request is not served, want %s kept", got, previousRevision)
+		}
+
+		answer(t, ns, cp)
+		if result := mustPass(t, r, ns, cp); result.RequeueAfter != 0 {
+			t.Errorf("a pass over a served request on a settled etcd requeues after %s", result.RequeueAfter)
+		}
+		if err := requestedAs(request, false)(getEtcd(t, ns, cp)); err != nil {
+			t.Errorf("a request etcd-druid served: %v", err)
+		}
+		if got := reportedRevision(t, ns, cp); got != revision {
+			t.Errorf("status.datastore.operatorRevision is %q once the request is served, want %s", got, revision)
+		}
+	})
+
+	for i, c := range []struct {
+		name   string
+		druid  func(t *testing.T)
+		served bool
+		run    string
+	}{
+		{"an annotation removed without a reconcile", func(*testing.T) {}, false, ""},
+		{"a reconcile under another run ID that failed", func(t *testing.T) { druidRuns(t, ns, cp, "failed", druidv1alpha1.LastOperationStateError) }, false, "failed"},
+		{"a create under another run ID that succeeded", func(t *testing.T) {
+			last := `{"status":{"lastOperation":{"runID":"created","type":"Create","state":"Succeeded","description":"etcd-druid's stand-in","lastUpdateTime":"2026-11-10T00:00:00Z"}}}`
+			if err := k8s.Status().Patch(t.Context(), getEtcd(t, ns, cp), client.RawPatch(types.MergePatchType, []byte(last))); err != nil {
+				t.Fatal(err)
+			}
+		}, true, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			writeGeneration(t, ns, cp, i+2)
+			mustPass(t, r, ns, cp)
+			request, run := fmt.Sprintf("%d/%s", getEtcd(t, ns, cp).Generation, revision), recordedRun(t, ns, cp)
+			if err := requestedAs(request, true)(getEtcd(t, ns, cp)); err != nil {
+				t.Fatal(err)
+			}
+			c.druid(t)
+			removeDruidAnnotation(t, ns, cp)
+			if !c.served {
+				asksAgain(t, r, ns, cp, request, cmp.Or(c.run, run))
+				answer(t, ns, cp)
+				return
+			}
+			mustPass(t, r, ns, cp)
+			if err := requestedAs(request, false)(getEtcd(t, ns, cp)); err != nil {
+				t.Errorf("a request served by a create: %v", err)
+			}
+		})
 	}
 }
 

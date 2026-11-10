@@ -483,31 +483,33 @@ func (r *Reconciler) applyEtcd(ctx context.Context, p *pass) (*outcome, error) {
 		condition.Message = note(condition.Message, memberNote(etcd, p.members))
 	}
 	requeueAfter := p.heldFor
-	if updated := updatedMembers(etcd, p.sts); updated == nil || *updated < etcd.Spec.Replicas || etcd.Annotations[lodiav1alpha1.EtcdReconcileRequestedAnnotation] != recordOf(etcd) {
+	if updated := updatedMembers(etcd, p.sts); updated == nil || *updated < etcd.Spec.Replicas || !served(etcd) {
 		requeueAfter = 15 * time.Second
 	}
 	return &outcome{etcd: etcd, sts: p.sts, restore: p.check.restored, condition: condition, requeueAfter: sooner(requeueAfter, p.check.requeueAfter)}, nil
 }
 
-// requestReconcile asks etcd-druid, which reconciles an Etcd's spec only on
-// request (etcd-druid@v0.39.0 internal/controller/etcd/reconcile_spec.go#L200-L224),
-// to reconcile etcd once for each generation and stamp: its annotation and
-// Lodia's record of the request go together, under the resourceVersion of
-// the apply's response, so that a pass on an older response conflicts and
-// the next one asks again. etcd-druid removes its annotation once it has
-// reconciled (reconcile_complete.go#L44-L55); a request waits while it is
-// there, and the watch brings the pass after its removal. A request under a
-// revision the record does not name waits for etcd-druid's Deployment to run
-// the version the operator was given in every replica: an older etcd-druid
-// would take it and roll the members to its own render.
+// requestReconcile asks etcd-druid, which reconciles a new Etcd's spec
+// unasked, past the wait below, and any other's only on request
+// (etcd-druid@v0.39.0 internal/controller/etcd/reconcile_spec.go#L200-L224),
+// to reconcile etcd until the request for its generation and stamp is
+// served: its annotation and Lodia's record of the request go together,
+// under the resourceVersion of the apply's response, so that a pass on an
+// older response conflicts and the next one asks again, and the record names
+// the run ID that lock makes current when the annotation lands. A request
+// waits while etcd-druid's annotation is there, and the watch brings the pass
+// after its removal. A request under a revision the record does not name
+// waits for etcd-druid's Deployment to run the version the operator was given
+// in every replica: an older etcd-druid would take it and roll the members to
+// its own render.
 func (r *Reconciler) requestReconcile(ctx context.Context, p *pass, etcd *druidv1alpha1.Etcd) (*druidv1alpha1.Etcd, error) {
-	want := recordOf(etcd)
-	recorded, ok := etcd.Annotations[lodiav1alpha1.EtcdReconcileRequestedAnnotation]
-	if recorded == want || druidv1alpha1.HasReconcileOperationAnnotation(etcd.ObjectMeta) {
+	if druidv1alpha1.HasReconcileOperationAnnotation(etcd.ObjectMeta) || served(etcd) {
 		return etcd, nil
 	}
+	recorded, ok := etcd.Annotations[lodiav1alpha1.EtcdReconcileRequestedAnnotation]
+	asked, _, _ := cutLast(recorded, "/")
 	stamp := etcd.Annotations[lodiav1alpha1.OperatorRevisionAnnotation]
-	if _, revision, _ := strings.Cut(recorded, "/"); !ok || revision != stamp {
+	if _, revision, _ := strings.Cut(asked, "/"); !ok || revision != stamp {
 		pending, err := r.druidPending(ctx)
 		if err != nil {
 			return nil, err
@@ -519,7 +521,7 @@ func (r *Reconciler) requestReconcile(ctx context.Context, p *pass, etcd *druidv
 	}
 	requested := etcd.DeepCopy()
 	metav1.SetMetaDataAnnotation(&requested.ObjectMeta, druidv1alpha1.DruidOperationAnnotation, druidv1alpha1.DruidOperationReconcile)
-	metav1.SetMetaDataAnnotation(&requested.ObjectMeta, lodiav1alpha1.EtcdReconcileRequestedAnnotation, want)
+	metav1.SetMetaDataAnnotation(&requested.ObjectMeta, lodiav1alpha1.EtcdReconcileRequestedAnnotation, requestOf(etcd)+"/"+runID(etcd))
 	err := r.Patch(ctx, requested, client.MergeFromWithOptions(etcd, client.MergeFromWithOptimisticLock{}), client.FieldOwner(FieldManager))
 	switch {
 	case apierrors.IsConflict(err):
@@ -530,9 +532,40 @@ func (r *Reconciler) requestReconcile(ctx context.Context, p *pass, etcd *druidv
 	return requested, nil
 }
 
-// recordOf is the record of a request to reconcile etcd as it stands.
-func recordOf(etcd *druidv1alpha1.Etcd) string {
+// requestOf is the generation and stamp a request to reconcile etcd asks for.
+func requestOf(etcd *druidv1alpha1.Etcd) string {
 	return fmt.Sprintf("%d/%s", etcd.Generation, etcd.Annotations[lodiav1alpha1.OperatorRevisionAnnotation])
+}
+
+func runID(etcd *druidv1alpha1.Etcd) string {
+	if last := etcd.Status.LastOperation; last != nil {
+		return last.RunID
+	}
+	return ""
+}
+
+// served says whether etcd-druid has reconciled the request for etcd's
+// generation and stamp: its annotation is gone, and a spec reconcile
+// succeeded under a run ID other than the recorded one. etcd-druid writes a
+// new run ID in a status patch at the start of every spec reconcile and syncs
+// the Etcd that patch returns (reconcile_spec.go#L33-L42,
+// internal/controller/utils/etcdstatus.go#L83-L93), so such a reconcile read
+// the request's spec; one under the recorded run ID started before the request
+// landed, and may have removed the annotation without syncing that spec.
+func served(etcd *druidv1alpha1.Etcd) bool {
+	asked, run, ok := cutLast(etcd.Annotations[lodiav1alpha1.EtcdReconcileRequestedAnnotation], "/")
+	last := etcd.Status.LastOperation
+	return ok && asked == requestOf(etcd) && !druidv1alpha1.HasReconcileOperationAnnotation(etcd.ObjectMeta) && last != nil &&
+		(last.Type == druidv1alpha1.LastOperationTypeCreate || last.Type == druidv1alpha1.LastOperationTypeReconcile) &&
+		last.State == druidv1alpha1.LastOperationStateSucceeded && last.RunID != run
+}
+
+func cutLast(s, sep string) (string, string, bool) {
+	i := strings.LastIndex(s, sep)
+	if i < 0 {
+		return s, "", false
+	}
+	return s[:i], s[i+len(sep):], true
 }
 
 // druidPending says why etcd-druid's Deployment does not yet run the version
@@ -1041,7 +1074,7 @@ func (r *Reconciler) datastoreStatus(ctx context.Context, cp *lodiav1alpha1.Cont
 	return status, nil
 }
 
-// rolledOut gives the Etcd's stamp once etcd-druid has reconciled the request
+// rolledOut gives the Etcd's stamp once etcd-druid has served the request
 // for its generation and stamp and every member runs that spec: a revision
 // that changes no field of the spec rolls a new etcd-druid's render with the
 // generation unchanged, and etcd-druid can mark as observed a generation it
@@ -1050,8 +1083,7 @@ func (r *Reconciler) datastoreStatus(ctx context.Context, cp *lodiav1alpha1.Cont
 func rolledOut(etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) (string, bool) {
 	stamp := etcd.Annotations[lodiav1alpha1.OperatorRevisionAnnotation]
 	updated := updatedMembers(etcd, sts)
-	return stamp, etcd.Annotations[lodiav1alpha1.EtcdReconcileRequestedAnnotation] == recordOf(etcd) && !druidv1alpha1.HasReconcileOperationAnnotation(etcd.ObjectMeta) &&
-		updated != nil && *updated == etcd.Spec.Replicas && len(stamp) <= maxRevision
+	return stamp, served(etcd) && updated != nil && *updated == etcd.Spec.Replicas && len(stamp) <= maxRevision
 }
 
 // applyStatus writes DatastoreReady and BackupReady together: the conditions

@@ -452,6 +452,9 @@ func readinessInput(etcd *druidv1alpha1.Etcd) string {
 	fmt.Fprintf(&b, "%d %t %d %t %d/%d %d %t %q %t;", etcd.Generation, !etcd.DeletionTimestamp.IsZero(), ptr.Deref(etcd.Status.ObservedGeneration, 0),
 		ptr.Deref(etcd.Status.Ready, false), etcd.Status.ReadyReplicas, etcd.Spec.Replicas, len(etcd.Status.Members), kept,
 		etcd.Annotations[lodiav1alpha1.EtcdReconcileRequestedAnnotation], druidv1alpha1.HasReconcileOperationAnnotation(etcd.ObjectMeta))
+	if last := etcd.Status.LastOperation; last != nil {
+		fmt.Fprintf(&b, "%s %s/%s;", last.RunID, last.Type, last.State)
+	}
 	for _, c := range etcd.Status.Conditions {
 		fmt.Fprintf(&b, "%s=%s/%s;", c.Type, c.Status, c.Reason)
 	}

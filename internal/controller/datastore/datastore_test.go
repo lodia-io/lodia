@@ -1348,6 +1348,7 @@ func setEtcdStatus(t *testing.T, ns, cp string, mutate func(*druidv1alpha1.EtcdS
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		etcd := getEtcd(t, ns, cp)
 		etcd.Status = druidv1alpha1.EtcdStatus{
+			LastOperation:      etcd.Status.LastOperation,
 			ObservedGeneration: new(etcd.Generation),
 			Ready:              new(true),
 			Replicas:           1,
@@ -2937,6 +2938,7 @@ func TestNetworkPolicyOfAnotherOwner(t *testing.T) {
 			waitCondition(t, ns, row.cp, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "etcd-druid has not observed generation 1")
 			runStatefulSet(t, ns, row.cp, 1)
 			setEtcdStatus(t, ns, row.cp, nil)
+			reconciled(t, ns, row.cp)
 			waitCondition(t, ns, row.cp, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere, row.message)
 			if after := reconcileNow(t, ns, row.cp); after != time.Minute {
 				t.Errorf("a NetworkPolicy another owner keeps requeues after %s, want a minute: an unlabelled one is outside the cache", after)
