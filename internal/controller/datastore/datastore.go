@@ -433,12 +433,9 @@ func (r *Reconciler) renderEtcd(ctx context.Context, p *pass) error {
 		}
 		p.namespaceUID = namespace.UID
 	}
-	p.sts = &appsv1.StatefulSet{}
-	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.EtcdName(cp.Name)}, p.sts); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return err
-		}
-		p.sts = nil
+	var err error
+	if p.sts, err = r.statefulSet(ctx, cp); err != nil {
+		return err
 	}
 	if err := r.restoreMembers(ctx, p); err != nil {
 		return err
@@ -468,14 +465,20 @@ func (r *Reconciler) applyEtcd(ctx context.Context, p *pass) (*outcome, error) {
 		}
 		return nil, err
 	}
-	requested, err := r.requestReconcile(ctx, p, etcd)
+	requested, requestErr := r.requestReconcile(ctx, p, etcd)
 	if requested == nil {
-		return nil, err
+		return nil, requestErr
 	}
-	if err != nil {
+	// etcd-druid syncs the StatefulSet before it removes its annotation
+	// (internal/controller/etcd/reconciler.go#L119-L142), so the one read
+	// before the apply can predate a request the response shows served.
+	if p.sts, err = r.statefulSet(ctx, cp); err != nil {
+		return nil, errors.Join(requestErr, err)
+	}
+	if requestErr != nil {
 		message := fmt.Sprintf("the API server refuses the request that etcd-druid reconcile Etcd %s, the annotations %s and %s; the reason is in Lodia's log",
 			etcd.Name, druidv1alpha1.DruidOperationAnnotation, lodiav1alpha1.EtcdReconcileRequestedAnnotation)
-		return &outcome{etcd: etcd, sts: p.sts, restore: p.check.restored, condition: newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, message)}, err
+		return &outcome{etcd: etcd, sts: p.sts, restore: p.check.restored, condition: newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, message)}, requestErr
 	}
 	etcd = requested
 	if err := r.labelClaims(ctx, cp, etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation]); err != nil {
@@ -604,6 +607,19 @@ func (r *Reconciler) druidPending(ctx context.Context) (string, error) {
 		return fmt.Sprintf("no pod of Deployment %s terminates", key), nil
 	}
 	return "", nil
+}
+
+// statefulSet reads etcd-druid's StatefulSet of cp's Etcd uncached, nil when
+// there is none.
+func (r *Reconciler) statefulSet(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*appsv1.StatefulSet, error) {
+	sts := &appsv1.StatefulSet{}
+	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.EtcdName(cp.Name)}, sts); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return sts, nil
 }
 
 // sooner is the earlier of two requeues, 0 being none.

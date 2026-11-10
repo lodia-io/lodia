@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/uuid"
@@ -698,6 +699,64 @@ func TestTheOperatorRevisionIsReportedOnceEtcdDruidRolledItOut(t *testing.T) {
 	mustPass(t, r, ns, cp)
 	if got := reportedRevision(t, ns, cp); got != revision {
 		t.Errorf("status.datastore.operatorRevision is %q once every part holds, want %s", got, revision)
+	}
+}
+
+func TestTheRevisionIsReportedFromTheStatefulSetReadAfterTheRequest(t *testing.T) {
+	for i, row := range []struct {
+		name   string
+		status bool
+	}{
+		{"etcd-druid removes its annotation", false},
+		{"etcd-druid writes its status and removes its annotation", true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			ns := namespace(t)
+			cp := fmt.Sprintf("sts-after-request-%d", i)
+			createClass(t, newClass(cp, "Retain"))
+			heldTenant(t, ns, cp, cp, nil)
+			grant(t, getControlPlane(t, ns, cp), revision)
+			r := operatorAt(unpaused(k8s), revision)
+			mustPass(t, r, ns, cp)
+			if err := requestedAs("1/"+revision, true)(getEtcd(t, ns, cp)); err != nil {
+				t.Fatal(err)
+			}
+			done := false
+			racing := interceptor.NewClient(unpaused(k8s), interceptor.Funcs{
+				Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+					if !done {
+						done = true
+						sts := &appsv1.StatefulSet{}
+						if err := k8s.Get(ctx, client.ObjectKey{Namespace: ns, Name: cp + "-etcd"}, sts); err != nil {
+							return err
+						}
+						sts.Spec.Template.Annotations = map[string]string{"etcd-druid": "the render of " + druidVersion}
+						if err := k8s.Update(ctx, sts); err != nil {
+							return err
+						}
+						if row.status {
+							setEtcdStatus(t, ns, cp, nil)
+						}
+						answer(t, ns, cp)
+					}
+					return c.Apply(ctx, obj, opts...)
+				},
+			})
+			mustPass(t, operatorAt(racing, revision), ns, cp)
+			datastore := getControlPlane(t, ns, cp).Status.Datastore
+			if datastore.OperatorRevision != previousRevision || datastore.Members.Updated != nil {
+				t.Errorf("a pass that read the StatefulSet before etcd-druid rolled it reports revision %q and %v members updated, want %s kept and none counted", datastore.OperatorRevision, datastore.Members.Updated, previousRevision)
+			}
+			mustPass(t, r, ns, cp)
+			if got := reportedRevision(t, ns, cp); got != previousRevision {
+				t.Errorf("the next pass reports %q while the StatefulSet has not observed etcd-druid's roll, want %s kept", got, previousRevision)
+			}
+			setStatefulSetStatus(t, ns, cp, nil)
+			mustPass(t, r, ns, cp)
+			if got := reportedRevision(t, ns, cp); got != revision {
+				t.Errorf("status.datastore.operatorRevision is %q once the StatefulSet has rolled, want %s", got, revision)
+			}
+		})
 	}
 }
 
