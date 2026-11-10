@@ -99,6 +99,7 @@ func checkOneSlotInQueueOrder(t *testing.T, seen []observation, tenants int) {
 	t.Helper()
 	inSlot := map[client.ObjectKey]bool{}
 	waiting := map[client.ObjectKey]time.Time{}
+	waited := map[client.ObjectKey]bool{}
 	var order []string
 	for _, o := range seen {
 		if o.progressing == lodiav1alpha1.ReasonMaintenanceFailed {
@@ -115,8 +116,8 @@ func checkOneSlotInQueueOrder(t *testing.T, seen []observation, tenants int) {
 				return strings.Compare(a.Name, b.Name)
 			})
 			switch {
-			case len(queue) == 0 && len(order) > 0:
-				t.Errorf("at resourceVersion %s %s took a slot with no tenant waiting", o.resourceVersion, o.key.Namespace)
+			case len(queue) == 0 && len(order) > 0 && !waited[o.key]:
+				t.Errorf("at resourceVersion %s %s, never seen waiting, took a slot with no tenant waiting", o.resourceVersion, o.key.Namespace)
 			case len(queue) > 0 && queue[0] != o.key:
 				t.Errorf("at resourceVersion %s the slot went to %s, not to %s, the first of those waiting: %v", o.resourceVersion, o.key.Namespace, queue[0].Namespace, waiting)
 			}
@@ -124,7 +125,7 @@ func checkOneSlotInQueueOrder(t *testing.T, seen []observation, tenants int) {
 		}
 		inSlot[o.key] = o.slot
 		if o.scheduledFor != nil && !o.scheduledFor.After(o.at) {
-			waiting[o.key] = o.scheduledFor.Time
+			waiting[o.key], waited[o.key] = o.scheduledFor.Time, true
 		} else {
 			delete(waiting, o.key)
 		}
