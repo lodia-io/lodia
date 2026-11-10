@@ -373,8 +373,11 @@ func TestAHeldCreateTheTenantFailsWithoutARefusalChangesNothing(t *testing.T) {
 				},
 			},
 		}, client.DryRunAll)
+		if err == nil {
+			return errors.New("the webhook does not fail a Deployment's create yet")
+		}
 		if !apierrors.IsInternalError(err) {
-			return fmt.Errorf("a Deployment's create returned %v, want the webhook's failure", err)
+			return err
 		}
 		return nil
 	})
