@@ -27,7 +27,7 @@ import (
 )
 
 func component(version string) map[string]any {
-	c := map[string]any{"total": int64(1), "ready": int64(1), "updated": int64(1)}
+	c := map[string]any{"total": int64(1), "ready": int64(1), "updated": int64(1), "operatorRevision": runningRevision}
 	if version != "" {
 		c["version"] = version
 	}
@@ -46,7 +46,7 @@ func report(t *testing.T, cp *lodiav1alpha1.ControlPlane, apiServer, controllerM
 	}
 	status := map[string]any{"components": components}
 	if addons != "" {
-		status["addons"] = map[string]any{"version": addons}
+		status["addons"] = map[string]any{"version": addons, "operatorRevision": runningRevision}
 	}
 	applyStatus(t, cp, "test/reports", status)
 }
@@ -220,7 +220,7 @@ func TestAPassWritesTheKubernetesVersionThroughAFailureAndADeadlineThatIsSpent(t
 				return c.SubResource(subResource).Apply(ctx, obj, opts...)
 			},
 		})
-		_, err := (&lifecycle.Reconciler{Client: c, Reader: reader, Clock: clock.RealClock{}, Revision: runningRevision}).Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+		_, err := (&lifecycle.Reconciler{Client: c, Reader: reader, Clock: clock.RealClock{}, Revision: runningRevision, MaxConcurrentRollouts: 5, Settling: settlingTime}).Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 		return err
 	}
 	wrote := func() bool { return len(applied) == 1 && applied[0] != nil && applied[0].Version == "v1.37.1" }

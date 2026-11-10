@@ -48,6 +48,11 @@ const nodesWorkers = 100
 
 const healthTimeout = 5 * time.Second
 
+// etcdDruidStatusSync is how often etcd-druid syncs an Etcd's status, its
+// chart's etcdStatusSyncPeriod
+// (https://github.com/gardener/etcd-druid/blob/v0.39.0/charts/values.yaml#L63).
+const etcdDruidStatusSync = 15 * time.Second
+
 // Scheme holds the kinds the controllers read and write.
 func Scheme() *runtime.Scheme {
 	scheme := runtime.NewScheme()
@@ -170,7 +175,7 @@ func Setup(mgr ctrl.Manager, in Inputs) error {
 	if err := (&datastore.BackupReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdClient: dialEtcd, Clock: clock.RealClock{}}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the backup reconciler: %w", err)
 	}
-	if err := (&lifecycle.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Clock: clock.RealClock{}, Revision: revision}).SetupWithManager(mgr, workers); err != nil {
+	if err := newLifecycle(mgr.GetClient(), mgr.GetAPIReader(), in.Config, revision).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the lifecycle controller: %w", err)
 	}
 	if err := (&tenant.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), ApplyPeriod: 10 * time.Minute, TunnelImage: in.TunnelImage, Revision: revision}).SetupWithManager(mgr, workers); err != nil {
@@ -186,6 +191,17 @@ func Setup(mgr ctrl.Manager, in Inputs) error {
 		return fmt.Errorf("set up the workloads controller: %w", err)
 	}
 	return nil
+}
+
+// newLifecycle settles a change Lodia started for as long as Health takes to
+// turn Reachable False and etcd-druid to sync a member's loss into
+// DatastoreReady (docs/decisions/upgrades-and-maintenance-windows.md).
+func newLifecycle(c client.Client, reader client.Reader, cfg Config, revision string) *lifecycle.Reconciler {
+	return &lifecycle.Reconciler{
+		Client: c, Reader: reader, Clock: clock.RealClock{}, Revision: revision,
+		MaxConcurrentRollouts: cfg.Fleet.MaxConcurrentRollouts,
+		Settling:              time.Duration(cfg.Health.FailuresBeforeFalse)*(cfg.Health.Period.Duration+healthTimeout) + etcdDruidStatusSync,
+	}
 }
 
 func newHealth(c client.Client, reader client.Reader, cfg HealthConfig) *health.Reconciler {

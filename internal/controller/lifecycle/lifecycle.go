@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
+	"golang.org/x/sync/semaphore"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/clock"
@@ -51,12 +53,21 @@ func readiness(cp *lodiav1alpha1.ControlPlane) []string {
 
 type Reconciler struct {
 	client.Client
-	// Reader reads the ControlPlane as the API server holds it, before a write.
+	// Reader reads the ControlPlane as the API server holds it, before a write,
+	// and the fleet before a slot is taken.
 	Reader client.Reader
 	Clock  clock.PassiveClock
-	// Revision is the running operator revision, which every pass but a
-	// paused or deleting one's grants.
+	// Revision is the running operator revision, which Lifecycle grants by the
+	// rules of docs/decisions/upgrades-and-maintenance-windows.md.
 	Revision string
+	// MaxConcurrentRollouts is how many tenants hold a slot of the fleet.
+	MaxConcurrentRollouts int
+	// Settling is how long a change Lodia started keeps its slot once it has
+	// rolled out.
+	Settling time.Duration
+
+	once  sync.Once
+	slots *semaphore.Weighted
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
@@ -80,41 +91,72 @@ func backupsOwner(_ context.Context, obj client.Object) []reconcile.Request {
 // Reconcile decides from the cached object and, when that decision changes
 // something, from the object as the API server holds it, comparing the write
 // with that copy: a pass on a cache behind Lifecycle's own write would undo it
-// (docs/decisions/independent-controllers.md).
+// (docs/decisions/independent-controllers.md). A decision that takes a slot
+// of the fleet, counted from the cache, is made again under a semaphore from
+// the fleet the API server holds, and written under it, so that two passes
+// never take one slot.
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	cached := &lodiav1alpha1.ControlPlane{}
 	if err := r.Get(ctx, req.NamespacedName, cached); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	gathered, err := r.gather(ctx, cached)
+	gathered, err := r.gather(ctx, cached, r.Client)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if d := decide(gathered); d.createBackup == "" && !d.differs(cached) {
-		return ctrl.Result{}, nil
+		return ctrl.Result{RequeueAfter: d.requeue}, nil
 	}
 	current, err := statusapply.Live(ctx, r.Reader, cached)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if gathered, err = r.gather(ctx, current); err != nil {
+	if gathered, err = r.gather(ctx, current, r.Client); err != nil {
 		return ctrl.Result{}, err
 	}
 	d := decide(gathered)
+	if d.takesSlot {
+		slots := r.semaphore()
+		if err := slots.Acquire(ctx, 1); err != nil {
+			return ctrl.Result{}, err
+		}
+		defer slots.Release(1)
+		if gathered, err = r.gather(ctx, current, r.Reader); err != nil {
+			return ctrl.Result{}, err
+		}
+		d = decide(gathered)
+	}
 	if err := statusapply.Apply(ctx, r.Client, r.Reader, FieldManager, current, d.status, d.fieldsDiffer(current)); err != nil {
 		return ctrl.Result{}, err
 	}
 	if d.createBackup != "" {
-		return ctrl.Result{}, client.IgnoreAlreadyExists(r.Create(ctx, &lodiav1alpha1.Backup{
+		err := client.IgnoreAlreadyExists(r.Create(ctx, &lodiav1alpha1.Backup{
 			ObjectMeta: metav1.ObjectMeta{Name: d.createBackup, Namespace: current.Namespace},
 			Spec:       lodiav1alpha1.BackupSpec{ControlPlaneRef: lodiav1alpha1.LocalReference{Name: current.Name}},
 		}))
+		if err != nil {
+			return ctrl.Result{}, err
+		}
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: d.requeue}, nil
 }
 
-func (r *Reconciler) gather(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (facts, error) {
-	f := facts{cp: cp, now: r.Clock.Now(), revision: r.Revision}
+func (r *Reconciler) semaphore() *semaphore.Weighted {
+	r.once.Do(func() { r.slots = semaphore.NewWeighted(1) })
+	return r.slots
+}
+
+// gather reads what a pass decides from: the Backup of the minor step from
+// the cache, and, while a change is pending, the fleet through fleet.
+func (r *Reconciler) gather(ctx context.Context, cp *lodiav1alpha1.ControlPlane, fleet client.Reader) (facts, error) {
+	f := facts{cp: cp, now: r.Clock.Now(), revision: r.Revision, limit: r.MaxConcurrentRollouts, settling: r.Settling}
+	if cp.DeletionTimestamp.IsZero() && !cp.Spec.Paused && pending(cp, r.Revision) {
+		list := &lodiav1alpha1.ControlPlaneList{}
+		if err := fleet.List(ctx, list, client.UnsafeDisableDeepCopy); err != nil {
+			return f, err
+		}
+		f.fleet = fleetOf(list.Items, cp)
+	}
 	minor := backupMinor(cp)
 	if minor == "" {
 		return f, nil
@@ -194,7 +236,10 @@ func lagging(cp *lodiav1alpha1.ControlPlane) []string {
 }
 
 func ready(cp *lodiav1alpha1.ControlPlane) *metav1.Condition {
-	inputs := readiness(cp)
+	return readyOf(cp, readiness(cp))
+}
+
+func readyOf(cp *lodiav1alpha1.ControlPlane, inputs []string) *metav1.Condition {
 	next := newCondition(cp, lodiav1alpha1.ConditionReady, metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
 		strings.Join(inputs[:len(inputs)-1], ", ")+" and "+inputs[len(inputs)-1]+" are True")
 	for _, conditionType := range inputs {

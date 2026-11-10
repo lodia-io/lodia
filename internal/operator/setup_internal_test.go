@@ -42,3 +42,20 @@ func TestHealthNodesRunOnTheFilesValues(t *testing.T) {
 		t.Errorf("Timeout = %s, want Health's %s", got.Timeout, want)
 	}
 }
+
+func TestLifecycleRunsOnTheFilesValues(t *testing.T) {
+	if got := newLifecycle(nil, nil, DefaultConfig(), "v1.0.0+0"); got.Settling != 45*time.Second || got.MaxConcurrentRollouts != 5 {
+		t.Errorf("at the defaults Settling = %s and MaxConcurrentRollouts = %d, want 45s and 5", got.Settling, got.MaxConcurrentRollouts)
+	}
+	cfg := DefaultConfig()
+	cfg.Health.Period = metav1.Duration{Duration: 7 * time.Second}
+	cfg.Health.FailuresBeforeFalse = 4
+	cfg.Fleet.MaxConcurrentRollouts = 2
+	got := newLifecycle(nil, nil, cfg, "v1.0.0+0")
+	if want := 4*(7*time.Second+newHealth(nil, nil, cfg.Health).Timeout) + 15*time.Second; got.Settling != want {
+		t.Errorf("Settling = %s, want %s", got.Settling, want)
+	}
+	if got.MaxConcurrentRollouts != 2 || got.Revision != "v1.0.0+0" {
+		t.Errorf("MaxConcurrentRollouts = %d and Revision = %q, want 2 and v1.0.0+0", got.MaxConcurrentRollouts, got.Revision)
+	}
+}

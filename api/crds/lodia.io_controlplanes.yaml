@@ -1579,6 +1579,13 @@ spec:
                       longer than this field holds is not handled.
                     maxLength: 256
                     type: string
+                  settlingSince:
+                    description: |-
+                      SettlingSince is when Lifecycle first found the change it started in
+                      the tenant's slot of the fleet no longer rolling; the slot is kept for a
+                      settling time after it.
+                    format: date-time
+                    type: string
                 type: object
               nodes:
                 description: Nodes summarise the tenant's nodes.

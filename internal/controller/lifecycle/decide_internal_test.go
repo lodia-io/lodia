@@ -193,7 +193,7 @@ func check(t *testing.T, f facts, w want) {
 
 func progressingStatus(reason string) metav1.ConditionStatus {
 	switch reason {
-	case lodiav1alpha1.ReasonUpgrading, lodiav1alpha1.ReasonRollingOut, lodiav1alpha1.ReasonLatestGenerationNotObserved:
+	case lodiav1alpha1.ReasonUpgrading, lodiav1alpha1.ReasonRollingOut, lodiav1alpha1.ReasonLatestGenerationNotObserved, lodiav1alpha1.ReasonMaintaining:
 		return metav1.ConditionTrue
 	}
 	return metav1.ConditionFalse
@@ -512,6 +512,7 @@ func adopt(cp *lodiav1alpha1.ControlPlane, d decision) {
 	cp.Status.ObservedGeneration = d.status.ObservedGeneration
 	cp.Status.Target = d.status.Target
 	cp.Status.Kubernetes = d.status.Kubernetes
+	cp.Status.Maintenance = d.status.Maintenance
 	for _, c := range d.status.Conditions {
 		meta.SetStatusCondition(&cp.Status.Conditions, c)
 	}
@@ -530,7 +531,7 @@ func TestDecideWritesTheRunningRevision(t *testing.T) {
 			&lodiav1alpha1.Target{Version: "v1.37.1", OperatorRevision: revisionA}, true},
 		{"a pass that finds it granted writes nothing", steady, revisionA, revisionA,
 			&lodiav1alpha1.Target{Version: "v1.37.1", OperatorRevision: revisionA}, false},
-		{"a new release replaces its predecessor's", steady, revisionA, revisionB,
+		{"a new release replaces its predecessor's in a slot of the fleet", steady, revisionA, revisionB,
 			&lodiav1alpha1.Target{Version: "v1.37.1", OperatorRevision: revisionB}, true},
 		{"a rollback is one more revision", steady, revisionB, revisionA,
 			&lodiav1alpha1.Target{Version: "v1.37.1", OperatorRevision: revisionA}, true},
@@ -549,6 +550,7 @@ func TestDecideWritesTheRunningRevision(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := c.w.facts()
+			f.limit = 5
 			if c.was != "" {
 				f.revision = c.was
 				adopt(f.cp, decide(f))

@@ -177,7 +177,7 @@ The labels, annotations and the finalizer they share are defined in `api/v1alpha
 | annotation `lodia.io/etcd-reconcile-requested` | the `Etcd` | Datastore: `<generation>/<operator revision>/<run ID>` of its last request that etcd-druid reconcile the `Etcd`, written with that request, the run ID being that of etcd-druid's `status.lastOperation` | Datastore, which asks again until etcd-druid has served the request for the `Etcd`'s generation and `lodia.io/operator-revision` |
 | annotation `lodia.io/data-hash` | every Secret PKI writes | PKI: `DataHash` of the Secret's data, a SHA-256 that changes whenever the data does | Workloads, for the restart hashes of its pod templates |
 | annotation `lodia.io/operation` | a `ControlPlane` | the platform | Lifecycle and PKI, with rotations in phase 3 |
-| annotation `lodia.io/maintain-requested-at` | a `ControlPlane` | the platform: a new value asks for the pending maintenance now | Lifecycle, from phase 2's wave 2, which grants it outside the window, once per value, and records the value in `status.maintenance.lastHandled` |
+| annotation `lodia.io/maintain-requested-at` | a `ControlPlane` | the platform: a new value asks for the pending maintenance now | Lifecycle, which grants it outside the window, once per value, and records the value in `status.maintenance.lastHandled` |
 | annotation `lodia.io/operator-revision` | the Deployments Workloads renders and the `Etcd` the Datastore controller renders, never a pod template | Workloads and the Datastore controller: the operator revision the object was rendered with | each writer, which reports the revision in `status` once the object has rolled out |
 | annotation `lodia.io/sealed-uid` | a `Backup` | the backup reconciler of the Datastore controller: the `Backup`'s UID, once it is `Completed` | the backup reconciler, which never seals a `Backup` that carries it under another UID or without its `Completed` status (`SealLost`, [restore-replaces-the-source](decisions/restore-replaces-the-source.md)) |
 | finalizer `lodia.io/datastore` | a `ControlPlane` | Datastore | the API server, which deletes the `ControlPlane` once it is gone |
@@ -378,11 +378,12 @@ A tenant that stops answering leaves a True `AddonsApplied` as it was.
 
 ## Lifecycle
 
-Built so far: the version steps below, a minor at a time through a preflight and a `Backup`, `status.kubernetes`, `Progressing` and `Ready`, as [`api/controlplane.md`](api/controlplane.md#status) defines them.
+Built so far: the version steps below, a minor at a time through a preflight and a `Backup`, the grant of a new operator revision in each tenant's window within the fleet limit, `status.kubernetes`, `Progressing` and `Ready`, as [`api/controlplane.md`](api/controlplane.md#status) defines them.
 
 ### Upgrades and windows
 
-One minor at a time, in the order the version skew policy allows ([decision](decisions/upgrades-and-maintenance-windows.md)); from phase 2's wave 2 changes Lodia initiates roll in each tenant's window, within the fleet limit.
+One minor at a time, in the order the version skew policy allows ([decision](decisions/upgrades-and-maintenance-windows.md)).
+Changes Lodia initiates, a new operator revision today, roll in each tenant's window, within the fleet limit, each keeping its slot for a settling time once it has rolled out, and at once on an edit of the tenant's spec or a new `lodia.io/maintain-requested-at` ([the rules](decisions/upgrades-and-maintenance-windows.md#decision)).
 
 ```mermaid
 flowchart LR
@@ -513,7 +514,7 @@ The chart installs:
   It gets etcd-druid's Deployment, `etcd-druid` or `etcdDruidDeployment`, as `--etcd-druid-deployment`, and waits for it to run that version in every replica before it asks etcd-druid to reconcile an `Etcd` under a new revision ([A tenant namespace](#a-tenant-namespace)).
   etcd-druid's CRDs are in its chart's `crds/` directory, which Helm applies only when it installs a release, skipping a CRD that exists, and never on an upgrade ([install.go](https://github.com/helm/helm/blob/v4.3.1/pkg/action/install.go#L206-L218), [install.go](https://github.com/helm/helm/blob/v4.3.1/pkg/action/install.go#L329-L338));
 - the operator: two replicas with leader election on the Lease `lodia.io` in the release namespace, spread across nodes by hostname, at `system-cluster-critical` priority, with a securityContext that passes Pod Security `restricted` (the release namespace cannot enforce it while `etcdDruid.enabled`: etcd-druid's pod sets only `allowPrivilegeEscalation: false`, [deployment.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/charts/templates/deployment.yaml#L112-L113)), liveness and readiness probes on port 8081, the metrics endpoint on 8443 behind controller-runtime's authentication and authorization filter, and a PodDisruptionBudget with `maxUnavailable: 1` and `unhealthyPodEvictionPolicy: AlwaysAllow`;
-- its configuration: the ConfigMap `<release>-config` renders the `health` values, with the keys and defaults of the table below, as `config.yaml`; the operator mounts it at `/etc/lodia` and reads it as `--config`, and a `checksum/config` annotation on its pods rolls it when a value changes;
+- its configuration: the ConfigMap `<release>-config` renders the `health` and `fleet` values, with the keys and defaults of the table below, as `config.yaml`; the operator mounts it at `/etc/lodia` and reads it as `--config`, and a `checksum/config` annotation on its pods rolls it when a value changes;
 - its RBAC: a ClusterRole per controller from [`charts/lodia/files/rbac/`](../charts/lodia/files/rbac/) ([Identity and tenancy](#identity-and-tenancy)), the ClusterRole the metrics filter needs (`create` on TokenReviews and SubjectAccessReviews), a Role in the release namespace for the Lease and events, and a Role in etcd-druid's namespace with `get` on etcd-druid's Deployment alone;
 - the ValidatingAdmissionPolicy `kubeconfigrequests.lodia.io` and its binding of the same name from [`charts/lodia/files/policies/`](../charts/lodia/files/policies/), which decide who may ask for a kubeconfig ([short-lived-kubeconfigs](decisions/short-lived-kubeconfigs.md)); they keep their names in every release and stay with `crds.enabled=false`.
 
@@ -533,6 +534,7 @@ A key outside the first table, or a missing file, stops the operator from starti
 | `health.period` | how often Health probes each control plane and reads its leases | 5s |
 | `health.failuresBeforeFalse` | failed passes in a row that turn `Reachable` False | 3 |
 | `health.silentAfter`, `health.holdFraction`, `health.releaseAfter` | when a node counts as silent, the share of silent nodes that starts the hold, how long the nodes must be back before it ends; the operator refuses to start when they break the margin of [controller-manager-hold](decisions/controller-manager-hold.md) | 20s, 0.6, 2m |
+| `fleet.maxConcurrentRollouts` | tenants that hold a slot of the fleet at once, rolling a change Lodia started or failed in it; at least 1, or the operator refuses to start ([upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md)) | 5 |
 
 The keys below are owed: nothing reads them yet, and the operator refuses to start with one until the feature that reads it is built.
 
@@ -541,7 +543,6 @@ The keys below are owed: nothing reads them yet, and the operator refuses to sta
 | `versions` | the Kubernetes versions Lodia runs and, per minor, the images of kube-apiserver, controller manager, scheduler, kube-proxy, CoreDNS, konnectivity, etcd, the `latest` patch, which patch updates move to, and the end-of-support date | the table shipped with the release |
 | `registry` | a mirror prefix for every image, for air-gapped sites | `registry.k8s.io` |
 | `controllers.<name>.workers` | concurrent reconciles per controller | 10, and 100 for `health-nodes` |
-| `fleet.maxConcurrentRollouts` | tenants rolling a change Lodia started at once ([upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md)) | 5 |
 | `tenant.applyInterval` | the inventory re-apply period | 10m |
 | `pki.leafLifetime`, `pki.caLifetime`, `pki.trustAnchorLifetime` | leaf certificates, the kubelet signer and the request CA; every other CA but the cluster CA; the cluster CA ([staged-credential-rotation](decisions/staged-credential-rotation.md)) | 1 year, 5 years, 10 years |
 | `kubeconfigRequests.maxExpiration` | the longest a `KubeconfigRequest`'s certificate lives, at most the schema's 24 h ([fields](api/controlplane.md#kubeconfigrequest)) | 24h |

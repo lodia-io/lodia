@@ -19,20 +19,28 @@ import (
 )
 
 // facts is everything a pass decides from. backup is the pre-upgrade Backup of
-// the minor step cp is at, by backupMinor: nil while it does not exist.
+// the minor step cp is at, by backupMinor: nil while it does not exist. fleet
+// holds the other tenants that hold a slot of the fleet or wait for one, read
+// only while a change is pending; limit is how many may hold one, and settling
+// how long a change Lodia started keeps its slot once it has rolled out.
 type facts struct {
 	cp       *lodiav1alpha1.ControlPlane
 	backup   *lodiav1alpha1.Backup
 	now      time.Time
 	revision string
+	fleet    []member
+	limit    int
+	settling time.Duration
 }
 
 // decision holds every status field Lifecycle owns and no other, since an
-// apply that leaves one out removes it, and the name of the pre-upgrade Backup
-// to create.
+// apply that leaves one out removes it, the name of the pre-upgrade Backup to
+// create, when to pass again, and whether the write takes a slot of the fleet.
 type decision struct {
 	status       lodiav1alpha1.ControlPlaneStatus
 	createBackup string
+	requeue      time.Duration
+	takesSlot    bool
 }
 
 // fieldsDiffer says whether a status field Lifecycle owns, the conditions
@@ -40,7 +48,8 @@ type decision struct {
 func (d decision) fieldsDiffer(cp *lodiav1alpha1.ControlPlane) bool {
 	return d.status.ObservedGeneration != cp.Status.ObservedGeneration ||
 		!equality.Semantic.DeepEqual(d.status.Target, cp.Status.Target) ||
-		!equality.Semantic.DeepEqual(d.status.Kubernetes, cp.Status.Kubernetes)
+		!equality.Semantic.DeepEqual(d.status.Kubernetes, cp.Status.Kubernetes) ||
+		!equality.Semantic.DeepEqual(d.status.Maintenance, cp.Status.Maintenance)
 }
 
 // differs says whether writing the decision would change cp.
@@ -69,36 +78,55 @@ func decide(f facts) decision {
 	cp := f.cp
 	progressing := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionProgressing)
 	readyNow := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionReady)
-	observedGeneration := cp.Status.ObservedGeneration
-	c := change{target: targetOf(cp), upgrade: upgradeOf(cp)}
-	revision := revisionOf(cp)
+	status := lodiav1alpha1.ControlPlaneStatus{
+		ObservedGeneration: cp.Status.ObservedGeneration,
+		Target:             newTarget(targetOf(cp), revisionOf(cp), scheduledOf(cp)),
+		Maintenance:        newMaintenance(lastHandledOf(cp), settlingOf(cp)),
+	}
+	upgrade := upgradeOf(cp)
+	var d decision
 	switch {
 	case !cp.DeletionTimestamp.IsZero():
 		readyNow = newCondition(cp, lodiav1alpha1.ConditionReady, metav1.ConditionFalse, lodiav1alpha1.ReasonDeleting, "the ControlPlane is being deleted")
 	case cp.Spec.Paused:
 		progressing = newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonPaused, "spec.paused is true: Lodia reconciles nothing")
 	default:
-		c = f.versionChange()
-		revision = f.revision
-		progressing = c.progressing(f)
+		c := f.versionChange()
 		readyNow = ready(cp)
+		m := f.maintain(c, readyNow)
+		progressing = c.progressing(f, m)
 		if observed(cp) {
-			observedGeneration = cp.Generation
+			status.ObservedGeneration = cp.Generation
 		}
+		status.Target = newTarget(c.target, m.revision, m.scheduledFor)
+		status.Maintenance = newMaintenance(m.lastHandled, m.settlingSince)
+		upgrade = c.upgrade
+		d.createBackup, d.requeue, d.takesSlot = c.createBackup, m.requeue, m.takesSlot
 	}
-	status := lodiav1alpha1.ControlPlaneStatus{ObservedGeneration: observedGeneration}
-	if c.target != "" || revision != "" {
-		status.Target = &lodiav1alpha1.Target{Version: c.target, OperatorRevision: revision}
-	}
-	if reported := oldestReported(cp); reported != "" || c.upgrade != nil {
-		status.Kubernetes = &lodiav1alpha1.KubernetesStatus{Version: reported, Upgrade: c.upgrade}
+	if reported := oldestReported(cp); reported != "" || upgrade != nil {
+		status.Kubernetes = &lodiav1alpha1.KubernetesStatus{Version: reported, Upgrade: upgrade}
 	}
 	for _, condition := range []*metav1.Condition{progressing, readyNow} {
 		if condition != nil {
 			status.Conditions = append(status.Conditions, *condition)
 		}
 	}
-	return decision{status: status, createBackup: c.createBackup}
+	d.status = status
+	return d
+}
+
+func newTarget(version, revision string, scheduledFor *metav1.Time) *lodiav1alpha1.Target {
+	if version == "" && revision == "" && scheduledFor == nil {
+		return nil
+	}
+	return &lodiav1alpha1.Target{Version: version, OperatorRevision: revision, ScheduledFor: scheduledFor}
+}
+
+func newMaintenance(lastHandled string, settlingSince *metav1.Time) *lodiav1alpha1.MaintenanceStatus {
+	if lastHandled == "" && settlingSince == nil {
+		return nil
+	}
+	return &lodiav1alpha1.MaintenanceStatus{LastHandled: lastHandled, SettlingSince: settlingSince}
 }
 
 func targetOf(cp *lodiav1alpha1.ControlPlane) string {
@@ -113,6 +141,27 @@ func revisionOf(cp *lodiav1alpha1.ControlPlane) string {
 		return cp.Status.Target.OperatorRevision
 	}
 	return ""
+}
+
+func scheduledOf(cp *lodiav1alpha1.ControlPlane) *metav1.Time {
+	if cp.Status.Target != nil {
+		return cp.Status.Target.ScheduledFor
+	}
+	return nil
+}
+
+func lastHandledOf(cp *lodiav1alpha1.ControlPlane) string {
+	if cp.Status.Maintenance != nil {
+		return cp.Status.Maintenance.LastHandled
+	}
+	return ""
+}
+
+func settlingOf(cp *lodiav1alpha1.ControlPlane) *metav1.Time {
+	if cp.Status.Maintenance != nil {
+		return cp.Status.Maintenance.SettlingSince
+	}
+	return nil
 }
 
 func upgradeOf(cp *lodiav1alpha1.ControlPlane) *lodiav1alpha1.UpgradeStatus {
@@ -373,11 +422,28 @@ var upgradeFailures = []string{
 }
 
 // failure is why a version change under way has stopped, empty while it has
-// not: with no upgrade a refusal is Ready's to report.
+// not.
 func (c change) failure(cp *lodiav1alpha1.ControlPlane) string {
 	if c.upgrade == nil {
 		return ""
 	}
+	return c.cause(cp)
+}
+
+// failed is why a change its owner started has stopped: a cause while an
+// upgrade exists or a renderer has not reached the granted revision, so that
+// an idle tenant's standing refusal is Ready's to report, and an owner's or a
+// token's grant of a revision that is refused is not.
+func (c change) failed(f facts, granted string) string {
+	if c.upgrade == nil && len(behind(f.cp, granted, f.revision)) == 0 {
+		return ""
+	}
+	return c.cause(f.cp)
+}
+
+// cause is the first condition Ready is built from that stops a change, or
+// the pre-upgrade Backup's failure.
+func (c change) cause(cp *lodiav1alpha1.ControlPlane) string {
 	if c.backupFailed != "" {
 		return c.backupFailed
 	}
@@ -390,37 +456,64 @@ func (c change) failure(cp *lodiav1alpha1.ControlPlane) string {
 	return ""
 }
 
+// rolling names what keeps a change rolling: a component or an etcd member
+// not updated, a part not at the target, and a renderer that has not reached
+// the granted revision.
+func (c change) rolling(f facts, granted string) []string {
+	return slices.Concat(rollingOut(f.cp), notAtTarget(f.cp, c.target), behind(f.cp, granted, f.revision))
+}
+
 // progressing writes the first of Progressing's reasons that applies, in the
-// order docs/api/controlplane.md gives; MaintenanceFailed, TimeZoneUnsupported
-// and the reasons of the maintenance window take their places here with the
-// wave that writes them.
-func (c change) progressing(f facts) *metav1.Condition {
+// order docs/api/controlplane.md gives, and m's note after its message.
+func (c change) progressing(f facts, m maintenance) *metav1.Condition {
+	condition := c.reason(f, m)
+	if m.note != "" {
+		condition.Message += "; " + m.note
+	}
+	return condition
+}
+
+func (c change) reason(f facts, m maintenance) *metav1.Condition {
 	cp := f.cp
-	if c.unsupported != "" {
-		return newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, c.unsupported)
+	progressing := func(status metav1.ConditionStatus, reason, message string) *metav1.Condition {
+		return newCondition(cp, lodiav1alpha1.ConditionProgressing, status, reason, message)
 	}
-	if why := c.failure(cp); why != "" {
-		return newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonFailed, why)
+	switch {
+	case c.unsupported != "":
+		return progressing(metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, c.unsupported)
+	case m.unsupported != "":
+		return progressing(metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, m.unsupported)
 	}
-	if c.preflight != nil {
+	if why := c.failed(f, m.revision); why != "" && !m.slot {
+		return progressing(metav1.ConditionFalse, lodiav1alpha1.ReasonFailed, why)
+	}
+	switch {
+	case m.failed != "":
+		return progressing(metav1.ConditionFalse, lodiav1alpha1.ReasonMaintenanceFailed, m.failed)
+	case m.zone != "":
+		return progressing(metav1.ConditionFalse, lodiav1alpha1.ReasonTimeZoneUnsupported, m.zone)
+	case m.maintaining != "":
+		return progressing(metav1.ConditionTrue, lodiav1alpha1.ReasonMaintaining, m.maintaining)
+	case c.preflight != nil:
 		return c.preflight
 	}
 	if lag := lagging(cp); len(lag) > 0 {
-		return newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionTrue, lodiav1alpha1.ReasonLatestGenerationNotObserved,
-			fmt.Sprintf("generation %d is not taken up yet: %s", cp.Generation, strings.Join(lag, ", ")))
+		return progressing(metav1.ConditionTrue, lodiav1alpha1.ReasonLatestGenerationNotObserved, fmt.Sprintf("generation %d is not taken up yet: %s", cp.Generation, strings.Join(lag, ", ")))
 	}
-	rolling := append(rollingOut(cp), notAtTarget(cp, c.target)...)
-	if c.upgrade != nil {
-		return newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionTrue, lodiav1alpha1.ReasonUpgrading, c.upgradingMessage(f, rolling))
-	}
-	if len(rolling) > 0 {
+	rolling := c.rolling(f, m.revision)
+	switch {
+	case c.upgrade != nil:
+		return progressing(metav1.ConditionTrue, lodiav1alpha1.ReasonUpgrading, c.upgradingMessage(f, rolling))
+	case len(rolling) > 0:
 		message := strings.Join(rolling, "; ")
 		if c.waits != "" {
 			message = c.waits + ": " + message
 		}
-		return newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionTrue, lodiav1alpha1.ReasonRollingOut, message)
+		return progressing(metav1.ConditionTrue, lodiav1alpha1.ReasonRollingOut, message)
+	case m.waiting != nil:
+		return m.waiting
 	}
-	return newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonIdle, "no upgrade, rotation or hibernation is running")
+	return progressing(metav1.ConditionFalse, lodiav1alpha1.ReasonIdle, "no upgrade, rotation or hibernation is running")
 }
 
 func (c change) upgradingMessage(f facts, rolling []string) string {
