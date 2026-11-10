@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -338,6 +339,59 @@ func TestAHeldCreateTheTenantRefusesIsRefusedAndTheNextPassFinishesIt(t *testing
 		t.Errorf("the next held pass wrote the ConfigMap the refused pass created: resourceVersion %s, then %s", created.ResourceVersion, got)
 	}
 	expectAt(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, applied.ObservedGeneration)
+}
+
+func TestAHeldCreateTheTenantFailsWithoutARefusalChangesNothing(t *testing.T) {
+	ctx := t.Context()
+	cp, admin := heldTenant(t, "tenant-held-create-fails")
+	applied, available := *condition(t, cp, lodiav1alpha1.ConditionAddonsApplied), *condition(t, cp, lodiav1alpha1.ConditionAddonsAvailable)
+	deleteObject(t, admin, "Deployment kube-system/coredns")
+	if err := admin.Create(ctx, &admissionregistrationv1.ValidatingWebhookConfiguration{
+		ObjectMeta: metav1.ObjectMeta{Name: "unreachable"},
+		Webhooks: []admissionregistrationv1.ValidatingWebhook{{
+			Name:         "unreachable.example.test",
+			ClientConfig: admissionregistrationv1.WebhookClientConfig{URL: new("https://127.0.0.1:1/")},
+			Rules: []admissionregistrationv1.RuleWithOperations{{
+				Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create},
+				Rule:       admissionregistrationv1.Rule{APIGroups: []string{appsv1.GroupName}, APIVersions: []string{"v1"}, Resources: []string{"deployments"}},
+			}},
+			FailurePolicy:           new(admissionregistrationv1.Fail),
+			SideEffects:             new(admissionregistrationv1.SideEffectClassNone),
+			AdmissionReviewVersions: []string{"v1"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	testenv.Eventually(t, func() error {
+		err := admin.Create(ctx, &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "probe"},
+			Spec: appsv1.DeploymentSpec{
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "probe"}},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "probe"}},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "probe", Image: "probe"}}},
+				},
+			},
+		}, client.DryRunAll)
+		if !apierrors.IsInternalError(err) {
+			return fmt.Errorf("a Deployment's create returned %v, want the webhook's failure", err)
+		}
+		return nil
+	})
+	refresh(t, cp)
+	written := cp.ResourceVersion
+
+	if err := passWith(t, runningOperator(), cp); !apierrors.IsInternalError(err) {
+		t.Errorf("a held pass whose create the tenant fails without a refusal returned %v, want the failure", err)
+	}
+	expectSame(t, cp, applied)
+	expectSame(t, cp, available)
+	if cp.ResourceVersion != written {
+		t.Errorf("a held pass whose create failed without a refusal wrote the ControlPlane: resourceVersion %s, then %s", written, cp.ResourceVersion)
+	}
+	if exists(t, admin, "Deployment kube-system/coredns") {
+		t.Error("the Deployment exists although its create failed")
+	}
 }
 
 func TestAHeldPassKeepsAddonsAppliedUnlessAWaitCoversWhatRuns(t *testing.T) {
