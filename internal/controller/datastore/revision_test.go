@@ -82,7 +82,12 @@ func mustPass(t *testing.T, r *datastore.Reconciler, ns, name string) ctrl.Resul
 
 func druidRuns(t *testing.T, ns, cp, run string, state druidapicommon.LastOperationState) {
 	t.Helper()
-	last, err := json.Marshal(druidapicommon.LastOperation{RunID: run, Type: druidv1alpha1.LastOperationTypeReconcile, State: state, Description: "etcd-druid's stand-in", LastUpdateTime: metav1.Now()})
+	druidRunsAt(t, ns, cp, run, state, time.Now())
+}
+
+func druidRunsAt(t *testing.T, ns, cp, run string, state druidapicommon.LastOperationState, at time.Time) {
+	t.Helper()
+	last, err := json.Marshal(druidapicommon.LastOperation{RunID: run, Type: druidv1alpha1.LastOperationTypeReconcile, State: state, Description: "etcd-druid's stand-in", LastUpdateTime: metav1.NewTime(at)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1138,9 +1143,9 @@ func TestARequestConsumedByAReconcileThatStartedBeforeItIsAskedAgain(t *testing.
 	}
 }
 
-func TestARequestIsNotAskedAgainWhileAReconcileThatStartedAfterItRuns(t *testing.T) {
+func servedRequest(t *testing.T, cp string) (string, *datastore.Reconciler, string, string) {
+	t.Helper()
 	ns := namespace(t)
-	const cp = "in-flight"
 	createClass(t, newClass(cp, "Retain"))
 	heldTenant(t, ns, cp, cp, nil)
 	r := operatorAt(unpaused(k8s), previousRevision)
@@ -1151,15 +1156,25 @@ func TestARequestIsNotAskedAgainWhileAReconcileThatStartedAfterItRuns(t *testing
 		t.Fatal(err)
 	}
 	answer(t, ns, cp)
-	druidRuns(t, ns, cp, "back-to-back", druidv1alpha1.LastOperationStateProcessing)
-	for _, waiting := range []*datastore.Reconciler{r, ahead(r, 3*time.Minute-10*time.Second)} {
-		if result := mustPass(t, waiting, ns, cp); result.RequeueAfter != 15*time.Second {
-			t.Errorf("a pass while a reconcile that started after the request runs requeues after %s, want 15s", result.RequeueAfter)
-		}
-		if err := requestedAs(request, false)(getEtcd(t, ns, cp)); err != nil || recordedRun(t, ns, cp) != run {
-			t.Errorf("a pass while a reconcile that started after the request runs left run ID %q, want %q: %v", recordedRun(t, ns, cp), run, err)
-		}
+	return ns, r, request, run
+}
+
+func waits(t *testing.T, r *datastore.Reconciler, ns, cp, request, run string) {
+	t.Helper()
+	if result := mustPass(t, r, ns, cp); result.RequeueAfter != 15*time.Second {
+		t.Errorf("a pass while a reconcile that started after the request runs requeues after %s, want 15s", result.RequeueAfter)
 	}
+	if err := requestedAs(request, false)(getEtcd(t, ns, cp)); err != nil || recordedRun(t, ns, cp) != run {
+		t.Errorf("a pass while a reconcile that started after the request runs left run ID %q, want %q: %v", recordedRun(t, ns, cp), run, err)
+	}
+}
+
+func TestARequestIsNotAskedAgainWhileAReconcileThatStartedAfterItRuns(t *testing.T) {
+	const cp = "in-flight"
+	ns, r, request, run := servedRequest(t, cp)
+	druidRuns(t, ns, cp, "back-to-back", druidv1alpha1.LastOperationStateProcessing)
+	waits(t, r, ns, cp, request, run)
+	waits(t, ahead(r, 3*time.Minute-10*time.Second), ns, cp, request, run)
 	druidRuns(t, ns, cp, "back-to-back", druidv1alpha1.LastOperationStateSucceeded)
 	setEtcdStatus(t, ns, cp, nil)
 	if result := mustPass(t, r, ns, cp); result.RequeueAfter != 0 {
@@ -1168,6 +1183,66 @@ func TestARequestIsNotAskedAgainWhileAReconcileThatStartedAfterItRuns(t *testing
 	if err := requestedAs(request, false)(getEtcd(t, ns, cp)); err != nil || recordedRun(t, ns, cp) != run {
 		t.Errorf("a request served by the reconcile that ran left run ID %q, want %q: %v", recordedRun(t, ns, cp), run, err)
 	}
+}
+
+func TestTheWaitRunsOnTheOperatorsClock(t *testing.T) {
+	for _, c := range []struct {
+		cp   string
+		skew time.Duration
+	}{
+		{"druid-clock-ahead", 3 * time.Minute},
+		{"druid-clock-behind", -3 * time.Minute},
+	} {
+		t.Run(fmt.Sprintf("etcd-druid's lastUpdateTime off by %s", c.skew), func(t *testing.T) {
+			ns, r, request, run := servedRequest(t, c.cp)
+			druidRunsAt(t, ns, c.cp, "back-to-back", druidv1alpha1.LastOperationStateProcessing, time.Now().Add(c.skew))
+			waits(t, r, ns, c.cp, request, run)
+			waits(t, ahead(r, 3*time.Minute-10*time.Second), ns, c.cp, request, run)
+			asksAgain(t, ahead(r, 3*time.Minute+time.Second), ns, c.cp, request, "back-to-back")
+		})
+	}
+}
+
+func TestANewRunIDRestartsTheWait(t *testing.T) {
+	const cp = "new-run"
+	ns, r, request, run := servedRequest(t, cp)
+	druidRuns(t, ns, cp, "first", druidv1alpha1.LastOperationStateProcessing)
+	waits(t, r, ns, cp, request, run)
+	druidRuns(t, ns, cp, "second", druidv1alpha1.LastOperationStateProcessing)
+	waits(t, ahead(r, 2*time.Minute), ns, cp, request, run)
+	waits(t, ahead(r, 3*time.Minute+time.Second), ns, cp, request, run)
+	waits(t, ahead(r, 5*time.Minute-10*time.Second), ns, cp, request, run)
+	asksAgain(t, ahead(r, 5*time.Minute+time.Second), ns, cp, request, "second")
+}
+
+func TestTheWaitForgetsARunThatEnded(t *testing.T) {
+	const cp = "ended-run"
+	ns, r, request, run := servedRequest(t, cp)
+	druidRuns(t, ns, cp, "ended", druidv1alpha1.LastOperationStateProcessing)
+	waits(t, r, ns, cp, request, run)
+	druidRuns(t, ns, cp, "ended", druidv1alpha1.LastOperationStateSucceeded)
+	mustPass(t, r, ns, cp)
+	if err := requestedAs(request, false)(getEtcd(t, ns, cp)); err != nil || recordedRun(t, ns, cp) != run {
+		t.Fatalf("a request served by the reconcile that ran left run ID %q, want %q: %v", recordedRun(t, ns, cp), run, err)
+	}
+	druidRuns(t, ns, cp, "ended", druidv1alpha1.LastOperationStateProcessing)
+	waits(t, ahead(r, 3*time.Minute+time.Second), ns, cp, request, run)
+}
+
+func TestARestartedOperatorWaitsTheBoundFromItsOwnSighting(t *testing.T) {
+	const cp = "restarted"
+	ns, r, request, run := servedRequest(t, cp)
+	druidRuns(t, ns, cp, "stopped", druidv1alpha1.LastOperationStateProcessing)
+	waits(t, r, ns, cp, request, run)
+	restarted := operatorAt(unpaused(k8s), previousRevision)
+	start := time.Now().Add(3*time.Minute + time.Second)
+	now := clocktesting.NewFakePassiveClock(start)
+	restarted.Clock = now
+	waits(t, restarted, ns, cp, request, run)
+	now.SetTime(start.Add(3*time.Minute - 10*time.Second))
+	waits(t, restarted, ns, cp, request, run)
+	now.SetTime(start.Add(3*time.Minute + time.Second))
+	asksAgain(t, restarted, ns, cp, request, "stopped")
 }
 
 func TestAHeldPassAtANewGenerationReportsTheQuorumAtTheGenerationItDescribes(t *testing.T) {

@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
@@ -78,9 +79,21 @@ type Reconciler struct {
 	// EtcdClient connects to the etcd of an Etcd; the caller closes it.
 	EtcdClient func(ctx context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client, error)
 	// Clock spaces the full snapshots a restore asks for again, keeps a
-	// failed copy for a minute, and ends the wait on an etcd-druid reconcile
-	// that stopped writing.
+	// failed copy for a minute, and bounds the wait on an etcd-druid
+	// reconcile in flight.
 	Clock clock.PassiveClock
+	// sightings is, per Etcd, when this operator first saw its run Processing.
+	sightings map[client.ObjectKey]sighting
+}
+
+// sightingsMu guards the sightings of every Reconciler, which sighted makes
+// on first use: a Reconciler is a struct literal, and a copy shares its map
+// but would not share a lock of its own.
+var sightingsMu sync.Mutex
+
+type sighting struct {
+	run string
+	at  time.Time
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
@@ -158,6 +171,9 @@ func (r *Reconciler) controlPlanesUsing(ctx context.Context, class client.Object
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	cp := &lodiav1alpha1.ControlPlane{}
 	if err := r.Get(ctx, req.NamespacedName, cp); err != nil {
+		if apierrors.IsNotFound(err) {
+			r.forget(client.ObjectKey{Namespace: req.Namespace, Name: lodiav1alpha1.EtcdName(req.Name)})
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if cp.Spec.Paused {
@@ -550,7 +566,8 @@ func (r *Reconciler) applyEtcd(ctx context.Context, p *pass) (*outcome, error) {
 // its own render. A request the API server refuses comes back with etcd and
 // the error.
 func (r *Reconciler) requestReconcile(ctx context.Context, p *pass, etcd *druidv1alpha1.Etcd) (*druidv1alpha1.Etcd, error) {
-	if druidv1alpha1.HasReconcileOperationAnnotation(etcd.ObjectMeta) || served(etcd) || r.inFlight(etcd) {
+	// inFlight goes first: it records and drops the sightings.
+	if r.inFlight(etcd) || druidv1alpha1.HasReconcileOperationAnnotation(etcd.ObjectMeta) || served(etcd) {
 		return etcd, nil
 	}
 	recorded, ok := etcd.Annotations[lodiav1alpha1.EtcdReconcileRequestedAnnotation]
@@ -618,12 +635,39 @@ const specReconcileBound = 3 * time.Minute
 // than the recorded one, which started after the last request landed: a
 // request made meanwhile would record that run ID, which then removes the
 // annotation, and etcd-druid's next pass from its cache would repeat that. A
-// reconcile silent for specReconcileBound is one a stopped etcd-druid left.
+// reconcile seen in flight for specReconcileBound is one a stopped etcd-druid
+// left. The bound runs on the operator's clock from this operator's first
+// sight of that run: lastUpdateTime is etcd-druid's.
 func (r *Reconciler) inFlight(etcd *druidv1alpha1.Etcd) bool {
 	_, run, _ := cutLast(etcd.Annotations[lodiav1alpha1.EtcdReconcileRequestedAnnotation], "/")
-	last := etcd.Status.LastOperation
-	return last != nil && last.State == druidv1alpha1.LastOperationStateProcessing && last.RunID != run &&
-		r.Clock.Since(last.LastUpdateTime.Time) < specReconcileBound
+	seen, processing := r.sighted(etcd)
+	return processing && etcd.Status.LastOperation.RunID != run && r.Clock.Since(seen) < specReconcileBound
+}
+
+// sighted is when this operator first saw etcd Processing under its run ID,
+// and false while etcd is not Processing, whose sighting it drops.
+func (r *Reconciler) sighted(etcd *druidv1alpha1.Etcd) (time.Time, bool) {
+	sightingsMu.Lock()
+	defer sightingsMu.Unlock()
+	if r.sightings == nil {
+		r.sightings = map[client.ObjectKey]sighting{}
+	}
+	key, last := client.ObjectKeyFromObject(etcd), etcd.Status.LastOperation
+	if last == nil || last.State != druidv1alpha1.LastOperationStateProcessing {
+		delete(r.sightings, key)
+		return time.Time{}, false
+	}
+	if s, ok := r.sightings[key]; ok && s.run == last.RunID {
+		return s.at, true
+	}
+	r.sightings[key] = sighting{run: last.RunID, at: r.Clock.Now()}
+	return r.sightings[key].at, true
+}
+
+func (r *Reconciler) forget(key client.ObjectKey) {
+	sightingsMu.Lock()
+	defer sightingsMu.Unlock()
+	delete(r.sightings, key)
 }
 
 func cutLast(s, sep string) (string, string, bool) {
