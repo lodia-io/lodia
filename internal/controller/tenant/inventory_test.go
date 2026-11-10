@@ -6,6 +6,8 @@ package tenant
 import (
 	"slices"
 	"testing"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestAnObjectAtAnotherVersionIsNotStale(t *testing.T) {
@@ -19,5 +21,20 @@ func TestAnObjectAtAnotherVersionIsNotStale(t *testing.T) {
 	}
 	if got := union(desired, previous); len(got) != 2 || got[1].Version != "v1" {
 		t.Errorf("the union keeps %v, want the desired version of kube-proxy", got)
+	}
+}
+
+func TestAnotherOwnersObjectIsNamedWithItsFieldManagers(t *testing.T) {
+	obj := &metav1.ObjectMeta{ManagedFields: []metav1.ManagedFieldsEntry{
+		{Manager: "kubectl", Operation: metav1.ManagedFieldsOperationApply},
+		{Manager: "helm", Operation: metav1.ManagedFieldsOperationUpdate},
+		{Operation: metav1.ManagedFieldsOperationUpdate},
+		{Manager: "kubectl", Operation: metav1.ManagedFieldsOperationUpdate},
+	}}
+	if got, want := (foreignObject{managers: fieldManagers(obj)}).owners(), "its field managers are helm, kubectl"; got != want {
+		t.Errorf("an object with field managers is named %q, want %q", got, want)
+	}
+	if got, want := (foreignObject{managers: fieldManagers(&metav1.ObjectMeta{})}).owners(), "it has no field manager"; got != want {
+		t.Errorf("an object without a field manager is named %q, want %q", got, want)
 	}
 }

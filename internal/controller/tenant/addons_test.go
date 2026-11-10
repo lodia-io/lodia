@@ -18,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	corev1ac "k8s.io/client-go/applyconfigurations/core/v1"
 	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -203,7 +204,15 @@ func TestAPassThatDidNotApplyInFullKeepsTheAddonsVersion(t *testing.T) {
 			return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
 		})
 		foreign := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "coredns"}, Data: map[string]string{"Corefile": ".:53 { forward . 9.9.9.9 }"}}
-		if err := admin.Create(t.Context(), foreign); err != nil {
+		if err := admin.Create(t.Context(), foreign, client.FieldOwner("helm")); err != nil {
+			t.Fatal(err)
+		}
+		if err := admin.Apply(t.Context(), corev1ac.ConfigMap(foreign.Name, foreign.Namespace).WithLabels(map[string]string{"edited": "applied"}), client.FieldOwner("kubectl")); err != nil {
+			t.Fatal(err)
+		}
+		edit := client.MergeFrom(foreign.DeepCopy())
+		foreign.Annotations = map[string]string{"edited": "updated"}
+		if err := admin.Patch(t.Context(), foreign, edit, client.FieldOwner("kubectl")); err != nil {
 			t.Fatal(err)
 		}
 		setCoreDNS(t, cp, true)
@@ -219,8 +228,8 @@ func TestAPassThatDidNotApplyInFullKeepsTheAddonsVersion(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !appliedWith(made, lodiav1alpha1.ReasonObjectsControlledElsewhere, "ConfigMap kube-system/coredns exists and is not Lodia's") {
-			t.Fatalf("the pass applied %+v, want AddonsApplied Applying for the other owner's object", made)
+		if !appliedWith(made, lodiav1alpha1.ReasonObjectsControlledElsewhere, "ConfigMap kube-system/coredns exists and is not Lodia's: its field managers are helm, kubectl; delete it or disable the addon") {
+			t.Fatalf("the pass applied %+v, want AddonsApplied ObjectsControlledElsewhere naming the object and its field managers", made)
 		}
 		expectAddons(t, made, older, previous)
 		if got := storedAddons(t, cp); got != older {

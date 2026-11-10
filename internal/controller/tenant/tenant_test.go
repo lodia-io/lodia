@@ -468,12 +468,12 @@ func TestAnotherOwnersObjectStaysReportedThoughTheRolloutReadFails(t *testing.T)
 			},
 		},
 	} {
-		if err := admin.Create(ctx, obj); err != nil {
+		if err := admin.Create(ctx, obj, client.FieldOwner("kubectl-create")); err != nil {
 			t.Fatal(err)
 		}
 	}
 	setCoreDNS(t, cp, true)
-	const others = "ConfigMap kube-system/coredns exists and is not Lodia's; delete it or disable the addon"
+	const others = "ConfigMap kube-system/coredns exists and is not Lodia's: its field managers are kubectl-create; delete it or disable the addon"
 	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere)
 	})
@@ -1175,7 +1175,7 @@ func TestAnotherOwnersObjectsAreNeitherAdoptedNorPruned(t *testing.T) {
 			},
 		},
 	} {
-		if err := admin.Create(ctx, obj); err != nil {
+		if err := admin.Create(ctx, obj, client.FieldOwner("kubectl-create")); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1185,7 +1185,7 @@ func TestAnotherOwnersObjectsAreNeitherAdoptedNorPruned(t *testing.T) {
 		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere); err != nil {
 			return err
 		}
-		if c := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied); c.Message != "ConfigMap kube-system/coredns exists and is not Lodia's; delete it or disable the addon" {
+		if c := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied); c.Message != "ConfigMap kube-system/coredns exists and is not Lodia's: its field managers are kubectl-create; delete it or disable the addon" {
 			return fmt.Errorf("AddonsApplied says %q", c.Message)
 		}
 		return nil
