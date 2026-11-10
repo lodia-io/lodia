@@ -155,7 +155,7 @@ func (r *Reconciler) gather(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 		if err := fleet.List(ctx, list, client.UnsafeDisableDeepCopy); err != nil {
 			return f, err
 		}
-		f.fleet = fleetOf(list.Items, cp)
+		f.fleet = fleetOf(list.Items, cp, f.now)
 	}
 	minor := backupMinor(cp)
 	if minor == "" {

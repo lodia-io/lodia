@@ -177,7 +177,7 @@ func idle(namespace string) func(*lodiav1alpha1.ControlPlane) {
 	return func(cp *lodiav1alpha1.ControlPlane) {
 		if cp.Namespace == namespace {
 			meta.SetStatusCondition(&cp.Status.Conditions, metav1.Condition{Type: lodiav1alpha1.ConditionProgressing, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonIdle})
-			cp.Status.Maintenance = nil
+			cp.Status.Target.ScheduledFor, cp.Status.Maintenance = nil, nil
 		}
 	}
 }

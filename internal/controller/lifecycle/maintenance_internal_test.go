@@ -345,38 +345,58 @@ func TestTheQueueForASlot(t *testing.T) {
 	})
 }
 
-func TestTheFleetCountsOthersNotBeingDeleted(t *testing.T) {
+func TestTheFleetCountsOthersNotPausedOrBeingDeleted(t *testing.T) {
 	cp := world{spec: "v1.37.1"}.controlPlane()
-	tenant := func(namespace, name, reason string, slot int64, deleting bool) lodiav1alpha1.ControlPlane {
-		other := lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name, Generation: 2}}
-		if reason != "" {
-			other.Status.Conditions = []metav1.Condition{{Type: lodiav1alpha1.ConditionProgressing, Reason: reason, ObservedGeneration: 2}}
-		}
-		if slot != 0 {
-			other.Status.Maintenance = &lodiav1alpha1.MaintenanceStatus{SlotGeneration: slot}
-		}
-		if deleting {
-			other.DeletionTimestamp = &started
-		}
-		return other
+	type other struct {
+		name, reason     string
+		slot             int64
+		scheduledFor     time.Time
+		paused, deleting bool
 	}
-	got := fleetOf([]lodiav1alpha1.ControlPlane{
-		tenant("team", "dev", lodiav1alpha1.ReasonMaintaining, 2, false),
-		tenant("a", "maintaining", lodiav1alpha1.ReasonMaintaining, 2, false),
-		tenant("a", "failed", lodiav1alpha1.ReasonMaintenanceFailed, 2, false),
-		tenant("a", "zone", lodiav1alpha1.ReasonTimeZoneUnsupported, 2, false),
-		tenant("a", "edited", lodiav1alpha1.ReasonMaintaining, 1, false),
-		tenant("a", "queued", lodiav1alpha1.ReasonFleetLimit, 0, false),
-		tenant("a", "deleted", lodiav1alpha1.ReasonMaintaining, 2, true),
-		tenant("a", "idle", lodiav1alpha1.ReasonIdle, 0, false),
-		tenant("a", "new", "", 0, false),
-	}, cp)
+	tenant := func(o other) lodiav1alpha1.ControlPlane {
+		c := lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Namespace: "a", Name: o.name, Generation: 2}, Spec: lodiav1alpha1.ControlPlaneSpec{Paused: o.paused}}
+		if o.name == "dev" {
+			c.Namespace = "team"
+		}
+		if o.reason != "" {
+			c.Status.Conditions = []metav1.Condition{{Type: lodiav1alpha1.ConditionProgressing, Reason: o.reason, ObservedGeneration: 2}}
+		}
+		if o.slot != 0 {
+			c.Status.Maintenance = &lodiav1alpha1.MaintenanceStatus{SlotGeneration: o.slot}
+		}
+		if !o.scheduledFor.IsZero() {
+			c.Status.Target = &lodiav1alpha1.Target{ScheduledFor: &metav1.Time{Time: o.scheduledFor}}
+		}
+		if o.deleting {
+			c.DeletionTimestamp = &started
+		}
+		return c
+	}
+	var cps []lodiav1alpha1.ControlPlane
+	for _, o := range []other{
+		{name: "dev", reason: lodiav1alpha1.ReasonMaintaining, slot: 2},
+		{name: "maintaining", reason: lodiav1alpha1.ReasonMaintaining, slot: 2},
+		{name: "failed", reason: lodiav1alpha1.ReasonMaintenanceFailed, slot: 2},
+		{name: "zone", reason: lodiav1alpha1.ReasonTimeZoneUnsupported, slot: 2},
+		{name: "edited", reason: lodiav1alpha1.ReasonMaintaining, slot: 1},
+		{name: "queued", reason: lodiav1alpha1.ReasonFleetLimit, scheduledFor: present.Add(-time.Minute)},
+		{name: "rolling", reason: lodiav1alpha1.ReasonRollingOut, scheduledFor: present.Add(-time.Minute)},
+		{name: "opening", reason: lodiav1alpha1.ReasonWaitingForWindow, scheduledFor: present},
+		{name: "later", reason: lodiav1alpha1.ReasonWaitingForWindow, scheduledFor: present.Add(time.Second)},
+		{name: "paused", reason: lodiav1alpha1.ReasonPaused, scheduledFor: present.Add(-time.Minute), paused: true},
+		{name: "deleted", reason: lodiav1alpha1.ReasonMaintaining, slot: 2, deleting: true},
+		{name: "deleted-queued", reason: lodiav1alpha1.ReasonFleetLimit, scheduledFor: present.Add(-time.Minute), deleting: true},
+		{name: "idle", reason: lodiav1alpha1.ReasonIdle},
+		{name: "new"},
+	} {
+		cps = append(cps, tenant(o))
+	}
 	var names []string
-	for _, m := range got {
-		names = append(names, fmt.Sprintf("%s %t", m.key.name, m.slot))
+	for _, m := range fleetOf(cps, cp, present) {
+		names = append(names, fmt.Sprintf("%s %t %s", m.key.name, m.slot, m.key.scheduledFor.Format(time.TimeOnly)))
 	}
-	if strings.Join(names, ", ") != "maintaining true, failed true, zone true, queued false" {
-		t.Errorf("the fleet counts %v, want the slots of maintaining, failed and zone, and queued waiting", names)
+	if got, want := strings.Join(names, ", "), "maintaining true 00:00:00, failed true 00:00:00, zone true 00:00:00, queued false 12:29:00, rolling false 12:29:00, opening false 12:30:00"; got != want {
+		t.Errorf("the fleet counts %s, want %s", got, want)
 	}
 }
 
@@ -544,16 +564,133 @@ func TestASlotSurvivesTimeZoneUnsupported(t *testing.T) {
 	expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintenanceFailed, message: "Ready is not True 45s after operator revision " + revisionB + " rolled out", settlingSince: &rolledOut, slot: true})
 }
 
-func TestAPausedOrDeletingPassFreesTheSlot(t *testing.T) {
+func TestAPausedOrDeletingPassFreesTheSlotAndLeavesTheQueue(t *testing.T) {
 	for name, change := range map[string]func(*facts){
 		"paused, an edit":                    func(f *facts) { f.cp.Spec.Paused, f.cp.Generation = true, 4 },
 		"deleting, at the slot's generation": func(f *facts) { f.cp.DeletionTimestamp = &started },
 	} {
 		t.Run(name, func(t *testing.T) {
-			d := decide(held(slotted(lodiav1alpha1.ReasonMaintaining, 3), func(f *facts) { f.cp.Status.Target.OperatorRevision = revisionB }, settlingAt(present.Add(-10*time.Second)), handled("t1"), change))
+			d := decide(held(slotted(lodiav1alpha1.ReasonMaintaining, 3), settlingAt(present.Add(-10*time.Second)), handled("t1"), scheduled(present.Add(-time.Minute)), change))
 			if m := d.status.Maintenance; m == nil || m.LastHandled != "t1" || m.SettlingSince != nil || m.SlotGeneration != 0 {
 				t.Errorf("maintenance is %+v, want lastHandled kept and the slot freed", m)
 			}
+			if target := d.status.Target; target == nil || target.OperatorRevision != revisionA || target.ScheduledFor != nil {
+				t.Errorf("target is %+v, want the stored revision %s and no scheduledFor", target, revisionA)
+			}
 		})
 	}
+}
+
+func tenantIn(namespace string, change ...func(*facts)) facts {
+	f := held(append([]func(*facts){func(f *facts) { f.limit = 1 }}, change...)...)
+	f.cp.Namespace = namespace
+	return f
+}
+
+func among(f *facts, others ...facts) {
+	var cps []lodiav1alpha1.ControlPlane
+	for _, o := range others {
+		cps = append(cps, *o.cp)
+	}
+	f.fleet = fleetOf(cps, f.cp, f.now)
+}
+
+func when(t time.Time) func(*facts) { return func(f *facts) { f.now = t } }
+
+func TestAWaitForASlotUnderAnEarlierReasonIsQueued(t *testing.T) {
+	nowSecond := now.Rfc3339Copy().Time
+	tenMinutesOn := present.Add(10 * time.Minute)
+	for _, c := range []struct {
+		name, reason string
+		change       func(*facts)
+	}{
+		{"what rolls", lodiav1alpha1.ReasonRollingOut, func(f *facts) { f.cp.Status.Datastore.Members.Updated = nil }},
+		{"a condition behind the generation", lodiav1alpha1.ReasonLatestGenerationNotObserved, func(f *facts) {
+			f.cp.Generation = 4
+			for i := range f.cp.Status.Conditions {
+				f.cp.Status.Conditions[i].ObservedGeneration = 3
+			}
+			meta.FindStatusCondition(f.cp.Status.Conditions, lodiav1alpha1.ConditionProgressing).ObservedGeneration = 4
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			x := tenantIn("x", slotted(lodiav1alpha1.ReasonMaintaining, 3), func(f *facts) { f.cp.Status.Target.OperatorRevision = revisionB })
+			waits := tenantIn("a", c.change)
+			among(&waits, x)
+			adopt(waits.cp, expectGrant(t, waits, granted{revision: revisionA, reason: c.reason, scheduledFor: &nowSecond, requeue: fleetRequeue}))
+
+			x.cp.Status.Maintenance = nil
+			later := tenantIn("b", when(tenMinutesOn))
+			among(&later, x, waits)
+			adopt(later.cp, expectGrant(t, later, granted{revision: revisionA, reason: lodiav1alpha1.ReasonFleetLimit, scheduledFor: &tenMinutesOn, requeue: fleetRequeue}))
+
+			waits = tenantIn("a", when(tenMinutesOn), func(f *facts) { f.cp.Status = waits.cp.Status })
+			among(&waits, x, later)
+			expectGrant(t, waits, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, takesSlot: true, slot: true})
+		})
+	}
+}
+
+func TestASharedWindowStartGoesByTheQueue(t *testing.T) {
+	opens := func(f *facts) {
+		f.cp.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: &lodiav1alpha1.MaintenanceWindow{Begin: "12:30", End: "13:30"}}
+		f.cp.Status.Target.ScheduledFor = &metav1.Time{Time: present}
+		set(f, metav1.Condition{Type: lodiav1alpha1.ConditionProgressing, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonWaitingForWindow, ObservedGeneration: 3})
+	}
+	for _, first := range []string{"a", "z"} {
+		t.Run(first+" passes first", func(t *testing.T) {
+			tenants := map[string]facts{"a": tenantIn("a", opens), "z": tenantIn("z", opens)}
+			other := map[string]string{"a": "z", "z": "a"}
+			for _, ns := range []string{first, other[first]} {
+				f := tenants[ns]
+				among(&f, tenants[other[ns]])
+				want := granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, takesSlot: true, slot: true}
+				if ns == "z" {
+					want = granted{revision: revisionA, reason: lodiav1alpha1.ReasonFleetLimit, scheduledFor: &present, requeue: fleetRequeue}
+				}
+				adopt(f.cp, expectGrant(t, f, want))
+			}
+		})
+	}
+}
+
+func TestATenantNotReadyLeavesTheQueue(t *testing.T) {
+	unreachable := condition(metav1.Condition{Type: lodiav1alpha1.ConditionReachable, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonExternalProbeFailed, Message: "api: refused"})
+	reachable := condition(metav1.Condition{Type: lodiav1alpha1.ConditionReachable, Status: metav1.ConditionTrue, Reason: "Fine"})
+	t.Run("counted at its window's start until its own pass there finds it not Ready", func(t *testing.T) {
+		a := tenantIn("a", unreachable, func(f *facts) {
+			f.cp.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: &lodiav1alpha1.MaintenanceWindow{Begin: "12:30", End: "13:30"}}
+			f.cp.Status.Target.ScheduledFor = &metav1.Time{Time: present}
+		})
+		z := tenantIn("z")
+		among(&z, a)
+		adopt(z.cp, expectGrant(t, z, granted{revision: revisionA, reason: lodiav1alpha1.ReasonFleetLimit, scheduledFor: &present, requeue: fleetRequeue}))
+		among(&a, z)
+		adopt(a.cp, expectGrant(t, a, granted{revision: revisionA, reason: lodiav1alpha1.ReasonExternalProbeFailed, message: "Reachable: api: refused"}))
+		when(present.Add(fleetRequeue))(&z)
+		among(&z, a)
+		expectGrant(t, z, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, takesSlot: true, slot: true})
+	})
+	t.Run("and comes back behind those queued meanwhile", func(t *testing.T) {
+		x := tenantIn("x", slotted(lodiav1alpha1.ReasonMaintaining, 3), func(f *facts) { f.cp.Status.Target.OperatorRevision = revisionB })
+		first, second, third := present.Add(-30*time.Minute), present.Add(-20*time.Minute), present.Add(-10*time.Minute)
+		a := tenantIn("a", scheduled(first), progressingAs(lodiav1alpha1.ReasonFleetLimit, 3), unreachable, when(second))
+		among(&a, x)
+		adopt(a.cp, expectGrant(t, a, granted{revision: revisionA, reason: lodiav1alpha1.ReasonExternalProbeFailed, message: "Reachable: api: refused"}))
+		b := tenantIn("b", when(second))
+		among(&b, x, a)
+		adopt(b.cp, expectGrant(t, b, granted{revision: revisionA, reason: lodiav1alpha1.ReasonFleetLimit, scheduledFor: &second, requeue: fleetRequeue}))
+		reachable(&a)
+		when(third)(&a)
+		among(&a, x, b)
+		adopt(a.cp, expectGrant(t, a, granted{revision: revisionA, reason: lodiav1alpha1.ReasonFleetLimit, scheduledFor: &third, requeue: fleetRequeue}))
+
+		x.cp.Status.Maintenance = nil
+		when(present)(&a)
+		among(&a, x, b)
+		adopt(a.cp, expectGrant(t, a, granted{revision: revisionA, reason: lodiav1alpha1.ReasonFleetLimit, scheduledFor: &third, requeue: fleetRequeue}))
+		when(present)(&b)
+		among(&b, x, a)
+		expectGrant(t, b, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, takesSlot: true, slot: true})
+	})
 }

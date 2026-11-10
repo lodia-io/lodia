@@ -80,7 +80,7 @@ func decide(f facts) decision {
 	readyNow := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionReady)
 	status := lodiav1alpha1.ControlPlaneStatus{
 		ObservedGeneration: cp.Status.ObservedGeneration,
-		Target:             newTarget(targetOf(cp), revisionOf(cp), scheduledOf(cp)),
+		Target:             newTarget(targetOf(cp), revisionOf(cp), nil),
 		Maintenance:        newMaintenance(lastHandledOf(cp), nil, 0),
 	}
 	upgrade := upgradeOf(cp)

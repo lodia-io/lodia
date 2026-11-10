@@ -69,23 +69,23 @@ func (k queueKey) before(other queueKey) bool {
 	return k.name < other.name
 }
 
-// fleetOf is the members among cps, cp and tenants being deleted left out.
-func fleetOf(cps []lodiav1alpha1.ControlPlane, cp *lodiav1alpha1.ControlPlane) []member {
+// fleetOf is the members among cps, cp and tenants paused or being deleted
+// left out: those in a slot, and those queued, whose scheduledFor is at or
+// before now, whatever Progressing says, since a wait for a slot can sit
+// under a reason ranked above FleetLimit.
+func fleetOf(cps []lodiav1alpha1.ControlPlane, cp *lodiav1alpha1.ControlPlane, now time.Time) []member {
 	var fleet []member
 	for i := range cps {
 		other := &cps[i]
-		if other.Namespace == cp.Namespace && other.Name == cp.Name || !other.DeletionTimestamp.IsZero() {
+		if other.Namespace == cp.Namespace && other.Name == cp.Name || !other.DeletionTimestamp.IsZero() || other.Spec.Paused {
 			continue
 		}
 		key := queueKey{namespace: other.Namespace, name: other.Name}
-		if s := scheduledOf(other); s != nil {
-			key.scheduledFor = s.Time
-		}
-		progressing := meta.FindStatusCondition(other.Status.Conditions, lodiav1alpha1.ConditionProgressing)
-		switch {
+		switch s := scheduledOf(other); {
 		case inSlot(other):
 			fleet = append(fleet, member{slot: true, key: key})
-		case progressing != nil && progressing.Reason == lodiav1alpha1.ReasonFleetLimit:
+		case s != nil && !s.After(now):
+			key.scheduledFor = s.Time
 			fleet = append(fleet, member{key: key})
 		}
 	}

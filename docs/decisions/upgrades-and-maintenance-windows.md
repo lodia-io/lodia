@@ -71,7 +71,7 @@ Lifecycle grants the running revision, while it is pending, by these rules in th
 5. Not while `TimeZoneUnsupported` stands; outside the window, `WaitingForWindow`, with `target.scheduledFor` its next start.
 6. Not while `Ready` is not True, at whatever generation each input describes, `AddonsApplied` left out while it waits with `AccessReady` True: `Ready`'s reason.
    A held Tenant keeps `AddonsApplied` at the generation it describes for the whole hold, so `Ready` at the object's generation would never grant an edit Tenant had not taken up when the release started.
-7. A slot in the order of the queue: `Maintaining`, in the same write as the grant; none, `FleetLimit`, with `target.scheduledFor` when the tenant became eligible.
+7. A slot in the order of the queue: `Maintaining`, in the same write as the grant; none, `target.scheduledFor` when the tenant became eligible, which queues it, and `FleetLimit` unless a reason ranked above it applies.
 
 A change Lodia started keeps its origin in `status.maintenance.slotGeneration`, written in the same write as the grant: the tenant holds its slot while that is its generation, whatever `Progressing` says, so a reason ranked above the slot's does not free it, and an edit of `spec` does; a grant on request is the owner's.
 
@@ -93,7 +93,7 @@ Without a window Lodia-initiated changes roll at any time, still within the flee
 **The fleet.**
 Across all tenants, at most `fleet.maxConcurrentRollouts` (operator configuration, 5 by default) roll a Lodia-initiated change at once.
 A tenant holds a slot while `status.maintenance.slotGeneration` is its generation, `Progressing` `Maintaining` or, once failed, `MaintenanceFailed`: a failed rollout Lodia started keeps its slot, so that many failures halt maintenance across the fleet, as unavailable pods halt a Deployment's rollout, and the alert `LodiaMaintenanceHalted` fires.
-Tenants get slots in the order of `status.target.scheduledFor`, then namespace and name: a pass grants when the tenants that hold a slot and those queued before it are fewer than the limit, counted from the cache and, before the grant is written, again from the API server under a lock, so that two passes never take one slot.
+Tenants get slots in the order of `status.target.scheduledFor`, then namespace and name: a tenant is queued while its `scheduledFor` is at or before now, whatever `Progressing` says, since a wait for a slot can sit under a reason ranked above `FleetLimit`, and a pass grants when the tenants that hold a slot and those queued before it are fewer than the limit, counted from the cache and, before the grant is written, again from the API server under a lock, so that two passes never take one slot.
 An owner's change takes no slot.
 A change Lodia started holds its slot while it rolls: a part not at the target, a replica or member not updated, a renderer that reports neither the granted revision nor the running one.
 Once it has rolled out, `status.maintenance.settlingSince` records when, and the slot is held for a settling time S after the later of that and `Ready`'s last transition: `health.failuresBeforeFalse` × (`health.period` + Health's timeout) + one etcd-druid status sync ([values.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/charts/values.yaml#L63)), 45 seconds at the defaults.
