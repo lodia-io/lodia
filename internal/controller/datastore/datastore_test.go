@@ -23,10 +23,12 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -58,7 +60,11 @@ var (
 
 const (
 	druidNamespace    = "druid-system"
+	druidDeployment   = "etcd-druid"
+	druidVersion      = "v0.39.0"
 	operatorNamespace = "lodia-system"
+	revision          = "v0.0.0-test+running"
+	previousRevision  = "v0.0.0-test+previous"
 )
 
 func TestMain(m *testing.M) {
@@ -75,8 +81,11 @@ func TestMain(m *testing.M) {
 	})
 	k8s = env.Client
 	asDatastore = env.AsController("datastore")
+	if err := runDruid(context.Background()); err != nil {
+		env.Fatal("etcd-druid's Deployment", err)
+	}
 	mgr := env.Manager(asDatastore, false)
-	if err := (&datastore.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, EtcdClient: dialRestored, Clock: clock.RealClock{}}).SetupWithManager(mgr, 1); err != nil {
+	if err := (&datastore.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion, EtcdClient: dialRestored, Clock: clock.RealClock{}}).SetupWithManager(mgr, 1); err != nil {
 		env.Fatal("controller", err)
 	}
 	ctx := env.StartManager(mgr)
@@ -103,6 +112,59 @@ func create(t *testing.T, obj client.Object) {
 	if err := k8s.Create(t.Context(), obj); err != nil {
 		t.Fatal(err)
 	}
+	if cp, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
+		grant(t, cp, revision)
+		if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(cp), cp); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func grant(t *testing.T, cp *lodiav1alpha1.ControlPlane, operatorRevision string) {
+	t.Helper()
+	u := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": lodiav1alpha1.GroupVersion.String(),
+		"kind":       "ControlPlane",
+		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
+		"status":     map[string]any{"target": map[string]any{"version": cp.Spec.Version, "operatorRevision": operatorRevision}},
+	}}
+	if err := k8s.Status().Apply(t.Context(), client.ApplyConfigurationFromUnstructured(u), client.FieldOwner("test/lifecycle"), client.ForceOwnership); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func runDruid(ctx context.Context) error {
+	labels := map[string]string{"app.kubernetes.io/name": druidDeployment}
+	druid := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: druidDeployment, Namespace: druidNamespace},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: new(int32(1)),
+			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "etcd-druid", Image: "europe-docker.pkg.dev/gardener-project/releases/gardener/etcd-druid:" + druidVersion}}},
+			},
+		},
+	}
+	for _, obj := range []client.Object{
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: druidNamespace}},
+		&rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{Name: "lodia-etcd-druid", Namespace: druidNamespace},
+			Rules:      []rbacv1.PolicyRule{{APIGroups: []string{appsv1.GroupName}, Resources: []string{"deployments"}, ResourceNames: []string{druidDeployment}, Verbs: []string{"get"}}},
+		},
+		&rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: "lodia-etcd-druid", Namespace: druidNamespace},
+			RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: "lodia-etcd-druid"},
+			Subjects:   []rbacv1.Subject{{APIGroup: rbacv1.GroupName, Kind: rbacv1.UserKind, Name: "lodia-datastore"}},
+		},
+		druid,
+	} {
+		if err := k8s.Create(ctx, obj); err != nil {
+			return err
+		}
+	}
+	druid.Status = appsv1.DeploymentStatus{ObservedGeneration: druid.Generation, Replicas: 1, UpdatedReplicas: 1, ReadyReplicas: 1, AvailableReplicas: 1}
+	return k8s.Status().Update(ctx, druid)
 }
 
 func createClass(t *testing.T, class *lodiav1alpha1.DatastoreClass) {
@@ -491,7 +553,7 @@ func TestConditionsFromState(t *testing.T) {
 			return c.Get(ctx, key, obj, opts...)
 		},
 	}))
-	reconciler := &datastore.Reconciler{Client: failing, Reader: failing, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace}
+	reconciler := &datastore.Reconciler{Client: failing, Reader: failing, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion}
 	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: "dev"}}); !errors.Is(err, injected) {
 		t.Fatalf("a pass whose Etcd read fails returned %v, want the read's error", err)
 	}
@@ -555,7 +617,7 @@ func TestACredentialsCopyTheAPIServerRefusesIsThePasssError(t *testing.T) {
 	refuse(t, ns, admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"secrets"}}, func() client.Object {
 		return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: ns}}
 	})
-	reconciler := &datastore.Reconciler{Client: k8s, Reader: k8s, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace}
+	reconciler := &datastore.Reconciler{Client: k8s, Reader: k8s, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion}
 	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}); !apistatus.Refused(err) {
 		t.Fatalf("a pass whose credentials copy is refused returned %v, want the refusal, which the log then holds", err)
 	}
@@ -958,7 +1020,7 @@ func TestBackupPrefixHoldsNoName(t *testing.T) {
 			return c.Get(ctx, key, obj, opts...)
 		},
 	}))
-	reconciler := &datastore.Reconciler{Client: failing, Reader: failing, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace}
+	reconciler := &datastore.Reconciler{Client: failing, Reader: failing, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion}
 	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns.Name, Name: "v1"}}); !errors.Is(err, injected) {
 		t.Fatalf("a pass whose Namespace read fails returned %v, want the read's error", err)
 	}
@@ -1000,6 +1062,7 @@ func TestHeldClass(t *testing.T) {
 	readyOn(t, ns, cp, 2)
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
 		"has quorum, 1 of 1 members ready; DatastoreClass holding is held: its credentials Secret "+credentialsNamespace+"/s3 is missing")
+	reconciled(t, ns, cp)
 	if after := reconcileNow(t, ns, cp); after != time.Minute {
 		t.Errorf("a held class requeues after %s, want a minute: the class's Secret is outside the cache", after)
 	}
@@ -1285,6 +1348,7 @@ func setEtcdStatus(t *testing.T, ns, cp string, mutate func(*druidv1alpha1.EtcdS
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		etcd := getEtcd(t, ns, cp)
 		etcd.Status = druidv1alpha1.EtcdStatus{
+			LastOperation:      etcd.Status.LastOperation,
 			ObservedGeneration: new(etcd.Generation),
 			Ready:              new(true),
 			Replicas:           1,
@@ -1444,7 +1508,7 @@ func TestAPassFromAStaleCacheChangesNoEtcd(t *testing.T) {
 		},
 	})
 	pass := func(c client.WithWatch) error {
-		_, err := (&datastore.Reconciler{Client: c, Reader: c, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}})
+		_, err := (&datastore.Reconciler{Client: c, Reader: c, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}})
 		return err
 	}
 
@@ -1518,14 +1582,14 @@ func TestAFinalizingPassFromAStaleReadTouchesNoOtherEtcd(t *testing.T) {
 	}
 	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}
 
-	if _, err := (&datastore.Reconciler{Client: stale, Reader: stale, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace}).Reconcile(t.Context(), request); !apierrors.IsConflict(err) {
+	if _, err := (&datastore.Reconciler{Client: stale, Reader: stale, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion}).Reconcile(t.Context(), request); !apierrors.IsConflict(err) {
 		t.Errorf("a finalizing pass whose reads still return the deleted Etcd returned %v, want a conflict", err)
 	}
 	stands("a finalizing pass whose reads still return the deleted Etcd")
 
 	name := cp + "-etcd-" + cp + "-etcd-0"
 	create(t, claim(ns, name, nil))
-	if _, err := (&datastore.Reconciler{Client: stale, Reader: k8s, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace}).Reconcile(t.Context(), request); err != nil {
+	if _, err := (&datastore.Reconciler{Client: stale, Reader: k8s, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion}).Reconcile(t.Context(), request); err != nil {
 		t.Errorf("a finalizing pass from a cache that still holds the deleted Etcd returned %v", err)
 	}
 	stands("a finalizing pass from a cache that still holds the deleted Etcd")
@@ -1581,7 +1645,7 @@ func TestReclaimingFromAStaleListDeletesNoOtherClaim(t *testing.T) {
 			return nil
 		},
 	})
-	if _, err := (&datastore.Reconciler{Client: stale, Reader: stale, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}); !apierrors.IsConflict(err) {
+	if _, err := (&datastore.Reconciler{Client: stale, Reader: stale, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}); !apierrors.IsConflict(err) {
 		t.Errorf("a finalizing pass whose list still returns the reclaimed claim returned %v, want a conflict", err)
 	}
 	if pvc := getClaim(t, ns, name); pvc.UID != successor.UID || !pvc.DeletionTimestamp.IsZero() {
@@ -2503,7 +2567,7 @@ func TestRecordedClass(t *testing.T) {
 
 func reconcileNow(t *testing.T, ns, name string) time.Duration {
 	t.Helper()
-	result, err := (&datastore.Reconciler{Client: k8s, Reader: k8s, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}})
+	result, err := (&datastore.Reconciler{Client: k8s, Reader: k8s, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2874,6 +2938,7 @@ func TestNetworkPolicyOfAnotherOwner(t *testing.T) {
 			waitCondition(t, ns, row.cp, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "etcd-druid has not observed generation 1")
 			runStatefulSet(t, ns, row.cp, 1)
 			setEtcdStatus(t, ns, row.cp, nil)
+			reconciled(t, ns, row.cp)
 			waitCondition(t, ns, row.cp, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere, row.message)
 			if after := reconcileNow(t, ns, row.cp); after != time.Minute {
 				t.Errorf("a NetworkPolicy another owner keeps requeues after %s, want a minute: an unlabelled one is outside the cache", after)
@@ -2984,7 +3049,7 @@ func TestAFailedNetworkPolicyCallLeavesTheStatus(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			failing := noControlPlaneWrite(t, interceptor.NewClient(k8s, row.funcs))
-			reconciler := &datastore.Reconciler{Client: failing, Reader: failing, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace}
+			reconciler := &datastore.Reconciler{Client: failing, Reader: failing, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion}
 			if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}); !errors.Is(err, row.err) {
 				t.Fatalf("the pass returned %v, want %v", err, row.err)
 			}

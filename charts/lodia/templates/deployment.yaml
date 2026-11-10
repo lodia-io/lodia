@@ -38,11 +38,11 @@ spec:
             - --tunnel-image={{ include "lodia.image" (dict "image" .Values.tunnelImage "appVersion" .Chart.AppVersion) }}
             {{- if .Values.etcdDruid.enabled }}
             - --etcd-druid-version={{ .Values.etcdDruid.image.tag }}
-            - --etcd-druid-namespace={{ .Release.Namespace }}
             {{- else }}
             - --etcd-druid-version={{ required "etcdDruidVersion must name the version etcd-druid runs while etcdDruid.enabled is false" .Values.etcdDruidVersion }}
-            - --etcd-druid-namespace={{ required "etcdDruidNamespace must name the namespace etcd-druid runs in while etcdDruid.enabled is false" .Values.etcdDruidNamespace }}
             {{- end }}
+            - --etcd-druid-namespace={{ include "lodia.etcdDruidNamespace" . }}
+            - --etcd-druid-deployment={{ include "lodia.etcdDruidDeployment" . }}
             - --operator-namespace={{ .Release.Namespace }}
             - --config=/etc/lodia/config.yaml
             - --metrics-bind-address=:8443

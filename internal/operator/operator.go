@@ -115,18 +115,19 @@ func Cache(gatewayAPI bool) (cache.Options, error) {
 // LoadConfig returned, Version the operator's build version, SignerImage
 // lodia-signer's, which runs beside each API server, TunnelImage
 // lodia-tunnel's, which runs on each node of a gateway tenant,
-// EtcdDruidVersion and EtcdDruidNamespace etcd-druid's, OperatorNamespace the
-// operator's, which each etcd's NetworkPolicy admits, and GatewayAPI what
-// GatewayAPI found.
+// EtcdDruidVersion, EtcdDruidNamespace and EtcdDruidDeployment etcd-druid's,
+// OperatorNamespace the operator's, which each etcd's NetworkPolicy admits,
+// and GatewayAPI what GatewayAPI found.
 type Inputs struct {
-	Config             Config
-	Version            string
-	SignerImage        string
-	TunnelImage        string
-	EtcdDruidVersion   string
-	EtcdDruidNamespace string
-	OperatorNamespace  string
-	GatewayAPI         bool
+	Config              Config
+	Version             string
+	SignerImage         string
+	TunnelImage         string
+	EtcdDruidVersion    string
+	EtcdDruidNamespace  string
+	EtcdDruidDeployment string
+	OperatorNamespace   string
+	GatewayAPI          bool
 }
 
 // Setup registers every controller with the manager.
@@ -153,7 +154,17 @@ func Setup(mgr ctrl.Manager, in Inputs) error {
 	dialEtcd := func(ctx context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client, error) {
 		return datastore.DialEtcd(ctx, mgr.GetAPIReader(), etcd)
 	}
-	if err := (&datastore.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdDruidNamespace: in.EtcdDruidNamespace, OperatorNamespace: in.OperatorNamespace, EtcdClient: dialEtcd, Clock: clock.RealClock{}}).SetupWithManager(mgr, workers); err != nil {
+	if err := (&datastore.Reconciler{
+		Client:              mgr.GetClient(),
+		Reader:              mgr.GetAPIReader(),
+		EtcdDruidNamespace:  in.EtcdDruidNamespace,
+		EtcdDruidDeployment: in.EtcdDruidDeployment,
+		EtcdDruidVersion:    in.EtcdDruidVersion,
+		Revision:            revision,
+		OperatorNamespace:   in.OperatorNamespace,
+		EtcdClient:          dialEtcd,
+		Clock:               clock.RealClock{},
+	}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the datastore controller: %w", err)
 	}
 	if err := (&datastore.BackupReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdClient: dialEtcd, Clock: clock.RealClock{}}).SetupWithManager(mgr, workers); err != nil {

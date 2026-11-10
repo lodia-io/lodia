@@ -22,7 +22,7 @@ import (
 var version string
 
 func main() {
-	var metricsAddr, probeAddr, configPath, signerImage, tunnelImage, etcdDruidVersion, etcdDruidNamespace, operatorNamespace string
+	var metricsAddr, probeAddr, configPath, signerImage, tunnelImage, etcdDruidVersion, etcdDruidNamespace, etcdDruidDeployment, operatorNamespace string
 	var leaderElect bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "Address of the metrics endpoint, served over HTTPS behind authentication and authorization.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Address of the health and readiness probes.")
@@ -32,6 +32,7 @@ func main() {
 	flag.StringVar(&tunnelImage, "tunnel-image", "", "Image of lodia-tunnel, a gateway tenant's in-cluster path to its API server; required.")
 	flag.StringVar(&etcdDruidVersion, "etcd-druid-version", "", "Version of etcd-druid, what follows the repository and its colon in its image, a digest included, which the operator revision covers; required.")
 	flag.StringVar(&etcdDruidNamespace, "etcd-druid-namespace", "", "Namespace etcd-druid runs in, whose pods each etcd's NetworkPolicy admits to the backup-restore sidecar; required.")
+	flag.StringVar(&etcdDruidDeployment, "etcd-druid-deployment", "", "Name of etcd-druid's Deployment in --etcd-druid-namespace, which must run --etcd-druid-version in every replica before an etcd is handed to it under a new operator revision; required.")
 	flag.StringVar(&operatorNamespace, "operator-namespace", "", "Namespace the operator runs in, whose pods each etcd's NetworkPolicy admits to the client port; required.")
 	opts := zap.Options{}
 	opts.BindFlags(flag.CommandLine)
@@ -52,6 +53,10 @@ func main() {
 	}
 	if etcdDruidNamespace == "" {
 		log.Error(nil, "--etcd-druid-namespace is required")
+		os.Exit(1)
+	}
+	if etcdDruidDeployment == "" {
+		log.Error(nil, "--etcd-druid-deployment is required")
 		os.Exit(1)
 	}
 	if operatorNamespace == "" {
@@ -96,7 +101,7 @@ func main() {
 		log.Error(err, "create the manager")
 		os.Exit(1)
 	}
-	if err := operator.Setup(mgr, operator.Inputs{Config: config, Version: version, SignerImage: signerImage, TunnelImage: tunnelImage, EtcdDruidVersion: etcdDruidVersion, EtcdDruidNamespace: etcdDruidNamespace, OperatorNamespace: operatorNamespace, GatewayAPI: gatewayAPI}); err != nil {
+	if err := operator.Setup(mgr, operator.Inputs{Config: config, Version: version, SignerImage: signerImage, TunnelImage: tunnelImage, EtcdDruidVersion: etcdDruidVersion, EtcdDruidNamespace: etcdDruidNamespace, EtcdDruidDeployment: etcdDruidDeployment, OperatorNamespace: operatorNamespace, GatewayAPI: gatewayAPI}); err != nil {
 		log.Error(err, "set up the controllers")
 		os.Exit(1)
 	}
