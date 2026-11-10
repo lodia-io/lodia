@@ -159,28 +159,34 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if reason, message := waitsFor(cp); message != "" {
 		return ctrl.Result{}, r.wait(ctx, cp, reason, message)
 	}
+	held := cp.Status.Target.OperatorRevision != r.Revision
 	v, outside, err := newValues(cp, clusterCA)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if outside != "" {
+	if outside != "" && !held {
 		return ctrl.Result{}, r.wait(ctx, cp, lodiav1alpha1.ReasonWaitingForTarget, outside)
 	}
-	v.TunnelImage, v.tunnelCert, v.tunnelKey = r.TunnelImage, tunnelClient.Data[corev1.TLSCertKey], tunnelClient.Data[corev1.TLSPrivateKeyKey]
-	objects, err := render(v)
-	if err != nil {
-		return ctrl.Result{}, err
+	var objects []*unstructured.Unstructured
+	if outside == "" {
+		v.TunnelImage, v.tunnelCert, v.tunnelKey = r.TunnelImage, tunnelClient.Data[corev1.TLSCertKey], tunnelClient.Data[corev1.TLSPrivateKeyKey]
+		if objects, err = render(v); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 	tenant, err := r.tenantClient(kubeconfig, applyTimeout)
 	if err != nil {
 		return ctrl.Result{}, err
+	}
+	if held {
+		return r.hold(ctx, cp, tenant, objects, applied, available)
 	}
 
 	others, applyErr := applyInventory(ctx, tenant, objects)
 	syncErr := applyErr
 	var rolled metav1.Condition
 	if applyErr == nil {
-		rolled, syncErr = rollout(ctx, tenant, cp, objects, others)
+		rolled, syncErr = rollout(ctx, tenant, cp, entriesOf(objects), others)
 	}
 	switch reason, message, answered := outcome(applyErr); {
 	case applyErr == nil && len(others) > 0:
@@ -207,10 +213,57 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.applyStatus(ctx, cp, addons, applied, available); err != nil || syncErr != nil {
 		return ctrl.Result{}, errors.Join(syncErr, err)
 	}
-	if available.Status != metav1.ConditionTrue {
-		return ctrl.Result{RequeueAfter: min(waitPeriod, r.ApplyPeriod)}, nil
+	return r.next(available), nil
+}
+
+// hold is a pass while Lifecycle has not granted the running revision: it
+// creates what the stored inventory lists and the tenant lacks, with an apply
+// since appliedByLodia counts only that, writes nothing else, and reports what
+// runs, each condition at the generation it describes. objects is nil when the
+// running operator cannot render.
+func (r *Reconciler) hold(ctx context.Context, cp *lodiav1alpha1.ControlPlane, tenant client.Client, objects []*unstructured.Unstructured, applied, available metav1.Condition) (ctrl.Result, error) {
+	listed, missing, complete, err := heldInventory(ctx, tenant, objects)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: r.ApplyPeriod}, nil
+	for _, obj := range missing {
+		if err := apply(ctx, tenant, obj); err != nil {
+			if reason, message, _ := outcome(err); reason == lodiav1alpha1.ReasonRefused {
+				err = errors.Join(err, r.applyStatus(ctx, cp, cp.Status.Addons, at(newCondition(cp, applied.Type, metav1.ConditionFalse, reason, message), applied.ObservedGeneration), available))
+			}
+			return ctrl.Result{}, err
+		}
+	}
+	// A wait over a healthy render, as an API server restart leaves, would
+	// otherwise outlast it until the grant.
+	if complete && applied.Status == metav1.ConditionFalse && strings.HasPrefix(applied.Reason, "WaitingFor") && cp.Status.Addons != nil && cp.Status.Addons.Version != "" {
+		applied = at(newCondition(cp, applied.Type, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied,
+			fmt.Sprintf("the %d objects the inventory lists are applied; waiting for Lifecycle to grant the running operator revision %s", len(listed), r.Revision)), applied.ObservedGeneration)
+	}
+	if slices.ContainsFunc(listed, isWorkload) {
+		rolled, err := rollout(ctx, tenant, cp, listed, nil)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		available = at(rolled, available.ObservedGeneration)
+	}
+	if err := r.applyStatus(ctx, cp, cp.Status.Addons, applied, available); err != nil {
+		return ctrl.Result{}, err
+	}
+	return r.next(available), nil
+}
+
+// next looks again every minute while the addons are not rolled out.
+func (r *Reconciler) next(available metav1.Condition) ctrl.Result {
+	if available.Status != metav1.ConditionTrue {
+		return ctrl.Result{RequeueAfter: min(waitPeriod, r.ApplyPeriod)}
+	}
+	return ctrl.Result{RequeueAfter: r.ApplyPeriod}
+}
+
+func at(c metav1.Condition, generation int64) metav1.Condition {
+	c.ObservedGeneration = generation
+	return c
 }
 
 // outcome is the reason and the message a pass that stopped on err reports,
@@ -326,25 +379,30 @@ func (r *Reconciler) tenantClient(kubeconfig []byte, timeout time.Duration) (cli
 	return client.New(cfg, client.Options{Scheme: clientgoscheme.Scheme})
 }
 
-// rollout reads the DaemonSets and Deployments of the render but another
-// owner's.
-func rollout(ctx context.Context, c client.Client, cp *lodiav1alpha1.ControlPlane, objects []*unstructured.Unstructured, others []entry) (metav1.Condition, error) {
+func isWorkload(e entry) bool {
+	return e.Group == appsv1.GroupName && (e.Kind == "DaemonSet" || e.Kind == "Deployment")
+}
+
+// rollout reads the DaemonSets and Deployments among entries but others. One
+// that is missing is pending: a held pass leaves a listed one it no longer
+// renders as it is.
+func rollout(ctx context.Context, c client.Client, cp *lodiav1alpha1.ControlPlane, entries, others []entry) (metav1.Condition, error) {
 	var names, pending []string
-	for _, obj := range objects {
-		e := entryOf(obj)
-		var workload client.Object
-		switch {
-		case e.Group != appsv1.GroupName || contains(others, e):
-			continue
-		case e.Kind == "DaemonSet":
-			workload = &appsv1.DaemonSet{}
-		case e.Kind == "Deployment":
-			workload = &appsv1.Deployment{}
-		default:
+	for _, e := range entries {
+		if !isWorkload(e) || contains(others, e) {
 			continue
 		}
+		var workload client.Object = &appsv1.Deployment{}
+		if e.Kind == "DaemonSet" {
+			workload = &appsv1.DaemonSet{}
+		}
 		names = append(names, e.Name)
-		if err := c.Get(ctx, client.ObjectKey{Namespace: e.Namespace, Name: e.Name}, workload); err != nil {
+		err := c.Get(ctx, client.ObjectKey{Namespace: e.Namespace, Name: e.Name}, workload)
+		switch {
+		case apierrors.IsNotFound(err):
+			pending = append(pending, e.Name+" is missing")
+			continue
+		case err != nil:
 			return metav1.Condition{}, failed(e, err)
 		}
 		if want, available, done := rolledOut(workload); !done {

@@ -54,6 +54,14 @@ func entryOf(obj *unstructured.Unstructured) entry {
 	return entry{Group: gvk.Group, Version: gvk.Version, Kind: gvk.Kind, Namespace: obj.GetNamespace(), Name: obj.GetName()}
 }
 
+func entriesOf(objects []*unstructured.Unstructured) []entry {
+	out := make([]entry, 0, len(objects))
+	for _, obj := range objects {
+		out = append(out, entryOf(obj))
+	}
+	return out
+}
+
 func contains(entries []entry, e entry) bool {
 	return slices.ContainsFunc(entries, func(o entry) bool { return compareEntries(o, e) == 0 })
 }
@@ -173,27 +181,34 @@ func foreign(ctx context.Context, c client.Client, objects []*unstructured.Unstr
 	return others, nil
 }
 
+// readEntry reads the object an entry names at the version the tenant serves,
+// nil when it is gone or of a kind no longer served.
+func readEntry(ctx context.Context, c client.Client, e entry) (*unstructured.Unstructured, error) {
+	mapping, err := c.RESTMapper().RESTMapping(schema.GroupKind{Group: e.Group, Kind: e.Kind})
+	if meta.IsNoMatchError(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, failed(e, err)
+	}
+	existing := &unstructured.Unstructured{}
+	existing.SetGroupVersionKind(mapping.GroupVersionKind)
+	if err := c.Get(ctx, client.ObjectKey{Namespace: e.Namespace, Name: e.Name}, existing); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, failed(e, err)
+	}
+	return existing, nil
+}
+
 // prune deletes an entry that left the render if Lodia wrote it, under the
 // UID and resourceVersion it read; an entry it did not write, or one gone or
 // of a kind no longer served, only leaves the inventory.
 func prune(ctx context.Context, c client.Client, e entry) error {
-	mapping, err := c.RESTMapper().RESTMapping(schema.GroupKind{Group: e.Group, Kind: e.Kind})
-	if meta.IsNoMatchError(err) {
-		return nil
-	}
-	if err != nil {
-		return failed(e, err)
-	}
-	existing := &unstructured.Unstructured{}
-	existing.SetGroupVersionKind(mapping.GroupVersionKind)
-	err = c.Get(ctx, client.ObjectKey{Namespace: e.Namespace, Name: e.Name}, existing)
-	switch {
-	case apierrors.IsNotFound(err):
-		return nil
-	case err != nil:
-		return failed(e, err)
-	case !appliedByLodia(existing):
-		return nil
+	existing, err := readEntry(ctx, c, e)
+	if err != nil || existing == nil || !appliedByLodia(existing) {
+		return err
 	}
 	uid, version := existing.GetUID(), existing.GetResourceVersion()
 	err = c.Delete(ctx, existing, client.Preconditions{UID: &uid, ResourceVersion: &version}, client.PropagationPolicy(metav1.DeletePropagationBackground))
@@ -233,8 +248,8 @@ func applyInventory(ctx context.Context, c client.Client, objects []*unstructure
 		stored = both
 	}
 	for _, obj := range writes {
-		if err := c.Apply(ctx, client.ApplyConfigurationFromUnstructured(obj), client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
-			return nil, failed(entryOf(obj), err)
+		if err := apply(ctx, c, obj); err != nil {
+			return nil, err
 		}
 	}
 	for _, e := range stale(previous, desired) {
@@ -246,4 +261,44 @@ func applyInventory(ctx context.Context, c client.Client, objects []*unstructure
 		return others, writeInventory(ctx, c, desired)
 	}
 	return others, nil
+}
+
+func apply(ctx context.Context, c client.Client, obj *unstructured.Unstructured) error {
+	if err := c.Apply(ctx, client.ApplyConfigurationFromUnstructured(obj), client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
+		return failed(entryOf(obj), err)
+	}
+	return nil
+}
+
+// heldInventory reads what a held pass acts on: the stored inventory, the
+// objects of the render it lists that the tenant lacks, and whether it is
+// applied: it lists something, every object it lists is stored with Lodia's
+// apply but those missing ones, and no object of the render it does not list
+// is another owner's. Without a render, nil objects, only the inventory is read.
+func heldInventory(ctx context.Context, c client.Client, objects []*unstructured.Unstructured) ([]entry, []*unstructured.Unstructured, bool, error) {
+	listed, err := readInventory(ctx, c)
+	if err != nil || objects == nil {
+		return union(listed), nil, false, err
+	}
+	listed = union(listed)
+	applied := len(listed) > 0
+	var missing []*unstructured.Unstructured
+	for _, e := range listed {
+		existing, err := readEntry(ctx, c, e)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		i := slices.IndexFunc(objects, func(obj *unstructured.Unstructured) bool { return compareEntries(entryOf(obj), e) == 0 })
+		switch {
+		case existing == nil && i >= 0:
+			missing = append(missing, objects[i])
+		case existing == nil || !appliedByLodia(existing):
+			applied = false
+		}
+	}
+	others, err := foreign(ctx, c, objects, listed)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	return listed, missing, applied && len(others) == 0, nil
 }

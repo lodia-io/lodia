@@ -342,6 +342,7 @@ The kubeadm objects use kubeadm's own names, so `kubeadm join` and `kubeadm toke
 
 The controller manager runs with `--use-service-account-credentials` and no cloud provider ([kube-controller-manager](https://kubernetes.io/docs/reference/command-line-tools-reference/kube-controller-manager/)).
 Tenant renders every object at the oldest version the three components report, `status.target.version` for one that reports none ([decision](decisions/upgrades-and-maintenance-windows.md)).
+It renders with the running operator once Lifecycle grants that revision; until then it creates only what the stored inventory lists and the tenant lacks, and writes nothing else but what [`target.operatorRevision`'s row](api/controlplane.md#status) names ([decision](decisions/upgrades-and-maintenance-windows.md)).
 The pinned component versions per minor are those kubeadm pins: CoreDNS v1.13.1 and etcd 3.6.6 for 1.35, CoreDNS v1.14.2 for 1.36, CoreDNS v1.14.6 for 1.37, and konnectivity 0.NN for Kubernetes 1.NN (kubeadm's constants at [v1.35.0](https://github.com/kubernetes/kubernetes/blob/v1.35.0/cmd/kubeadm/app/constants/constants.go), [v1.36.0](https://github.com/kubernetes/kubernetes/blob/v1.36.0/cmd/kubeadm/app/constants/constants.go) and [v1.37.1](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kubeadm/app/constants/constants.go)).
 
 Built without the write lock, which is phase 3's (`internal/controller/tenant`, the templates in its `manifests/`, taken from [kubeadm v1.35.0](https://github.com/kubernetes/kubernetes/tree/v1.35.0/cmd/kubeadm/app/phases) and [the hard way](hard-way.md)).
@@ -351,7 +352,7 @@ With a 10-second timeout on each request, it applies the pair to `kube-system/ap
 It leaves another owner's objects as they are: an object no inventory names yet is read before its first apply and left alone when it exists without `lodia/tenant` among its field managers, and the prune deletes an entry that left the render only when `lodia/tenant` applied it, under the UID and resourceVersion it read, and otherwise drops the entry.
 The inventory names an object before it is first written, and is rewritten to what the render holds once the objects that left it are deleted, so a pass that stops anywhere leaves nothing to leak; an object at another API version is the same entry, pruned at the version the tenant serves, and one of a kind it no longer serves is gone.
 A tenant that stops answering leaves a True `AddonsApplied` as it was.
-`AddonsAvailable` reads the DaemonSets and Deployments Lodia applied, every minute until they are rolled out, and keeps a rollout it read before while none can be read ([reasons](api/controlplane.md#conditions-and-their-reasons)).
+`AddonsAvailable` reads the DaemonSets and Deployments Lodia applied, or while it holds those the inventory lists, every minute until they are rolled out, and keeps a rollout it read before while none can be read ([reasons](api/controlplane.md#conditions-and-their-reasons)).
 
 ## Lifecycle
 
