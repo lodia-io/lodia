@@ -605,8 +605,9 @@ func unsupported(cp *lodiav1alpha1.ControlPlane) []string {
 }
 
 // controlledElsewhere reports the objects under Workloads' names that another
-// owner keeps, read from the cache, which holds the labelled ones: Workloads'
-// own and a predecessor's. The garbage collector deletes a previous
+// owner keeps, read from the cache, which holds the labelled ones, Workloads'
+// own and a predecessor's, and from the API server when the cache lacks one.
+// The garbage collector deletes a previous
 // ControlPlane's, so that wait is short; any other owner's waits for a person.
 func (r *Reconciler) controlledElsewhere(ctx context.Context, cp *lodiav1alpha1.ControlPlane, objects ...client.Object) (*metav1.Condition, time.Duration, error) {
 	var held []string
