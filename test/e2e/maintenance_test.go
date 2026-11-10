@@ -193,6 +193,9 @@ func TestOperatorUpgradeInWindows(t *testing.T) {
 			if fleet.saw(closed, func(o observation) bool { return o.progressing == lodiav1alpha1.ReasonMaintaining }) {
 				t.Error("closed was seen Maintaining: an edit of its spec took a slot of the fleet")
 			}
+			if err := fleet.whole(); err != nil {
+				t.Error(err)
+			}
 			return ctx
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {

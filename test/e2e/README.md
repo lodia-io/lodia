@@ -93,7 +93,7 @@ Once each is `Ready` and `Idle`, every part reporting the suite's operator revis
 2. Within 3 minutes of that, `open` and `anytime` report revision B, `B`'s `VERSION` and a digest, in every `components.*`, `addons` and `datastore`, their API server's template runs signer B, they were seen `Maintaining` and are `Idle`.
 3. `closed` is `WaitingForWindow`, `target.scheduledFor` its window's start, its revision A and every part reporting revision A, from its first such status on and for 2 more minutes, and nothing recorded of it changed; no status of the three was seen with `Ready` other than True.
    A and B render the same `Etcd` and the same objects in the tenant, so a Datastore or a Tenant that ignored the hold would show only in those reports and the `Etcd`'s stamp.
-4. An edit of `closed`'s `addons.coreDNS.replicas` grants it revision B within 30 seconds, and its API server rolls to signer B, while it was never seen `Maintaining`.
+4. An edit of `closed`'s `addons.coreDNS.replicas` grants it revision B within 30 seconds, and its API server rolls to signer B, while it was never seen `Maintaining` by a watch that stayed unbroken.
 
 ## Nightly: the fleet limit
 
