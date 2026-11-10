@@ -353,7 +353,7 @@ func TestAHeldPassNotesTheQuotaCapTheEtcdRuns(t *testing.T) {
 		cp, class, quota, note string
 	}{
 		{"held-cap", "held-cap", "6Gi", "; DatastoreClass held-cap's quota 6Gi is capped at 4Gi: it needs 12Gi of volume and Etcd held-cap-etcd's is 8Gi"},
-		{"held-raise", "held-raise", "6Gi", ""},
+		{"held-raise", "held-raise", "12Gi", ""},
 	} {
 		t.Run(c.cp, func(t *testing.T) {
 			class := newClass(c.class, "Retain")
@@ -703,6 +703,24 @@ func TestAGrantAsksEtcdDruidOnceItRunsTheGivenVersion(t *testing.T) {
 	etcd = getEtcd(t, ns, cp)
 	if err := requestedAs(fmt.Sprintf("%d/%s", etcd.Generation, revision), true)(etcd); err != nil {
 		t.Errorf("a spec change under the same revision, while etcd-druid's Deployment is absent: %v", err)
+	}
+}
+
+func TestAnEtcdWithoutAStampOrARecordWaitsForEtcdDruid(t *testing.T) {
+	ns := namespace(t)
+	const cp = "unstamped"
+	createClass(t, newClass(cp, "Retain"))
+	heldTenant(t, ns, cp, cp, nil)
+	etcd := &druidv1alpha1.Etcd{ObjectMeta: metav1.ObjectMeta{Name: cp + "-etcd", Namespace: ns}}
+	patch := client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"annotations":{"`+lodiav1alpha1.OperatorRevisionAnnotation+`":null,"`+lodiav1alpha1.EtcdReconcileRequestedAnnotation+`":null}}}`))
+	if err := k8s.Patch(t.Context(), etcd, patch, client.FieldOwner("kubectl-annotate")); err != nil {
+		t.Fatal(err)
+	}
+	held := operatorAt(unpaused(k8s), revision)
+	held.EtcdDruidDeployment = "druid-absent"
+	mustPass(t, held, ns, cp)
+	if err := requestedAs("", false)(getEtcd(t, ns, cp)); err != nil {
+		t.Errorf("a held pass over an Etcd without a stamp or a record, while etcd-druid's Deployment is absent: %v", err)
 	}
 }
 
