@@ -584,6 +584,23 @@ func TestAHeldPassDeletesTheRoutesOfAHostnameAnotherControlPlaneOwns(t *testing.
 	}
 }
 
+func TestAHeldPassDeletesThePodDisruptionBudgetsARemovedHighAvailabilityLeaves(t *testing.T) {
+	cp := running(t, highAvailability)
+	pause(t, cp)
+	grant(t, cp, previous)
+	for _, component := range componentNames {
+		eventuallyBudget(t, cp, component)
+	}
+	update(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.HighAvailability = nil })
+
+	passOf(t, operatorAt(unpaused(), next), cp)
+	for _, component := range componentNames {
+		if budgetOrNil(t, cp, component) != nil {
+			t.Errorf("a held pass left the PodDisruptionBudget of %s", component)
+		}
+	}
+}
+
 func TestAStaleCacheWithAnOlderRevisionHoldsThePass(t *testing.T) {
 	cp := running(t)
 	grant(t, cp, next)
