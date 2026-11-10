@@ -497,6 +497,9 @@ func (r *Reconciler) applyEtcd(ctx context.Context, p *pass) (*outcome, error) {
 		}
 		return nil, err
 	}
+	if err := r.labelClaims(ctx, cp, etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation]); err != nil {
+		return nil, err
+	}
 	requested, requestErr := r.requestReconcile(ctx, p, etcd)
 	if requested == nil {
 		return nil, requestErr
@@ -513,9 +516,6 @@ func (r *Reconciler) applyEtcd(ctx context.Context, p *pass) (*outcome, error) {
 		return &outcome{etcd: etcd, sts: p.sts, restore: p.check.restored, condition: newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, message)}, requestErr
 	}
 	etcd = requested
-	if err := r.labelClaims(ctx, cp, etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation]); err != nil {
-		return nil, err
-	}
 	absent, err := r.missingSecrets(ctx, cp, etcd, p.secrets)
 	if err != nil {
 		return nil, err

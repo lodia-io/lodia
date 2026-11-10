@@ -574,21 +574,25 @@ func TestARequestThatConflictsIsMadeByTheNextPass(t *testing.T) {
 	}
 }
 
-func TestARequestTheAPIServerRefusesIsRefused(t *testing.T) {
-	ns := namespace(t)
-	const cp = "refused-request"
-	createClass(t, newClass(cp, "Retain"))
-	heldTenant(t, ns, cp, cp, nil)
-	grant(t, getControlPlane(t, ns, cp), revision)
+func refusingRequests(cp string) (client.WithWatch, error) {
 	refused := apierrors.NewForbidden(schema.GroupResource{Group: druidv1alpha1.SchemeGroupVersion.Group, Resource: "etcds"}, cp+"-etcd", errors.New("denied by a policy on "+druidv1alpha1.DruidOperationAnnotation))
-	refusing := interceptor.NewClient(unpaused(k8s), interceptor.Funcs{
+	return interceptor.NewClient(unpaused(k8s), interceptor.Funcs{
 		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
 			if _, ok := obj.(*druidv1alpha1.Etcd); ok {
 				return refused
 			}
 			return c.Patch(ctx, obj, patch, opts...)
 		},
-	})
+	}), refused
+}
+
+func TestARequestTheAPIServerRefusesIsRefused(t *testing.T) {
+	ns := namespace(t)
+	const cp = "refused-request"
+	createClass(t, newClass(cp, "Retain"))
+	heldTenant(t, ns, cp, cp, nil)
+	grant(t, getControlPlane(t, ns, cp), revision)
+	refusing, refused := refusingRequests(cp)
 	if _, err := passOf(t, operatorAt(refusing, revision), ns, cp); !errors.Is(err, refused) {
 		t.Fatalf("a pass whose request the API server refuses returned %v, want the refusal", err)
 	}
@@ -614,6 +618,36 @@ func TestARequestTheAPIServerRefusesIsRefused(t *testing.T) {
 	}
 	if ready := meta.FindStatusCondition(getControlPlane(t, ns, cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady); ready.Reason != lodiav1alpha1.ReasonReady {
 		t.Errorf("the pass after the refusal leaves DatastoreReady %s %q", ready.Reason, ready.Message)
+	}
+}
+
+func TestARefusedRequestLabelsTheClaimsOfTheAppliedEtcd(t *testing.T) {
+	ns := namespace(t)
+	const cp = "refused-claims"
+	createClass(t, newClass(cp, "Retain"))
+	plane := controlPlane(ns, cp, cp)
+	plane.Spec.Paused = true
+	create(t, plane)
+	writeGeneration(t, ns, cp, 1)
+	refusing, refused := refusingRequests(cp)
+	if _, err := passOf(t, operatorAt(refusing, revision), ns, cp); !errors.Is(err, refused) {
+		t.Fatalf("a pass whose request the API server refuses returned %v, want the refusal", err)
+	}
+	name := cp + "-etcd-" + cp + "-etcd-0"
+	create(t, claim(ns, name, nil))
+	if _, err := passOf(t, operatorAt(refusing, revision), ns, cp); !errors.Is(err, refused) {
+		t.Fatalf("a pass whose request the API server refuses returned %v, want the refusal", err)
+	}
+	if got := getClaim(t, ns, name).Labels[lodiav1alpha1.ControlPlaneUIDLabel]; got != string(getControlPlane(t, ns, cp).UID) {
+		t.Errorf("a pass whose request is refused left claim %s labelled %s=%q, want the ControlPlane's UID", name, lodiav1alpha1.ControlPlaneUIDLabel, got)
+	}
+
+	if err := k8s.Delete(t.Context(), getEtcd(t, ns, cp)); err != nil {
+		t.Fatal(err)
+	}
+	mustPass(t, operatorAt(unpaused(k8s), revision), ns, cp)
+	if err := requestedAs("1/"+revision, true)(getEtcd(t, ns, cp)); err != nil {
+		t.Errorf("the pass after the Etcd's deletion: %v", err)
 	}
 }
 
