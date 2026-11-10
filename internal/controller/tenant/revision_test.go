@@ -579,6 +579,54 @@ func TestWithoutAGrantedRevisionTenantWaitsForTheTarget(t *testing.T) {
 	}
 }
 
+func TestAWaitKeepsARefusalAndAnUnfinishedApply(t *testing.T) {
+	cp := controlPlane(t, "tenant-wait-keeps", paused)
+	publish(t, cp)
+	for _, granted := range []string{revision, previous} {
+		for wait, c := range map[string]struct {
+			access          metav1.ConditionStatus
+			reason, message string
+		}{
+			"for access":                     {metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer, "AccessReady is not True for this generation"},
+			"for a Secret Tenant cannot use": {metav1.ConditionTrue, lodiav1alpha1.ReasonBound, "Secret dev-ca-bundle does not exist"},
+		} {
+			t.Run(fmt.Sprintf("%s, %s granted", wait, granted), func(t *testing.T) {
+				setTarget(t, cp, version, granted)
+				refresh(t, cp)
+				applyStatus(t, cp, "test/"+lodiav1alpha1.ConditionAccessReady, map[string]any{"conditions": []any{
+					conditionAt(lodiav1alpha1.ConditionAccessReady, c.access, c.reason, cp.Generation),
+				}})
+				for _, before := range []struct {
+					status metav1.ConditionStatus
+					reason string
+					kept   bool
+				}{
+					{metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, true},
+					{metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, true},
+					{metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, false},
+				} {
+					setAddonsApplied(t, cp, before.status, before.reason, cp.Generation)
+					applyStatus(t, cp, "test/"+lodiav1alpha1.ConditionAddonsAvailable, map[string]any{"conditions": []any{
+						conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable, cp.Generation),
+					}})
+					if err := passWith(t, runningOperator(), cp); err != nil {
+						t.Fatal(err)
+					}
+					if before.kept {
+						expectAt(t, cp, lodiav1alpha1.ConditionAddonsApplied, before.status, before.reason, cp.Generation)
+					} else {
+						expectAt(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, cp.Generation)
+						if got := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied).Message; got != c.message {
+							t.Errorf("over %s AddonsApplied says %q, want %q", before.reason, got, c.message)
+						}
+					}
+					expectAt(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, cp.Generation)
+				}
+			})
+		}
+	}
+}
+
 func TestAStaleCacheWithAnOlderRevisionHoldsThePass(t *testing.T) {
 	cp, admin := heldTenant(t, "tenant-held-stale")
 	setTarget(t, cp, "v1.35.9", revision)

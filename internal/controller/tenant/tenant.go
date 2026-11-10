@@ -278,14 +278,24 @@ func outcome(err error) (string, string, bool) {
 // wait says what both conditions wait for: neither can be observed yet.
 func (r *Reconciler) wait(ctx context.Context, cp *lodiav1alpha1.ControlPlane, reason, message string) error {
 	return r.applyStatus(ctx, cp, cp.Status.Addons,
-		newCondition(cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, reason, message),
+		waiting(previous(cp, lodiav1alpha1.ConditionAddonsApplied), newCondition(cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, reason, message)),
 		newCondition(cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, reason, message))
 }
 
 // waitForAccess leaves a condition at the earlier generation it describes:
 // Tenant has not acted on this one.
 func waitForAccess(cp *lodiav1alpha1.ControlPlane, c metav1.Condition) metav1.Condition {
-	return statusapply.Wait(cp, &c, newCondition(cp, c.Type, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, "AccessReady is not True for this generation"))
+	return statusapply.Wait(cp, &c, waiting(c, newCondition(cp, c.Type, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, "AccessReady is not True for this generation")))
+}
+
+// waiting is what a wait reports instead of c. An AddonsApplied that names a
+// refused object or an unfinished apply stays: a lost access undoes no
+// observation, and a held pass writes True over a wait.
+func waiting(c, wait metav1.Condition) metav1.Condition {
+	if c.Type == lodiav1alpha1.ConditionAddonsApplied && (c.Reason == lodiav1alpha1.ReasonRefused || c.Reason == lodiav1alpha1.ReasonApplying) {
+		return c
+	}
+	return wait
 }
 
 type secretRead struct {

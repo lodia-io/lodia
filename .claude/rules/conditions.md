@@ -8,6 +8,7 @@ paths:
 
 - A writer that waits for another condition at a new generation leaves its own at the generation it last described; only a wait at the generation it already describes is False, `WaitingFor<X>` ([decision](../../docs/decisions/independent-controllers.md)).
 - A renderer held by `status.target.operatorRevision` reports what runs, at the generation its condition describes, as a wait does; Workloads' `WaitingForTarget` replaces a condition at the generation it describes unless that condition reports availability, and Tenant keeps `AddonsApplied` but for a refused creation and for True over a `WaitingFor*` reason.
+- Tenant's waits keep an `AddonsApplied` that is `Refused` or `Applying`: a lost access undoes no observation, and a held pass would write True over the wait.
 - A writer that decides from its own condition or status field while it waits, or keeps one while its calls to the tenant fail, reads it through `internal/live` and compares its status apply with that copy, not the cache's; its ClusterRole needs `get` on `controlplanes`.
 - A writer whose status apply carries the `resourceVersion` it read, and whose watch requeues every update of its object, needs no live read: a pass on a stale cache conflicts, or skips a write that the next pass makes.
 - Every status apply goes through `internal/statusapply`: a `ControlPlane`'s reads the object live once it finds a change, so its ClusterRole needs `get` on `controlplanes`, and `Backup` and `KubeconfigRequest` apply under the `resourceVersion` they read.
