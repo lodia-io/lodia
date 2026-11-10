@@ -57,6 +57,13 @@ const (
 	// nothing.
 	EtcdFormedAnnotation = "lodia.io/etcd-formed"
 
+	// EtcdReconcileRequestedAnnotation, written by the Datastore controller on
+	// an Etcd together with etcd-druid's druid.gardener.cloud/operation:
+	// reconcile, records the request as "<generation>/<operator revision>";
+	// a record that differs from the Etcd's generation and
+	// lodia.io/operator-revision is a request still to make.
+	EtcdReconcileRequestedAnnotation = "lodia.io/etcd-reconcile-requested"
+
 	// DataHashAnnotation, written by PKI on every Secret it writes, holds
 	// DataHash of the Secret's data, so that Workloads hashes a restart-only
 	// Secret into a pod template from its metadata alone.

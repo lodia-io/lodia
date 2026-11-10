@@ -53,18 +53,12 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 	// (etcd-druid@v0.39.0 internal/component/statefulset/builder.go#L468,
 	// internal/controller/compaction/snapshot.go#L87).
 	ca := druidv1alpha1.SecretReference{SecretReference: secret(lodiav1alpha1.EtcdCARole), DataKey: new(lodiav1alpha1.CACertKey)}
-	labels := map[string]string{lodiav1alpha1.ControlPlaneLabel: cp.Name}
 	etcd := &druidv1alpha1.Etcd{
-		TypeMeta: metav1.TypeMeta{APIVersion: druidv1alpha1.SchemeGroupVersion.String(), Kind: "Etcd"},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            lodiav1alpha1.EtcdName(cp.Name),
-			Namespace:       cp.Namespace,
-			Labels:          labels,
-			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cp, lodiav1alpha1.GroupVersion.WithKind("ControlPlane"))},
-		},
+		TypeMeta:   metav1.TypeMeta{APIVersion: druidv1alpha1.SchemeGroupVersion.String(), Kind: "Etcd"},
+		ObjectMeta: etcdMeta(cp),
 		Spec: druidv1alpha1.EtcdSpec{
 			Replicas: members,
-			Labels:   labels,
+			Labels:   map[string]string{lodiav1alpha1.ControlPlaneLabel: cp.Name},
 			Etcd: druidv1alpha1.EtcdConfig{
 				ClientUrlTLS: &druidv1alpha1.TLSConfig{TLSCASecretRef: ca, ServerTLSSecretRef: secret(lodiav1alpha1.EtcdServerRole), ClientTLSSecretRef: secret(lodiav1alpha1.EtcdClientRole)},
 				PeerUrlTLS:   &druidv1alpha1.PeerTLSConfig{TLSConfig: druidv1alpha1.TLSConfig{TLSCASecretRef: ca, ServerTLSSecretRef: secret(lodiav1alpha1.EtcdPeerRole)}},
@@ -183,6 +177,52 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 		}
 	}
 	return etcd, capped
+}
+
+func etcdMeta(cp *lodiav1alpha1.ControlPlane) metav1.ObjectMeta {
+	return metav1.ObjectMeta{
+		Name:            lodiav1alpha1.EtcdName(cp.Name),
+		Namespace:       cp.Namespace,
+		Labels:          map[string]string{lodiav1alpha1.ControlPlaneLabel: cp.Name},
+		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cp, lodiav1alpha1.GroupVersion.WithKind("ControlPlane"))},
+	}
+}
+
+// copied is the Etcd a held pass applies: current's spec on the certificate
+// generation given, those of current's annotations that an apply leaving them
+// out would remove, and the formed mark as render sets it. It names current's
+// resourceVersion, so that a copy from a stale cache conflicts instead of
+// writing an older spec back. etcd-druid's annotation and the record of a
+// request stay out of it, as out of every apply: one that carried them would
+// ask for ever, or take a request back before etcd-druid has run.
+func copied(cp *lodiav1alpha1.ControlPlane, current *druidv1alpha1.Etcd, generation int) *druidv1alpha1.Etcd {
+	etcd := &druidv1alpha1.Etcd{
+		TypeMeta:   metav1.TypeMeta{APIVersion: druidv1alpha1.SchemeGroupVersion.String(), Kind: "Etcd"},
+		ObjectMeta: etcdMeta(cp),
+		Spec:       *current.Spec.DeepCopy(),
+	}
+	etcd.UID, etcd.ResourceVersion = current.UID, current.ResourceVersion
+	for _, key := range []string{lodiav1alpha1.OperatorRevisionAnnotation, lodiav1alpha1.DatastoreClassAnnotation, lodiav1alpha1.DatastoreClassGenerationAnnotation, allowUnhealthyPodEviction} {
+		if value, ok := current.Annotations[key]; ok {
+			metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, key, value)
+		}
+	}
+	if formed(current) || current.Status.ReadyReplicas > 0 {
+		metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, lodiav1alpha1.EtcdFormedAnnotation, string(current.UID))
+	}
+	name := func(certificate lodiav1alpha1.EtcdCertificateRole) string {
+		return lodiav1alpha1.EtcdCertificateSecretName(cp.Name, certificate, generation)
+	}
+	if tls := etcd.Spec.Etcd.ClientUrlTLS; tls != nil {
+		tls.TLSCASecretRef.Name, tls.ServerTLSSecretRef.Name, tls.ClientTLSSecretRef.Name = name(lodiav1alpha1.EtcdCARole), name(lodiav1alpha1.EtcdServerRole), name(lodiav1alpha1.EtcdClientRole)
+	}
+	if peer := etcd.Spec.Etcd.PeerUrlTLS; peer != nil {
+		peer.TLSCASecretRef.Name, peer.ServerTLSSecretRef.Name = name(lodiav1alpha1.EtcdCARole), name(lodiav1alpha1.EtcdPeerRole)
+	}
+	if tls := etcd.Spec.Backup.TLS; tls != nil {
+		tls.TLSCASecretRef.Name, tls.ServerTLSSecretRef.Name, tls.ClientTLSSecretRef.Name = name(lodiav1alpha1.EtcdCARole), name(lodiav1alpha1.EtcdBackupRestoreRole), name(lodiav1alpha1.EtcdClientRole)
+	}
+	return etcd
 }
 
 func claimSize(claim corev1.PersistentVolumeClaim) resource.Quantity {
@@ -396,8 +436,8 @@ func updatedMembers(etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) *int32 {
 
 // etcd-druid refreshes every Etcd's status every 15 seconds
 // (etcd-druid@v0.39.0 api/config/v1alpha1/defaults.go#L104, charts/values.yaml#L63)
-// with new timestamps alone; only a change readiness, status.datastore or
-// membersHeld reads gets a pass.
+// with new timestamps alone; only a change readiness, status.datastore,
+// membersHeld or a request to etcd-druid reads gets a pass.
 func etcdChanged() predicate.Funcs {
 	return predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool {
 		before, ok := e.ObjectOld.(*druidv1alpha1.Etcd)
@@ -409,8 +449,9 @@ func etcdChanged() predicate.Funcs {
 func readinessInput(etcd *druidv1alpha1.Etcd) string {
 	var b strings.Builder
 	_, kept := keptMember(etcd)
-	fmt.Fprintf(&b, "%d %t %d %t %d/%d %d %t;", etcd.Generation, !etcd.DeletionTimestamp.IsZero(), ptr.Deref(etcd.Status.ObservedGeneration, 0),
-		ptr.Deref(etcd.Status.Ready, false), etcd.Status.ReadyReplicas, etcd.Spec.Replicas, len(etcd.Status.Members), kept)
+	fmt.Fprintf(&b, "%d %t %d %t %d/%d %d %t %q %t;", etcd.Generation, !etcd.DeletionTimestamp.IsZero(), ptr.Deref(etcd.Status.ObservedGeneration, 0),
+		ptr.Deref(etcd.Status.Ready, false), etcd.Status.ReadyReplicas, etcd.Spec.Replicas, len(etcd.Status.Members), kept,
+		etcd.Annotations[lodiav1alpha1.EtcdReconcileRequestedAnnotation], druidv1alpha1.HasReconcileOperationAnnotation(etcd.ObjectMeta))
 	for _, c := range etcd.Status.Conditions {
 		fmt.Fprintf(&b, "%s=%s/%s;", c.Type, c.Status, c.Reason)
 	}

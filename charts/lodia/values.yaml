@@ -24,10 +24,11 @@ etcdDruid:
   operatorConfig:
     controllers:
       etcd:
-        enableEtcdSpecAutoReconcile: true
+        enableEtcdSpecAutoReconcile: false
 
 etcdDruidNamespace: ""
 etcdDruidVersion: ""
+etcdDruidDeployment: ""
 
 health:
   period: 5s

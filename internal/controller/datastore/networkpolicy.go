@@ -77,8 +77,9 @@ func networkPolicy(cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, dru
 }
 
 // applyNetworkPolicy finds the policy by name, labelled or not, as the Etcd is
-// found, and never writes over one another owner keeps. The first result says
-// why the policy is not written, the second carries a refusal for the log.
+// found, never writes over one another owner keeps, and while the pass is
+// held writes it only when it is missing. The first result says why the
+// policy is not written, the second carries a refusal for the log.
 func (r *Reconciler) applyNetworkPolicy(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) (*metav1.Condition, error) {
 	key := client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.EtcdName(cp.Name)}
 	current := &networkingv1.NetworkPolicy{}
@@ -96,6 +97,9 @@ func (r *Reconciler) applyNetworkPolicy(ctx context.Context, cp *lodiav1alpha1.C
 				fmt.Sprintf("another owner keeps NetworkPolicy %s by %s %s (UID %s); the Datastore controller writes it once it is gone: the garbage collector deletes a previous ControlPlane's, any other owner's needs a person",
 					key.Name, ref.Kind, ref.Name, ref.UID))
 			return &held, nil
+		}
+		if r.held(cp) {
+			return nil, nil
 		}
 	}
 	if err := r.Apply(ctx, networkPolicy(cp, etcd, r.EtcdDruidNamespace, r.OperatorNamespace), client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {

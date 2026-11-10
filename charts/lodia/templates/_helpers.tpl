@@ -17,3 +17,19 @@ helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 {{ .image.repository }}:{{ .image.tag | default .appVersion }}
 {{- end -}}
 {{- end }}
+
+{{- define "lodia.etcdDruidNamespace" -}}
+{{- if .Values.etcdDruid.enabled -}}
+{{ .Release.Namespace }}
+{{- else -}}
+{{ required "etcdDruidNamespace must name the namespace etcd-druid runs in while etcdDruid.enabled is false" .Values.etcdDruidNamespace }}
+{{- end -}}
+{{- end }}
+
+{{- define "lodia.etcdDruidDeployment" -}}
+{{- if .Values.etcdDruid.enabled -}}
+etcd-druid
+{{- else -}}
+{{ required "etcdDruidDeployment must name etcd-druid's Deployment while etcdDruid.enabled is false" .Values.etcdDruidDeployment }}
+{{- end -}}
+{{- end }}

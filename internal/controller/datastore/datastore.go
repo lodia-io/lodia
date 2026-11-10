@@ -28,6 +28,7 @@ import (
 	corev1ac "k8s.io/client-go/applyconfigurations/core/v1"
 	metav1ac "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/utils/clock"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -51,6 +52,9 @@ const (
 	FieldManager = "lodia/" + Name
 )
 
+// maxRevision is the MaxLength of status.datastore.operatorRevision.
+const maxRevision = 128
+
 type Reconciler struct {
 	client.Client
 	// Reader reads the API server: what the label-filtered cache does not
@@ -59,6 +63,15 @@ type Reconciler struct {
 	// EtcdDruidNamespace is where etcd-druid runs; the etcd's NetworkPolicy
 	// admits its pods to the backup-restore sidecar.
 	EtcdDruidNamespace string
+	// EtcdDruidDeployment is etcd-druid's Deployment in EtcdDruidNamespace,
+	// which must run EtcdDruidVersion in every replica before an Etcd is
+	// handed to it under a new operator revision.
+	EtcdDruidDeployment string
+	EtcdDruidVersion    string
+	// Revision is the running operator revision, which the Datastore
+	// controller renders with once Lifecycle grants it in
+	// status.target.operatorRevision.
+	Revision string
 	// OperatorNamespace is where the operator runs; the etcd's NetworkPolicy
 	// admits its pods to the client port, which the backup reconciler dials.
 	OperatorNamespace string
@@ -139,6 +152,7 @@ func (r *Reconciler) controlPlanesUsing(ctx context.Context, class client.Object
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;patch;delete
+// get on etcd-druid's Deployment is a Role in its namespace, which the chart writes: no marker can name that namespace.
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	cp := &lodiav1alpha1.ControlPlane{}
@@ -149,9 +163,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, nil
 	}
 	// A restore decides from its own status and carries it into every apply,
-	// read live, since the cache can lag behind this controller's own last
-	// write.
-	if cp.Spec.RestoreFrom != nil {
+	// and a held pass keeps each condition at the generation it describes;
+	// both read it live, since the cache can lag behind this controller's own
+	// last write.
+	if cp.Spec.RestoreFrom != nil || r.held(cp) {
 		if err := live.Datastore(ctx, r.Reader, cp, lodiav1alpha1.ConditionDatastoreReady, lodiav1alpha1.ConditionBackupReady); err != nil {
 			return ctrl.Result{}, fmt.Errorf("read ControlPlane %s: %w", cp.Name, err)
 		}
@@ -188,6 +203,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			return ctrl.Result{}, err
 		}
 	}
+	if granted(cp) == "" {
+		return ctrl.Result{}, r.waitForTarget(ctx, cp)
+	}
 	out, err := r.reconcileEtcd(ctx, cp)
 	if out == nil {
 		return ctrl.Result{}, err
@@ -207,10 +225,52 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		err = errors.Join(err, policyErr)
 	}
-	if statusErr := r.applyStatus(ctx, cp, datastoreStatus(out.etcd, out.sts), out.restore, out.condition, backupReady(out.etcd)); statusErr != nil || err != nil {
+	datastore, readErr := r.datastoreStatus(ctx, cp, out.etcd, out.sts)
+	if readErr != nil {
+		return ctrl.Result{}, errors.Join(err, readErr)
+	}
+	ready, backup := out.condition, backupReady(out.etcd)
+	if r.held(cp) {
+		ready.ObservedGeneration, backup.ObservedGeneration = described(cp, ready.Type), described(cp, backup.Type)
+	}
+	if statusErr := r.applyStatus(ctx, cp, datastore, out.restore, ready, backup); statusErr != nil || err != nil {
 		return ctrl.Result{}, errors.Join(err, statusErr)
 	}
 	return ctrl.Result{RequeueAfter: out.requeueAfter}, nil
+}
+
+// held says whether cp's writes wait for Lifecycle to grant the running
+// operator revision.
+func (r *Reconciler) held(cp *lodiav1alpha1.ControlPlane) bool {
+	return granted(cp) != r.Revision
+}
+
+func granted(cp *lodiav1alpha1.ControlPlane) string {
+	if cp.Status.Target == nil {
+		return ""
+	}
+	return cp.Status.Target.OperatorRevision
+}
+
+// described is the generation a held pass reports a condition at: the one
+// the condition describes, read live, so that an owner's edit does not read
+// as reported before Lifecycle grants the running revision.
+func described(cp *lodiav1alpha1.ControlPlane, conditionType string) int64 {
+	if c := meta.FindStatusCondition(cp.Status.Conditions, conditionType); c != nil {
+		return c.ObservedGeneration
+	}
+	return cp.Generation
+}
+
+// waitForTarget writes nothing but both conditions, waiting, until Lifecycle
+// grants a first operator revision.
+func (r *Reconciler) waitForTarget(ctx context.Context, cp *lodiav1alpha1.ControlPlane) error {
+	waiting := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget, "waiting for Lifecycle to set status.target.operatorRevision")
+	backup := waiting
+	backup.Type = lodiav1alpha1.ConditionBackupReady
+	return r.applyStatus(ctx, cp, cp.Status.Datastore, cp.Status.Restore,
+		statusapply.Wait(cp, meta.FindStatusCondition(cp.Status.Conditions, waiting.Type), waiting),
+		statusapply.Wait(cp, meta.FindStatusCondition(cp.Status.Conditions, backup.Type), backup))
 }
 
 // outcome is what a pass reports. A nil outcome writes no status, and comes
@@ -238,10 +298,13 @@ type pass struct {
 	check        restoreCheck
 	members      int32
 	rendered     *druidv1alpha1.Etcd
-	// held is the note on DatastoreReady of a class held or a quota capped; a
-	// held class renders no cap, so the two never meet. It and refusal, an
-	// apply of the credentials the API server refused, reach whichever step
-	// the pass ends on.
+	// copied says that rendered is the current Etcd's copy a held pass
+	// applies.
+	copied bool
+	// held is the note on DatastoreReady of a class held or a quota capped,
+	// and of a request that waits for etcd-druid; a held class renders no cap,
+	// so those two never meet. It and refusal, an apply of the credentials the
+	// API server refused, reach whichever step the pass ends on.
 	held    string
 	heldFor time.Duration
 	refusal error
@@ -362,7 +425,8 @@ func (r *Reconciler) holdClass(ctx context.Context, p *pass) (*outcome, error) {
 
 func (r *Reconciler) renderEtcd(ctx context.Context, p *pass) error {
 	cp := p.cp
-	if p.class != nil && p.class.Spec.Backup != nil {
+	p.copied = p.current != nil && r.held(cp)
+	if !p.copied && p.class != nil && p.class.Spec.Backup != nil {
 		namespace := &corev1.Namespace{}
 		if err := r.Reader.Get(ctx, client.ObjectKey{Name: cp.Namespace}, namespace); err != nil {
 			return fmt.Errorf("read Namespace %s: %w", cp.Namespace, err)
@@ -379,8 +443,13 @@ func (r *Reconciler) renderEtcd(ctx context.Context, p *pass) error {
 	if err := r.restoreMembers(ctx, p); err != nil {
 		return err
 	}
+	if p.copied {
+		p.rendered = copied(cp, p.current, p.generation)
+		return nil
+	}
 	var capped string
 	p.rendered, capped = render(cp, p.class, p.namespaceUID, p.generation, p.current, p.claims, p.sts, p.members)
+	metav1.SetMetaDataAnnotation(&p.rendered.ObjectMeta, lodiav1alpha1.OperatorRevisionAnnotation, r.Revision)
 	if capped != "" {
 		p.held = capped
 	}
@@ -399,6 +468,9 @@ func (r *Reconciler) applyEtcd(ctx context.Context, p *pass) (*outcome, error) {
 		}
 		return nil, err
 	}
+	if etcd, err = r.requestReconcile(ctx, p, etcd); err != nil {
+		return nil, err
+	}
 	if err := r.labelClaims(ctx, cp, etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation]); err != nil {
 		return nil, err
 	}
@@ -407,12 +479,84 @@ func (r *Reconciler) applyEtcd(ctx context.Context, p *pass) (*outcome, error) {
 		return nil, err
 	}
 	condition := p.check.reported(cp, readiness(etcd, absent))
-	condition.Message = note(condition.Message, memberNote(etcd, p.members))
+	if !p.copied {
+		condition.Message = note(condition.Message, memberNote(etcd, p.members))
+	}
 	requeueAfter := p.heldFor
-	if updated := updatedMembers(etcd, p.sts); updated == nil || *updated < etcd.Spec.Replicas {
+	if updated := updatedMembers(etcd, p.sts); updated == nil || *updated < etcd.Spec.Replicas || etcd.Annotations[lodiav1alpha1.EtcdReconcileRequestedAnnotation] != recordOf(etcd) {
 		requeueAfter = 15 * time.Second
 	}
 	return &outcome{etcd: etcd, sts: p.sts, restore: p.check.restored, condition: condition, requeueAfter: sooner(requeueAfter, p.check.requeueAfter)}, nil
+}
+
+// requestReconcile asks etcd-druid, which reconciles an Etcd's spec only on
+// request (etcd-druid@v0.39.0 internal/controller/etcd/reconcile_spec.go#L200-L224),
+// to reconcile etcd once for each generation and stamp: its annotation and
+// Lodia's record of the request go together, under the resourceVersion of
+// the apply's response, so that a pass on an older response conflicts and
+// the next one asks again. etcd-druid removes its annotation once it has
+// reconciled (reconcile_complete.go#L44-L55); a request waits while it is
+// there, and the watch brings the pass after its removal. A request under a
+// revision the record does not name waits for etcd-druid's Deployment to run
+// the version the operator was given in every replica: an older etcd-druid
+// would take it and roll the members to its own render.
+func (r *Reconciler) requestReconcile(ctx context.Context, p *pass, etcd *druidv1alpha1.Etcd) (*druidv1alpha1.Etcd, error) {
+	want := recordOf(etcd)
+	recorded, ok := etcd.Annotations[lodiav1alpha1.EtcdReconcileRequestedAnnotation]
+	if recorded == want || druidv1alpha1.HasReconcileOperationAnnotation(etcd.ObjectMeta) {
+		return etcd, nil
+	}
+	stamp := etcd.Annotations[lodiav1alpha1.OperatorRevisionAnnotation]
+	if _, revision, _ := strings.Cut(recorded, "/"); !ok || revision != stamp {
+		pending, err := r.druidPending(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if pending != "" {
+			p.held = note(p.held, fmt.Sprintf("etcd-druid is asked to reconcile Etcd %s under operator revision %s once %s", etcd.Name, stamp, pending))
+			return etcd, nil
+		}
+	}
+	requested := etcd.DeepCopy()
+	metav1.SetMetaDataAnnotation(&requested.ObjectMeta, druidv1alpha1.DruidOperationAnnotation, druidv1alpha1.DruidOperationReconcile)
+	metav1.SetMetaDataAnnotation(&requested.ObjectMeta, lodiav1alpha1.EtcdReconcileRequestedAnnotation, want)
+	err := r.Patch(ctx, requested, client.MergeFromWithOptions(etcd, client.MergeFromWithOptimisticLock{}), client.FieldOwner(FieldManager))
+	switch {
+	case apierrors.IsConflict(err):
+		return etcd, nil
+	case err != nil:
+		return nil, fmt.Errorf("ask etcd-druid to reconcile Etcd %s: %w", etcd.Name, err)
+	}
+	return requested, nil
+}
+
+// recordOf is the record of a request to reconcile etcd as it stands.
+func recordOf(etcd *druidv1alpha1.Etcd) string {
+	return fmt.Sprintf("%d/%s", etcd.Generation, etcd.Annotations[lodiav1alpha1.OperatorRevisionAnnotation])
+}
+
+// druidPending says why etcd-druid's Deployment does not yet run the version
+// the operator was given in every replica, as kubectl rollout status counts
+// them (kubernetes/kubernetes@v1.37.1 staging/src/k8s.io/kubectl/pkg/polymorphichelpers/rollout_status.go#L75-L91);
+// empty once it does. It is read uncached: the cache holds only what Lodia
+// labels.
+func (r *Reconciler) druidPending(ctx context.Context) (string, error) {
+	key := client.ObjectKey{Namespace: r.EtcdDruidNamespace, Name: r.EtcdDruidDeployment}
+	d := &appsv1.Deployment{}
+	if err := r.Reader.Get(ctx, key, d); err != nil {
+		if apierrors.IsNotFound(err) {
+			return fmt.Sprintf("Deployment %s exists", key), nil
+		}
+		return "", fmt.Errorf("read Deployment %s: %w", key, err)
+	}
+	if !slices.ContainsFunc(d.Spec.Template.Spec.Containers, func(c corev1.Container) bool { return strings.HasSuffix(c.Image, ":"+r.EtcdDruidVersion) }) {
+		return fmt.Sprintf("Deployment %s runs etcd-druid %s", key, r.EtcdDruidVersion), nil
+	}
+	s := d.Status
+	if s.ObservedGeneration < d.Generation || s.UpdatedReplicas < ptr.Deref(d.Spec.Replicas, 1) || s.Replicas > s.UpdatedReplicas || s.AvailableReplicas < s.UpdatedReplicas {
+		return fmt.Sprintf("Deployment %s has rolled out etcd-druid %s to every replica", key, r.EtcdDruidVersion), nil
+	}
+	return "", nil
 }
 
 // sooner is the earlier of two requeues, 0 being none.
@@ -424,8 +568,11 @@ func sooner(a, b time.Duration) time.Duration {
 }
 
 func note(message, held string) string {
-	if held == "" {
+	switch {
+	case held == "":
 		return message
+	case message == "":
+		return held
 	}
 	return message + "; " + held
 }
@@ -779,7 +926,11 @@ func (r *Reconciler) finalize(ctx context.Context, cp *lodiav1alpha1.ControlPlan
 		etcd = nil
 	}
 	deleting := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonDeleting, "the ControlPlane is being deleted: the Etcd goes first, then its claims as the class says")
-	if err := r.applyStatus(ctx, cp, datastoreStatus(etcd, nil), cp.Status.Restore, deleting, backupReady(etcd)); err != nil {
+	datastore, err := r.datastoreStatus(ctx, cp, etcd, nil)
+	if err != nil {
+		return 0, err
+	}
+	if err := r.applyStatus(ctx, cp, datastore, cp.Status.Restore, deleting, backupReady(etcd)); err != nil {
 		return 0, err
 	}
 	// A claim no pass has labelled yet can only be this Etcd's: VolumesExist
@@ -857,10 +1008,13 @@ func (r *Reconciler) setFinalizer(ctx context.Context, cp *lodiav1alpha1.Control
 }
 
 // datastoreStatus says where the API server reaches the etcd, etcd-druid's
-// client Service, and where the Etcd's snapshots go.
-func datastoreStatus(etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) *lodiav1alpha1.DatastoreStatus {
+// client Service, where the Etcd's snapshots go, and the operator revision it
+// runs: its stamp once rolledOut says so, and until then the revision the API
+// server holds, since the field is written whole on every pass and the cache
+// can lag this controller's own last write.
+func (r *Reconciler) datastoreStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) (*lodiav1alpha1.DatastoreStatus, error) {
 	if etcd == nil {
-		return nil
+		return nil, nil
 	}
 	host, port := clientEndpoint(etcd)
 	status := &lodiav1alpha1.DatastoreStatus{
@@ -874,14 +1028,42 @@ func datastoreStatus(etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) *lodiav1
 	if name := etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation]; name != "" && err == nil {
 		status.Class = &lodiav1alpha1.DatastoreClassStatus{Name: name, Generation: generation}
 	}
-	return status
+	if stamp, ok := rolledOut(etcd, sts); ok {
+		status.OperatorRevision = stamp
+		return status, nil
+	}
+	if err := live.Datastore(ctx, r.Reader, cp); err != nil {
+		return nil, fmt.Errorf("read ControlPlane %s: %w", cp.Name, err)
+	}
+	if previous := cp.Status.Datastore; previous != nil {
+		status.OperatorRevision = previous.OperatorRevision
+	}
+	return status, nil
+}
+
+// rolledOut gives the Etcd's stamp once etcd-druid has reconciled the request
+// for its generation and stamp and every member runs that spec: a revision
+// that changes no field of the spec rolls a new etcd-druid's render with the
+// generation unchanged, and etcd-druid can mark as observed a generation it
+// did not reconcile (reconcile_complete.go#L33-L36). A stamp longer than the
+// field is not reported.
+func rolledOut(etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) (string, bool) {
+	stamp := etcd.Annotations[lodiav1alpha1.OperatorRevisionAnnotation]
+	updated := updatedMembers(etcd, sts)
+	return stamp, etcd.Annotations[lodiav1alpha1.EtcdReconcileRequestedAnnotation] == recordOf(etcd) && !druidv1alpha1.HasReconcileOperationAnnotation(etcd.ObjectMeta) &&
+		updated != nil && *updated == etcd.Spec.Replicas && len(stamp) <= maxRevision
 }
 
 // applyStatus writes DatastoreReady and BackupReady together: the conditions
 // are a list keyed by type, and an apply that left one out would give up its
 // ownership. The restore is carried into every apply for the same reason.
+// Each condition is at cp's generation unless it names one.
 func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, datastore *lodiav1alpha1.DatastoreStatus, restore *lodiav1alpha1.RestoreStatus, ready, backup metav1.Condition) error {
-	ready.ObservedGeneration, backup.ObservedGeneration = cp.Generation, cp.Generation
+	for _, c := range []*metav1.Condition{&ready, &backup} {
+		if c.ObservedGeneration == 0 {
+			c.ObservedGeneration = cp.Generation
+		}
+	}
 	changed := !equality.Semantic.DeepEqual(cp.Status.Datastore, datastore) || !equality.Semantic.DeepEqual(cp.Status.Restore, restore)
 	return statusapply.Apply(ctx, r.Client, r.Reader, FieldManager, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{ready, backup}, Datastore: datastore, Restore: restore}, changed)
 }
