@@ -704,3 +704,27 @@ func TestADeadlineThatStandsBeforeTheGrantKeepsItWaiting(t *testing.T) {
 	pastDeadline(&f)
 	expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintenanceFailed, message: "the change Lodia started failed: APIServerReady: ProgressDeadlineExceeded: kube-apiserver: ReplicaSet has timed out progressing", slot: true})
 }
+
+func TestATenantWaitingAfterTheGrantKeepsTheSlotMaintaining(t *testing.T) {
+	f := held(inWindow("12:00", "13:00", ""),
+		condition(metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonWaitingForAccess, Message: "Secret dev-ca-bundle is not controlled by this ControlPlane"}),
+		condition(metav1.Condition{Type: lodiav1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonWaitingForAccess, ObservedGeneration: 3, LastTransitionTime: metav1.NewTime(present.Add(-time.Hour))}))
+	adopt(f.cp, expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, takesSlot: true, slot: true}))
+	reportsAll(revisionB)(&f)
+	f.cp.Status.Addons.OperatorRevision = revisionA
+	for _, after := range []time.Duration{time.Hour, 24 * time.Hour} {
+		f.now = present.Add(after)
+		adopt(f.cp, expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, message: "the addons: reports operator revision " + revisionA + ", not " + revisionB, slot: true}))
+	}
+
+	ends := f
+	ends.cp = f.cp.DeepCopy()
+	condition(metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonApplied})(&ends)
+	reportsAll(revisionB)(&ends)
+	expectGrant(t, ends, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, settlingSince: new(f.now), requeue: settling, slot: true})
+
+	edited := f
+	edited.cp = f.cp.DeepCopy()
+	edited.cp.Generation = 4
+	expectGrant(t, edited, granted{revision: revisionB, reason: lodiav1alpha1.ReasonLatestGenerationNotObserved})
+}
