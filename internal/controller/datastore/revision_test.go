@@ -339,10 +339,18 @@ func TestAHeldPassCopiesTheCredentialsOfTheStoreTheEtcdNames(t *testing.T) {
 	mustPass(t, held, ns, cp)
 	copied(t, "other-access", "eu-west-1")
 
+	create(t, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "s3-third", Namespace: credentialsNamespace}, Data: map[string][]byte{"accessKeyID": []byte("third-access")}})
+	editClass(t, cp, func(class *lodiav1alpha1.DatastoreClass) { class.Spec.Backup.Store.SecretRef.Name = "s3-third" })
+	mustPass(t, held, ns, cp)
+	copied(t, "other-access", "eu-west-1")
+
 	grant(t, getControlPlane(t, ns, cp), revision)
 	mustPass(t, held, ns, cp)
 	if got := getEtcd(t, ns, cp).Spec.Backup.Store.Container; *got != "other-bucket" {
 		t.Errorf("the grant left the Etcd on bucket %s, want other-bucket", *got)
+	}
+	if got := getCopy(t, ns, cp).Data["accessKeyID"]; string(got) != "third-access" {
+		t.Errorf("the grant's pass left accessKeyID %s in the copy, want the class's third-access", got)
 	}
 }
 
