@@ -86,6 +86,9 @@ func TestOperatorUpgradeInWindows(t *testing.T) {
 				revisionA = revision
 			}
 			closedWas = recordClosed(ctx, t, k8s, closed)
+			if closedWas.etcdRevision != revisionA {
+				t.Fatalf("closed's Etcd is stamped %q, want %q", closedWas.etcdRevision, revisionA)
+			}
 			fleet = watchFleet(ctx, t, k8s, open, closed, anytime)
 			return ctx
 		}).
@@ -295,15 +298,34 @@ func readyAtOneRevision(ctx context.Context, t *testing.T, k8s client.Client, ke
 }
 
 func reportsRevision(cp *lodiav1alpha1.ControlPlane, revision string) error {
-	c, a, d := cp.Status.Components, cp.Status.Addons, cp.Status.Datastore
-	if c == nil || c.APIServer == nil || c.ControllerManager == nil || c.Scheduler == nil || a == nil || d == nil {
-		return fmt.Errorf("components %+v, addons %+v, datastore %+v", c, a, d)
+	return allAt(revisions(cp), revision)
+}
+
+func revisions(cp *lodiav1alpha1.ControlPlane) map[string]string {
+	parts := map[string]string{}
+	if c := cp.Status.Components; c != nil {
+		for part, s := range map[string]*lodiav1alpha1.ComponentStatus{"kube-apiserver": c.APIServer, "kube-controller-manager": c.ControllerManager, "kube-scheduler": c.Scheduler} {
+			if s != nil {
+				parts[part] = s.OperatorRevision
+			}
+		}
 	}
-	for part, got := range map[string]string{
-		"kube-apiserver": c.APIServer.OperatorRevision, "kube-controller-manager": c.ControllerManager.OperatorRevision, "kube-scheduler": c.Scheduler.OperatorRevision,
-		"the addons": a.OperatorRevision, "etcd": d.OperatorRevision,
-	} {
-		if got != revision {
+	if a := cp.Status.Addons; a != nil {
+		parts["the addons"] = a.OperatorRevision
+	}
+	if d := cp.Status.Datastore; d != nil {
+		parts["etcd"] = d.OperatorRevision
+	}
+	return parts
+}
+
+func allAt(parts map[string]string, revision string) error {
+	for _, part := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler", "the addons", "etcd"} {
+		got, ok := parts[part]
+		switch {
+		case !ok:
+			return fmt.Errorf("%s reports no operator revision", part)
+		case got != revision:
 			return fmt.Errorf("%s reports operator revision %q, not %q", part, got, revision)
 		}
 	}
@@ -327,14 +349,15 @@ func signerIs(ctx context.Context, k8s client.Client, key client.ObjectKey, imag
 }
 
 type closedState struct {
-	deployments map[string]int64
-	pods        map[string]types.UID
-	etcd        int64
-	inventory   string
+	deployments  map[string]int64
+	pods         map[string]types.UID
+	etcd         int64
+	etcdRevision string
+	inventory    string
 }
 
 func (s closedState) equal(other closedState) bool {
-	return maps.Equal(s.deployments, other.deployments) && maps.Equal(s.pods, other.pods) && s.etcd == other.etcd && s.inventory == other.inventory
+	return maps.Equal(s.deployments, other.deployments) && maps.Equal(s.pods, other.pods) && s.etcd == other.etcd && s.etcdRevision == other.etcdRevision && s.inventory == other.inventory
 }
 
 func recordClosed(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey) closedState {
@@ -358,7 +381,7 @@ func recordClosed(ctx context.Context, t *testing.T, k8s client.Client, key clie
 	if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: lodiav1alpha1.EtcdName(key.Name)}, etcd); err != nil {
 		t.Fatal(err)
 	}
-	s.etcd = etcd.Generation
+	s.etcd, s.etcdRevision = etcd.Generation, etcd.Annotations[lodiav1alpha1.OperatorRevisionAnnotation]
 	inventory := &corev1.ConfigMap{}
 	if err := openTenant(ctx, t, k8s, key).client.Get(ctx, client.ObjectKey{Namespace: metav1.NamespaceSystem, Name: "lodia-inventory"}, inventory); err != nil {
 		t.Fatal(err)
@@ -376,7 +399,7 @@ func waitingForWindow(o observation, revision string, opens time.Time) error {
 	case o.revision != revision:
 		return fmt.Errorf("target.operatorRevision is %q, want %q", o.revision, revision)
 	}
-	return nil
+	return allAt(o.parts, revision)
 }
 
 func hold(ctx context.Context, t *testing.T, d time.Duration, check func(context.Context) error) {
@@ -405,10 +428,11 @@ type observation struct {
 	progressing       string
 	revision          string
 	scheduledFor      *metav1.Time
+	parts             map[string]string
 }
 
 func observe(cp *lodiav1alpha1.ControlPlane, at time.Time) observation {
-	o := observation{key: client.ObjectKeyFromObject(cp), at: at, resourceVersion: cp.ResourceVersion, ready: metav1.ConditionUnknown, progressingStatus: metav1.ConditionUnknown}
+	o := observation{key: client.ObjectKeyFromObject(cp), at: at, resourceVersion: cp.ResourceVersion, ready: metav1.ConditionUnknown, progressingStatus: metav1.ConditionUnknown, parts: revisions(cp)}
 	if c := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionReady); c != nil {
 		o.ready, o.readyReason = c.Status, c.Reason
 	}
