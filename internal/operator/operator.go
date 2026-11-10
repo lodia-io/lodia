@@ -162,7 +162,7 @@ func Setup(mgr ctrl.Manager, in Inputs) error {
 	if err := (&lifecycle.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Clock: clock.RealClock{}, Revision: revision}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the lifecycle controller: %w", err)
 	}
-	if err := (&tenant.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), ApplyPeriod: 10 * time.Minute, TunnelImage: in.TunnelImage}).SetupWithManager(mgr, workers); err != nil {
+	if err := (&tenant.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), ApplyPeriod: 10 * time.Minute, TunnelImage: in.TunnelImage, Revision: revision}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the tenant controller: %w", err)
 	}
 	if err := newHealth(mgr.GetClient(), mgr.GetAPIReader(), in.Config.Health).SetupWithManager(mgr, workers); err != nil {

@@ -49,7 +49,7 @@ func gatewayMode(cp *lodiav1alpha1.ControlPlane) {
 
 func publishGateway(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 	t.Helper()
-	applyStatus(t, cp, "test/target", map[string]any{"target": map[string]any{"version": version}})
+	setTarget(t, cp, version, revision)
 	applyStatus(t, cp, "test/endpoint", map[string]any{"endpoint": map[string]any{
 		"apiServer":    map[string]any{"host": "api.dev.example.test", "port": int64(443)},
 		"konnectivity": map[string]any{"host": "konnectivity.dev.example.test", "port": int64(443)},
@@ -204,7 +204,7 @@ func TestAGatewayTenantGetsApiserverProxy(t *testing.T) {
 	left := cp.DeepCopy()
 	left.Spec.Endpoint = lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}}
 	left.Status.Endpoint.Tunnel = nil
-	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: left}, Reader: k8s, ApplyPeriod: time.Hour, Dial: *dial.Load()}
+	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: left}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: *dial.Load()}
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +255,7 @@ func TestOnlyGatewayModeReadsTheTunnelsClient(t *testing.T) {
 		reader := &failingSecret{Reader: k8s, name: "dev-tunnel-client"}
 		waiting := cp.DeepCopy()
 		meta.RemoveStatusCondition(&waiting.Status.Conditions, lodiav1alpha1.ConditionAccessReady)
-		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: waiting}, Reader: reader, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: unreachable}
+		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: waiting}, Reader: reader, Revision: revision, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: unreachable}
 		if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 			t.Errorf("%s: a pass waiting for access returned %v", c.namespace, err)
 		}
@@ -417,7 +417,7 @@ func TestAnotherOwnersSecretUnderThatNameIsLeftAlone(t *testing.T) {
 	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 	refresh(t, cp)
-	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: *dial.Load()}
+	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: *dial.Load()}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 		t.Fatal(err)
 	}
@@ -444,7 +444,7 @@ func TestARenewalReachesATenantWhoseEndpointIsGone(t *testing.T) {
 		t.Fatalf("status.endpoint is still %+v", cp.Status.Endpoint)
 	}
 	renew(t, cp, "without an endpoint")
-	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: *dial.Load()}
+	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: *dial.Load()}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 		t.Fatal(err)
 	}
@@ -464,7 +464,7 @@ func TestTheFirstWriteIsTheInventorys(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	r := &tenant.Reconciler{Client: k8s, Reader: k8s, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: *dial.Load()}
+	r := &tenant.Reconciler{Client: k8s, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: *dial.Load()}
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 		t.Fatal(err)
 	}
@@ -497,7 +497,7 @@ func TestAnUnchangedPairMovesNoResourceVersion(t *testing.T) {
 	meta.RemoveStatusCondition(&waiting.Status.Conditions, lodiav1alpha1.ConditionAccessReady)
 	before := get(t, admin, &corev1.Secret{}, "kube-system", clientSecret)
 	for name, at := range map[string]*lodiav1alpha1.ControlPlane{"a pass that applies": access, "a pass that waits": waiting} {
-		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: at}, Reader: k8s, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: *dial.Load()}
+		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: at}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: *dial.Load()}
 		for range 3 {
 			if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 				t.Fatalf("%s: %v", name, err)
@@ -533,7 +533,7 @@ func TestABlockingDialCostsDeliveryItsTimeoutAndThePassReports(t *testing.T) {
 		refresh(t, cp)
 		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 		defer cancel()
-		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: dropsPackets}
+		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: dropsPackets}
 		start := time.Now()
 		_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 		return time.Since(start), err
@@ -576,7 +576,7 @@ func TestWhatStopsDelivery(t *testing.T) {
 		dials.Add(1)
 		return nil, errors.New("connection refused")
 	}
-	r := &tenant.Reconciler{Client: k8s, Reader: k8s, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: counting}
+	r := &tenant.Reconciler{Client: k8s, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: counting}
 	pass := func() ctrl.Result {
 		t.Helper()
 		dials.Store(0)
@@ -662,7 +662,7 @@ func TestAFailedDeliveryStopsNothing(t *testing.T) {
 		}
 		return reaches(ctx, network, address)
 	}
-	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: firstFails}
+	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: firstFails}
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 		t.Fatal(err)
 	}
@@ -672,7 +672,7 @@ func TestAFailedDeliveryStopsNothing(t *testing.T) {
 
 	waiting := cp.DeepCopy()
 	meta.RemoveStatusCondition(&waiting.Status.Conditions, lodiav1alpha1.ConditionAccessReady)
-	r = &tenant.Reconciler{Client: snapshot{Client: k8s, cp: waiting}, Reader: &failingSecret{Reader: k8s, name: "dev-tunnel-client"}, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: reaches}
+	r = &tenant.Reconciler{Client: snapshot{Client: k8s, cp: waiting}, Reader: &failingSecret{Reader: k8s, name: "dev-tunnel-client"}, Revision: revision, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: reaches}
 	if result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil || result.RequeueAfter != time.Hour {
 		t.Errorf("a pass whose delivery could not read the pair returned %+v, %v", result, err)
 	}
@@ -684,7 +684,7 @@ func TestAFailedDeliveryStopsNothing(t *testing.T) {
 		{NonResourceURLs: []string{"*"}, Verbs: []string{"*"}},
 	}, authorizationv1.ResourceAttributes{Resource: "secrets", Verb: "patch", Namespace: "kube-system"})
 	renew(t, cp, "refused")
-	r = &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: reaches}
+	r = &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: reaches}
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apierrors.IsForbidden(err) {
 		t.Errorf("a pass whose applies are refused returned %v, want the ordinary apply's refusal", err)
 	}
@@ -725,7 +725,7 @@ func TestASecretTenantCannotUseIsReportedAndNothingIsWritten(t *testing.T) {
 			pass := func() ctrl.Result {
 				t.Helper()
 				refresh(t, cp)
-				r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: *dial.Load()}
+				r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: *dial.Load()}
 				result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 				if err != nil {
 					t.Fatal(err)
@@ -818,7 +818,7 @@ func TestDeliveryUsesOnlyWhatThisControlPlaneControls(t *testing.T) {
 		waiting := cp.DeepCopy()
 		shape(waiting)
 		meta.SetStatusCondition(&waiting.Status.Conditions, metav1.Condition{Type: lodiav1alpha1.ConditionAccessReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonWaitingForAPIServer})
-		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: waiting}, Reader: k8s, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: *dial.Load()}
+		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: waiting}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: *dial.Load()}
 		if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 			t.Fatal(err)
 		}
@@ -904,7 +904,7 @@ func TestATenantThatAnswersNothingCostsThePassItsTimeoutsAndThePassReports(t *te
 			update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
 			setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 			refresh(t, cp)
-			r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: answersNothing(t, cp)}
+			r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: answersNothing(t, cp)}
 			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 			defer cancel()
 			ended := make(chan error, 1)

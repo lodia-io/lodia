@@ -23,7 +23,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -69,6 +68,9 @@ type Reconciler struct {
 	ApplyPeriod time.Duration
 	// TunnelImage is lodia-tunnel's, which apiserver-proxy runs.
 	TunnelImage string
+	// Revision is the running operator revision, which Tenant renders with
+	// once Lifecycle grants it in status.target.operatorRevision.
+	Revision string
 	// Dial, when set, opens every connection to a tenant's API server; tests
 	// set it, since envtest has no DNS for the tenant's Service.
 	Dial func(ctx context.Context, network, address string) (net.Conn, error)
@@ -96,7 +98,7 @@ func inputs(cp *lodiav1alpha1.ControlPlane) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d %t", cp.Generation, cp.DeletionTimestamp.IsZero())
 	if t := cp.Status.Target; t != nil {
-		fmt.Fprintf(&b, " target=%s", t.Version)
+		fmt.Fprintf(&b, " target=%s %s", t.Version, t.OperatorRevision)
 	}
 	fmt.Fprintf(&b, " components=%q", reported(cp))
 	if e := cp.Status.Endpoint; e != nil {
@@ -154,12 +156,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		return ctrl.Result{RequeueAfter: min(waitPeriod, r.ApplyPeriod)}, nil
 	}
-	v, reason, waitingFor, err := newValues(cp, clusterCA)
+	if reason, message := waitsFor(cp); message != "" {
+		return ctrl.Result{}, r.wait(ctx, cp, reason, message)
+	}
+	v, outside, err := newValues(cp, clusterCA)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if waitingFor != "" {
-		return ctrl.Result{}, r.wait(ctx, cp, reason, waitingFor)
+	if outside != "" {
+		return ctrl.Result{}, r.wait(ctx, cp, lodiav1alpha1.ReasonWaitingForTarget, outside)
 	}
 	v.TunnelImage, v.tunnelCert, v.tunnelKey = r.TunnelImage, tunnelClient.Data[corev1.TLSCertKey], tunnelClient.Data[corev1.TLSPrivateKeyKey]
 	objects, err := render(v)
@@ -188,9 +193,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	addons := cp.Status.Addons
 	if applyErr == nil && len(others) == 0 {
-		rendered := ptr.Deref(addons, lodiav1alpha1.Rendered{})
-		rendered.Version = v.Version
-		addons = &rendered
+		addons = &lodiav1alpha1.Rendered{Version: v.Version, OperatorRevision: r.Revision}
 	}
 	if syncErr == nil {
 		available = rolled

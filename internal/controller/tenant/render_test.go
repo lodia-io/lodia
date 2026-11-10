@@ -77,7 +77,7 @@ func TestTheRenderIsPinned(t *testing.T) {
 				Spec:       lodiav1alpha1.ControlPlaneSpec{Endpoint: endpoint, Network: network, Addons: c.addons},
 				Status:     lodiav1alpha1.ControlPlaneStatus{Target: &lodiav1alpha1.Target{Version: "v1.35.8"}, Endpoint: &c.status},
 			}
-			v, _, waiting, err := newValues(cp, []byte("the cluster CA"))
+			v, waiting, err := newValues(cp, []byte("the cluster CA"))
 			if err != nil || waiting != "" {
 				t.Fatalf("%s, %s: %v %s", golden, mode, err, waiting)
 			}
@@ -125,7 +125,7 @@ func TestKubeProxyServesItsHealthOnTheAddressGiven(t *testing.T) {
 				Endpoint: &lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 443}, Konnectivity: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 8132}, InCluster: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 6443}},
 			},
 		}
-		v, _, waiting, err := newValues(cp, nil)
+		v, waiting, err := newValues(cp, nil)
 		if err != nil || waiting != "" {
 			t.Fatalf("%q: %v %s", address, err, waiting)
 		}
@@ -145,7 +145,7 @@ func TestTheKubernetesEndpointsAreRenderedFromInCluster(t *testing.T) {
 				Endpoint: &lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "api.dev.example.test", Port: 443}, Konnectivity: lodiav1alpha1.HostPort{Host: "api.dev.example.test", Port: 8132}, InCluster: lodiav1alpha1.HostPort{Host: host, Port: 31443}},
 			},
 		}
-		v, _, waiting, err := newValues(cp, nil)
+		v, waiting, err := newValues(cp, nil)
 		if err != nil || waiting != "" {
 			t.Fatalf("%s: %v %s", host, err, waiting)
 		}
@@ -199,7 +199,7 @@ func gatewayControlPlane(inCluster, tunnel string) *lodiav1alpha1.ControlPlane {
 			Network: lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
 		},
 		Status: lodiav1alpha1.ControlPlaneStatus{
-			Target: &lodiav1alpha1.Target{Version: "v1.35.8"},
+			Target: &lodiav1alpha1.Target{Version: "v1.35.8", OperatorRevision: "v0.0.0-test+running"},
 			Endpoint: &lodiav1alpha1.EndpointStatus{
 				APIServer:    lodiav1alpha1.HostPort{Host: "api.dev.example.test", Port: 443},
 				Konnectivity: lodiav1alpha1.HostPort{Host: "konnectivity.dev.example.test", Port: 443},
@@ -212,7 +212,7 @@ func gatewayControlPlane(inCluster, tunnel string) *lodiav1alpha1.ControlPlane {
 
 func rendered(t *testing.T, cp *lodiav1alpha1.ControlPlane) []*unstructured.Unstructured {
 	t.Helper()
-	v, _, waiting, err := newValues(cp, []byte("the cluster CA"))
+	v, waiting, err := newValues(cp, []byte("the cluster CA"))
 	if err != nil || waiting != "" {
 		t.Fatalf("%v %s", err, waiting)
 	}
@@ -428,13 +428,13 @@ func TestGatewayModeMovesTheAgentsToThePublicPath(t *testing.T) {
 func TestAGatewayEndpointWithoutATunnelWaits(t *testing.T) {
 	gateway := gatewayControlPlane("240.0.0.1", "tunnel.dev.example.test")
 	gateway.Status.Endpoint.Tunnel = nil
-	if _, reason, waiting, err := newValues(gateway, nil); err != nil || reason != lodiav1alpha1.ReasonWaitingForEndpoint || waiting == "" {
-		t.Errorf("a gateway endpoint without a tunnel gives %q %q %v", reason, waiting, err)
+	if reason, waiting := waitsFor(gateway); reason != lodiav1alpha1.ReasonWaitingForEndpoint || waiting == "" {
+		t.Errorf("a gateway endpoint without a tunnel gives %q %q", reason, waiting)
 	}
 	other := gateway.DeepCopy()
 	other.Spec.Endpoint = lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}}
-	if _, reason, waiting, err := newValues(other, nil); err != nil || waiting != "" {
-		t.Errorf("a nodePort endpoint without a tunnel gives %q %q %v", reason, waiting, err)
+	if reason, waiting := waitsFor(other); waiting != "" {
+		t.Errorf("a nodePort endpoint without a tunnel gives %q %q", reason, waiting)
 	}
 }
 
@@ -449,6 +449,18 @@ func TestTheTunnelIsAnInput(t *testing.T) {
 		change(changed.Status.Endpoint.Tunnel)
 		if inputs(changed) == before {
 			t.Errorf("a pass does not run for a change of the tunnel's %s", name)
+		}
+	}
+}
+
+func TestTheOperatorRevisionIsAnInput(t *testing.T) {
+	cp := gatewayControlPlane("240.0.0.1", "tunnel.dev.example.test")
+	before := inputs(cp)
+	for name, revision := range map[string]string{"granted": "v0.0.1-test+next", "gone": ""} {
+		changed := cp.DeepCopy()
+		changed.Status.Target.OperatorRevision = revision
+		if inputs(changed) == before {
+			t.Errorf("a pass does not run when the operator revision is %s", name)
 		}
 	}
 }
@@ -511,7 +523,7 @@ func TestTheAddonsRenderAtTheOldestOfTheComponents(t *testing.T) {
 				t.Errorf("%s: %s is %s, want %s", name, what, got[0], got[1])
 			}
 		}
-		if v, _, _, err := newValues(c.cp, nil); err != nil || v.Version != c.version {
+		if v, _, err := newValues(c.cp, nil); err != nil || v.Version != c.version {
 			t.Errorf("%s: the values carry the version %v (%v), want %s, which status.addons.version reports", name, v.Version, err, c.version)
 		}
 	}
@@ -527,9 +539,9 @@ func TestAVersionOutsideTheTableWaitsForTheTarget(t *testing.T) {
 		"the target the oldest, outside":       {reporting("v1.34.2", "v1.37.1", "", "v1.37.1"), `"v1.34.2"`},
 		"a version that is none":               {reporting("v1.37.1", "v1.37.1", "latest", "v1.37.1"), `""`},
 	} {
-		_, reason, message, err := newValues(c.cp, nil)
-		if err != nil || reason != lodiav1alpha1.ReasonWaitingForTarget || !strings.Contains(message, c.said) || !strings.HasSuffix(message, "is not a version Lodia runs") {
-			t.Errorf("%s: newValues gives %q %q %v, want WaitingForTarget naming %s", name, reason, message, err, c.said)
+		_, message, err := newValues(c.cp, nil)
+		if err != nil || !strings.Contains(message, c.said) || !strings.HasSuffix(message, "is not a version Lodia runs") {
+			t.Errorf("%s: newValues gives %q %v, want a message naming %s", name, message, err, c.said)
 		}
 	}
 }
@@ -543,9 +555,9 @@ func TestTheAddonsAreNeverNewerThanTheOldestComponent(t *testing.T) {
 			for _, controllerManager := range reports {
 				for _, scheduler := range reports {
 					cp := reporting(target, apiServer, controllerManager, scheduler)
-					v, reason, message, err := newValues(cp, nil)
-					if err != nil || reason != "" {
-						t.Fatalf("target %s, reports %q %q %q: %q %q %v", target, apiServer, controllerManager, scheduler, reason, message, err)
+					v, message, err := newValues(cp, nil)
+					if err != nil || message != "" {
+						t.Fatalf("target %s, reports %q %q %q: %q %v", target, apiServer, controllerManager, scheduler, message, err)
 					}
 					oldest := ""
 					for _, report := range []string{apiServer, controllerManager, scheduler} {
