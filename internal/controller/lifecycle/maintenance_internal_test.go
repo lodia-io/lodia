@@ -728,3 +728,15 @@ func TestATenantWaitingAfterTheGrantKeepsTheSlotMaintaining(t *testing.T) {
 	edited.cp.Generation = 4
 	expectGrant(t, edited, granted{revision: revisionB, reason: lodiav1alpha1.ReasonLatestGenerationNotObserved})
 }
+
+func TestATokenRemovedAndSetAgainIsNotHandledTwice(t *testing.T) {
+	nextStart := time.Date(2026, 11, 9, 13, 0, 0, 0, time.UTC)
+	f := held(closedWindow, requested("t1"), handled("t0"))
+	adopt(f.cp, expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonRollingOut, lastHandled: "t1"}))
+	reportsAll(revisionB)(&f)
+	f.cp.Annotations = nil
+	f.revision = revisionC
+	adopt(f.cp, expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonWaitingForWindow, lastHandled: "t1", scheduledFor: &nextStart, requeue: 30 * time.Minute}))
+	requested("t1")(&f)
+	expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonWaitingForWindow, lastHandled: "t1", scheduledFor: &nextStart, requeue: 30 * time.Minute})
+}

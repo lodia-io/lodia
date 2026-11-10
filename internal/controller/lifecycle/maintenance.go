@@ -106,6 +106,7 @@ func (f facts) maintain(c change, ready *metav1.Condition) maintenance {
 	m := maintenance{revision: granted, lastHandled: lastHandledOf(cp), slot: inSlot(cp)}
 	token := cp.Annotations[lodiav1alpha1.MaintainRequestedAtAnnotation]
 	switch {
+	case token == "":
 	case utf8.RuneCountInString(token) > maxToken:
 		m.note = fmt.Sprintf("%s holds more than %d characters and is not handled", lodiav1alpha1.MaintainRequestedAtAnnotation, maxToken)
 		token = ""

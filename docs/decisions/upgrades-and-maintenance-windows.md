@@ -64,7 +64,7 @@ A hand edit is not reverted while a tenant waits; storing the last render, as Ga
 **The grant.**
 Lifecycle grants the running revision, while it is pending, by these rules in their order:
 
-1. A new value of `lodia.io/maintain-requested-at` is recorded in `status.maintenance.lastHandled` on every pass but a paused or deleting one's, pending or not; a value over 256 characters is not handled.
+1. A new value of `lodia.io/maintain-requested-at` is recorded in `status.maintenance.lastHandled` on every pass but a paused or deleting one's, pending or not; a value over 256 characters is not handled, and removing the annotation leaves the record, so the same value set again does nothing.
 2. A revision that does not run the minor of the target or of a reported version is granted on no path, since a renderer would write `WaitingForTarget` and take a running tenant down: `Unsupported`; a tenant in a slot keeps it, so the release after reaches it at once.
 3. At once, with no slot: no target yet; an edit of `spec` not taken up, its generation ahead of `Progressing`'s; an upgrade its owner started; a new value of the annotation; a tenant in a slot, which keeps it, so that a later release, or a rollback, reaches a tenant a bad release left failed; and three kinds of tenant only the grant brings back to `Ready`, since a held renderer cannot: `AddonsApplied` not True with no `status.addons.version` or with `Refused`, `ObjectsControlledElsewhere` or `Applying`, `APIServerReady` False, `WaitingForTarget`, at the object's generation, and a restored `ControlPlane` whose controller manager is not released.
 4. Not while `Unsupported` or `Failed` stands: the owner's to fix.
