@@ -601,7 +601,7 @@ func TestARequestTheAPIServerRefusesIsRefused(t *testing.T) {
 	}
 }
 
-func druidAt(t *testing.T, name, version string, status appsv1.DeploymentStatus) {
+func druidAt(t *testing.T, name, version string, mutate func(*appsv1.DeploymentStatus)) {
 	t.Helper()
 	labels := map[string]string{"app.kubernetes.io/name": name}
 	d := &appsv1.Deployment{
@@ -621,8 +621,10 @@ func druidAt(t *testing.T, name, version string, status appsv1.DeploymentStatus)
 			t.Error(err)
 		}
 	})
-	status.ObservedGeneration = d.Generation
-	d.Status = status
+	d.Status = appsv1.DeploymentStatus{ObservedGeneration: d.Generation, Replicas: 1, UpdatedReplicas: 1, ReadyReplicas: 1, AvailableReplicas: 1}
+	if mutate != nil {
+		mutate(&d.Status)
+	}
 	if err := k8s.Status().Update(t.Context(), d); err != nil {
 		t.Fatal(err)
 	}
@@ -642,16 +644,24 @@ func TestAGrantAsksEtcdDruidOnceItRunsTheGivenVersion(t *testing.T) {
 	}
 	grant(t, getControlPlane(t, ns, cp), revision)
 
-	rolled := appsv1.DeploymentStatus{Replicas: 1, UpdatedReplicas: 1, ReadyReplicas: 1, AvailableReplicas: 1}
-	druidAt(t, "druid-rolling", druidVersion, appsv1.DeploymentStatus{Replicas: 2, UpdatedReplicas: 1, ReadyReplicas: 2, AvailableReplicas: 2})
-	druidAt(t, "druid-older", "v0.38.0", rolled)
-	terminating := rolled
-	terminating.TerminatingReplicas = new(int32(1))
-	druidAt(t, "druid-terminating", druidVersion, terminating)
+	druidAt(t, "druid-unobserved", druidVersion, func(s *appsv1.DeploymentStatus) { s.ObservedGeneration-- })
+	druidAt(t, "druid-short", druidVersion, func(s *appsv1.DeploymentStatus) { s.Replicas, s.UpdatedReplicas, s.ReadyReplicas, s.AvailableReplicas = 0, 0, 0, 0 })
+	druidAt(t, "druid-rolling", druidVersion, func(s *appsv1.DeploymentStatus) { s.Replicas, s.ReadyReplicas, s.AvailableReplicas = 2, 2, 2 })
+	druidAt(t, "druid-unavailable", druidVersion, func(s *appsv1.DeploymentStatus) { s.ReadyReplicas, s.AvailableReplicas = 0, 0 })
+	druidAt(t, "druid-older", "v0.38.0", nil)
+	druidAt(t, "druid-candidate", druidVersion+"-rc.1", nil)
+	druidAt(t, "druid-terminating", druidVersion, func(s *appsv1.DeploymentStatus) { s.TerminatingReplicas = new(int32(1)) })
+	rollingOut := func(deployment string) string {
+		return "once Deployment " + druidNamespace + "/" + deployment + " has rolled out etcd-druid " + druidVersion + " to every replica"
+	}
 	for _, c := range []struct{ deployment, waits string }{
 		{"druid-absent", "once Deployment " + druidNamespace + "/druid-absent exists"},
-		{"druid-rolling", "once Deployment " + druidNamespace + "/druid-rolling has rolled out etcd-druid " + druidVersion + " to every replica"},
+		{"druid-unobserved", rollingOut("druid-unobserved")},
+		{"druid-short", rollingOut("druid-short")},
+		{"druid-rolling", rollingOut("druid-rolling")},
+		{"druid-unavailable", rollingOut("druid-unavailable")},
 		{"druid-older", "once Deployment " + druidNamespace + "/druid-older runs etcd-druid " + druidVersion},
+		{"druid-candidate", "once Deployment " + druidNamespace + "/druid-candidate runs etcd-druid " + druidVersion},
 		{"druid-terminating", "once no pod of Deployment " + druidNamespace + "/druid-terminating terminates"},
 	} {
 		t.Run(c.deployment, func(t *testing.T) {
@@ -668,8 +678,8 @@ func TestAGrantAsksEtcdDruidOnceItRunsTheGivenVersion(t *testing.T) {
 				t.Errorf("a request for a new revision while etcd-druid's Deployment does not run its version: %v", err)
 			}
 			ready := meta.FindStatusCondition(getControlPlane(t, ns, cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
-			if want := "etcd-druid is asked to reconcile Etcd " + cp + "-etcd under operator revision " + revision + " " + c.waits; ready.Status != metav1.ConditionTrue || !strings.HasSuffix(ready.Message, want) {
-				t.Errorf("DatastoreReady is %s %q, want True ending %q", ready.Status, ready.Message, want)
+			if want := "Etcd " + cp + "-etcd has quorum, 1 of 1 members ready; etcd-druid is asked to reconcile Etcd " + cp + "-etcd under operator revision " + revision + " " + c.waits; ready.Status != metav1.ConditionTrue || ready.Message != want {
+				t.Errorf("DatastoreReady is %s %q, want True %q", ready.Status, ready.Message, want)
 			}
 		})
 	}
@@ -835,6 +845,30 @@ func TestTheRevisionIsReportedFromTheStatefulSetReadAfterTheRequest(t *testing.T
 				t.Errorf("status.datastore.operatorRevision is %q once the StatefulSet has rolled, want %s", got, revision)
 			}
 		})
+	}
+}
+
+func TestAStampLongerThanTheFieldIsNotReported(t *testing.T) {
+	ns := namespace(t)
+	const cp = "long-stamp"
+	createClass(t, newClass(cp, "Retain"))
+	heldTenant(t, ns, cp, cp, nil)
+	long := "v0.0.0-test+" + strings.Repeat("0", 129-len("v0.0.0-test+"))
+	etcd := getEtcd(t, ns, cp)
+	edit := client.MergeFrom(etcd.DeepCopy())
+	metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, lodiav1alpha1.OperatorRevisionAnnotation, long)
+	if err := k8s.Patch(t.Context(), etcd, edit, client.FieldOwner("kubectl-annotate")); err != nil {
+		t.Fatal(err)
+	}
+	held := operatorAt(unpaused(k8s), revision)
+	mustPass(t, held, ns, cp)
+	if err := requestedAs("1/"+long, true)(getEtcd(t, ns, cp)); err != nil {
+		t.Fatalf("a held pass over a hand-edited stamp: %v", err)
+	}
+	answer(t, ns, cp)
+	mustPass(t, held, ns, cp)
+	if got := reportedRevision(t, ns, cp); got != previousRevision {
+		t.Errorf("status.datastore.operatorRevision is %q once a stamp of %d characters is rolled out, want %s kept", got, len(long), previousRevision)
 	}
 }
 
