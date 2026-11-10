@@ -559,8 +559,8 @@ func TestAFailedSyncComparesItsWriteWithTheServer(t *testing.T) {
 	refresh(t, cp)
 	stale := cp.DeepCopy()
 	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
-		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, cp.Generation),
-		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, cp.Generation),
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, cp.Generation),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, cp.Generation),
 	}})
 	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: unreachable}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
@@ -569,6 +569,28 @@ func TestAFailedSyncComparesItsWriteWithTheServer(t *testing.T) {
 	refresh(t, cp)
 	expectNow(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying)
 	expectNow(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying)
+}
+
+func TestAPassTheTenantDoesNotAnswerKeepsARefusalAndAnotherOwnersObject(t *testing.T) {
+	cp := controlPlane(t, "tenant-unanswered-causes")
+	publish(t, cp)
+	reconcilePKI(t, &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour, Clock: clock.RealClock{}}, cp)
+	testenv.EventuallyWithin(t, 10*time.Second, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+	})
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	for _, reason := range []string{lodiav1alpha1.ReasonRefused, lodiav1alpha1.ReasonObjectsControlledElsewhere} {
+		setAddonsApplied(t, cp, metav1.ConditionFalse, reason, cp.Generation)
+		refresh(t, cp)
+		before := *condition(t, cp, lodiav1alpha1.ConditionAddonsApplied)
+		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: unreachable}
+		if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+			t.Fatalf("%s: a pass that could not reach the tenant succeeded", reason)
+		}
+		refresh(t, cp)
+		expectSame(t, cp, before)
+	}
 }
 
 type snapshot struct {

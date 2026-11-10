@@ -208,6 +208,7 @@ func TestDecide(t *testing.T) {
 	const v1361, v1362 = "v1.36.1", "v1.36.2"
 	refused := &metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonRefused, ObservedGeneration: 3, Message: "the tenant refuses"}
 	pastDeadline := &metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonProgressDeadlineExceeded, ObservedGeneration: 3, Message: "past the deadline"}
+	elsewhere := &metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonObjectsControlledElsewhere, ObservedGeneration: 3, Message: "ConfigMap kube-system/coredns exists and is not Lodia's"}
 	staleDatastore := &metav1.Condition{Type: lodiav1alpha1.ConditionDatastoreReady, Status: metav1.ConditionTrue, Reason: "Fine", ObservedGeneration: 2}
 	cases := []struct {
 		name string
@@ -300,6 +301,8 @@ func TestDecide(t *testing.T) {
 			want{target: "v1.37.1", reason: lodiav1alpha1.ReasonUpgrading, step: lodiav1alpha1.UpgradeStepAPIServer, since: t0, version: "v1.36.6"}},
 		{"Backup Completed under a Refused condition stays, Failed", world{spec: "v1.37.1", target: "v1.36.6", step: lodiav1alpha1.UpgradeStepBackup, reports: at("v1.36.6"), backupReason: lodiav1alpha1.ReasonCompleted, backupStatus: metav1.ConditionTrue, cond: refused},
 			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonFailed, step: lodiav1alpha1.UpgradeStepBackup, since: t0, message: "the tenant refuses", version: "v1.36.6"}},
+		{"Backup Completed under another owner's object in the tenant stays, Failed", world{spec: "v1.37.1", target: "v1.36.6", step: lodiav1alpha1.UpgradeStepBackup, reports: at("v1.36.6"), backupReason: lodiav1alpha1.ReasonCompleted, backupStatus: metav1.ConditionTrue, cond: elsewhere},
+			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonFailed, step: lodiav1alpha1.UpgradeStepBackup, since: t0, message: "ConfigMap kube-system/coredns exists and is not Lodia's", version: "v1.36.6"}},
 		{"Backup Completed under a rollout past its deadline stays, Failed", world{spec: "v1.37.1", target: "v1.36.6", step: lodiav1alpha1.UpgradeStepBackup, reports: at("v1.36.6"), backupReason: lodiav1alpha1.ReasonCompleted, backupStatus: metav1.ConditionTrue, cond: pastDeadline},
 			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonFailed, step: lodiav1alpha1.UpgradeStepBackup, since: t0, message: "past the deadline", version: "v1.36.6"}},
 		{"Backup NoBackupStore under a Refused condition stays, Failed", world{spec: "v1.37.1", target: "v1.36.6", step: lodiav1alpha1.UpgradeStepBackup, reports: at("v1.36.6"), backupReason: lodiav1alpha1.ReasonNoBackupStore, backupStatus: metav1.ConditionFalse, cond: refused},
