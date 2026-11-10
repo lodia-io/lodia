@@ -97,9 +97,9 @@ func answer(t *testing.T, ns, cp string) {
 	removeDruidAnnotation(t, ns, cp)
 }
 
-func reconciled(t *testing.T, ns, cp string) *druidv1alpha1.Etcd {
+func reconciled(t *testing.T, ns, cp string) {
 	t.Helper()
-	return waitEtcd(t, ns, cp, func(etcd *druidv1alpha1.Etcd) error {
+	waitEtcd(t, ns, cp, func(etcd *druidv1alpha1.Etcd) error {
 		if druidv1alpha1.HasReconcileOperationAnnotation(etcd.ObjectMeta) {
 			answer(t, ns, cp)
 			return errors.New("etcd-druid had a request to answer")
@@ -645,7 +645,9 @@ func TestAGrantAsksEtcdDruidOnceItRunsTheGivenVersion(t *testing.T) {
 	grant(t, getControlPlane(t, ns, cp), revision)
 
 	druidAt(t, "druid-unobserved", druidVersion, func(s *appsv1.DeploymentStatus) { s.ObservedGeneration-- })
-	druidAt(t, "druid-short", druidVersion, func(s *appsv1.DeploymentStatus) { s.Replicas, s.UpdatedReplicas, s.ReadyReplicas, s.AvailableReplicas = 0, 0, 0, 0 })
+	druidAt(t, "druid-short", druidVersion, func(s *appsv1.DeploymentStatus) {
+		s.Replicas, s.UpdatedReplicas, s.ReadyReplicas, s.AvailableReplicas = 0, 0, 0, 0
+	})
 	druidAt(t, "druid-rolling", druidVersion, func(s *appsv1.DeploymentStatus) { s.Replicas, s.ReadyReplicas, s.AvailableReplicas = 2, 2, 2 })
 	druidAt(t, "druid-unavailable", druidVersion, func(s *appsv1.DeploymentStatus) { s.ReadyReplicas, s.AvailableReplicas = 0, 0 })
 	druidAt(t, "druid-older", "v0.38.0", nil)
