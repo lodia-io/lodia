@@ -431,6 +431,9 @@ func (r *Reconciler) holdClass(ctx context.Context, p *pass) (*outcome, error) {
 // storeMoved says whether a held pass keeps an Etcd on a store other than the
 // one its class renders: the backup-restore sidecar mounts <cp>-etcd-backup,
 // so the keys of a store must not arrive before the Etcd names that store.
+// The Etcd's store reaches the sidecar only once etcd-druid serves its
+// request, so a move granted while that request waits for etcd-druid's
+// Deployment brings the keys first, for as long as the wait lasts.
 func (r *Reconciler) storeMoved(ctx context.Context, p *pass) (bool, error) {
 	if p.current == nil || !r.held(p.cp) {
 		return false, nil
