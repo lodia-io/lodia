@@ -274,6 +274,8 @@ func TestTheGrantFollowsTheRulesInTheirOrder(t *testing.T) {
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonWaitingForWindow, message: "waits for the maintenance window 13:00-14:00 UTC, which opens at 2026-11-09T13:00:00Z", scheduledFor: &nextStart, requeue: 30 * time.Minute}},
 		{"5: a window that opens in more than an hour is looked at again in one", held(inWindow("20:00", "21:00", "Europe/Kyiv")),
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonWaitingForWindow, scheduledFor: new(time.Date(2026, 11, 9, 18, 0, 0, 0, time.UTC)), requeue: time.Hour}},
+		{"5: an Etcd created under the hold reports the running revision, which is not rolling", held(closedWindow, func(f *facts) { f.cp.Status.Datastore.OperatorRevision = revisionB }),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonWaitingForWindow, scheduledFor: &nextStart, requeue: 30 * time.Minute}},
 		{"5: what rolls comes before the wait, which keeps its scheduledFor", held(closedWindow, func(f *facts) { *f.cp.Status.Components.APIServer.Updated = 0 }),
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonRollingOut, scheduledFor: &nextStart, requeue: 30 * time.Minute}},
 		{"6: not Ready in an open window: Ready's reason", held(inWindow("12:00", "13:00", ""), condition(unreachable)),
@@ -287,6 +289,8 @@ func TestTheGrantFollowsTheRulesInTheirOrder(t *testing.T) {
 		}), granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, slot: true, takesSlot: true}},
 		{"6: AddonsApplied waiting at an earlier generation with AccessReady True is left out", held(condition(metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonWaitingForAccess, ObservedGeneration: 2})),
 			granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, slot: true, takesSlot: true}},
+		{"6: so is AddonsApplied WaitingForTarget", held(condition(metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonWaitingForTarget})),
+			granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, takesSlot: true, slot: true}},
 		{"6: but not without AccessReady", held(condition(waitingForAccess), condition(metav1.Condition{Type: lodiav1alpha1.ConditionAccessReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonBinding, Message: "not confirmed"})),
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonBinding, message: "AccessReady: not confirmed"}},
 		{"7: a free slot: Maintaining in the same apply as the grant", held(inWindow("12:00", "13:00", "")),
@@ -301,6 +305,16 @@ func TestTheGrantFollowsTheRulesInTheirOrder(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			expectGrant(t, c.f, c.want)
 		})
+	}
+}
+
+func TestRuleSixWaitsWhileAnInputOfReadyIsMissing(t *testing.T) {
+	d := decide(held(scheduled(present.Add(-time.Minute)), func(f *facts) {
+		meta.RemoveStatusCondition(&f.cp.Status.Conditions, lodiav1alpha1.ConditionControllersLeading)
+	}))
+	progressing := meta.FindStatusCondition(d.status.Conditions, lodiav1alpha1.ConditionProgressing)
+	if d.status.Target.OperatorRevision != revisionA || d.takesSlot || d.status.Target.ScheduledFor != nil || progressing.Reason != lodiav1alpha1.ReasonLatestGenerationNotObserved {
+		t.Errorf("with ControllersLeading missing: revision %s, takesSlot %t, scheduledFor %v, Progressing %+v", d.status.Target.OperatorRevision, d.takesSlot, d.status.Target.ScheduledFor, progressing)
 	}
 }
 

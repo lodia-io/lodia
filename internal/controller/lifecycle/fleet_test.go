@@ -514,6 +514,63 @@ func TestASlotPassThatCannotFinishWritesNothingAndFreesTheSemaphore(t *testing.T
 	}
 }
 
+func TestAPassWaitingForTheSemaphoreEndsAtItsDeadline(t *testing.T) {
+	a, b := fleetTenant(t, "semaphore-a"), fleetTenant(t, "semaphore-b")
+	release, entered := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	reader := interceptor.NewClient(quiet, interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			once.Do(func() { close(entered) })
+			<-release
+			return c.List(ctx, list, opts...)
+		},
+	})
+	r := fleetReconciler(quiet, reader, later, 5)
+	holder := make(chan error, 1)
+	go func() {
+		_, err := passOf(context.Background(), r, a)
+		holder <- err
+	}()
+	<-entered
+	timer := time.AfterFunc(5*time.Second, func() { close(release) })
+	defer timer.Stop()
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	begun := time.Now()
+	_, err := passOf(ctx, r, b)
+	if waited := time.Since(begun); !errors.Is(err, context.DeadlineExceeded) || waited > 3*time.Second {
+		t.Errorf("a pass whose deadline ends while another holds the semaphore returned %v after %s, want its deadline after a second", err, waited.Round(10*time.Millisecond))
+	}
+	if err := <-holder; err != nil {
+		t.Fatal(err)
+	}
+	expectMaintenance(t, a, lodiav1alpha1.ReasonMaintaining, runningRevision)
+	expectMaintenance(t, b, lodiav1alpha1.ReasonIdle, otherRevision)
+}
+
+func TestARecountOnAStaleCacheKeepsTheQueuePlace(t *testing.T) {
+	x, z := fleetTenant(t, "recount-x"), fleetTenant(t, "recount-z")
+	seedLifecycle(t, x, runningRevision, lodiav1alpha1.ReasonMaintaining, nil, nil)
+	waitingSince := later.Add(-time.Hour)
+	seedLifecycle(t, z, otherRevision, lodiav1alpha1.ReasonFleetLimit, &waitingSince, nil)
+	stale := getQuiet(t, z)
+	idle(z.Namespace)(stale)
+	cache := interceptor.NewClient(cacheShowing(idle(x.Namespace)), interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if cp, ok := obj.(*lodiav1alpha1.ControlPlane); ok && key.Namespace == z.Namespace {
+				stale.DeepCopyInto(cp)
+				return nil
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	mustPass(t, fleetReconciler(cache, quiet, later, 1), z)
+	if after := expectMaintenance(t, z, lodiav1alpha1.ReasonFleetLimit, otherRevision); !after.Status.Target.ScheduledFor.Time.Equal(waitingSince) {
+		t.Errorf("a recount the API server refused left scheduledFor %v, want %s kept", after.Status.Target.ScheduledFor, waitingSince)
+	}
+}
+
 func TestTheWindowsRequeueAndATimeZoneChange(t *testing.T) {
 	cp := fleetTenant(t, "window")
 	setWindow := func(window *lodiav1alpha1.MaintenanceWindow) {

@@ -49,6 +49,7 @@ func TestTheWindowOpensAndNextOpens(t *testing.T) {
 		{"across midnight, a second before it opens", "22:00", "02:00", "", "2026-11-10T21:59:59Z", false, "2026-11-10T22:00:00Z"},
 		{"ending at midnight, its last second", "22:00", "00:00", "", "2026-11-10T23:59:59Z", true, ""},
 		{"ending at midnight, at midnight", "22:00", "00:00", "", "2026-11-11T00:00:00Z", false, "2026-11-11T22:00:00Z"},
+		{"the day before Berlin skips an hour, a window inside it next opens two days on", "02:15", "02:45", "Europe/Berlin", "2026-03-28T02:00:00Z", false, "2026-03-30T00:15:00Z"},
 		{"inside the hour Berlin skips in spring, it does not open that day", "02:15", "02:45", "Europe/Berlin", "2026-03-29T00:59:59Z", false, "2026-03-30T00:15:00Z"},
 		{"inside the hour Berlin skips in spring, nor at the jump", "02:15", "02:45", "Europe/Berlin", "2026-03-29T01:00:00Z", false, "2026-03-30T00:15:00Z"},
 		{"ending inside the skipped hour, open before the jump", "01:30", "02:30", "Europe/Berlin", "2026-03-29T00:59:59Z", true, ""},
