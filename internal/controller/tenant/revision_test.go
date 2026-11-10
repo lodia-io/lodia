@@ -69,8 +69,7 @@ func heldTenant(t *testing.T, namespace string) (*lodiav1alpha1.ControlPlane, *t
 	t.Helper()
 	cp, admin := servedTenant(t, namespace)
 	applied(t, cp)
-	update(t, cp, paused)
-	time.Sleep(3 * time.Second)
+	pause(t, cp)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 	setTarget(t, cp, version, previous)
 	refresh(t, cp)
@@ -640,7 +639,7 @@ func TestWithoutAGrantedRevisionTenantWaitsForTheTarget(t *testing.T) {
 	testenv.EventuallyWithin(t, 10*time.Second, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
 	})
-	update(t, cp, paused)
+	pause(t, cp)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 	applyStatus(t, cp, "test/target", map[string]any{"target": map[string]any{"version": version}})
 	appliedAtTheGeneration(t, cp)
@@ -724,7 +723,7 @@ func TestAWaitAtANewGenerationKeepsBothConditions(t *testing.T) {
 	testenv.EventuallyWithin(t, 10*time.Second, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
 	})
-	update(t, cp, paused)
+	pause(t, cp)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
 		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation-1),
@@ -828,8 +827,7 @@ func TestAStaleCacheWithAnOlderRevisionHoldsThePass(t *testing.T) {
 func TestARenewalReachesAHeldTenant(t *testing.T) {
 	cp, admin, _ := gatewayTenant(t, "tenant-held-delivery")
 	applied(t, cp)
-	update(t, cp, paused)
-	time.Sleep(3 * time.Second)
+	pause(t, cp)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 	setTarget(t, cp, version, previous)
 	before := get(t, admin, &corev1.ConfigMap{}, "kube-system", "lodia-inventory").ResourceVersion

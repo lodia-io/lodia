@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -62,14 +63,39 @@ const (
 type dialFunc = func(ctx context.Context, network, address string) (net.Conn, error)
 
 var (
-	k8s    client.Client
-	scheme *runtime.Scheme
-	dial   atomic.Pointer[dialFunc]
+	k8s          client.Client
+	scheme       *runtime.Scheme
+	dial         atomic.Pointer[dialFunc]
+	managerReads *pausedReads
 
 	unreachable dialFunc = func(context.Context, string, string) (net.Conn, error) {
 		return nil, errors.New("connection refused")
 	}
 )
+
+type pausedReads struct {
+	client.Client
+	mu     sync.Mutex
+	paused map[client.ObjectKey]int64
+}
+
+func (r *pausedReads) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if err := r.Client.Get(ctx, key, obj, opts...); err != nil {
+		return err
+	}
+	if cp, ok := obj.(*lodiav1alpha1.ControlPlane); ok && cp.Spec.Paused {
+		r.mu.Lock()
+		r.paused[key] = max(r.paused[key], cp.Generation)
+		r.mu.Unlock()
+	}
+	return nil
+}
+
+func (r *pausedReads) pausedAt(key client.ObjectKey) int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.paused[key]
+}
 
 func TestMain(m *testing.M) {
 	if !testenv.Available() {
@@ -79,8 +105,9 @@ func TestMain(m *testing.M) {
 	k8s, scheme = env.Client, env.Scheme
 	mgr := env.Manager(env.AsController("tenant"), false)
 	dial.Store(&unreachable)
+	managerReads = &pausedReads{Client: mgr.GetClient(), paused: map[client.ObjectKey]int64{}}
 	r := &tenant.Reconciler{
-		Client:      mgr.GetClient(),
+		Client:      managerReads,
 		Reader:      mgr.GetAPIReader(),
 		ApplyPeriod: 2 * time.Second,
 		TunnelImage: tunnelImage,
@@ -1446,6 +1473,17 @@ func setReplicas(t *testing.T, cp *lodiav1alpha1.ControlPlane, replicas int32) {
 			cp.Spec.Addons.CoreDNS = &lodiav1alpha1.CoreDNS{}
 		}
 		cp.Spec.Addons.CoreDNS.Replicas = &replicas
+	})
+}
+
+func pause(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+	t.Helper()
+	update(t, cp, paused)
+	testenv.Eventually(t, func() error {
+		if read := managerReads.pausedAt(client.ObjectKeyFromObject(cp)); read < cp.Generation {
+			return fmt.Errorf("the suite's manager has read the ControlPlane paused at generation %d, want %d", read, cp.Generation)
+		}
+		return nil
 	})
 }
 
