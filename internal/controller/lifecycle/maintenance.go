@@ -139,8 +139,8 @@ func (m maintenance) slotGeneration(cp *lodiav1alpha1.ControlPlane) int64 {
 // grant applies the rules to a pending change, in their order: a revision
 // that cannot render what runs on no path; at once, with no slot, where
 // waiting would stall the owner or keep the tenant from Ready; then, unless
-// the owner has something to fix, in the window, while the tenant is Ready,
-// with a free slot.
+// the owner has something to fix, in the window, while the tenant is Ready
+// with no cause that fails a change standing, with a free slot.
 func (f facts) grant(m *maintenance, c change, w *window, requested bool) {
 	cp := f.cp
 	if what := unrenderable(cp, c.target); what != "" {
@@ -166,6 +166,14 @@ func (f facts) grant(m *maintenance, c change, w *window, requested bool) {
 	}
 	if notReady := readyForMaintenance(cp); notReady != nil {
 		m.waiting = newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, notReady.Reason, notReady.Message)
+		return
+	}
+	if stops := stopping(cp); stops != nil {
+		message := stops.Type
+		if stops.Message != "" {
+			message += ": " + stops.Message
+		}
+		m.waiting = newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, stops.Reason, message)
 		return
 	}
 	key := f.key()

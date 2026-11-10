@@ -71,6 +71,7 @@ Lifecycle grants the running revision, while it is pending, by these rules in th
 5. Not while `TimeZoneUnsupported` stands; outside the window, `WaitingForWindow`, with `target.scheduledFor` its next start.
 6. Not while `Ready` is not True, at whatever generation each input describes, `AddonsApplied` left out while it waits with `AccessReady` True: `Ready`'s reason.
    A held Tenant keeps `AddonsApplied` at the generation it describes for the whole hold, so `Ready` at the object's generation would never grant an edit Tenant had not taken up when the release started.
+   Nor while a cause that fails a change stands on an input of `Ready`, `ProgressDeadlineExceeded` on an available component: that cause's reason, since the change would fail in the write that grants it, for a cause it did not bring.
 7. A slot in the order of the queue: `Maintaining`, in the same write as the grant; none, `target.scheduledFor` when the tenant became eligible, which queues it, and `FleetLimit` unless a reason ranked above it applies.
 
 A change Lodia started keeps its origin in `status.maintenance.slotGeneration`, written in the same write as the grant: the tenant holds its slot while that is its generation, whatever `Progressing` says, so a reason ranked above the slot's does not free it, and an edit of `spec` does; a grant on request is the owner's.

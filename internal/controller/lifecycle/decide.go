@@ -447,13 +447,21 @@ func (c change) cause(cp *lodiav1alpha1.ControlPlane) string {
 	if c.backupFailed != "" {
 		return c.backupFailed
 	}
-	for _, conditionType := range readiness(cp) {
-		condition := meta.FindStatusCondition(cp.Status.Conditions, conditionType)
-		if condition != nil && slices.Contains(upgradeFailures, condition.Reason) {
-			return fmt.Sprintf("%s: %s: %s", conditionType, condition.Reason, condition.Message)
-		}
+	if condition := stopping(cp); condition != nil {
+		return fmt.Sprintf("%s: %s: %s", condition.Type, condition.Reason, condition.Message)
 	}
 	return ""
+}
+
+// stopping is the first condition Ready is built from whose reason stops a
+// change, or nil.
+func stopping(cp *lodiav1alpha1.ControlPlane) *metav1.Condition {
+	for _, conditionType := range readiness(cp) {
+		if condition := meta.FindStatusCondition(cp.Status.Conditions, conditionType); condition != nil && slices.Contains(upgradeFailures, condition.Reason) {
+			return condition
+		}
+	}
+	return nil
 }
 
 // rolling names what keeps a change rolling: a component or an etcd member

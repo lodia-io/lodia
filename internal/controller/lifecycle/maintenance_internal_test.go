@@ -694,3 +694,13 @@ func TestATenantNotReadyLeavesTheQueue(t *testing.T) {
 		expectGrant(t, b, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, takesSlot: true, slot: true})
 	})
 }
+
+func TestADeadlineThatStandsBeforeTheGrantKeepsItWaiting(t *testing.T) {
+	pastDeadline := condition(metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonProgressDeadlineExceeded, Message: "kube-apiserver: ReplicaSet has timed out progressing"})
+	f := held(inWindow("12:00", "13:00", ""), pastDeadline, scheduled(present.Add(-time.Minute)))
+	adopt(f.cp, expectGrant(t, f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonProgressDeadlineExceeded, message: "APIServerReady: kube-apiserver: ReplicaSet has timed out progressing"}))
+	condition(metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionTrue, Reason: "Fine"})(&f)
+	adopt(f.cp, expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, takesSlot: true, slot: true}))
+	pastDeadline(&f)
+	expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintenanceFailed, message: "the change Lodia started failed: APIServerReady: ProgressDeadlineExceeded: kube-apiserver: ReplicaSet has timed out progressing", slot: true})
+}
