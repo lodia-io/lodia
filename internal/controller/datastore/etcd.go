@@ -149,15 +149,7 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 		}
 	}
 	if backup := spec.Backup; backup != nil {
-		etcd.Spec.Backup.Store = &druidv1alpha1.StoreSpec{
-			Provider:  new(druidv1alpha1.StorageProvider(backup.Store.Provider)),
-			Container: new(backup.Store.Bucket),
-			Prefix:    path.Join(backup.Store.Prefix, string(namespaceUID), "controlplanes", string(cp.UID)),
-			SecretRef: &corev1.SecretReference{Name: lodiav1alpha1.EtcdBackupSecret.Name(cp.Name)},
-		}
-		if backup.Store.Endpoint != "" {
-			etcd.Spec.Backup.Store.EndpointOverride = new(backup.Store.Endpoint)
-		}
+		etcd.Spec.Backup.Store = store(cp, backup, namespaceUID)
 		if backup.FullSnapshotSchedule != "" {
 			etcd.Spec.Backup.FullSnapshotSchedule = new(string(backup.FullSnapshotSchedule))
 		}
@@ -177,6 +169,19 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 		}
 	}
 	return etcd, capped
+}
+
+func store(cp *lodiav1alpha1.ControlPlane, backup *lodiav1alpha1.EtcdBackup, namespaceUID types.UID) *druidv1alpha1.StoreSpec {
+	spec := &druidv1alpha1.StoreSpec{
+		Provider:  new(druidv1alpha1.StorageProvider(backup.Store.Provider)),
+		Container: new(backup.Store.Bucket),
+		Prefix:    path.Join(backup.Store.Prefix, string(namespaceUID), "controlplanes", string(cp.UID)),
+		SecretRef: &corev1.SecretReference{Name: lodiav1alpha1.EtcdBackupSecret.Name(cp.Name)},
+	}
+	if backup.Store.Endpoint != "" {
+		spec.EndpointOverride = new(backup.Store.Endpoint)
+	}
+	return spec
 }
 
 func etcdMeta(cp *lodiav1alpha1.ControlPlane) metav1.ObjectMeta {

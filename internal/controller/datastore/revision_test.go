@@ -301,6 +301,51 @@ func TestAHeldPassChangesNothingButTheCertificateReferences(t *testing.T) {
 	}
 }
 
+func TestAHeldPassCopiesTheCredentialsOfTheStoreTheEtcdNames(t *testing.T) {
+	ns, credentialsNamespace := namespace(t), namespace(t)
+	const cp = "held-store"
+	create(t, credentials(credentialsNamespace))
+	createClass(t, fullClass(cp, credentialsNamespace))
+	heldTenant(t, ns, cp, cp, nil)
+	held := operatorAt(unpaused(k8s), revision)
+	copied := func(t *testing.T, accessKeyID, region string) {
+		t.Helper()
+		secret := getCopy(t, ns, cp)
+		if got := getEtcd(t, ns, cp).Spec.Backup.Store.Container; *got != "lodia-backups" {
+			t.Errorf("a held pass moved the Etcd to bucket %s", *got)
+		}
+		if string(secret.Data["accessKeyID"]) != accessKeyID || string(secret.Data["region"]) != region {
+			t.Errorf("%s holds accessKeyID %s and region %s, want %s and %s", secret.Name, secret.Data["accessKeyID"], secret.Data["region"], accessKeyID, region)
+		}
+	}
+
+	create(t, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "s3-rotated", Namespace: credentialsNamespace}, Data: map[string][]byte{"accessKeyID": []byte("rotated-access")}})
+	editClass(t, cp, func(class *lodiav1alpha1.DatastoreClass) {
+		class.Spec.Backup.Store.SecretRef.Name, class.Spec.Backup.Store.Region = "s3-rotated", "eu-west-1"
+	})
+	mustPass(t, held, ns, cp)
+	copied(t, "rotated-access", "eu-west-1")
+
+	create(t, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "s3-other", Namespace: credentialsNamespace}, Data: map[string][]byte{"accessKeyID": []byte("other-access")}})
+	editClass(t, cp, func(class *lodiav1alpha1.DatastoreClass) {
+		class.Spec.Backup.Store.Bucket, class.Spec.Backup.Store.SecretRef.Name = "other-bucket", "s3-other"
+	})
+	mustPass(t, held, ns, cp)
+	copied(t, "rotated-access", "eu-west-1")
+
+	if err := k8s.Delete(t.Context(), getCopy(t, ns, cp)); err != nil {
+		t.Fatal(err)
+	}
+	mustPass(t, held, ns, cp)
+	copied(t, "other-access", "eu-west-1")
+
+	grant(t, getControlPlane(t, ns, cp), revision)
+	mustPass(t, held, ns, cp)
+	if got := getEtcd(t, ns, cp).Spec.Backup.Store.Container; *got != "other-bucket" {
+		t.Errorf("the grant left the Etcd on bucket %s, want other-bucket", *got)
+	}
+}
+
 func TestAHeldPassCreatesAMissingEtcdFromTheFullRender(t *testing.T) {
 	ns := namespace(t)
 	const cp = "held-create"

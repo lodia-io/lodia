@@ -405,7 +405,11 @@ func (r *Reconciler) holdClass(ctx context.Context, p *pass) (*outcome, error) {
 	if class == nil || class.Spec.Backup == nil {
 		return nil, nil
 	}
-	blocked, err := r.copyCredentials(ctx, p.cp, class, p.secrets)
+	moved, err := r.storeMoved(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	blocked, err := r.copyCredentials(ctx, p.cp, class, p.secrets, moved)
 	if blocked == "" && err != nil {
 		return nil, err
 	}
@@ -423,17 +427,37 @@ func (r *Reconciler) holdClass(ctx context.Context, p *pass) (*outcome, error) {
 	return nil, nil
 }
 
+// storeMoved says whether a held pass keeps an Etcd on a store other than the
+// one its class renders: the backup-restore sidecar mounts <cp>-etcd-backup,
+// so the keys of a store must not arrive before the Etcd names that store.
+func (r *Reconciler) storeMoved(ctx context.Context, p *pass) (bool, error) {
+	if p.current == nil || !r.held(p.cp) {
+		return false, nil
+	}
+	var err error
+	if p.namespaceUID, err = r.namespaceUID(ctx, p.cp); err != nil {
+		return false, err
+	}
+	return !equality.Semantic.DeepEqual(store(p.cp, p.class.Spec.Backup, p.namespaceUID), p.current.Spec.Backup.Store), nil
+}
+
+func (r *Reconciler) namespaceUID(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (types.UID, error) {
+	namespace := &corev1.Namespace{}
+	if err := r.Reader.Get(ctx, client.ObjectKey{Name: cp.Namespace}, namespace); err != nil {
+		return "", fmt.Errorf("read Namespace %s: %w", cp.Namespace, err)
+	}
+	return namespace.UID, nil
+}
+
 func (r *Reconciler) renderEtcd(ctx context.Context, p *pass) error {
 	cp := p.cp
 	p.copied = p.current != nil && r.held(cp)
-	if !p.copied && p.class != nil && p.class.Spec.Backup != nil {
-		namespace := &corev1.Namespace{}
-		if err := r.Reader.Get(ctx, client.ObjectKey{Name: cp.Namespace}, namespace); err != nil {
-			return fmt.Errorf("read Namespace %s: %w", cp.Namespace, err)
-		}
-		p.namespaceUID = namespace.UID
-	}
 	var err error
+	if !p.copied && p.class != nil && p.class.Spec.Backup != nil {
+		if p.namespaceUID, err = r.namespaceUID(ctx, cp); err != nil {
+			return err
+		}
+	}
 	if p.sts, err = r.statefulSet(ctx, cp); err != nil {
 		return err
 	}
@@ -923,9 +947,10 @@ func (r *Reconciler) labelClaims(ctx context.Context, cp *lodiav1alpha1.ControlP
 }
 
 // etcd-druid mounts the store's Secret from the Etcd's namespace, and the
-// backup-restore sidecar reads the region from it. The first result says why
-// the copy cannot be made, the second carries a refusal for the log.
-func (r *Reconciler) copyCredentials(ctx context.Context, cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, secrets []metav1.PartialObjectMetadata) (string, error) {
+// backup-restore sidecar reads the region from it. An existing copy is kept
+// while moved says the Etcd is held on another store. The first result says
+// why the copy cannot be made, the second carries a refusal for the log.
+func (r *Reconciler) copyCredentials(ctx context.Context, cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, secrets []metav1.PartialObjectMetadata, moved bool) (string, error) {
 	store := class.Spec.Backup.Store
 	source := &corev1.Secret{}
 	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: store.SecretRef.Namespace, Name: store.SecretRef.Name}, source); err != nil {
@@ -942,6 +967,9 @@ func (r *Reconciler) copyCredentials(ctx context.Context, cp *lodiav1alpha1.Cont
 	if existing != nil {
 		if ref := ownership.ControlledElsewhere(existing, cp); ref != nil {
 			return fmt.Sprintf("%s is controlled by %s %s with UID %s", name, ref.Kind, ref.Name, ref.UID), nil
+		}
+		if moved {
+			return "", nil
 		}
 	}
 	data := maps.Clone(source.Data)
