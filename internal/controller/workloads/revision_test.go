@@ -507,6 +507,12 @@ func TestWithoutAGrantedRevisionWorkloadsWaitsForTheTarget(t *testing.T) {
 	if n := deployments(t, cp); n != 0 {
 		t.Errorf("%d Deployments before a revision is granted", n)
 	}
+
+	changeService(t, cp, func(svc *corev1.Service) { svc.Spec.Selector[lodiav1alpha1.ComponentLabel] = "edited" })
+	passOf(t, operatorAt(k8s, revision), cp)
+	if got := getService(t, cp).Spec.Selector[lodiav1alpha1.ComponentLabel]; got != "edited" {
+		t.Errorf("a pass without a granted revision rewrote the Service a person edited: the selector says %q", got)
+	}
 }
 
 func TestAHeldPassReadsTheStoredRoutes(t *testing.T) {
