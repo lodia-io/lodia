@@ -560,11 +560,11 @@ func (r *Reconciler) applyEtcd(ctx context.Context, p *pass) (*outcome, error) {
 // the run ID that lock makes current when the annotation lands. A request
 // waits while etcd-druid's annotation is there or a spec reconcile is in
 // flight, and the watch brings the pass after the annotation's removal or the
-// reconcile's end. A request under a revision the record does not name
-// waits for etcd-druid's Deployment to run the version the operator was given
-// in every replica: an older etcd-druid would take it and roll the members to
-// its own render. A request the API server refuses comes back with etcd and
-// the error.
+// reconcile's last write of lastOperation. A request under a revision the
+// record does not name waits for etcd-druid's Deployment to run the version
+// the operator was given in every replica: an older etcd-druid would take it
+// and roll the members to its own render. A request the API server refuses
+// comes back with etcd and the error.
 func (r *Reconciler) requestReconcile(ctx context.Context, p *pass, etcd *druidv1alpha1.Etcd) (*druidv1alpha1.Etcd, error) {
 	// inFlight goes first: it records and drops the sightings.
 	if r.inFlight(etcd) || druidv1alpha1.HasReconcileOperationAnnotation(etcd.ObjectMeta) || served(etcd) {
