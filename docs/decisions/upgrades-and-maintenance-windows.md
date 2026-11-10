@@ -53,7 +53,7 @@ The configuration's `versions` and `registry` keys join the digest when somethin
 Revisions are compared for equality only, so a rollback of the operator is one more revision.
 Workloads, Tenant and the Datastore controller render with the running revision only while `status.target.operatorRevision` equals it ([what they hold until then](../api/controlplane.md#status)).
 Workloads stamps the revision on its Deployments and the Datastore controller on the `Etcd`, in the annotation `lodia.io/operator-revision`, never in a pod template, so a revision that changes nothing rolls nothing.
-Until the grant Workloads writes nothing that exists and creates what is missing: it keeps no inventory, so an object a new release adds is created at once.
+Until the grant Workloads writes nothing that exists but the deletions [`target.operatorRevision`'s row](../api/controlplane.md#status) names, and creates what is missing: it keeps no inventory, so an object a new release adds is created at once.
 Tenant stamps nothing: `status.addons.operatorRevision` is the revision of a pass that applied in full.
 etcd-druid's automatic spec reconcile is off, and the Datastore controller asks for each reconcile ([dedicated-etcd-by-default](dedicated-etcd-by-default.md)).
 Lifecycle grants the running revision when a `ControlPlane` is created, when its spec changes, during an upgrade its owner started, and otherwise in the window, with a free slot of the fleet, while the tenant is `Ready`.
