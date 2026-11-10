@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -60,9 +61,34 @@ var restartOnlySecrets = []lodiav1alpha1.Secret{
 }
 
 var (
-	k8s       client.WithWatch
-	apiReader client.Reader
+	k8s          client.WithWatch
+	apiReader    client.Reader
+	managerReads *pausedReads
 )
+
+type pausedReads struct {
+	client.Client
+	mu     sync.Mutex
+	paused map[client.ObjectKey]int64
+}
+
+func (r *pausedReads) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if err := r.Client.Get(ctx, key, obj, opts...); err != nil {
+		return err
+	}
+	if cp, ok := obj.(*lodiav1alpha1.ControlPlane); ok && cp.Spec.Paused {
+		r.mu.Lock()
+		r.paused[key] = max(r.paused[key], cp.Generation)
+		r.mu.Unlock()
+	}
+	return nil
+}
+
+func (r *pausedReads) pausedAt(key client.ObjectKey) int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.paused[key]
+}
 
 func TestMain(m *testing.M) {
 	testenv.SkipUnlessAvailable("the workloads controller tests")
@@ -79,7 +105,8 @@ func TestMain(m *testing.M) {
 	k8s = env.Client
 	mgr := env.Manager(env.AsController("workloads"), true)
 	apiReader = mgr.GetAPIReader()
-	reconciler := &workloads.Reconciler{Client: mgr.GetClient(), Reader: apiReader, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: revision}
+	managerReads = &pausedReads{Client: mgr.GetClient(), paused: map[client.ObjectKey]int64{}}
+	reconciler := &workloads.Reconciler{Client: managerReads, Reader: apiReader, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: revision}
 	if err := reconciler.SetupWithManager(mgr, 1); err != nil {
 		env.Fatal("controller", err)
 	}
@@ -1318,9 +1345,7 @@ func TestARefusalIsNotCountedAsAvailability(t *testing.T) {
 
 func TestAWaitComparesItsWriteWithTheServer(t *testing.T) {
 	cp := running(t)
-	changeSpec(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.Paused = true })
-	setTrue(t, cp, lodiav1alpha1.ConditionCertificatesReady, "Issued")
-	setTrue(t, cp, lodiav1alpha1.ConditionDatastoreReady, "Ready")
+	pause(t, cp)
 	applyStatus(t, cp, "test/"+lodiav1alpha1.ConditionDatastoreReady, map[string]any{"conditions": []any{map[string]any{
 		"type": lodiav1alpha1.ConditionDatastoreReady, "status": string(metav1.ConditionFalse), "reason": lodiav1alpha1.ReasonUnavailable,
 		"message": "set by the test", "observedGeneration": get(t, cp).Generation, "lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
@@ -1429,9 +1454,7 @@ func TestAWaitThatCannotReadWritesNothing(t *testing.T) {
 
 func TestAFailureAmongTheObjectsEndsThePassInAnErrorAndWritesNoStatus(t *testing.T) {
 	cp := running(t)
-	changeSpec(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.Paused = true })
-	setTrue(t, cp, lodiav1alpha1.ConditionCertificatesReady, "Issued")
-	setTrue(t, cp, lodiav1alpha1.ConditionDatastoreReady, "Ready")
+	pause(t, cp)
 	held := get(t, cp)
 	held.Spec.Paused = false
 	budget := &policyv1.PodDisruptionBudget{
@@ -1484,9 +1507,7 @@ func TestAWaitOnAStaleReadKeepsTheGenerationItsConditionNames(t *testing.T) {
 	cp := running(t, func(spec *lodiav1alpha1.ControlPlaneSpec) {
 		spec.APIServer = &lodiav1alpha1.APIServer{Replicas: new(int32(2))}
 	})
-	changeSpec(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.Paused = true })
-	setTrue(t, cp, lodiav1alpha1.ConditionCertificatesReady, "Issued")
-	setTrue(t, cp, lodiav1alpha1.ConditionDatastoreReady, "Ready")
+	pause(t, cp)
 	read := get(t, cp)
 	applyStatus(t, cp, "test/"+lodiav1alpha1.ConditionDatastoreReady, map[string]any{"conditions": []any{map[string]any{
 		"type":               lodiav1alpha1.ConditionDatastoreReady,
