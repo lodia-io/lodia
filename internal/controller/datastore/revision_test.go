@@ -522,10 +522,14 @@ func TestAGrantAsksEtcdDruidOnceItRunsTheGivenVersion(t *testing.T) {
 	rolled := appsv1.DeploymentStatus{Replicas: 1, UpdatedReplicas: 1, ReadyReplicas: 1, AvailableReplicas: 1}
 	druidAt(t, "druid-rolling", druidVersion, appsv1.DeploymentStatus{Replicas: 2, UpdatedReplicas: 1, ReadyReplicas: 2, AvailableReplicas: 2})
 	druidAt(t, "druid-older", "v0.38.0", rolled)
+	terminating := rolled
+	terminating.TerminatingReplicas = new(int32(1))
+	druidAt(t, "druid-terminating", druidVersion, terminating)
 	for _, c := range []struct{ deployment, waits string }{
 		{"druid-absent", "once Deployment " + druidNamespace + "/druid-absent exists"},
 		{"druid-rolling", "once Deployment " + druidNamespace + "/druid-rolling has rolled out etcd-druid " + druidVersion + " to every replica"},
 		{"druid-older", "once Deployment " + druidNamespace + "/druid-older runs etcd-druid " + druidVersion},
+		{"druid-terminating", "once no pod of Deployment " + druidNamespace + "/druid-terminating terminates"},
 	} {
 		t.Run(c.deployment, func(t *testing.T) {
 			r := operatorAt(unpaused(k8s), revision)

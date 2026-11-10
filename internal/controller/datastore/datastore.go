@@ -570,9 +570,10 @@ func cutLast(s, sep string) (string, string, bool) {
 
 // druidPending says why etcd-druid's Deployment does not yet run the version
 // the operator was given in every replica, as kubectl rollout status counts
-// them (kubernetes/kubernetes@v1.37.1 staging/src/k8s.io/kubectl/pkg/polymorphichelpers/rollout_status.go#L75-L91);
-// empty once it does. It is read uncached: the cache holds only what Lodia
-// labels.
+// them (kubernetes/kubernetes@v1.37.1 staging/src/k8s.io/kubectl/pkg/polymorphichelpers/rollout_status.go#L75-L91),
+// with no terminating pod left, which kubectl does not count and which
+// reconciles until it stops; empty once it does. It is read uncached: the
+// cache holds only what Lodia labels.
 func (r *Reconciler) druidPending(ctx context.Context) (string, error) {
 	key := client.ObjectKey{Namespace: r.EtcdDruidNamespace, Name: r.EtcdDruidDeployment}
 	d := &appsv1.Deployment{}
@@ -588,6 +589,9 @@ func (r *Reconciler) druidPending(ctx context.Context) (string, error) {
 	s := d.Status
 	if s.ObservedGeneration < d.Generation || s.UpdatedReplicas < ptr.Deref(d.Spec.Replicas, 1) || s.Replicas > s.UpdatedReplicas || s.AvailableReplicas < s.UpdatedReplicas {
 		return fmt.Sprintf("Deployment %s has rolled out etcd-druid %s to every replica", key, r.EtcdDruidVersion), nil
+	}
+	if ptr.Deref(s.TerminatingReplicas, 0) > 0 {
+		return fmt.Sprintf("no pod of Deployment %s terminates", key), nil
 	}
 	return "", nil
 }
