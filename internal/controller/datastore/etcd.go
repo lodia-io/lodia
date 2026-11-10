@@ -120,19 +120,7 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 		}
 	}
 	etcd.Spec.StorageCapacity = &volume
-	quota := resource.MustParse(lodiav1alpha1.DefaultQuotaBackendBytes)
-	if spec.Etcd != nil && spec.Etcd.QuotaBackendBytes != nil {
-		quota = spec.Etcd.QuotaBackendBytes.DeepCopy()
-	}
-	var capped string
-	twice := quota.DeepCopy()
-	twice.Add(quota)
-	if twice.Cmp(volume) > 0 {
-		half := resource.NewQuantity(volume.Value()/2, volume.Format)
-		capped = fmt.Sprintf("DatastoreClass %s's quota %s is capped at %s: it needs %s of volume and Etcd %s's is %s",
-			class.Name, quota.String(), half.String(), twice.String(), etcd.Name, volume.String())
-		quota = *half
-	}
+	quota, capped := cappedQuota(class, volume, etcd.Name)
 	etcd.Spec.Etcd.Quota = &quota
 	if settings := spec.Etcd; settings != nil {
 		etcd.Spec.Etcd.Resources = settings.Resources
@@ -169,6 +157,23 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 		}
 	}
 	return etcd, capped
+}
+
+// cappedQuota is the class's quota, capped at half the volume, and the note
+// of a cap.
+func cappedQuota(class *lodiav1alpha1.DatastoreClass, volume resource.Quantity, etcd string) (resource.Quantity, string) {
+	quota := resource.MustParse(lodiav1alpha1.DefaultQuotaBackendBytes)
+	if settings := class.Spec.Etcd; settings != nil && settings.QuotaBackendBytes != nil {
+		quota = settings.QuotaBackendBytes.DeepCopy()
+	}
+	twice := quota.DeepCopy()
+	twice.Add(quota)
+	if twice.Cmp(volume) <= 0 {
+		return quota, ""
+	}
+	half := resource.NewQuantity(volume.Value()/2, volume.Format)
+	return *half, fmt.Sprintf("DatastoreClass %s's quota %s is capped at %s: it needs %s of volume and Etcd %s's is %s",
+		class.Name, quota.String(), half.String(), twice.String(), etcd, volume.String())
 }
 
 func store(cp *lodiav1alpha1.ControlPlane, backup *lodiav1alpha1.EtcdBackup, namespaceUID types.UID) *druidv1alpha1.StoreSpec {

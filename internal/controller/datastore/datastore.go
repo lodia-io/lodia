@@ -466,6 +466,13 @@ func (r *Reconciler) renderEtcd(ctx context.Context, p *pass) error {
 	}
 	if p.copied {
 		p.rendered = copied(cp, p.current, p.generation)
+		// The held Etcd keeps its quota: a cap is noted while that quota is the
+		// cap, not while it is one a class edit waits to change.
+		if current := p.current.Spec.Etcd.Quota; p.class != nil && current != nil {
+			if capped, note := cappedQuota(p.class, ptr.Deref(p.current.Spec.StorageCapacity, p.class.Spec.Storage.Size), p.current.Name); note != "" && capped.Cmp(*current) == 0 {
+				p.held = note
+			}
+		}
 		return nil
 	}
 	var capped string

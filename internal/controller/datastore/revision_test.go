@@ -346,6 +346,39 @@ func TestAHeldPassCopiesTheCredentialsOfTheStoreTheEtcdNames(t *testing.T) {
 	}
 }
 
+func TestAHeldPassNotesTheQuotaCapTheEtcdRuns(t *testing.T) {
+	ns, credentialsNamespace := namespace(t), namespace(t)
+	create(t, credentials(credentialsNamespace))
+	for _, c := range []struct {
+		cp, class, quota, note string
+	}{
+		{"held-cap", "held-cap", "6Gi", "; DatastoreClass held-cap's quota 6Gi is capped at 4Gi: it needs 12Gi of volume and Etcd held-cap-etcd's is 8Gi"},
+		{"held-raise", "held-raise", "6Gi", ""},
+	} {
+		t.Run(c.cp, func(t *testing.T) {
+			class := newClass(c.class, "Retain")
+			if c.note == "" {
+				class = fullClass(c.class, credentialsNamespace)
+			}
+			createClass(t, class)
+			heldTenant(t, ns, c.cp, c.class, nil)
+			running := quantity(getEtcd(t, ns, c.cp).Spec.Etcd.Quota)
+			editClass(t, c.class, func(class *lodiav1alpha1.DatastoreClass) {
+				class.Spec.Storage.Size = resource.MustParse("40Gi")
+				class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{QuotaBackendBytes: new(resource.MustParse(c.quota))}
+			})
+			mustPass(t, operatorAt(unpaused(k8s), revision), ns, c.cp)
+			ready := meta.FindStatusCondition(getControlPlane(t, ns, c.cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
+			if want := "Etcd " + c.cp + "-etcd has quorum, 1 of 1 members ready" + c.note; ready.Message != want {
+				t.Errorf("a held pass over an Etcd at quota %s, class quota %s, writes DatastoreReady %q, want %q", running, c.quota, ready.Message, want)
+			}
+			if got := quantity(getEtcd(t, ns, c.cp).Spec.Etcd.Quota); got != running {
+				t.Errorf("a held pass moved the quota from %s to %s", running, got)
+			}
+		})
+	}
+}
+
 func TestAHeldPassCreatesAMissingEtcdFromTheFullRender(t *testing.T) {
 	ns := namespace(t)
 	const cp = "held-create"
