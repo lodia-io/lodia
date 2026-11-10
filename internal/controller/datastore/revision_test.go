@@ -11,12 +11,14 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	druidapicommon "github.com/gardener/etcd-druid/api/common"
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -362,6 +364,35 @@ func TestAHeldPassCopiesTheCredentialsOfTheStoreTheEtcdNames(t *testing.T) {
 	}
 }
 
+func TestAHeldPassWithoutAnEtcdCopiesTheCredentialsOfTheStoreItRenders(t *testing.T) {
+	ns, credentialsNamespace := namespace(t), namespace(t)
+	const cp = "held-gone"
+	create(t, credentials(credentialsNamespace))
+	createClass(t, fullClass(cp, credentialsNamespace))
+	heldTenant(t, ns, cp, cp, nil)
+	held := operatorAt(unpaused(k8s), revision)
+	create(t, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "s3-other", Namespace: credentialsNamespace}, Data: map[string][]byte{"accessKeyID": []byte("other-access")}})
+	editClass(t, cp, func(class *lodiav1alpha1.DatastoreClass) {
+		class.Spec.Backup.Store.Bucket, class.Spec.Backup.Store.SecretRef.Name = "other-bucket", "s3-other"
+	})
+	mustPass(t, held, ns, cp)
+	kept := string(getCopy(t, ns, cp).Data["accessKeyID"])
+	if kept == "other-access" {
+		t.Fatalf("a held pass over the Etcd on the old store copied the keys of the class's new store")
+	}
+
+	if err := k8s.Delete(t.Context(), getEtcd(t, ns, cp)); err != nil {
+		t.Fatal(err)
+	}
+	mustPass(t, held, ns, cp)
+	if got := getEtcd(t, ns, cp).Spec.Backup.Store.Container; *got != "other-bucket" {
+		t.Errorf("a held pass without an Etcd created one on bucket %s, want the class's other-bucket", *got)
+	}
+	if got := string(getCopy(t, ns, cp).Data["accessKeyID"]); got != "other-access" {
+		t.Errorf("a held pass without an Etcd left accessKeyID %s in the copy, want the class's other-access", got)
+	}
+}
+
 func TestAHeldPassNotesTheQuotaCapTheEtcdRuns(t *testing.T) {
 	ns, credentialsNamespace := namespace(t), namespace(t)
 	create(t, credentials(credentialsNamespace))
@@ -648,6 +679,29 @@ func TestARefusedRequestLabelsTheClaimsOfTheAppliedEtcd(t *testing.T) {
 	mustPass(t, operatorAt(unpaused(k8s), revision), ns, cp)
 	if err := requestedAs("1/"+revision, true)(getEtcd(t, ns, cp)); err != nil {
 		t.Errorf("the pass after the Etcd's deletion: %v", err)
+	}
+}
+
+func TestARefusedRequestReportsTheAppliedEtcd(t *testing.T) {
+	ns := namespace(t)
+	const cp = "refused-grant"
+	createClass(t, newClass(cp, "Retain"))
+	heldTenant(t, ns, cp, cp, nil)
+	editClass(t, cp, func(class *lodiav1alpha1.DatastoreClass) {
+		class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{QuotaBackendBytes: new(resource.MustParse("3Gi"))}
+	})
+	setHighAvailability(t, ns, cp, &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"})
+	grant(t, getControlPlane(t, ns, cp), revision)
+	refusing, refused := refusingRequests(cp)
+	if _, err := passOf(t, operatorAt(refusing, revision), ns, cp); !errors.Is(err, refused) {
+		t.Fatalf("a pass whose request the API server refuses returned %v, want the refusal", err)
+	}
+	if etcd := getEtcd(t, ns, cp); etcd.Spec.Replicas != 3 || etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation] != "2" {
+		t.Fatalf("the grant's pass applied %d members of class generation %s, want 3 of 2", etcd.Spec.Replicas, etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation])
+	}
+	datastore := getControlPlane(t, ns, cp).Status.Datastore
+	if datastore.Class == nil || datastore.Class.Generation != 2 || datastore.Members.Total != 3 {
+		t.Errorf("a refused request reports class %+v and %d members, want the applied Etcd's class generation 2 and 3 members", datastore.Class, datastore.Members.Total)
 	}
 }
 
@@ -1284,4 +1338,62 @@ func TestTheRestoreAsksEtcdDruidOnEveryEtcdItWrites(t *testing.T) {
 		return nil
 	})
 	waitEtcd(t, r.ns, restoredCP, requestedAs(fmt.Sprintf("%d/%s", raised.Generation, revision), true))
+}
+
+func TestARefusedRequestOnTheRestoresRaiseReportsTheRestore(t *testing.T) {
+	r := newRestore(t, restoreSetup{controlPlane: func(cp *lodiav1alpha1.ControlPlane) {
+		cp.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+	}})
+	r.copied(t)
+	waitEtcd(t, r.ns, restoredCP, requestedAs("1/"+revision, true))
+	answer(t, r.ns, restoredCP)
+	marker := r.cleanedUp(t)
+
+	added := func(o string) string {
+		return "(has(" + o + ".metadata.annotations) && '" + druidv1alpha1.DruidOperationAnnotation + "' in " + o + ".metadata.annotations)"
+	}
+	policy := &admissionregistrationv1.ValidatingAdmissionPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "refuse-requests-in-" + r.ns},
+		Spec: admissionregistrationv1.ValidatingAdmissionPolicySpec{
+			FailurePolicy: new(admissionregistrationv1.Fail),
+			MatchConstraints: &admissionregistrationv1.MatchResources{ResourceRules: []admissionregistrationv1.NamedRuleWithOperations{{
+				RuleWithOperations: admissionregistrationv1.RuleWithOperations{
+					Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Update},
+					Rule:       admissionregistrationv1.Rule{APIGroups: []string{druidv1alpha1.SchemeGroupVersion.Group}, APIVersions: []string{"v1alpha1"}, Resources: []string{"etcds"}},
+				},
+			}}},
+			Validations: []admissionregistrationv1.Validation{{Expression: "object.metadata.namespace != '" + r.ns + "' || !" + added("object") + " || " + added("oldObject"), Message: "no request to etcd-druid"}},
+		},
+	}
+	binding := &admissionregistrationv1.ValidatingAdmissionPolicyBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: policy.Name},
+		Spec:       admissionregistrationv1.ValidatingAdmissionPolicyBindingSpec{PolicyName: policy.Name, ValidationActions: []admissionregistrationv1.ValidationAction{admissionregistrationv1.Deny}},
+	}
+	for _, obj := range []client.Object{policy, binding} {
+		create(t, obj)
+		t.Cleanup(func() {
+			if err := client.IgnoreNotFound(k8s.Delete(context.Background(), obj)); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	testenv.Eventually(t, func() error {
+		etcd := getEtcd(t, r.ns, restoredCP)
+		probe := etcd.DeepCopy()
+		metav1.SetMetaDataAnnotation(&probe.ObjectMeta, druidv1alpha1.DruidOperationAnnotation, druidv1alpha1.DruidOperationReconcile)
+		if err := k8s.Patch(t.Context(), probe, client.MergeFrom(etcd), client.DryRunAll); err == nil {
+			return errors.New("the policy does not refuse a request yet")
+		}
+		return nil
+	})
+
+	createLease(t, r.ns, restoredCP+"-etcd-full-snap", strconv.FormatInt(marker, 10))
+	poke(t, r.ns)
+	waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, "the API server refuses the request that etcd-druid reconcile Etcd "+restoredCP+"-etcd")
+	if n := getEtcd(t, r.ns, restoredCP).Spec.Replicas; n != 3 {
+		t.Errorf("the pass that completes the restore applied %d members, want 3", n)
+	}
+	if restore := r.controlPlane(t).Status.Restore; restore == nil || restore.Backup.Name != backupName {
+		t.Errorf("the pass that completes the restore and whose request is refused wrote status.restore %+v, want Backup %s", restore, backupName)
+	}
 }
