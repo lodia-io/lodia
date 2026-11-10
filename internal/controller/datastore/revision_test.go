@@ -28,6 +28,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/uuid"
+	"k8s.io/utils/clock"
+	clocktesting "k8s.io/utils/clock/testing"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -53,7 +55,13 @@ func unpaused(c client.WithWatch) client.WithWatch {
 }
 
 func operatorAt(c client.WithWatch, operatorRevision string) *datastore.Reconciler {
-	return &datastore.Reconciler{Client: c, Reader: k8s, EtcdDruidNamespace: druidNamespace, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion, Revision: operatorRevision, OperatorNamespace: operatorNamespace}
+	return &datastore.Reconciler{Client: c, Reader: k8s, EtcdDruidNamespace: druidNamespace, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion, Revision: operatorRevision, OperatorNamespace: operatorNamespace, Clock: clock.RealClock{}}
+}
+
+func ahead(r *datastore.Reconciler, by time.Duration) *datastore.Reconciler {
+	later := *r
+	later.Clock = clocktesting.NewFakePassiveClock(time.Now().Add(by))
+	return &later
 }
 
 func passOf(t *testing.T, r *datastore.Reconciler, ns, name string) (ctrl.Result, error) {
@@ -950,9 +958,13 @@ func TestARequestConsumedByAReconcileThatStartedBeforeItIsAskedAgain(t *testing.
 		writeGeneration(t, ns, cp, 2)
 		r := operatorAt(unpaused(k8s), revision)
 		mustPass(t, r, ns, cp)
+		if err := requestedAs("", false)(getEtcd(t, ns, cp)); err != nil {
+			t.Fatalf("a pass while etcd-druid's first reconcile runs: %v", err)
+		}
+		mustPass(t, ahead(r, 3*time.Minute+time.Second), ns, cp)
 		request := fmt.Sprintf("%d/%s", getEtcd(t, ns, cp).Generation, revision)
 		if err := requestedAs(request, true)(getEtcd(t, ns, cp)); err != nil || recordedRun(t, ns, cp) != "first" {
-			t.Fatalf("the request made while etcd-druid's first reconcile runs records run ID %q: %v", recordedRun(t, ns, cp), err)
+			t.Fatalf("the request made once etcd-druid's first reconcile has written nothing for 3 minutes records run ID %q: %v", recordedRun(t, ns, cp), err)
 		}
 		runStatefulSet(t, ns, cp, 1)
 		druidEnds(t, ns, cp, "first")
@@ -973,10 +985,16 @@ func TestARequestConsumedByAReconcileThatStartedBeforeItIsAskedAgain(t *testing.
 		druidRuns(t, ns, cp, "stale", druidv1alpha1.LastOperationStateProcessing)
 		grant(t, getControlPlane(t, ns, cp), revision)
 		mustPass(t, r, ns, cp)
+		if err := requestedAs("1/"+previousRevision, false)(getEtcd(t, ns, cp)); err != nil {
+			t.Fatalf("the grant's pass while etcd-druid's reconcile runs: %v", err)
+		}
+		mustPass(t, ahead(r, 3*time.Minute+time.Second), ns, cp)
 		request := fmt.Sprintf("%d/%s", getEtcd(t, ns, cp).Generation, revision)
 		if err := requestedAs(request, true)(getEtcd(t, ns, cp)); err != nil || recordedRun(t, ns, cp) != "stale" {
-			t.Fatalf("the grant's request records run ID %q: %v", recordedRun(t, ns, cp), err)
+			t.Fatalf("the grant's request made once the reconcile has written nothing for 3 minutes records run ID %q: %v", recordedRun(t, ns, cp), err)
 		}
+		removeDruidAnnotation(t, ns, cp)
+		asksAgain(t, r, ns, cp, request, "stale")
 		druidEnds(t, ns, cp, "stale")
 		asksAgain(t, r, ns, cp, request, "stale")
 		if got := reportedRevision(t, ns, cp); got != previousRevision {
@@ -1029,6 +1047,38 @@ func TestARequestConsumedByAReconcileThatStartedBeforeItIsAskedAgain(t *testing.
 				t.Errorf("a request served by a create: %v", err)
 			}
 		})
+	}
+}
+
+func TestARequestIsNotAskedAgainWhileAReconcileThatStartedAfterItRuns(t *testing.T) {
+	ns := namespace(t)
+	const cp = "in-flight"
+	createClass(t, newClass(cp, "Retain"))
+	heldTenant(t, ns, cp, cp, nil)
+	r := operatorAt(unpaused(k8s), previousRevision)
+	writeGeneration(t, ns, cp, 2)
+	mustPass(t, r, ns, cp)
+	request, run := fmt.Sprintf("%d/%s", getEtcd(t, ns, cp).Generation, previousRevision), recordedRun(t, ns, cp)
+	if err := requestedAs(request, true)(getEtcd(t, ns, cp)); err != nil {
+		t.Fatal(err)
+	}
+	answer(t, ns, cp)
+	druidRuns(t, ns, cp, "back-to-back", druidv1alpha1.LastOperationStateProcessing)
+	for _, waiting := range []*datastore.Reconciler{r, ahead(r, 3*time.Minute-10*time.Second)} {
+		if result := mustPass(t, waiting, ns, cp); result.RequeueAfter != 15*time.Second {
+			t.Errorf("a pass while a reconcile that started after the request runs requeues after %s, want 15s", result.RequeueAfter)
+		}
+		if err := requestedAs(request, false)(getEtcd(t, ns, cp)); err != nil || recordedRun(t, ns, cp) != run {
+			t.Errorf("a pass while a reconcile that started after the request runs left run ID %q, want %q: %v", recordedRun(t, ns, cp), run, err)
+		}
+	}
+	druidRuns(t, ns, cp, "back-to-back", druidv1alpha1.LastOperationStateSucceeded)
+	setEtcdStatus(t, ns, cp, nil)
+	if result := mustPass(t, r, ns, cp); result.RequeueAfter != 0 {
+		t.Errorf("a pass over a request served by the reconcile that ran requeues after %s", result.RequeueAfter)
+	}
+	if err := requestedAs(request, false)(getEtcd(t, ns, cp)); err != nil || recordedRun(t, ns, cp) != run {
+		t.Errorf("a request served by the reconcile that ran left run ID %q, want %q: %v", recordedRun(t, ns, cp), run, err)
 	}
 }
 

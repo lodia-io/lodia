@@ -77,8 +77,9 @@ type Reconciler struct {
 	OperatorNamespace string
 	// EtcdClient connects to the etcd of an Etcd; the caller closes it.
 	EtcdClient func(ctx context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client, error)
-	// Clock spaces the full snapshots a restore asks for again, and keeps a
-	// failed copy for a minute.
+	// Clock spaces the full snapshots a restore asks for again, keeps a
+	// failed copy for a minute, and ends the wait on an etcd-druid reconcile
+	// that stopped writing.
 	Clock clock.PassiveClock
 }
 
@@ -538,14 +539,15 @@ func (r *Reconciler) applyEtcd(ctx context.Context, p *pass) (*outcome, error) {
 // under the resourceVersion of the apply's response, so that a pass on an
 // older response conflicts and the next one asks again, and the record names
 // the run ID that lock makes current when the annotation lands. A request
-// waits while etcd-druid's annotation is there, and the watch brings the pass
-// after its removal. A request under a revision the record does not name
+// waits while etcd-druid's annotation is there or a spec reconcile is in
+// flight, and the watch brings the pass after the annotation's removal or the
+// reconcile's end. A request under a revision the record does not name
 // waits for etcd-druid's Deployment to run the version the operator was given
 // in every replica: an older etcd-druid would take it and roll the members to
 // its own render. A request the API server refuses comes back with etcd and
 // the error.
 func (r *Reconciler) requestReconcile(ctx context.Context, p *pass, etcd *druidv1alpha1.Etcd) (*druidv1alpha1.Etcd, error) {
-	if druidv1alpha1.HasReconcileOperationAnnotation(etcd.ObjectMeta) || served(etcd) {
+	if druidv1alpha1.HasReconcileOperationAnnotation(etcd.ObjectMeta) || served(etcd) || r.inFlight(etcd) {
 		return etcd, nil
 	}
 	recorded, ok := etcd.Annotations[lodiav1alpha1.EtcdReconcileRequestedAnnotation]
@@ -602,6 +604,23 @@ func served(etcd *druidv1alpha1.Etcd) bool {
 	return ok && asked == requestOf(etcd) && !druidv1alpha1.HasReconcileOperationAnnotation(etcd.ObjectMeta) && last != nil &&
 		(last.Type == druidv1alpha1.LastOperationTypeCreate || last.Type == druidv1alpha1.LastOperationTypeReconcile) &&
 		last.State == druidv1alpha1.LastOperationStateSucceeded && last.RunID != run
+}
+
+// specReconcileBound outlasts one spec reconcile of etcd-druid, which writes
+// status.lastOperation at its start and at its end only
+// (reconcile_spec.go#L33-L49).
+const specReconcileBound = 3 * time.Minute
+
+// inFlight says whether etcd-druid runs a spec reconcile under a run ID other
+// than the recorded one, which started after the last request landed: a
+// request made meanwhile would record that run ID, which then removes the
+// annotation, and etcd-druid's next pass from its cache would repeat that. A
+// reconcile silent for specReconcileBound is one a stopped etcd-druid left.
+func (r *Reconciler) inFlight(etcd *druidv1alpha1.Etcd) bool {
+	_, run, _ := cutLast(etcd.Annotations[lodiav1alpha1.EtcdReconcileRequestedAnnotation], "/")
+	last := etcd.Status.LastOperation
+	return last != nil && last.State == druidv1alpha1.LastOperationStateProcessing && last.RunID != run &&
+		r.Clock.Since(last.LastUpdateTime.Time) < specReconcileBound
 }
 
 func cutLast(s, sep string) (string, string, bool) {
