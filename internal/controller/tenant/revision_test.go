@@ -564,6 +564,9 @@ func TestAHeldPassReadsTheRolloutOfWhatTheInventoryListsAndChangesNothingItCanno
 		{APIGroups: []string{appsv1.GroupName}, Resources: []string{"daemonsets"}, Verbs: []string{"create", "patch", "update", "delete", "list", "watch"}},
 		{NonResourceURLs: []string{"*"}, Verbs: []string{"*"}},
 	}, authorizationv1.ResourceAttributes{Group: appsv1.GroupName, Resource: "daemonsets", Verb: "get", Namespace: "kube-system"})
+	listed := inventoryOf(t, admin)
+	editByHand(t, admin, listed)
+	before := resourceVersions(t, admin, listed)
 	if err := passWith(t, runningOperator(), cp); !apierrors.IsForbidden(err) {
 		t.Errorf("a held pass whose read of a listed DaemonSet is refused returned %v, want the refusal", err)
 	}
@@ -571,6 +574,21 @@ func TestAHeldPassReadsTheRolloutOfWhatTheInventoryListsAndChangesNothingItCanno
 	expectSame(t, cp, missing)
 	if cp.ResourceVersion != written {
 		t.Errorf("a held pass that could not read a listed DaemonSet wrote the ControlPlane: resourceVersion %s, then %s", written, cp.ResourceVersion)
+	}
+	if after := resourceVersions(t, admin, listed); !equality.Semantic.DeepEqual(after, before) {
+		t.Errorf("a held pass that could not read a listed DaemonSet wrote the tenant: %v, then %v", before, after)
+	}
+
+	setComponents(t, cp, running(version), running("v1.34.2"), running(version))
+	refresh(t, cp)
+	written = cp.ResourceVersion
+	if err := passWith(t, runningOperator(), cp); !apierrors.IsForbidden(err) {
+		t.Errorf("a held pass that cannot render, whose rollout read of a listed DaemonSet is refused, returned %v, want the refusal", err)
+	}
+	expectSame(t, cp, applied)
+	expectSame(t, cp, missing)
+	if cp.ResourceVersion != written {
+		t.Errorf("a held pass that cannot render and could not read a listed DaemonSet wrote the ControlPlane: resourceVersion %s, then %s", written, cp.ResourceVersion)
 	}
 }
 
