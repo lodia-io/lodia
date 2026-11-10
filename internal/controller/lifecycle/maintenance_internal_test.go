@@ -280,6 +280,8 @@ func TestTheGrantFollowsTheRulesInTheirOrder(t *testing.T) {
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonRollingOut, scheduledFor: &nextStart, requeue: 30 * time.Minute}},
 		{"6: not Ready in an open window: Ready's reason", held(inWindow("12:00", "13:00", ""), condition(unreachable)),
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonExternalProbeFailed, message: "Reachable: api: refused"}},
+		{"6: Ready's reason before a cause standing on an input of Ready", held(inWindow("12:00", "13:00", ""), condition(pastDeadline), condition(unreachable)),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonExternalProbeFailed, message: "Reachable: api: refused"}},
 		{"6: Ready True at an earlier generation counts", held(func(f *facts) {
 			f.cp.Generation = 4
 			for i := range f.cp.Status.Conditions {
@@ -753,4 +755,19 @@ func TestATokenRemovedAndSetAgainIsNotHandledTwice(t *testing.T) {
 	adopt(f.cp, expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonWaitingForWindow, lastHandled: "t1", scheduledFor: &nextStart, requeue: 30 * time.Minute}))
 	requested("t1")(&f)
 	expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonWaitingForWindow, lastHandled: "t1", scheduledFor: &nextStart, requeue: 30 * time.Minute})
+}
+
+func TestRuleTwoKeepsTheSlotSettling(t *testing.T) {
+	tenSecondsAgo := present.Add(-10 * time.Second)
+	outside := func(f *facts) {
+		f.cp.Spec.Version, f.cp.Status.Target.Version, f.cp.Status.Target.OperatorRevision = "v1.34.9", "v1.34.9", revisionB
+		for _, c := range []*lodiav1alpha1.ComponentStatus{f.cp.Status.Components.APIServer, f.cp.Status.Components.ControllerManager, f.cp.Status.Components.Scheduler} {
+			c.Version = "v1.34.9"
+		}
+		f.cp.Status.Addons.Version = "v1.34.9"
+	}
+	f := held(slotted(lodiav1alpha1.ReasonMaintaining, 3), outside, reportsAll(revisionB), running(revisionC), settlingAt(tenSecondsAgo))
+	expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonUnsupported, settlingSince: &tenSecondsAgo, requeue: settling - 10*time.Second, slot: true})
+	f.now = present.Add(settling)
+	expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonUnsupported})
 }
