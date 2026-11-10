@@ -486,12 +486,14 @@ func TestAHeldPassKeepsAddonsAppliedUnlessAWaitCoversWhatRuns(t *testing.T) {
 		c.repairs()
 	}
 
-	setAddonsApplied(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, generation)
-	heldPass(t, cp)
-	expectAt(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, generation)
 	want := fmt.Sprintf("the %d objects the inventory lists are applied; waiting for Lifecycle to grant the running operator revision %s", len(inventory), revision)
-	if c := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied); c.Message != want {
-		t.Errorf("AddonsApplied says %q, want %q", c.Message, want)
+	for _, reason := range []string{lodiav1alpha1.ReasonWaitingForAccess, lodiav1alpha1.ReasonWaitingForTarget, lodiav1alpha1.ReasonWaitingForEndpoint} {
+		setAddonsApplied(t, cp, metav1.ConditionFalse, reason, generation)
+		heldPass(t, cp)
+		expectAt(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, generation)
+		if c := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied); c.Message != want {
+			t.Errorf("over %s AddonsApplied says %q, want %q", reason, c.Message, want)
+		}
 	}
 	if !appliedByLodia(get(t, admin, &corev1.ConfigMap{}, "kube-system", "kube-proxy")) {
 		t.Error("the held pass did not create the listed ConfigMap a person's deletion left missing")
