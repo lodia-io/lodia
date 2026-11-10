@@ -381,10 +381,11 @@ func TestAHeldPassReadsWhatTheCacheLacksAndWritesNothing(t *testing.T) {
 
 func TestAHeldPassAtANewGenerationKeepsTheGenerationItDescribes(t *testing.T) {
 	cp := running(t)
-	grant(t, cp, previous)
-	settle(t, cp)
 	ready := *condition(t, cp)
 	generations := generationsOf(t, cp)
+	pause(t, cp)
+	grant(t, cp, previous)
+	settle(t, cp)
 	update(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) {
 		spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]string{"audit-log-maxage": "7"}}
 	})
@@ -392,7 +393,7 @@ func TestAHeldPassAtANewGenerationKeepsTheGenerationItDescribes(t *testing.T) {
 		t.Fatal("the spec change did not move the generation")
 	}
 
-	held := operatorAt(k8s, next)
+	held := operatorAt(unpaused(), next)
 	passOf(t, held, cp)
 	if err := expectAt(cp, ready.ObservedGeneration, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, ready.Message); err != nil {
 		t.Error(err)
