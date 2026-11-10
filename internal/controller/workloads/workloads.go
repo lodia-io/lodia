@@ -1030,7 +1030,6 @@ func (r *Reconciler) stored(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(content, obj); err != nil {
 		return false, err
 	}
-	obj.GetObjectKind().SetGroupVersionKind(gvk)
 	return true, nil
 }
 
