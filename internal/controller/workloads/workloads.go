@@ -613,10 +613,14 @@ func (r *Reconciler) controlledElsewhere(ctx context.Context, cp *lodiav1alpha1.
 	requeueAfter := 10 * time.Second
 	for _, obj := range objects {
 		current := cached(obj)
-		if err := r.Get(ctx, client.ObjectKeyFromObject(obj), current); err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
-			}
+		err := r.Get(ctx, client.ObjectKeyFromObject(obj), current)
+		if apierrors.IsNotFound(err) {
+			err = r.Reader.Get(ctx, client.ObjectKeyFromObject(obj), current)
+		}
+		if apierrors.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
 			return nil, 0, err
 		}
 		owner := ownership.ControlledElsewhere(current, cp)
@@ -1005,8 +1009,7 @@ func (r *Reconciler) apply(ctx context.Context, cp *lodiav1alpha1.ControlPlane, 
 // stored fills obj with the object stored under its name and says whether
 // there is one. One the cache lacks is read from the API server: the cache can
 // lag Workloads' own create, or miss an object whose label was removed. One
-// another owner keeps counts as missing, so that the apply the API server
-// refuses says so and nothing is read from it.
+// another owner keeps counts as missing, and nothing is read from it.
 func (r *Reconciler) stored(ctx context.Context, cp *lodiav1alpha1.ControlPlane, obj client.Object) (bool, error) {
 	key := client.ObjectKeyFromObject(obj)
 	current := cached(obj)
