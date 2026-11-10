@@ -80,7 +80,7 @@ Then wave 2: upgrades with maintenance windows, the fleet limit and the operator
 
 Done from wave 1b: `highAvailability` with [gate G2](../test/e2e/README.md#gate-g2-a-highly-available-control-plane), backups with `Backup` and restore with [gate G3](../test/e2e/README.md#gate-g3-a-backup-and-a-restore), `KubeconfigRequest`s, and the Gateway with in-cluster access, with its gate on every pull request and G6 and conformance behind the Gateway every night ([gates](../test/e2e/README.md#the-gateway-gate)).
 
-Done from wave 2: Health's internal probe, node sampling and the controller manager hold, with gate G4 every night ([gate](../test/e2e/README.md#nightly-gate-g4-nodes-cut-off-from-the-gateway)); upgrades by minors, with the upgrade part of [gate G1](../test/e2e/README.md#gate-g1-a-minor-upgrade) on every pull request.
+Done from wave 2: Health's internal probe, node sampling and the controller manager hold, with gate G4 every night ([gate](../test/e2e/README.md#nightly-gate-g4-nodes-cut-off-from-the-gateway)); upgrades by minors, with the upgrade part of [gate G1](../test/e2e/README.md#gate-g1-a-minor-upgrade) on every pull request; the operator revision, granted in maintenance windows within the fleet limit, with [gate G5](../test/e2e/README.md#gate-g5-an-operator-upgrade-in-windows) on every pull request.
 
 Gate:
 
@@ -92,6 +92,7 @@ Gate:
   Cut one worker of two: no hold, and its pods move to the other after the toleration, as upstream does ([controller-manager-hold](decisions/controller-manager-hold.md)).
   `TestControllerManagerHold` checks both every night in [`nightly-hold`](../test/e2e/README.md#nightly-gate-g4-nodes-cut-off-from-the-gateway).
 - e2e: an operator upgrade re-renders a tenant only inside its window; outside it, `Progressing` is False, `WaitingForWindow`, and `status.target.scheduledFor` is the window's next start; an edit of the tenant's spec renders it at once.
+  [`TestOperatorUpgradeInWindows`](../test/e2e/README.md#gate-g5-an-operator-upgrade-in-windows) checks it on every pull request.
 - Measured: API p99 latency through the Gateway against a direct Service, overhead under 5 ms on kind.
   `TestGatewayOverhead` measures it in [`nightly-gateway`](../test/e2e/README.md#nightly-g6-and-conformance-behind-the-gateway); on 2026-11-08 on Docker Desktop's kernel 6.12.54-linuxkit with 16 CPUs, Δp99 was 0.06 ms through the Gateway and 0.17 ms through the tunnel on reused connections, and 0.11 and 0.99 ms on new ones, with no error.
 

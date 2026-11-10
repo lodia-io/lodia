@@ -108,16 +108,23 @@ var buildVersion = sync.OnceValues(func() (string, error) {
 })
 
 func build(ctx context.Context, kubeconfig, command string) (reference.NamedTagged, error) {
-	cluster, err := kindCluster(kubeconfig)
-	if err != nil {
-		return nil, err
-	}
 	version, err := buildVersion()
 	if err != nil {
 		return nil, err
 	}
-	ko := exec.CommandContext(ctx, "go", "run", "github.com/google/ko@v0.19.1", "build",
-		"--base-import-paths", "--platform=linux/"+goruntime.GOARCH, command)
+	return buildAs(ctx, kubeconfig, command, version)
+}
+
+func buildAs(ctx context.Context, kubeconfig, command, version string, tags ...string) (reference.NamedTagged, error) {
+	cluster, err := kindCluster(kubeconfig)
+	if err != nil {
+		return nil, err
+	}
+	args := []string{"run", "github.com/google/ko@v0.19.1", "build", "--base-import-paths", "--platform=linux/" + goruntime.GOARCH}
+	if len(tags) > 0 {
+		args = append(args, "--tags="+strings.Join(tags, ","))
+	}
+	ko := exec.CommandContext(ctx, "go", append(args, command)...)
 	ko.Dir = root
 	ko.Env = append(os.Environ(), "KO_DOCKER_REPO=kind.local", "KIND_CLUSTER_NAME="+cluster, "VERSION="+version)
 	var stderr bytes.Buffer

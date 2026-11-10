@@ -81,6 +81,19 @@ Each is a job of its own, with its own kind cluster.
 
 `TestHighAvailabilityUpgrade` (`make e2e-upgrade-ha`, on the cluster shape of G2) is G1's edit on a tenant with `failureTolerance: Zone`, under the two loops.
 
+## Gate G5: an operator upgrade in windows
+
+`TestOperatorUpgradeInWindows` checks the window item of the [phase 2 gate](../../docs/roadmap.md#phase-2--production) ([upgrades-and-maintenance-windows](../../docs/decisions/upgrades-and-maintenance-windows.md)).
+It sits behind the build tag `maintenance` with `e2e`, and `make e2e-maintenance` runs it on a kind cluster of its own; the `e2e-maintenance` job of [`ci.yml`](../../.github/workflows/ci.yml) runs that on every pull request.
+
+Three `ControlPlane`s in `nodePort` mode, with windows in UTC around the time the test starts: `open` from two hours before to two hours after, `closed` from four hours after to five, and `anytime` with none, so that every edge is at least an hour away.
+Once each is `Ready` and `Idle`, every part reporting the suite's operator revision A, the test records `closed`'s Deployment generations, pod UIDs, `Etcd` generation and the resourceVersion of its inventory inside the tenant, and a watch of every `ControlPlane` records each status of the three from then on.
+
+1. The suite builds the operator again under its `VERSION` with `-b`, and the signer under the tag `e2e-b`, since ko builds reproducibly and the same signer built again is the same image; the chart upgrades to both with `--reuse-values`, and a running replica of build B takes the Lease `lodia.io`.
+2. Within 3 minutes of that, `open` and `anytime` report revision B, `B`'s `VERSION` and a digest, in every `components.*`, `addons` and `datastore`, their API server's template runs signer B, they were seen `Maintaining` and are `Idle`.
+3. `closed` is `WaitingForWindow`, `target.scheduledFor` its window's start and its revision A, from its first such status on and for 2 more minutes, and nothing recorded of it changed; no status of the three was seen with `Ready` other than True.
+4. An edit of `closed`'s `addons.coreDNS.replicas` grants it revision B within 30 seconds, and its API server rolls to signer B, while it was never seen `Maintaining`.
+
 ## Gate G2: a highly available control plane
 
 `TestHighAvailabilityGate` checks the second item of the [phase 2 gate](../../docs/roadmap.md#phase-2--production).

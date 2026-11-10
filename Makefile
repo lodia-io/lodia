@@ -9,6 +9,7 @@ E2E_CLUSTER ?= lodia-e2e-local
 E2E_DIR ?= $(CURDIR)/work/e2e
 E2E_HA_TEST ?= TestHighAvailabilityGate
 E2E_UPGRADE_TEST ?= TestMinorUpgradeGate
+E2E_MAINTENANCE_TEST ?= TestOperatorUpgradeInWindows
 CHART = charts/lodia
 CONTROLLERS = datastore health lifecycle pki tenant workloads
 GENERATED = api/v1alpha1/zz_generated.deepcopy.go api/crds/*.yaml $(CHART)/files/crds/*.yaml $(CHART)/files/rbac/*.yaml
@@ -32,6 +33,7 @@ lint:
 	golangci-lint run --build-tags e2e,gateway ./test/e2e/...
 	golangci-lint run --build-tags e2e,hold ./test/e2e/...
 	golangci-lint run --build-tags e2e,upgrade ./test/e2e/...
+	golangci-lint run --build-tags e2e,maintenance ./test/e2e/...
 	cd api && golangci-lint run ./...
 
 .PHONY: test
@@ -141,6 +143,13 @@ e2e-upgrade-ha: ## the nightly upgrade of a highly available tenant, on a kind c
 	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig --config test/e2e/testdata/kind-ha.yaml
 	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,upgrade -count=1 -timeout 45m -run '^TestHighAvailabilityUpgrade$$' ./test/e2e/...; status=$$?; \
 	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 || status=1; \
+	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
+
+.PHONY: e2e-maintenance
+e2e-maintenance: ## gate G5, an operator upgrade that re-renders tenants only in their windows, on a kind cluster of its own that it deletes afterwards
+	mkdir -p $(E2E_DIR)
+	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig
+	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,maintenance -count=1 -timeout 40m -run '^$(E2E_MAINTENANCE_TEST)$$' ./test/e2e/...; status=$$?; \
 	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
 
 .PHONY: conformance-gateway
