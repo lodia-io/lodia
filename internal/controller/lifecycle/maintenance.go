@@ -160,7 +160,13 @@ func (f facts) grant(m *maintenance, c change, w *window, requested bool) {
 		}
 	}
 	if notReady := readyForMaintenance(cp); notReady != nil {
-		m.waiting = newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, notReady.Reason, notReady.Message)
+		reason, message := notReady.Reason, notReady.Message
+		if notReady.Status == metav1.ConditionUnknown {
+			// Ready's Unknown reasons, Reconciling and
+			// LatestGenerationNotObserved, say something else under False.
+			reason, message = lodiav1alpha1.ReasonWaitingForReady, fmt.Sprintf("Ready is Unknown: %s: %s", notReady.Reason, notReady.Message)
+		}
+		m.waiting = newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, reason, message)
 		return
 	}
 	if stops := stopping(cp); stops != nil {

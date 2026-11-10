@@ -310,13 +310,21 @@ func TestTheGrantFollowsTheRulesInTheirOrder(t *testing.T) {
 	}
 }
 
-func TestRuleSixWaitsWhileAnInputOfReadyIsMissing(t *testing.T) {
-	d := decide(held(scheduled(present.Add(-time.Minute)), func(f *facts) {
-		meta.RemoveStatusCondition(&f.cp.Status.Conditions, lodiav1alpha1.ConditionControllersLeading)
-	}))
-	progressing := meta.FindStatusCondition(d.status.Conditions, lodiav1alpha1.ConditionProgressing)
-	if d.status.Target.OperatorRevision != revisionA || d.takesSlot || d.status.Target.ScheduledFor != nil || progressing.Reason != lodiav1alpha1.ReasonLatestGenerationNotObserved {
-		t.Errorf("with ControllersLeading missing: revision %s, takesSlot %t, scheduledFor %v, Progressing %+v", d.status.Target.OperatorRevision, d.takesSlot, d.status.Target.ScheduledFor, progressing)
+func TestRuleSixWaitsWhileReadyIsUnknown(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		change  func(*facts)
+		message string
+	}{
+		{"an input of Ready missing", func(f *facts) {
+			meta.RemoveStatusCondition(&f.cp.Status.Conditions, lodiav1alpha1.ConditionControllersLeading)
+		}, "Ready is Unknown: LatestGenerationNotObserved: ControllersLeading is not reported for generation 3"},
+		{"an input on its writer's first pass", condition(metav1.Condition{Type: lodiav1alpha1.ConditionReachable, Status: metav1.ConditionUnknown, Reason: lodiav1alpha1.ReasonReconciling, Message: "the first pass has not finished"}),
+			"Ready is Unknown: Reconciling: Reachable: the first pass has not finished"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			expectGrant(t, held(scheduled(present.Add(-time.Minute)), c.change), granted{revision: revisionA, reason: lodiav1alpha1.ReasonWaitingForReady, message: c.message})
+		})
 	}
 }
 
