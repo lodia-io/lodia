@@ -103,7 +103,7 @@ func seedStatus(t *testing.T, cp *lodiav1alpha1.ControlPlane, granted, reason st
 		maintenance["settlingSince"] = settlingSince.Format(time.RFC3339)
 	}
 	if slot {
-		maintenance["slotGeneration"] = generation
+		maintenance["slotSince"] = startedAt.Format(time.RFC3339)
 	}
 	if len(maintenance) > 0 {
 		fields["maintenance"] = maintenance
@@ -135,17 +135,17 @@ func expectMaintenance(t *testing.T, cp *lodiav1alpha1.ControlPlane, reason, rev
 	if c == nil || c.Reason != reason || revisionOn(fresh) != revision {
 		t.Fatalf("%s: Progressing is %+v with revision %q, want %s with %q", cp.Namespace, c, revisionOn(fresh), reason, revision)
 	}
-	if slot := slotOn(fresh) == fresh.Generation; slot != (reason == lodiav1alpha1.ReasonMaintaining || reason == lodiav1alpha1.ReasonMaintenanceFailed) {
-		t.Fatalf("%s: %s with maintenance.slotGeneration %d at generation %d", cp.Namespace, reason, slotOn(fresh), fresh.Generation)
+	if slot := slotOn(fresh) != nil; slot != (reason == lodiav1alpha1.ReasonMaintaining || reason == lodiav1alpha1.ReasonMaintenanceFailed) {
+		t.Fatalf("%s: %s with maintenance.slotSince %v", cp.Namespace, reason, slotOn(fresh))
 	}
 	return fresh
 }
 
-func slotOn(cp *lodiav1alpha1.ControlPlane) int64 {
+func slotOn(cp *lodiav1alpha1.ControlPlane) *metav1.Time {
 	if cp.Status.Maintenance == nil {
-		return 0
+		return nil
 	}
-	return cp.Status.Maintenance.SlotGeneration
+	return cp.Status.Maintenance.SlotSince
 }
 
 func cacheShowing(change func(*lodiav1alpha1.ControlPlane)) client.WithWatch {
@@ -215,7 +215,7 @@ func TestASlotIsCountedFromTheCacheThenFromTheAPIServer(t *testing.T) {
 	if result := mustPass(t, fleetReconciler(cacheShowing(func(cp *lodiav1alpha1.ControlPlane) {
 		if cp.Namespace == x.Namespace {
 			meta.SetStatusCondition(&cp.Status.Conditions, metav1.Condition{Type: lodiav1alpha1.ConditionProgressing, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonMaintaining})
-			cp.Status.Maintenance = &lodiav1alpha1.MaintenanceStatus{SlotGeneration: cp.Generation}
+			cp.Status.Maintenance = &lodiav1alpha1.MaintenanceStatus{SlotSince: &metav1.Time{Time: startedAt}}
 		}
 	}), quiet, later, 1), y); result.RequeueAfter != 30*time.Second {
 		t.Errorf("an over-count is looked at again after %s, want 30s", result.RequeueAfter)
@@ -335,8 +335,8 @@ func TestARestartedOperatorReadsTheSlotWhateverProgressingSays(t *testing.T) {
 	mustPass(t, fleetReconciler(quiet, quiet, later, 1), y)
 	expectMaintenance(t, y, lodiav1alpha1.ReasonFleetLimit, otherRevision)
 	mustPass(t, fleetReconciler(quiet, quiet, later, 1), x)
-	if fresh := getQuiet(t, x); slotOn(fresh) != fresh.Generation || fresh.Status.Maintenance.SettlingSince == nil || !fresh.Status.Maintenance.SettlingSince.Time.Equal(settling) {
-		t.Errorf("a restarted operator left maintenance %+v at generation %d, want the slot and settlingSince kept", fresh.Status.Maintenance, fresh.Generation)
+	if fresh := getQuiet(t, x); slotOn(fresh) == nil || !slotOn(fresh).Time.Equal(startedAt) || fresh.Status.Maintenance.SettlingSince == nil || !fresh.Status.Maintenance.SettlingSince.Time.Equal(settling) {
+		t.Errorf("a restarted operator left maintenance %+v, want the slot and settlingSince kept", fresh.Status.Maintenance)
 	}
 
 	end := later.Add(settlingTime)
@@ -348,18 +348,43 @@ func TestARestartedOperatorReadsTheSlotWhateverProgressingSays(t *testing.T) {
 	expectMaintenance(t, y, lodiav1alpha1.ReasonMaintaining, runningRevision)
 }
 
-func TestAnOwnersEditFreesTheSlotForTheOthers(t *testing.T) {
+func TestAnOwnersEditAndAPauseKeepTheSlotUntilTheChangeSettles(t *testing.T) {
 	x, y := fleetTenant(t, "edited-x"), fleetTenant(t, "edited-y")
 	seedLifecycle(t, x, runningRevision, lodiav1alpha1.ReasonMaintaining, nil, nil)
 	mustPass(t, fleetReconciler(quiet, quiet, later, 1), y)
 	expectMaintenance(t, y, lodiav1alpha1.ReasonFleetLimit, otherRevision)
 
-	fresh := getQuiet(t, x)
-	fresh.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: &lodiav1alpha1.MaintenanceWindow{Begin: "20:00", End: "21:00"}}
-	if err := quiet.Update(t.Context(), fresh); err != nil {
-		t.Fatal(err)
+	for _, step := range []struct {
+		name   string
+		edit   func(*lodiav1alpha1.ControlPlane)
+		reason string
+	}{
+		{"an edit of the window", func(cp *lodiav1alpha1.ControlPlane) {
+			cp.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: &lodiav1alpha1.MaintenanceWindow{Begin: "20:00", End: "21:00"}}
+		}, lodiav1alpha1.ReasonMaintaining},
+		{"a pause", func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true }, lodiav1alpha1.ReasonPaused},
+		{"an unpause", func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = false }, lodiav1alpha1.ReasonMaintaining},
+	} {
+		fresh := getQuiet(t, x)
+		step.edit(fresh)
+		if err := quiet.Update(t.Context(), fresh); err != nil {
+			t.Fatal(err)
+		}
+		mustPass(t, fleetReconciler(quiet, quiet, later, 1), x)
+		fresh = getQuiet(t, x)
+		if c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionProgressing); c == nil || c.Reason != step.reason || slotOn(fresh) == nil || !slotOn(fresh).Time.Equal(startedAt) {
+			t.Fatalf("after %s: Progressing %+v, maintenance %+v, want %s with the slot taken at %s", step.name, c, fresh.Status.Maintenance, step.reason, startedAt)
+		}
+		mustPass(t, fleetReconciler(quiet, quiet, later, 1), y)
+		expectMaintenance(t, y, lodiav1alpha1.ReasonFleetLimit, otherRevision)
 	}
-	mustPass(t, fleetReconciler(quiet, quiet, later, 1), y)
+
+	reportsOf(t, x, runningRevision)
+	mustPass(t, fleetReconciler(quiet, quiet, later, 1), x)
+	expectMaintenance(t, x, lodiav1alpha1.ReasonMaintaining, runningRevision)
+	mustPass(t, fleetReconciler(quiet, quiet, later.Add(settlingTime), 1), x)
+	expectMaintenance(t, x, lodiav1alpha1.ReasonIdle, runningRevision)
+	mustPass(t, fleetReconciler(quiet, quiet, later.Add(settlingTime), 1), y)
 	expectMaintenance(t, y, lodiav1alpha1.ReasonMaintaining, runningRevision)
 }
 
@@ -438,6 +463,20 @@ func TestAStaleCacheNeverRevokesAGrantOrASlot(t *testing.T) {
 			cp.Status.Target.ScheduledFor = &metav1.Time{Time: startedAt}
 			cp.Status.Maintenance = nil
 			meta.SetStatusCondition(&cp.Status.Conditions, metav1.Condition{Type: lodiav1alpha1.ConditionProgressing, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonFleetLimit, ObservedGeneration: cp.Generation})
+		}},
+		{"a cache from before an owner's edit and the grant", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+			fresh := getQuiet(t, cp)
+			fresh.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: &lodiav1alpha1.MaintenanceWindow{Begin: "20:00", End: "21:00"}}
+			if err := quiet.Update(t.Context(), fresh); err != nil {
+				t.Fatal(err)
+			}
+			seedLifecycle(t, cp, runningRevision, lodiav1alpha1.ReasonMaintaining, nil, nil)
+		}, func(cp *lodiav1alpha1.ControlPlane) {
+			cp.Generation--
+			cp.Spec.Maintenance = nil
+			cp.Status.Target.OperatorRevision = otherRevision
+			cp.Status.Maintenance = nil
+			meta.SetStatusCondition(&cp.Status.Conditions, metav1.Condition{Type: lodiav1alpha1.ConditionProgressing, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonIdle, ObservedGeneration: cp.Generation})
 		}},
 		{"a cache that has not seen the change roll out", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 			reportsOf(t, cp, runningRevision)
@@ -718,7 +757,7 @@ func TestTheManagerTakesASlotAsTheLifecycleUser(t *testing.T) {
 	testenv.Eventually(t, func() error {
 		fresh := get(t, cp)
 		c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionProgressing)
-		if revisionOn(fresh) != runningRevision || c == nil || c.Reason != lodiav1alpha1.ReasonMaintaining || slotOn(fresh) != fresh.Generation {
+		if revisionOn(fresh) != runningRevision || c == nil || c.Reason != lodiav1alpha1.ReasonMaintaining || slotOn(fresh) == nil {
 			return fmt.Errorf("revision %q, Progressing %+v, maintenance %+v, want %s in a slot", revisionOn(fresh), c, fresh.Status.Maintenance, runningRevision)
 		}
 		return nil

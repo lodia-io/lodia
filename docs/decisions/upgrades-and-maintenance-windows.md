@@ -74,7 +74,8 @@ Lifecycle grants the running revision, while it is pending, by these rules in th
    Nor while a cause that fails a change stands on an input of `Ready`, `ProgressDeadlineExceeded` on an available component: that cause's reason, since the change would fail in the write that grants it, for a cause it did not bring.
 7. A slot in the order of the queue: `Maintaining`, in the same write as the grant; none, `target.scheduledFor` when the tenant became eligible, which queues it, and `FleetLimit` unless a reason ranked above it applies.
 
-A change Lodia started keeps its origin in `status.maintenance.slotGeneration`, written in the same write as the grant: the tenant holds its slot while that is its generation, whatever `Progressing` says, so a reason ranked above the slot's does not free it, and an edit of `spec` does; a grant on request is the owner's.
+A change Lodia started keeps its origin in `status.maintenance.slotSince`, written in the same write as the grant: the tenant holds its slot while it is present, whatever `Progressing` says, so a reason ranked above the slot's does not free it; a grant on request is the owner's.
+Only the change settling and deletion end a slot: an owner's edit rolls in the slot and settles it as any other change, and a paused tenant keeps counting as a used slot, since a tenant a bad release left failed would otherwise leave the fleet on an edit or a pause, and rule 6 would keep the next release waiting for a `Ready` only that release brings.
 
 **Who waits for the window:**
 
@@ -93,11 +94,11 @@ Without a window Lodia-initiated changes roll at any time, still within the flee
 
 **The fleet.**
 Across all tenants, at most `fleet.maxConcurrentRollouts` (operator configuration, 5 by default) roll a Lodia-initiated change at once.
-A tenant holds a slot while `status.maintenance.slotGeneration` is its generation, `Progressing` `Maintaining` or, once failed, `MaintenanceFailed`: a failed rollout Lodia started keeps its slot, so that many failures halt maintenance across the fleet, as unavailable pods halt a Deployment's rollout, which the alert `LodiaMaintenanceHalted` reports from the observability wave.
+A tenant holds a slot while `status.maintenance.slotSince` is present, `Progressing` `Maintaining` or, once failed, `MaintenanceFailed`: a failed rollout Lodia started keeps its slot, so that many failures halt maintenance across the fleet, as unavailable pods halt a Deployment's rollout, which the alert `LodiaMaintenanceHalted` reports from the observability wave.
 Tenants get slots in the order of `status.target.scheduledFor`, then namespace and name: a tenant is queued while its `scheduledFor` is at or before now, whatever `Progressing` says, since a wait for a slot can sit under a reason ranked above `FleetLimit`, and a pass grants when the tenants that hold a slot and those queued before it are fewer than the limit, counted from the cache and, before the grant is written, again from the API server under a lock, so that two passes never take one slot.
 An owner's change takes no slot.
 A change Lodia started holds its slot while it rolls: a part not at the target, a replica or member not updated, a renderer that reports neither the granted revision nor the running one.
-A Tenant that waits after the grant, `AddonsApplied` False with a `WaitingFor*` reason while `AccessReady` is True, keeps its earlier `status.addons`, so the change stays `Maintaining` with its slot until the wait ends or an owner's edit: such a wait names no cause of the change.
+A Tenant that waits after the grant, `AddonsApplied` False with a `WaitingFor*` reason while `AccessReady` is True, keeps its earlier `status.addons`, so the change stays `Maintaining` with its slot until the wait ends: such a wait names no cause of the change.
 Once it has rolled out, `status.maintenance.settlingSince` records when, and the slot is held for a settling time S after the later of that and `Ready`'s last transition: `health.failuresBeforeFalse` × (`health.period` + Health's timeout) + one etcd-druid status sync ([values.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/charts/values.yaml#L63)), 45 seconds at the defaults.
 Then the slot is free while `Ready` is True, and the change is `MaintenanceFailed` while it is not; a refusal, an object kept elsewhere, `Unsupported` or `ProgressDeadlineExceeded` among `Ready`'s inputs fails it at once.
 A canary, one tenant first for each new revision, can come later without a change of contract.
@@ -134,7 +135,7 @@ Lodia never removes the annotation, so a GitOps tool that keeps it does not figh
 
 ## Consequences
 
-- Lifecycle is the only controller that knows the maintenance windows and the fleet; it counts the tenants rolling a Lodia-initiated change from their `status` (`status.maintenance.slotGeneration`), not in memory, so a restarted operator neither forgets nor double-counts a rollout in progress.
+- Lifecycle is the only controller that knows the maintenance windows and the fleet; it counts the tenants rolling a Lodia-initiated change from their `status` (`status.maintenance.slotSince`), not in memory, so a restarted operator neither forgets nor double-counts a rollout in progress.
 - In the `Compact` layout steps 3 and 4 are one rollout of the single pod: the API server, controller manager and scheduler change version together, which the skew policy allows ([compact-layout](compact-layout.md)).
 - `status.target` is part of the API users read: `target.version`, `target.operatorRevision` and `target.scheduledFor`, with `Progressing`.
 - An operator release note states which tenants will roll (all with a changed render) and what changes, because the roll is deferred, not hidden.

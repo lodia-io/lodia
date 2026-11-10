@@ -33,9 +33,10 @@ type maintenance struct {
 	scheduledFor  *metav1.Time
 	lastHandled   string
 	settlingSince *metav1.Time
-	// slot says the tenant holds a slot after the pass, and takesSlot that
-	// the pass takes it.
-	slot, takesSlot bool
+	// slotSince is status.maintenance.slotSince after the pass, present while
+	// the tenant holds a slot, and takesSlot says the pass takes it.
+	slotSince *metav1.Time
+	takesSlot bool
 	// unsupported, zone, failed and maintaining are Progressing's message for
 	// Unsupported, TimeZoneUnsupported, MaintenanceFailed and Maintaining.
 	unsupported, zone, failed, maintaining string
@@ -69,21 +70,23 @@ func (k queueKey) before(other queueKey) bool {
 	return k.name < other.name
 }
 
-// fleetOf is the members among cps, cp and tenants paused or being deleted
-// left out: those in a slot, and those queued, whose scheduledFor is at or
-// before now, whatever Progressing says, since a wait for a slot can sit
-// under a reason ranked above FleetLimit.
+// fleetOf is the members among cps, cp and tenants being deleted left out:
+// those in a slot, paused ones included, so that unpausing one never takes the
+// fleet past its limit, and those not paused that are queued, whose
+// scheduledFor is at or before now, whatever Progressing says, since a wait
+// for a slot can sit under a reason ranked above FleetLimit.
 func fleetOf(cps []lodiav1alpha1.ControlPlane, cp *lodiav1alpha1.ControlPlane, now time.Time) []member {
 	var fleet []member
 	for i := range cps {
 		other := &cps[i]
-		if other.Namespace == cp.Namespace && other.Name == cp.Name || !other.DeletionTimestamp.IsZero() || other.Spec.Paused {
+		if other.Namespace == cp.Namespace && other.Name == cp.Name || !other.DeletionTimestamp.IsZero() {
 			continue
 		}
 		key := queueKey{namespace: other.Namespace, name: other.Name}
 		switch s := scheduledOf(other); {
-		case inSlot(other):
+		case slotOf(other) != nil:
 			fleet = append(fleet, member{slot: true, key: key})
+		case other.Spec.Paused:
 		case s != nil && !s.After(now):
 			key.scheduledFor = s.Time
 			fleet = append(fleet, member{key: key})
@@ -103,7 +106,7 @@ func pending(cp *lodiav1alpha1.ControlPlane, revision string) bool {
 func (f facts) maintain(c change, ready *metav1.Condition) maintenance {
 	cp := f.cp
 	granted := revisionOf(cp)
-	m := maintenance{revision: granted, lastHandled: lastHandledOf(cp), slot: inSlot(cp)}
+	m := maintenance{revision: granted, lastHandled: lastHandledOf(cp), slotSince: slotOf(cp)}
 	token := cp.Annotations[lodiav1alpha1.MaintainRequestedAtAnnotation]
 	switch {
 	case token == "":
@@ -122,19 +125,10 @@ func (f facts) maintain(c change, ready *metav1.Condition) maintenance {
 	if pending(cp, f.revision) {
 		f.grant(&m, c, w, token != "")
 	}
-	if m.slot {
+	if m.slotSince != nil {
 		f.settle(&m, c, ready, granted)
 	}
 	return m
-}
-
-// slotGeneration is status.maintenance.slotGeneration after the pass: cp's
-// generation while it holds a slot.
-func (m maintenance) slotGeneration(cp *lodiav1alpha1.ControlPlane) int64 {
-	if m.slot {
-		return cp.Generation
-	}
-	return 0
 }
 
 // grant applies the rules to a pending change, in their order: a revision
@@ -148,7 +142,7 @@ func (f facts) grant(m *maintenance, c change, w *window, requested bool) {
 		m.unsupported = fmt.Sprintf("operator revision %s does not run %s, of a minor outside %s; the ControlPlane stays at revision %s", f.revision, what, strings.Join(versions.Minors(), ", "), m.revision)
 		return
 	}
-	if m.slot || requested || f.atOnce(c) {
+	if m.slotSince != nil || requested || f.atOnce(c) {
 		m.revision = f.revision
 		return
 	}
@@ -179,7 +173,8 @@ func (f facts) grant(m *maintenance, c change, w *window, requested bool) {
 	}
 	key := f.key()
 	if f.free(key) {
-		m.revision, m.slot, m.takesSlot = f.revision, true, true
+		since := metav1.NewTime(f.now).Rfc3339Copy()
+		m.revision, m.slotSince, m.takesSlot = f.revision, &since, true
 		return
 	}
 	m.scheduledFor = &metav1.Time{Time: key.scheduledFor}
@@ -238,12 +233,6 @@ func (f facts) atOnce(c change) bool {
 // stoppedAddons are the reasons of an AddonsApplied whose apply stopped on an
 // object refused or another owner's, or did not finish.
 var stoppedAddons = []string{lodiav1alpha1.ReasonRefused, lodiav1alpha1.ReasonObjectsControlledElsewhere, lodiav1alpha1.ReasonApplying}
-
-// inSlot says whether cp holds a slot of the fleet: status.maintenance.slotGeneration
-// is its generation, since an owner's edit frees it.
-func inSlot(cp *lodiav1alpha1.ControlPlane) bool {
-	return cp.Status.Maintenance != nil && cp.Status.Maintenance.SlotGeneration == cp.Generation
-}
 
 // readyForMaintenance is what keeps Ready from True, at whatever generation
 // each input describes, or nil. AddonsApplied is left out while it waits: a
@@ -319,7 +308,7 @@ func (f facts) settle(m *maintenance, c change, ready *metav1.Condition, granted
 		m.maintaining = fmt.Sprintf("operator revision %s has rolled out; the ControlPlane keeps its slot of the fleet until %s", m.revision, deadline.UTC().Format(time.RFC3339))
 		m.requeue = deadline.Sub(f.now)
 	case ready.Status == metav1.ConditionTrue:
-		m.slot, m.settlingSince = false, nil
+		m.slotSince, m.settlingSince = nil, nil
 	default:
 		m.failed = fmt.Sprintf("Ready is not True %s after operator revision %s rolled out: %s: %s", f.settling, m.revision, ready.Reason, ready.Message)
 	}

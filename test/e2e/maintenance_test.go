@@ -444,7 +444,7 @@ func observe(cp *lodiav1alpha1.ControlPlane, at time.Time) observation {
 	if target := cp.Status.Target; target != nil {
 		o.revision, o.scheduledFor = target.OperatorRevision, target.ScheduledFor
 	}
-	o.slot = cp.Status.Maintenance != nil && cp.Status.Maintenance.SlotGeneration == cp.Generation
+	o.slot = cp.Status.Maintenance != nil && cp.Status.Maintenance.SlotSince != nil
 	return o
 }
 

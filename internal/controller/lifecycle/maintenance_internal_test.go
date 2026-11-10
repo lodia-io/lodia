@@ -20,6 +20,8 @@ const revisionC = "v1.2.0+cccc"
 
 const settling = 45 * time.Second
 
+var slotTaken = present.Add(-2 * time.Hour)
+
 func held(change ...func(*facts)) facts {
 	f := world{spec: "v1.37.1", target: "v1.37.1", revision: revisionA, reports: at("v1.37.1")}.facts()
 	f.revision, f.limit, f.settling = revisionB, 5, settling
@@ -66,16 +68,10 @@ func progressingAs(reason string, generation int64) func(*facts) {
 func slotted(reason string, generation int64) func(*facts) {
 	return func(f *facts) {
 		progressingAs(reason, generation)(f)
-		slotAt(generation)(f)
-	}
-}
-
-func slotAt(generation int64) func(*facts) {
-	return func(f *facts) {
 		if f.cp.Status.Maintenance == nil {
 			f.cp.Status.Maintenance = &lodiav1alpha1.MaintenanceStatus{}
 		}
-		f.cp.Status.Maintenance.SlotGeneration = generation
+		f.cp.Status.Maintenance.SlotSince = &metav1.Time{Time: slotTaken}
 	}
 }
 
@@ -178,11 +174,15 @@ func expectGrant(t *testing.T, f facts, want granted) decision {
 	if d.takesSlot != want.takesSlot {
 		t.Errorf("takesSlot is %t, want %t", d.takesSlot, want.takesSlot)
 	}
+	slotSince := slotOf(before)
+	if want.takesSlot {
+		slotSince = &metav1.Time{Time: metav1.NewTime(f.now).Rfc3339Copy().Time}
+	}
 	switch {
-	case want.slot && m.SlotGeneration != f.cp.Generation:
-		t.Errorf("maintenance.slotGeneration is %d, want the generation %d", m.SlotGeneration, f.cp.Generation)
-	case !want.slot && m.SlotGeneration != 0:
-		t.Errorf("maintenance.slotGeneration is %d, want it absent", m.SlotGeneration)
+	case !want.slot && m.SlotSince != nil:
+		t.Errorf("maintenance.slotSince is %s, want it absent", m.SlotSince)
+	case want.slot && (m.SlotSince == nil || slotSince == nil || !m.SlotSince.Equal(slotSince)):
+		t.Errorf("maintenance.slotSince is %v, want %v", m.SlotSince, slotSince)
 	}
 	c := meta.FindStatusCondition(d.status.Conditions, lodiav1alpha1.ConditionProgressing)
 	if c == nil || c.Reason != want.reason || c.Status != progressingStatus(want.reason) || c.ObservedGeneration != f.cp.Generation {
@@ -361,13 +361,12 @@ func TestTheQueueForASlot(t *testing.T) {
 	})
 }
 
-func TestTheFleetCountsOthersNotPausedOrBeingDeleted(t *testing.T) {
+func TestTheFleetCountsSlotsPausedOrNotAndQueuesOthersNotPaused(t *testing.T) {
 	cp := world{spec: "v1.37.1"}.controlPlane()
 	type other struct {
-		name, reason     string
-		slot             int64
-		scheduledFor     time.Time
-		paused, deleting bool
+		name, reason           string
+		scheduledFor           time.Time
+		slot, paused, deleting bool
 	}
 	tenant := func(o other) lodiav1alpha1.ControlPlane {
 		c := lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Namespace: "a", Name: o.name, Generation: 2}, Spec: lodiav1alpha1.ControlPlaneSpec{Paused: o.paused}}
@@ -377,8 +376,8 @@ func TestTheFleetCountsOthersNotPausedOrBeingDeleted(t *testing.T) {
 		if o.reason != "" {
 			c.Status.Conditions = []metav1.Condition{{Type: lodiav1alpha1.ConditionProgressing, Reason: o.reason, ObservedGeneration: 2}}
 		}
-		if o.slot != 0 {
-			c.Status.Maintenance = &lodiav1alpha1.MaintenanceStatus{SlotGeneration: o.slot}
+		if o.slot {
+			c.Status.Maintenance = &lodiav1alpha1.MaintenanceStatus{SlotSince: &metav1.Time{Time: slotTaken}}
 		}
 		if !o.scheduledFor.IsZero() {
 			c.Status.Target = &lodiav1alpha1.Target{ScheduledFor: &metav1.Time{Time: o.scheduledFor}}
@@ -390,17 +389,18 @@ func TestTheFleetCountsOthersNotPausedOrBeingDeleted(t *testing.T) {
 	}
 	var cps []lodiav1alpha1.ControlPlane
 	for _, o := range []other{
-		{name: "dev", reason: lodiav1alpha1.ReasonMaintaining, slot: 2},
-		{name: "maintaining", reason: lodiav1alpha1.ReasonMaintaining, slot: 2},
-		{name: "failed", reason: lodiav1alpha1.ReasonMaintenanceFailed, slot: 2},
-		{name: "zone", reason: lodiav1alpha1.ReasonTimeZoneUnsupported, slot: 2},
-		{name: "edited", reason: lodiav1alpha1.ReasonMaintaining, slot: 1},
+		{name: "dev", reason: lodiav1alpha1.ReasonMaintaining, slot: true},
+		{name: "maintaining", reason: lodiav1alpha1.ReasonMaintaining, slot: true},
+		{name: "failed", reason: lodiav1alpha1.ReasonMaintenanceFailed, slot: true},
+		{name: "zone", reason: lodiav1alpha1.ReasonTimeZoneUnsupported, slot: true},
+		{name: "edited", reason: lodiav1alpha1.ReasonLatestGenerationNotObserved, slot: true},
+		{name: "paused-in-a-slot", reason: lodiav1alpha1.ReasonPaused, slot: true, scheduledFor: present.Add(-time.Minute), paused: true},
 		{name: "queued", reason: lodiav1alpha1.ReasonFleetLimit, scheduledFor: present.Add(-time.Minute)},
 		{name: "rolling", reason: lodiav1alpha1.ReasonRollingOut, scheduledFor: present.Add(-time.Minute)},
 		{name: "opening", reason: lodiav1alpha1.ReasonWaitingForWindow, scheduledFor: present},
 		{name: "later", reason: lodiav1alpha1.ReasonWaitingForWindow, scheduledFor: present.Add(time.Second)},
 		{name: "paused", reason: lodiav1alpha1.ReasonPaused, scheduledFor: present.Add(-time.Minute), paused: true},
-		{name: "deleted", reason: lodiav1alpha1.ReasonMaintaining, slot: 2, deleting: true},
+		{name: "deleted", reason: lodiav1alpha1.ReasonMaintaining, slot: true, deleting: true},
 		{name: "deleted-queued", reason: lodiav1alpha1.ReasonFleetLimit, scheduledFor: present.Add(-time.Minute), deleting: true},
 		{name: "idle", reason: lodiav1alpha1.ReasonIdle},
 		{name: "new"},
@@ -411,7 +411,7 @@ func TestTheFleetCountsOthersNotPausedOrBeingDeleted(t *testing.T) {
 	for _, m := range fleetOf(cps, cp, present) {
 		names = append(names, fmt.Sprintf("%s %t %s", m.key.name, m.slot, m.key.scheduledFor.Format(time.TimeOnly)))
 	}
-	if got, want := strings.Join(names, ", "), "maintaining true 00:00:00, failed true 00:00:00, zone true 00:00:00, queued false 12:29:00, rolling false 12:29:00, opening false 12:30:00"; got != want {
+	if got, want := strings.Join(names, ", "), "maintaining true 00:00:00, failed true 00:00:00, zone true 00:00:00, edited true 00:00:00, paused-in-a-slot true 00:00:00, queued false 12:29:00, rolling false 12:29:00, opening false 12:30:00"; got != want {
 		t.Errorf("the fleet counts %s, want %s", got, want)
 	}
 }
@@ -452,8 +452,8 @@ func TestAChangeInASlotSettles(t *testing.T) {
 			granted{revision: revisionC, reason: lodiav1alpha1.ReasonMaintaining, slot: true, message: "operator revision " + revisionC + " rolls"}},
 		{"rolling again removes settlingSince", held(inSlot, grantedB, reportsAll(revisionB), settlingAt(tenSecondsAgo), func(f *facts) { f.cp.Status.Datastore.Members.Updated = nil }),
 			granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, slot: true, message: "etcd: its updated members are not reported yet"}},
-		{"an owner's edit frees the slot and removes settlingSince", held(slotted(lodiav1alpha1.ReasonMaintaining, 2), grantedB, reportsAll(revisionB), settlingAt(tenSecondsAgo)),
-			granted{revision: revisionB, reason: lodiav1alpha1.ReasonIdle}},
+		{"an owner's edit keeps the slot and settlingSince", held(slotted(lodiav1alpha1.ReasonMaintaining, 2), grantedB, reportsAll(revisionB), settlingAt(tenSecondsAgo)),
+			granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, slot: true, settlingSince: &tenSecondsAgo, requeue: settling - 10*time.Second}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			expectGrant(t, c.f, c.want)
@@ -580,15 +580,24 @@ func TestASlotSurvivesTimeZoneUnsupported(t *testing.T) {
 	expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintenanceFailed, message: "Ready is not True 45s after operator revision " + revisionB + " rolled out", settlingSince: &rolledOut, slot: true})
 }
 
-func TestAPausedOrDeletingPassFreesTheSlotAndLeavesTheQueue(t *testing.T) {
-	for name, change := range map[string]func(*facts){
-		"paused, an edit":                    func(f *facts) { f.cp.Spec.Paused, f.cp.Generation = true, 4 },
-		"deleting, at the slot's generation": func(f *facts) { f.cp.DeletionTimestamp = &started },
+func TestAPausedPassKeepsTheSlotAndADeletingPassFreesIt(t *testing.T) {
+	tenSecondsAgo := metav1.NewTime(present.Add(-10 * time.Second))
+	for _, c := range []struct {
+		name   string
+		change func(*facts)
+		want   *lodiav1alpha1.MaintenanceStatus
+	}{
+		{"paused, an edit", func(f *facts) { f.cp.Spec.Paused, f.cp.Generation = true, 4 },
+			&lodiav1alpha1.MaintenanceStatus{LastHandled: "t1", SettlingSince: &tenSecondsAgo, SlotSince: &metav1.Time{Time: slotTaken}}},
+		{"deleting", func(f *facts) { f.cp.DeletionTimestamp = &started },
+			&lodiav1alpha1.MaintenanceStatus{LastHandled: "t1"}},
+		{"paused and deleting", func(f *facts) { f.cp.Spec.Paused, f.cp.DeletionTimestamp = true, &started },
+			&lodiav1alpha1.MaintenanceStatus{LastHandled: "t1"}},
 	} {
-		t.Run(name, func(t *testing.T) {
-			d := decide(held(slotted(lodiav1alpha1.ReasonMaintaining, 3), settlingAt(present.Add(-10*time.Second)), handled("t1"), scheduled(present.Add(-time.Minute)), change))
-			if m := d.status.Maintenance; m == nil || m.LastHandled != "t1" || m.SettlingSince != nil || m.SlotGeneration != 0 {
-				t.Errorf("maintenance is %+v, want lastHandled kept and the slot freed", m)
+		t.Run(c.name, func(t *testing.T) {
+			d := decide(held(slotted(lodiav1alpha1.ReasonMaintaining, 3), settlingAt(tenSecondsAgo.Time), handled("t1"), scheduled(present.Add(-time.Minute)), c.change))
+			if !equality.Semantic.DeepEqual(d.status.Maintenance, c.want) {
+				t.Errorf("maintenance is %+v, want %+v", d.status.Maintenance, c.want)
 			}
 			if target := d.status.Target; target == nil || target.OperatorRevision != revisionA || target.ScheduledFor != nil {
 				t.Errorf("target is %+v, want the stored revision %s and no scheduledFor", target, revisionA)
@@ -742,7 +751,7 @@ func TestATenantWaitingAfterTheGrantKeepsTheSlotMaintaining(t *testing.T) {
 	edited := f
 	edited.cp = f.cp.DeepCopy()
 	edited.cp.Generation = 4
-	expectGrant(t, edited, granted{revision: revisionB, reason: lodiav1alpha1.ReasonLatestGenerationNotObserved})
+	expectGrant(t, edited, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, message: "the addons: reports operator revision " + revisionA + ", not " + revisionB, slot: true})
 }
 
 func TestATokenRemovedAndSetAgainIsNotHandledTwice(t *testing.T) {
@@ -770,4 +779,86 @@ func TestRuleTwoKeepsTheSlotSettling(t *testing.T) {
 	expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonUnsupported, settlingSince: &tenSecondsAgo, requeue: settling - 10*time.Second, slot: true})
 	f.now = present.Add(settling)
 	expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonUnsupported})
+}
+
+func TestAnOwnersEditOrAPauseOfAFailedTenantKeepsTheNextReleaseReachingIt(t *testing.T) {
+	hourAgo := present.Add(-time.Hour)
+	failedByB := func(t *testing.T) facts {
+		f := held(slotted(lodiav1alpha1.ReasonMaintenanceFailed, 3), func(f *facts) { f.cp.Status.Target.OperatorRevision = revisionB }, reportsAll(revisionB), settlingAt(hourAgo),
+			condition(metav1.Condition{Type: lodiav1alpha1.ConditionReachable, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonExternalProbeFailed, Message: "api: refused"}),
+			condition(metav1.Condition{Type: lodiav1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonExternalProbeFailed, ObservedGeneration: 3, LastTransitionTime: metav1.NewTime(hourAgo)}))
+		adopt(f.cp, expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintenanceFailed, settlingSince: &hourAgo, slot: true}))
+		return f
+	}
+	stillFailed := granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintenanceFailed, message: "Ready is not True 45s after operator revision " + revisionB + " rolled out", settlingSince: &hourAgo, slot: true}
+	paused := granted{revision: revisionB, reason: lodiav1alpha1.ReasonPaused, settlingSince: &hourAgo, slot: true}
+	fixed := granted{revision: revisionC, reason: lodiav1alpha1.ReasonMaintaining, message: "operator revision " + revisionC + " rolls: kube-apiserver: reports operator revision " + revisionB + ", not " + revisionC, slot: true}
+	t.Run("an owner's edit while release B runs", func(t *testing.T) {
+		f := failedByB(t)
+		f.cp.Generation = 4
+		adopt(f.cp, expectGrant(t, f, stillFailed))
+		for i := range f.cp.Status.Conditions {
+			f.cp.Status.Conditions[i].ObservedGeneration = 4
+		}
+		adopt(f.cp, expectGrant(t, f, stillFailed))
+		f.revision = revisionC
+		adopt(f.cp, expectGrant(t, f, fixed))
+		f.now = present.Add(24 * time.Hour)
+		expectGrant(t, f, fixed)
+	})
+	t.Run("a pause and an unpause while release B runs", func(t *testing.T) {
+		f := failedByB(t)
+		f.cp.Spec.Paused, f.cp.Generation = true, 4
+		adopt(f.cp, expectGrant(t, f, paused))
+		f.cp.Spec.Paused, f.cp.Generation = false, 5
+		adopt(f.cp, expectGrant(t, f, stillFailed))
+		f.revision = revisionC
+		expectGrant(t, f, fixed)
+	})
+	t.Run("release C while paused, granted at the unpause", func(t *testing.T) {
+		f := failedByB(t)
+		f.cp.Spec.Paused, f.cp.Generation = true, 4
+		f.revision = revisionC
+		adopt(f.cp, expectGrant(t, f, paused))
+		f.cp.Spec.Paused, f.cp.Generation = false, 5
+		expectGrant(t, f, fixed)
+	})
+}
+
+func TestAnOwnersEditOfATenantInASlotRollsInItAndSettlesIt(t *testing.T) {
+	f := held(slotted(lodiav1alpha1.ReasonMaintaining, 3), func(f *facts) { f.cp.Status.Target.OperatorRevision = revisionB })
+	f.cp.Generation = 4
+	adopt(f.cp, expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, message: "the addons: reports operator revision " + revisionA, slot: true}))
+	for i := range f.cp.Status.Conditions {
+		f.cp.Status.Conditions[i].ObservedGeneration = 4
+	}
+	reportsAll(revisionB)(&f)
+	*f.cp.Status.Components.APIServer.Updated = 0
+	adopt(f.cp, expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, message: "kube-apiserver: 0 of 1 replicas updated", slot: true}))
+
+	refused := f
+	refused.cp = f.cp.DeepCopy()
+	condition(metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonRefused, Message: "the tenant refuses the edit", ObservedGeneration: 4})(&refused)
+	expectGrant(t, refused, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintenanceFailed, message: "the change Lodia started failed: AddonsApplied: Refused: the tenant refuses the edit", slot: true})
+
+	*f.cp.Status.Components.APIServer.Updated = 1
+	adopt(f.cp, expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, settlingSince: new(now.Rfc3339Copy().Time), requeue: settling, slot: true}))
+	f.now = present.Add(settling)
+	expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonIdle})
+}
+
+func TestAPausedTenantInASlotCountsSoUnpausingStaysWithinTheLimit(t *testing.T) {
+	nowSecond := now.Rfc3339Copy().Time
+	x := tenantIn("x", slotted(lodiav1alpha1.ReasonMaintaining, 3), func(f *facts) { f.cp.Status.Target.OperatorRevision = revisionB })
+	x.cp.Spec.Paused, x.cp.Generation = true, 4
+	adopt(x.cp, expectGrant(t, x, granted{revision: revisionB, reason: lodiav1alpha1.ReasonPaused, slot: true}))
+	y := tenantIn("y")
+	among(&y, x)
+	adopt(y.cp, expectGrant(t, y, granted{revision: revisionA, reason: lodiav1alpha1.ReasonFleetLimit, scheduledFor: &nowSecond, requeue: fleetRequeue}))
+
+	x.cp.Spec.Paused, x.cp.Generation = false, 5
+	among(&x, y)
+	adopt(x.cp, expectGrant(t, x, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, slot: true}))
+	among(&y, x)
+	expectGrant(t, y, granted{revision: revisionA, reason: lodiav1alpha1.ReasonFleetLimit, scheduledFor: &nowSecond, requeue: fleetRequeue})
 }

@@ -81,7 +81,7 @@ func decide(f facts) decision {
 	status := lodiav1alpha1.ControlPlaneStatus{
 		ObservedGeneration: cp.Status.ObservedGeneration,
 		Target:             newTarget(targetOf(cp), revisionOf(cp), nil),
-		Maintenance:        newMaintenance(lastHandledOf(cp), nil, 0),
+		Maintenance:        newMaintenance(lastHandledOf(cp), nil, nil),
 	}
 	upgrade := upgradeOf(cp)
 	var d decision
@@ -90,6 +90,7 @@ func decide(f facts) decision {
 		readyNow = newCondition(cp, lodiav1alpha1.ConditionReady, metav1.ConditionFalse, lodiav1alpha1.ReasonDeleting, "the ControlPlane is being deleted")
 	case cp.Spec.Paused:
 		progressing = newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonPaused, "spec.paused is true: Lodia reconciles nothing")
+		status.Maintenance = newMaintenance(lastHandledOf(cp), settlingOf(cp), slotOf(cp))
 	default:
 		c := f.versionChange()
 		readyNow = ready(cp)
@@ -99,7 +100,7 @@ func decide(f facts) decision {
 			status.ObservedGeneration = cp.Generation
 		}
 		status.Target = newTarget(c.target, m.revision, m.scheduledFor)
-		status.Maintenance = newMaintenance(m.lastHandled, m.settlingSince, m.slotGeneration(cp))
+		status.Maintenance = newMaintenance(m.lastHandled, m.settlingSince, m.slotSince)
 		upgrade = c.upgrade
 		d.createBackup, d.requeue, d.takesSlot = c.createBackup, m.requeue, m.takesSlot
 	}
@@ -122,11 +123,11 @@ func newTarget(version, revision string, scheduledFor *metav1.Time) *lodiav1alph
 	return &lodiav1alpha1.Target{Version: version, OperatorRevision: revision, ScheduledFor: scheduledFor}
 }
 
-func newMaintenance(lastHandled string, settlingSince *metav1.Time, slotGeneration int64) *lodiav1alpha1.MaintenanceStatus {
-	if lastHandled == "" && settlingSince == nil && slotGeneration == 0 {
+func newMaintenance(lastHandled string, settlingSince, slotSince *metav1.Time) *lodiav1alpha1.MaintenanceStatus {
+	if lastHandled == "" && settlingSince == nil && slotSince == nil {
 		return nil
 	}
-	return &lodiav1alpha1.MaintenanceStatus{LastHandled: lastHandled, SettlingSince: settlingSince, SlotGeneration: slotGeneration}
+	return &lodiav1alpha1.MaintenanceStatus{LastHandled: lastHandled, SettlingSince: settlingSince, SlotSince: slotSince}
 }
 
 func targetOf(cp *lodiav1alpha1.ControlPlane) string {
@@ -160,6 +161,16 @@ func lastHandledOf(cp *lodiav1alpha1.ControlPlane) string {
 func settlingOf(cp *lodiav1alpha1.ControlPlane) *metav1.Time {
 	if cp.Status.Maintenance != nil {
 		return cp.Status.Maintenance.SettlingSince
+	}
+	return nil
+}
+
+// slotOf is when the change Lodia started in cp took its slot of the fleet,
+// nil while cp holds none; only that change settling and deletion end it, an
+// owner's edit and a pause do not (docs/decisions/upgrades-and-maintenance-windows.md).
+func slotOf(cp *lodiav1alpha1.ControlPlane) *metav1.Time {
+	if cp.Status.Maintenance != nil {
+		return cp.Status.Maintenance.SlotSince
 	}
 	return nil
 }
@@ -492,7 +503,7 @@ func (c change) reason(f facts, m maintenance) *metav1.Condition {
 	case m.unsupported != "":
 		return progressing(metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, m.unsupported)
 	}
-	if why := c.failed(f, m.revision); why != "" && !m.slot {
+	if why := c.failed(f, m.revision); why != "" && m.slotSince == nil {
 		return progressing(metav1.ConditionFalse, lodiav1alpha1.ReasonFailed, why)
 	}
 	switch {

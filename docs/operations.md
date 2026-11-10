@@ -311,7 +311,7 @@ A clone restores through the API, as Velero does, which gives every object a new
    A failure named elsewhere holds the target at this step even with the `Backup` `Completed`, and the target moves once the cause is gone: if that took long, delete the `Backup` first, so that the upgrade starts from a fresh one.
 3. API server step failing: a removed flag or feature gate in `extraArgs` or `featureGates` is the usual cause; fix `spec`, the step retries.
 4. In-tenant step failing: an object the tenant refuses, named in `AddonsApplied`; the addons' pods roll on the owner's nodes afterwards, and an image they cannot pull (air gap, registry mirror missing) shows in `AddonsAvailable`, not here.
-5. `MaintenanceFailed`: a new operator revision the tenant failed in its slot of the fleet, `Progressing`'s message saying what; the tenant keeps the slot and takes the next release at once, and the slot is free once the cause is gone and `Ready` has been True for the settling time.
+5. `MaintenanceFailed`: a new operator revision the tenant failed in its slot of the fleet, `Progressing`'s message saying what; the tenant keeps the slot, through an edit of its spec or a pause, and takes the next release at once, and the slot is free once the cause is gone and `Ready` has been True for the settling time.
 6. Rollback of a minor: create a new `ControlPlane` with `restoreFrom` the `Backup` `<cp>-pre-upgrade-v<minor>-<ControlPlane UID>` and the old `spec.version`; it replaces the cluster, so delete the old one, or create the new one `Released` once the old one is gone ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)).
    A downgrade in place is not supported by Kubernetes.
 
