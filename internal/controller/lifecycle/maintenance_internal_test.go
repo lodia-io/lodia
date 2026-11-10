@@ -862,3 +862,56 @@ func TestAPausedTenantInASlotCountsSoUnpausingStaysWithinTheLimit(t *testing.T) 
 	among(&y, x)
 	expectGrant(t, y, granted{revision: revisionA, reason: lodiav1alpha1.ReasonFleetLimit, scheduledFor: &nowSecond, requeue: fleetRequeue})
 }
+
+func TestEveryPathThatDoesNotWaitRemovesScheduledFor(t *testing.T) {
+	pastDeadline := condition(metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonProgressDeadlineExceeded, Message: "past the deadline"})
+	for _, c := range []struct {
+		name   string
+		change func(*facts)
+		want   granted
+	}{
+		{"nothing pending: the running revision is the granted one", running(revisionA),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonIdle}},
+		{"rule 2: the running revision cannot render a report", func(f *facts) { f.cp.Status.Addons.Version = "v1.34.9" },
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonUnsupported}},
+		{"rule 3: a token", requested("t1"),
+			granted{revision: revisionB, reason: lodiav1alpha1.ReasonRollingOut, lastHandled: "t1"}},
+		{"rule 3: APIServerReady False WaitingForTarget", condition(metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonWaitingForTarget}),
+			granted{revision: revisionB, reason: lodiav1alpha1.ReasonRollingOut}},
+		{"rule 4: Failed", func(f *facts) {
+			pastDeadline(f)
+			f.cp.Status.Components.Scheduler.OperatorRevision = revisionC
+		}, granted{revision: revisionA, reason: lodiav1alpha1.ReasonFailed}},
+		{"rule 5: TimeZoneUnsupported", inWindow("12:00", "13:00", "Mars/Olympus_Mons"),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonTimeZoneUnsupported}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			x := tenantIn("x", scheduled(present.Add(-time.Hour)), progressingAs(lodiav1alpha1.ReasonFleetLimit, 3), c.change)
+			adopt(x.cp, expectGrant(t, x, c.want))
+			y := tenantIn("y")
+			if x.revision == revisionA {
+				y = tenantIn("y", running(revisionA), func(f *facts) { f.cp.Status.Target.OperatorRevision = revisionB })
+			}
+			among(&y, x)
+			expectGrant(t, y, granted{revision: y.revision, reason: lodiav1alpha1.ReasonMaintaining, takesSlot: true, slot: true})
+		})
+	}
+}
+
+func TestATenantOfTheSameNamespaceCounts(t *testing.T) {
+	nowSecond := now.Rfc3339Copy().Time
+	named := func(name string) func(*facts) { return func(f *facts) { f.cp.Name = name } }
+	for _, c := range []struct {
+		name  string
+		other facts
+	}{
+		{"in the only slot", tenantIn("team", named("dev"), slotted(lodiav1alpha1.ReasonMaintaining, 3), func(f *facts) { f.cp.Status.Target.OperatorRevision = revisionB })},
+		{"queued before it", tenantIn("team", named("qa"), scheduled(present.Add(-time.Hour)), progressingAs(lodiav1alpha1.ReasonFleetLimit, 3))},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			prod := tenantIn("team", named("prod"))
+			among(&prod, c.other)
+			expectGrant(t, prod, granted{revision: revisionA, reason: lodiav1alpha1.ReasonFleetLimit, scheduledFor: &nowSecond, requeue: fleetRequeue})
+		})
+	}
+}
