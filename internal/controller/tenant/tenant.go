@@ -138,7 +138,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 	}
 	if !statusapply.TrueAt(cp, lodiav1alpha1.ConditionAccessReady) {
-		if err := r.applyStatus(ctx, cp, cp.Status.Addons, waitForAccess(cp, applied), waitForAccess(cp, available)); err != nil {
+		if err := r.wait(ctx, cp, lodiav1alpha1.ReasonWaitingForAccess, "AccessReady is not True for this generation"); err != nil {
 			return ctrl.Result{}, err
 		}
 		if cp.Spec.Endpoint.Gateway != nil {
@@ -275,17 +275,16 @@ func outcome(err error) (string, string, bool) {
 	return lodiav1alpha1.ReasonApplying, "the tenant's API server does not answer; the error is in Lodia's log", false
 }
 
-// wait says what both conditions wait for: neither can be observed yet.
+// wait says what both conditions wait for, but leaves one at the earlier
+// generation it describes: Tenant has not acted on this one, and a held pass
+// writes True over a wait at the generation the wait names.
 func (r *Reconciler) wait(ctx context.Context, cp *lodiav1alpha1.ControlPlane, reason, message string) error {
-	return r.applyStatus(ctx, cp, cp.Status.Addons,
-		waiting(previous(cp, lodiav1alpha1.ConditionAddonsApplied), newCondition(cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, reason, message)),
-		newCondition(cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, reason, message))
-}
-
-// waitForAccess leaves a condition at the earlier generation it describes:
-// Tenant has not acted on this one.
-func waitForAccess(cp *lodiav1alpha1.ControlPlane, c metav1.Condition) metav1.Condition {
-	return statusapply.Wait(cp, &c, waiting(c, newCondition(cp, c.Type, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, "AccessReady is not True for this generation")))
+	conditions := make([]metav1.Condition, 0, 2)
+	for _, conditionType := range []string{lodiav1alpha1.ConditionAddonsApplied, lodiav1alpha1.ConditionAddonsAvailable} {
+		c := previous(cp, conditionType)
+		conditions = append(conditions, statusapply.Wait(cp, &c, waiting(c, newCondition(cp, conditionType, metav1.ConditionFalse, reason, message))))
+	}
+	return r.applyStatus(ctx, cp, cp.Status.Addons, conditions...)
 }
 
 // waiting is what a wait reports instead of c. An AddonsApplied that names a

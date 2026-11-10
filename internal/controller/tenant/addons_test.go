@@ -330,7 +330,7 @@ func TestEveryPathThatAppliesStatusKeepsTheAddons(t *testing.T) {
 		setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 		setAddons(t, cp, older)
 		applyStatus(t, cp, "test/target", map[string]any{})
-		refresh(t, cp)
+		appliedAtTheGeneration(t, cp)
 		if cp.Status.Target != nil && cp.Status.Target.Version != "" {
 			t.Fatalf("status.target is %+v, want none", cp.Status.Target)
 		}
@@ -355,7 +355,7 @@ func TestEveryPathThatAppliesStatusKeepsTheAddons(t *testing.T) {
 		setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 		setAddons(t, cp, older)
 		setComponents(t, cp, running(version), running("v1.34.2"), running(version))
-		refresh(t, cp)
+		appliedAtTheGeneration(t, cp)
 		made, err := pass(t, cp, cp.DeepCopy(), unreachable, nil)
 		if err != nil {
 			t.Fatal(err)

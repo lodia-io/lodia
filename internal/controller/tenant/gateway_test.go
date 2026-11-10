@@ -444,11 +444,12 @@ func TestARenewalReachesATenantWhoseEndpointIsGone(t *testing.T) {
 		t.Fatalf("status.endpoint is still %+v", cp.Status.Endpoint)
 	}
 	renew(t, cp, "without an endpoint")
+	before := *condition(t, cp, lodiav1alpha1.ConditionAddonsApplied)
 	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: *dial.Load()}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 		t.Fatal(err)
 	}
-	expectNow(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint)
+	expectSame(t, cp, before)
 	if err := holds(t, admin, "without an endpoint"); err != nil {
 		t.Error(err)
 	}

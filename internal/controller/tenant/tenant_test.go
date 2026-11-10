@@ -1412,6 +1412,16 @@ func conditionAt(conditionType string, status metav1.ConditionStatus, reason str
 	}
 }
 
+func appliedAtTheGeneration(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+	t.Helper()
+	refresh(t, cp)
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable, cp.Generation),
+	}})
+	refresh(t, cp)
+}
+
 func setCoreDNS(t *testing.T, cp *lodiav1alpha1.ControlPlane, enabled bool) {
 	t.Helper()
 	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) {

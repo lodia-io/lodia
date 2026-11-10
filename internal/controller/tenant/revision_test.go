@@ -566,6 +566,7 @@ func TestWithoutAGrantedRevisionTenantWaitsForTheTarget(t *testing.T) {
 	update(t, cp, paused)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 	applyStatus(t, cp, "test/target", map[string]any{"target": map[string]any{"version": version}})
+	appliedAtTheGeneration(t, cp)
 	r := runningOperator()
 	r.Dial = unreachable
 	if err := passWith(t, r, cp); err != nil {
@@ -623,6 +624,96 @@ func TestAWaitKeepsARefusalAndAnUnfinishedApply(t *testing.T) {
 					expectAt(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, cp.Generation)
 				}
 			})
+		}
+	}
+}
+
+type hidingSecret struct {
+	client.Reader
+	name string
+}
+
+func (r hidingSecret) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if _, ok := obj.(*corev1.Secret); ok && key.Name == r.name {
+		return apierrors.NewNotFound(corev1.Resource("secrets"), key.Name)
+	}
+	return r.Reader.Get(ctx, key, obj, opts...)
+}
+
+func TestAWaitAtANewGenerationKeepsBothConditions(t *testing.T) {
+	cp := controlPlane(t, "tenant-wait-generation")
+	publish(t, cp)
+	reconcilePKI(t, &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour, Clock: clock.RealClock{}}, cp)
+	testenv.EventuallyWithin(t, 10*time.Second, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+	})
+	update(t, cp, paused)
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation-1),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable, cp.Generation-1),
+	}})
+	applied, available := *condition(t, cp, lodiav1alpha1.ConditionAddonsApplied), *condition(t, cp, lodiav1alpha1.ConditionAddonsAvailable)
+	for _, c := range []struct {
+		name            string
+		reader          client.Reader
+		breaks, repairs func()
+	}{
+		{"AccessReady is not True", k8s, func() {
+			applyStatus(t, cp, "test/"+lodiav1alpha1.ConditionAccessReady, map[string]any{"conditions": []any{
+				conditionAt(lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer, cp.Generation),
+			}})
+		}, func() { setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound) }},
+		{"a Secret Tenant cannot use", hidingSecret{Reader: k8s, name: "dev-ca-bundle"}, func() {}, func() {}},
+		{"status.target has no version", k8s, func() { applyStatus(t, cp, "test/target", map[string]any{}) }, func() { setTarget(t, cp, version, revision) }},
+		{"status.target has no operatorRevision", k8s, func() {
+			applyStatus(t, cp, "test/target", map[string]any{"target": map[string]any{"version": version}})
+		}, func() { setTarget(t, cp, version, revision) }},
+		{"status.endpoint is not published", k8s, func() { applyStatus(t, cp, "test/endpoint", map[string]any{}) }, func() { publish(t, cp) }},
+		{"a component runs a version outside the table", k8s, func() {
+			setComponents(t, cp, running(version), running("v1.34.2"), running(version))
+		}, func() { setComponents(t, cp, nil, nil, nil) }},
+	} {
+		c.breaks()
+		refresh(t, cp)
+		written := cp.ResourceVersion
+		r := runningOperator()
+		r.Reader, r.Dial = c.reader, unreachable
+		if err := passWith(t, r, cp); err != nil {
+			t.Errorf("when %s, the pass returned %v, which a wait does not", c.name, err)
+		}
+		expectSame(t, cp, applied)
+		expectSame(t, cp, available)
+		if cp.ResourceVersion != written {
+			t.Errorf("when %s, a wait at generation %d wrote the ControlPlane: resourceVersion %s, then %s", c.name, cp.Generation, written, cp.ResourceVersion)
+		}
+		c.repairs()
+	}
+}
+
+func TestAWaitAtANewGenerationLeavesAHeldPassNoTrueToWriteThere(t *testing.T) {
+	cp, admin := heldTenant(t, "tenant-held-wait-generation")
+	generation := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied).ObservedGeneration
+	setReplicas(t, cp, 3)
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	heldPass(t, cp)
+	expectAt(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, generation)
+	for _, granted := range []string{previous, revision} {
+		setTarget(t, cp, version, granted)
+		applied, available := *condition(t, cp, lodiav1alpha1.ConditionAddonsApplied), *condition(t, cp, lodiav1alpha1.ConditionAddonsAvailable)
+		r := runningOperator()
+		r.Reader = hidingSecret{Reader: k8s, name: "dev-ca-bundle"}
+		if err := passWith(t, r, cp); err != nil {
+			t.Fatal(err)
+		}
+		expectSame(t, cp, applied)
+		expectSame(t, cp, available)
+
+		setTarget(t, cp, version, previous)
+		heldPass(t, cp)
+		expectAt(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, generation)
+		if replicas := get(t, admin, &appsv1.Deployment{}, "kube-system", "coredns").Spec.Replicas; replicas == nil || *replicas != 2 {
+			t.Errorf("after a wait with %s granted, a held pass rendered the owner's edit: CoreDNS has %v replicas", granted, replicas)
 		}
 	}
 }
