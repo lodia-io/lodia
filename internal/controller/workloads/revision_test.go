@@ -346,6 +346,11 @@ func TestAHeldPassReadsWhatTheCacheLacksAndWritesNothing(t *testing.T) {
 	ready := *condition(t, cp)
 	pause(t, cp)
 	grant(t, cp, previous)
+	for _, name := range routeNames(cp) {
+		route := &gatewayv1.TLSRoute{ObjectMeta: metav1.ObjectMeta{Namespace: cp.Namespace, Name: name}}
+		byHand(t, route, func() { route.Spec.Rules[0].BackendRefs[0].Weight = new(int32(2)) })
+	}
+	accept(t, cp)
 	published := get(t, cp).Status.Endpoint
 	before := objectsOf(t, cp)
 	blind := interceptor.NewClient(unpaused(), interceptor.Funcs{
