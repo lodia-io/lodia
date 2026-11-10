@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -475,6 +476,49 @@ func TestARequestThatConflictsIsMadeByTheNextPass(t *testing.T) {
 	mustPass(t, operatorAt(unpaused(k8s), revision), ns, cp)
 	if err := requestedAs(fmt.Sprintf("%d/%s", applied.Generation, revision), true)(getEtcd(t, ns, cp)); err != nil {
 		t.Errorf("the first pass of a restarted operator: %v", err)
+	}
+}
+
+func TestARequestTheAPIServerRefusesIsRefused(t *testing.T) {
+	ns := namespace(t)
+	const cp = "refused-request"
+	createClass(t, newClass(cp, "Retain"))
+	heldTenant(t, ns, cp, cp, nil)
+	grant(t, getControlPlane(t, ns, cp), revision)
+	refused := apierrors.NewForbidden(schema.GroupResource{Group: druidv1alpha1.SchemeGroupVersion.Group, Resource: "etcds"}, cp+"-etcd", errors.New("denied by a policy on "+druidv1alpha1.DruidOperationAnnotation))
+	refusing := interceptor.NewClient(unpaused(k8s), interceptor.Funcs{
+		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			if _, ok := obj.(*druidv1alpha1.Etcd); ok {
+				return refused
+			}
+			return c.Patch(ctx, obj, patch, opts...)
+		},
+	})
+	if _, err := passOf(t, operatorAt(refusing, revision), ns, cp); !errors.Is(err, refused) {
+		t.Fatalf("a pass whose request the API server refuses returned %v, want the refusal", err)
+	}
+	plane := getControlPlane(t, ns, cp)
+	ready := meta.FindStatusCondition(plane.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
+	want := "the API server refuses the request that etcd-druid reconcile Etcd " + cp + "-etcd, the annotations " + druidv1alpha1.DruidOperationAnnotation + " and " + lodiav1alpha1.EtcdReconcileRequestedAnnotation + "; the reason is in Lodia's log"
+	if ready.Status != metav1.ConditionFalse || ready.Reason != lodiav1alpha1.ReasonRefused || ready.Message != want {
+		t.Errorf("a refused request leaves DatastoreReady %s %s %q, want False %s %q", ready.Status, ready.Reason, ready.Message, lodiav1alpha1.ReasonRefused, want)
+	}
+	if datastore := plane.Status.Datastore; datastore == nil || len(datastore.Endpoints) != 1 || datastore.OperatorRevision != previousRevision || datastore.Members.Updated == nil {
+		t.Errorf("a refused request leaves status.datastore %+v, want the applied Etcd's, members updated, and %s kept", datastore, previousRevision)
+	}
+	if backup := meta.FindStatusCondition(plane.Status.Conditions, lodiav1alpha1.ConditionBackupReady); backup.Reason != lodiav1alpha1.ReasonNoBackupStore {
+		t.Errorf("a refused request leaves BackupReady %s, want the applied Etcd's %s", backup.Reason, lodiav1alpha1.ReasonNoBackupStore)
+	}
+	if etcd := getEtcd(t, ns, cp); stamped(etcd) != revision {
+		t.Errorf("the pass whose request is refused applied the Etcd stamped %s, want %s", stamped(etcd), revision)
+	}
+
+	mustPass(t, operatorAt(unpaused(k8s), revision), ns, cp)
+	if err := requestedAs("1/"+revision, true)(getEtcd(t, ns, cp)); err != nil {
+		t.Errorf("the pass after the refusal: %v", err)
+	}
+	if ready := meta.FindStatusCondition(getControlPlane(t, ns, cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady); ready.Reason != lodiav1alpha1.ReasonReady {
+		t.Errorf("the pass after the refusal leaves DatastoreReady %s %q", ready.Reason, ready.Message)
 	}
 }
 

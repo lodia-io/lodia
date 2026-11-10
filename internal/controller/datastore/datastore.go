@@ -468,9 +468,16 @@ func (r *Reconciler) applyEtcd(ctx context.Context, p *pass) (*outcome, error) {
 		}
 		return nil, err
 	}
-	if etcd, err = r.requestReconcile(ctx, p, etcd); err != nil {
+	requested, err := r.requestReconcile(ctx, p, etcd)
+	if requested == nil {
 		return nil, err
 	}
+	if err != nil {
+		message := fmt.Sprintf("the API server refuses the request that etcd-druid reconcile Etcd %s, the annotations %s and %s; the reason is in Lodia's log",
+			etcd.Name, druidv1alpha1.DruidOperationAnnotation, lodiav1alpha1.EtcdReconcileRequestedAnnotation)
+		return &outcome{etcd: etcd, sts: p.sts, restore: p.check.restored, condition: newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, message)}, err
+	}
+	etcd = requested
 	if err := r.labelClaims(ctx, cp, etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation]); err != nil {
 		return nil, err
 	}
@@ -501,7 +508,8 @@ func (r *Reconciler) applyEtcd(ctx context.Context, p *pass) (*outcome, error) {
 // after its removal. A request under a revision the record does not name
 // waits for etcd-druid's Deployment to run the version the operator was given
 // in every replica: an older etcd-druid would take it and roll the members to
-// its own render.
+// its own render. A request the API server refuses comes back with etcd and
+// the error.
 func (r *Reconciler) requestReconcile(ctx context.Context, p *pass, etcd *druidv1alpha1.Etcd) (*druidv1alpha1.Etcd, error) {
 	if druidv1alpha1.HasReconcileOperationAnnotation(etcd.ObjectMeta) || served(etcd) {
 		return etcd, nil
@@ -526,6 +534,8 @@ func (r *Reconciler) requestReconcile(ctx context.Context, p *pass, etcd *druidv
 	switch {
 	case apierrors.IsConflict(err):
 		return etcd, nil
+	case apistatus.Refused(err):
+		return etcd, fmt.Errorf("ask etcd-druid to reconcile Etcd %s: %w", etcd.Name, err)
 	case err != nil:
 		return nil, fmt.Errorf("ask etcd-druid to reconcile Etcd %s: %w", etcd.Name, err)
 	}
