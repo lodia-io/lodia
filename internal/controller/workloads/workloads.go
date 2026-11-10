@@ -228,7 +228,7 @@ func (r *Reconciler) reconcile(ctx context.Context, cp *lodiav1alpha1.ControlPla
 		}
 		return &outcome{endpoint: endpoint, condition: *held, routes: keptRoutes(cp, *held), requeueAfter: requeueAfter}, nil
 	}
-	if err := r.apply(ctx, r.held(cp), svc); err != nil {
+	if err := r.apply(ctx, cp, svc); err != nil {
 		out, err := refused(cp.Status.Endpoint, svc, err)
 		if out != nil {
 			out.routes = keptRoutes(cp, out.condition)
@@ -447,7 +447,7 @@ func (r *Reconciler) writeObjects(ctx context.Context, cp *lodiav1alpha1.Control
 		return &outcome{endpoint: endpoint, condition: *held, requeueAfter: requeueAfter}, nil
 	}
 	for _, obj := range objects {
-		if err := r.apply(ctx, r.held(cp), obj); err != nil {
+		if err := r.apply(ctx, cp, obj); err != nil {
 			return refused(endpoint, obj, err)
 		}
 	}
@@ -983,9 +983,9 @@ func (r *Reconciler) deletePodDisruptionBudgets(ctx context.Context, cp *lodiav1
 
 // apply writes obj and fills it with the object the API server stores. A held
 // pass writes only a missing object, and fills obj with a stored one as it is.
-func (r *Reconciler) apply(ctx context.Context, held bool, obj client.Object) error {
-	if held {
-		if stored, err := r.stored(ctx, obj); err != nil || stored {
+func (r *Reconciler) apply(ctx context.Context, cp *lodiav1alpha1.ControlPlane, obj client.Object) error {
+	if r.held(cp) {
+		if stored, err := r.stored(ctx, cp, obj); err != nil || stored {
 			return err
 		}
 	}
@@ -1004,8 +1004,10 @@ func (r *Reconciler) apply(ctx context.Context, held bool, obj client.Object) er
 
 // stored fills obj with the object stored under its name and says whether
 // there is one. One the cache lacks is read from the API server: the cache can
-// lag Workloads' own create, or miss an object whose label was removed.
-func (r *Reconciler) stored(ctx context.Context, obj client.Object) (bool, error) {
+// lag Workloads' own create, or miss an object whose label was removed. One
+// another owner keeps counts as missing, so that the apply the API server
+// refuses says so and nothing is read from it.
+func (r *Reconciler) stored(ctx context.Context, cp *lodiav1alpha1.ControlPlane, obj client.Object) (bool, error) {
 	key := client.ObjectKeyFromObject(obj)
 	current := cached(obj)
 	err := r.Get(ctx, key, current)
@@ -1018,6 +1020,8 @@ func (r *Reconciler) stored(ctx context.Context, obj client.Object) (bool, error
 		return false, nil
 	case err != nil:
 		return false, fmt.Errorf("read %s %s: %w", gvk.Kind, obj.GetName(), err)
+	case ownership.ControlledElsewhere(current, cp) != nil:
+		return false, nil
 	}
 	content, err := runtime.DefaultUnstructuredConverter.ToUnstructured(current)
 	if err != nil {

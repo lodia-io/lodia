@@ -326,7 +326,7 @@ func (r *Reconciler) write(ctx context.Context, cp *lodiav1alpha1.ControlPlane, 
 				fmt.Sprintf("hostname %s is held by TLSRoute %s/%s on Gateway %s/%s; Workloads writes no route for it until that one is gone", hostname, other.Namespace, other.Name, gw.Namespace, gw.Name)}, nil
 		}
 	}
-	return nil, r.apply(ctx, r.held(cp), route)
+	return nil, r.apply(ctx, cp, route)
 }
 
 func (r *Reconciler) semaphore(gateway types.NamespacedName) *semaphore.Weighted {

@@ -667,6 +667,36 @@ func TestAHeldPassWritesNothingOverAPredecessorsService(t *testing.T) {
 	}
 }
 
+func TestAHeldPassLeavesAServiceAnotherOwnerKeepsOutsideTheCacheToTheAPIServer(t *testing.T) {
+	ns := namespace(t)
+	foreign := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      lodiav1alpha1.APIServerServiceName("dev"),
+			Namespace: ns,
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "apps/v1", Kind: "Deployment", Name: "someone", UID: "0b6f1c2e-1111-4222-8333-444455556666", Controller: new(true),
+			}},
+		},
+		Spec: corev1.ServiceSpec{Type: corev1.ServiceTypeLoadBalancer, Ports: []corev1.ServicePort{{Name: "https", Port: 443, TargetPort: intstr.FromInt32(8443)}}},
+	}
+	if err := k8s.Create(t.Context(), foreign); err != nil {
+		t.Fatal(err)
+	}
+	foreign.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{IP: "198.51.100.7", IPMode: new(corev1.LoadBalancerIPModeVIP)}}
+	if err := k8s.Status().Update(t.Context(), foreign); err != nil {
+		t.Fatal(err)
+	}
+
+	cp := create(t, ns, loadBalancer())
+	testenv.Eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused) })
+	if e := get(t, cp).Status.Endpoint; e != nil {
+		t.Errorf("status.endpoint is %+v, from a Service another owner keeps", e)
+	}
+	if svc := getService(t, cp); svc.ResourceVersion != foreign.ResourceVersion {
+		t.Error("a held pass wrote the Service another owner keeps")
+	}
+}
+
 func TestAStampThatDoesNotFitTheFieldIsNotReported(t *testing.T) {
 	cp := running(t)
 	expectRevisions(t, cp, revision, revision, revision)
