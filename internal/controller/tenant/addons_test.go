@@ -65,7 +65,7 @@ func (w recording) Apply(ctx context.Context, obj runtime.ApplyConfiguration, op
 func pass(t *testing.T, cp, cached *lodiav1alpha1.ControlPlane, dial dialFunc, fail error) ([]lodiav1alpha1.ControlPlaneStatus, error) {
 	t.Helper()
 	var made []lodiav1alpha1.ControlPlaneStatus
-	r := &tenant.Reconciler{Client: recorder{Client: snapshot{Client: k8s, cp: cached}, made: &made, fail: fail}, Reader: k8s, ApplyPeriod: time.Hour, Dial: dial}
+	r := &tenant.Reconciler{Client: recorder{Client: snapshot{Client: k8s, cp: cached}, made: &made, fail: fail}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: dial}
 	_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 	return made, err
 }
@@ -74,7 +74,7 @@ func paused(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true }
 
 func setAddons(t *testing.T, cp *lodiav1alpha1.ControlPlane, version string) {
 	t.Helper()
-	applyStatus(t, cp, "test/addons", map[string]any{"addons": map[string]any{"version": version}})
+	applyStatus(t, cp, "test/addons", map[string]any{"addons": map[string]any{"version": version, "operatorRevision": previous}})
 }
 
 func storedAddons(t *testing.T, cp *lodiav1alpha1.ControlPlane) string {
@@ -86,11 +86,11 @@ func storedAddons(t *testing.T, cp *lodiav1alpha1.ControlPlane) string {
 	return cp.Status.Addons.Version
 }
 
-func expectAddons(t *testing.T, made []lodiav1alpha1.ControlPlaneStatus, want string) {
+func expectAddons(t *testing.T, made []lodiav1alpha1.ControlPlaneStatus, version, rev string) {
 	t.Helper()
 	for i, s := range made {
-		if s.Addons == nil || s.Addons.Version != want || s.Addons.OperatorRevision != "" {
-			t.Errorf("status apply %d of the pass carries the addons %+v, want version %s alone", i+1, s.Addons, want)
+		if s.Addons == nil || s.Addons.Version != version || s.Addons.OperatorRevision != rev {
+			t.Errorf("status apply %d of the pass carries the addons %+v, want version %s and operator revision %s", i+1, s.Addons, version, rev)
 		}
 	}
 }
@@ -115,8 +115,8 @@ func TestTheAddonsVersionIsTheRenderOfAPassThatAppliedInFull(t *testing.T) {
 		}
 		return nil
 	})
-	if cp.Status.Addons.OperatorRevision != "" {
-		t.Errorf("status.addons.operatorRevision is %q, which nothing writes yet", cp.Status.Addons.OperatorRevision)
+	if cp.Status.Addons.OperatorRevision != revision {
+		t.Errorf("status.addons.operatorRevision is %q, want the running %s", cp.Status.Addons.OperatorRevision, revision)
 	}
 	owned := false
 	for _, e := range cp.ManagedFields {
@@ -131,7 +131,7 @@ func TestTheAddonsVersionIsTheRenderOfAPassThatAppliedInFull(t *testing.T) {
 		t.Errorf("no manager owns status.addons: %+v", cp.ManagedFields)
 	}
 
-	applyStatus(t, cp, "test/target", map[string]any{"target": map[string]any{"version": "v1.35.9"}})
+	setTargetVersion(t, cp, "v1.35.9")
 	testenv.Eventually(t, func() error {
 		if got := storedAddons(t, cp); got != "v1.35.9" {
 			return fmt.Errorf("status.addons.version is %s, want the render's v1.35.9", got)
@@ -162,7 +162,7 @@ func TestAPassThatAppliedInFullReportsEvenWhenTheRolloutCannotBeRead(t *testing.
 	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied); err != nil {
 		t.Error(err)
 	}
-	expectAddons(t, made, version)
+	expectAddons(t, made, version, revision)
 	if got := storedAddons(t, cp); got != version {
 		t.Errorf("status.addons.version is %s after a full apply, want %s", got, version)
 	}
@@ -190,7 +190,7 @@ func TestAPassThatDidNotApplyInFullKeepsTheAddonsVersion(t *testing.T) {
 		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused); err != nil {
 			t.Error(err)
 		}
-		expectAddons(t, made, older)
+		expectAddons(t, made, older, previous)
 		if got := storedAddons(t, cp); got != older {
 			t.Errorf("status.addons.version is %s after a refused apply, want %s", got, older)
 		}
@@ -222,7 +222,7 @@ func TestAPassThatDidNotApplyInFullKeepsTheAddonsVersion(t *testing.T) {
 		if !appliedWith(made, lodiav1alpha1.ReasonApplying, "ConfigMap kube-system/coredns exists and is not Lodia's") {
 			t.Fatalf("the pass applied %+v, want AddonsApplied Applying for the other owner's object", made)
 		}
-		expectAddons(t, made, older)
+		expectAddons(t, made, older, previous)
 		if got := storedAddons(t, cp); got != older {
 			t.Errorf("status.addons.version is %s beside another owner's object, want %s", got, older)
 		}
@@ -277,7 +277,7 @@ func TestEveryPathThatAppliesStatusKeepsTheAddons(t *testing.T) {
 		if len(made) == 0 || made[0].Conditions[0].Reason != lodiav1alpha1.ReasonReconciling {
 			t.Fatalf("the pass applied %+v first, want Reconciling", made)
 		}
-		expectAddons(t, made, older)
+		expectAddons(t, made, older, previous)
 	})
 
 	t.Run("AccessReady is not True, and the cache is older than the API server", func(t *testing.T) {
@@ -301,7 +301,7 @@ func TestEveryPathThatAppliesStatusKeepsTheAddons(t *testing.T) {
 		if len(made) != 1 || !appliedWith(made, lodiav1alpha1.ReasonWaitingForAccess, "AccessReady is not True for this generation") {
 			t.Fatalf("the pass applied %+v, want one apply that waits for access", made)
 		}
-		expectAddons(t, made, version)
+		expectAddons(t, made, version, previous)
 	})
 
 	t.Run("a Secret is missing", func(t *testing.T) {
@@ -316,7 +316,7 @@ func TestEveryPathThatAppliesStatusKeepsTheAddons(t *testing.T) {
 		if !appliedWith(made, lodiav1alpha1.ReasonWaitingForAccess, "Secret dev-ca-bundle does not exist") {
 			t.Fatalf("the pass applied %+v, want a wait for the missing CA bundle", made)
 		}
-		expectAddons(t, made, older)
+		expectAddons(t, made, older, previous)
 	})
 
 	t.Run("the render waits", func(t *testing.T) {
@@ -330,7 +330,7 @@ func TestEveryPathThatAppliesStatusKeepsTheAddons(t *testing.T) {
 		setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 		setAddons(t, cp, older)
 		applyStatus(t, cp, "test/target", map[string]any{})
-		refresh(t, cp)
+		appliedAtTheGeneration(t, cp)
 		if cp.Status.Target != nil && cp.Status.Target.Version != "" {
 			t.Fatalf("status.target is %+v, want none", cp.Status.Target)
 		}
@@ -341,7 +341,7 @@ func TestEveryPathThatAppliesStatusKeepsTheAddons(t *testing.T) {
 		if !appliedWith(made, lodiav1alpha1.ReasonWaitingForTarget, "status.target has no version") {
 			t.Fatalf("the pass applied %+v, want a wait for the target", made)
 		}
-		expectAddons(t, made, older)
+		expectAddons(t, made, older, previous)
 	})
 
 	t.Run("a component runs a version outside the table", func(t *testing.T) {
@@ -355,7 +355,7 @@ func TestEveryPathThatAppliesStatusKeepsTheAddons(t *testing.T) {
 		setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 		setAddons(t, cp, older)
 		setComponents(t, cp, running(version), running("v1.34.2"), running(version))
-		refresh(t, cp)
+		appliedAtTheGeneration(t, cp)
 		made, err := pass(t, cp, cp.DeepCopy(), unreachable, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -363,7 +363,7 @@ func TestEveryPathThatAppliesStatusKeepsTheAddons(t *testing.T) {
 		if !appliedWith(made, lodiav1alpha1.ReasonWaitingForTarget, `"v1.34.2", is not a version Lodia runs`) {
 			t.Fatalf("the pass applied %+v, want a wait that names v1.34.2", made)
 		}
-		expectAddons(t, made, older)
+		expectAddons(t, made, older, previous)
 	})
 }
 
@@ -374,7 +374,7 @@ func TestAPassThatCannotReadTheAddonsLiveWritesNothing(t *testing.T) {
 	expired, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
 	defer cancel()
 	var made []lodiav1alpha1.ControlPlaneStatus
-	r := &tenant.Reconciler{Client: recorder{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, made: &made}, Reader: k8s, ApplyPeriod: time.Hour, Dial: unreachable}
+	r := &tenant.Reconciler{Client: recorder{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, made: &made}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: unreachable}
 	if _, err := r.Reconcile(expired, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("a pass whose deadline is spent returned %v", err)
 	}

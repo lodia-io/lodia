@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -55,19 +56,46 @@ const (
 	apiServerPort    = 443
 	konnectivityPort = 8132
 	inClusterPort    = 6443
+	revision         = "v0.0.0-test+running"
+	previous         = "v0.0.0-test+previous"
 )
 
 type dialFunc = func(ctx context.Context, network, address string) (net.Conn, error)
 
 var (
-	k8s    client.Client
-	scheme *runtime.Scheme
-	dial   atomic.Pointer[dialFunc]
+	k8s          client.Client
+	scheme       *runtime.Scheme
+	dial         atomic.Pointer[dialFunc]
+	managerReads *pausedReads
 
 	unreachable dialFunc = func(context.Context, string, string) (net.Conn, error) {
 		return nil, errors.New("connection refused")
 	}
 )
+
+type pausedReads struct {
+	client.Client
+	mu     sync.Mutex
+	paused map[client.ObjectKey]int64
+}
+
+func (r *pausedReads) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if err := r.Client.Get(ctx, key, obj, opts...); err != nil {
+		return err
+	}
+	if cp, ok := obj.(*lodiav1alpha1.ControlPlane); ok && cp.Spec.Paused {
+		r.mu.Lock()
+		r.paused[key] = max(r.paused[key], cp.Generation)
+		r.mu.Unlock()
+	}
+	return nil
+}
+
+func (r *pausedReads) pausedAt(key client.ObjectKey) int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.paused[key]
+}
 
 func TestMain(m *testing.M) {
 	if !testenv.Available() {
@@ -77,11 +105,13 @@ func TestMain(m *testing.M) {
 	k8s, scheme = env.Client, env.Scheme
 	mgr := env.Manager(env.AsController("tenant"), false)
 	dial.Store(&unreachable)
+	managerReads = &pausedReads{Client: mgr.GetClient(), paused: map[client.ObjectKey]int64{}}
 	r := &tenant.Reconciler{
-		Client:      mgr.GetClient(),
+		Client:      managerReads,
 		Reader:      mgr.GetAPIReader(),
 		ApplyPeriod: 2 * time.Second,
 		TunnelImage: tunnelImage,
+		Revision:    revision,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
 			return (*dial.Load())(ctx, network, address)
 		},
@@ -183,7 +213,7 @@ func TestAWaitOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
 	})
 	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
 	pass := func(at *lodiav1alpha1.ControlPlane, reader client.Reader) error {
-		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: at}, Reader: reader}
+		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: at}, Reader: reader, Revision: revision}
 		_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 		return err
 	}
@@ -245,7 +275,7 @@ func TestAConditionKeptWithoutAnAnswerOnAStaleReadIsDecidedFromTheServer(t *test
 		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable, cp.Generation),
 	}})
 	pass := func(reader client.Reader) error {
-		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: reader, ApplyPeriod: time.Hour, Dial: unreachable}
+		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: reader, Revision: revision, ApplyPeriod: time.Hour, Dial: unreachable}
 		_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 		return err
 	}
@@ -307,7 +337,7 @@ func TestAPassCancelledBeforeTheTenantAnswersWritesNothing(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	var dialed atomic.Bool
-	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, ApplyPeriod: time.Hour, Dial: func(context.Context, string, string) (net.Conn, error) {
+	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: func(context.Context, string, string) (net.Conn, error) {
 		dialed.Store(true)
 		cancel()
 		return nil, context.Canceled
@@ -349,7 +379,7 @@ func TestARolloutReadThatFailsOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
 		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable, cp.Generation),
 	}})
 	pass := func(reader client.Reader) error {
-		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: reader, ApplyPeriod: time.Hour, Dial: *dial.Load()}
+		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: reader, Revision: revision, ApplyPeriod: time.Hour, Dial: *dial.Load()}
 		_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 		return err
 	}
@@ -406,7 +436,7 @@ func TestARefusedApplyStopsThePass(t *testing.T) {
 		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, cp.Generation-1),
 	}})
 	refresh(t, cp)
-	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, ApplyPeriod: time.Hour, Dial: *dial.Load()}
+	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: *dial.Load()}
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apierrors.IsForbidden(err) {
 		t.Errorf("a pass whose apply was refused returned %v, want the refusal", err)
 	}
@@ -461,7 +491,7 @@ func TestAnotherOwnersObjectKeepsApplyingThoughTheRolloutReadFails(t *testing.T)
 		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable, cp.Generation-1),
 	}})
 	refresh(t, cp)
-	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, ApplyPeriod: time.Hour, Dial: *dial.Load()}
+	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: *dial.Load()}
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apierrors.IsForbidden(err) {
 		t.Errorf("a pass whose rollout read was refused returned %v, want the refusal", err)
 	}
@@ -498,7 +528,7 @@ func TestAWaitComparesItsWriteWithTheServer(t *testing.T) {
 		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation),
 		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable, cp.Generation),
 	}})
-	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: k8s}
+	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: k8s, Revision: revision}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 		t.Fatal(err)
 	}
@@ -532,7 +562,7 @@ func TestAFailedSyncComparesItsWriteWithTheServer(t *testing.T) {
 		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, cp.Generation),
 		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, cp.Generation),
 	}})
-	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: k8s, ApplyPeriod: time.Hour, Dial: unreachable}
+	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: unreachable}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
 		t.Fatal("a pass that could not reach the tenant succeeded")
 	}
@@ -987,7 +1017,7 @@ func TestATenantThatDoesNotAnswerAtANewGenerationKeepsWhatItDescribed(t *testing
 	dial.Store(&unreachable)
 	setReplicas(t, cp, 2)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
-	r := &tenant.Reconciler{Client: k8s, Reader: k8s, ApplyPeriod: time.Hour, Dial: unreachable}
+	r := &tenant.Reconciler{Client: k8s, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: unreachable}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
 		t.Fatal("a pass that could not reach the tenant succeeded")
 	}
@@ -1379,12 +1409,17 @@ func applyStatus(t *testing.T, cp *lodiav1alpha1.ControlPlane, manager string, s
 
 func publish(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 	t.Helper()
-	applyStatus(t, cp, "test/target", map[string]any{"target": map[string]any{"version": version}})
+	setTarget(t, cp, version, revision)
 	applyStatus(t, cp, "test/endpoint", map[string]any{"endpoint": map[string]any{
 		"apiServer":    map[string]any{"host": endpointHost, "port": int64(apiServerPort)},
 		"konnectivity": map[string]any{"host": endpointHost, "port": int64(konnectivityPort)},
 		"inCluster":    map[string]any{"host": endpointHost, "port": int64(inClusterPort)},
 	}})
+}
+
+func setTarget(t *testing.T, cp *lodiav1alpha1.ControlPlane, to, rev string) {
+	t.Helper()
+	applyStatus(t, cp, "test/target", map[string]any{"target": map[string]any{"version": to, "operatorRevision": rev}})
 }
 
 func setCondition(t *testing.T, cp *lodiav1alpha1.ControlPlane, conditionType, reason string) {
@@ -1402,6 +1437,16 @@ func conditionAt(conditionType string, status metav1.ConditionStatus, reason str
 		"observedGeneration": generation,
 		"lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
 	}
+}
+
+func appliedAtTheGeneration(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+	t.Helper()
+	refresh(t, cp)
+	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable, cp.Generation),
+	}})
+	refresh(t, cp)
 }
 
 func setCoreDNS(t *testing.T, cp *lodiav1alpha1.ControlPlane, enabled bool) {
@@ -1428,6 +1473,17 @@ func setReplicas(t *testing.T, cp *lodiav1alpha1.ControlPlane, replicas int32) {
 			cp.Spec.Addons.CoreDNS = &lodiav1alpha1.CoreDNS{}
 		}
 		cp.Spec.Addons.CoreDNS.Replicas = &replicas
+	})
+}
+
+func pause(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+	t.Helper()
+	update(t, cp, paused)
+	testenv.Eventually(t, func() error {
+		if read := managerReads.pausedAt(client.ObjectKeyFromObject(cp)); read < cp.Generation {
+			return fmt.Errorf("the suite's manager has read the ControlPlane paused at generation %d, want %d", read, cp.Generation)
+		}
+		return nil
 	})
 }
 

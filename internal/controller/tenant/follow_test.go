@@ -46,7 +46,7 @@ func running(version string) *reported {
 
 func setTargetVersion(t *testing.T, cp *lodiav1alpha1.ControlPlane, to string) {
 	t.Helper()
-	applyStatus(t, cp, "test/target", map[string]any{"target": map[string]any{"version": to}})
+	setTarget(t, cp, to, revision)
 }
 
 func eventuallyAddonsAt(t *testing.T, cp *lodiav1alpha1.ControlPlane, admin *tenantClient, version, coreDNS, konnectivity string) {

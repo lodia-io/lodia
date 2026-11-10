@@ -76,29 +76,38 @@ type values struct {
 	kubeProxy, coreDNS       bool
 }
 
-// newValues also returns the reason and the message of what a render still
-// waits for, empty when nothing.
-func newValues(cp *lodiav1alpha1.ControlPlane, clusterCA []byte) (*values, string, string, error) {
-	endpoint := cp.Status.Endpoint
-	switch {
+// waitsFor is the reason and the message of what a render waits for, empty
+// when nothing.
+func waitsFor(cp *lodiav1alpha1.ControlPlane) (string, string) {
+	switch endpoint := cp.Status.Endpoint; {
 	case cp.Status.Target == nil || cp.Status.Target.Version == "":
-		return nil, lodiav1alpha1.ReasonWaitingForTarget, "status.target has no version", nil
+		return lodiav1alpha1.ReasonWaitingForTarget, "status.target has no version"
+	case cp.Status.Target.OperatorRevision == "":
+		return lodiav1alpha1.ReasonWaitingForTarget, "status.target has no operatorRevision"
 	case endpoint == nil:
-		return nil, lodiav1alpha1.ReasonWaitingForEndpoint, "status.endpoint is not published", nil
+		return lodiav1alpha1.ReasonWaitingForEndpoint, "status.endpoint is not published"
 	case cp.Spec.Endpoint.Gateway != nil && endpoint.Tunnel == nil:
-		return nil, lodiav1alpha1.ReasonWaitingForEndpoint, "status.endpoint has no tunnel", nil
+		return lodiav1alpha1.ReasonWaitingForEndpoint, "status.endpoint has no tunnel"
 	}
+	return "", ""
+}
+
+// newValues needs what waitsFor waits for. Instead of values it can return
+// what says that the oldest version the components run is not in the running
+// operator's table.
+func newValues(cp *lodiav1alpha1.ControlPlane, clusterCA []byte) (*values, string, error) {
+	endpoint := cp.Status.Endpoint
 	oldest, ok := versions.Oldest(runningVersions(cp)...)
 	var images versions.Images
 	if ok {
 		images, ok = versions.For(oldest)
 	}
 	if !ok {
-		return nil, lodiav1alpha1.ReasonWaitingForTarget, fmt.Sprintf("the oldest version the components run, %q, is not a version Lodia runs", oldest), nil
+		return nil, fmt.Sprintf("the oldest version the components run, %q, is not a version Lodia runs", oldest), nil
 	}
 	inCluster, err := netip.ParseAddr(endpoint.InCluster.Host)
 	if err != nil {
-		return nil, "", "", err
+		return nil, "", err
 	}
 	addressType := discoveryv1.AddressTypeIPv4
 	if inCluster.Is6() {
@@ -143,7 +152,7 @@ func newValues(cp *lodiav1alpha1.ControlPlane, clusterCA []byte) (*values, strin
 	v.ServiceSubnet, v.PodSubnet = strings.Join(services, ","), strings.Join(pods, ",")
 	dns, err := tenthAddress(services[0])
 	if err != nil {
-		return nil, "", "", err
+		return nil, "", err
 	}
 	v.DNSIP = dns.String()
 	if addons := cp.Spec.Addons; addons != nil {
@@ -168,7 +177,7 @@ func newValues(cp *lodiav1alpha1.ControlPlane, clusterCA []byte) (*values, strin
 		if k := addons.Konnectivity; k != nil {
 			pinned, err := versions.PinKonnectivity(images, k.Version)
 			if err != nil {
-				return nil, "", "", err
+				return nil, "", err
 			}
 			v.AgentImage = pinned.KonnectivityAgent
 			if a := k.Agent; a != nil && a.Mode == "Deployment" {
@@ -181,10 +190,10 @@ func newValues(cp *lodiav1alpha1.ControlPlane, clusterCA []byte) (*values, strin
 	}
 	info, err := clientcmd.Write(clientcmdapi.Config{Clusters: map[string]*clientcmdapi.Cluster{"": {Server: v.Server, CertificateAuthorityData: clusterCA}}})
 	if err != nil {
-		return nil, "", "", err
+		return nil, "", err
 	}
 	v.ClusterInfo = string(info)
-	return v, "", "", nil
+	return v, "", nil
 }
 
 // reported are the versions the API server, the controller manager and the
