@@ -81,7 +81,7 @@ func decide(f facts) decision {
 	status := lodiav1alpha1.ControlPlaneStatus{
 		ObservedGeneration: cp.Status.ObservedGeneration,
 		Target:             newTarget(targetOf(cp), revisionOf(cp), scheduledOf(cp)),
-		Maintenance:        newMaintenance(lastHandledOf(cp), settlingOf(cp)),
+		Maintenance:        newMaintenance(lastHandledOf(cp), nil, 0),
 	}
 	upgrade := upgradeOf(cp)
 	var d decision
@@ -99,7 +99,7 @@ func decide(f facts) decision {
 			status.ObservedGeneration = cp.Generation
 		}
 		status.Target = newTarget(c.target, m.revision, m.scheduledFor)
-		status.Maintenance = newMaintenance(m.lastHandled, m.settlingSince)
+		status.Maintenance = newMaintenance(m.lastHandled, m.settlingSince, m.slotGeneration(cp))
 		upgrade = c.upgrade
 		d.createBackup, d.requeue, d.takesSlot = c.createBackup, m.requeue, m.takesSlot
 	}
@@ -122,11 +122,11 @@ func newTarget(version, revision string, scheduledFor *metav1.Time) *lodiav1alph
 	return &lodiav1alpha1.Target{Version: version, OperatorRevision: revision, ScheduledFor: scheduledFor}
 }
 
-func newMaintenance(lastHandled string, settlingSince *metav1.Time) *lodiav1alpha1.MaintenanceStatus {
-	if lastHandled == "" && settlingSince == nil {
+func newMaintenance(lastHandled string, settlingSince *metav1.Time, slotGeneration int64) *lodiav1alpha1.MaintenanceStatus {
+	if lastHandled == "" && settlingSince == nil && slotGeneration == 0 {
 		return nil
 	}
-	return &lodiav1alpha1.MaintenanceStatus{LastHandled: lastHandled, SettlingSince: settlingSince}
+	return &lodiav1alpha1.MaintenanceStatus{LastHandled: lastHandled, SettlingSince: settlingSince, SlotGeneration: slotGeneration}
 }
 
 func targetOf(cp *lodiav1alpha1.ControlPlane) string {

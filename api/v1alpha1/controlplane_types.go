@@ -1074,6 +1074,12 @@ type MaintenanceStatus struct {
 	// settling time after it.
 	// +optional
 	SettlingSince *metav1.Time `json:"settlingSince,omitempty"`
+
+	// SlotGeneration is the generation at which a change Lifecycle started
+	// holds a slot of the fleet: the tenant holds it while this is
+	// metadata.generation, so an edit of spec frees it.
+	// +optional
+	SlotGeneration int64 `json:"slotGeneration,omitempty"`
 }
 
 // ControllerManagerHold is one hold of the controller manager's leader lease.

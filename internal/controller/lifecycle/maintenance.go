@@ -49,8 +49,8 @@ type maintenance struct {
 // member is another tenant that holds a slot of the fleet, or waits for one
 // under key.
 type member struct {
-	reason string
-	key    queueKey
+	slot bool
+	key  queueKey
 }
 
 // queueKey orders the tenants that wait for a slot.
@@ -74,17 +74,19 @@ func fleetOf(cps []lodiav1alpha1.ControlPlane, cp *lodiav1alpha1.ControlPlane) [
 	var fleet []member
 	for i := range cps {
 		other := &cps[i]
-		progressing := meta.FindStatusCondition(other.Status.Conditions, lodiav1alpha1.ConditionProgressing)
-		if other.Namespace == cp.Namespace && other.Name == cp.Name || !other.DeletionTimestamp.IsZero() || progressing == nil {
+		if other.Namespace == cp.Namespace && other.Name == cp.Name || !other.DeletionTimestamp.IsZero() {
 			continue
 		}
-		switch progressing.Reason {
-		case lodiav1alpha1.ReasonMaintaining, lodiav1alpha1.ReasonMaintenanceFailed, lodiav1alpha1.ReasonFleetLimit:
-			key := queueKey{namespace: other.Namespace, name: other.Name}
-			if s := scheduledOf(other); s != nil {
-				key.scheduledFor = s.Time
-			}
-			fleet = append(fleet, member{reason: progressing.Reason, key: key})
+		key := queueKey{namespace: other.Namespace, name: other.Name}
+		if s := scheduledOf(other); s != nil {
+			key.scheduledFor = s.Time
+		}
+		progressing := meta.FindStatusCondition(other.Status.Conditions, lodiav1alpha1.ConditionProgressing)
+		switch {
+		case inSlot(other):
+			fleet = append(fleet, member{slot: true, key: key})
+		case progressing != nil && progressing.Reason == lodiav1alpha1.ReasonFleetLimit:
+			fleet = append(fleet, member{key: key})
 		}
 	}
 	return fleet
@@ -119,13 +121,19 @@ func (f facts) maintain(c change, ready *metav1.Condition) maintenance {
 	if pending(cp, f.revision) {
 		f.grant(&m, c, w, token != "")
 	}
-	switch {
-	case m.unsupported != "":
-		m.slot = false
-	case m.slot:
+	if m.slot {
 		f.settle(&m, c, ready, granted)
 	}
 	return m
+}
+
+// slotGeneration is status.maintenance.slotGeneration after the pass: cp's
+// generation while it holds a slot.
+func (m maintenance) slotGeneration(cp *lodiav1alpha1.ControlPlane) int64 {
+	if m.slot {
+		return cp.Generation
+	}
+	return 0
 }
 
 // grant applies the rules to a pending change, in their order: a revision
@@ -222,11 +230,10 @@ func (f facts) atOnce(c change) bool {
 // object refused or another owner's, or did not finish.
 var stoppedAddons = []string{lodiav1alpha1.ReasonRefused, lodiav1alpha1.ReasonObjectsControlledElsewhere, lodiav1alpha1.ReasonApplying}
 
-// inSlot says whether cp holds a slot of the fleet: Progressing is Maintaining
-// or MaintenanceFailed at its generation, since an owner's edit frees it.
+// inSlot says whether cp holds a slot of the fleet: status.maintenance.slotGeneration
+// is its generation, since an owner's edit frees it.
 func inSlot(cp *lodiav1alpha1.ControlPlane) bool {
-	p := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionProgressing)
-	return p != nil && p.ObservedGeneration == cp.Generation && (p.Reason == lodiav1alpha1.ReasonMaintaining || p.Reason == lodiav1alpha1.ReasonMaintenanceFailed)
+	return cp.Status.Maintenance != nil && cp.Status.Maintenance.SlotGeneration == cp.Generation
 }
 
 // readyForMaintenance is what keeps Ready from True, at whatever generation
@@ -260,7 +267,7 @@ func (f facts) key() queueKey {
 func (f facts) free(key queueKey) bool {
 	taken := 0
 	for _, m := range f.fleet {
-		if m.reason != lodiav1alpha1.ReasonFleetLimit || m.key.before(key) {
+		if m.slot || m.key.before(key) {
 			taken++
 		}
 	}

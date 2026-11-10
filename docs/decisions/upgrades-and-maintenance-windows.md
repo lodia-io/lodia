@@ -65,7 +65,7 @@ A hand edit is not reverted while a tenant waits; storing the last render, as Ga
 Lifecycle grants the running revision, while it is pending, by these rules in their order:
 
 1. A new value of `lodia.io/maintain-requested-at` is recorded in `status.maintenance.lastHandled` on every pass but a paused or deleting one's, pending or not; a value over 256 characters is not handled.
-2. A revision that does not run the minor of the target or of a reported version is granted on no path, since a renderer would write `WaitingForTarget` and take a running tenant down: `Unsupported`.
+2. A revision that does not run the minor of the target or of a reported version is granted on no path, since a renderer would write `WaitingForTarget` and take a running tenant down: `Unsupported`; a tenant in a slot keeps it, so the release after reaches it at once.
 3. At once, with no slot: no target yet; an edit of `spec` not taken up, its generation ahead of `Progressing`'s; an upgrade its owner started; a new value of the annotation; a tenant in a slot, which keeps it, so that a later release, or a rollback, reaches a tenant a bad release left failed; and three kinds of tenant only the grant brings back to `Ready`, since a held renderer cannot: `AddonsApplied` not True with no `status.addons.version` or with `Refused`, `ObjectsControlledElsewhere` or `Applying`, `APIServerReady` False, `WaitingForTarget`, at the object's generation, and a restored `ControlPlane` whose controller manager is not released.
 4. Not while `Unsupported` or `Failed` stands: the owner's to fix.
 5. Not while `TimeZoneUnsupported` stands; outside the window, `WaitingForWindow`, with `target.scheduledFor` its next start.
@@ -73,7 +73,7 @@ Lifecycle grants the running revision, while it is pending, by these rules in th
    A held Tenant keeps `AddonsApplied` at the generation it describes for the whole hold, so `Ready` at the object's generation would never grant an edit Tenant had not taken up when the release started.
 7. A slot in the order of the queue: `Maintaining`, in the same write as the grant; none, `FleetLimit`, with `target.scheduledFor` when the tenant became eligible.
 
-A change Lodia started keeps its origin through the reason it writes, `Maintaining` or `MaintenanceFailed`, at the generation it describes; an edit of `spec` frees the slot, and a grant on request is the owner's.
+A change Lodia started keeps its origin in `status.maintenance.slotGeneration`, written in the same write as the grant: the tenant holds its slot while that is its generation, whatever `Progressing` says, so a reason ranked above the slot's does not free it, and an edit of `spec` does; a grant on request is the owner's.
 
 **Who waits for the window:**
 
@@ -92,7 +92,7 @@ Without a window Lodia-initiated changes roll at any time, still within the flee
 
 **The fleet.**
 Across all tenants, at most `fleet.maxConcurrentRollouts` (operator configuration, 5 by default) roll a Lodia-initiated change at once.
-A tenant holds a slot while `Progressing` is True, `Maintaining`, or False, `MaintenanceFailed`: a failed rollout Lodia started keeps its slot, so that many failures halt maintenance across the fleet, as unavailable pods halt a Deployment's rollout, and the alert `LodiaMaintenanceHalted` fires.
+A tenant holds a slot while `status.maintenance.slotGeneration` is its generation, `Progressing` `Maintaining` or, once failed, `MaintenanceFailed`: a failed rollout Lodia started keeps its slot, so that many failures halt maintenance across the fleet, as unavailable pods halt a Deployment's rollout, and the alert `LodiaMaintenanceHalted` fires.
 Tenants get slots in the order of `status.target.scheduledFor`, then namespace and name: a pass grants when the tenants that hold a slot and those queued before it are fewer than the limit, counted from the cache and, before the grant is written, again from the API server under a lock, so that two passes never take one slot.
 An owner's change takes no slot.
 A change Lodia started holds its slot while it rolls: a part not at the target, a replica or member not updated, a renderer that reports neither the granted revision nor the running one.
@@ -132,7 +132,7 @@ Lodia never removes the annotation, so a GitOps tool that keeps it does not figh
 
 ## Consequences
 
-- Lifecycle is the only controller that knows the maintenance windows and the fleet; it counts the tenants rolling a Lodia-initiated change from their `status` (`Progressing`), not in memory, so a restarted operator neither forgets nor double-counts a rollout in progress.
+- Lifecycle is the only controller that knows the maintenance windows and the fleet; it counts the tenants rolling a Lodia-initiated change from their `status` (`status.maintenance.slotGeneration`), not in memory, so a restarted operator neither forgets nor double-counts a rollout in progress.
 - In the `Compact` layout steps 3 and 4 are one rollout of the single pod: the API server, controller manager and scheduler change version together, which the skew policy allows ([compact-layout](compact-layout.md)).
 - `status.target` is part of the API users read: `target.version`, `target.operatorRevision` and `target.scheduledFor`, with `Progressing`.
 - An operator release note states which tenants will roll (all with a changed render) and what changes, because the roll is deferred, not hidden.
