@@ -180,7 +180,7 @@ func TestTheReleaseWaitsForAddonsAppliedAtItsGenerationAndHoldsForGood(t *testin
 
 func TestAControllerManagerScaledByHandIsReleased(t *testing.T) {
 	cp := restored(t, namespace(t), lodiav1alpha1.RestoreHeld)
-	update(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.Paused = true })
+	pause(t, cp)
 	r := &workloads.Reconciler{Client: unpaused(), Reader: k8s, SignerImage: signerImage, Revision: revision}
 	testenv.Eventually(t, func() error {
 		if d := deployment(t, cp, "kube-controller-manager"); *d.Spec.Replicas == 0 {
@@ -302,7 +302,7 @@ func TestAStaleCacheNeverStopsAReleasedControllerManager(t *testing.T) {
 		}
 		return nil
 	})
-	update(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.Paused = true })
+	pause(t, cp)
 	kcm := types.NamespacedName{Namespace: cp.Namespace, Name: "dev-kube-controller-manager"}
 	injected := errors.New("injected: the API server did not answer")
 	r := &workloads.Reconciler{Client: unpaused(func(key client.ObjectKey, obj client.Object) {

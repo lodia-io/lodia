@@ -104,6 +104,13 @@ func imagesAt(t *testing.T, cp *lodiav1alpha1.ControlPlane, tag string, componen
 func pause(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 	t.Helper()
 	update(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.Paused = true })
+	generation := get(t, cp).Generation
+	testenv.Eventually(t, func() error {
+		if read := managerReads.pausedAt(client.ObjectKeyFromObject(cp)); read < generation {
+			return fmt.Errorf("the suite's manager has read the ControlPlane paused at generation %d, want %d", read, generation)
+		}
+		return nil
+	})
 }
 
 func appliedStatus(t *testing.T, cp *lodiav1alpha1.ControlPlane, c client.WithWatch) lodiav1alpha1.ControlPlaneStatus {
