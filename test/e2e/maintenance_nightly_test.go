@@ -8,6 +8,7 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -74,6 +75,9 @@ func TestFleetLimitInQueueOrder(t *testing.T) {
 				return nil
 			})
 			fleet.stop()
+			if err := fleet.whole(); err != nil {
+				t.Fatal(err)
+			}
 			checkOneSlotInQueueOrder(t, fleet.all(), len(keys))
 			return ctx
 		}).
@@ -94,26 +98,36 @@ func TestFleetLimitInQueueOrder(t *testing.T) {
 func checkOneSlotInQueueOrder(t *testing.T, seen []observation, tenants int) {
 	t.Helper()
 	inSlot := map[client.ObjectKey]bool{}
-	queued := map[client.ObjectKey]time.Time{}
-	type grant struct {
-		key    client.ObjectKey
-		queued time.Time
-		waited bool
-	}
-	var grants []grant
+	waiting := map[client.ObjectKey]time.Time{}
+	var order []string
 	for _, o := range seen {
-		slot := o.progressing == lodiav1alpha1.ReasonMaintaining || o.progressing == lodiav1alpha1.ReasonMaintenanceFailed
 		if o.progressing == lodiav1alpha1.ReasonMaintenanceFailed {
 			t.Errorf("%s at resourceVersion %s: MaintenanceFailed", o.key.Namespace, o.resourceVersion)
 		}
-		if o.progressing == lodiav1alpha1.ReasonFleetLimit && o.scheduledFor != nil {
-			queued[o.key] = o.scheduledFor.Time
+		if o.slot && !inSlot[o.key] {
+			queue := slices.SortedFunc(maps.Keys(waiting), func(a, b client.ObjectKey) int {
+				switch {
+				case !waiting[a].Equal(waiting[b]):
+					return waiting[a].Compare(waiting[b])
+				case a.Namespace != b.Namespace:
+					return strings.Compare(a.Namespace, b.Namespace)
+				}
+				return strings.Compare(a.Name, b.Name)
+			})
+			switch {
+			case len(queue) == 0 && len(order) > 0:
+				t.Errorf("at resourceVersion %s %s took a slot with no tenant waiting", o.resourceVersion, o.key.Namespace)
+			case len(queue) > 0 && queue[0] != o.key:
+				t.Errorf("at resourceVersion %s the slot went to %s, not to %s, the first of those waiting: %v", o.resourceVersion, o.key.Namespace, queue[0].Namespace, waiting)
+			}
+			order = append(order, fmt.Sprintf("%s (waiting since %s, %d waiting)", o.key.Namespace, waiting[o.key].Format(time.RFC3339), len(queue)))
 		}
-		if slot && !inSlot[o.key] {
-			at, waited := queued[o.key]
-			grants = append(grants, grant{o.key, at, waited})
+		inSlot[o.key] = o.slot
+		if o.scheduledFor != nil && !o.scheduledFor.After(o.at) {
+			waiting[o.key] = o.scheduledFor.Time
+		} else {
+			delete(waiting, o.key)
 		}
-		inSlot[o.key] = slot
 		holders := 0
 		for _, holds := range inSlot {
 			if holds {
@@ -124,32 +138,8 @@ func checkOneSlotInQueueOrder(t *testing.T, seen []observation, tenants int) {
 			t.Errorf("at resourceVersion %s, %d tenants hold a slot of a fleet limited to 1", o.resourceVersion, holders)
 		}
 	}
-	var order []string
-	for _, g := range grants {
-		order = append(order, fmt.Sprintf("%s (queued at %s, waited %t)", g.key.Namespace, g.queued.Format(time.RFC3339), g.waited))
-	}
 	t.Logf("the slot went to %s", strings.Join(order, ", "))
-	if len(grants) != tenants {
-		t.Errorf("%d grants of a slot, want one for each of the %d tenants", len(grants), tenants)
-	}
-	var waited []grant
-	for _, g := range grants {
-		if g.waited {
-			waited = append(waited, g)
-		}
-	}
-	if len(waited) < tenants-1 {
-		t.Errorf("%d tenants waited for the slot, want at least %d", len(waited), tenants-1)
-	}
-	if !slices.IsSortedFunc(waited, func(a, b grant) int {
-		switch {
-		case !a.queued.Equal(b.queued):
-			return a.queued.Compare(b.queued)
-		case a.key.Namespace != b.key.Namespace:
-			return strings.Compare(a.key.Namespace, b.key.Namespace)
-		}
-		return strings.Compare(a.key.Name, b.key.Name)
-	}) {
-		t.Errorf("the tenants that waited were granted out of the queue's order: %s", strings.Join(order, ", "))
+	if len(order) != tenants {
+		t.Errorf("%d grants of a slot, want one for each of the %d tenants", len(order), tenants)
 	}
 }

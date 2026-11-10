@@ -7,6 +7,7 @@ package e2e
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -429,6 +430,7 @@ type observation struct {
 	revision          string
 	scheduledFor      *metav1.Time
 	parts             map[string]string
+	slot              bool
 }
 
 func observe(cp *lodiav1alpha1.ControlPlane, at time.Time) observation {
@@ -442,6 +444,7 @@ func observe(cp *lodiav1alpha1.ControlPlane, at time.Time) observation {
 	if target := cp.Status.Target; target != nil {
 		o.revision, o.scheduledFor = target.OperatorRevision, target.ScheduledFor
 	}
+	o.slot = cp.Status.Maintenance != nil && cp.Status.Maintenance.SlotGeneration == cp.Generation
 	return o
 }
 
@@ -517,14 +520,21 @@ func (w *fleetWatch) saw(key client.ObjectKey, match func(observation) bool) boo
 	return slices.ContainsFunc(w.of(key), match)
 }
 
-func (w *fleetWatch) ready(t *testing.T, keys ...client.ObjectKey) {
-	t.Helper()
+func (w *fleetWatch) whole() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if len(w.broken) > 0 {
-		t.Errorf("the watch of the ControlPlanes broke, so its record is incomplete: %v", w.broken)
+		return fmt.Errorf("the watch of the ControlPlanes broke, so its record is incomplete: %w", errors.Join(w.broken...))
 	}
-	for _, o := range w.seen {
+	return nil
+}
+
+func (w *fleetWatch) ready(t *testing.T, keys ...client.ObjectKey) {
+	t.Helper()
+	if err := w.whole(); err != nil {
+		t.Error(err)
+	}
+	for _, o := range w.all() {
 		if slices.Contains(keys, o.key) && o.ready != metav1.ConditionTrue {
 			t.Errorf("%s at resourceVersion %s, %s: Ready is %s %s", o.key, o.resourceVersion, o.at.Format(time.RFC3339), o.ready, o.readyReason)
 		}
