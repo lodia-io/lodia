@@ -74,7 +74,7 @@ The test does not ask `Ready` to stay `True` through the upgrade, and logs each 
 
 ## Nightly: the chain and a highly available upgrade
 
-[`nightly-upgrade.yml`](../../.github/workflows/nightly-upgrade.yml) runs two tests under the same tag every night, on demand, and on a pull request that changes the workflow or `test/e2e/upgrade_nightly_test.go`.
+[`nightly-upgrade.yml`](../../.github/workflows/nightly-upgrade.yml) runs two tests under the same tag every night, on demand, and on a pull request that changes the workflow, `test/e2e/upgrade_nightly_test.go` or `test/e2e/maintenance_nightly_test.go`, and the [fleet limit](#nightly-the-fleet-limit) beside them.
 Each is a job of its own, with its own kind cluster.
 
 `TestMinorUpgradeChain` (`make e2e-upgrade E2E_UPGRADE_TEST=TestMinorUpgradeChain`) takes a tenant from v1.35.8 to v1.37.1, the table's `Latest` of 1.36 between them: a `Backup` of each minor completes before the target moves, a kind node of v1.35.8 joins at the first minor, one of v1.36.4 after the first step, and one of v1.37.0 at the end, and the first two keep their kubelets.
@@ -93,6 +93,12 @@ Once each is `Ready` and `Idle`, every part reporting the suite's operator revis
 2. Within 3 minutes of that, `open` and `anytime` report revision B, `B`'s `VERSION` and a digest, in every `components.*`, `addons` and `datastore`, their API server's template runs signer B, they were seen `Maintaining` and are `Idle`.
 3. `closed` is `WaitingForWindow`, `target.scheduledFor` its window's start and its revision A, from its first such status on and for 2 more minutes, and nothing recorded of it changed; no status of the three was seen with `Ready` other than True.
 4. An edit of `closed`'s `addons.coreDNS.replicas` grants it revision B within 30 seconds, and its API server rolls to signer B, while it was never seen `Maintaining`.
+
+## Nightly: the fleet limit
+
+`TestFleetLimitInQueueOrder` (`make e2e-maintenance E2E_MAINTENANCE_TEST=TestFleetLimitInQueueOrder`), in the same build tag, runs in [`nightly-upgrade.yml`](../../.github/workflows/nightly-upgrade.yml) as a job of its own.
+Four `ControlPlane`s without a window turn `Ready`; the chart upgrades to build B, as in G5, with `fleet.maxConcurrentRollouts` 1.
+The test wants all four at revision B and `Idle` within 20 minutes, and over the statuses one watch of every `ControlPlane` delivered, in the order they were written: never two in `Maintaining` or `MaintenanceFailed` at once, none `MaintenanceFailed`, one slot granted to each, and those that waited, `FleetLimit`, granted in the order of their `target.scheduledFor`, namespace and name.
 
 ## Gate G2: a highly available control plane
 

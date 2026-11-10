@@ -146,7 +146,7 @@ e2e-upgrade-ha: ## the nightly upgrade of a highly available tenant, on a kind c
 	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
 
 .PHONY: e2e-maintenance
-e2e-maintenance: ## gate G5, an operator upgrade that re-renders tenants only in their windows, on a kind cluster of its own that it deletes afterwards
+e2e-maintenance: ## gate G5, an operator upgrade that re-renders tenants only in their windows, on a kind cluster of its own that it deletes afterwards; E2E_MAINTENANCE_TEST=TestFleetLimitInQueueOrder runs the nightly fleet limit instead
 	mkdir -p $(E2E_DIR)
 	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig
 	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,maintenance -count=1 -timeout 40m -run '^$(E2E_MAINTENANCE_TEST)$$' ./test/e2e/...; status=$$?; \
