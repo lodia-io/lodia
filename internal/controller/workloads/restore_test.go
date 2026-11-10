@@ -181,7 +181,7 @@ func TestTheReleaseWaitsForAddonsAppliedAtItsGenerationAndHoldsForGood(t *testin
 func TestAControllerManagerScaledByHandIsReleased(t *testing.T) {
 	cp := restored(t, namespace(t), lodiav1alpha1.RestoreHeld)
 	update(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.Paused = true })
-	r := &workloads.Reconciler{Client: unpaused(), Reader: k8s, SignerImage: signerImage}
+	r := &workloads.Reconciler{Client: unpaused(), Reader: k8s, SignerImage: signerImage, Revision: revision}
 	testenv.Eventually(t, func() error {
 		if d := deployment(t, cp, "kube-controller-manager"); *d.Spec.Replicas == 0 {
 			d.Spec.Replicas = new(int32(1))
@@ -313,7 +313,7 @@ func TestAStaleCacheNeverStopsAReleasedControllerManager(t *testing.T) {
 		Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
 			return injected
 		},
-	}), SignerImage: signerImage}
+	}), SignerImage: signerImage, Revision: revision}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !errors.Is(err, injected) {
 		t.Fatalf("a pass that cannot read the controller manager from the server returned %v, want the read's error", err)
 	}

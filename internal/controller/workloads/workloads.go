@@ -63,6 +63,8 @@ const (
 
 	// maxVersion is the MaxLength of status.components.*.version.
 	maxVersion = 16
+	// maxRevision is the MaxLength of status.components.*.operatorRevision.
+	maxRevision = 128
 )
 
 var releaseTag = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
@@ -82,6 +84,9 @@ type Reconciler struct {
 	// GatewayAPI says whether the management cluster served TLSRoute and
 	// Gateway when the operator started.
 	GatewayAPI bool
+	// Revision is the running operator revision, which Workloads renders
+	// with once Lifecycle grants it in status.target.operatorRevision.
+	Revision string
 
 	writes   sync.Mutex
 	gateways map[types.NamespacedName]*semaphore.Weighted
@@ -147,12 +152,12 @@ func restartOnlyNames(cp string) []string {
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/status,verbs=patch
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;patch;delete
-// +kubebuilder:rbac:groups="",resources=services;configmaps,verbs=list;watch;create;patch;delete
-// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=list;watch;create;patch;delete
-// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=list;watch;create;patch;delete
+// +kubebuilder:rbac:groups="",resources=services;configmaps,verbs=get;list;watch;create;patch;delete
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;patch;delete
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=list;watch
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=list
-// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=tlsroutes,verbs=list;watch;create;patch;delete
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=tlsroutes,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=list;watch
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -223,7 +228,7 @@ func (r *Reconciler) reconcile(ctx context.Context, cp *lodiav1alpha1.ControlPla
 		}
 		return &outcome{endpoint: endpoint, condition: *held, routes: keptRoutes(cp, *held), requeueAfter: requeueAfter}, nil
 	}
-	if err := r.apply(ctx, svc); err != nil {
+	if err := r.apply(ctx, cp, svc); err != nil {
 		out, err := refused(cp.Status.Endpoint, svc, err)
 		if out != nil {
 			out.routes = keptRoutes(cp, out.condition)
@@ -271,6 +276,19 @@ func (r *Reconciler) rollout(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 	if stopped, err := r.writeObjects(ctx, cp, endpoint, all); stopped != nil || err != nil {
 		return stopped, err
 	}
+	if r.held(cp) {
+		count := func() (metav1.Condition, error) {
+			return availability(deployments, in.note, controllerManagerHeld(cp)), nil
+		}
+		if in.unknownReport != "" {
+			count = func() (metav1.Condition, error) { return r.count(ctx, cp) }
+		}
+		kept, err := r.keep(ctx, cp, r.holding(cp), count)
+		if err != nil {
+			return nil, err
+		}
+		return report(*kept), nil
+	}
 	if in.unknownReport != "" {
 		return report(newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget, in.unknownReport)), nil
 	}
@@ -288,10 +306,18 @@ type inputs struct {
 
 // inputs waits, in this order, for the target, the two conditions, the
 // Datastore's endpoints and the hashes, and returns what the pods render from
-// or the condition that says what it waits for.
+// or the condition that says what it waits for. A held pass whose target the
+// table does not hold reports what runs, as the waits do.
 func (r *Reconciler) inputs(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus) (*inputs, *metav1.Condition, error) {
+	if granted(cp) == "" {
+		return nil, new(newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget, "waiting for Lifecycle to set status.target.operatorRevision")), nil
+	}
 	images, message, unknownReport := imagesOf(cp)
 	if message != "" {
+		if r.held(cp) {
+			waiting, err := r.wait(ctx, cp, r.holding(cp))
+			return nil, waiting, err
+		}
 		return nil, new(newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget, message)), nil
 	}
 	if a := cp.Spec.Addons; a != nil && a.Konnectivity != nil {
@@ -345,6 +371,7 @@ func (r *Reconciler) inputs(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 			images:      images,
 			signerImage: r.SignerImage,
 			tunnelImage: r.TunnelImage,
+			revision:    r.Revision,
 			endpoint:    endpoint,
 			etcd:        cp.Status.Datastore.Endpoints,
 			hashes:      hashes,
@@ -409,8 +436,9 @@ func objects(in *inputs) ([]*appsv1.Deployment, []client.Object) {
 	return deployments, all
 }
 
-// writeObjects applies objects once no other owner keeps one of them. A non-nil
-// outcome stops the pass at what it reports.
+// writeObjects applies objects once no other owner keeps one of them, on a
+// held pass only those that are missing. A non-nil outcome stops the pass at
+// what it reports.
 func (r *Reconciler) writeObjects(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, objects []client.Object) (*outcome, error) {
 	if held, requeueAfter, err := r.controlledElsewhere(ctx, cp, objects...); err != nil || held != nil {
 		if err != nil {
@@ -419,7 +447,7 @@ func (r *Reconciler) writeObjects(ctx context.Context, cp *lodiav1alpha1.Control
 		return &outcome{endpoint: endpoint, condition: *held, requeueAfter: requeueAfter}, nil
 	}
 	for _, obj := range objects {
-		if err := r.apply(ctx, obj); err != nil {
+		if err := r.apply(ctx, cp, obj); err != nil {
 			return refused(endpoint, obj, err)
 		}
 	}
@@ -492,6 +520,11 @@ func refused(endpoint *lodiav1alpha1.EndpointStatus, obj client.Object, err erro
 // at the generation the condition names; otherwise it keeps a condition of an
 // older generation and returns waiting for one of cp's.
 func (r *Reconciler) wait(ctx context.Context, cp *lodiav1alpha1.ControlPlane, waiting metav1.Condition) (*metav1.Condition, error) {
+	return r.keep(ctx, cp, waiting, func() (metav1.Condition, error) { return r.count(ctx, cp) })
+}
+
+// keep is wait's decision, with count giving the availability it reports.
+func (r *Reconciler) keep(ctx context.Context, cp *lodiav1alpha1.ControlPlane, waiting metav1.Condition, count func() (metav1.Condition, error)) (*metav1.Condition, error) {
 	if err := live.Conditions(ctx, r.Reader, cp, lodiav1alpha1.ConditionAPIServerReady); err != nil {
 		return nil, err
 	}
@@ -500,19 +533,48 @@ func (r *Reconciler) wait(ctx context.Context, cp *lodiav1alpha1.ControlPlane, w
 		return &waiting, nil
 	}
 	if slices.Contains([]string{lodiav1alpha1.ReasonReady, lodiav1alpha1.ReasonUnavailable, lodiav1alpha1.ReasonProgressDeadlineExceeded}, previous.Reason) {
-		controlled, err := r.controlled(ctx, cp)
+		counted, err := count()
 		if err != nil {
 			return nil, err
 		}
-		_, note, err := r.release(ctx, cp)
-		if err != nil {
-			return nil, err
-		}
-		counted := availability(slices.Collect(maps.Values(controlled)), note, controllerManagerHeld(cp))
 		counted.ObservedGeneration = previous.ObservedGeneration
 		return &counted, nil
 	}
 	return new(statusapply.Wait(cp, previous, waiting)), nil
+}
+
+// count is the availability of the Deployments this ControlPlane controls, as
+// the cache holds them.
+func (r *Reconciler) count(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (metav1.Condition, error) {
+	controlled, err := r.controlled(ctx, cp)
+	if err != nil {
+		return metav1.Condition{}, err
+	}
+	_, note, err := r.release(ctx, cp)
+	if err != nil {
+		return metav1.Condition{}, err
+	}
+	return availability(slices.Collect(maps.Values(controlled)), note, controllerManagerHeld(cp)), nil
+}
+
+// held says whether cp's writes wait for Lifecycle to grant the running
+// operator revision.
+func (r *Reconciler) held(cp *lodiav1alpha1.ControlPlane) bool {
+	return granted(cp) != r.Revision
+}
+
+func granted(cp *lodiav1alpha1.ControlPlane) string {
+	if cp.Status.Target == nil {
+		return ""
+	}
+	return cp.Status.Target.OperatorRevision
+}
+
+// holding is what a held pass reports while APIServerReady neither reports
+// availability nor describes an earlier generation.
+func (r *Reconciler) holding(cp *lodiav1alpha1.ControlPlane) metav1.Condition {
+	return newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget,
+		fmt.Sprintf("waiting for Lifecycle to grant the running operator revision %s; status.target.operatorRevision is %s", r.Revision, granted(cp)))
 }
 
 // unsupported names the fields this release does not render, so a ControlPlane that
@@ -543,18 +605,23 @@ func unsupported(cp *lodiav1alpha1.ControlPlane) []string {
 }
 
 // controlledElsewhere reports the objects under Workloads' names that another
-// owner keeps, read from the cache, which holds the labelled ones: Workloads'
-// own and a predecessor's. The garbage collector deletes a previous
+// owner keeps, read from the cache, which holds the labelled ones, Workloads'
+// own and a predecessor's, and from the API server when the cache lacks one.
+// The garbage collector deletes a previous
 // ControlPlane's, so that wait is short; any other owner's waits for a person.
 func (r *Reconciler) controlledElsewhere(ctx context.Context, cp *lodiav1alpha1.ControlPlane, objects ...client.Object) (*metav1.Condition, time.Duration, error) {
 	var held []string
 	requeueAfter := 10 * time.Second
 	for _, obj := range objects {
 		current := cached(obj)
-		if err := r.Get(ctx, client.ObjectKeyFromObject(obj), current); err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
-			}
+		err := r.Get(ctx, client.ObjectKeyFromObject(obj), current)
+		if apierrors.IsNotFound(err) {
+			err = r.Reader.Get(ctx, client.ObjectKeyFromObject(obj), current)
+		}
+		if apierrors.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
 			return nil, 0, err
 		}
 		owner := ownership.ControlledElsewhere(current, cp)
@@ -587,6 +654,8 @@ func cached(obj client.Object) client.Object {
 		return &networkingv1.NetworkPolicy{}
 	case *policyv1.PodDisruptionBudget:
 		return &policyv1.PodDisruptionBudget{}
+	case *gatewayv1.TLSRoute:
+		return &gatewayv1.TLSRoute{}
 	default:
 		m := &metav1.PartialObjectMetadata{}
 		m.SetGroupVersionKind(obj.GetObjectKind().GroupVersionKind())
@@ -839,9 +908,11 @@ func slot(c *lodiav1alpha1.ComponentsStatus, component string) **lodiav1alpha1.C
 	return &c.Scheduler
 }
 
-// rolledOut is d's counts, with the version of its image once every replica
-// runs the template, 0 of 0 included, and previous's report until then. A
-// component with neither a Deployment nor a report is absent.
+// rolledOut is d's counts, with the version of its image and the revision of
+// its stamp once every replica runs the template, 0 of 0 included, and
+// previous's report until then. A component with neither a Deployment nor a
+// report is absent. A stamp longer than the field is not reported, as a
+// hand-edited image is not.
 func rolledOut(d *appsv1.Deployment, component string, previous *lodiav1alpha1.ComponentStatus) *lodiav1alpha1.ComponentStatus {
 	var report lodiav1alpha1.Rendered
 	if previous != nil {
@@ -857,6 +928,9 @@ func rolledOut(d *appsv1.Deployment, component string, previous *lodiav1alpha1.C
 	if status.Updated != nil && *status.Updated == status.Total {
 		if version := imageVersion(d, component); version != "" {
 			status.Version = version
+		}
+		if stamp := d.Annotations[lodiav1alpha1.OperatorRevisionAnnotation]; stamp != "" && len(stamp) <= maxRevision {
+			status.OperatorRevision = stamp
 		}
 	}
 	return status
@@ -912,7 +986,14 @@ func (r *Reconciler) deletePodDisruptionBudgets(ctx context.Context, cp *lodiav1
 	return nil
 }
 
-func (r *Reconciler) apply(ctx context.Context, obj client.Object) error {
+// apply writes obj and fills it with the object the API server stores. A held
+// pass writes only a missing object, and fills obj with a stored one as it is.
+func (r *Reconciler) apply(ctx context.Context, cp *lodiav1alpha1.ControlPlane, obj client.Object) error {
+	if r.held(cp) {
+		if stored, err := r.stored(ctx, cp, obj); err != nil || stored {
+			return err
+		}
+	}
 	content, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
 		return err
@@ -924,6 +1005,36 @@ func (r *Reconciler) apply(ctx context.Context, obj client.Object) error {
 		return fmt.Errorf("apply %s %s: %w", applied.GetKind(), applied.GetName(), err)
 	}
 	return runtime.DefaultUnstructuredConverter.FromUnstructured(applied.Object, obj)
+}
+
+// stored fills obj with the object stored under its name and says whether
+// there is one. One the cache lacks is read from the API server: the cache can
+// lag Workloads' own create, or miss an object whose label was removed. One
+// another owner keeps counts as missing, and nothing is read from it.
+func (r *Reconciler) stored(ctx context.Context, cp *lodiav1alpha1.ControlPlane, obj client.Object) (bool, error) {
+	key := client.ObjectKeyFromObject(obj)
+	current := cached(obj)
+	err := r.Get(ctx, key, current)
+	if apierrors.IsNotFound(err) {
+		err = r.Reader.Get(ctx, key, current)
+	}
+	gvk := obj.GetObjectKind().GroupVersionKind()
+	switch {
+	case apierrors.IsNotFound(err):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("read %s %s: %w", gvk.Kind, obj.GetName(), err)
+	case ownership.ControlledElsewhere(current, cp) != nil:
+		return false, nil
+	}
+	content, err := runtime.DefaultUnstructuredConverter.ToUnstructured(current)
+	if err != nil {
+		return false, err
+	}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(content, obj); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // dropNulls removes the null fields a typed object marshals, such as

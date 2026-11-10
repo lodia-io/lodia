@@ -150,8 +150,9 @@ var routeReasons = []string{
 // attach writes this ControlPlane's routes while it owns all three hostnames,
 // and deletes those it controls otherwise. Every write goes through write's
 // re-check; a route the cache holds as rendered gets none, so a pass that
-// changes nothing writes nothing on the Gateway. The error of a refused route
-// comes with its condition, for the backoff.
+// changes nothing writes nothing on the Gateway, and a held pass writes only
+// a route the cache lacks. The error of a refused route comes with its
+// condition, for the backoff.
 func (r *Reconciler) attach(ctx context.Context, cp *lodiav1alpha1.ControlPlane, gw *gatewayv1.Gateway, port int32) (*metav1.Condition, error) {
 	owners, err := r.owners(ctx, cp)
 	if err != nil {
@@ -186,7 +187,7 @@ func (r *Reconciler) attach(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 				continue
 			}
 		}
-		if current == nil || !unchanged(current, desired) {
+		if current == nil || !r.held(cp) && !unchanged(current, desired) {
 			problem, err := r.write(ctx, cp, gw, port, desired)
 			switch {
 			case apistatus.Refused(err):
@@ -325,7 +326,7 @@ func (r *Reconciler) write(ctx context.Context, cp *lodiav1alpha1.ControlPlane, 
 				fmt.Sprintf("hostname %s is held by TLSRoute %s/%s on Gateway %s/%s; Workloads writes no route for it until that one is gone", hostname, other.Namespace, other.Name, gw.Namespace, gw.Name)}, nil
 		}
 	}
-	return nil, r.apply(ctx, route)
+	return nil, r.apply(ctx, cp, route)
 }
 
 func (r *Reconciler) semaphore(gateway types.NamespacedName) *semaphore.Weighted {
