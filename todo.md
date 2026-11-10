@@ -215,6 +215,8 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 - Health's own metrics, under metrics-are-part-of-the-api: the lag of Health's pass is the watchdog of the hold's margin, and the rest, failed probes and silent nodes, is to be named there.
   The hold itself is `lodia_controlplane_condition{type="ControllerManagerHeld"}`.
+- `LodiaMaintenanceHalted`, as many tenants `MaintenanceFailed` as `fleet.maxConcurrentRollouts` ([operations](docs/operations.md#alerts-shipped-in-the-chart)).
+- An alert for a slot held long: a tenant whose change neither finishes nor fails, a tenant API that stops answering mid-rollout or a Tenant waiting after the grant on a cause the grant did not remove, stays `Maintaining` with its slot; from `Progressing`'s `lastTransitionTime` ([upgrades-and-maintenance-windows](docs/decisions/upgrades-and-maintenance-windows.md), "The fleet").
 
 ## For the release that first drops a minor
 
