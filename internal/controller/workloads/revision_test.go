@@ -31,6 +31,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/apistatus"
 	"go.lodia.io/lodia/internal/controller/workloads"
 	"go.lodia.io/lodia/internal/testenv"
 )
@@ -443,6 +444,47 @@ func TestAHeldPassOutsideTheRunningTableReportsWhatRuns(t *testing.T) {
 				t.Errorf("a pass that is not held: %v", err)
 			}
 		})
+	}
+}
+
+func waitingForTheGrant(running, granted string) string {
+	return fmt.Sprintf("waiting for Lifecycle to grant the running operator revision %s; status.target.operatorRevision is %s", running, granted)
+}
+
+func TestAHeldPassOverAConditionThatReportsNoAvailabilityWaitsForTheGrant(t *testing.T) {
+	cp := controlPlane(t, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.Paused = true })
+	setTargetAt(t, cp, version, previous)
+	held := operatorAt(unpaused(), next)
+	passOf(t, held, cp)
+	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
+	inputsReadyBesidesTheTarget(t, cp)
+	passOf(t, held, cp)
+	for _, component := range componentNames {
+		markAvailable(t, deployment(t, cp, component))
+	}
+	passOf(t, held, cp)
+	if err := expectAt(cp, 1, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget, waitingForTheGrant(next, previous)); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestAHeldPassWithATargetOutsideTheTableOverARefusalWaitsForTheGrant(t *testing.T) {
+	cp := running(t)
+	pause(t, cp)
+	refuseScheduler(t, cp.Namespace)
+	unheld := operatorAt(unpaused(), revision)
+	if _, err := unheld.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apistatus.Refused(err) {
+		t.Fatalf("a pass whose Deployment is refused returned %v", err)
+	}
+	generation := get(t, cp).Generation
+	if err := expectAt(cp, generation, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, "the API server refuses Deployment dev-kube-scheduler; the reason is in Lodia's log"); err != nil {
+		t.Fatal(err)
+	}
+
+	setTargetAt(t, cp, "v1.34.1", previous)
+	passOf(t, operatorAt(unpaused(), next), cp)
+	if err := expectAt(cp, generation, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget, waitingForTheGrant(next, previous)); err != nil {
+		t.Error(err)
 	}
 }
 
