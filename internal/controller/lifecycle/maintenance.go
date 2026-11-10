@@ -209,7 +209,7 @@ func (f facts) atOnce(c change) bool {
 	case progressing == nil || progressing.ObservedGeneration < cp.Generation:
 	case c.upgrade != nil:
 	case (addons == nil || addons.Status != metav1.ConditionTrue) &&
-		(cp.Status.Addons == nil || cp.Status.Addons.Version == "" || addons != nil && (addons.Reason == lodiav1alpha1.ReasonRefused || addons.Reason == lodiav1alpha1.ReasonApplying)):
+		(cp.Status.Addons == nil || cp.Status.Addons.Version == "" || addons != nil && slices.Contains(stoppedAddons, addons.Reason)):
 	case api != nil && api.Status == metav1.ConditionFalse && api.Reason == lodiav1alpha1.ReasonWaitingForTarget && api.ObservedGeneration == cp.Generation:
 	case cp.Spec.RestoreFrom != nil && (cp.Status.Components == nil || cp.Status.Components.ControllerManager == nil || cp.Status.Components.ControllerManager.Total == 0):
 	default:
@@ -217,6 +217,10 @@ func (f facts) atOnce(c change) bool {
 	}
 	return true
 }
+
+// stoppedAddons are the reasons of an AddonsApplied whose apply stopped on an
+// object refused or another owner's, or did not finish.
+var stoppedAddons = []string{lodiav1alpha1.ReasonRefused, lodiav1alpha1.ReasonObjectsControlledElsewhere, lodiav1alpha1.ReasonApplying}
 
 // inSlot says whether cp holds a slot of the fleet: Progressing is Maintaining
 // or MaintenanceFailed at its generation, since an owner's edit frees it.

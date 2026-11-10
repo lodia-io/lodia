@@ -174,6 +174,7 @@ func TestTheGrantFollowsTheRulesInTheirOrder(t *testing.T) {
 	long := strings.Repeat("x", 257)
 	wide := strings.Repeat("é", 256)
 	refused := metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonRefused, Message: "the tenant refuses"}
+	elsewhere := metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonObjectsControlledElsewhere, Message: "ConfigMap kube-system/x exists and is not Lodia's"}
 	applying := metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonApplying}
 	waitingForAccess := metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonWaitingForAccess, Message: "AccessReady is not True"}
 	unreachable := metav1.Condition{Type: lodiav1alpha1.ConditionReachable, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonExternalProbeFailed, Message: "api: refused"}
@@ -222,7 +223,9 @@ func TestTheGrantFollowsTheRulesInTheirOrder(t *testing.T) {
 			granted{revision: revisionB, reason: lodiav1alpha1.ReasonRollingOut}},
 		{"3: addons refused", held(closedWindow, condition(refused)),
 			granted{revision: revisionB, reason: lodiav1alpha1.ReasonFailed, message: "the tenant refuses"}},
-		{"3: addons stopped on another owner's object", held(closedWindow, condition(applying)),
+		{"3: addons stopped on another owner's object", held(closedWindow, condition(elsewhere)),
+			granted{revision: revisionB, reason: lodiav1alpha1.ReasonFailed, message: "AddonsApplied: ObjectsControlledElsewhere: ConfigMap kube-system/x exists and is not Lodia's"}},
+		{"3: addons whose apply did not finish", held(closedWindow, condition(applying)),
 			granted{revision: revisionB, reason: lodiav1alpha1.ReasonRollingOut}},
 		{"3: APIServerReady False WaitingForTarget at the object's generation", held(closedWindow, condition(heldAPI)),
 			granted{revision: revisionB, reason: lodiav1alpha1.ReasonRollingOut}},
@@ -472,4 +475,17 @@ func TestAnOwnersRevisionThatIsRefusedFails(t *testing.T) {
 		granted{revision: revisionA, reason: lodiav1alpha1.ReasonFailed, message: "the tenant refuses"})
 	expectGrant(t, held(running(revisionA), refused),
 		granted{revision: revisionA, reason: lodiav1alpha1.ReasonIdle})
+}
+
+func TestAnotherOwnersObjectInTheTenantFailsTheChangeInItsSlot(t *testing.T) {
+	const message = "the change Lodia started failed: AddonsApplied: ObjectsControlledElsewhere: ConfigMap kube-system/x exists and is not Lodia's"
+	f := held(progressingAs(lodiav1alpha1.ReasonMaintaining, 3), func(f *facts) { f.cp.Status.Target.OperatorRevision = revisionB }, reportsAll(revisionB),
+		func(f *facts) { f.cp.Status.Addons.OperatorRevision = revisionA },
+		condition(metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonObjectsControlledElsewhere, Message: "ConfigMap kube-system/x exists and is not Lodia's; delete it or disable the addon"}),
+		condition(metav1.Condition{Type: lodiav1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonObjectsControlledElsewhere, ObservedGeneration: 3, LastTransitionTime: metav1.NewTime(present.Add(-time.Hour))}))
+	adopt(f.cp, expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintenanceFailed, message: message}))
+	f.now = present.Add(24 * time.Hour)
+	expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintenanceFailed, message: message})
+	f.revision = revisionC
+	expectGrant(t, f, granted{revision: revisionC, reason: lodiav1alpha1.ReasonMaintenanceFailed, message: message})
 }

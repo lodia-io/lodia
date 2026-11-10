@@ -208,7 +208,7 @@ func TestAPassThatDidNotApplyInFullKeepsTheAddonsVersion(t *testing.T) {
 		}
 		setCoreDNS(t, cp, true)
 		testenv.Eventually(t, func() error {
-			return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying)
+			return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere)
 		})
 		update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
 		setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
@@ -219,13 +219,18 @@ func TestAPassThatDidNotApplyInFullKeepsTheAddonsVersion(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !appliedWith(made, lodiav1alpha1.ReasonApplying, "ConfigMap kube-system/coredns exists and is not Lodia's") {
+		if !appliedWith(made, lodiav1alpha1.ReasonObjectsControlledElsewhere, "ConfigMap kube-system/coredns exists and is not Lodia's") {
 			t.Fatalf("the pass applied %+v, want AddonsApplied Applying for the other owner's object", made)
 		}
 		expectAddons(t, made, older, previous)
 		if got := storedAddons(t, cp); got != older {
 			t.Errorf("status.addons.version is %s beside another owner's object, want %s", got, older)
 		}
+
+		generation := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied).ObservedGeneration
+		setTarget(t, cp, version, previous)
+		heldPass(t, cp)
+		expectAt(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere, generation)
 	})
 }
 

@@ -448,7 +448,7 @@ func TestARefusedApplyStopsThePass(t *testing.T) {
 	}
 }
 
-func TestAnotherOwnersObjectKeepsApplyingThoughTheRolloutReadFails(t *testing.T) {
+func TestAnotherOwnersObjectStaysReportedThoughTheRolloutReadFails(t *testing.T) {
 	ctx := t.Context()
 	cp, admin := servedTenant(t, "tenant-owners-rollout")
 	setCoreDNS(t, cp, false)
@@ -475,7 +475,7 @@ func TestAnotherOwnersObjectKeepsApplyingThoughTheRolloutReadFails(t *testing.T)
 	setCoreDNS(t, cp, true)
 	const others = "ConfigMap kube-system/coredns exists and is not Lodia's; delete it or disable the addon"
 	testenv.Eventually(t, func() error {
-		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying)
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere)
 	})
 	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
@@ -495,7 +495,7 @@ func TestAnotherOwnersObjectKeepsApplyingThoughTheRolloutReadFails(t *testing.T)
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apierrors.IsForbidden(err) {
 		t.Errorf("a pass whose rollout read was refused returned %v, want the refusal", err)
 	}
-	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying); err != nil {
+	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere); err != nil {
 		t.Error(err)
 	}
 	if c := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied); c.Message != others {
@@ -1160,7 +1160,7 @@ func TestAnotherOwnersObjectsAreNeitherAdoptedNorPruned(t *testing.T) {
 
 	setCoreDNS(t, cp, true)
 	testenv.Eventually(t, func() error {
-		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying); err != nil {
+		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere); err != nil {
 			return err
 		}
 		if c := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied); c.Message != "ConfigMap kube-system/coredns exists and is not Lodia's; delete it or disable the addon" {

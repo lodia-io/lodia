@@ -190,7 +190,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	switch reason, message, answered := outcome(applyErr); {
 	case applyErr == nil && len(others) > 0:
-		applied = newCondition(cp, applied.Type, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, others[0].String()+" exists and is not Lodia's; delete it or disable the addon")
+		applied = newCondition(cp, applied.Type, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere, others[0].String()+" exists and is not Lodia's; delete it or disable the addon")
 	case applyErr == nil:
 		applied = newCondition(cp, applied.Type, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, fmt.Sprintf("%d objects are applied and the inventory is pruned", len(objects)))
 	case answered || applied.Status != metav1.ConditionTrue:
@@ -288,10 +288,10 @@ func (r *Reconciler) wait(ctx context.Context, cp *lodiav1alpha1.ControlPlane, r
 }
 
 // waiting is what a wait reports instead of c. An AddonsApplied that names a
-// refused object or an unfinished apply stays: a lost access undoes no
-// observation, and a held pass writes True over a wait.
+// refused object, another owner's or an unfinished apply stays: a lost access
+// undoes no observation, and a held pass writes True over a wait.
 func waiting(c, wait metav1.Condition) metav1.Condition {
-	if c.Type == lodiav1alpha1.ConditionAddonsApplied && (c.Reason == lodiav1alpha1.ReasonRefused || c.Reason == lodiav1alpha1.ReasonApplying) {
+	if c.Type == lodiav1alpha1.ConditionAddonsApplied && slices.Contains([]string{lodiav1alpha1.ReasonRefused, lodiav1alpha1.ReasonObjectsControlledElsewhere, lodiav1alpha1.ReasonApplying}, c.Reason) {
 		return c
 	}
 	return wait

@@ -405,7 +405,7 @@ func TestAnotherOwnersSecretUnderThatNameIsLeftAlone(t *testing.T) {
 	before := get(t, admin, &corev1.Secret{}, "kube-system", clientSecret).ResourceVersion
 	grantAccess(t, cp)
 	testenv.Eventually(t, func() error {
-		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying); err != nil {
+		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere); err != nil {
 			return err
 		}
 		if c := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied); c.Message != "Secret kube-system/"+clientSecret+" exists and is not Lodia's; delete it or disable the addon" {
