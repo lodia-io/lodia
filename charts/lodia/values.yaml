@@ -22,6 +22,8 @@ etcdDruid:
   image:
     tag: v0.39.0@sha256:80d2ee4803acf96c46f8f1169772127ac2fb9aee7903a3a27c3af8cd1ad78775
   operatorConfig:
+    leaderElection:
+      enabled: true
     controllers:
       etcd:
         enableEtcdSpecAutoReconcile: false
