@@ -523,7 +523,7 @@ func TestAHeldPassReadsTheStoredRoutes(t *testing.T) {
 	settle(t, cp)
 	before := objectsOf(t, cp)
 
-	var lists atomic.Int32
+	var lists, gets atomic.Int32
 	held := operatorAt(k8s, next)
 	held.Reader = interceptor.NewClient(k8s, interceptor.Funcs{
 		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
@@ -532,11 +532,20 @@ func TestAHeldPassReadsTheStoredRoutes(t *testing.T) {
 			}
 			return c.List(ctx, list, opts...)
 		},
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*lodiav1alpha1.ControlPlane); !ok {
+				gets.Add(1)
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
 	})
 	passOf(t, held, cp)
 	expectNoWrites(t, cp, before, "a held pass over routes whose render differs")
 	if n := lists.Load(); n != 0 {
 		t.Errorf("a held pass over routes the cache holds read the routes without the cache %d times, want none", n)
+	}
+	if n := gets.Load(); n != 0 {
+		t.Errorf("a held pass over objects the cache holds read %d of them without the cache, want none", n)
 	}
 	want := "TLSRoute dev-konnectivity is not Accepted by Gateway " + cp.Namespace + "/shared: NotAllowedByListeners"
 	if c := routesReady(t, cp); c.Reason != lodiav1alpha1.ReasonRouteNotAccepted || c.Message != want {
