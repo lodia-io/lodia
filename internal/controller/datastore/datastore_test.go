@@ -1526,7 +1526,7 @@ func TestAPassFromAStaleCacheChangesNoEtcd(t *testing.T) {
 	if err := k8s.Delete(t.Context(), binding); err != nil {
 		t.Fatal(err)
 	}
-	recreated := waitEtcd(t, ns, cp, nil)
+	recreated := waitEtcd(t, ns, cp, requestedAs("1/"+revision, true))
 	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd stale-etcd")
 	if err := pass(noControlPlaneWrite(t, stale)); !apierrors.IsInvalid(err) {
 		t.Fatalf("a pass from a cache that holds the replaced Etcd returned %v, want the UID refused", err)
