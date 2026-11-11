@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/config"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
@@ -440,6 +441,34 @@ func TestWhatIsNotSampledIsForgotten(t *testing.T) {
 			}
 			if got, ok := r.Sample(client.ObjectKeyFromObject(cp), cp.UID); ok {
 				t.Errorf("a ControlPlane %s still has the sample %+v", c.name, got)
+			}
+		})
+	}
+}
+
+func TestAReadOfTheCacheThatFailsForgetsTheSampleUntilTheNextMinute(t *testing.T) {
+	_, cfgs := etcdCluster(t, 1, nil)
+	for _, failing := range []client.Object{&lodiav1alpha1.ControlPlane{}, &druidv1alpha1.Etcd{}} {
+		t.Run(fmt.Sprintf("%T", failing), func(t *testing.T) {
+			cp, etcd := sampledControlPlane("unread", "uid-unread")
+			r, clk := sampler(cp, etcd)
+			r.EtcdClient = dialURL(clientURL(cfgs[0]))
+			samplePass(t, r, client.ObjectKeyFromObject(cp))
+			clk.Step(5 * time.Second)
+			servedSample(t, r, cp)
+			r.Cache = interceptor.NewClient(fakeCache(cp, etcd), interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if reflect.TypeOf(obj) == reflect.TypeOf(failing) {
+						return errors.New("injected: the cache did not answer")
+					}
+					return c.Get(ctx, key, obj, opts...)
+				},
+			})
+			if got := samplePass(t, r, client.ObjectKeyFromObject(cp)); got.RequeueAfter != time.Minute {
+				t.Errorf("a pass whose read fails requeues after %s, want a minute", got.RequeueAfter)
+			}
+			if got, ok := r.Sample(client.ObjectKeyFromObject(cp), cp.UID); ok {
+				t.Errorf("a pass whose read fails leaves the sample %+v", got)
 			}
 		})
 	}
