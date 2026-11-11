@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -52,11 +53,41 @@ import (
 )
 
 var (
-	k8s         client.WithWatch
-	cached      client.Client
-	apiReader   client.Reader
-	asDatastore *rest.Config
+	k8s          client.WithWatch
+	cached       client.Client
+	apiReader    client.Reader
+	asDatastore  *rest.Config
+	managerReads *reads
 )
+
+type reads struct {
+	client.Client
+	mu        sync.Mutex
+	etcdReady map[client.ObjectKey]druidv1alpha1.Condition
+}
+
+func (r *reads) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if err := r.Client.Get(ctx, key, obj, opts...); err != nil {
+		return err
+	}
+	if etcd, ok := obj.(*druidv1alpha1.Etcd); ok {
+		if ready := druidv1alpha1.GetCondition(etcd, druidv1alpha1.ConditionTypeReady); ready != nil {
+			r.mu.Lock()
+			r.etcdReady[key] = *ready
+			r.mu.Unlock()
+		}
+	}
+	return nil
+}
+
+func (r *reads) readyOf(key client.ObjectKey) *druidv1alpha1.Condition {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if ready, ok := r.etcdReady[key]; ok {
+		return &ready
+	}
+	return nil
+}
 
 const (
 	druidNamespace    = "druid-system"
@@ -85,7 +116,8 @@ func TestMain(m *testing.M) {
 		env.Fatal("etcd-druid's Deployment", err)
 	}
 	mgr := env.Manager(asDatastore, false)
-	if err := (&datastore.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion, EtcdClient: dialRestored, Clock: clock.RealClock{}}).SetupWithManager(mgr, 1); err != nil {
+	managerReads = &reads{Client: mgr.GetClient(), etcdReady: map[client.ObjectKey]druidv1alpha1.Condition{}}
+	if err := (&datastore.Reconciler{Client: managerReads, Reader: mgr.GetAPIReader(), EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion, EtcdClient: dialRestored, Clock: clock.RealClock{}}).SetupWithManager(mgr, 1); err != nil {
 		env.Fatal("controller", err)
 	}
 	ctx := env.StartManager(mgr)

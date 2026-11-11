@@ -977,13 +977,10 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 		t.Helper()
 		condition.Type, condition.LastUpdateTime = druidv1alpha1.ConditionTypeReady, metav1.NewTime(now.Now()).Rfc3339Copy()
 		setEtcdStatus(t, r.ns, restoredCP, func(s *druidv1alpha1.EtcdStatus) { s.Conditions = append(s.Conditions, condition) })
+		poke(t, r.ns)
 		testenv.Eventually(t, func() error {
-			etcd := &druidv1alpha1.Etcd{}
-			if err := cached.Get(t.Context(), client.ObjectKey{Namespace: r.ns, Name: restoredCP + "-etcd"}, etcd); err != nil {
-				return err
-			}
-			if ready := druidv1alpha1.GetCondition(etcd, druidv1alpha1.ConditionTypeReady); ready == nil || !equality.Semantic.DeepEqual(*ready, condition) {
-				return fmt.Errorf("the cache holds Ready %+v, want %+v", ready, condition)
+			if ready := managerReads.readyOf(client.ObjectKey{Namespace: r.ns, Name: restoredCP + "-etcd"}); ready == nil || !equality.Semantic.DeepEqual(*ready, condition) {
+				return fmt.Errorf("the suite's manager has read Ready %+v, want %+v", ready, condition)
 			}
 			return nil
 		})
