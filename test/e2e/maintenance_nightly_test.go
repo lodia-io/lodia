@@ -123,6 +123,9 @@ func checkOneSlotInQueueOrder(t *testing.T, seen []observation, tenants int) {
 			}
 			order = append(order, fmt.Sprintf("%s (waiting since %s, %d waiting)", o.key.Namespace, waiting[o.key].Format(time.RFC3339), len(queue)))
 		}
+		if o.progressing == lodiav1alpha1.ReasonFleetLimit && (o.scheduledFor == nil || o.scheduledFor.After(o.at)) {
+			t.Errorf("at resourceVersion %s %s waits for a slot without a scheduledFor at or before %s", o.resourceVersion, o.key.Namespace, o.at.Format(time.RFC3339))
+		}
 		inSlot[o.key] = o.slot
 		if o.scheduledFor != nil && !o.scheduledFor.After(o.at) {
 			waiting[o.key], waited[o.key] = o.scheduledFor.Time, true

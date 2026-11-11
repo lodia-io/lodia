@@ -448,6 +448,12 @@ func TestAChangeInASlotSettles(t *testing.T) {
 			granted{revision: revisionB, reason: lodiav1alpha1.ReasonIdle}},
 		{"MaintenanceFailed after S with Ready not True, keeping the slot", held(append([]func(*facts){inSlot, grantedB, reportsAll(revisionB), settlingAt(present.Add(-settling))}, notReady...)...),
 			granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintenanceFailed, slot: true, message: "Ready is not True 45s after the change Lodia started rolled out: ExternalProbeFailed: Reachable: api: refused", settlingSince: new(present.Add(-settling))}},
+		{"MaintenanceFailed after S with Ready Unknown, keeping the slot", held(inSlot, grantedB, reportsAll(revisionB), settlingAt(present.Add(-settling)),
+			func(f *facts) {
+				meta.RemoveStatusCondition(&f.cp.Status.Conditions, lodiav1alpha1.ConditionControllersLeading)
+			},
+			condition(metav1.Condition{Type: lodiav1alpha1.ConditionReady, Status: metav1.ConditionUnknown, Reason: lodiav1alpha1.ReasonLatestGenerationNotObserved, ObservedGeneration: 3, LastTransitionTime: metav1.NewTime(present.Add(-time.Hour))})),
+			granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintenanceFailed, slot: true, message: "Ready is not True 45s after the change Lodia started rolled out: LatestGenerationNotObserved: ControllersLeading is not reported for generation 3", settlingSince: new(present.Add(-settling))}},
 		{"Maintaining within S with Ready not True", held(append([]func(*facts){inSlot, grantedB, reportsAll(revisionB), settlingAt(tenSecondsAgo)}, notReady...)...),
 			granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, slot: true, settlingSince: &tenSecondsAgo, requeue: settling - 10*time.Second}},
 		{"Ready coming back restarts S from now, the write's transition", held(slotted(lodiav1alpha1.ReasonMaintenanceFailed, 3), grantedB, reportsAll(revisionB), settlingAt(present.Add(-time.Hour)), notReady[1]),
