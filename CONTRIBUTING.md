@@ -19,6 +19,10 @@ Every other tool runs through `go tool`.
 
 CI runs `make verify`, `make e2e`, `make e2e-ha`, `make e2e-restore` and `make e2e-gateway` on every pull request, and `make conformance`, `make e2e-gateway-g6`, `make conformance-gateway` and `make e2e-hold` every night.
 
+`test/rules/lodia_test.yaml`, promtool's cases of the alert rules, is generated and never edited by hand.
+To add or change a case, edit the alert's function in `test/rules/cases_test.go`, run `go test ./test/rules/ -update` and commit the file it rewrites.
+`go test ./test/rules/` fails when the committed file differs from what the cases generate.
+
 ## Docs
 
 - Each fact once, in its home, and a link to it elsewhere: the fields, conditions and reasons of `ControlPlane` and `Backup` in [`docs/api/controlplane.md`](docs/api/controlplane.md), runbooks in [`docs/operations.md`](docs/operations.md).
