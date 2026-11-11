@@ -209,7 +209,7 @@ The in-cluster path, `kubernetes` to `240.0.0.1:6443` through `apiserver-proxy` 
 | `AddonsAvailable=False`, `RolloutPending` | the DaemonSet or Deployment inside the tenant; a node that cannot pull images; a CNI missing (pods of CoreDNS stay Pending until a CNI is installed) |
 | `kubectl logs` / `exec` hang, everything else works | the konnectivity path: agents connected to every server (`konnectivity_network_proxy_server_ready_backend_connections`), the agent's DaemonSet, outbound 443 for the konnectivity hostname |
 | `Progressing=False`, `WaitingForWindow` for long | expected outside the window; `status.target.scheduledFor` says when it opens, and `lodia.io/maintain-requested-at` rolls the change now |
-| `Progressing=False`, `FleetLimit` | other tenants roll a change Lodia started, or failed one and keep their slots (`LodiaMaintenanceHalted`, from the observability wave); the operator's `fleet.maxConcurrentRollouts`; `status.target.scheduledFor` orders the queue |
+| `Progressing=False`, `FleetLimit` | other tenants hold the slots, `status.maintenance.slotSince` present whatever their `Progressing` reads: they roll a change Lodia started, or failed one and keep their slots (`LodiaMaintenanceHalted`, from the observability wave); the operator's `fleet.maxConcurrentRollouts`; `status.target.scheduledFor` orders the queue |
 | `Progressing=False`, `Failed` or `MaintenanceFailed` | `status.kubernetes.upgrade.step` and `Progressing`'s message; the [stuck upgrade](#stuck-upgrade) runbook |
 | `Progressing=False`, `WaitingForNodes` | a kubelet more than three minors older than the next minor, `status.nodes.oldestKubelet`: upgrade the nodes first; or `status.nodes` is absent, Health not having listed the nodes yet: the tenant's API must answer it |
 | `Progressing=False`, `TimeZoneUnsupported` | `spec.maintenance.window.timeZone` is not in the operator's zone database; an IANA name such as `Europe/Berlin` |
@@ -359,7 +359,7 @@ From phase 2's wave 2, behind a value of `metrics.*` and off by default, written
 | `LodiaEtcdNoLeader` | a dedicated etcd without a leader for 1 m | quorum or network inside the management cluster |
 | `LodiaControllerManagerHeld` | the hold active for 15 m | most nodes cannot reach the control plane; the tenant's workloads run, its controllers wait |
 | `LodiaUpgradeFailed` | `Progressing=False`, reason `Failed`, at once | the stuck upgrade runbook |
-| `LodiaMaintenanceHalted` | as many tenants `Progressing=False`, `MaintenanceFailed`, as `fleet.maxConcurrentRollouts` | changes Lodia starts are halted across the fleet; the stuck upgrade runbook for each |
+| `LodiaMaintenanceHalted` | as many tenants whose change Lodia started failed in their slots as `fleet.maxConcurrentRollouts`, the slot read from `status.maintenance.slotSince`, not from `Progressing`'s reason, since a slot is also held under `Unsupported`, which ranks above `MaintenanceFailed`, and `TimeZoneUnsupported` | changes Lodia starts are halted across the fleet; the stuck upgrade runbook for each |
 | `LodiaKubernetesEndOfSupport` | a tenant's minor within 30 days of its end-of-support date in the version table | upgrade it a minor; `Progressing`'s message says the same |
 | `LodiaReconcileErrors` | a controller's error rate above 5% for 15 m | the operator logs, by controller |
 

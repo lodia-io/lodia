@@ -94,7 +94,7 @@ Without a window Lodia-initiated changes roll at any time, still within the flee
 
 **The fleet.**
 Across all tenants, at most `fleet.maxConcurrentRollouts` (operator configuration, 5 by default) roll a Lodia-initiated change at once.
-A tenant holds a slot while `status.maintenance.slotSince` is present, `Progressing` `Maintaining` or, once failed, `MaintenanceFailed`: a failed rollout Lodia started keeps its slot, so that many failures halt maintenance across the fleet, as unavailable pods halt a Deployment's rollout, which the alert `LodiaMaintenanceHalted` reports from the observability wave.
+A tenant holds a slot while `status.maintenance.slotSince` is present, whatever `Progressing` reads: a failed rollout Lodia started keeps its slot, so that many failures halt maintenance across the fleet, as unavailable pods halt a Deployment's rollout, which the alert `LodiaMaintenanceHalted` reports from the observability wave.
 Tenants get slots in the order of `status.target.scheduledFor`, then namespace and name: a tenant is queued while its `scheduledFor` is at or before now, whatever `Progressing` says, since a wait for a slot can sit under a reason ranked above `FleetLimit`, and a pass grants when the tenants that hold a slot and those queued before it are fewer than the limit, counted from the cache and, before the grant is written, again from the API server under a lock, so that two passes never take one slot.
 An owner's change takes no slot.
 A change Lodia started holds its slot while it rolls: a part not at the target, a replica or member not updated, a renderer that reports neither the granted revision nor the running one.
