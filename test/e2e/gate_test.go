@@ -138,6 +138,10 @@ func TestPhase1Gate(t *testing.T) {
 			})
 			return ctx
 		}).
+		Assess("G7: behind the metrics filter, the leader serves the tenant's Ready and its etcd's leader and size, and the standby no lodia_ series", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			leaderServesMetrics(ctx, t, cfg, k8s, key)
+			return ctx
+		}).
 		Assess("anonymous requests reach the tenant's health paths and cluster-info, nothing else", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			access = openTenant(ctx, t, k8s, key)
 			anonymous, err := rest.HTTPClientFor(rest.AnonymousClientConfig(access.cfg))
