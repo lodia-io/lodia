@@ -104,7 +104,7 @@ flowchart TB
   end
   ep["load balancer, node port<br/>or Gateway :443 by SNI"] --> svc
   op["Lodia"] --> svc
-  op -->|":2379 seals"| etcd
+  op -->|":2379 seals · samples"| etcd
   druid["etcd-druid"] -->|":8080 snapshots · :2379 scale-in"| etcd
 ```
 
@@ -298,7 +298,7 @@ It selects the members by the labels etcd-druid gives the StatefulSet's pods, `a
 | port | from | dialled by |
 |---|---|---|
 | client, 2379 | the API server's pods: `lodia.io/control-plane: <cp>`, `app.kubernetes.io/name: kube-apiserver` | the API server, through the client Service |
-| client, 2379 | the pods of the operator's namespace, by `kubernetes.io/metadata.name`: the operator's flag `--operator-namespace`, which the chart sets to the release's; no rule of its own when it is etcd-druid's | the backup reconciler, which puts a `Backup`'s seal into its source's etcd, and with the restore the Datastore controller, which checks the seal and cleans up a restored etcd ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)); from phase 2's wave 2, observability, the Datastore controller's samples of the etcd's `Status` for Lodia's metrics: the database size, the leader and the alarms ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)) |
+| client, 2379 | the pods of the operator's namespace, by `kubernetes.io/metadata.name`: the operator's flag `--operator-namespace`, which the chart sets to the release's; no rule of its own when it is etcd-druid's | the backup reconciler, which puts a `Backup`'s seal into its source's etcd, and with the restore the Datastore controller, which checks the seal and cleans up a restored etcd ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)); and the etcd sampler, `datastore-sample`, which lists the members through the client Service and reads each one's `Status` at the client URL it advertises, its pod's name on the peer Service ([etcdconfig.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/configmap/etcdconfig.go#L196-L202)), once a minute for Lodia's metrics: the database size, the leader and the alarms ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)) |
 | client, 2379; peer, 2380 | the members | the members, each other on the peer port ([etcdconfig.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/configmap/etcdconfig.go#L150-L166)); their backup-restore sidecars on the client port, through the client Service, to list the members at every start and to add their own as a learner when the cluster grows ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L474-L477), [httpAPI.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/server/httpAPI.go#L452-L455), [member_control.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/member/member_control.go#L102-L104)) |
 | client, 2379 | the pods of etcd-druid's namespace, by `kubernetes.io/metadata.name`: the operator's flag `--etcd-druid-namespace`, which the chart sets ([Installation](#installation)) | etcd-druid, to remove members in a scale-in and to list them before it completes it ([memberremoval.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/memberremoval.go#L45-L100), [reconcile_spec.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcd/reconcile_spec.go#L129-L139)), at any member count, since its status lists only the members the spec asks for from the start of a scale-in ([helper.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/helper.go#L146-L154)) |
 | backup-restore, 8080, with a backup store | the members | a sidecar that is not the backup leader, which forwards a snapshot request to the leader's ([httpAPI.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/server/httpAPI.go#L281-L288)) |
@@ -555,7 +555,7 @@ Upgrading Lodia: [`operations.md`](operations.md#upgrading-lodia); etcd-druid's 
 
 [`operations.md`](operations.md): what breaks and how it shows, the runbooks (restore, lost quorum, forced rotation, stuck upgrade, nodes cut off), capacity planning, the alert rules and what each means.
 
-Lodia's metrics come from a collector that builds them at scrape time from status and from what Health counts and observes, and that the leader alone serves ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)).
+Lodia's metrics come from a collector that builds them at scrape time from status, from each dedicated etcd's last sample and from what Health counts and observes, and that the leader alone serves ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)).
 
 ## Conventions
 

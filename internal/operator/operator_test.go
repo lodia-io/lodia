@@ -21,9 +21,12 @@ import (
 	"testing"
 	"time"
 
+	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	"github.com/gardener/etcd-druid/api/core/v1alpha1/crds"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/server/v3/embed"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -32,12 +35,14 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/util/wait"
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
+	"k8s.io/apiserver/pkg/storage/etcd3/testserver"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
@@ -48,6 +53,7 @@ import (
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/controller/health"
 	"go.lodia.io/lodia/internal/operator"
+	"go.lodia.io/lodia/internal/testenv"
 )
 
 func TestTheCacheHoldsTheGatewayAPIWholeOnlyWhereItIsServed(t *testing.T) {
@@ -154,6 +160,72 @@ func TestADiscoveryErrorIsAnError(t *testing.T) {
 	if served || !apierrors.IsServiceUnavailable(err) || meta.IsNoMatchError(err) {
 		t.Errorf("GatewayAPI says %t, %v while /apis answers 503, want that error", served, err)
 	}
+}
+
+func TestTheMetricsServeTheSamplesOfTheSamplerSetupReturns(t *testing.T) {
+	cfg := start(t)
+	member := testserver.NewTestConfig(t)
+	etcdServer, err := embed.StartEtcd(member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(etcdServer.Close)
+	select {
+	case <-etcdServer.Server.ReadyNotify():
+	case <-time.After(60 * time.Second):
+		t.Fatal("the etcd member took too long to start")
+	}
+	k8s, err := client.New(cfg, client.Options{Scheme: operator.Scheme()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp := createControlPlane(t, k8s)
+	etcd := &druidv1alpha1.Etcd{ObjectMeta: metav1.ObjectMeta{
+		Name: lodiav1alpha1.EtcdName(cp.Name), Namespace: cp.Namespace, UID: "etcd-of-dev",
+		Annotations:     map[string]string{lodiav1alpha1.EtcdFormedAnnotation: "etcd-of-dev"},
+		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cp, lodiav1alpha1.GroupVersion.WithKind("ControlPlane"))},
+	}}
+
+	options, err := operator.Cache(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+		Scheme:     operator.Scheme(),
+		Metrics:    metricsserver.Options{BindAddress: "0"},
+		Cache:      options,
+		Controller: config.Controller{SkipNameValidation: new(true), CacheSyncTimeout: cacheSyncTimeout},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources, err := operator.Setup(mgr, testInputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources.Etcd.Cache = fake.NewClientBuilder().WithScheme(operator.Scheme()).WithObjects(cp, etcd).Build()
+	sources.Etcd.EtcdClient = func(context.Context, *druidv1alpha1.Etcd) (*clientv3.Client, error) {
+		return clientv3.New(clientv3.Config{Endpoints: []string{member.ListenClientUrls[0].String()}, DialTimeout: 5 * time.Second})
+	}
+	collector, err := operator.Metrics(mgr.GetCache(), mgr.Elected(), testInputs, sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan error, 1)
+	go func() { stopped <- mgr.Start(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-stopped; err != nil {
+			t.Errorf("manager: %v", err)
+		}
+	})
+	testenv.Eventually(t, func() error {
+		if got, ok := collector.EtcdSample(client.ObjectKeyFromObject(cp), cp.UID); !ok || !got.HasLeader {
+			return fmt.Errorf("the metrics serve the sample %+v, %t, want the manager's sampler's, with its leader", got, ok)
+		}
+		return nil
+	})
 }
 
 type roundTripper func(*http.Request) (*http.Response, error)

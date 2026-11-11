@@ -137,12 +137,13 @@ type Inputs struct {
 }
 
 // Sources are the controllers Setup registers whose memory Lodia's metrics
-// serve: Health, with its counter of failed probes, and health-nodes, with its
-// histogram of lag and its counts of the nodes. No registry holds the counter
-// or the histogram.
+// serve: Health, with its counter of failed probes, health-nodes, with its
+// histogram of lag and its counts of the nodes, and the etcd sampler, with its
+// samples. No registry holds the counter or the histogram.
 type Sources struct {
 	Health *health.Reconciler
 	Nodes  *health.NodesReconciler
+	Etcd   *datastore.SampleReconciler
 }
 
 // Setup registers every controller with the manager and returns the Sources
@@ -186,13 +187,17 @@ func Setup(mgr ctrl.Manager, in Inputs) (*Sources, error) {
 	if err := (&datastore.BackupReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdClient: dialEtcd, Clock: clock.RealClock{}}).SetupWithManager(mgr, workers); err != nil {
 		return nil, fmt.Errorf("set up the backup reconciler: %w", err)
 	}
+	sampler := &datastore.SampleReconciler{Cache: mgr.GetCache(), EtcdClient: dialEtcd, Clock: clock.RealClock{}}
+	if err := sampler.SetupWithManager(mgr, workers); err != nil {
+		return nil, fmt.Errorf("set up the etcd sampler: %w", err)
+	}
 	if err := newLifecycle(mgr.GetClient(), mgr.GetAPIReader(), in.Config, revision).SetupWithManager(mgr, workers); err != nil {
 		return nil, fmt.Errorf("set up the lifecycle controller: %w", err)
 	}
 	if err := (&tenant.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), ApplyPeriod: 10 * time.Minute, TunnelImage: in.TunnelImage, Revision: revision}).SetupWithManager(mgr, workers); err != nil {
 		return nil, fmt.Errorf("set up the tenant controller: %w", err)
 	}
-	sources := &Sources{Health: newHealth(mgr.GetClient(), mgr.GetAPIReader(), in.Config.Health), Nodes: newNodes(mgr.GetClient(), mgr.GetAPIReader(), in.Config.Health)}
+	sources := &Sources{Health: newHealth(mgr.GetClient(), mgr.GetAPIReader(), in.Config.Health), Nodes: newNodes(mgr.GetClient(), mgr.GetAPIReader(), in.Config.Health), Etcd: sampler}
 	if err := sources.Health.SetupWithManager(mgr, workers); err != nil {
 		return nil, fmt.Errorf("set up the health controller: %w", err)
 	}
@@ -216,7 +221,7 @@ func Metrics(reader client.Reader, elected <-chan struct{}, in Inputs, sources *
 	}
 	return &metrics.Collector{
 		Reader: reader, Elected: elected, Revision: revision, MaxConcurrentRollouts: in.Config.Fleet.MaxConcurrentRollouts,
-		NodeCounts: sources.Nodes.Counts, SampleLag: sources.Nodes.SampleLag, ProbeFailures: sources.Health.ProbeFailures,
+		EtcdSample: sources.Etcd.Sample, NodeCounts: sources.Nodes.Counts, SampleLag: sources.Nodes.SampleLag, ProbeFailures: sources.Health.ProbeFailures,
 	}, nil
 }
 

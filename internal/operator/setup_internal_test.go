@@ -71,6 +71,9 @@ func TestTheMetricsRunOnTheFilesLimitAndTheRevisionLifecycleGrants(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if got.EtcdSample == nil {
+		t.Error("the metrics serve no sample of the etcd sampler")
+	}
 	if want := newLifecycle(nil, nil, in.Config, revision); got.Revision != want.Revision || got.MaxConcurrentRollouts != want.MaxConcurrentRollouts {
 		t.Errorf("the metrics run on revision %q and limit %d, want Lifecycle's %q and %d", got.Revision, got.MaxConcurrentRollouts, want.Revision, want.MaxConcurrentRollouts)
 	}

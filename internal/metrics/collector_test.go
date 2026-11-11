@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/prometheus/common/expfmt"
@@ -29,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	datastorectrl "go.lodia.io/lodia/internal/controller/datastore"
 	"go.lodia.io/lodia/internal/metrics"
 	"go.lodia.io/lodia/internal/operator"
 	"go.lodia.io/lodia/internal/testenv"
@@ -47,8 +49,13 @@ func TestMain(m *testing.M) {
 	if !testenv.Available() {
 		os.Exit(m.Run())
 	}
-	env = testenv.Start(testenv.Options{})
-	role = env.AsController("lifecycle")
+	druid, err := testenv.DruidCRDs()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "etcd-druid CRDs:", err)
+		os.Exit(1)
+	}
+	env = testenv.Start(testenv.Options{Scheme: testenv.Scheme(druidv1alpha1.AddToScheme), CRDs: druid})
+	role = env.AsController("datastore")
 	os.Exit(env.Finish(m.Run()))
 }
 
@@ -59,7 +66,9 @@ func elected() <-chan struct{} {
 }
 
 func collector(objs ...client.Object) *metrics.Collector {
-	return collectorOf(fake.NewClientBuilder().WithScheme(operator.Scheme()).WithObjects(objs...).Build(), elected())
+	c := collectorOf(fake.NewClientBuilder().WithScheme(operator.Scheme()).WithObjects(objs...).Build(), elected())
+	c.EtcdSample = samplesOf(objs)
+	return c
 }
 
 func collectorOf(reader client.Reader, elected <-chan struct{}) *metrics.Collector {
@@ -70,7 +79,7 @@ func collectorOf(reader client.Reader, elected <-chan struct{}) *metrics.Collect
 	failures := metrics.NewProbeFailures()
 	failures.WithLabelValues(lodiav1alpha1.MetricProbeAPI).Add(3)
 	failures.WithLabelValues(lodiav1alpha1.MetricProbeTunnel).Inc()
-	return &metrics.Collector{Reader: reader, Elected: elected, Revision: running, MaxConcurrentRollouts: 3, NodeCounts: goldenCounts, SampleLag: lag, ProbeFailures: failures}
+	return &metrics.Collector{Reader: reader, Elected: elected, Revision: running, MaxConcurrentRollouts: 3, EtcdSample: samplesOf(nil), NodeCounts: goldenCounts, SampleLag: lag, ProbeFailures: failures}
 }
 
 func TestEveryShapeOfControlPlaneMatchesTheGolden(t *testing.T) {
@@ -246,7 +255,7 @@ func TestAStandbyEmitsNothingAndStartsNoInformer(t *testing.T) {
 	create(t, namespace(t), gatewayHA("standby", 20))
 	var requests atomic.Int32
 	reader := startCache(t, func(req *http.Request, next http.RoundTripper) (*http.Response, error) {
-		if strings.Contains(req.URL.Path, "controlplanes") {
+		if strings.Contains(req.URL.Path, "controlplanes") || strings.Contains(req.URL.Path, "etcds") {
 			requests.Add(1)
 		}
 		return next.RoundTrip(req)
@@ -256,7 +265,7 @@ func TestAStandbyEmitsNothingAndStartsNoInformer(t *testing.T) {
 		t.Errorf("a standby emits %d series, want none", n)
 	}
 	if n := requests.Load(); n != 0 {
-		t.Errorf("a standby's collection sent %d requests for ControlPlanes, want none", n)
+		t.Errorf("a standby's collection sent %d requests for ControlPlanes or Etcds, want none", n)
 	}
 }
 
@@ -301,15 +310,23 @@ func BenchmarkCollect(b *testing.B) {
 		if err := env.Client.DeleteAllOf(context.Background(), &lodiav1alpha1.ControlPlane{}, client.InNamespace(ns)); err != nil {
 			b.Error(err)
 		}
+		if err := env.Client.DeleteAllOf(context.Background(), &druidv1alpha1.Etcd{}, client.InNamespace(ns)); err != nil {
+			b.Error(err)
+		}
 	})
+	sample := datastorectrl.EtcdSample{HasLeader: true, DBSize: new(int64(52428800))}
 	for i := range 200 {
 		cp := gatewayHA(fmt.Sprintf("tenant-%03d", i), 100+i)
 		cp.Status.Maintenance = nil
 		create(b, ns, cp)
+		if err := env.Client.Create(b.Context(), etcdOf(cp, "8Gi", 5*time.Minute, true, true)); err != nil {
+			b.Fatal(err)
+		}
 	}
 	reader := startCache(b, nil)
 	registry := prometheus.NewRegistry()
 	c := collectorOf(reader, elected())
+	c.EtcdSample = func(types.NamespacedName, types.UID) (datastorectrl.EtcdSample, bool) { return sample, true }
 	c.NodeCounts = func(types.NamespacedName, types.UID) (int, int, bool) { return 1, 4, true }
 	registry.MustRegister(c)
 	var series, size int
