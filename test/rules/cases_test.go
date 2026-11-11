@@ -86,6 +86,11 @@ func controlPlaneNotReady() []testCase {
 				reason("restore-conflict", "ControllersLeading", "WaitingForAccess", "1x40"),
 				ready0("paused"), reason("paused", "Ready", "Unavailable", "1x40"), reason("paused", "Progressing", "Paused", "1x40"),
 				cond("ready", "Ready", "True", "1x40"), reason("ready", "Ready", "Ready", "1x40"),
+				join(
+					ready0("unknown"), reason("unknown", "Ready", "Deleting", "1x40"), reason("unknown", "Progressing", "Paused", "1x40"),
+					ready0("conflict"), reason("conflict", "Ready", "HostnameConflict", "1x40"),
+					reason("conflict", "ControllersLeading", "AwaitingRelease", "1x40"),
+				).in("tenants-b"),
 			),
 			checks: []check{
 				{570, alert, nil},
@@ -117,6 +122,7 @@ func controlPlaneDeletionStuck() []testCase {
 				reason("deleting", "Ready", "Deleting", "1x70"),
 				reason("paused", "Ready", "Deleting", "1x70"), reason("paused", "Progressing", "Paused", "1x70"),
 				reason("ready", "Ready", "Ready", "1x70"),
+				join(reason("deleting", "Ready", "Deleting", "1x70"), reason("deleting", "Progressing", "Paused", "1x70")).in("tenants-b"),
 			),
 			checks: []check{{1770, alert, nil}, {1800, alert, []alertLabels{tenantAlert("deleting")}}},
 		},
@@ -151,6 +157,10 @@ func redundancyLost() []testCase {
 				comp("full", "apiServer", 3, 3), comp("full", "scheduler", 2, 2), mem("full", 3, 3),
 				comp("paused", "apiServer", 3, 2), mem("paused", 3, 2), reason("paused", "Progressing", "Paused", "1x40"),
 				comp("deleting", "apiServer", 3, 2), mem("deleting", 3, 2), reason("deleting", "Ready", "Deleting", "1x40"),
+				join(
+					comp("api", "apiServer", 3, 2), mem("api", 3, 3),
+					reason("api", "Progressing", "Paused", "1x40"), reason("api", "Ready", "Deleting", "1x40"),
+				).in("tenants-b"),
 			),
 			checks: []check{
 				{870, alert, nil},
@@ -189,6 +199,11 @@ func rolloutStuck() []testCase {
 				threeMembers("upgrading", 3, 2), tenant(upgradeMetric, "upgrading", "0x130", "step", "APIServer"),
 				threeMembers("paused", 3, 2), reason("paused", "Progressing", "Paused", "1x130"),
 				threeMembers("deleting", 3, 2), reason("deleting", "Ready", "Deleting", "1x130"),
+				join(
+					threeMembers("unreported", 3, 3), tenant(slotMetric, "unreported", "0x130"),
+					tenant(upgradeMetric, "unreported", "0x130", "step", "APIServer"),
+					reason("unreported", "Progressing", "Paused", "1x130"), reason("unreported", "Ready", "Deleting", "1x130"),
+				).in("tenants-b"),
 			),
 			checks: []check{
 				{3570, alert, nil},
@@ -214,6 +229,7 @@ func certificateExpiring() []testCase {
 				tenant(expiration, "paused", fmt.Sprintf("%dx250", soon)), reason("paused", "Progressing", "Paused", "1x250"),
 				tenant(expiration, "deleting", fmt.Sprintf("%dx250", soon)), reason("deleting", "Ready", "Deleting", "1x250"),
 				tenant(expiration, "renewed", fmt.Sprintf("%dx250", soon+3600)),
+				join(tenant(expiration, "expiring", fmt.Sprintf("%dx250", soon)), reason("expiring", "Ready", "Deleting", "1x250")).in("tenants-b"),
 			),
 			checks: []check{{7200, alert, nil}, {7230, alert, []alertLabels{tenantAlert("expiring"), tenantAlert("paused")}}},
 		},
@@ -231,6 +247,10 @@ func caExpiring() []testCase {
 				cond("valid", "CAValidityAcceptable", "False", "0x130"),
 				cond("paused", "CAValidityAcceptable", "False", "1x130"), reason("paused", "Progressing", "Paused", "1x130"),
 				cond("deleting", "CAValidityAcceptable", "False", "1x130"), reason("deleting", "Ready", "Deleting", "1x130"),
+				join(
+					cond("expiring", "CAValidityAcceptable", "False", "1x130"),
+					reason("expiring", "Progressing", "Paused", "1x130"), reason("expiring", "Ready", "Deleting", "1x130"),
+				).in("tenants-b"),
 			),
 			checks: []check{{3570, alert, nil}, {3600, alert, []alertLabels{tenantAlert("expiring")}}},
 		},
@@ -270,6 +290,12 @@ func backupStale() []testCase {
 				backup("deleting", "False", "BackupFailed", 300), reason("deleting", "Ready", "Deleting", "1x380"),
 				backup("other-unknown", "True", "BackupSucceeded", 300),
 				reason("other-unknown", "AddonsAvailable", "Reconciling", "1x380"),
+				join(
+					backup("failed", "False", "BackupFailed", 300),
+					reason("failed", "Progressing", "Paused", "1x380"), reason("failed", "Ready", "Deleting", "1x380"),
+					backup("no-deltas-failed", "True", "BackupSucceeded", 300),
+					backup("ok", "Unknown", "SnapshotsPending"),
+				).in("tenants-b"),
 			),
 			checks: []check{
 				{270, alert, nil}, {300, alert, []alertLabels{tenantAlert("failed")}},
@@ -343,6 +369,10 @@ func controllerManagerHeld() []testCase {
 				cond("not-held", "ControllerManagerHeld", "True", "0x40"),
 				cond("paused", "ControllerManagerHeld", "True", "1x40"), reason("paused", "Progressing", "Paused", "1x40"),
 				cond("deleting", "ControllerManagerHeld", "True", "1x40"), reason("deleting", "Ready", "Deleting", "1x40"),
+				join(
+					cond("held", "ControllerManagerHeld", "True", "1x40"),
+					reason("held", "Progressing", "Paused", "1x40"), reason("held", "Ready", "Deleting", "1x40"),
+				).in("tenants-b"),
 			),
 			checks: []check{{870, alert, nil}, {900, alert, []alertLabels{tenantAlert("held")}}},
 		},
@@ -360,6 +390,10 @@ func controllerManagerHoldBlocked() []testCase {
 				reason("not-held", "ControllerManagerHeld", "NotHeld", "1x10"),
 				reason("paused", "ControllerManagerHeld", "HoldBlocked", "1x10"), reason("paused", "Progressing", "Paused", "1x10"),
 				reason("deleting", "ControllerManagerHeld", "HoldBlocked", "1x10"), reason("deleting", "Ready", "Deleting", "1x10"),
+				join(
+					reason("blocked", "ControllerManagerHeld", "HoldBlocked", "1x10"),
+					reason("blocked", "Progressing", "Paused", "1x10"), reason("blocked", "Ready", "Deleting", "1x10"),
+				).in("tenants-b"),
 			),
 			checks: []check{{30, alert, nil}, {60, alert, []alertLabels{tenantAlert("blocked")}}},
 		},
@@ -377,6 +411,7 @@ func upgradeFailed() []testCase {
 				reason("maintenance", "Progressing", "MaintenanceFailed", "1x10"),
 				reason("upgrading", "Progressing", "Upgrading", "1x10"),
 				reason("deleting", "Progressing", "Failed", "1x10"), reason("deleting", "Ready", "Deleting", "1x10"),
+				join(reason("failed", "Progressing", "Failed", "1x10"), reason("failed", "Ready", "Deleting", "1x10")).in("tenants-b"),
 			),
 			checks: []check{{0, alert, []alertLabels{tenantAlert("failed"), tenantAlert("maintenance")}}},
 		},
@@ -399,6 +434,10 @@ func upgradeStalled() []testCase {
 				tenant(upgradeMetric, "paused", "0x265", "step", "Addons"), reason("paused", "Progressing", "Paused", "1x265"),
 				tenant(upgradeMetric, "deleting", "0x265", "step", "Addons"),
 				reason("deleting", "Progressing", "Upgrading", "1x265"), reason("deleting", "Ready", "Deleting", "1x265"),
+				join(
+					tenant(upgradeMetric, "stalled", "0x265", "step", "Addons"),
+					reason("stalled", "Progressing", "Paused", "1x265"), reason("stalled", "Ready", "Deleting", "1x265"),
+				).in("tenants-b"),
 			),
 			checks: []check{
 				{7200, alert, nil}, {7230, alert, []alertLabels{tenantAlert("stalled")}},
@@ -424,7 +463,8 @@ func maintenanceHalted() []testCase {
 		}
 	}
 	return []testCase{
-		halted("fires on MaintenanceFailed and Unsupported", true, slot("failed", "MaintenanceFailed", 40), slot("other", "Unsupported", 40)),
+		halted("fires on MaintenanceFailed and Unsupported", true, slot("failed", "MaintenanceFailed", 40), slot("other", "Unsupported", 40),
+			reason("other", "Progressing", "TimeZoneUnsupported", "1x40").in("tenants-b")),
 		halted("fires on MaintenanceFailed and Paused", true, slot("failed", "MaintenanceFailed", 40), slot("other", "Paused", 40)),
 		halted("stays silent on MaintenanceFailed and Maintaining", false, slot("failed", "MaintenanceFailed", 40), slot("other", "Maintaining", 40)),
 		halted("stays silent on MaintenanceFailed and TimeZoneUnsupported", false, slot("failed", "MaintenanceFailed", 40), slot("other", "TimeZoneUnsupported", 40)),
@@ -452,6 +492,7 @@ func maintenanceSlotHeldLong() []testCase {
 			series: join(
 				slot("maintaining", "Maintaining", 130), slot("paused", "Paused", 130),
 				slot("unsupported", "Unsupported", 130), slot("failed", "MaintenanceFailed", 130),
+				slot("maintaining", "MaintenanceFailed", 130).in("tenants-b"),
 			),
 			checks: []check{
 				{3600, alert, nil},

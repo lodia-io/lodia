@@ -72,6 +72,14 @@ func (b batch) on(p pod) batch {
 	return moved
 }
 
+func (b batch) in(namespace string) batch {
+	moved := slices.Clone(b)
+	for i := range moved {
+		moved[i].namespace = namespace
+	}
+	return moved
+}
+
 func join(parts ...batch) batch {
 	return slices.Concat(parts...)
 }
@@ -241,23 +249,26 @@ type conditionSeries struct {
 	transition bool
 }
 
+type tenantKey struct{ namespace, controlplane string }
+
 type tenantSeries struct {
 	pod   pod
 	types map[string]*conditionSeries
 }
 
 func complete(in batch) (batch, error) {
-	tenants := map[string]*tenantSeries{}
-	var order []string
+	tenants := map[tenantKey]*tenantSeries{}
+	var order []tenantKey
 	for _, s := range in {
 		if !strings.HasPrefix(s.metric, "lodia_controlplane_") {
 			continue
 		}
-		t, ok := tenants[s.controlplane]
+		key := tenantKey{s.namespace, s.controlplane}
+		t, ok := tenants[key]
 		if !ok {
 			t = &tenantSeries{pod: s.pod, types: map[string]*conditionSeries{}}
-			tenants[s.controlplane] = t
-			order = append(order, s.controlplane)
+			tenants[key] = t
+			order = append(order, key)
 		}
 		if !strings.HasPrefix(s.metric, conditionMetric) {
 			continue
@@ -277,8 +288,9 @@ func complete(in batch) (batch, error) {
 		}
 	}
 	var extra batch
-	for _, cp := range order {
-		t := tenants[cp]
+	for _, key := range order {
+		t, cp := tenants[key], key.controlplane
+		add := func(b batch) { extra = append(extra, b.on(t.pod).in(key.namespace)...) }
 		want := slices.Clone(healthy)
 		if ready := t.types["Ready"]; ready != nil && ready.reason != nil {
 			cause := ready.reason.label("reason")
@@ -295,14 +307,14 @@ func complete(in batch) (batch, error) {
 			c := t.types[h.typ]
 			if c == nil {
 				for _, st := range statuses {
-					extra = append(extra, cond(cp, h.typ, st, fmt.Sprintf("%dx%d", bit(st == h.status), completedFor)).on(t.pod)...)
+					add(cond(cp, h.typ, st, fmt.Sprintf("%dx%d", bit(st == h.status), completedFor)))
 				}
-				extra = append(extra, reason(cp, h.typ, h.cause, fmt.Sprintf("1x%d", completedFor)).on(t.pod)...)
+				add(reason(cp, h.typ, h.cause, fmt.Sprintf("1x%d", completedFor)))
 				transition := fmt.Sprintf("-86400x%d", completedFor)
 				if h.typ == "Progressing" {
 					transition = fmt.Sprintf("0x20 600x%d", completedFor-21)
 				}
-				extra = append(extra, tenant(transitionMetric, cp, transition, "type", h.typ).on(t.pod)...)
+				add(tenant(transitionMetric, cp, transition, "type", h.typ))
 				continue
 			}
 			var status, n string
@@ -334,18 +346,18 @@ func complete(in batch) (batch, error) {
 			}
 			for _, st := range statuses {
 				if !has(st) {
-					extra = append(extra, cond(cp, h.typ, st, fmt.Sprintf("%dx%s", bit(st == status), n)).on(t.pod)...)
+					add(cond(cp, h.typ, st, fmt.Sprintf("%dx%s", bit(st == status), n)))
 				}
 			}
 			if c.reason == nil {
 				cause, ok := reasonOf[[2]string{h.typ, status}]
 				if !ok {
-					return nil, fmt.Errorf("%s: no reason for %s %s", cp, h.typ, status)
+					return nil, fmt.Errorf("%s/%s: no reason for %s %s", key.namespace, cp, h.typ, status)
 				}
-				extra = append(extra, reason(cp, h.typ, cause, "1x"+n).on(t.pod)...)
+				add(reason(cp, h.typ, cause, "1x"+n))
 			}
 			if !c.transition {
-				extra = append(extra, tenant(transitionMetric, cp, "-86400x"+n, "type", h.typ).on(t.pod)...)
+				add(tenant(transitionMetric, cp, "-86400x"+n, "type", h.typ))
 			}
 		}
 	}
