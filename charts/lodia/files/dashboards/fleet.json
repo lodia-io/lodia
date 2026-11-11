@@ -303,7 +303,7 @@
                 "value": [
                   {
                     "title": "Control plane",
-                    "url": "/d/lodia-controlplane?var-namespace=${__data.fields.namespace}&var-controlplane=${__data.fields.controlplane}"
+                    "url": "/d/lodia-controlplane?var-namespace=${__data.fields.namespace}&var-controlplane=${__data.fields.controlplane}&${datasource:queryparam}&${__url_time_range}"
                   }
                 ]
               }
@@ -773,7 +773,7 @@
                 "value": [
                   {
                     "title": "Control plane",
-                    "url": "/d/lodia-controlplane?var-namespace=${__data.fields.namespace}&var-controlplane=${__data.fields.controlplane}"
+                    "url": "/d/lodia-controlplane?var-namespace=${__data.fields.namespace}&var-controlplane=${__data.fields.controlplane}&${datasource:queryparam}&${__url_time_range}"
                   }
                 ]
               }
