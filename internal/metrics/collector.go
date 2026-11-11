@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package metrics builds Lodia's metrics of each ControlPlane from its status
-// at scrape time, in the leader alone
-// (docs/decisions/metrics-are-part-of-the-api.md).
+// and Health's counts at scrape time, in the leader alone, and serves Health's
+// histogram and counter (docs/decisions/metrics-are-part-of-the-api.md).
 package metrics
 
 import (
@@ -12,6 +12,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -69,6 +70,10 @@ var (
 		"step")
 	certificatesExpiration = perControlPlane("lodia_controlplane_certificates_expiration_timestamp_seconds",
 		"status.credentials.notAfter: the earliest expiry among the certificates PKI's Secrets hold for the ControlPlane, its CAs among them. It counts each Secret's own certificate and the newest complete etcd generation, and leaves out the replaced certificates in the CA bundles, the staged kubelet signer and a previous etcd generation.")
+	nodesSilent = perControlPlane("lodia_controlplane_nodes_silent",
+		"The nodes that count whose Lease Health has not seen change for health.silentAfter, in its last list of the node Leases. Absent while that list is missing, and until Health's clock of the Leases has run health.silentAfter.")
+	nodesCounted = perControlPlane("lodia_controlplane_nodes_counted",
+		"The nodes that count towards the hold of the controller manager in Health's last list of the node Leases: those with a Lease that are Ready, or turned Unknown less than 5 minutes before the hold began. Absent while lodia_controlplane_nodes_silent is.")
 	maxConcurrentRollouts = prometheus.NewDesc("lodia_fleet_max_concurrent_rollouts",
 		"fleet.maxConcurrentRollouts: how many tenants may hold a slot of the fleet at once.", nil, nil)
 
@@ -77,7 +82,7 @@ var (
 		nodes, nodesReady, nodesOutdatedKubelets, componentReplicas, componentReplicasReady,
 		datastoreMembers, datastoreMembersReady, datastoreMembersUpdated, operatorRevisionGranted,
 		slotSince, scheduledFor, upgradeStarted, maxConcurrentRollouts,
-		certificatesExpiration,
+		certificatesExpiration, nodesSilent, nodesCounted,
 	}
 
 	statuses = []metav1.ConditionStatus{metav1.ConditionTrue, metav1.ConditionFalse, metav1.ConditionUnknown}
@@ -87,21 +92,52 @@ func perControlPlane(name, help string, labels ...string) *prometheus.Desc {
 	return prometheus.NewDesc(name, help, append([]string{"namespace", "controlplane"}, labels...), nil)
 }
 
+// NewSampleLag returns the histogram health-nodes observes and the collector
+// serves.
+func NewSampleLag() prometheus.Histogram {
+	return prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "lodia_health_nodes_sample_lag_seconds",
+		Help:    "How much later than its due time, the previous pass's end plus the requeue it returned, a pass of health-nodes started: the delay in Health's queue, for which the margin of the controller manager's hold keeps 10 seconds.",
+		Buckets: []float64{0.25, 0.5, 1, 2.5, 5, 10, 30},
+	})
+}
+
+// NewProbeFailures returns the counter Health's probes count into and the
+// collector serves, with a series of each path from the start.
+func NewProbeFailures() *prometheus.CounterVec {
+	failures := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "lodia_health_probe_failures_total",
+		Help: "Health's probes that failed, by path, whether or not three failed passes in a row turned Reachable False.",
+	}, []string{"path"})
+	for _, path := range []string{lodiav1alpha1.MetricProbeAPI, lodiav1alpha1.MetricProbeInternal, lodiav1alpha1.MetricProbeTunnel, lodiav1alpha1.MetricProbeKonnectivity} {
+		failures.WithLabelValues(path)
+	}
+	return failures
+}
+
 // Collector builds the metrics from Reader, the manager's cache, once Elected,
-// the manager's, is closed, with Revision, the running operator revision, and
-// MaxConcurrentRollouts, fleet.maxConcurrentRollouts. It keeps no state, so
-// scrapes may run at once.
+// the manager's, is closed, with Revision, the running operator revision,
+// MaxConcurrentRollouts, fleet.maxConcurrentRollouts, and NodeCounts, the
+// count of a ControlPlane's nodes health-nodes published, by its name and
+// UID. It serves SampleLag and ProbeFailures, Health's, which no registry
+// holds, so that the standby serves neither. It keeps no state, so scrapes may
+// run at once.
 type Collector struct {
 	Reader                client.Reader
 	Elected               <-chan struct{}
 	Revision              string
 	MaxConcurrentRollouts int
+	NodeCounts            func(types.NamespacedName, types.UID) (silent, counted int, ok bool)
+	SampleLag             prometheus.Histogram
+	ProbeFailures         *prometheus.CounterVec
 }
 
 func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	for _, desc := range descs {
 		ch <- desc
 	}
+	c.SampleLag.Describe(ch)
+	c.ProbeFailures.Describe(ch)
 }
 
 // Collect emits nothing in a replica that does not lead: the cache's
@@ -121,6 +157,8 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		return
 	}
 	ch <- prometheus.MustNewConstMetric(maxConcurrentRollouts, prometheus.GaugeValue, float64(c.MaxConcurrentRollouts))
+	c.SampleLag.Collect(ch)
+	c.ProbeFailures.Collect(ch)
 	for i := range list.Items {
 		c.collect(ch, &list.Items[i])
 	}
@@ -166,6 +204,10 @@ func (c *Collector) collect(ch chan<- prometheus.Metric, cp *lodiav1alpha1.Contr
 		emit(nodes, float64(n.Total))
 		emit(nodesReady, float64(n.Ready))
 		emit(nodesOutdatedKubelets, float64(n.OutdatedKubelets))
+	}
+	if silent, counted, ok := c.NodeCounts(client.ObjectKeyFromObject(cp), cp.UID); ok {
+		emit(nodesSilent, float64(silent))
+		emit(nodesCounted, float64(counted))
 	}
 
 	if components := status.Components; components != nil {

@@ -22,6 +22,7 @@ import (
 	"github.com/prometheus/common/expfmt"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -58,8 +59,18 @@ func elected() <-chan struct{} {
 }
 
 func collector(objs ...client.Object) *metrics.Collector {
-	reader := fake.NewClientBuilder().WithScheme(operator.Scheme()).WithObjects(objs...).Build()
-	return &metrics.Collector{Reader: reader, Elected: elected(), Revision: running, MaxConcurrentRollouts: 3}
+	return collectorOf(fake.NewClientBuilder().WithScheme(operator.Scheme()).WithObjects(objs...).Build(), elected())
+}
+
+func collectorOf(reader client.Reader, elected <-chan struct{}) *metrics.Collector {
+	lag := metrics.NewSampleLag()
+	for _, seconds := range []float64{0, 0, 0.3, 12} {
+		lag.Observe(seconds)
+	}
+	failures := metrics.NewProbeFailures()
+	failures.WithLabelValues(lodiav1alpha1.MetricProbeAPI).Add(3)
+	failures.WithLabelValues(lodiav1alpha1.MetricProbeTunnel).Inc()
+	return &metrics.Collector{Reader: reader, Elected: elected, Revision: running, MaxConcurrentRollouts: 3, NodeCounts: goldenCounts, SampleLag: lag, ProbeFailures: failures}
 }
 
 func TestEveryShapeOfControlPlaneMatchesTheGolden(t *testing.T) {
@@ -180,7 +191,7 @@ func TestARecreatedControlPlaneIsServedUnderItsNewUID(t *testing.T) {
 	cp := gatewayHA("recreated", 21)
 	create(t, ns, cp)
 	reader := startCache(t, nil)
-	c := &metrics.Collector{Reader: reader, Elected: elected(), Revision: running, MaxConcurrentRollouts: 3}
+	c := collectorOf(reader, elected())
 	uids := func() ([]string, error) {
 		registry := prometheus.NewPedanticRegistry()
 		registry.MustRegister(c)
@@ -240,7 +251,7 @@ func TestAStandbyEmitsNothingAndStartsNoInformer(t *testing.T) {
 		}
 		return next.RoundTrip(req)
 	})
-	c := &metrics.Collector{Reader: reader, Elected: make(chan struct{}), Revision: running, MaxConcurrentRollouts: 3}
+	c := collectorOf(reader, make(chan struct{}))
 	if n := testutil.CollectAndCount(c); n != 0 {
 		t.Errorf("a standby emits %d series, want none", n)
 	}
@@ -264,7 +275,7 @@ func TestACollectionBeforeTheInformerSyncsEndsWithinTheDeadline(t *testing.T) {
 		return next.RoundTrip(req)
 	})
 	t.Cleanup(func() { close(release) })
-	c := &metrics.Collector{Reader: reader, Elected: elected(), Revision: running, MaxConcurrentRollouts: 3}
+	c := collectorOf(reader, elected())
 	start := time.Now()
 	collected := make(chan int, 1)
 	go func() { collected <- testutil.CollectAndCount(c) }()
@@ -298,7 +309,9 @@ func BenchmarkCollect(b *testing.B) {
 	}
 	reader := startCache(b, nil)
 	registry := prometheus.NewRegistry()
-	registry.MustRegister(&metrics.Collector{Reader: reader, Elected: elected(), Revision: running, MaxConcurrentRollouts: 3})
+	c := collectorOf(reader, elected())
+	c.NodeCounts = func(types.NamespacedName, types.UID) (int, int, bool) { return 1, 4, true }
+	registry.MustRegister(c)
 	var series, size int
 	b.ReportAllocs()
 	for b.Loop() {

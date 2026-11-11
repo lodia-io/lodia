@@ -8,13 +8,16 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"go.lodia.io/lodia/internal/controller/health"
+	"go.lodia.io/lodia/internal/metrics"
 )
 
 func TestHealthRunsOnTheFilesValues(t *testing.T) {
 	cfg := DefaultConfig().Health
 	cfg.Period = metav1.Duration{Duration: 7 * time.Second}
 	cfg.FailuresBeforeFalse = 4
-	got := newHealth(nil, nil, cfg)
+	got := newHealth(nil, nil, cfg, nil)
 	if got.Period != 7*time.Second {
 		t.Errorf("Period = %s, want 7s", got.Period)
 	}
@@ -28,7 +31,7 @@ func TestHealthNodesRunOnTheFilesValues(t *testing.T) {
 	cfg.Period = metav1.Duration{Duration: 7 * time.Second}
 	cfg.SilentAfter = metav1.Duration{Duration: 25 * time.Second}
 	cfg.HoldFraction = 750
-	got := newNodes(nil, nil, cfg)
+	got := newNodes(nil, nil, cfg, nil)
 	if got.Period != 7*time.Second {
 		t.Errorf("Period = %s, want 7s", got.Period)
 	}
@@ -38,7 +41,7 @@ func TestHealthNodesRunOnTheFilesValues(t *testing.T) {
 	if got.HoldFraction != 750 {
 		t.Errorf("HoldFraction = %d, want 750", got.HoldFraction)
 	}
-	if want := newHealth(nil, nil, cfg).Timeout; got.Timeout != want {
+	if want := newHealth(nil, nil, cfg, nil).Timeout; got.Timeout != want {
 		t.Errorf("Timeout = %s, want Health's %s", got.Timeout, want)
 	}
 }
@@ -52,7 +55,7 @@ func TestLifecycleRunsOnTheFilesValues(t *testing.T) {
 	cfg.Health.FailuresBeforeFalse = 4
 	cfg.Fleet.MaxConcurrentRollouts = 2
 	got := newLifecycle(nil, nil, cfg, "v1.0.0+0")
-	if want := 4*(7*time.Second+newHealth(nil, nil, cfg.Health).Timeout) + 15*time.Second; got.Settling != want {
+	if want := 4*(7*time.Second+newHealth(nil, nil, cfg.Health, nil).Timeout) + 15*time.Second; got.Settling != want {
 		t.Errorf("Settling = %s, want %s", got.Settling, want)
 	}
 	if got.MaxConcurrentRollouts != 2 || got.Revision != "v1.0.0+0" {
@@ -67,7 +70,7 @@ func TestTheMetricsRunOnTheFilesLimitAndTheRevisionLifecycleGrants(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := Metrics(nil, nil, in)
+	got, err := Metrics(nil, nil, in, &Sources{Nodes: &health.NodesReconciler{}, SampleLag: metrics.NewSampleLag(), ProbeFailures: metrics.NewProbeFailures()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,5 +79,23 @@ func TestTheMetricsRunOnTheFilesLimitAndTheRevisionLifecycleGrants(t *testing.T)
 	}
 	if got.MaxConcurrentRollouts != 2 {
 		t.Errorf("MaxConcurrentRollouts = %d, want the file's 2", got.MaxConcurrentRollouts)
+	}
+}
+
+func TestHealthCountsIntoWhatTheMetricsServe(t *testing.T) {
+	in := Inputs{Config: DefaultConfig(), Version: "v1.0.0"}
+	sources := &Sources{Nodes: &health.NodesReconciler{}, SampleLag: metrics.NewSampleLag(), ProbeFailures: metrics.NewProbeFailures()}
+	got, err := Metrics(nil, nil, in, sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SampleLag != sources.SampleLag || got.ProbeFailures != sources.ProbeFailures || got.NodeCounts == nil {
+		t.Errorf("the metrics serve %+v, want the Sources' %+v", got, sources)
+	}
+	if probes := newHealth(nil, nil, in.Config.Health, sources.ProbeFailures); probes.ProbeFailures != sources.ProbeFailures {
+		t.Error("the probes count into another counter than the metrics serve")
+	}
+	if nodes := newNodes(nil, nil, in.Config.Health, sources.SampleLag); nodes.SampleLag != sources.SampleLag {
+		t.Error("health-nodes observes into another histogram than the metrics serve")
 	}
 }

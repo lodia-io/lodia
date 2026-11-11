@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -87,6 +88,9 @@ type Reconciler struct {
 	// the in-namespace Service, whose name nothing outside a cluster resolves.
 	// It is nil in production.
 	DialContext func(ctx context.Context, network, address string) (net.Conn, error)
+	// ProbeFailures counts every failed probe by its path, the label path;
+	// nil counts nothing.
+	ProbeFailures *prometheus.CounterVec
 
 	mu       sync.Mutex
 	failures map[types.NamespacedName]int
@@ -259,9 +263,10 @@ func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPla
 
 // probes runs the control plane's probes at once, each under Timeout, so that
 // a dead path holds a worker for one Timeout: the public endpoint, the
-// in-namespace Service and, in gateway mode, the tunnel and konnectivity.
-// It returns the reason of a failed pass, empty when all passed, and the
-// condition's message: what each path that failed answered, or what answered.
+// in-namespace Service and, in gateway mode, the tunnel and konnectivity; it
+// counts each that fails. It returns the reason of a failed pass, empty when
+// all passed, and the condition's message: what each path that failed
+// answered, or what answered.
 func (r *Reconciler) probes(ctx context.Context, cp *lodiav1alpha1.ControlPlane, p *prober, url string) (string, string) {
 	gateway := cp.Spec.Endpoint.Gateway != nil
 	internal := lodiav1alpha1.APIServerServiceURL(cp.Namespace, cp.Name) + lodiav1alpha1.APIServerReadyzPath
@@ -281,27 +286,33 @@ func (r *Reconciler) probes(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 	wg.Wait()
 	log := logf.FromContext(ctx)
 	var failed []string
+	fail := func(path, answer string) {
+		if r.ProbeFailures != nil {
+			r.ProbeFailures.WithLabelValues(path).Inc()
+		}
+		failed = append(failed, answer)
+	}
 	reason := lodiav1alpha1.ReasonExternalProbeFailed
 	if internalCode != http.StatusOK {
 		log.Error(internalErr, "the probe of the in-namespace Service failed", "url", internal, "code", internalCode)
 		reason = lodiav1alpha1.ReasonInternalProbeFailed
-		failed = append(failed, "internal: "+internal+" "+answered(internalCode))
+		fail(lodiav1alpha1.MetricProbeInternal, lodiav1alpha1.MetricProbeInternal+": "+internal+" "+answered(internalCode))
 	}
 	if apiCode != http.StatusOK {
 		log.Error(apiErr, "the probe of the public endpoint failed", "url", url, "code", apiCode)
 		answer := url + " " + answered(apiCode)
 		if gateway {
-			answer = "api: " + answer
+			answer = lodiav1alpha1.MetricProbeAPI + ": " + answer
 		}
-		failed = append(failed, answer)
+		fail(lodiav1alpha1.MetricProbeAPI, answer)
 	}
 	if gateway && tunnelCode != http.StatusOK {
 		log.Error(tunnelErr, "the probe through the tunnel failed", "tunnel", hostPort(*e.Tunnel), "code", tunnelCode)
-		failed = append(failed, "tunnel: "+url+" through "+hostPort(*e.Tunnel)+" "+answered(tunnelCode))
+		fail(lodiav1alpha1.MetricProbeTunnel, lodiav1alpha1.MetricProbeTunnel+": "+url+" through "+hostPort(*e.Tunnel)+" "+answered(tunnelCode))
 	}
 	if gateway && konnErr != nil {
 		log.Error(konnErr, "the TLS handshake with konnectivity failed", "address", hostPort(e.Konnectivity))
-		failed = append(failed, "konnectivity: "+hostPort(e.Konnectivity)+" did not complete a TLS handshake")
+		fail(lodiav1alpha1.MetricProbeKonnectivity, lodiav1alpha1.MetricProbeKonnectivity+": "+hostPort(e.Konnectivity)+" did not complete a TLS handshake")
 	}
 	if len(failed) > 0 {
 		return reason, strings.Join(failed, "; ")

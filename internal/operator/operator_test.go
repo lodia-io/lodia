@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"github.com/gardener/etcd-druid/api/core/v1alpha1/crds"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -33,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	"sigs.k8s.io/yaml"
@@ -238,7 +241,7 @@ func run(t *testing.T, cfg *rest.Config, gatewayAPI bool) (client.Client, <-chan
 	}
 	in := testInputs
 	in.GatewayAPI = gatewayAPI
-	if err := operator.Setup(mgr, in); err != nil {
+	if _, err := operator.Setup(mgr, in); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -315,5 +318,97 @@ func expectAPass(t *testing.T, k8s client.Client, stopped <-chan struct{}, reaso
 	case <-stopped:
 		t.Fatal("the manager stopped")
 	case <-time.After(cacheSyncTimeout + time.Second):
+	}
+}
+
+func TestHealthsMetricsAreServedByLodiasCollectorAloneOnceElected(t *testing.T) {
+	cfg := start(t)
+	options, err := operator.Cache(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+		Scheme:     operator.Scheme(),
+		Metrics:    metricsserver.Options{BindAddress: "0"},
+		Cache:      options,
+		Controller: config.Controller{SkipNameValidation: new(true)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources, err := operator.Setup(mgr, testInputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collector, err := operator.Metrics(mgr.GetCache(), mgr.Elected(), testInputs, sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, gatherer := range map[string]prometheus.Gatherer{"controller-runtime's": ctrlmetrics.Registry, "the default": prometheus.DefaultGatherer} {
+		families, err := gatherer.Gather()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, family := range families {
+			if strings.HasPrefix(family.GetName(), "lodia_") {
+				t.Errorf("%s registry serves %s beside Lodia's collector", name, family.GetName())
+			}
+		}
+	}
+	if n := testutil.CollectAndCount(collector); n != 0 {
+		t.Errorf("before the election Lodia's collector serves %d series, want none", n)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan error, 1)
+	go func() { stopped <- mgr.Start(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-stopped; err != nil {
+			t.Errorf("manager: %v", err)
+		}
+	})
+	k8s, err := client.New(cfg, client.Options{Scheme: operator.Scheme()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "operator-"}}
+	if err := k8s.Create(t.Context(), ns); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Create(t.Context(), &lodiav1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: ns.Name},
+		Spec: lodiav1alpha1.ControlPlaneSpec{
+			Version:   "v1.37.1",
+			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{}},
+			Endpoint:  lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}},
+			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	registry := prometheus.NewPedanticRegistry()
+	registry.MustRegister(collector)
+	var last error
+	if err := wait.PollUntilContextTimeout(t.Context(), 200*time.Millisecond, 30*time.Second, true, func(context.Context) (bool, error) {
+		families, err := registry.Gather()
+		if err != nil {
+			return false, err
+		}
+		served := map[string]int{}
+		var observed uint64
+		for _, family := range families {
+			served[family.GetName()] = len(family.GetMetric())
+			if family.GetName() == "lodia_health_nodes_sample_lag_seconds" {
+				observed = family.GetMetric()[0].GetHistogram().GetSampleCount()
+			}
+		}
+		if observed == 0 || served["lodia_health_probe_failures_total"] != 4 {
+			last = fmt.Errorf("the collector serves %v, with %d passes of health-nodes observed", served, observed)
+			return false, nil
+		}
+		return true, nil
+	}); err != nil {
+		t.Fatalf("%v: %v", err, last)
 	}
 }

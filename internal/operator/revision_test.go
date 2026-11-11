@@ -165,7 +165,7 @@ func TestTheOperatorRefusesToStartWithoutAVersion(t *testing.T) {
 	if revision, err := in.Revision(); err == nil {
 		t.Errorf("an empty version gives the revision %q", revision)
 	}
-	if err := operator.Setup(nil, in); err == nil || !strings.Contains(err.Error(), "without a version") {
+	if _, err := operator.Setup(nil, in); err == nil || !strings.Contains(err.Error(), "without a version") {
 		t.Errorf("Setup with an empty version returns %v, want the refusal before it touches the manager", err)
 	}
 }
@@ -181,7 +181,7 @@ func TestTheOperatorRefusesAVersionThatIsNotUTF8(t *testing.T) {
 func TestTheOperatorRefusesToStartWithARevisionThatDoesNotFit(t *testing.T) {
 	in := revisionInputs()
 	in.Version = strings.Repeat("v", 128)
-	if err := operator.Setup(nil, in); err == nil || !strings.Contains(err.Error(), "more than the 128") {
+	if _, err := operator.Setup(nil, in); err == nil || !strings.Contains(err.Error(), "more than the 128") {
 		t.Errorf("Setup with a version of 128 characters returns %v, want the refusal before it touches the manager", err)
 	}
 }

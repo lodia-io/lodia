@@ -53,7 +53,7 @@ A metric is renamed only under a new name, and in `v1alpha1` the old one stays f
 | `lodia_controlplane_datastore_db_size_bytes` | | the largest `dbSize` among the members that answered the last sample; absent until the `Etcd` is formed | with the etcd sampler |
 | `lodia_controlplane_datastore_has_leader` | | the last sample: 1 when a quorum of the voting members answered naming one leader, else 0; absent until the `Etcd` is formed | with the etcd sampler |
 | `lodia_controlplane_datastore_alarm` | `alarm` (`NOSPACE`, `CORRUPT`) | 1 per alarm armed in the last sample | with the etcd sampler |
-| `lodia_controlplane_nodes_silent`, `lodia_controlplane_nodes_counted` | | Health's last Lease list, once its clock has run `silentAfter`: the silent nodes and those that count, the two sides of the hold's fraction ([controller-manager-hold](controller-manager-hold.md)) | with Health's metrics |
+| `lodia_controlplane_nodes_silent`, `lodia_controlplane_nodes_counted` | | Health's last Lease list, once its clock has run `silentAfter`: the silent nodes and those that count, the two sides of the hold's fraction ([controller-manager-hold](controller-manager-hold.md)) | yes |
 | `lodia_controlplane_kubernetes_end_of_support_timestamp_seconds` | | the end-of-support date the version table gives the minor of `status.kubernetes.version` ([upgrades-and-maintenance-windows](upgrades-and-maintenance-windows.md)) | once the version table has the dates |
 
 Of the operator, without a tenant's labels:
@@ -61,8 +61,8 @@ Of the operator, without a tenant's labels:
 | metric | labels | value | served |
 |---|---|---|---|
 | `lodia_fleet_max_concurrent_rollouts` | | `fleet.maxConcurrentRollouts`, the slots of the fleet | yes |
-| `lodia_health_nodes_sample_lag_seconds` | a histogram, buckets 0.25, 0.5, 1, 2.5, 5, 10 and 30 | how much later than its due time a `health-nodes` pass started: the watchdog of the hold's margin | with Health's metrics |
-| `lodia_health_probe_failures_total` | `path` (`api`, `tunnel`, `konnectivity`, `internal`) | the probes that failed, whether or not three in a row turned `Reachable` False | with Health's metrics |
+| `lodia_health_nodes_sample_lag_seconds` | a histogram, buckets 0.25, 0.5, 1, 2.5, 5, 10 and 30 | how much later than its due time a `health-nodes` pass started: the watchdog of the hold's margin | yes |
+| `lodia_health_probe_failures_total` | `path` (`api`, `tunnel`, `konnectivity`, `internal`) | the probes that failed, whether or not three in a row turned `Reachable` False | yes |
 
 ## Why
 
@@ -89,7 +89,8 @@ Of the operator, without a tenant's labels:
 
 ## Code
 
-- `internal/metrics` — `Collector` builds the metrics served from the manager's cache, once elected, under the list's deadline; `collector_test.go` holds the golden `testdata/metrics.prom` over a tenant of each shape, a standby before and after its election, an informer that has not synced, a recreated `ControlPlane` and two scrapes at once, and `BenchmarkCollect` a scrape at 200 tenants.
+- `internal/metrics` — `Collector` builds the metrics served from the manager's cache and Health's counts, once elected, under the list's deadline, and serves Health's histogram and counter, which `NewSampleLag` and `NewProbeFailures` build; `collector_test.go` holds the golden `testdata/metrics.prom` over a tenant of each shape, a standby before and after its election, an informer that has not synced, a recreated `ControlPlane` and two scrapes at once, and `BenchmarkCollect` a scrape at 200 tenants.
+- `internal/controller/health` — `health.go` counts each failed probe by its path; `nodes.go` observes each pass's lag from the due time the pass before set, and publishes the pass's counts, which `Counts` reads under the reconciler's lock; `metrics_test.go` holds the lag of late, early and long passes, of failed reads, after a forget and of a first pass, the counts before and after `silentAfter`, during a hold, without a list, after a restart and of a recreated `ControlPlane`, the failed probes of each path, and collections during passes.
 - `api/v1alpha1/metrics.go` — the label values no other type of the package holds.
-- `internal/operator`, `cmd/lodia` — `Metrics` builds the collector on the running revision and `fleet.maxConcurrentRollouts`, and `cmd/lodia` registers it in controller-runtime's registry after `Setup`.
+- `internal/operator`, `cmd/lodia` — `Metrics` builds the collector on the running revision, `fleet.maxConcurrentRollouts` and the `Sources` `Setup` returns, and `cmd/lodia` registers it in controller-runtime's registry after `Setup`; `operator_test.go` checks that no registry holds a `lodia_` metric beside it.
 - `Makefile`, `.github/workflows/ci.yml` — `make monitoring`, part of `verify`, runs `promtool check metrics` on the golden; CI installs promtool by its checksum.

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -70,10 +71,23 @@ type NodesReconciler struct {
 	// Clock tells when a Lease was seen to change, and how old the last list of
 	// Nodes is.
 	Clock clock.PassiveClock
+	// SampleLag observes how much later than its due time each pass starts;
+	// nil observes nothing.
+	SampleLag prometheus.Observer
 
 	mu      sync.Mutex
 	samples map[types.NamespacedName]*sampling
 	clients map[types.NamespacedName]*tenantClients
+	// counts is what each control plane's last pass counted, for Counts, which
+	// reads it under mu, since a pass writes its sampling without.
+	counts map[types.NamespacedName]nodeCount
+}
+
+// nodeCount is what a pass counted of the control plane with uid: the silent
+// nodes and those that count, as status.health has them.
+type nodeCount struct {
+	uid             types.UID
+	silent, counted int
 }
 
 // sampling is what a pass remembers of one control plane; only that control
@@ -91,12 +105,19 @@ type sampling struct {
 	// leader is the version of the controller manager's Lease the pass saw
 	// last, and when it saw that version first.
 	leader renewal
+	// due is when the next pass is due, the end of the last one plus the
+	// requeue it returned; zero before the first pass and after one that could
+	// not read the ControlPlane.
+	due time.Time
+	// count is what this pass counted, once the clock of the node Leases has
+	// run SilentAfter, else nil.
+	count *nodeCount
 }
 
-// restart forgets the clock of the node Leases and the count towards the
-// release: no list of the Leases stands behind this pass.
+// restart forgets the clock of the node Leases, the count towards the release
+// and the pass's count: no list of the Leases stands behind this pass.
 func (s *sampling) restart() {
-	s.leases, s.below = nil, time.Time{}
+	s.leases, s.below, s.count = nil, time.Time{}, nil
 }
 
 // observe starts the clock, when it was forgotten, and notes the Leases listed.
@@ -148,30 +169,42 @@ func (r *NodesReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			return ctrl.Result{}, nil
 		}
 		logf.FromContext(ctx).Error(err, "read the ControlPlane")
-		return r.again(now), nil
+		r.unread(req.NamespacedName)
+		result, _ := r.again(now)
+		return result, nil
 	}
 	if !cp.DeletionTimestamp.IsZero() || cp.Spec.Paused {
 		r.forget(req.NamespacedName)
 		return ctrl.Result{}, nil
 	}
-	if err := r.sample(ctx, cp, now); err != nil {
+	s := r.sampling(req.NamespacedName, cp.UID)
+	if !s.due.IsZero() && r.SampleLag != nil {
+		r.SampleLag.Observe(max(now.Sub(s.due), 0).Seconds())
+	}
+	s.count = nil
+	if err := r.sample(ctx, cp, s, now); err != nil {
 		logf.FromContext(ctx).Error(err, "sample the tenant's nodes")
 	}
-	return r.again(now), nil
+	r.publish(req.NamespacedName, s)
+	result, due := r.again(now)
+	s.due = due
+	return result, nil
 }
 
-// again requeues a Period after now, or in a second when the pass took longer.
-// It returns no error on any path: controller-runtime does not requeue a
-// non-positive RequeueAfter, and an error goes to a backoff that reaches 1,000
-// s (https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/internal/controller/controller.go#L498-L516).
-func (r *NodesReconciler) again(now time.Time) ctrl.Result {
-	return ctrl.Result{RequeueAfter: max(r.Period-r.Clock.Since(now), time.Second)}
+// again requeues a Period after now, or in a second when the pass took longer,
+// and returns when the next pass is due: controller-runtime adds the request
+// once Reconcile returns. It returns no error on any path: controller-runtime
+// does not requeue a non-positive RequeueAfter, and an error goes to a backoff
+// that reaches 1,000 s (https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/internal/controller/controller.go#L498-L516).
+func (r *NodesReconciler) again(now time.Time) (ctrl.Result, time.Time) {
+	end := r.Clock.Now()
+	after := max(r.Period-end.Sub(now), time.Second)
+	return ctrl.Result{RequeueAfter: after}, end.Add(after)
 }
 
 // sample takes one pass over cp; an error only ends it, to be logged.
-func (r *NodesReconciler) sample(ctx context.Context, cp *lodiav1alpha1.ControlPlane, now time.Time) error {
+func (r *NodesReconciler) sample(ctx context.Context, cp *lodiav1alpha1.ControlPlane, s *sampling, now time.Time) error {
 	key := client.ObjectKeyFromObject(cp)
-	s := r.sampling(key, cp.UID)
 	if meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionControllerManagerHeld) == nil {
 		if err := live.Nodes(ctx, r.Reader, cp, lodiav1alpha1.ConditionControllerManagerHeld); err != nil {
 			return err
@@ -398,10 +431,50 @@ func (r *NodesReconciler) tenant(key types.NamespacedName, kubeconfig []byte) (*
 	return r.clients[key].of(kubeconfig)
 }
 
+// publish makes the pass's count the one Counts returns, or leaves none.
+func (r *NodesReconciler) publish(key types.NamespacedName, s *sampling) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s.count == nil {
+		delete(r.counts, key)
+		return
+	}
+	if r.counts == nil {
+		r.counts = map[types.NamespacedName]nodeCount{}
+	}
+	r.counts[key] = *s.count
+}
+
+// unread forgets the due time and the count of the control plane under key,
+// whichever its UID: a pass that cannot read it has neither.
+func (r *NodesReconciler) unread(key types.NamespacedName) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s := r.samples[key]; s != nil {
+		s.due = time.Time{}
+	}
+	delete(r.counts, key)
+}
+
+// Counts returns the silent nodes and those that count of the control plane
+// with key and uid, as its last pass counted them: nothing when that pass had
+// no list of the node Leases, or before their clock has run SilentAfter, when
+// no node can be silent yet.
+func (r *NodesReconciler) Counts(key types.NamespacedName, uid types.UID) (silent, counted int, ok bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	c, ok := r.counts[key]
+	if !ok || c.uid != uid {
+		return 0, 0, false
+	}
+	return c.silent, c.counted, true
+}
+
 func (r *NodesReconciler) forget(key types.NamespacedName) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.samples, key)
+	delete(r.counts, key)
 	if c := r.clients[key]; c != nil && c.transport != nil {
 		utilnet.CloseIdleConnectionsFor(c.transport.Transport)
 	}

@@ -25,4 +25,13 @@ const (
 	MetricComponentAPIServer         = "apiServer"
 	MetricComponentControllerManager = "controllerManager"
 	MetricComponentScheduler         = "scheduler"
+
+	// MetricProbeAPI, MetricProbeInternal, MetricProbeTunnel and
+	// MetricProbeKonnectivity name a path Health probes, in the label path;
+	// each prefixes that path's answer in Reachable's message, but the public
+	// endpoint's outside gateway mode.
+	MetricProbeAPI          = "api"
+	MetricProbeInternal     = "internal"
+	MetricProbeTunnel       = "tunnel"
+	MetricProbeKonnectivity = "konnectivity"
 )
