@@ -166,6 +166,60 @@ func TestAStagedSignerIsLeftOutOfNotAfter(t *testing.T) {
 	expectNotAfter(t, cp, leaf.NotAfter)
 }
 
+func TestARequestCANotWrittenLeavesItsNotAfter(t *testing.T) {
+	now := clocktesting.NewFakePassiveClock(time.Now())
+	r := longLived()
+	r.Clock = now
+	cp := controlPlane(t, "pki-not-after-unwritten-request-ca")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	old := parseTLS(t, secretOf(t, cp, "dev-cakey-kubeconfig-requests")).Cert
+	expectNotAfter(t, cp, old.NotAfter)
+
+	now.SetTime(certs.RenewalTime(old))
+	r.Client = failingApply{Client: controller, secret: "dev-cakey-kubeconfig-requests"}
+	for range 3 {
+		reconcileFails(t, r, cp)
+	}
+	for _, name := range []string{"dev-kubelet-signer", "dev-apiserver-kubelet-client"} {
+		if c := parseTLS(t, secretOf(t, cp, name)).Cert; !c.NotAfter.After(old.NotAfter) {
+			t.Fatalf("%s ends at %s, want it renewed past %s", name, c.NotAfter, old.NotAfter)
+		}
+	}
+	if c := parseTLS(t, secretOf(t, cp, "dev-cakey-kubeconfig-requests")).Cert; !c.NotAfter.Equal(old.NotAfter) {
+		t.Fatalf("the request CA was renewed: it ends at %s, want %s", c.NotAfter, old.NotAfter)
+	}
+	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, lodiav1alpha1.ReasonIssuing)
+	expectNotAfter(t, cp, old.NotAfter)
+}
+
+func TestAStagedSignerNotWrittenLeavesTheSignersNotAfter(t *testing.T) {
+	now := clocktesting.NewFakePassiveClock(time.Now())
+	r := longLived()
+	r.Clock = now
+	cp := controlPlane(t, "pki-not-after-unwritten-signer")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	old := parseTLS(t, secretOf(t, cp, "dev-kubelet-signer")).Cert
+	expectNotAfter(t, cp, old.NotAfter)
+
+	now.SetTime(certs.RenewalTime(old))
+	r.Client = failingApply{Client: controller, secret: "dev-kubelet-signer-next"}
+	for range 3 {
+		reconcileFails(t, r, cp)
+	}
+	for _, name := range []string{"dev-cakey-kubeconfig-requests", "dev-apiserver-kubelet-client", "dev-etcd-server-2"} {
+		if c := parseTLS(t, secretOf(t, cp, name)).Cert; !c.NotAfter.After(old.NotAfter) {
+			t.Fatalf("%s ends at %s, want it renewed past %s", name, c.NotAfter, old.NotAfter)
+		}
+	}
+	if c := parseTLS(t, secretOf(t, cp, "dev-kubelet-signer")).Cert; !c.NotAfter.Equal(old.NotAfter) {
+		t.Fatalf("the kubelet signer was replaced: it ends at %s, want %s", c.NotAfter, old.NotAfter)
+	}
+	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, lodiav1alpha1.ReasonIssuing)
+	expectNotAfter(t, cp, old.NotAfter)
+}
+
 func TestARestoreThatFindsSecretsWritesNoNotAfter(t *testing.T) {
 	ctx := t.Context()
 	r := newReconciler(time.Hour)
