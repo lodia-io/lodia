@@ -48,8 +48,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - No schema can check what pod admission refuses in a pod the StatefulSet API accepted: a `priorityClassName` that names no PriorityClass, or one deleted later, and a LimitRange or ResourceQuota in the tenant namespace.
   The rolling update deletes the old pod first and then cannot create the new one ([stateful_set_control.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/statefulset/stateful_set_control.go#L748-L760)), so a single member goes down at its next roll, and every certificate generation is a roll.
   `docs/operations.md` names the symptom.
-- A class edit that reaches the `Etcd` rolls its members at once; the decision wants it in the tenant's maintenance window, which Lifecycle gates in phase 2.
-  The `Etcd` records the class generation it was rendered from for that.
 - Backup credentials scoped to one tenant's prefix, so a tenant namespace's `<cp>-etcd-backup` reaches only that tenant's snapshots and not every tenant's on the class (`docs/README.md`, Identity and tenancy).
   A `Backup`'s copy, `<prefix>/<namespace UID>/backups/<Backup UID>`, sits under the same namespace UID as its source's snapshots, so one scope per namespace covers both.
 - `make e2e` could check for Docker and `helm` before it creates its cluster.
@@ -216,6 +214,14 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - Phase 3: a dedicated identity for Cluster API.
   `<cluster>-kubeconfig`, which the provider copies from `<cp>-admin-kubeconfig`, carries Lodia's admin credential (`kubernetes-admin` in `lodia:cluster-admins`), which is also the platform's automation credential, while Cluster API's contract says that kubeconfig must not be shared with other users or applications ([control-plane.md](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/docs/book/src/developer/providers/contracts/control-plane.md#L872-L874)).
   A second standing kubeconfig from PKI for it, so that revoking one does not revoke the other.
+
+## From class edits in the window (2026-11-11)
+
+- An edit that removes `etcd.autoCompaction` from a class that set it is refused at the grant: the apply of the `Etcd` sends an empty `spec.sharedConfig` where Lodia's apply set its fields before, it comes back null, and etcd-druid's schema refuses it (`spec.sharedConfig in body must be of type object: "null"`), so `DatastoreReady` is `Refused` and certificate generations stop reaching the `Etcd`.
+  `apply` drops empty scheduling constraints for that reason, and an empty `sharedConfig` needs the same.
+- A person's edit of the `Etcd`'s `spec.backup.store` to a value the schema of `status.datastore.snapshots` refuses fails every status apply while `keep` or `copied` carries the store: while the class waits for its grant or is held for its credentials, while the operator revision is held, and while the recorded class is gone, until a class of its name is created again and granted; `DatastoreReady`, `BackupReady` and `status.datastore` stop being written meanwhile.
+  A store a person adds under a class without one, or an `endpointOverride` under a class whose store names no endpoint, is a field Lodia's apply does not own: it stays, and every status apply fails, held or not, until a class edit that renders that field is granted.
+  etcd-druid's schema takes any provider or none, `Local` among them, no container, and a prefix and an endpoint of any length ([store.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/store.go#L13-L35)); the status takes S3, GCS, ABS and Swift, a bucket of at least one character, a prefix of 1 to 512 characters and an endpoint of at most 512.
 
 ## For wave 2, observability
 

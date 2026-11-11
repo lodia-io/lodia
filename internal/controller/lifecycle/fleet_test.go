@@ -55,6 +55,15 @@ func fleetTenant(t *testing.T, namespace string) *lodiav1alpha1.ControlPlane {
 	return cp
 }
 
+func autoUpdate(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+	t.Helper()
+	fresh := getQuiet(t, cp)
+	fresh.Spec.Maintenance = &lodiav1alpha1.Maintenance{AutoUpdate: &lodiav1alpha1.AutoUpdate{KubernetesPatch: true}}
+	if err := quiet.Update(t.Context(), fresh); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func reportsOf(t *testing.T, cp *lodiav1alpha1.ControlPlane, revision string) {
 	t.Helper()
 	components := map[string]any{}
@@ -477,6 +486,47 @@ func TestAStaleCacheNeverRevokesAGrantOrASlot(t *testing.T) {
 			cp.Status.Target.OperatorRevision = otherRevision
 			cp.Status.Maintenance = nil
 			meta.SetStatusCondition(&cp.Status.Conditions, metav1.Condition{Type: lodiav1alpha1.ConditionProgressing, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonIdle, ObservedGeneration: cp.Generation})
+		}},
+		{"a cache from before a patch update's grant", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+			autoUpdate(t, cp)
+			reportsOf(t, cp, runningRevision)
+			seedSlot(t, cp, map[string]any{"version": "v1.37.2", "operatorRevision": runningRevision}, true, nil)
+		}, func(cp *lodiav1alpha1.ControlPlane) {
+			cp.Status.Target.Version = "v1.37.1"
+			cp.Status.Kubernetes.Upgrade = nil
+			cp.Status.Maintenance = nil
+			meta.SetStatusCondition(&cp.Status.Conditions, metav1.Condition{Type: lodiav1alpha1.ConditionProgressing, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonIdle, ObservedGeneration: cp.Generation})
+		}},
+		{"a cache from before patch updates were turned on and granted", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+			autoUpdate(t, cp)
+			reportsOf(t, cp, runningRevision)
+			seedLifecycle(t, cp, runningRevision, lodiav1alpha1.ReasonIdle, nil, nil)
+		}, func(cp *lodiav1alpha1.ControlPlane) {
+			cp.Generation--
+			cp.Spec.Maintenance = nil
+			cp.Status.Target.Version = "v1.37.1"
+			cp.Status.Kubernetes.Upgrade = nil
+			cp.Status.Maintenance = nil
+			meta.SetStatusCondition(&cp.Status.Conditions, metav1.Condition{Type: lodiav1alpha1.ConditionProgressing, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonIdle, ObservedGeneration: cp.Generation})
+		}},
+		{"a cache from before a class edit's grant", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+			class := datastoreClass(t, quiet, "stale-grant")
+			reportsOf(t, cp, runningRevision)
+			applyQuiet(t, cp, "test/class", runsClass(class, 1))
+			seedSlot(t, cp, classGrant(class, editClass(t, quiet, "stale-grant")), false, nil)
+		}, func(cp *lodiav1alpha1.ControlPlane) {
+			cp.Status.Target.DatastoreClass = nil
+			cp.Status.Maintenance = nil
+			meta.SetStatusCondition(&cp.Status.Conditions, metav1.Condition{Type: lodiav1alpha1.ConditionProgressing, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonIdle, ObservedGeneration: cp.Generation})
+		}},
+		{"a cache that has not seen the Etcd take the class edit", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+			class := datastoreClass(t, quiet, "stale-rollout")
+			reportsOf(t, cp, runningRevision)
+			applyQuiet(t, cp, "test/class", runsClass(class, editClass(t, quiet, "stale-rollout")))
+			seedSlot(t, cp, classGrant(class, 2), false, &settling)
+		}, func(cp *lodiav1alpha1.ControlPlane) {
+			cp.Status.Datastore.Class.Generation = 1
+			cp.Status.Maintenance.SettlingSince = nil
 		}},
 		{"a cache that has not seen the change roll out", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 			reportsOf(t, cp, runningRevision)

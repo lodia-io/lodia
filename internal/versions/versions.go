@@ -10,6 +10,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/distribution/reference"
 	"k8s.io/apimachinery/pkg/util/version"
@@ -30,11 +31,12 @@ type Images struct {
 // CoreDNS is kubeadm's pin for each minor (kubernetes/kubernetes
 // cmd/kubeadm/app/constants/constants.go at v1.35.0, v1.36.0 and v1.37.1);
 // konnectivity 0.NN serves Kubernetes 1.NN (apiserver-network-proxy README);
-// latest is the minor's newest patch, https://dl.k8s.io/release/stable-<minor>.txt.
-var minors = map[string]struct{ coreDNS, konnectivity, latest string }{
-	"1.35": {"v1.13.1", "v0.35.0", "v1.35.10"},
-	"1.36": {"v1.14.2", "v0.36.0", "v1.36.6"},
-	"1.37": {"v1.14.6", "v0.37.0", "v1.37.2"},
+// latest is the minor's newest patch, https://dl.k8s.io/release/stable-<minor>.txt;
+// endOfSupport is the minor's End of Life, https://kubernetes.io/releases/.
+var minors = map[string]struct{ coreDNS, konnectivity, latest, endOfSupport string }{
+	"1.35": {"v1.13.1", "v0.35.0", "v1.35.10", "2027-02-28"},
+	"1.36": {"v1.14.2", "v0.36.0", "v1.36.6", "2027-06-28"},
+	"1.37": {"v1.14.6", "v0.37.0", "v1.37.2", "2027-10-28"},
 }
 
 // For returns the images of a Kubernetes version vMAJOR.MINOR.PATCH, and
@@ -112,11 +114,26 @@ func Oldest(reported ...string) (string, bool) {
 	return oldest, found
 }
 
+// Newer says whether the Kubernetes version a is newer than b, and false when
+// either is not a semantic version.
+func Newer(a, b string) bool {
+	va, errA := version.ParseSemantic(a)
+	vb, errB := version.ParseSemantic(b)
+	return errA == nil && errB == nil && vb.LessThan(va)
+}
+
 // Latest returns the newest patch of minor in the table, and false when Lodia
 // does not run it.
 func Latest(minor string) (string, bool) {
 	m, ok := minors[minor]
 	return m.latest, ok
+}
+
+// EndOfSupport returns the day, in UTC, the Kubernetes project ends its
+// support of minor, and false when Lodia does not run it.
+func EndOfSupport(minor string) (time.Time, bool) {
+	day, err := time.Parse(time.DateOnly, minors[minor].endOfSupport)
+	return day, err == nil
 }
 
 // Next returns the minor after minor ("1.37" for "1.36"), and false when Lodia

@@ -6,6 +6,7 @@ package lifecycle
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,19 +20,25 @@ import (
 )
 
 // facts is everything a pass decides from. backup is the pre-upgrade Backup of
-// the minor step cp is at, by backupMinor: nil while it does not exist. fleet
-// holds the other tenants that hold a slot of the fleet or wait for one, read
-// only while a change is pending; limit is how many may hold one, and settling
-// how long a change Lodia started keeps its slot once it has rolled out.
+// the minor step cp is at, by backupMinor: nil while it does not exist. class
+// is the UID and generation of the DatastoreClass status.datastore.class
+// names, noClass while none is named or it is gone. fleet holds the other
+// tenants that hold a slot of the fleet or wait for one, read only while a
+// change is pending; limit is how many may hold one, and settling how long a
+// change Lodia started keeps its slot once it has rolled out.
 type facts struct {
 	cp       *lodiav1alpha1.ControlPlane
 	backup   *lodiav1alpha1.Backup
+	class    lodiav1alpha1.DatastoreClassGeneration
 	now      time.Time
 	revision string
 	fleet    []member
 	limit    int
 	settling time.Duration
 }
+
+// noClass stands for no class: none named, or one that is gone.
+var noClass lodiav1alpha1.DatastoreClassGeneration
 
 // decision holds every status field Lifecycle owns and no other, since an
 // apply that leaves one out removes it, the name of the pre-upgrade Backup to
@@ -59,10 +66,13 @@ func (d decision) differs(cp *lodiav1alpha1.ControlPlane) bool {
 	})
 }
 
-// change is where a version change stands after a pass.
+// change is where a version change stands after a pass, and the class
+// generation the Etcd may run.
 type change struct {
 	target  string
 	upgrade *lodiav1alpha1.UpgradeStatus
+	// class is target.datastoreClass after the pass.
+	class lodiav1alpha1.DatastoreClassGeneration
 	// unsupported is why the target stays, for the owner to fix.
 	unsupported string
 	// preflight is a minor step's failed check, its own reason.
@@ -80,7 +90,7 @@ func decide(f facts) decision {
 	readyNow := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionReady)
 	status := lodiav1alpha1.ControlPlaneStatus{
 		ObservedGeneration: cp.Status.ObservedGeneration,
-		Target:             newTarget(targetOf(cp), revisionOf(cp), nil),
+		Target:             newTarget(targetOf(cp), revisionOf(cp), classTargetOf(cp), nil),
 		Maintenance:        newMaintenance(lastHandledOf(cp), nil, nil),
 	}
 	upgrade := upgradeOf(cp)
@@ -94,17 +104,21 @@ func decide(f facts) decision {
 	default:
 		c := f.versionChange()
 		readyNow = ready(cp)
-		m := f.maintain(c, readyNow)
+		m := f.maintain(&c, readyNow)
 		progressing = c.progressing(f, m)
 		if observed(cp) {
 			status.ObservedGeneration = cp.Generation
 		}
-		status.Target = newTarget(c.target, m.revision, m.scheduledFor)
+		status.Target = newTarget(c.target, m.revision, c.class, m.scheduledFor)
 		status.Maintenance = newMaintenance(m.lastHandled, m.settlingSince, m.slotSince)
 		upgrade = c.upgrade
 		d.createBackup, d.requeue, d.takesSlot = c.createBackup, m.requeue, m.takesSlot
 	}
-	if reported := oldestReported(cp); reported != "" || upgrade != nil {
+	reported := oldestReported(cp)
+	if notice := supportNotice(reported, f.now); notice != "" && cp.DeletionTimestamp.IsZero() {
+		progressing.Message += "; " + notice
+	}
+	if reported != "" || upgrade != nil {
 		status.Kubernetes = &lodiav1alpha1.KubernetesStatus{Version: reported, Upgrade: upgrade}
 	}
 	for _, condition := range []*metav1.Condition{progressing, readyNow} {
@@ -116,11 +130,34 @@ func decide(f facts) decision {
 	return d
 }
 
-func newTarget(version, revision string, scheduledFor *metav1.Time) *lodiav1alpha1.Target {
-	if version == "" && revision == "" && scheduledFor == nil {
+// endOfSupportNotice is how many days before a minor's end of support
+// Progressing says it comes.
+const endOfSupportNotice = 60
+
+// supportNotice is Progressing's sentence on the end of support of the minor
+// of version, from endOfSupportNotice days before the table's date, empty
+// before that and for a minor the table has no date for.
+func supportNotice(version string, now time.Time) string {
+	minor, _ := versions.Minor(version)
+	day, ok := versions.EndOfSupport(minor)
+	switch {
+	case !ok || now.Before(day.AddDate(0, 0, -endOfSupportNotice)):
+		return ""
+	case now.Before(day):
+		return fmt.Sprintf("Kubernetes %s reaches its end of support on %s", minor, day.Format(time.DateOnly))
+	}
+	return fmt.Sprintf("Kubernetes %s reached its end of support on %s", minor, day.Format(time.DateOnly))
+}
+
+func newTarget(version, revision string, class lodiav1alpha1.DatastoreClassGeneration, scheduledFor *metav1.Time) *lodiav1alpha1.Target {
+	if version == "" && revision == "" && class == noClass && scheduledFor == nil {
 		return nil
 	}
-	return &lodiav1alpha1.Target{Version: version, OperatorRevision: revision, ScheduledFor: scheduledFor}
+	target := &lodiav1alpha1.Target{Version: version, OperatorRevision: revision, ScheduledFor: scheduledFor}
+	if class != noClass {
+		target.DatastoreClass = &class
+	}
+	return target
 }
 
 func newMaintenance(lastHandled string, settlingSince, slotSince *metav1.Time) *lodiav1alpha1.MaintenanceStatus {
@@ -142,6 +179,21 @@ func revisionOf(cp *lodiav1alpha1.ControlPlane) string {
 		return cp.Status.Target.OperatorRevision
 	}
 	return ""
+}
+
+func classTargetOf(cp *lodiav1alpha1.ControlPlane) lodiav1alpha1.DatastoreClassGeneration {
+	if cp.Status.Target != nil && cp.Status.Target.DatastoreClass != nil {
+		return *cp.Status.Target.DatastoreClass
+	}
+	return noClass
+}
+
+// runningClass is the DatastoreClass the Etcd runs, as Datastore reports it.
+func runningClass(cp *lodiav1alpha1.ControlPlane) *lodiav1alpha1.DatastoreClassStatus {
+	if d := cp.Status.Datastore; d != nil {
+		return d.Class
+	}
+	return nil
 }
 
 func scheduledOf(cp *lodiav1alpha1.ControlPlane) *metav1.Time {
@@ -182,12 +234,13 @@ func upgradeOf(cp *lodiav1alpha1.ControlPlane) *lodiav1alpha1.UpgradeStatus {
 	return nil
 }
 
-// versionChange moves the target and upgrade towards spec.version
+// versionChange moves the target and upgrade towards spec.version, and the
+// class generation as far as no grant does
 // (docs/decisions/upgrades-and-maintenance-windows.md).
 func (f facts) versionChange() change {
 	cp := f.cp
 	want := cp.Spec.Version
-	c := change{target: targetOf(cp), upgrade: upgradeOf(cp)}
+	c := change{target: targetOf(cp), upgrade: upgradeOf(cp), class: f.classTarget()}
 	if _, ok := versions.For(want); !ok {
 		c.unsupported = fmt.Sprintf("spec.version %s is not of a minor Lodia runs: %s", want, strings.Join(versions.Minors(), ", "))
 		c.settle(cp)
@@ -206,13 +259,84 @@ func (f facts) versionChange() change {
 		c.settle(cp)
 	case ahead > 0:
 		f.minorStep(&c)
-	case want != c.target:
+	// With patch updates the target only moves up: one may have taken it past
+	// spec.version.
+	case want != c.target && (!patchUpdates(cp) || versions.Newer(want, c.target)):
 		c.upgrade = moved(c.upgrade, f.now)
 		c.target = want
 	default:
 		c.settle(cp)
 	}
 	return c
+}
+
+// classTarget is target.datastoreClass where no grant moves it: the class
+// generation the Etcd runs while the target names none, and while the one it
+// names cannot be reached, the class already being at what the Etcd runs, as
+// for an Etcd created again by hand, or gone, in which case the Etcd keeps
+// what the class gave it.
+func (f facts) classTarget() lodiav1alpha1.DatastoreClassGeneration {
+	stored, running := classTargetOf(f.cp), runningClass(f.cp)
+	if running != nil && (stored == noClass || f.class == running.DatastoreClassGeneration || f.class == noClass) {
+		return running.DatastoreClassGeneration
+	}
+	return stored
+}
+
+// classBehind names the class generation the Etcd runs while it is not
+// target, a class edit, or a class created again under its name, that has not
+// reached it.
+func classBehind(cp *lodiav1alpha1.ControlPlane, target lodiav1alpha1.DatastoreClassGeneration) []string {
+	running := runningClass(cp)
+	if running == nil || running.DatastoreClassGeneration == target {
+		return nil
+	}
+	return []string{fmt.Sprintf("etcd: runs DatastoreClass %s generation %d, not %s", running.Name, running.Generation, classGeneration(running, target))}
+}
+
+// classGeneration names generation g of the class the Etcd runs, with its UID
+// when it is not the one the Etcd runs: a class created again under its name.
+func classGeneration(running *lodiav1alpha1.DatastoreClassStatus, g lodiav1alpha1.DatastoreClassGeneration) string {
+	if g.UID != running.UID {
+		return fmt.Sprintf("%d of UID %s", g.Generation, g.UID)
+	}
+	return strconv.FormatInt(g.Generation, 10)
+}
+
+func patchUpdates(cp *lodiav1alpha1.ControlPlane) bool {
+	m := cp.Spec.Maintenance
+	return m != nil && m.AutoUpdate != nil && m.AutoUpdate.KubernetesPatch
+}
+
+// patchUpdate is the version a patch update moves c's target to: with patch
+// updates on and spec.version of the target's minor, the newer of
+// spec.version and that minor's latest in the table, while it is newer than
+// the target; empty otherwise.
+func (f facts) patchUpdate(c change) string {
+	spec := f.cp.Spec.Version
+	minor, _ := versions.Minor(c.target)
+	specMinor, _ := versions.Minor(spec)
+	latest, ok := versions.Latest(minor)
+	if !patchUpdates(f.cp) || !ok || specMinor != minor {
+		return ""
+	}
+	newest := spec
+	if versions.Newer(latest, spec) {
+		newest = latest
+	}
+	if !versions.Newer(newest, c.target) {
+		return ""
+	}
+	return newest
+}
+
+// patch moves the target to version, a patch update, as step 1 moves it; a
+// first target is set, since no change is under way at creation.
+func (f facts) patch(c *change, version string) {
+	if targetOf(f.cp) != "" {
+		c.upgrade = moved(c.upgrade, f.now)
+	}
+	c.target = version
 }
 
 // moved is the upgrade once the target moves: its next step is the API
@@ -426,10 +550,12 @@ func notAtTarget(cp *lodiav1alpha1.ControlPlane, target string) []string {
 }
 
 // upgradeFailures are the reasons of a condition Ready is built from that stop
-// an upgrade: an object refused or kept elsewhere, or a rollout past its
-// deadline (docs/decisions/upgrades-and-maintenance-windows.md).
+// an upgrade: an object refused or kept elsewhere, a rollout past its
+// deadline, or a class's credentials Secret missing
+// (docs/decisions/upgrades-and-maintenance-windows.md).
 var upgradeFailures = []string{
 	lodiav1alpha1.ReasonRefused, lodiav1alpha1.ReasonObjectsControlledElsewhere, lodiav1alpha1.ReasonUnsupported, lodiav1alpha1.ReasonProgressDeadlineExceeded,
+	lodiav1alpha1.ReasonSecretNotFound,
 }
 
 // failure is why a version change under way has stopped, empty while it has
@@ -442,11 +568,11 @@ func (c change) failure(cp *lodiav1alpha1.ControlPlane) string {
 }
 
 // failed is why a change its owner started has stopped: a cause while an
-// upgrade exists or a renderer has not reached the granted revision, so that
-// an idle tenant's standing refusal is Ready's to report, and an owner's or a
-// token's grant of a revision that is refused is not.
+// upgrade exists, a renderer has not reached the granted revision or the Etcd
+// the granted class generation, so that an idle tenant's standing refusal is
+// Ready's to report, and an owner's or a token's grant that is refused is not.
 func (c change) failed(f facts, granted string) string {
-	if c.upgrade == nil && len(behind(f.cp, granted, f.revision)) == 0 {
+	if c.upgrade == nil && len(behind(f.cp, granted, f.revision)) == 0 && len(classBehind(f.cp, c.class)) == 0 {
 		return ""
 	}
 	return c.cause(f.cp)
@@ -476,10 +602,10 @@ func stopping(cp *lodiav1alpha1.ControlPlane) *metav1.Condition {
 }
 
 // rolling names what keeps a change rolling: a component or an etcd member
-// not updated, a part not at the target, and a renderer that has not reached
-// the granted revision.
+// not updated, a part not at the target, a renderer that has not reached the
+// granted revision, and an Etcd not at the granted class generation.
 func (c change) rolling(f facts, granted string) []string {
-	return slices.Concat(rollingOut(f.cp), notAtTarget(f.cp, c.target), behind(f.cp, granted, f.revision))
+	return slices.Concat(rollingOut(f.cp), notAtTarget(f.cp, c.target), behind(f.cp, granted, f.revision), classBehind(f.cp, c.class))
 }
 
 // progressing writes the first of Progressing's reasons that applies, in the

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -55,6 +56,10 @@ const (
 
 // maxRevision is the MaxLength of status.datastore.operatorRevision.
 const maxRevision = 128
+
+// maxClassName and maxClassUID are the MaxLength of status.datastore.class's
+// name and uid, which the API server counts in characters.
+const maxClassName, maxClassUID = 253, 36
 
 type Reconciler struct {
 	client.Client
@@ -242,7 +247,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		err = errors.Join(err, policyErr)
 	}
-	datastore, readErr := r.datastoreStatus(ctx, cp, out.etcd, out.sts)
+	datastore, readErr := r.datastoreStatus(ctx, cp, out.etcd, out.sts, out.applied)
 	if readErr != nil {
 		return ctrl.Result{}, errors.Join(err, readErr)
 	}
@@ -295,6 +300,9 @@ func (r *Reconciler) waitForTarget(ctx context.Context, cp *lodiav1alpha1.Contro
 type outcome struct {
 	etcd *druidv1alpha1.Etcd
 	sts  *appsv1.StatefulSet
+	// applied says that etcd is this pass's apply of it, not the cache's,
+	// which can predate the class the last pass reported.
+	applied bool
 	// restore is carried into every apply: what this pass found complete, or
 	// what it read.
 	restore      *lodiav1alpha1.RestoreStatus
@@ -316,15 +324,21 @@ type pass struct {
 	members      int32
 	rendered     *druidv1alpha1.Etcd
 	// copied says that rendered is the current Etcd's copy a held pass
-	// applies.
-	copied bool
-	// held is the note on DatastoreReady of a class held or a quota capped,
-	// and of a request that waits for etcd-druid; a held class renders no cap,
-	// so those two never meet. It and refusal, an apply of the credentials the
-	// API server refused, reach whichever step the pass ends on.
+	// applies, and keep that the Etcd keeps the fields its class gave it
+	// while the class waits for its grant or is held for its credentials.
+	copied, keep bool
+	// held is the note on DatastoreReady of a class held or waiting for its
+	// generation, of a quota capped, and of a request that waits for
+	// etcd-druid. It and refusal, an apply of the credentials the API server
+	// refused, reach whichever step the pass ends on.
 	held    string
 	heldFor time.Duration
 	refusal error
+	// heldReason is DatastoreReady's reason while it is True and the class is
+	// held for its credentials copy: Lifecycle reads it as a cause that fails
+	// a change, so that it grants no slot while the hold stands and fails the
+	// change in a slot.
+	heldReason string
 }
 
 func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*outcome, error) {
@@ -419,46 +433,97 @@ func (r *Reconciler) readInputs(ctx context.Context, p *pass) (*outcome, error) 
 
 func (r *Reconciler) holdClass(ctx context.Context, p *pass) (*outcome, error) {
 	class := p.class
-	if class == nil || class.Spec.Backup == nil {
+	if class == nil {
 		return nil, nil
 	}
-	moved, err := r.storeMoved(ctx, p)
+	// An Etcd takes an edit of its class, or a class created again under its
+	// name, once Lifecycle grants the class's UID and generation, in the
+	// window: a class is shared, and an edit rolls every member on it. A new
+	// Etcd takes the class as it is.
+	waits := p.current != nil && generationOf(class) != grantedClass(p.cp)
+	if waits {
+		p.keep = true
+		if recorded, _ := recordedClass(p.current); recorded.DatastoreClassGeneration != generationOf(class) {
+			generation := strconv.FormatInt(class.Generation, 10)
+			if recorded.UID != class.UID {
+				generation += " of UID " + string(class.UID)
+			}
+			p.held = fmt.Sprintf("DatastoreClass %s generation %s waits for status.target.datastoreClass", class.Name, generation)
+		}
+	}
+	if class.Spec.Backup == nil {
+		return nil, nil
+	}
+	moved, err := r.storeMoved(ctx, p, class, waits)
 	if err != nil {
 		return nil, err
 	}
 	blocked, err := r.copyCredentials(ctx, p.cp, class, p.secrets, moved)
-	if blocked == "" && err != nil {
+	if blocked == nil && err != nil {
 		return nil, err
 	}
 	p.refusal = err
-	if blocked != "" && p.current == nil {
-		message := fmt.Sprintf("DatastoreClass %s cannot be applied yet: %s", class.Name, blocked)
+	if blocked != nil && p.current == nil {
+		message := fmt.Sprintf("DatastoreClass %s cannot be applied yet: %s", class.Name, blocked.cause)
 		return &outcome{condition: newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, message), requeueAfter: time.Minute}, nil
 	}
 	// A class is held whole: applying the rest of an edit could add a store
 	// whose copy cannot be made, and the certificate generations still move.
-	if blocked != "" {
-		p.held = fmt.Sprintf("DatastoreClass %s is held: %s", class.Name, blocked)
-		p.class, p.heldFor = nil, time.Minute
+	if blocked != nil {
+		p.held = note(p.held, fmt.Sprintf("DatastoreClass %s is held: %s", class.Name, blocked.cause))
+		p.keep, p.heldFor, p.heldReason = true, time.Minute, blocked.reason
 	}
 	return nil, nil
 }
 
-// storeMoved says whether a held pass keeps an Etcd on a store other than the
-// one its class renders: the backup-restore sidecar mounts <cp>-etcd-backup,
-// so the keys of a store must not arrive before the Etcd names that store.
-// The Etcd's store reaches the sidecar only once etcd-druid serves its
-// request, so a move granted while that request waits for etcd-druid's
-// Deployment brings the keys first, for as long as the wait lasts.
-func (r *Reconciler) storeMoved(ctx context.Context, p *pass) (bool, error) {
-	if p.current == nil || !r.held(p.cp) {
+// grantedClass is status.target.datastoreClass, the zero value while absent.
+func grantedClass(cp *lodiav1alpha1.ControlPlane) lodiav1alpha1.DatastoreClassGeneration {
+	if cp.Status.Target == nil || cp.Status.Target.DatastoreClass == nil {
+		return lodiav1alpha1.DatastoreClassGeneration{}
+	}
+	return *cp.Status.Target.DatastoreClass
+}
+
+func generationOf(class *lodiav1alpha1.DatastoreClass) lodiav1alpha1.DatastoreClassGeneration {
+	return lodiav1alpha1.DatastoreClassGeneration{UID: class.UID, Generation: class.Generation}
+}
+
+// recordedClass is the class etcd was rendered from, as its annotations
+// record it, and whether they record one status.datastore.class takes: a
+// person can edit them to any value.
+func recordedClass(etcd *druidv1alpha1.Etcd) (lodiav1alpha1.DatastoreClassStatus, bool) {
+	generation, err := strconv.ParseInt(etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation], 10, 64)
+	class := lodiav1alpha1.DatastoreClassStatus{
+		Name:                     etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation],
+		DatastoreClassGeneration: lodiav1alpha1.DatastoreClassGeneration{UID: types.UID(etcd.Annotations[lodiav1alpha1.DatastoreClassUIDAnnotation]), Generation: generation},
+	}
+	return class, class.Name != "" && utf8.RuneCountInString(class.Name) <= maxClassName &&
+		class.UID != "" && utf8.RuneCountInString(string(class.UID)) <= maxClassUID &&
+		err == nil && generation >= 1
+}
+
+// storeMoved says whether a pass that keeps the Etcd's class, held by the
+// operator revision or waiting for the class's generation, keeps an Etcd on a
+// store other than the one class renders: the backup-restore sidecar mounts
+// <cp>-etcd-backup, so the keys of a store must not arrive before the Etcd
+// names that store. The Etcd is read from the API server: the copy lands
+// before the kept apply, which a stale cache only makes conflict. The Etcd's
+// store reaches the sidecar only once etcd-druid serves its request, so a move
+// granted while that request waits for etcd-druid's Deployment brings the keys
+// first, for as long as the wait lasts.
+func (r *Reconciler) storeMoved(ctx context.Context, p *pass, class *lodiav1alpha1.DatastoreClass, waits bool) (bool, error) {
+	if p.current == nil || !r.held(p.cp) && !waits {
 		return false, nil
+	}
+	etcd := &druidv1alpha1.Etcd{}
+	if err := r.Reader.Get(ctx, client.ObjectKeyFromObject(p.current), etcd); err != nil {
+		return false, fmt.Errorf("read Etcd %s: %w", p.current.Name, err)
 	}
 	var err error
 	if p.namespaceUID, err = r.namespaceUID(ctx, p.cp); err != nil {
 		return false, err
 	}
-	return !equality.Semantic.DeepEqual(store(p.cp, p.class.Spec.Backup, p.namespaceUID), p.current.Spec.Backup.Store), nil
+	return !equality.Semantic.DeepEqual(store(p.cp, class.Spec.Backup, p.namespaceUID), etcd.Spec.Backup.Store), nil
 }
 
 func (r *Reconciler) namespaceUID(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (types.UID, error) {
@@ -472,8 +537,12 @@ func (r *Reconciler) namespaceUID(ctx context.Context, cp *lodiav1alpha1.Control
 func (r *Reconciler) renderEtcd(ctx context.Context, p *pass) error {
 	cp := p.cp
 	p.copied = p.current != nil && r.held(cp)
+	class := p.class
+	if p.keep {
+		class = nil
+	}
 	var err error
-	if !p.copied && p.class != nil && p.class.Spec.Backup != nil {
+	if !p.copied && class != nil && class.Spec.Backup != nil {
 		if p.namespaceUID, err = r.namespaceUID(ctx, cp); err != nil {
 			return err
 		}
@@ -486,22 +555,32 @@ func (r *Reconciler) renderEtcd(ctx context.Context, p *pass) error {
 	}
 	if p.copied {
 		p.rendered = copied(cp, p.current, p.generation)
-		// The held Etcd keeps its quota: a cap is noted while that quota is the
-		// cap, not while it is one a class edit waits to change.
-		if current := p.current.Spec.Etcd.Quota; p.class != nil && current != nil {
-			if capped, note := cappedQuota(p.class, ptr.Deref(p.current.Spec.StorageCapacity, p.class.Spec.Storage.Size), p.current.Name); note != "" && capped.Cmp(*current) == 0 {
-				p.held = note
-			}
-		}
+		p.held = note(p.held, keptCap(p.class, p.current))
 		return nil
 	}
 	var capped string
-	p.rendered, capped = render(cp, p.class, p.namespaceUID, p.generation, p.current, p.claims, p.sts, p.members)
+	p.rendered, capped = render(cp, class, p.namespaceUID, p.generation, p.current, p.claims, p.sts, p.members)
 	metav1.SetMetaDataAnnotation(&p.rendered.ObjectMeta, lodiav1alpha1.OperatorRevisionAnnotation, r.Revision)
-	if capped != "" {
-		p.held = capped
+	if p.keep {
+		capped = keptCap(p.class, p.current)
 	}
+	p.held = note(p.held, capped)
 	return nil
+}
+
+// keptCap notes the cap of class's quota on an Etcd that keeps its own quota,
+// under the operator hold or while its class waits or is held, as long as
+// that quota is the cap.
+func keptCap(class *lodiav1alpha1.DatastoreClass, etcd *druidv1alpha1.Etcd) string {
+	quota := etcd.Spec.Etcd.Quota
+	if class == nil || quota == nil {
+		return ""
+	}
+	capped, note := cappedQuota(class, ptr.Deref(etcd.Spec.StorageCapacity, class.Spec.Storage.Size), etcd.Name)
+	if capped.Cmp(*quota) != 0 {
+		return ""
+	}
+	return note
 }
 
 func (r *Reconciler) applyEtcd(ctx context.Context, p *pass) (*outcome, error) {
@@ -532,7 +611,7 @@ func (r *Reconciler) applyEtcd(ctx context.Context, p *pass) (*outcome, error) {
 	if requestErr != nil {
 		message := fmt.Sprintf("the API server refuses the request that etcd-druid reconcile Etcd %s, the annotations %s and %s; the reason is in Lodia's log",
 			etcd.Name, druidv1alpha1.DruidOperationAnnotation, lodiav1alpha1.EtcdReconcileRequestedAnnotation)
-		return &outcome{etcd: etcd, sts: p.sts, restore: p.check.restored, condition: newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, message)}, requestErr
+		return &outcome{etcd: etcd, sts: p.sts, applied: true, restore: p.check.restored, condition: newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, message)}, requestErr
 	}
 	etcd = requested
 	absent, err := r.missingSecrets(ctx, cp, etcd, p.secrets)
@@ -540,6 +619,9 @@ func (r *Reconciler) applyEtcd(ctx context.Context, p *pass) (*outcome, error) {
 		return nil, err
 	}
 	condition := p.check.reported(cp, readiness(etcd, absent))
+	if condition.Status == metav1.ConditionTrue && p.heldReason != "" {
+		condition.Reason = p.heldReason
+	}
 	if !p.copied {
 		condition.Message = note(condition.Message, memberNote(etcd, p.members))
 	}
@@ -547,7 +629,7 @@ func (r *Reconciler) applyEtcd(ctx context.Context, p *pass) (*outcome, error) {
 	if updated := updatedMembers(etcd, p.sts); updated == nil || *updated < etcd.Spec.Replicas || !served(etcd) {
 		requeueAfter = 15 * time.Second
 	}
-	return &outcome{etcd: etcd, sts: p.sts, restore: p.check.restored, condition: condition, requeueAfter: sooner(requeueAfter, p.check.requeueAfter)}, nil
+	return &outcome{etcd: etcd, sts: p.sts, applied: true, restore: p.check.restored, condition: condition, requeueAfter: sooner(requeueAfter, p.check.requeueAfter)}, nil
 }
 
 // requestReconcile asks etcd-druid, which reconciles a new Etcd's spec
@@ -1019,30 +1101,36 @@ func (r *Reconciler) labelClaims(ctx context.Context, cp *lodiav1alpha1.ControlP
 	return nil
 }
 
+// blocked is why a class's credentials copy cannot be made: the reason
+// DatastoreReady gives it, and the cause.
+type blocked struct {
+	reason, cause string
+}
+
 // etcd-druid mounts the store's Secret from the Etcd's namespace, and the
 // backup-restore sidecar reads the region from it. An existing copy is kept
 // while moved says the Etcd is held on another store. The first result says
 // why the copy cannot be made, the second carries a refusal for the log.
-func (r *Reconciler) copyCredentials(ctx context.Context, cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, secrets []metav1.PartialObjectMetadata, moved bool) (string, error) {
+func (r *Reconciler) copyCredentials(ctx context.Context, cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, secrets []metav1.PartialObjectMetadata, moved bool) (*blocked, error) {
 	store := class.Spec.Backup.Store
 	source := &corev1.Secret{}
 	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: store.SecretRef.Namespace, Name: store.SecretRef.Name}, source); err != nil {
 		if apierrors.IsNotFound(err) {
-			return fmt.Sprintf("its credentials Secret %s/%s is missing", store.SecretRef.Namespace, store.SecretRef.Name), nil
+			return &blocked{lodiav1alpha1.ReasonSecretNotFound, fmt.Sprintf("its credentials Secret %s/%s is missing", store.SecretRef.Namespace, store.SecretRef.Name)}, nil
 		}
-		return "", fmt.Errorf("read the credentials Secret %s/%s of DatastoreClass %s: %w", store.SecretRef.Namespace, store.SecretRef.Name, class.Name, err)
+		return nil, fmt.Errorf("read the credentials Secret %s/%s of DatastoreClass %s: %w", store.SecretRef.Namespace, store.SecretRef.Name, class.Name, err)
 	}
 	name := lodiav1alpha1.EtcdBackupSecret.Name(cp.Name)
 	existing, err := r.secret(ctx, cp, name, secrets)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if existing != nil {
 		if ref := ownership.ControlledElsewhere(existing, cp); ref != nil {
-			return fmt.Sprintf("%s is controlled by %s %s with UID %s", name, ref.Kind, ref.Name, ref.UID), nil
+			return &blocked{lodiav1alpha1.ReasonObjectsControlledElsewhere, fmt.Sprintf("%s is controlled by %s %s with UID %s", name, ref.Kind, ref.Name, ref.UID)}, nil
 		}
 		if moved {
-			return "", nil
+			return nil, nil
 		}
 	}
 	data := maps.Clone(source.Data)
@@ -1065,11 +1153,11 @@ func (r *Reconciler) copyCredentials(ctx context.Context, cp *lodiav1alpha1.Cont
 	if err := r.Apply(ctx, secret, client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
 		err = fmt.Errorf("apply Secret %s: %w", name, err)
 		if apistatus.Refused(err) {
-			return fmt.Sprintf("the API server refuses %s; the reason is in Lodia's log", name), err
+			return &blocked{lodiav1alpha1.ReasonRefused, fmt.Sprintf("the API server refuses %s; the reason is in Lodia's log", name)}, err
 		}
-		return "", err
+		return nil, err
 	}
-	return "", nil
+	return nil, nil
 }
 
 func (r *Reconciler) finalize(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (time.Duration, error) {
@@ -1090,7 +1178,7 @@ func (r *Reconciler) finalize(ctx context.Context, cp *lodiav1alpha1.ControlPlan
 		etcd = nil
 	}
 	deleting := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonDeleting, "the ControlPlane is being deleted: the Etcd goes first, then its claims as the class says")
-	datastore, err := r.datastoreStatus(ctx, cp, etcd, nil)
+	datastore, err := r.datastoreStatus(ctx, cp, etcd, nil, false)
 	if err != nil {
 		return 0, err
 	}
@@ -1172,11 +1260,18 @@ func (r *Reconciler) setFinalizer(ctx context.Context, cp *lodiav1alpha1.Control
 }
 
 // datastoreStatus says where the API server reaches the etcd, etcd-druid's
-// client Service, where the Etcd's snapshots go, and the operator revision it
-// runs: its stamp once rolledOut says so, and until then the revision the API
-// server holds, since the field is written whole on every pass and the cache
-// can lag this controller's own last write.
-func (r *Reconciler) datastoreStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) (*lodiav1alpha1.DatastoreStatus, error) {
+// client Service, where the Etcd's snapshots go, and the class and the
+// operator revision it runs: those the Etcd records once rolledOut says so and
+// its stamp fits the field, and until then those the API server holds, since
+// the field is written whole on every pass and the cache can lag this
+// controller's own last write. While no revision is reported, or the Etcd
+// applied records a class the report does not name, as after one was created
+// again from another class, the class is the one that Etcd records, or no edit
+// of it could become pending, the one that would let the etcd roll included.
+// Only a person changes the name an Etcd records, and the report follows it
+// at once, since the Etcd takes the class of that name; a UID or generation
+// that moves under one name waits for rolledOut.
+func (r *Reconciler) datastoreStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet, applied bool) (*lodiav1alpha1.DatastoreStatus, error) {
 	if etcd == nil {
 		return nil, nil
 	}
@@ -1188,33 +1283,41 @@ func (r *Reconciler) datastoreStatus(ctx context.Context, cp *lodiav1alpha1.Cont
 	if store := etcd.Spec.Backup.Store; store != nil {
 		status.Snapshots = new(storeLocation(store))
 	}
-	generation, err := strconv.ParseInt(etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation], 10, 64)
-	if name := etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation]; name != "" && err == nil {
-		status.Class = &lodiav1alpha1.DatastoreClassStatus{Name: name, Generation: generation}
-	}
-	if stamp, ok := rolledOut(etcd, sts); ok {
-		status.OperatorRevision = stamp
+	if stamp := etcd.Annotations[lodiav1alpha1.OperatorRevisionAnnotation]; rolledOut(etcd, sts) && len(stamp) <= maxRevision {
+		status.Class, status.OperatorRevision = classStatus(etcd), stamp
 		return status, nil
 	}
 	if err := live.Datastore(ctx, r.Reader, cp); err != nil {
 		return nil, fmt.Errorf("read ControlPlane %s: %w", cp.Name, err)
 	}
 	if previous := cp.Status.Datastore; previous != nil {
-		status.OperatorRevision = previous.OperatorRevision
+		status.Class, status.OperatorRevision = previous.Class, previous.OperatorRevision
+	}
+	if c := classStatus(etcd); applied && (status.OperatorRevision == "" || c != nil && (status.Class == nil || status.Class.Name != c.Name)) {
+		status.Class = c
 	}
 	return status, nil
 }
 
-// rolledOut gives the Etcd's stamp once etcd-druid has served the request
-// for its generation and stamp and every member runs that spec: a revision
-// that changes no field of the spec rolls a new etcd-druid's render with the
+// classStatus is status.datastore.class as etcd's annotations record it, nil
+// while they record none.
+func classStatus(etcd *druidv1alpha1.Etcd) *lodiav1alpha1.DatastoreClassStatus {
+	if recorded, ok := recordedClass(etcd); ok {
+		return &recorded
+	}
+	return nil
+}
+
+// rolledOut says whether etcd-druid has served the request for the Etcd's
+// generation and stamp and every member runs that spec: a revision that
+// changes no field of the spec rolls a new etcd-druid's render with the
 // generation unchanged, and etcd-druid can mark as observed a generation it
-// did not reconcile (reconcile_complete.go#L33-L36). A stamp longer than the
-// field is not reported.
-func rolledOut(etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) (string, bool) {
-	stamp := etcd.Annotations[lodiav1alpha1.OperatorRevisionAnnotation]
+// did not reconcile (reconcile_complete.go#L33-L36), so a class edit would
+// otherwise count as rolled out, and free its slot, before etcd-druid rolls
+// it.
+func rolledOut(etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) bool {
 	updated := updatedMembers(etcd, sts)
-	return stamp, served(etcd) && updated != nil && *updated == etcd.Spec.Replicas && len(stamp) <= maxRevision
+	return served(etcd) && updated != nil && *updated == etcd.Spec.Replicas
 }
 
 // applyStatus writes DatastoreReady and BackupReady together: the conditions

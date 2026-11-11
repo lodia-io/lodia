@@ -309,6 +309,7 @@ func TestAHeldPassChangesNothingButTheCertificateReferences(t *testing.T) {
 	}
 
 	grant(t, getControlPlane(t, ns, cp), revision)
+	grantClass(t, ns, cp, "held-copy")
 	mustPass(t, held, ns, cp)
 	granted := getEtcd(t, ns, cp)
 	if quota := quantity(granted.Spec.Etcd.Quota); quota != "3Gi" || granted.Spec.Etcd.Metrics == nil || *granted.Spec.Etcd.Metrics != druidv1alpha1.Extensive || stamped(granted) != revision {
@@ -360,12 +361,50 @@ func TestAHeldPassCopiesTheCredentialsOfTheStoreTheEtcdNames(t *testing.T) {
 	copied(t, "other-access", "eu-west-1")
 
 	grant(t, getControlPlane(t, ns, cp), revision)
+	grantClass(t, ns, cp, cp)
 	mustPass(t, held, ns, cp)
 	if got := getEtcd(t, ns, cp).Spec.Backup.Store.Container; *got != "other-bucket" {
 		t.Errorf("the grant left the Etcd on bucket %s, want other-bucket", *got)
 	}
 	if got := getCopy(t, ns, cp).Data["accessKeyID"]; string(got) != "third-access" {
 		t.Errorf("the grant's pass left accessKeyID %s in the copy, want the class's third-access", got)
+	}
+}
+
+func TestAHeldPassOverAGrantedClassKeepsTheCopyOfTheStoreTheEtcdNames(t *testing.T) {
+	ns, credentialsNamespace := namespace(t), namespace(t)
+	const cp = "held-granted"
+	create(t, credentials(credentialsNamespace))
+	createClass(t, fullClass(cp, credentialsNamespace))
+	heldTenant(t, ns, cp, cp, nil)
+	create(t, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "s3-other", Namespace: credentialsNamespace}, Data: map[string][]byte{"accessKeyID": []byte("other-access")}})
+	editClass(t, cp, func(class *lodiav1alpha1.DatastoreClass) {
+		class.Spec.Backup.Store.Bucket, class.Spec.Backup.Store.SecretRef.Name = "other-bucket", "s3-other"
+	})
+	grantClass(t, ns, cp, cp)
+	mustPass(t, operatorAt(unpaused(k8s), revision), ns, cp)
+	if got := *getEtcd(t, ns, cp).Spec.Backup.Store.Container; got != "lodia-backups" {
+		t.Errorf("a held pass moved the Etcd to bucket %s", got)
+	}
+	if got := string(getCopy(t, ns, cp).Data["accessKeyID"]); got != "spike-access" {
+		t.Errorf("a held pass over a granted store move left accessKeyID %s in the copy, want spike-access of the store the Etcd names", got)
+	}
+}
+
+func TestAHeldPassOverAGoneClassKeepsTheEtcd(t *testing.T) {
+	ns := namespace(t)
+	const cp = "held-class-gone"
+	createClass(t, newClass(cp, "Retain"))
+	before := heldTenant(t, ns, cp, cp, nil)
+	if err := k8s.Delete(t.Context(), newClass(cp, "Retain")); err != nil {
+		t.Fatal(err)
+	}
+	mustPass(t, operatorAt(unpaused(k8s), revision), ns, cp)
+	if after := getEtcd(t, ns, cp); !reflect.DeepEqual(after.Spec, before.Spec) {
+		t.Errorf("a held pass over a gone class changed the Etcd's spec from\n%+v\nto\n%+v", before.Spec, after.Spec)
+	}
+	if message := readyMessage(t, ns, cp); message != "Etcd "+cp+"-etcd has quorum, 1 of 1 members ready" {
+		t.Errorf("a held pass over a gone class writes DatastoreReady %q", message)
 	}
 }
 
@@ -402,23 +441,29 @@ func TestAHeldPassNotesTheQuotaCapTheEtcdRuns(t *testing.T) {
 	ns, credentialsNamespace := namespace(t), namespace(t)
 	create(t, credentials(credentialsNamespace))
 	for _, c := range []struct {
-		cp, class, quota, note string
+		cp, quota, note string
+		granted         bool
 	}{
-		{"held-cap", "held-cap", "6Gi", "; DatastoreClass held-cap's quota 6Gi is capped at 4Gi: it needs 12Gi of volume and Etcd held-cap-etcd's is 8Gi"},
-		{"held-raise", "held-raise", "12Gi", ""},
+		{"held-cap", "6Gi", "; DatastoreClass held-cap's quota 6Gi is capped at 4Gi: it needs 12Gi of volume and Etcd held-cap-etcd's is 8Gi", true},
+		{"held-raise", "12Gi", "", true},
+		{"held-cap-waits", "6Gi", "; DatastoreClass held-cap-waits generation 2 waits for status.target.datastoreClass; DatastoreClass held-cap-waits's quota 6Gi is capped at 4Gi: it needs 12Gi of volume and Etcd held-cap-waits-etcd's is 8Gi", false},
+		{"held-raise-waits", "12Gi", "; DatastoreClass held-raise-waits generation 2 waits for status.target.datastoreClass", false},
 	} {
 		t.Run(c.cp, func(t *testing.T) {
-			class := newClass(c.class, "Retain")
-			if c.note == "" {
-				class = fullClass(c.class, credentialsNamespace)
+			class := newClass(c.cp, "Retain")
+			if strings.HasPrefix(c.cp, "held-raise") {
+				class = fullClass(c.cp, credentialsNamespace)
 			}
 			createClass(t, class)
-			heldTenant(t, ns, c.cp, c.class, nil)
+			heldTenant(t, ns, c.cp, c.cp, nil)
 			running := quantity(getEtcd(t, ns, c.cp).Spec.Etcd.Quota)
-			editClass(t, c.class, func(class *lodiav1alpha1.DatastoreClass) {
+			editClass(t, c.cp, func(class *lodiav1alpha1.DatastoreClass) {
 				class.Spec.Storage.Size = resource.MustParse("40Gi")
 				class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{QuotaBackendBytes: new(resource.MustParse(c.quota))}
 			})
+			if c.granted {
+				grantClass(t, ns, c.cp, c.cp)
+			}
 			mustPass(t, operatorAt(unpaused(k8s), revision), ns, c.cp)
 			ready := meta.FindStatusCondition(getControlPlane(t, ns, c.cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
 			if want := "Etcd " + c.cp + "-etcd has quorum, 1 of 1 members ready" + c.note; ready.Message != want {
@@ -697,6 +742,7 @@ func TestARefusedRequestReportsTheAppliedEtcd(t *testing.T) {
 	})
 	setHighAvailability(t, ns, cp, &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"})
 	grant(t, getControlPlane(t, ns, cp), revision)
+	grantClass(t, ns, cp, cp)
 	refusing, refused := refusingRequests(cp)
 	if _, err := passOf(t, operatorAt(refusing, revision), ns, cp); !errors.Is(err, refused) {
 		t.Fatalf("a pass whose request the API server refuses returned %v, want the refusal", err)
@@ -705,8 +751,8 @@ func TestARefusedRequestReportsTheAppliedEtcd(t *testing.T) {
 		t.Fatalf("the grant's pass applied %d members of class generation %s, want 3 of 2", etcd.Spec.Replicas, etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation])
 	}
 	datastore := getControlPlane(t, ns, cp).Status.Datastore
-	if datastore.Class == nil || datastore.Class.Generation != 2 || datastore.Members.Total != 3 {
-		t.Errorf("a refused request reports class %+v and %d members, want the applied Etcd's class generation 2 and 3 members", datastore.Class, datastore.Members.Total)
+	if datastore.Class == nil || datastore.Class.Generation != 1 || datastore.Members.Total != 3 {
+		t.Errorf("a refused request reports class %+v and %d members, want class generation 1, which runs until etcd-druid serves a request, and the applied Etcd's 3 members", datastore.Class, datastore.Members.Total)
 	}
 }
 
@@ -752,6 +798,7 @@ func TestAGrantAsksEtcdDruidOnceItRunsTheGivenVersion(t *testing.T) {
 		t.Fatalf("a held pass applied the class edit: quota %s", quota)
 	}
 	grant(t, getControlPlane(t, ns, cp), revision)
+	grantClass(t, ns, cp, "druid-gate")
 
 	druidAt(t, "druid-unobserved", druidVersion, func(s *appsv1.DeploymentStatus) { s.ObservedGeneration-- })
 	druidAt(t, "druid-short", druidVersion, func(s *appsv1.DeploymentStatus) {
@@ -933,6 +980,7 @@ func TestTheRevisionIsReportedFromTheStatefulSetReadAfterTheRequest(t *testing.T
 			createClass(t, newClass(cp, "Retain"))
 			heldTenant(t, ns, cp, cp, nil)
 			grant(t, getControlPlane(t, ns, cp), revision)
+			grantClass(t, ns, cp, cp)
 			r := operatorAt(unpaused(k8s), revision)
 			mustPass(t, r, ns, cp)
 			if err := requestedAs("1/"+revision, true)(getEtcd(t, ns, cp)); err != nil {
@@ -1322,6 +1370,7 @@ func TestAStaleCacheWithAnOlderRevisionHoldsThePass(t *testing.T) {
 	editClass(t, "stale-revision", func(class *lodiav1alpha1.DatastoreClass) {
 		class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{QuotaBackendBytes: new(resource.MustParse("3Gi"))}
 	})
+	grantClass(t, ns, cp, "stale-revision")
 	before := getEtcd(t, ns, cp)
 	stale := interceptor.NewClient(unpaused(k8s), interceptor.Funcs{
 		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
