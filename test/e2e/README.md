@@ -102,6 +102,7 @@ Four `ControlPlane`s without a window turn `Ready`; the chart upgrades to build 
 The test wants all four at revision B and `Idle` within 20 minutes, the watch of every `ControlPlane` unbroken, and over the statuses it delivered, in the order they were written: never two holding a slot at once, `status.maintenance.slotSince` present, none `MaintenanceFailed`, one slot granted to each, and each grant to the first, by `target.scheduledFor`, namespace and name, of the tenants then waiting, a tenant waiting while its `target.scheduledFor` is present and at or before the time the watch delivered its status.
 The first grant finds none waiting: tenants without a window become eligible in their first passes, and the first to reach the semaphore takes the slot.
 A later grant finds none waiting only for a tenant seen waiting before, whose `Ready` dropped while it waited: that wait has no `target.scheduledFor`, and its pass once `Ready` is back takes a slot nobody else waits for.
+A `FleetLimit` status without a `target.scheduledFor` at or before its time fails the test, since every wait for a slot carries one.
 The four become eligible within one second, so the order by `target.scheduledFor` across seconds is held by the envtest `TestTheQueueGoesByScheduledForNamespaceAndName` in `internal/controller/lifecycle`.
 
 ## Gate G2: a highly available control plane
