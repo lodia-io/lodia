@@ -516,7 +516,7 @@ func TestABlockingDialCostsDeliveryItsTimeoutAndThePassReports(t *testing.T) {
 	cp := controlPlane(t, "tenant-delivery-blocked", gatewayMode)
 	publishGateway(t, cp)
 	reconcilePKI(t, gatewayIssuer(), cp)
-	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	pause(t, cp)
 	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
 		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation),
 		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable, cp.Generation),
