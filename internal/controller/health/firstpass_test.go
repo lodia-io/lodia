@@ -26,8 +26,8 @@ var healthConditions = []string{lodiav1alpha1.ConditionReachable, lodiav1alpha1.
 func TestACacheWithoutHealthsConditionsLeavesTheServers(t *testing.T) {
 	cp := controlPlane(t)
 	e := serve(t)
-	publish(t, cp, e)
 	writeBundle(t, cp, e)
+	publish(t, cp, e)
 	testenv.Eventually(t, func() error {
 		return expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200")
 	})
