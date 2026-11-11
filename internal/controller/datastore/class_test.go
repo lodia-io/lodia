@@ -678,6 +678,87 @@ func TestAPassThatKeepsTheClassFromAStaleCacheWritesNoOlderClassBack(t *testing.
 	}
 }
 
+func TestAPassThatKeepsTheClassFromAStaleCacheKeepsTheCopyOfTheStoreTheEtcdNames(t *testing.T) {
+	const next = "v0.0.0-test+next"
+	for i, row := range []struct {
+		name          string
+		operator      string
+		hold, release func(t *testing.T, ns, cp string)
+	}{
+		{"its edit waits for the grant", revision,
+			func(*testing.T, string, string) {},
+			func(t *testing.T, ns, cp string) { grantClass(t, ns, cp, cp) }},
+		{"the operator revision is held", next,
+			func(t *testing.T, ns, cp string) { grantClass(t, ns, cp, cp) },
+			func(t *testing.T, ns, cp string) { grant(t, getControlPlane(t, ns, cp), next) }},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			ns, credentialsNamespace := namespace(t), namespace(t)
+			cp := fmt.Sprintf("stale-copy-%d", i)
+			create(t, credentials(credentialsNamespace))
+			create(t, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "s3-other", Namespace: credentialsNamespace}, Data: map[string][]byte{"accessKeyID": []byte("other-access")}})
+			createClass(t, fullClass(cp, credentialsNamespace))
+			r := classTenant(t, ns, cp, cp)
+			before := getEtcd(t, ns, cp)
+			copied := func(t *testing.T, bucket, accessKeyID string) {
+				t.Helper()
+				if got := *getEtcd(t, ns, cp).Spec.Backup.Store.Container; got != bucket {
+					t.Errorf("the Etcd is on bucket %s, want %s", got, bucket)
+				}
+				if got := string(getCopy(t, ns, cp).Data["accessKeyID"]); got != accessKeyID {
+					t.Errorf("%s-etcd-backup holds accessKeyID %s, want %s", cp, got, accessKeyID)
+				}
+			}
+			editClass(t, cp, func(class *lodiav1alpha1.DatastoreClass) {
+				class.Spec.Backup.Store.Bucket, class.Spec.Backup.Store.SecretRef.Name = "other-bucket", "s3-other"
+			})
+			grantClass(t, ns, cp, cp)
+			mustPass(t, r, ns, cp)
+			copied(t, "other-bucket", "other-access")
+
+			editClass(t, cp, func(class *lodiav1alpha1.DatastoreClass) {
+				class.Spec.Backup.Store.Bucket, class.Spec.Backup.Store.SecretRef.Name = "lodia-backups", "s3"
+			})
+			row.hold(t, ns, cp)
+			stale := interceptor.NewClient(unpaused(k8s), interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if etcd, ok := obj.(*druidv1alpha1.Etcd); ok {
+						before.DeepCopyInto(etcd)
+						return nil
+					}
+					return c.Get(ctx, key, obj, opts...)
+				},
+			})
+			if _, err := passOf(t, operatorAt(stale, row.operator), ns, cp); !apierrors.IsConflict(err) {
+				t.Errorf("a pass on a cache that holds the Etcd before the store move returned %v, want a conflict", err)
+			}
+			copied(t, "other-bucket", "other-access")
+
+			injected := errors.New("injected: the API server did not answer")
+			failing := operatorAt(unpaused(k8s), row.operator)
+			failing.Reader = interceptor.NewClient(k8s, interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if _, ok := obj.(*druidv1alpha1.Etcd); ok {
+						return injected
+					}
+					return c.Get(ctx, key, obj, opts...)
+				},
+			})
+			if _, err := passOf(t, failing, ns, cp); !errors.Is(err, injected) {
+				t.Errorf("a pass whose read of the Etcd failed returned %v, want %v", err, injected)
+			}
+			copied(t, "other-bucket", "other-access")
+
+			mustPass(t, operatorAt(unpaused(k8s), row.operator), ns, cp)
+			copied(t, "other-bucket", "other-access")
+
+			row.release(t, ns, cp)
+			mustPass(t, operatorAt(unpaused(k8s), row.operator), ns, cp)
+			copied(t, "lodia-backups", "spike-access")
+		})
+	}
+}
+
 func TestTheCapNoteStaysWhileAClassEditWaits(t *testing.T) {
 	ns := namespace(t)
 	const cp = "cap-waits"

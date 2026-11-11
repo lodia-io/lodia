@@ -506,19 +506,24 @@ func recordedClass(etcd *druidv1alpha1.Etcd) (lodiav1alpha1.DatastoreClassStatus
 // operator revision or waiting for the class's generation, keeps an Etcd on a
 // store other than the one class renders: the backup-restore sidecar mounts
 // <cp>-etcd-backup, so the keys of a store must not arrive before the Etcd
-// names that store. The Etcd's store reaches the sidecar only once
-// etcd-druid serves its request, so a move granted while that request waits
-// for etcd-druid's Deployment brings the keys first, for as long as the wait
-// lasts.
+// names that store. The Etcd is read from the API server: the copy lands
+// before the kept apply, which a stale cache only makes conflict. The Etcd's
+// store reaches the sidecar only once etcd-druid serves its request, so a move
+// granted while that request waits for etcd-druid's Deployment brings the keys
+// first, for as long as the wait lasts.
 func (r *Reconciler) storeMoved(ctx context.Context, p *pass, class *lodiav1alpha1.DatastoreClass, waits bool) (bool, error) {
 	if p.current == nil || !r.held(p.cp) && !waits {
 		return false, nil
+	}
+	etcd := &druidv1alpha1.Etcd{}
+	if err := r.Reader.Get(ctx, client.ObjectKeyFromObject(p.current), etcd); err != nil {
+		return false, fmt.Errorf("read Etcd %s: %w", p.current.Name, err)
 	}
 	var err error
 	if p.namespaceUID, err = r.namespaceUID(ctx, p.cp); err != nil {
 		return false, err
 	}
-	return !equality.Semantic.DeepEqual(store(p.cp, class.Spec.Backup, p.namespaceUID), p.current.Spec.Backup.Store), nil
+	return !equality.Semantic.DeepEqual(store(p.cp, class.Spec.Backup, p.namespaceUID), etcd.Spec.Backup.Store), nil
 }
 
 func (r *Reconciler) namespaceUID(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (types.UID, error) {
