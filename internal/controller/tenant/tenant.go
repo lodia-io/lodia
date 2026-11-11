@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -63,6 +64,9 @@ type Reconciler struct {
 	// AddonsApplied and AddonsAvailable when Tenant waits for access or keeps
 	// them.
 	Reader client.Reader
+	// Events records the transitions of the conditions it writes;
+	// SetupWithManager sets it.
+	Events events.EventRecorder
 	// ApplyPeriod is how often the tenant gets every object again, so one
 	// deleted or edited there comes back.
 	ApplyPeriod time.Duration
@@ -77,6 +81,7 @@ type Reconciler struct {
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
+	r.Events = mgr.GetEventRecorder("lodia.io/" + Name)
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(Name).
 		WithOptions(controller.Options{MaxConcurrentReconciles: workers, ReconciliationTimeout: time.Minute}).
@@ -116,6 +121,7 @@ func inputs(cp *lodiav1alpha1.ControlPlane) string {
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/status,verbs=patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	cp := &lodiav1alpha1.ControlPlane{}
@@ -458,5 +464,5 @@ func newCondition(cp *lodiav1alpha1.ControlPlane, conditionType string, status m
 // both conditions and addons, since an apply that leaves one out removes it.
 // A path that changes no addons passes cp's, which Reconcile read live.
 func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, addons *lodiav1alpha1.Rendered, conditions ...metav1.Condition) error {
-	return statusapply.ApplyInto(ctx, r.Client, r.Reader, FieldManager, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: conditions, Addons: addons}, !equality.Semantic.DeepEqual(cp.Status.Addons, addons))
+	return statusapply.Writer{Client: r.Client, Reader: r.Reader, Manager: FieldManager, Events: r.Events}.ApplyInto(ctx, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: conditions, Addons: addons}, !equality.Semantic.DeepEqual(cp.Status.Addons, addons))
 }

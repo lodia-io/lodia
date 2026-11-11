@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -25,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/config"
@@ -247,6 +249,13 @@ func statusOwners(obj metav1.Object) (map[string][]string, error) {
 
 func start(t *testing.T) client.WithWatch {
 	t.Helper()
+	cfg, k8s := serve(t)
+	run(t, cfg)
+	return k8s
+}
+
+func serve(t *testing.T) (*rest.Config, client.WithWatch) {
+	t.Helper()
 	druid, err := druidCRDs()
 	if err != nil {
 		t.Fatal(err)
@@ -266,11 +275,16 @@ func start(t *testing.T) client.WithWatch {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = env.Stop() })
-	scheme := operator.Scheme()
-	k8s, err := client.NewWithWatch(cfg, client.Options{Scheme: scheme})
+	k8s, err := client.NewWithWatch(cfg, client.Options{Scheme: operator.Scheme()})
 	if err != nil {
 		t.Fatal(err)
 	}
+	return cfg, k8s
+}
+
+func run(t *testing.T, cfg *rest.Config) func() {
+	t.Helper()
+	scheme := operator.Scheme()
 	cache, err := operator.Cache(true)
 	if err != nil {
 		t.Fatal(err)
@@ -286,13 +300,17 @@ func start(t *testing.T) client.WithWatch {
 	ctx, cancel := context.WithCancel(context.Background())
 	started := make(chan error, 1)
 	go func() { started <- mgr.Start(ctx) }()
-	t.Cleanup(func() {
-		cancel()
-		if err := <-started; err != nil {
-			t.Errorf("manager: %v", err)
-		}
-	})
-	return k8s
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			cancel()
+			if err := <-started; err != nil {
+				t.Errorf("manager: %v", err)
+			}
+		})
+	}
+	t.Cleanup(stop)
+	return stop
 }
 
 func druidCRDs() ([]*apiextensionsv1.CustomResourceDefinition, error) {

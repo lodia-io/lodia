@@ -181,3 +181,65 @@ const (
 	ReasonMaintenanceFailed           = "MaintenanceFailed"
 	ReasonLatestGenerationNotObserved = "LatestGenerationNotObserved"
 )
+
+// WarningGroup is what a reason of WarningReasons reports.
+type WarningGroup string
+
+const (
+	// WarningRefusal is a spec, or an object a controller finds, that it does
+	// not serve as it is.
+	WarningRefusal WarningGroup = "Refusal"
+	// WarningFailure is a change or an operation that did not complete.
+	WarningFailure WarningGroup = "Failure"
+	// WarningLoss is something that served and no longer does, or will not.
+	WarningLoss WarningGroup = "Loss"
+)
+
+// WarningReasons are the reasons whose event can be Warning, by group; every
+// other reason's event is Normal. A failure's event is Warning whatever it
+// replaces; a refusal's or a loss's only when the condition it replaces is
+// True, or has a reason that is neither a first pass, a wait nor another of
+// these (docs/decisions/metrics-are-part-of-the-api.md).
+var WarningReasons = map[string]WarningGroup{
+	ReasonUnsupported:                     WarningRefusal,
+	ReasonLoadBalancerHostnameUnsupported: WarningRefusal,
+	ReasonGatewayUnsupported:              WarningRefusal,
+	ReasonTimeZoneUnsupported:             WarningRefusal,
+	ReasonRefused:                         WarningRefusal,
+	ReasonObjectsControlledElsewhere:      WarningRefusal,
+	ReasonSecretsControlledElsewhere:      WarningRefusal,
+	ReasonSecretsExist:                    WarningRefusal,
+	ReasonDatastoreClassNotFound:          WarningRefusal,
+	ReasonBackupNotFound:                  WarningRefusal,
+	ReasonGatewayNotFound:                 WarningRefusal,
+	ReasonControlPlaneNotFound:            WarningRefusal,
+	ReasonSecretNotFound:                  WarningRefusal,
+	ReasonDatastoreClassAmbiguous:         WarningRefusal,
+	ReasonVolumesExist:                    WarningRefusal,
+	ReasonBackupIncompatible:              WarningRefusal,
+	ReasonCAPredatesControlPlane:          WarningRefusal,
+	ReasonRouteNotAccepted:                WarningRefusal,
+	ReasonHostnameConflict:                WarningRefusal,
+
+	ReasonFailed:                   WarningFailure,
+	ReasonMaintenanceFailed:        WarningFailure,
+	ReasonRestoreFailed:            WarningFailure,
+	ReasonBackupFailed:             WarningFailure,
+	ReasonProgressDeadlineExceeded: WarningFailure,
+	ReasonSealLost:                 WarningFailure,
+	ReasonHoldBlocked:              WarningFailure,
+	ReasonRequestInvalid:           WarningFailure,
+	ReasonPolicyNotEnforced:        WarningFailure,
+
+	ReasonQuorumLost:                  WarningLoss,
+	ReasonUnavailable:                 WarningLoss,
+	ReasonControllerManagerNotLeading: WarningLoss,
+	ReasonSchedulerNotLeading:         WarningLoss,
+	ReasonNodesSilent:                 WarningLoss,
+	ReasonExternalProbeFailed:         WarningLoss,
+	ReasonInternalProbeFailed:         WarningLoss,
+	ReasonCAMissing:                   WarningLoss,
+	ReasonCAExpired:                   WarningLoss,
+	ReasonSecretUnreadable:            WarningLoss,
+	ReasonCAExpiring:                  WarningLoss,
+}

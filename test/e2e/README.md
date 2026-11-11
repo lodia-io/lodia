@@ -28,7 +28,7 @@ The suite leaves the chart installed.
 - `TestPhase1Gate`: the per-pull-request part of the [phase 1 gate](../../docs/roadmap.md#phase-1--walking-skeleton).
   A `ControlPlane` in `nodePort` mode, at the version of kind's default node image, turns `Ready`, and the suite logs the time from its creation, which must be under 3 minutes.
   Its `status.target.operatorRevision` is that `VERSION` and a digest.
-  Then [gate G7](#gate-g7-the-leaders-metrics) reads the operator's metrics.
+  Then [gate G7](#gate-g7-the-leaders-metrics) reads the operator's metrics and the event of the tenant's `Ready`.
   Anonymous requests reach the health paths and `cluster-info` and nothing else: `/version`, which RBAC grants unauthenticated users ([policy.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/plugin/pkg/auth/authorizer/rbac/bootstrappolicy/policy.go#L383-L388), [binding](https://github.com/kubernetes/kubernetes/blob/v1.37.0/plugin/pkg/auth/authorizer/rbac/bootstrappolicy/policy.go#L723)), answers 401.
   A node joins (below) and turns `Ready`; a pod of agnhost, pinned by digest, runs on it, and its logs, an `exec` and a port-forward reach it through the konnectivity tunnel: before the three and after each, the suite reads konnectivity-server's dial count, the count of its `konnectivity_network_proxy_server_dial_duration_seconds` histogram, observed once per established dial ([metrics.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/pkg/server/metrics/metrics.go#L76-L85), [server.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/pkg/server/server.go#L1067)), on its health port, 8134 ([server.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/cmd/server/app/server.go#L585)), through a port-forward to the API server pod, and wants each call to add one dial.
   `exec` runs twice, over client-go's SPDY transport and over WebSocket, kubectl's default; the port-forward uses SPDY, and kubectl's WebSocket port-forward reaches the kubelet through the same transport and tunnel ([exec](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/registry/core/pod/rest/subresources.go#L208-L230), [port-forward](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/registry/core/pod/rest/subresources.go#L293-L306)), so the dial count covers it too.
@@ -73,7 +73,7 @@ It wants:
 
 Any miss fails that attempt and the next starts 2 seconds later: a Lease handed over between the reads, a sample not served yet, a port-forward that drops, or a pod the Service does not list as ready.
 The etcd's first sample is served within 65 seconds of the `Etcd` forming, which comes before `Ready`, so the step adds up to about a minute to the job.
-An event regarding the tenant, `action` `Ready`, `reason` `Ready`, type `Normal`, from `lodia.io/lifecycle`, joins G7 once the operator records events.
+Then, for up to 2 minutes, it wants an event regarding the tenant, by its UID, with `action` `Ready`, `reason` `Ready`, type `Normal` and `reportingController` `lodia.io/lifecycle`: the tenant's turn to `Ready` ([metrics-are-part-of-the-api](../../docs/decisions/metrics-are-part-of-the-api.md)).
 
 ## Gate G1: a minor upgrade
 

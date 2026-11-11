@@ -18,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -44,6 +45,9 @@ type Reconciler struct {
 	// metadata only, and PKI's conditions and status.credentials at the start
 	// of a pass.
 	Reader client.Reader
+	// Events records the transitions of the conditions it writes;
+	// SetupWithManager sets it.
+	Events events.EventRecorder
 	// The kubelet signer and the request CA live LeafLifetime, the cluster CA
 	// TrustAnchorLifetime, every other CA CALifetime.
 	LeafLifetime        time.Duration
@@ -64,6 +68,7 @@ type Reconciler struct {
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
+	r.Events = mgr.GetEventRecorder("lodia.io/pki")
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("pki").
 		For(&lodiav1alpha1.ControlPlane{}).
@@ -80,6 +85,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/finalizers,verbs=update
 // +kubebuilder:rbac:groups=lodia.io,resources=backups,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;patch;delete
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	cp := &lodiav1alpha1.ControlPlane{}
@@ -281,7 +287,7 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlP
 		conditions[i].LastTransitionTime = metav1.NewTime(now)
 	}
 	changed := !equality.Semantic.DeepEqual(credentialRefs(cp.Status.Credentials), credentials)
-	if err := statusapply.Apply(ctx, r.Client, r.Reader, fieldManager, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: conditions, Credentials: credentials}, changed); err != nil {
+	if err := (statusapply.Writer{Client: r.Client, Reader: r.Reader, Manager: fieldManager, Events: r.Events}).Apply(ctx, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: conditions, Credentials: credentials}, changed); err != nil {
 		return fmt.Errorf("apply the status of %s: %w", cp.Name, err)
 	}
 	return nil
