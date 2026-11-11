@@ -80,7 +80,7 @@ Then wave 2: upgrades with maintenance windows, the fleet limit and the operator
 
 Done from wave 1b: `highAvailability` with [gate G2](../test/e2e/README.md#gate-g2-a-highly-available-control-plane), backups with `Backup` and restore with [gate G3](../test/e2e/README.md#gate-g3-a-backup-and-a-restore), `KubeconfigRequest`s, and the Gateway with in-cluster access, with its gate on every pull request and G6 and conformance behind the Gateway every night ([gates](../test/e2e/README.md#the-gateway-gate)).
 
-Done from wave 2: Health's internal probe, node sampling and the controller manager hold, with gate G4 every night ([gate](../test/e2e/README.md#nightly-gate-g4-nodes-cut-off-from-the-gateway)); upgrades by minors, with the upgrade part of [gate G1](../test/e2e/README.md#gate-g1-a-minor-upgrade) on every pull request; the operator revision, granted in maintenance windows within the fleet limit, with [gate G5](../test/e2e/README.md#gate-g5-an-operator-upgrade-in-windows) on every pull request.
+Done from wave 2: Health's internal probe, node sampling and the controller manager hold, with gate G4 every night ([gate](../test/e2e/README.md#nightly-gate-g4-nodes-cut-off-from-the-gateway)); upgrades by minors, with the upgrade part of [gate G1](../test/e2e/README.md#gate-g1-a-minor-upgrade) on every pull request; the operator revision and automatic patch updates, granted in maintenance windows within the fleet limit, with [gate G5](../test/e2e/README.md#gate-g5-an-operator-upgrade-in-windows) on every pull request.
 
 Gate:
 

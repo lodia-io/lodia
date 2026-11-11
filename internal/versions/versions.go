@@ -112,6 +112,14 @@ func Oldest(reported ...string) (string, bool) {
 	return oldest, found
 }
 
+// Newer says whether the Kubernetes version a is newer than b, and false when
+// either is not a semantic version.
+func Newer(a, b string) bool {
+	va, errA := version.ParseSemantic(a)
+	vb, errB := version.ParseSemantic(b)
+	return errA == nil && errB == nil && vb.LessThan(va)
+}
+
 // Latest returns the newest patch of minor in the table, and false when Lodia
 // does not run it.
 func Latest(minor string) (string, bool) {

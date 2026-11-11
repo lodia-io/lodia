@@ -55,6 +55,15 @@ func fleetTenant(t *testing.T, namespace string) *lodiav1alpha1.ControlPlane {
 	return cp
 }
 
+func autoUpdate(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+	t.Helper()
+	fresh := getQuiet(t, cp)
+	fresh.Spec.Maintenance = &lodiav1alpha1.Maintenance{AutoUpdate: &lodiav1alpha1.AutoUpdate{KubernetesPatch: true}}
+	if err := quiet.Update(t.Context(), fresh); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func reportsOf(t *testing.T, cp *lodiav1alpha1.ControlPlane, revision string) {
 	t.Helper()
 	components := map[string]any{}
@@ -475,6 +484,28 @@ func TestAStaleCacheNeverRevokesAGrantOrASlot(t *testing.T) {
 			cp.Generation--
 			cp.Spec.Maintenance = nil
 			cp.Status.Target.OperatorRevision = otherRevision
+			cp.Status.Maintenance = nil
+			meta.SetStatusCondition(&cp.Status.Conditions, metav1.Condition{Type: lodiav1alpha1.ConditionProgressing, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonIdle, ObservedGeneration: cp.Generation})
+		}},
+		{"a cache from before a patch update's grant", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+			autoUpdate(t, cp)
+			reportsOf(t, cp, runningRevision)
+			seedLifecycle(t, cp, runningRevision, lodiav1alpha1.ReasonIdle, nil, nil)
+		}, func(cp *lodiav1alpha1.ControlPlane) {
+			cp.Status.Target.Version = "v1.37.1"
+			cp.Status.Kubernetes.Upgrade = nil
+			cp.Status.Maintenance = nil
+			meta.SetStatusCondition(&cp.Status.Conditions, metav1.Condition{Type: lodiav1alpha1.ConditionProgressing, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonIdle, ObservedGeneration: cp.Generation})
+		}},
+		{"a cache from before patch updates were turned on and granted", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+			autoUpdate(t, cp)
+			reportsOf(t, cp, runningRevision)
+			seedLifecycle(t, cp, runningRevision, lodiav1alpha1.ReasonIdle, nil, nil)
+		}, func(cp *lodiav1alpha1.ControlPlane) {
+			cp.Generation--
+			cp.Spec.Maintenance = nil
+			cp.Status.Target.Version = "v1.37.1"
+			cp.Status.Kubernetes.Upgrade = nil
 			cp.Status.Maintenance = nil
 			meta.SetStatusCondition(&cp.Status.Conditions, metav1.Condition{Type: lodiav1alpha1.ConditionProgressing, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonIdle, ObservedGeneration: cp.Generation})
 		}},

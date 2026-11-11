@@ -127,6 +127,27 @@ func TestOldest(t *testing.T) {
 	}
 }
 
+func TestNewer(t *testing.T) {
+	for _, c := range []struct {
+		a, b string
+		want bool
+	}{
+		{"v1.37.2", "v1.37.1", true},
+		{"v1.37.1", "v1.37.2", false},
+		{"v1.37.2", "v1.37.2", false},
+		{"v1.37.10", "v1.37.9", true},
+		{"v1.38.0", "v1.37.9", true},
+		{"v1.37.2", "", false},
+		{"", "v1.37.2", false},
+		{"latest", "v1.37.2", false},
+		{"v1.37.2", "v1.37", false},
+	} {
+		if got := versions.Newer(c.a, c.b); got != c.want {
+			t.Errorf("Newer(%q, %q) is %t, want %t", c.a, c.b, got, c.want)
+		}
+	}
+}
+
 func TestTheKonnectivityPinReplacesTheTagOfAnyReference(t *testing.T) {
 	digest := "@sha256:" + strings.Repeat("ab", 32)
 	for image, repinned := range map[string]string{

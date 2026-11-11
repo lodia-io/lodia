@@ -100,15 +100,17 @@ func fleetOf(cps []lodiav1alpha1.ControlPlane, cp *lodiav1alpha1.ControlPlane, n
 // rule 7 (docs/decisions/upgrades-and-maintenance-windows.md).
 type pendingChanges struct {
 	revision bool
+	// patch is the version a patch update moves the target to.
+	patch string
 }
 
 func (p pendingChanges) any() bool {
-	return p.revision
+	return p.revision || p.patch != ""
 }
 
 // pending is what the running operator may grant after c.
 func (f facts) pending(c change) pendingChanges {
-	return pendingChanges{revision: revisionOf(f.cp) != f.revision}
+	return pendingChanges{revision: revisionOf(f.cp) != f.revision, patch: f.patchUpdate(c)}
 }
 
 // describe names what p holds, with the verb that follows.
@@ -117,21 +119,28 @@ func (p pendingChanges) describe(f facts) string {
 	if p.revision {
 		kinds = append(kinds, "operator revision "+f.revision)
 	}
+	if p.patch != "" {
+		kinds = append(kinds, "Kubernetes "+p.patch)
+	}
 	if len(kinds) == 1 {
 		return kinds[0] + " waits"
 	}
 	return strings.Join(kinds[:len(kinds)-1], ", ") + " and " + kinds[len(kinds)-1] + " wait"
 }
 
-func (f facts) take(m *maintenance, p pendingChanges) {
+func (f facts) take(m *maintenance, c *change, p pendingChanges) {
 	if p.revision {
 		m.revision = f.revision
+	}
+	if p.patch != "" {
+		f.patch(c, p.patch)
 	}
 }
 
 // maintain records a new lodia.io/maintain-requested-at, grants a pending
-// change by the rules, and decides the change in the tenant's slot.
-func (f facts) maintain(c change, ready *metav1.Condition) maintenance {
+// change by the rules, moving c's target for a patch update, and decides the
+// change in the tenant's slot.
+func (f facts) maintain(c *change, ready *metav1.Condition) maintenance {
 	cp := f.cp
 	granted := revisionOf(cp)
 	m := maintenance{revision: granted, lastHandled: lastHandledOf(cp), slotSince: slotOf(cp)}
@@ -150,11 +159,11 @@ func (f facts) maintain(c change, ready *metav1.Condition) maintenance {
 	if err != nil {
 		m.zone = err.Error()
 	}
-	if p := f.pending(c); p.any() {
+	if p := f.pending(*c); p.any() {
 		f.grant(&m, c, p, w, token != "")
 	}
 	if m.slotSince != nil {
-		f.settle(&m, c, ready, granted)
+		f.settle(&m, *c, ready, granted)
 	}
 	return m
 }
@@ -165,15 +174,19 @@ func (f facts) maintain(c change, ready *metav1.Condition) maintenance {
 // Ready; then, unless the owner has something to fix, all that remain in the
 // window, while the tenant is Ready with no cause that fails a change
 // standing, in one free slot.
-func (f facts) grant(m *maintenance, c change, p pendingChanges, w *window, requested bool) {
+func (f facts) grant(m *maintenance, c *change, p pendingChanges, w *window, requested bool) {
 	cp := f.cp
 	if what := unrenderable(cp, c.target); what != "" {
 		m.unsupported = fmt.Sprintf("operator revision %s does not run %s, of a minor outside %s; the ControlPlane stays at revision %s", f.revision, what, strings.Join(versions.Minors(), ", "), m.revision)
 		return
 	}
 	inSlot := m.slotSince != nil
-	if p.revision && (inSlot || requested || f.atOnce(c)) {
+	if p.revision && (inSlot || requested || f.atOnce(*c)) {
 		m.revision, p.revision = f.revision, false
+	}
+	if p.patch != "" && (inSlot || requested || targetOf(cp) == "") {
+		f.patch(c, p.patch)
+		p.patch = ""
 	}
 	if !p.any() {
 		return
@@ -212,7 +225,7 @@ func (f facts) grant(m *maintenance, c change, p pendingChanges, w *window, requ
 	key := f.key()
 	if f.free(key) {
 		since := metav1.NewTime(f.now).Rfc3339Copy()
-		f.take(m, p)
+		f.take(m, c, p)
 		m.slotSince, m.takesSlot = &since, true
 		return
 	}
@@ -331,7 +344,7 @@ func (f facts) settle(m *maintenance, c change, ready *metav1.Condition, granted
 		return
 	}
 	if m.settlingSince == nil {
-		m.maintaining = "operator revision " + m.revision + " rolls"
+		m.maintaining = "the change Lodia started rolls"
 		if len(rolling) > 0 {
 			m.maintaining += ": " + strings.Join(rolling, "; ")
 		}
@@ -344,12 +357,12 @@ func (f facts) settle(m *maintenance, c change, ready *metav1.Condition, granted
 	deadline := since.Add(f.settling)
 	switch {
 	case f.now.Before(deadline):
-		m.maintaining = fmt.Sprintf("operator revision %s has rolled out; the ControlPlane keeps its slot of the fleet until %s", m.revision, deadline.UTC().Format(time.RFC3339))
+		m.maintaining = "the change Lodia started has rolled out; the ControlPlane keeps its slot of the fleet until " + deadline.UTC().Format(time.RFC3339)
 		m.requeue = deadline.Sub(f.now)
 	case ready.Status == metav1.ConditionTrue:
 		m.slotSince, m.settlingSince = nil, nil
 	default:
-		m.failed = fmt.Sprintf("Ready is not True %s after operator revision %s rolled out: %s: %s", f.settling, m.revision, ready.Reason, ready.Message)
+		m.failed = fmt.Sprintf("Ready is not True %s after the change Lodia started rolled out: %s: %s", f.settling, ready.Reason, ready.Message)
 	}
 }
 

@@ -378,12 +378,12 @@ A tenant that stops answering leaves a True `AddonsApplied` as it was.
 
 ## Lifecycle
 
-Built so far: the version steps below, a minor at a time through a preflight and a `Backup`, the grant of a new operator revision in each tenant's window within the fleet limit, `status.kubernetes`, `Progressing` and `Ready`, as [`api/controlplane.md`](api/controlplane.md#status) defines them.
+Built so far: the version steps below, a minor at a time through a preflight and a `Backup`, the grant of a new operator revision and of a patch update in each tenant's window within the fleet limit, `status.kubernetes`, `Progressing` and `Ready`, as [`api/controlplane.md`](api/controlplane.md#status) defines them.
 
 ### Upgrades and windows
 
 One minor at a time, in the order the version skew policy allows ([decision](decisions/upgrades-and-maintenance-windows.md)).
-Changes Lodia initiates, a new operator revision today, roll in each tenant's window, within the fleet limit, each keeping its slot for a settling time once it has rolled out, and at once on an edit of the tenant's spec or a new `lodia.io/maintain-requested-at` ([the rules](decisions/upgrades-and-maintenance-windows.md#decision)).
+Changes Lodia initiates, a new operator revision and a patch update, roll in each tenant's window, within the fleet limit, each keeping its slot for a settling time once it has rolled out, and at once on an edit of the tenant's spec or a new `lodia.io/maintain-requested-at` ([the rules](decisions/upgrades-and-maintenance-windows.md#decision)).
 
 ```mermaid
 flowchart LR

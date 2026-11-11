@@ -94,7 +94,7 @@ func decide(f facts) decision {
 	default:
 		c := f.versionChange()
 		readyNow = ready(cp)
-		m := f.maintain(c, readyNow)
+		m := f.maintain(&c, readyNow)
 		progressing = c.progressing(f, m)
 		if observed(cp) {
 			status.ObservedGeneration = cp.Generation
@@ -206,13 +206,51 @@ func (f facts) versionChange() change {
 		c.settle(cp)
 	case ahead > 0:
 		f.minorStep(&c)
-	case want != c.target:
+	// With patch updates the target only moves up: one may have taken it past
+	// spec.version.
+	case want != c.target && (!patchUpdates(cp) || versions.Newer(want, c.target)):
 		c.upgrade = moved(c.upgrade, f.now)
 		c.target = want
 	default:
 		c.settle(cp)
 	}
 	return c
+}
+
+func patchUpdates(cp *lodiav1alpha1.ControlPlane) bool {
+	m := cp.Spec.Maintenance
+	return m != nil && m.AutoUpdate != nil && m.AutoUpdate.KubernetesPatch
+}
+
+// patchUpdate is the version a patch update moves c's target to: with patch
+// updates on and spec.version of the target's minor, the newer of
+// spec.version and that minor's latest in the table, while it is newer than
+// the target; empty otherwise.
+func (f facts) patchUpdate(c change) string {
+	spec := f.cp.Spec.Version
+	minor, _ := versions.Minor(c.target)
+	specMinor, _ := versions.Minor(spec)
+	latest, ok := versions.Latest(minor)
+	if !patchUpdates(f.cp) || !ok || specMinor != minor {
+		return ""
+	}
+	newest := spec
+	if versions.Newer(latest, spec) {
+		newest = latest
+	}
+	if !versions.Newer(newest, c.target) {
+		return ""
+	}
+	return newest
+}
+
+// patch moves the target to version, a patch update, as step 1 moves it; a
+// first target is set, since no change is under way at creation.
+func (f facts) patch(c *change, version string) {
+	if targetOf(f.cp) != "" {
+		c.upgrade = moved(c.upgrade, f.now)
+	}
+	c.target = version
 }
 
 // moved is the upgrade once the target moves: its next step is the API
