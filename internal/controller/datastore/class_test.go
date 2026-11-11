@@ -624,6 +624,56 @@ func TestAnEtcdCreatedAgainOverAReportOfNoClassReportsItsClass(t *testing.T) {
 	}
 }
 
+func TestAPassThatKeepsTheClassFromAStaleCacheWritesNoOlderClassBack(t *testing.T) {
+	for i, row := range []struct {
+		name string
+		keep func(t *testing.T, class, credentialsNamespace string)
+	}{
+		{"its edit waits for the grant", func(t *testing.T, class, _ string) { editClass(t, class, quota("1Gi")) }},
+		{"it is held for its credentials", func(t *testing.T, _, credentialsNamespace string) {
+			if err := k8s.Delete(t.Context(), credentials(credentialsNamespace)); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"it is gone", func(t *testing.T, class, _ string) { deleteClass(t, class) }},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			ns, credentialsNamespace := namespace(t), namespace(t)
+			cp := fmt.Sprintf("stale-keep-%d", i)
+			create(t, credentials(credentialsNamespace))
+			createClass(t, fullClass(cp, credentialsNamespace))
+			r := unrolledTenant(t, ns, cp)
+			before := getEtcd(t, ns, cp)
+			editClass(t, cp, quota("3Gi"))
+			grantClass(t, ns, cp, cp)
+			mustPass(t, r, ns, cp)
+			runsClass(t, ns, cp, "3Gi", "2")
+
+			row.keep(t, cp, credentialsNamespace)
+			current := getEtcd(t, ns, cp).ResourceVersion
+			stale := interceptor.NewClient(unpaused(k8s), interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if etcd, ok := obj.(*druidv1alpha1.Etcd); ok {
+						before.DeepCopyInto(etcd)
+						return nil
+					}
+					return c.Get(ctx, key, obj, opts...)
+				},
+			})
+			if _, err := passOf(t, operatorAt(stale, revision), ns, cp); !apierrors.IsConflict(err) {
+				t.Errorf("a pass on a cache that holds the Etcd before the grant returned %v, want a conflict", err)
+			}
+			if got := getEtcd(t, ns, cp).ResourceVersion; got != current {
+				t.Errorf("a pass on a cache that holds the Etcd before the grant moved it from resourceVersion %s to %s", current, got)
+			}
+			runsClass(t, ns, cp, "3Gi", "2")
+
+			mustPass(t, r, ns, cp)
+			runsClass(t, ns, cp, "3Gi", "2")
+		})
+	}
+}
+
 func TestTheCapNoteStaysWhileAClassEditWaits(t *testing.T) {
 	ns := namespace(t)
 	const cp = "cap-waits"
