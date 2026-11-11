@@ -239,15 +239,16 @@ func certificateExpiring() []testCase {
 	const soon = 14*86400 + 3600
 	return []testCase{
 		{
-			name: alert + " on each side of 14 days, also while paused",
+			name: alert + " on each side of 14 days, also while paused or not Ready",
 			series: join(
 				tenant(expiration, "expiring", fmt.Sprintf("%dx250", soon)),
 				tenant(expiration, "paused", fmt.Sprintf("%dx250", soon)), reason("paused", "Progressing", "Paused", "1x250"),
+				tenant(expiration, "unready", fmt.Sprintf("%dx250", soon)), reason("unready", "Ready", "Unavailable", "1x250"),
 				tenant(expiration, "deleting", fmt.Sprintf("%dx250", soon)), reason("deleting", "Ready", "Deleting", "1x250"),
 				tenant(expiration, "renewed", fmt.Sprintf("%dx250", soon+3600)),
 				join(tenant(expiration, "expiring", fmt.Sprintf("%dx250", soon)), reason("expiring", "Ready", "Deleting", "1x250")).in("tenants-b"),
 			),
-			checks: []check{{7200, alert, nil}, {7230, alert, []alertLabels{tenantAlert("expiring"), tenantAlert("paused")}}},
+			checks: []check{{7200, alert, nil}, {7230, alert, []alertLabels{tenantAlert("expiring"), tenantAlert("paused"), tenantAlert("unready")}}},
 		},
 		failover(alert, tenantAlert("a"), 3600, tenant(expiration, "a", "0")),
 	}
@@ -614,18 +615,19 @@ func kubernetesEndOfSupport() []testCase {
 	at := func(cp string, seconds int) batch { return tenant(support, cp, fmt.Sprintf("%dx250", seconds)) }
 	return []testCase{
 		{
-			name: alert + " on each side of 30 days, past the date, also while paused",
+			name: alert + " on each side of 30 days, past the date, also while paused or not Ready",
 			series: join(
 				at("near", 29*days), at("crossing", 30*days+3600), at("far", 31*days), at("past", 0),
 				at("paused", 29*days), reason("paused", "Progressing", "Paused", "1x250"),
+				at("unready", 29*days), reason("unready", "Ready", "Unavailable", "1x250"),
 				at("deleting", 29*days), reason("deleting", "Ready", "Deleting", "1x250"),
 				join(at("near", 29*days), reason("near", "Ready", "Deleting", "1x250")).in("tenants-b"),
 			),
 			checks: []check{
 				{3570, alert, nil},
-				{3600, alert, []alertLabels{tenantAlert("near"), tenantAlert("past"), tenantAlert("paused")}},
-				{7200, alert, []alertLabels{tenantAlert("near"), tenantAlert("past"), tenantAlert("paused")}},
-				{7230, alert, []alertLabels{tenantAlert("near"), tenantAlert("past"), tenantAlert("paused"), tenantAlert("crossing")}},
+				{3600, alert, []alertLabels{tenantAlert("near"), tenantAlert("past"), tenantAlert("paused"), tenantAlert("unready")}},
+				{7200, alert, []alertLabels{tenantAlert("near"), tenantAlert("past"), tenantAlert("paused"), tenantAlert("unready")}},
+				{7230, alert, []alertLabels{tenantAlert("near"), tenantAlert("past"), tenantAlert("paused"), tenantAlert("unready"), tenantAlert("crossing")}},
 			},
 		},
 		failover(alert, tenantAlert("a"), 3600, tenant(support, "a", fmt.Sprint(29*days))),

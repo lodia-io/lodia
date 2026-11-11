@@ -6111,7 +6111,7 @@ tests:
               severity: warning
             exp_annotations: *a18
 
-  - name: 'LodiaCertificateExpiring on each side of 14 days, also while paused'
+  - name: 'LodiaCertificateExpiring on each side of 14 days, also while paused or not Ready'
     interval: 30s
     input_series:
       - series: 'lodia_controlplane_certificates_expiration_timestamp_seconds{job="lodia",namespace="tenants",controlplane="expiring",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443"}'
@@ -6119,6 +6119,10 @@ tests:
       - series: 'lodia_controlplane_certificates_expiration_timestamp_seconds{job="lodia",namespace="tenants",controlplane="paused",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443"}'
         values: '1213200x250'
       - series: 'lodia_controlplane_condition_reason{job="lodia",namespace="tenants",controlplane="paused",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Progressing",reason="Paused"}'
+        values: '1x250'
+      - series: 'lodia_controlplane_certificates_expiration_timestamp_seconds{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443"}'
+        values: '1213200x250'
+      - series: 'lodia_controlplane_condition_reason{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Ready",reason="Unavailable"}'
         values: '1x250'
       - series: 'lodia_controlplane_certificates_expiration_timestamp_seconds{job="lodia",namespace="tenants",controlplane="deleting",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443"}'
         values: '1213200x250'
@@ -6388,6 +6392,134 @@ tests:
         values: '1x520'
       - series: 'lodia_controlplane_condition_last_transition_timestamp_seconds{job="lodia",namespace="tenants",controlplane="paused",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Ready"}'
         values: '-86400x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="CertificatesReady",status="True"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="CertificatesReady",status="False"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="CertificatesReady",status="Unknown"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition_reason{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="CertificatesReady",reason="Issued"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition_last_transition_timestamp_seconds{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="CertificatesReady"}'
+        values: '-86400x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AccessReady",status="True"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AccessReady",status="False"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AccessReady",status="Unknown"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition_reason{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AccessReady",reason="Bound"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition_last_transition_timestamp_seconds{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AccessReady"}'
+        values: '-86400x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="CAValidityAcceptable",status="True"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="CAValidityAcceptable",status="False"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="CAValidityAcceptable",status="Unknown"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition_reason{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="CAValidityAcceptable",reason="Valid"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition_last_transition_timestamp_seconds{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="CAValidityAcceptable"}'
+        values: '-86400x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="DatastoreReady",status="True"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="DatastoreReady",status="False"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="DatastoreReady",status="Unknown"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition_reason{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="DatastoreReady",reason="Ready"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition_last_transition_timestamp_seconds{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="DatastoreReady"}'
+        values: '-86400x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="APIServerReady",status="True"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="APIServerReady",status="False"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="APIServerReady",status="Unknown"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition_reason{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="APIServerReady",reason="Unavailable"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition_last_transition_timestamp_seconds{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="APIServerReady"}'
+        values: '-86400x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AddonsApplied",status="True"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AddonsApplied",status="False"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AddonsApplied",status="Unknown"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition_reason{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AddonsApplied",reason="Applied"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition_last_transition_timestamp_seconds{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AddonsApplied"}'
+        values: '-86400x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AddonsAvailable",status="True"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AddonsAvailable",status="False"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AddonsAvailable",status="Unknown"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition_reason{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AddonsAvailable",reason="Available"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition_last_transition_timestamp_seconds{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AddonsAvailable"}'
+        values: '-86400x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Reachable",status="True"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Reachable",status="False"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Reachable",status="Unknown"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition_reason{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Reachable",reason="Reachable"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition_last_transition_timestamp_seconds{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Reachable"}'
+        values: '-86400x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="ControllersLeading",status="True"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="ControllersLeading",status="False"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="ControllersLeading",status="Unknown"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition_reason{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="ControllersLeading",reason="Leading"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition_last_transition_timestamp_seconds{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="ControllersLeading"}'
+        values: '-86400x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="ControllerManagerHeld",status="True"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="ControllerManagerHeld",status="False"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="ControllerManagerHeld",status="Unknown"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition_reason{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="ControllerManagerHeld",reason="NotHeld"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition_last_transition_timestamp_seconds{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="ControllerManagerHeld"}'
+        values: '-86400x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="BackupReady",status="True"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="BackupReady",status="False"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="BackupReady",status="Unknown"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition_reason{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="BackupReady",reason="BackupSucceeded"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition_last_transition_timestamp_seconds{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="BackupReady"}'
+        values: '-86400x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Progressing",status="True"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Progressing",status="False"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Progressing",status="Unknown"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition_reason{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Progressing",reason="Idle"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition_last_transition_timestamp_seconds{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Progressing"}'
+        values: '0x20 600x499'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Ready",status="True"}'
+        values: '0x250'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Ready",status="False"}'
+        values: '1x250'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Ready",status="Unknown"}'
+        values: '0x250'
+      - series: 'lodia_controlplane_condition_last_transition_timestamp_seconds{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Ready"}'
+        values: '-86400x250'
       - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="deleting",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="CertificatesReady",status="True"}'
         values: '1x520'
       - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="deleting",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="CertificatesReady",status="False"}'
@@ -6802,6 +6934,17 @@ tests:
             exp_annotations: &a20
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiacertificateexpiring'
               summary: 'A certificate of ControlPlane tenants/paused expires within 14 days.'
+          - exp_labels:
+              container: lodia
+              controlplane: unready
+              endpoint: metrics
+              job: lodia
+              namespace: tenants
+              service: lodia-metrics
+              severity: warning
+            exp_annotations: &a21
+              runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiacertificateexpiring'
+              summary: 'A certificate of ControlPlane tenants/unready expires within 14 days.'
 
   - name: 'LodiaCertificateExpiring fires throughout a failover'
     interval: 30s
@@ -6822,7 +6965,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: &a21
+            exp_annotations: &a22
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiacertificateexpiring'
               summary: 'A certificate of ControlPlane tenants/a expires within 14 days.'
       - eval_time: 1h30s
@@ -6836,7 +6979,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a21
+            exp_annotations: *a22
       - eval_time: 1h3m30s
         alertname: LodiaCertificateExpiring
         exp_alerts:
@@ -6848,7 +6991,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a21
+            exp_annotations: *a22
       - eval_time: 1h4m
         alertname: LodiaCertificateExpiring
         exp_alerts:
@@ -6860,7 +7003,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a21
+            exp_annotations: *a22
 
   - name: 'LodiaCAExpiring at its for, and never while paused'
     interval: 30s
@@ -7529,7 +7672,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: &a22
+            exp_annotations: &a23
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiacaexpiring'
               summary: 'A CA of ControlPlane tenants/expiring is in its last year.'
 
@@ -7552,7 +7695,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: &a23
+            exp_annotations: &a24
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiacaexpiring'
               summary: 'A CA of ControlPlane tenants/a is in its last year.'
       - eval_time: 1h30s
@@ -7566,7 +7709,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a23
+            exp_annotations: *a24
       - eval_time: 1h3m30s
         alertname: LodiaCAExpiring
         exp_alerts:
@@ -7578,7 +7721,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a23
+            exp_annotations: *a24
       - eval_time: 1h4m
         alertname: LodiaCAExpiring
         exp_alerts:
@@ -7590,7 +7733,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a23
+            exp_annotations: *a24
 
   - name: 'LodiaBackupStale on each side of three periods, and its exclusions'
     interval: 30s
@@ -9447,7 +9590,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: &a24
+            exp_annotations: &a25
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiabackupstale'
               summary: 'The etcd of ControlPlane tenants/failed takes no snapshots.'
       - eval_time: 20m
@@ -9461,7 +9604,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a24
+            exp_annotations: *a25
       - eval_time: 20m30s
         alertname: LodiaBackupStale
         exp_alerts:
@@ -9473,7 +9616,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a24
+            exp_annotations: *a25
           - exp_labels:
               container: lodia
               controlplane: pending
@@ -9482,7 +9625,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: &a25
+            exp_annotations: &a26
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiabackupstale'
               summary: 'The etcd of ControlPlane tenants/pending takes no snapshots.'
       - eval_time: 3h5m
@@ -9496,7 +9639,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a24
+            exp_annotations: *a25
           - exp_labels:
               container: lodia
               controlplane: pending
@@ -9505,7 +9648,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a25
+            exp_annotations: *a26
       - eval_time: 3h5m30s
         alertname: LodiaBackupStale
         exp_alerts:
@@ -9517,7 +9660,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a24
+            exp_annotations: *a25
           - exp_labels:
               container: lodia
               controlplane: hourly
@@ -9526,7 +9669,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: &a26
+            exp_annotations: &a27
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiabackupstale'
               summary: 'The etcd of ControlPlane tenants/hourly takes no snapshots.'
           - exp_labels:
@@ -9537,7 +9680,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a25
+            exp_annotations: *a26
 
   - name: 'LodiaBackupStale fires throughout a failover'
     interval: 30s
@@ -9562,7 +9705,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: &a27
+            exp_annotations: &a28
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiabackupstale'
               summary: 'The etcd of ControlPlane tenants/a takes no snapshots.'
       - eval_time: 5m30s
@@ -9576,7 +9719,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a27
+            exp_annotations: *a28
       - eval_time: 8m30s
         alertname: LodiaBackupStale
         exp_alerts:
@@ -9588,7 +9731,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a27
+            exp_annotations: *a28
       - eval_time: 9m
         alertname: LodiaBackupStale
         exp_alerts:
@@ -9600,7 +9743,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a27
+            exp_annotations: *a28
 
   - name: 'LodiaEtcdSpaceNearQuota on each side of 80%'
     interval: 30s
@@ -9887,7 +10030,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: &a28
+            exp_annotations: &a29
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiaetcdspacenearquota'
               summary: 'The etcd of ControlPlane tenants/near is above 80% of its quota.'
 
@@ -9914,7 +10057,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: &a29
+            exp_annotations: &a30
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiaetcdspacenearquota'
               summary: 'The etcd of ControlPlane tenants/a is above 80% of its quota.'
       - eval_time: 15m30s
@@ -9928,7 +10071,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a29
+            exp_annotations: *a30
       - eval_time: 18m30s
         alertname: LodiaEtcdSpaceNearQuota
         exp_alerts:
@@ -9940,7 +10083,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a29
+            exp_annotations: *a30
       - eval_time: 19m
         alertname: LodiaEtcdSpaceNearQuota
         exp_alerts:
@@ -9952,7 +10095,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a29
+            exp_annotations: *a30
 
   - name: 'LodiaEtcdNoLeader on two samples and never on one'
     interval: 30s
@@ -10499,7 +10642,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: critical
-            exp_annotations: &a30
+            exp_annotations: &a31
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiaetcdnoleader'
               summary: 'The etcd of ControlPlane tenants/two has had no leader in two samples.'
       - eval_time: 1m30s
@@ -10513,7 +10656,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: critical
-            exp_annotations: *a30
+            exp_annotations: *a31
 
   - name: 'LodiaEtcdNoLeader fires throughout a failover'
     interval: 30s
@@ -10534,7 +10677,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: critical
-            exp_annotations: &a31
+            exp_annotations: &a32
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiaetcdnoleader'
               summary: 'The etcd of ControlPlane tenants/a has had no leader in two samples.'
       - eval_time: 5m30s
@@ -10548,7 +10691,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: critical
-            exp_annotations: *a31
+            exp_annotations: *a32
       - eval_time: 8m30s
         alertname: LodiaEtcdNoLeader
         exp_alerts:
@@ -10560,7 +10703,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: critical
-            exp_annotations: *a31
+            exp_annotations: *a32
       - eval_time: 9m
         alertname: LodiaEtcdNoLeader
         exp_alerts:
@@ -10572,7 +10715,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: critical
-            exp_annotations: *a31
+            exp_annotations: *a32
 
   - name: 'LodiaEtcdAlarm on two samples and never on one'
     interval: 30s
@@ -10856,7 +10999,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: critical
-            exp_annotations: &a32
+            exp_annotations: &a33
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiaetcdalarm'
               summary: 'The etcd of ControlPlane tenants/two has armed NOSPACE.'
 
@@ -10880,7 +11023,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: critical
-            exp_annotations: &a33
+            exp_annotations: &a34
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiaetcdalarm'
               summary: 'The etcd of ControlPlane tenants/a has armed NOSPACE.'
       - eval_time: 5m30s
@@ -10895,7 +11038,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: critical
-            exp_annotations: *a33
+            exp_annotations: *a34
       - eval_time: 8m30s
         alertname: LodiaEtcdAlarm
         exp_alerts:
@@ -10908,7 +11051,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: critical
-            exp_annotations: *a33
+            exp_annotations: *a34
       - eval_time: 9m
         alertname: LodiaEtcdAlarm
         exp_alerts:
@@ -10921,7 +11064,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: critical
-            exp_annotations: *a33
+            exp_annotations: *a34
 
   - name: 'LodiaControllerManagerHeld at its for, and never while paused'
     interval: 30s
@@ -11590,7 +11733,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: critical
-            exp_annotations: &a34
+            exp_annotations: &a35
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiacontrollermanagerheld'
               summary: 'Lodia has held the controller manager of ControlPlane tenants/held for 15 minutes, since most of its nodes are silent.'
 
@@ -11613,7 +11756,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: critical
-            exp_annotations: &a35
+            exp_annotations: &a36
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiacontrollermanagerheld'
               summary: 'Lodia has held the controller manager of ControlPlane tenants/a for 15 minutes, since most of its nodes are silent.'
       - eval_time: 15m30s
@@ -11627,7 +11770,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: critical
-            exp_annotations: *a35
+            exp_annotations: *a36
       - eval_time: 18m30s
         alertname: LodiaControllerManagerHeld
         exp_alerts:
@@ -11639,7 +11782,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: critical
-            exp_annotations: *a35
+            exp_annotations: *a36
       - eval_time: 19m
         alertname: LodiaControllerManagerHeld
         exp_alerts:
@@ -11651,7 +11794,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: critical
-            exp_annotations: *a35
+            exp_annotations: *a36
 
   - name: 'LodiaControllerManagerHoldBlocked at its for, and never while paused'
     interval: 30s
@@ -12320,7 +12463,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: critical
-            exp_annotations: &a36
+            exp_annotations: &a37
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiacontrollermanagerholdblocked'
               summary: 'Most nodes of ControlPlane tenants/blocked are silent, and Lodia cannot hold its controller manager.'
 
@@ -12343,7 +12486,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: critical
-            exp_annotations: &a37
+            exp_annotations: &a38
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiacontrollermanagerholdblocked'
               summary: 'Most nodes of ControlPlane tenants/a are silent, and Lodia cannot hold its controller manager.'
       - eval_time: 5m30s
@@ -12357,7 +12500,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: critical
-            exp_annotations: *a37
+            exp_annotations: *a38
       - eval_time: 8m30s
         alertname: LodiaControllerManagerHoldBlocked
         exp_alerts:
@@ -12369,7 +12512,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: critical
-            exp_annotations: *a37
+            exp_annotations: *a38
       - eval_time: 9m
         alertname: LodiaControllerManagerHoldBlocked
         exp_alerts:
@@ -12381,7 +12524,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: critical
-            exp_annotations: *a37
+            exp_annotations: *a38
 
   - name: 'LodiaUpgradeFailed at once, on either failure'
     interval: 30s
@@ -13048,7 +13191,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: &a38
+            exp_annotations: &a39
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiaupgradefailed'
               summary: 'A change of ControlPlane tenants/failed failed.'
           - exp_labels:
@@ -13059,7 +13202,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: &a39
+            exp_annotations: &a40
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiaupgradefailed'
               summary: 'A change of ControlPlane tenants/maintenance failed.'
 
@@ -13082,7 +13225,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: &a40
+            exp_annotations: &a41
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiaupgradefailed'
               summary: 'A change of ControlPlane tenants/a failed.'
       - eval_time: 5m30s
@@ -13096,7 +13239,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a40
+            exp_annotations: *a41
       - eval_time: 8m30s
         alertname: LodiaUpgradeFailed
         exp_alerts:
@@ -13108,7 +13251,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a40
+            exp_annotations: *a41
       - eval_time: 9m
         alertname: LodiaUpgradeFailed
         exp_alerts:
@@ -13120,7 +13263,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a40
+            exp_annotations: *a41
 
   - name: 'LodiaUpgradeStalled past 2 hours, across a step, and its exclusions'
     interval: 30s
@@ -13933,7 +14076,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: &a41
+            exp_annotations: &a42
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiaupgradestalled'
               summary: 'The upgrade of ControlPlane tenants/stalled started more than 2 hours ago and has neither ended nor failed.'
       - eval_time: 2h5m
@@ -13947,7 +14090,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a41
+            exp_annotations: *a42
 
   - name: 'LodiaUpgradeStalled fires throughout a failover'
     interval: 30s
@@ -13968,7 +14111,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: &a42
+            exp_annotations: &a43
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiaupgradestalled'
               summary: 'The upgrade of ControlPlane tenants/a started more than 2 hours ago and has neither ended nor failed.'
       - eval_time: 2h5m30s
@@ -13982,7 +14125,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a42
+            exp_annotations: *a43
       - eval_time: 2h8m30s
         alertname: LodiaUpgradeStalled
         exp_alerts:
@@ -13994,7 +14137,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a42
+            exp_annotations: *a43
       - eval_time: 2h9m
         alertname: LodiaUpgradeStalled
         exp_alerts:
@@ -14006,7 +14149,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a42
+            exp_annotations: *a43
 
   - name: 'LodiaMaintenanceHalted at N = 2 fires on MaintenanceFailed and Unsupported'
     interval: 30s
@@ -14419,7 +14562,7 @@ tests:
               job: lodia
               service: lodia-metrics
               severity: warning
-            exp_annotations: &a43
+            exp_annotations: &a44
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiamaintenancehalted'
               summary: 'Tenants that wait for a person hold every slot of the fleet, so no change Lodia starts rolls.'
 
@@ -14704,7 +14847,7 @@ tests:
               job: lodia
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a43
+            exp_annotations: *a44
 
   - name: 'LodiaMaintenanceHalted at N = 2 stays silent on MaintenanceFailed and Maintaining'
     interval: 30s
@@ -15562,7 +15705,7 @@ tests:
               job: lodia
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a43
+            exp_annotations: *a44
       - eval_time: 15m30s
         alertname: LodiaMaintenanceHalted
         exp_alerts:
@@ -15572,7 +15715,7 @@ tests:
               job: lodia
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a43
+            exp_annotations: *a44
       - eval_time: 18m30s
         alertname: LodiaMaintenanceHalted
         exp_alerts:
@@ -15582,7 +15725,7 @@ tests:
               job: lodia
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a43
+            exp_annotations: *a44
       - eval_time: 19m
         alertname: LodiaMaintenanceHalted
         exp_alerts:
@@ -15592,7 +15735,7 @@ tests:
               job: lodia
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a43
+            exp_annotations: *a44
 
   - name: 'LodiaMaintenanceSlotHeldLong past an hour, but for MaintenanceFailed'
     interval: 30s
@@ -16271,7 +16414,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: &a44
+            exp_annotations: &a45
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiamaintenanceslotheldlong'
               summary: 'ControlPlane tenants/maintaining has held a slot of the fleet for more than an hour.'
           - exp_labels:
@@ -16282,7 +16425,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: &a45
+            exp_annotations: &a46
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiamaintenanceslotheldlong'
               summary: 'ControlPlane tenants/paused has held a slot of the fleet for more than an hour.'
           - exp_labels:
@@ -16293,7 +16436,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: &a46
+            exp_annotations: &a47
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiamaintenanceslotheldlong'
               summary: 'ControlPlane tenants/unsupported has held a slot of the fleet for more than an hour.'
 
@@ -16316,7 +16459,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: &a47
+            exp_annotations: &a48
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiamaintenanceslotheldlong'
               summary: 'ControlPlane tenants/a has held a slot of the fleet for more than an hour.'
       - eval_time: 1h5m30s
@@ -16330,7 +16473,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a47
+            exp_annotations: *a48
       - eval_time: 1h8m30s
         alertname: LodiaMaintenanceSlotHeldLong
         exp_alerts:
@@ -16342,7 +16485,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a47
+            exp_annotations: *a48
       - eval_time: 1h9m
         alertname: LodiaMaintenanceSlotHeldLong
         exp_alerts:
@@ -16354,7 +16497,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a47
+            exp_annotations: *a48
 
   - name: 'LodiaReconcileErrors on each side of 5%, and without reconciles'
     interval: 30s
@@ -16391,7 +16534,7 @@ tests:
               namespace: lodia-system
               service: lodia-metrics
               severity: warning
-            exp_annotations: &a48
+            exp_annotations: &a49
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiareconcileerrors'
               summary: 'More than 5% of the reconciles of Lodia''s controller datastore failed over 15 minutes.'
       - eval_time: 25m
@@ -16405,7 +16548,7 @@ tests:
               namespace: lodia-system
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a48
+            exp_annotations: *a49
 
   - name: 'LodiaReconcileErrors reads 15 minutes of reconciles'
     interval: 30s
@@ -16430,7 +16573,7 @@ tests:
               namespace: lodia-system
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a48
+            exp_annotations: *a49
 
   - name: 'LodiaReconcileErrors fires throughout a failover'
     interval: 30s
@@ -16459,7 +16602,7 @@ tests:
               namespace: lodia-system
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a48
+            exp_annotations: *a49
       - eval_time: 20m
         alertname: LodiaReconcileErrors
         exp_alerts:
@@ -16471,7 +16614,7 @@ tests:
               namespace: lodia-system
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a48
+            exp_annotations: *a49
       - eval_time: 20m30s
         alertname: LodiaReconcileErrors
         exp_alerts:
@@ -16483,7 +16626,7 @@ tests:
               namespace: lodia-system
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a48
+            exp_annotations: *a49
       - eval_time: 23m30s
         alertname: LodiaReconcileErrors
         exp_alerts:
@@ -16495,7 +16638,7 @@ tests:
               namespace: lodia-system
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a48
+            exp_annotations: *a49
       - eval_time: 24m
         alertname: LodiaReconcileErrors
         exp_alerts:
@@ -16507,7 +16650,7 @@ tests:
               namespace: lodia-system
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a48
+            exp_annotations: *a49
       - eval_time: 30m
         alertname: LodiaReconcileErrors
         exp_alerts:
@@ -16519,7 +16662,7 @@ tests:
               namespace: lodia-system
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a48
+            exp_annotations: *a49
 
   - name: 'LodiaHealthSamplingLate on one pass more than 10 seconds late, for 10 minutes'
     interval: 30s
@@ -16545,7 +16688,7 @@ tests:
               namespace: lodia-system
               service: lodia-metrics
               severity: warning
-            exp_annotations: &a49
+            exp_annotations: &a50
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiahealthsamplinglate'
               summary: 'A pass of health-nodes started more than 10 seconds after its due time in the last 10 minutes.'
       - eval_time: 14m
@@ -16558,7 +16701,7 @@ tests:
               namespace: lodia-system
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a49
+            exp_annotations: *a50
       - eval_time: 18m
         alertname: LodiaHealthSamplingLate
         exp_alerts:
@@ -16569,7 +16712,7 @@ tests:
               namespace: lodia-system
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a49
+            exp_annotations: *a50
       - eval_time: 30m
         alertname: LodiaHealthSamplingLate
 
@@ -16651,7 +16794,7 @@ tests:
               namespace: lodia-system
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a49
+            exp_annotations: *a50
       - eval_time: 6m30s
         alertname: LodiaHealthSamplingLate
         exp_alerts:
@@ -16662,7 +16805,7 @@ tests:
               namespace: lodia-system
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a49
+            exp_annotations: *a50
       - eval_time: 7m
         alertname: LodiaHealthSamplingLate
         exp_alerts:
@@ -16673,7 +16816,7 @@ tests:
               namespace: lodia-system
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a49
+            exp_annotations: *a50
       - eval_time: 9m30s
         alertname: LodiaHealthSamplingLate
         exp_alerts:
@@ -16684,7 +16827,7 @@ tests:
               namespace: lodia-system
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a49
+            exp_annotations: *a50
       - eval_time: 10m
         alertname: LodiaHealthSamplingLate
         exp_alerts:
@@ -16695,7 +16838,7 @@ tests:
               namespace: lodia-system
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a49
+            exp_annotations: *a50
       - eval_time: 11m
         alertname: LodiaHealthSamplingLate
         exp_alerts:
@@ -16706,9 +16849,9 @@ tests:
               namespace: lodia-system
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a49
+            exp_annotations: *a50
 
-  - name: 'LodiaKubernetesEndOfSupport on each side of 30 days, past the date, also while paused'
+  - name: 'LodiaKubernetesEndOfSupport on each side of 30 days, past the date, also while paused or not Ready'
     interval: 30s
     input_series:
       - series: 'lodia_controlplane_kubernetes_end_of_support_timestamp_seconds{job="lodia",namespace="tenants",controlplane="near",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443"}'
@@ -16722,6 +16865,10 @@ tests:
       - series: 'lodia_controlplane_kubernetes_end_of_support_timestamp_seconds{job="lodia",namespace="tenants",controlplane="paused",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443"}'
         values: '2505600x250'
       - series: 'lodia_controlplane_condition_reason{job="lodia",namespace="tenants",controlplane="paused",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Progressing",reason="Paused"}'
+        values: '1x250'
+      - series: 'lodia_controlplane_kubernetes_end_of_support_timestamp_seconds{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443"}'
+        values: '2505600x250'
+      - series: 'lodia_controlplane_condition_reason{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Ready",reason="Unavailable"}'
         values: '1x250'
       - series: 'lodia_controlplane_kubernetes_end_of_support_timestamp_seconds{job="lodia",namespace="tenants",controlplane="deleting",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443"}'
         values: '2505600x250'
@@ -17379,6 +17526,134 @@ tests:
         values: '1x520'
       - series: 'lodia_controlplane_condition_last_transition_timestamp_seconds{job="lodia",namespace="tenants",controlplane="paused",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Ready"}'
         values: '-86400x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="CertificatesReady",status="True"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="CertificatesReady",status="False"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="CertificatesReady",status="Unknown"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition_reason{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="CertificatesReady",reason="Issued"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition_last_transition_timestamp_seconds{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="CertificatesReady"}'
+        values: '-86400x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AccessReady",status="True"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AccessReady",status="False"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AccessReady",status="Unknown"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition_reason{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AccessReady",reason="Bound"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition_last_transition_timestamp_seconds{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AccessReady"}'
+        values: '-86400x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="CAValidityAcceptable",status="True"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="CAValidityAcceptable",status="False"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="CAValidityAcceptable",status="Unknown"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition_reason{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="CAValidityAcceptable",reason="Valid"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition_last_transition_timestamp_seconds{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="CAValidityAcceptable"}'
+        values: '-86400x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="DatastoreReady",status="True"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="DatastoreReady",status="False"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="DatastoreReady",status="Unknown"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition_reason{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="DatastoreReady",reason="Ready"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition_last_transition_timestamp_seconds{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="DatastoreReady"}'
+        values: '-86400x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="APIServerReady",status="True"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="APIServerReady",status="False"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="APIServerReady",status="Unknown"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition_reason{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="APIServerReady",reason="Unavailable"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition_last_transition_timestamp_seconds{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="APIServerReady"}'
+        values: '-86400x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AddonsApplied",status="True"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AddonsApplied",status="False"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AddonsApplied",status="Unknown"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition_reason{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AddonsApplied",reason="Applied"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition_last_transition_timestamp_seconds{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AddonsApplied"}'
+        values: '-86400x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AddonsAvailable",status="True"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AddonsAvailable",status="False"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AddonsAvailable",status="Unknown"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition_reason{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AddonsAvailable",reason="Available"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition_last_transition_timestamp_seconds{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="AddonsAvailable"}'
+        values: '-86400x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Reachable",status="True"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Reachable",status="False"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Reachable",status="Unknown"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition_reason{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Reachable",reason="Reachable"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition_last_transition_timestamp_seconds{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Reachable"}'
+        values: '-86400x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="ControllersLeading",status="True"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="ControllersLeading",status="False"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="ControllersLeading",status="Unknown"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition_reason{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="ControllersLeading",reason="Leading"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition_last_transition_timestamp_seconds{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="ControllersLeading"}'
+        values: '-86400x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="ControllerManagerHeld",status="True"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="ControllerManagerHeld",status="False"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="ControllerManagerHeld",status="Unknown"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition_reason{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="ControllerManagerHeld",reason="NotHeld"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition_last_transition_timestamp_seconds{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="ControllerManagerHeld"}'
+        values: '-86400x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="BackupReady",status="True"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="BackupReady",status="False"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="BackupReady",status="Unknown"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition_reason{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="BackupReady",reason="BackupSucceeded"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition_last_transition_timestamp_seconds{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="BackupReady"}'
+        values: '-86400x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Progressing",status="True"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Progressing",status="False"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Progressing",status="Unknown"}'
+        values: '0x520'
+      - series: 'lodia_controlplane_condition_reason{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Progressing",reason="Idle"}'
+        values: '1x520'
+      - series: 'lodia_controlplane_condition_last_transition_timestamp_seconds{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Progressing"}'
+        values: '0x20 600x499'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Ready",status="True"}'
+        values: '0x250'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Ready",status="False"}'
+        values: '1x250'
+      - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Ready",status="Unknown"}'
+        values: '0x250'
+      - series: 'lodia_controlplane_condition_last_transition_timestamp_seconds{job="lodia",namespace="tenants",controlplane="unready",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="Ready"}'
+        values: '-86400x250'
       - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="deleting",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="CertificatesReady",status="True"}'
         values: '1x520'
       - series: 'lodia_controlplane_condition{job="lodia",namespace="tenants",controlplane="deleting",service="lodia-metrics",endpoint="metrics",container="lodia",pod="lodia-a",instance="10.0.0.1:8443",type="CertificatesReady",status="False"}'
@@ -17649,7 +17924,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: &a50
+            exp_annotations: &a51
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiakubernetesendofsupport'
               summary: 'The Kubernetes minor of ControlPlane tenants/near reaches its end of support within 30 days, or has reached it.'
           - exp_labels:
@@ -17660,7 +17935,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: &a51
+            exp_annotations: &a52
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiakubernetesendofsupport'
               summary: 'The Kubernetes minor of ControlPlane tenants/past reaches its end of support within 30 days, or has reached it.'
           - exp_labels:
@@ -17671,9 +17946,20 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: &a52
+            exp_annotations: &a53
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiakubernetesendofsupport'
               summary: 'The Kubernetes minor of ControlPlane tenants/paused reaches its end of support within 30 days, or has reached it.'
+          - exp_labels:
+              container: lodia
+              controlplane: unready
+              endpoint: metrics
+              job: lodia
+              namespace: tenants
+              service: lodia-metrics
+              severity: warning
+            exp_annotations: &a54
+              runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiakubernetesendofsupport'
+              summary: 'The Kubernetes minor of ControlPlane tenants/unready reaches its end of support within 30 days, or has reached it.'
       - eval_time: 2h
         alertname: LodiaKubernetesEndOfSupport
         exp_alerts:
@@ -17685,7 +17971,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a50
+            exp_annotations: *a51
           - exp_labels:
               container: lodia
               controlplane: past
@@ -17694,7 +17980,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a51
+            exp_annotations: *a52
           - exp_labels:
               container: lodia
               controlplane: paused
@@ -17703,7 +17989,16 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a52
+            exp_annotations: *a53
+          - exp_labels:
+              container: lodia
+              controlplane: unready
+              endpoint: metrics
+              job: lodia
+              namespace: tenants
+              service: lodia-metrics
+              severity: warning
+            exp_annotations: *a54
       - eval_time: 2h30s
         alertname: LodiaKubernetesEndOfSupport
         exp_alerts:
@@ -17715,7 +18010,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: &a53
+            exp_annotations: &a55
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiakubernetesendofsupport'
               summary: 'The Kubernetes minor of ControlPlane tenants/crossing reaches its end of support within 30 days, or has reached it.'
           - exp_labels:
@@ -17726,7 +18021,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a50
+            exp_annotations: *a51
           - exp_labels:
               container: lodia
               controlplane: past
@@ -17735,7 +18030,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a51
+            exp_annotations: *a52
           - exp_labels:
               container: lodia
               controlplane: paused
@@ -17744,7 +18039,16 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a52
+            exp_annotations: *a53
+          - exp_labels:
+              container: lodia
+              controlplane: unready
+              endpoint: metrics
+              job: lodia
+              namespace: tenants
+              service: lodia-metrics
+              severity: warning
+            exp_annotations: *a54
 
   - name: 'LodiaKubernetesEndOfSupport fires throughout a failover'
     interval: 30s
@@ -17765,7 +18069,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: &a54
+            exp_annotations: &a56
               runbook_url: 'https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiakubernetesendofsupport'
               summary: 'The Kubernetes minor of ControlPlane tenants/a reaches its end of support within 30 days, or has reached it.'
       - eval_time: 1h30s
@@ -17779,7 +18083,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a54
+            exp_annotations: *a56
       - eval_time: 1h3m30s
         alertname: LodiaKubernetesEndOfSupport
         exp_alerts:
@@ -17791,7 +18095,7 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a54
+            exp_annotations: *a56
       - eval_time: 1h4m
         alertname: LodiaKubernetesEndOfSupport
         exp_alerts:
@@ -17803,4 +18107,4 @@ tests:
               namespace: tenants
               service: lodia-metrics
               severity: warning
-            exp_annotations: *a54
+            exp_annotations: *a56
