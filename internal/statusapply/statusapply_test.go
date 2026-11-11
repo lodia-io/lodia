@@ -299,6 +299,7 @@ func TestTheTransitionComesFromTheAPIServerNotTheCache(t *testing.T) {
 func TestAFirstPassReplacesNoConditionTheServerHoldsWithAnotherReason(t *testing.T) {
 	held := metav1.Condition{Type: lodiav1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonReady, Message: "held", ObservedGeneration: 1, LastTransitionTime: earlier}
 	unavailable := metav1.Condition{Type: lodiav1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonUnavailable, Message: "computed", ObservedGeneration: 1, LastTransitionTime: later}
+	copied := metav1.Condition{Type: lodiav1alpha1.ConditionReady, Status: metav1.ConditionUnknown, Reason: lodiav1alpha1.ReasonReconciling, Message: "DatastoreReady: the first pass has not finished", ObservedGeneration: 1, LastTransitionTime: later}
 	firstPass := func(generation int64) metav1.Condition {
 		return statusapply.FirstPass(&lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Generation: generation}}, lodiav1alpha1.ConditionReady)
 	}
@@ -315,6 +316,7 @@ func TestAFirstPassReplacesNoConditionTheServerHoldsWithAnotherReason(t *testing
 		{"a first pass over none", nil, 1, firstPass(1), firstPass(1), false},
 		{"a first pass over a first pass at an earlier generation", new(firstPass(1)), 2, firstPass(2), firstPass(2), false},
 		{"another reason over another reason", &held, 1, unavailable, unavailable, false},
+		{"a Reconciling copied from an input over another reason", &held, 1, copied, copied, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			cp := controlPlane(t, namespace(t))

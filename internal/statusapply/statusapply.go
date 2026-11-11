@@ -81,9 +81,9 @@ func Merge(current []metav1.Condition, conditions ...metav1.Condition) ([]metav1
 // successor. metadata.uid in the apply would not refuse it, since an update
 // of a custom resource's status takes the stored metadata
 // (k8s.io/apiextensions-apiserver@v0.37.0 pkg/registry/customresource/status_strategy.go#L81).
-// In place of a first pass's Reconciling the apply keeps a condition of the
-// type that copy holds with another reason, since a writer tells its first
-// pass from a cache that can lag behind its own last write.
+// In place of FirstPass's condition the apply keeps a condition of the type
+// that copy holds with another reason, since a writer tells its first pass
+// from a cache that can lag behind its own last write.
 func Apply(ctx context.Context, writer client.StatusClient, reader client.Reader, manager string, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed bool) error {
 	_, err := write(ctx, writer, reader, manager, cp, desired, changed)
 	return err
@@ -133,7 +133,8 @@ func write(ctx context.Context, writer client.StatusClient, reader client.Reader
 	}
 	conditions := slices.Clone(desired.Conditions)
 	for i, c := range conditions {
-		if held := meta.FindStatusCondition(read.Status.Conditions, c.Type); held != nil && c.Reason == lodiav1alpha1.ReasonReconciling && held.Reason != c.Reason {
+		first := FirstPass(cp, c.Type)
+		if held := meta.FindStatusCondition(read.Status.Conditions, c.Type); held != nil && !Differs(&first, c) && held.Reason != c.Reason {
 			conditions[i] = *held
 		}
 	}
