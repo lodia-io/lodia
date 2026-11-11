@@ -173,7 +173,8 @@
           "expr": "leader_election_master_status{name=\"lodia.io\",job=~\"$job\",instance=~\"$instance\"}",
           "legendFormat": "{{pod}}",
           "refId": "A",
-          "range": true
+          "instant": true,
+          "range": false
         }
       ],
       "id": 1,

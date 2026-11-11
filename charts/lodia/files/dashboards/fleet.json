@@ -90,7 +90,8 @@
           "expr": "count(max by (namespace, controlplane) (lodia_controlplane_info)) or vector(0)",
           "legendFormat": "",
           "refId": "A",
-          "range": true
+          "instant": true,
+          "range": false
         }
       ],
       "id": 1,
@@ -157,7 +158,8 @@
           "expr": "count(max by (namespace, controlplane) (lodia_controlplane_condition{type=\"Ready\",status=\"True\"}) == 0) or vector(0)",
           "legendFormat": "",
           "refId": "A",
-          "range": true
+          "instant": true,
+          "range": false
         }
       ],
       "id": 2,

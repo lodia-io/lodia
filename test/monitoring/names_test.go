@@ -170,13 +170,18 @@ func TestRulesReadServedMetrics(t *testing.T) {
 	checkReads(t, servedMetrics(t), ruleFile, reads)
 }
 
+type target struct {
+	RefID   string `json:"refId"`
+	Expr    string `json:"expr"`
+	Instant bool   `json:"instant"`
+	Range   bool   `json:"range"`
+}
+
 type panel struct {
-	Title   string  `json:"title"`
-	Panels  []panel `json:"panels"`
-	Targets []struct {
-		RefID string `json:"refId"`
-		Expr  string `json:"expr"`
-	} `json:"targets"`
+	Type    string   `json:"type"`
+	Title   string   `json:"title"`
+	Panels  []panel  `json:"panels"`
+	Targets []target `json:"targets"`
 }
 
 type dashboard struct {
@@ -195,18 +200,26 @@ func expand(grafana string) string {
 	return variable.ReplaceAllString(rangeVariable.ReplaceAllString(grafana, "[5m]"), "1")
 }
 
-func (d dashboard) reads() ([]read, error) {
-	var reads []read
+func (d dashboard) panels() []panel {
+	var all []panel
 	var walk func(panels []panel)
 	walk = func(panels []panel) {
 		for _, p := range panels {
-			for _, target := range p.Targets {
-				reads = append(reads, read{where: fmt.Sprintf("panel %q target %s", p.Title, target.RefID), expr: expand(target.Expr)})
-			}
+			all = append(all, p)
 			walk(p.Panels)
 		}
 	}
 	walk(d.Panels)
+	return all
+}
+
+func (d dashboard) reads() ([]read, error) {
+	var reads []read
+	for _, p := range d.panels() {
+		for _, target := range p.Targets {
+			reads = append(reads, read{where: fmt.Sprintf("panel %q target %s", p.Title, target.RefID), expr: expand(target.Expr)})
+		}
+	}
 	for _, v := range d.Templating.List {
 		if v.Type != "query" {
 			continue
@@ -225,7 +238,8 @@ func (d dashboard) reads() ([]read, error) {
 	return reads, nil
 }
 
-func TestDashboardsReadServedMetrics(t *testing.T) {
+func dashboards(t *testing.T) map[string]dashboard {
+	t.Helper()
 	files, err := filepath.Glob(dashboardGlob)
 	if err != nil {
 		t.Fatal(err)
@@ -233,23 +247,46 @@ func TestDashboardsReadServedMetrics(t *testing.T) {
 	if len(files) == 0 {
 		t.Fatalf("no dashboard matches %s", dashboardGlob)
 	}
-	served := servedMetrics(t)
+	all := map[string]dashboard{}
 	for _, file := range files {
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var d dashboard
+		if err := json.Unmarshal(raw, &d); err != nil {
+			t.Fatalf("%s: %v", file, err)
+		}
+		all[file] = d
+	}
+	return all
+}
+
+func TestDashboardsReadServedMetrics(t *testing.T) {
+	served := servedMetrics(t)
+	for file, d := range dashboards(t) {
 		t.Run(filepath.Base(file), func(t *testing.T) {
-			raw, err := os.ReadFile(file)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var d dashboard
-			if err := json.Unmarshal(raw, &d); err != nil {
-				t.Fatal(err)
-			}
 			reads, err := d.reads()
 			if err != nil {
 				t.Fatal(err)
 			}
 			checkReads(t, served, file, reads)
 		})
+	}
+}
+
+func TestStatPanelsShowTheCurrentSeries(t *testing.T) {
+	for file, d := range dashboards(t) {
+		for _, p := range d.panels() {
+			if p.Type != "stat" {
+				continue
+			}
+			for _, target := range p.Targets {
+				if !target.Instant || target.Range {
+					t.Errorf("%s: panel %q target %s is a range query, so the stat keeps a tile for every series of the time range", file, p.Title, target.RefID)
+				}
+			}
+		}
 	}
 }
 

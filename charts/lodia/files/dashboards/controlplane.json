@@ -157,7 +157,8 @@
           "expr": "max by (reason) (lodia_controlplane_condition_reason{type=\"Ready\",namespace=\"$namespace\",controlplane=\"$controlplane\"}) * on () group_left () max(lodia_controlplane_condition{type=\"Ready\",status=\"True\",namespace=\"$namespace\",controlplane=\"$controlplane\"})",
           "legendFormat": "{{reason}}",
           "refId": "A",
-          "range": true
+          "instant": true,
+          "range": false
         }
       ],
       "id": 1,
@@ -220,7 +221,8 @@
           "expr": "max by (kubernetes_version, layout, datastore, endpoint_mode) (lodia_controlplane_info{namespace=\"$namespace\",controlplane=\"$controlplane\"})",
           "legendFormat": "{{kubernetes_version}} / {{layout}} / {{datastore}} / {{endpoint_mode}}",
           "refId": "A",
-          "range": true
+          "instant": true,
+          "range": false
         }
       ],
       "id": 2,
@@ -288,7 +290,8 @@
           "expr": "max(lodia_controlplane_certificates_expiration_timestamp_seconds{namespace=\"$namespace\",controlplane=\"$controlplane\"}) - time()",
           "legendFormat": "",
           "refId": "A",
-          "range": true
+          "instant": true,
+          "range": false
         }
       ],
       "id": 3,
@@ -352,7 +355,8 @@
           "expr": "time() - max(lodia_controlplane_maintenance_slot_since_timestamp_seconds{namespace=\"$namespace\",controlplane=\"$controlplane\"})",
           "legendFormat": "slot held for",
           "refId": "A",
-          "range": true
+          "instant": true,
+          "range": false
         },
         {
           "datasource": {
@@ -363,7 +367,8 @@
           "expr": "time() - max by (step) (lodia_controlplane_upgrade_started_timestamp_seconds{namespace=\"$namespace\",controlplane=\"$controlplane\"})",
           "legendFormat": "upgrade at {{step}} for",
           "refId": "B",
-          "range": true
+          "instant": true,
+          "range": false
         }
       ],
       "id": 4,
@@ -965,7 +970,8 @@
           "expr": "max(lodia_controlplane_datastore_has_leader{namespace=\"$namespace\",controlplane=\"$controlplane\"})",
           "legendFormat": "",
           "refId": "A",
-          "range": true
+          "instant": true,
+          "range": false
         }
       ],
       "id": 10,
@@ -1033,7 +1039,8 @@
           "expr": "max by (alarm) (lodia_controlplane_datastore_alarm{namespace=\"$namespace\",controlplane=\"$controlplane\"})",
           "legendFormat": "{{alarm}}",
           "refId": "A",
-          "range": true
+          "instant": true,
+          "range": false
         }
       ],
       "id": 11,
