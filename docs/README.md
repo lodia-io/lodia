@@ -596,7 +596,7 @@ Each dashboard queries the Prometheus data source chosen in its `Data source` va
 | dashboard | shows |
 |---|---|
 | `Lodia / Fleet` | the tenants by `Ready` and its reason, the slots against `fleet.maxConcurrentRollouts`, the queue for a slot, the release's reach, the upgrades under way, the controller manager holds, the backups and the datastores at risk |
-| `Lodia / Control plane` | the tenant chosen by its `Namespace` and `Control plane` variables: its conditions and since when, replicas, etcd's members, size and leader, nodes, silent nodes against the hold's fraction, which the `Hold fraction` variable gives (0.6, as `health.holdFraction` defaults), and certificate expiry |
+| `Lodia / Control plane` | the tenant chosen by its `Namespace` and `Control plane` variables: its conditions and since when, replicas, etcd's members, size and leader, nodes, silent nodes against the hold's fraction as Lodia serves it in `lodia_health_hold_fraction`, and certificate expiry |
 | `Lodia / Operator` | the replicas and which leads, reconciles, errors, durations and queue depth per controller, Health's sampling lag and failed probes, and memory; the `Job` and `Instance` variables pick the replicas, since controller-runtime's series come from both |
 
 ## Operations
