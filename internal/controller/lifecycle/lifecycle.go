@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"golang.org/x/sync/semaphore"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/clock"
@@ -150,23 +151,22 @@ func (r *Reconciler) semaphore() *semaphore.Weighted {
 // the cache, and, while a change is pending, the fleet through fleet.
 func (r *Reconciler) gather(ctx context.Context, cp *lodiav1alpha1.ControlPlane, fleet client.Reader) (facts, error) {
 	f := facts{cp: cp, now: r.Clock.Now(), revision: r.Revision, limit: r.MaxConcurrentRollouts, settling: r.Settling}
-	if cp.DeletionTimestamp.IsZero() && !cp.Spec.Paused && pending(cp, r.Revision) {
+	if minor := backupMinor(cp); minor != "" {
+		backup := &lodiav1alpha1.Backup{}
+		switch err := r.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.PreUpgradeBackupName(cp.Name, minor, cp.UID)}, backup); {
+		case err == nil:
+			f.backup = backup
+		case !apierrors.IsNotFound(err):
+			return f, err
+		}
+	}
+	if cp.DeletionTimestamp.IsZero() && !cp.Spec.Paused && f.pending(f.versionChange()).any() {
 		list := &lodiav1alpha1.ControlPlaneList{}
 		if err := fleet.List(ctx, list, client.UnsafeDisableDeepCopy); err != nil {
 			return f, err
 		}
 		f.fleet = fleetOf(list.Items, cp, f.now)
 	}
-	minor := backupMinor(cp)
-	if minor == "" {
-		return f, nil
-	}
-	backup := &lodiav1alpha1.Backup{}
-	err := r.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.PreUpgradeBackupName(cp.Name, minor, cp.UID)}, backup)
-	if err != nil {
-		return f, client.IgnoreNotFound(err)
-	}
-	f.backup = backup
 	return f, nil
 }
 

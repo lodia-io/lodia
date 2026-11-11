@@ -95,10 +95,38 @@ func fleetOf(cps []lodiav1alpha1.ControlPlane, cp *lodiav1alpha1.ControlPlane, n
 	return fleet
 }
 
-// pending says whether cp has a change the running operator grants: its
-// revision.
-func pending(cp *lodiav1alpha1.ControlPlane, revision string) bool {
-	return revisionOf(cp) != revision
+// pendingChanges is what the running operator may grant a tenant, each kind
+// granted at once on its own paths of rule 3 and all of them in one slot by
+// rule 7 (docs/decisions/upgrades-and-maintenance-windows.md).
+type pendingChanges struct {
+	revision bool
+}
+
+func (p pendingChanges) any() bool {
+	return p.revision
+}
+
+// pending is what the running operator may grant after c.
+func (f facts) pending(c change) pendingChanges {
+	return pendingChanges{revision: revisionOf(f.cp) != f.revision}
+}
+
+// describe names what p holds, with the verb that follows.
+func (p pendingChanges) describe(f facts) string {
+	var kinds []string
+	if p.revision {
+		kinds = append(kinds, "operator revision "+f.revision)
+	}
+	if len(kinds) == 1 {
+		return kinds[0] + " waits"
+	}
+	return strings.Join(kinds[:len(kinds)-1], ", ") + " and " + kinds[len(kinds)-1] + " wait"
+}
+
+func (f facts) take(m *maintenance, p pendingChanges) {
+	if p.revision {
+		m.revision = f.revision
+	}
 }
 
 // maintain records a new lodia.io/maintain-requested-at, grants a pending
@@ -122,8 +150,8 @@ func (f facts) maintain(c change, ready *metav1.Condition) maintenance {
 	if err != nil {
 		m.zone = err.Error()
 	}
-	if pending(cp, f.revision) {
-		f.grant(&m, c, w, token != "")
+	if p := f.pending(c); p.any() {
+		f.grant(&m, c, p, w, token != "")
 	}
 	if m.slotSince != nil {
 		f.settle(&m, c, ready, granted)
@@ -131,19 +159,23 @@ func (f facts) maintain(c change, ready *metav1.Condition) maintenance {
 	return m
 }
 
-// grant applies the rules to a pending change, in their order: a revision
-// that cannot render what runs on no path; at once, with no slot, where
-// waiting would stall the owner or keep the tenant from Ready; then, unless
-// the owner has something to fix, in the window, while the tenant is Ready
-// with no cause that fails a change standing, with a free slot.
-func (f facts) grant(m *maintenance, c change, w *window, requested bool) {
+// grant applies the rules to the pending changes, in their order: nothing
+// while the running operator cannot render what runs; at once, with no slot,
+// each kind where waiting would stall the owner or keep the tenant from
+// Ready; then, unless the owner has something to fix, all that remain in the
+// window, while the tenant is Ready with no cause that fails a change
+// standing, in one free slot.
+func (f facts) grant(m *maintenance, c change, p pendingChanges, w *window, requested bool) {
 	cp := f.cp
 	if what := unrenderable(cp, c.target); what != "" {
 		m.unsupported = fmt.Sprintf("operator revision %s does not run %s, of a minor outside %s; the ControlPlane stays at revision %s", f.revision, what, strings.Join(versions.Minors(), ", "), m.revision)
 		return
 	}
-	if m.slotSince != nil || requested || f.atOnce(c) {
-		m.revision = f.revision
+	inSlot := m.slotSince != nil
+	if p.revision && (inSlot || requested || f.atOnce(c)) {
+		m.revision, p.revision = f.revision, false
+	}
+	if !p.any() {
 		return
 	}
 	if c.unsupported != "" || c.failed(f, m.revision) != "" || m.zone != "" {
@@ -154,7 +186,7 @@ func (f facts) grant(m *maintenance, c change, w *window, requested bool) {
 			spec := cp.Spec.Maintenance.Window
 			m.scheduledFor = &metav1.Time{Time: next}
 			m.waiting = newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForWindow,
-				fmt.Sprintf("operator revision %s waits for the maintenance window %s-%s %s, which opens at %s", f.revision, spec.Begin, spec.End, w.zone, next.UTC().Format(time.RFC3339)))
+				fmt.Sprintf("%s for the maintenance window %s-%s %s, which opens at %s", p.describe(f), spec.Begin, spec.End, w.zone, next.UTC().Format(time.RFC3339)))
 			m.requeue = min(next.Sub(f.now), time.Hour)
 			return
 		}
@@ -180,12 +212,13 @@ func (f facts) grant(m *maintenance, c change, w *window, requested bool) {
 	key := f.key()
 	if f.free(key) {
 		since := metav1.NewTime(f.now).Rfc3339Copy()
-		m.revision, m.slotSince, m.takesSlot = f.revision, &since, true
+		f.take(m, p)
+		m.slotSince, m.takesSlot = &since, true
 		return
 	}
 	m.scheduledFor = &metav1.Time{Time: key.scheduledFor}
 	m.waiting = newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonFleetLimit,
-		fmt.Sprintf("operator revision %s waits for one of the fleet's %d slots, in the order of status.target.scheduledFor", f.revision, f.limit))
+		fmt.Sprintf("%s for one of the fleet's %d slots, in the order of status.target.scheduledFor", p.describe(f), f.limit))
 	m.requeue = fleetRequeue
 }
 
