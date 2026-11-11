@@ -13,6 +13,7 @@ paths:
 - The collector reads the manager's cache and the samples alone, never the API server.
 - Every metric has a line in the golden, `internal/metrics/testdata/metrics.prom`.
 - Every rule aggregates `pod` and `instance` away: a failover moves every series to another pod.
+- Every dashboard query on a tenant's series aggregates `pod` and `instance` away with `max`, as a rule does, so that the two leaders' series at a failover are one; the operator dashboard, which shows the replicas, keeps `pod`.
 - Every alert carries `keep_firing_for: 4m`, which outlasts the two lease handovers of a `helm upgrade`.
 - Every alert has a section `### <alert>` in `docs/operations.md`, which its `runbook_url` names.
 - Every alert has cases, written in the alert's function in `test/rules/cases_test.go`, and `go test ./test/rules/` fails on an alert with no case where it fires; `go test ./test/rules/ -update` rewrites `test/rules/lodia_test.yaml`, which is never edited by hand.

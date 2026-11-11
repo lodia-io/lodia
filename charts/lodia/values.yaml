@@ -52,3 +52,7 @@ metrics:
   rules:
     enabled: false
     labels: {}
+  dashboards:
+    enabled: false
+    labels:
+      grafana_dashboard: "1"

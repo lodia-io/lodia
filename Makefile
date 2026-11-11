@@ -13,7 +13,8 @@ E2E_MAINTENANCE_TEST ?= TestOperatorUpgradeInWindows
 CHART = charts/lodia
 CONTROLLERS = datastore health lifecycle pki tenant workloads
 RACE_PACKAGES = ./internal/controller/health ./internal/metrics
-METRICS = metrics.service.enabled=true,metrics.serviceMonitor.enabled=true,metrics.rules.enabled=true
+DASHBOARDS = $(wildcard $(CHART)/files/dashboards/*.json)
+METRICS = metrics.service.enabled=true,metrics.serviceMonitor.enabled=true,metrics.rules.enabled=true,metrics.dashboards.enabled=true
 GENERATED = api/v1alpha1/zz_generated.deepcopy.go api/crds/*.yaml $(CHART)/files/crds/*.yaml $(CHART)/files/rbac/*.yaml
 DIGEST = sha256:0000000000000000000000000000000000000000000000000000000000000000
 
@@ -54,7 +55,7 @@ restore-keys: ## the etcd keys a restore's cleanup deletes, against the API serv
 	done
 
 .PHONY: chart
-chart: ## lint and render the chart with image tags, then with image digests; with crds.enabled=false it must still render the policy kubeconfigrequests.lodia.io and its binding; the metrics Service and ServiceMonitor only once their values are on, rendered as the release check, and the ServiceMonitor scraping that Service alone over https, with the labels it is given; the PrometheusRule only once its value is on, with the labels it is given, holding the rule file with every runbook at the release's tag unless appVersion ends in -dev
+chart: ## lint and render the chart with image tags, then with image digests; with crds.enabled=false it must still render the policy kubeconfigrequests.lodia.io and its binding; the metrics Service and ServiceMonitor only once their values are on, rendered as the release check, and the ServiceMonitor scraping that Service alone over https, with the labels it is given; the PrometheusRule only once its value is on, with the labels it is given, holding the rule file with every runbook at the release's tag unless appVersion ends in -dev; the dashboards only once their value is on, a ConfigMap each, holding its file, with the labels it is given
 	helm dependency build $(CHART)
 	helm lint --strict $(CHART)
 	helm template lodia $(CHART) --namespace lodia-system > /dev/null
@@ -72,8 +73,9 @@ chart: ## lint and render the chart with image tags, then with image digests; wi
 	helm lint --strict $(CHART) --set image.digest=$(DIGEST),signerImage.digest=$(DIGEST),tunnelImage.digest=$(DIGEST)
 	helm template lodia $(CHART) --namespace lodia-system --set image.digest=$(DIGEST),signerImage.digest=$(DIGEST),tunnelImage.digest=$(DIGEST) > /dev/null
 	helm template lodia $(CHART) --namespace lodia-system | awk '/^---/ {kind = ""} /^kind: / {kind = $$2} kind == "ServiceMonitor" || kind == "PrometheusRule" || kind == "Service" && /^  name: lodia-metrics$$/ {found = 1} END {exit found}' || { echo "the defaults render the Service lodia-metrics, a ServiceMonitor or a PrometheusRule"; exit 1; }
+	helm template lodia $(CHART) --namespace lodia-system | awk '/^---/ {kind = ""} /^kind: / {kind = $$2} kind == "ConfigMap" && /^    grafana_dashboard:/ {found = 1} END {exit found}' || { echo "the defaults render a ConfigMap labelled grafana_dashboard"; exit 1; }
 	helm lint --strict $(CHART) --set $(METRICS)
-	helm lint --strict $(CHART) --set $(METRICS),metrics.serviceMonitor.scrapeClass=check,metrics.serviceMonitor.labels.release=check,metrics.rules.labels.release=check
+	helm lint --strict $(CHART) --set $(METRICS),metrics.serviceMonitor.scrapeClass=check,metrics.serviceMonitor.labels.release=check,metrics.rules.labels.release=check,metrics.dashboards.labels.release=check
 	helm template check $(CHART) --namespace lodia-system --set $(METRICS) | awk '/^---/ {kind = ""} /^kind: / {kind = $$2} /^  name: / && (kind == "Service" && $$2 == "check-metrics" || kind == "ServiceMonitor" && $$2 == "check" || kind == "PrometheusRule" && $$2 == "check") {found[kind] = 1} END {exit !(found["Service"] && found["ServiceMonitor"] && found["PrometheusRule"])}' || { echo "with $(METRICS) the chart renders no Service check-metrics, no ServiceMonitor check or no PrometheusRule check"; exit 1; }
 	! helm template lodia $(CHART) --namespace lodia-system --set metrics.serviceMonitor.enabled=true > /dev/null 2>&1 || { echo "the ServiceMonitor renders without the metrics Service"; exit 1; }
 	helm template check $(CHART) --namespace lodia-system --set $(METRICS) --show-only templates/servicemonitor.yaml | grep -qx '      honorLabels: true' || { echo "the ServiceMonitor's endpoint does not honor the scraped labels, so prometheus-operator's namespace and endpoint rename Lodia's"; exit 1; }
@@ -92,6 +94,11 @@ chart: ## lint and render the chart with image tags, then with image digests; wi
 	helm template check $(CHART) --namespace lodia-system --set $(METRICS),metrics.serviceMonitor.scrapeClass=check --show-only templates/servicemonitor.yaml | awk '/^  scrapeClass: "check"$$/ {class = 1} /bearerTokenFile/ {token = 1} END {exit !(class && !token)}' || { echo "with metrics.serviceMonitor.scrapeClass the ServiceMonitor names no such class or keeps a token file, which Prometheus refuses beside the class's authorization"; exit 1; }
 	helm template check $(CHART) --namespace lodia-system --set $(METRICS),metrics.rules.labels.release=check --show-only templates/prometheusrule.yaml | awk '/^[^ ]/ {top = $$1} /^  [^ ]/ {block = $$1} top == "metadata:" && block == "labels:" && /^    [^ ]/ {print $$1, $$2}' | grep -Fqx 'release: check' || { echo "metrics.rules.labels does not reach the labels of the PrometheusRule, so a Prometheus that selects rules by label never loads it"; exit 1; }
 	helm template check $(CHART) --namespace lodia-system --set $(METRICS) --show-only templates/prometheusrule.yaml | awk 'spec && $$0 != "" {print substr($$0, 3)} /^spec:$$/ {spec = 1}' | diff $(CHART)/files/rules/lodia.yaml - || { echo "the PrometheusRule of a -dev appVersion is not the rule file $(CHART)/files/rules/lodia.yaml"; exit 1; }
+	helm template check $(CHART) --namespace lodia-system --set $(METRICS),metrics.dashboards.labels.release=check --show-only templates/dashboards.yaml | awk '/^kind: ConfigMap$$/ {maps++} /^    grafana_dashboard: "1"$$/ {grafana++} /^    release: check$$/ {release++} END {exit !(maps == $(words $(DASHBOARDS)) && grafana == maps && release == maps)}' || { echo "with $(METRICS) the chart renders other than a ConfigMap for each of $(DASHBOARDS), each with the label grafana_dashboard and the labels of metrics.dashboards.labels"; exit 1; }
+	@for file in $(DASHBOARDS); do \
+		name="$$(basename $$file .json)"; \
+		helm template check $(CHART) --namespace lodia-system --set $(METRICS) --show-only templates/dashboards.yaml | awk -v want="check-dashboard-$$name" -v key="$$name.json" '/^---/ {config = 0} /^  name: / {config = ($$2 == want)} config && $$0 == "  " key ": |" {data = 1; next} data && /^    / {print substr($$0, 5); next} data {data = 0}' | diff $$file - > /dev/null || { echo "the ConfigMap check-dashboard-$$name does not hold $$file as $$name.json"; exit 1; }; \
+	done
 	helm package $(CHART) --version 1.2.3 --app-version 1.2.3 --destination work/chart > /dev/null
 	helm template check work/chart/lodia-1.2.3.tgz --namespace lodia-system --set $(METRICS) --show-only templates/prometheusrule.yaml | awk 'spec && $$0 != "" {print substr($$0, 3)} /^spec:$$/ {spec = 1}' | sed 's|https://github.com/lodia-io/lodia/blob/v1.2.3/|https://github.com/lodia-io/lodia/blob/main/|' | diff $(CHART)/files/rules/lodia.yaml - || { echo "the PrometheusRule of appVersion 1.2.3 is not the rule file with its runbooks at the tag v1.2.3"; exit 1; }
 	! helm template check work/chart/lodia-1.2.3.tgz --namespace lodia-system --set $(METRICS) --show-only templates/prometheusrule.yaml | grep -q 'https://github.com/lodia-io/lodia/blob/main/' || { echo "the PrometheusRule of appVersion 1.2.3 links a runbook at main, not at the tag v1.2.3"; exit 1; }
