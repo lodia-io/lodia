@@ -75,7 +75,7 @@ Lifecycle grants the running revision, while it is pending, by these rules in th
 7. A slot in the order of the queue: `Maintaining`, in the same write as the grant; none, `target.scheduledFor` when the tenant became eligible, which queues it, and `FleetLimit` unless a reason ranked above it applies.
 
 A change Lodia started keeps its origin in `status.maintenance.slotSince`, written in the same write as the grant: the tenant holds its slot while it is present, whatever `Progressing` says, so a reason ranked above the slot's does not free it; a grant on request is the owner's.
-Only the change settling and deletion end a slot: an owner's edit rolls in the slot and settles it as any other change, and a paused tenant keeps counting as a used slot, since a tenant a bad release left failed would otherwise leave the fleet on an edit or a pause, and rule 6 would keep the next release waiting for a `Ready` only that release brings.
+Only the change settling and deletion end a slot: an owner's edit that the writers take up before the change settles rolls in the slot and settles it as any other change, and a paused tenant keeps counting as a used slot, since a tenant a bad release left failed would otherwise leave the fleet on an edit or a pause, and rule 6 would keep the next release waiting for a `Ready` only that release brings.
 
 **Who waits for the window:**
 
