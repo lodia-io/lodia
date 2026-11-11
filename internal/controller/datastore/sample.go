@@ -41,6 +41,11 @@ const (
 	// then fires on two samples and never on one
 	// (docs/decisions/metrics-are-part-of-the-api.md).
 	sampleTimeout = 5 * time.Second
+
+	// etcdCallsTime is what a pass keeps of its deadline for MemberList and
+	// the Status calls: a client that comes later keeps no sample, so a slow
+	// management API server never makes a healthy etcd leaderless.
+	etcdCallsTime = time.Second
 )
 
 // EtcdSample is what a pass read from the members of a ControlPlane's etcd.
@@ -147,8 +152,8 @@ func (r *SampleReconciler) sampled(ctx context.Context, cp *lodiav1alpha1.Contro
 }
 
 // sample lists etcd's members and reads each one's Status at once, and is
-// false when there is no client to do so with: a failed read of the client
-// certificate says nothing about the etcd.
+// false when there is no client to do so with in time: a failed or slow read
+// of the client certificate says nothing about the etcd.
 //
 // The list is serializable, which a member answers from its own state
 // (etcd@v3.5.27 server/etcdserver/api/v3rpc/member.go#L90-L98), so an etcd
@@ -163,6 +168,11 @@ func (r *SampleReconciler) sample(ctx context.Context, etcd *druidv1alpha1.Etcd)
 		return EtcdSample{}, false
 	}
 	defer func() { _ = c.Close() }()
+	deadline, _ := ctx.Deadline()
+	if left := time.Until(deadline); left < etcdCallsTime {
+		log.Error(fmt.Errorf("%s of the pass left, below the %s its calls to the etcd need", left, etcdCallsTime), "connect to the etcd")
+		return EtcdSample{}, false
+	}
 	list, err := c.MemberList(ctx, clientv3.WithSerializable())
 	if err != nil {
 		log.Error(err, "list the etcd's members")

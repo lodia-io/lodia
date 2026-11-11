@@ -751,7 +751,7 @@ lodia_controlplane_datastore_delta_snapshot_period_seconds{controlplane="restore
 lodia_controlplane_datastore_delta_snapshot_period_seconds{controlplane="rolling",namespace="tenants"} 30
 lodia_controlplane_datastore_delta_snapshot_period_seconds{controlplane="starting",namespace="tenants"} 300
 lodia_controlplane_datastore_delta_snapshot_period_seconds{controlplane="waiting",namespace="tenants"} 300
-# HELP lodia_controlplane_datastore_has_leader The last sample of the etcd: 1 when a quorum of the voting members answered naming one leader, else 0; absent until the Etcd is formed and while the operator cannot read the client certificate it names.
+# HELP lodia_controlplane_datastore_has_leader The last sample of the etcd: 1 when a quorum of the voting members answered naming one leader, else 0; absent until the Etcd is formed and while the operator cannot read the client certificate it names in time.
 # TYPE lodia_controlplane_datastore_has_leader gauge
 lodia_controlplane_datastore_has_leader{controlplane="edge",namespace="tenants"} 1
 lodia_controlplane_datastore_has_leader{controlplane="failed",namespace="tenants"} 1

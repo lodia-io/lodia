@@ -68,7 +68,7 @@ var (
 	datastoreDBSize = perControlPlane("lodia_controlplane_datastore_db_size_bytes",
 		"The largest dbSize among the etcd's members that answered the last sample; absent until the Etcd is formed.")
 	datastoreHasLeader = perControlPlane("lodia_controlplane_datastore_has_leader",
-		"The last sample of the etcd: 1 when a quorum of the voting members answered naming one leader, else 0; absent until the Etcd is formed and while the operator cannot read the client certificate it names.")
+		"The last sample of the etcd: 1 when a quorum of the voting members answered naming one leader, else 0; absent until the Etcd is formed and while the operator cannot read the client certificate it names in time.")
 	datastoreAlarm = perControlPlane("lodia_controlplane_datastore_alarm",
 		"1 for each alarm armed in the etcd in the last sample.",
 		"alarm")

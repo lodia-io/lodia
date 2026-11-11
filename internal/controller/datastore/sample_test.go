@@ -348,6 +348,33 @@ func TestAMemberListThatFailsGivesNoLeaderAndNoSize(t *testing.T) {
 	}
 }
 
+func TestAClientThatLeavesThePassTooLittleOfItsDeadlineKeepsNoSample(t *testing.T) {
+	_, cfgs := etcdCluster(t, 1, nil)
+	for _, c := range []struct {
+		left   time.Duration
+		sample bool
+	}{
+		{2 * time.Millisecond, false},
+		{1250 * time.Millisecond, true},
+	} {
+		t.Run(c.left.String()+" left", func(t *testing.T) {
+			cp, etcd := sampledControlPlane("slow", "uid-slow")
+			r, clk := sampler(cp, etcd)
+			r.EtcdClient = func(ctx context.Context, e *druidv1alpha1.Etcd) (*clientv3.Client, error) {
+				deadline, _ := ctx.Deadline()
+				time.Sleep(time.Until(deadline) - c.left)
+				return dialURL(clientURL(cfgs[0]))(ctx, e)
+			}
+			samplePass(t, r, client.ObjectKeyFromObject(cp))
+			clk.Step(5 * time.Second)
+			got, ok := r.Sample(client.ObjectKeyFromObject(cp), cp.UID)
+			if ok != c.sample || ok && !got.HasLeader {
+				t.Errorf("a healthy etcd whose client comes %s before the pass's deadline is served %+v, %t, want %t and any sample with its leader", c.left, got, ok, c.sample)
+			}
+		})
+	}
+}
+
 func TestAMemberWrittenPastItsQuotaReportsNoSpace(t *testing.T) {
 	_, cfgs := etcdCluster(t, 1, func(_ int, cfg *embed.Config) { cfg.QuotaBackendBytes = 1 << 20 })
 	c := etcdClient(t, clientURL(cfgs[0]))
