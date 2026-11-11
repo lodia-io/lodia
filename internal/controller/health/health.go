@@ -264,30 +264,44 @@ func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPla
 // probes runs the control plane's probes at once, each under Timeout, so that
 // a dead path holds a worker for one Timeout: the public endpoint, the
 // in-namespace Service and, in gateway mode, the tunnel and konnectivity; it
-// counts each that fails. It returns the reason of a failed pass, empty when
-// all passed, and the condition's message: what each path that failed
-// answered, or what answered.
+// counts each that fails, but none that ended after the pass's context: the
+// pass cut those. It returns the reason of a failed pass, empty when all
+// passed, and the condition's message: what each path that failed answered,
+// or what answered.
 func (r *Reconciler) probes(ctx context.Context, cp *lodiav1alpha1.ControlPlane, p *prober, url string) (string, string) {
 	gateway := cp.Spec.Endpoint.Gateway != nil
 	internal := lodiav1alpha1.APIServerServiceURL(cp.Namespace, cp.Name) + lodiav1alpha1.APIServerReadyzPath
 	var (
-		apiCode, internalCode, tunnelCode int
-		apiErr, internalErr, tunnelErr    error
-		konnErr                           error
-		wg                                sync.WaitGroup
+		apiCode, internalCode, tunnelCode       int
+		apiErr, internalErr, tunnelErr          error
+		konnErr                                 error
+		apiCut, internalCut, tunnelCut, konnCut bool
+		wg                                      sync.WaitGroup
 	)
-	wg.Go(func() { apiCode, apiErr = r.probe(ctx, p.direct, url) })
-	wg.Go(func() { internalCode, internalErr = r.probe(ctx, p.direct, internal) })
+	wg.Go(func() {
+		apiCode, apiErr = r.probe(ctx, p.direct, url)
+		apiCut = ctx.Err() != nil
+	})
+	wg.Go(func() {
+		internalCode, internalErr = r.probe(ctx, p.direct, internal)
+		internalCut = ctx.Err() != nil
+	})
 	e := cp.Status.Endpoint
 	if gateway {
-		wg.Go(func() { tunnelCode, tunnelErr = r.probe(ctx, r.throughTunnel(p, *e.Tunnel), url) })
-		wg.Go(func() { konnErr = r.handshake(ctx, p, e.Konnectivity) })
+		wg.Go(func() {
+			tunnelCode, tunnelErr = r.probe(ctx, r.throughTunnel(p, *e.Tunnel), url)
+			tunnelCut = ctx.Err() != nil
+		})
+		wg.Go(func() {
+			konnErr = r.handshake(ctx, p, e.Konnectivity)
+			konnCut = ctx.Err() != nil
+		})
 	}
 	wg.Wait()
 	log := logf.FromContext(ctx)
 	var failed []string
-	fail := func(path, answer string) {
-		if r.ProbeFailures != nil {
+	fail := func(path string, cut bool, answer string) {
+		if r.ProbeFailures != nil && !cut {
 			r.ProbeFailures.WithLabelValues(path).Inc()
 		}
 		failed = append(failed, answer)
@@ -296,7 +310,7 @@ func (r *Reconciler) probes(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 	if internalCode != http.StatusOK {
 		log.Error(internalErr, "the probe of the in-namespace Service failed", "url", internal, "code", internalCode)
 		reason = lodiav1alpha1.ReasonInternalProbeFailed
-		fail(lodiav1alpha1.MetricProbeInternal, lodiav1alpha1.MetricProbeInternal+": "+internal+" "+answered(internalCode))
+		fail(lodiav1alpha1.MetricProbeInternal, internalCut, lodiav1alpha1.MetricProbeInternal+": "+internal+" "+answered(internalCode))
 	}
 	if apiCode != http.StatusOK {
 		log.Error(apiErr, "the probe of the public endpoint failed", "url", url, "code", apiCode)
@@ -304,15 +318,15 @@ func (r *Reconciler) probes(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 		if gateway {
 			answer = lodiav1alpha1.MetricProbeAPI + ": " + answer
 		}
-		fail(lodiav1alpha1.MetricProbeAPI, answer)
+		fail(lodiav1alpha1.MetricProbeAPI, apiCut, answer)
 	}
 	if gateway && tunnelCode != http.StatusOK {
 		log.Error(tunnelErr, "the probe through the tunnel failed", "tunnel", hostPort(*e.Tunnel), "code", tunnelCode)
-		fail(lodiav1alpha1.MetricProbeTunnel, lodiav1alpha1.MetricProbeTunnel+": "+url+" through "+hostPort(*e.Tunnel)+" "+answered(tunnelCode))
+		fail(lodiav1alpha1.MetricProbeTunnel, tunnelCut, lodiav1alpha1.MetricProbeTunnel+": "+url+" through "+hostPort(*e.Tunnel)+" "+answered(tunnelCode))
 	}
 	if gateway && konnErr != nil {
 		log.Error(konnErr, "the TLS handshake with konnectivity failed", "address", hostPort(e.Konnectivity))
-		fail(lodiav1alpha1.MetricProbeKonnectivity, lodiav1alpha1.MetricProbeKonnectivity+": "+hostPort(e.Konnectivity)+" did not complete a TLS handshake")
+		fail(lodiav1alpha1.MetricProbeKonnectivity, konnCut, lodiav1alpha1.MetricProbeKonnectivity+": "+hostPort(e.Konnectivity)+" did not complete a TLS handshake")
 	}
 	if len(failed) > 0 {
 		return reason, strings.Join(failed, "; ")

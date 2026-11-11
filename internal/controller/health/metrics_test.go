@@ -6,8 +6,10 @@ package health_test
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -340,6 +342,72 @@ func TestOutsideGatewayModeAFailedPublicEndpointCountsAsAPI(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(failures.WithLabelValues(lodiav1alpha1.MetricProbeInternal)); got != 0 {
 		t.Errorf("the in-namespace Service, which answered, counts %v failures, want none", got)
+	}
+}
+
+func TestAProbePastItsOwnTimeoutCounts(t *testing.T) {
+	cp := controlPlane(t)
+	e := serve(t)
+	writeBundle(t, cp, e)
+	publish(t, cp, e)
+	failures := metrics.NewProbeFailures()
+	probe := newReconciler(500 * time.Millisecond)
+	probe.ProbeFailures = failures
+	e.hang.Store(true)
+	reconcile(t, probe, cp)
+	if got := testutil.ToFloat64(failures.WithLabelValues(lodiav1alpha1.MetricProbeAPI)); got != 1 {
+		t.Errorf("the public endpoint, which did not answer within the probe's timeout, counts %v failures, want 1", got)
+	}
+}
+
+func TestAProbeThePassCutCountsNoFailure(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		cut  func(t *testing.T, f *gatewayFixture, probe *health.Reconciler) context.Context
+		want map[string]float64
+	}{
+		{"cancelled while every path but the in-namespace Service hangs", func(t *testing.T, f *gatewayFixture, probe *health.Reconciler) context.Context {
+			stalled, _ := stallListener(t)
+			publishGateway(t, f.cp, f.apiAddress(), stalled, f.tunnel.address)
+			f.api.hang.Store(true)
+			f.tunnel.hang.Store(true)
+			f.api.service.code.Store(http.StatusServiceUnavailable)
+			ctx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+			var dialed sync.Once
+			probe.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+				if address == f.apiAddress() {
+					dialed.Do(func() { time.AfterFunc(time.Second, cancel) })
+				}
+				return dialService(ctx, network, address)
+			}
+			return ctx
+		}, map[string]float64{lodiav1alpha1.MetricProbeInternal: 1}},
+		{"past its deadline while the in-namespace Service hangs", func(t *testing.T, f *gatewayFixture, _ *health.Reconciler) context.Context {
+			f.api.service.hang.Store(true)
+			f.api.code.Store(http.StatusServiceUnavailable)
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+			t.Cleanup(cancel)
+			return ctx
+		}, map[string]float64{lodiav1alpha1.MetricProbeAPI: 1}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newGateway(t)
+			f.publishWorking(t)
+			testenv.Eventually(t, func() error {
+				return expect(t, f.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, f.allAnswered())
+			})
+			failures := metrics.NewProbeFailures()
+			probe := f.probe(10 * time.Second)
+			probe.ProbeFailures = failures
+			ctx := c.cut(t, f, probe)
+			_, _ = probe.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(f.cp)})
+			for _, path := range []string{lodiav1alpha1.MetricProbeAPI, lodiav1alpha1.MetricProbeInternal, lodiav1alpha1.MetricProbeTunnel, lodiav1alpha1.MetricProbeKonnectivity} {
+				if got := testutil.ToFloat64(failures.WithLabelValues(path)); got != c.want[path] {
+					t.Errorf("path %s counts %v failures, want %v", path, got, c.want[path])
+				}
+			}
+		})
 	}
 }
 
