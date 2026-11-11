@@ -404,7 +404,7 @@ A `ControlPlane` stored with an `extraArgs` flag the new schema refuses keeps th
 
 | what | supported |
 |---|---|
-| Tenant Kubernetes versions | the minors the Kubernetes project maintains, today 1.35, 1.36 and 1.37; a minor leaves Lodia's version table with the first release after it leaves upstream support, and stays renderable for one more release, only as the source of an upgrade; from wave 2 tenants are warned ahead of its end-of-support date |
+| Tenant Kubernetes versions | the minors the Kubernetes project maintains, today 1.35, 1.36 and 1.37; a minor leaves Lodia's version table with the first release after it leaves upstream support, and stays renderable for one more release, only as the source of an upgrade; tenants are warned in `Progressing`'s message from 60 days before its end-of-support date, and in a metric and an alert from wave 2's observability |
 | Management cluster | a maintained minor with the CEL features the CRDs use: 1.35 or newer today |
 | Lodia versions | until 1.0, the latest minor gets fixes; from 1.0, the two latest minors |
 | API versions | `v1alpha1` may change between minors until `v1beta1`; from `v1beta1`, changes are additive and conversion needs no webhook |

@@ -80,7 +80,7 @@ flowchart LR
 ## Consequences
 
 - Two or more controllers may hold a `ControlPlane` in a partially ready state for a while; `status` says exactly which part and why.
-- Three controllers know about time: PKI (certificate lifetimes and renewal), Lifecycle (windows, the fleet limit, rotation stages) and Health (how long nodes have been silent); the other three are pure functions of `spec` and `status.target`.
+- Three controllers know about time: PKI (certificate lifetimes and renewal), Lifecycle (windows, the fleet limit, the end of support, rotation stages) and Health (how long nodes have been silent); the other three are pure functions of `spec` and `status.target`.
 - The layout (`Split` or `Compact`) is known to Workloads alone ([compact-layout](compact-layout.md)).
 - Metrics come per controller, labelled by the controller alone: queue depth, reconcile duration and errors; the per-tenant ones and the events are [metrics-are-part-of-the-api](metrics-are-part-of-the-api.md)'s.
 - No controller uses the content of, or writes over, an object whose controller is not its `ControlPlane`, or that refers to another `ControlPlane` at all; `internal/ownership` is the one place that rule is written, and every controller asks it.

@@ -104,7 +104,11 @@ func decide(f facts) decision {
 		upgrade = c.upgrade
 		d.createBackup, d.requeue, d.takesSlot = c.createBackup, m.requeue, m.takesSlot
 	}
-	if reported := oldestReported(cp); reported != "" || upgrade != nil {
+	reported := oldestReported(cp)
+	if notice := supportNotice(reported, f.now); notice != "" && cp.DeletionTimestamp.IsZero() {
+		progressing.Message += "; " + notice
+	}
+	if reported != "" || upgrade != nil {
 		status.Kubernetes = &lodiav1alpha1.KubernetesStatus{Version: reported, Upgrade: upgrade}
 	}
 	for _, condition := range []*metav1.Condition{progressing, readyNow} {
@@ -114,6 +118,25 @@ func decide(f facts) decision {
 	}
 	d.status = status
 	return d
+}
+
+// endOfSupportNotice is how many days before a minor's end of support
+// Progressing says it comes.
+const endOfSupportNotice = 60
+
+// supportNotice is Progressing's sentence on the end of support of the minor
+// of version, from endOfSupportNotice days before the table's date, empty
+// before that and for a minor the table has no date for.
+func supportNotice(version string, now time.Time) string {
+	minor, _ := versions.Minor(version)
+	day, ok := versions.EndOfSupport(minor)
+	switch {
+	case !ok || now.Before(day.AddDate(0, 0, -endOfSupportNotice)):
+		return ""
+	case now.Before(day):
+		return fmt.Sprintf("Kubernetes %s reaches its end of support on %s", minor, day.Format(time.DateOnly))
+	}
+	return fmt.Sprintf("Kubernetes %s reached its end of support on %s", minor, day.Format(time.DateOnly))
 }
 
 func newTarget(version, revision string, scheduledFor *metav1.Time) *lodiav1alpha1.Target {

@@ -133,6 +133,7 @@ A reason with a phase beside it is not written before that phase.
 `Ready`'s `observedGeneration` is the oldest that the conditions it is built from describe, and the object's while one is missing or the `ControlPlane` is being deleted, so `Ready` True at the object's generation means available with every change taken up.
 
 When more than one of `Progressing`'s reasons applies, Lifecycle writes the first in this order: `Paused`; what the owner has to fix, `Unsupported`, `Failed`, `MaintenanceFailed`, `TimeZoneUnsupported`; a change Lodia started in its slot, `Maintaining`; a minor step that cannot start, `WaitingForDatastore`, `WaitingForNodes`, `ControllerManagerHeld`; a change not taken up yet, `LatestGenerationNotObserved`; what rolls, `Upgrading`, `RollingOut`; a change Lodia started that waits its turn, `WaitingForWindow`, `Ready`'s reason or `WaitingForReady` or the reason of a cause standing on one of its inputs, `FleetLimit`; then `Idle`.
+From 60 days before the end of support of the minor of `kubernetes.version`, as the version table dates it, the message ends, whatever the reason, with `Kubernetes <minor> reaches its end of support on <date>`, and from that date with `reached`.
 A reason that no other field reports comes before one that `status.kubernetes.upgrade`, `status.components` or `status.datastore.members` counts anyway.
 
 ## Backup

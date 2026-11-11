@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"go.lodia.io/lodia/internal/versions"
 )
@@ -59,6 +60,26 @@ func TestLatestIsAPatchOfItsMinor(t *testing.T) {
 	}
 	if latest, ok := versions.Latest("1.34"); ok {
 		t.Errorf("1.34 has a latest, %s, and Lodia does not run it", latest)
+	}
+}
+
+func TestEndOfSupport(t *testing.T) {
+	for minor, want := range map[string]time.Time{
+		"1.35": time.Date(2027, 2, 28, 0, 0, 0, 0, time.UTC),
+		"1.36": time.Date(2027, 6, 28, 0, 0, 0, 0, time.UTC),
+		"1.37": time.Date(2027, 10, 28, 0, 0, 0, 0, time.UTC),
+	} {
+		if got, ok := versions.EndOfSupport(minor); !ok || !got.Equal(want) {
+			t.Errorf("the end of support of %s is %s, %t, want %s", minor, got, ok, want)
+		}
+	}
+	for _, minor := range versions.Minors() {
+		if _, ok := versions.EndOfSupport(minor); !ok {
+			t.Errorf("minor %s has no end-of-support date", minor)
+		}
+	}
+	if day, ok := versions.EndOfSupport("1.34"); ok {
+		t.Errorf("1.34 ends its support on %s, and Lodia does not run it", day)
 	}
 }
 
