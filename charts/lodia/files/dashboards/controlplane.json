@@ -1108,7 +1108,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max(lodia_health_hold_fraction)",
+          "expr": "max(lodia_health_hold_threshold_ratio)",
           "legendFormat": "hold fraction",
           "refId": "B",
           "range": true

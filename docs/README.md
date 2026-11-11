@@ -454,7 +454,7 @@ A second reconciler, `health-nodes`, with a queue of its own and 100 workers, sa
 Every period it lists the Leases of `kube-node-lease` through the in-namespace Service with a list that sets no `resourceVersion`, which the API server must serve as a consistent read ([api-concepts.md](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/reference/using-api/api-concepts.md#L1652-L1654)), and every 30 seconds the Nodes.
 It never touches the public endpoint, so one that does not answer, which holds a `health` worker for the timeout, delays no sample.
 It reports `status.nodes`, and in `ControllerManagerHeld` how many of the nodes that count are silent ([controller-manager-hold](decisions/controller-manager-hold.md)).
-Health's metrics are `lodia_health_nodes_sample_lag_seconds`, `lodia_health_probe_failures_total`, `lodia_health_hold_fraction` and each tenant's `lodia_controlplane_nodes_silent` and `lodia_controlplane_nodes_counted` ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)).
+Health's metrics are `lodia_health_nodes_sample_lag_seconds`, `lodia_health_probe_failures_total`, `lodia_health_hold_threshold_ratio` and each tenant's `lodia_controlplane_nodes_silent` and `lodia_controlplane_nodes_counted` ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)).
 
 From inside the management cluster the public probe reaches a load balancer's or a Gateway's address through kube-proxy, which captures traffic to such an address on every node, so it proves the cloud load balancer only in `nodePort` mode ([serviceport.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/proxy/serviceport.go#L222-L235)); the end-to-end signal from the nodes' side is their leases.
 While most nodes are silent and the API server answers, Health holds the controller manager's leader Lease inside the tenant ([controller-manager-hold](decisions/controller-manager-hold.md)), so nothing evicts their pods.
@@ -597,7 +597,7 @@ Each dashboard queries the Prometheus data source chosen in its `Data source` va
 | dashboard | shows |
 |---|---|
 | `Lodia / Fleet` | the tenants by `Ready` and its reason, the slots against `fleet.maxConcurrentRollouts`, the queue for a slot, the release's reach, the upgrades under way, the controller manager holds, the backups and the datastores at risk |
-| `Lodia / Control plane` | the tenant chosen by its `Namespace` and `Control plane` variables: its conditions and since when, replicas, etcd's members, size and leader, nodes, silent nodes against the hold's fraction as Lodia serves it in `lodia_health_hold_fraction`, and certificate expiry |
+| `Lodia / Control plane` | the tenant chosen by its `Namespace` and `Control plane` variables: its conditions and since when, replicas, etcd's members, size and leader, nodes, silent nodes against the hold's fraction as Lodia serves it in `lodia_health_hold_threshold_ratio`, and certificate expiry |
 | `Lodia / Operator` | the replicas and which leads, reconciles, errors, durations and queue depth per controller, Health's sampling lag and failed probes, and memory; the `Job` and `Instance` variables pick the replicas, since controller-runtime's series come from both |
 
 ## Operations

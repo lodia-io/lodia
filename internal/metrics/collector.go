@@ -90,7 +90,7 @@ var (
 		"The nodes that count towards the hold of the controller manager in Health's last list of the node Leases: those with a Lease that are Ready, or turned Unknown less than 5 minutes before the hold began. Absent while lodia_controlplane_nodes_silent is.")
 	maxConcurrentRollouts = prometheus.NewDesc("lodia_fleet_max_concurrent_rollouts",
 		"fleet.maxConcurrentRollouts: how many tenants may hold a slot of the fleet at once.", nil, nil)
-	holdFraction = prometheus.NewDesc("lodia_health_hold_fraction",
+	holdThresholdRatio = prometheus.NewDesc("lodia_health_hold_threshold_ratio",
 		"health.holdFraction: the share of the counted nodes that are silent at which Health holds a tenant's controller manager.", nil, nil)
 
 	descs = []*prometheus.Desc{
@@ -98,7 +98,7 @@ var (
 		nodes, nodesReady, nodesOutdatedKubelets, componentReplicas, componentReplicasReady,
 		datastoreMembers, datastoreMembersReady, datastoreMembersUpdated,
 		datastoreQuota, datastoreDeltaSnapshotPeriod, datastoreDBSize, datastoreHasLeader, datastoreAlarm, operatorRevisionGranted,
-		slotSince, scheduledFor, upgradeStarted, maxConcurrentRollouts, holdFraction,
+		slotSince, scheduledFor, upgradeStarted, maxConcurrentRollouts, holdThresholdRatio,
 		certificatesExpiration, nodesSilent, nodesCounted,
 	}
 
@@ -187,7 +187,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		byName[client.ObjectKeyFromObject(&etcds.Items[i])] = &etcds.Items[i]
 	}
 	ch <- prometheus.MustNewConstMetric(maxConcurrentRollouts, prometheus.GaugeValue, float64(c.MaxConcurrentRollouts))
-	ch <- prometheus.MustNewConstMetric(holdFraction, prometheus.GaugeValue, float64(c.HoldFraction)/1000)
+	ch <- prometheus.MustNewConstMetric(holdThresholdRatio, prometheus.GaugeValue, float64(c.HoldFraction)/1000)
 	c.SampleLag.Collect(ch)
 	c.ProbeFailures.Collect(ch)
 	for i := range list.Items {

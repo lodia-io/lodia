@@ -66,7 +66,7 @@ Of the operator, without a tenant's labels:
 | metric | labels | value | served |
 |---|---|---|---|
 | `lodia_fleet_max_concurrent_rollouts` | | `fleet.maxConcurrentRollouts`, the slots of the fleet | yes |
-| `lodia_health_hold_fraction` | | `health.holdFraction`, the share of the counted nodes that are silent at which Health holds a tenant's controller manager ([controller-manager-hold](controller-manager-hold.md)) | yes |
+| `lodia_health_hold_threshold_ratio` | | `health.holdFraction`, the share of the counted nodes that are silent at which Health holds a tenant's controller manager ([controller-manager-hold](controller-manager-hold.md)) | yes |
 | `lodia_health_nodes_sample_lag_seconds` | a histogram, buckets 0.25, 0.5, 1, 2.5, 5, 10 and 30 | how much later than its due time a `health-nodes` pass started: the watchdog of the hold's margin | yes |
 | `lodia_health_probe_failures_total` | `path` (`api`, `tunnel`, `konnectivity`, `internal`) | the probes that failed, whether or not three in a row turned `Reachable` False | yes |
 
