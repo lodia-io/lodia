@@ -846,6 +846,35 @@ func TestAnEtcdAPersonAnnotatedWhileItRollsKeepsTheClassReportedUntilItRolledOut
 	}
 }
 
+func TestAClassNameAPersonEditsIsReportedAtOnce(t *testing.T) {
+	ns := namespace(t)
+	const cp = "renamed"
+	first, second := newClass(cp+"-a", "Retain"), classOf(cp+"-b", "3Gi")
+	createClass(t, first)
+	createClass(t, second)
+	r := classTenant(t, ns, cp, first.Name)
+	grantClass(t, ns, cp, first.Name)
+	mustPass(t, r, ns, cp)
+	runsClass(t, ns, cp, "4Gi", "1")
+
+	setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) { s.UpdatedReplicas = 0 })
+	if err := k8s.Patch(t.Context(), getEtcd(t, ns, cp), client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"annotations":{"`+lodiav1alpha1.DatastoreClassAnnotation+`":"`+second.Name+`"}}}`)), client.FieldOwner("kubectl-annotate")); err != nil {
+		t.Fatal(err)
+	}
+	mustPass(t, r, ns, cp)
+	want := lodiav1alpha1.DatastoreClassStatus{Name: second.Name, DatastoreClassGeneration: lodiav1alpha1.DatastoreClassGeneration{UID: first.UID, Generation: 1}}
+	if got := getControlPlane(t, ns, cp).Status.Datastore.Class; got == nil || *got != want {
+		t.Errorf("while a member is not updated an Etcd whose class name a person edited reports class %+v, want %+v", got, want)
+	}
+
+	grantClass(t, ns, cp, second.Name)
+	mustPass(t, r, ns, cp)
+	setStatefulSetStatus(t, ns, cp, nil)
+	rollOut(t, r, ns, cp)
+	runsClass(t, ns, cp, "3Gi", "1")
+	recordsUID(t, ns, cp, second)
+}
+
 func TestAClassAnnotationTheSchemaTakesIsReportedAsItIs(t *testing.T) {
 	for i, row := range []struct{ annotation, value string }{
 		{lodiav1alpha1.DatastoreClassAnnotation, strings.Repeat("ü", 253)},

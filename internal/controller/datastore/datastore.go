@@ -1268,8 +1268,9 @@ func (r *Reconciler) setFinalizer(ctx context.Context, cp *lodiav1alpha1.Control
 // applied records a class the report does not name, as after one was created
 // again from another class, the class is the one that Etcd records, or no edit
 // of it could become pending, the one that would let the etcd roll included.
-// The name an Etcd records never changes while it exists, so a UID or
-// generation that moves under it waits for rolledOut.
+// Only a person changes the name an Etcd records, and the report follows it
+// at once, since the Etcd takes the class of that name; a UID or generation
+// that moves under one name waits for rolledOut.
 func (r *Reconciler) datastoreStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet, applied bool) (*lodiav1alpha1.DatastoreStatus, error) {
 	if etcd == nil {
 		return nil, nil
