@@ -1,3 +1,14 @@
+# HELP lodia_controlplane_certificates_expiration_timestamp_seconds status.credentials.notAfter: the earliest expiry among the certificates PKI's Secrets hold for the ControlPlane, its CAs among them. It counts each Secret's own certificate and the newest complete etcd generation, and leaves out the replaced certificates in the CA bundles, the staged kubelet signer and a previous etcd generation.
+# TYPE lodia_controlplane_certificates_expiration_timestamp_seconds gauge
+lodia_controlplane_certificates_expiration_timestamp_seconds{controlplane="deleting",namespace="tenants"} 1.80216e+09
+lodia_controlplane_certificates_expiration_timestamp_seconds{controlplane="edge",namespace="tenants"} 1.80216e+09
+lodia_controlplane_certificates_expiration_timestamp_seconds{controlplane="failed",namespace="tenants"} 1.80216e+09
+lodia_controlplane_certificates_expiration_timestamp_seconds{controlplane="paused",namespace="tenants"} 1.80216e+09
+lodia_controlplane_certificates_expiration_timestamp_seconds{controlplane="queued",namespace="tenants"} 1.80216e+09
+lodia_controlplane_certificates_expiration_timestamp_seconds{controlplane="restored",namespace="tenants"} 1.80216e+09
+lodia_controlplane_certificates_expiration_timestamp_seconds{controlplane="rolling",namespace="tenants"} 1.80216e+09
+lodia_controlplane_certificates_expiration_timestamp_seconds{controlplane="upgrading",namespace="tenants"} 1.80216e+09
+lodia_controlplane_certificates_expiration_timestamp_seconds{controlplane="waiting",namespace="tenants"} 1.80216e+09
 # HELP lodia_controlplane_component_replicas status.components.<component>.total: the replicas the component's Deployment asks for.
 # TYPE lodia_controlplane_component_replicas gauge
 lodia_controlplane_component_replicas{component="apiServer",controlplane="deleting",namespace="tenants"} 1

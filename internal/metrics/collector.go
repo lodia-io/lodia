@@ -81,6 +81,8 @@ var (
 	upgradeStarted = perControlPlane("lodia_controlplane_upgrade_started_timestamp_seconds",
 		"status.kubernetes.upgrade.startedAt, labelled with its step: when the version change in progress started.",
 		"step")
+	certificatesExpiration = perControlPlane("lodia_controlplane_certificates_expiration_timestamp_seconds",
+		"status.credentials.notAfter: the earliest expiry among the certificates PKI's Secrets hold for the ControlPlane, its CAs among them. It counts each Secret's own certificate and the newest complete etcd generation, and leaves out the replaced certificates in the CA bundles, the staged kubelet signer and a previous etcd generation.")
 	maxConcurrentRollouts = prometheus.NewDesc("lodia_fleet_max_concurrent_rollouts",
 		"fleet.maxConcurrentRollouts: how many tenants may hold a slot of the fleet at once.", nil, nil)
 
@@ -90,6 +92,7 @@ var (
 		datastoreMembers, datastoreMembersReady, datastoreMembersUpdated,
 		datastoreQuota, datastoreDeltaSnapshotPeriod, datastoreDBSize, datastoreHasLeader, datastoreAlarm, operatorRevisionGranted,
 		slotSince, scheduledFor, upgradeStarted, maxConcurrentRollouts,
+		certificatesExpiration,
 	}
 
 	statuses = []metav1.ConditionStatus{metav1.ConditionTrue, metav1.ConditionFalse, metav1.ConditionUnknown}
@@ -242,6 +245,9 @@ func (c *Collector) collect(ch chan<- prometheus.Metric, cp *lodiav1alpha1.Contr
 	}
 	if k := status.Kubernetes; k != nil && k.Upgrade != nil {
 		emit(upgradeStarted, seconds(k.Upgrade.StartedAt), string(k.Upgrade.Step))
+	}
+	if c := status.Credentials; c != nil && c.NotAfter != nil {
+		emit(certificatesExpiration, seconds(*c.NotAfter))
 	}
 }
 
