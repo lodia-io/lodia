@@ -264,6 +264,7 @@ func passing(reason string) bool {
 	switch reason {
 	case lodiav1alpha1.ReasonReconciling, lodiav1alpha1.ReasonLatestGenerationNotObserved,
 		lodiav1alpha1.ReasonProvisioning, lodiav1alpha1.ReasonRestoring, lodiav1alpha1.ReasonRolloutPending, lodiav1alpha1.ReasonDeleting,
+		lodiav1alpha1.ReasonApplying, lodiav1alpha1.ReasonBinding,
 		lodiav1alpha1.ReasonAwaitingRelease, lodiav1alpha1.ReasonSourceExists:
 		return true
 	}
