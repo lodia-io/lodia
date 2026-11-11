@@ -530,6 +530,7 @@ func TestFinalizerAndEtcdFromClass(t *testing.T) {
 		}}},
 		{"the Etcd → status.datastore", ptr.Deref(cp.Status.Datastore, lodiav1alpha1.DatastoreStatus{}), lodiav1alpha1.DatastoreStatus{
 			Endpoints: []lodiav1alpha1.HostPort{{Host: "dev-etcd-client." + ns + ".svc", Port: 2379}},
+			Class:     &lodiav1alpha1.DatastoreClassStatus{Name: "mapped", DatastoreClassGeneration: lodiav1alpha1.DatastoreClassGeneration{UID: mapped.UID, Generation: 1}},
 			Members:   lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: 1}},
 			Snapshots: &lodiav1alpha1.SnapshotLocation{Provider: "S3", Endpoint: "https://s3.example.test", Bucket: "lodia-backups", Prefix: store.Prefix},
 		}},
@@ -1424,7 +1425,8 @@ func TestUnsupported(t *testing.T) {
 func TestDatastoreReadyIsQuorum(t *testing.T) {
 	ns := namespace(t)
 	const cp = "reported"
-	createClass(t, newClass("reported", "Retain"))
+	class := newClass("reported", "Retain")
+	createClass(t, class)
 	create(t, controlPlane(ns, cp, "reported"))
 	writeGeneration(t, ns, cp, 1)
 	waitEtcd(t, ns, cp, nil)
@@ -1446,6 +1448,7 @@ func TestDatastoreReadyIsQuorum(t *testing.T) {
 	})
 	if got, want := ptr.Deref(getControlPlane(t, ns, cp).Status.Datastore, lodiav1alpha1.DatastoreStatus{}), (lodiav1alpha1.DatastoreStatus{
 		Endpoints: []lodiav1alpha1.HostPort{{Host: "reported-etcd-client." + ns + ".svc", Port: 2379}},
+		Class:     &lodiav1alpha1.DatastoreClassStatus{Name: "reported", DatastoreClassGeneration: lodiav1alpha1.DatastoreClassGeneration{UID: class.UID, Generation: 1}},
 		Members:   lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: 1, Ready: 1}, Updated: new(int32(1))},
 	}); !reflect.DeepEqual(got, want) {
 		t.Errorf("status.datastore %+v, want %+v", got, want)
