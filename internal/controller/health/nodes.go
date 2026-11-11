@@ -73,7 +73,7 @@ type NodesReconciler struct {
 	Clock clock.PassiveClock
 	// SampleLag observes how much later than its due time each pass starts;
 	// nil observes nothing.
-	SampleLag prometheus.Observer
+	SampleLag prometheus.Histogram
 
 	mu      sync.Mutex
 	samples map[types.NamespacedName]*sampling

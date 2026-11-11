@@ -12,7 +12,6 @@ import (
 	"time"
 
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
-	"github.com/prometheus/client_golang/prometheus"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/labels"
@@ -137,13 +136,13 @@ type Inputs struct {
 	GatewayAPI          bool
 }
 
-// Sources are what the controllers of Setup keep in memory for Lodia's
-// metrics: health-nodes, whose counts of the nodes the metrics serve, and
-// Health's histogram and counter, which no registry holds.
+// Sources are the controllers Setup registers whose memory Lodia's metrics
+// serve: Health, with its counter of failed probes, and health-nodes, with its
+// histogram of lag and its counts of the nodes. No registry holds the counter
+// or the histogram.
 type Sources struct {
-	Nodes         *health.NodesReconciler
-	SampleLag     prometheus.Histogram
-	ProbeFailures *prometheus.CounterVec
+	Health *health.Reconciler
+	Nodes  *health.NodesReconciler
 }
 
 // Setup registers every controller with the manager and returns the Sources
@@ -193,11 +192,10 @@ func Setup(mgr ctrl.Manager, in Inputs) (*Sources, error) {
 	if err := (&tenant.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), ApplyPeriod: 10 * time.Minute, TunnelImage: in.TunnelImage, Revision: revision}).SetupWithManager(mgr, workers); err != nil {
 		return nil, fmt.Errorf("set up the tenant controller: %w", err)
 	}
-	sources := &Sources{SampleLag: metrics.NewSampleLag(), ProbeFailures: metrics.NewProbeFailures()}
-	if err := newHealth(mgr.GetClient(), mgr.GetAPIReader(), in.Config.Health, sources.ProbeFailures).SetupWithManager(mgr, workers); err != nil {
+	sources := &Sources{Health: newHealth(mgr.GetClient(), mgr.GetAPIReader(), in.Config.Health), Nodes: newNodes(mgr.GetClient(), mgr.GetAPIReader(), in.Config.Health)}
+	if err := sources.Health.SetupWithManager(mgr, workers); err != nil {
 		return nil, fmt.Errorf("set up the health controller: %w", err)
 	}
-	sources.Nodes = newNodes(mgr.GetClient(), mgr.GetAPIReader(), in.Config.Health, sources.SampleLag)
 	if err := sources.Nodes.SetupWithManager(mgr, nodesWorkers); err != nil {
 		return nil, fmt.Errorf("set up the health nodes reconciler: %w", err)
 	}
@@ -218,7 +216,7 @@ func Metrics(reader client.Reader, elected <-chan struct{}, in Inputs, sources *
 	}
 	return &metrics.Collector{
 		Reader: reader, Elected: elected, Revision: revision, MaxConcurrentRollouts: in.Config.Fleet.MaxConcurrentRollouts,
-		NodeCounts: sources.Nodes.Counts, SampleLag: sources.SampleLag, ProbeFailures: sources.ProbeFailures,
+		NodeCounts: sources.Nodes.Counts, SampleLag: sources.Nodes.SampleLag, ProbeFailures: sources.Health.ProbeFailures,
 	}, nil
 }
 
@@ -233,14 +231,14 @@ func newLifecycle(c client.Client, reader client.Reader, cfg Config, revision st
 	}
 }
 
-func newHealth(c client.Client, reader client.Reader, cfg HealthConfig, failures *prometheus.CounterVec) *health.Reconciler {
-	return &health.Reconciler{Client: c, Reader: reader, Period: cfg.Period.Duration, FailuresBeforeFalse: cfg.FailuresBeforeFalse, Timeout: healthTimeout, Clock: clock.RealClock{}, ProbeFailures: failures}
+func newHealth(c client.Client, reader client.Reader, cfg HealthConfig) *health.Reconciler {
+	return &health.Reconciler{Client: c, Reader: reader, Period: cfg.Period.Duration, FailuresBeforeFalse: cfg.FailuresBeforeFalse, Timeout: healthTimeout, Clock: clock.RealClock{}, ProbeFailures: metrics.NewProbeFailures()}
 }
 
-func newNodes(c client.Client, reader client.Reader, cfg HealthConfig, lag prometheus.Observer) *health.NodesReconciler {
+func newNodes(c client.Client, reader client.Reader, cfg HealthConfig) *health.NodesReconciler {
 	return &health.NodesReconciler{
 		Client: c, Reader: reader, Period: cfg.Period.Duration, Timeout: healthTimeout,
 		SilentAfter: cfg.SilentAfter.Duration, HoldFraction: int(cfg.HoldFraction), ReleaseAfter: cfg.ReleaseAfter.Duration, Clock: clock.RealClock{},
-		SampleLag: lag,
+		SampleLag: metrics.NewSampleLag(),
 	}
 }
