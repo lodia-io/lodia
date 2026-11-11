@@ -396,7 +396,9 @@ Look at the operator's pods in the release namespace, their logs and events, and
 
 ### LodiaControlPlaneNotReady
 
-Critical, after 10 minutes of `Ready` not True, but while it reads `Deleting`, which [`LodiaControlPlaneDeletionStuck`](#lodiacontrolplanedeletionstuck) watches, or while a restored `ControlPlane` is held for its release: `AwaitingRelease`, `SourceExists`, or `HostnameConflict` while `ControllersLeading` reads one of the two, a held restore in `gateway` mode whose source keeps the hostnames ([replace a cluster](#replace-a-cluster-from-a-backup)).
+Critical, after 10 minutes of `Ready` not True, but while it reads `Deleting`, which [`LodiaControlPlaneDeletionStuck`](#lodiacontrolplanedeletionstuck) watches, `Restoring`, a restore its owner asked for, until its etcd serves, or while a restored `ControlPlane` is held for its release: `AwaitingRelease`, `SourceExists`, or `HostnameConflict` while `ControllersLeading` reads one of the two, a held restore in `gateway` mode whose source keeps the hostnames ([replace a cluster](#replace-a-cluster-from-a-backup)).
+A restore fires on `WaitingForBackup`, which PKI also reads for a failed `Backup`.
+In `gateway` mode, a restore whose source keeps the hostnames reads `HostnameConflict` from its start, since `RoutesReady` comes first in `Ready`, while `ControllersLeading` reads `WaitingForAccess` until `AccessReady` is True, so it fires unless its hold is written within 10 minutes.
 A held restore whose certificates, etcd or endpoint fail reads that failure in `Ready`, and fires.
 `Ready`'s reason and message name the first input that is not True: its row in [what breaks](#what-breaks-and-how-it-shows).
 A hibernated tenant joins the exceptions with hibernation, in phase 3.
