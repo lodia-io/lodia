@@ -221,6 +221,23 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 - `.golangci.yml` breaks its own header: it switches gosec off for `internal/testenv/` (`.golangci.yml:72-73`), a rule off for one repository, and no GitHub workflow compares the file, so "the lint job fails on any difference" does not hold here.
   Move the exclusion to `//nolint:gosec // <why>` at its sites in `internal/testenv/testenv.go`, so that Lodia and the Cluster API provider carry the same file byte for byte; the provider's `verify` then compares its copy with Lodia's at the commit it pins.
+- The six e2e jobs of `.github/workflows/ci.yml`, `e2e` to `e2e-maintenance`, set no `timeout-minutes`, so a hung run holds a runner for GitHub's default of 360 minutes; the nightlies set one.
+- A failed e2e run leaves nothing to read: the suite dumps no objects, events or logs, and the jobs upload no artifacts.
+  A dump on failure that fits under go test's `-timeout`, and an upload step under `if: always()`.
+- `E2E_DIR` is one directory for every kind cluster (`Makefile:9`): two runs in one checkout share `work/e2e/kubeconfig`, kind makes the second cluster current in it, and the first run's helm, which reads the file on every call, follows it.
+  A directory per cluster, `work/e2e/$(E2E_CLUSTER)`.
+- The suite does not refuse the `HELM_KUBE*` variables, which helm lays over `--kubeconfig` ([environment.go](https://github.com/helm/helm/blob/v4.3.1/pkg/cli/environment.go#L102-L109)), so the chart install can reach another API server than the one the guard checked ([e2e-on-a-named-cluster](docs/decisions/e2e-on-a-named-cluster.md)).
+- `test/e2e/suite_test.go:123-132` runs ko through `go run` with `Output()` and no `WaitDelay`: a cancelled context kills `go`, ko keeps the pipe open, and the test waits for ko to end.
+  A `GOARCH` in the environment also makes ko refuse `--platform`; ko's environment should drop it.
+- Six Markdown files are hard-wrapped against `CONTRIBUTING.md:27`: `CLAUDE.md`, `SECURITY.md`, `ADOPTERS.md`, `CODE_OF_CONDUCT.md`, `docs/review-checklist.md` and `docs/etcd-spike-2026-10.md`.
+- Stale lines:
+  - `CONTRIBUTING.md:20` leaves out `make e2e-upgrade` and `make e2e-maintenance`, which CI runs on every pull request, and the nightlies of `nightly-ha.yml` and `nightly-upgrade.yml`;
+  - `CONTRIBUTING.md:11` says every other tool runs through `go tool`, but ko and hydrophone run through `go run` (`Makefile:1-5`);
+  - `CLAUDE.md`'s `make verify` leaves out `restore-keys` (`Makefile:82`);
+  - `README.md:6-7` says phase 1 and controllers built for one replica, while high availability and most of phase 2 are built;
+  - `docs/decisions/releases-and-support.md:4` names only the release workflow as not built, but Renovate and kube-api-linter are not built either (this file, "From the skeleton").
+- The ten e2e targets of the Makefile repeat create, run, remove and delete, each with its own list of node containers to remove, and the suite's `Finish` removes them again.
+  A label that `startNode` (`test/e2e/gate_test.go`) puts on each container, a removal by that label, and one `define` recipe would leave one copy.
 
 ## For wave 2, observability
 
