@@ -752,7 +752,7 @@ func TestPaused(t *testing.T) {
 		t.Fatal("the finalizer is not on the unpaused ControlPlane")
 	}
 
-	setPaused(t, ns, "dev", true)
+	pause(t, ns, "dev")
 	writeGeneration(t, ns, "dev", 2)
 	if err := k8s.Delete(t.Context(), getControlPlane(t, ns, "dev")); err != nil {
 		t.Fatal(err)
@@ -1301,7 +1301,7 @@ func TestPredecessorsCopy(t *testing.T) {
 		t.Fatalf("the copy's owners are %+v, want the ControlPlane", owners)
 	}
 
-	setPaused(t, ns, cp, true)
+	pause(t, ns, cp)
 	if err := k8s.Delete(t.Context(), getCopy(t, ns, cp)); err != nil {
 		t.Fatal(err)
 	}
@@ -1599,7 +1599,7 @@ func TestAFinalizingPassFromAStaleReadTouchesNoOtherEtcd(t *testing.T) {
 	create(t, controlPlane(ns, cp, "finalized"))
 	writeGeneration(t, ns, cp, 1)
 	predecessor := waitEtcd(t, ns, cp, nil)
-	setPaused(t, ns, cp, true)
+	pause(t, ns, cp)
 	if err := k8s.Delete(t.Context(), getControlPlane(t, ns, cp)); err != nil {
 		t.Fatal(err)
 	}
@@ -1668,7 +1668,7 @@ func TestReclaimingFromAStaleListDeletesNoOtherClaim(t *testing.T) {
 	if predecessor.Labels[lodiav1alpha1.ControlPlaneUIDLabel] != string(getControlPlane(t, ns, cp).UID) {
 		t.Fatalf("the StatefulSet's claim carries labels %v, want the ControlPlane's UID", predecessor.Labels)
 	}
-	setPaused(t, ns, cp, true)
+	pause(t, ns, cp)
 	if err := k8s.Delete(t.Context(), getControlPlane(t, ns, cp)); err != nil {
 		t.Fatal(err)
 	}
