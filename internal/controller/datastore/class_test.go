@@ -753,7 +753,7 @@ func TestAPassThatKeepsTheClassFromAStaleCacheKeepsTheCopyOfTheStoreTheEtcdNames
 			copied(t, "other-bucket", "other-access")
 
 			row.release(t, ns, cp)
-			mustPass(t, operatorAt(unpaused(k8s), row.operator), ns, cp)
+			mustPass(t, failing, ns, cp)
 			copied(t, "lodia-backups", "spike-access")
 		})
 	}
