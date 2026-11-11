@@ -336,8 +336,8 @@ type pass struct {
 	refusal error
 	// heldReason is DatastoreReady's reason while it is True and the class is
 	// held for its credentials copy: Lifecycle reads it as a cause that fails
-	// a change, so that it grants no slot to an edit that cannot be applied
-	// and fails the change in a slot.
+	// a change, so that it grants no slot while the hold stands and fails the
+	// change in a slot.
 	heldReason string
 }
 
