@@ -1,0 +1,17 @@
+{{- if .Values.metrics.service.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lodia.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+spec:
+  selector:
+    {{- include "lodia.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: metrics
+      port: 8443
+      targetPort: metrics
+{{- end }}

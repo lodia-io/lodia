@@ -94,10 +94,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   An unlabelled object it applied for a predecessor is taken over silently, with the `OwnerReferencesPermissionEnforcement` plugin as without it, now that Workloads may delete (before, the plugin refused the apply); one that only refers to another `ControlPlane` is applied over once and then held; one with another controller is refused by validation, which `APIServerReady` reports as `Refused`.
   Reading the targets uncached, as PKI reads its Secrets, would see them all.
 
-## From the etcd NetworkPolicy (2026-10-26)
-
-- The etcd's policy admits no metrics scraper, as the controller manager's and the scheduler's do not: a ServiceMonitor for the etcd and sidecar metrics needs its scraper admitted, the phase 2 arrow from the metrics scrapers to the health ports.
-
 ## From the chart (2026-10-26)
 
 - etcd-druid's CRDs come from its chart's `crds/` directory, which Helm applies only when it installs a release (`docs/README.md`, Installation): a bump of the dependency needs its CRDs applied by hand first; decide whether the chart templates them or the release notes carry the step.

@@ -88,7 +88,8 @@ func installLodia(ctx context.Context, cfg *envconf.Config) (context.Context, er
 		helm.WithArgs("--install", "--create-namespace",
 			"--set", "image.repository="+operator.Name(), "--set", "image.tag="+operator.Tag(),
 			"--set", "signerImage.repository="+signer.Name(), "--set", "signerImage.tag="+signer.Tag(),
-			"--set", "tunnelImage.repository="+tunnel.Name(), "--set", "tunnelImage.tag="+tunnel.Tag()),
+			"--set", "tunnelImage.repository="+tunnel.Name(), "--set", "tunnelImage.tag="+tunnel.Tag(),
+			"--set", "metrics.service.enabled=true"),
 		helm.WithWait(), helm.WithTimeout("5m"))
 	if err != nil {
 		return ctx, fmt.Errorf("install the chart: %w", err)

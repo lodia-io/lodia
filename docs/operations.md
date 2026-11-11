@@ -344,6 +344,42 @@ The one limit is in `gateway` mode: the tunnel's client certificate has 30 days 
 Changes to `ControlPlane` objects are accepted by the API (no webhooks) and applied when Lodia is back.
 Renewal and backups pause; the `LodiaOperatorDown` alert fires first.
 
+## Scraping a tenant's etcd
+
+Lodia's own metrics come from the operator ([scraping it](README.md#scraping-the-operator)); scraping a tenant's components is the platform's choice.
+The etcd's NetworkPolicy admits only what dials the members ([A tenant namespace](README.md#a-tenant-namespace)), and policies add up ([network policies](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/concepts/services-networking/network-policies.md#L75-L78)), so a platform that scrapes the members admits its scraper with a policy of its own, here a Prometheus of prometheus-operator, by the label it gives its pods ([operator.go](https://github.com/prometheus-operator/prometheus-operator/blob/v0.94.2/pkg/prometheus/server/operator.go#L1698-L1706)):
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: <cp>-etcd-metrics
+  namespace: <the ControlPlane's namespace>
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/managed-by: etcd-druid
+      app.kubernetes.io/part-of: <cp>-etcd
+      app.kubernetes.io/name: <cp>-etcd
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: <the Prometheus's namespace>
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - port: 2379
+        - port: 8080
+```
+
+Before applying it, weigh both ports ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md#decision)):
+
+- etcd serves its metrics on the client port alone, behind client certificates, and Lodia turns on no etcd authentication, so the certificate a scraper needs reads every key of the tenant;
+- the backup-restore sidecar serves `/metrics` on 8080 beside the endpoints that take snapshots and start initialization, which the policy opens to the scraper too.
+
 ## Alerts shipped in the chart
 
 From phase 2's wave 2, behind a value of `metrics.*` and off by default, written on the metrics of [metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md):
