@@ -23,6 +23,7 @@ import (
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/promql/parser"
 	"go.lodia.io/lodia/internal/metrics"
+	yamlv3 "go.yaml.in/yaml/v3"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/client-go/util/workqueue"
@@ -470,11 +471,11 @@ func TestLintExcludesTheFleetAndControlPlaneDashboardsAlone(t *testing.T) {
 	var lint struct {
 		Exclusions map[string]*struct {
 			Entries []struct {
-				Dashboard string `json:"dashboard"`
-			} `json:"entries"`
-		} `json:"exclusions"`
+				Dashboard string `yaml:"dashboard"`
+			} `yaml:"entries"`
+		} `yaml:"exclusions"`
 	}
-	if err := yaml.Unmarshal(raw, &lint); err != nil {
+	if err := yamlv3.Unmarshal(raw, &lint); err != nil {
 		t.Fatal(err)
 	}
 	if len(lint.Exclusions) == 0 {
