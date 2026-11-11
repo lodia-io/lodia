@@ -1902,6 +1902,28 @@ tests:
               severity: warning
             exp_annotations: *a44
 
+  - name: 'LodiaReconcileErrors reads 15 minutes of reconciles'
+    interval: 30s
+    input_series:
+      - series: 'controller_runtime_reconcile_errors_total{job="lodia",namespace="lodia-system",pod="lodia-a",instance="10.0.0.1:8443",controller="datastore"}'
+        values: '0x20 6+6x80'
+      - series: 'controller_runtime_reconcile_total{job="lodia",namespace="lodia-system",pod="lodia-a",instance="10.0.0.1:8443",controller="datastore",result="error"}'
+        values: '0x20 6+6x80'
+      - series: 'controller_runtime_reconcile_total{job="lodia",namespace="lodia-system",pod="lodia-a",instance="10.0.0.1:8443",controller="datastore",result="success"}'
+        values: '0+100x20 2094+94x80'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: LodiaReconcileErrors
+      - eval_time: 40m
+        alertname: LodiaReconcileErrors
+        exp_alerts:
+          - exp_labels:
+              controller: datastore
+              job: lodia
+              namespace: lodia-system
+              severity: warning
+            exp_annotations: *a44
+
   - name: 'LodiaReconcileErrors fires throughout a failover'
     interval: 30s
     input_series:
