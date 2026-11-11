@@ -84,6 +84,7 @@ func controlPlaneNotReady() []testCase {
 				ready0("restore-backup"), reason("restore-backup", "Ready", "WaitingForBackup", "1x40"),
 				ready0("restore-conflict"), reason("restore-conflict", "Ready", "HostnameConflict", "1x40"),
 				reason("restore-conflict", "ControllersLeading", "WaitingForAccess", "1x40"),
+				reason("restore-conflict", "DatastoreReady", "Restoring", "1x40"),
 				ready0("paused"), reason("paused", "Ready", "Unavailable", "1x40"), reason("paused", "Progressing", "Paused", "1x40"),
 				cond("ready", "Ready", "True", "1x40"), reason("ready", "Ready", "Ready", "1x40"),
 				join(
