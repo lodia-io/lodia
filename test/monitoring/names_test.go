@@ -270,18 +270,27 @@ func TestRulesReadServedMetrics(t *testing.T) {
 	checkReads(t, servedMetrics(t), ruleFile, reads)
 }
 
+type datasourceRef struct {
+	Type string `json:"type"`
+	UID  string `json:"uid"`
+}
+
+var templatedDatasource = datasourceRef{Type: "prometheus", UID: "${datasource}"}
+
 type target struct {
-	RefID   string `json:"refId"`
-	Expr    string `json:"expr"`
-	Instant bool   `json:"instant"`
-	Range   bool   `json:"range"`
+	RefID      string         `json:"refId"`
+	Expr       string         `json:"expr"`
+	Instant    bool           `json:"instant"`
+	Range      bool           `json:"range"`
+	Datasource *datasourceRef `json:"datasource"`
 }
 
 type panel struct {
-	Type    string   `json:"type"`
-	Title   string   `json:"title"`
-	Panels  []panel  `json:"panels"`
-	Targets []target `json:"targets"`
+	Type       string         `json:"type"`
+	Title      string         `json:"title"`
+	Datasource *datasourceRef `json:"datasource"`
+	Panels     []panel        `json:"panels"`
+	Targets    []target       `json:"targets"`
 }
 
 type dashboard struct {
@@ -289,9 +298,10 @@ type dashboard struct {
 	Panels     []panel `json:"panels"`
 	Templating struct {
 		List []struct {
-			Name  string `json:"name"`
-			Type  string `json:"type"`
-			Query any    `json:"query"`
+			Name       string         `json:"name"`
+			Type       string         `json:"type"`
+			Datasource *datasourceRef `json:"datasource"`
+			Query      any            `json:"query"`
 		} `json:"list"`
 	} `json:"templating"`
 }
@@ -385,6 +395,29 @@ func TestStatPanelsShowTheCurrentSeries(t *testing.T) {
 				if !target.Instant || target.Range {
 					t.Errorf("%s: panel %q target %s is a range query, so the stat keeps a tile for every series of the time range", file, p.Title, target.RefID)
 				}
+			}
+		}
+	}
+}
+
+func TestEveryQueryReadsTheDatasourceVariable(t *testing.T) {
+	for file, d := range dashboards(t) {
+		for _, p := range d.panels() {
+			if len(p.Targets) == 0 {
+				continue
+			}
+			if p.Datasource == nil || *p.Datasource != templatedDatasource {
+				t.Errorf("%s: panel %q reads the data source %+v, want %+v", file, p.Title, p.Datasource, templatedDatasource)
+			}
+			for _, target := range p.Targets {
+				if target.Datasource != nil && *target.Datasource != templatedDatasource {
+					t.Errorf("%s: panel %q target %s reads the data source %+v, want %+v", file, p.Title, target.RefID, *target.Datasource, templatedDatasource)
+				}
+			}
+		}
+		for _, v := range d.Templating.List {
+			if v.Type == "query" && (v.Datasource == nil || *v.Datasource != templatedDatasource) {
+				t.Errorf("%s: variable %s reads the data source %+v, want %+v", file, v.Name, v.Datasource, templatedDatasource)
 			}
 		}
 	}
