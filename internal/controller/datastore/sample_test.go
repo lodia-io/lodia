@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -265,12 +266,28 @@ func TestALearnerIsNotCountedInTheQuorum(t *testing.T) {
 		}
 	})
 	c := etcdClient(t, clientURL(cfgs[0]))
+	cp, etcd := sampledControlPlane("learning", "uid-learning")
+	r, clk := sampler(cp, etcd)
+	r.EtcdClient = dialURL(clientURL(cfgs[0]))
 	learner := etcdMember(t, "learner")
 	learner.StrictReconfigCheck = false
 	added, err := c.MemberAddAsLearner(t.Context(), []string{learner.AdvertisePeerUrls[0].String()})
 	if err != nil {
 		t.Fatal(err)
 	}
+	listed, err := c.MemberList(t.Context(), clientv3.WithSerializable())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if i := slices.IndexFunc(listed.Members, func(m *etcdserverpb.Member) bool { return m.GetID() == added.Member.GetID() }); i < 0 || len(listed.Members[i].GetClientURLs()) > 0 {
+		t.Fatalf("the learner not started yet is not listed without a client URL: %v", listed.Members)
+	}
+	samplePass(t, r, client.ObjectKeyFromObject(cp))
+	clk.Step(time.Minute)
+	if got := servedSample(t, r, cp); got.HasLeader || got.DBSize == nil {
+		t.Errorf("one voting member of two answering beside a learner not started yet gives %+v with size %v, want no leader and the member's size", got, got.DBSize)
+	}
+
 	learner.InitialCluster = strings.Join([]string{
 		cfgs[0].Name + "=" + cfgs[0].AdvertisePeerUrls[0].String(),
 		cfgs[1].Name + "=" + cfgs[1].AdvertisePeerUrls[0].String(),
@@ -306,9 +323,6 @@ func TestALearnerIsNotCountedInTheQuorum(t *testing.T) {
 		return nil
 	})
 
-	cp, etcd := sampledControlPlane("learning", "uid-learning")
-	r, clk := sampler(cp, etcd)
-	r.EtcdClient = dialURL(clientURL(cfgs[0]))
 	samplePass(t, r, client.ObjectKeyFromObject(cp))
 	clk.Step(time.Minute)
 	if got := servedSample(t, r, cp); got.HasLeader {
