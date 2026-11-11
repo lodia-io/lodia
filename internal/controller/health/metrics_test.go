@@ -107,6 +107,13 @@ func TestAPassAfterOneThatRanPastThePeriodObservesZeroOnTime(t *testing.T) {
 	h.expectLag(lag, lagged{count: 1})
 }
 
+func TestAPassOnTimeThatRunsTwelveSecondsObservesZero(t *testing.T) {
+	h, lag := lagging(t)
+	h.taking(0, 3*time.Second)
+	h.taking(5, 12*time.Second)
+	h.expectLag(lag, lagged{count: 1})
+}
+
 func TestLeaseReadsFailingFor30SecondsObserveNothingAboveTenSeconds(t *testing.T) {
 	h, lag := lagging(t)
 	h.at(0)
