@@ -102,15 +102,22 @@ type pendingChanges struct {
 	revision bool
 	// patch is the version a patch update moves the target to.
 	patch string
+	// class is the generation an edit of the DatastoreClass moves the target
+	// to: that of the class status.datastore.class names, while it exists.
+	class int64
 }
 
 func (p pendingChanges) any() bool {
-	return p.revision || p.patch != ""
+	return p.revision || p.patch != "" || p.class != 0
 }
 
 // pending is what the running operator may grant after c.
 func (f facts) pending(c change) pendingChanges {
-	return pendingChanges{revision: revisionOf(f.cp) != f.revision, patch: f.patchUpdate(c)}
+	p := pendingChanges{revision: revisionOf(f.cp) != f.revision, patch: f.patchUpdate(c)}
+	if f.classGeneration != c.class {
+		p.class = f.classGeneration
+	}
+	return p
 }
 
 // describe names what p holds, with the verb that follows.
@@ -121,6 +128,9 @@ func (p pendingChanges) describe(f facts) string {
 	}
 	if p.patch != "" {
 		kinds = append(kinds, "Kubernetes "+p.patch)
+	}
+	if p.class != 0 {
+		kinds = append(kinds, fmt.Sprintf("DatastoreClass %s generation %d", runningClass(f.cp).Name, p.class))
 	}
 	if len(kinds) == 1 {
 		return kinds[0] + " waits"
@@ -135,11 +145,14 @@ func (f facts) take(m *maintenance, c *change, p pendingChanges) {
 	if p.patch != "" {
 		f.patch(c, p.patch)
 	}
+	if p.class != 0 {
+		c.class = p.class
+	}
 }
 
 // maintain records a new lodia.io/maintain-requested-at, grants a pending
-// change by the rules, moving c's target for a patch update, and decides the
-// change in the tenant's slot.
+// change by the rules, moving c's target for a patch update and a class edit,
+// and decides the change in the tenant's slot.
 func (f facts) maintain(c *change, ready *metav1.Condition) maintenance {
 	cp := f.cp
 	granted := revisionOf(cp)
@@ -187,6 +200,9 @@ func (f facts) grant(m *maintenance, c *change, p pendingChanges, w *window, req
 	if p.patch != "" && (inSlot || requested || targetOf(cp) == "") {
 		f.patch(c, p.patch)
 		p.patch = ""
+	}
+	if p.class != 0 && (inSlot || requested) {
+		c.class, p.class = p.class, 0
 	}
 	if !p.any() {
 		return

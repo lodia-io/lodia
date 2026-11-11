@@ -167,3 +167,168 @@ func TestANewPatchInTheTableRollsWithTheReleaseThatAddsItInOneSlot(t *testing.T)
 	f.now = f.now.Add(settling)
 	expectVersion(t, expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonIdle}), versioned{version: "v1.37.2"})
 }
+
+func onClass(running, target, class int64) func(*facts) {
+	return func(f *facts) {
+		f.cp.Status.Datastore.Class = &lodiav1alpha1.DatastoreClassStatus{Name: "shared", Generation: running}
+		if f.cp.Status.Target != nil {
+			f.cp.Status.Target.DatastoreClassGeneration = target
+		}
+		f.classGeneration = class
+	}
+}
+
+func expectClass(t *testing.T, d decision, want int64) {
+	t.Helper()
+	if got := d.status.Target; got == nil || got.DatastoreClassGeneration != want {
+		t.Errorf("target is %+v, want datastoreClassGeneration %d", got, want)
+	}
+}
+
+func TestAClassEditIsGrantedByItsOwnRules(t *testing.T) {
+	nextStart := time.Date(2026, 11, 9, 13, 0, 0, 0, time.UTC)
+	nowSecond := now.Rfc3339Copy().Time
+	waitsForTheWindow := granted{revision: revisionA, reason: lodiav1alpha1.ReasonWaitingForWindow, message: "DatastoreClass shared generation 5 waits for the maintenance window 13:00-14:00 UTC, which opens at 2026-11-09T13:00:00Z", scheduledFor: &nextStart, requeue: 30 * time.Minute}
+	refusedEtcd := condition(metav1.Condition{Type: lodiav1alpha1.ConditionDatastoreReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonRefused, Message: "the API server refuses Etcd dev-etcd"})
+	for _, c := range []struct {
+		name  string
+		f     facts
+		want  granted
+		class int64
+	}{
+		{"pending alone, it waits for a closed window", held(running(revisionA), closedWindow, onClass(4, 4, 5)), waitsForTheWindow, 4},
+		{"at once on a token, the owner's: no slot", held(running(revisionA), closedWindow, onClass(4, 4, 5), requested("t1")),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonRollingOut, message: "etcd: runs DatastoreClass shared generation 4, not 5", lastHandled: "t1"}, 5},
+		{"at once in a slot, which it keeps", held(running(revisionA), closedWindow, onClass(4, 4, 5), slotted(lodiav1alpha1.ReasonMaintaining, 3)),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonMaintaining, message: "the change Lodia started rolls: etcd: runs DatastoreClass shared generation 4, not 5", slot: true}, 5},
+		{"not at once with no target yet, which takes what the Etcd runs", held(running(revisionA), closedWindow, onClass(4, 0, 5)), waitsForTheWindow, 4},
+		{"not at once on an owner's edit not taken up", held(running(revisionA), closedWindow, onClass(4, 4, 5), progressingAs(lodiav1alpha1.ReasonIdle, 2)), waitsForTheWindow, 4},
+		{"not at once during an owner's upgrade", held(running(revisionA), closedWindow, onClass(4, 4, 5), upgrading(lodiav1alpha1.UpgradeStepAddons), func(f *facts) { f.cp.Status.Addons.Version = "v1.37.0" }),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonUpgrading, scheduledFor: &nextStart, requeue: 30 * time.Minute}, 4},
+		{"not at once on addons never applied", held(running(revisionA), closedWindow, onClass(4, 4, 5), func(f *facts) { f.cp.Status.Addons = nil },
+			condition(metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonWaitingForAccess})),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonRollingOut, scheduledFor: &nextStart, requeue: 30 * time.Minute}, 4},
+		{"not at once on APIServerReady WaitingForTarget", held(running(revisionA), closedWindow, onClass(4, 4, 5),
+			condition(metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonWaitingForTarget})), waitsForTheWindow, 4},
+		{"not at once on a restored tenant whose controller manager is not released", held(running(revisionA), closedWindow, onClass(4, 4, 5), func(f *facts) {
+			f.cp.Spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "a-1"}}
+			f.cp.Status.Components.ControllerManager.Total = 0
+		}), waitsForTheWindow, 4},
+		{"not with no slot free", held(running(revisionA), onClass(4, 4, 5), fleet(holding("a", "a")), func(f *facts) { f.limit = 1 }),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonFleetLimit, message: "DatastoreClass shared generation 5 waits for one of the fleet's 1 slots", scheduledFor: &nowSecond, requeue: fleetRequeue}, 4},
+		{"in a free slot", held(running(revisionA), onClass(4, 4, 5)),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonMaintaining, message: "the change Lodia started rolls: etcd: runs DatastoreClass shared generation 4, not 5", slot: true, takesSlot: true}, 5},
+		{"an absent target takes what the Etcd runs at once", held(running(revisionA), closedWindow, onClass(4, 0, 4)),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonIdle}, 4},
+		{"so does a target the class is not at, once it is at what the Etcd runs", held(running(revisionA), closedWindow, onClass(7, 5, 7)),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonIdle}, 7},
+		{"a class that is gone is not pending", held(running(revisionA), closedWindow, onClass(4, 4, 0)),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonIdle}, 4},
+		{"a class gone before the Etcd took its granted edit leaves the target at what the Etcd runs", held(running(revisionA), closedWindow, onClass(4, 5, 0), slotted(lodiav1alpha1.ReasonMaintaining, 3)),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonMaintaining, message: "keeps its slot of the fleet until", slot: true, settlingSince: &nowSecond, requeue: settling}, 4},
+		{"an Etcd without a class reported keeps the target", held(running(revisionA), closedWindow, func(f *facts) { f.cp.Status.Target.DatastoreClassGeneration = 4 }),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonIdle}, 4},
+		{"the owner's edit refused is Failed", held(running(revisionA), onClass(4, 5, 5), refusedEtcd),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonFailed, message: "DatastoreReady: Refused: the API server refuses Etcd dev-etcd"}, 5},
+		{"a standing refusal once the Etcd runs the target is Ready's to report", held(running(revisionA), onClass(5, 5, 5), refusedEtcd),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonIdle}, 5},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			expectClass(t, expectGrant(t, c.f, c.want), c.class)
+		})
+	}
+}
+
+func TestEveryKindPendingIsGrantedInOneSlot(t *testing.T) {
+	nextStart := time.Date(2026, 11, 9, 13, 0, 0, 0, time.UTC)
+	waits := held(closedWindow, patches, onClass(4, 4, 5))
+	d := expectGrant(t, waits, granted{revision: revisionA, reason: lodiav1alpha1.ReasonWaitingForWindow,
+		message: "operator revision " + revisionB + ", Kubernetes v1.37.2 and DatastoreClass shared generation 5 wait for the maintenance window", scheduledFor: &nextStart, requeue: 30 * time.Minute})
+	expectVersion(t, d, versioned{version: "v1.37.1"})
+	expectClass(t, d, 4)
+
+	d = expectGrant(t, held(inWindow("12:00", "13:00", ""), patches, onClass(4, 4, 5)), granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, slot: true, takesSlot: true,
+		message: "the change Lodia started rolls: kube-apiserver: reports v1.37.1, not v1.37.2"})
+	expectVersion(t, d, versioned{version: "v1.37.2", step: lodiav1alpha1.UpgradeStepAPIServer, since: now.Rfc3339Copy().Time})
+	expectClass(t, d, 5)
+}
+
+func TestAClassEditInASlotRollsSettlesAndFails(t *testing.T) {
+	nowSecond := now.Rfc3339Copy().Time
+	tenSecondsAgo := present.Add(-10 * time.Second)
+	inSlot := slotted(lodiav1alpha1.ReasonMaintaining, 3)
+	notReady := []func(*facts){
+		condition(metav1.Condition{Type: lodiav1alpha1.ConditionDatastoreReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonQuorumLost, Message: "Etcd dev-etcd has 0 of 1 members ready"}),
+		condition(metav1.Condition{Type: lodiav1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonQuorumLost, ObservedGeneration: 3, LastTransitionTime: metav1.NewTime(present.Add(-time.Hour))}),
+	}
+	for _, c := range []struct {
+		name  string
+		f     facts
+		want  granted
+		class int64
+	}{
+		{"rolling while the Etcd runs another generation", held(running(revisionA), inSlot, onClass(4, 5, 5)),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonMaintaining, slot: true, message: "the change Lodia started rolls: etcd: runs DatastoreClass shared generation 4, not 5"}, 5},
+		{"rolled out once it runs the target: settlingSince now, a pass at S", held(running(revisionA), inSlot, onClass(5, 5, 5)),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonMaintaining, slot: true, settlingSince: &nowSecond, requeue: settling}, 5},
+		{"Idle after S with Ready True", held(running(revisionA), inSlot, onClass(5, 5, 5), settlingAt(present.Add(-settling))),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonIdle}, 5},
+		{"MaintenanceFailed after S with Ready not True", held(append([]func(*facts){running(revisionA), inSlot, onClass(5, 5, 5), settlingAt(present.Add(-settling))}, notReady...)...),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonMaintenanceFailed, slot: true, message: "Ready is not True 45s after the change Lodia started rolled out: QuorumLost: DatastoreReady: Etcd dev-etcd has 0 of 1 members ready", settlingSince: new(present.Add(-settling))}, 5},
+		{"Maintaining within S with Ready not True", held(append([]func(*facts){running(revisionA), inSlot, onClass(5, 5, 5), settlingAt(tenSecondsAgo)}, notReady...)...),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonMaintaining, slot: true, settlingSince: &tenSecondsAgo, requeue: settling - 10*time.Second}, 5},
+		{"rolling again removes settlingSince", held(running(revisionA), inSlot, onClass(4, 5, 5), settlingAt(tenSecondsAgo)),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonMaintaining, slot: true, message: "etcd: runs DatastoreClass shared generation 4, not 5"}, 5},
+		{"MaintenanceFailed at once on an Etcd refused", held(running(revisionA), inSlot, onClass(4, 5, 5),
+			condition(metav1.Condition{Type: lodiav1alpha1.ConditionDatastoreReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonRefused, Message: "the API server refuses Etcd dev-etcd"})),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonMaintenanceFailed, slot: true, message: "the change Lodia started failed: DatastoreReady: Refused: the API server refuses Etcd dev-etcd"}, 5},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			expectClass(t, expectGrant(t, c.f, c.want), c.class)
+		})
+	}
+}
+
+func TestAClassEditedTwiceBeforeTheGrantTakesTheLatest(t *testing.T) {
+	f := held(running(revisionA), closedWindow, onClass(4, 4, 5))
+	adopt(f.cp, expectGrant(t, f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonWaitingForWindow, message: "generation 5 waits", scheduledFor: new(time.Date(2026, 11, 9, 13, 0, 0, 0, time.UTC)), requeue: 30 * time.Minute}))
+	f.classGeneration = 6
+	d := expectGrant(t, f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonWaitingForWindow, message: "generation 6 waits", scheduledFor: new(time.Date(2026, 11, 9, 13, 0, 0, 0, time.UTC)), requeue: 30 * time.Minute})
+	expectClass(t, d, 4)
+	adopt(f.cp, d)
+	f.now = time.Date(2026, 11, 9, 13, 0, 0, 0, time.UTC)
+	expectClass(t, expectGrant(t, f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonMaintaining, message: "runs DatastoreClass shared generation 4, not 6", slot: true, takesSlot: true}), 6)
+}
+
+func TestAClassEditedBetweenTwoPassesOfItsSlotIsTakenAtOnce(t *testing.T) {
+	f := held(running(revisionA), onClass(4, 4, 5))
+	d := expectGrant(t, f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonMaintaining, slot: true, takesSlot: true})
+	expectClass(t, d, 5)
+	adopt(f.cp, d)
+	f.classGeneration = 6
+	closedWindow(&f)
+	expectClass(t, expectGrant(t, f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonMaintaining, message: "runs DatastoreClass shared generation 4, not 6", slot: true}), 6)
+}
+
+func TestAClassDeletedWhileItsEditWaitsIsNoLongerPending(t *testing.T) {
+	f := held(running(revisionA), closedWindow, onClass(4, 4, 5))
+	adopt(f.cp, expectGrant(t, f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonWaitingForWindow, scheduledFor: new(time.Date(2026, 11, 9, 13, 0, 0, 0, time.UTC)), requeue: 30 * time.Minute}))
+	f.classGeneration = 0
+	expectClass(t, expectGrant(t, f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonIdle}), 4)
+	f.classGeneration = 1
+	expectClass(t, expectGrant(t, f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonWaitingForWindow, message: "DatastoreClass shared generation 1 waits", scheduledFor: new(time.Date(2026, 11, 9, 13, 0, 0, 0, time.UTC)), requeue: 30 * time.Minute}), 4)
+}
+
+func TestAPausedOrDeletingPassKeepsTheClassTarget(t *testing.T) {
+	for _, change := range []func(*facts){
+		func(f *facts) { f.cp.Spec.Paused = true },
+		func(f *facts) { f.cp.DeletionTimestamp = &started },
+	} {
+		f := held(running(revisionA), onClass(4, 4, 5), change)
+		expectClass(t, decide(f), 4)
+		f = held(running(revisionA), onClass(4, 0, 4), change)
+		if target := decide(f).status.Target; target == nil || target.DatastoreClassGeneration != 0 {
+			t.Errorf("a paused or deleting pass wrote target %+v, want no class generation", target)
+		}
+	}
+}

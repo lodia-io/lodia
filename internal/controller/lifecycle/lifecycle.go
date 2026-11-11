@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
@@ -77,6 +78,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 		WithOptions(controller.Options{MaxConcurrentReconciles: workers, ReconciliationTimeout: time.Minute}).
 		For(&lodiav1alpha1.ControlPlane{}).
 		Watches(&lodiav1alpha1.Backup{}, handler.EnqueueRequestsFromMapFunc(backupsOwner)).
+		Watches(&lodiav1alpha1.DatastoreClass{}, handler.EnqueueRequestsFromMapFunc(r.controlPlanesOn)).
 		Complete(r)
 }
 
@@ -85,9 +87,28 @@ func backupsOwner(_ context.Context, obj client.Object) []reconcile.Request {
 	return []reconcile.Request{{NamespacedName: client.ObjectKey{Namespace: backup.Namespace, Name: backup.Spec.ControlPlaneRef.Name}}}
 }
 
+// controlPlanesOn maps a DatastoreClass to the ControlPlanes whose Etcd runs
+// it, as status.datastore.class names it: an edit of it is pending for them
+// alone.
+func (r *Reconciler) controlPlanesOn(ctx context.Context, class client.Object) []reconcile.Request {
+	list := &lodiav1alpha1.ControlPlaneList{}
+	if err := r.List(ctx, list); err != nil {
+		logf.FromContext(ctx).Error(err, "list the ControlPlanes of a DatastoreClass", "class", class.GetName())
+		return nil
+	}
+	var requests []reconcile.Request
+	for i := range list.Items {
+		if running := runningClass(&list.Items[i]); running != nil && running.Name == class.GetName() {
+			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&list.Items[i])})
+		}
+	}
+	return requests
+}
+
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/status,verbs=patch
 // +kubebuilder:rbac:groups=lodia.io,resources=backups,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=lodia.io,resources=datastoreclasses,verbs=list;watch
 
 // Reconcile decides from the cached object and, when that decision changes
 // something, from the object as the API server holds it, comparing the write
@@ -147,8 +168,9 @@ func (r *Reconciler) semaphore() *semaphore.Weighted {
 	return r.slots
 }
 
-// gather reads what a pass decides from: the Backup of the minor step from
-// the cache, and, while a change is pending, the fleet through fleet.
+// gather reads what a pass decides from: the Backup of the minor step and the
+// DatastoreClass the Etcd runs from the cache, and, while a change is
+// pending, the fleet through fleet.
 func (r *Reconciler) gather(ctx context.Context, cp *lodiav1alpha1.ControlPlane, fleet client.Reader) (facts, error) {
 	f := facts{cp: cp, now: r.Clock.Now(), revision: r.Revision, limit: r.MaxConcurrentRollouts, settling: r.Settling}
 	if minor := backupMinor(cp); minor != "" {
@@ -156,6 +178,15 @@ func (r *Reconciler) gather(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 		switch err := r.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.PreUpgradeBackupName(cp.Name, minor, cp.UID)}, backup); {
 		case err == nil:
 			f.backup = backup
+		case !apierrors.IsNotFound(err):
+			return f, err
+		}
+	}
+	if running := runningClass(cp); running != nil {
+		class := &lodiav1alpha1.DatastoreClass{}
+		switch err := r.Get(ctx, client.ObjectKey{Name: running.Name}, class); {
+		case err == nil:
+			f.classGeneration = class.Generation
 		case !apierrors.IsNotFound(err):
 			return f, err
 		}

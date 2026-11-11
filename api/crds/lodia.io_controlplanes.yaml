@@ -1682,6 +1682,14 @@ spec:
               target:
                 description: Target is what Lifecycle rolls now.
                 properties:
+                  datastoreClassGeneration:
+                    description: |-
+                      DatastoreClassGeneration is the generation of the DatastoreClass that
+                      status.datastore.class names which the Etcd may run: an edit of the
+                      class reaches the Etcd once Lifecycle grants it, in the window.
+                    format: int64
+                    minimum: 1
+                    type: integer
                   operatorRevision:
                     description: |-
                       OperatorRevision is the operator revision this tenant may be rendered

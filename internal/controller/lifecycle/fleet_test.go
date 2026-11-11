@@ -509,6 +509,26 @@ func TestAStaleCacheNeverRevokesAGrantOrASlot(t *testing.T) {
 			cp.Status.Maintenance = nil
 			meta.SetStatusCondition(&cp.Status.Conditions, metav1.Condition{Type: lodiav1alpha1.ConditionProgressing, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonIdle, ObservedGeneration: cp.Generation})
 		}},
+		{"a cache from before a class edit's grant", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+			datastoreClass(t, quiet, "stale-grant")
+			reportsOf(t, cp, runningRevision)
+			applyQuiet(t, cp, "test/class", runsClass("stale-grant", 1))
+			seedLifecycle(t, cp, runningRevision, lodiav1alpha1.ReasonIdle, nil, nil)
+			editClass(t, quiet, "stale-grant")
+		}, func(cp *lodiav1alpha1.ControlPlane) {
+			cp.Status.Target.DatastoreClassGeneration = 0
+			cp.Status.Maintenance = nil
+			meta.SetStatusCondition(&cp.Status.Conditions, metav1.Condition{Type: lodiav1alpha1.ConditionProgressing, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonIdle, ObservedGeneration: cp.Generation})
+		}},
+		{"a cache that has not seen the Etcd take the class edit", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+			datastoreClass(t, quiet, "stale-rollout")
+			reportsOf(t, cp, runningRevision)
+			applyQuiet(t, cp, "test/class", runsClass("stale-rollout", editClass(t, quiet, "stale-rollout")))
+			seedClassGrant(t, cp, 2, &settling)
+		}, func(cp *lodiav1alpha1.ControlPlane) {
+			cp.Status.Datastore.Class.Generation = 1
+			cp.Status.Maintenance.SettlingSince = nil
+		}},
 		{"a cache that has not seen the change roll out", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 			reportsOf(t, cp, runningRevision)
 			seedLifecycle(t, cp, runningRevision, lodiav1alpha1.ReasonMaintaining, nil, &settling)

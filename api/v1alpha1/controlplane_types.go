@@ -790,6 +790,13 @@ type Target struct {
 	// +kubebuilder:validation:MaxLength=128
 	OperatorRevision string `json:"operatorRevision,omitempty"`
 
+	// DatastoreClassGeneration is the generation of the DatastoreClass that
+	// status.datastore.class names which the Etcd may run: an edit of the
+	// class reaches the Etcd once Lifecycle grants it, in the window.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	DatastoreClassGeneration int64 `json:"datastoreClassGeneration,omitempty"`
+
 	// ScheduledFor is when a change Lodia initiates may roll: while it waits
 	// for the window, the window's next start; while it waits for a slot of
 	// the fleet, when it became eligible, in its window and Ready, which
