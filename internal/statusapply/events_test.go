@@ -122,6 +122,26 @@ func TestAMessageChangeIsNoEvent(t *testing.T) {
 	}
 }
 
+func TestALockedMessageChangeIsNoEvent(t *testing.T) {
+	backup := newBackup(t, namespace(t))
+	w, r := recording()
+	snapshotting := reported(lodiav1alpha1.ConditionReady, metav1.ConditionUnknown, lodiav1alpha1.ReasonSnapshotting)
+	if err := w.ApplyLocked(t.Context(), "Backup", backup, backup.Status.Conditions, map[string]any{}, snapshotting); err != nil {
+		t.Fatal(err)
+	}
+	got := storedBackup(t, backup)
+	snapshotting.Message = "the seal is at revision 7 in dev's etcd"
+	if err := w.ApplyLocked(t.Context(), "Backup", got, got.Status.Conditions, map[string]any{}, snapshotting); err != nil {
+		t.Fatal(err)
+	}
+	if c := meta.FindStatusCondition(storedBackup(t, backup).Status.Conditions, lodiav1alpha1.ConditionReady); c == nil || c.Message != snapshotting.Message {
+		t.Fatalf("Ready is %+v, want the new message written", c)
+	}
+	if len(r.events) != 1 {
+		t.Errorf("recorded %+v, want the first transition alone", r.events)
+	}
+}
+
 func TestAWriteTheServerRefusesIsNoEvent(t *testing.T) {
 	cp := controlPlane(t, namespace(t))
 	w, r := recording()
@@ -167,6 +187,27 @@ func TestTheFirstPassIsNoEvent(t *testing.T) {
 	}
 	if len(r.events) != 0 {
 		t.Errorf("recorded %+v", r.events)
+	}
+}
+
+func TestAKeptFirstPassIsNoEvent(t *testing.T) {
+	cp := controlPlane(t, namespace(t))
+	if err := apply(t.Context(), cp, conditions(reported(lodiav1alpha1.ConditionAPIServerReady, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable)), false); err != nil {
+		t.Fatal(err)
+	}
+	w, r := recording()
+	if err := w.Apply(t.Context(), cp, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{statusapply.FirstPass(cp, lodiav1alpha1.ConditionAPIServerReady)}, ObservedGeneration: 1}, true); err != nil {
+		t.Fatal(err)
+	}
+	got := stored(t, cp)
+	if got.Status.ObservedGeneration != 1 {
+		t.Fatalf("observedGeneration %d, want the apply made", got.Status.ObservedGeneration)
+	}
+	if c := meta.FindStatusCondition(got.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady); c == nil || c.Reason != lodiav1alpha1.ReasonUnavailable {
+		t.Fatalf("APIServerReady is %+v, want Unavailable kept", c)
+	}
+	if len(r.events) != 0 {
+		t.Errorf("recorded %+v for a kept first pass", r.events)
 	}
 }
 
