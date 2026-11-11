@@ -68,7 +68,7 @@ var (
 		"status.kubernetes.upgrade.startedAt, labelled with its step: when the version change in progress started.",
 		"step")
 	certificatesExpiration = perControlPlane("lodia_controlplane_certificates_expiration_timestamp_seconds",
-		"status.credentials.notAfter: the earliest expiry among the certificates PKI keeps for the ControlPlane, its CAs among them.")
+		"status.credentials.notAfter: the earliest expiry among the certificates PKI's Secrets hold for the ControlPlane, its CAs among them. It counts each Secret's own certificate and the newest complete etcd generation, and leaves out the replaced certificates in the CA bundles, the staged kubelet signer and a previous etcd generation.")
 	maxConcurrentRollouts = prometheus.NewDesc("lodia_fleet_max_concurrent_rollouts",
 		"fleet.maxConcurrentRollouts: how many tenants may hold a slot of the fleet at once.", nil, nil)
 
