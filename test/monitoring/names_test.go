@@ -37,6 +37,7 @@ import (
 const (
 	ruleFile      = "../../charts/lodia/files/rules/lodia.yaml"
 	dashboardGlob = "../../charts/lodia/files/dashboards/*.json"
+	lintFile      = "../../charts/lodia/files/dashboards/.lint"
 	goldenFile    = "../../internal/metrics/testdata/metrics.prom"
 )
 
@@ -419,6 +420,45 @@ func TestEveryQueryReadsTheDatasourceVariable(t *testing.T) {
 			if v.Type == "query" && (v.Datasource == nil || *v.Datasource != templatedDatasource) {
 				t.Errorf("%s: variable %s reads the data source %+v, want %+v", file, v.Name, v.Datasource, templatedDatasource)
 			}
+		}
+	}
+}
+
+func TestLintExcludesTheFleetAndControlPlaneDashboardsAlone(t *testing.T) {
+	raw, err := os.ReadFile(lintFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lint struct {
+		Exclusions map[string]*struct {
+			Entries []struct {
+				Dashboard string `json:"dashboard"`
+			} `json:"entries"`
+		} `json:"exclusions"`
+	}
+	if err := yaml.Unmarshal(raw, &lint); err != nil {
+		t.Fatal(err)
+	}
+	if len(lint.Exclusions) == 0 {
+		t.Fatalf("%s excludes no rule", lintFile)
+	}
+	var want []string
+	for file, d := range dashboards(t) {
+		if base := filepath.Base(file); base == "fleet.json" || base == "controlplane.json" {
+			want = append(want, d.Title)
+		}
+	}
+	slices.Sort(want)
+	for rule, exclusion := range lint.Exclusions {
+		var got []string
+		if exclusion != nil {
+			for _, entry := range exclusion.Entries {
+				got = append(got, entry.Dashboard)
+			}
+		}
+		slices.Sort(got)
+		if !slices.Equal(got, want) {
+			t.Errorf("%s excludes %s for the dashboards %q, want %q alone; an exclusion without entries, or an entry without a dashboard, holds for every dashboard", lintFile, rule, got, want)
 		}
 	}
 }
