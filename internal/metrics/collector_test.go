@@ -157,6 +157,79 @@ func TestTwoCollectionsAtOnceAgree(t *testing.T) {
 	}
 }
 
+func TestAStandbyServesFromTheScrapeAfterItIsElected(t *testing.T) {
+	c := collector(golden()...)
+	elected := make(chan struct{})
+	c.Elected = elected
+	if n := testutil.CollectAndCount(c); n != 0 {
+		t.Fatalf("a standby emits %d series, want none", n)
+	}
+	close(elected)
+	want, err := os.ReadFile(goldenFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := testutil.CollectAndCompare(c, bytes.NewReader(want)); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestARecreatedControlPlaneIsServedUnderItsNewUID(t *testing.T) {
+	requireEnv(t)
+	ns := namespace(t)
+	cp := gatewayHA("recreated", 21)
+	create(t, ns, cp)
+	reader := startCache(t, nil)
+	c := &metrics.Collector{Reader: reader, Elected: elected(), Revision: running, MaxConcurrentRollouts: 3}
+	uids := func() ([]string, error) {
+		registry := prometheus.NewPedanticRegistry()
+		registry.MustRegister(c)
+		families, err := registry.Gather()
+		if err != nil {
+			return nil, err
+		}
+		var out []string
+		for _, family := range families {
+			for _, m := range family.GetMetric() {
+				labels := map[string]string{}
+				for _, l := range m.GetLabel() {
+					labels[l.GetName()] = l.GetValue()
+				}
+				if labels["namespace"] == ns && labels["controlplane"] == cp.Name && family.GetName() == "lodia_controlplane_info" {
+					out = append(out, labels["uid"])
+				}
+			}
+		}
+		return out, nil
+	}
+	first := string(cp.UID)
+	testenv.Eventually(t, func() error {
+		got, err := uids()
+		if err != nil {
+			return err
+		}
+		if len(got) != 1 || got[0] != first {
+			return fmt.Errorf("the info series carry the UIDs %v, want %s", got, first)
+		}
+		return nil
+	})
+	if err := env.Client.Delete(t.Context(), cp); err != nil {
+		t.Fatal(err)
+	}
+	successor := gatewayHA("recreated", 22)
+	create(t, ns, successor)
+	testenv.Eventually(t, func() error {
+		got, err := uids()
+		if err != nil {
+			return err
+		}
+		if len(got) != 1 || got[0] != string(successor.UID) {
+			return fmt.Errorf("the info series carry the UIDs %v, want only the successor's %s", got, successor.UID)
+		}
+		return nil
+	})
+}
+
 func TestAStandbyEmitsNothingAndStartsNoInformer(t *testing.T) {
 	requireEnv(t)
 	create(t, namespace(t), gatewayHA("standby", 20))

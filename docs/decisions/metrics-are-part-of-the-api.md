@@ -89,7 +89,7 @@ Of the operator, without a tenant's labels:
 
 ## Code
 
-- `internal/metrics` — `Collector` builds the metrics served from the manager's cache, once elected, under the list's deadline; `collector_test.go` holds the golden `testdata/metrics.prom` over a tenant of each shape, a standby, an informer that has not synced and two scrapes at once, and `BenchmarkCollect` a scrape at 200 tenants.
+- `internal/metrics` — `Collector` builds the metrics served from the manager's cache, once elected, under the list's deadline; `collector_test.go` holds the golden `testdata/metrics.prom` over a tenant of each shape, a standby before and after its election, an informer that has not synced, a recreated `ControlPlane` and two scrapes at once, and `BenchmarkCollect` a scrape at 200 tenants.
 - `api/v1alpha1/metrics.go` — the label values no other type of the package holds.
 - `internal/operator`, `cmd/lodia` — `Metrics` builds the collector on the running revision and `fleet.maxConcurrentRollouts`, and `cmd/lodia` registers it in controller-runtime's registry after `Setup`.
 - `Makefile`, `.github/workflows/ci.yml` — `make monitoring`, part of `verify`, runs `promtool check metrics` on the golden; CI installs promtool by its checksum.
