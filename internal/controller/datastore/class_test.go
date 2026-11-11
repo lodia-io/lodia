@@ -203,6 +203,10 @@ func TestAClassCreatedAgainUnderItsNameWaitsForItsGrant(t *testing.T) {
 
 		grantClass(t, ns, cp, cp)
 		mustPass(t, r, ns, cp)
+		recordsUID(t, ns, cp, again)
+		if got := getControlPlane(t, ns, cp).Status.Datastore.Class; got == nil || got.UID != replaced.UID {
+			t.Errorf("while the class created again rolls status.datastore.class is %+v, want UID %s kept", got, replaced.UID)
+		}
 		rollOut(t, r, ns, cp)
 		runsClass(t, ns, cp, "3Gi", "1")
 		recordsUID(t, ns, cp, again)
