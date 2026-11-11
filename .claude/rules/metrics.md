@@ -15,7 +15,7 @@ paths:
 - Every metric has a line in the golden, `internal/metrics/testdata/metrics.prom`.
 - Every rule aggregates `pod` and `instance` away: a failover moves every series to another pod.
 - Every dashboard query on a tenant's series aggregates `pod` and `instance` away with `max`, as a rule does, so that the two leaders' series at a failover are one; the operator dashboard, which shows the replicas, keeps `pod`.
-- Every metric and label name a rule or a dashboard reads is one a series of the golden or of controller-runtime's registry carries, and `make monitoring` fails on one that is not; the test is a module of its own, so the parser's requirements stay out of the operator's, and runs from its directory: `cd test/monitoring && go test ./...`.
+- Every metric and label name a rule or a dashboard reads is one a series of the golden or of controller-runtime's registry carries, a `by`, `on` or `group_left` label one the series that aggregation or join reads carry, and `make monitoring` fails on one that is not; the test is a module of its own, so the parser's requirements stay out of the operator's, and runs from its directory: `cd test/monitoring && go test ./...`.
 - A dashboard passes `dashboard-linter lint --strict`; `charts/lodia/files/dashboards/.lint` excludes the job and instance rules for the fleet and control plane dashboards alone, by title, and the name test fails on an exclusion whose entries name other dashboards or none.
 - Every alert carries `keep_firing_for: 4m`, which outlasts the two lease handovers of a `helm upgrade`.
 - Every alert has a section `### <alert>` in `docs/operations.md`, which its `runbook_url` names.

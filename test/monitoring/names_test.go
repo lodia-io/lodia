@@ -183,15 +183,47 @@ type read struct {
 	expr  string
 }
 
+func (s served) labelsOf(selector *parser.VectorSelector) (map[string]bool, string) {
+	f, extra, problem := s.lookup(selector.Name)
+	if problem != "" {
+		return nil, problem
+	}
+	own := maps.Clone(f.labels)
+	if extra != "" {
+		own[extra] = true
+	}
+	return own, ""
+}
+
+func (s served) carriedBy(node parser.Node) map[string]bool {
+	carried := map[string]bool{}
+	for _, l := range targetLabels {
+		carried[l] = true
+	}
+	parser.Inspect(node, func(node parser.Node, _ []parser.Node) error {
+		if selector, ok := node.(*parser.VectorSelector); ok {
+			if own, problem := s.labelsOf(selector); problem == "" {
+				maps.Copy(carried, own)
+			}
+		}
+		return nil
+	})
+	return carried
+}
+
 func (r read) problems(s served) []string {
 	expr, err := parser.NewParser(parser.Options{}).ParseExpr(r.expr)
 	if err != nil {
 		return []string{err.Error()}
 	}
-	var problems, grouped []string
-	carried := map[string]bool{}
-	for _, l := range targetLabels {
-		carried[l] = true
+	var problems []string
+	uncarried := func(labels []string, of parser.Node, what, where string) {
+		carried := s.carriedBy(of)
+		for _, l := range labels {
+			if !carried[l] {
+				problems = append(problems, fmt.Sprintf("%s %s, which no series %s carries", what, l, where))
+			}
+		}
 	}
 	parser.Inspect(expr, func(node parser.Node, _ []parser.Node) error {
 		switch n := node.(type) {
@@ -200,36 +232,42 @@ func (r read) problems(s served) []string {
 				problems = append(problems, fmt.Sprintf("the selector %s has no metric name", n))
 				return nil
 			}
-			f, extra, problem := s.lookup(n.Name)
+			own, problem := s.labelsOf(n)
 			if problem != "" {
 				problems = append(problems, fmt.Sprintf("reads %s, %s", n.Name, problem))
 				return nil
-			}
-			own := maps.Clone(f.labels)
-			if extra != "" {
-				own[extra] = true
 			}
 			for _, m := range n.LabelMatchers {
 				if m.Name != model.MetricNameLabel && !own[m.Name] && !slices.Contains(targetLabels, m.Name) {
 					problems = append(problems, fmt.Sprintf("matches %s on %s, which none of its series carries", n.Name, m.Name))
 				}
 			}
-			maps.Copy(carried, own)
 		case *parser.AggregateExpr:
-			grouped = append(grouped, n.Grouping...)
+			what := "groups by"
+			if n.Without {
+				what = "groups without"
+			}
+			uncarried(n.Grouping, n.Expr, what, "it aggregates")
 		case *parser.BinaryExpr:
-			if n.VectorMatching != nil {
-				grouped = append(grouped, n.VectorMatching.MatchingLabels...)
-				grouped = append(grouped, n.VectorMatching.Include...)
+			m := n.VectorMatching
+			if m == nil {
+				return nil
+			}
+			what := "joins on"
+			if !m.On {
+				what = "joins ignoring"
+			}
+			uncarried(m.MatchingLabels, n.LHS, what, "on its left")
+			uncarried(m.MatchingLabels, n.RHS, what, "on its right")
+			if m.Card == parser.CardManyToOne {
+				uncarried(m.Include, n.RHS, "group_left copies", "on its right")
+			}
+			if m.Card == parser.CardOneToMany {
+				uncarried(m.Include, n.LHS, "group_right copies", "on its left")
 			}
 		}
 		return nil
 	})
-	for _, l := range grouped {
-		if !carried[l] {
-			problems = append(problems, fmt.Sprintf("groups or matches on %s, which no series it reads carries", l))
-		}
-	}
 	return problems
 }
 
@@ -502,6 +540,7 @@ func TestALabelIsOneTheSeriesCarry(t *testing.T) {
 	s := served{families: map[string]family{
 		"a_gauge":     {kind: dto.MetricType_GAUGE, labels: map[string]bool{"type": true}},
 		"other":       {kind: dto.MetricType_GAUGE, labels: map[string]bool{"reason": true}},
+		"both":        {kind: dto.MetricType_GAUGE, labels: map[string]bool{"type": true, "reason": true}},
 		"a_histogram": {kind: dto.MetricType_HISTOGRAM, labels: map[string]bool{"path": true}},
 	}}
 	for expr, want := range map[string]int{
@@ -509,11 +548,32 @@ func TestALabelIsOneTheSeriesCarry(t *testing.T) {
 		`a_gauge{tpye="Ready"}`:                                                        1,
 		`sum by (type, instance) (a_gauge)`:                                            0,
 		`sum by (tpye) (a_gauge)`:                                                      1,
+		`sum by (reason) (a_gauge)`:                                                    1,
+		`sum by (reason) (a_gauge) * on () group_left () max(other)`:                   1,
+		`sum by (reason) (a_gauge * on (namespace) group_left (reason) other)`:         0,
+		`sum without (type) (a_gauge)`:                                                 0,
+		`sum without (reason) (a_gauge)`:                                               1,
+		`sum without (reason) (a_gauge) * on () group_left () max(other)`:              1,
+		`topk(3, a_gauge)`:                                                             0,
 		`sum without (le, path) (rate(a_histogram_bucket{le="10.0"}[5m]))`:             0,
 		`a_histogram_sum{le="10.0"}`:                                                   1,
 		`a_gauge * on (namespace) group_left (reason) other`:                           0,
-		`a_gauge * on (controlplane) group_left (reason) other`:                        1,
+		`a_gauge * on (controlplane) group_left (reason) other`:                        2,
 		`a_gauge * on (namespace) group_left (resaon) other`:                           1,
+		`a_gauge * on (namespace) group_left (type) other`:                             1,
+		`a_gauge * on (namespace) group_left (type) both`:                              0,
+		`a_gauge * on (namespace) group_right (type) other`:                            0,
+		`a_gauge * on (namespace) group_right (reason) other`:                          1,
+		`other * on (namespace) group_right (reason) a_gauge`:                          0,
+		`a_gauge * on (type) both`:                                                     0,
+		`a_gauge * on (reason) both`:                                                   1,
+		`both * on (reason) other`:                                                     0,
+		`both * on (type) other`:                                                       1,
+		`both * on (type, reason) a_gauge`:                                             1,
+		`a_gauge * ignoring (type) both`:                                               0,
+		`a_gauge * ignoring (reason) both`:                                             1,
+		`both * ignoring (reason) a_gauge`:                                             1,
+		`both * ignoring (type) other`:                                                 1,
 		`count by (reason) (max by (namespace, reason) (other)) or vector(0) > bool 1`: 0,
 	} {
 		if got := (read{expr: expr}).problems(s); len(got) != want {
