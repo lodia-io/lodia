@@ -199,7 +199,7 @@ func TestThreeMembersGiveTheirLeaderWhileAQuorumAnswersAndTheLargestSize(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Compact(t.Context(), deleted.Header.Revision, clientv3.WithCompactPhysical()); err != nil {
+	if _, err := c.Compact(t.Context(), deleted.Header.GetRevision(), clientv3.WithCompactPhysical()); err != nil {
 		t.Fatal(err)
 	}
 	list, err := c.MemberList(t.Context())
@@ -213,8 +213,8 @@ func TestThreeMembersGiveTheirLeaderWhileAQuorumAnswersAndTheLargestSize(t *test
 	var order []string
 	idOf := map[string]uint64{}
 	for _, m := range list.Members {
-		order = append(order, m.Name)
-		idOf[m.Name] = m.ID
+		order = append(order, m.GetName())
+		idOf[m.GetName()] = m.GetID()
 	}
 	for _, name := range order[:2] {
 		if _, err := c.Defragment(t.Context(), urlOf[name]); err != nil {
@@ -283,7 +283,7 @@ func TestALearnerIsNotCountedInTheQuorum(t *testing.T) {
 			return err
 		}
 		for _, m := range list.Members {
-			if m.ID == added.Member.ID && len(m.ClientURLs) == 0 {
+			if m.GetID() == added.Member.GetID() && len(m.GetClientURLs()) == 0 {
 				return errors.New("the learner has published no client URL yet")
 			}
 		}
@@ -319,8 +319,8 @@ func TestALearnerIsNotCountedInTheQuorum(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, m := range list.Members {
-		if m.Name == cfgs[1].Name {
-			if _, err := c.MemberRemove(t.Context(), m.ID); err != nil {
+		if m.GetName() == cfgs[1].Name {
+			if _, err := c.MemberRemove(t.Context(), m.GetID()); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -380,7 +380,7 @@ func TestAMemberWrittenPastItsQuotaReportsNoSpace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	corrupt := &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_ACTIVATE, MemberID: status.Header.MemberId, Alarm: etcdserverpb.AlarmType_CORRUPT}
+	corrupt := &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_ACTIVATE, MemberID: status.Header.GetMemberId(), Alarm: etcdserverpb.AlarmType_CORRUPT}
 	if _, err := etcdserverpb.NewMaintenanceClient(c.ActiveConnection()).Alarm(t.Context(), corrupt); err != nil {
 		t.Fatal(err)
 	}

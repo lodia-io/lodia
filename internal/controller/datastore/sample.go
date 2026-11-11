@@ -172,12 +172,12 @@ func (r *SampleReconciler) sample(ctx context.Context, etcd *druidv1alpha1.Etcd)
 	var wg sync.WaitGroup
 	for i, member := range list.Members {
 		// A member added and not started yet has no client URL.
-		if len(member.ClientURLs) == 0 {
+		if len(member.GetClientURLs()) == 0 {
 			continue
 		}
 		wg.Go(func() {
-			if answers[i], errs[i] = c.Status(ctx, member.ClientURLs[0]); errs[i] != nil {
-				errs[i] = fmt.Errorf("member %s at %s: %w", member.Name, member.ClientURLs[0], errs[i])
+			if answers[i], errs[i] = c.Status(ctx, member.GetClientURLs()[0]); errs[i] != nil {
+				errs[i] = fmt.Errorf("member %s at %s: %w", member.GetName(), member.GetClientURLs()[0], errs[i])
 			}
 		})
 	}
@@ -196,7 +196,7 @@ func tally(members []*etcdserverpb.Member, answers []*clientv3.StatusResponse) E
 	var sample EtcdSample
 	voting := 0
 	for _, member := range members {
-		if !member.IsLearner {
+		if !member.GetIsLearner() {
 			voting++
 		}
 	}
