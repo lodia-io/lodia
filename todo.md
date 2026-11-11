@@ -219,8 +219,8 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 - An edit that removes `etcd.autoCompaction` from a class that set it is refused at the grant: the apply of the `Etcd` sends an empty `spec.sharedConfig` where Lodia's apply set its fields before, it comes back null, and etcd-druid's schema refuses it (`spec.sharedConfig in body must be of type object: "null"`), so `DatastoreReady` is `Refused` and certificate generations stop reaching the `Etcd`.
   `apply` drops empty scheduling constraints for that reason, and an empty `sharedConfig` needs the same.
-- A person's edit of the `Etcd`'s `spec.backup.store` to a value the schema of `status.datastore.snapshots` refuses fails every status apply while the class waits for its grant or the operator revision is held, since `keep` and `copied` carry the store: `DatastoreReady`, `BackupReady` and `status.datastore` stop being written.
-  etcd-druid's schema takes any provider, `Local` among them, and a prefix and an endpoint of any length; the status takes S3, GCS, ABS and Swift, a prefix of 1 to 512 characters and an endpoint of at most 512.
+- A person's edit of the `Etcd`'s `spec.backup.store` to a value the schema of `status.datastore.snapshots` refuses fails every status apply while `keep` or `copied` carries the store: while the class waits for its grant or is held for its credentials, while the operator revision is held, and while the recorded class is gone, until a class of its name is created again and granted; `DatastoreReady`, `BackupReady` and `status.datastore` stop being written meanwhile.
+  etcd-druid's schema takes any provider or none, `Local` among them, no container, and a prefix and an endpoint of any length ([store.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/store.go#L13-L35)); the status takes S3, GCS, ABS and Swift, a bucket of at least one character, a prefix of 1 to 512 characters and an endpoint of at most 512.
 
 ## For wave 2, observability
 
