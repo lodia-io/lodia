@@ -1111,7 +1111,7 @@ func TestTheCopyFollowsTheSourcesEtcdNotItsClass(t *testing.T) {
 		t.Fatal(err)
 	}
 	settle(t, src.ns, sourceName)
-	waitCondition(t, src.ns, sourceName, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "DatastoreClass "+src.ns+" is held")
+	waitCondition(t, src.ns, sourceName, metav1.ConditionTrue, lodiav1alpha1.ReasonSecretNotFound, "DatastoreClass "+src.ns+" is held")
 	class := &lodiav1alpha1.DatastoreClass{}
 	if err := k8s.Get(t.Context(), client.ObjectKey{Name: src.ns}, class); err != nil {
 		t.Fatal(err)

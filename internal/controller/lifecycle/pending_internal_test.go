@@ -312,6 +312,35 @@ func TestAClassEditInASlotRollsSettlesAndFails(t *testing.T) {
 	}
 }
 
+func TestAClassHeldForItsCredentialsTakesNoSlotAndFailsInOne(t *testing.T) {
+	const note = "Etcd dev-etcd has quorum, 1 of 1 members ready; DatastoreClass shared generation 5 waits for status.target.datastoreClass; DatastoreClass shared is held: its credentials Secret lodia/s3-new is missing"
+	heldFor := func(reason string) func(*facts) {
+		return condition(metav1.Condition{Type: lodiav1alpha1.ConditionDatastoreReady, Status: metav1.ConditionTrue, Reason: reason, Message: note})
+	}
+	for _, reason := range []string{lodiav1alpha1.ReasonSecretNotFound, lodiav1alpha1.ReasonObjectsControlledElsewhere, lodiav1alpha1.ReasonRefused} {
+		t.Run(reason, func(t *testing.T) {
+			expectClass(t, expectGrant(t, held(running(revisionA), onClass(4, 4, 5), heldFor(reason)),
+				granted{revision: revisionA, reason: reason, message: "DatastoreReady: " + note}), shared(4))
+
+			f := held(running(revisionA), onClass(4, 5, 5), slotted(lodiav1alpha1.ReasonMaintaining, 3), heldFor(reason))
+			failed := granted{revision: revisionA, reason: lodiav1alpha1.ReasonMaintenanceFailed, message: "the change Lodia started failed: DatastoreReady: " + reason + ": " + note, slot: true}
+			d := expectGrant(t, f, failed)
+			expectClass(t, d, shared(5))
+			adopt(f.cp, d)
+			f.now = present.Add(7 * 24 * time.Hour)
+			expectGrant(t, f, failed)
+		})
+	}
+
+	f := held(running(revisionA), closedWindow, onClass(4, 4, 5), heldFor(lodiav1alpha1.ReasonSecretNotFound))
+	nextStart := time.Date(2026, 11, 9, 13, 0, 0, 0, time.UTC)
+	adopt(f.cp, expectGrant(t, f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonWaitingForWindow, scheduledFor: &nextStart, requeue: 30 * time.Minute}))
+	f.now = nextStart
+	adopt(f.cp, expectGrant(t, f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonSecretNotFound, message: "DatastoreReady: " + note}))
+	condition(metav1.Condition{Type: lodiav1alpha1.ConditionDatastoreReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonReady, Message: "Etcd dev-etcd has quorum, 1 of 1 members ready"})(&f)
+	expectClass(t, expectGrant(t, f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonMaintaining, message: "etcd: runs DatastoreClass shared generation 4, not 5", slot: true, takesSlot: true}), shared(5))
+}
+
 func TestAClassEditedTwiceBeforeTheGrantTakesTheLatest(t *testing.T) {
 	f := held(running(revisionA), closedWindow, onClass(4, 4, 5))
 	adopt(f.cp, expectGrant(t, f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonWaitingForWindow, message: "generation 5 waits", scheduledFor: new(time.Date(2026, 11, 9, 13, 0, 0, 0, time.UTC)), requeue: 30 * time.Minute}))

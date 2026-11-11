@@ -326,6 +326,11 @@ type pass struct {
 	held    string
 	heldFor time.Duration
 	refusal error
+	// heldReason is DatastoreReady's reason while it is True and the class is
+	// held for its credentials copy: Lifecycle reads it as a cause that fails
+	// a change, so that it grants no slot to an edit that cannot be applied
+	// and fails the change in a slot.
+	heldReason string
 }
 
 func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*outcome, error) {
@@ -446,19 +451,19 @@ func (r *Reconciler) holdClass(ctx context.Context, p *pass) (*outcome, error) {
 		return nil, err
 	}
 	blocked, err := r.copyCredentials(ctx, p.cp, class, p.secrets, moved)
-	if blocked == "" && err != nil {
+	if blocked == nil && err != nil {
 		return nil, err
 	}
 	p.refusal = err
-	if blocked != "" && p.current == nil {
-		message := fmt.Sprintf("DatastoreClass %s cannot be applied yet: %s", class.Name, blocked)
+	if blocked != nil && p.current == nil {
+		message := fmt.Sprintf("DatastoreClass %s cannot be applied yet: %s", class.Name, blocked.cause)
 		return &outcome{condition: newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, message), requeueAfter: time.Minute}, nil
 	}
 	// A class is held whole: applying the rest of an edit could add a store
 	// whose copy cannot be made, and the certificate generations still move.
-	if blocked != "" {
-		p.held = note(p.held, fmt.Sprintf("DatastoreClass %s is held: %s", class.Name, blocked))
-		p.class, p.heldFor = nil, time.Minute
+	if blocked != nil {
+		p.held = note(p.held, fmt.Sprintf("DatastoreClass %s is held: %s", class.Name, blocked.cause))
+		p.class, p.heldFor, p.heldReason = nil, time.Minute, blocked.reason
 	}
 	return nil, nil
 }
@@ -584,6 +589,9 @@ func (r *Reconciler) applyEtcd(ctx context.Context, p *pass) (*outcome, error) {
 		return nil, err
 	}
 	condition := p.check.reported(cp, readiness(etcd, absent))
+	if condition.Status == metav1.ConditionTrue && p.heldReason != "" {
+		condition.Reason = p.heldReason
+	}
 	if !p.copied {
 		condition.Message = note(condition.Message, memberNote(etcd, p.members))
 	}
@@ -1063,30 +1071,36 @@ func (r *Reconciler) labelClaims(ctx context.Context, cp *lodiav1alpha1.ControlP
 	return nil
 }
 
+// blocked is why a class's credentials copy cannot be made: the reason
+// DatastoreReady gives it, and the cause.
+type blocked struct {
+	reason, cause string
+}
+
 // etcd-druid mounts the store's Secret from the Etcd's namespace, and the
 // backup-restore sidecar reads the region from it. An existing copy is kept
 // while moved says the Etcd is held on another store. The first result says
 // why the copy cannot be made, the second carries a refusal for the log.
-func (r *Reconciler) copyCredentials(ctx context.Context, cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, secrets []metav1.PartialObjectMetadata, moved bool) (string, error) {
+func (r *Reconciler) copyCredentials(ctx context.Context, cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, secrets []metav1.PartialObjectMetadata, moved bool) (*blocked, error) {
 	store := class.Spec.Backup.Store
 	source := &corev1.Secret{}
 	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: store.SecretRef.Namespace, Name: store.SecretRef.Name}, source); err != nil {
 		if apierrors.IsNotFound(err) {
-			return fmt.Sprintf("its credentials Secret %s/%s is missing", store.SecretRef.Namespace, store.SecretRef.Name), nil
+			return &blocked{lodiav1alpha1.ReasonSecretNotFound, fmt.Sprintf("its credentials Secret %s/%s is missing", store.SecretRef.Namespace, store.SecretRef.Name)}, nil
 		}
-		return "", fmt.Errorf("read the credentials Secret %s/%s of DatastoreClass %s: %w", store.SecretRef.Namespace, store.SecretRef.Name, class.Name, err)
+		return nil, fmt.Errorf("read the credentials Secret %s/%s of DatastoreClass %s: %w", store.SecretRef.Namespace, store.SecretRef.Name, class.Name, err)
 	}
 	name := lodiav1alpha1.EtcdBackupSecret.Name(cp.Name)
 	existing, err := r.secret(ctx, cp, name, secrets)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if existing != nil {
 		if ref := ownership.ControlledElsewhere(existing, cp); ref != nil {
-			return fmt.Sprintf("%s is controlled by %s %s with UID %s", name, ref.Kind, ref.Name, ref.UID), nil
+			return &blocked{lodiav1alpha1.ReasonObjectsControlledElsewhere, fmt.Sprintf("%s is controlled by %s %s with UID %s", name, ref.Kind, ref.Name, ref.UID)}, nil
 		}
 		if moved {
-			return "", nil
+			return nil, nil
 		}
 	}
 	data := maps.Clone(source.Data)
@@ -1109,11 +1123,11 @@ func (r *Reconciler) copyCredentials(ctx context.Context, cp *lodiav1alpha1.Cont
 	if err := r.Apply(ctx, secret, client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
 		err = fmt.Errorf("apply Secret %s: %w", name, err)
 		if apistatus.Refused(err) {
-			return fmt.Sprintf("the API server refuses %s; the reason is in Lodia's log", name), err
+			return &blocked{lodiav1alpha1.ReasonRefused, fmt.Sprintf("the API server refuses %s; the reason is in Lodia's log", name)}, err
 		}
-		return "", err
+		return nil, err
 	}
-	return "", nil
+	return nil, nil
 }
 
 func (r *Reconciler) finalize(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (time.Duration, error) {

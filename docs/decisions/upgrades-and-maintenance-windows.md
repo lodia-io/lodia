@@ -78,7 +78,7 @@ Lifecycle grants what is pending, the running revision, a patch update and an ed
 5. Not while `TimeZoneUnsupported` stands; outside the window, `WaitingForWindow`, with `target.scheduledFor` its next start.
 6. Not while `Ready` is not True, at whatever generation each input describes, `AddonsApplied` left out while it waits with `AccessReady` True: `Ready`'s reason, or `WaitingForReady` while `Ready` is Unknown, whose reasons say something else under `Progressing` False.
    A held Tenant keeps `AddonsApplied` at the generation it describes for the whole hold, so `Ready` at the object's generation would never grant an edit Tenant had not taken up when the release started.
-   Nor while a cause that fails a change stands on an input of `Ready`, `ProgressDeadlineExceeded` on an available component: that cause's reason, since the change would fail in the write that grants it, for a cause it did not bring.
+   Nor while a cause that fails a change stands on an input of `Ready`, `ProgressDeadlineExceeded` on an available component or a class held for its credentials copy on `DatastoreReady`: that cause's reason, since the change would fail in the write that grants it, for a cause it did not bring.
 7. A slot in the order of the queue, for everything still pending: `Maintaining`, in the same write as the grant; none, `target.scheduledFor` when the tenant became eligible, which queues it, and `FleetLimit` unless a reason ranked above it applies.
 
 A change Lodia started keeps its origin in `status.maintenance.slotSince`, written in the same write as the grant: the tenant holds its slot while it is present, whatever `Progressing` says, so a reason ranked above the slot's does not free it; a grant on request is the owner's.
@@ -107,7 +107,7 @@ An owner's change takes no slot.
 A change Lodia started holds its slot while it rolls: a part not at the target, a replica or member not updated, a renderer that reports neither the granted revision nor the running one, an `Etcd` that runs another UID or generation of its class than the one granted.
 A Tenant that waits after the grant, `AddonsApplied` False with a `WaitingFor*` reason while `AccessReady` is True, keeps its earlier `status.addons`, so the change stays `Maintaining` with its slot until the wait ends: such a wait names no cause of the change.
 Once it has rolled out, `status.maintenance.settlingSince` records when, and the slot is held for a settling time S after the later of that and `Ready`'s last transition: `health.failuresBeforeFalse` × (`health.period` + Health's timeout) + one etcd-druid status sync ([values.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/charts/values.yaml#L63)), 45 seconds at the defaults.
-Then the slot is free while `Ready` is True, and the change is `MaintenanceFailed` while it is not; a refusal, an object kept elsewhere, `Unsupported` or `ProgressDeadlineExceeded` among `Ready`'s inputs fails it at once.
+Then the slot is free while `Ready` is True, and the change is `MaintenanceFailed` while it is not; a refusal, an object kept elsewhere, `Unsupported`, `ProgressDeadlineExceeded` or a class's missing credentials Secret among `Ready`'s inputs fails it at once.
 A canary, one tenant first for each new revision, can come later without a change of contract.
 
 **Maintenance on request.**

@@ -73,9 +73,14 @@ func quota(q string) func(*lodiav1alpha1.DatastoreClass) {
 
 func readyMessage(t *testing.T, ns, cp string) string {
 	t.Helper()
+	return trueWith(t, ns, cp, lodiav1alpha1.ReasonReady)
+}
+
+func trueWith(t *testing.T, ns, cp, reason string) string {
+	t.Helper()
 	c := meta.FindStatusCondition(getControlPlane(t, ns, cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
-	if c == nil || c.Status != metav1.ConditionTrue {
-		t.Fatalf("DatastoreReady is %+v, want True", c)
+	if c == nil || c.Status != metav1.ConditionTrue || c.Reason != reason {
+		t.Fatalf("DatastoreReady is %+v, want True, %s", c, reason)
 	}
 	return c.Message
 }
@@ -276,7 +281,7 @@ func TestAClassHeldForItsCredentialsAlsoNotesItsWait(t *testing.T) {
 	})
 	mustPass(t, r, ns, cp)
 	want := "; DatastoreClass " + cp + " generation 2 waits for status.target.datastoreClass; DatastoreClass " + cp + " is held: its credentials Secret " + credentialsNamespace + "/s3 is missing"
-	if message := readyMessage(t, ns, cp); !strings.HasSuffix(message, want) {
+	if message := trueWith(t, ns, cp, lodiav1alpha1.ReasonSecretNotFound); !strings.HasSuffix(message, want) {
 		t.Errorf("DatastoreReady says %q, want it to end with %q", message, want)
 	}
 	grantClass(t, ns, cp, cp)

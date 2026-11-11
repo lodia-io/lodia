@@ -650,7 +650,7 @@ func TestACredentialsCopyTheAPIServerRefusesIsThePasssError(t *testing.T) {
 	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}); !apistatus.Refused(err) {
 		t.Fatalf("a pass whose credentials copy is refused returned %v, want the refusal, which the log then holds", err)
 	}
-	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "DatastoreClass refused-copy is held: the API server refuses "+cp+"-etcd-backup; the reason is in Lodia's log")
+	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, "DatastoreClass refused-copy is held: the API server refuses "+cp+"-etcd-backup; the reason is in Lodia's log")
 }
 
 func refuseEtcds(t *testing.T, ns string) *admissionregistrationv1.ValidatingAdmissionPolicyBinding {
@@ -1089,8 +1089,9 @@ func TestHeldClass(t *testing.T) {
 	if quota, recorded := quantity(etcd.Spec.Etcd.Quota), etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation]; quota != "2Gi" || recorded != "1" {
 		t.Errorf("quota %s from class generation %s: the held class's edit reached the Etcd", quota, recorded)
 	}
-	readyOn(t, ns, cp, 2)
-	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
+	runStatefulSet(t, ns, cp, 2)
+	setEtcdStatus(t, ns, cp, nil)
+	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonSecretNotFound,
 		"has quorum, 1 of 1 members ready; DatastoreClass holding is held: its credentials Secret "+credentialsNamespace+"/s3 is missing")
 	reconciled(t, ns, cp)
 	if after := reconcileNow(t, ns, cp); after != time.Minute {
@@ -1292,6 +1293,13 @@ func TestPredecessorsCopy(t *testing.T) {
 	if again := getCopy(t, ns, cp); again.ResourceVersion != predecessors.ResourceVersion {
 		t.Errorf("the predecessor's copy moved from resourceVersion %s to %s", predecessors.ResourceVersion, again.ResourceVersion)
 	}
+	runStatefulSet(t, ns, cp, 2)
+	setEtcdStatus(t, ns, cp, nil)
+	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonObjectsControlledElsewhere, "has quorum, 1 of 1 members ready; DatastoreClass succeeding is held: "+controlledBy)
+	if err := k8s.Delete(t.Context(), predecessors); err != nil {
+		t.Fatal(err)
+	}
+	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum, 1 of 1 members ready")
 }
 
 func TestOwnerlessCopyIsAdopted(t *testing.T) {

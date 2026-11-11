@@ -550,10 +550,12 @@ func notAtTarget(cp *lodiav1alpha1.ControlPlane, target string) []string {
 }
 
 // upgradeFailures are the reasons of a condition Ready is built from that stop
-// an upgrade: an object refused or kept elsewhere, or a rollout past its
-// deadline (docs/decisions/upgrades-and-maintenance-windows.md).
+// an upgrade: an object refused or kept elsewhere, a rollout past its
+// deadline, or a class's credentials Secret missing
+// (docs/decisions/upgrades-and-maintenance-windows.md).
 var upgradeFailures = []string{
 	lodiav1alpha1.ReasonRefused, lodiav1alpha1.ReasonObjectsControlledElsewhere, lodiav1alpha1.ReasonUnsupported, lodiav1alpha1.ReasonProgressDeadlineExceeded,
+	lodiav1alpha1.ReasonSecretNotFound,
 }
 
 // failure is why a version change under way has stopped, empty while it has
