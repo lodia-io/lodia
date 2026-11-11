@@ -196,19 +196,21 @@ func (s served) labelsOf(selector *parser.VectorSelector) (map[string]bool, stri
 	return own, ""
 }
 
-func (s served) carriedBy(node parser.Node) map[string]bool {
+func (s served) carriedBy(nodes ...parser.Node) map[string]bool {
 	carried := map[string]bool{}
 	for _, l := range targetLabels {
 		carried[l] = true
 	}
-	parser.Inspect(node, func(node parser.Node, _ []parser.Node) error {
-		if selector, ok := node.(*parser.VectorSelector); ok {
-			if own, problem := s.labelsOf(selector); problem == "" {
-				maps.Copy(carried, own)
+	for _, node := range nodes {
+		parser.Inspect(node, func(node parser.Node, _ []parser.Node) error {
+			if selector, ok := node.(*parser.VectorSelector); ok {
+				if own, problem := s.labelsOf(selector); problem == "" {
+					maps.Copy(carried, own)
+				}
 			}
-		}
-		return nil
-	})
+			return nil
+		})
+	}
 	return carried
 }
 
@@ -218,8 +220,8 @@ func (r read) problems(s served) []string {
 		return []string{err.Error()}
 	}
 	var problems []string
-	uncarried := func(labels []string, of parser.Node, what, where string) {
-		carried := s.carriedBy(of)
+	uncarried := func(labels []string, what, where string, of ...parser.Node) {
+		carried := s.carriedBy(of...)
 		for _, l := range labels {
 			if !carried[l] {
 				problems = append(problems, fmt.Sprintf("%s %s, which no series %s carries", what, l, where))
@@ -248,23 +250,23 @@ func (r read) problems(s served) []string {
 			if n.Without {
 				what = "groups without"
 			}
-			uncarried(n.Grouping, n.Expr, what, "it aggregates")
+			uncarried(n.Grouping, what, "it aggregates", n.Expr)
 		case *parser.BinaryExpr:
 			m := n.VectorMatching
 			if m == nil {
 				return nil
 			}
-			what := "joins on"
-			if !m.On {
-				what = "joins ignoring"
+			if m.On {
+				uncarried(m.MatchingLabels, "joins on", "on its left", n.LHS)
+				uncarried(m.MatchingLabels, "joins on", "on its right", n.RHS)
+			} else {
+				uncarried(m.MatchingLabels, "joins ignoring", "on either side", n.LHS, n.RHS)
 			}
-			uncarried(m.MatchingLabels, n.LHS, what, "on its left")
-			uncarried(m.MatchingLabels, n.RHS, what, "on its right")
 			if m.Card == parser.CardManyToOne {
-				uncarried(m.Include, n.RHS, "group_left copies", "on its right")
+				uncarried(m.Include, "group_left copies", "on its right", n.RHS)
 			}
 			if m.Card == parser.CardOneToMany {
-				uncarried(m.Include, n.LHS, "group_right copies", "on its left")
+				uncarried(m.Include, "group_right copies", "on its left", n.LHS)
 			}
 		}
 		return nil
@@ -572,9 +574,12 @@ func TestALabelIsOneTheSeriesCarry(t *testing.T) {
 		`both * on (type) other`:                                                       1,
 		`both * on (type, reason) a_gauge`:                                             1,
 		`a_gauge * ignoring (type) both`:                                               0,
-		`a_gauge * ignoring (reason) both`:                                             1,
-		`both * ignoring (reason) a_gauge`:                                             1,
-		`both * ignoring (type) other`:                                                 1,
+		`a_gauge * ignoring (reason) both`:                                             0,
+		`both * ignoring (reason) a_gauge`:                                             0,
+		`both * ignoring (type) other`:                                                 0,
+		`both * ignoring (reason) group_left () a_gauge`:                               0,
+		`a_gauge * ignoring (resaon) both`:                                             1,
+		`a_gauge * ignoring (reason) a_gauge`:                                          1,
 		`count by (reason) (max by (namespace, reason) (other)) or vector(0) > bool 1`: 0,
 	} {
 		if got := (read{expr: expr}).problems(s); len(got) != want {
