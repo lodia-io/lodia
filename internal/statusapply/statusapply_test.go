@@ -318,6 +318,7 @@ func TestAFirstPassReplacesNoConditionTheServerHoldsWithAnotherReason(t *testing
 		{"a first pass over Unknown with another reason", &pending, 1, backupFirstPass, pending, true},
 		{"a first pass over none", nil, 1, firstPass(1), firstPass(1), false},
 		{"a first pass over a first pass at an earlier generation", new(firstPass(1)), 2, firstPass(2), firstPass(2), false},
+		{"a first pass over a Reconciling with another message", &copied, 1, firstPass(1), firstPass(1), false},
 		{"another reason over another reason", &held, 1, unavailable, unavailable, false},
 		{"a Reconciling copied from an input over another reason", &held, 1, copied, copied, false},
 	} {
