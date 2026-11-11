@@ -17,7 +17,7 @@ go tool kind delete cluster --name lodia-e2e-dev --kubeconfig work/e2e/dev.kubec
 `--kubeconfig` makes kind write that file alone and leave `~/.kube/config` untouched.
 `go test` runs in the package directory, so it needs an absolute `E2E_KUBECONFIG`; `make e2e` resolves a relative one, and runs `go test -v` so that each scenario's lines are in the log.
 
-Before the first test, the suite installs Lodia as a user does, and needs Docker and `helm` on the `PATH` for it: it builds `cmd/lodia`, `cmd/lodia-signer` and `cmd/lodia-tunnel` with ko straight into the kind cluster (`KO_DOCKER_REPO=kind.local`, as the hard way does, and `VERSION` from `git describe --tags --always --dirty`), then runs `helm dependency build` and installs [`charts/lodia`](../../charts/lodia) into `lodia-system` with those three images.
+Before the first test, the suite installs Lodia as a user does, and needs Docker and `helm` on the `PATH` for it: it builds `cmd/lodia`, `cmd/lodia-signer` and `cmd/lodia-tunnel` with ko straight into the kind cluster (`KO_DOCKER_REPO=kind.local`, as the hard way does, and `VERSION` from `git describe --tags --always --dirty`), then runs `helm dependency build` and installs [`charts/lodia`](../../charts/lodia) into `lodia-system` with those three images and `metrics.service.enabled=true`.
 The chart brings the CRDs and etcd-druid v0.39.0, its dependency; the operator runs in the cluster under the chart's RBAC, and every test asserts against it.
 The suite leaves the chart installed.
 
@@ -28,6 +28,7 @@ The suite leaves the chart installed.
 - `TestPhase1Gate`: the per-pull-request part of the [phase 1 gate](../../docs/roadmap.md#phase-1--walking-skeleton).
   A `ControlPlane` in `nodePort` mode, at the version of kind's default node image, turns `Ready`, and the suite logs the time from its creation, which must be under 3 minutes.
   Its `status.target.operatorRevision` is that `VERSION` and a digest.
+  Then [gate G7](#gate-g7-the-leaders-metrics) reads the operator's metrics.
   Anonymous requests reach the health paths and `cluster-info` and nothing else: `/version`, which RBAC grants unauthenticated users ([policy.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/plugin/pkg/auth/authorizer/rbac/bootstrappolicy/policy.go#L383-L388), [binding](https://github.com/kubernetes/kubernetes/blob/v1.37.0/plugin/pkg/auth/authorizer/rbac/bootstrappolicy/policy.go#L723)), answers 401.
   A node joins (below) and turns `Ready`; a pod of agnhost, pinned by digest, runs on it, and its logs, an `exec` and a port-forward reach it through the konnectivity tunnel: before the three and after each, the suite reads konnectivity-server's dial count, the count of its `konnectivity_network_proxy_server_dial_duration_seconds` histogram, observed once per established dial ([metrics.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/pkg/server/metrics/metrics.go#L76-L85), [server.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/pkg/server/server.go#L1067)), on its health port, 8134 ([server.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/cmd/server/app/server.go#L585)), through a port-forward to the API server pod, and wants each call to add one dial.
   `exec` runs twice, over client-go's SPDY transport and over WebSocket, kubectl's default; the port-forward uses SPDY, and kubectl's WebSocket port-forward reaches the kubelet through the same transport and tunnel ([exec](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/registry/core/pod/rest/subresources.go#L208-L230), [port-forward](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/registry/core/pod/rest/subresources.go#L293-L306)), so the dial count covers it too.
@@ -43,7 +44,7 @@ The suite leaves the chart installed.
 
 The suite reaches the tenant's API server through `status.endpoint`, as `<cp>-admin-kubeconfig`, whose server it is, and, as the platform, creates a bootstrap token Secret there ([nodes-join-with-kubeadm](../../docs/decisions/nodes-join-with-kubeadm.md)).
 That address is a kind node's on the docker network `kind`, so the suite runs where that network is routable, as on GitHub's Linux runners.
-It port-forwards to a pod only for what no Service serves: konnectivity-server's health port and the tenant's pod `web`.
+It port-forwards to a pod only for what no Service serves from that pod alone: konnectivity-server's health port, the tenant's pod `web`, and each operator replica's metrics, which the Service `lodia-metrics` spreads over both.
 Each connection to a forwarded address gets a port-forward of its own: client-go ends a port-forward, with every connection through it, on the first forwarding error ([portforward.go](https://github.com/kubernetes/client-go/blob/v0.37.1/tools/portforward/portforward.go#L545-L550)), and an exec's connection meets one when the API server has closed it before the client's last write (`write: broken pipe`).
 
 A node joins as in [the hard way](../../docs/hard-way.md#11-join-a-node).
@@ -55,6 +56,24 @@ The CNI is kindnet from the node image's manifest, with the tenant's pod range.
 The suite removes the containers it started when it ends, pass or fail, and each one before it starts it; `make e2e`, `make e2e-ha`, `make e2e-restore`, `make e2e-gateway`, `make e2e-upgrade`, `make e2e-hold` and `make conformance` remove them as well, since a `go test` timeout or a panic never reaches the suite's end.
 
 `make e2e` gives the suite 30 minutes.
+
+## Gate G7: the leader's metrics
+
+G7 checks the metrics item of the [phase 2 gate](../../docs/roadmap.md#phase-2--production) ([metrics-are-part-of-the-api](../../docs/decisions/metrics-are-part-of-the-api.md)), as a step of `TestPhase1Gate` right after its tenant turns `Ready`.
+The kind cluster runs no prometheus-operator, so G7 checks the filter, the token and the leader, and `make chart` the ServiceMonitor.
+
+The test binds a ServiceAccount of its own to a ClusterRole with `get` on the non-resource URL `/metrics` and takes its token by TokenRequest, as a Prometheus's token is bound ([Scraping the operator](../../docs/README.md#scraping-the-operator)); it also takes a token of the namespace's `default` ServiceAccount, which holds no such rule.
+Then, for up to 2 minutes, it reads the holder of the Lease `lodia.io`, port-forwards to each pod the Service `lodia-metrics` lists as ready, on the port the Service names `metrics`, and reads the Lease again.
+It wants:
+
+1. two pods, each answering 401 without a token, 403 to the `default` ServiceAccount's token and 200 to the test's own, controller-runtime's filter ([filters.go](https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/metrics/filters/filters.go#L103-L135));
+2. the same holder at both reads of the Lease, a pod among the two, whose name starts its identity ([leader_election.go](https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/leaderelection/leader_election.go#L93-L97));
+3. that pod, the leader, serving `leader_election_master_status{name="lodia.io"} 1` and, for the tenant, `lodia_controlplane_condition{type="Ready",status="True"} 1`, `lodia_controlplane_datastore_has_leader 1` and a `lodia_controlplane_datastore_db_size_bytes` above 0;
+4. the other, the standby, serving no `lodia_` series and `leader_election_master_status{name="lodia.io"} 0`.
+
+Any miss fails that attempt and the next starts 2 seconds later: a Lease handed over between the reads, a sample not served yet, a port-forward that drops, or a pod the Service does not list as ready.
+The etcd's first sample is served within 65 seconds of the `Etcd` forming, which comes before `Ready`, so the step adds up to about a minute to the job.
+An event regarding the tenant, `action` `Ready`, `reason` `Ready`, type `Normal`, from `lodia.io/lifecycle`, joins G7 once the operator records events.
 
 ## Gate G1: a minor upgrade
 
@@ -212,7 +231,7 @@ It wants Δp99 under 5 ms for the Gateway and for the tunnel in both mixes, no e
 ## Nightly: highAvailability removed and added back
 
 `TestHighAvailabilityRemovedAndRestored`, in the same build tag and on the same cluster shape as G2, runs every night in [`nightly-ha.yml`](../../.github/workflows/nightly-ha.yml), on demand, and on a pull request that changes the workflow or the test; `make e2e-ha E2E_HA_TEST=TestHighAvailabilityRemovedAndRestored` runs it locally.
-A tenant with `failureTolerance: Zone` turns `Ready` with three etcd members and two replicas of each component.
+A tenant with `failureTolerance: Zone` turns `Ready` with three etcd members and two replicas of each component, and G7's check runs on it: the leader serves its etcd's leader, which a quorum of the three members names, and its size.
 Removing `highAvailability` must then leave it `Ready` with one member, one replica of each component and no PodDisruptionBudget, and adding it back must bring the three members, the two replicas and the budgets back, each within 10 minutes.
 A step ends once etcd-druid has completed its scale and the StatefulSet runs every member on its current revision, ready, since etcd-druid's count of ready members trails them ([A tenant namespace](../../docs/README.md#a-tenant-namespace)).
 The recorder of G2 watches both steps and logs every change, with the events of the control plane's objects, every change of their pods and the last lines a restarted container logged.

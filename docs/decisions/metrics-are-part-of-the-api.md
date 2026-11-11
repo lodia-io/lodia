@@ -1,8 +1,8 @@
 # Lodia's metrics are part of its API
 
 Decided 2026-10-26.
-Built: the collector, served by the leader alone, with every metric below that the table marks served, and the events.
-Not built yet: the other metrics and the chart's metrics Service, ServiceMonitor, rules and dashboards, which phase 2's wave 2, observability, builds next ([roadmap](../roadmap.md)).
+Built: the collector, served by the leader alone, with every metric below that the table marks served, the chart's metrics Service and ServiceMonitor, and the events.
+Not built yet: the other metrics and the chart's rules and dashboards, which phase 2's wave 2, observability, builds next ([roadmap](../roadmap.md)).
 
 ## Decision
 
@@ -100,6 +100,8 @@ Of the operator, without a tenant's labels:
 - `api/v1alpha1/metrics.go` — the label values no other type of the package holds.
 - `internal/operator`, `cmd/lodia` — `Metrics` builds the collector on the running revision, `fleet.maxConcurrentRollouts` and the `Sources` `Setup` returns, the Health, `health-nodes` and etcd sampler it registers, and `cmd/lodia` registers it in controller-runtime's registry after `Setup`; `operator_test.go` checks that no registry holds a `lodia_` metric beside it, that it serves the failed probes and the lag of the Health and `health-nodes` that `Setup` registers, the counts of the `health-nodes` in the `Sources` and the sample the manager's sampler keeps.
 - `Makefile`, `.github/workflows/ci.yml` — `make monitoring`, part of `verify`, runs `promtool check metrics` on the golden; CI installs promtool by its checksum; `make test` runs `internal/controller/health` and `internal/metrics` with the race detector, without which collections during passes catch no unlocked count.
+- `charts/lodia/templates/metrics-service.yaml`, `servicemonitor.yaml` — the Service and the ServiceMonitor behind `metrics.service.enabled` and `metrics.serviceMonitor.enabled` ([Scraping the operator](../README.md#scraping-the-operator)); `make chart` checks that the defaults render neither and that the ServiceMonitor fails without the Service; under the release `check` it checks that the ServiceMonitor honors the labels, scrapes over https without verifying the certificate, carries `metrics.serviceMonitor.labels`, makes the job the chart's name, `lodia`, and not the release, scrapes the Service's port, selects the Service `check-metrics` alone, and sends the token file only without `scrapeClass`.
+- `test/e2e/metrics_test.go` — gate G7, a step of `TestPhase1Gate` ([G7](../../test/e2e/README.md#gate-g7-the-leaders-metrics)).
 - `internal/statusapply` — `Writer` records each transition of the conditions it writes once the API server has taken the write, typed by `WarningReasons` against the API server's copy; `events_test.go` holds a transition, a reason change, a message change and a locked one, a refused and a retried write, a pass on a stale cache and one on a predecessor's, a pass past its deadline and a cancelled one, a first pass and one kept over another reason, a note cut inside a rune and an ASCII one at 1024 bytes, a flapping condition's series, a conflicting `Backup`, and the type on both sides of the rule.
 - `api/v1alpha1/conditions.go` — `WarningReasons`; `conditions_test.go` fails on a reason it does not classify.
 - `internal/controller/events_test.go` — every controller, through `operator.Setup` as a user bound to the generated ClusterRoles alone, records under its name, each ClusterRole alone may create and patch events, and a restarted manager records nothing it already did.

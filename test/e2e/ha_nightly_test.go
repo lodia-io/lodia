@@ -50,6 +50,7 @@ func TestHighAvailabilityRemovedAndRestored(t *testing.T) {
 			until(ctx, t, 8*time.Minute, "three members and two replicas each, Ready", func(ctx context.Context) error {
 				return shaped(ctx, k8s, key, 3, 2)
 			})
+			leaderServesMetrics(ctx, t, cfg, k8s, key)
 			history = record(ctx, t, k8s, key)
 			return ctx
 		}).

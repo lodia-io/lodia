@@ -1,0 +1,33 @@
+{{- if .Values.metrics.serviceMonitor.enabled }}
+{{- if not .Values.metrics.service.enabled }}
+{{- fail "metrics.serviceMonitor.enabled needs metrics.service.enabled: the ServiceMonitor scrapes the Service <release>-metrics" }}
+{{- end }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lodia.labels" . | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- with .Values.metrics.serviceMonitor.scrapeClass }}
+  scrapeClass: {{ . | quote }}
+  {{- end }}
+  jobLabel: app.kubernetes.io/name
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: metrics
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  endpoints:
+    - port: metrics
+      scheme: https
+      honorLabels: true
+      tlsConfig:
+        insecureSkipVerify: true
+      {{- if not .Values.metrics.serviceMonitor.scrapeClass }}
+      bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+      {{- end }}
+{{- end }}
