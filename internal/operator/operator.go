@@ -176,6 +176,9 @@ func Setup(mgr ctrl.Manager, in Inputs) error {
 	if err := (&datastore.BackupReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdClient: dialEtcd, Clock: clock.RealClock{}}).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the backup reconciler: %w", err)
 	}
+	if err := (&datastore.SampleReconciler{Cache: mgr.GetCache(), EtcdClient: dialEtcd, Clock: clock.RealClock{}}).SetupWithManager(mgr, workers); err != nil {
+		return fmt.Errorf("set up the etcd sampler: %w", err)
+	}
 	if err := newLifecycle(mgr.GetClient(), mgr.GetAPIReader(), in.Config, revision).SetupWithManager(mgr, workers); err != nil {
 		return fmt.Errorf("set up the lifecycle controller: %w", err)
 	}
