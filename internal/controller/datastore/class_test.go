@@ -503,6 +503,23 @@ func TestAClassReportNeverMovesBackwardsAcrossARoll(t *testing.T) {
 	runsClass(t, ns, cp, "1Gi", "3")
 }
 
+func TestADeletingPassKeepsTheClassReported(t *testing.T) {
+	ns := namespace(t)
+	const cp = "deleting-unrolled"
+	createClass(t, newClass(cp, "Retain"))
+	r := unrolledTenant(t, ns, cp)
+	if err := k8s.Patch(t.Context(), getEtcd(t, ns, cp), client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"annotations":{"`+lodiav1alpha1.DatastoreClassGenerationAnnotation+`":"7"}}}`)), client.FieldOwner("kubectl-annotate")); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Delete(t.Context(), getControlPlane(t, ns, cp)); err != nil {
+		t.Fatal(err)
+	}
+	mustPass(t, r, ns, cp)
+	if got := reportedClass(t, ns, cp); got != 1 {
+		t.Errorf("a deleting pass reports class generation %d, the Etcd's annotation, want 1 kept", got)
+	}
+}
+
 func TestTheCapNoteStaysWhileAClassEditWaits(t *testing.T) {
 	ns := namespace(t)
 	const cp = "cap-waits"
