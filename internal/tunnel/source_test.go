@@ -170,18 +170,17 @@ func TestAFailedReloadIsRetriedWithoutAnEventUntilItLoads(t *testing.T) {
 	eventually(t, "the retry", func() bool { return s.current.Load() != first })
 
 	second := s.current.Load()
-	for range 2 {
-		select {
-		case events <- fsnotify.Event{}:
-		case <-time.After(waitFor):
-			t.Fatal("the watch is not listening")
-		}
-	}
 	writeVolume(t, dir, caFiles(t, newCA(t, "third")))
 	time.Sleep(100 * time.Millisecond)
 	if s.current.Load() != second {
 		t.Fatal("still retrying after a good load, with a watch to wake it")
 	}
+	select {
+	case events <- fsnotify.Event{}:
+	case <-time.After(waitFor):
+		t.Fatal("the watch is not listening")
+	}
+	eventually(t, "the reload the event wakes", func() bool { return s.current.Load() != second })
 }
 
 func TestAFailedReadIsRetriedWithoutAnEvent(t *testing.T) {
