@@ -1,0 +1,273 @@
+groups:
+  - name: lodia
+    rules:
+      - alert: LodiaOperatorDown
+        expr: absent(leader_election_master_status{job="lodia",name="lodia.io"} == 1)
+        for: 5m
+        keep_firing_for: 4m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No replica of Lodia has led for 5 minutes, so nothing reconciles the tenants."
+          runbook_url: https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiaoperatordown
+
+      - alert: LodiaControlPlaneNotReady
+        expr: |
+          max without (pod, instance, type, status) (lodia_controlplane_condition{type="Ready",status="True"}) == 0
+          unless on (namespace, controlplane) lodia_controlplane_condition_reason{type="Ready",reason=~"AwaitingRelease|SourceExists|Deleting"}
+          unless on (namespace, controlplane) (
+            lodia_controlplane_condition_reason{type="Ready",reason="Restoring"}
+            and on (namespace, controlplane) time() - lodia_controlplane_condition_last_transition_timestamp_seconds{type="Ready"} < 3600
+          )
+          unless on (namespace, controlplane) (
+            lodia_controlplane_condition_reason{type="Ready",reason="HostnameConflict"}
+            and on (namespace, controlplane) lodia_controlplane_condition_reason{type="ControllersLeading",reason=~"AwaitingRelease|SourceExists"}
+          )
+          unless on (namespace, controlplane) lodia_controlplane_condition_reason{type="Progressing",reason="Paused"}
+        for: 10m
+        keep_firing_for: 4m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ControlPlane {{ $labels.namespace }}/{{ $labels.controlplane }} has not been Ready for 10 minutes."
+          runbook_url: https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiacontrolplanenotready
+
+      - alert: LodiaControlPlaneDeletionStuck
+        expr: |
+          max without (pod, instance, type, reason) (lodia_controlplane_condition_reason{type="Ready",reason="Deleting"})
+          unless on (namespace, controlplane) lodia_controlplane_condition_reason{type="Progressing",reason="Paused"}
+        for: 30m
+        keep_firing_for: 4m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ControlPlane {{ $labels.namespace }}/{{ $labels.controlplane }} has been deleting for 30 minutes."
+          runbook_url: https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiacontrolplanedeletionstuck
+
+      - alert: LodiaRedundancyLost
+        expr: |
+          (
+            (
+              max without (pod, instance) (lodia_controlplane_component_replicas_ready) > 0
+              and
+              max without (pod, instance) (lodia_controlplane_component_replicas_ready)
+                < max without (pod, instance) (lodia_controlplane_component_replicas)
+            )
+            or
+            (
+              max without (pod, instance) (lodia_controlplane_datastore_members_ready)
+                >= floor(max without (pod, instance) (lodia_controlplane_datastore_members) / 2) + 1
+              and
+              max without (pod, instance) (lodia_controlplane_datastore_members_ready)
+                < max without (pod, instance) (lodia_controlplane_datastore_members)
+            )
+          )
+          unless on (namespace, controlplane) lodia_controlplane_condition_reason{type="Progressing",reason="Paused"}
+          unless on (namespace, controlplane) lodia_controlplane_condition_reason{type="Ready",reason="Deleting"}
+        for: 15m
+        keep_firing_for: 4m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ControlPlane {{ $labels.namespace }}/{{ $labels.controlplane }} has fewer ready {{ with $labels.component }}replicas of {{ . }}{{ else }}etcd members{{ end }} than it runs."
+          runbook_url: https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiaredundancylost
+
+      - alert: LodiaRolloutStuck
+        expr: |
+          (
+            max without (pod, instance) (lodia_controlplane_datastore_members_ready)
+              unless on (namespace, controlplane) lodia_controlplane_datastore_members_updated
+            or
+            max without (pod, instance) (lodia_controlplane_datastore_members_ready)
+              > max without (pod, instance) (lodia_controlplane_datastore_members_updated)
+            or
+            max without (pod, instance, type, reason) (lodia_controlplane_condition_reason{type="APIServerReady",reason="ProgressDeadlineExceeded"})
+          )
+          unless on (namespace, controlplane) lodia_controlplane_maintenance_slot_since_timestamp_seconds
+          unless on (namespace, controlplane) lodia_controlplane_upgrade_started_timestamp_seconds
+          unless on (namespace, controlplane) lodia_controlplane_condition_reason{type="Progressing",reason="Paused"}
+          unless on (namespace, controlplane) lodia_controlplane_condition_reason{type="Ready",reason="Deleting"}
+        for: 1h
+        keep_firing_for: 4m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A roll of ControlPlane {{ $labels.namespace }}/{{ $labels.controlplane }}'s etcd or of a component's Deployment has not finished for an hour."
+          runbook_url: https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiarolloutstuck
+
+      - alert: LodiaCertificateExpiring
+        expr: |
+          max without (pod, instance) (lodia_controlplane_certificates_expiration_timestamp_seconds) - time() < 14 * 86400
+          unless on (namespace, controlplane) lodia_controlplane_condition_reason{type="Ready",reason="Deleting"}
+        for: 1h
+        keep_firing_for: 4m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A certificate of ControlPlane {{ $labels.namespace }}/{{ $labels.controlplane }} expires within 14 days."
+          runbook_url: https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiacertificateexpiring
+
+      - alert: LodiaCAExpiring
+        expr: |
+          max without (pod, instance, type, status) (lodia_controlplane_condition{type="CAValidityAcceptable",status="False"}) == 1
+          unless on (namespace, controlplane) lodia_controlplane_condition_reason{type="Progressing",reason="Paused"}
+          unless on (namespace, controlplane) lodia_controlplane_condition_reason{type="Ready",reason="Deleting"}
+        for: 1h
+        keep_firing_for: 4m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A CA of ControlPlane {{ $labels.namespace }}/{{ $labels.controlplane }} is in its last year."
+          runbook_url: https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiacaexpiring
+
+      - alert: LodiaBackupStale
+        expr: |
+          (
+            max without (pod, instance, type, reason) (lodia_controlplane_condition_reason{type="BackupReady",reason="BackupFailed"})
+              and on (namespace, controlplane) lodia_controlplane_datastore_delta_snapshot_period_seconds
+            or
+            time() - max without (pod, instance, type) (lodia_controlplane_condition_last_transition_timestamp_seconds{type="BackupReady"})
+              > 3 * max without (pod, instance) (lodia_controlplane_datastore_delta_snapshot_period_seconds)
+              and on (namespace, controlplane) lodia_controlplane_condition{type="BackupReady",status="Unknown"} == 1
+          )
+          unless on (namespace, controlplane) lodia_controlplane_condition_reason{type="Progressing",reason="Paused"}
+          unless on (namespace, controlplane) lodia_controlplane_condition_reason{type="Ready",reason="Deleting"}
+        for: 5m
+        keep_firing_for: 4m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The etcd of ControlPlane {{ $labels.namespace }}/{{ $labels.controlplane }} takes no snapshots."
+          runbook_url: https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiabackupstale
+
+      - alert: LodiaEtcdSpaceNearQuota
+        expr: |
+          max without (pod, instance) (lodia_controlplane_datastore_db_size_bytes)
+            / max without (pod, instance) (lodia_controlplane_datastore_quota_bytes) > 0.8
+        for: 15m
+        keep_firing_for: 4m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The etcd of ControlPlane {{ $labels.namespace }}/{{ $labels.controlplane }} is above 80% of its quota."
+          runbook_url: https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiaetcdspacenearquota
+
+      - alert: LodiaEtcdNoLeader
+        expr: max without (pod, instance) (lodia_controlplane_datastore_has_leader) == 0
+        for: 1m
+        keep_firing_for: 4m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The etcd of ControlPlane {{ $labels.namespace }}/{{ $labels.controlplane }} has had no leader in two samples."
+          runbook_url: https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiaetcdnoleader
+
+      - alert: LodiaEtcdAlarm
+        expr: max without (pod, instance) (lodia_controlplane_datastore_alarm) == 1
+        for: 1m
+        keep_firing_for: 4m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The etcd of ControlPlane {{ $labels.namespace }}/{{ $labels.controlplane }} has armed {{ $labels.alarm }}."
+          runbook_url: https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiaetcdalarm
+
+      - alert: LodiaControllerManagerHeld
+        expr: |
+          max without (pod, instance, type, status) (lodia_controlplane_condition{type="ControllerManagerHeld",status="True"}) == 1
+          unless on (namespace, controlplane) lodia_controlplane_condition_reason{type="Progressing",reason="Paused"}
+          unless on (namespace, controlplane) lodia_controlplane_condition_reason{type="Ready",reason="Deleting"}
+        for: 15m
+        keep_firing_for: 4m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Lodia has held the controller manager of ControlPlane {{ $labels.namespace }}/{{ $labels.controlplane }} for 15 minutes, since most of its nodes are silent."
+          runbook_url: https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiacontrollermanagerheld
+
+      - alert: LodiaControllerManagerHoldBlocked
+        expr: |
+          max without (pod, instance, type, reason) (lodia_controlplane_condition_reason{type="ControllerManagerHeld",reason="HoldBlocked"})
+          unless on (namespace, controlplane) lodia_controlplane_condition_reason{type="Progressing",reason="Paused"}
+          unless on (namespace, controlplane) lodia_controlplane_condition_reason{type="Ready",reason="Deleting"}
+        for: 1m
+        keep_firing_for: 4m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Most nodes of ControlPlane {{ $labels.namespace }}/{{ $labels.controlplane }} are silent, and Lodia cannot hold its controller manager."
+          runbook_url: https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiacontrollermanagerholdblocked
+
+      - alert: LodiaUpgradeFailed
+        expr: |
+          max without (pod, instance, type, reason) (lodia_controlplane_condition_reason{type="Progressing",reason=~"Failed|MaintenanceFailed"})
+          unless on (namespace, controlplane) lodia_controlplane_condition_reason{type="Ready",reason="Deleting"}
+        keep_firing_for: 4m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A change of ControlPlane {{ $labels.namespace }}/{{ $labels.controlplane }} failed."
+          runbook_url: https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiaupgradefailed
+
+      - alert: LodiaUpgradeStalled
+        expr: |
+          time() - max without (pod, instance, step) (lodia_controlplane_upgrade_started_timestamp_seconds) > 2 * 3600
+          unless on (namespace, controlplane) lodia_controlplane_condition_reason{type="Progressing",reason=~"Failed|MaintenanceFailed|Paused"}
+          unless on (namespace, controlplane) lodia_controlplane_condition_reason{type="Ready",reason="Deleting"}
+        keep_firing_for: 4m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The upgrade of ControlPlane {{ $labels.namespace }}/{{ $labels.controlplane }} started more than 2 hours ago and has neither ended nor failed."
+          runbook_url: https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiaupgradestalled
+
+      - alert: LodiaMaintenanceHalted
+        expr: |
+          count without (namespace, controlplane) (
+            max without (pod, instance) (lodia_controlplane_maintenance_slot_since_timestamp_seconds)
+            unless on (namespace, controlplane) lodia_controlplane_condition_reason{type="Progressing",reason=~"Maintaining|TimeZoneUnsupported"}
+          )
+          >= ignoring (namespace) max without (pod, instance) (lodia_fleet_max_concurrent_rollouts)
+        for: 15m
+        keep_firing_for: 4m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Tenants that wait for a person hold every slot of the fleet, so no change Lodia starts rolls."
+          runbook_url: https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiamaintenancehalted
+
+      - alert: LodiaMaintenanceSlotHeldLong
+        expr: |
+          time() - max without (pod, instance) (lodia_controlplane_maintenance_slot_since_timestamp_seconds) > 3600
+          unless on (namespace, controlplane) lodia_controlplane_condition_reason{type="Progressing",reason="MaintenanceFailed"}
+        keep_firing_for: 4m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ControlPlane {{ $labels.namespace }}/{{ $labels.controlplane }} has held a slot of the fleet for more than an hour."
+          runbook_url: https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiamaintenanceslotheldlong
+
+      - alert: LodiaReconcileErrors
+        expr: |
+          sum without (pod, instance) (rate(controller_runtime_reconcile_errors_total{job="lodia"}[15m]))
+            / sum without (pod, instance, result) (rate(controller_runtime_reconcile_total{job="lodia"}[15m]))
+            > 0.05
+        for: 15m
+        keep_firing_for: 4m
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 5% of the reconciles of Lodia's controller {{ $labels.controller }} failed over 15 minutes."
+          runbook_url: https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiareconcileerrors
+
+      - alert: LodiaHealthSamplingLate
+        expr: |
+          sum without (pod, instance) (increase(lodia_health_nodes_sample_lag_seconds_count[10m]))
+            - sum without (pod, instance, le) (increase(lodia_health_nodes_sample_lag_seconds_bucket{le="10.0"}[10m]))
+            > 0
+        keep_firing_for: 4m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A pass of health-nodes started more than 10 seconds after its due time in the last 10 minutes."
+          runbook_url: https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiahealthsamplinglate

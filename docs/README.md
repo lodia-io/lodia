@@ -492,7 +492,7 @@ Prerequisites on the management cluster:
 | etcd-druid | dedicated etcd (installed by the chart as a dependency, or separately) |
 | Gateway API ≥ 1.5 and an implementation that supports `TLSRoute` in passthrough ([which](operations.md#gateway-implementations)) | `endpoint.gateway` only ([api-exposure](decisions/api-exposure.md)); its CRDs installed before the operator starts, since it looks for `TLSRoute` and `Gateway` only then, or the operator restarted after |
 | an S3-compatible bucket and credentials | backups, strongly recommended |
-| prometheus-operator and a Prometheus | optional: the chart's ServiceMonitor ([what the Prometheus needs](#scraping-the-operator)) |
+| prometheus-operator and a Prometheus | optional: the chart's ServiceMonitor and PrometheusRule ([what scraping needs](#scraping-the-operator), [what the alerts need](#alerting-on-the-operator)) |
 
 The chart is [`charts/lodia`](../charts/lodia).
 The release workflow that publishes it to `oci://ghcr.io/lodia-io/charts/lodia` with the images is not built yet ([releases-and-support](decisions/releases-and-support.md)); until it is, build the images with ko and install from a checkout, into `lodia-system` or any namespace.
@@ -520,7 +520,7 @@ The chart installs:
 - its configuration: the ConfigMap `<release>-config` renders the `health` and `fleet` values, with the keys and defaults of the table below, as `config.yaml`; the operator mounts it at `/etc/lodia` and reads it as `--config`, and a `checksum/config` annotation on its pods rolls it when a value changes;
 - its RBAC: a ClusterRole per controller from [`charts/lodia/files/rbac/`](../charts/lodia/files/rbac/) ([Identity and tenancy](#identity-and-tenancy)), the ClusterRole the metrics filter needs (`create` on TokenReviews and SubjectAccessReviews), a Role in the release namespace for the Lease and events, and a Role in etcd-druid's namespace with `get` on etcd-druid's Deployment alone;
 - the ValidatingAdmissionPolicy `kubeconfigrequests.lodia.io` and its binding of the same name from [`charts/lodia/files/policies/`](../charts/lodia/files/policies/), which decide who may ask for a kubeconfig ([short-lived-kubeconfigs](decisions/short-lived-kubeconfigs.md)); they keep their names in every release and stay with `crds.enabled=false`;
-- off by default, a metrics Service and a ServiceMonitor ([Scraping the operator](#scraping-the-operator)).
+- off by default, a metrics Service and a ServiceMonitor ([Scraping the operator](#scraping-the-operator)), and a PrometheusRule ([Alerting on the operator](#alerting-on-the-operator)).
 
 `image`, `signerImage` and `tunnelImage` each take a `repository` (`ghcr.io/lodia-io/lodia`, `ghcr.io/lodia-io/lodia-signer` and `ghcr.io/lodia-io/lodia-tunnel`), a `digest` and a `tag`, which defaults to the chart's `appVersion`: with a digest the chart renders `repository@digest`, otherwise `repository:tag`.
 The signer's image reaches the operator as `--signer-image`, and `lodia-tunnel`'s as `--tunnel-image`.
@@ -571,6 +571,21 @@ The Prometheus needs:
 - no `overrideHonorLabels`, which turns `honorLabels` off ([promcfg.go](https://github.com/prometheus-operator/prometheus-operator/blob/v0.94.2/pkg/prometheus/promcfg.go#L500-L507)), and no `enforcedNamespaceLabel`, which writes the ServiceMonitor's namespace into the label it names on every scraped series, a tenant's `namespace` included ([prometheus_types.go](https://github.com/prometheus-operator/prometheus-operator/blob/v0.94.2/pkg/apis/monitoring/v1/prometheus_types.go#L656-L669)), unless the ServiceMonitor is in `excludedFromEnforcement` ([prometheus_types.go](https://github.com/prometheus-operator/prometheus-operator/blob/v0.94.2/pkg/apis/monitoring/v1/prometheus_types.go#L872-L878)).
 
 The chart renders no NetworkPolicy for the operator: a platform whose default-deny covers the release namespace admits its scraper to 8443 there; scraping a tenant's etcd is the platform's choice ([an example](operations.md#scraping-a-tenants-etcd)).
+
+### Alerting on the operator
+
+`metrics.rules.enabled` renders the PrometheusRule `<release>`, the [alerts](operations.md#alerts-shipped-in-the-chart) of [`files/rules/lodia.yaml`](../charts/lodia/files/rules/lodia.yaml), each linking its section of `operations.md` at the release's tag, or at `main` while the chart's `appVersion` ends in `-dev`.
+It carries `metrics.rules.labels` beside the chart's, for a Prometheus that selects rules by label, as kube-prometheus-stack's selects `release: <its release>` ([prometheus.yaml](https://github.com/prometheus-community/helm-charts/blob/kube-prometheus-stack-92.10.0/charts/kube-prometheus-stack/templates/prometheus/prometheus.yaml#L290-L293)).
+The rules read controller-runtime's series of the job `lodia`, which the chart's ServiceMonitor names.
+An alert on a tenant carries the tenant's `namespace`, which `honorLabels` keeps; `LodiaReconcileErrors` and `LodiaHealthSamplingLate` carry the release namespace, and `LodiaOperatorDown` and `LodiaMaintenanceHalted` none.
+Under prometheus-operator's default matcher strategy, `OnNamespace`, an `AlertmanagerConfig` routes only the alerts of its own namespace ([alertmanager_types.go](https://github.com/prometheus-operator/prometheus-operator/blob/v0.94.2/pkg/apis/monitoring/v1/alertmanager_types.go#L470-L499)), so one in the release namespace routes those two alone: route the others from Alertmanager's own configuration, from an `AlertmanagerConfig` under the strategy `None`, or from one in the Alertmanager's namespace under `OnNamespaceExceptForAlertmanagerNamespace`.
+
+The rules need of the Prometheus, beside what scraping needs:
+
+- scrapes and rule evaluations every 30 seconds, prometheus-operator's defaults ([prometheus_types.go](https://github.com/prometheus-operator/prometheus-operator/blob/v0.94.2/pkg/apis/monitoring/v1/prometheus_types.go#L331-L336), [prometheus_types.go](https://github.com/prometheus-operator/prometheus-operator/blob/v0.94.2/pkg/apis/monitoring/v1/prometheus_types.go#L1358-L1362)): `LodiaEtcdNoLeader` and `LodiaEtcdAlarm` then fire on two samples of the etcd, a minute apart, and never on one, and the 4 minutes every alert keeps firing outlast the failovers of a `helm upgrade` of Lodia;
+- a `ruleQueryOffset` above the leader's scrape duration where its scrapes take long ([prometheus_types.go](https://github.com/prometheus-operator/prometheus-operator/blob/v0.94.2/pkg/apis/monitoring/v1/prometheus_types.go#L1364-L1367), [configuration.md](https://github.com/prometheus/prometheus/blob/v3.15.1/docs/configuration/configuration.md#L78-L83)), since scrape durations that differ widen the window in which a sample is seen, and can fire those two alerts on one sample;
+- the PrometheusRule in `excludedFromEnforcement` wherever `enforcedNamespaceLabel` is set, which adds the PrometheusRule's namespace to every selector of its rules, so that they read no tenant's series ([prometheus_types.go](https://github.com/prometheus-operator/prometheus-operator/blob/v0.94.2/pkg/apis/monitoring/v1/prometheus_types.go#L656-L669), [prometheus_types.go](https://github.com/prometheus-operator/prometheus-operator/blob/v0.94.2/pkg/apis/monitoring/v1/prometheus_types.go#L872-L878));
+- Prometheus 3, which stores a histogram's `le` of `10` as `10.0` ([migration.md](https://github.com/prometheus/prometheus/blob/v3.15.1/docs/migration.md#L211-L225)), as `LodiaHealthSamplingLate` reads it.
 
 ## Operations
 

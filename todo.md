@@ -241,12 +241,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - The ten e2e targets of the Makefile repeat create, run, remove and delete, each with its own list of node containers to remove, and the suite's `Finish` removes them again.
   A label that `startNode` (`test/e2e/gate_test.go`) puts on each container, a removal by that label, and one `define` recipe would leave one copy.
 
-## For wave 2, observability
-
-- `LodiaMaintenanceHalted`, as many tenants failed in their slots as `fleet.maxConcurrentRollouts` ([operations](docs/operations.md#alerts-shipped-in-the-chart)).
-  This alert and the next read the slot from `status.maintenance.slotSince`, not from `Progressing`'s reason, since a slot is also held under `Unsupported`, which ranks above `MaintenanceFailed`, and `TimeZoneUnsupported`, which ranks above `Maintaining`.
-- An alert for a slot held long: a tenant whose change neither finishes nor fails, a tenant API that stops answering mid-rollout or a Tenant waiting after the grant on a cause the grant did not remove, stays `Maintaining` with its slot; from `Progressing`'s `lastTransitionTime` ([upgrades-and-maintenance-windows](docs/decisions/upgrades-and-maintenance-windows.md), "The fleet").
-
 ## For the release that first drops a minor
 
 - A minor dropped from the version table stays renderable for one more release, as the source of an upgrade ([upgrades-and-maintenance-windows](docs/decisions/upgrades-and-maintenance-windows.md), "End of support"): build it in the release that first drops one, since no minor is dropped yet and the flag would have no data and no test that means anything.
