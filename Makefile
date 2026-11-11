@@ -92,8 +92,10 @@ chart: ## lint and render the chart with image tags, then with image digests; wi
 	helm template check $(CHART) --namespace lodia-system --set $(METRICS),metrics.serviceMonitor.scrapeClass=check --show-only templates/servicemonitor.yaml | awk '/^  scrapeClass: "check"$$/ {class = 1} /bearerTokenFile/ {token = 1} END {exit !(class && !token)}' || { echo "with metrics.serviceMonitor.scrapeClass the ServiceMonitor names no such class or keeps a token file, which Prometheus refuses beside the class's authorization"; exit 1; }
 
 .PHONY: monitoring
-monitoring: ## lint the collector's golden as promtool lints a scrape
+monitoring: ## lint the collector's golden as promtool lints a scrape, check the alert rules and run their tests
 	promtool check metrics < internal/metrics/testdata/metrics.prom
+	promtool check rules --lint-fatal $(CHART)/files/rules/lodia.yaml
+	promtool test rules test/rules/lodia_test.yaml
 
 .PHONY: verify
 verify: ## the check that says a change is done

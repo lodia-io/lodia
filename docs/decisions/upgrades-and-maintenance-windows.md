@@ -2,7 +2,7 @@
 
 Decided 2026-10-25.
 Built: the steps of a minor upgrade below, Lifecycle driving them, the operator revision, the holds of Workloads, Tenant and the Datastore controller, the stamps on the Deployments and the `Etcd`, Lifecycle's grant of the running revision, of patch updates and of edits of the `DatastoreClass` by the rules below (windows, the fleet, maintenance on request and the settling time), and the warning of the end of support in `Progressing`'s message.
-Not built yet, with phase 2's observability: the end of support's metric and alert, and the alerts `LodiaMaintenanceHalted` and one for a slot held long ([roadmap](../roadmap.md)).
+Not built yet, with phase 2's observability: the end of support's metric and alert ([roadmap](../roadmap.md)).
 
 ## Decision
 
@@ -101,7 +101,7 @@ Without a window Lodia-initiated changes roll at any time, still within the flee
 
 **The fleet.**
 Across all tenants, at most `fleet.maxConcurrentRollouts` (operator configuration, 5 by default) roll a Lodia-initiated change at once.
-A tenant holds a slot while `status.maintenance.slotSince` is present, whatever `Progressing` reads: a failed rollout Lodia started keeps its slot, so that many failures halt maintenance across the fleet, as unavailable pods halt a Deployment's rollout, which the alert `LodiaMaintenanceHalted` reports from the observability wave.
+A tenant holds a slot while `status.maintenance.slotSince` is present, whatever `Progressing` reads: a failed rollout Lodia started keeps its slot, so that many failures halt maintenance across the fleet, as unavailable pods halt a Deployment's rollout, which the alert [`LodiaMaintenanceHalted`](../operations.md#lodiamaintenancehalted) reports.
 Tenants get slots in the order of `status.target.scheduledFor`, then namespace and name: a tenant is queued while its `scheduledFor` is at or before now, whatever `Progressing` says, since a wait for a slot can sit under a reason ranked above `FleetLimit`, and a pass grants when the tenants that hold a slot and those queued before it are fewer than the limit, counted from the cache and, before the grant is written, again from the API server under a lock, so that two passes never take one slot.
 An owner's change takes no slot.
 A change Lodia started holds its slot while it rolls: a part not at the target, a replica or member not updated, a renderer that reports neither the granted revision nor the running one, an `Etcd` that runs another UID or generation of its class than the one granted, which `status.datastore.class` reports, as the revision, only once etcd-druid has rolled it, but as applied while no revision is reported or the applied `Etcd` records a class the report does not name, as after an `Etcd` was created again from another class, or no edit could reach it.

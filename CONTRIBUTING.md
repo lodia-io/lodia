@@ -13,7 +13,7 @@ Every other tool runs through `go tool`.
 | command | does |
 |---|---|
 | `make generate` | deepcopy functions and CRDs from `api/`, their copies in the chart, and each controller's ClusterRole from its RBAC markers; commit the result |
-| `make verify` | the check that says a change is done: generated files current, the chart linted and rendered, lint, the metrics' golden linted by promtool, unit and envtest tests, and the etcd keys a restore's cleanup deletes against each minor Lodia runs (`make restore-keys`) |
+| `make verify` | the check that says a change is done: generated files current, the chart linted and rendered, lint, the metrics' golden and the alert rules checked by promtool, the rules' promtool tests, unit and envtest tests, and the etcd keys a restore's cleanup deletes against each minor Lodia runs (`make restore-keys`) |
 | `make e2e` | the end-to-end suite on a kind cluster of its own ([`test/e2e/README.md`](test/e2e/README.md)) |
 | `make conformance` | the Kubernetes conformance suite against a tenant with two nodes, on a kind cluster of its own ([`test/e2e/README.md`](test/e2e/README.md#nightly-conformance-and-the-idle-control-plane)) |
 

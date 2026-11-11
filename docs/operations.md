@@ -210,7 +210,7 @@ The in-cluster path, `kubernetes` to `240.0.0.1:6443` through `apiserver-proxy` 
 | `AddonsAvailable=False`, `RolloutPending` | the DaemonSet or Deployment inside the tenant; a node that cannot pull images; a CNI missing (pods of CoreDNS stay Pending until a CNI is installed) |
 | `kubectl logs` / `exec` hang, everything else works | the konnectivity path: agents connected to every server (`konnectivity_network_proxy_server_ready_backend_connections`), the agent's DaemonSet, outbound 443 for the konnectivity hostname |
 | `Progressing=False`, `WaitingForWindow` for long | expected outside the window; `status.target.scheduledFor` says when it opens, and `lodia.io/maintain-requested-at` rolls the change now |
-| `Progressing=False`, `FleetLimit` | other tenants hold the slots, `status.maintenance.slotSince` present whatever their `Progressing` reads: they roll a change Lodia started, or failed one and keep their slots (`LodiaMaintenanceHalted`, from the observability wave); the operator's `fleet.maxConcurrentRollouts`; `status.target.scheduledFor` orders the queue |
+| `Progressing=False`, `FleetLimit` | other tenants hold the slots, `status.maintenance.slotSince` present whatever their `Progressing` reads: they roll a change Lodia started, or failed one and keep their slots ([`LodiaMaintenanceHalted`](#lodiamaintenancehalted)); the operator's `fleet.maxConcurrentRollouts`; `status.target.scheduledFor` orders the queue |
 | `Progressing=False`, `Failed` or `MaintenanceFailed` | `status.kubernetes.upgrade.step` and `Progressing`'s message; the [stuck upgrade](#stuck-upgrade) runbook |
 | `Progressing=False`, `WaitingForNodes` | a kubelet more than three minors older than the next minor, `status.nodes.oldestKubelet`: upgrade the nodes first; or `status.nodes` is absent, Health not having listed the nodes yet: the tenant's API must answer it |
 | `Progressing=False`, `TimeZoneUnsupported` | `spec.maintenance.window.timeZone` is not in the operator's zone database; an IANA name such as `Europe/Berlin` |
@@ -342,7 +342,7 @@ Phase 3, not built: no controller reads `lodia.io/operation`, so the steps below
 Tenants keep running: their pods, their certificates (valid for a year) and their etcds do not depend on Lodia being up.
 The one limit is in `gateway` mode: the tunnel's client certificate has 30 days after its renewal time while the operator is down, the `ControlPlane` is paused, or PKI is stopped by a Secret another owner keeps, by one a restored `ControlPlane` does not control (`SecretsExist`), by an earlier failed write, or by a lost or expired tunnel CA; then every pod of that tenant loses its API.
 Changes to `ControlPlane` objects are accepted by the API (no webhooks) and applied when Lodia is back.
-Renewal and backups pause; the `LodiaOperatorDown` alert fires first.
+Renewal and backups pause; the [`LodiaOperatorDown`](#lodiaoperatordown) alert fires first.
 
 ## Scraping a tenant's etcd
 
@@ -382,25 +382,111 @@ Before applying it, weigh both ports ([metrics-are-part-of-the-api](decisions/me
 
 ## Alerts shipped in the chart
 
-From phase 2's wave 2, behind a value of `metrics.*` and off by default, written on the metrics of [metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md):
+The rules of [`charts/lodia/files/rules/lodia.yaml`](../charts/lodia/files/rules/lodia.yaml) read the metrics of [metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md) and controller-runtime's; [`test/rules/lodia_test.yaml`](../test/rules/lodia_test.yaml) tests each on both sides of what it reads.
+`critical` is a tenant's API, its etcd or its nodes' link down, or nothing reconciling; `warning` waits for working hours.
+Every alert on a tenant leaves out a `ControlPlane` being deleted, but `LodiaControlPlaneDeletionStuck`, and every alert on its conditions or counts leaves out a paused one, whose conditions and counts stand as they were.
+Every alert keeps firing for 4 minutes after its condition ends, so that it outlasts the failovers of a `helm upgrade` of Lodia, which move every series to the other pod; an alert still pending at a failover starts its wait again.
 
-| alert | fires when | means |
-|---|---|---|
-| `LodiaOperatorDown` | no operator replica scraped for 5 m | nothing is reconciled; tenants keep running |
-| `LodiaControlPlaneNotReady` | `Ready` not True for 10 m, not hibernated | a tenant's API or a part of it is down; the reason names which |
-| `LodiaRedundancyLost` | a component with fewer ready replicas than it runs, or an etcd with fewer ready members than it has, for 15 m | the control plane serves, and one more loss is an outage; the component's pods or the member's, and their nodes |
-| `LodiaCertificateExpiring` | `status.credentials.notAfter` within 14 days, for 1 h | renewal failed; look at `CertificatesReady` |
-| `LodiaCAExpiring` | `CAValidityAcceptable=False` for 1 h | a CA is in its last year, named in the message; rotate it |
-| `LodiaBackupStale` | `BackupReady=False` for 15 m, but for `NoBackupStore` | the backup sidecar or the bucket credentials; etcd-druid's message is in the condition |
-| `LodiaEtcdSpaceNearQuota` | the database above 80% of the quota for 15 m | compaction is not keeping up, or the tenant writes too much |
-| `LodiaEtcdNoLeader` | a dedicated etcd without a leader for 1 m | quorum or network inside the management cluster |
-| `LodiaControllerManagerHeld` | the hold active for 15 m | most nodes cannot reach the control plane; the tenant's workloads run, its controllers wait |
-| `LodiaUpgradeFailed` | `Progressing=False`, reason `Failed`, at once | the stuck upgrade runbook |
-| `LodiaMaintenanceHalted` | as many tenants whose change Lodia started failed in their slots as `fleet.maxConcurrentRollouts`, the slot read from `status.maintenance.slotSince`, not from `Progressing`'s reason, since a slot is also held under `Unsupported`, which ranks above `MaintenanceFailed`, and `TimeZoneUnsupported` | changes Lodia starts are halted across the fleet; the stuck upgrade runbook for each |
-| `LodiaKubernetesEndOfSupport` | a tenant's minor within 30 days of its end-of-support date in the version table | upgrade it a minor; `Progressing`'s message says the same |
-| `LodiaReconcileErrors` | a controller's error rate above 5% for 15 m | the operator logs, by controller |
+### LodiaOperatorDown
 
-Every alert links to its runbook section here.
+Critical, after 5 minutes without a replica that leads: `leader_election_master_status{name="lodia.io"}` is 1 in the leader alone, so no replica scraped fires it too.
+Nothing is reconciled, and tenants keep running ([operator down](#operator-down)).
+Look at the operator's pods in the release namespace, their logs and events, and the Lease `lodia.io`, which names the last holder.
+
+### LodiaControlPlaneNotReady
+
+Critical, after 10 minutes of `Ready` not True, but while it reads `Deleting`, which [`LodiaControlPlaneDeletionStuck`](#lodiacontrolplanedeletionstuck) watches, or while a restored `ControlPlane` is held for its release: `AwaitingRelease`, `SourceExists`, or `HostnameConflict` while `ControllersLeading` reads one of the two, a held restore in `gateway` mode whose source keeps the hostnames ([replace a cluster](#replace-a-cluster-from-a-backup)).
+A held restore whose certificates, etcd or endpoint fail reads that failure in `Ready`, and fires.
+`Ready`'s reason and message name the first input that is not True: its row in [what breaks](#what-breaks-and-how-it-shows).
+A hibernated tenant joins the exceptions with hibernation, in phase 3.
+
+### LodiaControlPlaneDeletionStuck
+
+Warning, after 30 minutes of `Ready` reading `Deleting`, but for a paused `ControlPlane`, which deletes nothing until it is unpaused.
+The Datastore controller deletes the `Etcd` `<cp>-etcd`, waits for etcd-druid to let it go and reclaims the claims before it removes its finalizer `lodia.io/datastore` ([deletion](README.md#deletion)): look at the `Etcd`'s finalizers and `status.lastErrors`, etcd-druid's log and Lodia's (`controller="datastore"`).
+Then the garbage collector deletes what the `ControlPlane` owns, and an object of its namespace left with a `deletionTimestamp` names the finalizer it waits for.
+
+### LodiaRedundancyLost
+
+Warning, after 15 minutes of a component with at least one ready replica and fewer than it runs, or of an etcd with a quorum of members ready and fewer than it has: the control plane serves, and one more loss is an outage, which `LodiaControlPlaneNotReady` names.
+Look at the component's pods or the member's, and their nodes; a replica that stays `Pending` and a member that does not come back after a roll have their rows in [what breaks](#what-breaks-and-how-it-shows).
+
+### LodiaRolloutStuck
+
+Warning, after an hour of a roll that does not finish while the tenant holds no slot and runs no upgrade, which [`LodiaMaintenanceSlotHeldLong`](#lodiamaintenanceslotheldlong) and [`LodiaUpgradeStalled`](#lodiaupgradestalled) watch: `APIServerReady` reads `ProgressDeadlineExceeded`, or `status.datastore.members.updated` is absent or below `ready`.
+Until it finishes, the replicas and members it has not reached run on the certificates they started with.
+Look at the events of the Deployment `APIServerReady`'s message names, or of the StatefulSet `<cp>-etcd`; an absent `updated` means etcd-druid does not report the `Etcd`: its `status.lastErrors` and etcd-druid's log.
+
+### LodiaCertificateExpiring
+
+Warning, after an hour of `status.credentials.notAfter`, the earliest expiry among the certificates PKI writes, its CAs included, within 14 days, a paused tenant included, since PKI renews nothing while it is paused.
+Renewal failed: `CertificatesReady` names why, or unpause the tenant.
+
+### LodiaCAExpiring
+
+Warning, after an hour of `CAValidityAcceptable=False`: a CA is in its last year, named in the message with when it expires.
+A [CA rotation](#forced-ca-rotation) mends it, from phase 3.
+
+### LodiaBackupStale
+
+Warning, after 5 minutes of `BackupReady` reading `BackupFailed`, which etcd-druid reports once the last delta snapshot is three delta snapshot periods old ([check_backup_ready.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/health/condition/check_backup_ready.go#L101-L120)), or `Unknown` for more than three periods since its last transition, as a store that never worked reads: 20 minutes after the last snapshot at the class's default period.
+A class without a backup store (`NoBackupStore`), a shared datastore (`Unsupported`) and a class whose `deltaSnapshotPeriod` is below a second, which takes no delta snapshots, never fire it.
+Look at the backup sidecar's log in the etcd's pods and at the class's bucket credentials; etcd-druid's message is in the condition.
+
+### LodiaEtcdSpaceNearQuota
+
+Warning, after 15 minutes of the etcd's largest member database above 80% of its quota: compaction does not keep up, or the tenant writes too much.
+Act before the quota: the [space quota](#etcd-space-quota) runbook.
+
+### LodiaEtcdNoLeader
+
+Critical, on two samples in a row, a minute apart, in which no quorum of the etcd's voting members names one leader; one sample never fires it, and a new or restored etcd is sampled only once it has formed.
+The tenant's API cannot write: the [lost quorum](#lost-etcd-quorum) runbook, and the network between the members inside the management cluster.
+
+### LodiaEtcdAlarm
+
+Critical, on an alarm armed in two samples in a row.
+`NOSPACE`: API calls fail with `etcdserver: mvcc: database space exceeded` until the alarm is disarmed: the [space quota](#etcd-space-quota) runbook.
+`CORRUPT`, armed when two members' hashes of one revision differ ([corrupt.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/etcdserver/corrupt.go#L184-L273)), fails every write and linearizable read ([corrupt.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/etcdserver/corrupt.go#L432-L464)): [restore](#restore-a-tenant-from-backup) the tenant.
+
+### LodiaControllerManagerHeld
+
+Critical, after 15 minutes of `ControllerManagerHeld=True`: most nodes cannot reach the control plane, and the tenant's workloads run while its controllers wait: the [nodes cut off](#nodes-cut-off-from-the-control-plane) runbook.
+
+### LodiaControllerManagerHoldBlocked
+
+Critical, after a minute of `ControllerManagerHeld` reading `HoldBlocked`: most nodes are silent and Lodia cannot hold the controller manager, so nothing stops the evictions the hold exists for ([controller-manager-hold](decisions/controller-manager-hold.md)).
+Mend the nodes' path, as for [nodes cut off](#nodes-cut-off-from-the-control-plane), and what the message names: its row in [what breaks](#what-breaks-and-how-it-shows).
+
+### LodiaUpgradeFailed
+
+Warning, at once, on `Progressing=False` with `Failed` or `MaintenanceFailed`: the [stuck upgrade](#stuck-upgrade) runbook.
+
+### LodiaUpgradeStalled
+
+Warning, once `status.kubernetes.upgrade.startedAt` is more than 2 hours ago, whatever its step, while `Progressing` reads neither `Failed`, `MaintenanceFailed` nor `Paused`.
+An upgrade that neither ends nor fails waits on its `Backup` step, a `Backup` `Snapshotting` behind a full etcd for one, or on Tenant: `status.kubernetes.upgrade.step` and the [stuck upgrade](#stuck-upgrade) runbook.
+
+### LodiaMaintenanceHalted
+
+Warning, after 15 minutes of as many tenants as `fleet.maxConcurrentRollouts` holding a slot of the fleet, `status.maintenance.slotSince`, with a reason other than `Maintaining` and `TimeZoneUnsupported`, whose changes roll or settle.
+`MaintenanceFailed` and `Paused` free nothing without a person, and `Unsupported` holds its slot for good over a failed change, so changes Lodia starts are halted across the fleet.
+The [stuck upgrade](#stuck-upgrade) runbook for each tenant that holds a slot.
+
+### LodiaMaintenanceSlotHeldLong
+
+Warning, once a tenant's slot was taken more than an hour ago, a paused tenant included, but for `MaintenanceFailed`, which [`LodiaUpgradeFailed`](#lodiaupgradefailed) names.
+A change Lodia started neither finishes nor fails: a tenant API that stops answering mid-rollout, or a Tenant that waits after the grant on a cause the grant did not remove, stays `Maintaining` with its slot ([upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md#decision)).
+Look at `Progressing`'s message and the conditions it names.
+
+### LodiaReconcileErrors
+
+Warning, after 15 minutes of a controller's reconcile errors above 5% of its reconciles, both over 15 minutes: its errors are in Lodia's log (`controller="<name>"`), never in a condition.
+
+### LodiaHealthSamplingLate
+
+Warning, once a pass of `health-nodes` started more than 10 seconds after its due time in the last 10 minutes: the hold's margin keeps 10 seconds for a delay in Health's queue, and a longer one can let the tenant's controller manager mark a silent node before the hold makes it exit ([controller-manager-hold](decisions/controller-manager-hold.md)).
+Look at the operator's CPU and its throttling, and at `controller_runtime_active_workers{controller="health-nodes"}` against `controller_runtime_max_concurrent_reconciles`.
 
 ## Capacity
 
