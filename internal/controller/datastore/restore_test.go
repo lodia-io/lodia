@@ -440,6 +440,7 @@ func poke(t *testing.T, ns string) {
 }
 
 func TestARestoreCopiesChecksCleansUpAndSnapshots(t *testing.T) {
+	t.Parallel()
 	r := newRestore(t, restoreSetup{controlPlane: func(cp *lodiav1alpha1.ControlPlane) {
 		cp.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
 	}})
@@ -638,6 +639,7 @@ func owned(t *testing.T, obj client.Object, cp *lodiav1alpha1.ControlPlane) {
 }
 
 func TestARestoreStartsOnlyFromASealedCompatibleBackupInTheClasssStore(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name            string
 		setup           restoreSetup
@@ -735,6 +737,7 @@ func TestARestoreStartsOnlyFromASealedCompatibleBackupInTheClasssStore(t *testin
 }
 
 func TestABackupBeingDeletedRestoresAndGoesOnceTheRestoreIsComplete(t *testing.T) {
+	t.Parallel()
 	backups := &datastore.BackupReconciler{Client: cached, Reader: apiReader, Clock: clock.RealClock{}}
 	pass := func(t *testing.T, ns string) *lodiav1alpha1.Backup {
 		t.Helper()
@@ -776,6 +779,7 @@ func TestABackupBeingDeletedRestoresAndGoesOnceTheRestoreIsComplete(t *testing.T
 }
 
 func TestTheCopyTargetIsTheEtcdsPrefix(t *testing.T) {
+	t.Parallel()
 	r := newRestore(t, restoreSetup{class: func(c *lodiav1alpha1.DatastoreClass) { c.Spec.Backup.Store.Prefix = "prod/" }})
 	target := r.waitCopyTask(t).Spec.TargetStore.Prefix
 	etcd := r.copied(t)
@@ -785,6 +789,7 @@ func TestTheCopyTargetIsTheEtcdsPrefix(t *testing.T) {
 }
 
 func TestARestoreFromACopyWithoutItsSealCleansUpNothing(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name string
 		seal func(t *testing.T, r *restore)
@@ -820,6 +825,7 @@ func TestARestoreFromACopyWithoutItsSealCleansUpNothing(t *testing.T) {
 }
 
 func TestTheCleanupFitsOneTransactionOfADeltaSnapshot(t *testing.T) {
+	t.Parallel()
 	nodes := func(n int) func(*testing.T, *restoredEtcd) {
 		return func(t *testing.T, e *restoredEtcd) {
 			keys := make([]string, n)
@@ -849,6 +855,7 @@ func TestTheCleanupFitsOneTransactionOfADeltaSnapshot(t *testing.T) {
 }
 
 func TestTheCleanupFunction(t *testing.T) {
+	t.Parallel()
 	e := &restoredEtcd{Client: testserver.RunEtcd(t, nil).Client}
 	e.put(t, append(slices.Clone(cleanedKeys), keptKeys...)...)
 	uid := types.UID("5e1f7c3a-0000-4000-8000-0000000000aa")
@@ -882,6 +889,7 @@ func TestTheCleanupFunction(t *testing.T) {
 }
 
 func TestARestoreCheckThatCannotRunHoldsTheRestore(t *testing.T) {
+	t.Parallel()
 	r := newRestore(t, restoreSetup{})
 	finishCopy(t, r.ns, r.waitCopyTask(t).Name, druidv1alpha1.EtcdCopyBackupsTaskSucceeded, "")
 	waitEtcd(t, r.ns, restoredCP, nil)
@@ -899,6 +907,7 @@ func TestARestoreCheckThatCannotRunHoldsTheRestore(t *testing.T) {
 }
 
 func TestARestoreCheckThatCannotRunKeepsTheStatusTheCacheLacks(t *testing.T) {
+	t.Parallel()
 	r := newRestore(t, restoreSetup{})
 	r.copied(t)
 	marker := r.cleanedUp(t)
@@ -959,6 +968,7 @@ func TestARestoreCheckThatCannotRunKeepsTheStatusTheCacheLacks(t *testing.T) {
 }
 
 func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
+	t.Parallel()
 	r := newRestore(t, restoreSetup{})
 	r.waitCopyTask(t)
 	time.Sleep(1100 * time.Millisecond)
@@ -1084,6 +1094,7 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 }
 
 func TestAFullSnapshotRejectedBeforeTheEtcdIsReadyGoesOnceItIs(t *testing.T) {
+	t.Parallel()
 	r := newRestore(t, restoreSetup{})
 	created := r.copied(t).CreationTimestamp.Time
 	marker := r.cleanedUp(t)
@@ -1127,6 +1138,7 @@ func TestAFullSnapshotRejectedBeforeTheEtcdIsReadyGoesOnceItIs(t *testing.T) {
 }
 
 func TestALeaseThatReachesTheMarkerWhileTheNextFullSnapshotWaitsCompletesTheRestore(t *testing.T) {
+	t.Parallel()
 	r := newRestore(t, restoreSetup{})
 	created := r.copied(t).CreationTimestamp.Time
 	marker := r.cleanedUp(t)
@@ -1148,6 +1160,7 @@ func TestALeaseThatReachesTheMarkerWhileTheNextFullSnapshotWaitsCompletesTheRest
 }
 
 func TestARestoreSurvivesAFailureAtEachStep(t *testing.T) {
+	t.Parallel()
 	survives := func(t *testing.T, r *restore, marker int64) {
 		t.Helper()
 		r.etcd.put(t, "/registry/minions/b-node")
@@ -1320,6 +1333,7 @@ func TestARestoreSurvivesAFailureAtEachStep(t *testing.T) {
 }
 
 func TestARestoreStatusRemovedComesBackFromTheMarker(t *testing.T) {
+	t.Parallel()
 	r := newRestore(t, restoreSetup{})
 	r.copied(t)
 	marker := r.cleanedUp(t)
@@ -1346,6 +1360,7 @@ func TestARestoreStatusRemovedComesBackFromTheMarker(t *testing.T) {
 }
 
 func TestDataFromBeforeTheCleanupIsCleanedUpAgain(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name string
 		gone bool
@@ -1380,6 +1395,7 @@ func TestDataFromBeforeTheCleanupIsCleanedUpAgain(t *testing.T) {
 }
 
 func TestALeftoverFullSnapshotLeaseCompletesNoRestore(t *testing.T) {
+	t.Parallel()
 	r := newRestore(t, restoreSetup{before: func(r *restore) {
 		createLease(t, r.ns, restoredCP+"-etcd-full-snap", strconv.FormatInt(math.MaxInt64, 10))
 		time.Sleep(1100 * time.Millisecond)
@@ -1392,6 +1408,7 @@ func TestALeftoverFullSnapshotLeaseCompletesNoRestore(t *testing.T) {
 }
 
 func TestACompletedRestoreNeedsItsBackupNoMore(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name string
 		gone bool
@@ -1452,6 +1469,7 @@ func TestACompletedRestoreNeedsItsBackupNoMore(t *testing.T) {
 }
 
 func TestACompletedRestoreKeepsItsRecordWithoutAnEtcd(t *testing.T) {
+	t.Parallel()
 	completed := func(t *testing.T) (*restore, *lodiav1alpha1.RestoreStatus) {
 		t.Helper()
 		r := newRestore(t, restoreSetup{})
@@ -1635,6 +1653,7 @@ func TestACompletedRestoreKeepsItsRecordWithoutAnEtcd(t *testing.T) {
 }
 
 func TestAnEtcdCreatedAgainFromAStaleCacheNeedsNoBackup(t *testing.T) {
+	t.Parallel()
 	r := newRestore(t, restoreSetup{})
 	r.copied(t)
 	marker := r.cleanedUp(t)
@@ -1670,6 +1689,7 @@ func TestAnEtcdCreatedAgainFromAStaleCacheNeedsNoBackup(t *testing.T) {
 }
 
 func TestAnEtcdDeletedMidRestoreComesBackOverItsClaims(t *testing.T) {
+	t.Parallel()
 	r := newRestore(t, restoreSetup{controlPlane: func(cp *lodiav1alpha1.ControlPlane) {
 		cp.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
 	}})
@@ -1702,6 +1722,7 @@ func TestAnEtcdDeletedMidRestoreComesBackOverItsClaims(t *testing.T) {
 }
 
 func TestACompletedRestoreComesBackOverItsClaimsWithTheirMembers(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name     string
 		ordinals []int
@@ -1768,6 +1789,7 @@ func TestACompletedRestoreComesBackOverItsClaimsWithTheirMembers(t *testing.T) {
 }
 
 func TestAStalePassWhoseCheckCannotRunKeepsTheMembers(t *testing.T) {
+	t.Parallel()
 	r := newRestore(t, restoreSetup{controlPlane: func(cp *lodiav1alpha1.ControlPlane) {
 		cp.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
 	}})
@@ -1818,6 +1840,7 @@ func TestAStalePassWhoseCheckCannotRunKeepsTheMembers(t *testing.T) {
 }
 
 func TestAFailedCopyStaysAMinute(t *testing.T) {
+	t.Parallel()
 	r := newRestore(t, restoreSetup{})
 	task := r.waitCopyTask(t)
 	failed := time.Now().Truncate(time.Second)
@@ -1868,6 +1891,7 @@ func TestAFailedCopyStaysAMinute(t *testing.T) {
 }
 
 func TestACleanupTheEtcdRefusesAtItsQuota(t *testing.T) {
+	t.Parallel()
 	r := newRestore(t, restoreSetup{quota: 1 << 20, preload: func(t *testing.T, e *restoredEtcd) {
 		e.put(t, append(slices.Clone(cleanedKeys), keptKeys...)...)
 		for i := 0; ; i++ {
@@ -1886,6 +1910,7 @@ func TestACleanupTheEtcdRefusesAtItsQuota(t *testing.T) {
 }
 
 func TestARestoreCompletesOnItsFullSnapshotWithoutAnEvent(t *testing.T) {
+	t.Parallel()
 	r := newRestore(t, restoreSetup{})
 	r.copied(t)
 	marker := r.cleanedUp(t)
@@ -1902,6 +1927,7 @@ func TestARestoreCompletesOnItsFullSnapshotWithoutAnEvent(t *testing.T) {
 }
 
 func TestARestoreReadThatFailsIsNoAnswer(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name string
 		key  func(*testing.T, *restore) string
@@ -1951,6 +1977,7 @@ func caBundle(t *testing.T, ns, cp string, notBefore time.Time) *corev1.Secret {
 }
 
 func TestACAOlderThanItsControlPlaneStartsNoEmptyEtcd(t *testing.T) {
+	t.Parallel()
 	adopted := func(t *testing.T, issuedBefore time.Duration) (string, *corev1.Secret) {
 		t.Helper()
 		ns := namespace(t)

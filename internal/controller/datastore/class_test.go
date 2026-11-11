@@ -105,6 +105,7 @@ func trueWith(t *testing.T, ns, cp, reason string) string {
 }
 
 func TestAClassEditWaitsUntilItsGenerationIsGranted(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name, quota string
 		class       func(name, credentialsNamespace string) *lodiav1alpha1.DatastoreClass
@@ -181,6 +182,7 @@ func recordsUID(t *testing.T, ns, cp string, class *lodiav1alpha1.DatastoreClass
 }
 
 func TestAClassCreatedAgainUnderItsNameWaitsForItsGrant(t *testing.T) {
+	t.Parallel()
 	t.Run("at the generation granted to the class it replaces", func(t *testing.T) {
 		ns := namespace(t)
 		const cp = "again-same"
@@ -236,6 +238,7 @@ func TestAClassCreatedAgainUnderItsNameWaitsForItsGrant(t *testing.T) {
 }
 
 func TestANewEtcdTakesTheClassAsItIs(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "as-it-is"
 	createClass(t, newClass(cp, "Retain"))
@@ -260,6 +263,7 @@ func TestANewEtcdTakesTheClassAsItIs(t *testing.T) {
 }
 
 func TestAStoreMoveThatWaitsForItsGenerationKeepsTheCopyOfTheStoreTheEtcdNames(t *testing.T) {
+	t.Parallel()
 	ns, credentialsNamespace := namespace(t), namespace(t)
 	const cp = "waits-store"
 	create(t, credentials(credentialsNamespace))
@@ -295,6 +299,7 @@ func TestAStoreMoveThatWaitsForItsGenerationKeepsTheCopyOfTheStoreTheEtcdNames(t
 }
 
 func TestAClassHeldForItsCredentialsAlsoNotesItsWait(t *testing.T) {
+	t.Parallel()
 	ns, credentialsNamespace := namespace(t), namespace(t)
 	const cp = "waits-held"
 	create(t, credentials(credentialsNamespace))
@@ -317,6 +322,7 @@ func TestAClassHeldForItsCredentialsAlsoNotesItsWait(t *testing.T) {
 }
 
 func TestAHeldPassGivesTheCredentialsHoldItsReason(t *testing.T) {
+	t.Parallel()
 	ns, credentialsNamespace := namespace(t), namespace(t)
 	const cp = "held-reason"
 	create(t, credentials(credentialsNamespace))
@@ -333,6 +339,7 @@ func TestAHeldPassGivesTheCredentialsHoldItsReason(t *testing.T) {
 }
 
 func TestTheClassIsReportedOnceEtcdDruidRolledItOut(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "reported-class"
 	createClass(t, newClass(cp, "Retain"))
@@ -400,6 +407,7 @@ func unrolledTenant(t *testing.T, ns, name string) *datastore.Reconciler {
 }
 
 func TestAnEtcdThatNeverRolledOutReportsTheClassItWasAppliedWith(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "never-rolled"
 	createClass(t, newClass(cp, "Retain"))
@@ -422,6 +430,7 @@ func TestAnEtcdThatNeverRolledOutReportsTheClassItWasAppliedWith(t *testing.T) {
 }
 
 func TestARefusedRequestReportsTheClassOfAnEtcdThatNeverRolledOut(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "refused-unrolled"
 	createClass(t, newClass(cp, "Retain"))
@@ -446,6 +455,7 @@ func reportedClass(t *testing.T, ns, cp string) int64 {
 }
 
 func TestAClassReportNeverMovesBackwardsAcrossARoll(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "report-forward"
 	createClass(t, newClass(cp, "Retain"))
@@ -508,6 +518,7 @@ func TestAClassReportNeverMovesBackwardsAcrossARoll(t *testing.T) {
 }
 
 func TestADeletingPassKeepsTheClassReported(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "deleting-unrolled"
 	createClass(t, newClass(cp, "Retain"))
@@ -609,6 +620,7 @@ func TestAnEtcdCreatedAgainFromAnotherClassReportsItsOwnClass(t *testing.T) {
 }
 
 func TestAnEtcdCreatedAgainOverAReportOfNoClassReportsItsClass(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "recreated-unreported"
 	createClass(t, newClass(cp, "Retain"))
@@ -629,6 +641,7 @@ func TestAnEtcdCreatedAgainOverAReportOfNoClassReportsItsClass(t *testing.T) {
 }
 
 func TestAPassThatKeepsTheClassFromAStaleCacheWritesNoOlderClassBack(t *testing.T) {
+	t.Parallel()
 	for i, row := range []struct {
 		name string
 		keep func(t *testing.T, class, credentialsNamespace string)
@@ -679,6 +692,7 @@ func TestAPassThatKeepsTheClassFromAStaleCacheWritesNoOlderClassBack(t *testing.
 }
 
 func TestAPassThatKeepsTheClassFromAStaleCacheKeepsTheCopyOfTheStoreTheEtcdNames(t *testing.T) {
+	t.Parallel()
 	const next = "v0.0.0-test+next"
 	for i, row := range []struct {
 		name          string
@@ -760,6 +774,7 @@ func TestAPassThatKeepsTheClassFromAStaleCacheKeepsTheCopyOfTheStoreTheEtcdNames
 }
 
 func TestTheCapNoteStaysWhileAClassEditWaits(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "cap-waits"
 	createClass(t, newClass(cp, "Retain"))
@@ -790,6 +805,7 @@ func TestTheCapNoteStaysWhileAClassEditWaits(t *testing.T) {
 }
 
 func TestAnEtcdWhoseClassAnnotationsAPersonEditedReportsNoClass(t *testing.T) {
+	t.Parallel()
 	tenants := []struct {
 		name   string
 		tenant func(t *testing.T, ns, cp string) *datastore.Reconciler
@@ -827,6 +843,7 @@ func TestAnEtcdWhoseClassAnnotationsAPersonEditedReportsNoClass(t *testing.T) {
 }
 
 func TestAnEtcdAPersonAnnotatedWhileItRollsKeepsTheClassReportedUntilItRolledOut(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "annotated-rolling"
 	createClass(t, newClass(cp, "Retain"))
@@ -847,6 +864,7 @@ func TestAnEtcdAPersonAnnotatedWhileItRollsKeepsTheClassReportedUntilItRolledOut
 }
 
 func TestAClassNameAPersonEditsIsReportedAtOnce(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "renamed"
 	first, second := newClass(cp+"-a", "Retain"), classOf(cp+"-b", "3Gi")
@@ -876,6 +894,7 @@ func TestAClassNameAPersonEditsIsReportedAtOnce(t *testing.T) {
 }
 
 func TestAClassAnnotationTheSchemaTakesIsReportedAsItIs(t *testing.T) {
+	t.Parallel()
 	for i, row := range []struct{ annotation, value string }{
 		{lodiav1alpha1.DatastoreClassAnnotation, strings.Repeat("ü", 253)},
 		{lodiav1alpha1.DatastoreClassUIDAnnotation, strings.Repeat("ü", 36)},
@@ -904,6 +923,7 @@ func TestAClassAnnotationTheSchemaTakesIsReportedAsItIs(t *testing.T) {
 }
 
 func TestAnEtcdAPersonTookTheQuotaFromNotesNoCap(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "unquoted"
 	createClass(t, newClass(cp, "Retain"))

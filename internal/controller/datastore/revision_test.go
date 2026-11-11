@@ -214,6 +214,7 @@ func noRequestApplied(t *testing.T, etcd *druidv1alpha1.Etcd) {
 }
 
 func TestAHeldPassChangesNothingButTheCertificateReferences(t *testing.T) {
+	t.Parallel()
 	ns, credentialsNamespace := namespace(t), namespace(t)
 	const cp = "held-copy"
 	create(t, credentials(credentialsNamespace))
@@ -318,6 +319,7 @@ func TestAHeldPassChangesNothingButTheCertificateReferences(t *testing.T) {
 }
 
 func TestAHeldPassCopiesTheCredentialsOfTheStoreTheEtcdNames(t *testing.T) {
+	t.Parallel()
 	ns, credentialsNamespace := namespace(t), namespace(t)
 	const cp = "held-store"
 	create(t, credentials(credentialsNamespace))
@@ -372,6 +374,7 @@ func TestAHeldPassCopiesTheCredentialsOfTheStoreTheEtcdNames(t *testing.T) {
 }
 
 func TestAHeldPassOverAGrantedClassKeepsTheCopyOfTheStoreTheEtcdNames(t *testing.T) {
+	t.Parallel()
 	ns, credentialsNamespace := namespace(t), namespace(t)
 	const cp = "held-granted"
 	create(t, credentials(credentialsNamespace))
@@ -392,6 +395,7 @@ func TestAHeldPassOverAGrantedClassKeepsTheCopyOfTheStoreTheEtcdNames(t *testing
 }
 
 func TestAHeldPassOverAGoneClassKeepsTheEtcd(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "held-class-gone"
 	createClass(t, newClass(cp, "Retain"))
@@ -409,6 +413,7 @@ func TestAHeldPassOverAGoneClassKeepsTheEtcd(t *testing.T) {
 }
 
 func TestAHeldPassWithoutAnEtcdCopiesTheCredentialsOfTheStoreItRenders(t *testing.T) {
+	t.Parallel()
 	ns, credentialsNamespace := namespace(t), namespace(t)
 	const cp = "held-gone"
 	create(t, credentials(credentialsNamespace))
@@ -438,6 +443,7 @@ func TestAHeldPassWithoutAnEtcdCopiesTheCredentialsOfTheStoreItRenders(t *testin
 }
 
 func TestAHeldPassNotesTheQuotaCapTheEtcdRuns(t *testing.T) {
+	t.Parallel()
 	ns, credentialsNamespace := namespace(t), namespace(t)
 	create(t, credentials(credentialsNamespace))
 	for _, c := range []struct {
@@ -477,6 +483,7 @@ func TestAHeldPassNotesTheQuotaCapTheEtcdRuns(t *testing.T) {
 }
 
 func TestAHeldPassCreatesAMissingEtcdFromTheFullRender(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "held-create"
 	createClass(t, newClass("held-create", "Retain"))
@@ -506,6 +513,7 @@ func TestAHeldPassCreatesAMissingEtcdFromTheFullRender(t *testing.T) {
 }
 
 func TestAHeldPassWritesTheNetworkPolicyOnlyWhenItIsMissing(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "held-policy"
 	createClass(t, newClass("held-policy", "Retain"))
@@ -551,6 +559,7 @@ func TestAHeldPassWritesTheNetworkPolicyOnlyWhenItIsMissing(t *testing.T) {
 }
 
 func TestTheRequestFollowsEveryWriteOfTheEtcd(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "requested"
 	createClass(t, newClass("requested", "Retain"))
@@ -588,6 +597,7 @@ func TestTheRequestFollowsEveryWriteOfTheEtcd(t *testing.T) {
 }
 
 func TestARequestThatConflictsIsMadeByTheNextPass(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "request-conflict"
 	createClass(t, newClass("request-conflict", "Retain"))
@@ -668,6 +678,7 @@ func refusingRequests(cp string) (client.WithWatch, error) {
 }
 
 func TestARequestTheAPIServerRefusesIsRefused(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "refused-request"
 	createClass(t, newClass(cp, "Retain"))
@@ -703,6 +714,7 @@ func TestARequestTheAPIServerRefusesIsRefused(t *testing.T) {
 }
 
 func TestARefusedRequestLabelsTheClaimsOfTheAppliedEtcd(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "refused-claims"
 	createClass(t, newClass(cp, "Retain"))
@@ -733,6 +745,7 @@ func TestARefusedRequestLabelsTheClaimsOfTheAppliedEtcd(t *testing.T) {
 }
 
 func TestARefusedRequestReportsTheAppliedEtcd(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "refused-grant"
 	createClass(t, newClass(cp, "Retain"))
@@ -786,6 +799,7 @@ func druidAt(t *testing.T, name, version string, mutate func(*appsv1.DeploymentS
 }
 
 func TestAGrantAsksEtcdDruidOnceItRunsTheGivenVersion(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "druid-gate"
 	createClass(t, newClass("druid-gate", "Retain"))
@@ -863,6 +877,7 @@ func TestAGrantAsksEtcdDruidOnceItRunsTheGivenVersion(t *testing.T) {
 }
 
 func TestAnEtcdWithoutAStampOrARecordWaitsForEtcdDruid(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "unstamped"
 	createClass(t, newClass(cp, "Retain"))
@@ -890,6 +905,7 @@ func reportedRevision(t *testing.T, ns, cp string) string {
 }
 
 func TestTheOperatorRevisionIsReportedOnceEtcdDruidRolledItOut(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "reported-revision"
 	createClass(t, newClass("reported-revision", "Retain"))
@@ -967,6 +983,7 @@ func TestTheOperatorRevisionIsReportedOnceEtcdDruidRolledItOut(t *testing.T) {
 }
 
 func TestTheRevisionIsReportedFromTheStatefulSetReadAfterTheRequest(t *testing.T) {
+	t.Parallel()
 	for i, row := range []struct {
 		name   string
 		status bool
@@ -1026,6 +1043,7 @@ func TestTheRevisionIsReportedFromTheStatefulSetReadAfterTheRequest(t *testing.T
 }
 
 func TestAStampLongerThanTheFieldIsNotReported(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "long-stamp"
 	createClass(t, newClass(cp, "Retain"))
@@ -1076,6 +1094,7 @@ func asksAgain(t *testing.T, r *datastore.Reconciler, ns, cp, request, run strin
 }
 
 func TestARequestConsumedByAReconcileThatStartedBeforeItIsAskedAgain(t *testing.T) {
+	t.Parallel()
 	t.Run("etcd-druid's first reconcile of a new Etcd", func(t *testing.T) {
 		ns := namespace(t)
 		const cp = "new-etcd-request"
@@ -1218,6 +1237,7 @@ func waits(t *testing.T, r *datastore.Reconciler, ns, cp, request, run string) {
 }
 
 func TestARequestIsNotAskedAgainWhileAReconcileThatStartedAfterItRuns(t *testing.T) {
+	t.Parallel()
 	const cp = "in-flight"
 	ns, r, request, run := servedRequest(t, cp)
 	druidRuns(t, ns, cp, "back-to-back", druidv1alpha1.LastOperationStateProcessing)
@@ -1234,6 +1254,7 @@ func TestARequestIsNotAskedAgainWhileAReconcileThatStartedAfterItRuns(t *testing
 }
 
 func TestTheWaitRunsOnTheOperatorsClock(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		cp   string
 		skew time.Duration
@@ -1252,6 +1273,7 @@ func TestTheWaitRunsOnTheOperatorsClock(t *testing.T) {
 }
 
 func TestANewRunIDRestartsTheWait(t *testing.T) {
+	t.Parallel()
 	const cp = "new-run"
 	ns, r, request, run := servedRequest(t, cp)
 	druidRuns(t, ns, cp, "first", druidv1alpha1.LastOperationStateProcessing)
@@ -1264,6 +1286,7 @@ func TestANewRunIDRestartsTheWait(t *testing.T) {
 }
 
 func TestTheWaitForgetsARunThatEnded(t *testing.T) {
+	t.Parallel()
 	const cp = "ended-run"
 	ns, r, request, run := servedRequest(t, cp)
 	druidRuns(t, ns, cp, "ended", druidv1alpha1.LastOperationStateProcessing)
@@ -1278,6 +1301,7 @@ func TestTheWaitForgetsARunThatEnded(t *testing.T) {
 }
 
 func TestARestartedOperatorWaitsTheBoundFromItsOwnSighting(t *testing.T) {
+	t.Parallel()
 	const cp = "restarted"
 	ns, r, request, run := servedRequest(t, cp)
 	druidRuns(t, ns, cp, "stopped", druidv1alpha1.LastOperationStateProcessing)
@@ -1294,6 +1318,7 @@ func TestARestartedOperatorWaitsTheBoundFromItsOwnSighting(t *testing.T) {
 }
 
 func TestAHeldPassAtANewGenerationReportsTheQuorumAtTheGenerationItDescribes(t *testing.T) {
+	t.Parallel()
 	ns, credentialsNamespace := namespace(t), namespace(t)
 	const cp = "held-generation"
 	create(t, credentials(credentialsNamespace))
@@ -1362,6 +1387,7 @@ func TestAHeldPassAtANewGenerationReportsTheQuorumAtTheGenerationItDescribes(t *
 }
 
 func TestAStaleCacheWithAnOlderRevisionHoldsThePass(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "stale-revision"
 	createClass(t, newClass("stale-revision", "Retain"))
@@ -1394,6 +1420,7 @@ func TestAStaleCacheWithAnOlderRevisionHoldsThePass(t *testing.T) {
 }
 
 func TestWithoutAGrantedRevisionDatastoreWaitsForTheTarget(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "no-target"
 	createClass(t, newClass("no-target", "Delete"))
@@ -1445,6 +1472,7 @@ func TestWithoutAGrantedRevisionDatastoreWaitsForTheTarget(t *testing.T) {
 }
 
 func TestTheRestoreAsksEtcdDruidOnEveryEtcdItWrites(t *testing.T) {
+	t.Parallel()
 	r := newRestore(t, restoreSetup{controlPlane: func(cp *lodiav1alpha1.ControlPlane) {
 		cp.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
 	}})
@@ -1465,6 +1493,7 @@ func TestTheRestoreAsksEtcdDruidOnEveryEtcdItWrites(t *testing.T) {
 }
 
 func TestARefusedRequestOnTheRestoresRaiseReportsTheRestore(t *testing.T) {
+	t.Parallel()
 	r := newRestore(t, restoreSetup{controlPlane: func(cp *lodiav1alpha1.ControlPlane) {
 		cp.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
 	}})

@@ -176,6 +176,7 @@ func sampler(objs ...client.Object) (*datastore.SampleReconciler, *clocktesting.
 }
 
 func TestOneMemberGivesItsLeaderAndItsSize(t *testing.T) {
+	t.Parallel()
 	_, cfgs := etcdCluster(t, 1, nil)
 	cp, etcd := sampledControlPlane("one", "uid-one")
 	r, clk := sampler(cp, etcd)
@@ -190,6 +191,7 @@ func TestOneMemberGivesItsLeaderAndItsSize(t *testing.T) {
 }
 
 func TestThreeMembersGiveTheirLeaderWhileAQuorumAnswersAndTheLargestSize(t *testing.T) {
+	t.Parallel()
 	members, cfgs := etcdCluster(t, 3, nil)
 	c := etcdClient(t, clientURL(cfgs[0]))
 	value := strings.Repeat("v", 10<<10)
@@ -391,6 +393,7 @@ func TestAClientThatLeavesThePassTooLittleOfItsDeadlineKeepsNoSample(t *testing.
 }
 
 func TestEveryPassClosesItsClient(t *testing.T) {
+	t.Parallel()
 	_, cfgs := etcdCluster(t, 1, nil)
 	for _, c := range []struct {
 		name    string
@@ -429,6 +432,7 @@ func TestEveryPassClosesItsClient(t *testing.T) {
 }
 
 func TestAMemberWrittenPastItsQuotaReportsNoSpace(t *testing.T) {
+	t.Parallel()
 	_, cfgs := etcdCluster(t, 1, func(_ int, cfg *embed.Config) { cfg.QuotaBackendBytes = 1 << 20 })
 	c := etcdClient(t, clientURL(cfgs[0]))
 	value := strings.Repeat("v", 64<<10)
@@ -473,6 +477,7 @@ func TestAMemberWrittenPastItsQuotaReportsNoSpace(t *testing.T) {
 }
 
 func TestWhatIsNotSampledIsForgotten(t *testing.T) {
+	t.Parallel()
 	_, cfgs := etcdCluster(t, 1, nil)
 	for _, c := range []struct {
 		name         string
@@ -527,6 +532,7 @@ func TestWhatIsNotSampledIsForgotten(t *testing.T) {
 }
 
 func TestAReadOfTheCacheThatFailsForgetsTheSampleUntilTheNextMinute(t *testing.T) {
+	t.Parallel()
 	_, cfgs := etcdCluster(t, 1, nil)
 	for _, failing := range []client.Object{&lodiav1alpha1.ControlPlane{}, &druidv1alpha1.Etcd{}} {
 		t.Run(fmt.Sprintf("%T", failing), func(t *testing.T) {
@@ -555,6 +561,7 @@ func TestAReadOfTheCacheThatFailsForgetsTheSampleUntilTheNextMinute(t *testing.T
 }
 
 func TestADialThatFailsForgetsTheSample(t *testing.T) {
+	t.Parallel()
 	_, cfgs := etcdCluster(t, 1, nil)
 	cp, etcd := sampledControlPlane("undialled", "uid-undialled")
 	r, clk := sampler(cp, etcd)
@@ -574,6 +581,7 @@ func TestADialThatFailsForgetsTheSample(t *testing.T) {
 }
 
 func TestARecreatedControlPlaneIsSampledUnderItsNewUIDAlone(t *testing.T) {
+	t.Parallel()
 	_, cfgs := etcdCluster(t, 1, nil)
 	first, firstEtcd := sampledControlPlane("again", "uid-first")
 	r, clk := sampler(first, firstEtcd)
@@ -800,6 +808,7 @@ type roundTripper func(*http.Request) (*http.Response, error)
 func (f roundTripper) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 func TestOnlyACreationOrADeletionBringsAPassBeforeItsMinute(t *testing.T) {
+	t.Parallel()
 	_, cfgs := etcdCluster(t, 1, nil)
 	ns := namespace(t)
 	cp := formedControlPlane(t, ns, "steady")

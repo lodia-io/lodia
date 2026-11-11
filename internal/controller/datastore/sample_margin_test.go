@@ -14,6 +14,7 @@ import (
 )
 
 func TestAClientThatComesTooLateToAnEtcdThatDoesNotAnswerKeepsNoSample(t *testing.T) {
+	t.Parallel()
 	unreachable := closedURL(t)
 	for _, left := range []time.Duration{2 * time.Millisecond, 500 * time.Millisecond} {
 		t.Run(left.String(), func(t *testing.T) {

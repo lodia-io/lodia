@@ -309,6 +309,7 @@ func (s *source) toCopy(t *testing.T, r *datastore.BackupReconciler) *lodiav1alp
 }
 
 func TestABackupIsSealedAndCopied(t *testing.T) {
+	t.Parallel()
 	src := newSource(t, nil, nil)
 	r := src.reconciler(cached)
 	created := createBackup(t, src.ns, "before-upgrade", nil)
@@ -430,6 +431,7 @@ func TestABackupIsSealedAndCopied(t *testing.T) {
 }
 
 func TestOnlyTheFullSnapshotLeaseShowsTheSeal(t *testing.T) {
+	t.Parallel()
 	src := newSource(t, nil, nil)
 	r := src.reconciler(cached)
 	created := createBackup(t, src.ns, "full", nil)
@@ -452,6 +454,7 @@ func TestOnlyTheFullSnapshotLeaseShowsTheSeal(t *testing.T) {
 }
 
 func TestAFlushThatEndsShortOfTheSealIsSentAgain(t *testing.T) {
+	t.Parallel()
 	src := newSource(t, nil, nil)
 	now := clocktesting.NewFakePassiveClock(time.Now())
 	r := src.reconciler(cached)
@@ -501,6 +504,7 @@ func TestAFlushThatEndsShortOfTheSealIsSentAgain(t *testing.T) {
 }
 
 func TestALeaseThatReachesTheSealWhileTheNextFlushWaitsStartsTheCopy(t *testing.T) {
+	t.Parallel()
 	src := newSource(t, nil, nil)
 	now := clocktesting.NewFakePassiveClock(time.Now())
 	r := src.reconciler(cached)
@@ -529,6 +533,7 @@ func TestALeaseThatReachesTheSealWhileTheNextFlushWaitsStartsTheCopy(t *testing.
 }
 
 func TestALeaseOlderThanTheEtcdIsIgnored(t *testing.T) {
+	t.Parallel()
 	src := newSource(t, nil, func(s *source) {
 		createLease(t, s.ns, fullLease, "1000000000")
 		time.Sleep(1100 * time.Millisecond)
@@ -598,6 +603,7 @@ func (s refusingStatus) Apply(ctx context.Context, obj runtime.ApplyConfiguratio
 }
 
 func TestAWriteRefusedAtAnyStep(t *testing.T) {
+	t.Parallel()
 	src := newSource(t, nil, nil)
 	writes := seal(t, src, "refused-none", 0)
 	if writes < 10 {
@@ -662,6 +668,7 @@ func seal(t *testing.T, src *source, name string, nth int) int {
 }
 
 func TestTheMarkIsWrittenAfterTheSourceIsGone(t *testing.T) {
+	t.Parallel()
 	src := newSource(t, nil, nil)
 	r := src.reconciler(cached)
 	created := createBackup(t, src.ns, "marked-late", nil)
@@ -712,6 +719,7 @@ func (s staleBackup) Get(ctx context.Context, key client.ObjectKey, obj client.O
 }
 
 func TestAPassFromAStaleBackupDropsNoRecordedField(t *testing.T) {
+	t.Parallel()
 	src := newSource(t, nil, nil)
 	r := src.reconciler(cached)
 	created := createBackup(t, src.ns, "stale", nil)
@@ -730,6 +738,7 @@ func TestAPassFromAStaleBackupDropsNoRecordedField(t *testing.T) {
 }
 
 func TestABackupThatCannotBeTaken(t *testing.T) {
+	t.Parallel()
 	t.Run("NoBackupStore", func(t *testing.T) {
 		ns := namespace(t)
 		createClass(t, newClass(ns, "Retain"))
@@ -880,6 +889,7 @@ func unmoved(t *testing.T, r *datastore.BackupReconciler, ns, name string) {
 }
 
 func TestASealThatDidNotComeBack(t *testing.T) {
+	t.Parallel()
 	src := newSource(t, nil, nil)
 	r := src.reconciler(cached)
 	other := createBackup(t, src.ns, "another-uid", map[string]string{lodiav1alpha1.SealedUIDAnnotation: "0b6c3a51-7c8e-4f3c-9d55-2e2f1f3c4a10"})
@@ -906,6 +916,7 @@ func TestASealThatDidNotComeBack(t *testing.T) {
 }
 
 func TestACompletedBackupMarkedWithAnotherUIDIsSealLost(t *testing.T) {
+	t.Parallel()
 	src := newSource(t, nil, nil)
 	r := src.reconciler(cached)
 	created := createBackup(t, src.ns, "restored", nil)
@@ -937,6 +948,7 @@ func TestACompletedBackupMarkedWithAnotherUIDIsSealLost(t *testing.T) {
 }
 
 func TestAnOwnerlessKeySecretIsNotAdopted(t *testing.T) {
+	t.Parallel()
 	src := newSource(t, nil, nil)
 	r := src.reconciler(cached)
 	ownerless := &corev1.Secret{
@@ -962,6 +974,7 @@ func TestAnOwnerlessKeySecretIsNotAdopted(t *testing.T) {
 }
 
 func TestKeysHeldForAPredecessorBackupAreLetGo(t *testing.T) {
+	t.Parallel()
 	src := newSource(t, nil, nil)
 	r := src.reconciler(cached)
 	const predecessor = "7d1f0a52-3c2b-4f0e-8a6d-5b9c4e2f1a30"
@@ -978,6 +991,7 @@ func TestKeysHeldForAPredecessorBackupAreLetGo(t *testing.T) {
 }
 
 func TestABackupDeletedBeforeItIsSealedGoesAtOnce(t *testing.T) {
+	t.Parallel()
 	src := newSource(t, nil, nil)
 	r := src.reconciler(cached)
 	backup := src.toCopy(t, r)
@@ -1003,6 +1017,7 @@ func TestABackupDeletedBeforeItIsSealedGoesAtOnce(t *testing.T) {
 }
 
 func TestASealTheEtcdRefuses(t *testing.T) {
+	t.Parallel()
 	cfg := testserver.NewTestConfig(t)
 	cfg.QuotaBackendBytes = 1 << 20
 	src := newSource(t, cfg, nil)
@@ -1050,6 +1065,7 @@ func druidBackupReady(status druidv1alpha1.ConditionStatus, reason, message stri
 }
 
 func TestBackupReadyFollowsEtcdDruid(t *testing.T) {
+	t.Parallel()
 	ns, credentialsNamespace := namespace(t), namespace(t)
 	create(t, credentials(credentialsNamespace))
 	createClass(t, fullClass(ns, credentialsNamespace))
@@ -1104,6 +1120,7 @@ func TestBackupReadyFollowsEtcdDruid(t *testing.T) {
 }
 
 func TestTheCopyFollowsTheSourcesEtcdNotItsClass(t *testing.T) {
+	t.Parallel()
 	src := newSource(t, nil, nil)
 	r := src.reconciler(cached)
 	etcd := getEtcd(t, src.ns, sourceName)
@@ -1177,6 +1194,7 @@ func awaitBackup(t *testing.T, ns, name string, check func(*lodiav1alpha1.Backup
 }
 
 func TestTheWatchesBringTheNextPass(t *testing.T) {
+	t.Parallel()
 	var backups client.Reader
 	src := newSource(t, nil, func(s *source) {
 		backups = runBackupReconciler(t, s)
@@ -1242,6 +1260,7 @@ func editClass(t *testing.T, name string, edit func(*lodiav1alpha1.DatastoreClas
 }
 
 func TestAStoreMovedBeforeTheCopyFailsTheBackup(t *testing.T) {
+	t.Parallel()
 	src := newSource(t, nil, nil)
 	r := src.reconciler(cached)
 	created := createBackup(t, src.ns, "moved", nil)
@@ -1267,6 +1286,7 @@ func TestAStoreMovedBeforeTheCopyFailsTheBackup(t *testing.T) {
 }
 
 func TestTheFlushIsAFullSnapshotWhateverTheDeltaPeriod(t *testing.T) {
+	t.Parallel()
 	src := newSource(t, nil, nil)
 	r := src.reconciler(cached)
 	for _, period := range []time.Duration{0, 999 * time.Millisecond, time.Second, 5 * time.Minute} {
@@ -1297,6 +1317,7 @@ func TestTheFlushIsAFullSnapshotWhateverTheDeltaPeriod(t *testing.T) {
 }
 
 func TestAStoreMovedAwayAndBackFailsTheBackup(t *testing.T) {
+	t.Parallel()
 	src := newSource(t, nil, nil)
 	r := src.reconciler(cached)
 	created := createBackup(t, src.ns, "away", nil)
@@ -1318,6 +1339,7 @@ func TestAStoreMovedAwayAndBackFailsTheBackup(t *testing.T) {
 }
 
 func TestAStoreMovedAwayAndBackWhileTheMemberRestartsFailsTheBackup(t *testing.T) {
+	t.Parallel()
 	src := newSource(t, nil, nil)
 	r := src.reconciler(k8s)
 	created := createBackup(t, src.ns, "restart", nil)
@@ -1361,6 +1383,7 @@ type storeKeyMove struct {
 }
 
 func TestAStoreMovedThroughTheCredentialsFailsTheBackup(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name     string
 		provider lodiav1alpha1.StoreProvider
@@ -1500,6 +1523,7 @@ func (h hiding) Get(ctx context.Context, key client.ObjectKey, obj client.Object
 }
 
 func TestABackupWaitsForTheCredentialsCopy(t *testing.T) {
+	t.Parallel()
 	src := newSource(t, nil, nil)
 	r := src.reconciler(cached)
 	hidden := &datastore.BackupReconciler{Client: cached, Reader: hiding{apiReader, "src-etcd-backup"}, EtcdClient: src.dial, Clock: clock.RealClock{}}
@@ -1621,6 +1645,7 @@ func (c conflictOnce) Patch(ctx context.Context, obj client.Object, patch client
 }
 
 func TestTheRestoreSourceFinalizer(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	r := &datastore.BackupReconciler{Client: cached, Reader: apiReader, Clock: clock.RealClock{}}
 	pass := func(t *testing.T, r *datastore.BackupReconciler, name string) {
@@ -2026,6 +2051,7 @@ func (c missingControlPlanes) List(ctx context.Context, list client.ObjectList, 
 }
 
 func TestTheRestoreSourceFinalizerFollowsItsEvents(t *testing.T) {
+	t.Parallel()
 	for _, keysFirst := range []bool{false, true} {
 		name := map[bool]string{false: "restored-then-keyed", true: "keyed-then-restored"}[keysFirst]
 		t.Run(name, func(t *testing.T) {
