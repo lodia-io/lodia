@@ -19,7 +19,10 @@ const (
 	previous = "v0.9.0+2b7e"
 )
 
-var now = time.Date(2026, 11, 11, 8, 0, 0, 0, time.UTC)
+var (
+	now            = time.Date(2026, 11, 11, 8, 0, 0, 0, time.UTC)
+	beyondAnyClock = time.Date(2100, 1, 1, 3, 0, 0, 0, time.UTC)
+)
 
 func ago(d time.Duration) *metav1.Time { return &metav1.Time{Time: now.Add(-d)} }
 
@@ -178,6 +181,27 @@ func golden() []client.Object {
 	paused.Status.Conditions = conditions(paused, map[string]state{lodiav1alpha1.ConditionProgressing: {metav1.ConditionFalse, lodiav1alpha1.ReasonPaused}})
 	paused.Status.Maintenance = &lodiav1alpha1.MaintenanceStatus{SlotSince: ago(2 * time.Hour)}
 
+	starting := controlPlane("starting", 10)
+	starting.Status.Components = &lodiav1alpha1.ComponentsStatus{APIServer: &lodiav1alpha1.ComponentStatus{RolloutCount: count(1, 0, 0)}}
+
+	rolling := controlPlane("rolling", 11)
+	rolling.Generation = 2
+	steady(rolling, "v1.36.4")
+	rolling.Status.Conditions = conditions(rolling, map[string]state{lodiav1alpha1.ConditionProgressing: {metav1.ConditionTrue, lodiav1alpha1.ReasonUpgrading}})
+	rolling.Status.Target.Version = "v1.37.1"
+	rolling.Status.Kubernetes.Upgrade = &lodiav1alpha1.UpgradeStatus{Step: lodiav1alpha1.UpgradeStepAPIServer, StartedAt: *ago(5 * time.Minute)}
+	rolling.Status.Components = components(count(3, 2, 2), count(2, 1, 1), count(2, 2, 1))
+	rolling.Status.Datastore = datastore(count(3, 2, 1))
+
+	waiting := controlPlane("waiting", 12)
+	steady(waiting, "v1.37.1")
+	waiting.Status.Conditions = conditions(waiting, map[string]state{lodiav1alpha1.ConditionProgressing: {metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForWindow}})
+	waiting.Status.Target.OperatorRevision = previous
+	waiting.Status.Target.ScheduledFor = &metav1.Time{Time: beyondAnyClock}
+
+	overdue := controlPlane("overdue", 13)
+	overdue.Status.Target = &lodiav1alpha1.Target{Version: "v1.37.1", OperatorRevision: previous, ScheduledFor: ago(24 * time.Hour)}
+
 	shared := controlPlane("shared", 8)
 	shared.Spec.Layout = lodiav1alpha1.LayoutCompact
 	shared.Spec.Datastore = lodiav1alpha1.DatastoreChoice{Shared: &lodiav1alpha1.SharedDatastore{Name: "pool"}}
@@ -201,5 +225,5 @@ func golden() []client.Object {
 	steady(deleting, "v1.37.1")
 	deleting.Status.Conditions = conditions(deleting, map[string]state{lodiav1alpha1.ConditionReady: {metav1.ConditionFalse, lodiav1alpha1.ReasonDeleting}})
 
-	return []client.Object{fresh, edge, restored, failed, queued, upgrading, paused, shared, deleting}
+	return []client.Object{fresh, edge, restored, failed, queued, upgrading, paused, starting, rolling, waiting, overdue, shared, deleting}
 }
