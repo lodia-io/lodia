@@ -1,8 +1,8 @@
 # Upgrades follow the version skew policy step by step; changes Lodia initiates roll in each tenant's maintenance window, a bounded number of tenants at a time
 
 Decided 2026-10-25.
-Built: the steps of a minor upgrade below, Lifecycle driving them, the operator revision, the holds of Workloads, Tenant and the Datastore controller, the stamps on the Deployments and the `Etcd`, Lifecycle's grant of the running revision, of patch updates and of edits of the `DatastoreClass` by the rules below (windows, the fleet, maintenance on request and the settling time), and the warning of the end of support in `Progressing`'s message.
-Not built yet, with phase 2's observability: the end of support's metric and alert ([roadmap](../roadmap.md)).
+Built: the steps of a minor upgrade below, Lifecycle driving them, the operator revision, the holds of Workloads, Tenant and the Datastore controller, the stamps on the Deployments and the `Etcd`, Lifecycle's grant of the running revision, of patch updates and of edits of the `DatastoreClass` by the rules below (windows, the fleet, maintenance on request and the settling time), and the warning of the end of support in `Progressing`'s message, a metric and an alert.
+Not built yet: the rendering of a dropped minor, in the release that first drops one ([todo](../../todo.md#for-the-release-that-first-drops-a-minor)).
 
 ## Decision
 

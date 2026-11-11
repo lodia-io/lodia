@@ -2,7 +2,7 @@
 
 Decided 2026-10-26.
 Built: the collector, served by the leader alone, with every metric below that the table marks served, the chart's metrics Service, ServiceMonitor and alerts, and the events.
-Not built yet: the other metrics and the chart's dashboards, which phase 2's wave 2, observability, builds next ([roadmap](../roadmap.md)).
+Not built yet: the chart's dashboards, which phase 2's wave 2, observability, builds next ([roadmap](../roadmap.md)).
 
 ## Decision
 
@@ -59,7 +59,7 @@ A metric is renamed only under a new name, and in `v1alpha1` the old one stays f
 | `lodia_controlplane_datastore_has_leader` | | the last sample: 1 when a quorum of the voting members answered naming one leader, else 0; absent while the `ControlPlane` is paused or being deleted, until its `Etcd` is formed, and after a pass that could not read the cache, or the client certificate in time, until one does | yes |
 | `lodia_controlplane_datastore_alarm` | `alarm` (`NOSPACE`, `CORRUPT`) | 1 per alarm armed in the last sample; none wherever `lodia_controlplane_datastore_has_leader` is absent | yes |
 | `lodia_controlplane_nodes_silent`, `lodia_controlplane_nodes_counted` | | Health's last Lease list, once its clock has run `silentAfter`: the silent nodes and those that count, the two sides of the hold's fraction ([controller-manager-hold](controller-manager-hold.md)); absent while `spec.health.holdControllerManager` is false | yes |
-| `lodia_controlplane_kubernetes_end_of_support_timestamp_seconds` | | the end-of-support date the version table gives the minor of `status.kubernetes.version` ([upgrades-and-maintenance-windows](upgrades-and-maintenance-windows.md)) | once the version table has the dates |
+| `lodia_controlplane_kubernetes_end_of_support_timestamp_seconds` | | the end-of-support date, at 00:00 UTC, that the version table gives the minor of `status.kubernetes.version`, absent for a minor outside the table ([upgrades-and-maintenance-windows](upgrades-and-maintenance-windows.md)) | yes |
 
 Of the operator, without a tenant's labels:
 
