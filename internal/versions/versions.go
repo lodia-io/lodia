@@ -132,11 +132,7 @@ func Latest(minor string) (string, bool) {
 // EndOfSupport returns the day, in UTC, the Kubernetes project ends its
 // support of minor, and false when Lodia does not run it.
 func EndOfSupport(minor string) (time.Time, bool) {
-	m, ok := minors[minor]
-	if !ok {
-		return time.Time{}, false
-	}
-	day, err := time.Parse(time.DateOnly, m.endOfSupport)
+	day, err := time.Parse(time.DateOnly, minors[minor].endOfSupport)
 	return day, err == nil
 }
 
