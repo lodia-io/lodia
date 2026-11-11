@@ -93,9 +93,10 @@ func (r *SampleReconciler) SetupWithManager(mgr ctrl.Manager, workers int) error
 		Complete(r)
 }
 
-// Reconcile returns no error on any path: controller-runtime sends an error
-// to a backoff that reaches past the minute
-// (https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/internal/controller/controller.go#L498-L516).
+// Reconcile returns no error on any path: beside an error controller-runtime
+// drops RequeueAfter and requeues by a backoff from 5 ms to 1000 s
+// (https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/internal/controller/controller.go#L486-L497,
+// https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/controller/controller.go#L270-L273).
 func (r *SampleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	start := r.Clock.Now()
 	again := func() (ctrl.Result, error) {
