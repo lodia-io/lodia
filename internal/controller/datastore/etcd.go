@@ -40,7 +40,10 @@ const allowUnhealthyPodEviction = "resources.druid.gardener.cloud/allow-unhealth
 // immutable in the Etcd, the second a StatefulSet field that cannot change in
 // place. Without one, the size is that of the smallest claim left, which the
 // StatefulSet binds again by name. The quota is capped at half the size. A nil
-// class is a recorded class that is gone. The backup prefix holds UIDs and no
+// class keeps the fields current's class gave it, while that class waits for
+// its grant, is held for its credentials or is gone, under current's
+// resourceVersion, so that a stale cache conflicts instead of writing an older
+// class back outside the window. The backup prefix holds UIDs and no
 // name: etcd-backup-restore takes the last v1/ anywhere in a key for its
 // layout and ignores the snapshots it misreads
 // (etcd-backup-restore@v0.45.1 pkg/snapstore/snapshot.go#L39-L59).
@@ -90,10 +93,12 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 	}
 	if class == nil {
 		keep(etcd, current)
+		etcd.ResourceVersion = current.ResourceVersion
 		return etcd, ""
 	}
 	spec := &class.Spec
 	metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, lodiav1alpha1.DatastoreClassAnnotation, class.Name)
+	metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, lodiav1alpha1.DatastoreClassUIDAnnotation, string(class.UID))
 	metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, lodiav1alpha1.DatastoreClassGenerationAnnotation, strconv.FormatInt(class.Generation, 10))
 	if spec.Storage.ClassName != "" {
 		etcd.Spec.StorageClass = new(spec.Storage.ClassName)
@@ -212,7 +217,7 @@ func copied(cp *lodiav1alpha1.ControlPlane, current *druidv1alpha1.Etcd, generat
 		Spec:       *current.Spec.DeepCopy(),
 	}
 	etcd.UID, etcd.ResourceVersion = current.UID, current.ResourceVersion
-	for _, key := range []string{lodiav1alpha1.OperatorRevisionAnnotation, lodiav1alpha1.DatastoreClassAnnotation, lodiav1alpha1.DatastoreClassGenerationAnnotation, allowUnhealthyPodEviction} {
+	for _, key := range []string{lodiav1alpha1.OperatorRevisionAnnotation, lodiav1alpha1.DatastoreClassAnnotation, lodiav1alpha1.DatastoreClassUIDAnnotation, lodiav1alpha1.DatastoreClassGenerationAnnotation, allowUnhealthyPodEviction} {
 		if value, ok := current.Annotations[key]; ok {
 			metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, key, value)
 		}
@@ -318,7 +323,7 @@ func memberLabels(etcd *druidv1alpha1.Etcd) map[string]string {
 
 // keep must copy every field render takes from the class.
 func keep(etcd, current *druidv1alpha1.Etcd) {
-	for _, key := range []string{lodiav1alpha1.DatastoreClassAnnotation, lodiav1alpha1.DatastoreClassGenerationAnnotation} {
+	for _, key := range []string{lodiav1alpha1.DatastoreClassAnnotation, lodiav1alpha1.DatastoreClassUIDAnnotation, lodiav1alpha1.DatastoreClassGenerationAnnotation} {
 		if value, ok := current.Annotations[key]; ok {
 			metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, key, value)
 		}

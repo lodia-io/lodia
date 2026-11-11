@@ -33,6 +33,8 @@ const (
 // object named in the message.
 // ObjectsControlledElsewhere is an object under a writer's names that another
 // owner keeps, False, the object and its owner named in the message.
+// DatastoreReady is True with either, or with SecretNotFound, while the etcd
+// serves but its class's credentials copy cannot be made.
 const (
 	ReasonReconciling                = "Reconciling"
 	ReasonReady                      = "Ready"
@@ -86,6 +88,7 @@ const (
 	ReasonBackupIncompatible      = "BackupIncompatible"
 	ReasonRestoreFailed           = "RestoreFailed"
 	ReasonCAPredatesControlPlane  = "CAPredatesControlPlane"
+	ReasonSecretNotFound          = "SecretNotFound"
 )
 
 // APIServerReady.
