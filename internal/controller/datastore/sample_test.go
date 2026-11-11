@@ -91,17 +91,7 @@ func servedSample(t *testing.T, r *datastore.SampleReconciler, cp *lodiav1alpha1
 
 func clientURL(cfg *embed.Config) string { return cfg.ListenClientUrls[0].String() }
 
-func closedURL(t *testing.T) url.URL {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := l.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return url.URL{Scheme: "http", Host: l.Addr().String()}
-}
+var unreachable = url.URL{Scheme: "http", Host: "127.0.0.1:1"}
 
 func etcdMember(t *testing.T, name string) *embed.Config {
 	t.Helper()
@@ -261,7 +251,7 @@ func TestThreeMembersGiveTheirLeaderWhileAQuorumAnswersAndTheLargestSize(t *test
 }
 
 func TestALearnerIsNotCountedInTheQuorum(t *testing.T) {
-	unreachable := closedURL(t)
+	t.Parallel()
 	_, cfgs := etcdCluster(t, 2, func(i int, cfg *embed.Config) {
 		cfg.StrictReconfigCheck = false
 		if i == 1 {
@@ -354,9 +344,9 @@ func TestALearnerIsNotCountedInTheQuorum(t *testing.T) {
 }
 
 func TestAMemberListThatFailsGivesNoLeaderAndNoSize(t *testing.T) {
+	t.Parallel()
 	cp, etcd := sampledControlPlane("unlisted", "uid-unlisted")
 	r, clk := sampler(cp, etcd)
-	unreachable := closedURL(t)
 	r.EtcdClient = dialURL(unreachable.String())
 	samplePass(t, r, client.ObjectKeyFromObject(cp))
 	clk.Step(5 * time.Second)
@@ -609,10 +599,10 @@ func TestARecreatedControlPlaneIsSampledUnderItsNewUIDAlone(t *testing.T) {
 }
 
 func TestEachSampleStandsAMinuteWhateverItsPassTook(t *testing.T) {
+	t.Parallel()
 	_, cfgs := etcdCluster(t, 1, nil)
 	cp, etcd := sampledControlPlane("timed", "uid-timed")
 	r, clk := sampler(cp, etcd)
-	unreachable := closedURL(t)
 	took := 100 * time.Millisecond
 	endpoint := clientURL(cfgs[0])
 	r.EtcdClient = func(ctx context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client, error) {
