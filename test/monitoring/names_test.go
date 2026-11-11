@@ -5,13 +5,17 @@ package monitoring
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
@@ -19,8 +23,14 @@ import (
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/promql/parser"
 	"go.lodia.io/lodia/internal/metrics"
+	"k8s.io/client-go/tools/leaderelection"
+	"k8s.io/client-go/tools/leaderelection/resourcelock"
+	"k8s.io/client-go/util/workqueue"
 	_ "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 	"sigs.k8s.io/yaml"
 )
 
@@ -34,34 +44,97 @@ var (
 	fqName        = regexp.MustCompile(`fqName: "([^"]+)"`)
 	rangeVariable = regexp.MustCompile(`\[\$\{?\w+(:\w+)?\}?\]`)
 	variable      = regexp.MustCompile(`\$\{?\w+(:\w+)?\}?`)
-	labelValues   = regexp.MustCompile(`^label_values\((.+),\s*[A-Za-z_]\w*\)$`)
+	labelValues   = regexp.MustCompile(`^label_values\((.+),\s*([A-Za-z_]\w*)\)$`)
 
 	histogramSuffixes = []string{"_bucket", "_count", "_sum"}
+	targetLabels      = []string{"job", "instance", "namespace", "service", "endpoint", "pod", "container"}
 )
+
+func TestMain(m *testing.M) {
+	if err := fillControllerRuntimesRegistry(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	os.Exit(m.Run())
+}
+
+func fillControllerRuntimesRegistry() error {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	c, err := controller.NewUnmanaged("monitoring", controller.Options{
+		Reconciler: reconcile.Func(func(context.Context, reconcile.Request) (reconcile.Result, error) {
+			cancel()
+			return reconcile.Result{}, nil
+		}),
+	})
+	if err != nil {
+		return err
+	}
+	if err := c.Watch(source.Func(func(_ context.Context, queue workqueue.TypedRateLimitingInterface[reconcile.Request]) error {
+		queue.Add(reconcile.Request{})
+		return nil
+	})); err != nil {
+		return err
+	}
+	if err := c.Start(ctx); err != nil {
+		return err
+	}
+	_, err = leaderelection.NewLeaderElector(leaderelection.LeaderElectionConfig{
+		Lock:          &resourcelock.LeaseLock{LockConfig: resourcelock.ResourceLockConfig{Identity: "monitoring"}},
+		LeaseDuration: 15 * time.Second,
+		RenewDeadline: 10 * time.Second,
+		RetryPeriod:   2 * time.Second,
+		Callbacks:     leaderelection.LeaderCallbacks{OnStartedLeading: func(context.Context) {}, OnStoppedLeading: func() {}},
+		Name:          "lodia.io",
+	})
+	return err
+}
+
+type family struct {
+	kind   dto.MetricType
+	labels map[string]bool
+}
 
 type served struct {
 	described map[string]bool
-	types     map[string]dto.MetricType
+	families  map[string]family
 }
 
-func (s served) has(name string) bool {
-	if s.described[name] {
-		return true
+func (s served) lookup(name string) (family, string, string) {
+	if f, ok := s.families[name]; ok {
+		if f.kind == dto.MetricType_HISTOGRAM {
+			return family{}, "", "the bare name of a histogram, which a scrape serves as its _bucket, _count and _sum alone"
+		}
+		if f.kind == dto.MetricType_SUMMARY {
+			return f, "quantile", ""
+		}
+		return f, "", ""
 	}
 	for _, suffix := range histogramSuffixes {
 		base, ok := strings.CutSuffix(name, suffix)
-		if !ok || !s.described[base] {
+		f, found := s.families[base]
+		if !ok || !found {
 			continue
 		}
-		kind, known := s.types[base]
-		return !known || kind == dto.MetricType_HISTOGRAM || kind == dto.MetricType_SUMMARY
+		switch {
+		case f.kind == dto.MetricType_HISTOGRAM && suffix == "_bucket":
+			return f, "le", ""
+		case f.kind == dto.MetricType_HISTOGRAM || f.kind == dto.MetricType_SUMMARY && suffix != "_bucket":
+			return f, "", ""
+		}
 	}
-	return false
+	for _, suffix := range append([]string{""}, histogramSuffixes...) {
+		base, ok := strings.CutSuffix(name, suffix)
+		if _, found := s.families[base]; ok && !found && s.described[base] {
+			return family{}, "", "described, but with no series in the test process, so its type and labels are unknown"
+		}
+	}
+	return family{}, "", "which neither Lodia's collector nor controller-runtime's registry serves"
 }
 
 func servedMetrics(t *testing.T) served {
 	t.Helper()
-	s := served{described: map[string]bool{}, types: map[string]dto.MetricType{}}
+	s := served{described: map[string]bool{}, families: map[string]family{}}
 	lodia := &metrics.Collector{SampleLag: metrics.NewSampleLag(), ProbeFailures: metrics.NewProbeFailures()}
 	for _, c := range []prometheus.Collector{lodia, ctrlmetrics.Registry.(prometheus.Collector)} {
 		descs := make(chan *prometheus.Desc)
@@ -77,12 +150,9 @@ func servedMetrics(t *testing.T) served {
 			s.described[match[1]] = true
 		}
 	}
-	families, err := ctrlmetrics.Registry.Gather()
+	gathered, err := ctrlmetrics.Registry.Gather()
 	if err != nil {
 		t.Fatal(err)
-	}
-	for _, family := range families {
-		s.types[family.GetName()] = family.GetType()
 	}
 	golden, err := os.ReadFile(goldenFile)
 	if err != nil {
@@ -93,8 +163,16 @@ func servedMetrics(t *testing.T) served {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, family := range parsed {
-		s.types[name] = family.GetType()
+	for _, families := range [][]*dto.MetricFamily{gathered, slices.Collect(maps.Values(parsed))} {
+		for _, f := range families {
+			labels := map[string]bool{}
+			for _, m := range f.GetMetric() {
+				for _, l := range m.GetLabel() {
+					labels[l.GetName()] = true
+				}
+			}
+			s.families[f.GetName()] = family{kind: f.GetType(), labels: labels}
+		}
 	}
 	return s
 }
@@ -104,26 +182,54 @@ type read struct {
 	expr  string
 }
 
-func (r read) names() ([]string, error) {
+func (r read) problems(s served) []string {
 	expr, err := parser.NewParser(parser.Options{}).ParseExpr(r.expr)
 	if err != nil {
-		return nil, err
+		return []string{err.Error()}
 	}
-	var names []string
-	var unnamed error
+	var problems, grouped []string
+	carried := map[string]bool{}
+	for _, l := range targetLabels {
+		carried[l] = true
+	}
 	parser.Inspect(expr, func(node parser.Node, _ []parser.Node) error {
-		selector, ok := node.(*parser.VectorSelector)
-		if !ok {
-			return nil
+		switch n := node.(type) {
+		case *parser.VectorSelector:
+			if n.Name == "" {
+				problems = append(problems, fmt.Sprintf("the selector %s has no metric name", n))
+				return nil
+			}
+			f, extra, problem := s.lookup(n.Name)
+			if problem != "" {
+				problems = append(problems, fmt.Sprintf("reads %s, %s", n.Name, problem))
+				return nil
+			}
+			own := maps.Clone(f.labels)
+			if extra != "" {
+				own[extra] = true
+			}
+			for _, m := range n.LabelMatchers {
+				if m.Name != model.MetricNameLabel && !own[m.Name] && !slices.Contains(targetLabels, m.Name) {
+					problems = append(problems, fmt.Sprintf("matches %s on %s, which none of its series carries", n.Name, m.Name))
+				}
+			}
+			maps.Copy(carried, own)
+		case *parser.AggregateExpr:
+			grouped = append(grouped, n.Grouping...)
+		case *parser.BinaryExpr:
+			if n.VectorMatching != nil {
+				grouped = append(grouped, n.VectorMatching.MatchingLabels...)
+				grouped = append(grouped, n.VectorMatching.Include...)
+			}
 		}
-		if selector.Name == "" {
-			unnamed = fmt.Errorf("the selector %s has no metric name", selector)
-			return nil
-		}
-		names = append(names, selector.Name)
 		return nil
 	})
-	return names, unnamed
+	for _, l := range grouped {
+		if !carried[l] {
+			problems = append(problems, fmt.Sprintf("groups or matches on %s, which no series it reads carries", l))
+		}
+	}
+	return problems
 }
 
 func checkReads(t *testing.T, served served, file string, reads []read) {
@@ -132,14 +238,8 @@ func checkReads(t *testing.T, served served, file string, reads []read) {
 		t.Fatalf("%s: found no expression to check", file)
 	}
 	for _, r := range reads {
-		names, err := r.names()
-		if err != nil {
-			t.Errorf("%s: %s: %v", file, r.where, err)
-		}
-		for _, name := range names {
-			if !served.has(name) {
-				t.Errorf("%s: %s reads %s, which neither Lodia's collector nor controller-runtime's registry describes", file, r.where, name)
-			}
+		for _, problem := range r.problems(served) {
+			t.Errorf("%s: %s %s", file, r.where, problem)
 		}
 	}
 }
@@ -233,7 +333,7 @@ func (d dashboard) reads() ([]read, error) {
 		if match == nil {
 			return nil, fmt.Errorf("variable %s: the query %q is not label_values(<selector>, <label>)", v.Name, text)
 		}
-		reads = append(reads, read{where: "variable " + v.Name, expr: expand(match[1])})
+		reads = append(reads, read{where: "variable " + v.Name, expr: expand("group by (" + match[2] + ") (" + match[1] + ")")})
 	}
 	return reads, nil
 }
@@ -290,24 +390,61 @@ func TestStatPanelsShowTheCurrentSeries(t *testing.T) {
 	}
 }
 
-func TestHistogramSuffixesNeedAHistogram(t *testing.T) {
+func TestANameIsReadAsAScrapeServesIt(t *testing.T) {
 	s := served{
-		described: map[string]bool{"a_gauge": true, "a_histogram": true, "an_unknown": true},
-		types:     map[string]dto.MetricType{"a_gauge": dto.MetricType_GAUGE, "a_histogram": dto.MetricType_HISTOGRAM},
+		described: map[string]bool{"a_gauge": true, "a_histogram": true, "a_summary": true, "an_empty_vector": true},
+		families: map[string]family{
+			"a_gauge":     {kind: dto.MetricType_GAUGE},
+			"a_histogram": {kind: dto.MetricType_HISTOGRAM},
+			"a_summary":   {kind: dto.MetricType_SUMMARY},
+		},
 	}
-	for name, want := range map[string]bool{
-		"a_gauge":            true,
-		"a_gauge_count":      false,
-		"a_histogram":        true,
-		"a_histogram_bucket": true,
-		"a_histogram_sum":    true,
-		"a_histogram_total":  false,
-		"an_unknown_bucket":  true,
-		"a_misspelling":      false,
-		"a_misspelling_sum":  false,
+	for name, want := range map[string]struct {
+		served bool
+		extra  string
+	}{
+		"a_gauge":               {true, ""},
+		"a_gauge_count":         {false, ""},
+		"a_histogram":           {false, ""},
+		"a_histogram_bucket":    {true, "le"},
+		"a_histogram_count":     {true, ""},
+		"a_histogram_sum":       {true, ""},
+		"a_histogram_total":     {false, ""},
+		"a_summary":             {true, "quantile"},
+		"a_summary_sum":         {true, ""},
+		"a_summary_bucket":      {false, ""},
+		"an_empty_vector":       {false, ""},
+		"an_empty_vector_count": {false, ""},
+		"a_misspelling":         {false, ""},
+		"a_misspelling_sum":     {false, ""},
 	} {
-		if got := s.has(name); got != want {
-			t.Errorf("has(%s) = %t, want %t", name, got, want)
+		_, extra, problem := s.lookup(name)
+		if served := problem == ""; served != want.served || extra != want.extra {
+			t.Errorf("lookup(%s) serves it %t with the label %q (%s), want %t and %q", name, served, extra, problem, want.served, want.extra)
+		}
+	}
+}
+
+func TestALabelIsOneTheSeriesCarry(t *testing.T) {
+	s := served{families: map[string]family{
+		"a_gauge":     {kind: dto.MetricType_GAUGE, labels: map[string]bool{"type": true}},
+		"other":       {kind: dto.MetricType_GAUGE, labels: map[string]bool{"reason": true}},
+		"a_histogram": {kind: dto.MetricType_HISTOGRAM, labels: map[string]bool{"path": true}},
+	}}
+	for expr, want := range map[string]int{
+		`a_gauge{type="Ready",job="lodia",pod="a"}`:                                    0,
+		`a_gauge{tpye="Ready"}`:                                                        1,
+		`sum by (type, instance) (a_gauge)`:                                            0,
+		`sum by (tpye) (a_gauge)`:                                                      1,
+		`sum without (le, path) (rate(a_histogram_bucket{le="10.0"}[5m]))`:             0,
+		`a_histogram_sum{le="10.0"}`:                                                   1,
+		`a_gauge * on (namespace) group_left (reason) other`:                           0,
+		`a_gauge * on (controlplane) group_left (reason) other`:                        1,
+		`a_gauge * on (namespace) group_left (resaon) other`:                           1,
+		`count by (reason) (max by (namespace, reason) (other)) or vector(0) > bool 1`: 0,
+	} {
+		if got := (read{expr: expr}).problems(s); len(got) != want {
+			t.Errorf("%s: %d problems %q, want %d", expr, len(got), got, want)
 		}
 	}
 }
