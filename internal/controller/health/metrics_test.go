@@ -252,7 +252,9 @@ func TestARestartedOperatorCountsAgainOnlyOnceItsClockHasRunSilentAfter(t *testi
 }
 
 func TestAForgottenOrRecreatedControlPlaneHasNoCount(t *testing.T) {
-	h := holding(t, "a", "b", "c")
+	h, lag := lagging(t)
+	h.at(0)
+	h.at(20)
 	h.expectCountsOfTheHold()
 	updateSpec(t, h.cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
 	h.now.SetTime(h.start.Add(25 * time.Second))
@@ -274,6 +276,7 @@ func TestAForgottenOrRecreatedControlPlaneHasNoCount(t *testing.T) {
 	expectNoCounts(t, h.r, h.cp)
 	h.at(55)
 	expectNoCounts(t, h.r, h.cp)
+	h.expectLag(lag, lagged{count: 2, above10: 2, sum: 30})
 	if _, _, ok := h.r.Counts(client.ObjectKeyFromObject(predecessor), predecessor.UID); ok {
 		t.Error("the successor's pass left the predecessor's count")
 	}
