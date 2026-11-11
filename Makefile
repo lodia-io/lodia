@@ -38,6 +38,7 @@ lint:
 	golangci-lint run --build-tags e2e,upgrade ./test/e2e/...
 	golangci-lint run --build-tags e2e,maintenance ./test/e2e/...
 	cd api && golangci-lint run ./...
+	cd test/monitoring && golangci-lint run ./...
 
 .PHONY: test
 test: ## unit and envtest tests, those of RACE_PACKAGES with the race detector; envtest runs a real API server and etcd
@@ -104,11 +105,12 @@ chart: ## lint and render the chart with image tags, then with image digests; wi
 	! helm template check work/chart/lodia-1.2.3.tgz --namespace lodia-system --set $(METRICS) --show-only templates/prometheusrule.yaml | grep -q 'https://github.com/lodia-io/lodia/blob/main/' || { echo "the PrometheusRule of appVersion 1.2.3 links a runbook at main, not at the tag v1.2.3"; exit 1; }
 
 .PHONY: monitoring
-monitoring: ## lint the collector's golden as promtool lints a scrape, check the alert rules and run their tests, and lint the dashboards
+monitoring: ## lint the collector's golden as promtool lints a scrape, check the alert rules and run their tests, lint the dashboards, and check that every metric they and the rules read is one Lodia serves
 	promtool check metrics < internal/metrics/testdata/metrics.prom
 	promtool check rules --lint-fatal $(CHART)/files/rules/lodia.yaml
 	promtool test rules test/rules/lodia_test.yaml
 	for dashboard in $(DASHBOARDS); do dashboard-linter lint --strict $$dashboard || exit 1; done
+	cd test/monitoring && go test -count=1 ./...
 
 .PHONY: verify
 verify: ## the check that says a change is done
@@ -116,6 +118,7 @@ verify: ## the check that says a change is done
 	[ "$$before" = "$$(cat $(GENERATED) | cksum)" ] || { echo "make generate changed the generated files: review and commit them"; exit 1; }
 	go mod tidy -diff
 	cd api && go mod tidy -diff
+	cd test/monitoring && go mod tidy -diff
 	$(MAKE) --no-print-directory chart lint monitoring test restore-keys
 
 .PHONY: e2e
