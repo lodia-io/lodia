@@ -12,6 +12,6 @@ metadata:
     {{- toYaml . | nindent 4 }}
     {{- end }}
 data:
-  {{- ($.Files.Glob $path).AsConfig | nindent 2 }}
+  {{- dict (printf "%s-%s" $.Chart.Name (base $path)) ($.Files.Get $path) | toYaml | nindent 2 }}
 {{- end }}
 {{- end }}

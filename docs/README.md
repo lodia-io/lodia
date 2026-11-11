@@ -590,6 +590,7 @@ The rules need of the Prometheus, beside what scraping needs:
 ### Dashboards
 
 `metrics.dashboards.enabled` renders a ConfigMap `<release>-dashboard-<name>` for each file of [`files/dashboards/`](../charts/lodia/files/dashboards/), with `metrics.dashboards.labels` beside the chart's.
+It holds the file under the key `lodia-<name>.json`, since the Grafana sidecar names each file it writes after its key, in one folder unless told otherwise ([resources.py](https://github.com/kiwigrid/k8s-sidecar/blob/2.14.1/src/resources.py#L352-L366)), and another chart's `fleet.json` would replace Lodia's.
 The label `grafana_dashboard: "1"` is the one the Grafana sidecar of kube-prometheus-stack looks for, in every namespace ([values.yaml](https://github.com/prometheus-community/helm-charts/blob/kube-prometheus-stack-92.10.0/charts/kube-prometheus-stack/values.yaml#L1566-L1571)); a Grafana whose sidecar selects another label needs it in `metrics.dashboards.labels`.
 Each dashboard queries the Prometheus data source chosen in its `Data source` variable.
 
