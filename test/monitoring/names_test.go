@@ -358,7 +358,7 @@ func decodeDashboard(raw []byte) (dashboard, error) {
 
 func (d dashboard) hasDatasourceVariable() bool {
 	return slices.ContainsFunc(d.Templating.List, func(v templateVariable) bool {
-		return v.Name == "datasource" && v.Type == "datasource"
+		return v.Name == "datasource" && v.Type == "datasource" && v.Query == "prometheus"
 	})
 }
 
@@ -472,7 +472,7 @@ func TestEveryQueryReadsTheDatasourceVariable(t *testing.T) {
 			}
 		}
 		if !d.hasDatasourceVariable() {
-			t.Errorf("%s: no variable named datasource has the type datasource, which every ${datasource} reads", file)
+			t.Errorf("%s: no variable named datasource has the type datasource and queries prometheus, which every ${datasource} reads", file)
 		}
 		for _, v := range d.Templating.List {
 			if v.Type == "query" && (v.Datasource == nil || *v.Datasource != templatedDatasource) {
@@ -604,14 +604,17 @@ func TestADashboardIsDecodedAsGrafanaReadsIt(t *testing.T) {
 	}
 }
 
-func TestADatasourceVariableIsNamedAndTypedDatasource(t *testing.T) {
+func TestADatasourceVariableIsNamedAndTypedDatasourceAndQueriesPrometheus(t *testing.T) {
 	for raw, want := range map[string]bool{
-		`{"templating":{"list":[{"name":"datasource","type":"datasource"}]}}`:                                     true,
-		`{"templating":{"list":[{"name":"namespace","type":"query"},{"name":"datasource","type":"datasource"}]}}`: true,
-		`{"templating":{"list":[{"name":"datasource","type":"query"}]}}`:                                          false,
-		`{"templating":{"list":[{"name":"source","type":"datasource"}]}}`:                                         false,
-		`{"templating":{"list":[]}}`:                                          false,
-		`{"Templating":{"list":[{"name":"datasource","type":"datasource"}]}}`: false,
+		`{"templating":{"list":[{"name":"datasource","type":"datasource","query":"prometheus"}]}}`:                                     true,
+		`{"templating":{"list":[{"name":"namespace","type":"query"},{"name":"datasource","type":"datasource","query":"prometheus"}]}}`: true,
+		`{"templating":{"list":[{"name":"datasource","type":"query","query":"prometheus"}]}}`:                                          false,
+		`{"templating":{"list":[{"name":"source","type":"datasource","query":"prometheus"}]}}`:                                         false,
+		`{"templating":{"list":[{"name":"datasource","type":"datasource"}]}}`:                                                          false,
+		`{"templating":{"list":[{"name":"datasource","type":"datasource","Query":"prometheus"}]}}`:                                     false,
+		`{"templating":{"list":[{"name":"datasource","type":"datasource","query":"loki"}]}}`:                                           false,
+		`{"templating":{"list":[]}}`: false,
+		`{"Templating":{"list":[{"name":"datasource","type":"datasource","query":"prometheus"}]}}`: false,
 	} {
 		d, err := decodeDashboard([]byte(raw))
 		if err != nil {
