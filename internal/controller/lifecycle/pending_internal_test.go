@@ -276,6 +276,25 @@ func TestEveryKindPendingIsGrantedInOneSlot(t *testing.T) {
 	expectClass(t, d, shared(5))
 }
 
+func TestAGrantOfAnotherKindKeepsTheClassTarget(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		f    facts
+		want granted
+	}{
+		{"in a free slot", held(inWindow("12:00", "13:00", ""), onClass(4, 4, 4)),
+			granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, slot: true, takesSlot: true}},
+		{"on a token", held(closedWindow, onClass(4, 4, 4), requested("t1")),
+			granted{revision: revisionB, reason: lodiav1alpha1.ReasonRollingOut, lastHandled: "t1"}},
+		{"in a slot it holds", held(closedWindow, onClass(4, 4, 4), slotted(lodiav1alpha1.ReasonMaintaining, 3)),
+			granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, slot: true}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			expectClass(t, expectGrant(t, c.f, c.want), shared(4))
+		})
+	}
+}
+
 func TestAClassEditInASlotRollsSettlesAndFails(t *testing.T) {
 	nowSecond := now.Rfc3339Copy().Time
 	tenSecondsAgo := present.Add(-10 * time.Second)
