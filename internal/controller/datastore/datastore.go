@@ -1245,10 +1245,10 @@ func (r *Reconciler) setFinalizer(ctx context.Context, cp *lodiav1alpha1.Control
 
 // datastoreStatus says where the API server reaches the etcd, etcd-druid's
 // client Service, where the Etcd's snapshots go, and the class and the
-// operator revision it runs: those the Etcd records once rolledOut says so,
-// and until then those the API server holds, since the field is written whole
-// on every pass and the cache can lag this controller's own last write. A
-// stamp longer than its field is not reported.
+// operator revision it runs: those the Etcd records once rolledOut says so and
+// its stamp fits the field, and until then those the API server holds, since
+// the field is written whole on every pass and the cache can lag this
+// controller's own last write.
 func (r *Reconciler) datastoreStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) (*lodiav1alpha1.DatastoreStatus, error) {
 	if etcd == nil {
 		return nil, nil
@@ -1261,24 +1261,18 @@ func (r *Reconciler) datastoreStatus(ctx context.Context, cp *lodiav1alpha1.Cont
 	if store := etcd.Spec.Backup.Store; store != nil {
 		status.Snapshots = new(storeLocation(store))
 	}
-	rolled := rolledOut(etcd, sts)
-	if rolled {
+	if stamp := etcd.Annotations[lodiav1alpha1.OperatorRevisionAnnotation]; rolledOut(etcd, sts) && len(stamp) <= maxRevision {
 		if recorded, ok := recordedClass(etcd); ok {
 			status.Class = &recorded
 		}
-		if stamp := etcd.Annotations[lodiav1alpha1.OperatorRevisionAnnotation]; len(stamp) <= maxRevision {
-			status.OperatorRevision = stamp
-			return status, nil
-		}
+		status.OperatorRevision = stamp
+		return status, nil
 	}
 	if err := live.Datastore(ctx, r.Reader, cp); err != nil {
 		return nil, fmt.Errorf("read ControlPlane %s: %w", cp.Name, err)
 	}
 	if previous := cp.Status.Datastore; previous != nil {
-		status.OperatorRevision = previous.OperatorRevision
-		if !rolled {
-			status.Class = previous.Class
-		}
+		status.Class, status.OperatorRevision = previous.Class, previous.OperatorRevision
 	}
 	return status, nil
 }
