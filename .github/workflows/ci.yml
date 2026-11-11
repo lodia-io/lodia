@@ -31,6 +31,12 @@ jobs:
           mkdir "$RUNNER_TEMP/promtool"
           tar -xzf "$RUNNER_TEMP/prometheus.tar.gz" -C "$RUNNER_TEMP/promtool" --strip-components=1 prometheus-3.15.1.linux-amd64/promtool
           echo "$RUNNER_TEMP/promtool" >> "$GITHUB_PATH"
+      - run: |
+          curl -fsSL -o "$RUNNER_TEMP/dashboard-linter.tar.gz" https://github.com/grafana/dashboard-linter/releases/download/v0.4.0/dashboard-linter_0.4.0_linux_amd64.tar.gz
+          echo "df9a94834b5ea1273a2a79c649f0513913771a81ae25f194dc2244b7f45fef51  $RUNNER_TEMP/dashboard-linter.tar.gz" | sha256sum --check --strict
+          mkdir "$RUNNER_TEMP/dashboard-linter"
+          tar -xzf "$RUNNER_TEMP/dashboard-linter.tar.gz" -C "$RUNNER_TEMP/dashboard-linter" dashboard-linter
+          echo "$RUNNER_TEMP/dashboard-linter" >> "$GITHUB_PATH"
       - run: make verify
         env:
           LODIA_APISERVER_DUMPS: ${{ runner.temp }}/apiserver-dumps

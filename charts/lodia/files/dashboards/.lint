@@ -1,0 +1,17 @@
+exclusions:
+  template-job-rule:
+    entries:
+      - dashboard: Lodia / Fleet
+      - dashboard: Lodia / Control plane
+  template-instance-rule:
+    entries:
+      - dashboard: Lodia / Fleet
+      - dashboard: Lodia / Control plane
+  target-job-rule:
+    entries:
+      - dashboard: Lodia / Fleet
+      - dashboard: Lodia / Control plane
+  target-instance-rule:
+    entries:
+      - dashboard: Lodia / Fleet
+      - dashboard: Lodia / Control plane

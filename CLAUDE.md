@@ -41,8 +41,9 @@ the same change.
   generated files current, both modules tidy (`.` and `api/`, which is
   `go.lodia.io/lodia/api`), the chart linted and rendered, golangci-lint,
   the metrics' golden and the alert rules checked by promtool, the rules'
-  promtool tests, unit and envtest tests; `helm`, golangci-lint and promtool
-  are installed on their own. CI runs it on every pull request.
+  promtool tests, the dashboards linted by dashboard-linter, unit and envtest
+  tests; `helm`, golangci-lint, promtool and dashboard-linter are installed on
+  their own. CI runs it on every pull request.
 - `make e2e` — the suite in `test/e2e` against `E2E_KUBECONFIG`, or against a
   kind cluster of its own that it deletes afterwards; it refuses any other
   cluster (`docs/decisions/e2e-on-a-named-cluster.md`).

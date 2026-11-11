@@ -1,5 +1,5 @@
 # Every tool runs through `go tool` (see the tool block in go.mod), except
-# golangci-lint, helm and promtool, which are installed on their own, and ko
+# golangci-lint, helm, promtool and dashboard-linter, which are installed on their own, and ko
 # and hydrophone, which run as `go run github.com/google/ko@<version>` and
 # `go run sigs.k8s.io/hydrophone@<version>`: their dependency graphs would
 # move the operator's own dependencies.
@@ -104,10 +104,11 @@ chart: ## lint and render the chart with image tags, then with image digests; wi
 	! helm template check work/chart/lodia-1.2.3.tgz --namespace lodia-system --set $(METRICS) --show-only templates/prometheusrule.yaml | grep -q 'https://github.com/lodia-io/lodia/blob/main/' || { echo "the PrometheusRule of appVersion 1.2.3 links a runbook at main, not at the tag v1.2.3"; exit 1; }
 
 .PHONY: monitoring
-monitoring: ## lint the collector's golden as promtool lints a scrape, check the alert rules and run their tests
+monitoring: ## lint the collector's golden as promtool lints a scrape, check the alert rules and run their tests, and lint the dashboards
 	promtool check metrics < internal/metrics/testdata/metrics.prom
 	promtool check rules --lint-fatal $(CHART)/files/rules/lodia.yaml
 	promtool test rules test/rules/lodia_test.yaml
+	for dashboard in $(DASHBOARDS); do dashboard-linter lint --strict $$dashboard || exit 1; done
 
 .PHONY: verify
 verify: ## the check that says a change is done
