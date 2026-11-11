@@ -88,7 +88,7 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "A roll of ControlPlane {{ $labels.namespace }}/{{ $labels.controlplane }}'s etcd or API server has not finished for an hour."
+          summary: "A roll of ControlPlane {{ $labels.namespace }}/{{ $labels.controlplane }}'s etcd or of a component's Deployment has not finished for an hour."
           runbook_url: https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiarolloutstuck
 
       - alert: LodiaCertificateExpiring
