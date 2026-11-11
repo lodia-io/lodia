@@ -316,7 +316,8 @@ func (t *tenant) credentials() *lodiav1alpha1.CredentialsStatus {
 
 // notAfter is the earliest NotAfter among the certificates PKI's Secrets hold
 // after the pass's writes: each Secret's own, not a CA bundle's, which keeps
-// replaced signers and request CAs until they expire, and of the etcd
+// a replaced kubelet signer until it expires and a replaced request CA until
+// 24 h 5 min after its successor's issuance (clientBundle), and of the etcd
 // generations the newest complete one alone, since no member runs the
 // previous one once the roll ends. The staged kubelet signer is mounted
 // nowhere.
