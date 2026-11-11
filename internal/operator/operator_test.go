@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -28,9 +29,13 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/util/wait"
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
+	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/config"
@@ -41,6 +46,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/controller/health"
 	"go.lodia.io/lodia/internal/operator"
 )
 
@@ -267,7 +273,7 @@ func run(t *testing.T, cfg *rest.Config, gatewayAPI bool) (client.Client, <-chan
 
 var testInputs = operator.Inputs{Config: operator.DefaultConfig(), Version: "v0.0.0-test", SignerImage: "registry.example/lodia-signer:test", TunnelImage: "registry.example/lodia-tunnel:test", EtcdDruidVersion: "v0.39.0", EtcdDruidNamespace: "etcd-druid", EtcdDruidDeployment: "etcd-druid", OperatorNamespace: "lodia-system"}
 
-func expectAPass(t *testing.T, k8s client.Client, stopped <-chan struct{}, reason, message string) {
+func createControlPlane(t *testing.T, k8s client.Client) *lodiav1alpha1.ControlPlane {
 	t.Helper()
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "operator-"}}
 	if err := k8s.Create(t.Context(), ns); err != nil {
@@ -288,6 +294,12 @@ func expectAPass(t *testing.T, k8s client.Client, stopped <-chan struct{}, reaso
 	if err := k8s.Create(t.Context(), cp); err != nil {
 		t.Fatal(err)
 	}
+	return cp
+}
+
+func expectAPass(t *testing.T, k8s client.Client, stopped <-chan struct{}, reason, message string) {
+	t.Helper()
+	cp := createControlPlane(t, k8s)
 	revision, err := testInputs.Revision()
 	if err != nil {
 		t.Fatal(err)
@@ -376,7 +388,7 @@ func TestHealthsMetricsAreServedByLodiasCollectorAloneOnceElected(t *testing.T) 
 	if err := k8s.Create(t.Context(), ns); err != nil {
 		t.Fatal(err)
 	}
-	if err := k8s.Create(t.Context(), &lodiav1alpha1.ControlPlane{
+	cp := &lodiav1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: ns.Name},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
 			Version:   "v1.37.1",
@@ -384,9 +396,17 @@ func TestHealthsMetricsAreServedByLodiasCollectorAloneOnceElected(t *testing.T) 
 			Endpoint:  lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}},
 			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
 		},
-	}); err != nil {
+	}
+	if err := k8s.Create(t.Context(), cp); err != nil {
 		t.Fatal(err)
 	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dead := map[string]any{"host": "127.0.0.1", "port": int64(listener.Addr().(*net.TCPAddr).Port)}
+	_ = listener.Close()
+	applyStatus(t, k8s, cp, "test/endpoint", map[string]any{"endpoint": map[string]any{"apiServer": dead, "konnectivity": dead, "inCluster": dead}})
 	registry := prometheus.NewPedanticRegistry()
 	registry.MustRegister(collector)
 	var last error
@@ -397,18 +417,81 @@ func TestHealthsMetricsAreServedByLodiasCollectorAloneOnceElected(t *testing.T) 
 		}
 		served := map[string]int{}
 		var observed uint64
+		var failed float64
 		for _, family := range families {
 			served[family.GetName()] = len(family.GetMetric())
-			if family.GetName() == "lodia_health_nodes_sample_lag_seconds" {
+			switch family.GetName() {
+			case "lodia_health_nodes_sample_lag_seconds":
 				observed = family.GetMetric()[0].GetHistogram().GetSampleCount()
+			case "lodia_health_probe_failures_total":
+				for _, m := range family.GetMetric() {
+					if m.GetLabel()[0].GetValue() == lodiav1alpha1.MetricProbeAPI {
+						failed = m.GetCounter().GetValue()
+					}
+				}
 			}
 		}
-		if observed == 0 || served["lodia_health_probe_failures_total"] != 4 {
-			last = fmt.Errorf("the collector serves %v, with %d passes of health-nodes observed", served, observed)
+		if observed == 0 || failed == 0 || served["lodia_health_probe_failures_total"] != 4 {
+			last = fmt.Errorf("the collector serves %v, with %d passes of health-nodes observed and %v failed probes of the public endpoint", served, observed, failed)
 			return false, nil
 		}
 		return true, nil
 	}); err != nil {
 		t.Fatalf("%v: %v", err, last)
+	}
+}
+
+func TestTheMetricsServeTheCountsOfTheSourcesHealthNodes(t *testing.T) {
+	cfg := start(t)
+	k8s, err := client.New(cfg, client.Options{Scheme: operator.Scheme()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp := createControlPlane(t, k8s)
+	applyStatus(t, k8s, cp, "test/access", map[string]any{"conditions": []any{map[string]any{
+		"type": lodiav1alpha1.ConditionAccessReady, "status": string(metav1.ConditionTrue), "reason": lodiav1alpha1.ReasonBound, "message": "set by the test",
+		"observedGeneration": cp.Generation, "lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
+	}}})
+	kubeconfig, err := clientcmd.Write(clientcmdapi.Config{
+		Clusters:       map[string]*clientcmdapi.Cluster{"tenant": {Server: cfg.Host, CertificateAuthorityData: cfg.CAData}},
+		AuthInfos:      map[string]*clientcmdapi.AuthInfo{"lodia": {ClientCertificateData: cfg.CertData, ClientKeyData: cfg.KeyData}},
+		Contexts:       map[string]*clientcmdapi.Context{"tenant": {Cluster: "tenant", AuthInfo: "lodia"}},
+		CurrentContext: "tenant",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Create(t.Context(), &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: lodiav1alpha1.LodiaKubeconfigSecret.Name(cp.Name), Namespace: cp.Namespace},
+		Data:       map[string][]byte{lodiav1alpha1.KubeconfigKey: kubeconfig},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	nodes := &health.NodesReconciler{Client: k8s, Reader: k8s, Timeout: 5 * time.Second, Clock: clock.RealClock{}}
+	if _, err := nodes.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := nodes.Counts(client.ObjectKeyFromObject(cp), cp.UID); !ok {
+		t.Fatal("a pass with silentAfter 0 over a tenant that lists its nodes published no count")
+	}
+	collector, err := operator.Metrics(k8s, nil, testInputs, &operator.Sources{Health: &health.Reconciler{}, Nodes: nodes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := collector.NodeCounts(client.ObjectKeyFromObject(cp), cp.UID); !ok {
+		t.Error("the metrics serve no count of the Sources' health-nodes")
+	}
+}
+
+func applyStatus(t *testing.T, k8s client.Client, cp *lodiav1alpha1.ControlPlane, owner string, status map[string]any) {
+	t.Helper()
+	u := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": lodiav1alpha1.GroupVersion.String(),
+		"kind":       "ControlPlane",
+		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
+		"status":     status,
+	}}
+	if err := k8s.Status().Apply(t.Context(), client.ApplyConfigurationFromUnstructured(u), client.FieldOwner(owner), client.ForceOwnership); err != nil {
+		t.Fatal(err)
 	}
 }
