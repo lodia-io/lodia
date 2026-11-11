@@ -312,6 +312,22 @@ func TestAClassHeldForItsCredentialsAlsoNotesItsWait(t *testing.T) {
 	runsClass(t, ns, cp, "2Gi", "1")
 }
 
+func TestAHeldPassGivesTheCredentialsHoldItsReason(t *testing.T) {
+	ns, credentialsNamespace := namespace(t), namespace(t)
+	const cp = "held-reason"
+	create(t, credentials(credentialsNamespace))
+	createClass(t, fullClass(cp, credentialsNamespace))
+	heldTenant(t, ns, cp, cp, nil)
+	if err := k8s.Delete(t.Context(), credentials(credentialsNamespace)); err != nil {
+		t.Fatal(err)
+	}
+	mustPass(t, operatorAt(unpaused(k8s), revision), ns, cp)
+	want := "; DatastoreClass " + cp + " is held: its credentials Secret " + credentialsNamespace + "/s3 is missing"
+	if message := trueWith(t, ns, cp, lodiav1alpha1.ReasonSecretNotFound); !strings.HasSuffix(message, want) {
+		t.Errorf("under the operator hold DatastoreReady says %q, want it to end with %q", message, want)
+	}
+}
+
 func TestTheClassIsReportedOnceEtcdDruidRolledItOut(t *testing.T) {
 	ns := namespace(t)
 	const cp = "reported-class"
