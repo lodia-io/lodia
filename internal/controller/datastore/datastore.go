@@ -242,7 +242,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		err = errors.Join(err, policyErr)
 	}
-	datastore, readErr := r.datastoreStatus(ctx, cp, out.etcd, out.sts)
+	datastore, readErr := r.datastoreStatus(ctx, cp, out.etcd, out.sts, out.applied)
 	if readErr != nil {
 		return ctrl.Result{}, errors.Join(err, readErr)
 	}
@@ -295,6 +295,9 @@ func (r *Reconciler) waitForTarget(ctx context.Context, cp *lodiav1alpha1.Contro
 type outcome struct {
 	etcd *druidv1alpha1.Etcd
 	sts  *appsv1.StatefulSet
+	// applied says that etcd is this pass's apply of it, not the cache's,
+	// which can predate the class the last pass reported.
+	applied bool
 	// restore is carried into every apply: what this pass found complete, or
 	// what it read.
 	restore      *lodiav1alpha1.RestoreStatus
@@ -595,7 +598,7 @@ func (r *Reconciler) applyEtcd(ctx context.Context, p *pass) (*outcome, error) {
 	if requestErr != nil {
 		message := fmt.Sprintf("the API server refuses the request that etcd-druid reconcile Etcd %s, the annotations %s and %s; the reason is in Lodia's log",
 			etcd.Name, druidv1alpha1.DruidOperationAnnotation, lodiav1alpha1.EtcdReconcileRequestedAnnotation)
-		return &outcome{etcd: etcd, sts: p.sts, restore: p.check.restored, condition: newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, message)}, requestErr
+		return &outcome{etcd: etcd, sts: p.sts, applied: true, restore: p.check.restored, condition: newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, message)}, requestErr
 	}
 	etcd = requested
 	absent, err := r.missingSecrets(ctx, cp, etcd, p.secrets)
@@ -613,7 +616,7 @@ func (r *Reconciler) applyEtcd(ctx context.Context, p *pass) (*outcome, error) {
 	if updated := updatedMembers(etcd, p.sts); updated == nil || *updated < etcd.Spec.Replicas || !served(etcd) {
 		requeueAfter = 15 * time.Second
 	}
-	return &outcome{etcd: etcd, sts: p.sts, restore: p.check.restored, condition: condition, requeueAfter: sooner(requeueAfter, p.check.requeueAfter)}, nil
+	return &outcome{etcd: etcd, sts: p.sts, applied: true, restore: p.check.restored, condition: condition, requeueAfter: sooner(requeueAfter, p.check.requeueAfter)}, nil
 }
 
 // requestReconcile asks etcd-druid, which reconciles a new Etcd's spec
@@ -1162,7 +1165,7 @@ func (r *Reconciler) finalize(ctx context.Context, cp *lodiav1alpha1.ControlPlan
 		etcd = nil
 	}
 	deleting := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonDeleting, "the ControlPlane is being deleted: the Etcd goes first, then its claims as the class says")
-	datastore, err := r.datastoreStatus(ctx, cp, etcd, nil)
+	datastore, err := r.datastoreStatus(ctx, cp, etcd, nil, false)
 	if err != nil {
 		return 0, err
 	}
@@ -1248,8 +1251,10 @@ func (r *Reconciler) setFinalizer(ctx context.Context, cp *lodiav1alpha1.Control
 // operator revision it runs: those the Etcd records once rolledOut says so and
 // its stamp fits the field, and until then those the API server holds, since
 // the field is written whole on every pass and the cache can lag this
-// controller's own last write.
-func (r *Reconciler) datastoreStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) (*lodiav1alpha1.DatastoreStatus, error) {
+// controller's own last write. While no revision is reported, the etcd never
+// having rolled out, the class is the one the Etcd applied records, or no edit
+// of it could become pending, the one that would let the etcd roll included.
+func (r *Reconciler) datastoreStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet, applied bool) (*lodiav1alpha1.DatastoreStatus, error) {
 	if etcd == nil {
 		return nil, nil
 	}
@@ -1262,10 +1267,7 @@ func (r *Reconciler) datastoreStatus(ctx context.Context, cp *lodiav1alpha1.Cont
 		status.Snapshots = new(storeLocation(store))
 	}
 	if stamp := etcd.Annotations[lodiav1alpha1.OperatorRevisionAnnotation]; rolledOut(etcd, sts) && len(stamp) <= maxRevision {
-		if recorded, ok := recordedClass(etcd); ok {
-			status.Class = &recorded
-		}
-		status.OperatorRevision = stamp
+		status.Class, status.OperatorRevision = classStatus(etcd), stamp
 		return status, nil
 	}
 	if err := live.Datastore(ctx, r.Reader, cp); err != nil {
@@ -1274,7 +1276,19 @@ func (r *Reconciler) datastoreStatus(ctx context.Context, cp *lodiav1alpha1.Cont
 	if previous := cp.Status.Datastore; previous != nil {
 		status.Class, status.OperatorRevision = previous.Class, previous.OperatorRevision
 	}
+	if applied && status.OperatorRevision == "" {
+		status.Class = classStatus(etcd)
+	}
 	return status, nil
+}
+
+// classStatus is status.datastore.class as etcd's annotations record it, nil
+// while they record none.
+func classStatus(etcd *druidv1alpha1.Etcd) *lodiav1alpha1.DatastoreClassStatus {
+	if recorded, ok := recordedClass(etcd); ok {
+		return &recorded
+	}
+	return nil
 }
 
 // rolledOut says whether etcd-druid has served the request for the Etcd's

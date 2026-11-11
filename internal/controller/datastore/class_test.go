@@ -5,17 +5,23 @@ package datastore_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"testing"
 
+	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
@@ -355,6 +361,130 @@ func TestTheClassIsReportedOnceEtcdDruidRolledItOut(t *testing.T) {
 	setStatefulSetStatus(t, ns, cp, nil)
 	mustPass(t, r, ns, cp)
 	runsClass(t, ns, cp, "3Gi", "2")
+}
+
+func unrolledTenant(t *testing.T, ns, name string) *datastore.Reconciler {
+	t.Helper()
+	cp := controlPlane(ns, name, name)
+	cp.Spec.Paused = true
+	create(t, cp)
+	writeGeneration(t, ns, name, 1)
+	r := operatorAt(unpaused(k8s), revision)
+	mustPass(t, r, ns, name)
+	answer(t, ns, name)
+	runStatefulSet(t, ns, name, 1)
+	setStatefulSetStatus(t, ns, name, func(s *appsv1.StatefulSetStatus) { s.AvailableReplicas, s.ReadyReplicas = 0, 0 })
+	setEtcdStatus(t, ns, name, nil)
+	mustPass(t, r, ns, name)
+	return r
+}
+
+func TestAnEtcdThatNeverRolledOutReportsTheClassItWasAppliedWith(t *testing.T) {
+	ns := namespace(t)
+	const cp = "never-rolled"
+	createClass(t, newClass(cp, "Retain"))
+	r := unrolledTenant(t, ns, cp)
+	runsClass(t, ns, cp, "4Gi", "1")
+	if got := reportedRevision(t, ns, cp); got != "" {
+		t.Errorf("an Etcd that never rolled out reports operator revision %q", got)
+	}
+
+	editClass(t, cp, quota("3Gi"))
+	mustPass(t, r, ns, cp)
+	runsClass(t, ns, cp, "4Gi", "1")
+	if want := "; DatastoreClass " + cp + " generation 2 waits for status.target.datastoreClass"; !strings.HasSuffix(readyMessage(t, ns, cp), want) {
+		t.Errorf("DatastoreReady says %q, want it to end with %q", readyMessage(t, ns, cp), want)
+	}
+
+	grantClass(t, ns, cp, cp)
+	mustPass(t, r, ns, cp)
+	runsClass(t, ns, cp, "3Gi", "2")
+}
+
+func TestARefusedRequestReportsTheClassOfAnEtcdThatNeverRolledOut(t *testing.T) {
+	ns := namespace(t)
+	const cp = "refused-unrolled"
+	createClass(t, newClass(cp, "Retain"))
+	plane := controlPlane(ns, cp, cp)
+	plane.Spec.Paused = true
+	create(t, plane)
+	writeGeneration(t, ns, cp, 1)
+	refusing, refused := refusingRequests(cp)
+	if _, err := passOf(t, operatorAt(refusing, revision), ns, cp); !errors.Is(err, refused) {
+		t.Fatalf("a pass whose request the API server refuses returned %v, want the refusal", err)
+	}
+	runsClass(t, ns, cp, "4Gi", "1")
+}
+
+func reportedClass(t *testing.T, ns, cp string) int64 {
+	t.Helper()
+	status := getControlPlane(t, ns, cp).Status.Datastore
+	if status == nil || status.Class == nil {
+		t.Fatalf("status.datastore is %+v, want a class", status)
+	}
+	return status.Class.Generation
+}
+
+func TestAClassReportNeverMovesBackwardsAcrossARoll(t *testing.T) {
+	ns := namespace(t)
+	const cp = "report-forward"
+	createClass(t, newClass(cp, "Retain"))
+	r := unrolledTenant(t, ns, cp)
+	before := getEtcd(t, ns, cp)
+	editClass(t, cp, quota("3Gi"))
+	grantClass(t, ns, cp, cp)
+	mustPass(t, r, ns, cp)
+	runsClass(t, ns, cp, "3Gi", "2")
+
+	refused := apierrors.NewInvalid(schema.GroupKind{Group: druidv1alpha1.SchemeGroupVersion.Group, Kind: "Etcd"}, cp+"-etcd", field.ErrorList{field.Forbidden(field.NewPath("spec"), "refused by a policy")})
+	stale := interceptor.NewClient(unpaused(k8s), interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if etcd, ok := obj.(*druidv1alpha1.Etcd); ok {
+				before.DeepCopyInto(etcd)
+				return nil
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+		Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+			if u, ok := obj.(interface{ GetKind() string }); ok && u.GetKind() == "Etcd" {
+				return refused
+			}
+			return c.Apply(ctx, obj, opts...)
+		},
+	})
+	if _, err := passOf(t, operatorAt(stale, revision), ns, cp); !errors.Is(err, refused) {
+		t.Fatalf("a pass whose apply the API server refuses returned %v, want the refusal", err)
+	}
+	if got := reportedClass(t, ns, cp); got != 2 {
+		t.Errorf("a pass on a cache that holds the Etcd before the grant reports class generation %d, want 2 kept", got)
+	}
+
+	answer(t, ns, cp)
+	setEtcdStatus(t, ns, cp, nil)
+	setStatefulSetStatus(t, ns, cp, nil)
+	mustPass(t, r, ns, cp)
+	runsClass(t, ns, cp, "3Gi", "2")
+	if got := reportedRevision(t, ns, cp); got != revision {
+		t.Fatalf("status.datastore.operatorRevision is %q once the Etcd rolled out, want %s", got, revision)
+	}
+
+	editClass(t, cp, quota("1Gi"))
+	grantClass(t, ns, cp, cp)
+	mustPass(t, r, ns, cp)
+	if etcd := getEtcd(t, ns, cp); etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation] != "3" {
+		t.Fatalf("the grant's pass left the Etcd at class generation %s", etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation])
+	}
+	if got := reportedClass(t, ns, cp); got != 2 {
+		t.Errorf("while generation 3 rolls status.datastore.class is at generation %d, want 2", got)
+	}
+	setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) { s.UpdatedReplicas = 0 })
+	rollOut(t, r, ns, cp)
+	if got := reportedClass(t, ns, cp); got != 2 {
+		t.Errorf("while a member is not updated status.datastore.class is at generation %d, want 2", got)
+	}
+	setStatefulSetStatus(t, ns, cp, nil)
+	mustPass(t, r, ns, cp)
+	runsClass(t, ns, cp, "1Gi", "3")
 }
 
 func TestTheCapNoteStaysWhileAClassEditWaits(t *testing.T) {

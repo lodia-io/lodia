@@ -200,6 +200,57 @@ func TestAClassDeletedWhileItsEditWaitsLeavesNothingPendingUntilItIsCreatedAgain
 	}
 }
 
+func TestAClassEditReachesAnEtcdThatNeverRolledOut(t *testing.T) {
+	for _, row := range []struct {
+		name, begin string
+		token       bool
+		reason      string
+	}{
+		{"on a token", "20:00", true, lodiav1alpha1.ReasonRollingOut},
+		{"in its window", "11:00", false, lodiav1alpha1.ReasonMaintaining},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			class := datastoreClass(t, quiet, "lifecycle-unrolled-"+row.begin[:2])
+			cp := quietControlPlane(t)
+			fresh := getQuiet(t, cp)
+			fresh.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: &lodiav1alpha1.MaintenanceWindow{Begin: row.begin, End: row.begin[:2] + ":59"}}
+			if err := quiet.Update(t.Context(), fresh); err != nil {
+				t.Fatal(err)
+			}
+			seedQuiet(t, getQuiet(t, cp), "v1.37.1", "", all("v1.37.1"), "")
+			seedLifecycle(t, cp, runningRevision, lodiav1alpha1.ReasonIdle, nil, nil)
+			applyQuiet(t, cp, "test/class", map[string]any{"datastore": map[string]any{
+				"endpoints": []any{map[string]any{"host": "dev-etcd-client.team.svc", "port": int64(2379)}},
+				"members":   map[string]any{"total": int64(3), "ready": int64(2), "updated": int64(2)},
+				"class":     map[string]any{"name": class.Name, "uid": string(class.UID), "generation": int64(1)},
+			}})
+			r := fleetReconciler(quiet, quiet, later, 5)
+			mustPass(t, r, cp)
+			if got := classTarget(getQuiet(t, cp)); got != classAt(class, 1) {
+				t.Fatalf("target.datastoreClass is %+v, want generation 1 of UID %s, what the Etcd was applied with", got, class.UID)
+			}
+
+			generation := editClass(t, quiet, class.Name)
+			if row.token {
+				mustPass(t, r, cp)
+				fresh := expectMaintenance(t, cp, lodiav1alpha1.ReasonRollingOut, runningRevision)
+				if classTarget(fresh) != classAt(class, 1) || fresh.Status.Target.ScheduledFor == nil {
+					t.Errorf("a class edit outside the window left target %+v, want generation 1 and a scheduledFor", fresh.Status.Target)
+				}
+				fresh.Annotations = map[string]string{lodiav1alpha1.MaintainRequestedAtAnnotation: "2026-11-09T11:00:00Z"}
+				if err := quiet.Update(t.Context(), fresh); err != nil {
+					t.Fatal(err)
+				}
+			}
+			mustPass(t, r, cp)
+			fresh = expectMaintenance(t, cp, row.reason, runningRevision)
+			if c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionProgressing); classTarget(fresh) != classAt(class, generation) || !strings.Contains(c.Message, "etcd: runs DatastoreClass "+class.Name+" generation 1, not 2") {
+				t.Errorf("the grant left target %+v and Progressing %q, want generation 2 rolling", fresh.Status.Target, c.Message)
+			}
+		})
+	}
+}
+
 func TestAClassEditAndAPatchUpdateWaitForAFullFleet(t *testing.T) {
 	y := fleetTenant(t, "full-y")
 	seedLifecycle(t, y, runningRevision, lodiav1alpha1.ReasonMaintaining, nil, nil)
