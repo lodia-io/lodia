@@ -458,8 +458,9 @@ func (r *NodesReconciler) unread(key types.NamespacedName) {
 
 // Counts returns the silent nodes and those that count of the control plane
 // with key and uid, as its last pass counted them: nothing when that pass had
-// no list of the node Leases or found the hold off, or before their clock has
-// run SilentAfter, when no node can be silent yet.
+// no list of the node Leases or found the hold off, before the first list of
+// the Nodes, or before their clock has run SilentAfter, when no node can be
+// silent yet.
 func (r *NodesReconciler) Counts(key types.NamespacedName, uid types.UID) (silent, counted int, ok bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

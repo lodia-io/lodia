@@ -509,7 +509,7 @@ func TestCollectionsDuringPassesShareNothingUnlocked(t *testing.T) {
 		t.Fatalf("%d collections ran beside the passes", collections.Load())
 	}
 	want := `
-# HELP lodia_controlplane_nodes_silent The nodes that count whose Lease Health has not seen change for health.silentAfter, in its last list of the node Leases. Absent while that list is missing or the tenant's hold is off, and until Health's clock of the Leases has run health.silentAfter.
+# HELP lodia_controlplane_nodes_silent The nodes that count whose Lease Health has not seen change for health.silentAfter, in its last list of the node Leases. Absent while that list is missing or the tenant's hold is off, before Health's first list of the Nodes, and until Health's clock of the Leases has run health.silentAfter.
 # TYPE lodia_controlplane_nodes_silent gauge
 lodia_controlplane_nodes_silent{controlplane="dev",namespace="` + h.cp.Namespace + `"} 3
 `
