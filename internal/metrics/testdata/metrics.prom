@@ -730,11 +730,11 @@ lodia_controlplane_condition_reason{controlplane="waiting",namespace="tenants",r
 lodia_controlplane_condition_reason{controlplane="waiting",namespace="tenants",reason="Ready",type="Ready"} 1
 lodia_controlplane_condition_reason{controlplane="waiting",namespace="tenants",reason="Valid",type="CAValidityAcceptable"} 1
 lodia_controlplane_condition_reason{controlplane="waiting",namespace="tenants",reason="WaitingForWindow",type="Progressing"} 1
-# HELP lodia_controlplane_datastore_alarm 1 for each alarm armed in the etcd in the last sample.
+# HELP lodia_controlplane_datastore_alarm 1 for each alarm armed in the etcd in the last sample; none wherever lodia_controlplane_datastore_has_leader is absent.
 # TYPE lodia_controlplane_datastore_alarm gauge
 lodia_controlplane_datastore_alarm{alarm="CORRUPT",controlplane="upgrading",namespace="tenants"} 1
 lodia_controlplane_datastore_alarm{alarm="NOSPACE",controlplane="failed",namespace="tenants"} 1
-# HELP lodia_controlplane_datastore_db_size_bytes The largest dbSize among the etcd's members that answered the last sample; absent until the Etcd is formed.
+# HELP lodia_controlplane_datastore_db_size_bytes The largest dbSize among the etcd's members that answered the last sample; absent when none did and wherever lodia_controlplane_datastore_has_leader is.
 # TYPE lodia_controlplane_datastore_db_size_bytes gauge
 lodia_controlplane_datastore_db_size_bytes{controlplane="edge",namespace="tenants"} 5.24288e+07
 lodia_controlplane_datastore_db_size_bytes{controlplane="failed",namespace="tenants"} 2.147487744e+09
@@ -751,7 +751,7 @@ lodia_controlplane_datastore_delta_snapshot_period_seconds{controlplane="restore
 lodia_controlplane_datastore_delta_snapshot_period_seconds{controlplane="rolling",namespace="tenants"} 30
 lodia_controlplane_datastore_delta_snapshot_period_seconds{controlplane="starting",namespace="tenants"} 300
 lodia_controlplane_datastore_delta_snapshot_period_seconds{controlplane="waiting",namespace="tenants"} 300
-# HELP lodia_controlplane_datastore_has_leader The last sample of the etcd: 1 when a quorum of the voting members answered naming one leader, else 0; absent until the Etcd is formed and while the operator cannot read the client certificate it names in time.
+# HELP lodia_controlplane_datastore_has_leader The last sample of the etcd: 1 when a quorum of the voting members answered naming one leader, else 0; absent while the ControlPlane is paused or being deleted, until its Etcd is formed, and after a pass that could not read the cache, or the client certificate in time, until one does.
 # TYPE lodia_controlplane_datastore_has_leader gauge
 lodia_controlplane_datastore_has_leader{controlplane="edge",namespace="tenants"} 1
 lodia_controlplane_datastore_has_leader{controlplane="failed",namespace="tenants"} 1

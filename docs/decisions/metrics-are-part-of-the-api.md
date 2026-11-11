@@ -52,9 +52,9 @@ A metric is renamed only under a new name, and in `v1alpha1` the old one stays f
 | `lodia_controlplane_certificates_expiration_timestamp_seconds` | | `status.credentials.notAfter` | yes |
 | `lodia_controlplane_datastore_quota_bytes` | | the `Etcd`'s `spec.etcd.quota` | yes |
 | `lodia_controlplane_datastore_delta_snapshot_period_seconds` | | the `Etcd`'s `spec.backup.deltaSnapshotPeriod`, absent below 1 second or without a store | yes |
-| `lodia_controlplane_datastore_db_size_bytes` | | the largest `dbSize` among the members that answered the last sample; absent until the `Etcd` is formed | yes |
-| `lodia_controlplane_datastore_has_leader` | | the last sample: 1 when a quorum of the voting members answered naming one leader, else 0; absent until the `Etcd` is formed, and while the operator cannot read the client certificate it names in time, a failure of the management cluster's | yes |
-| `lodia_controlplane_datastore_alarm` | `alarm` (`NOSPACE`, `CORRUPT`) | 1 per alarm armed in the last sample | yes |
+| `lodia_controlplane_datastore_db_size_bytes` | | the largest `dbSize` among the members that answered the last sample; absent when none did and wherever `lodia_controlplane_datastore_has_leader` is | yes |
+| `lodia_controlplane_datastore_has_leader` | | the last sample: 1 when a quorum of the voting members answered naming one leader, else 0; absent while the `ControlPlane` is paused or being deleted, until its `Etcd` is formed, and after a pass that could not read the cache, or the client certificate in time, until one does | yes |
+| `lodia_controlplane_datastore_alarm` | `alarm` (`NOSPACE`, `CORRUPT`) | 1 per alarm armed in the last sample; none wherever `lodia_controlplane_datastore_has_leader` is absent | yes |
 | `lodia_controlplane_nodes_silent`, `lodia_controlplane_nodes_counted` | | Health's last Lease list, once its clock has run `silentAfter`: the silent nodes and those that count, the two sides of the hold's fraction ([controller-manager-hold](controller-manager-hold.md)) | with Health's metrics |
 | `lodia_controlplane_kubernetes_end_of_support_timestamp_seconds` | | the end-of-support date the version table gives the minor of `status.kubernetes.version` ([upgrades-and-maintenance-windows](upgrades-and-maintenance-windows.md)) | once the version table has the dates |
 

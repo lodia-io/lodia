@@ -66,11 +66,11 @@ var (
 	datastoreDeltaSnapshotPeriod = perControlPlane("lodia_controlplane_datastore_delta_snapshot_period_seconds",
 		"The Etcd's spec.backup.deltaSnapshotPeriod; absent without a backup store and below 1 s, where no delta snapshot is taken.")
 	datastoreDBSize = perControlPlane("lodia_controlplane_datastore_db_size_bytes",
-		"The largest dbSize among the etcd's members that answered the last sample; absent until the Etcd is formed.")
+		"The largest dbSize among the etcd's members that answered the last sample; absent when none did and wherever lodia_controlplane_datastore_has_leader is.")
 	datastoreHasLeader = perControlPlane("lodia_controlplane_datastore_has_leader",
-		"The last sample of the etcd: 1 when a quorum of the voting members answered naming one leader, else 0; absent until the Etcd is formed and while the operator cannot read the client certificate it names in time.")
+		"The last sample of the etcd: 1 when a quorum of the voting members answered naming one leader, else 0; absent while the ControlPlane is paused or being deleted, until its Etcd is formed, and after a pass that could not read the cache, or the client certificate in time, until one does.")
 	datastoreAlarm = perControlPlane("lodia_controlplane_datastore_alarm",
-		"1 for each alarm armed in the etcd in the last sample.",
+		"1 for each alarm armed in the etcd in the last sample; none wherever lodia_controlplane_datastore_has_leader is absent.",
 		"alarm")
 	operatorRevisionGranted = perControlPlane("lodia_controlplane_operator_revision_granted",
 		"1 when status.target.operatorRevision is the running operator's revision, else 0.")
