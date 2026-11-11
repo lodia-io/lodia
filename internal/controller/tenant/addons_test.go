@@ -146,7 +146,7 @@ func TestAPassThatAppliedInFullReportsEvenWhenTheRolloutCannotBeRead(t *testing.
 	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
 	})
-	update(t, cp, paused)
+	pause(t, cp)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 	rebindOperator(t, admin, []rbacv1.PolicyRule{
 		{APIGroups: []string{"", "discovery.k8s.io", "rbac.authorization.k8s.io"}, Resources: []string{"*"}, Verbs: []string{"*"}},
@@ -175,7 +175,7 @@ func TestAPassThatDidNotApplyInFullKeepsTheAddonsVersion(t *testing.T) {
 		testenv.Eventually(t, func() error {
 			return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
 		})
-		update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+		pause(t, cp)
 		setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 		rebindOperator(t, admin, []rbacv1.PolicyRule{
 			{APIGroups: []string{"*"}, Resources: []string{"*"}, Verbs: []string{"get", "list", "watch"}},
@@ -219,7 +219,7 @@ func TestAPassThatDidNotApplyInFullKeepsTheAddonsVersion(t *testing.T) {
 		testenv.Eventually(t, func() error {
 			return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere)
 		})
-		update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+		pause(t, cp)
 		setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 		setAddons(t, cp, older)
 		refresh(t, cp)
@@ -254,7 +254,7 @@ func TestAFailedStatusWriteLeavesTheAddonsVersionForTheNextPass(t *testing.T) {
 		}
 		return nil
 	})
-	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	pause(t, cp)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 	setAddons(t, cp, older)
 	refresh(t, cp)
@@ -340,7 +340,7 @@ func TestEveryPathThatAppliesStatusKeepsTheAddons(t *testing.T) {
 		testenv.EventuallyWithin(t, 10*time.Second, func() error {
 			return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
 		})
-		update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+		pause(t, cp)
 		setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 		setAddons(t, cp, older)
 		applyStatus(t, cp, "test/target", map[string]any{})
@@ -365,7 +365,7 @@ func TestEveryPathThatAppliesStatusKeepsTheAddons(t *testing.T) {
 		testenv.EventuallyWithin(t, 10*time.Second, func() error {
 			return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
 		})
-		update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+		pause(t, cp)
 		setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 		setAddons(t, cp, older)
 		setComponents(t, cp, running(version), running("v1.34.2"), running(version))

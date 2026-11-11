@@ -198,7 +198,7 @@ func TestAGatewayTenantGetsApiserverProxy(t *testing.T) {
 		return nil
 	})
 
-	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	pause(t, cp)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 	refresh(t, cp)
 	left := cp.DeepCopy()
@@ -249,7 +249,7 @@ func TestOnlyGatewayModeReadsTheTunnelsClient(t *testing.T) {
 		cp := controlPlane(t, c.namespace, c.mode)
 		c.published(t, cp)
 		reconcilePKI(t, gatewayIssuer(), cp)
-		update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+		pause(t, cp)
 		setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 		refresh(t, cp)
 		reader := &failingSecret{Reader: k8s, name: "dev-tunnel-client"}
@@ -414,7 +414,7 @@ func TestAnotherOwnersSecretUnderThatNameIsLeftAlone(t *testing.T) {
 		return nil
 	})
 	renew(t, cp, "renewed")
-	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	pause(t, cp)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 	refresh(t, cp)
 	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: *dial.Load()}
@@ -436,7 +436,7 @@ func TestAnotherOwnersSecretUnderThatNameIsLeftAlone(t *testing.T) {
 func TestARenewalReachesATenantWhoseEndpointIsGone(t *testing.T) {
 	cp, admin, _ := gatewayTenant(t, "tenant-delivery-no-endpoint")
 	applied(t, cp)
-	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	pause(t, cp)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 	applyStatus(t, cp, "test/endpoint", map[string]any{})
 	refresh(t, cp)
@@ -490,7 +490,7 @@ func TestTheFirstWriteIsTheInventorys(t *testing.T) {
 func TestAnUnchangedPairMovesNoResourceVersion(t *testing.T) {
 	cp, admin, _ := gatewayTenant(t, "tenant-delivery-unchanged")
 	applied(t, cp)
-	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	pause(t, cp)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 	refresh(t, cp)
 	access := cp.DeepCopy()
@@ -618,7 +618,7 @@ func TestWhatStopsDelivery(t *testing.T) {
 		reconcilePKI(t, gatewayIssuer(), cp)
 	}
 
-	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	pause(t, cp)
 	if result := pass(); dials.Load() != 0 || result.RequeueAfter != 0 {
 		t.Errorf("a paused pass dialled %d times and requeues after %s", dials.Load(), result.RequeueAfter)
 	}
@@ -651,7 +651,7 @@ func TestAFailedDeliveryStopsNothing(t *testing.T) {
 	ctx := t.Context()
 	cp, admin, _ := gatewayTenant(t, "tenant-delivery-fails")
 	applied(t, cp)
-	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	pause(t, cp)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 	refresh(t, cp)
 	renew(t, cp, "through the ordinary apply")
@@ -721,7 +721,7 @@ func TestASecretTenantCannotUseIsReportedAndNothingIsWritten(t *testing.T) {
 			ctx := t.Context()
 			cp, admin := c.tenant(t, c.namespace)
 			applied(t, cp)
-			update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+			pause(t, cp)
 			setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 			pass := func() ctrl.Result {
 				t.Helper()
@@ -808,7 +808,7 @@ func TestDeliveryUsesOnlyWhatThisControlPlaneControls(t *testing.T) {
 	ctx := t.Context()
 	cp, admin, _ := gatewayTenant(t, "tenant-delivery-controlled")
 	applied(t, cp)
-	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	pause(t, cp)
 	plain := func(*lodiav1alpha1.ControlPlane) {}
 	restored := func(cp *lodiav1alpha1.ControlPlane) {
 		cp.Spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "backup"}}
@@ -902,7 +902,7 @@ func TestATenantThatAnswersNothingCostsThePassItsTimeoutsAndThePassReports(t *te
 			cp := controlPlane(t, c.namespace, c.mode)
 			c.published(t, cp)
 			reconcilePKI(t, gatewayIssuer(), cp)
-			update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+			pause(t, cp)
 			setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 			refresh(t, cp)
 			r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: answersNothing(t, cp)}
