@@ -59,3 +59,22 @@ func TestLifecycleRunsOnTheFilesValues(t *testing.T) {
 		t.Errorf("MaxConcurrentRollouts = %d and Revision = %q, want 2 and v1.0.0+0", got.MaxConcurrentRollouts, got.Revision)
 	}
 }
+
+func TestTheMetricsRunOnTheFilesLimitAndTheRevisionLifecycleGrants(t *testing.T) {
+	in := Inputs{Config: DefaultConfig(), Version: "v1.0.0", SignerImage: "signer", TunnelImage: "tunnel", EtcdDruidVersion: "v0.39.0", EtcdDruidNamespace: "druid", OperatorNamespace: "lodia"}
+	in.Config.Fleet.MaxConcurrentRollouts = 2
+	revision, err := in.Revision()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Metrics(nil, nil, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := newLifecycle(nil, nil, in.Config, revision); got.Revision != want.Revision || got.MaxConcurrentRollouts != want.MaxConcurrentRollouts {
+		t.Errorf("the metrics run on revision %q and limit %d, want Lifecycle's %q and %d", got.Revision, got.MaxConcurrentRollouts, want.Revision, want.MaxConcurrentRollouts)
+	}
+	if got.MaxConcurrentRollouts != 2 {
+		t.Errorf("MaxConcurrentRollouts = %d, want the file's 2", got.MaxConcurrentRollouts)
+	}
+}
