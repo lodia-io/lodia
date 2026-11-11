@@ -18,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/apimachinery/pkg/util/version"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -58,6 +59,9 @@ type NodesReconciler struct {
 	// Reader reads Lodia's kubeconfig, whose data the cache does not hold, and
 	// the status NodesReconciler keeps.
 	Reader client.Reader
+	// Events records the transitions of the conditions it writes;
+	// SetupWithManager sets it.
+	Events events.EventRecorder
 	// Period is how often a control plane is sampled, Timeout how long its
 	// lists wait for an answer.
 	Period, Timeout time.Duration
@@ -136,6 +140,7 @@ type node struct {
 }
 
 func (r *NodesReconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
+	r.Events = mgr.GetEventRecorder("lodia.io/" + NodesName)
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(NodesName).
 		WithOptions(controller.Options{MaxConcurrentReconciles: workers, ReconciliationTimeout: time.Minute}).
@@ -159,6 +164,7 @@ func accessChanged() predicate.Funcs {
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/status,verbs=patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 // +kubebuilder:rbac:groups="",resources=pods,verbs=list
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 func (r *NodesReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	now := r.Clock.Now()
@@ -397,7 +403,7 @@ func changes(cp *lodiav1alpha1.ControlPlane, nodes *lodiav1alpha1.NodesStatus, h
 // apply writes every field each time, since an apply that leaves one out
 // removes it; it leaves cp with what it wrote.
 func (r *NodesReconciler) apply(ctx context.Context, cp *lodiav1alpha1.ControlPlane, nodes *lodiav1alpha1.NodesStatus, health *lodiav1alpha1.HealthStatus, c metav1.Condition) error {
-	if err := statusapply.ApplyInto(ctx, r.Client, r.Reader, NodesFieldManager, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{c}, Nodes: nodes, Health: health}, true); err != nil {
+	if err := (statusapply.Writer{Client: r.Client, Reader: r.Reader, Manager: NodesFieldManager, Events: r.Events}).ApplyInto(ctx, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{c}, Nodes: nodes, Health: health}, true); err != nil {
 		return err
 	}
 	cp.Status.Nodes, cp.Status.Health = nodes, health

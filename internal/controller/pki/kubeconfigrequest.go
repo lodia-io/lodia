@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -57,6 +58,9 @@ type KubeconfigRequestReconciler struct {
 	// Reader reads the request CA, the client and cluster CA bundles and the
 	// admission policy as the API server holds them.
 	Reader client.Reader
+	// Events records the transitions of the conditions it writes;
+	// SetupWithManager sets it.
+	Events events.EventRecorder
 	Clock  clock.PassiveClock
 	// PolicyGrace is how long after the admission policy and its binding a
 	// request must have been created: each API server enforces a binding only
@@ -65,6 +69,7 @@ type KubeconfigRequestReconciler struct {
 }
 
 func (r *KubeconfigRequestReconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
+	r.Events = mgr.GetEventRecorder("lodia.io/kubeconfigrequest")
 	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &lodiav1alpha1.KubeconfigRequest{}, controlPlaneRefField, func(obj client.Object) []string {
 		return []string{obj.(*lodiav1alpha1.KubeconfigRequest).Spec.ControlPlaneRef.Name}
 	}); err != nil {
@@ -103,6 +108,7 @@ func (r *KubeconfigRequestReconciler) requestsOf(ctx context.Context, namespace,
 // +kubebuilder:rbac:groups=lodia.io,resources=kubeconfigrequests,verbs=list;watch;delete
 // +kubebuilder:rbac:groups=lodia.io,resources=kubeconfigrequests/status,verbs=patch
 // +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=validatingadmissionpolicies;validatingadmissionpolicybindings,verbs=get,resourceNames=kubeconfigrequests.lodia.io
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Reconcile answers a request once, from the state at its pass: Issued and
 // the two final reasons are never written again, and the status write
@@ -301,19 +307,19 @@ func requestKubeconfig(controlPlane string, e *endpoint, caBundle []byte, user s
 func (r *KubeconfigRequestReconciler) applyStatus(ctx context.Context, kr *lodiav1alpha1.KubeconfigRequest, now time.Time, c metav1.Condition, kubeconfig []byte, expiration *time.Time) error {
 	c.ObservedGeneration = kr.Generation
 	c.LastTransitionTime = metav1.NewTime(now)
-	_, applied, changed, err := statusapply.Merge(kr.Status.Conditions, c)
+	all, _, changed, err := statusapply.Merge(kr.Status.Conditions, c)
 	if err != nil {
 		return err
 	}
 	if !changed {
 		return nil
 	}
-	status := map[string]any{"conditions": applied}
+	status := map[string]any{}
 	if kubeconfig != nil {
 		status["kubeconfig"] = base64.StdEncoding.EncodeToString(kubeconfig)
 		status["expirationTimestamp"] = expiration.UTC().Format(time.RFC3339)
 	}
-	if err := statusapply.ApplyLocked(ctx, r.Client, kubeconfigRequestFieldManager, "KubeconfigRequest", kr, status); err != nil {
+	if err := (statusapply.Writer{Client: r.Client, Manager: kubeconfigRequestFieldManager, Events: r.Events}).ApplyLocked(ctx, "KubeconfigRequest", kr, kr.Status.Conditions, status, *meta.FindStatusCondition(all, c.Type)); err != nil {
 		return fmt.Errorf("apply the status of KubeconfigRequest %s: %w", kr.Name, err)
 	}
 	return nil

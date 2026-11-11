@@ -5,6 +5,13 @@ metadata:
   name: lodia-lifecycle
 rules:
 - apiGroups:
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
   - lodia.io
   resources:
   - backups

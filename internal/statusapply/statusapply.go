@@ -10,13 +10,18 @@ package statusapply
 import (
 	"context"
 	"errors"
+	"maps"
 	"slices"
+	"strings"
 	"time"
+	"unicode/utf8"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
@@ -71,28 +76,41 @@ func Merge(current []metav1.Condition, conditions ...metav1.Condition) ([]metav1
 	return all, applied, changed, nil
 }
 
-// Apply writes desired, every status field and condition manager owns, since
-// an apply that leaves one out removes it, and only when a condition differs
-// from cp's or the caller says another field does.
+// Writer writes one controller's part of an object's status and records an
+// event for each transition of a condition it writes, regarding the object
+// without its resourceVersion, so that client-go folds a repeat into a series.
+// An event's type follows api/v1alpha1's WarningReasons and the condition it
+// replaces on the API server.
+type Writer struct {
+	Client  client.StatusClient
+	Reader  client.Reader
+	Manager string
+	// Events records nothing when nil.
+	Events events.EventRecorder
+}
+
+// Apply writes desired, every status field and condition the Writer's
+// manager owns, since an apply that leaves one out removes it, and only when a
+// condition differs from cp's or the caller says another field does.
 //
-// A change is first read through reader, which must not be a cache: the
-// transitions come from the API server's copy, and the write stops on another
-// UID, so a cache still holding a deleted predecessor writes nothing to its
-// successor. metadata.uid in the apply would not refuse it, since an update
-// of a custom resource's status takes the stored metadata
+// A change is first read through the Writer's reader, which must not be a
+// cache: the transitions come from the API server's copy, and the write stops
+// on another UID, so a cache still holding a deleted predecessor writes
+// nothing to its successor. metadata.uid in the apply would not refuse it,
+// since an update of a custom resource's status takes the stored metadata
 // (k8s.io/apiextensions-apiserver@v0.37.0 pkg/registry/customresource/status_strategy.go#L81).
 // In place of FirstPass's condition the apply keeps a condition of the type
 // that copy holds with another reason, since a writer tells its first pass
 // from a cache that can lag behind its own last write.
-func Apply(ctx context.Context, writer client.StatusClient, reader client.Reader, manager string, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed bool) error {
-	_, err := write(ctx, writer, reader, manager, cp, desired, changed)
+func (w Writer) Apply(ctx context.Context, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed bool) error {
+	_, err := w.write(ctx, cp, desired, changed)
 	return err
 }
 
 // ApplyInto is Apply for a writer that goes on from its own conditions in the
 // same pass: it leaves cp with the conditions it wrote.
-func ApplyInto(ctx context.Context, writer client.StatusClient, reader client.Reader, manager string, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed bool) error {
-	written, err := write(ctx, writer, reader, manager, cp, desired, changed)
+func (w Writer) ApplyInto(ctx context.Context, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed bool) error {
+	written, err := w.write(ctx, cp, desired, changed)
 	if written != nil {
 		cp.Status.Conditions = written
 	}
@@ -112,7 +130,7 @@ func Live(ctx context.Context, reader client.Reader, cp *lodiav1alpha1.ControlPl
 }
 
 // write returns the conditions it wrote among cp's, nil when it wrote none.
-func write(ctx context.Context, writer client.StatusClient, reader client.Reader, manager string, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed bool) ([]metav1.Condition, error) {
+func (w Writer) write(ctx context.Context, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed bool) ([]metav1.Condition, error) {
 	ctx, cancel, err := ownDeadline(ctx)
 	if err != nil {
 		return nil, err
@@ -128,7 +146,7 @@ func write(ctx context.Context, writer client.StatusClient, reader client.Reader
 		conditionTypes = append(conditionTypes, c.Type)
 	}
 	read := cp.DeepCopy()
-	if err := live.Conditions(ctx, reader, read, conditionTypes...); err != nil {
+	if err := live.Conditions(ctx, w.Reader, read, conditionTypes...); err != nil {
 		return nil, err
 	}
 	conditions := slices.Clone(desired.Conditions)
@@ -150,22 +168,38 @@ func write(ctx context.Context, writer client.StatusClient, reader client.Reader
 		return nil, err
 	}
 	fields["conditions"] = applied
-	if err := apply(ctx, writer, manager, "ControlPlane", map[string]any{"name": cp.Name, "namespace": cp.Namespace}, fields); err != nil {
+	if err := w.apply(ctx, "ControlPlane", map[string]any{"name": cp.Name, "namespace": cp.Namespace}, fields); err != nil {
 		return nil, err
 	}
+	w.record("ControlPlane", cp, read.Status.Conditions, conditions)
 	return all, nil
 }
 
-// ApplyLocked writes fields under the resourceVersion obj was read at, for a
-// kind with one writer, whose watch requeues every update: a write computed
-// from a stale copy conflicts.
-func ApplyLocked(ctx context.Context, writer client.StatusClient, manager, kind string, obj client.Object, fields map[string]any) error {
+// ApplyLocked writes fields and conditions under the resourceVersion obj was
+// read at, for a kind with one writer, whose watch requeues every update: a
+// write computed from a stale copy conflicts. The transitions count from read,
+// obj's conditions at that resourceVersion.
+func (w Writer) ApplyLocked(ctx context.Context, kind string, obj client.Object, read []metav1.Condition, fields map[string]any, conditions ...metav1.Condition) error {
 	ctx, cancel, err := ownDeadline(ctx)
 	if err != nil {
 		return err
 	}
 	defer cancel()
-	return apply(ctx, writer, manager, kind, map[string]any{"name": obj.GetName(), "namespace": obj.GetNamespace(), "resourceVersion": obj.GetResourceVersion()}, fields)
+	applied := make([]any, 0, len(conditions))
+	for i := range conditions {
+		u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&conditions[i])
+		if err != nil {
+			return err
+		}
+		applied = append(applied, u)
+	}
+	status := maps.Clone(fields)
+	status["conditions"] = applied
+	if err := w.apply(ctx, kind, map[string]any{"name": obj.GetName(), "namespace": obj.GetNamespace(), "resourceVersion": obj.GetResourceVersion()}, status); err != nil {
+		return err
+	}
+	w.record(kind, obj, read, conditions)
+	return nil
 }
 
 // ownDeadline detaches a status write from a pass that has used its whole
@@ -179,12 +213,76 @@ func ownDeadline(ctx context.Context) (context.Context, context.CancelFunc, erro
 	return ctx, cancel, nil
 }
 
-func apply(ctx context.Context, writer client.StatusClient, manager, kind string, metadata, fields map[string]any) error {
+func (w Writer) apply(ctx context.Context, kind string, metadata, fields map[string]any) error {
 	u := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": lodiav1alpha1.GroupVersion.String(),
 		"kind":       kind,
 		"metadata":   metadata,
 		"status":     fields,
 	}}
-	return writer.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(u), client.FieldOwner(manager), client.ForceOwnership)
+	return w.Client.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(u), client.FieldOwner(w.Manager), client.ForceOwnership)
+}
+
+// record records each condition written whose status or reason differs from
+// the one it replaced, but a first pass where there was none.
+func (w Writer) record(kind string, obj metav1.Object, replaced []metav1.Condition, written []metav1.Condition) {
+	if w.Events == nil {
+		return
+	}
+	regarding := &corev1.ObjectReference{APIVersion: lodiav1alpha1.GroupVersion.String(), Kind: kind, Namespace: obj.GetNamespace(), Name: obj.GetName(), UID: obj.GetUID()}
+	for _, c := range written {
+		previous := meta.FindStatusCondition(replaced, c.Type)
+		if previous == nil && c.Reason == lodiav1alpha1.ReasonReconciling || previous != nil && previous.Status == c.Status && previous.Reason == c.Reason {
+			continue
+		}
+		w.Events.Eventf(regarding, nil, eventType(previous, c.Reason), c.Reason, c.Type, "%s", note(c.Message))
+	}
+}
+
+// eventType applies the rule of api/v1alpha1's WarningReasons to the
+// condition reason replaces.
+func eventType(replaced *metav1.Condition, reason string) string {
+	group, warning := lodiav1alpha1.WarningReasons[reason]
+	switch {
+	case !warning:
+		return corev1.EventTypeNormal
+	case group == lodiav1alpha1.WarningFailure:
+		return corev1.EventTypeWarning
+	case replaced == nil:
+		return corev1.EventTypeNormal
+	case replaced.Status == metav1.ConditionTrue:
+		return corev1.EventTypeWarning
+	}
+	if _, listed := lodiav1alpha1.WarningReasons[replaced.Reason]; listed || passing(replaced.Reason) {
+		return corev1.EventTypeNormal
+	}
+	return corev1.EventTypeWarning
+}
+
+// passing says whether reason is a first pass or a wait.
+func passing(reason string) bool {
+	switch reason {
+	case lodiav1alpha1.ReasonReconciling, lodiav1alpha1.ReasonLatestGenerationNotObserved,
+		lodiav1alpha1.ReasonProvisioning, lodiav1alpha1.ReasonRestoring, lodiav1alpha1.ReasonRolloutPending, lodiav1alpha1.ReasonDeleting,
+		lodiav1alpha1.ReasonApplying, lodiav1alpha1.ReasonBinding, lodiav1alpha1.ReasonIssuing,
+		lodiav1alpha1.ReasonAwaitingRelease, lodiav1alpha1.ReasonSourceExists:
+		return true
+	}
+	return strings.HasPrefix(reason, "WaitingFor")
+}
+
+// noteLimit is the most bytes the API server takes in an event's note
+// (https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/apis/core/validation/events.go#L33-L38).
+const noteLimit = 1024
+
+// note is message cut to noteLimit before the rune that crosses it.
+func note(message string) string {
+	if len(message) <= noteLimit {
+		return message
+	}
+	cut := noteLimit
+	for cut > 0 && !utf8.RuneStart(message[cut]) {
+		cut--
+	}
+	return message[:cut]
 }

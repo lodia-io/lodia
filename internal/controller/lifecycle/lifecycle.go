@@ -16,6 +16,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -58,6 +59,9 @@ type Reconciler struct {
 	// Reader reads the ControlPlane as the API server holds it, before a write,
 	// and the fleet before a slot is taken.
 	Reader client.Reader
+	// Events records the transitions of the conditions it writes;
+	// SetupWithManager sets it.
+	Events events.EventRecorder
 	Clock  clock.PassiveClock
 	// Revision is the running operator revision, which Lifecycle grants by the
 	// rules of docs/decisions/upgrades-and-maintenance-windows.md.
@@ -73,6 +77,7 @@ type Reconciler struct {
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
+	r.Events = mgr.GetEventRecorder("lodia.io/" + Name)
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(Name).
 		WithOptions(controller.Options{MaxConcurrentReconciles: workers, ReconciliationTimeout: time.Minute}).
@@ -109,6 +114,7 @@ func (r *Reconciler) controlPlanesOn(ctx context.Context, class client.Object) [
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/status,verbs=patch
 // +kubebuilder:rbac:groups=lodia.io,resources=backups,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups=lodia.io,resources=datastoreclasses,verbs=list;watch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Reconcile decides from the cached object and, when that decision changes
 // something, from the object as the API server holds it, comparing the write
@@ -148,7 +154,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		d = decide(gathered)
 	}
-	if err := statusapply.Apply(ctx, r.Client, r.Reader, FieldManager, current, d.status, d.fieldsDiffer(current)); err != nil {
+	if err := (statusapply.Writer{Client: r.Client, Reader: r.Reader, Manager: FieldManager, Events: r.Events}).Apply(ctx, current, d.status, d.fieldsDiffer(current)); err != nil {
 		return ctrl.Result{}, err
 	}
 	if d.createBackup != "" {

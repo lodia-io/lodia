@@ -577,6 +577,7 @@ The chart renders no NetworkPolicy for the operator: a platform whose default-de
 [`operations.md`](operations.md): what breaks and how it shows, the runbooks (restore, lost quorum, forced rotation, stuck upgrade, nodes cut off), capacity planning, the alert rules and what each means.
 
 Lodia's metrics come from a collector that builds them at scrape time from status, from each dedicated etcd's last sample and from what Health counts and observes, and that the leader alone serves ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)).
+Each controller records an event for every transition of a condition it writes ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)).
 
 ## Conventions
 
@@ -609,7 +610,7 @@ Lodia's metrics come from a collector that builds them at scrape time from statu
 - [staged-credential-rotation](decisions/staged-credential-rotation.md) — a CA per purpose and a signer sidecar, so routine rotations never touch a node.
 - [upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md) — the upgrade order; Lodia-initiated changes roll in windows, N tenants at a time.
 - [controller-manager-hold](decisions/controller-manager-hold.md) — while most nodes are silent, Health holds the controller manager's leader lease, so an outage evicts nothing.
-- [metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md) — `lodia_*` metrics per tenant, built from status at scrape time by the leader; conditions one-hot; the chart's monitoring off by default.
+- [metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md) — `lodia_*` metrics per tenant, built from status at scrape time by the leader; conditions one-hot; an event per transition of a condition; the chart's monitoring off by default.
 - [short-lived-kubeconfigs](decisions/short-lived-kubeconfigs.md) — `KubeconfigRequest` for the requester's own key and name, from a CA of its own; the standing admin credential is a group RBAC governs, not `system:masters`.
 - [e2e-on-a-named-cluster](decisions/e2e-on-a-named-cluster.md) — e2e refuses the current context; conformance nightly.
 - [releases-and-support](decisions/releases-and-support.md) — ko, cosign, attestations, the chart in GHCR; the three maintained Kubernetes minors.

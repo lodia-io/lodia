@@ -23,11 +23,14 @@ import (
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	eventsv1 "k8s.io/api/events/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
+
+	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 )
 
 const (
@@ -73,6 +76,31 @@ func leaderServesMetrics(ctx context.Context, t *testing.T, cfg *envconf.Config,
 		return err
 	})
 	t.Logf("pod %s leads and serves %s's etcd at %.0f bytes", leader, key, size)
+}
+
+func readyRecorded(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey) {
+	t.Helper()
+	cp := &lodiav1alpha1.ControlPlane{}
+	if err := k8s.Get(ctx, key, cp); err != nil {
+		t.Fatal(err)
+	}
+	until(ctx, t, 2*time.Minute, fmt.Sprintf("an event regarding %s records its Ready, Normal, from lodia.io/lifecycle", key), func(ctx context.Context) error {
+		events := &eventsv1.EventList{}
+		if err := k8s.List(ctx, events, client.InNamespace(key.Namespace)); err != nil {
+			return err
+		}
+		var regarding []string
+		for _, e := range events.Items {
+			if e.Regarding.Kind != "ControlPlane" || e.Regarding.Name != key.Name || e.Regarding.UID != cp.UID {
+				continue
+			}
+			if e.Action == lodiav1alpha1.ConditionReady && e.Reason == lodiav1alpha1.ReasonReady && e.Type == corev1.EventTypeNormal && e.ReportingController == "lodia.io/lifecycle" {
+				return nil
+			}
+			regarding = append(regarding, fmt.Sprintf("%s %s %s from %s", e.Type, e.Action, e.Reason, e.ReportingController))
+		}
+		return fmt.Errorf("the events regarding it are %v", regarding)
+	})
 }
 
 func serviceAccountToken(ctx context.Context, t *testing.T, k8s client.Client, sa *corev1.ServiceAccount) string {

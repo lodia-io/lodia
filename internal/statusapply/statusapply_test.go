@@ -13,10 +13,12 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	eventsv1 "k8s.io/api/events/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
@@ -28,6 +30,7 @@ const manager = "lodia/test"
 
 var (
 	k8s     client.Client
+	cfg     *rest.Config
 	earlier = metav1.Date(2026, 11, 2, 18, 0, 0, 0, time.UTC)
 	later   = metav1.Date(2026, 11, 3, 18, 0, 0, 0, time.UTC)
 )
@@ -37,8 +40,8 @@ func TestMain(m *testing.M) {
 		os.Exit(m.Run())
 	}
 	env := &envtest.Environment{CRDDirectoryPaths: []string{filepath.Join("..", "..", "api", "crds")}, ErrorIfCRDPathMissing: true}
-	cfg, err := env.Start()
-	if err != nil {
+	var err error
+	if cfg, err = env.Start(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -48,6 +51,10 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	if err := lodiav1alpha1.AddToScheme(scheme); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err := eventsv1.AddToScheme(scheme); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -104,8 +111,12 @@ func stored(t *testing.T, cp *lodiav1alpha1.ControlPlane) *lodiav1alpha1.Control
 	return got
 }
 
+func writer() statusapply.Writer {
+	return statusapply.Writer{Client: k8s, Reader: k8s, Manager: manager}
+}
+
 func apply(ctx context.Context, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed bool) error {
-	return statusapply.Apply(ctx, k8s, k8s, manager, cp, desired, changed)
+	return writer().Apply(ctx, cp, desired, changed)
 }
 
 func TestMerge(t *testing.T) {
@@ -234,7 +245,7 @@ func TestWaitKeepsOnlyAnEarlierGeneration(t *testing.T) {
 func TestNothingChangedReadsAndWritesNothing(t *testing.T) {
 	held := condition(metav1.ConditionTrue, "as it is", earlier)
 	cp := &lodiav1alpha1.ControlPlane{Status: lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{held}}}
-	if err := statusapply.Apply(t.Context(), nil, nil, manager, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{held}}, false); err != nil {
+	if err := (statusapply.Writer{Manager: manager}).Apply(t.Context(), cp, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{held}}, false); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -283,7 +294,7 @@ func TestTheTransitionComesFromTheAPIServerNotTheCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	cached.Status.Conditions = []metav1.Condition{condition(metav1.ConditionFalse, "the cache lags", earlier)}
-	if err := statusapply.ApplyInto(t.Context(), k8s, k8s, manager, cached, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{condition(metav1.ConditionTrue, "after", later)}}, false); err != nil {
+	if err := writer().ApplyInto(t.Context(), cached, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{condition(metav1.ConditionTrue, "after", later)}}, false); err != nil {
 		t.Fatal(err)
 	}
 	got := meta.FindStatusCondition(stored(t, cp).Status.Conditions, lodiav1alpha1.ConditionReady)
@@ -370,7 +381,7 @@ func TestAKeptConditionStaysInTheApplyOfAnotherField(t *testing.T) {
 	}
 	cached := stored(t, cp)
 	meta.RemoveStatusCondition(&cached.Status.Conditions, lodiav1alpha1.ConditionReady)
-	if err := statusapply.ApplyInto(t.Context(), k8s, k8s, manager, cached, lodiav1alpha1.ControlPlaneStatus{
+	if err := writer().ApplyInto(t.Context(), cached, lodiav1alpha1.ControlPlaneStatus{
 		Conditions:         []metav1.Condition{statusapply.FirstPass(cached, lodiav1alpha1.ConditionReady)},
 		ObservedGeneration: 1,
 	}, true); err != nil {
@@ -444,7 +455,7 @@ func TestAWriteTheServerAlreadyHoldsIsNotRepeated(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := stored(t, cp).ResourceVersion
-	if err := statusapply.Apply(t.Context(), noWrite{t}, k8s, manager, cached, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{held}}, false); err != nil {
+	if err := (statusapply.Writer{Client: noWrite{t}, Reader: k8s, Manager: manager}).Apply(t.Context(), cached, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{held}}, false); err != nil {
 		t.Fatal(err)
 	}
 	if after := stored(t, cp).ResourceVersion; after != before {
@@ -473,7 +484,7 @@ func TestAnotherFieldThatChangedIsWrittenWithTheConditions(t *testing.T) {
 
 func TestAFieldThisWriterLeavesOutIsAnotherWritersToKeep(t *testing.T) {
 	cp := controlPlane(t, namespace(t))
-	if err := statusapply.Apply(t.Context(), k8s, k8s, "lodia/other", cp, lodiav1alpha1.ControlPlaneStatus{
+	if err := (statusapply.Writer{Client: k8s, Reader: k8s, Manager: "lodia/other"}).Apply(t.Context(), cp, lodiav1alpha1.ControlPlaneStatus{
 		Conditions: []metav1.Condition{{Type: lodiav1alpha1.ConditionProgressing, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonReconciling, ObservedGeneration: 1}},
 		Target:     &lodiav1alpha1.Target{Version: "v1.35.0"},
 	}, true); err != nil {
@@ -496,8 +507,8 @@ func TestAPassThatUsedItsWholeDeadlineStillWrites(t *testing.T) {
 	ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
 	defer cancel()
 	var deadline time.Time
-	writer := recordsDeadline{SubResourceWriter: k8s.Status(), at: &deadline}
-	if err := statusapply.Apply(ctx, writer, k8s, manager, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{condition(metav1.ConditionFalse, "why the pass ended", earlier)}}, false); err != nil {
+	recording := recordsDeadline{SubResourceWriter: k8s.Status(), at: &deadline}
+	if err := (statusapply.Writer{Client: recording, Reader: k8s, Manager: manager}).Apply(ctx, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{condition(metav1.ConditionFalse, "why the pass ended", earlier)}}, false); err != nil {
 		t.Fatal(err)
 	}
 	if c := meta.FindStatusCondition(stored(t, cp).Status.Conditions, lodiav1alpha1.ConditionReady); c == nil || c.Message != "why the pass ended" {
@@ -512,7 +523,7 @@ func TestALockedApplyPastItsDeadlineStillWrites(t *testing.T) {
 	backup := newBackup(t, namespace(t))
 	ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
 	defer cancel()
-	if err := statusapply.ApplyLocked(ctx, k8s, manager, "Backup", backup, backupConditions(t, "why the pass ended")); err != nil {
+	if err := writer().ApplyLocked(ctx, "Backup", backup, nil, map[string]any{}, backupReady("why the pass ended")); err != nil {
 		t.Fatal(err)
 	}
 	if c := meta.FindStatusCondition(storedBackup(t, backup).Status.Conditions, lodiav1alpha1.ConditionReady); c == nil || c.Message != "why the pass ended" {
@@ -524,7 +535,6 @@ func TestACancelledPassWritesNothingAndReturnsItsError(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	desired := lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{condition(metav1.ConditionFalse, "only the cancellation", earlier)}}
-	fields := backupConditions(t, "only the cancellation")
 	for name, write := range map[string]func(cp *lodiav1alpha1.ControlPlane, backup *lodiav1alpha1.Backup) error{
 		"Apply": func(cp *lodiav1alpha1.ControlPlane, _ *lodiav1alpha1.Backup) error {
 			return apply(ctx, cp, desired, false)
@@ -538,10 +548,10 @@ func TestACancelledPassWritesNothingAndReturnsItsError(t *testing.T) {
 			return apply(ctx, held, desired, false)
 		},
 		"ApplyInto": func(cp *lodiav1alpha1.ControlPlane, _ *lodiav1alpha1.Backup) error {
-			return statusapply.ApplyInto(ctx, k8s, k8s, manager, cp, desired, false)
+			return writer().ApplyInto(ctx, cp, desired, false)
 		},
 		"ApplyLocked": func(_ *lodiav1alpha1.ControlPlane, backup *lodiav1alpha1.Backup) error {
-			return statusapply.ApplyLocked(ctx, k8s, manager, "Backup", backup, fields)
+			return writer().ApplyLocked(ctx, "Backup", backup, nil, map[string]any{}, backupReady("only the cancellation"))
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -565,10 +575,10 @@ func TestACancelledPassWritesNothingAndReturnsItsError(t *testing.T) {
 
 func TestALockedApplyConflictsOnAStaleResourceVersion(t *testing.T) {
 	backup := newBackup(t, namespace(t))
-	if err := statusapply.ApplyLocked(t.Context(), k8s, manager, "Backup", backup, backupConditions(t, "first")); err != nil {
+	if err := writer().ApplyLocked(t.Context(), "Backup", backup, nil, map[string]any{}, backupReady("first")); err != nil {
 		t.Fatal(err)
 	}
-	err := statusapply.ApplyLocked(t.Context(), k8s, manager, "Backup", backup, backupConditions(t, "computed from a stale copy"))
+	err := writer().ApplyLocked(t.Context(), "Backup", backup, nil, map[string]any{}, backupReady("computed from a stale copy"))
 	if !apierrors.IsConflict(err) {
 		t.Fatalf("error %v, want a conflict", err)
 	}
@@ -576,7 +586,7 @@ func TestALockedApplyConflictsOnAStaleResourceVersion(t *testing.T) {
 	if c := meta.FindStatusCondition(got.Status.Conditions, lodiav1alpha1.ConditionReady); c == nil || c.Message != "first" {
 		t.Errorf("Ready is %+v", c)
 	}
-	if err := statusapply.ApplyLocked(t.Context(), k8s, manager, "Backup", got, backupConditions(t, "from the latest copy")); err != nil {
+	if err := writer().ApplyLocked(t.Context(), "Backup", got, got.Status.Conditions, map[string]any{}, backupReady("from the latest copy")); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -602,13 +612,8 @@ func storedBackup(t *testing.T, backup *lodiav1alpha1.Backup) *lodiav1alpha1.Bac
 	return got
 }
 
-func backupConditions(t *testing.T, message string) map[string]any {
-	t.Helper()
-	u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&metav1.Condition{Type: lodiav1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonReconciling, Message: message, LastTransitionTime: earlier})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return map[string]any{"conditions": []any{u}}
+func backupReady(message string) metav1.Condition {
+	return metav1.Condition{Type: lodiav1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonReconciling, Message: message, LastTransitionTime: earlier}
 }
 
 type recordsDeadline struct {

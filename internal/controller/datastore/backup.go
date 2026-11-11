@@ -26,6 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -62,6 +63,9 @@ type BackupReconciler struct {
 	// Reader reads the API server: the Backup in every pass, the full
 	// snapshot Lease and the Secrets.
 	Reader client.Reader
+	// Events records the transitions of the conditions it writes;
+	// SetupWithManager sets it.
+	Events events.EventRecorder
 	// EtcdClient connects to the etcd of an Etcd; the caller closes it.
 	EtcdClient func(ctx context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client, error)
 	// Clock spaces the full snapshots a Backup asks for again.
@@ -69,6 +73,7 @@ type BackupReconciler struct {
 }
 
 func (r *BackupReconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
+	r.Events = mgr.GetEventRecorder("lodia.io/" + BackupName)
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(BackupName).
 		WithOptions(controller.Options{MaxConcurrentReconciles: workers, ReconciliationTimeout: time.Minute}).
@@ -125,6 +130,7 @@ func (r *BackupReconciler) restoredKeys(ctx context.Context, secret client.Objec
 // +kubebuilder:rbac:groups=lodia.io,resources=backups/finalizers,verbs=update
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get
 // +kubebuilder:rbac:groups=druid.gardener.cloud,resources=etcdopstasks;etcdcopybackupstasks,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Reconcile takes the steps of a Backup in order, and each pass writes at
 // most one status, with the resourceVersion of the Backup it read, so that a
@@ -814,12 +820,7 @@ func (r *BackupReconciler) applyStatus(ctx context.Context, backup *lodiav1alpha
 	if err != nil {
 		return false, err
 	}
-	ready, err := runtime.DefaultUnstructuredConverter.ToUnstructured(meta.FindStatusCondition(status.Conditions, lodiav1alpha1.ConditionReady))
-	if err != nil {
-		return false, err
-	}
-	content["conditions"] = []any{ready}
-	err = statusapply.ApplyLocked(ctx, r.Client, BackupFieldManager, "Backup", backup, content)
+	err = statusapply.Writer{Client: r.Client, Manager: BackupFieldManager, Events: r.Events}.ApplyLocked(ctx, "Backup", backup, backup.Status.Conditions, content, *meta.FindStatusCondition(status.Conditions, lodiav1alpha1.ConditionReady))
 	if apierrors.IsConflict(err) {
 		return true, nil
 	}
