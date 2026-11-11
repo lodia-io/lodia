@@ -6,6 +6,7 @@ package v1alpha1
 import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // ControlPlane is one tenant cluster's control plane: an API server with its
@@ -790,6 +791,13 @@ type Target struct {
 	// +kubebuilder:validation:MaxLength=128
 	OperatorRevision string `json:"operatorRevision,omitempty"`
 
+	// DatastoreClass is the UID and generation of the DatastoreClass that
+	// status.datastore.class names which the Etcd may run: an edit of the
+	// class, or a class created again under its name, reaches the Etcd once
+	// Lifecycle grants it, in the window.
+	// +optional
+	DatastoreClass *DatastoreClassGeneration `json:"datastoreClass,omitempty"`
+
 	// ScheduledFor is when a change Lodia initiates may roll: while it waits
 	// for the window, the window's next start; while it waits for a slot of
 	// the fleet, when it became eligible, in its window and Ready, which
@@ -1024,6 +1032,20 @@ type DatastoreClassStatus struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	Name string `json:"name"`
+
+	DatastoreClassGeneration `json:",inline"`
+}
+
+// DatastoreClassGeneration is a generation of one DatastoreClass: a class
+// deleted and created again under its name has another UID, and starts again
+// at generation 1.
+type DatastoreClassGeneration struct {
+	// UID of the class.
+	// +required
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=36
+	UID types.UID `json:"uid"`
 
 	// +required
 	// +kubebuilder:validation:Minimum=1

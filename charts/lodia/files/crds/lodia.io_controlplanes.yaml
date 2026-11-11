@@ -1307,9 +1307,15 @@ spec:
                         maxLength: 253
                         minLength: 1
                         type: string
+                      uid:
+                        description: UID of the class.
+                        maxLength: 36
+                        minLength: 1
+                        type: string
                     required:
                     - generation
                     - name
+                    - uid
                     type: object
                   endpoints:
                     description: Endpoints are where the API server reaches etcd.
@@ -1685,6 +1691,26 @@ spec:
               target:
                 description: Target is what Lifecycle rolls now.
                 properties:
+                  datastoreClass:
+                    description: |-
+                      DatastoreClass is the UID and generation of the DatastoreClass that
+                      status.datastore.class names which the Etcd may run: an edit of the
+                      class, or a class created again under its name, reaches the Etcd once
+                      Lifecycle grants it, in the window.
+                    properties:
+                      generation:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      uid:
+                        description: UID of the class.
+                        maxLength: 36
+                        minLength: 1
+                        type: string
+                    required:
+                    - generation
+                    - uid
+                    type: object
                   operatorRevision:
                     description: |-
                       OperatorRevision is the operator revision this tenant may be rendered

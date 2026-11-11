@@ -296,7 +296,7 @@ func TestTheGrantFollowsTheRulesInTheirOrder(t *testing.T) {
 		{"6: but not without AccessReady", held(condition(waitingForAccess), condition(metav1.Condition{Type: lodiav1alpha1.ConditionAccessReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonBinding, Message: "not confirmed"})),
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonBinding, message: "AccessReady: not confirmed"}},
 		{"7: a free slot: Maintaining in the same apply as the grant", held(inWindow("12:00", "13:00", "")),
-			granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, slot: true, message: "operator revision " + revisionB + " rolls: kube-apiserver: reports operator revision " + revisionA + ", not " + revisionB, takesSlot: true}},
+			granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, slot: true, message: "the change Lodia started rolls: kube-apiserver: reports operator revision " + revisionA + ", not " + revisionB, takesSlot: true}},
 		{"7: no slot: FleetLimit, scheduledFor when it became eligible", held(fleet(holding("a", "a"), holding("b", "b")), func(f *facts) { f.limit = 2 }),
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonFleetLimit, message: "one of the fleet's 2 slots", scheduledFor: &nowSecond, requeue: 30 * time.Second}},
 		{"7: FleetLimit keeps its scheduledFor while it waits", held(fleet(holding("a", "a")), scheduled(present.Add(-time.Hour)), progressingAs(lodiav1alpha1.ReasonFleetLimit, 3), func(f *facts) { f.limit = 1 }),
@@ -447,13 +447,13 @@ func TestAChangeInASlotSettles(t *testing.T) {
 		{"Idle after S with Ready True, settlingSince removed and the slot free", held(inSlot, grantedB, reportsAll(revisionB), settlingAt(present.Add(-settling))),
 			granted{revision: revisionB, reason: lodiav1alpha1.ReasonIdle}},
 		{"MaintenanceFailed after S with Ready not True, keeping the slot", held(append([]func(*facts){inSlot, grantedB, reportsAll(revisionB), settlingAt(present.Add(-settling))}, notReady...)...),
-			granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintenanceFailed, slot: true, message: "Ready is not True 45s after operator revision " + revisionB + " rolled out: ExternalProbeFailed: Reachable: api: refused", settlingSince: new(present.Add(-settling))}},
+			granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintenanceFailed, slot: true, message: "Ready is not True 45s after the change Lodia started rolled out: ExternalProbeFailed: Reachable: api: refused", settlingSince: new(present.Add(-settling))}},
 		{"MaintenanceFailed after S with Ready Unknown, keeping the slot", held(inSlot, grantedB, reportsAll(revisionB), settlingAt(present.Add(-settling)),
 			func(f *facts) {
 				meta.RemoveStatusCondition(&f.cp.Status.Conditions, lodiav1alpha1.ConditionControllersLeading)
 			},
 			condition(metav1.Condition{Type: lodiav1alpha1.ConditionReady, Status: metav1.ConditionUnknown, Reason: lodiav1alpha1.ReasonLatestGenerationNotObserved, ObservedGeneration: 3, LastTransitionTime: metav1.NewTime(present.Add(-time.Hour))})),
-			granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintenanceFailed, slot: true, message: "Ready is not True 45s after operator revision " + revisionB + " rolled out: LatestGenerationNotObserved: ControllersLeading is not reported for generation 3", settlingSince: new(present.Add(-settling))}},
+			granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintenanceFailed, slot: true, message: "Ready is not True 45s after the change Lodia started rolled out: LatestGenerationNotObserved: ControllersLeading is not reported for generation 3", settlingSince: new(present.Add(-settling))}},
 		{"Maintaining within S with Ready not True", held(append([]func(*facts){inSlot, grantedB, reportsAll(revisionB), settlingAt(tenSecondsAgo)}, notReady...)...),
 			granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, slot: true, settlingSince: &tenSecondsAgo, requeue: settling - 10*time.Second}},
 		{"Ready coming back restarts S from now, the write's transition", held(slotted(lodiav1alpha1.ReasonMaintenanceFailed, 3), grantedB, reportsAll(revisionB), settlingAt(present.Add(-time.Hour)), notReady[1]),
@@ -463,7 +463,7 @@ func TestAChangeInASlotSettles(t *testing.T) {
 		{"etcd not at the granted revision keeps it rolling", held(inSlot, grantedB, reportsAll(revisionB), func(f *facts) { f.cp.Status.Datastore.OperatorRevision = revisionA }),
 			granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, slot: true, message: "etcd: reports operator revision " + revisionA + ", not " + revisionB}},
 		{"a new grant clears settlingSince, even with nothing left to roll", held(slotted(lodiav1alpha1.ReasonMaintenanceFailed, 3), running(revisionC), reportsAll(revisionC), settlingAt(present.Add(-time.Hour))),
-			granted{revision: revisionC, reason: lodiav1alpha1.ReasonMaintaining, slot: true, message: "operator revision " + revisionC + " rolls"}},
+			granted{revision: revisionC, reason: lodiav1alpha1.ReasonMaintaining, slot: true, message: "the change Lodia started rolls"}},
 		{"rolling again removes settlingSince", held(inSlot, grantedB, reportsAll(revisionB), settlingAt(tenSecondsAgo), func(f *facts) { f.cp.Status.Datastore.Members.Updated = nil }),
 			granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, slot: true, message: "etcd: its updated members are not reported yet"}},
 		{"an owner's edit keeps the slot and settlingSince", held(slotted(lodiav1alpha1.ReasonMaintaining, 2), grantedB, reportsAll(revisionB), settlingAt(tenSecondsAgo)),
@@ -578,7 +578,7 @@ func TestAnUnrenderableReleaseBetweenKeepsTheSlotOfAFailedTenant(t *testing.T) {
 	adopt(f.cp, expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonUnsupported, message: "does not run status.components.scheduler.version v1.34.9", slot: true}))
 	f.cp.Status.Components.Scheduler.Version = "v1.37.1"
 	f.revision = revisionD
-	expectGrant(t, f, granted{revision: revisionD, reason: lodiav1alpha1.ReasonMaintaining, message: "operator revision " + revisionD + " rolls", slot: true})
+	expectGrant(t, f, granted{revision: revisionD, reason: lodiav1alpha1.ReasonMaintaining, message: "the change Lodia started rolls", slot: true})
 }
 
 func TestASlotSurvivesTimeZoneUnsupported(t *testing.T) {
@@ -591,7 +591,7 @@ func TestASlotSurvivesTimeZoneUnsupported(t *testing.T) {
 	adopt(f.cp, expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonTimeZoneUnsupported, settlingSince: &rolledOut, requeue: settling, slot: true}))
 	condition(metav1.Condition{Type: lodiav1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonExternalProbeFailed, ObservedGeneration: 3, LastTransitionTime: metav1.NewTime(rolledOut)})(&f)
 	f.now = rolledOut.Add(settling)
-	expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintenanceFailed, message: "Ready is not True 45s after operator revision " + revisionB + " rolled out", settlingSince: &rolledOut, slot: true})
+	expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintenanceFailed, message: "Ready is not True 45s after the change Lodia started rolled out", settlingSince: &rolledOut, slot: true})
 }
 
 func TestAPausedPassKeepsTheSlotAndADeletingPassFreesIt(t *testing.T) {
@@ -804,9 +804,9 @@ func TestAnOwnersEditOrAPauseOfAFailedTenantKeepsTheNextReleaseReachingIt(t *tes
 		adopt(f.cp, expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintenanceFailed, settlingSince: &hourAgo, slot: true}))
 		return f
 	}
-	stillFailed := granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintenanceFailed, message: "Ready is not True 45s after operator revision " + revisionB + " rolled out", settlingSince: &hourAgo, slot: true}
+	stillFailed := granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintenanceFailed, message: "Ready is not True 45s after the change Lodia started rolled out", settlingSince: &hourAgo, slot: true}
 	paused := granted{revision: revisionB, reason: lodiav1alpha1.ReasonPaused, settlingSince: &hourAgo, slot: true}
-	fixed := granted{revision: revisionC, reason: lodiav1alpha1.ReasonMaintaining, message: "operator revision " + revisionC + " rolls: kube-apiserver: reports operator revision " + revisionB + ", not " + revisionC, slot: true}
+	fixed := granted{revision: revisionC, reason: lodiav1alpha1.ReasonMaintaining, message: "the change Lodia started rolls: kube-apiserver: reports operator revision " + revisionB + ", not " + revisionC, slot: true}
 	t.Run("an owner's edit while release B runs", func(t *testing.T) {
 		f := failedByB(t)
 		f.cp.Generation = 4
