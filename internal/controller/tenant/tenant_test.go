@@ -1165,6 +1165,7 @@ func TestAnotherOwnersObjectsAreNeitherAdoptedNorPruned(t *testing.T) {
 	})
 	corefile := ".:53 {\n    forward . 9.9.9.9\n}\n"
 	for _, obj := range []client.Object{
+		&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "coredns"}},
 		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "coredns"}, Data: map[string]string{"Corefile": corefile}},
 		&appsv1.Deployment{
 			ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "coredns"},
@@ -1192,7 +1193,10 @@ func TestAnotherOwnersObjectsAreNeitherAdoptedNorPruned(t *testing.T) {
 		}
 		return nil
 	})
-	owners := []string{"ConfigMap kube-system/coredns", "Deployment kube-system/coredns"}
+	if c := condition(t, cp, lodiav1alpha1.ConditionAddonsAvailable); strings.Contains(c.Message, "coredns") {
+		t.Errorf("AddonsAvailable reads the owner's Deployment: %q", c.Message)
+	}
+	owners := []string{"ServiceAccount kube-system/coredns", "ConfigMap kube-system/coredns", "Deployment kube-system/coredns"}
 	inventory := inventoryOf(t, admin)
 	for _, entry := range owners {
 		if slices.Contains(inventory, entry) {
