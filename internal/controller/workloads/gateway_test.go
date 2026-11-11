@@ -511,15 +511,15 @@ func TestAStaleCacheNeverDropsThePublishedEndpoint(t *testing.T) {
 			if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 				t.Fatal(err)
 			}
-			if len(applied) != 2 {
-				t.Fatalf("the pass applied %d statuses, want the first pass's and its own", len(applied))
+			if len(applied) != 1 {
+				t.Fatalf("the pass applied %d statuses, want its own alone", len(applied))
 			}
 			for i, a := range applied {
 				if !equality.Semantic.DeepEqual(a.Status.Endpoint, published) {
 					t.Errorf("status apply %d carries the endpoint %+v, want the published %+v", i, a.Status.Endpoint, published)
 				}
 			}
-			if c := meta.FindStatusCondition(applied[1].Status.Conditions, lodiav1alpha1.ConditionRoutesReady); held && !equality.Semantic.DeepEqual(c, routes) {
+			if c := meta.FindStatusCondition(applied[0].Status.Conditions, lodiav1alpha1.ConditionRoutesReady); held && !equality.Semantic.DeepEqual(c, routes) {
 				t.Errorf("the pass applied RoutesReady %+v, want the one the API server holds, %+v", c, routes)
 			}
 		})
