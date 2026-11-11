@@ -20,6 +20,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/controller/datastore"
+	"go.lodia.io/lodia/internal/versions"
 )
 
 // listTimeout is below Prometheus' default scrape timeout of 10 s: an
@@ -84,6 +85,8 @@ var (
 		"step")
 	certificatesExpiration = perControlPlane("lodia_controlplane_certificates_expiration_timestamp_seconds",
 		"status.credentials.notAfter: the earliest expiry among the certificates PKI's Secrets hold for the ControlPlane, its CAs among them. It counts each Secret's own certificate and the newest complete etcd generation, and leaves out the replaced certificates in the CA bundles, the staged kubelet signer and a previous etcd generation.")
+	endOfSupport = perControlPlane("lodia_controlplane_kubernetes_end_of_support_timestamp_seconds",
+		"The end-of-support date, at 00:00 UTC, that the version table gives the minor of status.kubernetes.version; absent while the version is absent and for a minor outside the table.")
 	nodesSilent = perControlPlane("lodia_controlplane_nodes_silent",
 		"The nodes that count whose Lease Health has not seen change for health.silentAfter, in its last list of the node Leases. Absent while that list is missing or the tenant's hold is off, before Health's first list of the Nodes, and until Health's clock of the Leases has run health.silentAfter.")
 	nodesCounted = perControlPlane("lodia_controlplane_nodes_counted",
@@ -99,7 +102,7 @@ var (
 		datastoreMembers, datastoreMembersReady, datastoreMembersUpdated,
 		datastoreQuota, datastoreDeltaSnapshotPeriod, datastoreDBSize, datastoreHasLeader, datastoreAlarm, operatorRevisionGranted,
 		slotSince, scheduledFor, upgradeStarted, maxConcurrentRollouts, holdThresholdRatio,
-		certificatesExpiration, nodesSilent, nodesCounted,
+		certificatesExpiration, endOfSupport, nodesSilent, nodesCounted,
 	}
 
 	statuses = []metav1.ConditionStatus{metav1.ConditionTrue, metav1.ConditionFalse, metav1.ConditionUnknown}
@@ -218,6 +221,10 @@ func (c *Collector) collect(ch chan<- prometheus.Metric, cp *lodiav1alpha1.Contr
 		endpoint = lodiav1alpha1.MetricEndpointLoadBalancer
 	}
 	emit(info, 1, string(cp.UID), version, string(cp.Spec.Layout), datastore, endpoint)
+	minor, _ := versions.Minor(version)
+	if day, ok := versions.EndOfSupport(minor); ok {
+		emit(endOfSupport, float64(day.Unix()))
+	}
 
 	for _, cond := range status.Conditions {
 		for _, s := range statuses {

@@ -493,6 +493,13 @@ Warning, after 15 minutes of a controller's reconcile errors above 5% of its rec
 Warning, once a pass of `health-nodes` started more than 10 seconds after its due time in the last 10 minutes: the hold's margin keeps 10 seconds for a delay in Health's queue, and a longer one can let the tenant's controller manager mark a silent node before the hold makes it exit ([controller-manager-hold](decisions/controller-manager-hold.md)).
 Look at the operator's CPU and its throttling, and at `controller_runtime_active_workers{controller="health-nodes"}` against `controller_runtime_max_concurrent_reconciles`.
 
+### LodiaKubernetesEndOfSupport
+
+Warning, once the end-of-support date of the minor of `status.kubernetes.version` has been within 30 days, or past, for an hour, a paused tenant included.
+The date is the version table's, the end of life that [kubernetes.io/releases](https://kubernetes.io/releases/) gives the minor, and `Progressing`'s message names it from 60 days before it.
+Set `spec.version` to a patch of the next minor ([upgrades](README.md#upgrades-and-windows)); Lodia forces no upgrade at the date ([upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md)).
+A tenant that reports no version, or one whose minor the table lacks, has no series and never fires it.
+
 ## Capacity
 
 One idle control plane, as the nightly conformance run measures it before the suite starts ([`TestConformance`](../test/e2e/README.md#nightly-conformance-and-the-idle-control-plane)): a `ControlPlane` of one replica at Kubernetes v1.37.0 with a dedicated etcd of one member, two nodes joined, the konnectivity agents and CoreDNS running and no workload, idle for 3 minutes.
@@ -532,7 +539,7 @@ A `ControlPlane` stored with an `extraArgs` flag the new schema refuses keeps th
 
 | what | supported |
 |---|---|
-| Tenant Kubernetes versions | the minors the Kubernetes project maintains, today 1.35, 1.36 and 1.37; a minor leaves Lodia's version table with the first release after it leaves upstream support, and stays renderable for one more release, only as the source of an upgrade; tenants are warned in `Progressing`'s message from 60 days before its end-of-support date, and in a metric and an alert from wave 2's observability |
+| Tenant Kubernetes versions | the minors the Kubernetes project maintains, today 1.35, 1.36 and 1.37; a minor leaves Lodia's version table with the first release after it leaves upstream support, and stays renderable for one more release, only as the source of an upgrade; tenants are warned in `Progressing`'s message from 60 days before its end-of-support date, and by [`LodiaKubernetesEndOfSupport`](#lodiakubernetesendofsupport) from 30 days before |
 | Management cluster | a maintained minor with the CEL features the CRDs use: 1.35 or newer today |
 | Lodia versions | until 1.0, the latest minor gets fixes; from 1.0, the two latest minors |
 | API versions | `v1alpha1` may change between minors until `v1beta1`; from `v1beta1`, changes are additive and conversion needs no webhook |

@@ -271,3 +271,15 @@ groups:
         annotations:
           summary: "A pass of health-nodes started more than 10 seconds after its due time in the last 10 minutes."
           runbook_url: https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiahealthsamplinglate
+
+      - alert: LodiaKubernetesEndOfSupport
+        expr: |
+          max without (pod, instance) (lodia_controlplane_kubernetes_end_of_support_timestamp_seconds) - time() < 30 * 86400
+          unless on (namespace, controlplane) lodia_controlplane_condition_reason{type="Ready",reason="Deleting"}
+        for: 1h
+        keep_firing_for: 4m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The Kubernetes minor of ControlPlane {{ $labels.namespace }}/{{ $labels.controlplane }} reaches its end of support within 30 days, or has reached it."
+          runbook_url: https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiakubernetesendofsupport

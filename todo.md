@@ -244,3 +244,4 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 ## For the release that first drops a minor
 
 - A minor dropped from the version table stays renderable for one more release, as the source of an upgrade ([upgrades-and-maintenance-windows](docs/decisions/upgrades-and-maintenance-windows.md), "End of support"): build it in the release that first drops one, since no minor is dropped yet and the flag would have no data and no test that means anything.
+  It keeps its end-of-support date too, which the metric, the alert and `Progressing`'s notice read for the tenants still on it: without the date their series ends, and the alert resolves for the tenants nearing or past it.

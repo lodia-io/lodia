@@ -226,7 +226,13 @@ func golden() []client.Object {
 	steady(deleting, "v1.37.1")
 	deleting.Status.Conditions = conditions(deleting, map[string]state{lodiav1alpha1.ConditionReady: {metav1.ConditionFalse, lodiav1alpha1.ReasonDeleting}})
 
-	tenants := []client.Object{fresh, edge, restored, failed, queued, upgrading, paused, starting, rolling, waiting, overdue, shared, deleting}
+	aging := controlPlane("aging", 14)
+	aging.Status.Kubernetes = &lodiav1alpha1.KubernetesStatus{Version: "v1.35.10"}
+
+	legacy := controlPlane("legacy", 15)
+	legacy.Status.Kubernetes = &lodiav1alpha1.KubernetesStatus{Version: "v1.34.9"}
+
+	tenants := []client.Object{fresh, edge, restored, failed, queued, upgrading, paused, starting, rolling, waiting, overdue, shared, deleting, aging, legacy}
 	return append(tenants, goldenEtcds(tenants)...)
 }
 
