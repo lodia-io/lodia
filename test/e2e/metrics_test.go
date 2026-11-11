@@ -99,6 +99,9 @@ func scrapeOperator(ctx context.Context, t *testing.T, cfg *envconf.Config, k8s 
 			return "", 0, err
 		}
 	}
+	if len(scraped) != 2 {
+		return "", 0, fmt.Errorf("the Service %s lists the pods %v, want two distinct ones", metricsService, pods)
+	}
 	after, err := leaseHolder(ctx, k8s)
 	if err != nil {
 		return "", 0, err
