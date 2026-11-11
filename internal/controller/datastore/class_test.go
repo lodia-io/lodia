@@ -522,6 +522,10 @@ func TestAnEtcdWhoseClassAnnotationsAPersonEditedReportsNoClass(t *testing.T) {
 		`{"metadata":{"annotations":{"` + lodiav1alpha1.DatastoreClassAnnotation + `":null}}}`,
 		`{"metadata":{"annotations":{"` + lodiav1alpha1.DatastoreClassUIDAnnotation + `":null}}}`,
 		`{"metadata":{"annotations":{"` + lodiav1alpha1.DatastoreClassGenerationAnnotation + `":"x"}}}`,
+		`{"metadata":{"annotations":{"` + lodiav1alpha1.DatastoreClassGenerationAnnotation + `":"0"}}}`,
+		`{"metadata":{"annotations":{"` + lodiav1alpha1.DatastoreClassGenerationAnnotation + `":"-1"}}}`,
+		`{"metadata":{"annotations":{"` + lodiav1alpha1.DatastoreClassUIDAnnotation + `":"` + strings.Repeat("u", 37) + `"}}}`,
+		`{"metadata":{"annotations":{"` + lodiav1alpha1.DatastoreClassAnnotation + `":"` + strings.Repeat("n", 254) + `"}}}`,
 	} {
 		t.Run(edit, func(t *testing.T) {
 			ns := namespace(t)
@@ -534,6 +538,34 @@ func TestAnEtcdWhoseClassAnnotationsAPersonEditedReportsNoClass(t *testing.T) {
 			mustPass(t, r, ns, cp)
 			if status := getControlPlane(t, ns, cp).Status.Datastore; status == nil || status.Class != nil {
 				t.Errorf("an Etcd annotated %s reports status.datastore %+v, want no class", edit, status)
+			}
+		})
+	}
+}
+
+func TestAClassAnnotationTheSchemaTakesIsReportedAsItIs(t *testing.T) {
+	for i, row := range []struct{ annotation, value string }{
+		{lodiav1alpha1.DatastoreClassAnnotation, strings.Repeat("ü", 253)},
+		{lodiav1alpha1.DatastoreClassUIDAnnotation, strings.Repeat("ü", 36)},
+	} {
+		t.Run(row.annotation, func(t *testing.T) {
+			ns := namespace(t)
+			cp := fmt.Sprintf("annotated-wide-%d", i)
+			createClass(t, newClass(cp, "Retain"))
+			r := classTenant(t, ns, cp, cp)
+			etcd := getEtcd(t, ns, cp)
+			edit := client.MergeFrom(etcd.DeepCopy())
+			metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, row.annotation, row.value)
+			if err := k8s.Patch(t.Context(), etcd, edit, client.FieldOwner("kubectl-annotate")); err != nil {
+				t.Fatal(err)
+			}
+			mustPass(t, r, ns, cp)
+			want := lodiav1alpha1.DatastoreClassStatus{
+				Name:                     etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation],
+				DatastoreClassGeneration: lodiav1alpha1.DatastoreClassGeneration{UID: types.UID(etcd.Annotations[lodiav1alpha1.DatastoreClassUIDAnnotation]), Generation: 1},
+			}
+			if status := getControlPlane(t, ns, cp).Status.Datastore; status == nil || status.Class == nil || *status.Class != want {
+				t.Errorf("an Etcd whose %s holds %d characters of two bytes reports status.datastore %+v, want class %+v", row.annotation, len([]rune(row.value)), status, want)
 			}
 		})
 	}

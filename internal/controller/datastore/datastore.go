@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -55,6 +56,10 @@ const (
 
 // maxRevision is the MaxLength of status.datastore.operatorRevision.
 const maxRevision = 128
+
+// maxClassName and maxClassUID are the MaxLength of status.datastore.class's
+// name and uid, which the API server counts in characters.
+const maxClassName, maxClassUID = 253, 36
 
 type Reconciler struct {
 	client.Client
@@ -484,14 +489,17 @@ func generationOf(class *lodiav1alpha1.DatastoreClass) lodiav1alpha1.DatastoreCl
 }
 
 // recordedClass is the class etcd was rendered from, as its annotations
-// record it, and whether they do.
+// record it, and whether they record one status.datastore.class takes: a
+// person can edit them to any value.
 func recordedClass(etcd *druidv1alpha1.Etcd) (lodiav1alpha1.DatastoreClassStatus, bool) {
 	generation, err := strconv.ParseInt(etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation], 10, 64)
 	class := lodiav1alpha1.DatastoreClassStatus{
 		Name:                     etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation],
 		DatastoreClassGeneration: lodiav1alpha1.DatastoreClassGeneration{UID: types.UID(etcd.Annotations[lodiav1alpha1.DatastoreClassUIDAnnotation]), Generation: generation},
 	}
-	return class, class.Name != "" && class.UID != "" && err == nil
+	return class, class.Name != "" && utf8.RuneCountInString(class.Name) <= maxClassName &&
+		class.UID != "" && utf8.RuneCountInString(string(class.UID)) <= maxClassUID &&
+		err == nil && generation >= 1
 }
 
 // storeMoved says whether a pass that keeps the Etcd's class, held by the
