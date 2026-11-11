@@ -1,6 +1,6 @@
 # Every tool runs through `go tool` (see the tool block in go.mod), except
-# golangci-lint and helm, which are installed on their own, and ko and
-# hydrophone, which run as `go run github.com/google/ko@<version>` and
+# golangci-lint, helm and promtool, which are installed on their own, and ko
+# and hydrophone, which run as `go run github.com/google/ko@<version>` and
 # `go run sigs.k8s.io/hydrophone@<version>`: their dependency graphs would
 # move the operator's own dependencies.
 
@@ -69,13 +69,17 @@ chart: ## lint and render the chart with image tags, then with image digests; wi
 	helm lint --strict $(CHART) --set image.digest=$(DIGEST),signerImage.digest=$(DIGEST),tunnelImage.digest=$(DIGEST)
 	helm template lodia $(CHART) --namespace lodia-system --set image.digest=$(DIGEST),signerImage.digest=$(DIGEST),tunnelImage.digest=$(DIGEST) > /dev/null
 
+.PHONY: monitoring
+monitoring: ## lint the collector's golden as promtool lints a scrape
+	promtool check metrics < internal/metrics/testdata/metrics.prom
+
 .PHONY: verify
 verify: ## the check that says a change is done
 	@before="$$(cat $(GENERATED) | cksum)"; $(MAKE) --no-print-directory generate; \
 	[ "$$before" = "$$(cat $(GENERATED) | cksum)" ] || { echo "make generate changed the generated files: review and commit them"; exit 1; }
 	go mod tidy -diff
 	cd api && go mod tidy -diff
-	$(MAKE) --no-print-directory chart lint test restore-keys
+	$(MAKE) --no-print-directory chart lint monitoring test restore-keys
 
 .PHONY: e2e
 e2e: ## the e2e suite against E2E_KUBECONFIG, else against a kind cluster of its own that it deletes afterwards

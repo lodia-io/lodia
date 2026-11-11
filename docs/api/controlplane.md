@@ -104,7 +104,7 @@ A hostname is a lowercase DNS name whose labels are at most 63 characters, and n
 | `maintenance.settlingSince` | Lifecycle | when Lifecycle first found the change it started in the tenant's slot of the fleet no longer rolling; absent while it rolls, removed when it rolls again and cleared by a new grant; the slot is kept for the settling time after the later of it and `Ready`'s `lastTransitionTime`, `health.failuresBeforeFalse` × (`health.period` + Health's 5-second timeout) + 15 seconds of etcd-druid's status sync, 45 seconds at the defaults ([upgrades-and-maintenance-windows](../decisions/upgrades-and-maintenance-windows.md)) |
 | `maintenance.slotSince` | Lifecycle | when the change Lifecycle started took a slot of the fleet, written in the same apply as the grant and `Maintaining`: the tenant holds the slot while it is present, whatever `Progressing` says; an edit of spec that the writers take up before the change settles rolls in the slot and settles it as any other change, and a paused tenant keeps it and counts as a used slot, so unpausing never takes the fleet past the limit; removed only when the change settles, `Ready` True the settling time after it rolled out, and by a deleting pass |
 
-Lodia's metrics, from wave 2, observability, are built from these fields at scrape time; [metrics-are-part-of-the-api](../decisions/metrics-are-part-of-the-api.md) lists each beside its field.
+Lodia's metrics are built at scrape time from these fields and, with the rest of wave 2, observability, from the etcd's samples and Health's counts; [metrics-are-part-of-the-api](../decisions/metrics-are-part-of-the-api.md) lists each beside its source.
 
 ## Conditions and their reasons
 
