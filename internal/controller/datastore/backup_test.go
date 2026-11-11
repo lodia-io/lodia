@@ -1216,6 +1216,9 @@ func TestTheWatchesBringTheNextPass(t *testing.T) {
 	})
 	createBackup(t, src.ns, "held", nil)
 	awaitBackup(t, src.ns, "held", readyIs(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, fmt.Sprintf("DatastoreReady of src is True (Ready) for generation %d", ready.ObservedGeneration)))
+	if getBackup(t, src.ns, "held").Status.StartedAt != nil {
+		t.Fatal("the held Backup started while the ControlPlane is paused")
+	}
 	setPaused(t, src.ns, sourceName, false)
 	awaitBackup(t, src.ns, "held", func(b *lodiav1alpha1.Backup) error {
 		if b.Status.StartedAt == nil {
