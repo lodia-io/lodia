@@ -730,6 +730,36 @@ lodia_controlplane_condition_reason{controlplane="waiting",namespace="tenants",r
 lodia_controlplane_condition_reason{controlplane="waiting",namespace="tenants",reason="Ready",type="Ready"} 1
 lodia_controlplane_condition_reason{controlplane="waiting",namespace="tenants",reason="Valid",type="CAValidityAcceptable"} 1
 lodia_controlplane_condition_reason{controlplane="waiting",namespace="tenants",reason="WaitingForWindow",type="Progressing"} 1
+# HELP lodia_controlplane_datastore_alarm 1 for each alarm armed in the etcd in the last sample; none wherever lodia_controlplane_datastore_has_leader is absent.
+# TYPE lodia_controlplane_datastore_alarm gauge
+lodia_controlplane_datastore_alarm{alarm="CORRUPT",controlplane="upgrading",namespace="tenants"} 1
+lodia_controlplane_datastore_alarm{alarm="NOSPACE",controlplane="failed",namespace="tenants"} 1
+# HELP lodia_controlplane_datastore_db_size_bytes The largest dbSize among the etcd's members that answered the last sample; absent when none did and wherever lodia_controlplane_datastore_has_leader is.
+# TYPE lodia_controlplane_datastore_db_size_bytes gauge
+lodia_controlplane_datastore_db_size_bytes{controlplane="edge",namespace="tenants"} 5.24288e+07
+lodia_controlplane_datastore_db_size_bytes{controlplane="failed",namespace="tenants"} 2.147487744e+09
+lodia_controlplane_datastore_db_size_bytes{controlplane="queued",namespace="tenants"} 3.145728e+07
+lodia_controlplane_datastore_db_size_bytes{controlplane="restored",namespace="tenants"} 1.073741824e+09
+lodia_controlplane_datastore_db_size_bytes{controlplane="rolling",namespace="tenants"} 6.291456e+07
+lodia_controlplane_datastore_db_size_bytes{controlplane="upgrading",namespace="tenants"} 4.194304e+07
+# HELP lodia_controlplane_datastore_delta_snapshot_period_seconds The Etcd's spec.backup.deltaSnapshotPeriod; absent without a backup store and below 1 s, where no delta snapshot is taken.
+# TYPE lodia_controlplane_datastore_delta_snapshot_period_seconds gauge
+lodia_controlplane_datastore_delta_snapshot_period_seconds{controlplane="deleting",namespace="tenants"} 300
+lodia_controlplane_datastore_delta_snapshot_period_seconds{controlplane="edge",namespace="tenants"} 300
+lodia_controlplane_datastore_delta_snapshot_period_seconds{controlplane="paused",namespace="tenants"} 300
+lodia_controlplane_datastore_delta_snapshot_period_seconds{controlplane="restored",namespace="tenants"} 3600
+lodia_controlplane_datastore_delta_snapshot_period_seconds{controlplane="rolling",namespace="tenants"} 30
+lodia_controlplane_datastore_delta_snapshot_period_seconds{controlplane="starting",namespace="tenants"} 300
+lodia_controlplane_datastore_delta_snapshot_period_seconds{controlplane="waiting",namespace="tenants"} 300
+# HELP lodia_controlplane_datastore_has_leader The last sample of the etcd: 1 when a quorum of the voting members answered naming one leader, else 0; absent while the ControlPlane is paused or being deleted, until its Etcd is formed, and after a pass that could not read the cache, or the client certificate in time, until one does.
+# TYPE lodia_controlplane_datastore_has_leader gauge
+lodia_controlplane_datastore_has_leader{controlplane="edge",namespace="tenants"} 1
+lodia_controlplane_datastore_has_leader{controlplane="failed",namespace="tenants"} 1
+lodia_controlplane_datastore_has_leader{controlplane="queued",namespace="tenants"} 1
+lodia_controlplane_datastore_has_leader{controlplane="restored",namespace="tenants"} 1
+lodia_controlplane_datastore_has_leader{controlplane="rolling",namespace="tenants"} 0
+lodia_controlplane_datastore_has_leader{controlplane="upgrading",namespace="tenants"} 1
+lodia_controlplane_datastore_has_leader{controlplane="waiting",namespace="tenants"} 0
 # HELP lodia_controlplane_datastore_members status.datastore.members.total: the members the etcd asks for.
 # TYPE lodia_controlplane_datastore_members gauge
 lodia_controlplane_datastore_members{controlplane="deleting",namespace="tenants"} 1
@@ -762,6 +792,18 @@ lodia_controlplane_datastore_members_updated{controlplane="restored",namespace="
 lodia_controlplane_datastore_members_updated{controlplane="rolling",namespace="tenants"} 1
 lodia_controlplane_datastore_members_updated{controlplane="upgrading",namespace="tenants"} 1
 lodia_controlplane_datastore_members_updated{controlplane="waiting",namespace="tenants"} 1
+# HELP lodia_controlplane_datastore_quota_bytes The Etcd's spec.etcd.quota: the database size at which etcd arms NOSPACE.
+# TYPE lodia_controlplane_datastore_quota_bytes gauge
+lodia_controlplane_datastore_quota_bytes{controlplane="deleting",namespace="tenants"} 4.294967296e+09
+lodia_controlplane_datastore_quota_bytes{controlplane="edge",namespace="tenants"} 8.589934592e+09
+lodia_controlplane_datastore_quota_bytes{controlplane="failed",namespace="tenants"} 2.147483648e+09
+lodia_controlplane_datastore_quota_bytes{controlplane="paused",namespace="tenants"} 4.294967296e+09
+lodia_controlplane_datastore_quota_bytes{controlplane="queued",namespace="tenants"} 4.294967296e+09
+lodia_controlplane_datastore_quota_bytes{controlplane="restored",namespace="tenants"} 4.294967296e+09
+lodia_controlplane_datastore_quota_bytes{controlplane="rolling",namespace="tenants"} 4.294967296e+09
+lodia_controlplane_datastore_quota_bytes{controlplane="starting",namespace="tenants"} 4.294967296e+09
+lodia_controlplane_datastore_quota_bytes{controlplane="upgrading",namespace="tenants"} 4.294967296e+09
+lodia_controlplane_datastore_quota_bytes{controlplane="waiting",namespace="tenants"} 4.294967296e+09
 # HELP lodia_controlplane_info 1 for every ControlPlane: its UID, status.kubernetes.version, empty while absent, spec.layout, and the members of spec.datastore and spec.endpoint that are set.
 # TYPE lodia_controlplane_info gauge
 lodia_controlplane_info{controlplane="deleting",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="v1.37.1",layout="Split",namespace="tenants",uid="00000000-0000-0000-0000-000000000009"} 1
