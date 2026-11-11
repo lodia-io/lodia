@@ -806,10 +806,12 @@ lodia_controlplane_datastore_quota_bytes{controlplane="upgrading",namespace="ten
 lodia_controlplane_datastore_quota_bytes{controlplane="waiting",namespace="tenants"} 4.294967296e+09
 # HELP lodia_controlplane_info 1 for every ControlPlane: its UID, status.kubernetes.version, empty while absent, spec.layout, and the members of spec.datastore and spec.endpoint that are set.
 # TYPE lodia_controlplane_info gauge
+lodia_controlplane_info{controlplane="aging",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="v1.35.10",layout="Split",namespace="tenants",uid="00000000-0000-0000-0000-000000000014"} 1
 lodia_controlplane_info{controlplane="deleting",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="v1.37.1",layout="Split",namespace="tenants",uid="00000000-0000-0000-0000-000000000009"} 1
 lodia_controlplane_info{controlplane="edge",datastore="dedicated",endpoint_mode="gateway",kubernetes_version="v1.37.1",layout="Split",namespace="tenants",uid="00000000-0000-0000-0000-000000000002"} 1
 lodia_controlplane_info{controlplane="failed",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="v1.37.1",layout="Split",namespace="tenants",uid="00000000-0000-0000-0000-000000000004"} 1
 lodia_controlplane_info{controlplane="fresh",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="",layout="Split",namespace="tenants",uid="00000000-0000-0000-0000-000000000001"} 1
+lodia_controlplane_info{controlplane="legacy",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="v1.34.9",layout="Split",namespace="tenants",uid="00000000-0000-0000-0000-000000000015"} 1
 lodia_controlplane_info{controlplane="overdue",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="",layout="Split",namespace="tenants",uid="00000000-0000-0000-0000-000000000013"} 1
 lodia_controlplane_info{controlplane="paused",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="v1.37.1",layout="Split",namespace="tenants",uid="00000000-0000-0000-0000-000000000007"} 1
 lodia_controlplane_info{controlplane="queued",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="v1.37.1",layout="Split",namespace="tenants",uid="00000000-0000-0000-0000-000000000005"} 1
@@ -819,6 +821,18 @@ lodia_controlplane_info{controlplane="shared",datastore="shared",endpoint_mode="
 lodia_controlplane_info{controlplane="starting",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="",layout="Split",namespace="tenants",uid="00000000-0000-0000-0000-000000000010"} 1
 lodia_controlplane_info{controlplane="upgrading",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="v1.36.4",layout="Split",namespace="tenants",uid="00000000-0000-0000-0000-000000000006"} 1
 lodia_controlplane_info{controlplane="waiting",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="v1.37.1",layout="Split",namespace="tenants",uid="00000000-0000-0000-0000-000000000012"} 1
+# HELP lodia_controlplane_kubernetes_end_of_support_timestamp_seconds The end-of-support date, at 00:00 UTC, that the version table gives the minor of status.kubernetes.version; absent while the version is absent and for a minor outside the table.
+# TYPE lodia_controlplane_kubernetes_end_of_support_timestamp_seconds gauge
+lodia_controlplane_kubernetes_end_of_support_timestamp_seconds{controlplane="aging",namespace="tenants"} 1.8037728e+09
+lodia_controlplane_kubernetes_end_of_support_timestamp_seconds{controlplane="deleting",namespace="tenants"} 1.8246816e+09
+lodia_controlplane_kubernetes_end_of_support_timestamp_seconds{controlplane="edge",namespace="tenants"} 1.8246816e+09
+lodia_controlplane_kubernetes_end_of_support_timestamp_seconds{controlplane="failed",namespace="tenants"} 1.8246816e+09
+lodia_controlplane_kubernetes_end_of_support_timestamp_seconds{controlplane="paused",namespace="tenants"} 1.8246816e+09
+lodia_controlplane_kubernetes_end_of_support_timestamp_seconds{controlplane="queued",namespace="tenants"} 1.8246816e+09
+lodia_controlplane_kubernetes_end_of_support_timestamp_seconds{controlplane="restored",namespace="tenants"} 1.8141408e+09
+lodia_controlplane_kubernetes_end_of_support_timestamp_seconds{controlplane="rolling",namespace="tenants"} 1.8141408e+09
+lodia_controlplane_kubernetes_end_of_support_timestamp_seconds{controlplane="upgrading",namespace="tenants"} 1.8141408e+09
+lodia_controlplane_kubernetes_end_of_support_timestamp_seconds{controlplane="waiting",namespace="tenants"} 1.8246816e+09
 # HELP lodia_controlplane_maintenance_scheduled_for_timestamp_seconds status.target.scheduledFor: when a change Lodia initiates may roll; at or before now the tenant is queued for a slot, later it waits for its window.
 # TYPE lodia_controlplane_maintenance_scheduled_for_timestamp_seconds gauge
 lodia_controlplane_maintenance_scheduled_for_timestamp_seconds{controlplane="overdue",namespace="tenants"} 1.7942976e+09
@@ -831,10 +845,12 @@ lodia_controlplane_maintenance_slot_since_timestamp_seconds{controlplane="failed
 lodia_controlplane_maintenance_slot_since_timestamp_seconds{controlplane="paused",namespace="tenants"} 1.7943768e+09
 # HELP lodia_controlplane_metadata_generation metadata.generation.
 # TYPE lodia_controlplane_metadata_generation gauge
+lodia_controlplane_metadata_generation{controlplane="aging",namespace="tenants"} 1
 lodia_controlplane_metadata_generation{controlplane="deleting",namespace="tenants"} 1
 lodia_controlplane_metadata_generation{controlplane="edge",namespace="tenants"} 3
 lodia_controlplane_metadata_generation{controlplane="failed",namespace="tenants"} 2
 lodia_controlplane_metadata_generation{controlplane="fresh",namespace="tenants"} 1
+lodia_controlplane_metadata_generation{controlplane="legacy",namespace="tenants"} 1
 lodia_controlplane_metadata_generation{controlplane="overdue",namespace="tenants"} 1
 lodia_controlplane_metadata_generation{controlplane="paused",namespace="tenants"} 5
 lodia_controlplane_metadata_generation{controlplane="queued",namespace="tenants"} 1
@@ -887,10 +903,12 @@ lodia_controlplane_nodes_silent{controlplane="edge",namespace="tenants"} 1
 lodia_controlplane_nodes_silent{controlplane="failed",namespace="tenants"} 0
 # HELP lodia_controlplane_operator_revision_granted 1 when status.target.operatorRevision is the running operator's revision, else 0.
 # TYPE lodia_controlplane_operator_revision_granted gauge
+lodia_controlplane_operator_revision_granted{controlplane="aging",namespace="tenants"} 0
 lodia_controlplane_operator_revision_granted{controlplane="deleting",namespace="tenants"} 1
 lodia_controlplane_operator_revision_granted{controlplane="edge",namespace="tenants"} 1
 lodia_controlplane_operator_revision_granted{controlplane="failed",namespace="tenants"} 1
 lodia_controlplane_operator_revision_granted{controlplane="fresh",namespace="tenants"} 0
+lodia_controlplane_operator_revision_granted{controlplane="legacy",namespace="tenants"} 0
 lodia_controlplane_operator_revision_granted{controlplane="overdue",namespace="tenants"} 0
 lodia_controlplane_operator_revision_granted{controlplane="paused",namespace="tenants"} 1
 lodia_controlplane_operator_revision_granted{controlplane="queued",namespace="tenants"} 0
