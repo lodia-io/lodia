@@ -40,8 +40,9 @@ the same change.
 - `make verify` — the one check whose exit code says a change is done:
   generated files current, both modules tidy (`.` and `api/`, which is
   `go.lodia.io/lodia/api`), the chart linted and rendered, golangci-lint,
-  unit and envtest tests; `helm` and golangci-lint are installed on their
-  own. CI runs it on every pull request.
+  the metrics' golden linted by promtool, unit and envtest tests; `helm`,
+  golangci-lint and promtool are installed on their own. CI runs it on every
+  pull request.
 - `make e2e` — the suite in `test/e2e` against `E2E_KUBECONFIG`, or against a
   kind cluster of its own that it deletes afterwards; it refuses any other
   cluster (`docs/decisions/e2e-on-a-named-cluster.md`).

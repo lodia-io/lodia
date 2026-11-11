@@ -12,6 +12,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
@@ -101,8 +102,18 @@ func main() {
 		log.Error(err, "create the manager")
 		os.Exit(1)
 	}
-	if err := operator.Setup(mgr, operator.Inputs{Config: config, Version: version, SignerImage: signerImage, TunnelImage: tunnelImage, EtcdDruidVersion: etcdDruidVersion, EtcdDruidNamespace: etcdDruidNamespace, EtcdDruidDeployment: etcdDruidDeployment, OperatorNamespace: operatorNamespace, GatewayAPI: gatewayAPI}); err != nil {
+	in := operator.Inputs{Config: config, Version: version, SignerImage: signerImage, TunnelImage: tunnelImage, EtcdDruidVersion: etcdDruidVersion, EtcdDruidNamespace: etcdDruidNamespace, EtcdDruidDeployment: etcdDruidDeployment, OperatorNamespace: operatorNamespace, GatewayAPI: gatewayAPI}
+	if err := operator.Setup(mgr, in); err != nil {
 		log.Error(err, "set up the controllers")
+		os.Exit(1)
+	}
+	collector, err := operator.Metrics(mgr.GetCache(), mgr.Elected(), in)
+	if err != nil {
+		log.Error(err, "build Lodia's metrics")
+		os.Exit(1)
+	}
+	if err := ctrlmetrics.Registry.Register(collector); err != nil {
+		log.Error(err, "register Lodia's metrics")
 		os.Exit(1)
 	}
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

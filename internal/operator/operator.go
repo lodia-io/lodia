@@ -35,6 +35,7 @@ import (
 	"go.lodia.io/lodia/internal/controller/pki"
 	"go.lodia.io/lodia/internal/controller/tenant"
 	"go.lodia.io/lodia/internal/controller/workloads"
+	"go.lodia.io/lodia/internal/metrics"
 )
 
 // workers is the default of controllers.<name>.workers, a key the operator
@@ -191,6 +192,17 @@ func Setup(mgr ctrl.Manager, in Inputs) error {
 		return fmt.Errorf("set up the workloads controller: %w", err)
 	}
 	return nil
+}
+
+// Metrics is Lodia's collector over a manager's cache and its Elected.
+// Setup does not register it, since controller-runtime's registry is global
+// and tests run Setup for many managers in one process: cmd/lodia does.
+func Metrics(reader client.Reader, elected <-chan struct{}, in Inputs) (*metrics.Collector, error) {
+	revision, err := in.Revision()
+	if err != nil {
+		return nil, err
+	}
+	return &metrics.Collector{Reader: reader, Elected: elected, Revision: revision, MaxConcurrentRollouts: in.Config.Fleet.MaxConcurrentRollouts}, nil
 }
 
 // newLifecycle settles a change Lodia started for as long as Health takes to
