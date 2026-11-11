@@ -554,6 +554,25 @@ func TestAReadOfTheCacheThatFailsForgetsTheSampleUntilTheNextMinute(t *testing.T
 	}
 }
 
+func TestADialThatFailsForgetsTheSample(t *testing.T) {
+	_, cfgs := etcdCluster(t, 1, nil)
+	cp, etcd := sampledControlPlane("undialled", "uid-undialled")
+	r, clk := sampler(cp, etcd)
+	r.EtcdClient = dialURL(clientURL(cfgs[0]))
+	samplePass(t, r, client.ObjectKeyFromObject(cp))
+	clk.Step(5 * time.Second)
+	servedSample(t, r, cp)
+	r.EtcdClient = func(context.Context, *druidv1alpha1.Etcd) (*clientv3.Client, error) {
+		return nil, errors.New("injected: the client certificate cannot be read")
+	}
+	if got := samplePass(t, r, client.ObjectKeyFromObject(cp)); got.RequeueAfter != time.Minute {
+		t.Errorf("a pass whose dial fails requeues after %s, want a minute", got.RequeueAfter)
+	}
+	if got, ok := r.Sample(client.ObjectKeyFromObject(cp), cp.UID); ok {
+		t.Errorf("a pass whose dial fails leaves the sample %+v", got)
+	}
+}
+
 func TestARecreatedControlPlaneIsSampledUnderItsNewUIDAlone(t *testing.T) {
 	_, cfgs := etcdCluster(t, 1, nil)
 	first, firstEtcd := sampledControlPlane("again", "uid-first")
