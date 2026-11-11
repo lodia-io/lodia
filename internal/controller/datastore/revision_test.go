@@ -980,6 +980,7 @@ func TestTheRevisionIsReportedFromTheStatefulSetReadAfterTheRequest(t *testing.T
 			createClass(t, newClass(cp, "Retain"))
 			heldTenant(t, ns, cp, cp, nil)
 			grant(t, getControlPlane(t, ns, cp), revision)
+			grantClass(t, ns, cp, cp)
 			r := operatorAt(unpaused(k8s), revision)
 			mustPass(t, r, ns, cp)
 			if err := requestedAs("1/"+revision, true)(getEtcd(t, ns, cp)); err != nil {

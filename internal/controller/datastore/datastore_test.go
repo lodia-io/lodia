@@ -1536,6 +1536,7 @@ func TestAPassFromAStaleCacheChangesNoEtcd(t *testing.T) {
 	const cp = "stale"
 	createClass(t, newClass("stale", "Retain"))
 	create(t, controlPlane(ns, cp, "stale"))
+	grantClass(t, ns, cp, "stale")
 	writeGeneration(t, ns, cp, 1)
 	predecessor := waitEtcd(t, ns, cp, nil)
 	stale := interceptor.NewClient(k8s, interceptor.Funcs{
