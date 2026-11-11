@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -76,6 +77,9 @@ type Reconciler struct {
 	// Reader reads what the label-filtered cache does not hold, and
 	// APIServerReady while Workloads waits.
 	Reader client.Reader
+	// Events records the transitions of the conditions it writes;
+	// SetupWithManager sets it.
+	Events events.EventRecorder
 	// SignerImage is lodia-signer's image, the API server's sidecar.
 	SignerImage string
 	// TunnelImage is lodia-tunnel's image, the API server's sidecar in
@@ -93,6 +97,7 @@ type Reconciler struct {
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
+	r.Events = mgr.GetEventRecorder("lodia.io/" + Name)
 	readOnce := predicate.NewPredicateFuncs(func(secret client.Object) bool {
 		cp, ok := secret.GetLabels()[lodiav1alpha1.ControlPlaneLabel]
 		return ok && slices.Contains(restartOnlyNames(cp), secret.GetName())
@@ -159,6 +164,7 @@ func restartOnlyNames(cp string) []string {
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=list
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=tlsroutes,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=list;watch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	cp := &lodiav1alpha1.ControlPlane{}
@@ -1071,7 +1077,7 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlP
 		}
 	}
 	changed := !equality.Semantic.DeepEqual(cp.Status.Endpoint, endpoint) || !equality.Semantic.DeepEqual(cp.Status.Components, components)
-	return statusapply.Apply(ctx, r.Client, r.Reader, FieldManager, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: conditions, Endpoint: endpoint, Components: components}, changed)
+	return statusapply.Writer{Client: r.Client, Reader: r.Reader, Manager: FieldManager, Events: r.Events}.Apply(ctx, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: conditions, Endpoint: endpoint, Components: components}, changed)
 }
 
 func newCondition(status metav1.ConditionStatus, reason, message string) metav1.Condition {

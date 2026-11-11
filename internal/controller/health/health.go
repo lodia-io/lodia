@@ -35,6 +35,7 @@ import (
 	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/events"
 	apiregistrationv1client "k8s.io/kube-aggregator/pkg/client/clientset_generated/clientset/typed/apiregistration/v1"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
@@ -75,6 +76,9 @@ type Reconciler struct {
 	// Reader reads the CA bundle and Lodia's kubeconfig, whose data the cache
 	// does not hold, and a condition Health keeps.
 	Reader client.Reader
+	// Events records the transitions of the conditions it writes;
+	// SetupWithManager sets it.
+	Events events.EventRecorder
 	// Period is how often a control plane is probed and its leader Leases
 	// read, Timeout how long a probe or a read waits for an answer.
 	Period, Timeout time.Duration
@@ -130,6 +134,7 @@ type renewal struct {
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
+	r.Events = mgr.GetEventRecorder("lodia.io/" + Name)
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(Name).
 		WithOptions(controller.Options{MaxConcurrentReconciles: workers, ReconciliationTimeout: time.Minute}).
@@ -156,6 +161,7 @@ func access(cp *lodiav1alpha1.ControlPlane) bool {
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/status,verbs=patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	cp := &lodiav1alpha1.ControlPlane{}
@@ -839,5 +845,5 @@ func previous(cp *lodiav1alpha1.ControlPlane, conditionType string) metav1.Condi
 // every time, since an apply that leaves one out removes it; it leaves cp
 // with what it wrote.
 func (r *Reconciler) apply(ctx context.Context, cp *lodiav1alpha1.ControlPlane, conditions ...metav1.Condition) error {
-	return statusapply.ApplyInto(ctx, r.Client, r.Reader, FieldManager, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: conditions}, false)
+	return statusapply.Writer{Client: r.Client, Reader: r.Reader, Manager: FieldManager, Events: r.Events}.ApplyInto(ctx, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: conditions}, false)
 }
