@@ -241,6 +241,12 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - The ten e2e targets of the Makefile repeat create, run, remove and delete, each with its own list of node containers to remove, and the suite's `Finish` removes them again.
   A label that `startNode` (`test/e2e/gate_test.go`) puts on each container, a removal by that label, and one `define` recipe would leave one copy.
 
+## From the datastore tests' time (2026-11-11)
+
+- The embedded etcds of the datastore tests listen on ports that `testserver.NewTestConfig` chose by listening on port 0 and closing ([test_server.go](https://github.com/kubernetes/apiserver/blob/v0.37.1/pkg/storage/etcd3/testserver/test_server.go#L37-L50)); a socket that takes such a port first fails the test on `bind: address already in use`.
+  It happened in serial local runs before the tests ran in parallel, and since then in one of four local runs at the default `-parallel` of 16, beside another session's envtests, and in none of six at CI's 4.
+  Check whether an etcd that listens on port 0 itself and is dialled at its listener's address closes that window, at least for the single-member etcds of the restore and backup tests.
+
 ## For the release that first drops a minor
 
 - A minor dropped from the version table stays renderable for one more release, as the source of an upgrade ([upgrades-and-maintenance-windows](docs/decisions/upgrades-and-maintenance-windows.md), "End of support"): build it in the release that first drops one, since no minor is dropped yet and the flag would have no data and no test that means anything.
