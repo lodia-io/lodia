@@ -23,6 +23,7 @@ import (
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/controller/health"
 	"go.lodia.io/lodia/internal/metrics"
+	"go.lodia.io/lodia/internal/testenv"
 )
 
 type lagged struct {
@@ -287,6 +288,9 @@ func TestAForgottenOrRecreatedControlPlaneHasNoCount(t *testing.T) {
 func TestEachFailedProbeCountsOnceByItsPath(t *testing.T) {
 	f := newGateway(t)
 	f.publishWorking(t)
+	testenv.Eventually(t, func() error {
+		return expect(t, f.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, f.allAnswered())
+	})
 	failures := metrics.NewProbeFailures()
 	probe := f.probe(500 * time.Millisecond)
 	probe.ProbeFailures = failures
@@ -359,12 +363,12 @@ func TestCollectionsDuringPassesShareNothingUnlocked(t *testing.T) {
 			}
 		}
 	}()
-	for at := 0; at <= 60; at += 5 {
+	for at := 0; at <= 60 || collections.Load() < 3 && at <= 600; at += 5 {
 		h.at(at)
 	}
 	close(stop)
 	<-stopped
-	if collections.Load() < 2 {
+	if collections.Load() < 3 {
 		t.Fatalf("%d collections ran beside the passes", collections.Load())
 	}
 	want := `
