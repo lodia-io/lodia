@@ -391,8 +391,8 @@ Every alert keeps firing for 4 minutes after its condition ends, so that it outl
 ### LodiaOperatorDown
 
 Critical, after 5 minutes without a replica that leads: `leader_election_master_status{name="lodia.io"}` is 1 in the leader alone, so no replica scraped fires it too.
-Nothing is reconciled, and tenants keep running ([operator down](#operator-down)).
-Look at the operator's pods in the release namespace, their logs and events, and the Lease `lodia.io`, which names the last holder.
+Look first at `up{job="lodia"}` and the Lease `lodia.io`: a holder whose `renewTime` moves leads and reconciles, so `up` 0 or absent for its pod is a scrape that fails, whose last error Prometheus shows on the target ([what scraping needs](README.md#scraping-the-operator)).
+Otherwise no replica leads: nothing is reconciled, and tenants keep running ([operator down](#operator-down)); look at the operator's pods in the release namespace, their logs and events, and the Lease's last holder.
 
 ### LodiaControlPlaneNotReady
 
@@ -405,7 +405,7 @@ A hibernated tenant joins the exceptions with hibernation, in phase 3.
 
 ### LodiaControlPlaneDeletionStuck
 
-Warning, after 30 minutes of `Ready` reading `Deleting`, but for a paused `ControlPlane`, which deletes nothing until it is unpaused.
+Warning, after 30 minutes of `Ready` reading `Deleting`, but for a `ControlPlane` paused before its deletion, which deletes nothing until it is unpaused; one paused after its deletion began fires, and waits for its unpause too.
 The Datastore controller deletes the `Etcd` `<cp>-etcd`, waits for etcd-druid to let it go and reclaims the claims before it removes its finalizer `lodia.io/datastore` ([deletion](README.md#deletion)): look at the `Etcd`'s finalizers and `status.lastErrors`, etcd-druid's log and Lodia's (`controller="datastore"`).
 Then the garbage collector deletes what the `ControlPlane` owns, and an object of its namespace left with a `deletionTimestamp` names the finalizer it waits for.
 
@@ -423,7 +423,7 @@ Look at the events of the Deployment `APIServerReady`'s message names, or of the
 ### LodiaCertificateExpiring
 
 Warning, after an hour of `status.credentials.notAfter`, the earliest expiry among the certificates PKI writes, its CAs included, within 14 days, a paused tenant included, since PKI renews nothing while it is paused.
-Renewal failed: `CertificatesReady` names why, or unpause the tenant.
+Renewal failed, which `CertificatesReady` names; or a CA that PKI does not renew is in its last 14 days, which `CertificatesReady` does not name until it has expired and [`LodiaCAExpiring`](#lodiacaexpiring) has named for a year: a [CA rotation](#forced-ca-rotation) mends it, from phase 3; or the tenant is paused: unpause it.
 
 ### LodiaCAExpiring
 
@@ -450,7 +450,8 @@ The tenant's API cannot write: the [lost quorum](#lost-etcd-quorum) runbook, and
 
 Critical, on an alarm armed in two samples in a row.
 `NOSPACE`: API calls fail with `etcdserver: mvcc: database space exceeded` until the alarm is disarmed: the [space quota](#etcd-space-quota) runbook.
-`CORRUPT`, armed when two members' hashes of one revision differ ([corrupt.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/etcdserver/corrupt.go#L184-L273)), fails every write and linearizable read ([corrupt.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/etcdserver/corrupt.go#L432-L464)): [restore](#restore-a-tenant-from-backup) the tenant.
+`CORRUPT`, armed when two members' hashes of one revision differ ([corrupt.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/etcdserver/corrupt.go#L184-L273)), fails every write ([corrupt.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/etcdserver/corrupt.go#L432-L464)) while reads still answer ([v3_server.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/etcdserver/v3_server.go#L131)): [restore](#restore-a-tenant-from-backup) the tenant.
+etcd compares those hashes only when its config turns a check on ([server.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/etcdserver/server.go#L2670-L2700)), and etcd-druid's config turns none on ([etcdconfig.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/configmap/etcdconfig.go#L42-L64)), so it does not arm on Lodia's etcds today.
 
 ### LodiaControllerManagerHeld
 
