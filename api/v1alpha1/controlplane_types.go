@@ -934,8 +934,11 @@ type CredentialsStatus struct {
 	// +optional
 	CABundleSecretRef *LocalReference `json:"caBundleSecretRef,omitempty"`
 
-	// NotAfter is the earliest expiry of the certificates PKI writes for
-	// this ControlPlane, its CAs among them.
+	// NotAfter is the earliest expiry among the certificates PKI's Secrets
+	// hold for this ControlPlane, its CAs among them. It counts each Secret's
+	// own certificate and the newest complete etcd generation, and leaves out
+	// the replaced certificates in the CA bundles, the staged kubelet signer
+	// and a previous etcd generation.
 	// +optional
 	NotAfter *metav1.Time `json:"notAfter,omitempty"`
 }
