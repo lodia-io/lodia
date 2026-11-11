@@ -18,6 +18,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/controller/health"
+	"go.lodia.io/lodia/internal/testenv"
 )
 
 var healthConditions = []string{lodiav1alpha1.ConditionReachable, lodiav1alpha1.ConditionControllersLeading}
@@ -25,8 +26,11 @@ var healthConditions = []string{lodiav1alpha1.ConditionReachable, lodiav1alpha1.
 func TestACacheWithoutHealthsConditionsLeavesTheServers(t *testing.T) {
 	cp := controlPlane(t)
 	e := serve(t)
-	publish(t, cp, e)
 	writeBundle(t, cp, e)
+	publish(t, cp, e)
+	testenv.Eventually(t, func() error {
+		return expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200")
+	})
 	r := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: 2 * time.Second, Clock: clock.RealClock{}}
 	reconcile(t, r, cp)
 	if err := expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {

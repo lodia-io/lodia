@@ -10,12 +10,15 @@ import (
 	"context"
 	"time"
 
+	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	"github.com/prometheus/client_golang/prometheus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/controller/datastore"
 )
 
 // listTimeout is below Prometheus' default scrape timeout of 10 s: an
@@ -58,6 +61,17 @@ var (
 		"status.datastore.members.ready: those of them that are ready.")
 	datastoreMembersUpdated = perControlPlane("lodia_controlplane_datastore_members_updated",
 		"status.datastore.members.updated: those of them that run the Etcd's current spec and are available; absent while it is.")
+	datastoreQuota = perControlPlane("lodia_controlplane_datastore_quota_bytes",
+		"The Etcd's spec.etcd.quota: the database size at which etcd arms NOSPACE.")
+	datastoreDeltaSnapshotPeriod = perControlPlane("lodia_controlplane_datastore_delta_snapshot_period_seconds",
+		"The Etcd's spec.backup.deltaSnapshotPeriod; absent without a backup store and below 1 s, where no delta snapshot is taken.")
+	datastoreDBSize = perControlPlane("lodia_controlplane_datastore_db_size_bytes",
+		"The largest dbSize among the etcd's members that answered the last sample; absent when none did and wherever lodia_controlplane_datastore_has_leader is.")
+	datastoreHasLeader = perControlPlane("lodia_controlplane_datastore_has_leader",
+		"The last sample of the etcd: 1 when a quorum of the voting members answered naming one leader, else 0; absent while the ControlPlane is paused or being deleted, until its Etcd is formed, and after a pass that could not read the cache, or the client certificate in time, until one does.")
+	datastoreAlarm = perControlPlane("lodia_controlplane_datastore_alarm",
+		"1 for each alarm armed in the etcd in the last sample; none wherever lodia_controlplane_datastore_has_leader is absent.",
+		"alarm")
 	operatorRevisionGranted = perControlPlane("lodia_controlplane_operator_revision_granted",
 		"1 when status.target.operatorRevision is the running operator's revision, else 0.")
 	slotSince = perControlPlane("lodia_controlplane_maintenance_slot_since_timestamp_seconds",
@@ -75,7 +89,8 @@ var (
 	descs = []*prometheus.Desc{
 		info, condition, conditionReason, conditionLastTransition, generation, observedGeneration,
 		nodes, nodesReady, nodesOutdatedKubelets, componentReplicas, componentReplicasReady,
-		datastoreMembers, datastoreMembersReady, datastoreMembersUpdated, operatorRevisionGranted,
+		datastoreMembers, datastoreMembersReady, datastoreMembersUpdated,
+		datastoreQuota, datastoreDeltaSnapshotPeriod, datastoreDBSize, datastoreHasLeader, datastoreAlarm, operatorRevisionGranted,
 		slotSince, scheduledFor, upgradeStarted, maxConcurrentRollouts,
 		certificatesExpiration,
 	}
@@ -88,14 +103,16 @@ func perControlPlane(name, help string, labels ...string) *prometheus.Desc {
 }
 
 // Collector builds the metrics from Reader, the manager's cache, once Elected,
-// the manager's, is closed, with Revision, the running operator revision, and
-// MaxConcurrentRollouts, fleet.maxConcurrentRollouts. It keeps no state, so
-// scrapes may run at once.
+// the manager's, is closed, with Revision, the running operator revision,
+// MaxConcurrentRollouts, fleet.maxConcurrentRollouts, and EtcdSample, the
+// sample the etcd sampler serves of a ControlPlane's etcd, by its name and
+// UID. It keeps no state, so scrapes may run at once.
 type Collector struct {
 	Reader                client.Reader
 	Elected               <-chan struct{}
 	Revision              string
 	MaxConcurrentRollouts int
+	EtcdSample            func(types.NamespacedName, types.UID) (datastore.EtcdSample, bool)
 }
 
 func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
@@ -120,13 +137,23 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		logf.Log.WithName("metrics").Error(err, "list the ControlPlanes: this scrape gets none of Lodia's metrics")
 		return
 	}
+	var etcds druidv1alpha1.EtcdList
+	if err := c.Reader.List(ctx, &etcds); err != nil {
+		logf.Log.WithName("metrics").Error(err, "list the Etcds: this scrape gets none of Lodia's metrics")
+		return
+	}
+	byName := make(map[types.NamespacedName]*druidv1alpha1.Etcd, len(etcds.Items))
+	for i := range etcds.Items {
+		byName[client.ObjectKeyFromObject(&etcds.Items[i])] = &etcds.Items[i]
+	}
 	ch <- prometheus.MustNewConstMetric(maxConcurrentRollouts, prometheus.GaugeValue, float64(c.MaxConcurrentRollouts))
 	for i := range list.Items {
-		c.collect(ch, &list.Items[i])
+		cp := &list.Items[i]
+		c.collect(ch, cp, byName[types.NamespacedName{Namespace: cp.Namespace, Name: lodiav1alpha1.EtcdName(cp.Name)}])
 	}
 }
 
-func (c *Collector) collect(ch chan<- prometheus.Metric, cp *lodiav1alpha1.ControlPlane) {
+func (c *Collector) collect(ch chan<- prometheus.Metric, cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) {
 	emit := func(desc *prometheus.Desc, value float64, labels ...string) {
 		ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, value, append([]string{cp.Namespace, cp.Name}, labels...)...)
 	}
@@ -189,6 +216,23 @@ func (c *Collector) collect(ch chan<- prometheus.Metric, cp *lodiav1alpha1.Contr
 		emit(datastoreMembersReady, float64(d.Members.Ready))
 		if d.Members.Updated != nil {
 			emit(datastoreMembersUpdated, float64(*d.Members.Updated))
+		}
+	}
+	if etcd != nil && metav1.IsControlledBy(etcd, cp) {
+		if quota := etcd.Spec.Etcd.Quota; quota != nil {
+			emit(datastoreQuota, float64(quota.Value()))
+		}
+		if period := etcd.Spec.Backup.DeltaSnapshotPeriod; etcd.Spec.Backup.Store != nil && period != nil && period.Duration >= time.Second {
+			emit(datastoreDeltaSnapshotPeriod, period.Seconds())
+		}
+	}
+	if sample, ok := c.EtcdSample(client.ObjectKeyFromObject(cp), cp.UID); ok {
+		if sample.DBSize != nil {
+			emit(datastoreDBSize, float64(*sample.DBSize))
+		}
+		emit(datastoreHasLeader, oneIf(sample.HasLeader))
+		for _, alarm := range sample.Alarms {
+			emit(datastoreAlarm, 1, alarm)
 		}
 	}
 

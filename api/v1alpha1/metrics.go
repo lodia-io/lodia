@@ -25,4 +25,9 @@ const (
 	MetricComponentAPIServer         = "apiServer"
 	MetricComponentControllerManager = "controllerManager"
 	MetricComponentScheduler         = "scheduler"
+
+	// MetricAlarmNoSpace and MetricAlarmCorrupt name an alarm armed in a
+	// dedicated etcd, as etcd names it, in the label alarm.
+	MetricAlarmNoSpace = "NOSPACE"
+	MetricAlarmCorrupt = "CORRUPT"
 )

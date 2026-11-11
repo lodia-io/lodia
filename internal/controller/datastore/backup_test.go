@@ -797,7 +797,7 @@ func TestABackupThatCannotBeTaken(t *testing.T) {
 	t.Run("WaitingForDatastore, an older generation", func(t *testing.T) {
 		src := newSource(t, nil, nil)
 		r := src.reconciler(cached)
-		setPaused(t, src.ns, sourceName, true)
+		pause(t, src.ns, sourceName)
 		cp := getControlPlane(t, src.ns, sourceName)
 		ready := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
 		if ready.Status != metav1.ConditionTrue || ready.ObservedGeneration == cp.Generation {
@@ -1135,7 +1135,7 @@ func TestTheCopyFollowsTheSourcesEtcdNotItsClass(t *testing.T) {
 	}
 }
 
-func runBackupReconciler(t *testing.T, s *source) {
+func runBackupReconciler(t *testing.T, s *source) client.Reader {
 	t.Helper()
 	options, err := operator.Cache(false)
 	if err != nil {
@@ -1163,6 +1163,7 @@ func runBackupReconciler(t *testing.T, s *source) {
 			t.Error(err)
 		}
 	})
+	return mgr.GetClient()
 }
 
 func awaitBackup(t *testing.T, ns, name string, check func(*lodiav1alpha1.Backup) error) *lodiav1alpha1.Backup {
@@ -1176,8 +1177,9 @@ func awaitBackup(t *testing.T, ns, name string, check func(*lodiav1alpha1.Backup
 }
 
 func TestTheWatchesBringTheNextPass(t *testing.T) {
+	var backups client.Reader
 	src := newSource(t, nil, func(s *source) {
-		runBackupReconciler(t, s)
+		backups = runBackupReconciler(t, s)
 		createBackup(t, s.ns, "early", nil)
 		awaitBackup(t, s.ns, "early", readyIs(metav1.ConditionFalse, lodiav1alpha1.ReasonControlPlaneNotFound, "no ControlPlane src"))
 	})
@@ -1201,8 +1203,22 @@ func TestTheWatchesBringTheNextPass(t *testing.T) {
 
 	ready := meta.FindStatusCondition(getControlPlane(t, src.ns, sourceName).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
 	setPaused(t, src.ns, sourceName, true)
+	generation := getControlPlane(t, src.ns, sourceName).Generation
+	testenv.Eventually(t, func() error {
+		cp := &lodiav1alpha1.ControlPlane{}
+		if err := backups.Get(t.Context(), client.ObjectKey{Namespace: src.ns, Name: sourceName}, cp); err != nil {
+			return err
+		}
+		if !cp.Spec.Paused || cp.Generation < generation {
+			return fmt.Errorf("the Backup controller's cache holds the ControlPlane at generation %d, paused %t, want it paused at %d", cp.Generation, cp.Spec.Paused, generation)
+		}
+		return nil
+	})
 	createBackup(t, src.ns, "held", nil)
 	awaitBackup(t, src.ns, "held", readyIs(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, fmt.Sprintf("DatastoreReady of src is True (Ready) for generation %d", ready.ObservedGeneration)))
+	if getBackup(t, src.ns, "held").Status.StartedAt != nil {
+		t.Fatal("the held Backup started while the ControlPlane is paused")
+	}
 	setPaused(t, src.ns, sourceName, false)
 	awaitBackup(t, src.ns, "held", func(b *lodiav1alpha1.Backup) error {
 		if b.Status.StartedAt == nil {
