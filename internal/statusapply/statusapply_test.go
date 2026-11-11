@@ -296,6 +296,125 @@ func TestTheTransitionComesFromTheAPIServerNotTheCache(t *testing.T) {
 	}
 }
 
+func TestAFirstPassReplacesNoConditionTheServerHoldsWithAnotherReason(t *testing.T) {
+	held := metav1.Condition{Type: lodiav1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonReady, Message: "held", ObservedGeneration: 1, LastTransitionTime: earlier}
+	unavailable := metav1.Condition{Type: lodiav1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonUnavailable, Message: "computed", ObservedGeneration: 1, LastTransitionTime: later}
+	copied := metav1.Condition{Type: lodiav1alpha1.ConditionReady, Status: metav1.ConditionUnknown, Reason: lodiav1alpha1.ReasonReconciling, Message: "DatastoreReady: the first pass has not finished", ObservedGeneration: 1, LastTransitionTime: later}
+	pending := metav1.Condition{Type: lodiav1alpha1.ConditionBackupReady, Status: metav1.ConditionUnknown, Reason: lodiav1alpha1.ReasonSnapshotsPending, Message: "etcd-druid reports no BackupReady of Etcd dev yet", ObservedGeneration: 1, LastTransitionTime: earlier}
+	firstPass := func(generation int64) metav1.Condition {
+		return statusapply.FirstPass(&lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Generation: generation}}, lodiav1alpha1.ConditionReady)
+	}
+	backupFirstPass := statusapply.FirstPass(&lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Generation: 1}}, lodiav1alpha1.ConditionBackupReady)
+	stamped := firstPass(1)
+	stamped.LastTransitionTime = later
+	for _, c := range []struct {
+		name       string
+		server     *metav1.Condition
+		generation int64
+		desired    metav1.Condition
+		want       metav1.Condition
+		kept       bool
+	}{
+		{"a first pass over another reason", &held, 1, firstPass(1), held, true},
+		{"a first pass over another reason at an earlier generation", &held, 2, firstPass(2), held, true},
+		{"a first pass over Unknown with another reason", &pending, 1, backupFirstPass, pending, true},
+		{"a first pass that carries a transition time over another reason", &held, 1, stamped, held, true},
+		{"a first pass over none", nil, 1, firstPass(1), firstPass(1), false},
+		{"a first pass over a first pass at an earlier generation", new(firstPass(1)), 2, firstPass(2), firstPass(2), false},
+		{"a first pass over a Reconciling with another message", &copied, 1, firstPass(1), firstPass(1), false},
+		{"another reason over another reason", &held, 1, unavailable, unavailable, false},
+		{"a Reconciling copied from an input over another reason", &held, 1, copied, copied, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cp := controlPlane(t, namespace(t))
+			if c.server != nil {
+				if err := apply(t.Context(), cp, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{*c.server}}, false); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if c.generation > 1 {
+				changed := stored(t, cp)
+				changed.Spec.Version = "v1.35.1"
+				if err := k8s.Update(t.Context(), changed); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cached := stored(t, cp)
+			if cached.Generation != c.generation {
+				t.Fatalf("generation %d, want %d", cached.Generation, c.generation)
+			}
+			meta.RemoveStatusCondition(&cached.Status.Conditions, c.desired.Type)
+			if err := apply(t.Context(), cached, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{c.desired}}, false); err != nil {
+				t.Fatal(err)
+			}
+			got := stored(t, cp)
+			if moved := got.ResourceVersion != cached.ResourceVersion; moved == c.kept {
+				t.Errorf("resourceVersion %s, then %s", cached.ResourceVersion, got.ResourceVersion)
+			}
+			found := meta.FindStatusCondition(got.Status.Conditions, c.desired.Type)
+			if found == nil || found.Status != c.want.Status || found.Reason != c.want.Reason || found.Message != c.want.Message || found.ObservedGeneration != c.want.ObservedGeneration {
+				t.Fatalf("%s is %+v, want %+v", c.desired.Type, found, c.want)
+			}
+			if c.kept && !found.LastTransitionTime.Equal(&c.server.LastTransitionTime) {
+				t.Errorf("lastTransitionTime %s, want %s", found.LastTransitionTime, c.server.LastTransitionTime)
+			}
+		})
+	}
+}
+
+func TestAKeptConditionStaysInTheApplyOfAnotherField(t *testing.T) {
+	cp := controlPlane(t, namespace(t))
+	held := metav1.Condition{Type: lodiav1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonReady, Message: "held", ObservedGeneration: 1, LastTransitionTime: earlier}
+	if err := apply(t.Context(), cp, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{held}}, false); err != nil {
+		t.Fatal(err)
+	}
+	cached := stored(t, cp)
+	meta.RemoveStatusCondition(&cached.Status.Conditions, lodiav1alpha1.ConditionReady)
+	if err := statusapply.ApplyInto(t.Context(), k8s, k8s, manager, cached, lodiav1alpha1.ControlPlaneStatus{
+		Conditions:         []metav1.Condition{statusapply.FirstPass(cached, lodiav1alpha1.ConditionReady)},
+		ObservedGeneration: 1,
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+	got := stored(t, cp)
+	if got.Status.ObservedGeneration != 1 {
+		t.Errorf("observedGeneration %d, want 1", got.Status.ObservedGeneration)
+	}
+	if c := meta.FindStatusCondition(got.Status.Conditions, lodiav1alpha1.ConditionReady); c == nil || c.Reason != held.Reason || c.Message != held.Message || !c.LastTransitionTime.Equal(&held.LastTransitionTime) {
+		t.Errorf("Ready is %+v, want %+v", c, held)
+	}
+	if c := meta.FindStatusCondition(cached.Status.Conditions, lodiav1alpha1.ConditionReady); c == nil || c.Reason != held.Reason {
+		t.Errorf("the object is left with %+v, not what was written", c)
+	}
+}
+
+func TestARecreatedControlPlaneGetsAFirstPassOfItsOwn(t *testing.T) {
+	ns := namespace(t)
+	predecessor := controlPlane(t, ns)
+	held := metav1.Condition{Type: lodiav1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonReady, Message: "the predecessor's", ObservedGeneration: 1, LastTransitionTime: earlier}
+	if err := apply(t.Context(), predecessor, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{held}}, false); err != nil {
+		t.Fatal(err)
+	}
+	cached := stored(t, predecessor)
+	meta.RemoveStatusCondition(&cached.Status.Conditions, lodiav1alpha1.ConditionReady)
+	if err := k8s.Delete(t.Context(), predecessor); err != nil {
+		t.Fatal(err)
+	}
+	successor := controlPlane(t, ns)
+	if err := apply(t.Context(), cached, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{statusapply.FirstPass(cached, lodiav1alpha1.ConditionReady)}}, false); err == nil {
+		t.Fatal("a first pass from a cache holding the predecessor succeeded")
+	}
+	if got := stored(t, successor); len(got.Status.Conditions) != 0 {
+		t.Errorf("the successor's conditions became %+v", got.Status.Conditions)
+	}
+	if err := apply(t.Context(), successor, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{statusapply.FirstPass(successor, lodiav1alpha1.ConditionReady)}}, false); err != nil {
+		t.Fatal(err)
+	}
+	if c := meta.FindStatusCondition(stored(t, successor).Status.Conditions, lodiav1alpha1.ConditionReady); c == nil || c.Status != metav1.ConditionUnknown || c.Reason != lodiav1alpha1.ReasonReconciling {
+		t.Errorf("the successor's Ready is %+v, want its own first pass", c)
+	}
+}
+
 func TestApplyLeavesTheCallersConditionsAlone(t *testing.T) {
 	cp := controlPlane(t, namespace(t))
 	if err := apply(t.Context(), cp, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{condition(metav1.ConditionTrue, "server", earlier)}}, false); err != nil {
