@@ -13,7 +13,7 @@ func cases() []testCase {
 		operatorDown(), controlPlaneNotReady(), controlPlaneDeletionStuck(), redundancyLost(), rolloutStuck(),
 		certificateExpiring(), caExpiring(), backupStale(), etcdSpaceNearQuota(), etcdNoLeader(), etcdAlarm(),
 		controllerManagerHeld(), controllerManagerHoldBlocked(), upgradeFailed(), upgradeStalled(),
-		maintenanceHalted(), maintenanceSlotHeldLong(), reconcileErrors(), healthSamplingLate(),
+		maintenanceHalted(), maintenanceSlotHeldLong(), reconcileErrors(), healthSamplingLate(), kubernetesEndOfSupport(),
 	)
 }
 
@@ -604,5 +604,30 @@ func healthSamplingLate() []testCase {
 			),
 			checks: throughout(alert, late, 300, 390, 420, 570, 600, 660),
 		},
+	}
+}
+
+func kubernetesEndOfSupport() []testCase {
+	const alert = "LodiaKubernetesEndOfSupport"
+	const support = "lodia_controlplane_kubernetes_end_of_support_timestamp_seconds"
+	const days = 86400
+	at := func(cp string, seconds int) batch { return tenant(support, cp, fmt.Sprintf("%dx250", seconds)) }
+	return []testCase{
+		{
+			name: alert + " on each side of 30 days, past the date, also while paused",
+			series: join(
+				at("near", 29*days), at("crossing", 30*days+3600), at("far", 31*days), at("past", 0),
+				at("paused", 29*days), reason("paused", "Progressing", "Paused", "1x250"),
+				at("deleting", 29*days), reason("deleting", "Ready", "Deleting", "1x250"),
+				join(at("near", 29*days), reason("near", "Ready", "Deleting", "1x250")).in("tenants-b"),
+			),
+			checks: []check{
+				{3570, alert, nil},
+				{3600, alert, []alertLabels{tenantAlert("near"), tenantAlert("past"), tenantAlert("paused")}},
+				{7200, alert, []alertLabels{tenantAlert("near"), tenantAlert("past"), tenantAlert("paused")}},
+				{7230, alert, []alertLabels{tenantAlert("near"), tenantAlert("past"), tenantAlert("paused"), tenantAlert("crossing")}},
+			},
+		},
+		failover(alert, tenantAlert("a"), 3600, tenant(support, "a", fmt.Sprint(29*days))),
 	}
 }
