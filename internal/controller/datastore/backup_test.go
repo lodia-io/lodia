@@ -28,7 +28,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apiserver/pkg/storage/etcd3/testserver"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/clock"
 	clocktesting "k8s.io/utils/clock/testing"
@@ -56,7 +55,7 @@ type source struct {
 
 func newSource(t *testing.T, etcd *embed.Config, before func(*source)) *source {
 	t.Helper()
-	s := &source{ns: namespace(t), credentials: namespace(t), etcd: testserver.RunEtcd(t, etcd)}
+	s := &source{ns: namespace(t), credentials: namespace(t), etcd: runEtcd(t, etcd)}
 	create(t, credentials(s.credentials))
 	createClass(t, fullClass(s.ns, s.credentials))
 	if before != nil {
@@ -819,7 +818,7 @@ func TestABackupThatCannotBeTaken(t *testing.T) {
 		}
 	})
 	t.Run("WaitingForDatastore, a foreign Etcd", func(t *testing.T) {
-		src := &source{ns: namespace(t), etcd: testserver.RunEtcd(t, nil)}
+		src := &source{ns: namespace(t), etcd: runEtcd(t, nil)}
 		create(t, &druidv1alpha1.Etcd{
 			ObjectMeta: metav1.ObjectMeta{Name: "src-etcd", Namespace: src.ns, Labels: map[string]string{lodiav1alpha1.ControlPlaneLabel: sourceName}},
 			Spec: druidv1alpha1.EtcdSpec{Replicas: 1, Labels: map[string]string{"app": "etcd"}, Backup: druidv1alpha1.BackupSpec{
@@ -1018,7 +1017,7 @@ func TestABackupDeletedBeforeItIsSealedGoesAtOnce(t *testing.T) {
 
 func TestASealTheEtcdRefuses(t *testing.T) {
 	t.Parallel()
-	cfg := testserver.NewTestConfig(t)
+	cfg := etcdConfig(t)
 	cfg.QuotaBackendBytes = 1 << 20
 	src := newSource(t, cfg, nil)
 	for i := 0; ; i++ {

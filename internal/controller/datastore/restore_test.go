@@ -36,7 +36,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apiserver/pkg/storage/etcd3/testserver"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/clock"
 	clocktesting "k8s.io/utils/clock/testing"
@@ -241,11 +240,11 @@ func newRestore(t *testing.T, setup restoreSetup) *restore {
 	}
 	createClass(t, class)
 	if setup.quota == 0 {
-		r.etcd = &restoredEtcd{Client: testserver.RunEtcd(t, nil).Client}
+		r.etcd = &restoredEtcd{Client: runEtcd(t, nil).Client}
 	} else {
-		config := testserver.NewTestConfig(t)
+		config := etcdConfig(t)
 		config.QuotaBackendBytes = setup.quota
-		r.etcd = &restoredEtcd{Client: testserver.RunEtcd(t, config).Client}
+		r.etcd = &restoredEtcd{Client: runEtcd(t, config).Client}
 	}
 	key := r.ns + "/" + restoredCP + "-etcd"
 	restoredEtcds.Store(key, r.etcd)
@@ -856,7 +855,7 @@ func TestTheCleanupFitsOneTransactionOfADeltaSnapshot(t *testing.T) {
 
 func TestTheCleanupFunction(t *testing.T) {
 	t.Parallel()
-	e := &restoredEtcd{Client: testserver.RunEtcd(t, nil).Client}
+	e := &restoredEtcd{Client: runEtcd(t, nil).Client}
 	e.put(t, append(slices.Clone(cleanedKeys), keptKeys...)...)
 	uid := types.UID("5e1f7c3a-0000-4000-8000-0000000000aa")
 	deleted, revision, err := datastore.Cleanup(t.Context(), e, uid, []byte("first"))

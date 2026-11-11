@@ -243,9 +243,9 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the datastore tests' time (2026-11-11)
 
-- The embedded etcds of the datastore tests listen on ports that `testserver.NewTestConfig` chose by listening on port 0 and closing ([test_server.go](https://github.com/kubernetes/apiserver/blob/v0.37.1/pkg/storage/etcd3/testserver/test_server.go#L37-L50)); a socket that takes such a port first fails the test on `bind: address already in use`.
-  It happened in serial local runs before the tests ran in parallel, and since then in one of four local runs at the default `-parallel` of 16, beside another session's envtests, and in none of six at CI's 4.
-  Check whether an etcd that listens on port 0 itself and is dialled at its listener's address closes that window, at least for the single-member etcds of the restore and backup tests.
+- `TestTheMetricsServeTheSamplesOfTheSamplerSetupReturns` (`internal/operator/operator_test.go`) starts its etcd on ports that `testserver.NewTestConfig` chose by listening on port 0 and closing ([test_server.go](https://github.com/kubernetes/apiserver/blob/v0.37.1/pkg/storage/etcd3/testserver/test_server.go#L37-L50)); a socket that takes such a port first fails the test on `bind: address already in use`.
+  The datastore tests no longer have the window: their `etcdConfig` and `runEtcd` (`internal/controller/datastore/embeddedetcd_test.go`) give each etcd listeners that etcd itself binds.
+  Share them with this test.
 
 ## For the release that first drops a minor
 

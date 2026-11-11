@@ -27,7 +27,6 @@ import (
 	"google.golang.org/grpc/connectivity"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apiserver/pkg/storage/etcd3/testserver"
 	"k8s.io/client-go/rest"
 	"k8s.io/utils/clock"
 	clocktesting "k8s.io/utils/clock/testing"
@@ -95,7 +94,7 @@ var unreachable = url.URL{Scheme: "http", Host: "127.0.0.1:1"}
 
 func etcdMember(t *testing.T, name string) *embed.Config {
 	t.Helper()
-	cfg := testserver.NewTestConfig(t)
+	cfg := etcdConfig(t)
 	cfg.Name = name
 	cfg.InitialClusterToken = t.Name()
 	return cfg
@@ -130,6 +129,9 @@ func etcdCluster(t *testing.T, n int, configure func(i int, cfg *embed.Config)) 
 	var initial []string
 	for i := range cfgs {
 		cfgs[i] = etcdMember(t, "m"+strconv.Itoa(i))
+		if n > 1 {
+			socketPeer(cfgs[i])
+		}
 		initial = append(initial, cfgs[i].Name+"="+cfgs[i].AdvertisePeerUrls[0].String())
 	}
 	for i, cfg := range cfgs {
@@ -264,6 +266,7 @@ func TestALearnerIsNotCountedInTheQuorum(t *testing.T) {
 	r.EtcdClient = dialURL(clientURL(cfgs[0]))
 	learner := etcdMember(t, "learner")
 	learner.StrictReconfigCheck = false
+	socketPeer(learner)
 	added, err := c.MemberAddAsLearner(t.Context(), []string{learner.AdvertisePeerUrls[0].String()})
 	if err != nil {
 		t.Fatal(err)
