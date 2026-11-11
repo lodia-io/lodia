@@ -24,6 +24,7 @@ import (
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/embed"
+	"google.golang.org/grpc/connectivity"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apiserver/pkg/storage/etcd3/testserver"
@@ -384,6 +385,44 @@ func TestAClientThatLeavesThePassTooLittleOfItsDeadlineKeepsNoSample(t *testing.
 			got, ok := r.Sample(client.ObjectKeyFromObject(cp), cp.UID)
 			if ok != c.sample || ok && !got.HasLeader {
 				t.Errorf("a healthy etcd whose client comes %s before the pass's deadline is served %+v, %t, want %t and any sample with its leader", c.left, got, ok, c.sample)
+			}
+		})
+	}
+}
+
+func TestEveryPassClosesItsClient(t *testing.T) {
+	_, cfgs := etcdCluster(t, 1, nil)
+	for _, c := range []struct {
+		name    string
+		timeout time.Duration
+		sample  bool
+	}{
+		{"that samples", 5 * time.Second, true},
+		{"left too little time for the etcd's calls", 500 * time.Millisecond, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cp, etcd := sampledControlPlane("closing", "uid-closing")
+			r, clk := sampler(cp, etcd)
+			var dialled []*clientv3.Client
+			r.EtcdClient = func(ctx context.Context, e *druidv1alpha1.Etcd) (*clientv3.Client, error) {
+				c, err := dialURL(clientURL(cfgs[0]))(ctx, e)
+				dialled = append(dialled, c)
+				return c, err
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), c.timeout)
+			defer cancel()
+			if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+				t.Fatal(err)
+			}
+			if len(dialled) != 1 {
+				t.Fatalf("the pass dialled %d clients, want one", len(dialled))
+			}
+			clk.Step(5 * time.Second)
+			if _, ok := r.Sample(client.ObjectKeyFromObject(cp), cp.UID); ok != c.sample {
+				t.Fatalf("the pass kept a sample: %t, want %t", ok, c.sample)
+			}
+			if state := dialled[0].ActiveConnection().GetState(); state != connectivity.Shutdown {
+				t.Errorf("after the pass its client's connection is %s, want %s", state, connectivity.Shutdown)
 			}
 		})
 	}
