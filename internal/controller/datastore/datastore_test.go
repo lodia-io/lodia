@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -52,11 +53,53 @@ import (
 )
 
 var (
-	k8s         client.WithWatch
-	cached      client.Client
-	apiReader   client.Reader
-	asDatastore *rest.Config
+	k8s          client.WithWatch
+	cached       client.Client
+	apiReader    client.Reader
+	asDatastore  *rest.Config
+	managerReads *reads
 )
+
+type reads struct {
+	client.Client
+	mu        sync.Mutex
+	etcdReady map[client.ObjectKey]druidv1alpha1.Condition
+	paused    map[client.ObjectKey]int64
+}
+
+func (r *reads) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if err := r.Client.Get(ctx, key, obj, opts...); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch read := obj.(type) {
+	case *druidv1alpha1.Etcd:
+		if ready := druidv1alpha1.GetCondition(read, druidv1alpha1.ConditionTypeReady); ready != nil {
+			r.etcdReady[key] = *ready
+		}
+	case *lodiav1alpha1.ControlPlane:
+		if read.Spec.Paused {
+			r.paused[key] = max(r.paused[key], read.Generation)
+		}
+	}
+	return nil
+}
+
+func (r *reads) readyOf(key client.ObjectKey) *druidv1alpha1.Condition {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if ready, ok := r.etcdReady[key]; ok {
+		return &ready
+	}
+	return nil
+}
+
+func (r *reads) pausedAt(key client.ObjectKey) int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.paused[key]
+}
 
 const (
 	druidNamespace    = "druid-system"
@@ -85,7 +128,8 @@ func TestMain(m *testing.M) {
 		env.Fatal("etcd-druid's Deployment", err)
 	}
 	mgr := env.Manager(asDatastore, false)
-	if err := (&datastore.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion, EtcdClient: dialRestored, Clock: clock.RealClock{}}).SetupWithManager(mgr, 1); err != nil {
+	managerReads = &reads{Client: mgr.GetClient(), etcdReady: map[client.ObjectKey]druidv1alpha1.Condition{}, paused: map[client.ObjectKey]int64{}}
+	if err := (&datastore.Reconciler{Client: managerReads, Reader: mgr.GetAPIReader(), EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion, EtcdClient: dialRestored, Clock: clock.RealClock{}}).SetupWithManager(mgr, 1); err != nil {
 		env.Fatal("controller", err)
 	}
 	ctx := env.StartManager(mgr)
@@ -320,6 +364,18 @@ func setPaused(t *testing.T, ns, name string, paused bool) {
 	if err := k8s.Patch(t.Context(), cp, patch); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func pause(t *testing.T, ns, name string) {
+	t.Helper()
+	setPaused(t, ns, name, true)
+	generation := getControlPlane(t, ns, name).Generation
+	testenv.Eventually(t, func() error {
+		if read := managerReads.pausedAt(client.ObjectKey{Namespace: ns, Name: name}); read < generation {
+			return fmt.Errorf("the suite's manager has read the ControlPlane paused at generation %d, want %d", read, generation)
+		}
+		return nil
+	})
 }
 
 func waitCondition(t *testing.T, ns, name string, status metav1.ConditionStatus, reason, message string) {

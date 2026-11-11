@@ -848,12 +848,14 @@ func loadImage(ctx context.Context, t *testing.T, kubeconfig, node string, image
 	if err != nil || len(nodes) == 0 {
 		t.Fatalf("the nodes of kind cluster %s: %d, %v", cluster, len(nodes), err)
 	}
-	// Through files, since piped from one docker exec into another the archive
-	// arrived cut short on CI runners; outside /tmp, a tmpfs on both nodes,
-	// which docker cp cannot reach.
+	// The export is local: through the transfer API, ctr exits while a
+	// goroutine still writes the end of the archive
+	// (https://github.com/containerd/containerd/blob/v2.3.4/core/transfer/archive/exporter.go#L119-L125).
+	// The archive stays outside /tmp, a tmpfs on both nodes, which docker cp
+	// cannot reach.
 	archive, local := "/root/"+apiLoop+".tar", filepath.Join(t.TempDir(), apiLoop+".tar")
 	for _, args := range [][]string{
-		{"exec", nodes[0].String(), "ctr", "--namespace=k8s.io", "images", "export", archive, image.String()},
+		{"exec", nodes[0].String(), "ctr", "--namespace=k8s.io", "images", "export", "--local", archive, image.String()},
 		{"cp", nodes[0].String() + ":" + archive, local},
 		{"cp", local, node + ":" + archive},
 		{"exec", node, "ctr", "--namespace=k8s.io", "images", "import", "--digests", archive},
