@@ -142,6 +142,10 @@ func TestPhase1Gate(t *testing.T) {
 			leaderServesMetrics(ctx, t, cfg, k8s, key)
 			return ctx
 		}).
+		Assess("G7: an event regarding the tenant records its Ready, Normal, from lodia.io/lifecycle", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			readyRecorded(ctx, t, k8s, key)
+			return ctx
+		}).
 		Assess("anonymous requests reach the tenant's health paths and cluster-info, nothing else", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			access = openTenant(ctx, t, k8s, key)
 			anonymous, err := rest.HTTPClientFor(rest.AnonymousClientConfig(access.cfg))
