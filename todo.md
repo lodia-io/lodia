@@ -217,6 +217,11 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   `<cluster>-kubeconfig`, which the provider copies from `<cp>-admin-kubeconfig`, carries Lodia's admin credential (`kubernetes-admin` in `lodia:cluster-admins`), which is also the platform's automation credential, while Cluster API's contract says that kubeconfig must not be shared with other users or applications ([control-plane.md](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/docs/book/src/developer/providers/contracts/control-plane.md#L872-L874)).
   A second standing kubeconfig from PKI for it, so that revoking one does not revoke the other.
 
+## From the provider's audit (2026-11-11)
+
+- `.golangci.yml` breaks its own header: it switches gosec off for `internal/testenv/` (`.golangci.yml:72-73`), a rule off for one repository, and no GitHub workflow compares the file, so "the lint job fails on any difference" does not hold here.
+  Move the exclusion to `//nolint:gosec // <why>` at its sites in `internal/testenv/testenv.go`, so that Lodia and the Cluster API provider carry the same file byte for byte; the provider's `verify` then compares its copy with Lodia's at the commit it pins.
+
 ## For wave 2, observability
 
 - Health's own metrics, under metrics-are-part-of-the-api: the lag of Health's pass is the watchdog of the hold's margin, and the rest, failed probes and silent nodes, is to be named there.
