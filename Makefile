@@ -12,6 +12,7 @@ E2E_UPGRADE_TEST ?= TestMinorUpgradeGate
 E2E_MAINTENANCE_TEST ?= TestOperatorUpgradeInWindows
 CHART = charts/lodia
 CONTROLLERS = datastore health lifecycle pki tenant workloads
+RACE_PACKAGES = ./internal/controller/health ./internal/metrics
 METRICS = metrics.service.enabled=true,metrics.serviceMonitor.enabled=true
 GENERATED = api/v1alpha1/zz_generated.deepcopy.go api/crds/*.yaml $(CHART)/files/crds/*.yaml $(CHART)/files/rbac/*.yaml
 DIGEST = sha256:0000000000000000000000000000000000000000000000000000000000000000
@@ -38,9 +39,10 @@ lint:
 	cd api && golangci-lint run ./...
 
 .PHONY: test
-test: ## unit and envtest tests; envtest runs a real API server and etcd
+test: ## unit and envtest tests, those of RACE_PACKAGES with the race detector; envtest runs a real API server and etcd
 	# @todo: 60 s until we know what holds an API server past SIGTERM; see todo.md.
-	KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT=60s KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test ./...
+	KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT=60s KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test $$(go list ./... | grep -vxF "$$(go list $(RACE_PACKAGES))")
+	KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT=60s KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test -race $(RACE_PACKAGES)
 	cd api && go test ./...
 
 .PHONY: restore-keys

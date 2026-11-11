@@ -229,3 +229,15 @@ func golden() []client.Object {
 	tenants := []client.Object{fresh, edge, restored, failed, queued, upgrading, paused, starting, rolling, waiting, overdue, shared, deleting}
 	return append(tenants, goldenEtcds(tenants)...)
 }
+
+func goldenCounts(key types.NamespacedName, uid types.UID) (silent, counted int, ok bool) {
+	counts := map[string]struct {
+		uid             int
+		silent, counted int
+	}{"edge": {2, 1, 4}, "failed": {4, 0, 2}}
+	c, ok := counts[key.Name]
+	if !ok || key.Namespace != "tenants" || uid != controlPlane(key.Name, c.uid).UID {
+		return 0, 0, false
+	}
+	return c.silent, c.counted, true
+}

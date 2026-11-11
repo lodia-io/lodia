@@ -136,9 +136,19 @@ type Inputs struct {
 	GatewayAPI          bool
 }
 
-// Setup registers every controller with the manager and returns the etcd
-// sampler, whose samples Metrics serves.
-func Setup(mgr ctrl.Manager, in Inputs) (*datastore.SampleReconciler, error) {
+// Sources are the controllers Setup registers whose memory Lodia's metrics
+// serve: Health, with its counter of failed probes, health-nodes, with its
+// histogram of lag and its counts of the nodes, and the etcd sampler, with its
+// samples. No registry holds the counter or the histogram.
+type Sources struct {
+	Health *health.Reconciler
+	Nodes  *health.NodesReconciler
+	Etcd   *datastore.SampleReconciler
+}
+
+// Setup registers every controller with the manager and returns the Sources
+// Metrics serves.
+func Setup(mgr ctrl.Manager, in Inputs) (*Sources, error) {
 	revision, err := in.Revision()
 	if err != nil {
 		return nil, err
@@ -187,28 +197,32 @@ func Setup(mgr ctrl.Manager, in Inputs) (*datastore.SampleReconciler, error) {
 	if err := (&tenant.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), ApplyPeriod: 10 * time.Minute, TunnelImage: in.TunnelImage, Revision: revision}).SetupWithManager(mgr, workers); err != nil {
 		return nil, fmt.Errorf("set up the tenant controller: %w", err)
 	}
-	if err := newHealth(mgr.GetClient(), mgr.GetAPIReader(), in.Config.Health).SetupWithManager(mgr, workers); err != nil {
+	sources := &Sources{Health: newHealth(mgr.GetClient(), mgr.GetAPIReader(), in.Config.Health), Nodes: newNodes(mgr.GetClient(), mgr.GetAPIReader(), in.Config.Health), Etcd: sampler}
+	if err := sources.Health.SetupWithManager(mgr, workers); err != nil {
 		return nil, fmt.Errorf("set up the health controller: %w", err)
 	}
-	if err := newNodes(mgr.GetClient(), mgr.GetAPIReader(), in.Config.Health).SetupWithManager(mgr, nodesWorkers); err != nil {
+	if err := sources.Nodes.SetupWithManager(mgr, nodesWorkers); err != nil {
 		return nil, fmt.Errorf("set up the health nodes reconciler: %w", err)
 	}
 	if err := (&workloads.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), SignerImage: in.SignerImage, TunnelImage: in.TunnelImage, GatewayAPI: in.GatewayAPI, Revision: revision}).SetupWithManager(mgr, workers); err != nil {
 		return nil, fmt.Errorf("set up the workloads controller: %w", err)
 	}
-	return sampler, nil
+	return sources, nil
 }
 
 // Metrics is Lodia's collector over a manager's cache and its Elected, and
-// over the samples of the etcd sampler Setup returns. Setup does not register
-// it, since controller-runtime's registry is global and tests run Setup for
-// many managers in one process: cmd/lodia does.
-func Metrics(reader client.Reader, elected <-chan struct{}, in Inputs, sampler *datastore.SampleReconciler) (*metrics.Collector, error) {
+// over the Sources Setup returned. Setup does not register it, since
+// controller-runtime's registry is global and tests run Setup for many
+// managers in one process: cmd/lodia does.
+func Metrics(reader client.Reader, elected <-chan struct{}, in Inputs, sources *Sources) (*metrics.Collector, error) {
 	revision, err := in.Revision()
 	if err != nil {
 		return nil, err
 	}
-	return &metrics.Collector{Reader: reader, Elected: elected, Revision: revision, MaxConcurrentRollouts: in.Config.Fleet.MaxConcurrentRollouts, EtcdSample: sampler.Sample}, nil
+	return &metrics.Collector{
+		Reader: reader, Elected: elected, Revision: revision, MaxConcurrentRollouts: in.Config.Fleet.MaxConcurrentRollouts,
+		EtcdSample: sources.Etcd.Sample, NodeCounts: sources.Nodes.Counts, SampleLag: sources.Nodes.SampleLag, ProbeFailures: sources.Health.ProbeFailures,
+	}, nil
 }
 
 // newLifecycle settles a change Lodia started for as long as Health takes to
@@ -223,12 +237,13 @@ func newLifecycle(c client.Client, reader client.Reader, cfg Config, revision st
 }
 
 func newHealth(c client.Client, reader client.Reader, cfg HealthConfig) *health.Reconciler {
-	return &health.Reconciler{Client: c, Reader: reader, Period: cfg.Period.Duration, FailuresBeforeFalse: cfg.FailuresBeforeFalse, Timeout: healthTimeout, Clock: clock.RealClock{}}
+	return &health.Reconciler{Client: c, Reader: reader, Period: cfg.Period.Duration, FailuresBeforeFalse: cfg.FailuresBeforeFalse, Timeout: healthTimeout, Clock: clock.RealClock{}, ProbeFailures: metrics.NewProbeFailures()}
 }
 
 func newNodes(c client.Client, reader client.Reader, cfg HealthConfig) *health.NodesReconciler {
 	return &health.NodesReconciler{
 		Client: c, Reader: reader, Period: cfg.Period.Duration, Timeout: healthTimeout,
 		SilentAfter: cfg.SilentAfter.Duration, HoldFraction: int(cfg.HoldFraction), ReleaseAfter: cfg.ReleaseAfter.Duration, Clock: clock.RealClock{},
+		SampleLag: metrics.NewSampleLag(),
 	}
 }

@@ -855,6 +855,10 @@ lodia_controlplane_nodes{controlplane="restored",namespace="tenants"} 0
 lodia_controlplane_nodes{controlplane="rolling",namespace="tenants"} 2
 lodia_controlplane_nodes{controlplane="upgrading",namespace="tenants"} 2
 lodia_controlplane_nodes{controlplane="waiting",namespace="tenants"} 2
+# HELP lodia_controlplane_nodes_counted The nodes that count towards the hold of the controller manager in Health's last list of the node Leases: those with a Lease that are Ready, or turned Unknown less than 5 minutes before the hold began. Absent while lodia_controlplane_nodes_silent is.
+# TYPE lodia_controlplane_nodes_counted gauge
+lodia_controlplane_nodes_counted{controlplane="edge",namespace="tenants"} 4
+lodia_controlplane_nodes_counted{controlplane="failed",namespace="tenants"} 2
 # HELP lodia_controlplane_nodes_outdated_kubelets status.nodes.outdatedKubelets: the tenant's nodes whose kubelet runs an older minor than status.kubernetes.version.
 # TYPE lodia_controlplane_nodes_outdated_kubelets gauge
 lodia_controlplane_nodes_outdated_kubelets{controlplane="deleting",namespace="tenants"} 0
@@ -877,6 +881,10 @@ lodia_controlplane_nodes_ready{controlplane="restored",namespace="tenants"} 0
 lodia_controlplane_nodes_ready{controlplane="rolling",namespace="tenants"} 2
 lodia_controlplane_nodes_ready{controlplane="upgrading",namespace="tenants"} 2
 lodia_controlplane_nodes_ready{controlplane="waiting",namespace="tenants"} 2
+# HELP lodia_controlplane_nodes_silent The nodes that count whose Lease Health has not seen change for health.silentAfter, in its last list of the node Leases. Absent while that list is missing or the tenant's hold is off, before Health's first list of the Nodes, and until Health's clock of the Leases has run health.silentAfter.
+# TYPE lodia_controlplane_nodes_silent gauge
+lodia_controlplane_nodes_silent{controlplane="edge",namespace="tenants"} 1
+lodia_controlplane_nodes_silent{controlplane="failed",namespace="tenants"} 0
 # HELP lodia_controlplane_operator_revision_granted 1 when status.target.operatorRevision is the running operator's revision, else 0.
 # TYPE lodia_controlplane_operator_revision_granted gauge
 lodia_controlplane_operator_revision_granted{controlplane="deleting",namespace="tenants"} 1
@@ -910,3 +918,21 @@ lodia_controlplane_upgrade_started_timestamp_seconds{controlplane="upgrading",na
 # HELP lodia_fleet_max_concurrent_rollouts fleet.maxConcurrentRollouts: how many tenants may hold a slot of the fleet at once.
 # TYPE lodia_fleet_max_concurrent_rollouts gauge
 lodia_fleet_max_concurrent_rollouts 3
+# HELP lodia_health_nodes_sample_lag_seconds How much later than its due time, the previous pass's end plus the requeue it returned, a pass of health-nodes started: the delay in Health's queue, for which the margin of the controller manager's hold keeps 10 seconds.
+# TYPE lodia_health_nodes_sample_lag_seconds histogram
+lodia_health_nodes_sample_lag_seconds_bucket{le="0.25"} 2
+lodia_health_nodes_sample_lag_seconds_bucket{le="0.5"} 3
+lodia_health_nodes_sample_lag_seconds_bucket{le="1"} 3
+lodia_health_nodes_sample_lag_seconds_bucket{le="2.5"} 3
+lodia_health_nodes_sample_lag_seconds_bucket{le="5"} 3
+lodia_health_nodes_sample_lag_seconds_bucket{le="10"} 3
+lodia_health_nodes_sample_lag_seconds_bucket{le="30"} 4
+lodia_health_nodes_sample_lag_seconds_bucket{le="+Inf"} 4
+lodia_health_nodes_sample_lag_seconds_sum 12.3
+lodia_health_nodes_sample_lag_seconds_count 4
+# HELP lodia_health_probe_failures_total Health's probes that failed, by path, whether or not three failed passes in a row turned Reachable False.
+# TYPE lodia_health_probe_failures_total counter
+lodia_health_probe_failures_total{path="api"} 3
+lodia_health_probe_failures_total{path="internal"} 0
+lodia_health_probe_failures_total{path="konnectivity"} 0
+lodia_health_probe_failures_total{path="tunnel"} 1
