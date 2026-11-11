@@ -220,7 +220,7 @@ func Metrics(reader client.Reader, elected <-chan struct{}, in Inputs, sources *
 		return nil, err
 	}
 	return &metrics.Collector{
-		Reader: reader, Elected: elected, Revision: revision, MaxConcurrentRollouts: in.Config.Fleet.MaxConcurrentRollouts,
+		Reader: reader, Elected: elected, Revision: revision, MaxConcurrentRollouts: in.Config.Fleet.MaxConcurrentRollouts, HoldFraction: sources.Nodes.HoldFraction,
 		EtcdSample: sources.Etcd.Sample, NodeCounts: sources.Nodes.Counts, SampleLag: sources.Nodes.SampleLag, ProbeFailures: sources.Health.ProbeFailures,
 	}, nil
 }

@@ -918,6 +918,9 @@ lodia_controlplane_upgrade_started_timestamp_seconds{controlplane="upgrading",na
 # HELP lodia_fleet_max_concurrent_rollouts fleet.maxConcurrentRollouts: how many tenants may hold a slot of the fleet at once.
 # TYPE lodia_fleet_max_concurrent_rollouts gauge
 lodia_fleet_max_concurrent_rollouts 3
+# HELP lodia_health_hold_fraction health.holdFraction: the share of the counted nodes that are silent at which Health holds a tenant's controller manager.
+# TYPE lodia_health_hold_fraction gauge
+lodia_health_hold_fraction 0.75
 # HELP lodia_health_nodes_sample_lag_seconds How much later than its due time, the previous pass's end plus the requeue it returned, a pass of health-nodes started: the delay in Health's queue, for which the margin of the controller manager's hold keeps 10 seconds.
 # TYPE lodia_health_nodes_sample_lag_seconds histogram
 lodia_health_nodes_sample_lag_seconds_bucket{le="0.25"} 2
