@@ -186,7 +186,7 @@ func (r *Reconciler) gather(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 		class := &lodiav1alpha1.DatastoreClass{}
 		switch err := r.Get(ctx, client.ObjectKey{Name: running.Name}, class); {
 		case err == nil:
-			f.classGeneration = class.Generation
+			f.class = lodiav1alpha1.DatastoreClassGeneration{UID: class.UID, Generation: class.Generation}
 		case !apierrors.IsNotFound(err):
 			return f, err
 		}

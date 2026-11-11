@@ -12,6 +12,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/controller/datastore"
@@ -38,9 +40,26 @@ func runsClass(t *testing.T, ns, cp, quota, generation string) {
 	if got, recorded := quantity(etcd.Spec.Etcd.Quota), etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation]; got != quota || recorded != generation {
 		t.Errorf("the Etcd runs quota %s of class generation %s, want %s of generation %s", got, recorded, quota, generation)
 	}
-	if status := getControlPlane(t, ns, cp).Status.Datastore; status == nil || status.Class == nil || status.Class.Name != etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation] || strconv.FormatInt(status.Class.Generation, 10) != generation {
-		t.Errorf("status.datastore is %+v, want class generation %s", status, generation)
+	g, err := strconv.ParseInt(generation, 10, 64)
+	if err != nil {
+		t.Fatal(err)
 	}
+	want := lodiav1alpha1.DatastoreClassStatus{
+		Name:                     etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation],
+		DatastoreClassGeneration: lodiav1alpha1.DatastoreClassGeneration{UID: types.UID(etcd.Annotations[lodiav1alpha1.DatastoreClassUIDAnnotation]), Generation: g},
+	}
+	if status := getControlPlane(t, ns, cp).Status.Datastore; status == nil || status.Class == nil || *status.Class != want || want.UID == "" {
+		t.Errorf("status.datastore is %+v, want class %+v", status, want)
+	}
+}
+
+func classAt(t *testing.T, name string, g int64) *lodiav1alpha1.DatastoreClassGeneration {
+	t.Helper()
+	class := &lodiav1alpha1.DatastoreClass{}
+	if err := k8s.Get(t.Context(), client.ObjectKey{Name: name}, class); err != nil {
+		t.Fatal(err)
+	}
+	return &lodiav1alpha1.DatastoreClassGeneration{UID: class.UID, Generation: g}
 }
 
 func quota(q string) func(*lodiav1alpha1.DatastoreClass) {
@@ -77,7 +96,7 @@ func TestAClassEditWaitsUntilItsGenerationIsGranted(t *testing.T) {
 			r := classTenant(t, ns, cp, cp)
 			runsClass(t, ns, cp, c.quota, "1")
 			waits := func(generation string) string {
-				return "DatastoreClass " + cp + " generation " + generation + " waits for status.target.datastoreClassGeneration"
+				return "DatastoreClass " + cp + " generation " + generation + " waits for status.target.datastoreClass"
 			}
 			if message := readyMessage(t, ns, cp); strings.Contains(message, "waits for") {
 				t.Errorf("a new Etcd notes %q", message)
@@ -95,7 +114,7 @@ func TestAClassEditWaitsUntilItsGenerationIsGranted(t *testing.T) {
 			waitEtcd(t, ns, cp, namesGeneration(2))
 			runsClass(t, ns, cp, c.quota, "1")
 
-			applyTarget(t, getControlPlane(t, ns, cp), "v1.37.1", revision, 1)
+			applyTarget(t, getControlPlane(t, ns, cp), "v1.37.1", revision, classAt(t, cp, 1))
 			mustPass(t, r, ns, cp)
 			runsClass(t, ns, cp, c.quota, "1")
 
@@ -114,6 +133,75 @@ func TestAClassEditWaitsUntilItsGenerationIsGranted(t *testing.T) {
 			}
 		})
 	}
+}
+
+func classOf(name, quotaBytes string) *lodiav1alpha1.DatastoreClass {
+	class := newClass(name, "Retain")
+	quota(quotaBytes)(class)
+	return class
+}
+
+func deleteClass(t *testing.T, name string) {
+	t.Helper()
+	if err := k8s.Delete(t.Context(), newClass(name, "Retain")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func recordsUID(t *testing.T, ns, cp string, class *lodiav1alpha1.DatastoreClass) {
+	t.Helper()
+	if got := getEtcd(t, ns, cp).Annotations[lodiav1alpha1.DatastoreClassUIDAnnotation]; got != string(class.UID) {
+		t.Errorf("the Etcd records class UID %s, want %s", got, class.UID)
+	}
+}
+
+func TestAClassCreatedAgainUnderItsNameWaitsForItsGrant(t *testing.T) {
+	t.Run("at the generation granted to the class it replaces", func(t *testing.T) {
+		ns := namespace(t)
+		const cp = "again-same"
+		replaced := classOf(cp, "2Gi")
+		createClass(t, replaced)
+		r := classTenant(t, ns, cp, cp)
+		grantClass(t, ns, cp, cp)
+		deleteClass(t, cp)
+		mustPass(t, r, ns, cp)
+		runsClass(t, ns, cp, "2Gi", "1")
+
+		again := classOf(cp, "3Gi")
+		createClass(t, again)
+		mustPass(t, r, ns, cp)
+		runsClass(t, ns, cp, "2Gi", "1")
+		recordsUID(t, ns, cp, replaced)
+		if want := "; DatastoreClass " + cp + " generation 1 of UID " + string(again.UID) + " waits for status.target.datastoreClass"; !strings.HasSuffix(readyMessage(t, ns, cp), want) {
+			t.Errorf("DatastoreReady says %q, want it to end with %q", readyMessage(t, ns, cp), want)
+		}
+
+		grantClass(t, ns, cp, cp)
+		mustPass(t, r, ns, cp)
+		runsClass(t, ns, cp, "3Gi", "1")
+		recordsUID(t, ns, cp, again)
+	})
+	t.Run("reaching the generation granted to the class it replaces", func(t *testing.T) {
+		ns := namespace(t)
+		const cp = "again-reaches"
+		replaced := classOf(cp, "2Gi")
+		createClass(t, replaced)
+		r := classTenant(t, ns, cp, cp)
+		editClass(t, cp, quota("1Gi"))
+		grantClass(t, ns, cp, cp)
+		mustPass(t, r, ns, cp)
+		runsClass(t, ns, cp, "1Gi", "2")
+
+		deleteClass(t, cp)
+		createClass(t, classOf(cp, "3Gi"))
+		mustPass(t, r, ns, cp)
+		runsClass(t, ns, cp, "1Gi", "2")
+
+		editClass(t, cp, quota("4Gi"))
+		mustPass(t, r, ns, cp)
+		runsClass(t, ns, cp, "1Gi", "2")
+		recordsUID(t, ns, cp, replaced)
+	})
 }
 
 func TestANewEtcdTakesTheClassAsItIs(t *testing.T) {
@@ -187,7 +275,7 @@ func TestAClassHeldForItsCredentialsAlsoNotesItsWait(t *testing.T) {
 		class.Spec.Etcd.QuotaBackendBytes = new(resource.MustParse("3Gi"))
 	})
 	mustPass(t, r, ns, cp)
-	want := "; DatastoreClass " + cp + " generation 2 waits for status.target.datastoreClassGeneration; DatastoreClass " + cp + " is held: its credentials Secret " + credentialsNamespace + "/s3 is missing"
+	want := "; DatastoreClass " + cp + " generation 2 waits for status.target.datastoreClass; DatastoreClass " + cp + " is held: its credentials Secret " + credentialsNamespace + "/s3 is missing"
 	if message := readyMessage(t, ns, cp); !strings.HasSuffix(message, want) {
 		t.Errorf("DatastoreReady says %q, want it to end with %q", message, want)
 	}

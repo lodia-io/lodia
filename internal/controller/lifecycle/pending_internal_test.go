@@ -168,20 +168,43 @@ func TestANewPatchInTheTableRollsWithTheReleaseThatAddsItInOneSlot(t *testing.T)
 	expectVersion(t, expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonIdle}), versioned{version: "v1.37.2"})
 }
 
+const (
+	sharedUID   = "11111111-0000-0000-0000-000000000001"
+	recreateUID = "11111111-0000-0000-0000-000000000002"
+)
+
+func shared(g int64) lodiav1alpha1.DatastoreClassGeneration {
+	if g == 0 {
+		return noClass
+	}
+	return lodiav1alpha1.DatastoreClassGeneration{UID: sharedUID, Generation: g}
+}
+
+func again(g int64) lodiav1alpha1.DatastoreClassGeneration {
+	return lodiav1alpha1.DatastoreClassGeneration{UID: recreateUID, Generation: g}
+}
+
 func onClass(running, target, class int64) func(*facts) {
+	return onClasses(shared(running), shared(target), shared(class))
+}
+
+func onClasses(running, target, class lodiav1alpha1.DatastoreClassGeneration) func(*facts) {
 	return func(f *facts) {
-		f.cp.Status.Datastore.Class = &lodiav1alpha1.DatastoreClassStatus{Name: "shared", Generation: running}
+		f.cp.Status.Datastore.Class = &lodiav1alpha1.DatastoreClassStatus{Name: "shared", DatastoreClassGeneration: running}
 		if f.cp.Status.Target != nil {
-			f.cp.Status.Target.DatastoreClassGeneration = target
+			f.cp.Status.Target.DatastoreClass = nil
+			if target != noClass {
+				f.cp.Status.Target.DatastoreClass = &target
+			}
 		}
-		f.classGeneration = class
+		f.class = class
 	}
 }
 
-func expectClass(t *testing.T, d decision, want int64) {
+func expectClass(t *testing.T, d decision, want lodiav1alpha1.DatastoreClassGeneration) {
 	t.Helper()
-	if got := d.status.Target; got == nil || got.DatastoreClassGeneration != want {
-		t.Errorf("target is %+v, want datastoreClassGeneration %d", got, want)
+	if got := classTargetOf(&lodiav1alpha1.ControlPlane{Status: d.status}); got != want {
+		t.Errorf("target is %+v, want datastoreClass %+v", d.status.Target, want)
 	}
 }
 
@@ -226,7 +249,7 @@ func TestAClassEditIsGrantedByItsOwnRules(t *testing.T) {
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonIdle}, 4},
 		{"a class gone before the Etcd took its granted edit leaves the target at what the Etcd runs", held(running(revisionA), closedWindow, onClass(4, 5, 0), slotted(lodiav1alpha1.ReasonMaintaining, 3)),
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonMaintaining, message: "keeps its slot of the fleet until", slot: true, settlingSince: &nowSecond, requeue: settling}, 4},
-		{"an Etcd without a class reported keeps the target", held(running(revisionA), closedWindow, func(f *facts) { f.cp.Status.Target.DatastoreClassGeneration = 4 }),
+		{"an Etcd without a class reported keeps the target", held(running(revisionA), closedWindow, func(f *facts) { f.cp.Status.Target.DatastoreClass = new(shared(4)) }),
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonIdle}, 4},
 		{"the owner's edit refused is Failed", held(running(revisionA), onClass(4, 5, 5), refusedEtcd),
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonFailed, message: "DatastoreReady: Refused: the API server refuses Etcd dev-etcd"}, 5},
@@ -234,7 +257,7 @@ func TestAClassEditIsGrantedByItsOwnRules(t *testing.T) {
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonIdle}, 5},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			expectClass(t, expectGrant(t, c.f, c.want), c.class)
+			expectClass(t, expectGrant(t, c.f, c.want), shared(c.class))
 		})
 	}
 }
@@ -245,12 +268,12 @@ func TestEveryKindPendingIsGrantedInOneSlot(t *testing.T) {
 	d := expectGrant(t, waits, granted{revision: revisionA, reason: lodiav1alpha1.ReasonWaitingForWindow,
 		message: "operator revision " + revisionB + ", Kubernetes v1.37.2 and DatastoreClass shared generation 5 wait for the maintenance window", scheduledFor: &nextStart, requeue: 30 * time.Minute})
 	expectVersion(t, d, versioned{version: "v1.37.1"})
-	expectClass(t, d, 4)
+	expectClass(t, d, shared(4))
 
 	d = expectGrant(t, held(inWindow("12:00", "13:00", ""), patches, onClass(4, 4, 5)), granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, slot: true, takesSlot: true,
 		message: "the change Lodia started rolls: kube-apiserver: reports v1.37.1, not v1.37.2"})
 	expectVersion(t, d, versioned{version: "v1.37.2", step: lodiav1alpha1.UpgradeStepAPIServer, since: now.Rfc3339Copy().Time})
-	expectClass(t, d, 5)
+	expectClass(t, d, shared(5))
 }
 
 func TestAClassEditInASlotRollsSettlesAndFails(t *testing.T) {
@@ -284,7 +307,7 @@ func TestAClassEditInASlotRollsSettlesAndFails(t *testing.T) {
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonMaintenanceFailed, slot: true, message: "the change Lodia started failed: DatastoreReady: Refused: the API server refuses Etcd dev-etcd"}, 5},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			expectClass(t, expectGrant(t, c.f, c.want), c.class)
+			expectClass(t, expectGrant(t, c.f, c.want), shared(c.class))
 		})
 	}
 }
@@ -292,31 +315,65 @@ func TestAClassEditInASlotRollsSettlesAndFails(t *testing.T) {
 func TestAClassEditedTwiceBeforeTheGrantTakesTheLatest(t *testing.T) {
 	f := held(running(revisionA), closedWindow, onClass(4, 4, 5))
 	adopt(f.cp, expectGrant(t, f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonWaitingForWindow, message: "generation 5 waits", scheduledFor: new(time.Date(2026, 11, 9, 13, 0, 0, 0, time.UTC)), requeue: 30 * time.Minute}))
-	f.classGeneration = 6
+	f.class = shared(6)
 	d := expectGrant(t, f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonWaitingForWindow, message: "generation 6 waits", scheduledFor: new(time.Date(2026, 11, 9, 13, 0, 0, 0, time.UTC)), requeue: 30 * time.Minute})
-	expectClass(t, d, 4)
+	expectClass(t, d, shared(4))
 	adopt(f.cp, d)
 	f.now = time.Date(2026, 11, 9, 13, 0, 0, 0, time.UTC)
-	expectClass(t, expectGrant(t, f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonMaintaining, message: "runs DatastoreClass shared generation 4, not 6", slot: true, takesSlot: true}), 6)
+	expectClass(t, expectGrant(t, f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonMaintaining, message: "runs DatastoreClass shared generation 4, not 6", slot: true, takesSlot: true}), shared(6))
 }
 
 func TestAClassEditedBetweenTwoPassesOfItsSlotIsTakenAtOnce(t *testing.T) {
 	f := held(running(revisionA), onClass(4, 4, 5))
 	d := expectGrant(t, f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonMaintaining, slot: true, takesSlot: true})
-	expectClass(t, d, 5)
+	expectClass(t, d, shared(5))
 	adopt(f.cp, d)
-	f.classGeneration = 6
+	f.class = shared(6)
 	closedWindow(&f)
-	expectClass(t, expectGrant(t, f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonMaintaining, message: "runs DatastoreClass shared generation 4, not 6", slot: true}), 6)
+	expectClass(t, expectGrant(t, f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonMaintaining, message: "runs DatastoreClass shared generation 4, not 6", slot: true}), shared(6))
 }
 
 func TestAClassDeletedWhileItsEditWaitsIsNoLongerPending(t *testing.T) {
 	f := held(running(revisionA), closedWindow, onClass(4, 4, 5))
 	adopt(f.cp, expectGrant(t, f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonWaitingForWindow, scheduledFor: new(time.Date(2026, 11, 9, 13, 0, 0, 0, time.UTC)), requeue: 30 * time.Minute}))
-	f.classGeneration = 0
-	expectClass(t, expectGrant(t, f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonIdle}), 4)
-	f.classGeneration = 1
-	expectClass(t, expectGrant(t, f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonWaitingForWindow, message: "DatastoreClass shared generation 1 waits", scheduledFor: new(time.Date(2026, 11, 9, 13, 0, 0, 0, time.UTC)), requeue: 30 * time.Minute}), 4)
+	f.class = noClass
+	expectClass(t, expectGrant(t, f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonIdle}), shared(4))
+	f.class = again(1)
+	expectClass(t, expectGrant(t, f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonWaitingForWindow, message: "DatastoreClass shared generation 1 of UID " + recreateUID + " waits", scheduledFor: new(time.Date(2026, 11, 9, 13, 0, 0, 0, time.UTC)), requeue: 30 * time.Minute}), shared(4))
+}
+
+func TestAClassCreatedAgainUnderItsNameWaitsForItsGrant(t *testing.T) {
+	nextStart := time.Date(2026, 11, 9, 13, 0, 0, 0, time.UTC)
+	nowSecond := now.Rfc3339Copy().Time
+	waits := func(generation string) granted {
+		return granted{revision: revisionA, reason: lodiav1alpha1.ReasonWaitingForWindow, message: "DatastoreClass shared generation " + generation + " of UID " + recreateUID + " waits for the maintenance window", scheduledFor: &nextStart, requeue: 30 * time.Minute}
+	}
+	for _, c := range []struct {
+		name  string
+		f     facts
+		want  granted
+		class lodiav1alpha1.DatastoreClassGeneration
+	}{
+		{"at the generation granted to the class it replaces", held(running(revisionA), closedWindow, onClasses(shared(1), shared(1), again(1))), waits("1"), shared(1)},
+		{"at a generation above the one granted", held(running(revisionA), closedWindow, onClasses(shared(1), shared(1), again(2))), waits("2"), shared(1)},
+		{"reaching the generation granted to the class it replaces", held(running(revisionA), closedWindow, onClasses(shared(2), shared(2), again(2))), waits("2"), shared(2)},
+		{"with no target yet, which takes what the Etcd runs", held(running(revisionA), closedWindow, onClasses(shared(1), noClass, again(1))), waits("1"), shared(1)},
+		{"granted in a free slot", held(running(revisionA), onClasses(shared(1), shared(1), again(1))),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonMaintaining, message: "the change Lodia started rolls: etcd: runs DatastoreClass shared generation 1, not 1 of UID " + recreateUID, slot: true, takesSlot: true}, again(1)},
+		{"granted at once in a slot", held(running(revisionA), closedWindow, onClasses(shared(1), shared(1), again(1)), slotted(lodiav1alpha1.ReasonMaintaining, 3)),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonMaintaining, message: "etcd: runs DatastoreClass shared generation 1, not 1 of UID " + recreateUID, slot: true}, again(1)},
+		{"rolled out once the Etcd runs it", held(running(revisionA), onClasses(again(1), again(1), again(1)), slotted(lodiav1alpha1.ReasonMaintaining, 3)),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonMaintaining, message: "keeps its slot of the fleet until", slot: true, settlingSince: &nowSecond, requeue: settling}, again(1)},
+		{"an Etcd created again by hand takes it as it is, and so does the target", held(running(revisionA), closedWindow, onClasses(again(1), shared(1), again(1))),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonIdle}, again(1)},
+		{"failed while the Etcd runs the class it replaces", held(running(revisionA), onClasses(shared(1), again(1), again(1)),
+			condition(metav1.Condition{Type: lodiav1alpha1.ConditionDatastoreReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonRefused, Message: "the API server refuses Etcd dev-etcd"})),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonFailed, message: "DatastoreReady: Refused"}, again(1)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			expectClass(t, expectGrant(t, c.f, c.want), c.class)
+		})
+	}
 }
 
 func TestAPausedOrDeletingPassKeepsTheClassTarget(t *testing.T) {
@@ -325,10 +382,10 @@ func TestAPausedOrDeletingPassKeepsTheClassTarget(t *testing.T) {
 		func(f *facts) { f.cp.DeletionTimestamp = &started },
 	} {
 		f := held(running(revisionA), onClass(4, 4, 5), change)
-		expectClass(t, decide(f), 4)
+		expectClass(t, decide(f), shared(4))
 		f = held(running(revisionA), onClass(4, 0, 4), change)
-		if target := decide(f).status.Target; target == nil || target.DatastoreClassGeneration != 0 {
-			t.Errorf("a paused or deleting pass wrote target %+v, want no class generation", target)
+		if target := decide(f).status.Target; target == nil || target.DatastoreClass != nil {
+			t.Errorf("a paused or deleting pass wrote target %+v, want no class", target)
 		}
 	}
 }

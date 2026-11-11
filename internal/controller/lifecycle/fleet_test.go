@@ -510,20 +510,20 @@ func TestAStaleCacheNeverRevokesAGrantOrASlot(t *testing.T) {
 			meta.SetStatusCondition(&cp.Status.Conditions, metav1.Condition{Type: lodiav1alpha1.ConditionProgressing, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonIdle, ObservedGeneration: cp.Generation})
 		}},
 		{"a cache from before a class edit's grant", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
-			datastoreClass(t, quiet, "stale-grant")
+			class := datastoreClass(t, quiet, "stale-grant")
 			reportsOf(t, cp, runningRevision)
-			applyQuiet(t, cp, "test/class", runsClass("stale-grant", 1))
-			seedSlot(t, cp, classGrant(editClass(t, quiet, "stale-grant")), false, nil)
+			applyQuiet(t, cp, "test/class", runsClass(class, 1))
+			seedSlot(t, cp, classGrant(class, editClass(t, quiet, "stale-grant")), false, nil)
 		}, func(cp *lodiav1alpha1.ControlPlane) {
-			cp.Status.Target.DatastoreClassGeneration = 0
+			cp.Status.Target.DatastoreClass = nil
 			cp.Status.Maintenance = nil
 			meta.SetStatusCondition(&cp.Status.Conditions, metav1.Condition{Type: lodiav1alpha1.ConditionProgressing, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonIdle, ObservedGeneration: cp.Generation})
 		}},
 		{"a cache that has not seen the Etcd take the class edit", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
-			datastoreClass(t, quiet, "stale-rollout")
+			class := datastoreClass(t, quiet, "stale-rollout")
 			reportsOf(t, cp, runningRevision)
-			applyQuiet(t, cp, "test/class", runsClass("stale-rollout", editClass(t, quiet, "stale-rollout")))
-			seedSlot(t, cp, classGrant(2), false, &settling)
+			applyQuiet(t, cp, "test/class", runsClass(class, editClass(t, quiet, "stale-rollout")))
+			seedSlot(t, cp, classGrant(class, 2), false, &settling)
 		}, func(cp *lodiav1alpha1.ControlPlane) {
 			cp.Status.Datastore.Class.Generation = 1
 			cp.Status.Maintenance.SettlingSince = nil

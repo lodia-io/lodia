@@ -126,9 +126,9 @@ func grant(t *testing.T, cp *lodiav1alpha1.ControlPlane, operatorRevision string
 	if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(cp), current); err != nil {
 		t.Fatal(err)
 	}
-	var class int64
+	var class *lodiav1alpha1.DatastoreClassGeneration
 	if current.Status.Target != nil {
-		class = current.Status.Target.DatastoreClassGeneration
+		class = current.Status.Target.DatastoreClass
 	}
 	applyTarget(t, cp, cp.Spec.Version, operatorRevision, class)
 }
@@ -140,14 +140,14 @@ func grantClass(t *testing.T, ns, name, className string) {
 	if err := k8s.Get(t.Context(), client.ObjectKey{Name: className}, class); err != nil {
 		t.Fatal(err)
 	}
-	applyTarget(t, cp, cp.Status.Target.Version, cp.Status.Target.OperatorRevision, class.Generation)
+	applyTarget(t, cp, cp.Status.Target.Version, cp.Status.Target.OperatorRevision, &lodiav1alpha1.DatastoreClassGeneration{UID: class.UID, Generation: class.Generation})
 }
 
-func applyTarget(t *testing.T, cp *lodiav1alpha1.ControlPlane, version, operatorRevision string, class int64) {
+func applyTarget(t *testing.T, cp *lodiav1alpha1.ControlPlane, version, operatorRevision string, class *lodiav1alpha1.DatastoreClassGeneration) {
 	t.Helper()
 	target := map[string]any{"version": version, "operatorRevision": operatorRevision}
-	if class != 0 {
-		target["datastoreClassGeneration"] = class
+	if class != nil {
+		target["datastoreClass"] = map[string]any{"uid": string(class.UID), "generation": class.Generation}
 	}
 	u := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": lodiav1alpha1.GroupVersion.String(),
@@ -462,7 +462,8 @@ func resources(r *corev1.ResourceRequirements) string {
 func TestFinalizerAndEtcdFromClass(t *testing.T) {
 	ns, credentialsNamespace := namespace(t), namespace(t)
 	create(t, credentials(credentialsNamespace))
-	createClass(t, fullClass("mapped", credentialsNamespace))
+	mapped := fullClass("mapped", credentialsNamespace)
+	createClass(t, mapped)
 	create(t, controlPlane(ns, "dev", "mapped"))
 
 	testenv.Eventually(t, func() error {
@@ -529,11 +530,12 @@ func TestFinalizerAndEtcdFromClass(t *testing.T) {
 		}}},
 		{"the Etcd → status.datastore", ptr.Deref(cp.Status.Datastore, lodiav1alpha1.DatastoreStatus{}), lodiav1alpha1.DatastoreStatus{
 			Endpoints: []lodiav1alpha1.HostPort{{Host: "dev-etcd-client." + ns + ".svc", Port: 2379}},
-			Class:     &lodiav1alpha1.DatastoreClassStatus{Name: "mapped", Generation: 1},
+			Class:     &lodiav1alpha1.DatastoreClassStatus{Name: "mapped", DatastoreClassGeneration: lodiav1alpha1.DatastoreClassGeneration{UID: mapped.UID, Generation: 1}},
 			Members:   lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: 1}},
 			Snapshots: &lodiav1alpha1.SnapshotLocation{Provider: "S3", Endpoint: "https://s3.example.test", Bucket: "lodia-backups", Prefix: store.Prefix},
 		}},
 		{"the class → metadata.annotations[" + lodiav1alpha1.DatastoreClassAnnotation + "]", etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation], "mapped"},
+		{"the class's UID → metadata.annotations[" + lodiav1alpha1.DatastoreClassUIDAnnotation + "]", etcd.Annotations[lodiav1alpha1.DatastoreClassUIDAnnotation], string(mapped.UID)},
 		{"the class's generation → metadata.annotations[" + lodiav1alpha1.DatastoreClassGenerationAnnotation + "]", etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation], "1"},
 	}
 	for _, row := range rows {
@@ -1415,7 +1417,8 @@ func TestUnsupported(t *testing.T) {
 func TestDatastoreReadyIsQuorum(t *testing.T) {
 	ns := namespace(t)
 	const cp = "reported"
-	createClass(t, newClass("reported", "Retain"))
+	class := newClass("reported", "Retain")
+	createClass(t, class)
 	create(t, controlPlane(ns, cp, "reported"))
 	writeGeneration(t, ns, cp, 1)
 	waitEtcd(t, ns, cp, nil)
@@ -1437,7 +1440,7 @@ func TestDatastoreReadyIsQuorum(t *testing.T) {
 	})
 	if got, want := ptr.Deref(getControlPlane(t, ns, cp).Status.Datastore, lodiav1alpha1.DatastoreStatus{}), (lodiav1alpha1.DatastoreStatus{
 		Endpoints: []lodiav1alpha1.HostPort{{Host: "reported-etcd-client." + ns + ".svc", Port: 2379}},
-		Class:     &lodiav1alpha1.DatastoreClassStatus{Name: "reported", Generation: 1},
+		Class:     &lodiav1alpha1.DatastoreClassStatus{Name: "reported", DatastoreClassGeneration: lodiav1alpha1.DatastoreClassGeneration{UID: class.UID, Generation: 1}},
 		Members:   lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: 1, Ready: 1}, Updated: new(int32(1))},
 	}); !reflect.DeepEqual(got, want) {
 		t.Errorf("status.datastore %+v, want %+v", got, want)
@@ -2702,7 +2705,7 @@ func TestClassGone(t *testing.T) {
 	if got, want := withoutTLS(after), withoutTLS(before); !reflect.DeepEqual(got, want) {
 		t.Errorf("the Etcd's fields from the gone class moved:\n got %+v\nwant %+v", got, want)
 	}
-	for _, key := range []string{lodiav1alpha1.DatastoreClassAnnotation, lodiav1alpha1.DatastoreClassGenerationAnnotation} {
+	for _, key := range []string{lodiav1alpha1.DatastoreClassAnnotation, lodiav1alpha1.DatastoreClassUIDAnnotation, lodiav1alpha1.DatastoreClassGenerationAnnotation} {
 		if after.Annotations[key] != before.Annotations[key] {
 			t.Errorf("annotation %s moved from %q to %q", key, before.Annotations[key], after.Annotations[key])
 		}

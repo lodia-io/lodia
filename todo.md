@@ -219,8 +219,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 - An edit that removes `etcd.autoCompaction` from a class that set it is refused at the grant: the apply of the `Etcd` sends an empty `spec.sharedConfig` where Lodia's apply set its fields before, it comes back null, and etcd-druid's schema refuses it (`spec.sharedConfig in body must be of type object: "null"`), so `DatastoreReady` is `Refused` and certificate generations stop reaching the `Etcd`.
   `apply` drops empty scheduling constraints for that reason, and an empty `sharedConfig` needs the same.
-- A class deleted and created again under its name starts again at generation 1, and `status.target.datastoreClassGeneration` names a generation, not a class: a recreated class that reaches the generation granted to its predecessor is applied without a grant.
-  The class's UID beside the generation, in the target and on the `Etcd`, would tell them apart.
 
 ## For wave 2, observability
 

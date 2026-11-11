@@ -94,6 +94,7 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 	}
 	spec := &class.Spec
 	metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, lodiav1alpha1.DatastoreClassAnnotation, class.Name)
+	metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, lodiav1alpha1.DatastoreClassUIDAnnotation, string(class.UID))
 	metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, lodiav1alpha1.DatastoreClassGenerationAnnotation, strconv.FormatInt(class.Generation, 10))
 	if spec.Storage.ClassName != "" {
 		etcd.Spec.StorageClass = new(spec.Storage.ClassName)
@@ -212,7 +213,7 @@ func copied(cp *lodiav1alpha1.ControlPlane, current *druidv1alpha1.Etcd, generat
 		Spec:       *current.Spec.DeepCopy(),
 	}
 	etcd.UID, etcd.ResourceVersion = current.UID, current.ResourceVersion
-	for _, key := range []string{lodiav1alpha1.OperatorRevisionAnnotation, lodiav1alpha1.DatastoreClassAnnotation, lodiav1alpha1.DatastoreClassGenerationAnnotation, allowUnhealthyPodEviction} {
+	for _, key := range []string{lodiav1alpha1.OperatorRevisionAnnotation, lodiav1alpha1.DatastoreClassAnnotation, lodiav1alpha1.DatastoreClassUIDAnnotation, lodiav1alpha1.DatastoreClassGenerationAnnotation, allowUnhealthyPodEviction} {
 		if value, ok := current.Annotations[key]; ok {
 			metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, key, value)
 		}
@@ -318,7 +319,7 @@ func memberLabels(etcd *druidv1alpha1.Etcd) map[string]string {
 
 // keep must copy every field render takes from the class.
 func keep(etcd, current *druidv1alpha1.Etcd) {
-	for _, key := range []string{lodiav1alpha1.DatastoreClassAnnotation, lodiav1alpha1.DatastoreClassGenerationAnnotation} {
+	for _, key := range []string{lodiav1alpha1.DatastoreClassAnnotation, lodiav1alpha1.DatastoreClassUIDAnnotation, lodiav1alpha1.DatastoreClassGenerationAnnotation} {
 		if value, ok := current.Annotations[key]; ok {
 			metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, key, value)
 		}

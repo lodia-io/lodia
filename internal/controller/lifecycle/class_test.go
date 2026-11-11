@@ -20,7 +20,7 @@ import (
 	"go.lodia.io/lodia/internal/testenv"
 )
 
-func datastoreClass(t *testing.T, c client.Client, name string) {
+func datastoreClass(t *testing.T, c client.Client, name string) *lodiav1alpha1.DatastoreClass {
 	t.Helper()
 	class := &lodiav1alpha1.DatastoreClass{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
@@ -34,6 +34,7 @@ func datastoreClass(t *testing.T, c client.Client, name string) {
 			t.Error(err)
 		}
 	})
+	return class
 }
 
 func editClass(t *testing.T, c client.Client, name string) int64 {
@@ -49,26 +50,29 @@ func editClass(t *testing.T, c client.Client, name string) int64 {
 	return class.Generation
 }
 
-func runsClass(name string, generation int64) map[string]any {
+func runsClass(class *lodiav1alpha1.DatastoreClass, generation int64) map[string]any {
 	return map[string]any{"datastore": map[string]any{
 		"endpoints":        []any{map[string]any{"host": "dev-etcd-client.team.svc", "port": int64(2379)}},
 		"members":          map[string]any{"total": int64(1), "ready": int64(1), "updated": int64(1)},
 		"operatorRevision": runningRevision,
-		"class":            map[string]any{"name": name, "generation": generation},
+		"class":            map[string]any{"name": class.Name, "uid": string(class.UID), "generation": generation},
 	}}
 }
 
-func classTarget(cp *lodiav1alpha1.ControlPlane) int64 {
-	if cp.Status.Target == nil {
-		return 0
+func classAt(class *lodiav1alpha1.DatastoreClass, generation int64) lodiav1alpha1.DatastoreClassGeneration {
+	return lodiav1alpha1.DatastoreClassGeneration{UID: class.UID, Generation: generation}
+}
+
+func classTarget(cp *lodiav1alpha1.ControlPlane) lodiav1alpha1.DatastoreClassGeneration {
+	if cp.Status.Target == nil || cp.Status.Target.DatastoreClass == nil {
+		return lodiav1alpha1.DatastoreClassGeneration{}
 	}
-	return cp.Status.Target.DatastoreClassGeneration
+	return *cp.Status.Target.DatastoreClass
 }
 
 func TestAClassEditReachesTheControlPlanesWhoseEtcdRunsIt(t *testing.T) {
 	const edited, kept = "lifecycle-edited", "lifecycle-kept"
-	datastoreClass(t, k8s, edited)
-	datastoreClass(t, k8s, kept)
+	classes := map[string]*lodiav1alpha1.DatastoreClass{edited: datastoreClass(t, k8s, edited), kept: datastoreClass(t, k8s, kept)}
 	tenants := map[string]*lodiav1alpha1.ControlPlane{}
 	for _, class := range []string{edited, kept} {
 		cp := controlPlane(t, "v1.37.1")
@@ -79,13 +83,13 @@ func TestAClassEditReachesTheControlPlanesWhoseEtcdRunsIt(t *testing.T) {
 			setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
 		}
 		reportAll(t, cp, "v1.37.1")
-		applyStatus(t, cp, "test/datastore", runsClass(class, 1))
+		applyStatus(t, cp, "test/datastore", runsClass(classes[class], 1))
 		tenants[class] = cp
 	}
-	for _, cp := range tenants {
+	for class, cp := range tenants {
 		testenv.Eventually(t, func() error {
-			if got := classTarget(get(t, cp)); got != 1 {
-				return fmt.Errorf("target.datastoreClassGeneration is %d, want 1, the generation the Etcd runs", got)
+			if got := classTarget(get(t, cp)); got != classAt(classes[class], 1) {
+				return fmt.Errorf("target.datastoreClass is %+v, want generation 1 of UID %s, what the Etcd runs", got, classes[class].UID)
 			}
 			return expect(t, cp, "v1.37.1", lodiav1alpha1.ReasonIdle)
 		})
@@ -95,12 +99,12 @@ func TestAClassEditReachesTheControlPlanesWhoseEtcdRunsIt(t *testing.T) {
 	testenv.Eventually(t, func() error {
 		fresh := get(t, tenants[edited])
 		c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionProgressing)
-		if want := "DatastoreClass " + edited + " generation 2 waits for the maintenance window 20:00-21:00 UTC"; c == nil || c.Reason != lodiav1alpha1.ReasonWaitingForWindow || !strings.Contains(c.Message, want) || classTarget(fresh) != 1 {
+		if want := "DatastoreClass " + edited + " generation 2 waits for the maintenance window 20:00-21:00 UTC"; c == nil || c.Reason != lodiav1alpha1.ReasonWaitingForWindow || !strings.Contains(c.Message, want) || classTarget(fresh) != classAt(classes[edited], 1) {
 			return fmt.Errorf("Progressing is %+v with target %+v, want %s %q and generation 1", c, fresh.Status.Target, lodiav1alpha1.ReasonWaitingForWindow, want)
 		}
 		return nil
 	})
-	if fresh := get(t, tenants[kept]); classTarget(fresh) != 1 || fresh.Status.Target.ScheduledFor != nil {
+	if fresh := get(t, tenants[kept]); classTarget(fresh) != classAt(classes[kept], 1) || fresh.Status.Target.ScheduledFor != nil {
 		t.Errorf("the tenant on the class not edited has target %+v", fresh.Status.Target)
 	}
 }
@@ -127,25 +131,25 @@ func seedSlot(t *testing.T, cp *lodiav1alpha1.ControlPlane, target map[string]an
 	applyQuiet(t, cp, lifecycle.FieldManager, status)
 }
 
-func classGrant(generation int64) map[string]any {
-	return map[string]any{"version": "v1.37.1", "operatorRevision": runningRevision, "datastoreClassGeneration": generation}
+func classGrant(class *lodiav1alpha1.DatastoreClass, generation int64) map[string]any {
+	return map[string]any{"version": "v1.37.1", "operatorRevision": runningRevision, "datastoreClass": map[string]any{"uid": string(class.UID), "generation": generation}}
 }
 
 func TestARestartedOperatorKeepsAClassEditInItsSlot(t *testing.T) {
 	const class = "lifecycle-restart"
-	datastoreClass(t, quiet, class)
+	restart := datastoreClass(t, quiet, class)
 	cp := fleetTenant(t, "class-restart")
 	reportsOf(t, cp, runningRevision)
-	applyQuiet(t, cp, "test/class", runsClass(class, 1))
-	seedSlot(t, cp, classGrant(editClass(t, quiet, class)), false, nil)
+	applyQuiet(t, cp, "test/class", runsClass(restart, 1))
+	seedSlot(t, cp, classGrant(restart, editClass(t, quiet, class)), false, nil)
 
 	mustPass(t, fleetReconciler(quiet, quiet, later, 1), cp)
 	fresh := expectMaintenance(t, cp, lodiav1alpha1.ReasonMaintaining, runningRevision)
-	if c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionProgressing); classTarget(fresh) != 2 || !slotOn(fresh).Time.Equal(startedAt) || !strings.Contains(c.Message, "etcd: runs DatastoreClass "+class+" generation 1, not 2") {
+	if c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionProgressing); classTarget(fresh) != classAt(restart, 2) || !slotOn(fresh).Time.Equal(startedAt) || !strings.Contains(c.Message, "etcd: runs DatastoreClass "+class+" generation 1, not 2") {
 		t.Errorf("after a restart: target %+v, maintenance %+v, Progressing %q; want generation 2 rolling in the slot taken at %s", fresh.Status.Target, fresh.Status.Maintenance, c.Message, startedAt)
 	}
 
-	applyQuiet(t, cp, "test/class", runsClass(class, 2))
+	applyQuiet(t, cp, "test/class", runsClass(restart, 2))
 	if result := mustPass(t, fleetReconciler(quiet, quiet, later, 1), cp); result.RequeueAfter != settlingTime {
 		t.Errorf("a class edit rolled out is looked at again after %s, want the settling time", result.RequeueAfter)
 	}
@@ -153,14 +157,14 @@ func TestARestartedOperatorKeepsAClassEditInItsSlot(t *testing.T) {
 		t.Errorf("maintenance is %+v, want settlingSince %s", fresh.Status.Maintenance, later)
 	}
 	mustPass(t, fleetReconciler(quiet, quiet, later.Add(settlingTime), 1), cp)
-	if fresh := expectMaintenance(t, cp, lodiav1alpha1.ReasonIdle, runningRevision); classTarget(fresh) != 2 || fresh.Status.Maintenance != nil {
+	if fresh := expectMaintenance(t, cp, lodiav1alpha1.ReasonIdle, runningRevision); classTarget(fresh) != classAt(restart, 2) || fresh.Status.Maintenance != nil {
 		t.Errorf("after the settling time: target %+v, maintenance %+v, want generation 2 and the slot free", fresh.Status.Target, fresh.Status.Maintenance)
 	}
 }
 
-func TestAClassDeletedWhileItsEditWaitsLeavesNothingPending(t *testing.T) {
+func TestAClassDeletedWhileItsEditWaitsLeavesNothingPendingUntilItIsCreatedAgain(t *testing.T) {
 	const class = "lifecycle-deleted"
-	datastoreClass(t, quiet, class)
+	deleted := datastoreClass(t, quiet, class)
 	cp := fleetTenant(t, "class-deleted")
 	fresh := getQuiet(t, cp)
 	fresh.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: &lodiav1alpha1.MaintenanceWindow{Begin: "20:00", End: "21:00"}}
@@ -168,20 +172,28 @@ func TestAClassDeletedWhileItsEditWaitsLeavesNothingPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	reportsOf(t, cp, runningRevision)
-	applyQuiet(t, cp, "test/class", runsClass(class, 1))
+	applyQuiet(t, cp, "test/class", runsClass(deleted, 1))
 	seedLifecycle(t, cp, runningRevision, lodiav1alpha1.ReasonIdle, nil, nil)
 	editClass(t, quiet, class)
 
 	r := fleetReconciler(quiet, quiet, later, 5)
 	mustPass(t, r, cp)
-	if fresh := expectMaintenance(t, cp, lodiav1alpha1.ReasonWaitingForWindow, runningRevision); classTarget(fresh) != 1 || fresh.Status.Target.ScheduledFor == nil {
+	if fresh := expectMaintenance(t, cp, lodiav1alpha1.ReasonWaitingForWindow, runningRevision); classTarget(fresh) != classAt(deleted, 1) || fresh.Status.Target.ScheduledFor == nil {
 		t.Errorf("a class edit waiting for the window left target %+v, want generation 1 and a scheduledFor", fresh.Status.Target)
 	}
-	if err := quiet.Delete(t.Context(), &lodiav1alpha1.DatastoreClass{ObjectMeta: metav1.ObjectMeta{Name: class}}); err != nil {
+	if err := quiet.Delete(t.Context(), deleted); err != nil {
 		t.Fatal(err)
 	}
 	mustPass(t, r, cp)
-	if fresh := expectMaintenance(t, cp, lodiav1alpha1.ReasonIdle, runningRevision); classTarget(fresh) != 1 || fresh.Status.Target.ScheduledFor != nil {
+	if fresh := expectMaintenance(t, cp, lodiav1alpha1.ReasonIdle, runningRevision); classTarget(fresh) != classAt(deleted, 1) || fresh.Status.Target.ScheduledFor != nil {
 		t.Errorf("once the class is gone the target is %+v, want generation 1 and no scheduledFor", fresh.Status.Target)
+	}
+
+	created := datastoreClass(t, quiet, class)
+	mustPass(t, r, cp)
+	fresh = expectMaintenance(t, cp, lodiav1alpha1.ReasonWaitingForWindow, runningRevision)
+	c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionProgressing)
+	if want := "DatastoreClass " + class + " generation 1 of UID " + string(created.UID) + " waits for the maintenance window"; classTarget(fresh) != classAt(deleted, 1) || !strings.Contains(c.Message, want) {
+		t.Errorf("the class created again leaves target %+v and Progressing %q, want generation 1 of UID %s kept and %q", fresh.Status.Target, c.Message, deleted.UID, want)
 	}
 }

@@ -102,20 +102,21 @@ type pendingChanges struct {
 	revision bool
 	// patch is the version a patch update moves the target to.
 	patch string
-	// class is the generation an edit of the DatastoreClass moves the target
-	// to: that of the class status.datastore.class names, while it exists.
-	class int64
+	// class is the UID and generation an edit of the DatastoreClass, or a
+	// class created again under its name, moves the target to: those of the
+	// class status.datastore.class names, while it exists.
+	class lodiav1alpha1.DatastoreClassGeneration
 }
 
 func (p pendingChanges) any() bool {
-	return p.revision || p.patch != "" || p.class != 0
+	return p.revision || p.patch != "" || p.class != noClass
 }
 
 // pending is what the running operator may grant after c.
 func (f facts) pending(c change) pendingChanges {
 	p := pendingChanges{revision: revisionOf(f.cp) != f.revision, patch: f.patchUpdate(c)}
-	if f.classGeneration != c.class {
-		p.class = f.classGeneration
+	if f.class != c.class {
+		p.class = f.class
 	}
 	return p
 }
@@ -129,8 +130,9 @@ func (p pendingChanges) describe(f facts) string {
 	if p.patch != "" {
 		kinds = append(kinds, "Kubernetes "+p.patch)
 	}
-	if p.class != 0 {
-		kinds = append(kinds, fmt.Sprintf("DatastoreClass %s generation %d", runningClass(f.cp).Name, p.class))
+	if p.class != noClass {
+		running := runningClass(f.cp)
+		kinds = append(kinds, fmt.Sprintf("DatastoreClass %s generation %s", running.Name, classGeneration(running, p.class)))
 	}
 	if len(kinds) == 1 {
 		return kinds[0] + " waits"
@@ -145,7 +147,7 @@ func (f facts) take(m *maintenance, c *change, p pendingChanges) {
 	if p.patch != "" {
 		f.patch(c, p.patch)
 	}
-	if p.class != 0 {
+	if p.class != noClass {
 		c.class = p.class
 	}
 }
@@ -201,8 +203,8 @@ func (f facts) grant(m *maintenance, c *change, p pendingChanges, w *window, req
 		f.patch(c, p.patch)
 		p.patch = ""
 	}
-	if p.class != 0 && (inSlot || requested) {
-		c.class, p.class = p.class, 0
+	if p.class != noClass && (inSlot || requested) {
+		c.class, p.class = p.class, noClass
 	}
 	if !p.any() {
 		return

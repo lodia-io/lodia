@@ -6,6 +6,7 @@ package lifecycle
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,22 +20,25 @@ import (
 )
 
 // facts is everything a pass decides from. backup is the pre-upgrade Backup of
-// the minor step cp is at, by backupMinor: nil while it does not exist.
-// classGeneration is the generation of the DatastoreClass
-// status.datastore.class names, 0 while none is named or it is gone. fleet
-// holds the other tenants that hold a slot of the fleet or wait for one, read
-// only while a change is pending; limit is how many may hold one, and settling
-// how long a change Lodia started keeps its slot once it has rolled out.
+// the minor step cp is at, by backupMinor: nil while it does not exist. class
+// is the UID and generation of the DatastoreClass status.datastore.class
+// names, noClass while none is named or it is gone. fleet holds the other
+// tenants that hold a slot of the fleet or wait for one, read only while a
+// change is pending; limit is how many may hold one, and settling how long a
+// change Lodia started keeps its slot once it has rolled out.
 type facts struct {
-	cp              *lodiav1alpha1.ControlPlane
-	backup          *lodiav1alpha1.Backup
-	classGeneration int64
-	now             time.Time
-	revision        string
-	fleet           []member
-	limit           int
-	settling        time.Duration
+	cp       *lodiav1alpha1.ControlPlane
+	backup   *lodiav1alpha1.Backup
+	class    lodiav1alpha1.DatastoreClassGeneration
+	now      time.Time
+	revision string
+	fleet    []member
+	limit    int
+	settling time.Duration
 }
+
+// noClass stands for no class: none named, or one that is gone.
+var noClass lodiav1alpha1.DatastoreClassGeneration
 
 // decision holds every status field Lifecycle owns and no other, since an
 // apply that leaves one out removes it, the name of the pre-upgrade Backup to
@@ -67,8 +71,8 @@ func (d decision) differs(cp *lodiav1alpha1.ControlPlane) bool {
 type change struct {
 	target  string
 	upgrade *lodiav1alpha1.UpgradeStatus
-	// class is target.datastoreClassGeneration after the pass.
-	class int64
+	// class is target.datastoreClass after the pass.
+	class lodiav1alpha1.DatastoreClassGeneration
 	// unsupported is why the target stays, for the owner to fix.
 	unsupported string
 	// preflight is a minor step's failed check, its own reason.
@@ -145,11 +149,15 @@ func supportNotice(version string, now time.Time) string {
 	return fmt.Sprintf("Kubernetes %s reached its end of support on %s", minor, day.Format(time.DateOnly))
 }
 
-func newTarget(version, revision string, class int64, scheduledFor *metav1.Time) *lodiav1alpha1.Target {
-	if version == "" && revision == "" && class == 0 && scheduledFor == nil {
+func newTarget(version, revision string, class lodiav1alpha1.DatastoreClassGeneration, scheduledFor *metav1.Time) *lodiav1alpha1.Target {
+	if version == "" && revision == "" && class == noClass && scheduledFor == nil {
 		return nil
 	}
-	return &lodiav1alpha1.Target{Version: version, OperatorRevision: revision, DatastoreClassGeneration: class, ScheduledFor: scheduledFor}
+	target := &lodiav1alpha1.Target{Version: version, OperatorRevision: revision, ScheduledFor: scheduledFor}
+	if class != noClass {
+		target.DatastoreClass = &class
+	}
+	return target
 }
 
 func newMaintenance(lastHandled string, settlingSince, slotSince *metav1.Time) *lodiav1alpha1.MaintenanceStatus {
@@ -173,11 +181,11 @@ func revisionOf(cp *lodiav1alpha1.ControlPlane) string {
 	return ""
 }
 
-func classTargetOf(cp *lodiav1alpha1.ControlPlane) int64 {
-	if cp.Status.Target != nil {
-		return cp.Status.Target.DatastoreClassGeneration
+func classTargetOf(cp *lodiav1alpha1.ControlPlane) lodiav1alpha1.DatastoreClassGeneration {
+	if cp.Status.Target != nil && cp.Status.Target.DatastoreClass != nil {
+		return *cp.Status.Target.DatastoreClass
 	}
-	return 0
+	return noClass
 }
 
 // runningClass is the DatastoreClass the Etcd runs, as Datastore reports it.
@@ -262,26 +270,37 @@ func (f facts) versionChange() change {
 	return c
 }
 
-// classTarget is target.datastoreClassGeneration where no grant moves it: the
+// classTarget is target.datastoreClass where no grant moves it: the class
 // generation the Etcd runs while the target names none, and while the one it
 // names cannot be reached, the class already being at what the Etcd runs, as
 // for an Etcd created again by hand, or gone, in which case the Etcd keeps
 // what the class gave it.
-func (f facts) classTarget() int64 {
+func (f facts) classTarget() lodiav1alpha1.DatastoreClassGeneration {
 	stored, running := classTargetOf(f.cp), runningClass(f.cp)
-	if running != nil && (stored == 0 || f.classGeneration == running.Generation || f.classGeneration == 0) {
-		return running.Generation
+	if running != nil && (stored == noClass || f.class == running.DatastoreClassGeneration || f.class == noClass) {
+		return running.DatastoreClassGeneration
 	}
 	return stored
 }
 
 // classBehind names the class generation the Etcd runs while it is not
-// target, a class edit that has not reached it.
-func classBehind(cp *lodiav1alpha1.ControlPlane, target int64) []string {
-	if running := runningClass(cp); running != nil && running.Generation != target {
-		return []string{fmt.Sprintf("etcd: runs DatastoreClass %s generation %d, not %d", running.Name, running.Generation, target)}
+// target, a class edit, or a class created again under its name, that has not
+// reached it.
+func classBehind(cp *lodiav1alpha1.ControlPlane, target lodiav1alpha1.DatastoreClassGeneration) []string {
+	running := runningClass(cp)
+	if running == nil || running.DatastoreClassGeneration == target {
+		return nil
 	}
-	return nil
+	return []string{fmt.Sprintf("etcd: runs DatastoreClass %s generation %d, not %s", running.Name, running.Generation, classGeneration(running, target))}
+}
+
+// classGeneration names generation g of the class the Etcd runs, with its UID
+// when it is not the one the Etcd runs: a class created again under its name.
+func classGeneration(running *lodiav1alpha1.DatastoreClassStatus, g lodiav1alpha1.DatastoreClassGeneration) string {
+	if g.UID != running.UID {
+		return fmt.Sprintf("%d of UID %s", g.Generation, g.UID)
+	}
+	return strconv.FormatInt(g.Generation, 10)
 }
 
 func patchUpdates(cp *lodiav1alpha1.ControlPlane) bool {

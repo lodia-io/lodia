@@ -423,14 +423,19 @@ func (r *Reconciler) holdClass(ctx context.Context, p *pass) (*outcome, error) {
 	if class == nil {
 		return nil, nil
 	}
-	// An Etcd takes an edit of its class once Lifecycle grants the class's
-	// generation, in the window: a class is shared, and an edit rolls every
-	// member on it. A new Etcd takes the class as it is.
-	waits := p.current != nil && class.Generation != grantedClass(p.cp)
+	// An Etcd takes an edit of its class, or a class created again under its
+	// name, once Lifecycle grants the class's UID and generation, in the
+	// window: a class is shared, and an edit rolls every member on it. A new
+	// Etcd takes the class as it is.
+	waits := p.current != nil && generationOf(class) != grantedClass(p.cp)
 	if waits {
 		p.class = nil
-		if generation := strconv.FormatInt(class.Generation, 10); p.current.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation] != generation {
-			p.held = fmt.Sprintf("DatastoreClass %s generation %s waits for status.target.datastoreClassGeneration", class.Name, generation)
+		if recorded, _ := recordedClass(p.current); recorded.DatastoreClassGeneration != generationOf(class) {
+			generation := strconv.FormatInt(class.Generation, 10)
+			if recorded.UID != class.UID {
+				generation += " of UID " + string(class.UID)
+			}
+			p.held = fmt.Sprintf("DatastoreClass %s generation %s waits for status.target.datastoreClass", class.Name, generation)
 		}
 	}
 	if class.Spec.Backup == nil {
@@ -458,12 +463,27 @@ func (r *Reconciler) holdClass(ctx context.Context, p *pass) (*outcome, error) {
 	return nil, nil
 }
 
-// grantedClass is status.target.datastoreClassGeneration, 0 while absent.
-func grantedClass(cp *lodiav1alpha1.ControlPlane) int64 {
-	if cp.Status.Target == nil {
-		return 0
+// grantedClass is status.target.datastoreClass, the zero value while absent.
+func grantedClass(cp *lodiav1alpha1.ControlPlane) lodiav1alpha1.DatastoreClassGeneration {
+	if cp.Status.Target == nil || cp.Status.Target.DatastoreClass == nil {
+		return lodiav1alpha1.DatastoreClassGeneration{}
 	}
-	return cp.Status.Target.DatastoreClassGeneration
+	return *cp.Status.Target.DatastoreClass
+}
+
+func generationOf(class *lodiav1alpha1.DatastoreClass) lodiav1alpha1.DatastoreClassGeneration {
+	return lodiav1alpha1.DatastoreClassGeneration{UID: class.UID, Generation: class.Generation}
+}
+
+// recordedClass is the class etcd was rendered from, as its annotations
+// record it, and whether they do.
+func recordedClass(etcd *druidv1alpha1.Etcd) (lodiav1alpha1.DatastoreClassStatus, bool) {
+	generation, err := strconv.ParseInt(etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation], 10, 64)
+	class := lodiav1alpha1.DatastoreClassStatus{
+		Name:                     etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation],
+		DatastoreClassGeneration: lodiav1alpha1.DatastoreClassGeneration{UID: types.UID(etcd.Annotations[lodiav1alpha1.DatastoreClassUIDAnnotation]), Generation: generation},
+	}
+	return class, class.Name != "" && class.UID != "" && err == nil
 }
 
 // storeMoved says whether a pass that keeps the Etcd's class, held by the
@@ -1212,9 +1232,8 @@ func (r *Reconciler) datastoreStatus(ctx context.Context, cp *lodiav1alpha1.Cont
 	if store := etcd.Spec.Backup.Store; store != nil {
 		status.Snapshots = new(storeLocation(store))
 	}
-	generation, err := strconv.ParseInt(etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation], 10, 64)
-	if name := etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation]; name != "" && err == nil {
-		status.Class = &lodiav1alpha1.DatastoreClassStatus{Name: name, Generation: generation}
+	if recorded, ok := recordedClass(etcd); ok {
+		status.Class = &recorded
 	}
 	if stamp, ok := rolledOut(etcd, sts); ok {
 		status.OperatorRevision = stamp
