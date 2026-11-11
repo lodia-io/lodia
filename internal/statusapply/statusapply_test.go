@@ -305,6 +305,8 @@ func TestAFirstPassReplacesNoConditionTheServerHoldsWithAnotherReason(t *testing
 		return statusapply.FirstPass(&lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Generation: generation}}, lodiav1alpha1.ConditionReady)
 	}
 	backupFirstPass := statusapply.FirstPass(&lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Generation: 1}}, lodiav1alpha1.ConditionBackupReady)
+	stamped := firstPass(1)
+	stamped.LastTransitionTime = later
 	for _, c := range []struct {
 		name       string
 		server     *metav1.Condition
@@ -316,6 +318,7 @@ func TestAFirstPassReplacesNoConditionTheServerHoldsWithAnotherReason(t *testing
 		{"a first pass over another reason", &held, 1, firstPass(1), held, true},
 		{"a first pass over another reason at an earlier generation", &held, 2, firstPass(2), held, true},
 		{"a first pass over Unknown with another reason", &pending, 1, backupFirstPass, pending, true},
+		{"a first pass that carries a transition time over another reason", &held, 1, stamped, held, true},
 		{"a first pass over none", nil, 1, firstPass(1), firstPass(1), false},
 		{"a first pass over a first pass at an earlier generation", new(firstPass(1)), 2, firstPass(2), firstPass(2), false},
 		{"a first pass over a Reconciling with another message", &copied, 1, firstPass(1), firstPass(1), false},
