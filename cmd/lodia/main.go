@@ -103,12 +103,12 @@ func main() {
 		os.Exit(1)
 	}
 	in := operator.Inputs{Config: config, Version: version, SignerImage: signerImage, TunnelImage: tunnelImage, EtcdDruidVersion: etcdDruidVersion, EtcdDruidNamespace: etcdDruidNamespace, EtcdDruidDeployment: etcdDruidDeployment, OperatorNamespace: operatorNamespace, GatewayAPI: gatewayAPI}
-	sampler, err := operator.Setup(mgr, in)
+	sources, err := operator.Setup(mgr, in)
 	if err != nil {
 		log.Error(err, "set up the controllers")
 		os.Exit(1)
 	}
-	collector, err := operator.Metrics(mgr.GetCache(), mgr.Elected(), in, sampler)
+	collector, err := operator.Metrics(mgr.GetCache(), mgr.Elected(), in, sources)
 	if err != nil {
 		log.Error(err, "build Lodia's metrics")
 		os.Exit(1)

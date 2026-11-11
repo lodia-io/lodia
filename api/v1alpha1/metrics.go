@@ -30,4 +30,13 @@ const (
 	// dedicated etcd, as etcd names it, in the label alarm.
 	MetricAlarmNoSpace = "NOSPACE"
 	MetricAlarmCorrupt = "CORRUPT"
+
+	// MetricProbeAPI, MetricProbeInternal, MetricProbeTunnel and
+	// MetricProbeKonnectivity name a path Health probes, in the label path;
+	// each prefixes that path's answer in Reachable's message, but the public
+	// endpoint's outside gateway mode.
+	MetricProbeAPI          = "api"
+	MetricProbeInternal     = "internal"
+	MetricProbeTunnel       = "tunnel"
+	MetricProbeKonnectivity = "konnectivity"
 )

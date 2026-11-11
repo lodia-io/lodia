@@ -67,7 +67,7 @@ func TestTheMetricsRunOnTheFilesLimitAndTheRevisionLifecycleGrants(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := Metrics(nil, nil, in, nil)
+	got, err := Metrics(nil, nil, in, &Sources{Health: newHealth(nil, nil, in.Config.Health), Nodes: newNodes(nil, nil, in.Config.Health)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,5 +79,20 @@ func TestTheMetricsRunOnTheFilesLimitAndTheRevisionLifecycleGrants(t *testing.T)
 	}
 	if got.MaxConcurrentRollouts != 2 {
 		t.Errorf("MaxConcurrentRollouts = %d, want the file's 2", got.MaxConcurrentRollouts)
+	}
+}
+
+func TestTheMetricsServeTheCounterAndHistogramOfTheSources(t *testing.T) {
+	in := Inputs{Config: DefaultConfig(), Version: "v1.0.0"}
+	sources := &Sources{Health: newHealth(nil, nil, in.Config.Health), Nodes: newNodes(nil, nil, in.Config.Health)}
+	got, err := Metrics(nil, nil, in, sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ProbeFailures == nil || got.ProbeFailures != sources.Health.ProbeFailures {
+		t.Error("the metrics serve another counter than the one Health's probes count into")
+	}
+	if got.SampleLag == nil || got.SampleLag != sources.Nodes.SampleLag {
+		t.Error("the metrics serve another histogram than the one health-nodes observes")
 	}
 }

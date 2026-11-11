@@ -19,7 +19,6 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	datastorectrl "go.lodia.io/lodia/internal/controller/datastore"
-	"go.lodia.io/lodia/internal/metrics"
 )
 
 func etcdOf(cp *lodiav1alpha1.ControlPlane, quota string, period time.Duration, store, formed bool) *druidv1alpha1.Etcd {
@@ -145,7 +144,7 @@ func TestACollectionWhoseEtcdListHangsEndsWithinTheDeadline(t *testing.T) {
 	})
 	t.Cleanup(func() { close(release) })
 	create(t, namespace(t), gatewayHA("unlisted", 30))
-	c := &metrics.Collector{Reader: reader, Elected: elected(), Revision: running, MaxConcurrentRollouts: 3, EtcdSample: samplesOf(nil)}
+	c := collectorOf(reader, elected())
 	start := time.Now()
 	collected := make(chan int, 1)
 	go func() { collected <- testutil.CollectAndCount(c) }()
