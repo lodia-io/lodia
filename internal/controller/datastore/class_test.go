@@ -386,3 +386,45 @@ func TestTheCapNoteStaysWhileAClassEditWaits(t *testing.T) {
 		t.Errorf("while an edit waits under the operator hold DatastoreReady says %q, want it to end with %q", message, want)
 	}
 }
+
+func TestAnEtcdWhoseClassAnnotationsAPersonEditedReportsNoClass(t *testing.T) {
+	for i, edit := range []string{
+		`{"metadata":{"annotations":{"` + lodiav1alpha1.DatastoreClassAnnotation + `":null}}}`,
+		`{"metadata":{"annotations":{"` + lodiav1alpha1.DatastoreClassUIDAnnotation + `":null}}}`,
+		`{"metadata":{"annotations":{"` + lodiav1alpha1.DatastoreClassGenerationAnnotation + `":"x"}}}`,
+	} {
+		t.Run(edit, func(t *testing.T) {
+			ns := namespace(t)
+			cp := fmt.Sprintf("annotated-%d", i)
+			createClass(t, newClass(cp, "Retain"))
+			r := classTenant(t, ns, cp, cp)
+			if err := k8s.Patch(t.Context(), getEtcd(t, ns, cp), client.RawPatch(types.MergePatchType, []byte(edit)), client.FieldOwner("kubectl-annotate")); err != nil {
+				t.Fatal(err)
+			}
+			mustPass(t, r, ns, cp)
+			if status := getControlPlane(t, ns, cp).Status.Datastore; status == nil || status.Class != nil {
+				t.Errorf("an Etcd annotated %s reports status.datastore %+v, want no class", edit, status)
+			}
+		})
+	}
+}
+
+func TestAnEtcdAPersonTookTheQuotaFromNotesNoCap(t *testing.T) {
+	ns := namespace(t)
+	const cp = "unquoted"
+	createClass(t, newClass(cp, "Retain"))
+	classTenant(t, ns, cp, cp)
+	editClass(t, cp, func(class *lodiav1alpha1.DatastoreClass) {
+		class.Spec.Storage.Size = resource.MustParse("40Gi")
+		class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{QuotaBackendBytes: new(resource.MustParse("6Gi"))}
+	})
+	if err := k8s.Patch(t.Context(), getEtcd(t, ns, cp), client.RawPatch(types.MergePatchType, []byte(`{"spec":{"etcd":{"quota":null}}}`)), client.FieldOwner("kubectl-edit")); err != nil {
+		t.Fatal(err)
+	}
+	for _, operator := range []string{revision, "v0.0.0-test+next"} {
+		mustPass(t, operatorAt(unpaused(k8s), operator), ns, cp)
+		if message := readyMessage(t, ns, cp); strings.Contains(message, "capped") {
+			t.Errorf("an Etcd without a quota under operator %s notes %q", operator, message)
+		}
+	}
+}

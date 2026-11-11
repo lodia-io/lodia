@@ -329,6 +329,9 @@ func TestAClassHeldForItsCredentialsTakesNoSlotAndFailsInOne(t *testing.T) {
 			adopt(f.cp, d)
 			f.now = present.Add(7 * 24 * time.Hour)
 			expectGrant(t, f, failed)
+
+			rolled := held(running(revisionA), onClass(5, 5, 5), slotted(lodiav1alpha1.ReasonMaintaining, 3), settlingAt(present.Add(-10*time.Second)), heldFor(reason))
+			expectGrant(t, rolled, granted{revision: revisionA, reason: lodiav1alpha1.ReasonMaintenanceFailed, message: failed.message, slot: true, settlingSince: new(present.Add(-10 * time.Second))})
 		})
 	}
 
