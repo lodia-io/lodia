@@ -482,11 +482,7 @@ func TestEveryQueryReadsTheDatasourceVariable(t *testing.T) {
 	}
 }
 
-func TestLintExcludesTheFleetAndControlPlaneDashboardsAlone(t *testing.T) {
-	raw, err := os.ReadFile(lintFile)
-	if err != nil {
-		t.Fatal(err)
-	}
+func lintExclusions(raw []byte) (map[string][]string, error) {
 	var lint struct {
 		Exclusions map[string]*struct {
 			Entries []struct {
@@ -495,9 +491,31 @@ func TestLintExcludesTheFleetAndControlPlaneDashboardsAlone(t *testing.T) {
 		} `yaml:"exclusions"`
 	}
 	if err := yamlv3.Unmarshal(raw, &lint); err != nil {
+		return nil, err
+	}
+	excluded := map[string][]string{}
+	for rule, exclusion := range lint.Exclusions {
+		var titles []string
+		if exclusion != nil {
+			for _, entry := range exclusion.Entries {
+				titles = append(titles, entry.Dashboard)
+			}
+		}
+		excluded[rule] = titles
+	}
+	return excluded, nil
+}
+
+func TestLintExcludesTheFleetAndControlPlaneDashboardsAlone(t *testing.T) {
+	raw, err := os.ReadFile(lintFile)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if len(lint.Exclusions) == 0 {
+	excluded, err := lintExclusions(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(excluded) == 0 {
 		t.Fatalf("%s excludes no rule", lintFile)
 	}
 	var want []string
@@ -507,17 +525,45 @@ func TestLintExcludesTheFleetAndControlPlaneDashboardsAlone(t *testing.T) {
 		}
 	}
 	slices.Sort(want)
-	for rule, exclusion := range lint.Exclusions {
-		var got []string
-		if exclusion != nil {
-			for _, entry := range exclusion.Entries {
-				got = append(got, entry.Dashboard)
-			}
-		}
+	for rule, got := range excluded {
 		slices.Sort(got)
 		if !slices.Equal(got, want) {
 			t.Errorf("%s excludes %s for the dashboards %q, want %q alone; an exclusion without entries, or an entry without a dashboard, holds for every dashboard", lintFile, rule, got, want)
 		}
+	}
+}
+
+func TestLintIsDecodedAsTheLinterDecodesIt(t *testing.T) {
+	for name, test := range map[string]struct {
+		lint string
+		want map[string][]string
+	}{
+		"as written": {
+			"exclusions:\n  a-rule:\n    entries:\n      - dashboard: One\n      - dashboard: Two\n  b-rule:\n",
+			map[string][]string{"a-rule": {"One", "Two"}, "b-rule": nil},
+		},
+		"Exclusions": {
+			"Exclusions:\n  a-rule:\n    entries:\n      - dashboard: One\n",
+			map[string][]string{},
+		},
+		"Entries": {
+			"exclusions:\n  a-rule:\n    Entries:\n      - dashboard: One\n",
+			map[string][]string{"a-rule": nil},
+		},
+		"Dashboard": {
+			"exclusions:\n  a-rule:\n    entries:\n      - Dashboard: One\n",
+			map[string][]string{"a-rule": {""}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := lintExclusions([]byte(test.lint))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !maps.EqualFunc(got, test.want, slices.Equal) {
+				t.Errorf("%q excludes %q, want %q", test.lint, got, test.want)
+			}
+		})
 	}
 }
 
@@ -631,6 +677,8 @@ func TestALabelIsOneTheSeriesCarry(t *testing.T) {
 		`sum without (reason) (a_gauge)`:                                               1,
 		`sum without (reason) (a_gauge) * on () group_left () max(other)`:              1,
 		`topk(3, a_gauge)`:                                                             0,
+		`topk by (reason) (scalar(max(other)), a_gauge)`:                               1,
+		`topk without (reason) (scalar(max(other)), a_gauge)`:                          1,
 		`sum without (le, path) (rate(a_histogram_bucket{le="10.0"}[5m]))`:             0,
 		`a_histogram_sum{le="10.0"}`:                                                   1,
 		`a_gauge * on (namespace) group_left (reason) other`:                           0,
@@ -653,6 +701,11 @@ func TestALabelIsOneTheSeriesCarry(t *testing.T) {
 		`both * ignoring (reason) group_left () a_gauge`:                               0,
 		`a_gauge * ignoring (resaon) both`:                                             1,
 		`a_gauge * ignoring (reason) a_gauge`:                                          1,
+		`a_gauge unless on (reason) other`:                                             1,
+		`a_gauge and on (reason) other`:                                                1,
+		`a_gauge or on (reason) other`:                                                 1,
+		`a_gauge unless ignoring (reason) other`:                                       0,
+		`a_gauge unless ignoring (resaon) other`:                                       1,
 		`count by (reason) (max by (namespace, reason) (other)) or vector(0) > bool 1`: 0,
 	} {
 		if got := (read{expr: expr}).problems(s); len(got) != want {
