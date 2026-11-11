@@ -495,3 +495,16 @@ func (w failsOnce) Apply(ctx context.Context, obj runtime.ApplyConfiguration, op
 	}
 	return w.SubResourceWriter.Apply(ctx, obj, opts...)
 }
+
+func TestANoteOfExactlyItsLimitIsTheWholeMessage(t *testing.T) {
+	cp := controlPlane(t, namespace(t))
+	w, r := recording()
+	unavailable := reported(lodiav1alpha1.ConditionReady, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable)
+	unavailable.Message = strings.Repeat("a", 1024)
+	if err := w.Apply(t.Context(), cp, conditions(unavailable), false); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.events) != 1 || r.events[0].note != unavailable.Message {
+		t.Errorf("recorded %d events, want one whose note is the whole 1024-byte message", len(r.events))
+	}
+}
