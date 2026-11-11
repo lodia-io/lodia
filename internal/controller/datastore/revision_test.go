@@ -709,8 +709,8 @@ func TestARefusedRequestReportsTheAppliedEtcd(t *testing.T) {
 		t.Fatalf("the grant's pass applied %d members of class generation %s, want 3 of 2", etcd.Spec.Replicas, etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation])
 	}
 	datastore := getControlPlane(t, ns, cp).Status.Datastore
-	if datastore.Class == nil || datastore.Class.Generation != 2 || datastore.Members.Total != 3 {
-		t.Errorf("a refused request reports class %+v and %d members, want the applied Etcd's class generation 2 and 3 members", datastore.Class, datastore.Members.Total)
+	if datastore.Class == nil || datastore.Class.Generation != 1 || datastore.Members.Total != 3 {
+		t.Errorf("a refused request reports class %+v and %d members, want class generation 1, which runs until etcd-druid serves a request, and the applied Etcd's 3 members", datastore.Class, datastore.Members.Total)
 	}
 }
 

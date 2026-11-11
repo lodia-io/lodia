@@ -4,16 +4,20 @@
 package datastore_test
 
 import (
+	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/controller/datastore"
@@ -51,6 +55,15 @@ func runsClass(t *testing.T, ns, cp, quota, generation string) {
 	if status := getControlPlane(t, ns, cp).Status.Datastore; status == nil || status.Class == nil || *status.Class != want || want.UID == "" {
 		t.Errorf("status.datastore is %+v, want class %+v", status, want)
 	}
+}
+
+func rollOut(t *testing.T, r *datastore.Reconciler, ns, cp string) {
+	t.Helper()
+	answer(t, ns, cp)
+	mustPass(t, r, ns, cp)
+	answer(t, ns, cp)
+	setEtcdStatus(t, ns, cp, nil)
+	mustPass(t, r, ns, cp)
 }
 
 func classAt(t *testing.T, name string, g int64) *lodiav1alpha1.DatastoreClassGeneration {
@@ -132,6 +145,7 @@ func TestAClassEditWaitsUntilItsGenerationIsGranted(t *testing.T) {
 
 			grantClass(t, ns, cp, cp)
 			mustPass(t, r, ns, cp)
+			rollOut(t, r, ns, cp)
 			runsClass(t, ns, cp, "1Gi", "3")
 			if message := readyMessage(t, ns, cp); strings.Contains(message, "waits for") {
 				t.Errorf("a granted class still notes %q", message)
@@ -183,6 +197,7 @@ func TestAClassCreatedAgainUnderItsNameWaitsForItsGrant(t *testing.T) {
 
 		grantClass(t, ns, cp, cp)
 		mustPass(t, r, ns, cp)
+		rollOut(t, r, ns, cp)
 		runsClass(t, ns, cp, "3Gi", "1")
 		recordsUID(t, ns, cp, again)
 	})
@@ -195,6 +210,7 @@ func TestAClassCreatedAgainUnderItsNameWaitsForItsGrant(t *testing.T) {
 		editClass(t, cp, quota("1Gi"))
 		grantClass(t, ns, cp, cp)
 		mustPass(t, r, ns, cp)
+		rollOut(t, r, ns, cp)
 		runsClass(t, ns, cp, "1Gi", "2")
 
 		deleteClass(t, cp)
@@ -229,6 +245,7 @@ func TestANewEtcdTakesTheClassAsItIs(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustPass(t, r, ns, cp)
+	rollOut(t, r, ns, cp)
 	runsClass(t, ns, cp, "1Gi", "3")
 }
 
@@ -287,4 +304,55 @@ func TestAClassHeldForItsCredentialsAlsoNotesItsWait(t *testing.T) {
 	grantClass(t, ns, cp, cp)
 	mustPass(t, r, ns, cp)
 	runsClass(t, ns, cp, "2Gi", "1")
+}
+
+func TestTheClassIsReportedOnceEtcdDruidRolledItOut(t *testing.T) {
+	ns := namespace(t)
+	const cp = "reported-class"
+	createClass(t, newClass(cp, "Retain"))
+	r := classTenant(t, ns, cp, cp)
+	editClass(t, cp, quota("3Gi"))
+	grantClass(t, ns, cp, cp)
+	keeps := func(t *testing.T, r *datastore.Reconciler) {
+		t.Helper()
+		mustPass(t, r, ns, cp)
+		if got := getControlPlane(t, ns, cp).Status.Datastore.Class; got == nil || got.Generation != 1 {
+			t.Errorf("status.datastore.class is %+v, want generation 1 kept", got)
+		}
+	}
+
+	t.Run("etcd-druid's annotation is there", func(t *testing.T) {
+		keeps(t, r)
+		etcd := getEtcd(t, ns, cp)
+		if err := requestedAs(fmt.Sprintf("%d/%s", etcd.Generation, revision), true)(etcd); err != nil || etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation] != "2" {
+			t.Fatalf("the grant's pass left the Etcd at class generation %s: %v", etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation], err)
+		}
+		keeps(t, r)
+	})
+	t.Run("the cache holds another report", func(t *testing.T) {
+		other := interceptor.NewClient(unpaused(k8s), interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if err := c.Get(ctx, key, obj, opts...); err != nil {
+					return err
+				}
+				if plane, ok := obj.(*lodiav1alpha1.ControlPlane); ok && plane.Status.Datastore != nil {
+					plane.Status.Datastore.Class = nil
+				}
+				return nil
+			},
+		})
+		keeps(t, operatorAt(other, revision))
+	})
+	answer(t, ns, cp)
+	t.Run("etcd-druid has not observed the generation", func(t *testing.T) {
+		keeps(t, r)
+	})
+	setEtcdStatus(t, ns, cp, nil)
+	t.Run("a member is not updated", func(t *testing.T) {
+		setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) { s.UpdatedReplicas = 0 })
+		keeps(t, r)
+	})
+	setStatefulSetStatus(t, ns, cp, nil)
+	mustPass(t, r, ns, cp)
+	runsClass(t, ns, cp, "3Gi", "2")
 }

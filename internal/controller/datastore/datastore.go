@@ -1230,10 +1230,11 @@ func (r *Reconciler) setFinalizer(ctx context.Context, cp *lodiav1alpha1.Control
 }
 
 // datastoreStatus says where the API server reaches the etcd, etcd-druid's
-// client Service, where the Etcd's snapshots go, and the operator revision it
-// runs: its stamp once rolledOut says so, and until then the revision the API
-// server holds, since the field is written whole on every pass and the cache
-// can lag this controller's own last write.
+// client Service, where the Etcd's snapshots go, and the class and the
+// operator revision it runs: those the Etcd records once rolledOut says so,
+// and until then those the API server holds, since the field is written whole
+// on every pass and the cache can lag this controller's own last write. A
+// stamp longer than its field is not reported.
 func (r *Reconciler) datastoreStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) (*lodiav1alpha1.DatastoreStatus, error) {
 	if etcd == nil {
 		return nil, nil
@@ -1246,32 +1247,38 @@ func (r *Reconciler) datastoreStatus(ctx context.Context, cp *lodiav1alpha1.Cont
 	if store := etcd.Spec.Backup.Store; store != nil {
 		status.Snapshots = new(storeLocation(store))
 	}
-	if recorded, ok := recordedClass(etcd); ok {
-		status.Class = &recorded
-	}
-	if stamp, ok := rolledOut(etcd, sts); ok {
-		status.OperatorRevision = stamp
-		return status, nil
+	rolled := rolledOut(etcd, sts)
+	if rolled {
+		if recorded, ok := recordedClass(etcd); ok {
+			status.Class = &recorded
+		}
+		if stamp := etcd.Annotations[lodiav1alpha1.OperatorRevisionAnnotation]; len(stamp) <= maxRevision {
+			status.OperatorRevision = stamp
+			return status, nil
+		}
 	}
 	if err := live.Datastore(ctx, r.Reader, cp); err != nil {
 		return nil, fmt.Errorf("read ControlPlane %s: %w", cp.Name, err)
 	}
 	if previous := cp.Status.Datastore; previous != nil {
 		status.OperatorRevision = previous.OperatorRevision
+		if !rolled {
+			status.Class = previous.Class
+		}
 	}
 	return status, nil
 }
 
-// rolledOut gives the Etcd's stamp once etcd-druid has served the request
-// for its generation and stamp and every member runs that spec: a revision
-// that changes no field of the spec rolls a new etcd-druid's render with the
+// rolledOut says whether etcd-druid has served the request for the Etcd's
+// generation and stamp and every member runs that spec: a revision that
+// changes no field of the spec rolls a new etcd-druid's render with the
 // generation unchanged, and etcd-druid can mark as observed a generation it
-// did not reconcile (reconcile_complete.go#L33-L36). A stamp longer than the
-// field is not reported.
-func rolledOut(etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) (string, bool) {
-	stamp := etcd.Annotations[lodiav1alpha1.OperatorRevisionAnnotation]
+// did not reconcile (reconcile_complete.go#L33-L36), so a class edit would
+// otherwise count as rolled out, and free its slot, before etcd-druid rolls
+// it.
+func rolledOut(etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) bool {
 	updated := updatedMembers(etcd, sts)
-	return stamp, served(etcd) && updated != nil && *updated == etcd.Spec.Replicas && len(stamp) <= maxRevision
+	return served(etcd) && updated != nil && *updated == etcd.Spec.Replicas
 }
 
 // applyStatus writes DatastoreReady and BackupReady together: the conditions
