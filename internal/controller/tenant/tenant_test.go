@@ -584,7 +584,9 @@ func TestAPassTheTenantDoesNotAnswerKeepsARefusalAndAnotherOwnersObject(t *testi
 		setAddonsApplied(t, cp, metav1.ConditionFalse, reason, cp.Generation)
 		refresh(t, cp)
 		before := *condition(t, cp, lodiav1alpha1.ConditionAddonsApplied)
-		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: unreachable}
+		stale := cp.DeepCopy()
+		meta.SetStatusCondition(&stale.Status.Conditions, metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonApplying, ObservedGeneration: cp.Generation})
+		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: unreachable}
 		if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
 			t.Fatalf("%s: a pass that could not reach the tenant succeeded", reason)
 		}
