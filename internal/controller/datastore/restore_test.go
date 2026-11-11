@@ -1782,6 +1782,7 @@ func TestAStalePassWhoseCheckCannotRunKeepsTheMembers(t *testing.T) {
 		return nil
 	})
 	r.etcd.unreachable.Store(true)
+	grantClass(t, r.ns, restoredCP, r.ns)
 	stale := interceptor.NewClient(k8s, interceptor.Funcs{
 		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 			if etcd, ok := obj.(*druidv1alpha1.Etcd); ok {

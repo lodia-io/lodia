@@ -16,7 +16,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -220,7 +219,7 @@ func TestAPassWritesTheKubernetesVersionThroughAFailureAndADeadlineThatIsSpent(t
 				return c.SubResource(subResource).Apply(ctx, obj, opts...)
 			},
 		})
-		_, err := (&lifecycle.Reconciler{Client: c, Reader: reader, Clock: clock.RealClock{}, Revision: runningRevision, MaxConcurrentRollouts: 5, Settling: settlingTime}).Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+		_, err := (&lifecycle.Reconciler{Client: c, Reader: reader, Clock: wall, Revision: runningRevision, MaxConcurrentRollouts: 5, Settling: settlingTime}).Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 		return err
 	}
 	wrote := func() bool { return len(applied) == 1 && applied[0] != nil && applied[0].Version == "v1.37.1" }

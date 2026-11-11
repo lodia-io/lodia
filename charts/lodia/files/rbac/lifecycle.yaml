@@ -27,3 +27,10 @@ rules:
   - controlplanes/status
   verbs:
   - patch
+- apiGroups:
+  - lodia.io
+  resources:
+  - datastoreclasses
+  verbs:
+  - list
+  - watch

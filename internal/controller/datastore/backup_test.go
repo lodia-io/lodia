@@ -1111,7 +1111,7 @@ func TestTheCopyFollowsTheSourcesEtcdNotItsClass(t *testing.T) {
 		t.Fatal(err)
 	}
 	settle(t, src.ns, sourceName)
-	waitCondition(t, src.ns, sourceName, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "DatastoreClass "+src.ns+" is held")
+	waitCondition(t, src.ns, sourceName, metav1.ConditionTrue, lodiav1alpha1.ReasonSecretNotFound, "DatastoreClass "+src.ns+" is held")
 	class := &lodiav1alpha1.DatastoreClass{}
 	if err := k8s.Get(t.Context(), client.ObjectKey{Name: src.ns}, class); err != nil {
 		t.Fatal(err)
@@ -1250,6 +1250,7 @@ func TestAStoreMovedBeforeTheCopyFailsTheBackup(t *testing.T) {
 	editClass(t, src.ns, func(class *lodiav1alpha1.DatastoreClass) {
 		class.Spec.Backup.Store.Prefix, class.Spec.Backup.Store.Bucket = "moved", "other-bucket"
 	})
+	grantClass(t, src.ns, sourceName, src.ns)
 	waitEtcd(t, src.ns, sourceName, func(etcd *druidv1alpha1.Etcd) error {
 		if store := etcd.Spec.Backup.Store; *store.Container != "other-bucket" || !strings.HasPrefix(store.Prefix, "moved/") {
 			return fmt.Errorf("the Etcd's store is %s/%s", *store.Container, store.Prefix)
@@ -1273,6 +1274,7 @@ func TestTheFlushIsAFullSnapshotWhateverTheDeltaPeriod(t *testing.T) {
 			editClass(t, src.ns, func(class *lodiav1alpha1.DatastoreClass) {
 				class.Spec.Backup.DeltaSnapshotPeriod = &metav1.Duration{Duration: period}
 			})
+			grantClass(t, src.ns, sourceName, src.ns)
 			waitEtcd(t, src.ns, sourceName, func(etcd *druidv1alpha1.Etcd) error {
 				if got := etcd.Spec.Backup.DeltaSnapshotPeriod; got == nil || got.Duration != period {
 					return fmt.Errorf("the Etcd's deltaSnapshotPeriod is %v", got)
@@ -1344,6 +1346,7 @@ func moveStore(t *testing.T, ns, bucket, prefix string) {
 	editClass(t, ns, func(class *lodiav1alpha1.DatastoreClass) {
 		class.Spec.Backup.Store.Bucket, class.Spec.Backup.Store.Prefix = bucket, prefix
 	})
+	grantClass(t, ns, sourceName, ns)
 	waitEtcd(t, ns, sourceName, func(etcd *druidv1alpha1.Etcd) error {
 		if store := etcd.Spec.Backup.Store; *store.Container != bucket || !strings.HasPrefix(store.Prefix, prefix+"/") {
 			return fmt.Errorf("the Etcd's store is %s/%s", *store.Container, store.Prefix)
