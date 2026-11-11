@@ -152,6 +152,9 @@ func TestACABundleKeptElsewhereOrWithoutACertificateWaitsForCertificates(t *test
 	e := serve(t)
 	publish(t, cp, e)
 	name := lodiav1alpha1.CABundleSecret.Name(cp.Name)
+	testenv.Eventually(t, func() error {
+		return expect(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the CA bundle "+name)
+	})
 	foreign := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name, Namespace: cp.Namespace,
