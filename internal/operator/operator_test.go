@@ -238,7 +238,7 @@ func run(t *testing.T, cfg *rest.Config, gatewayAPI bool) (client.Client, <-chan
 	}
 	in := testInputs
 	in.GatewayAPI = gatewayAPI
-	if err := operator.Setup(mgr, in); err != nil {
+	if _, err := operator.Setup(mgr, in); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())

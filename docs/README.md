@@ -554,7 +554,7 @@ Upgrading Lodia: [`operations.md`](operations.md#upgrading-lodia); etcd-druid's 
 
 [`operations.md`](operations.md): what breaks and how it shows, the runbooks (restore, lost quorum, forced rotation, stuck upgrade, nodes cut off), capacity planning, the alert rules and what each means.
 
-Lodia's metrics come from a collector that builds them from status at scrape time and that the leader alone serves ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)).
+Lodia's metrics come from a collector that builds them at scrape time from status and from each dedicated etcd's last sample, and that the leader alone serves ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)).
 
 ## Conventions
 

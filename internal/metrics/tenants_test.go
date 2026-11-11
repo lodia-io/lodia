@@ -225,5 +225,6 @@ func golden() []client.Object {
 	steady(deleting, "v1.37.1")
 	deleting.Status.Conditions = conditions(deleting, map[string]state{lodiav1alpha1.ConditionReady: {metav1.ConditionFalse, lodiav1alpha1.ReasonDeleting}})
 
-	return []client.Object{fresh, edge, restored, failed, queued, upgrading, paused, starting, rolling, waiting, overdue, shared, deleting}
+	tenants := []client.Object{fresh, edge, restored, failed, queued, upgrading, paused, starting, rolling, waiting, overdue, shared, deleting}
+	return append(tenants, goldenEtcds(tenants)...)
 }

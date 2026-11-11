@@ -136,11 +136,12 @@ type Inputs struct {
 	GatewayAPI          bool
 }
 
-// Setup registers every controller with the manager.
-func Setup(mgr ctrl.Manager, in Inputs) error {
+// Setup registers every controller with the manager and returns the etcd
+// sampler, whose samples Metrics serves.
+func Setup(mgr ctrl.Manager, in Inputs) (*datastore.SampleReconciler, error) {
 	revision, err := in.Revision()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := (&pki.Reconciler{
 		Client:              mgr.GetClient(),
@@ -152,10 +153,10 @@ func Setup(mgr ctrl.Manager, in Inputs) error {
 		SignerPropagation:   5 * time.Minute,
 		Clock:               clock.RealClock{},
 	}).SetupWithManager(mgr, workers); err != nil {
-		return fmt.Errorf("set up the pki controller: %w", err)
+		return nil, fmt.Errorf("set up the pki controller: %w", err)
 	}
 	if err := (&pki.KubeconfigRequestReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Clock: clock.RealClock{}, PolicyGrace: 10 * time.Second}).SetupWithManager(mgr, workers); err != nil {
-		return fmt.Errorf("set up the kubeconfig request reconciler: %w", err)
+		return nil, fmt.Errorf("set up the kubeconfig request reconciler: %w", err)
 	}
 	dialEtcd := func(ctx context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client, error) {
 		return datastore.DialEtcd(ctx, mgr.GetAPIReader(), etcd)
@@ -171,41 +172,43 @@ func Setup(mgr ctrl.Manager, in Inputs) error {
 		EtcdClient:          dialEtcd,
 		Clock:               clock.RealClock{},
 	}).SetupWithManager(mgr, workers); err != nil {
-		return fmt.Errorf("set up the datastore controller: %w", err)
+		return nil, fmt.Errorf("set up the datastore controller: %w", err)
 	}
 	if err := (&datastore.BackupReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdClient: dialEtcd, Clock: clock.RealClock{}}).SetupWithManager(mgr, workers); err != nil {
-		return fmt.Errorf("set up the backup reconciler: %w", err)
+		return nil, fmt.Errorf("set up the backup reconciler: %w", err)
 	}
-	if err := (&datastore.SampleReconciler{Cache: mgr.GetCache(), EtcdClient: dialEtcd, Clock: clock.RealClock{}}).SetupWithManager(mgr, workers); err != nil {
-		return fmt.Errorf("set up the etcd sampler: %w", err)
+	sampler := &datastore.SampleReconciler{Cache: mgr.GetCache(), EtcdClient: dialEtcd, Clock: clock.RealClock{}}
+	if err := sampler.SetupWithManager(mgr, workers); err != nil {
+		return nil, fmt.Errorf("set up the etcd sampler: %w", err)
 	}
 	if err := newLifecycle(mgr.GetClient(), mgr.GetAPIReader(), in.Config, revision).SetupWithManager(mgr, workers); err != nil {
-		return fmt.Errorf("set up the lifecycle controller: %w", err)
+		return nil, fmt.Errorf("set up the lifecycle controller: %w", err)
 	}
 	if err := (&tenant.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), ApplyPeriod: 10 * time.Minute, TunnelImage: in.TunnelImage, Revision: revision}).SetupWithManager(mgr, workers); err != nil {
-		return fmt.Errorf("set up the tenant controller: %w", err)
+		return nil, fmt.Errorf("set up the tenant controller: %w", err)
 	}
 	if err := newHealth(mgr.GetClient(), mgr.GetAPIReader(), in.Config.Health).SetupWithManager(mgr, workers); err != nil {
-		return fmt.Errorf("set up the health controller: %w", err)
+		return nil, fmt.Errorf("set up the health controller: %w", err)
 	}
 	if err := newNodes(mgr.GetClient(), mgr.GetAPIReader(), in.Config.Health).SetupWithManager(mgr, nodesWorkers); err != nil {
-		return fmt.Errorf("set up the health nodes reconciler: %w", err)
+		return nil, fmt.Errorf("set up the health nodes reconciler: %w", err)
 	}
 	if err := (&workloads.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), SignerImage: in.SignerImage, TunnelImage: in.TunnelImage, GatewayAPI: in.GatewayAPI, Revision: revision}).SetupWithManager(mgr, workers); err != nil {
-		return fmt.Errorf("set up the workloads controller: %w", err)
+		return nil, fmt.Errorf("set up the workloads controller: %w", err)
 	}
-	return nil
+	return sampler, nil
 }
 
-// Metrics is Lodia's collector over a manager's cache and its Elected.
-// Setup does not register it, since controller-runtime's registry is global
-// and tests run Setup for many managers in one process: cmd/lodia does.
-func Metrics(reader client.Reader, elected <-chan struct{}, in Inputs) (*metrics.Collector, error) {
+// Metrics is Lodia's collector over a manager's cache and its Elected, and
+// over the samples of the etcd sampler Setup returns. Setup does not register
+// it, since controller-runtime's registry is global and tests run Setup for
+// many managers in one process: cmd/lodia does.
+func Metrics(reader client.Reader, elected <-chan struct{}, in Inputs, sampler *datastore.SampleReconciler) (*metrics.Collector, error) {
 	revision, err := in.Revision()
 	if err != nil {
 		return nil, err
 	}
-	return &metrics.Collector{Reader: reader, Elected: elected, Revision: revision, MaxConcurrentRollouts: in.Config.Fleet.MaxConcurrentRollouts}, nil
+	return &metrics.Collector{Reader: reader, Elected: elected, Revision: revision, MaxConcurrentRollouts: in.Config.Fleet.MaxConcurrentRollouts, EtcdSample: sampler.Sample}, nil
 }
 
 // newLifecycle settles a change Lodia started for as long as Health takes to

@@ -49,11 +49,11 @@ A metric is renamed only under a new name, and in `v1alpha1` the old one stays f
 | `lodia_controlplane_maintenance_scheduled_for_timestamp_seconds` | | `status.target.scheduledFor`: at or before now, the tenant is queued for a slot; later, it waits for its window | yes |
 | `lodia_controlplane_upgrade_started_timestamp_seconds` | `step` (`UpgradeStep`) | `status.kubernetes.upgrade.startedAt` and `.step` | yes |
 | `lodia_controlplane_certificates_expiration_timestamp_seconds` | | `status.credentials.notAfter` | once PKI writes it |
-| `lodia_controlplane_datastore_quota_bytes` | | the `Etcd`'s `spec.etcd.quota` | with the etcd sampler |
-| `lodia_controlplane_datastore_delta_snapshot_period_seconds` | | the `Etcd`'s `spec.backup.deltaSnapshotPeriod`, absent below 1 second or without a store | with the etcd sampler |
-| `lodia_controlplane_datastore_db_size_bytes` | | the largest `dbSize` among the members that answered the last sample; absent until the `Etcd` is formed | with the etcd sampler |
-| `lodia_controlplane_datastore_has_leader` | | the last sample: 1 when a quorum of the voting members answered naming one leader, else 0; absent until the `Etcd` is formed | with the etcd sampler |
-| `lodia_controlplane_datastore_alarm` | `alarm` (`NOSPACE`, `CORRUPT`) | 1 per alarm armed in the last sample | with the etcd sampler |
+| `lodia_controlplane_datastore_quota_bytes` | | the `Etcd`'s `spec.etcd.quota` | yes |
+| `lodia_controlplane_datastore_delta_snapshot_period_seconds` | | the `Etcd`'s `spec.backup.deltaSnapshotPeriod`, absent below 1 second or without a store | yes |
+| `lodia_controlplane_datastore_db_size_bytes` | | the largest `dbSize` among the members that answered the last sample; absent until the `Etcd` is formed | yes |
+| `lodia_controlplane_datastore_has_leader` | | the last sample: 1 when a quorum of the voting members answered naming one leader, else 0; absent until the `Etcd` is formed, and while the operator cannot read the client certificate it names, a failure of the management cluster's | yes |
+| `lodia_controlplane_datastore_alarm` | `alarm` (`NOSPACE`, `CORRUPT`) | 1 per alarm armed in the last sample | yes |
 | `lodia_controlplane_nodes_silent`, `lodia_controlplane_nodes_counted` | | Health's last Lease list, once its clock has run `silentAfter`: the silent nodes and those that count, the two sides of the hold's fraction ([controller-manager-hold](controller-manager-hold.md)) | with Health's metrics |
 | `lodia_controlplane_kubernetes_end_of_support_timestamp_seconds` | | the end-of-support date the version table gives the minor of `status.kubernetes.version` ([upgrades-and-maintenance-windows](upgrades-and-maintenance-windows.md)) | once the version table has the dates |
 
@@ -90,8 +90,8 @@ Of the operator, without a tenant's labels:
 
 ## Code
 
-- `internal/metrics` — `Collector` builds the metrics served from the manager's cache, once elected, under the list's deadline; `collector_test.go` holds the golden `testdata/metrics.prom` over a tenant of each shape, a standby before and after its election, an informer that has not synced, a recreated `ControlPlane` and two scrapes at once, and `BenchmarkCollect` a scrape at 200 tenants.
+- `internal/metrics` — `Collector` builds the metrics served from the manager's cache and the etcd sampler's samples, once elected, under the lists' deadline; `collector_test.go` holds the golden `testdata/metrics.prom` over a tenant of each shape, a standby before and after its election, an informer that has not synced, a recreated `ControlPlane` and two scrapes at once, `etcd_test.go` the quota and the period of an `Etcd` without a sample and an `Etcd` list that does not answer, and `BenchmarkCollect` a scrape at 200 tenants.
 - `internal/controller/datastore/sample.go` — `SampleReconciler`, the controller `datastore-sample`, and the samples it serves; `sample_test.go` runs it on embedded etcd: one member, three with members stopped, a learner, a member list that fails, both alarms, the ControlPlanes it forgets, a recreated one, the minute each sample stands, and a member and a Secret read that hang.
 - `api/v1alpha1/metrics.go` — the label values no other type of the package holds.
-- `internal/operator`, `cmd/lodia` — `Metrics` builds the collector on the running revision and `fleet.maxConcurrentRollouts`, and `cmd/lodia` registers it in controller-runtime's registry after `Setup`.
+- `internal/operator`, `cmd/lodia` — `Metrics` builds the collector on the running revision, `fleet.maxConcurrentRollouts` and the etcd sampler `Setup` returns, and `cmd/lodia` registers it in controller-runtime's registry after `Setup`.
 - `Makefile`, `.github/workflows/ci.yml` — `make monitoring`, part of `verify`, runs `promtool check metrics` on the golden; CI installs promtool by its checksum.
