@@ -105,7 +105,7 @@ func TestAClassEditReachesTheControlPlanesWhoseEtcdRunsIt(t *testing.T) {
 	}
 }
 
-func seedClassGrant(t *testing.T, cp *lodiav1alpha1.ControlPlane, generation int64, settlingSince *time.Time) {
+func seedSlot(t *testing.T, cp *lodiav1alpha1.ControlPlane, target map[string]any, upgrade bool, settlingSince *time.Time) {
 	t.Helper()
 	fresh := getQuiet(t, cp)
 	condition := func(conditionType, status, reason string) map[string]any {
@@ -115,12 +115,20 @@ func seedClassGrant(t *testing.T, cp *lodiav1alpha1.ControlPlane, generation int
 	if settlingSince != nil {
 		maintenance["settlingSince"] = settlingSince.Format(time.RFC3339)
 	}
-	applyQuiet(t, cp, lifecycle.FieldManager, map[string]any{
+	status := map[string]any{
 		"observedGeneration": fresh.Generation,
-		"target":             map[string]any{"version": "v1.37.1", "operatorRevision": runningRevision, "datastoreClassGeneration": generation},
+		"target":             target,
 		"conditions":         []any{condition(lodiav1alpha1.ConditionProgressing, "True", lodiav1alpha1.ReasonMaintaining), condition(lodiav1alpha1.ConditionReady, "True", lodiav1alpha1.ReasonReady)},
 		"maintenance":        maintenance,
-	})
+	}
+	if upgrade {
+		status["kubernetes"] = map[string]any{"upgrade": map[string]any{"step": string(lodiav1alpha1.UpgradeStepAPIServer), "startedAt": startedAt.Format(time.RFC3339)}}
+	}
+	applyQuiet(t, cp, lifecycle.FieldManager, status)
+}
+
+func classGrant(generation int64) map[string]any {
+	return map[string]any{"version": "v1.37.1", "operatorRevision": runningRevision, "datastoreClassGeneration": generation}
 }
 
 func TestARestartedOperatorKeepsAClassEditInItsSlot(t *testing.T) {
@@ -129,7 +137,7 @@ func TestARestartedOperatorKeepsAClassEditInItsSlot(t *testing.T) {
 	cp := fleetTenant(t, "class-restart")
 	reportsOf(t, cp, runningRevision)
 	applyQuiet(t, cp, "test/class", runsClass(class, 1))
-	seedClassGrant(t, cp, editClass(t, quiet, class), nil)
+	seedSlot(t, cp, classGrant(editClass(t, quiet, class)), false, nil)
 
 	mustPass(t, fleetReconciler(quiet, quiet, later, 1), cp)
 	fresh := expectMaintenance(t, cp, lodiav1alpha1.ReasonMaintaining, runningRevision)

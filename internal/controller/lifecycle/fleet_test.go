@@ -490,7 +490,7 @@ func TestAStaleCacheNeverRevokesAGrantOrASlot(t *testing.T) {
 		{"a cache from before a patch update's grant", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 			autoUpdate(t, cp)
 			reportsOf(t, cp, runningRevision)
-			seedLifecycle(t, cp, runningRevision, lodiav1alpha1.ReasonIdle, nil, nil)
+			seedSlot(t, cp, map[string]any{"version": "v1.37.2", "operatorRevision": runningRevision}, true, nil)
 		}, func(cp *lodiav1alpha1.ControlPlane) {
 			cp.Status.Target.Version = "v1.37.1"
 			cp.Status.Kubernetes.Upgrade = nil
@@ -513,8 +513,7 @@ func TestAStaleCacheNeverRevokesAGrantOrASlot(t *testing.T) {
 			datastoreClass(t, quiet, "stale-grant")
 			reportsOf(t, cp, runningRevision)
 			applyQuiet(t, cp, "test/class", runsClass("stale-grant", 1))
-			seedLifecycle(t, cp, runningRevision, lodiav1alpha1.ReasonIdle, nil, nil)
-			editClass(t, quiet, "stale-grant")
+			seedSlot(t, cp, classGrant(editClass(t, quiet, "stale-grant")), false, nil)
 		}, func(cp *lodiav1alpha1.ControlPlane) {
 			cp.Status.Target.DatastoreClassGeneration = 0
 			cp.Status.Maintenance = nil
@@ -524,7 +523,7 @@ func TestAStaleCacheNeverRevokesAGrantOrASlot(t *testing.T) {
 			datastoreClass(t, quiet, "stale-rollout")
 			reportsOf(t, cp, runningRevision)
 			applyQuiet(t, cp, "test/class", runsClass("stale-rollout", editClass(t, quiet, "stale-rollout")))
-			seedClassGrant(t, cp, 2, &settling)
+			seedSlot(t, cp, classGrant(2), false, &settling)
 		}, func(cp *lodiav1alpha1.ControlPlane) {
 			cp.Status.Datastore.Class.Generation = 1
 			cp.Status.Maintenance.SettlingSince = nil
