@@ -593,7 +593,7 @@
     {
       "type": "timeseries",
       "title": "Health sampling lag, 99th percentile",
-      "description": "How much later than its due time a health-nodes pass started; the hold of the controller manager keeps a margin of 10 seconds, and LodiaHealthSamplingLate fires above it.",
+      "description": "The 99th percentile of how much later than its due time a health-nodes pass started; the hold of the controller manager keeps a margin of 10 seconds for it.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"

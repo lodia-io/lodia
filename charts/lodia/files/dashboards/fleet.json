@@ -41,7 +41,7 @@
     {
       "type": "stat",
       "title": "Tenants",
-      "description": "ControlPlanes that have a status.",
+      "description": "Every ControlPlane.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"

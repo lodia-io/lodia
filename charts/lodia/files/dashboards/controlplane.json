@@ -286,7 +286,7 @@
     {
       "type": "stat",
       "title": "Slot and upgrade",
-      "description": "How long the ControlPlane has held a maintenance slot, and how long its Kubernetes upgrade has run at its step.",
+      "description": "How long the ControlPlane has held a maintenance slot, and how long since its version change started, at the step it is on now.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -346,7 +346,7 @@
           },
           "editorMode": "code",
           "expr": "time() - max by (step) (lodia_controlplane_upgrade_started_timestamp_seconds{namespace=\"$namespace\",controlplane=\"$controlplane\"})",
-          "legendFormat": "upgrade at {{step}} for",
+          "legendFormat": "upgrade at {{step}}, started",
           "refId": "B",
           "instant": true,
           "range": false
