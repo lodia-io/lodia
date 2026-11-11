@@ -103,6 +103,20 @@ func TestAReasonChangeAtOneStatusIsOneEvent(t *testing.T) {
 	}
 }
 
+func TestAStatusChangeAtOneReasonIsOneEvent(t *testing.T) {
+	cp := controlPlane(t, namespace(t))
+	if err := apply(t.Context(), cp, conditions(reported(lodiav1alpha1.ConditionDatastoreReady, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused)), false); err != nil {
+		t.Fatal(err)
+	}
+	w, r := recording()
+	if err := w.Apply(t.Context(), stored(t, cp), conditions(reported(lodiav1alpha1.ConditionDatastoreReady, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused)), false); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.events) != 1 || r.events[0].eventType != corev1.EventTypeWarning || r.events[0].reason != lodiav1alpha1.ReasonRefused {
+		t.Errorf("recorded %+v, want one Warning Refused", r.events)
+	}
+}
+
 func TestAMessageChangeIsNoEvent(t *testing.T) {
 	cp := controlPlane(t, namespace(t))
 	w, r := recording()
@@ -208,6 +222,22 @@ func TestAKeptFirstPassIsNoEvent(t *testing.T) {
 	}
 	if len(r.events) != 0 {
 		t.Errorf("recorded %+v for a kept first pass", r.events)
+	}
+}
+
+func TestReadysReconcilingOverAnotherReasonIsAnEvent(t *testing.T) {
+	cp := controlPlane(t, namespace(t))
+	if err := apply(t.Context(), cp, conditions(reported(lodiav1alpha1.ConditionReady, metav1.ConditionUnknown, lodiav1alpha1.ReasonLatestGenerationNotObserved)), false); err != nil {
+		t.Fatal(err)
+	}
+	w, r := recording()
+	reconciling := reported(lodiav1alpha1.ConditionReady, metav1.ConditionUnknown, lodiav1alpha1.ReasonReconciling)
+	reconciling.Message = "RoutesReady: the first pass has not finished"
+	if err := w.Apply(t.Context(), stored(t, cp), conditions(reconciling), false); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.events) != 1 || r.events[0].eventType != corev1.EventTypeNormal || r.events[0].reason != lodiav1alpha1.ReasonReconciling {
+		t.Errorf("recorded %+v, want one Normal Reconciling", r.events)
 	}
 }
 
