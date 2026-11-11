@@ -1,8 +1,8 @@
 # Lodia's metrics are part of its API
 
 Decided 2026-10-26.
-Built: the collector, served by the leader alone, with every metric below that the table marks served.
-Not built yet: the other metrics, the events and the chart's metrics Service, ServiceMonitor, rules and dashboards, which phase 2's wave 2, observability, builds next ([roadmap](../roadmap.md)).
+Built: the collector, served by the leader alone, with every metric below that the table marks served, and the chart's metrics Service and ServiceMonitor.
+Not built yet: the other metrics, the events and the chart's rules and dashboards, which phase 2's wave 2, observability, builds next ([roadmap](../roadmap.md)).
 
 ## Decision
 
@@ -96,3 +96,4 @@ Of the operator, without a tenant's labels:
 - `api/v1alpha1/metrics.go` — the label values no other type of the package holds.
 - `internal/operator`, `cmd/lodia` — `Metrics` builds the collector on the running revision, `fleet.maxConcurrentRollouts` and the etcd sampler `Setup` returns, and `cmd/lodia` registers it in controller-runtime's registry after `Setup`; `operator_test.go` reads, through `Metrics`, the sample the manager's sampler keeps.
 - `Makefile`, `.github/workflows/ci.yml` — `make monitoring`, part of `verify`, runs `promtool check metrics` on the golden; CI installs promtool by its checksum.
+- `charts/lodia/templates/metrics-service.yaml`, `servicemonitor.yaml` — the Service and the ServiceMonitor behind `metrics.service.enabled` and `metrics.serviceMonitor.enabled` ([Scraping the operator](../README.md#scraping-the-operator)); `make chart` checks that the defaults render neither, that the ServiceMonitor fails without the Service, honors the labels, makes the job `lodia`, scrapes the Service's port, selects that Service alone, and sends the token file only without `scrapeClass`.

@@ -12,6 +12,7 @@ E2E_UPGRADE_TEST ?= TestMinorUpgradeGate
 E2E_MAINTENANCE_TEST ?= TestOperatorUpgradeInWindows
 CHART = charts/lodia
 CONTROLLERS = datastore health lifecycle pki tenant workloads
+METRICS = metrics.service.enabled=true,metrics.serviceMonitor.enabled=true
 GENERATED = api/v1alpha1/zz_generated.deepcopy.go api/crds/*.yaml $(CHART)/files/crds/*.yaml $(CHART)/files/rbac/*.yaml
 DIGEST = sha256:0000000000000000000000000000000000000000000000000000000000000000
 
@@ -51,7 +52,7 @@ restore-keys: ## the etcd keys a restore's cleanup deletes, against the API serv
 	done
 
 .PHONY: chart
-chart: ## lint and render the chart with image tags, then with image digests; with crds.enabled=false it must still render the policy kubeconfigrequests.lodia.io and its binding
+chart: ## lint and render the chart with image tags, then with image digests; with crds.enabled=false it must still render the policy kubeconfigrequests.lodia.io and its binding; the metrics Service and ServiceMonitor only once their values are on, and the ServiceMonitor scraping that Service alone
 	helm dependency build $(CHART)
 	helm lint --strict $(CHART)
 	helm template lodia $(CHART) --namespace lodia-system > /dev/null
@@ -68,6 +69,21 @@ chart: ## lint and render the chart with image tags, then with image digests; wi
 	helm template lodia $(CHART) --namespace lodia-system --set etcdDruid.enabled=false,etcdDruidNamespace=druid,etcdDruidVersion=v0.0.0-check,etcdDruidDeployment=druid-check | awk '/^---/ {kind = ""; ns = ""} /^kind: / {kind = $$2} /^  namespace: / {ns = $$2} /^    resourceNames: \[druid-check\]$$/ && kind == "Role" && ns == "druid" {found = 1} END {exit !found}' || { echo "no Role in etcdDruidNamespace lets the operator read etcdDruidDeployment"; exit 1; }
 	helm lint --strict $(CHART) --set image.digest=$(DIGEST),signerImage.digest=$(DIGEST),tunnelImage.digest=$(DIGEST)
 	helm template lodia $(CHART) --namespace lodia-system --set image.digest=$(DIGEST),signerImage.digest=$(DIGEST),tunnelImage.digest=$(DIGEST) > /dev/null
+	helm template lodia $(CHART) --namespace lodia-system | awk '/^---/ {kind = ""} /^kind: / {kind = $$2} kind == "ServiceMonitor" || kind == "Service" && /^  name: lodia-metrics$$/ {found = 1} END {exit found}' || { echo "the defaults render the Service lodia-metrics or a ServiceMonitor"; exit 1; }
+	helm lint --strict $(CHART) --set $(METRICS)
+	helm template lodia $(CHART) --namespace lodia-system --set $(METRICS) | awk '/^---/ {kind = ""} /^kind: / {kind = $$2} /^  name: / && (kind == "Service" && $$2 == "lodia-metrics" || kind == "ServiceMonitor" && $$2 == "lodia") {found[kind] = 1} END {exit !(found["Service"] && found["ServiceMonitor"])}' || { echo "with $(METRICS) the chart renders no Service lodia-metrics or no ServiceMonitor lodia"; exit 1; }
+	! helm template lodia $(CHART) --namespace lodia-system --set metrics.serviceMonitor.enabled=true > /dev/null 2>&1 || { echo "the ServiceMonitor renders without the metrics Service"; exit 1; }
+	helm template lodia $(CHART) --namespace lodia-system --set $(METRICS) --show-only templates/servicemonitor.yaml | grep -qx '      honorLabels: true' || { echo "the ServiceMonitor's endpoint does not honor the scraped labels, so prometheus-operator's namespace and endpoint rename Lodia's"; exit 1; }
+	@job="$$(helm template lodia $(CHART) --namespace lodia-system --set $(METRICS) --show-only templates/servicemonitor.yaml | awk '/^  jobLabel: / {print $$2}')"; \
+	helm template lodia $(CHART) --namespace lodia-system --set $(METRICS) --show-only templates/metrics-service.yaml | awk '/^[^ ]/ {top = $$1} /^  [^ ]/ {block = $$1} top == "metadata:" && block == "labels:" && /^    [^ ]/ {print $$1, $$2}' | grep -Fqx "$$job: lodia" || { echo "the ServiceMonitor's jobLabel [$$job] names no label of the Service lodia-metrics that holds lodia, so its job is not lodia"; exit 1; }
+	@port="$$(helm template lodia $(CHART) --namespace lodia-system --set $(METRICS) --show-only templates/servicemonitor.yaml | awk '/^    - port: / {print $$3}')"; \
+	[ -n "$$port" ] && helm template lodia $(CHART) --namespace lodia-system --set $(METRICS) --show-only templates/metrics-service.yaml | awk '/^[^ ]/ {top = $$1} /^  [^ ]/ {block = $$1} top == "spec:" && block == "ports:" && /^    - name: / {print $$3}' | grep -Fqx "$$port" || { echo "the ServiceMonitor scrapes the port [$$port], which the Service lodia-metrics does not name"; exit 1; }
+	@selector="$$(helm template lodia $(CHART) --namespace lodia-system --set $(METRICS) --show-only templates/servicemonitor.yaml | awk '/^    matchLabels:/ {m = 1; next} m && /^      [^ ]/ {print $$1, $$2; next} {m = 0}')"; \
+	printf '%s\n' "$$selector" | grep -Fqx 'app.kubernetes.io/component: metrics' && printf '%s\n' "$$selector" | grep -Fqx 'app.kubernetes.io/instance: lodia' || { echo "the ServiceMonitor's selector [$$selector] lacks app.kubernetes.io/component: metrics or app.kubernetes.io/instance: lodia"; exit 1; }; \
+	matched="$$(helm template lodia $(CHART) --namespace lodia-system --set $(METRICS) | SELECTOR="$$selector" awk 'function flush(  n, i, ok, pairs) { if (kind == "Service") { ok = 1; n = split(ENVIRON["SELECTOR"], pairs, "\n"); for (i = 1; i <= n; i++) if (!(pairs[i] in labels)) ok = 0; if (ok) print name } split("", labels); kind = name = "" } /^---/ {flush()} /^kind: / {kind = $$2} /^[^ ]/ {top = $$1} /^  [^ ]/ {block = $$1} top == "metadata:" && /^  name: / {name = $$2} top == "metadata:" && block == "labels:" && /^    [^ ]/ {labels[$$1 " " $$2] = 1} END {flush()}' | tr '\n' ' ')"; \
+	[ "$$matched" = "lodia-metrics " ] || { echo "the ServiceMonitor's selector matches the Services [$$matched], want lodia-metrics alone"; exit 1; }
+	helm template lodia $(CHART) --namespace lodia-system --set $(METRICS) --show-only templates/servicemonitor.yaml | awk '/^      bearerTokenFile: \/var\/run\/secrets\/kubernetes.io\/serviceaccount\/token$$/ {token = 1} /scrapeClass/ {class = 1} END {exit !(token && !class)}' || { echo "by default the ServiceMonitor names a scrape class or sends no token from Prometheus's own file"; exit 1; }
+	helm template lodia $(CHART) --namespace lodia-system --set $(METRICS),metrics.serviceMonitor.scrapeClass=check --show-only templates/servicemonitor.yaml | awk '/^  scrapeClass: "check"$$/ {class = 1} /bearerTokenFile/ {token = 1} END {exit !(class && !token)}' || { echo "with metrics.serviceMonitor.scrapeClass the ServiceMonitor names no such class or keeps a token file, which Prometheus refuses beside the class's authorization"; exit 1; }
 
 .PHONY: monitoring
 monitoring: ## lint the collector's golden as promtool lints a scrape

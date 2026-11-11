@@ -41,3 +41,11 @@ health:
 
 fleet:
   maxConcurrentRollouts: 5
+
+metrics:
+  service:
+    enabled: false
+  serviceMonitor:
+    enabled: false   # needs metrics.service.enabled
+    scrapeClass: ""  # required where the Prometheus's default scrape class carries an authorization
+    labels: {}
