@@ -427,9 +427,13 @@ func TestAProbePastItsOwnTimeoutCounts(t *testing.T) {
 	probe := newReconciler(500 * time.Millisecond)
 	probe.ProbeFailures = failures
 	e.hang.Store(true)
-	reconcile(t, probe, cp)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	if _, err := probe.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+		t.Fatal(err)
+	}
 	if got := testutil.ToFloat64(failures.WithLabelValues(lodiav1alpha1.MetricProbeAPI)); got != 1 {
-		t.Errorf("the public endpoint, which did not answer within the probe's timeout, counts %v failures, want 1", got)
+		t.Errorf("the public endpoint, which did not answer within the probe's timeout in a pass with a minute left, counts %v failures, want 1", got)
 	}
 }
 
