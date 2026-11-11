@@ -1,0 +1,18 @@
+{{- if .Values.metrics.rules.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lodia.labels" . | nindent 4 }}
+    {{- with .Values.metrics.rules.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- $rules := .Files.Get "files/rules/lodia.yaml" }}
+  {{- if not (hasSuffix "-dev" .Chart.AppVersion) }}
+  {{- $rules = replace "https://github.com/lodia-io/lodia/blob/main/" (printf "https://github.com/lodia-io/lodia/blob/v%s/" .Chart.AppVersion) $rules }}
+  {{- end }}
+  {{- $rules | trim | nindent 2 }}
+{{- end }}

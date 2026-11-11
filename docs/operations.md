@@ -382,7 +382,7 @@ Before applying it, weigh both ports ([metrics-are-part-of-the-api](decisions/me
 
 ## Alerts shipped in the chart
 
-The rules of [`charts/lodia/files/rules/lodia.yaml`](../charts/lodia/files/rules/lodia.yaml) read the metrics of [metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md) and controller-runtime's; [`test/rules/lodia_test.yaml`](../test/rules/lodia_test.yaml) tests each on both sides of what it reads.
+The chart's PrometheusRule, behind `metrics.rules.enabled` and off by default ([what the Prometheus needs](README.md#alerting-on-the-operator)), holds the rules of [`charts/lodia/files/rules/lodia.yaml`](../charts/lodia/files/rules/lodia.yaml), on the metrics of [metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md) and controller-runtime's; [`test/rules/lodia_test.yaml`](../test/rules/lodia_test.yaml) tests each on both sides of what it reads.
 `critical` is a tenant's API, its etcd or its nodes' link down, or nothing reconciling; `warning` waits for working hours.
 Every alert on a tenant leaves out a `ControlPlane` being deleted, but `LodiaControlPlaneDeletionStuck`, and every alert on its conditions or counts leaves out a paused one, whose conditions and counts stand as they were.
 Every alert keeps firing for 4 minutes after its condition ends, so that it outlasts the failovers of a `helm upgrade` of Lodia, which move every series to the other pod; an alert still pending at a failover starts its wait again.
