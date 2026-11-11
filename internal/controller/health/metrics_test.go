@@ -16,6 +16,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -209,6 +210,67 @@ func TestTheCountsWaitForTheClockAndFollowTheHold(t *testing.T) {
 	h.expectCountsOfTheHold()
 	h.back(25)
 	h.expectHealth(0, 3)
+	h.expectCountsOfTheHold()
+}
+
+func TestCountsDuringAHoldCountAnUnknownNodeFromTheHoldsStart(t *testing.T) {
+	h := sampling(t, "a", "b")
+	joined(t, "c", corev1.ConditionUnknown, h.start.Add(-4*time.Minute))
+	h.at(0)
+	h.at(20)
+	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+		t.Fatalf("20 seconds of silence left the Lease with holder %q", holder)
+	}
+	h.at(90)
+	h.expectHealth(3, 3)
+	h.expectCountsOfTheHold()
+}
+
+func TestAConflictWhoseReReadFailsKeepsThePassCount(t *testing.T) {
+	h := holding(t, "a", "b", "c")
+	var gets atomic.Int32
+	h.inject(func(w http.ResponseWriter, req *http.Request) bool {
+		if req.URL.Path != managerLease {
+			return false
+		}
+		switch req.Method {
+		case http.MethodPut:
+			refuse(w, http.StatusConflict, metav1.StatusReasonConflict)
+			return true
+		case http.MethodGet:
+			if gets.Add(1) > 1 {
+				refuse(w, http.StatusInternalServerError, metav1.StatusReasonInternalError)
+				return true
+			}
+		}
+		return false
+	})
+	h.at(25)
+	h.inject(nil)
+	expectCounts(t, h.r, h.cp, 3, 3)
+}
+
+func TestAConflictWhoseReReadFindsAnotherHolderCountsAsTheRetry(t *testing.T) {
+	h := sampling(t, "a", "b")
+	joined(t, "c", corev1.ConditionUnknown, h.start.Add(-4*time.Minute-30*time.Second))
+	h.at(0)
+	h.at(20)
+	h.expectHealth(3, 3)
+	createManagerPod(t, h.cp, "dev-kube-controller-manager-7d9")
+	var puts atomic.Int32
+	h.inject(func(w http.ResponseWriter, req *http.Request) bool {
+		if req.Method == http.MethodPut && req.URL.Path == managerLease && puts.Add(1) == 1 {
+			renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", time.Now())
+		}
+		return false
+	})
+	h.at(40)
+	h.inject(nil)
+	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+		t.Fatalf("the retry left holder %q", holder)
+	}
+	h.expectSilent(taken(2, 2, "60"))
+	h.expectHealth(2, 2)
 	h.expectCountsOfTheHold()
 }
 
