@@ -251,6 +251,55 @@ func TestAClassEditReachesAnEtcdThatNeverRolledOut(t *testing.T) {
 	}
 }
 
+func TestAClassEditReachesAnEtcdCreatedAgainFromAnotherClass(t *testing.T) {
+	for _, row := range []struct {
+		name, begin string
+		token       bool
+		reason      string
+	}{
+		{"on a token", "20:00", true, lodiav1alpha1.ReasonRollingOut},
+		{"in its window", "11:00", false, lodiav1alpha1.ReasonMaintaining},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			predecessor := datastoreClass(t, quiet, "lifecycle-predecessor-"+row.begin[:2])
+			class := datastoreClass(t, quiet, "lifecycle-recreated-"+row.begin[:2])
+			cp := quietControlPlane(t)
+			fresh := getQuiet(t, cp)
+			fresh.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: &lodiav1alpha1.MaintenanceWindow{Begin: row.begin, End: row.begin[:2] + ":59"}}
+			if err := quiet.Update(t.Context(), fresh); err != nil {
+				t.Fatal(err)
+			}
+			seedQuiet(t, getQuiet(t, cp), "v1.37.1", "", all("v1.37.1"), "")
+			seedLifecycle(t, cp, runningRevision, lodiav1alpha1.ReasonIdle, nil, nil)
+			applyQuiet(t, cp, "test/class", runsClass(predecessor, 1))
+			r := fleetReconciler(quiet, quiet, later, 5)
+			mustPass(t, r, cp)
+			if got := classTarget(getQuiet(t, cp)); got != classAt(predecessor, 1) {
+				t.Fatalf("target.datastoreClass is %+v, want generation 1 of UID %s, what the Etcd runs", got, predecessor.UID)
+			}
+
+			applyQuiet(t, cp, "test/class", runsClass(class, 1))
+			generation := editClass(t, quiet, class.Name)
+			if row.token {
+				mustPass(t, r, cp)
+				fresh := expectMaintenance(t, cp, lodiav1alpha1.ReasonRollingOut, runningRevision)
+				if classTarget(fresh) != classAt(predecessor, 1) || fresh.Status.Target.ScheduledFor == nil {
+					t.Errorf("a class edit outside the window left target %+v, want generation 1 of UID %s and a scheduledFor", fresh.Status.Target, predecessor.UID)
+				}
+				fresh.Annotations = map[string]string{lodiav1alpha1.MaintainRequestedAtAnnotation: "2026-11-09T11:00:00Z"}
+				if err := quiet.Update(t.Context(), fresh); err != nil {
+					t.Fatal(err)
+				}
+			}
+			mustPass(t, r, cp)
+			fresh = expectMaintenance(t, cp, row.reason, runningRevision)
+			if c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionProgressing); classTarget(fresh) != classAt(class, generation) || !strings.Contains(c.Message, "etcd: runs DatastoreClass "+class.Name+" generation 1, not 2") {
+				t.Errorf("the grant left target %+v and Progressing %q, want generation 2 of %s rolling", fresh.Status.Target, c.Message, class.Name)
+			}
+		})
+	}
+}
+
 func TestAClassEditAndAPatchUpdateWaitForAFullFleet(t *testing.T) {
 	y := fleetTenant(t, "full-y")
 	seedLifecycle(t, y, runningRevision, lodiav1alpha1.ReasonMaintaining, nil, nil)

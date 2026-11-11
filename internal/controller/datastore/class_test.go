@@ -520,6 +520,110 @@ func TestADeletingPassKeepsTheClassReported(t *testing.T) {
 	}
 }
 
+func defaultClass(name string) *lodiav1alpha1.DatastoreClass {
+	class := newClass(name, "Retain")
+	class.Annotations = map[string]string{lodiav1alpha1.DefaultClassAnnotation: "true"}
+	return class
+}
+
+func recreateEtcd(t *testing.T, r *datastore.Reconciler, ns, cp string) *druidv1alpha1.Etcd {
+	t.Helper()
+	predecessor := getEtcd(t, ns, cp)
+	if err := k8s.Delete(t.Context(), predecessor); err != nil {
+		t.Fatal(err)
+	}
+	setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) { s.AvailableReplicas, s.ReadyReplicas = 0, 0 })
+	mustPass(t, r, ns, cp)
+	return predecessor
+}
+
+func TestAnEtcdCreatedAgainFromAnotherClassReportsItsOwnClass(t *testing.T) {
+	ns := namespace(t)
+	const cp = "recreated-other"
+	first, second := defaultClass(cp+"-a"), defaultClass(cp+"-b")
+	createClass(t, first)
+	r := classTenant(t, ns, cp, "")
+	grantClass(t, ns, cp, first.Name)
+	mustPass(t, r, ns, cp)
+	runsClass(t, ns, cp, "4Gi", "1")
+
+	editClass(t, first.Name, func(class *lodiav1alpha1.DatastoreClass) {
+		delete(class.Annotations, lodiav1alpha1.DefaultClassAnnotation)
+	})
+	createClass(t, second)
+	predecessor := recreateEtcd(t, r, ns, cp)
+	if got := getEtcd(t, ns, cp).Annotations[lodiav1alpha1.DatastoreClassAnnotation]; got != second.Name {
+		t.Fatalf("the Etcd created again records class %s, want the default %s", got, second.Name)
+	}
+	runsClass(t, ns, cp, "4Gi", "1")
+	if got := reportedRevision(t, ns, cp); got != revision {
+		t.Errorf("the Etcd created again reports operator revision %q, want its predecessor's %s", got, revision)
+	}
+
+	refused := apierrors.NewInvalid(schema.GroupKind{Group: druidv1alpha1.SchemeGroupVersion.Group, Kind: "Etcd"}, cp+"-etcd", field.ErrorList{field.Forbidden(field.NewPath("spec"), "refused by a policy")})
+	stale := interceptor.NewClient(unpaused(k8s), interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if etcd, ok := obj.(*druidv1alpha1.Etcd); ok {
+				predecessor.DeepCopyInto(etcd)
+				return nil
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+		Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+			if u, ok := obj.(interface{ GetKind() string }); ok && u.GetKind() == "Etcd" {
+				return refused
+			}
+			return c.Apply(ctx, obj, opts...)
+		},
+	})
+	if _, err := passOf(t, operatorAt(stale, revision), ns, cp); !errors.Is(err, refused) {
+		t.Fatalf("a pass whose apply the API server refuses returned %v, want the refusal", err)
+	}
+	if got := getControlPlane(t, ns, cp).Status.Datastore.Class; got == nil || got.Name != second.Name {
+		t.Errorf("a refused pass on a cache that holds the Etcd's predecessor reports class %+v, want %s kept", got, second.Name)
+	}
+
+	answer(t, ns, cp)
+	mustPass(t, r, ns, cp)
+	editClass(t, second.Name, quota("3Gi"))
+	mustPass(t, r, ns, cp)
+	runsClass(t, ns, cp, "4Gi", "1")
+	if c, want := meta.FindStatusCondition(getControlPlane(t, ns, cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady), "; DatastoreClass "+second.Name+" generation 2 waits for status.target.datastoreClass"; c == nil || !strings.HasSuffix(c.Message, want) {
+		t.Errorf("DatastoreReady is %+v, want its message to end with %q", c, want)
+	}
+
+	grantClass(t, ns, cp, second.Name)
+	mustPass(t, r, ns, cp)
+	if got := reportedClass(t, ns, cp); got != 1 {
+		t.Errorf("while generation 2 of %s rolls status.datastore.class is at generation %d, want 1", second.Name, got)
+	}
+	answer(t, ns, cp)
+	setEtcdStatus(t, ns, cp, nil)
+	setStatefulSetStatus(t, ns, cp, nil)
+	mustPass(t, r, ns, cp)
+	runsClass(t, ns, cp, "3Gi", "2")
+}
+
+func TestAnEtcdCreatedAgainOverAReportOfNoClassReportsItsClass(t *testing.T) {
+	ns := namespace(t)
+	const cp = "recreated-unreported"
+	createClass(t, newClass(cp, "Retain"))
+	r := classTenant(t, ns, cp, cp)
+	if err := k8s.Patch(t.Context(), getEtcd(t, ns, cp), client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"annotations":{"`+lodiav1alpha1.DatastoreClassUIDAnnotation+`":null}}}`)), client.FieldOwner("kubectl-annotate")); err != nil {
+		t.Fatal(err)
+	}
+	mustPass(t, r, ns, cp)
+	if status := getControlPlane(t, ns, cp).Status.Datastore; status == nil || status.Class != nil || status.OperatorRevision != revision {
+		t.Fatalf("an Etcd that rolled out without its class UID reports status.datastore %+v, want no class and operator revision %s", status, revision)
+	}
+
+	recreateEtcd(t, r, ns, cp)
+	runsClass(t, ns, cp, "4Gi", "1")
+	if got := reportedRevision(t, ns, cp); got != revision {
+		t.Errorf("the Etcd created again reports operator revision %q, want its predecessor's %s", got, revision)
+	}
+}
+
 func TestTheCapNoteStaysWhileAClassEditWaits(t *testing.T) {
 	ns := namespace(t)
 	const cp = "cap-waits"
@@ -573,6 +677,26 @@ func TestAnEtcdWhoseClassAnnotationsAPersonEditedReportsNoClass(t *testing.T) {
 				t.Errorf("an Etcd annotated %s reports status.datastore %+v, want no class", edit, status)
 			}
 		})
+	}
+}
+
+func TestAnEtcdAPersonAnnotatedWhileItRollsKeepsTheClassReportedUntilItRolledOut(t *testing.T) {
+	ns := namespace(t)
+	const cp = "annotated-rolling"
+	createClass(t, newClass(cp, "Retain"))
+	r := classTenant(t, ns, cp, cp)
+	setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) { s.UpdatedReplicas = 0 })
+	if err := k8s.Patch(t.Context(), getEtcd(t, ns, cp), client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"annotations":{"`+lodiav1alpha1.DatastoreClassGenerationAnnotation+`":"x"}}}`)), client.FieldOwner("kubectl-annotate")); err != nil {
+		t.Fatal(err)
+	}
+	mustPass(t, r, ns, cp)
+	if got := reportedClass(t, ns, cp); got != 1 {
+		t.Errorf("while a member is not updated an Etcd annotated by hand reports class generation %d, want 1 kept", got)
+	}
+	setStatefulSetStatus(t, ns, cp, nil)
+	mustPass(t, r, ns, cp)
+	if status := getControlPlane(t, ns, cp).Status.Datastore; status == nil || status.Class != nil {
+		t.Errorf("once it rolled out an Etcd annotated by hand reports status.datastore %+v, want no class", status)
 	}
 }
 

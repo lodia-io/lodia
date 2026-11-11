@@ -1259,9 +1259,12 @@ func (r *Reconciler) setFinalizer(ctx context.Context, cp *lodiav1alpha1.Control
 // operator revision it runs: those the Etcd records once rolledOut says so and
 // its stamp fits the field, and until then those the API server holds, since
 // the field is written whole on every pass and the cache can lag this
-// controller's own last write. While no revision is reported, the etcd never
-// having rolled out, the class is the one the Etcd applied records, or no edit
+// controller's own last write. While no revision is reported, or the Etcd
+// applied records a class the report does not name, as after one was created
+// again from another class, the class is the one that Etcd records, or no edit
 // of it could become pending, the one that would let the etcd roll included.
+// The name an Etcd records never changes while it exists, so a UID or
+// generation that moves under it waits for rolledOut.
 func (r *Reconciler) datastoreStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet, applied bool) (*lodiav1alpha1.DatastoreStatus, error) {
 	if etcd == nil {
 		return nil, nil
@@ -1284,8 +1287,8 @@ func (r *Reconciler) datastoreStatus(ctx context.Context, cp *lodiav1alpha1.Cont
 	if previous := cp.Status.Datastore; previous != nil {
 		status.Class, status.OperatorRevision = previous.Class, previous.OperatorRevision
 	}
-	if applied && status.OperatorRevision == "" {
-		status.Class = classStatus(etcd)
+	if c := classStatus(etcd); applied && (status.OperatorRevision == "" || c != nil && (status.Class == nil || status.Class.Name != c.Name)) {
+		status.Class = c
 	}
 	return status, nil
 }
