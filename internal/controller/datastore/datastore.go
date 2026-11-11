@@ -316,8 +316,8 @@ type pass struct {
 	members      int32
 	rendered     *druidv1alpha1.Etcd
 	// copied says that rendered is the current Etcd's copy a held pass
-	// applies, and keep that the Etcd keeps the fields class gave it, which
-	// waits for its grant or is held for its credentials.
+	// applies, and keep that the Etcd keeps the fields its class gave it
+	// while the class waits for its grant or is held for its credentials.
 	copied, keep bool
 	// held is the note on DatastoreReady of a class held or waiting for its
 	// generation, of a quota capped, and of a request that waits for
