@@ -115,6 +115,7 @@ func steady(cp *lodiav1alpha1.ControlPlane, version string) {
 	cp.Status.Components = components(count(1, 1, 1), count(1, 1, 1), count(1, 1, 1))
 	cp.Status.Datastore = datastore(count(1, 1, 1))
 	cp.Status.Nodes = &lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: 2, Ready: 2}}
+	cp.Status.Credentials = &lodiav1alpha1.CredentialsStatus{NotAfter: &metav1.Time{Time: now.Add(90 * 24 * time.Hour)}}
 }
 
 func gatewayHA(name string, uid int) *lodiav1alpha1.ControlPlane {

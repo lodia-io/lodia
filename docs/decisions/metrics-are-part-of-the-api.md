@@ -47,7 +47,7 @@ A metric is renamed only under a new name, and in `v1alpha1` the old one stays f
 | `lodia_controlplane_maintenance_slot_since_timestamp_seconds` | | `status.maintenance.slotSince`: the tenant's slot of the fleet | yes |
 | `lodia_controlplane_maintenance_scheduled_for_timestamp_seconds` | | `status.target.scheduledFor`: at or before now, the tenant is queued for a slot; later, it waits for its window | yes |
 | `lodia_controlplane_upgrade_started_timestamp_seconds` | `step` (`UpgradeStep`) | `status.kubernetes.upgrade.startedAt` and `.step` | yes |
-| `lodia_controlplane_certificates_expiration_timestamp_seconds` | | `status.credentials.notAfter` | once PKI writes it |
+| `lodia_controlplane_certificates_expiration_timestamp_seconds` | | `status.credentials.notAfter` | yes |
 | `lodia_controlplane_datastore_quota_bytes` | | the `Etcd`'s `spec.etcd.quota` | with the etcd sampler |
 | `lodia_controlplane_datastore_delta_snapshot_period_seconds` | | the `Etcd`'s `spec.backup.deltaSnapshotPeriod`, absent below 1 second or without a store | with the etcd sampler |
 | `lodia_controlplane_datastore_db_size_bytes` | | the largest `dbSize` among the members that answered the last sample; absent until the `Etcd` is formed | with the etcd sampler |

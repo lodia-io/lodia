@@ -311,7 +311,43 @@ func (t *tenant) credentials() *lodiav1alpha1.CredentialsStatus {
 		}
 		return nil
 	}
-	return credentialRefs(&lodiav1alpha1.CredentialsStatus{AdminKubeconfigSecretRef: ref(lodiav1alpha1.AdminKubeconfigSecret), CABundleSecretRef: ref(lodiav1alpha1.CABundleSecret)})
+	return credentialRefs(&lodiav1alpha1.CredentialsStatus{AdminKubeconfigSecretRef: ref(lodiav1alpha1.AdminKubeconfigSecret), CABundleSecretRef: ref(lodiav1alpha1.CABundleSecret), NotAfter: t.notAfter()})
+}
+
+// notAfter is the earliest NotAfter among the certificates PKI's Secrets hold
+// after the pass's writes: each Secret's own, not a CA bundle's, which keeps
+// a replaced kubelet signer until it expires and a replaced request CA until
+// 24 h 5 min after its successor's issuance (clientBundle), and of the etcd
+// generations the newest complete one alone, since no member runs the
+// previous one once the roll ends. The staged kubelet signer is mounted
+// nowhere.
+func (t *tenant) notAfter() *metav1.Time {
+	newest := 0
+	for name := range t.existing {
+		if _, g, ok := lodiav1alpha1.ParseEtcdCertificateSecretName(t.cp.Name, name); ok && g > newest && t.etcdComplete(g) {
+			newest = g
+		}
+	}
+	var earliest *metav1.Time
+	for name, s := range t.existing {
+		if _, g, ok := lodiav1alpha1.ParseEtcdCertificateSecretName(t.cp.Name, name); ok && g != newest || name == t.name(kubeletSignerNext) {
+			continue
+		}
+		pem := data(s, lodiav1alpha1.TLSCertKey)
+		if kubeconfig := data(s, lodiav1alpha1.KubeconfigKey); pem == nil && kubeconfig != nil {
+			pem, _, _ = certs.Embedded(kubeconfig)
+		}
+		parsed, err := certs.ParseCerts(pem)
+		if err != nil {
+			continue
+		}
+		for _, c := range parsed {
+			if earliest == nil || c.NotAfter.Before(earliest.Time) {
+				earliest = &metav1.Time{Time: c.NotAfter}
+			}
+		}
+	}
+	return earliest
 }
 
 func data(s *corev1.Secret, key string) []byte {

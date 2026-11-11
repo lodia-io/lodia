@@ -288,10 +288,10 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlP
 }
 
 // credentialRefs is the part of status.credentials PKI writes, nil when it
-// names nothing.
+// holds nothing.
 func credentialRefs(c *lodiav1alpha1.CredentialsStatus) *lodiav1alpha1.CredentialsStatus {
-	if c == nil || c.AdminKubeconfigSecretRef == nil && c.CABundleSecretRef == nil {
+	if c == nil || c.AdminKubeconfigSecretRef == nil && c.CABundleSecretRef == nil && c.NotAfter == nil {
 		return nil
 	}
-	return &lodiav1alpha1.CredentialsStatus{AdminKubeconfigSecretRef: c.AdminKubeconfigSecretRef, CABundleSecretRef: c.CABundleSecretRef}
+	return &lodiav1alpha1.CredentialsStatus{AdminKubeconfigSecretRef: c.AdminKubeconfigSecretRef, CABundleSecretRef: c.CABundleSecretRef, NotAfter: c.NotAfter}
 }
