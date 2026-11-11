@@ -89,7 +89,7 @@ A hostname is a lowercase DNS name whose labels are at most 63 characters, and n
 | `credentials.adminKubeconfigSecretRef` | PKI | `<name>-admin-kubeconfig` |
 | `credentials.caBundleSecretRef` | PKI | `<name>-ca-bundle`: the CAs a client must trust now (two during a rotation) |
 | `credentials.rotation.<credential>.{phase, lastInitiated, lastCompleted}` | PKI, phase 3 | the stages per credential (the same keys as `target.rotation`), as Gardener reports them; not in the Go types until then |
-| `credentials.notAfter` | PKI, from wave 2, observability | the earliest expiry of the certificates PKI writes for this `ControlPlane`, its CAs among them |
+| `credentials.notAfter` | PKI | the earliest `NotAfter` among the certificates PKI's Secrets of this `ControlPlane` hold: the CAs, the kubelet signer, the request CA, every leaf and kubeconfig, and of the etcd certificates the newest complete generation alone, since no member runs the previous one once the roll ends; not the CA bundles, which keep replaced signers and request CAs until they expire, nor the staged signer, which nothing mounts; a certificate whose write failed does not count, the one it would have replaced does; absent until PKI has written a certificate, and kept while a Secret another owner keeps under PKI's names stops it |
 | `datastore` | Datastore | written whole once the store exists, absent until then |
 | `datastore.endpoints[].{host, port}` | Datastore | where the API server reaches etcd: for a dedicated etcd, etcd-druid's client Service; Workloads builds `--etcd-servers` from it |
 | `datastore.class.{name, generation}` | Datastore | the `DatastoreClass` a dedicated etcd was built from, and the generation of it the `Etcd` runs; Lifecycle reads it in phase 2 |
