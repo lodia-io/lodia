@@ -309,6 +309,7 @@ func TestAHeldPassChangesNothingButTheCertificateReferences(t *testing.T) {
 	}
 
 	grant(t, getControlPlane(t, ns, cp), revision)
+	grantClass(t, ns, cp, "held-copy")
 	mustPass(t, held, ns, cp)
 	granted := getEtcd(t, ns, cp)
 	if quota := quantity(granted.Spec.Etcd.Quota); quota != "3Gi" || granted.Spec.Etcd.Metrics == nil || *granted.Spec.Etcd.Metrics != druidv1alpha1.Extensive || stamped(granted) != revision {
@@ -360,6 +361,7 @@ func TestAHeldPassCopiesTheCredentialsOfTheStoreTheEtcdNames(t *testing.T) {
 	copied(t, "other-access", "eu-west-1")
 
 	grant(t, getControlPlane(t, ns, cp), revision)
+	grantClass(t, ns, cp, cp)
 	mustPass(t, held, ns, cp)
 	if got := getEtcd(t, ns, cp).Spec.Backup.Store.Container; *got != "other-bucket" {
 		t.Errorf("the grant left the Etcd on bucket %s, want other-bucket", *got)
@@ -419,6 +421,7 @@ func TestAHeldPassNotesTheQuotaCapTheEtcdRuns(t *testing.T) {
 				class.Spec.Storage.Size = resource.MustParse("40Gi")
 				class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{QuotaBackendBytes: new(resource.MustParse(c.quota))}
 			})
+			grantClass(t, ns, c.cp, c.class)
 			mustPass(t, operatorAt(unpaused(k8s), revision), ns, c.cp)
 			ready := meta.FindStatusCondition(getControlPlane(t, ns, c.cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
 			if want := "Etcd " + c.cp + "-etcd has quorum, 1 of 1 members ready" + c.note; ready.Message != want {
@@ -697,6 +700,7 @@ func TestARefusedRequestReportsTheAppliedEtcd(t *testing.T) {
 	})
 	setHighAvailability(t, ns, cp, &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"})
 	grant(t, getControlPlane(t, ns, cp), revision)
+	grantClass(t, ns, cp, cp)
 	refusing, refused := refusingRequests(cp)
 	if _, err := passOf(t, operatorAt(refusing, revision), ns, cp); !errors.Is(err, refused) {
 		t.Fatalf("a pass whose request the API server refuses returned %v, want the refusal", err)
@@ -752,6 +756,7 @@ func TestAGrantAsksEtcdDruidOnceItRunsTheGivenVersion(t *testing.T) {
 		t.Fatalf("a held pass applied the class edit: quota %s", quota)
 	}
 	grant(t, getControlPlane(t, ns, cp), revision)
+	grantClass(t, ns, cp, "druid-gate")
 
 	druidAt(t, "druid-unobserved", druidVersion, func(s *appsv1.DeploymentStatus) { s.ObservedGeneration-- })
 	druidAt(t, "druid-short", druidVersion, func(s *appsv1.DeploymentStatus) {
@@ -1322,6 +1327,7 @@ func TestAStaleCacheWithAnOlderRevisionHoldsThePass(t *testing.T) {
 	editClass(t, "stale-revision", func(class *lodiav1alpha1.DatastoreClass) {
 		class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{QuotaBackendBytes: new(resource.MustParse("3Gi"))}
 	})
+	grantClass(t, ns, cp, "stale-revision")
 	before := getEtcd(t, ns, cp)
 	stale := interceptor.NewClient(unpaused(k8s), interceptor.Funcs{
 		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {

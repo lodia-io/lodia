@@ -318,10 +318,11 @@ type pass struct {
 	// copied says that rendered is the current Etcd's copy a held pass
 	// applies.
 	copied bool
-	// held is the note on DatastoreReady of a class held or a quota capped,
-	// and of a request that waits for etcd-druid; a held class renders no cap,
-	// so those two never meet. It and refusal, an apply of the credentials the
-	// API server refused, reach whichever step the pass ends on.
+	// held is the note on DatastoreReady of a class held or waiting for its
+	// generation, or of a quota capped, and of a request that waits for
+	// etcd-druid; a held class renders no cap, so those never meet. It and
+	// refusal, an apply of the credentials the API server refused, reach
+	// whichever step the pass ends on.
 	held    string
 	heldFor time.Duration
 	refusal error
@@ -419,10 +420,23 @@ func (r *Reconciler) readInputs(ctx context.Context, p *pass) (*outcome, error) 
 
 func (r *Reconciler) holdClass(ctx context.Context, p *pass) (*outcome, error) {
 	class := p.class
-	if class == nil || class.Spec.Backup == nil {
+	if class == nil {
 		return nil, nil
 	}
-	moved, err := r.storeMoved(ctx, p)
+	// An Etcd takes an edit of its class once Lifecycle grants the class's
+	// generation, in the window: a class is shared, and an edit rolls every
+	// member on it. A new Etcd takes the class as it is.
+	waits := p.current != nil && class.Generation != grantedClass(p.cp)
+	if waits {
+		p.class = nil
+		if generation := strconv.FormatInt(class.Generation, 10); p.current.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation] != generation {
+			p.held = fmt.Sprintf("DatastoreClass %s generation %s waits for status.target.datastoreClassGeneration", class.Name, generation)
+		}
+	}
+	if class.Spec.Backup == nil {
+		return nil, nil
+	}
+	moved, err := r.storeMoved(ctx, p, class, waits)
 	if err != nil {
 		return nil, err
 	}
@@ -438,27 +452,37 @@ func (r *Reconciler) holdClass(ctx context.Context, p *pass) (*outcome, error) {
 	// A class is held whole: applying the rest of an edit could add a store
 	// whose copy cannot be made, and the certificate generations still move.
 	if blocked != "" {
-		p.held = fmt.Sprintf("DatastoreClass %s is held: %s", class.Name, blocked)
+		p.held = note(p.held, fmt.Sprintf("DatastoreClass %s is held: %s", class.Name, blocked))
 		p.class, p.heldFor = nil, time.Minute
 	}
 	return nil, nil
 }
 
-// storeMoved says whether a held pass keeps an Etcd on a store other than the
-// one its class renders: the backup-restore sidecar mounts <cp>-etcd-backup,
-// so the keys of a store must not arrive before the Etcd names that store.
-// The Etcd's store reaches the sidecar only once etcd-druid serves its
-// request, so a move granted while that request waits for etcd-druid's
-// Deployment brings the keys first, for as long as the wait lasts.
-func (r *Reconciler) storeMoved(ctx context.Context, p *pass) (bool, error) {
-	if p.current == nil || !r.held(p.cp) {
+// grantedClass is status.target.datastoreClassGeneration, 0 while absent.
+func grantedClass(cp *lodiav1alpha1.ControlPlane) int64 {
+	if cp.Status.Target == nil {
+		return 0
+	}
+	return cp.Status.Target.DatastoreClassGeneration
+}
+
+// storeMoved says whether a pass that keeps the Etcd's class, held by the
+// operator revision or waiting for the class's generation, keeps an Etcd on a
+// store other than the one class renders: the backup-restore sidecar mounts
+// <cp>-etcd-backup, so the keys of a store must not arrive before the Etcd
+// names that store. The Etcd's store reaches the sidecar only once
+// etcd-druid serves its request, so a move granted while that request waits
+// for etcd-druid's Deployment brings the keys first, for as long as the wait
+// lasts.
+func (r *Reconciler) storeMoved(ctx context.Context, p *pass, class *lodiav1alpha1.DatastoreClass, waits bool) (bool, error) {
+	if p.current == nil || !r.held(p.cp) && !waits {
 		return false, nil
 	}
 	var err error
 	if p.namespaceUID, err = r.namespaceUID(ctx, p.cp); err != nil {
 		return false, err
 	}
-	return !equality.Semantic.DeepEqual(store(p.cp, p.class.Spec.Backup, p.namespaceUID), p.current.Spec.Backup.Store), nil
+	return !equality.Semantic.DeepEqual(store(p.cp, class.Spec.Backup, p.namespaceUID), p.current.Spec.Backup.Store), nil
 }
 
 func (r *Reconciler) namespaceUID(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (types.UID, error) {

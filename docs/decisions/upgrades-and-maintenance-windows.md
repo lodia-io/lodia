@@ -1,8 +1,8 @@
 # Upgrades follow the version skew policy step by step; changes Lodia initiates roll in each tenant's maintenance window, a bounded number of tenants at a time
 
 Decided 2026-10-25.
-Built: the steps of a minor upgrade below, Lifecycle driving them, the operator revision, the holds of Workloads, Tenant and the Datastore controller, the stamps on the Deployments and the `Etcd`, Lifecycle's grant of the running revision and of patch updates by the rules below (windows, the fleet, maintenance on request and the settling time), and the warning of the end of support in `Progressing`'s message.
-Not built yet: an edit of the `DatastoreClass` in the window, which phase 2's wave 2 builds next, and, with its observability, the end of support's metric and alert, and the alerts `LodiaMaintenanceHalted` and one for a slot held long ([roadmap](../roadmap.md)).
+Built: the steps of a minor upgrade below, Lifecycle driving them, the operator revision, the holds of Workloads, Tenant and the Datastore controller, the stamps on the Deployments and the `Etcd`, Lifecycle's grant of the running revision, of patch updates and of edits of the `DatastoreClass` by the rules below (windows, the fleet, maintenance on request and the settling time), and the warning of the end of support in `Progressing`'s message.
+Not built yet, with phase 2's observability: the end of support's metric and alert, and the alerts `LodiaMaintenanceHalted` and one for a slot held long ([roadmap](../roadmap.md)).
 
 ## Decision
 
@@ -39,6 +39,10 @@ Lodia never writes `spec`: `maintenance.autoUpdate.kubernetesPatch` moves `targe
 A patch update is pending while `spec.version` is of the target's minor and the newer of it and the table's `latest` of that minor is newer than the target; the grant moves the target there as an owner's patch edit does.
 With patch updates the target only moves up: an owner's edit of `spec.version` within the minor still moves it at once, and one below a patch update leaves it where it is.
 `spec.version` takes any patch of a minor in the table: `latest` is what updates move to, not an allowlist.
+
+**Class edits.**
+An edit of a `DatastoreClass` is pending for each tenant whose `Etcd` runs the class, while the class's generation is not `status.target.datastoreClassGeneration` ([the field](../api/controlplane.md#status)).
+The Datastore controller applies a class to an existing `Etcd` only at that generation, holding it whole as it holds a class whose credentials it cannot copy, and copies the credentials meanwhile as under the operator hold; a new `Etcd` takes the class as it is.
 
 **End of support.**
 Each minor in the version table has an end-of-support date, and a minor dropped from the table stays renderable for one more release, as the source of an upgrade.
@@ -151,5 +155,5 @@ Lodia never removes the annotation, so a GitOps tool that keeps it does not figh
 - `internal/operator` — `fleet.maxConcurrentRollouts`, at least 1, and the settling time from Health's configuration.
 - `internal/controller/workloads` — `status.components.*.version`, the tag of each component's own image once every replica runs it, and the controller manager and the scheduler rendered at `components.apiServer.version`; the hold in `apply`, which, while `target.operatorRevision` is not `Reconciler.Revision`, writes only an object neither the cache nor the API server holds; the stamp on the Deployments, which `status.components.*.operatorRevision` reports under the rule of `version`.
 - `internal/controller/tenant` — the render at the oldest component's version, and `status.addons`, the version and the running revision of a pass that applied it in full; the hold in `hold` and `heldInventory`, which, while `target.operatorRevision` is not `Reconciler.Revision`, apply only an object the stored inventory lists and the tenant lacks, and report what runs.
-- `internal/controller/datastore` — the hold in `copied` and `applyNetworkPolicy`, which, while `target.operatorRevision` is not `Reconciler.Revision`, apply the stored `Etcd`'s spec on the newest certificate generation and a missing NetworkPolicy, and report what runs, and in `storeMoved`, which keeps the credentials copy of the store the held `Etcd` names; the stamp on the `Etcd`; `requestReconcile`, which asks etcd-druid for each reconcile under the record `lodia.io/etcd-reconcile-requested` until `served` says a reconcile under another run ID has taken it, `inFlight`, its wait while such a reconcile runs, and `druidPending`, its wait for etcd-druid's Deployment; `status.datastore.operatorRevision` from `rolledOut`.
+- `internal/controller/datastore` — `holdClass`, which applies the class to an existing `Etcd` only at `target.datastoreClassGeneration`; the hold in `copied` and `applyNetworkPolicy`, which, while `target.operatorRevision` is not `Reconciler.Revision`, apply the stored `Etcd`'s spec on the newest certificate generation and a missing NetworkPolicy, and report what runs, and in `storeMoved`, which keeps the credentials copy of the store the `Etcd` names while either hold keeps its class; the stamp on the `Etcd`; `requestReconcile`, which asks etcd-druid for each reconcile under the record `lodia.io/etcd-reconcile-requested` until `served` says a reconcile under another run ID has taken it, `inFlight`, its wait while such a reconcile runs, and `druidPending`, its wait for etcd-druid's Deployment; `status.datastore.operatorRevision` from `rolledOut`.
 - `internal/versions` — `Oldest`, `Newer`, `Latest`, `Next` and `MinorsAhead`, the version arithmetic of a step and of a patch update, and `EndOfSupport`, each minor's date.

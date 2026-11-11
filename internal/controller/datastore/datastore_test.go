@@ -122,11 +122,38 @@ func create(t *testing.T, obj client.Object) {
 
 func grant(t *testing.T, cp *lodiav1alpha1.ControlPlane, operatorRevision string) {
 	t.Helper()
+	current := &lodiav1alpha1.ControlPlane{}
+	if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(cp), current); err != nil {
+		t.Fatal(err)
+	}
+	var class int64
+	if current.Status.Target != nil {
+		class = current.Status.Target.DatastoreClassGeneration
+	}
+	applyTarget(t, cp, cp.Spec.Version, operatorRevision, class)
+}
+
+func grantClass(t *testing.T, ns, name, className string) {
+	t.Helper()
+	cp := getControlPlane(t, ns, name)
+	class := &lodiav1alpha1.DatastoreClass{}
+	if err := k8s.Get(t.Context(), client.ObjectKey{Name: className}, class); err != nil {
+		t.Fatal(err)
+	}
+	applyTarget(t, cp, cp.Status.Target.Version, cp.Status.Target.OperatorRevision, class.Generation)
+}
+
+func applyTarget(t *testing.T, cp *lodiav1alpha1.ControlPlane, version, operatorRevision string, class int64) {
+	t.Helper()
+	target := map[string]any{"version": version, "operatorRevision": operatorRevision}
+	if class != 0 {
+		target["datastoreClassGeneration"] = class
+	}
 	u := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": lodiav1alpha1.GroupVersion.String(),
 		"kind":       "ControlPlane",
 		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
-		"status":     map[string]any{"target": map[string]any{"version": cp.Spec.Version, "operatorRevision": operatorRevision}},
+		"status":     map[string]any{"target": target},
 	}}
 	if err := k8s.Status().Apply(t.Context(), client.ApplyConfigurationFromUnstructured(u), client.FieldOwner("test/lifecycle"), client.ForceOwnership); err != nil {
 		t.Fatal(err)
@@ -1054,6 +1081,7 @@ func TestHeldClass(t *testing.T) {
 	if err := k8s.Update(t.Context(), class); err != nil {
 		t.Fatal(err)
 	}
+	grantClass(t, ns, cp, "holding")
 	writeGeneration(t, ns, cp, 2)
 	etcd := waitEtcd(t, ns, cp, namesGeneration(2))
 	if quota, recorded := quantity(etcd.Spec.Etcd.Quota), etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation]; quota != "2Gi" || recorded != "1" {
@@ -1123,6 +1151,7 @@ func TestSnapshotsFollowTheEtcdsStore(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
+		grantClass(t, ns, cp, "snapshotting")
 	}
 	moveStore("lodia-backups-2")
 	reports("lodia-backups-2")
@@ -2275,6 +2304,7 @@ func TestStorageAtCreation(t *testing.T) {
 	if err := k8s.Update(t.Context(), class); err != nil {
 		t.Fatal(err)
 	}
+	grantClass(t, ns, "grown", "growing")
 	etcd := waitEtcd(t, ns, "grown", func(etcd *druidv1alpha1.Etcd) error {
 		if quota := quantity(etcd.Spec.Etcd.Quota); quota != "3Gi" {
 			return fmt.Errorf("quota %s, the class edit has not reached the Etcd", quota)
@@ -2312,6 +2342,7 @@ func TestQuotaFitsTheVolume(t *testing.T) {
 		if err := k8s.Update(t.Context(), class); err != nil {
 			t.Fatal(err)
 		}
+		grantClass(t, ns, cp, "quota")
 	}
 	recorded := func(generation string) func(*druidv1alpha1.Etcd) error {
 		return func(etcd *druidv1alpha1.Etcd) error {
@@ -2373,6 +2404,7 @@ func TestQuotaFitsRetainedClaims(t *testing.T) {
 	if err := k8s.Update(t.Context(), class); err != nil {
 		t.Fatal(err)
 	}
+	grantClass(t, ns, cp, "regrow")
 	recreated := func(quota, capacity, note string) {
 		t.Helper()
 		previous := waitEtcd(t, ns, cp, func(etcd *druidv1alpha1.Etcd) error {
