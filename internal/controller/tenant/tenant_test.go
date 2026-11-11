@@ -595,6 +595,26 @@ func TestAPassTheTenantDoesNotAnswerKeepsARefusalAndAnotherOwnersObject(t *testi
 	}
 }
 
+func TestAPassTheTenantAnswersReplacesAStoredCause(t *testing.T) {
+	cp, admin := servedTenant(t, "tenant-answered-causes")
+	testenv.Eventually(t, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
+	})
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	rebindOperator(t, admin, []rbacv1.PolicyRule{
+		{APIGroups: []string{"*"}, Resources: []string{"*"}, Verbs: []string{"get", "list", "watch"}},
+		{NonResourceURLs: []string{"*"}, Verbs: []string{"*"}},
+	}, authorizationv1.ResourceAttributes{Resource: "configmaps", Verb: "patch", Namespace: "kube-system"})
+	setAddonsApplied(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere, cp.Generation)
+	refresh(t, cp)
+	if _, err := pass(t, cp, cp.DeepCopy(), *dial.Load(), nil); err == nil {
+		t.Fatal("a pass whose apply the tenant refuses succeeded")
+	}
+	refresh(t, cp)
+	expectNow(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused)
+}
+
 type snapshot struct {
 	client.Client
 	cp *lodiav1alpha1.ControlPlane
