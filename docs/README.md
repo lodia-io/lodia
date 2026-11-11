@@ -577,6 +577,8 @@ The chart renders no NetworkPolicy for the operator: a platform whose default-de
 `metrics.rules.enabled` renders the PrometheusRule `<release>`, the [alerts](operations.md#alerts-shipped-in-the-chart) of [`files/rules/lodia.yaml`](../charts/lodia/files/rules/lodia.yaml), each linking its section of `operations.md` at the release's tag, or at `main` while the chart's `appVersion` ends in `-dev`.
 It carries `metrics.rules.labels` beside the chart's, for a Prometheus that selects rules by label, as kube-prometheus-stack's selects `release: <its release>` ([prometheus.yaml](https://github.com/prometheus-community/helm-charts/blob/kube-prometheus-stack-92.10.0/charts/kube-prometheus-stack/templates/prometheus/prometheus.yaml#L290-L293)).
 The rules read controller-runtime's series of the job `lodia`, which the chart's ServiceMonitor names.
+An alert on a tenant carries the tenant's `namespace`, which `honorLabels` keeps; `LodiaReconcileErrors` and `LodiaHealthSamplingLate` carry the release namespace, and `LodiaOperatorDown` and `LodiaMaintenanceHalted` none.
+Under prometheus-operator's default matcher strategy, `OnNamespace`, an `AlertmanagerConfig` routes only the alerts of its own namespace ([alertmanager_types.go](https://github.com/prometheus-operator/prometheus-operator/blob/v0.94.2/pkg/apis/monitoring/v1/alertmanager_types.go#L470-L499)), so one in the release namespace routes those two alone: route the others from Alertmanager's own configuration, from an `AlertmanagerConfig` under the strategy `None`, or from one in the Alertmanager's namespace under `OnNamespaceExceptForAlertmanagerNamespace`.
 
 The rules need of the Prometheus, beside what scraping needs:
 
