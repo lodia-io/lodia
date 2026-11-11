@@ -705,28 +705,39 @@ func TestTheCapNoteStaysWhileAClassEditWaits(t *testing.T) {
 }
 
 func TestAnEtcdWhoseClassAnnotationsAPersonEditedReportsNoClass(t *testing.T) {
+	tenants := []struct {
+		name   string
+		tenant func(t *testing.T, ns, cp string) *datastore.Reconciler
+	}{
+		{"rolled out", func(t *testing.T, ns, cp string) *datastore.Reconciler { return classTenant(t, ns, cp, cp) }},
+		{"never rolled out", unrolledTenant},
+	}
 	for i, edit := range []string{
 		`{"metadata":{"annotations":{"` + lodiav1alpha1.DatastoreClassAnnotation + `":null}}}`,
 		`{"metadata":{"annotations":{"` + lodiav1alpha1.DatastoreClassUIDAnnotation + `":null}}}`,
 		`{"metadata":{"annotations":{"` + lodiav1alpha1.DatastoreClassGenerationAnnotation + `":"x"}}}`,
 		`{"metadata":{"annotations":{"` + lodiav1alpha1.DatastoreClassGenerationAnnotation + `":"0"}}}`,
 		`{"metadata":{"annotations":{"` + lodiav1alpha1.DatastoreClassGenerationAnnotation + `":"-1"}}}`,
+		`{"metadata":{"annotations":{"` + lodiav1alpha1.DatastoreClassGenerationAnnotation + `":"9223372036854775808"}}}`,
 		`{"metadata":{"annotations":{"` + lodiav1alpha1.DatastoreClassUIDAnnotation + `":"` + strings.Repeat("u", 37) + `"}}}`,
 		`{"metadata":{"annotations":{"` + lodiav1alpha1.DatastoreClassAnnotation + `":"` + strings.Repeat("n", 254) + `"}}}`,
 	} {
-		t.Run(edit, func(t *testing.T) {
-			ns := namespace(t)
-			cp := fmt.Sprintf("annotated-%d", i)
-			createClass(t, newClass(cp, "Retain"))
-			r := classTenant(t, ns, cp, cp)
-			if err := k8s.Patch(t.Context(), getEtcd(t, ns, cp), client.RawPatch(types.MergePatchType, []byte(edit)), client.FieldOwner("kubectl-annotate")); err != nil {
-				t.Fatal(err)
-			}
-			mustPass(t, r, ns, cp)
-			if status := getControlPlane(t, ns, cp).Status.Datastore; status == nil || status.Class != nil {
-				t.Errorf("an Etcd annotated %s reports status.datastore %+v, want no class", edit, status)
-			}
-		})
+		for j, tenant := range tenants {
+			t.Run(tenant.name+" "+edit, func(t *testing.T) {
+				ns := namespace(t)
+				cp := fmt.Sprintf("annotated-%d-%d", i, j)
+				createClass(t, newClass(cp, "Retain"))
+				r := tenant.tenant(t, ns, cp)
+				runsClass(t, ns, cp, "4Gi", "1")
+				if err := k8s.Patch(t.Context(), getEtcd(t, ns, cp), client.RawPatch(types.MergePatchType, []byte(edit)), client.FieldOwner("kubectl-annotate")); err != nil {
+					t.Fatal(err)
+				}
+				mustPass(t, r, ns, cp)
+				if status := getControlPlane(t, ns, cp).Status.Datastore; status == nil || status.Class != nil {
+					t.Errorf("an Etcd annotated %s reports status.datastore %+v, want no class", edit, status)
+				}
+			})
+		}
 	}
 }
 
