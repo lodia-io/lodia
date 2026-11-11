@@ -496,7 +496,7 @@ Look at the operator's CPU and its throttling, and at `controller_runtime_active
 ### LodiaKubernetesEndOfSupport
 
 Warning, once the end-of-support date of the minor of `status.kubernetes.version` has been within 30 days, or past, for an hour, a paused tenant included.
-The date is the version table's, the end of life that [kubernetes.io/releases](https://kubernetes.io/releases/) gives the minor, and `Progressing`'s message has named it for 60 days by then.
+The date is the version table's, the end of life that [kubernetes.io/releases](https://kubernetes.io/releases/) gives the minor, and `Progressing`'s message names it from 60 days before it.
 Set `spec.version` to a patch of the next minor ([upgrades](README.md#upgrades-and-windows)); Lodia forces no upgrade at the date ([upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md)).
 A tenant that reports no version, or one whose minor the table lacks, has no series and never fires it.
 
