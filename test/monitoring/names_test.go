@@ -6,11 +6,11 @@ package monitoring
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -313,39 +313,53 @@ func TestRulesReadServedMetrics(t *testing.T) {
 }
 
 type datasourceRef struct {
-	Type string `json:"type"`
-	UID  string `json:"uid"`
+	Type string `yaml:"type"`
+	UID  string `yaml:"uid"`
 }
 
 var templatedDatasource = datasourceRef{Type: "prometheus", UID: "${datasource}"}
 
 type target struct {
-	RefID      string         `json:"refId"`
-	Expr       string         `json:"expr"`
-	Instant    bool           `json:"instant"`
-	Range      bool           `json:"range"`
-	Datasource *datasourceRef `json:"datasource"`
+	RefID      string         `yaml:"refId"`
+	Expr       string         `yaml:"expr"`
+	Instant    bool           `yaml:"instant"`
+	Range      bool           `yaml:"range"`
+	Datasource *datasourceRef `yaml:"datasource"`
 }
 
 type panel struct {
-	Type       string         `json:"type"`
-	Title      string         `json:"title"`
-	Datasource *datasourceRef `json:"datasource"`
-	Panels     []panel        `json:"panels"`
-	Targets    []target       `json:"targets"`
+	Type       string         `yaml:"type"`
+	Title      string         `yaml:"title"`
+	Datasource *datasourceRef `yaml:"datasource"`
+	Panels     []panel        `yaml:"panels"`
+	Targets    []target       `yaml:"targets"`
+}
+
+type templateVariable struct {
+	Name       string         `yaml:"name"`
+	Type       string         `yaml:"type"`
+	Datasource *datasourceRef `yaml:"datasource"`
+	Query      any            `yaml:"query"`
 }
 
 type dashboard struct {
-	Title      string  `json:"title"`
-	Panels     []panel `json:"panels"`
+	Title      string  `yaml:"title"`
+	Panels     []panel `yaml:"panels"`
 	Templating struct {
-		List []struct {
-			Name       string         `json:"name"`
-			Type       string         `json:"type"`
-			Datasource *datasourceRef `json:"datasource"`
-			Query      any            `json:"query"`
-		} `json:"list"`
-	} `json:"templating"`
+		List []templateVariable `yaml:"list"`
+	} `yaml:"templating"`
+}
+
+func decodeDashboard(raw []byte) (dashboard, error) {
+	var d dashboard
+	err := yamlv3.Unmarshal(raw, &d)
+	return d, err
+}
+
+func (d dashboard) hasDatasourceVariable() bool {
+	return slices.ContainsFunc(d.Templating.List, func(v templateVariable) bool {
+		return v.Name == "datasource" && v.Type == "datasource"
+	})
 }
 
 func expand(grafana string) string {
@@ -405,8 +419,8 @@ func dashboards(t *testing.T) map[string]dashboard {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var d dashboard
-		if err := json.Unmarshal(raw, &d); err != nil {
+		d, err := decodeDashboard(raw)
+		if err != nil {
 			t.Fatalf("%s: %v", file, err)
 		}
 		all[file] = d
@@ -457,6 +471,9 @@ func TestEveryQueryReadsTheDatasourceVariable(t *testing.T) {
 				}
 			}
 		}
+		if !d.hasDatasourceVariable() {
+			t.Errorf("%s: no variable named datasource has the type datasource, which every ${datasource} reads", file)
+		}
 		for _, v := range d.Templating.List {
 			if v.Type == "query" && (v.Datasource == nil || *v.Datasource != templatedDatasource) {
 				t.Errorf("%s: variable %s reads the data source %+v, want %+v", file, v.Name, v.Datasource, templatedDatasource)
@@ -500,6 +517,62 @@ func TestLintExcludesTheFleetAndControlPlaneDashboardsAlone(t *testing.T) {
 		slices.Sort(got)
 		if !slices.Equal(got, want) {
 			t.Errorf("%s excludes %s for the dashboards %q, want %q alone; an exclusion without entries, or an entry without a dashboard, holds for every dashboard", lintFile, rule, got, want)
+		}
+	}
+}
+
+const dashboardFixture = `{"title":"T","templating":{"list":[{"name":"datasource","type":"datasource","query":"prometheus"},{"name":"ns","type":"query","datasource":{"type":"prometheus","uid":"${datasource}"},"query":{"query":"label_values(a, b)"}}]},"panels":[{"type":"row","title":"R","panels":[{"type":"stat","title":"S","datasource":{"type":"prometheus","uid":"${datasource}"},"targets":[{"refId":"A","expr":"up","instant":true,"range":true,"datasource":{"type":"prometheus","uid":"${datasource}"}}]}]}]}`
+
+func TestADashboardIsDecodedAsGrafanaReadsIt(t *testing.T) {
+	ref := &datasourceRef{Type: "prometheus", UID: "${datasource}"}
+	want := dashboard{
+		Title: "T",
+		Panels: []panel{{Type: "row", Title: "R", Panels: []panel{{
+			Type: "stat", Title: "S", Datasource: ref,
+			Targets: []target{{RefID: "A", Expr: "up", Instant: true, Range: true, Datasource: ref}},
+		}}}},
+	}
+	want.Templating.List = []templateVariable{
+		{Name: "datasource", Type: "datasource", Query: "prometheus"},
+		{Name: "ns", Type: "query", Datasource: ref, Query: map[string]any{"query": "label_values(a, b)"}},
+	}
+	got, err := decodeDashboard([]byte(dashboardFixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("decoded %+v, want %+v", got, want)
+	}
+	for _, key := range []string{"title", "templating", "list", "name", "type", "datasource", "query", "panels", "targets", "refId", "expr", "instant", "range", "uid"} {
+		capitalised := strings.ReplaceAll(dashboardFixture, `"`+key+`":`, `"`+strings.ToUpper(key[:1])+key[1:]+`":`)
+		if capitalised == dashboardFixture {
+			t.Fatalf("the fixture has no key %s", key)
+		}
+		d, err := decodeDashboard([]byte(capitalised))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reflect.DeepEqual(d, want) {
+			t.Errorf("a dashboard with the key %s capitalised is decoded as one with the key Grafana reads", key)
+		}
+	}
+}
+
+func TestADatasourceVariableIsNamedAndTypedDatasource(t *testing.T) {
+	for raw, want := range map[string]bool{
+		`{"templating":{"list":[{"name":"datasource","type":"datasource"}]}}`:                                     true,
+		`{"templating":{"list":[{"name":"namespace","type":"query"},{"name":"datasource","type":"datasource"}]}}`: true,
+		`{"templating":{"list":[{"name":"datasource","type":"query"}]}}`:                                          false,
+		`{"templating":{"list":[{"name":"source","type":"datasource"}]}}`:                                         false,
+		`{"templating":{"list":[]}}`:                                          false,
+		`{"Templating":{"list":[{"name":"datasource","type":"datasource"}]}}`: false,
+	} {
+		d, err := decodeDashboard([]byte(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := d.hasDatasourceVariable(); got != want {
+			t.Errorf("%s: %t, want %t", raw, got, want)
 		}
 	}
 }
