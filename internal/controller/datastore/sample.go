@@ -157,7 +157,10 @@ func (r *SampleReconciler) sampled(ctx context.Context, cp *lodiav1alpha1.Contro
 //
 // The list is serializable, which a member answers from its own state
 // (etcd@v3.5.27 server/etcdserver/api/v3rpc/member.go#L90-L98), so an etcd
-// without a leader still gives its size and alarms. The alarms come from each
+// without a leader still gives its size and alarms until etcd-druid's
+// readiness probe takes its members out of the client Service, about 30 s
+// (etcd-druid@v0.39.0 internal/component/statefulset/builder.go#L603-L610);
+// MemberList then fails or waits out the pass. The alarms come from each
 // member's Status, not from AlarmList, which goes through raft
 // (etcd@v3.5.27 server/etcdserver/v3_server.go#L491-L497).
 func (r *SampleReconciler) sample(ctx context.Context, etcd *druidv1alpha1.Etcd) (EtcdSample, bool) {
