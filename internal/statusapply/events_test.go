@@ -238,6 +238,26 @@ func TestTheNoteIsTheMessageCutBeforeTheRuneAcrossItsLimit(t *testing.T) {
 	}
 }
 
+func TestAnASCIINoteIsCutAtItsLimit(t *testing.T) {
+	ns := namespace(t)
+	cp := controlPlane(t, ns)
+	message := strings.Repeat("a", 1025)
+	unavailable := reported(lodiav1alpha1.ConditionReady, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable)
+	unavailable.Message = message
+	if err := broadcasting(t).Apply(t.Context(), cp, conditions(unavailable), false); err != nil {
+		t.Fatal(err)
+	}
+	got := eventually(t, ns, func(list []eventsv1.Event) error {
+		if len(list) != 1 {
+			return fmt.Errorf("%d events", len(list))
+		}
+		return nil
+	})
+	if got[0].Note != message[:1024] {
+		t.Errorf("the note is %d bytes, want 1024", len(got[0].Note))
+	}
+}
+
 func TestAConditionThatFlapsTwiceIsOneEventWithASeries(t *testing.T) {
 	ns := namespace(t)
 	cp := controlPlane(t, ns)
