@@ -1528,17 +1528,7 @@ func TestACompletedRestoreKeepsItsRecordWithoutAnEtcd(t *testing.T) {
 
 	t.Run("a foreign Etcd", func(t *testing.T) {
 		r, record := completed(t)
-		setPaused(t, r.ns, restoredCP, true)
-		testenv.Eventually(t, func() error {
-			cp := &lodiav1alpha1.ControlPlane{}
-			if err := cached.Get(t.Context(), client.ObjectKey{Namespace: r.ns, Name: restoredCP}, cp); err != nil {
-				return err
-			}
-			if !cp.Spec.Paused {
-				return errors.New("the cache does not show the pause yet")
-			}
-			return nil
-		})
+		pause(t, r.ns, restoredCP)
 		if err := k8s.Delete(t.Context(), getEtcd(t, r.ns, restoredCP)); err != nil {
 			t.Fatal(err)
 		}
@@ -1653,17 +1643,7 @@ func TestAnEtcdCreatedAgainFromAStaleCacheNeedsNoBackup(t *testing.T) {
 	if err := k8s.Delete(t.Context(), r.backup); err != nil {
 		t.Fatal(err)
 	}
-	setPaused(t, r.ns, restoredCP, true)
-	testenv.Eventually(t, func() error {
-		cp := &lodiav1alpha1.ControlPlane{}
-		if err := cached.Get(t.Context(), client.ObjectKey{Namespace: r.ns, Name: restoredCP}, cp); err != nil {
-			return err
-		}
-		if !cp.Spec.Paused {
-			return errors.New("the cache does not show the pause yet")
-		}
-		return nil
-	})
+	pause(t, r.ns, restoredCP)
 	if err := k8s.Delete(t.Context(), getEtcd(t, r.ns, restoredCP)); err != nil {
 		t.Fatal(err)
 	}
@@ -1749,17 +1729,7 @@ func TestACompletedRestoreComesBackOverItsClaimsWithTheirMembers(t *testing.T) {
 				create(t, claim(r.ns, fmt.Sprintf("b-etcd-b-etcd-%d", ordinal), map[string]string{lodiav1alpha1.ControlPlaneUIDLabel: uid}))
 			}
 			if c.removed {
-				setPaused(t, r.ns, restoredCP, true)
-				testenv.Eventually(t, func() error {
-					cp := &lodiav1alpha1.ControlPlane{}
-					if err := cached.Get(t.Context(), client.ObjectKey{Namespace: r.ns, Name: restoredCP}, cp); err != nil {
-						return err
-					}
-					if !cp.Spec.Paused {
-						return errors.New("the cache does not show the pause yet")
-					}
-					return nil
-				})
+				pause(t, r.ns, restoredCP)
 				remove := []byte(`[{"op":"remove","path":"/status/restore"}]`)
 				if err := k8s.Status().Patch(t.Context(), r.controlPlane(t), client.RawPatch(types.JSONPatchType, remove), client.FieldOwner("someone-else")); err != nil {
 					t.Fatal(err)
