@@ -172,6 +172,10 @@ func (r *NodesReconciler) selectRow(ctx context.Context, cp *lodiav1alpha1.Contr
 		began = lease.Spec.AcquireTime.Time
 	}
 	silent, counted := r.silence(s, now, began)
+	trusted := now.Sub(s.restarted) >= r.SilentAfter
+	if trusted {
+		s.count = &nodeCount{uid: s.uid, silent: silent, counted: counted}
+	}
 	decide := func(write leaseWrite, condition *metav1.Condition) (row, error) {
 		return row{write: write, condition: condition, silent: silent, counted: counted, counts: true}, nil
 	}
@@ -200,7 +204,7 @@ func (r *NodesReconciler) selectRow(ctx context.Context, cp *lodiav1alpha1.Contr
 	if !ours {
 		return row{condition: held(cp, lodiav1alpha1.ReasonNotHeld, share)}, nil
 	}
-	if s.below.IsZero() && now.Sub(s.restarted) >= r.SilentAfter {
+	if s.below.IsZero() && trusted {
 		s.below = now
 	}
 	if !s.below.IsZero() && now.Sub(s.below) >= r.ReleaseAfter {
