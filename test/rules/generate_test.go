@@ -120,7 +120,7 @@ func generate(rules map[string]rule, cases []testCase) (string, error) {
 	var out strings.Builder
 	fmt.Fprintf(&out, "rule_files:\n  - %s\n\nevaluation_interval: 30s\n\ntests:\n", ruleFile)
 	anchors := map[string]string{}
-	checked := map[string]bool{}
+	fires := map[string]bool{}
 	for _, c := range cases {
 		input := c.series
 		if !c.asIs {
@@ -139,11 +139,11 @@ func generate(rules map[string]rule, cases []testCase) (string, error) {
 			if !ok {
 				return "", fmt.Errorf("%s: %s is not in %s", c.name, ck.alert, ruleFile)
 			}
-			checked[ck.alert] = true
 			fmt.Fprintf(&out, "      - eval_time: %s\n        alertname: %s\n", duration(ck.at), ck.alert)
 			if len(ck.want) == 0 {
 				continue
 			}
+			fires[ck.alert] = true
 			out.WriteString("        exp_alerts:\n")
 			expected := make([]alertLabels, len(ck.want))
 			for i, w := range ck.want {
@@ -178,8 +178,8 @@ func generate(rules map[string]rule, cases []testCase) (string, error) {
 		out.WriteString("\n")
 	}
 	for _, alert := range slices.Sorted(maps.Keys(rules)) {
-		if !checked[alert] {
-			return "", fmt.Errorf("%s in %s has no case in cases_test.go", alert, ruleFile)
+		if !fires[alert] {
+			return "", fmt.Errorf("%s in %s has no case in cases_test.go where it fires", alert, ruleFile)
 		}
 	}
 	return strings.TrimRight(out.String(), "\n") + "\n", nil
