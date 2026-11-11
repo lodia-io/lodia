@@ -87,11 +87,7 @@ func TestTheRevisionSurvivesTheEdgesOfAPass(t *testing.T) {
 		cp := seed(t)
 		expired, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
 		defer cancel()
-		cached := interceptor.NewClient(quiet, interceptor.Funcs{
-			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-				return c.Get(context.Background(), key, obj, opts...)
-			},
-		})
+		cached := synced(quiet)
 		if err := reconcileAt(expired, cached, quiet, later, cp); err != nil {
 			t.Fatal(err)
 		}

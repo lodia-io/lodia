@@ -399,16 +399,16 @@ func TestAnotherOwnersSecretUnderThatNameIsLeftAlone(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: clientSecret, Labels: map[string]string{lodiav1alpha1.ManagedByLabel: lodiav1alpha1.ManagedBy}},
 		Type:       corev1.SecretTypeTLS,
 		Data:       theirs,
-	}); err != nil {
+	}, client.FieldOwner("kubectl-create")); err != nil {
 		t.Fatal(err)
 	}
 	before := get(t, admin, &corev1.Secret{}, "kube-system", clientSecret).ResourceVersion
 	grantAccess(t, cp)
 	testenv.Eventually(t, func() error {
-		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying); err != nil {
+		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere); err != nil {
 			return err
 		}
-		if c := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied); c.Message != "Secret kube-system/"+clientSecret+" exists and is not Lodia's; delete it or disable the addon" {
+		if c := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied); c.Message != "Secret kube-system/"+clientSecret+" exists and is not Lodia's: its field managers are kubectl-create; delete it or disable the addon" {
 			return fmt.Errorf("AddonsApplied says %q", c.Message)
 		}
 		return nil

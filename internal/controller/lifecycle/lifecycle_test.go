@@ -36,7 +36,10 @@ var readiness = []string{
 	lodiav1alpha1.ConditionControllersLeading,
 }
 
-const runningRevision = "v1.0.0+0123456789abcdef"
+const (
+	runningRevision = "v1.0.0+0123456789abcdef"
+	settlingTime    = 45 * time.Second
+)
 
 var (
 	k8s   client.WithWatch
@@ -48,7 +51,7 @@ func TestMain(m *testing.M) {
 	env := testenv.Start(testenv.Options{})
 	k8s = env.Client
 	mgr := env.Manager(env.AsController("lifecycle"), false)
-	if err := (&lifecycle.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Clock: clock.RealClock{}, Revision: runningRevision}).SetupWithManager(mgr, 1); err != nil {
+	if err := (&lifecycle.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Clock: clock.RealClock{}, Revision: runningRevision, MaxConcurrentRollouts: 5, Settling: settlingTime}).SetupWithManager(mgr, 1); err != nil {
 		env.Fatal("controller", err)
 	}
 	env.StartManager(mgr)
@@ -233,7 +236,7 @@ func TestProgressingNamesTheLagAfterUnsupportedAndBeforeTheRollout(t *testing.T)
 			"controllerManager": versioned("v1.35.0", 1, 1, 1),
 			"scheduler":         versioned("v1.35.0", 1, 1, 1),
 		},
-		"addons": map[string]any{"version": "v1.35.0"},
+		"addons": map[string]any{"version": "v1.35.0", "operatorRevision": runningRevision},
 	})
 	testenv.Eventually(t, func() error {
 		return expectProgressing(t, cp, lodiav1alpha1.ReasonRollingOut, "kube-apiserver: 1 of 2 replicas updated")
@@ -343,9 +346,9 @@ func TestProgressingSumsTheRollout(t *testing.T) {
 		"components": map[string]any{
 			"apiServer":         versioned(v, 2, 3, 1),
 			"controllerManager": versioned(v, 2, 2, 2),
-			"scheduler":         map[string]any{"total": int64(2), "ready": int64(2), "version": v},
+			"scheduler":         map[string]any{"total": int64(2), "ready": int64(2), "version": v, "operatorRevision": runningRevision},
 		},
-		"addons": map[string]any{"version": v},
+		"addons": map[string]any{"version": v, "operatorRevision": runningRevision},
 	})
 	testenv.Eventually(t, func() error {
 		return expectProgressing(t, cp, lodiav1alpha1.ReasonRollingOut,
@@ -357,24 +360,27 @@ func TestProgressingSumsTheRollout(t *testing.T) {
 			"controllerManager": versioned(v, 2, 2, 2),
 			"scheduler":         versioned(v, 2, 1, 2),
 		},
-		"addons": map[string]any{"version": v},
+		"addons": map[string]any{"version": v, "operatorRevision": runningRevision},
 	})
 	applyStatus(t, cp, "test/datastore", map[string]any{"datastore": map[string]any{
-		"endpoints": []any{map[string]any{"host": "dev-etcd-client.team.svc", "port": int64(2379)}},
-		"members":   map[string]any{"total": int64(3), "ready": int64(3), "updated": int64(2)},
+		"endpoints":        []any{map[string]any{"host": "dev-etcd-client.team.svc", "port": int64(2379)}},
+		"members":          map[string]any{"total": int64(3), "ready": int64(3), "updated": int64(2)},
+		"operatorRevision": runningRevision,
 	}})
 	testenv.Eventually(t, func() error {
 		return expectProgressing(t, cp, lodiav1alpha1.ReasonRollingOut, "etcd: 2 of 3 members updated")
 	})
 	applyStatus(t, cp, "test/datastore", map[string]any{"datastore": map[string]any{
-		"endpoints": []any{map[string]any{"host": "dev-etcd-client.team.svc", "port": int64(2379)}},
-		"members":   map[string]any{"total": int64(3), "ready": int64(2), "updated": int64(3)},
+		"endpoints":        []any{map[string]any{"host": "dev-etcd-client.team.svc", "port": int64(2379)}},
+		"members":          map[string]any{"total": int64(3), "ready": int64(2), "updated": int64(3)},
+		"operatorRevision": runningRevision,
 	}})
 	testenv.Eventually(t, func() error { return expect(t, cp, "v1.37.1", lodiav1alpha1.ReasonIdle) })
 
 	applyStatus(t, cp, "test/datastore", map[string]any{"datastore": map[string]any{
-		"endpoints": []any{map[string]any{"host": "dev-etcd-client.team.svc", "port": int64(2379)}},
-		"members":   map[string]any{"total": int64(3), "ready": int64(3)},
+		"endpoints":        []any{map[string]any{"host": "dev-etcd-client.team.svc", "port": int64(2379)}},
+		"members":          map[string]any{"total": int64(3), "ready": int64(3)},
+		"operatorRevision": runningRevision,
 	}})
 	testenv.Eventually(t, func() error {
 		return expectProgressing(t, cp, lodiav1alpha1.ReasonRollingOut, "etcd: its updated members are not reported yet")
@@ -546,7 +552,7 @@ func gateway() lodiav1alpha1.Endpoint {
 }
 
 func versioned(version string, total, ready, updated int64) map[string]any {
-	return map[string]any{"total": total, "ready": ready, "updated": updated, "version": version}
+	return map[string]any{"total": total, "ready": ready, "updated": updated, "version": version, "operatorRevision": runningRevision}
 }
 
 func setFinalizers(t *testing.T, cp *lodiav1alpha1.ControlPlane, finalizers ...string) {
@@ -589,7 +595,7 @@ func expectNoWrite(t *testing.T, cp *lodiav1alpha1.ControlPlane, conditionType, 
 			return c.SubResource(subResource).Apply(ctx, obj, opts...)
 		},
 	})
-	if _, err := (&lifecycle.Reconciler{Client: counting, Reader: k8s, Clock: clock.RealClock{}, Revision: runningRevision}).Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+	if _, err := (&lifecycle.Reconciler{Client: counting, Reader: k8s, Clock: clock.RealClock{}, Revision: runningRevision, MaxConcurrentRollouts: 5, Settling: settlingTime}).Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 		t.Fatal(err)
 	}
 	if after := get(t, cp).ResourceVersion; applies > 0 || after != settled {

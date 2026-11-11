@@ -35,6 +35,12 @@ const (
 // only the sections some feature reads; a key outside them refuses to start.
 type Config struct {
 	Health HealthConfig `json:"health"`
+	Fleet  FleetConfig  `json:"fleet"`
+}
+
+// FleetConfig holds the fleet limit.
+type FleetConfig struct {
+	MaxConcurrentRollouts int `json:"maxConcurrentRollouts"`
 }
 
 // HealthConfig holds Health's settings.
@@ -63,13 +69,16 @@ func (t *Thousandths) UnmarshalJSON(data []byte) error {
 // DefaultConfig is what the operator runs with when it is given no file, and
 // for every key a file leaves out.
 func DefaultConfig() Config {
-	return Config{Health: HealthConfig{
-		Period:              metav1.Duration{Duration: 5 * time.Second},
-		FailuresBeforeFalse: 3,
-		SilentAfter:         metav1.Duration{Duration: 20 * time.Second},
-		HoldFraction:        600,
-		ReleaseAfter:        metav1.Duration{Duration: 2 * time.Minute},
-	}}
+	return Config{
+		Health: HealthConfig{
+			Period:              metav1.Duration{Duration: 5 * time.Second},
+			FailuresBeforeFalse: 3,
+			SilentAfter:         metav1.Duration{Duration: 20 * time.Second},
+			HoldFraction:        600,
+			ReleaseAfter:        metav1.Duration{Duration: 2 * time.Minute},
+		},
+		Fleet: FleetConfig{MaxConcurrentRollouts: 5},
+	}
 }
 
 // LoadConfig reads the file at path, strictly, over the defaults, and checks
@@ -87,6 +96,9 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if err := cfg.Health.validate(); err != nil {
 		return Config{}, err
+	}
+	if n := cfg.Fleet.MaxConcurrentRollouts; n < 1 {
+		return Config{}, fmt.Errorf("fleet.maxConcurrentRollouts is %d, want at least 1: with none no change Lodia starts ever rolls", n)
 	}
 	return cfg, nil
 }

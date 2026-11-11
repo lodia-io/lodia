@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -157,10 +158,41 @@ func writeInventory(ctx context.Context, c client.Client, entries []entry) error
 	return nil
 }
 
+// foreignObject is an object of the render that exists without Lodia's field
+// manager, another owner's, with the field managers it has.
+type foreignObject struct {
+	entry
+	managers []string
+}
+
+// owners names the field managers, which tell a person whether deleting the
+// object helps: one a tool applies comes back.
+func (o foreignObject) owners() string {
+	if len(o.managers) == 0 {
+		return "it has no field manager"
+	}
+	return "its field managers are " + strings.Join(o.managers, ", ")
+}
+
+func fieldManagers(obj metav1.Object) []string {
+	var managers []string
+	for _, f := range obj.GetManagedFields() {
+		if f.Manager != "" {
+			managers = append(managers, f.Manager)
+		}
+	}
+	slices.Sort(managers)
+	return slices.Compact(managers)
+}
+
+func isForeign(others []foreignObject, e entry) bool {
+	return slices.ContainsFunc(others, func(o foreignObject) bool { return compareEntries(o.entry, e) == 0 })
+}
+
 // foreign returns the objects of the render no inventory lists yet that
 // exist without Lodia's field manager: another owner's.
-func foreign(ctx context.Context, c client.Client, objects []*unstructured.Unstructured, previous []entry) ([]entry, error) {
-	var others []entry
+func foreign(ctx context.Context, c client.Client, objects []*unstructured.Unstructured, previous []entry) ([]foreignObject, error) {
+	var others []foreignObject
 	for _, obj := range objects {
 		e := entryOf(obj)
 		if contains(previous, e) {
@@ -174,10 +206,10 @@ func foreign(ctx context.Context, c client.Client, objects []*unstructured.Unstr
 		case err != nil:
 			return nil, failed(e, err)
 		case !appliedByLodia(existing):
-			others = append(others, e)
+			others = append(others, foreignObject{entry: e, managers: fieldManagers(existing)})
 		}
 	}
-	slices.SortFunc(others, compareEntries)
+	slices.SortFunc(others, func(a, b foreignObject) int { return compareEntries(a.entry, b.entry) })
 	return others, nil
 }
 
@@ -222,7 +254,7 @@ func prune(ctx context.Context, c client.Client, e entry) error {
 // then prunes what the previous inventory lists and they do not. The
 // inventory names an object before Lodia first writes it, so a pass that
 // stops anywhere leaves nothing a later pass cannot prune.
-func applyInventory(ctx context.Context, c client.Client, objects []*unstructured.Unstructured) ([]entry, error) {
+func applyInventory(ctx context.Context, c client.Client, objects []*unstructured.Unstructured) ([]foreignObject, error) {
 	previous, err := readInventory(ctx, c)
 	if err != nil {
 		return nil, err
@@ -235,7 +267,7 @@ func applyInventory(ctx context.Context, c client.Client, objects []*unstructure
 	var desired []entry
 	var writes []*unstructured.Unstructured
 	for _, obj := range objects {
-		if e := entryOf(obj); !contains(others, e) {
+		if e := entryOf(obj); !isForeign(others, e) {
 			desired, writes = append(desired, e), append(writes, obj)
 		}
 	}

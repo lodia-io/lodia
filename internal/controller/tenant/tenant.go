@@ -190,11 +190,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	switch reason, message, answered := outcome(applyErr); {
 	case applyErr == nil && len(others) > 0:
-		applied = newCondition(cp, applied.Type, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, others[0].String()+" exists and is not Lodia's; delete it or disable the addon")
+		applied = newCondition(cp, applied.Type, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere, others[0].String()+" exists and is not Lodia's: "+others[0].owners()+"; delete it or disable the addon")
 	case applyErr == nil:
 		applied = newCondition(cp, applied.Type, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, fmt.Sprintf("%d objects are applied and the inventory is pruned", len(objects)))
-	case answered || applied.Status != metav1.ConditionTrue:
-		// No answer is no observation: a True stays, anything else says so.
+	case answered || applied.Status != metav1.ConditionTrue && !slices.Contains([]string{lodiav1alpha1.ReasonRefused, lodiav1alpha1.ReasonObjectsControlledElsewhere}, applied.Reason):
+		// No answer is no observation: a True, a refused object and another
+		// owner's stay, since the object does; anything else says so.
 		applied = newCondition(cp, applied.Type, metav1.ConditionFalse, reason, message)
 	}
 	addons := cp.Status.Addons
@@ -288,10 +289,10 @@ func (r *Reconciler) wait(ctx context.Context, cp *lodiav1alpha1.ControlPlane, r
 }
 
 // waiting is what a wait reports instead of c. An AddonsApplied that names a
-// refused object or an unfinished apply stays: a lost access undoes no
-// observation, and a held pass writes True over a wait.
+// refused object, another owner's or an unfinished apply stays: a lost access
+// undoes no observation, and a held pass writes True over a wait.
 func waiting(c, wait metav1.Condition) metav1.Condition {
-	if c.Type == lodiav1alpha1.ConditionAddonsApplied && (c.Reason == lodiav1alpha1.ReasonRefused || c.Reason == lodiav1alpha1.ReasonApplying) {
+	if c.Type == lodiav1alpha1.ConditionAddonsApplied && slices.Contains([]string{lodiav1alpha1.ReasonRefused, lodiav1alpha1.ReasonObjectsControlledElsewhere, lodiav1alpha1.ReasonApplying}, c.Reason) {
 		return c
 	}
 	return wait
@@ -395,10 +396,10 @@ func isWorkload(e entry) bool {
 // rollout reads the DaemonSets and Deployments among entries but others. One
 // that is missing is pending: a held pass leaves a listed one it no longer
 // renders as it is.
-func rollout(ctx context.Context, c client.Client, cp *lodiav1alpha1.ControlPlane, entries, others []entry) (metav1.Condition, error) {
+func rollout(ctx context.Context, c client.Client, cp *lodiav1alpha1.ControlPlane, entries []entry, others []foreignObject) (metav1.Condition, error) {
 	var names, pending []string
 	for _, e := range entries {
-		if !isWorkload(e) || contains(others, e) {
+		if !isWorkload(e) || isForeign(others, e) {
 			continue
 		}
 		var workload client.Object = &appsv1.Deployment{}

@@ -1068,6 +1068,18 @@ type MaintenanceStatus struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=256
 	LastHandled string `json:"lastHandled,omitempty"`
+
+	// SettlingSince is when Lifecycle first found the change it started in
+	// the tenant's slot of the fleet no longer rolling; the slot is kept for a
+	// settling time after it.
+	// +optional
+	SettlingSince *metav1.Time `json:"settlingSince,omitempty"`
+
+	// SlotSince is when the change Lifecycle started took a slot of the
+	// fleet: the tenant holds the slot while this is present, until the change
+	// settles or the ControlPlane is deleted.
+	// +optional
+	SlotSince *metav1.Time `json:"slotSince,omitempty"`
 }
 
 // ControllerManagerHold is one hold of the controller manager's leader lease.

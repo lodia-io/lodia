@@ -74,12 +74,36 @@ The test does not ask `Ready` to stay `True` through the upgrade, and logs each 
 
 ## Nightly: the chain and a highly available upgrade
 
-[`nightly-upgrade.yml`](../../.github/workflows/nightly-upgrade.yml) runs two tests under the same tag every night, on demand, and on a pull request that changes the workflow or `test/e2e/upgrade_nightly_test.go`.
+[`nightly-upgrade.yml`](../../.github/workflows/nightly-upgrade.yml) runs two tests under the same tag every night, on demand, and on a pull request that changes the workflow, `test/e2e/upgrade_nightly_test.go` or `test/e2e/maintenance_nightly_test.go`, and the [fleet limit](#nightly-the-fleet-limit) beside them.
 Each is a job of its own, with its own kind cluster.
 
 `TestMinorUpgradeChain` (`make e2e-upgrade E2E_UPGRADE_TEST=TestMinorUpgradeChain`) takes a tenant from v1.35.8 to v1.37.1, the table's `Latest` of 1.36 between them: a `Backup` of each minor completes before the target moves, a kind node of v1.35.8 joins at the first minor, one of v1.36.4 after the first step, and one of v1.37.0 at the end, and the first two keep their kubelets.
 
 `TestHighAvailabilityUpgrade` (`make e2e-upgrade-ha`, on the cluster shape of G2) is G1's edit on a tenant with `failureTolerance: Zone`, under the two loops.
+
+## Gate G5: an operator upgrade in windows
+
+`TestOperatorUpgradeInWindows` checks the window item of the [phase 2 gate](../../docs/roadmap.md#phase-2--production) ([upgrades-and-maintenance-windows](../../docs/decisions/upgrades-and-maintenance-windows.md)).
+It sits behind the build tag `maintenance` with `e2e`, and `make e2e-maintenance` runs it on a kind cluster of its own; the `e2e-maintenance` job of [`ci.yml`](../../.github/workflows/ci.yml) runs that on every pull request.
+
+Three `ControlPlane`s in `nodePort` mode, with windows in UTC around the time the test starts: `open` from two hours before to two hours after, `closed` from four hours after to five, and `anytime` with none, so that every edge is at least an hour away.
+Once each is `Ready` and `Idle`, every part reporting the suite's operator revision A, the test records `closed`'s Deployment generations, pod UIDs, `Etcd` generation and `lodia.io/operator-revision`, revision A, and the resourceVersion of its inventory inside the tenant, and a watch of every `ControlPlane` records each status of the three from then on.
+
+1. The suite builds the operator again under its `VERSION` with `-b`, and the signer under the tag `e2e-b`, since ko builds reproducibly and the same signer built again is the same image; the chart upgrades to both with `--reuse-values`, and a running replica of build B takes the Lease `lodia.io`.
+2. Within 3 minutes of that, `open` and `anytime` report revision B, `B`'s `VERSION` and a digest, in every `components.*`, `addons` and `datastore`, their API server's template runs signer B, they were seen `Maintaining` and are `Idle`.
+3. `closed` is `WaitingForWindow`, `target.scheduledFor` its window's start, its revision A and every part reporting revision A, from its first such status on and for 2 more minutes, and nothing recorded of it changed; no status of the three was seen with `Ready` other than True.
+   A and B render the same `Etcd` and the same objects in the tenant, so a Datastore or a Tenant that ignored the hold would show only in those reports and the `Etcd`'s stamp.
+4. An edit of `closed`'s `addons.coreDNS.replicas` grants it revision B within 30 seconds, and its API server rolls to signer B, while it was never seen `Maintaining` by a watch that stayed unbroken.
+
+## Nightly: the fleet limit
+
+`TestFleetLimitInQueueOrder` (`make e2e-maintenance E2E_MAINTENANCE_TEST=TestFleetLimitInQueueOrder`), in the same build tag, runs in [`nightly-upgrade.yml`](../../.github/workflows/nightly-upgrade.yml) as a job of its own.
+Four `ControlPlane`s without a window turn `Ready`; the chart upgrades to build B, as in G5, with `fleet.maxConcurrentRollouts` 1.
+The test wants all four at revision B and `Idle` within 20 minutes, the watch of every `ControlPlane` unbroken, and over the statuses it delivered, in the order they were written: never two holding a slot at once, `status.maintenance.slotSince` present, none `MaintenanceFailed`, one slot granted to each, and each grant to the first, by `target.scheduledFor`, namespace and name, of the tenants then waiting, a tenant waiting while its `target.scheduledFor` is present and at or before the time the watch delivered its status.
+The first grant finds none waiting: tenants without a window become eligible in their first passes, and the first to reach the semaphore takes the slot.
+A later grant finds none waiting only for a tenant seen waiting before, whose `Ready` dropped while it waited: that wait has no `target.scheduledFor`, and its pass once `Ready` is back takes a slot nobody else waits for.
+A `FleetLimit` status without a `target.scheduledFor` at or before its time fails the test, since every wait for a slot carries one.
+The four become eligible within one second, so the order by `target.scheduledFor` across seconds is held by the envtest `TestTheQueueGoesByScheduledForNamespaceAndName` in `internal/controller/lifecycle`.
 
 ## Gate G2: a highly available control plane
 

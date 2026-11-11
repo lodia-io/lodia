@@ -203,7 +203,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 ## From the CI of the refactoring (2026-11-09)
 
 - `make test` gives envtest's API servers 60 s to stop instead of the default 20 s (the `@todo` in `Makefile`): a tenant API server in `internal/controller/tenant` twice took longer, after its test's checks had passed, and nobody has measured why.
-  768 stops in loaded Linux containers took at most 1.12 s, so it did not reproduce outside CI.
+  768 stops in loaded Linux containers took at most 1.12 s, but it did reproduce outside CI: on macOS, in both of two runs of `go test -count=1 ./internal/controller/tenant/` on 2026-11-10, as `timeout waiting for process kube-apiserver to stop` in a test's cleanup after its checks passed, without a dump, since `LODIA_APISERVER_DUMPS` was not set.
   `verify` now keeps the log and the goroutines of a tenant API server still running 20 s into its stop, in the artifact `apiserver-dumps` (`testenv.StartDumping`, the `@todo` in `internal/controller/tenant/tenant_test.go`).
   Read the first dump, fix what holds it past SIGTERM, then remove `KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT` from `make test`, `StartDumping` and the artifact's step.
 
@@ -211,10 +211,19 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 - A renewed restart-only certificate rolls its component at once, or at the grant on a tenant Workloads holds, not in the tenant's window ([upgrades-and-maintenance-windows](docs/decisions/upgrades-and-maintenance-windows.md), "Who waits for the window"): holding it for the window is for phase 3's rotations, and takes a field each way between Workloads and Lifecycle, a digest of the restart hashes and a clock of the certificate the pods still run.
 
+## From the Cluster API provider (2026-11-10)
+
+- Phase 3: a dedicated identity for Cluster API.
+  `<cluster>-kubeconfig`, which the provider copies from `<cp>-admin-kubeconfig`, carries Lodia's admin credential (`kubernetes-admin` in `lodia:cluster-admins`), which is also the platform's automation credential, while Cluster API's contract says that kubeconfig must not be shared with other users or applications ([control-plane.md](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/docs/book/src/developer/providers/contracts/control-plane.md#L872-L874)).
+  A second standing kubeconfig from PKI for it, so that revoking one does not revoke the other.
+
 ## For wave 2, observability
 
 - Health's own metrics, under metrics-are-part-of-the-api: the lag of Health's pass is the watchdog of the hold's margin, and the rest, failed probes and silent nodes, is to be named there.
   The hold itself is `lodia_controlplane_condition{type="ControllerManagerHeld"}`.
+- `LodiaMaintenanceHalted`, as many tenants failed in their slots as `fleet.maxConcurrentRollouts` ([operations](docs/operations.md#alerts-shipped-in-the-chart)).
+  This alert and the next read the slot from `status.maintenance.slotSince`, not from `Progressing`'s reason, since a slot is also held under `Unsupported`, which ranks above `MaintenanceFailed`, and `TimeZoneUnsupported`, which ranks above `Maintaining`.
+- An alert for a slot held long: a tenant whose change neither finishes nor fails, a tenant API that stops answering mid-rollout or a Tenant waiting after the grant on a cause the grant did not remove, stays `Maintaining` with its slot; from `Progressing`'s `lastTransitionTime` ([upgrades-and-maintenance-windows](docs/decisions/upgrades-and-maintenance-windows.md), "The fleet").
 
 ## For the release that first drops a minor
 

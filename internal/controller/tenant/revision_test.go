@@ -412,6 +412,7 @@ func TestAHeldPassKeepsAddonsAppliedUnlessAWaitCoversWhatRuns(t *testing.T) {
 		reason string
 	}{
 		{metav1.ConditionFalse, lodiav1alpha1.ReasonRefused},
+		{metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere},
 		{metav1.ConditionFalse, lodiav1alpha1.ReasonApplying},
 		{metav1.ConditionUnknown, lodiav1alpha1.ReasonReconciling},
 	} {
@@ -679,6 +680,7 @@ func TestAWaitKeepsARefusalAndAnUnfinishedApply(t *testing.T) {
 					kept   bool
 				}{
 					{metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, true},
+					{metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere, true},
 					{metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, true},
 					{metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, false},
 				} {

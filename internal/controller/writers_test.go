@@ -66,6 +66,7 @@ var fieldWriters = map[string]string{
 	"endpoint.inCluster":    "lodia/workloads",
 	"endpoint.tunnel":       "lodia/workloads",
 	"kubernetes":            "lodia/lifecycle",
+	"maintenance":           "lodia/lifecycle",
 	"nodes":                 "lodia/health-nodes",
 	"restore":               "lodia/datastore",
 	"target":                "lodia/lifecycle",
