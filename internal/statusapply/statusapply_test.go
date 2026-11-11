@@ -300,9 +300,11 @@ func TestAFirstPassReplacesNoConditionTheServerHoldsWithAnotherReason(t *testing
 	held := metav1.Condition{Type: lodiav1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonReady, Message: "held", ObservedGeneration: 1, LastTransitionTime: earlier}
 	unavailable := metav1.Condition{Type: lodiav1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonUnavailable, Message: "computed", ObservedGeneration: 1, LastTransitionTime: later}
 	copied := metav1.Condition{Type: lodiav1alpha1.ConditionReady, Status: metav1.ConditionUnknown, Reason: lodiav1alpha1.ReasonReconciling, Message: "DatastoreReady: the first pass has not finished", ObservedGeneration: 1, LastTransitionTime: later}
+	pending := metav1.Condition{Type: lodiav1alpha1.ConditionBackupReady, Status: metav1.ConditionUnknown, Reason: lodiav1alpha1.ReasonSnapshotsPending, Message: "etcd-druid reports no BackupReady of Etcd dev yet", ObservedGeneration: 1, LastTransitionTime: earlier}
 	firstPass := func(generation int64) metav1.Condition {
 		return statusapply.FirstPass(&lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Generation: generation}}, lodiav1alpha1.ConditionReady)
 	}
+	backupFirstPass := statusapply.FirstPass(&lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Generation: 1}}, lodiav1alpha1.ConditionBackupReady)
 	for _, c := range []struct {
 		name       string
 		server     *metav1.Condition
@@ -313,6 +315,7 @@ func TestAFirstPassReplacesNoConditionTheServerHoldsWithAnotherReason(t *testing
 	}{
 		{"a first pass over another reason", &held, 1, firstPass(1), held, true},
 		{"a first pass over another reason at an earlier generation", &held, 2, firstPass(2), held, true},
+		{"a first pass over Unknown with another reason", &pending, 1, backupFirstPass, pending, true},
 		{"a first pass over none", nil, 1, firstPass(1), firstPass(1), false},
 		{"a first pass over a first pass at an earlier generation", new(firstPass(1)), 2, firstPass(2), firstPass(2), false},
 		{"another reason over another reason", &held, 1, unavailable, unavailable, false},
@@ -336,7 +339,7 @@ func TestAFirstPassReplacesNoConditionTheServerHoldsWithAnotherReason(t *testing
 			if cached.Generation != c.generation {
 				t.Fatalf("generation %d, want %d", cached.Generation, c.generation)
 			}
-			meta.RemoveStatusCondition(&cached.Status.Conditions, lodiav1alpha1.ConditionReady)
+			meta.RemoveStatusCondition(&cached.Status.Conditions, c.desired.Type)
 			if err := apply(t.Context(), cached, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{c.desired}}, false); err != nil {
 				t.Fatal(err)
 			}
@@ -344,12 +347,12 @@ func TestAFirstPassReplacesNoConditionTheServerHoldsWithAnotherReason(t *testing
 			if moved := got.ResourceVersion != cached.ResourceVersion; moved == c.kept {
 				t.Errorf("resourceVersion %s, then %s", cached.ResourceVersion, got.ResourceVersion)
 			}
-			ready := meta.FindStatusCondition(got.Status.Conditions, lodiav1alpha1.ConditionReady)
-			if ready == nil || ready.Status != c.want.Status || ready.Reason != c.want.Reason || ready.Message != c.want.Message || ready.ObservedGeneration != c.want.ObservedGeneration {
-				t.Fatalf("Ready is %+v, want %+v", ready, c.want)
+			found := meta.FindStatusCondition(got.Status.Conditions, c.desired.Type)
+			if found == nil || found.Status != c.want.Status || found.Reason != c.want.Reason || found.Message != c.want.Message || found.ObservedGeneration != c.want.ObservedGeneration {
+				t.Fatalf("%s is %+v, want %+v", c.desired.Type, found, c.want)
 			}
-			if c.kept && !ready.LastTransitionTime.Equal(&held.LastTransitionTime) {
-				t.Errorf("lastTransitionTime %s, want %s", ready.LastTransitionTime, held.LastTransitionTime)
+			if c.kept && !found.LastTransitionTime.Equal(&c.server.LastTransitionTime) {
+				t.Errorf("lastTransitionTime %s, want %s", found.LastTransitionTime, c.server.LastTransitionTime)
 			}
 		})
 	}
