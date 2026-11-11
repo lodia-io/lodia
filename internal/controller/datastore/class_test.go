@@ -356,3 +356,33 @@ func TestTheClassIsReportedOnceEtcdDruidRolledItOut(t *testing.T) {
 	mustPass(t, r, ns, cp)
 	runsClass(t, ns, cp, "3Gi", "2")
 }
+
+func TestTheCapNoteStaysWhileAClassEditWaits(t *testing.T) {
+	ns := namespace(t)
+	const cp = "cap-waits"
+	createClass(t, newClass(cp, "Retain"))
+	r := classTenant(t, ns, cp, cp)
+	editClass(t, cp, func(class *lodiav1alpha1.DatastoreClass) {
+		class.Spec.Storage.Size = resource.MustParse("40Gi")
+		class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{QuotaBackendBytes: new(resource.MustParse("6Gi"))}
+	})
+	grantClass(t, ns, cp, cp)
+	mustPass(t, r, ns, cp)
+	const capped = "DatastoreClass " + cp + "'s quota 6Gi is capped at 4Gi: it needs 12Gi of volume and Etcd " + cp + "-etcd's is 8Gi"
+	if message := readyMessage(t, ns, cp); !strings.HasSuffix(message, "; "+capped) {
+		t.Fatalf("a granted class whose quota is capped notes %q", message)
+	}
+
+	editClass(t, cp, func(class *lodiav1alpha1.DatastoreClass) {
+		class.Spec.Etcd.Defragmentation = &lodiav1alpha1.Defragmentation{Schedule: "0 4 * * *"}
+	})
+	mustPass(t, r, ns, cp)
+	want := "; DatastoreClass " + cp + " generation 3 waits for status.target.datastoreClass; " + capped
+	if message := readyMessage(t, ns, cp); !strings.HasSuffix(message, want) {
+		t.Errorf("while an edit waits DatastoreReady says %q, want it to end with %q", message, want)
+	}
+	mustPass(t, operatorAt(unpaused(k8s), "v0.0.0-test+next"), ns, cp)
+	if message := readyMessage(t, ns, cp); !strings.HasSuffix(message, want) {
+		t.Errorf("while an edit waits under the operator hold DatastoreReady says %q, want it to end with %q", message, want)
+	}
+}

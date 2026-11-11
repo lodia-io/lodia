@@ -404,24 +404,29 @@ func TestAHeldPassNotesTheQuotaCapTheEtcdRuns(t *testing.T) {
 	ns, credentialsNamespace := namespace(t), namespace(t)
 	create(t, credentials(credentialsNamespace))
 	for _, c := range []struct {
-		cp, class, quota, note string
+		cp, quota, note string
+		granted         bool
 	}{
-		{"held-cap", "held-cap", "6Gi", "; DatastoreClass held-cap's quota 6Gi is capped at 4Gi: it needs 12Gi of volume and Etcd held-cap-etcd's is 8Gi"},
-		{"held-raise", "held-raise", "12Gi", ""},
+		{"held-cap", "6Gi", "; DatastoreClass held-cap's quota 6Gi is capped at 4Gi: it needs 12Gi of volume and Etcd held-cap-etcd's is 8Gi", true},
+		{"held-raise", "12Gi", "", true},
+		{"held-cap-waits", "6Gi", "; DatastoreClass held-cap-waits generation 2 waits for status.target.datastoreClass; DatastoreClass held-cap-waits's quota 6Gi is capped at 4Gi: it needs 12Gi of volume and Etcd held-cap-waits-etcd's is 8Gi", false},
+		{"held-raise-waits", "12Gi", "; DatastoreClass held-raise-waits generation 2 waits for status.target.datastoreClass", false},
 	} {
 		t.Run(c.cp, func(t *testing.T) {
-			class := newClass(c.class, "Retain")
-			if c.note == "" {
-				class = fullClass(c.class, credentialsNamespace)
+			class := newClass(c.cp, "Retain")
+			if strings.HasPrefix(c.cp, "held-raise") {
+				class = fullClass(c.cp, credentialsNamespace)
 			}
 			createClass(t, class)
-			heldTenant(t, ns, c.cp, c.class, nil)
+			heldTenant(t, ns, c.cp, c.cp, nil)
 			running := quantity(getEtcd(t, ns, c.cp).Spec.Etcd.Quota)
-			editClass(t, c.class, func(class *lodiav1alpha1.DatastoreClass) {
+			editClass(t, c.cp, func(class *lodiav1alpha1.DatastoreClass) {
 				class.Spec.Storage.Size = resource.MustParse("40Gi")
 				class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{QuotaBackendBytes: new(resource.MustParse(c.quota))}
 			})
-			grantClass(t, ns, c.cp, c.class)
+			if c.granted {
+				grantClass(t, ns, c.cp, c.cp)
+			}
 			mustPass(t, operatorAt(unpaused(k8s), revision), ns, c.cp)
 			ready := meta.FindStatusCondition(getControlPlane(t, ns, c.cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
 			if want := "Etcd " + c.cp + "-etcd has quorum, 1 of 1 members ready" + c.note; ready.Message != want {

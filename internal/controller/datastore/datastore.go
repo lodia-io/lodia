@@ -316,13 +316,13 @@ type pass struct {
 	members      int32
 	rendered     *druidv1alpha1.Etcd
 	// copied says that rendered is the current Etcd's copy a held pass
-	// applies.
-	copied bool
+	// applies, and keep that the Etcd keeps the fields class gave it, which
+	// waits for its grant or is held for its credentials.
+	copied, keep bool
 	// held is the note on DatastoreReady of a class held or waiting for its
-	// generation, or of a quota capped, and of a request that waits for
-	// etcd-druid; a held class renders no cap, so those never meet. It and
-	// refusal, an apply of the credentials the API server refused, reach
-	// whichever step the pass ends on.
+	// generation, of a quota capped, and of a request that waits for
+	// etcd-druid. It and refusal, an apply of the credentials the API server
+	// refused, reach whichever step the pass ends on.
 	held    string
 	heldFor time.Duration
 	refusal error
@@ -434,7 +434,7 @@ func (r *Reconciler) holdClass(ctx context.Context, p *pass) (*outcome, error) {
 	// Etcd takes the class as it is.
 	waits := p.current != nil && generationOf(class) != grantedClass(p.cp)
 	if waits {
-		p.class = nil
+		p.keep = true
 		if recorded, _ := recordedClass(p.current); recorded.DatastoreClassGeneration != generationOf(class) {
 			generation := strconv.FormatInt(class.Generation, 10)
 			if recorded.UID != class.UID {
@@ -463,7 +463,7 @@ func (r *Reconciler) holdClass(ctx context.Context, p *pass) (*outcome, error) {
 	// whose copy cannot be made, and the certificate generations still move.
 	if blocked != nil {
 		p.held = note(p.held, fmt.Sprintf("DatastoreClass %s is held: %s", class.Name, blocked.cause))
-		p.class, p.heldFor, p.heldReason = nil, time.Minute, blocked.reason
+		p.keep, p.heldFor, p.heldReason = true, time.Minute, blocked.reason
 	}
 	return nil, nil
 }
@@ -521,8 +521,12 @@ func (r *Reconciler) namespaceUID(ctx context.Context, cp *lodiav1alpha1.Control
 func (r *Reconciler) renderEtcd(ctx context.Context, p *pass) error {
 	cp := p.cp
 	p.copied = p.current != nil && r.held(cp)
+	class := p.class
+	if p.keep {
+		class = nil
+	}
 	var err error
-	if !p.copied && p.class != nil && p.class.Spec.Backup != nil {
+	if !p.copied && class != nil && class.Spec.Backup != nil {
 		if p.namespaceUID, err = r.namespaceUID(ctx, cp); err != nil {
 			return err
 		}
@@ -535,22 +539,32 @@ func (r *Reconciler) renderEtcd(ctx context.Context, p *pass) error {
 	}
 	if p.copied {
 		p.rendered = copied(cp, p.current, p.generation)
-		// The held Etcd keeps its quota: a cap is noted while that quota is the
-		// cap, not while it is one a class edit waits to change.
-		if current := p.current.Spec.Etcd.Quota; p.class != nil && current != nil {
-			if capped, note := cappedQuota(p.class, ptr.Deref(p.current.Spec.StorageCapacity, p.class.Spec.Storage.Size), p.current.Name); note != "" && capped.Cmp(*current) == 0 {
-				p.held = note
-			}
-		}
+		p.held = note(p.held, keptCap(p.class, p.current))
 		return nil
 	}
 	var capped string
-	p.rendered, capped = render(cp, p.class, p.namespaceUID, p.generation, p.current, p.claims, p.sts, p.members)
+	p.rendered, capped = render(cp, class, p.namespaceUID, p.generation, p.current, p.claims, p.sts, p.members)
 	metav1.SetMetaDataAnnotation(&p.rendered.ObjectMeta, lodiav1alpha1.OperatorRevisionAnnotation, r.Revision)
-	if capped != "" {
-		p.held = capped
+	if p.keep {
+		capped = keptCap(p.class, p.current)
 	}
+	p.held = note(p.held, capped)
 	return nil
+}
+
+// keptCap notes the cap of class's quota on an Etcd that keeps its own quota,
+// under the operator hold or while its class waits or is held, as long as
+// that quota is the cap.
+func keptCap(class *lodiav1alpha1.DatastoreClass, etcd *druidv1alpha1.Etcd) string {
+	quota := etcd.Spec.Etcd.Quota
+	if class == nil || quota == nil {
+		return ""
+	}
+	capped, note := cappedQuota(class, ptr.Deref(etcd.Spec.StorageCapacity, class.Spec.Storage.Size), etcd.Name)
+	if capped.Cmp(*quota) != 0 {
+		return ""
+	}
+	return note
 }
 
 func (r *Reconciler) applyEtcd(ctx context.Context, p *pass) (*outcome, error) {

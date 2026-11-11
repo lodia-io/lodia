@@ -39,7 +39,7 @@ The Datastore controller is built for the dedicated case, of one member or three
   etcd suggests at most 8 GiB ([quota.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/etcdserver/quota.go#L30-L32)).
   The quota is the class's, capped at half the smallest volume: the running `Etcd`'s, which never grows; with none, that of the smallest claim of this `ControlPlane` not being deleted, its capacity or else its request, since the new StatefulSet attaches the claims again by name ([stateful_set_utils.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/controller/statefulset/stateful_set_utils.go#L116-L119)) and replaces one being deleted from its template ([stateful_pod_control.go](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/controller/statefulset/stateful_pod_control.go#L337-L352)); with neither, the class's `storage.size`.
   That volume is also the `Etcd`'s `storageCapacity`, so an `Etcd` created again, and its scale-out members, match the volumes that exist.
-  When the cap applies, `DatastoreReady`'s message notes it, and the rest of the class edit applies; while the operator revision is held, the message notes it as long as the held `Etcd`'s quota is the cap ([upgrades-and-maintenance-windows](upgrades-and-maintenance-windows.md)).
+  When the cap applies, `DatastoreReady`'s message notes it, and the rest of the class edit applies; while the operator revision is held, a class edit waits for its grant or the class is held, the message notes it as long as the `Etcd`'s quota is the cap of the class as it is ([upgrades-and-maintenance-windows](upgrades-and-maintenance-windows.md)).
 
 ## Why
 
