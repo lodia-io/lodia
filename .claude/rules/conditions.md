@@ -12,3 +12,4 @@ paths:
 - A writer that decides from its own condition or status field while it waits, or keeps one while its calls to the tenant fail, reads it through `internal/live` and compares its status apply with that copy, not the cache's; its ClusterRole needs `get` on `controlplanes`.
 - A writer whose status apply carries the `resourceVersion` it read, and whose watch requeues every update of its object, needs no live read: a pass on a stale cache conflicts, or skips a write that the next pass makes.
 - Every status apply goes through `internal/statusapply`: a `ControlPlane`'s reads the object live once it finds a change, so its ClusterRole needs `get` on `controlplanes`, and `Backup` and `KubeconfigRequest` apply under the `resourceVersion` they read.
+- A first pass's `Reconciling` never replaces a condition of its type that the API server holds with another reason: the status apply keeps that one, so a writer may tell its first pass from the cache.
