@@ -47,5 +47,5 @@ metrics:
     enabled: false
   serviceMonitor:
     enabled: false   # needs metrics.service.enabled
-    scrapeClass: ""  # required where the Prometheus's default scrape class carries an authorization
+    scrapeClass: ""  # required where the Prometheus denies file access through ServiceMonitors or its default scrape class carries an authorization
     labels: {}
