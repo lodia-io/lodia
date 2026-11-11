@@ -211,7 +211,7 @@ func TestAWaitOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
 	testenv.EventuallyWithin(t, 10*time.Second, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
 	})
-	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	pause(t, cp)
 	pass := func(at *lodiav1alpha1.ControlPlane, reader client.Reader) error {
 		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: at}, Reader: reader, Revision: revision}
 		_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
@@ -262,7 +262,7 @@ func TestAConditionKeptWithoutAnAnswerOnAStaleReadIsDecidedFromTheServer(t *test
 	testenv.EventuallyWithin(t, 10*time.Second, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
 	})
-	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	pause(t, cp)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
 		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation-1),
@@ -326,7 +326,7 @@ func TestAPassCancelledBeforeTheTenantAnswersWritesNothing(t *testing.T) {
 	testenv.EventuallyWithin(t, 10*time.Second, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
 	})
-	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	pause(t, cp)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
 		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, cp.Generation),
@@ -358,7 +358,7 @@ func TestARolloutReadThatFailsOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
 	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
 	})
-	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	pause(t, cp)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 	ctx := t.Context()
 	rebindOperator(t, admin, []rbacv1.PolicyRule{
@@ -423,7 +423,7 @@ func TestARefusedApplyStopsThePass(t *testing.T) {
 	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
 	})
-	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	pause(t, cp)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 	ctx := t.Context()
 	rebindOperator(t, admin, []rbacv1.PolicyRule{
@@ -477,7 +477,7 @@ func TestAnotherOwnersObjectStaysReportedThoughTheRolloutReadFails(t *testing.T)
 	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere)
 	})
-	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	pause(t, cp)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 	rebindOperator(t, admin, []rbacv1.PolicyRule{
 		{APIGroups: []string{"", "discovery.k8s.io", rbacv1.GroupName}, Resources: []string{"*"}, Verbs: []string{"*"}},
@@ -508,7 +508,7 @@ func TestAWaitComparesItsWriteWithTheServer(t *testing.T) {
 	testenv.EventuallyWithin(t, 10*time.Second, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
 	})
-	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	pause(t, cp)
 	waiting := func(conditionType string) map[string]any {
 		return map[string]any{
 			"type": conditionType, "status": string(metav1.ConditionFalse), "reason": lodiav1alpha1.ReasonWaitingForAccess,
@@ -544,7 +544,7 @@ func TestAFailedSyncComparesItsWriteWithTheServer(t *testing.T) {
 	testenv.EventuallyWithin(t, 10*time.Second, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
 	})
-	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	pause(t, cp)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 	applying := func(conditionType string) map[string]any {
 		return map[string]any{
@@ -578,7 +578,7 @@ func TestAPassTheTenantDoesNotAnswerKeepsARefusalAndAnotherOwnersObject(t *testi
 	testenv.EventuallyWithin(t, 10*time.Second, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
 	})
-	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	pause(t, cp)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 	for _, reason := range []string{lodiav1alpha1.ReasonRefused, lodiav1alpha1.ReasonObjectsControlledElsewhere} {
 		setAddonsApplied(t, cp, metav1.ConditionFalse, reason, cp.Generation)
@@ -600,7 +600,7 @@ func TestAPassTheTenantAnswersReplacesAStoredCause(t *testing.T) {
 	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
 	})
-	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	pause(t, cp)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 	rebindOperator(t, admin, []rbacv1.PolicyRule{
 		{APIGroups: []string{"*"}, Resources: []string{"*"}, Verbs: []string{"get", "list", "watch"}},
