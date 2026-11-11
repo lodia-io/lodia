@@ -120,6 +120,7 @@ groups:
         expr: |
           (
             max without (pod, instance, type, reason) (lodia_controlplane_condition_reason{type="BackupReady",reason="BackupFailed"})
+              and on (namespace, controlplane) lodia_controlplane_datastore_delta_snapshot_period_seconds
             or
             time() - max without (pod, instance, type) (lodia_controlplane_condition_last_transition_timestamp_seconds{type="BackupReady"})
               > 3 * max without (pod, instance) (lodia_controlplane_datastore_delta_snapshot_period_seconds)
