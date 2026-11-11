@@ -448,7 +448,7 @@ func TestARefusedApplyStopsThePass(t *testing.T) {
 	}
 }
 
-func TestAnotherOwnersObjectKeepsApplyingThoughTheRolloutReadFails(t *testing.T) {
+func TestAnotherOwnersObjectStaysReportedThoughTheRolloutReadFails(t *testing.T) {
 	ctx := t.Context()
 	cp, admin := servedTenant(t, "tenant-owners-rollout")
 	setCoreDNS(t, cp, false)
@@ -468,14 +468,14 @@ func TestAnotherOwnersObjectKeepsApplyingThoughTheRolloutReadFails(t *testing.T)
 			},
 		},
 	} {
-		if err := admin.Create(ctx, obj); err != nil {
+		if err := admin.Create(ctx, obj, client.FieldOwner("kubectl-create")); err != nil {
 			t.Fatal(err)
 		}
 	}
 	setCoreDNS(t, cp, true)
-	const others = "ConfigMap kube-system/coredns exists and is not Lodia's; delete it or disable the addon"
+	const others = "ConfigMap kube-system/coredns exists and is not Lodia's: its field managers are kubectl-create; delete it or disable the addon"
 	testenv.Eventually(t, func() error {
-		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying)
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere)
 	})
 	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
@@ -495,7 +495,7 @@ func TestAnotherOwnersObjectKeepsApplyingThoughTheRolloutReadFails(t *testing.T)
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apierrors.IsForbidden(err) {
 		t.Errorf("a pass whose rollout read was refused returned %v, want the refusal", err)
 	}
-	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying); err != nil {
+	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere); err != nil {
 		t.Error(err)
 	}
 	if c := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied); c.Message != others {
@@ -559,8 +559,8 @@ func TestAFailedSyncComparesItsWriteWithTheServer(t *testing.T) {
 	refresh(t, cp)
 	stale := cp.DeepCopy()
 	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
-		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, cp.Generation),
-		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, cp.Generation),
+		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, cp.Generation),
+		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, cp.Generation),
 	}})
 	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: unreachable}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
@@ -569,6 +569,50 @@ func TestAFailedSyncComparesItsWriteWithTheServer(t *testing.T) {
 	refresh(t, cp)
 	expectNow(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying)
 	expectNow(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying)
+}
+
+func TestAPassTheTenantDoesNotAnswerKeepsARefusalAndAnotherOwnersObject(t *testing.T) {
+	cp := controlPlane(t, "tenant-unanswered-causes")
+	publish(t, cp)
+	reconcilePKI(t, &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour, Clock: clock.RealClock{}}, cp)
+	testenv.EventuallyWithin(t, 10*time.Second, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess)
+	})
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	for _, reason := range []string{lodiav1alpha1.ReasonRefused, lodiav1alpha1.ReasonObjectsControlledElsewhere} {
+		setAddonsApplied(t, cp, metav1.ConditionFalse, reason, cp.Generation)
+		refresh(t, cp)
+		before := *condition(t, cp, lodiav1alpha1.ConditionAddonsApplied)
+		stale := cp.DeepCopy()
+		meta.SetStatusCondition(&stale.Status.Conditions, metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonApplying, ObservedGeneration: cp.Generation})
+		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: unreachable}
+		if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+			t.Fatalf("%s: a pass that could not reach the tenant succeeded", reason)
+		}
+		refresh(t, cp)
+		expectSame(t, cp, before)
+	}
+}
+
+func TestAPassTheTenantAnswersReplacesAStoredCause(t *testing.T) {
+	cp, admin := servedTenant(t, "tenant-answered-causes")
+	testenv.Eventually(t, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
+	})
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	rebindOperator(t, admin, []rbacv1.PolicyRule{
+		{APIGroups: []string{"*"}, Resources: []string{"*"}, Verbs: []string{"get", "list", "watch"}},
+		{NonResourceURLs: []string{"*"}, Verbs: []string{"*"}},
+	}, authorizationv1.ResourceAttributes{Resource: "configmaps", Verb: "patch", Namespace: "kube-system"})
+	setAddonsApplied(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere, cp.Generation)
+	refresh(t, cp)
+	if _, err := pass(t, cp, cp.DeepCopy(), *dial.Load(), nil); err == nil {
+		t.Fatal("a pass whose apply the tenant refuses succeeded")
+	}
+	refresh(t, cp)
+	expectNow(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused)
 }
 
 type snapshot struct {
@@ -1141,6 +1185,7 @@ func TestAnotherOwnersObjectsAreNeitherAdoptedNorPruned(t *testing.T) {
 	})
 	corefile := ".:53 {\n    forward . 9.9.9.9\n}\n"
 	for _, obj := range []client.Object{
+		&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "coredns"}},
 		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "coredns"}, Data: map[string]string{"Corefile": corefile}},
 		&appsv1.Deployment{
 			ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "coredns"},
@@ -1153,22 +1198,25 @@ func TestAnotherOwnersObjectsAreNeitherAdoptedNorPruned(t *testing.T) {
 			},
 		},
 	} {
-		if err := admin.Create(ctx, obj); err != nil {
+		if err := admin.Create(ctx, obj, client.FieldOwner("kubectl-create")); err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	setCoreDNS(t, cp, true)
 	testenv.Eventually(t, func() error {
-		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying); err != nil {
+		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere); err != nil {
 			return err
 		}
-		if c := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied); c.Message != "ConfigMap kube-system/coredns exists and is not Lodia's; delete it or disable the addon" {
+		if c := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied); c.Message != "ConfigMap kube-system/coredns exists and is not Lodia's: its field managers are kubectl-create; delete it or disable the addon" {
 			return fmt.Errorf("AddonsApplied says %q", c.Message)
 		}
 		return nil
 	})
-	owners := []string{"ConfigMap kube-system/coredns", "Deployment kube-system/coredns"}
+	if c := condition(t, cp, lodiav1alpha1.ConditionAddonsAvailable); strings.Contains(c.Message, "coredns") {
+		t.Errorf("AddonsAvailable reads the owner's Deployment: %q", c.Message)
+	}
+	owners := []string{"ServiceAccount kube-system/coredns", "ConfigMap kube-system/coredns", "Deployment kube-system/coredns"}
 	inventory := inventoryOf(t, admin)
 	for _, entry := range owners {
 		if slices.Contains(inventory, entry) {

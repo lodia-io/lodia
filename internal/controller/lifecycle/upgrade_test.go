@@ -51,6 +51,11 @@ func quietControlPlane(t *testing.T) *lodiav1alpha1.ControlPlane {
 	if err := quiet.Create(t.Context(), cp); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := client.IgnoreNotFound(quiet.Delete(context.Background(), cp)); err != nil {
+			t.Error(err)
+		}
+	})
 	return cp
 }
 
@@ -99,11 +104,11 @@ func seedQuiet(t *testing.T, cp *lodiav1alpha1.ControlPlane, target string, step
 	applyQuiet(t, cp, lifecycle.FieldManager, lifecycleStatus(target, step, startedAt))
 	components := map[string]any{}
 	for i, key := range []string{"apiServer", "controllerManager", "scheduler"} {
-		components[key] = map[string]any{"total": int64(1), "ready": int64(1), "updated": int64(1), "version": reports[i]}
+		components[key] = map[string]any{"total": int64(1), "ready": int64(1), "updated": int64(1), "version": reports[i], "operatorRevision": runningRevision}
 	}
 	status := map[string]any{
 		"components": components,
-		"addons":     map[string]any{"version": reports[3]},
+		"addons":     map[string]any{"version": reports[3], "operatorRevision": runningRevision},
 		"conditions": quietConditions(cp),
 	}
 	status["nodes"] = map[string]any{"total": int64(0), "ready": int64(0)}
@@ -125,7 +130,7 @@ func reconcileAt(ctx context.Context, c client.Client, reader client.Reader, now
 }
 
 func reconcileAs(ctx context.Context, c client.Client, reader client.Reader, revision string, now time.Time, cp *lodiav1alpha1.ControlPlane) error {
-	r := &lifecycle.Reconciler{Client: c, Reader: reader, Clock: clocktesting.NewFakePassiveClock(now), Revision: revision}
+	r := &lifecycle.Reconciler{Client: c, Reader: reader, Clock: clocktesting.NewFakePassiveClock(now), Revision: revision, MaxConcurrentRollouts: 5, Settling: settlingTime}
 	_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 	return err
 }
@@ -263,6 +268,17 @@ func TestTheLiveDecisionReadsTheBackupOfItsOwnMinor(t *testing.T) {
 	if err := quiet.Get(t.Context(), client.ObjectKey{Namespace: cp.Namespace, Name: preUpgrade(cp)}, &lodiav1alpha1.Backup{}); err != nil {
 		t.Errorf("the Backup of the live minor: %v", err)
 	}
+}
+
+func synced(c client.WithWatch) client.WithWatch {
+	return interceptor.NewClient(c, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			return c.Get(context.Background(), key, obj, opts...)
+		},
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			return c.List(context.Background(), list, opts...)
+		},
+	})
 }
 
 func countingReader(reads *int) client.WithWatch {
@@ -493,11 +509,7 @@ func TestAFailureMidPassLosesNothing(t *testing.T) {
 		seedQuiet(t, cp, "v1.36.6", "", all("v1.36.6"), "")
 		expired, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
 		defer cancel()
-		cached := interceptor.NewClient(quiet, interceptor.Funcs{
-			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-				return c.Get(context.Background(), key, obj, opts...)
-			},
-		})
+		cached := synced(quiet)
 		if err := reconcileAt(expired, cached, quiet, later, cp); err == nil {
 			t.Fatal("the create on a spent deadline returned no error")
 		}

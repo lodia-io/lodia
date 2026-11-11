@@ -38,3 +38,6 @@ health:
   silentAfter: 20s
   holdFraction: 0.6
   releaseAfter: 2m
+
+fleet:
+  maxConcurrentRollouts: 5

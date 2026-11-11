@@ -1,8 +1,8 @@
 # Upgrades follow the version skew policy step by step; changes Lodia initiates roll in each tenant's maintenance window, a bounded number of tenants at a time
 
 Decided 2026-10-25.
-Built: the steps of a minor upgrade below, Lifecycle driving them, the operator revision, which Lifecycle writes to `status.target.operatorRevision`, the running one, on every pass but a paused or deleting one's, the holds of Workloads, Tenant and the Datastore controller, and the stamps on the Deployments and the `Etcd`.
-Not built yet: windows, the fleet and patch updates, which phase 2's wave 2 builds next ([roadmap](../roadmap.md)); until then Lifecycle's grant on every pass leaves every renderer rendering with the running operator at once.
+Built: the steps of a minor upgrade below, Lifecycle driving them, the operator revision, the holds of Workloads, Tenant and the Datastore controller, the stamps on the Deployments and the `Etcd`, and Lifecycle's grant of the running revision by the rules below: windows, the fleet, maintenance on request and the settling time.
+Not built yet: patch updates, an edit of the `DatastoreClass` in the window and the warnings before end of support, which phase 2's wave 2 builds next, and, with its observability, the alerts `LodiaMaintenanceHalted` and one for a slot held long ([roadmap](../roadmap.md)).
 
 ## Decision
 
@@ -59,8 +59,23 @@ Tenant stamps nothing: `status.addons.operatorRevision` is the revision of a pas
 Until the grant the Datastore controller applies the `Etcd` it finds, with only a new generation of the etcd certificates, and writes the etcd's NetworkPolicy only when it is missing; it creates a missing `Etcd` from the full render, stamped with the running revision.
 etcd-druid's automatic spec reconcile is off, and the Datastore controller asks for each reconcile ([dedicated-etcd-by-default](dedicated-etcd-by-default.md)): for each generation and stamp of the `Etcd` until a reconcile that started after the request has served it, and for a stamp it has not asked under before only once etcd-druid's Deployment runs the version the operator was given and no pod of an older one terminates, since an older etcd-druid would roll the members to its own render.
 So `status.datastore.operatorRevision` names a revision only once etcd-druid, at the version that revision names, has reconciled the `Etcd` under it in a reconcile that started after the request, and every member runs that spec, wherever `DeploymentReplicaSetTerminatingReplicas`, on by default from Kubernetes 1.35, lets the Deployment count a terminating pod ([A tenant namespace](../README.md#a-tenant-namespace)).
-Lifecycle grants the running revision when a `ControlPlane` is created, when its spec changes, during an upgrade its owner started, and otherwise in the window, with a free slot of the fleet, while the tenant is `Ready`.
 A hand edit is not reverted while a tenant waits; storing the last render, as Gardener's ManagedResources do, stays a later option with the same contracts.
+
+**The grant.**
+Lifecycle grants the running revision, while it is pending, by these rules in their order:
+
+1. A new value of `lodia.io/maintain-requested-at` is recorded in `status.maintenance.lastHandled` on every pass but a paused or deleting one's, pending or not; a value over 256 characters is not handled, and removing the annotation leaves the record, so the same value set again does nothing.
+2. A revision that does not run the minor of the target or of a reported version is granted on no path, since a renderer would write `WaitingForTarget` and take a running tenant down: `Unsupported`; a tenant in a slot keeps it, so the release after reaches it at once.
+3. At once, with no slot: no target yet; an edit of `spec` not taken up, its generation ahead of `Progressing`'s; an upgrade its owner started; a new value of the annotation; a tenant in a slot, which keeps it, so that a later release, or a rollback, reaches a tenant a bad release left failed; and three kinds of tenant only the grant brings back to `Ready`, since a held renderer cannot: `AddonsApplied` not True with no `status.addons.version` or with `Refused`, `ObjectsControlledElsewhere` or `Applying`, `APIServerReady` False, `WaitingForTarget`, at the object's generation, and a restored `ControlPlane` whose controller manager is not released.
+4. Not while `Unsupported` or `Failed` stands: the owner's to fix.
+5. Not while `TimeZoneUnsupported` stands; outside the window, `WaitingForWindow`, with `target.scheduledFor` its next start.
+6. Not while `Ready` is not True, at whatever generation each input describes, `AddonsApplied` left out while it waits with `AccessReady` True: `Ready`'s reason, or `WaitingForReady` while `Ready` is Unknown, whose reasons say something else under `Progressing` False.
+   A held Tenant keeps `AddonsApplied` at the generation it describes for the whole hold, so `Ready` at the object's generation would never grant an edit Tenant had not taken up when the release started.
+   Nor while a cause that fails a change stands on an input of `Ready`, `ProgressDeadlineExceeded` on an available component: that cause's reason, since the change would fail in the write that grants it, for a cause it did not bring.
+7. A slot in the order of the queue: `Maintaining`, in the same write as the grant; none, `target.scheduledFor` when the tenant became eligible, which queues it, and `FleetLimit` unless a reason ranked above it applies.
+
+A change Lodia started keeps its origin in `status.maintenance.slotSince`, written in the same write as the grant: the tenant holds its slot while it is present, whatever `Progressing` says, so a reason ranked above the slot's does not free it; a grant on request is the owner's.
+Only the change settling and deletion end a slot: an owner's edit that the writers take up before the change settles rolls in the slot and settles it as any other change, and a paused tenant keeps counting as a used slot, since a tenant a bad release left failed would otherwise leave the fleet on an edit or a pause, and rule 6 would keep the next release waiting for a `Ready` only that release brings.
 
 **Who waits for the window:**
 
@@ -79,9 +94,13 @@ Without a window Lodia-initiated changes roll at any time, still within the flee
 
 **The fleet.**
 Across all tenants, at most `fleet.maxConcurrentRollouts` (operator configuration, 5 by default) roll a Lodia-initiated change at once.
-A tenant holds a slot while `Progressing` is True, `Maintaining`, or False, `MaintenanceFailed`: a failed rollout Lodia started keeps its slot, so that many failures halt maintenance across the fleet, as unavailable pods halt a Deployment's rollout, and the alert `LodiaMaintenanceHalted` fires.
-Tenants get slots in the order of `status.target.scheduledFor`, then namespace and name; grants are made one at a time, counted from an uncached list.
+A tenant holds a slot while `status.maintenance.slotSince` is present, whatever `Progressing` reads: a failed rollout Lodia started keeps its slot, so that many failures halt maintenance across the fleet, as unavailable pods halt a Deployment's rollout, which the alert `LodiaMaintenanceHalted` reports from the observability wave.
+Tenants get slots in the order of `status.target.scheduledFor`, then namespace and name: a tenant is queued while its `scheduledFor` is at or before now, whatever `Progressing` says, since a wait for a slot can sit under a reason ranked above `FleetLimit`, and a pass grants when the tenants that hold a slot and those queued before it are fewer than the limit, counted from the cache and, before the grant is written, again from the API server under a lock, so that two passes never take one slot.
 An owner's change takes no slot.
+A change Lodia started holds its slot while it rolls: a part not at the target, a replica or member not updated, a renderer that reports neither the granted revision nor the running one.
+A Tenant that waits after the grant, `AddonsApplied` False with a `WaitingFor*` reason while `AccessReady` is True, keeps its earlier `status.addons`, so the change stays `Maintaining` with its slot until the wait ends: such a wait names no cause of the change.
+Once it has rolled out, `status.maintenance.settlingSince` records when, and the slot is held for a settling time S after the later of that and `Ready`'s last transition: `health.failuresBeforeFalse` × (`health.period` + Health's timeout) + one etcd-druid status sync ([values.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/charts/values.yaml#L63)), 45 seconds at the defaults.
+Then the slot is free while `Ready` is True, and the change is `MaintenanceFailed` while it is not; a refusal, an object kept elsewhere, `Unsupported` or `ProgressDeadlineExceeded` among `Ready`'s inputs fails it at once.
 A canary, one tenant first for each new revision, can come later without a change of contract.
 
 **Maintenance on request.**
@@ -99,6 +118,7 @@ Lodia never removes the annotation, so a GitOps tool that keeps it does not figh
 - In the solutions we studied, a new operator release can re-render every cluster it manages at once; one bug or one changed default then becomes a fleet-wide rollout in the middle of a business day.
   Gardener answers with maintenance time windows ([shoot_maintenance.md](https://github.com/gardener/gardener/blob/v1.154.0/docs/usage/shoot/shoot_maintenance.md#L11-L20)) and a cap on the shoots each gardenlet reconciles at once ([types.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/apis/config/gardenlet/v1alpha1/types.go#L315-L319)); the same two levers are enough here.
   Counting a failed rollout in its slot makes the cap a brake on a bad release too.
+  Without the settling time a revision that changes no template is reported within seconds and frees its slot before a probe can fail, so a release that breaks tenants would reach all of them.
 - Every renderer is held, not only pod templates: a re-rendered NetworkPolicy, kube-proxy configuration or `Etcd` is as fleet-wide as a pod template.
 - Automatic patch updates in the window keep tenants on supported versions without a platform on top polling for releases; the version table, not `spec`, carries them, since a GitOps tool would revert a written `spec`.
 
@@ -115,7 +135,7 @@ Lodia never removes the annotation, so a GitOps tool that keeps it does not figh
 
 ## Consequences
 
-- Lifecycle is the only controller that knows the maintenance windows and the fleet; it counts the tenants rolling a Lodia-initiated change from their `status` (`Progressing`), not in memory, so a restarted operator neither forgets nor double-counts a rollout in progress.
+- Lifecycle is the only controller that knows the maintenance windows and the fleet; it counts the tenants rolling a Lodia-initiated change from their `status` (`status.maintenance.slotSince`), not in memory, so a restarted operator neither forgets nor double-counts a rollout in progress.
 - In the `Compact` layout steps 3 and 4 are one rollout of the single pod: the API server, controller manager and scheduler change version together, which the skew policy allows ([compact-layout](compact-layout.md)).
 - `status.target` is part of the API users read: `target.version`, `target.operatorRevision` and `target.scheduledFor`, with `Progressing`.
 - An operator release note states which tenants will roll (all with a changed render) and what changes, because the roll is deferred, not hidden.
@@ -124,7 +144,8 @@ Lodia never removes the annotation, so a GitOps tool that keeps it does not figh
 
 - `api/v1alpha1` — `Target`, `KubernetesStatus` with `UpgradeStep`, `ComponentStatus` and `Rendered`, `MaintenanceStatus`, the window's rule, the annotations `lodia.io/operator-revision` and `lodia.io/maintain-requested-at`, `PreUpgradeBackupName` and the reasons of `Progressing`; `test/api` holds the rules.
 - `cmd/lodia`, `.ko.yaml`, `internal/operator` — the build version, set by ko from `VERSION` (every build of `cmd/lodia` sets it), and `Inputs.Revision`, which adds the digest; the operator refuses to start on an empty version or a revision longer than the field's 128 characters.
-- `internal/controller/lifecycle` — `decide` holds the steps above and writes the running revision on every pass but a paused or deleting one's, which keep the stored one; the reconciler gathers its facts, the `ControlPlane` and the `Backup` of the minor step, decides on the cached object, and on a change decides again on the object read live before it writes.
+- `internal/controller/lifecycle` — `decide` holds the steps above, and `maintain` the grant, its rules and the settling time; `window` reads the window with `time/tzdata`; the reconciler gathers its facts, the `ControlPlane`, the `Backup` of the minor step and, while a revision is pending, the fleet from the cache, decides on the cached object, on a change decides again on the object read live, and before a write that takes a slot decides once more from the fleet the API server lists, under a semaphore that honours the pass's deadline; it requeues at the window's next start, at most an hour ahead, every 30 seconds while `FleetLimit`, and at the end of the settling time.
+- `internal/operator` — `fleet.maxConcurrentRollouts`, at least 1, and the settling time from Health's configuration.
 - `internal/controller/workloads` — `status.components.*.version`, the tag of each component's own image once every replica runs it, and the controller manager and the scheduler rendered at `components.apiServer.version`; the hold in `apply`, which, while `target.operatorRevision` is not `Reconciler.Revision`, writes only an object neither the cache nor the API server holds; the stamp on the Deployments, which `status.components.*.operatorRevision` reports under the rule of `version`.
 - `internal/controller/tenant` — the render at the oldest component's version, and `status.addons`, the version and the running revision of a pass that applied it in full; the hold in `hold` and `heldInventory`, which, while `target.operatorRevision` is not `Reconciler.Revision`, apply only an object the stored inventory lists and the tenant lacks, and report what runs.
 - `internal/controller/datastore` — the hold in `copied` and `applyNetworkPolicy`, which, while `target.operatorRevision` is not `Reconciler.Revision`, apply the stored `Etcd`'s spec on the newest certificate generation and a missing NetworkPolicy, and report what runs, and in `storeMoved`, which keeps the credentials copy of the store the held `Etcd` names; the stamp on the `Etcd`; `requestReconcile`, which asks etcd-druid for each reconcile under the record `lodia.io/etcd-reconcile-requested` until `served` says a reconcile under another run ID has taken it, `inFlight`, its wait while such a reconcile runs, and `druidPending`, its wait for etcd-druid's Deployment; `status.datastore.operatorRevision` from `rolledOut`.

@@ -33,13 +33,16 @@ func seconds(s float64) metav1.Duration {
 }
 
 func TestWithoutAFileTheDefaultsApply(t *testing.T) {
-	want := operator.Config{Health: operator.HealthConfig{
-		Period:              seconds(5),
-		FailuresBeforeFalse: 3,
-		SilentAfter:         seconds(20),
-		HoldFraction:        600,
-		ReleaseAfter:        seconds(120),
-	}}
+	want := operator.Config{
+		Health: operator.HealthConfig{
+			Period:              seconds(5),
+			FailuresBeforeFalse: 3,
+			SilentAfter:         seconds(20),
+			HoldFraction:        600,
+			ReleaseAfter:        seconds(120),
+		},
+		Fleet: operator.FleetConfig{MaxConcurrentRollouts: 5},
+	}
 	got, err := operator.LoadConfig("")
 	if err != nil || got != want {
 		t.Errorf("LoadConfig(\"\") is %+v, %v, want %+v", got, err, want)
@@ -65,12 +68,16 @@ func TestTheChartsValuesAreTheDefaults(t *testing.T) {
 	}
 	var values struct {
 		Health operator.HealthConfig `json:"health"`
+		Fleet  operator.FleetConfig  `json:"fleet"`
 	}
 	if err := yaml.Unmarshal(raw, &values); err != nil {
 		t.Fatal(err)
 	}
 	if want := operator.DefaultConfig().Health; values.Health != want {
 		t.Errorf("the chart's health values are %+v, want the operator's defaults %+v", values.Health, want)
+	}
+	if want := operator.DefaultConfig().Fleet; values.Fleet != want {
+		t.Errorf("the chart's fleet values are %+v, want the operator's defaults %+v", values.Fleet, want)
 	}
 }
 
@@ -82,7 +89,7 @@ func TestAMissingFileRefusesToStart(t *testing.T) {
 }
 
 func TestAFileKeepsTheDefaultsOfTheKeysItLeavesOut(t *testing.T) {
-	for name, content := range map[string]string{"empty": "", "no keys": "health: {}\n"} {
+	for name, content := range map[string]string{"empty": "", "no keys": "health: {}\nfleet: {}\n"} {
 		t.Run(name, func(t *testing.T) {
 			got, err := load(t, content)
 			if err != nil || got != operator.DefaultConfig() {
@@ -102,13 +109,28 @@ func TestAnUnknownKeyRefusesToStart(t *testing.T) {
 	for _, c := range []struct{ name, content, key string }{
 		{"a section no feature reads", "registry: mirror.example\n", `"registry"`},
 		{"a key of the health section", "health:\n  perod: 5s\n", `"perod"`},
-		{"a key beside the health section", "health:\n  period: 5s\nfleet:\n  maxConcurrentRollouts: 5\n", `"fleet"`},
+		{"a key beside the health section", "health:\n  period: 5s\ntenant:\n  applyInterval: 10m\n", `"tenant"`},
+		{"a key of the fleet section", "fleet:\n  maxConcurrentRollout: 5\n", `"maxConcurrentRollout"`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if _, err := load(t, c.content); err == nil || !strings.Contains(err.Error(), c.key) {
 				t.Errorf("LoadConfig returned %v, want an error that names %s", err, c.key)
 			}
 		})
+	}
+}
+
+func TestTheFleetLimitComesFromTheFileAndIsAtLeastOne(t *testing.T) {
+	got, err := load(t, "fleet:\n  maxConcurrentRollouts: 2\n")
+	want := operator.DefaultConfig()
+	want.Fleet.MaxConcurrentRollouts = 2
+	if err != nil || got != want {
+		t.Errorf("a file that sets the fleet limit to 2 gives %+v, %v, want %+v", got, err, want)
+	}
+	for _, n := range []string{"0", "-1"} {
+		if got, err := load(t, "fleet:\n  maxConcurrentRollouts: "+n+"\n"); err == nil || !strings.Contains(err.Error(), "fleet.maxConcurrentRollouts") {
+			t.Errorf("a fleet limit of %s gives %+v, %v, want an error that names fleet.maxConcurrentRollouts", n, got, err)
+		}
 	}
 }
 

@@ -13,3 +13,5 @@ data:
       silentAfter: {{ .Values.health.silentAfter | quote }}
       holdFraction: {{ float64 .Values.health.holdFraction }}
       releaseAfter: {{ .Values.health.releaseAfter | quote }}
+    fleet:
+      maxConcurrentRollouts: {{ int .Values.fleet.maxConcurrentRollouts }}
