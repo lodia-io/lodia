@@ -19,13 +19,17 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/controller/datastore"
 	"go.lodia.io/lodia/internal/controller/health"
 	"go.lodia.io/lodia/internal/metrics"
+	"go.lodia.io/lodia/internal/operator"
 	"go.lodia.io/lodia/internal/testenv"
 )
 
@@ -484,7 +488,11 @@ func TestCollectionsDuringPassesShareNothingUnlocked(t *testing.T) {
 	h, lag := lagging(t)
 	elected := make(chan struct{})
 	close(elected)
-	collector := &metrics.Collector{Reader: k8s, Elected: elected, MaxConcurrentRollouts: 1, NodeCounts: h.r.Counts, SampleLag: lag, ProbeFailures: metrics.NewProbeFailures()}
+	reader := fake.NewClientBuilder().WithScheme(operator.Scheme()).WithObjects(h.cp).Build()
+	collector := &metrics.Collector{Reader: reader, Elected: elected, MaxConcurrentRollouts: 1, NodeCounts: h.r.Counts, SampleLag: lag, ProbeFailures: metrics.NewProbeFailures(),
+		EtcdSample: func(types.NamespacedName, types.UID) (datastore.EtcdSample, bool) {
+			return datastore.EtcdSample{}, false
+		}}
 	stop := make(chan struct{})
 	stopped := make(chan struct{})
 	var collections atomic.Int32
