@@ -216,6 +216,17 @@ func TestAPassWithoutAListOfTheLeasesLeavesNoCount(t *testing.T) {
 	expectCounts(t, h.r, h.cp, 3, 3)
 }
 
+func TestAHoldTurnedOffLeavesNoCount(t *testing.T) {
+	h := holding(t, "a", "b", "c")
+	h.expectCountsOfTheHold()
+	updateSpec(t, h.cp, func(cp *lodiav1alpha1.ControlPlane) {
+		cp.Spec.Health = &lodiav1alpha1.Health{HoldControllerManager: new(false)}
+	})
+	h.at(25)
+	h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonDisabled, disabled)
+	expectNoCounts(t, h.r, h.cp)
+}
+
 func TestAPassWhoseStatusApplyFailsStillPublishesItsCount(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
 	h.at(0)
@@ -354,7 +365,7 @@ func TestCollectionsDuringPassesShareNothingUnlocked(t *testing.T) {
 		t.Fatalf("%d collections ran beside the passes", collections.Load())
 	}
 	want := `
-# HELP lodia_controlplane_nodes_silent The nodes that count whose Lease Health has not seen change for health.silentAfter, in its last list of the node Leases. Absent while that list is missing, and until Health's clock of the Leases has run health.silentAfter.
+# HELP lodia_controlplane_nodes_silent The nodes that count whose Lease Health has not seen change for health.silentAfter, in its last list of the node Leases. Absent while that list is missing or the tenant's hold is off, and until Health's clock of the Leases has run health.silentAfter.
 # TYPE lodia_controlplane_nodes_silent gauge
 lodia_controlplane_nodes_silent{controlplane="dev",namespace="` + h.cp.Namespace + `"} 3
 `

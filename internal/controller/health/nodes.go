@@ -110,14 +110,14 @@ type sampling struct {
 	// not read the ControlPlane.
 	due time.Time
 	// count is what this pass counted, once the clock of the node Leases has
-	// run SilentAfter, else nil.
+	// run SilentAfter and while the hold is on, else nil.
 	count *nodeCount
 }
 
-// restart forgets the clock of the node Leases, the count towards the release
-// and the pass's count: no list of the Leases stands behind this pass.
+// restart forgets the clock of the node Leases and the count towards the
+// release: no list of the Leases stands behind this pass.
 func (s *sampling) restart() {
-	s.leases, s.below, s.count = nil, time.Time{}, nil
+	s.leases, s.below = nil, time.Time{}
 }
 
 // observe starts the clock, when it was forgotten, and notes the Leases listed.
@@ -458,8 +458,8 @@ func (r *NodesReconciler) unread(key types.NamespacedName) {
 
 // Counts returns the silent nodes and those that count of the control plane
 // with key and uid, as its last pass counted them: nothing when that pass had
-// no list of the node Leases, or before their clock has run SilentAfter, when
-// no node can be silent yet.
+// no list of the node Leases or found the hold off, or before their clock has
+// run SilentAfter, when no node can be silent yet.
 func (r *NodesReconciler) Counts(key types.NamespacedName, uid types.UID) (silent, counted int, ok bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
