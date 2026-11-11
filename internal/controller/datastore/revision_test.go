@@ -391,6 +391,23 @@ func TestAHeldPassOverAGrantedClassKeepsTheCopyOfTheStoreTheEtcdNames(t *testing
 	}
 }
 
+func TestAHeldPassOverAGoneClassKeepsTheEtcd(t *testing.T) {
+	ns := namespace(t)
+	const cp = "held-class-gone"
+	createClass(t, newClass(cp, "Retain"))
+	before := heldTenant(t, ns, cp, cp, nil)
+	if err := k8s.Delete(t.Context(), newClass(cp, "Retain")); err != nil {
+		t.Fatal(err)
+	}
+	mustPass(t, operatorAt(unpaused(k8s), revision), ns, cp)
+	if after := getEtcd(t, ns, cp); !reflect.DeepEqual(after.Spec, before.Spec) {
+		t.Errorf("a held pass over a gone class changed the Etcd's spec from\n%+v\nto\n%+v", before.Spec, after.Spec)
+	}
+	if message := readyMessage(t, ns, cp); message != "Etcd "+cp+"-etcd has quorum, 1 of 1 members ready" {
+		t.Errorf("a held pass over a gone class writes DatastoreReady %q", message)
+	}
+}
+
 func TestAHeldPassWithoutAnEtcdCopiesTheCredentialsOfTheStoreItRenders(t *testing.T) {
 	ns, credentialsNamespace := namespace(t), namespace(t)
 	const cp = "held-gone"
