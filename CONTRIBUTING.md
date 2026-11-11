@@ -7,13 +7,13 @@ Taking part means following the [code of conduct](CODE_OF_CONDUCT.md).
 
 ## Build and test
 
-You need Go (the version in `go.mod`), Docker for the end-to-end suite, [golangci-lint](https://golangci-lint.run/) v2.13.2 and [Helm](https://helm.sh/) v4.3.1.
+You need Go (the version in `go.mod`), Docker for the end-to-end suite, [golangci-lint](https://golangci-lint.run/) v2.13.2, [Helm](https://helm.sh/) v4.3.1 and promtool from [Prometheus v3.15.1](https://github.com/prometheus/prometheus/releases/tag/v3.15.1).
 Every other tool runs through `go tool`.
 
 | command | does |
 |---|---|
 | `make generate` | deepcopy functions and CRDs from `api/`, their copies in the chart, and each controller's ClusterRole from its RBAC markers; commit the result |
-| `make verify` | the check that says a change is done: generated files current, the chart linted and rendered, lint, unit and envtest tests, and the etcd keys a restore's cleanup deletes against each minor Lodia runs (`make restore-keys`) |
+| `make verify` | the check that says a change is done: generated files current, the chart linted and rendered, lint, the metrics' golden linted by promtool, unit and envtest tests, and the etcd keys a restore's cleanup deletes against each minor Lodia runs (`make restore-keys`) |
 | `make e2e` | the end-to-end suite on a kind cluster of its own ([`test/e2e/README.md`](test/e2e/README.md)) |
 | `make conformance` | the Kubernetes conformance suite against a tenant with two nodes, on a kind cluster of its own ([`test/e2e/README.md`](test/e2e/README.md#nightly-conformance-and-the-idle-control-plane)) |
 
