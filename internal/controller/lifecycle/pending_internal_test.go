@@ -405,6 +405,30 @@ func TestAClassCreatedAgainUnderItsNameWaitsForItsGrant(t *testing.T) {
 	}
 }
 
+func TestAClassEditOnATenantWithNoTargetWaitsForTheWindow(t *testing.T) {
+	f := held(running(revisionA), closedWindow, onClass(4, 0, 5), func(f *facts) { f.cp.Status.Target = nil })
+	d := expectGrant(t, f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonWaitingForWindow, message: "DatastoreClass shared generation 5 waits for the maintenance window",
+		scheduledFor: new(time.Date(2026, 11, 9, 13, 0, 0, 0, time.UTC)), requeue: 30 * time.Minute})
+	expectClass(t, d, shared(4))
+}
+
+func TestAStandingRefusalIsIdleWhereTheClassTargetTakesWhatTheEtcdRuns(t *testing.T) {
+	refused := condition(metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonRefused, Message: "the tenant refuses"})
+	for _, c := range []struct {
+		name  string
+		f     facts
+		class lodiav1alpha1.DatastoreClassGeneration
+	}{
+		{"an absent target", held(running(revisionA), onClass(4, 0, 4), refused), shared(4)},
+		{"an Etcd created again by hand", held(running(revisionA), onClass(7, 5, 7), refused), shared(7)},
+		{"a class gone after its grant", held(running(revisionA), onClass(4, 5, 0), refused), shared(4)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			expectClass(t, expectGrant(t, c.f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonIdle}), c.class)
+		})
+	}
+}
+
 func TestAPausedOrDeletingPassKeepsTheClassTarget(t *testing.T) {
 	for _, change := range []func(*facts){
 		func(f *facts) { f.cp.Spec.Paused = true },

@@ -5,6 +5,7 @@ package lifecycle_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/controller/lifecycle"
@@ -195,5 +197,55 @@ func TestAClassDeletedWhileItsEditWaitsLeavesNothingPendingUntilItIsCreatedAgain
 	c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionProgressing)
 	if want := "DatastoreClass " + class + " generation 1 of UID " + string(created.UID) + " waits for the maintenance window"; classTarget(fresh) != classAt(deleted, 1) || !strings.Contains(c.Message, want) {
 		t.Errorf("the class created again leaves target %+v and Progressing %q, want generation 1 of UID %s kept and %q", fresh.Status.Target, c.Message, deleted.UID, want)
+	}
+}
+
+func TestAClassEditAndAPatchUpdateWaitForAFullFleet(t *testing.T) {
+	y := fleetTenant(t, "full-y")
+	seedLifecycle(t, y, runningRevision, lodiav1alpha1.ReasonMaintaining, nil, nil)
+
+	class := datastoreClass(t, quiet, "lifecycle-full")
+	x := fleetTenant(t, "full-class")
+	reportsOf(t, x, runningRevision)
+	applyQuiet(t, x, "test/class", runsClass(class, 1))
+	seedLifecycle(t, x, runningRevision, lodiav1alpha1.ReasonIdle, nil, nil)
+	mustPass(t, fleetReconciler(quiet, quiet, later, 1), x)
+	editClass(t, quiet, class.Name)
+	mustPass(t, fleetReconciler(quiet, quiet, later, 1), x)
+	if fresh := expectMaintenance(t, x, lodiav1alpha1.ReasonFleetLimit, runningRevision); classTarget(fresh) != classAt(class, 1) {
+		t.Errorf("a class edit took target %+v past the fleet limit", fresh.Status.Target)
+	}
+
+	z := fleetTenant(t, "full-patch")
+	autoUpdate(t, z)
+	reportsOf(t, z, runningRevision)
+	seedLifecycle(t, z, runningRevision, lodiav1alpha1.ReasonIdle, nil, nil)
+	mustPass(t, fleetReconciler(quiet, quiet, later, 1), z)
+	if fresh := expectMaintenance(t, z, lodiav1alpha1.ReasonFleetLimit, runningRevision); fresh.Status.Target.Version != "v1.37.1" {
+		t.Errorf("a patch update took target %+v past the fleet limit", fresh.Status.Target)
+	}
+}
+
+func TestAClassReadThatFailsWritesNothing(t *testing.T) {
+	class := datastoreClass(t, quiet, "lifecycle-unread")
+	cp := fleetTenant(t, "class-unread")
+	reportsOf(t, cp, runningRevision)
+	applyQuiet(t, cp, "test/class", runsClass(class, 1))
+	seedSlot(t, cp, classGrant(class, editClass(t, quiet, class.Name)), false, nil)
+	before := getQuiet(t, cp)
+	injected := errors.New("injected: the class cannot be read")
+	failing := interceptor.NewClient(quiet, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*lodiav1alpha1.DatastoreClass); ok {
+				return injected
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	if _, err := passOf(t.Context(), fleetReconciler(failing, quiet, later, 1), cp); !errors.Is(err, injected) {
+		t.Errorf("a pass whose class read fails returned %v, want the read's error", err)
+	}
+	if after := getQuiet(t, cp); after.ResourceVersion != before.ResourceVersion {
+		t.Errorf("a pass whose class read failed wrote target %+v and maintenance %+v", after.Status.Target, after.Status.Maintenance)
 	}
 }

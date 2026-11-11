@@ -371,6 +371,26 @@ func TestAHeldPassCopiesTheCredentialsOfTheStoreTheEtcdNames(t *testing.T) {
 	}
 }
 
+func TestAHeldPassOverAGrantedClassKeepsTheCopyOfTheStoreTheEtcdNames(t *testing.T) {
+	ns, credentialsNamespace := namespace(t), namespace(t)
+	const cp = "held-granted"
+	create(t, credentials(credentialsNamespace))
+	createClass(t, fullClass(cp, credentialsNamespace))
+	heldTenant(t, ns, cp, cp, nil)
+	create(t, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "s3-other", Namespace: credentialsNamespace}, Data: map[string][]byte{"accessKeyID": []byte("other-access")}})
+	editClass(t, cp, func(class *lodiav1alpha1.DatastoreClass) {
+		class.Spec.Backup.Store.Bucket, class.Spec.Backup.Store.SecretRef.Name = "other-bucket", "s3-other"
+	})
+	grantClass(t, ns, cp, cp)
+	mustPass(t, operatorAt(unpaused(k8s), revision), ns, cp)
+	if got := *getEtcd(t, ns, cp).Spec.Backup.Store.Container; got != "lodia-backups" {
+		t.Errorf("a held pass moved the Etcd to bucket %s", got)
+	}
+	if got := string(getCopy(t, ns, cp).Data["accessKeyID"]); got != "spike-access" {
+		t.Errorf("a held pass over a granted store move left accessKeyID %s in the copy, want spike-access of the store the Etcd names", got)
+	}
+}
+
 func TestAHeldPassWithoutAnEtcdCopiesTheCredentialsOfTheStoreItRenders(t *testing.T) {
 	ns, credentialsNamespace := namespace(t), namespace(t)
 	const cp = "held-gone"
