@@ -52,7 +52,7 @@ restore-keys: ## the etcd keys a restore's cleanup deletes, against the API serv
 	done
 
 .PHONY: chart
-chart: ## lint and render the chart with image tags, then with image digests; with crds.enabled=false it must still render the policy kubeconfigrequests.lodia.io and its binding; the metrics Service and ServiceMonitor only once their values are on, rendered as the release check, and the ServiceMonitor scraping that Service alone
+chart: ## lint and render the chart with image tags, then with image digests; with crds.enabled=false it must still render the policy kubeconfigrequests.lodia.io and its binding; the metrics Service and ServiceMonitor only once their values are on, rendered as the release check, and the ServiceMonitor scraping that Service alone over https, with the labels it is given
 	helm dependency build $(CHART)
 	helm lint --strict $(CHART)
 	helm template lodia $(CHART) --namespace lodia-system > /dev/null
@@ -71,9 +71,13 @@ chart: ## lint and render the chart with image tags, then with image digests; wi
 	helm template lodia $(CHART) --namespace lodia-system --set image.digest=$(DIGEST),signerImage.digest=$(DIGEST),tunnelImage.digest=$(DIGEST) > /dev/null
 	helm template lodia $(CHART) --namespace lodia-system | awk '/^---/ {kind = ""} /^kind: / {kind = $$2} kind == "ServiceMonitor" || kind == "Service" && /^  name: lodia-metrics$$/ {found = 1} END {exit found}' || { echo "the defaults render the Service lodia-metrics or a ServiceMonitor"; exit 1; }
 	helm lint --strict $(CHART) --set $(METRICS)
+	helm lint --strict $(CHART) --set $(METRICS),metrics.serviceMonitor.scrapeClass=check,metrics.serviceMonitor.labels.release=check
 	helm template check $(CHART) --namespace lodia-system --set $(METRICS) | awk '/^---/ {kind = ""} /^kind: / {kind = $$2} /^  name: / && (kind == "Service" && $$2 == "check-metrics" || kind == "ServiceMonitor" && $$2 == "check") {found[kind] = 1} END {exit !(found["Service"] && found["ServiceMonitor"])}' || { echo "with $(METRICS) the chart renders no Service check-metrics or no ServiceMonitor check"; exit 1; }
 	! helm template lodia $(CHART) --namespace lodia-system --set metrics.serviceMonitor.enabled=true > /dev/null 2>&1 || { echo "the ServiceMonitor renders without the metrics Service"; exit 1; }
 	helm template check $(CHART) --namespace lodia-system --set $(METRICS) --show-only templates/servicemonitor.yaml | grep -qx '      honorLabels: true' || { echo "the ServiceMonitor's endpoint does not honor the scraped labels, so prometheus-operator's namespace and endpoint rename Lodia's"; exit 1; }
+	helm template check $(CHART) --namespace lodia-system --set $(METRICS) --show-only templates/servicemonitor.yaml | grep -qx '      scheme: https' || { echo "the ServiceMonitor's endpoint does not scrape over https, which is all controller-runtime's metrics listener serves"; exit 1; }
+	helm template check $(CHART) --namespace lodia-system --set $(METRICS) --show-only templates/servicemonitor.yaml | grep -qx '        insecureSkipVerify: true' || { echo "the ServiceMonitor's endpoint verifies the serving certificate, which controller-runtime generates for localhost"; exit 1; }
+	helm template check $(CHART) --namespace lodia-system --set $(METRICS),metrics.serviceMonitor.labels.release=check --show-only templates/servicemonitor.yaml | awk '/^[^ ]/ {top = $$1} /^  [^ ]/ {block = $$1} top == "metadata:" && block == "labels:" && /^    [^ ]/ {print $$1, $$2}' | grep -Fqx 'release: check' || { echo "metrics.serviceMonitor.labels does not reach the labels of the ServiceMonitor, so a Prometheus that selects ServiceMonitors by label never scrapes it"; exit 1; }
 	@job="$$(helm template check $(CHART) --namespace lodia-system --set $(METRICS) --show-only templates/servicemonitor.yaml | awk '/^  jobLabel: / {print $$2}')"; \
 	helm template check $(CHART) --namespace lodia-system --set $(METRICS) --show-only templates/metrics-service.yaml | awk '/^[^ ]/ {top = $$1} /^  [^ ]/ {block = $$1} top == "metadata:" && block == "labels:" && /^    [^ ]/ {print $$1, $$2}' | grep -Fqx "$$job: lodia" || { echo "the ServiceMonitor's jobLabel [$$job] names no label of the Service check-metrics that holds lodia, so its job is not lodia"; exit 1; }
 	@port="$$(helm template check $(CHART) --namespace lodia-system --set $(METRICS) --show-only templates/servicemonitor.yaml | awk '/^    - port: / {print $$3}')"; \
