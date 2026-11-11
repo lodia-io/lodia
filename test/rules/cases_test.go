@@ -62,6 +62,9 @@ func operatorDown() []testCase {
 func controlPlaneNotReady() []testCase {
 	const alert = "LodiaControlPlaneNotReady"
 	ready0 := func(cp string) batch { return cond(cp, "Ready", "True", "0x40") }
+	readySince := func(cp string, at int) batch {
+		return tenant(transitionMetric, cp, fmt.Sprintf("%dx40", at), "type", "Ready")
+	}
 	return []testCase{
 		{
 			name: alert + " on each side of its exclusions",
@@ -80,9 +83,8 @@ func controlPlaneNotReady() []testCase {
 				ready0("source-conflict"), reason("source-conflict", "Ready", "HostnameConflict", "1x40"),
 				reason("source-conflict", "ControllersLeading", "SourceExists", "1x40"),
 				ready0("deleting"), reason("deleting", "Ready", "Deleting", "1x40"),
-				ready0("restoring"), reason("restoring", "Ready", "Restoring", "1x40"),
-				ready0("restore-backup"), reason("restore-backup", "Ready", "WaitingForBackup", "1x40"),
-				ready0("restore-conflict"), reason("restore-conflict", "Ready", "HostnameConflict", "1x40"),
+				ready0("restore-backup"), reason("restore-backup", "Ready", "WaitingForBackup", "1x40"), readySince("restore-backup", 0),
+				ready0("restore-conflict"), reason("restore-conflict", "Ready", "HostnameConflict", "1x40"), readySince("restore-conflict", 0),
 				reason("restore-conflict", "ControllersLeading", "WaitingForAccess", "1x40"),
 				reason("restore-conflict", "DatastoreReady", "Restoring", "1x40"),
 				ready0("paused"), reason("paused", "Ready", "Unavailable", "1x40"), reason("paused", "Progressing", "Paused", "1x40"),
@@ -99,6 +101,19 @@ func controlPlaneNotReady() []testCase {
 					tenantAlert("unknown"), tenantAlert("conflict"), tenantAlert("held-ca"),
 					tenantAlert("restore-backup"), tenantAlert("restore-conflict"),
 				}},
+			},
+		},
+		{
+			name: alert + " on each side of a restore's hour",
+			series: join(
+				ready0("stuck"), reason("stuck", "Ready", "Restoring", "1x40"), readySince("stuck", -3600),
+				ready0("restoring"), reason("restoring", "Ready", "Restoring", "1x40"), readySince("restoring", 30-3600),
+				join(ready0("stuck"), reason("stuck", "Ready", "Restoring", "1x40"), readySince("stuck", 0)).in("tenants-b"),
+			),
+			checks: []check{
+				{570, alert, nil},
+				{600, alert, []alertLabels{tenantAlert("stuck")}},
+				{630, alert, []alertLabels{tenantAlert("stuck"), tenantAlert("restoring")}},
 			},
 		},
 		failover(alert, tenantAlert("a"), 900, cond("a", "Ready", "True", "0")),

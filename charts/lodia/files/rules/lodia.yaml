@@ -14,7 +14,11 @@ groups:
       - alert: LodiaControlPlaneNotReady
         expr: |
           max without (pod, instance, type, status) (lodia_controlplane_condition{type="Ready",status="True"}) == 0
-          unless on (namespace, controlplane) lodia_controlplane_condition_reason{type="Ready",reason=~"AwaitingRelease|SourceExists|Restoring|Deleting"}
+          unless on (namespace, controlplane) lodia_controlplane_condition_reason{type="Ready",reason=~"AwaitingRelease|SourceExists|Deleting"}
+          unless on (namespace, controlplane) (
+            lodia_controlplane_condition_reason{type="Ready",reason="Restoring"}
+            and on (namespace, controlplane) time() - lodia_controlplane_condition_last_transition_timestamp_seconds{type="Ready"} < 3600
+          )
           unless on (namespace, controlplane) (
             lodia_controlplane_condition_reason{type="Ready",reason="HostnameConflict"}
             and on (namespace, controlplane) lodia_controlplane_condition_reason{type="ControllersLeading",reason=~"AwaitingRelease|SourceExists"}
