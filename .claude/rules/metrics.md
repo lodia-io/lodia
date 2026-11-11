@@ -12,3 +12,5 @@ paths:
 - The collector reads the manager's cache and the samples alone, never the API server.
 - Every metric has a line in the golden, `internal/metrics/testdata/metrics.prom`.
 - Every rule aggregates `pod` and `instance` away: a failover moves every series to another pod.
+- Every alert carries `keep_firing_for: 4m`, which outlasts the two lease handovers of a `helm upgrade`.
+- Every alert has a section `### <alert>` in `docs/operations.md`, which its `runbook_url` names.
