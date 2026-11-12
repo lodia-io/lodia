@@ -103,22 +103,27 @@ func etcdMember(t *testing.T, name string) *embed.Config {
 func startMembers(t *testing.T, cfgs ...*embed.Config) []func() {
 	t.Helper()
 	stops := make([]func(), len(cfgs))
-	var ready []<-chan struct{}
+	etcds := make([]*embed.Etcd, len(cfgs))
 	for i, cfg := range cfgs {
 		e, err := embed.StartEtcd(cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
+		etcds[i] = e
 		stops[i] = sync.OnceFunc(e.Close)
 		t.Cleanup(stops[i])
-		ready = append(ready, e.Server.ReadyNotify())
 	}
-	for _, r := range ready {
+	for _, e := range etcds {
 		select {
-		case <-r:
+		case <-e.Server.ReadyNotify():
 		case <-time.After(60 * time.Second):
 			t.Fatal("an etcd member took too long to start")
 		}
+		go func() {
+			if err := <-e.Err(); err != nil {
+				t.Error(err)
+			}
+		}()
 	}
 	return stops
 }
