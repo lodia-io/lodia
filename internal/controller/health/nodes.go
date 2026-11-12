@@ -4,7 +4,10 @@
 package health
 
 import (
+	"cmp"
 	"context"
+	"errors"
+	"strconv"
 	"sync"
 	"time"
 
@@ -41,6 +44,11 @@ const (
 	// are large objects, and the set the hold counts changes slowly.
 	nodesEvery = 30 * time.Second
 
+	// leasePage and nodePage are the limits of the pages of the two lists; a Node
+	// is the larger object.
+	leasePage = 500
+	nodePage  = 100
+
 	// unknownGrace is how long after the controller manager marked a node
 	// Unknown it still counts.
 	unknownGrace = 5 * time.Minute
@@ -65,6 +73,10 @@ type NodesReconciler struct {
 	// Period is how often a control plane is sampled, Timeout how long its
 	// lists wait for an answer.
 	Period, Timeout time.Duration
+	// MaxNodes is the most Nodes, and the most Leases of kube-node-lease, of a
+	// tenant that Lodia counts: a list that has read more stops, and the
+	// tenant is not counted. It is positive.
+	MaxNodes int
 	// SilentAfter is how long a node's Lease may stay unchanged before the node
 	// is silent, HoldFraction the share of the counted nodes that are silent,
 	// in thousandths, at which the controller manager is held, and ReleaseAfter
@@ -95,12 +107,17 @@ type nodeCount struct {
 }
 
 // sampling is what a pass remembers of one control plane; only that control
-// plane's pass touches it.
+// plane's pass touches it. Its leases and nodes hold at most MaxNodes entries
+// each (docs/review-checklist.md, item 10).
 type sampling struct {
-	uid      types.UID
-	leases   map[string]renewal
-	nodes    []node
-	listedAt time.Time
+	uid    types.UID
+	leases map[string]renewal
+	nodes  []node
+	// nodesStop and leasesStop say why the last list of the Nodes, and the last
+	// list of the node Leases that did not fail, ended before its end; they are
+	// empty when it did not.
+	nodesStop, leasesStop string
+	listedAt              time.Time
 	// restarted is when the clock of the node Leases last started.
 	restarted time.Time
 	// below is when a held pass the clock trusted first read the nodes below
@@ -122,6 +139,12 @@ type sampling struct {
 // release: no list of the Leases stands behind this pass.
 func (s *sampling) restart() {
 	s.leases, s.below = nil, time.Time{}
+}
+
+// stopped says why a list of this control plane ended before its end: the
+// tenant is then not counted.
+func (s *sampling) stopped() string {
+	return cmp.Or(s.leasesStop, s.nodesStop)
 }
 
 // observe starts the clock, when it was forgotten, and notes the Leases listed.
@@ -247,29 +270,94 @@ func (r *NodesReconciler) list(ctx context.Context, tenant *tenant, s *sampling,
 	listing, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
 	var (
-		leases   *coordinationv1.LeaseList
-		leaseErr error
-		nodes    *corev1.NodeList
-		nodeErr  error
-		wg       sync.WaitGroup
+		leases    []coordinationv1.Lease
+		leaseStop string
+		leaseErr  error
+		nodes     []node
+		nodeStop  string
+		nodeErr   error
+		wg        sync.WaitGroup
 	)
 	listNodes := s.listedAt.IsZero() || now.Sub(s.listedAt) >= nodesEvery
-	wg.Go(func() { leases, leaseErr = tenant.nodeLeases.List(listing, metav1.ListOptions{}) })
+	wg.Go(func() { leases, leaseStop, leaseErr = r.listLeases(listing, tenant) })
 	if listNodes {
-		wg.Go(func() { nodes, nodeErr = tenant.core.Nodes().List(listing, metav1.ListOptions{}) })
+		wg.Go(func() { nodes, nodeStop, nodeErr = r.listNodes(listing, tenant) })
 	}
 	wg.Wait()
 	if listNodes {
 		if nodeErr != nil {
 			logf.FromContext(ctx).Error(nodeErr, "list the tenant's Nodes")
 		} else {
-			s.nodes, s.listedAt = summarize(nodes.Items), now
+			s.nodes, s.nodesStop, s.listedAt = nodes, nodeStop, now
 		}
 	}
 	if leaseErr != nil {
 		return nil, leaseErr
 	}
-	return leases.Items, nil
+	s.leasesStop = leaseStop
+	return leases, nil
+}
+
+func (r *NodesReconciler) listLeases(ctx context.Context, tenant *tenant) ([]coordinationv1.Lease, string, error) {
+	leases, more, err := listPages(ctx, leasePage, r.MaxNodes, func(ctx context.Context, options metav1.ListOptions) ([]coordinationv1.Lease, string, error) {
+		page, err := tenant.nodeLeases.List(ctx, options)
+		if err != nil {
+			return nil, "", err
+		}
+		return page.Items, page.Continue, nil
+	})
+	stop, err := r.stop("Leases of "+corev1.NamespaceNodeLease, more, err)
+	return leases, stop, err
+}
+
+func (r *NodesReconciler) listNodes(ctx context.Context, tenant *tenant) ([]node, string, error) {
+	nodes, more, err := listPages(ctx, nodePage, r.MaxNodes, func(ctx context.Context, options metav1.ListOptions) ([]node, string, error) {
+		page, err := tenant.core.Nodes().List(ctx, options)
+		if err != nil {
+			return nil, "", err
+		}
+		return summarize(page.Items), page.Continue, nil
+	})
+	stop, err := r.stop("Nodes", more, err)
+	return nodes, stop, err
+}
+
+// listPages reads a list a page at a time and keeps its first most items,
+// saying whether it saw more; it asks for no page after that. It does not use
+// pager.ListPager, whose EachListItem fetches the next page while it hands
+// over the last, even unbuffered. Every page is a consistent read: the list
+// sets no resourceVersion. A failure returns the items of the pages before it.
+func listPages[T any](ctx context.Context, size int64, most int, page func(context.Context, metav1.ListOptions) ([]T, string, error)) (kept []T, more bool, err error) {
+	options := metav1.ListOptions{Limit: size}
+	for {
+		items, next, err := page(ctx, options)
+		if err != nil {
+			return kept, false, err
+		}
+		kept = append(kept, items...)
+		if len(kept) > most {
+			return kept[:most], true, nil
+		}
+		if next == "" {
+			return kept, false, nil
+		}
+		options.Continue = next
+	}
+}
+
+// stop says why the list of what ended before its end, or nothing when it did
+// not: it saw more than MaxNodes items, or a response of it was longer than
+// maxResponseBytes. Another failure of the list is returned.
+func (r *NodesReconciler) stop(what string, more bool, err error) (string, error) {
+	switch {
+	case errors.Is(err, errResponseTooLong):
+		return "a response listing the " + what + " is longer than " + strconv.Itoa(maxResponseBytes) + " bytes", nil
+	case err != nil:
+		return "", err
+	case more:
+		return "more than " + strconv.Itoa(r.MaxNodes) + " " + what + " (health.maxNodes)", nil
+	}
+	return "", nil
 }
 
 // seen keeps, for every Lease listed, when its version was first seen: now for
@@ -329,25 +417,30 @@ func held(cp *lodiav1alpha1.ControlPlane, reason, message string) *metav1.Condit
 }
 
 func (s *sampling) status(cp *lodiav1alpha1.ControlPlane) *lodiav1alpha1.NodesStatus {
-	if s.listedAt.IsZero() {
+	truncated := s.stopped() != ""
+	if s.listedAt.IsZero() && !truncated {
 		return nil
 	}
 	running := ""
 	if cp.Status.Kubernetes != nil {
 		running = cp.Status.Kubernetes.Version
 	}
-	return nodesStatus(s.nodes, running)
+	return nodesStatus(s.nodes, running, truncated)
 }
 
 // nodesStatus counts the nodes; a kubelet is outdated when its minor is below
-// the minor of running, which counts none while it is absent or unparsable.
-func nodesStatus(nodes []node, running string) *lodiav1alpha1.NodesStatus {
-	status := &lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: int32(len(nodes))}}
+// the minor of running, which counts none while it is absent or unparsable. A
+// truncated list counts the nodes it read and tells nothing of the kubelets.
+func nodesStatus(nodes []node, running string, truncated bool) *lodiav1alpha1.NodesStatus {
+	status := &lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: int32(len(nodes))}, Truncated: truncated}
 	floor, _ := version.ParseSemantic(running)
 	var oldest *version.Version
 	for _, n := range nodes {
 		if n.ready == corev1.ConditionTrue {
 			status.Ready++
+		}
+		if truncated {
+			continue
 		}
 		kubelet := kubeletVersion(n.kubelet)
 		if kubelet == nil {

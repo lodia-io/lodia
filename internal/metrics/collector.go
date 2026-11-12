@@ -88,7 +88,7 @@ var (
 	endOfSupport = perControlPlane("lodia_controlplane_kubernetes_end_of_support_timestamp_seconds",
 		"The end-of-support date, at 00:00 UTC, that the version table gives the minor of status.kubernetes.version; absent while the version is absent and for a minor outside the table.")
 	nodesSilent = perControlPlane("lodia_controlplane_nodes_silent",
-		"The nodes that count whose Lease Health has not seen change for health.silentAfter, in its last list of the node Leases. Absent while that list is missing or the tenant's hold is off, before Health's first list of the Nodes, and until Health's clock of the Leases has run health.silentAfter.")
+		"The nodes that count whose Lease Health has not seen change for health.silentAfter, in its last list of the node Leases. Absent while that list is missing, or a list of the Leases or of the Nodes stopped at a bound, or the tenant's hold is off, before Health's first list of the Nodes, and until Health's clock of the Leases has run health.silentAfter.")
 	nodesCounted = perControlPlane("lodia_controlplane_nodes_counted",
 		"The nodes that count towards the hold of the controller manager in Health's last list of the node Leases: those with a Lease that are Ready, or turned Unknown less than 5 minutes before the hold began. Absent while lodia_controlplane_nodes_silent is.")
 	maxConcurrentRollouts = prometheus.NewDesc("lodia_fleet_max_concurrent_rollouts",

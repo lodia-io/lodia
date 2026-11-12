@@ -57,7 +57,7 @@ func TestStatusNodesFollowsTheKubeletsVersions(t *testing.T) {
 		{"none is outdated while status.kubernetes.version is absent", kubelets(corev1.ConditionTrue, "v1.30.0"), "", status(1, 1, 0, "v1.30.0")},
 		{"or unparsable", kubelets(corev1.ConditionTrue, "v1.30.0"), "garbage", status(1, 1, 0, "v1.30.0")},
 	} {
-		if got := nodesStatus(c.nodes, c.running); !equality.Semantic.DeepEqual(got, c.want) {
+		if got := nodesStatus(c.nodes, c.running, false); !equality.Semantic.DeepEqual(got, c.want) {
 			t.Errorf("%s: status.nodes is %+v, want %+v", c.name, got, c.want)
 		}
 	}

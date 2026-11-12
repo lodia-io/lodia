@@ -372,7 +372,7 @@ func TestRow8AFailedLeaseListWithoutAHoldReportsNotHeld(t *testing.T) {
 	h.expectUntouched(before)
 }
 
-func TestRow9WithNoNodeListAHoldRenews(t *testing.T) {
+func TestRow11WithNoNodeListAHoldRenews(t *testing.T) {
 	h := holding(t, "a", "b", "c")
 	h.r = nodesReconciler(h.now)
 	h.fail(nodeListPath, http.MethodGet, http.StatusInternalServerError, metav1.StatusReasonInternalError)
@@ -382,7 +382,7 @@ func TestRow9WithNoNodeListAHoldRenews(t *testing.T) {
 	h.renewedAt(25)
 }
 
-func TestRow10WithNoNodeListAndAnothersLeaseNotHeld(t *testing.T) {
+func TestRow12WithNoNodeListAndAnothersLeaseNotHeld(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
 	renew(t, lodiav1alpha1.ControllerManagerLease, "another_1", time.Now())
 	h.fail(nodeListPath, http.MethodGet, http.StatusInternalServerError, metav1.StatusReasonInternalError)
@@ -393,7 +393,7 @@ func TestRow10WithNoNodeListAndAnothersLeaseNotHeld(t *testing.T) {
 	h.expectUntouched(before)
 }
 
-func TestRow11AtOrAboveAHoldRenewsAndKeepsAcquireTime(t *testing.T) {
+func TestRow13AtOrAboveAHoldRenewsAndKeepsAcquireTime(t *testing.T) {
 	h := holding(t, "a", "b", "c")
 	acquired := h.lease().Spec.AcquireTime
 	h.at(25)
@@ -405,7 +405,7 @@ func TestRow11AtOrAboveAHoldRenewsAndKeepsAcquireTime(t *testing.T) {
 	}
 }
 
-func TestRow12TakesAFreeLeaseOrAnExpiredOneOrAPodsOwn(t *testing.T) {
+func TestRow14TakesAFreeLeaseOrAnExpiredOneOrAPodsOwn(t *testing.T) {
 	t.Run("no Lease", func(t *testing.T) {
 		h := sampling(t, "a", "b", "c")
 		h.at(0)
@@ -469,7 +469,7 @@ func TestATakeWritesItsOwnAcquireTimeOverTheLeaders(t *testing.T) {
 	}
 }
 
-func TestRow13AnotherHolderIsNamedAndLeftAlone(t *testing.T) {
+func TestRow15AnotherHolderIsNamedAndLeftAlone(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
 	h.at(0)
 	renew(t, lodiav1alpha1.ControllerManagerLease, "a-watchdog_1", time.Now())
@@ -480,7 +480,7 @@ func TestRow13AnotherHolderIsNamedAndLeftAlone(t *testing.T) {
 	h.expectUntouched(before)
 }
 
-func TestRow14BelowAHoldRenewsUntilReleaseAfter(t *testing.T) {
+func TestRow16BelowAHoldRenewsUntilReleaseAfter(t *testing.T) {
 	h := holding(t, "a", "b", "c")
 	h.back(25, 55)
 	h.expectSilent(silent(0, 3) + ", below 60%" + holdsUntil)
@@ -491,7 +491,7 @@ func TestRow14BelowAHoldRenewsUntilReleaseAfter(t *testing.T) {
 	}
 }
 
-func TestRow15BelowForReleaseAfterReleasesLikeClientGo(t *testing.T) {
+func TestRow17BelowForReleaseAfterReleasesLikeClientGo(t *testing.T) {
 	h := holding(t, "a", "b", "c")
 	transitions := ptr.Deref(h.lease().Spec.LeaseTransitions, 0)
 	h.back(25, 145)
@@ -505,7 +505,7 @@ func TestRow15BelowForReleaseAfterReleasesLikeClientGo(t *testing.T) {
 	}
 }
 
-func TestRow16BelowWithoutAHoldWritesNothing(t *testing.T) {
+func TestRow18BelowWithoutAHoldWritesNothing(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
 	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", time.Now())
 	before := h.lease()

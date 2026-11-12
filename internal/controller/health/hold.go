@@ -124,11 +124,12 @@ func (r *NodesReconciler) readLease(ctx context.Context, t *tenant) (*coordinati
 }
 
 // selectRow selects the first row of that table that matches. A pass that gets here with no
-// list of the node Leases behind it restarts the clock and clears the count
-// towards the release, whichever row follows; a hold with no list goes on
-// renewing.
+// list of the node Leases behind it, or with a list stopped at a bound,
+// restarts the clock and clears the count towards the release, whichever row
+// follows; a hold with no list goes on renewing, and one beyond a bound ends.
 func (r *NodesReconciler) selectRow(ctx context.Context, cp *lodiav1alpha1.ControlPlane, s *sampling, lease *coordinationv1.Lease, readErr error, listed bool, now time.Time) (row, error) {
-	if readErr != nil || !listed {
+	stop := s.stopped()
+	if readErr != nil || !listed || stop != "" {
 		s.restart()
 	}
 	if readErr != nil {
@@ -160,6 +161,12 @@ func (r *NodesReconciler) selectRow(ctx context.Context, cp *lodiav1alpha1.Contr
 			return row{write: renewLease, condition: nodesSilent(cp, failed+keepsHolding)}, nil
 		}
 		return row{condition: held(cp, lodiav1alpha1.ReasonNotHeld, failed)}, nil
+	case stop != "":
+		beyond := held(cp, lodiav1alpha1.ReasonTooManyNodes, stop+": Lodia does not count this tenant's nodes")
+		if ours {
+			return row{write: releaseLease, condition: beyond}, nil
+		}
+		return row{condition: beyond}, nil
 	case s.listedAt.IsZero():
 		const notListed = "the nodes are not listed yet"
 		if ours {

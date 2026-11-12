@@ -453,6 +453,7 @@ For a restored `ControlPlane` Health reports `AwaitingRelease` or `SourceExists`
 Both reconcilers read a tenant through clients whose transport cuts every response body at 8 MiB: a longer one fails its request with an error that names the bound, before anything is decoded.
 A second reconciler, `health-nodes`, with a queue of its own and 100 workers, samples the tenant's nodes once `AccessReady` is True.
 Every period it lists the Leases of `kube-node-lease` through the in-namespace Service with a list that sets no `resourceVersion`, which the API server must serve as a consistent read ([api-concepts.md](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/reference/using-api/api-concepts.md#L1652-L1654)), and every 30 seconds the Nodes.
+Both lists read a page at a time and stop at `health.maxNodes` items or at a response over the bound above; the tenant is then not counted: `ControllerManagerHeld` reads `TooManyNodes`, `status.nodes.truncated` is true, and no hold is taken or kept ([controller-manager-hold](decisions/controller-manager-hold.md)).
 It never touches the public endpoint, so one that does not answer, which holds a `health` worker for the timeout, delays no sample.
 It reports `status.nodes`, and in `ControllerManagerHeld` how many of the nodes that count are silent ([controller-manager-hold](decisions/controller-manager-hold.md)).
 Health's metrics are `lodia_health_nodes_sample_lag_seconds`, `lodia_health_probe_failures_total`, `lodia_health_hold_threshold_ratio` and each tenant's `lodia_controlplane_nodes_silent` and `lodia_controlplane_nodes_counted` ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)).
@@ -539,6 +540,7 @@ A key outside the first table, or a missing file, stops the operator from starti
 | `health.period` | how often Health probes each control plane and reads its leases | 5s |
 | `health.failuresBeforeFalse` | failed passes in a row that turn `Reachable` False | 3 |
 | `health.silentAfter`, `health.holdFraction`, `health.releaseAfter` | when a node counts as silent, the share of silent nodes that starts the hold, how long the nodes must be back before it ends; the operator refuses to start when they break the margin of [controller-manager-hold](decisions/controller-manager-hold.md) | 20s, 0.6, 2m |
+| `health.maxNodes` | the most Nodes, and the most Leases of `kube-node-lease`, of a tenant that Lodia counts; at least 1, or the operator refuses to start ([controller-manager-hold](decisions/controller-manager-hold.md)) | 5000 |
 | `fleet.maxConcurrentRollouts` | tenants that hold a slot of the fleet at once, rolling a change Lodia started or failed in it; at least 1, or the operator refuses to start ([upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md)) | 5 |
 
 The keys below are owed: nothing reads them yet, and the operator refuses to start with one until the feature that reads it is built.

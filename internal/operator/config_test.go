@@ -40,6 +40,7 @@ func TestWithoutAFileTheDefaultsApply(t *testing.T) {
 			SilentAfter:         seconds(20),
 			HoldFraction:        600,
 			ReleaseAfter:        seconds(120),
+			MaxNodes:            5000,
 		},
 		Fleet: operator.FleetConfig{MaxConcurrentRollouts: 5},
 	}
@@ -105,6 +106,18 @@ func TestAFileKeepsTheDefaultsOfTheKeysItLeavesOut(t *testing.T) {
 	}
 }
 
+func TestTheMaxNodesComeFromTheFile(t *testing.T) {
+	got, err := load(t, "health:\n  maxNodes: 120\n")
+	want := operator.DefaultConfig()
+	want.Health.MaxNodes = 120
+	if err != nil || got != want {
+		t.Errorf("a file that sets maxNodes to 120 gives %+v, %v, want %+v", got, err, want)
+	}
+	if got, err := load(t, ""); err != nil || got.Health.MaxNodes != 5000 {
+		t.Errorf("a file without maxNodes gives %d, %v, want 5000", got.Health.MaxNodes, err)
+	}
+}
+
 func TestAnUnknownKeyRefusesToStart(t *testing.T) {
 	for _, c := range []struct{ name, content, key string }{
 		{"a section no feature reads", "registry: mirror.example\n", `"registry"`},
@@ -158,7 +171,11 @@ func TestTheHealthSettingsAreCheckedBeforeTheManagerStarts(t *testing.T) {
 		refused string
 		holds   operator.Thousandths
 	}{
-		{name: "the defaults written out", content: "health:\n  period: 5s\n  failuresBeforeFalse: 3\n  silentAfter: 20s\n  holdFraction: 0.6\n  releaseAfter: 2m\n", holds: 600},
+		{name: "the defaults written out", content: "health:\n  period: 5s\n  failuresBeforeFalse: 3\n  silentAfter: 20s\n  holdFraction: 0.6\n  releaseAfter: 2m\n  maxNodes: 5000\n", holds: 600},
+
+		{name: "a zero maxNodes", content: "health:\n  maxNodes: 0\n", refused: "health.maxNodes"},
+		{name: "a negative maxNodes", content: "health:\n  maxNodes: -1\n", refused: "health.maxNodes"},
+		{name: "one node", content: "health:\n  maxNodes: 1\n"},
 
 		{name: "a zero period", content: "health:\n  period: 0s\n", refused: "health.period"},
 		{name: "a negative period", content: "health:\n  period: -5s\n", refused: "health.period"},

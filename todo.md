@@ -189,11 +189,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   Once every Envoy Gateway release still supported upstream keeps a `TLSRoute`'s `ResolvedRefs` True there, and the gateway gate pins one: remove `noEndpoints`, the clause in `RoutesReady`'s comment in `api/v1alpha1/conditions.go` and in its row of `docs/api/controlplane.md`, and the tests that write `EndpointsNotFound` (`TestRoutesWithoutReadyEndpointsAreResolvedWhileTheAPIServerIsUnavailable` in `internal/controller/workloads`, `TestReadyInGatewayModeSaysWhyTheAPIServerIsDownWhileItsRoutesHaveNoEndpoints` in `internal/controller`).
   The upstream fix is [envoyproxy/gateway#10564](https://github.com/envoyproxy/gateway/pull/10564), open on 2026-11-08.
 
-## From Health's node sampling (2026-11-08)
-
-- `health-nodes` lists the Nodes every 30 seconds and the Leases every period, each in one response with no `limit`, so a response grows with the tenant's nodes.
-  If tenants of thousands of nodes appear, page both lists.
-
 ## From the CI of the refactoring (2026-11-09)
 
 - `make test` gives envtest's API servers 60 s to stop instead of the default 20 s (the `@todo` in `Makefile`): a tenant API server in `internal/controller/tenant` twice took longer, after its test's checks had passed, and nobody has measured why.

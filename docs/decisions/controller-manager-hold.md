@@ -9,6 +9,9 @@ The Health controller protects a tenant's workloads from an outage between the c
 
 - **It watches from inside.**
   Every 5 seconds, Health's period, for every awake `ControlPlane`, it reads the `Lease`s in `kube-node-lease` through the in-namespace Service, never through the public endpoint the nodes use, and the tenant's `Node`s every 30 seconds, since nodes are large objects and the set it counts changes slowly ([KEP-589](https://github.com/kubernetes/enhancements/blob/7eef794bb549a50c6b08c457556ff0eac98a4c6b/keps/sig-node/589-efficient-node-heartbeats/README.md#L31-L49)).
+  Both lists page, 500 Leases and 100 Nodes to a page, with no `resourceVersion` set: the first page is a most recent read and each next one continues it at the same version ([api-concepts.md](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/reference/using-api/api-concepts.md#L1628-L1629)).
+  A list stops once it has read more than `health.maxNodes` items, 5,000 by default, the most a cluster supports ([cluster-large.md](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/setup/best-practices/cluster-large.md#L12-L16)), or when a response is longer than 8 MiB, since the tenant's administrator writes these objects.
+  A tenant whose list stopped is not counted: its Lease clock is forgotten, `ControllerManagerHeld` reads `TooManyNodes` naming the bound, a hold in place ends at once and none is taken, `status.nodes.truncated` is true, and a pass back under the bounds counts afresh.
 - **A node is silent** once its lease has not changed for 20 seconds by the operator's clock, not by `renewTime`: a node anywhere keeps its own time.
   The clock lives in memory: a lease seen for the first time counts as renewed then, and so does every lease after a read that failed, since the kubelets could not renew meanwhile either, and an operator that restarts counts afresh.
   A failover of the operator inside a cut can therefore delay a hold past the grace period, the known limit of keeping the clock in memory.
@@ -83,28 +86,30 @@ A pass reads the Lease first, with a consistent GET, then takes the first row th
 | 6 | `AccessReady` not True | `WaitingForAccess` | none |
 | 7 | the Lease list failed, held | `NodesSilent` | renew |
 | 8 | the Lease list failed | `NotHeld`, saying the Leases could not be listed | none |
-| 9 | no Node list of this run, held | `NodesSilent` | renew |
-| 10 | no Node list of this run | `NotHeld`, saying the nodes are not listed yet | none |
-| 11 | at or above the fraction, held | `NodesSilent` | renew, `acquireTime` kept |
-| 12 | at or above, the Lease free or expired, or held by a pod of this `ControlPlane` | `NodesSilent` | take: holder `lodia`, 60 s, `acquireTime` and `renewTime` now, transitions + 1 |
-| 13 | at or above | `HoldBlocked`, naming the holder | none |
-| 14 | below, held, for less than `releaseAfter` | `NodesSilent` | renew, or the Lease would lapse at 60 s |
-| 15 | below, held, for `releaseAfter` | `NotHeld` | release: no holder, 1 s, as client-go does |
-| 16 | below | `NotHeld` | none |
+| 9 | a list stopped at a bound, held | `TooManyNodes`, naming the bound | release at once |
+| 10 | a list stopped at a bound | `TooManyNodes`, naming the bound | none |
+| 11 | no Node list of this run, held | `NodesSilent` | renew |
+| 12 | no Node list of this run | `NotHeld`, saying the nodes are not listed yet | none |
+| 13 | at or above the fraction, held | `NodesSilent` | renew, `acquireTime` kept |
+| 14 | at or above, the Lease free or expired, or held by a pod of this `ControlPlane` | `NodesSilent` | take: holder `lodia`, 60 s, `acquireTime` and `renewTime` now, transitions + 1 |
+| 15 | at or above | `HoldBlocked`, naming the holder | none |
+| 16 | below, held, for less than `releaseAfter` | `NodesSilent` | renew, or the Lease would lapse at 60 s |
+| 17 | below, held, for `releaseAfter` | `NotHeld` | release: no holder, 1 s, as client-go does |
+| 18 | below | `NotHeld` | none |
 
-A pass with no Lease list behind it restarts the clock and clears the count towards the release, whichever row follows: rows 1, 2 and 5-8, rows 3 and 4 when the list failed or `AccessReady` is not True, and a missing or foreign `<cp>-lodia-kubeconfig`.
-Rows 11-13 clear the count, and rows 9 and 10 neither grow nor clear it.
+A pass with no Lease list behind it, or with a list stopped at a bound, restarts the clock and clears the count towards the release, whichever row follows: rows 1, 2 and 5-10, rows 3 and 4 when the list failed, was stopped or `AccessReady` is not True, and a missing or foreign `<cp>-lodia-kubeconfig`.
+Rows 13-15 clear the count, and rows 11 and 12 neither grow nor clear it.
 A write that is refused or fails changes the row's condition:
 
 | the write | then |
 |---|---|
 | succeeded | the row's condition |
-| a conflict | the Lease is read again and **the row is selected again** from what it says, so a retry never writes over a holder row 12 does not allow; when the retries run out, as "failed otherwise" |
+| a conflict | the Lease is read again and **the row is selected again** from what it says, so a retry never writes over a holder row 14 does not allow; when the retries run out, as "failed otherwise" |
 | a take refused (`apistatus.Refused`: a webhook, `Forbidden`) | `HoldBlocked`, naming the refusal; the next pass tries again |
 | a renewal or a release refused | `NodesSilent`, the Lease still `lodia`'s; the next pass tries again, and a refused renewal lapses at 60 s if it lasts |
 | failed otherwise (a timeout, a 5xx, `NotFound`) | kept, nothing applied; the next pass reads what the Lease says |
 | a create meets `AlreadyExists` | nothing applied; the next pass reads it |
-| row 12's pod list failed | kept, nothing applied, no take |
+| row 14's pod list failed | kept, nothing applied, no take |
 
 `NodesSilent` is therefore written only after a write that held the Lease, or with the Lease read as `lodia`'s.
 `status.health.controllerManagerHold` goes with it, its counts absent on any row that has no list to count from.
@@ -143,9 +148,9 @@ A write that is refused or fails changes the row's condition:
 ## Code
 
 - `internal/controller/workloads` — `render.go` renders the controller manager's timings and the scheduler's lease from the constants in `api/v1alpha1/names.go`; `workloads_test.go` holds the flags.
-- `internal/operator` — `config.go` loads Health's settings from the operator's configuration file and refuses the ones that break the margin; `config_test.go` holds every refusal.
+- `internal/operator` — `config.go` loads Health's settings from the operator's configuration file and refuses the ones that break the margin and a `health.maxNodes` that is not positive; `config_test.go` holds every refusal.
 - `internal/controller/health` — `health.go` reports `ControllersLeading` from the two leader Leases; `health_test.go` holds a Lease that stops renewing.
-  `nodes.go` samples the node Leases and the Nodes on a queue of its own and reports `status.nodes` and `ControllerManagerHeld`; `nodes_test.go` holds the counting rules.
-  `bounded.go` is the transport's cap on a response, for both reconcilers; `bounded_internal_test.go` holds a body of exactly the bound and one a byte over, chunked and with a length, and `bounded_test.go` a held restore's list of a kind whose response is over.
+  `nodes.go` samples the node Leases and the Nodes on a queue of its own, pages both lists and stops them at the bounds, and reports `status.nodes` and `ControllerManagerHeld`; `nodes_test.go` holds the counting rules, and `lists_internal_test.go` the pages, the stops at `health.maxNodes` and at a response over 8 MiB, with the bytes read, and a page that fails.
+  `bounded.go` is the transport's cap on a response, for both reconcilers; `bounded_internal_test.go` holds a body of exactly the bound and one a byte over, chunked and with a length, and `bounded_test.go` a held restore's list of a kind whose response is over, a tenant of more than a page counted whole, the stops with their condition and status, a hold released at once and one never taken, and the clock afresh once back under the bounds.
   `hold.go` selects the row of the table above and writes the Lease; `hold_test.go` holds every row, each write's outcomes and the timings of the release.
 - `test/e2e/hold_test.go` — gate G4: a highly available tenant behind the Gateway on a kind cluster, its two nodes cut off for 10 minutes, then one of them ([the gate](../../test/e2e/README.md#nightly-gate-g4-nodes-cut-off-from-the-gateway)).
