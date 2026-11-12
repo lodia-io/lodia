@@ -397,6 +397,10 @@ func (f facts) minorStep(c *change) {
 		c.preflight = newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForNodes,
 			fmt.Sprintf("the minor step to %s waits: the nodes are not listed yet", next))
 		return
+	case cp.Status.Nodes.Truncated:
+		c.preflight = newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForNodes,
+			fmt.Sprintf("the minor step to %s waits: the nodes could not all be counted", next))
+		return
 	}
 	if kubelet := cp.Status.Nodes.OldestKubelet; kubelet != "" {
 		if behind, ok := versions.MinorsAhead(kubelet, nextMinor); ok && behind > maxKubeletSkew {
