@@ -79,7 +79,7 @@ func collectorOf(reader client.Reader, elected <-chan struct{}) *metrics.Collect
 	failures := metrics.NewProbeFailures()
 	failures.WithLabelValues(lodiav1alpha1.MetricProbeAPI).Add(3)
 	failures.WithLabelValues(lodiav1alpha1.MetricProbeTunnel).Inc()
-	return &metrics.Collector{Reader: reader, Elected: elected, Revision: running, MaxConcurrentRollouts: 3, EtcdSample: samplesOf(nil), NodeCounts: goldenCounts, SampleLag: lag, ProbeFailures: failures}
+	return &metrics.Collector{Reader: reader, Elected: elected, Revision: running, MaxConcurrentRollouts: 3, HoldFraction: 750, EtcdSample: samplesOf(nil), NodeCounts: goldenCounts, SampleLag: lag, ProbeFailures: failures}
 }
 
 func TestEveryShapeOfControlPlaneMatchesTheGolden(t *testing.T) {

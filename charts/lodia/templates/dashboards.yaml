@@ -1,0 +1,17 @@
+{{- if .Values.metrics.dashboards.enabled }}
+{{- range $path, $_ := .Files.Glob "files/dashboards/*.json" }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $.Release.Name }}-dashboard-{{ base $path | trimSuffix ".json" }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "lodia.labels" $ | nindent 4 }}
+    {{- with $.Values.metrics.dashboards.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+data:
+  {{- dict (printf "%s-%s" $.Chart.Name (base $path)) ($.Files.Get $path) | toYaml | nindent 2 }}
+{{- end }}
+{{- end }}

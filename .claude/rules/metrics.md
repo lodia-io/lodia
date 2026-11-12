@@ -4,6 +4,7 @@ paths:
   - "charts/lodia/files/rules/**"
   - "charts/lodia/files/dashboards/**"
   - "test/rules/**"
+  - "test/monitoring/**"
 ---
 
 # Metrics
@@ -13,6 +14,9 @@ paths:
 - The collector reads the manager's cache and the samples alone, never the API server.
 - Every metric has a line in the golden, `internal/metrics/testdata/metrics.prom`.
 - Every rule aggregates `pod` and `instance` away: a failover moves every series to another pod.
+- Every dashboard query on a tenant's series aggregates `pod` and `instance` away with `max`, as a rule does, so that the two leaders' series at a failover are one; the operator dashboard, which shows the replicas, keeps `pod`.
+- Every metric and label name a rule or a dashboard reads is one a series of the golden or of controller-runtime's registry carries, a `by`, `on` or `group_left` label one the selectors under that aggregation or that side of the join carry, an `ignoring` label one the selectors of either side carry, and `make monitoring` fails on one that is not; the name test reads the selectors, not what each inner step returns, so a label an inner step drops passes it, which the promtool cases catch in a rule and nothing catches in a dashboard ([decision](../../docs/decisions/metrics-are-part-of-the-api.md#code)); the test is a module of its own, so the parser's requirements stay out of the operator's, and runs from its directory: `cd test/monitoring && go test ./...`.
+- A dashboard passes `dashboard-linter lint --strict`; `charts/lodia/files/dashboards/.lint` excludes the job and instance rules for the fleet and control plane dashboards alone, by title, and the name test, which reads `.lint` as the linter does, fails on an exclusion whose entries name other dashboards or none.
 - Every alert carries `keep_firing_for: 4m`, which outlasts the two lease handovers of a `helm upgrade`.
 - Every alert has a section `### <alert>` in `docs/operations.md`, which its `runbook_url` names.
 - Every alert has cases, written in the alert's function in `test/rules/cases_test.go`, and `go test ./test/rules/` fails on an alert with no case where it fires; `go test ./test/rules/ -update` rewrites `test/rules/lodia_test.yaml`, which is never edited by hand.

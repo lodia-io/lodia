@@ -82,6 +82,19 @@ func TestTheMetricsRunOnTheFilesLimitAndTheRevisionLifecycleGrants(t *testing.T)
 	}
 }
 
+func TestTheMetricsServeTheHoldFractionOfTheSourcesHealthNodes(t *testing.T) {
+	in := Inputs{Config: DefaultConfig(), Version: "v1.0.0"}
+	in.Config.Health.HoldFraction = 750
+	sources := &Sources{Health: newHealth(nil, nil, in.Config.Health), Nodes: newNodes(nil, nil, in.Config.Health)}
+	got, err := Metrics(nil, nil, in, sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.HoldFraction != sources.Nodes.HoldFraction || got.HoldFraction != 750 {
+		t.Errorf("the metrics serve a hold fraction of %d thousandths, want health-nodes' %d and the file's 750", got.HoldFraction, sources.Nodes.HoldFraction)
+	}
+}
+
 func TestTheMetricsServeTheCounterAndHistogramOfTheSources(t *testing.T) {
 	in := Inputs{Config: DefaultConfig(), Version: "v1.0.0"}
 	sources := &Sources{Health: newHealth(nil, nil, in.Config.Health), Nodes: newNodes(nil, nil, in.Config.Health)}
