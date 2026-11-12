@@ -334,3 +334,17 @@ func TestATenantBeyondTheBoundLeavesNothingToTheControlPlaneRecreatedUnderItsNam
 	expectNodes(t, successor, nodesOf(3, 3, 0, "v1.35.0"))
 	expectNotHeld(t, successor, silent(0, 3))
 }
+
+func TestRow9ReleasesAHoldOfATenantBeyondTheBoundBeforeAnyListOfNodes(t *testing.T) {
+	h := holding(t, "a", "b", "c")
+	joined(t, "d", corev1.ConditionTrue, h.start)
+	h.fail(nodeListPath, http.MethodGet, http.StatusInternalServerError, metav1.StatusReasonInternalError)
+	h.r = nodesReconciler(h.now)
+	h.r.MaxNodes = 3
+	h.at(25)
+	h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonTooManyNodes, tooManyLeases(3))
+	expectNodes(t, h.cp, truncatedNodes(0, 0))
+	if holder := h.holder(); holder != "" {
+		t.Fatalf("a restarted operator with no list of Nodes left holder %q", holder)
+	}
+}
