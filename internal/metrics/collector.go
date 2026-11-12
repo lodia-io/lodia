@@ -50,7 +50,7 @@ var (
 	nodesReady = perControlPlane("lodia_controlplane_nodes_ready",
 		"status.nodes.ready: the tenant's nodes that are Ready.")
 	nodesOutdatedKubelets = perControlPlane("lodia_controlplane_nodes_outdated_kubelets",
-		"status.nodes.outdatedKubelets: the tenant's nodes whose kubelet runs an older minor than status.kubernetes.version.")
+		"status.nodes.outdatedKubelets: the tenant's nodes whose kubelet runs an older minor than status.kubernetes.version; absent while status.nodes.truncated is true.")
 	componentReplicas = perControlPlane("lodia_controlplane_component_replicas",
 		"status.components.<component>.total: the replicas the component's Deployment asks for.",
 		"component")
@@ -242,7 +242,9 @@ func (c *Collector) collect(ch chan<- prometheus.Metric, cp *lodiav1alpha1.Contr
 	if n := status.Nodes; n != nil {
 		emit(nodes, float64(n.Total))
 		emit(nodesReady, float64(n.Ready))
-		emit(nodesOutdatedKubelets, float64(n.OutdatedKubelets))
+		if !n.Truncated {
+			emit(nodesOutdatedKubelets, float64(n.OutdatedKubelets))
+		}
 	}
 	if silent, counted, ok := c.NodeCounts(client.ObjectKeyFromObject(cp), cp.UID); ok {
 		emit(nodesSilent, float64(silent))
