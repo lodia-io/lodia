@@ -129,7 +129,7 @@ func TestMain(m *testing.M) {
 	}
 	mgr := env.Manager(asDatastore, false)
 	managerReads = &reads{Client: mgr.GetClient(), etcdReady: map[client.ObjectKey]druidv1alpha1.Condition{}, paused: map[client.ObjectKey]int64{}}
-	if err := (&datastore.Reconciler{Client: managerReads, Reader: mgr.GetAPIReader(), EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion, EtcdClient: dialRestored, Clock: clock.RealClock{}}).SetupWithManager(mgr, 1); err != nil {
+	if err := (&datastore.Reconciler{Client: managerReads, Reader: mgr.GetAPIReader(), EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion, EtcdClient: dialRestored, Clock: clock.RealClock{}}).SetupWithManager(mgr, 10); err != nil {
 		env.Fatal("controller", err)
 	}
 	ctx := env.StartManager(mgr)
@@ -516,6 +516,7 @@ func resources(r *corev1.ResourceRequirements) string {
 }
 
 func TestFinalizerAndEtcdFromClass(t *testing.T) {
+	t.Parallel()
 	ns, credentialsNamespace := namespace(t), namespace(t)
 	create(t, credentials(credentialsNamespace))
 	mapped := fullClass("mapped", credentialsNamespace)
@@ -604,6 +605,7 @@ func TestFinalizerAndEtcdFromClass(t *testing.T) {
 }
 
 func TestConditionsFromState(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	createClass(t, newClass("state", "Retain"))
 	events, err := k8s.Watch(t.Context(), &lodiav1alpha1.ControlPlaneList{}, client.InNamespace(ns))
@@ -645,6 +647,7 @@ func TestConditionsFromState(t *testing.T) {
 }
 
 func TestEtcdRefused(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	createClass(t, newClass("refused", "Retain"))
 	binding := refuseEtcds(t, ns)
@@ -665,6 +668,7 @@ func TestEtcdRefused(t *testing.T) {
 }
 
 func TestARefusedApplyKeepsTheDatastoreThatRuns(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "kept"
 	createClass(t, newClass("keeps-running", "Retain"))
@@ -690,6 +694,7 @@ func TestARefusedApplyKeepsTheDatastoreThatRuns(t *testing.T) {
 }
 
 func TestACredentialsCopyTheAPIServerRefusesIsThePasssError(t *testing.T) {
+	t.Parallel()
 	ns, credentialsNamespace := namespace(t), namespace(t)
 	const cp = "copy-refused"
 	create(t, credentials(credentialsNamespace))
@@ -757,6 +762,7 @@ func refuse(t *testing.T, ns string, rule admissionregistrationv1.Rule, probe fu
 }
 
 func TestPaused(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	createClass(t, newClass("paused", "Delete"))
 	paused := controlPlane(ns, "dev", "paused")
@@ -811,6 +817,7 @@ func TestPaused(t *testing.T) {
 }
 
 func TestNewestCompleteGeneration(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	createClass(t, newClass("generations", "Retain"))
 	create(t, controlPlane(ns, "dev", "generations"))
@@ -875,6 +882,7 @@ func TestNewestCompleteGeneration(t *testing.T) {
 }
 
 func TestGenerationsMoveForward(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	createClass(t, newClass("forward", "Retain"))
 	create(t, controlPlane(ns, "dev", "forward"))
@@ -912,6 +920,7 @@ func TestGenerationsMoveForward(t *testing.T) {
 }
 
 func TestOnlyItsOwnGenerationsCount(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	createClass(t, newClass("owned", "Retain"))
 	create(t, controlPlane(ns, "dev", "owned"))
@@ -941,6 +950,7 @@ func TestOnlyItsOwnGenerationsCount(t *testing.T) {
 }
 
 func TestMountedSecretsMustExist(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "mounted"
 	createClass(t, newClass("mounting", "Retain"))
@@ -1015,6 +1025,7 @@ func TestDatastoreClassNotFound(t *testing.T) {
 }
 
 func TestBackupCredentialsCopied(t *testing.T) {
+	t.Parallel()
 	ns, credentialsNamespace := namespace(t), namespace(t)
 	createClass(t, fullClass("backed-up", credentialsNamespace))
 	create(t, controlPlane(ns, "backed", "backed-up"))
@@ -1074,6 +1085,7 @@ func snapshotPrefix(key string) string {
 }
 
 func TestBackupPrefixHoldsNoName(t *testing.T) {
+	t.Parallel()
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-v1"}}
 	create(t, ns)
 	credentialsNamespace := namespace(t)
@@ -1119,6 +1131,7 @@ func readyOn(t *testing.T, ns, cp string, generation int) {
 }
 
 func TestHeldClass(t *testing.T) {
+	t.Parallel()
 	ns, credentialsNamespace := namespace(t), namespace(t)
 	const cp = "held"
 	create(t, credentials(credentialsNamespace))
@@ -1170,6 +1183,7 @@ func TestHeldClass(t *testing.T) {
 }
 
 func TestSnapshotsFollowTheEtcdsStore(t *testing.T) {
+	t.Parallel()
 	ns, credentialsNamespace := namespace(t), namespace(t)
 	const cp = "snapshotted"
 	create(t, credentials(credentialsNamespace))
@@ -1239,6 +1253,7 @@ func TestSnapshotsFollowTheEtcdsStore(t *testing.T) {
 }
 
 func TestBackupCopyFollowsItsEvents(t *testing.T) {
+	t.Parallel()
 	ns, credentialsNamespace := namespace(t), namespace(t)
 	const cp = "copied"
 	source := credentials(credentialsNamespace)
@@ -1295,6 +1310,7 @@ func TestBackupCopyFollowsItsEvents(t *testing.T) {
 }
 
 func TestPredecessorsCopy(t *testing.T) {
+	t.Parallel()
 	ns, credentialsNamespace := namespace(t), namespace(t)
 	const cp = "successor"
 	create(t, credentials(credentialsNamespace))
@@ -1359,6 +1375,7 @@ func TestPredecessorsCopy(t *testing.T) {
 }
 
 func TestOwnerlessCopyIsAdopted(t *testing.T) {
+	t.Parallel()
 	ns, credentialsNamespace := namespace(t), namespace(t)
 	const cp = "adopter"
 	create(t, credentials(credentialsNamespace))
@@ -1468,6 +1485,7 @@ func setEtcdStatus(t *testing.T, ns, cp string, mutate func(*druidv1alpha1.EtcdS
 }
 
 func TestUnsupported(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	shared := controlPlane(ns, "shared", "")
 	shared.Spec.Datastore = lodiav1alpha1.DatastoreChoice{Shared: &lodiav1alpha1.SharedDatastore{Name: "pool"}}
@@ -1479,6 +1497,7 @@ func TestUnsupported(t *testing.T) {
 }
 
 func TestDatastoreReadyIsQuorum(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "reported"
 	class := newClass("reported", "Retain")
@@ -1588,6 +1607,7 @@ func TestDatastoreReadyIsQuorum(t *testing.T) {
 }
 
 func TestAPassFromAStaleCacheChangesNoEtcd(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "stale"
 	createClass(t, newClass("stale", "Retain"))
@@ -1634,6 +1654,7 @@ func TestAPassFromAStaleCacheChangesNoEtcd(t *testing.T) {
 }
 
 func TestAFinalizingPassFromAStaleReadTouchesNoOtherEtcd(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "finalized"
 	createClass(t, newClass("finalized", "Retain"))
@@ -1696,6 +1717,7 @@ func TestAFinalizingPassFromAStaleReadTouchesNoOtherEtcd(t *testing.T) {
 }
 
 func TestReclaimingFromAStaleListDeletesNoOtherClaim(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "reclaimed"
 	createClass(t, newClass("reclaimed", "Delete"))
@@ -1751,6 +1773,7 @@ func TestReclaimingFromAStaleListDeletesNoOtherClaim(t *testing.T) {
 }
 
 func TestThreeMembersWithHighAvailability(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "ha"
 	createClass(t, newClass("ha", "Retain"))
@@ -1835,6 +1858,7 @@ func TestThreeMembersWithHighAvailability(t *testing.T) {
 }
 
 func TestHighAvailabilityOnAFormedEtcd(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "growing"
 	createClass(t, newClass("growing", "Retain"))
@@ -1932,6 +1956,7 @@ func TestHighAvailabilityOnAFormedEtcd(t *testing.T) {
 }
 
 func TestEtcdDruidKeepsTheClientPortThroughAScaleIn(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "shrinking"
 	createClass(t, newClass("shrinking", "Retain"))
@@ -2003,6 +2028,7 @@ func TestEtcdDruidKeepsTheClientPortThroughAScaleIn(t *testing.T) {
 }
 
 func TestAddingHighAvailabilityWaitsForASettledEtcd(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "toggled"
 	createClass(t, newClass("toggled", "Retain"))
@@ -2041,6 +2067,7 @@ func TestAddingHighAvailabilityWaitsForASettledEtcd(t *testing.T) {
 }
 
 func TestRemovingHighAvailabilityBacksOutOfAMemberThatNeverComesUp(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "stuck"
 	createClass(t, newClass("stuck", "Retain"))
@@ -2085,6 +2112,7 @@ func TestRemovingHighAvailabilityBacksOutOfAMemberThatNeverComesUp(t *testing.T)
 }
 
 func TestRemovingHighAvailabilityWaitsForTheMemberEtcdDruidKeeps(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "kept"
 	createClass(t, newClass("kept", "Retain"))
@@ -2145,6 +2173,7 @@ func TestRemovingHighAvailabilityWaitsForTheMemberEtcdDruidKeeps(t *testing.T) {
 }
 
 func TestAHeldScaleOutResumesOnceTheStatefulSetSettles(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "resumes"
 	createClass(t, newClass("resumes", "Retain"))
@@ -2271,6 +2300,7 @@ func deleted(t *testing.T, ns, name string) {
 }
 
 func TestVolumesExist(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	createClass(t, newClass("reused", "Delete"))
 	etcdLabels := druidv1alpha1.GetDefaultLabels(metav1.ObjectMeta{Name: "dev-etcd"})
@@ -2308,6 +2338,7 @@ func TestVolumesExist(t *testing.T) {
 }
 
 func TestForeignEtcd(t *testing.T) {
+	t.Parallel()
 	createClass(t, newClass("foreign", "Delete"))
 	rows := []struct {
 		name, cp string
@@ -2357,14 +2388,15 @@ func TestForeignEtcd(t *testing.T) {
 }
 
 func TestStorageAtCreation(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
-	createClass(t, newClass("growing", "Retain"))
-	create(t, controlPlane(ns, "grown", "growing"))
+	createClass(t, newClass("grown", "Retain"))
+	create(t, controlPlane(ns, "grown", "grown"))
 	writeGeneration(t, ns, "grown", 1)
 	waitEtcd(t, ns, "grown", nil)
 
 	class := &lodiav1alpha1.DatastoreClass{}
-	if err := k8s.Get(t.Context(), client.ObjectKey{Name: "growing"}, class); err != nil {
+	if err := k8s.Get(t.Context(), client.ObjectKey{Name: "grown"}, class); err != nil {
 		t.Fatal(err)
 	}
 	class.Spec.Storage = lodiav1alpha1.EtcdStorage{ClassName: "fast", Size: resource.MustParse("6Gi"), ReclaimPolicy: "Retain"}
@@ -2372,7 +2404,7 @@ func TestStorageAtCreation(t *testing.T) {
 	if err := k8s.Update(t.Context(), class); err != nil {
 		t.Fatal(err)
 	}
-	grantClass(t, ns, "grown", "growing")
+	grantClass(t, ns, "grown", "grown")
 	etcd := waitEtcd(t, ns, "grown", func(etcd *druidv1alpha1.Etcd) error {
 		if quota := quantity(etcd.Spec.Etcd.Quota); quota != "3Gi" {
 			return fmt.Errorf("quota %s, the class edit has not reached the Etcd", quota)
@@ -2388,6 +2420,7 @@ func TestStorageAtCreation(t *testing.T) {
 }
 
 func TestQuotaFitsTheVolume(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "quota"
 	class := newClass("quota", "Retain")
@@ -2452,6 +2485,7 @@ func TestQuotaFitsTheVolume(t *testing.T) {
 }
 
 func TestQuotaFitsRetainedClaims(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "regrow"
 	createClass(t, newClass("regrow", "Retain"))
@@ -2527,6 +2561,7 @@ func TestQuotaFitsRetainedClaims(t *testing.T) {
 }
 
 func TestTerminatingClaimIsSkipped(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "restart"
 	createClass(t, newClass("restart", "Retain"))
@@ -2568,6 +2603,7 @@ func TestTerminatingClaimIsSkipped(t *testing.T) {
 }
 
 func TestTerminatingClaimBesideALiveOne(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "beside"
 	createClass(t, newClass("beside", "Retain"))
@@ -2743,6 +2779,7 @@ func withoutTLS(etcd *druidv1alpha1.Etcd) druidv1alpha1.EtcdSpec {
 }
 
 func TestClassGone(t *testing.T) {
+	t.Parallel()
 	ns, credentialsNamespace := namespace(t), namespace(t)
 	const cp = "kept"
 	create(t, credentials(credentialsNamespace))
@@ -2789,6 +2826,7 @@ func TestClassGone(t *testing.T) {
 }
 
 func TestDeletionBeforeLabelling(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	createClass(t, newClass("unlabelled", "Delete"))
 	create(t, controlPlane(ns, "dev", "unlabelled"))
@@ -2814,6 +2852,7 @@ func TestDeletionBeforeLabelling(t *testing.T) {
 }
 
 func TestDeletion(t *testing.T) {
+	t.Parallel()
 	for _, policy := range []string{"Delete", "Retain"} {
 		t.Run(policy, func(t *testing.T) {
 			ns := namespace(t)
@@ -2947,6 +2986,7 @@ func sameSpec(t *testing.T, got, want networkingv1.NetworkPolicySpec) {
 }
 
 func TestNetworkPolicy(t *testing.T) {
+	t.Parallel()
 	ns, credentialsNamespace := namespace(t), namespace(t)
 	create(t, credentials(credentialsNamespace))
 	createClass(t, fullClass("isolating", credentialsNamespace))
@@ -3010,6 +3050,7 @@ func getPolicy(t *testing.T, ns, cp string) *networkingv1.NetworkPolicy {
 }
 
 func TestNetworkPolicyOfAnotherOwner(t *testing.T) {
+	t.Parallel()
 	createClass(t, newClass("policed", "Retain"))
 	rows := []struct {
 		name, cp string
@@ -3064,6 +3105,7 @@ func TestNetworkPolicyOfAnotherOwner(t *testing.T) {
 }
 
 func TestOwnerlessNetworkPolicyIsAdopted(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	createClass(t, newClass("adopting-policy", "Retain"))
 	create(t, &networkingv1.NetworkPolicy{
@@ -3086,6 +3128,7 @@ func TestOwnerlessNetworkPolicyIsAdopted(t *testing.T) {
 }
 
 func TestNetworkPolicyRefused(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "walled"
 	createClass(t, newClass("walling", "Retain"))
@@ -3111,6 +3154,7 @@ func TestNetworkPolicyRefused(t *testing.T) {
 }
 
 func TestAFailedNetworkPolicyCallLeavesTheStatus(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "flaky"
 	createClass(t, newClass("flaking", "Retain"))
