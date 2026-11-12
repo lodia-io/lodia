@@ -24,6 +24,7 @@ import (
 var datastoreConditions = []string{lodiav1alpha1.ConditionDatastoreReady, lodiav1alpha1.ConditionBackupReady}
 
 func TestACacheWithoutDatastoreReadyLeavesTheServersConditions(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	const cp = "cached"
 	createClass(t, newClass("cached", "Retain"))
@@ -55,6 +56,7 @@ func TestACacheWithoutDatastoreReadyLeavesTheServersConditions(t *testing.T) {
 }
 
 func TestANewControlPlaneStillGetsReconcilingFromDatastore(t *testing.T) {
+	t.Parallel()
 	ns := namespace(t)
 	createClass(t, newClass("new", "Retain"))
 	events, err := k8s.Watch(t.Context(), &lodiav1alpha1.ControlPlaneList{}, client.InNamespace(ns))

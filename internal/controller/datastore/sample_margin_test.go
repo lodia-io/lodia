@@ -14,7 +14,7 @@ import (
 )
 
 func TestAClientThatComesTooLateToAnEtcdThatDoesNotAnswerKeepsNoSample(t *testing.T) {
-	unreachable := closedURL(t)
+	t.Parallel()
 	for _, left := range []time.Duration{2 * time.Millisecond, 500 * time.Millisecond} {
 		t.Run(left.String(), func(t *testing.T) {
 			cp, etcd := sampledControlPlane("late", "uid-late")
