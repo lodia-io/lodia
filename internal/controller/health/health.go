@@ -725,6 +725,7 @@ func (c *tenantClients) of(kubeconfig []byte) (*tenant, error) {
 	}
 	cfg.Proxy = http.ProxyURL(nil)
 	cfg.UserAgent = rest.DefaultKubernetesUserAgent()
+	cfg.Wrap(capResponses)
 	transport, err := rest.HTTPClientFor(cfg)
 	if err != nil {
 		return nil, err
