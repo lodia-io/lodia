@@ -247,6 +247,12 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   The datastore tests no longer have the window: their `etcdConfig` and `runEtcd` (`internal/controller/datastore/embeddedetcd_test.go`) give each etcd listeners that etcd itself binds.
   Share them with this test.
 
+## From the kubelet certificates' lifetime (2026-11-12)
+
+- A kubelet client certificate cannot be revoked, and a kubelet renews its own without asking for a lifetime: its certificate manager sets no `RequestedCertificateLifetime` ([kubelet.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/certificate/kubelet.go#L229-L248)), so the controller manager's `--cluster-signing-duration` alone sets it ([signer.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controller/certificates/signer/signer.go#L219-L237)).
+  A node a platform removes therefore keeps a certificate its API server accepts for up to 30 days, and its kubelet may register its `Node` again in that time.
+  `docs/decisions/staged-credential-rotation.md:22` sets the 30 days without weighing that window against the renewals a shorter lifetime costs: decide the lifetime, or a field for it, on that trade.
+
 ## For the release that first drops a minor
 
 - A minor dropped from the version table stays renderable for one more release, as the source of an upgrade ([upgrades-and-maintenance-windows](docs/decisions/upgrades-and-maintenance-windows.md), "End of support"): build it in the release that first drops one, since no minor is dropped yet and the flag would have no data and no test that means anything.
