@@ -637,11 +637,11 @@ The runs below are on go1.26.10, `go version go1.26.10 darwin/arm64`, on 16 core
 | one read, the most of 47 shapes, over HTTP/1.1 | 10 | 8.0 to 16.3 MiB | 20.4 MiB, in every run | 22.2 MiB |
 | the same, over HTTP/2 | 10 | 12.8 to 20.7 MiB | 20.9 to 21.4 MiB | 26.5 MiB |
 | a read whose answer of 16 MiB is cut, over HTTP/1.1 | 1,000 | 12.4 to 20.4 MiB | 20.4 MiB | 22.2 MiB |
-| the same, headers at their bound | 1,000 | 13.3 to 25.3 MiB | 21.4 MiB | 22.2 MiB |
+| the same, headers at their bound | 1,000 | 13.4 to 25.3 MiB | 21.4 MiB | 22.2 MiB |
 | the same, gzipped | 1,000 | 13.4 to 29.4 MiB | 21.4 MiB | 22.2 MiB |
 | the same, over HTTP/2 | 1,000 | 22.1 to 28.6 MiB | 22.4 to 22.7 MiB | 26.5 MiB |
-| the same, headers at their bound | 1,000 | 22.4 to 29.0 MiB | 22.6 to 23.1 MiB | 26.5 MiB |
-| the same, trailers at their bound | 1,000 | 22.1 to 28.9 MiB | 22.3 to 23.2 MiB | 26.5 MiB |
+| the same, headers at their bound | 1,000 | 22.5 to 29.0 MiB | 22.6 to 23.1 MiB | 26.5 MiB |
+| the same, trailers at their bound | 1,000 | 22.1 to 28.9 MiB | 22.3 to 23.3 MiB | 26.5 MiB |
 | the same, gzipped | 1,000 | 21.9 to 39.2 MiB | 22.3 to 23.1 MiB | 26.5 MiB |
 | one pass of `health-nodes`, the Lease read, both lists answered together and the renewal, over HTTP/1.1 | 10 | 15.9 to 24.2 MiB | 24.1 to 32.4 MiB | 48.4 MiB |
 | the same, over HTTP/2 | 10 | 21.1 to 25.5 MiB | 33.2 to 41.5 MiB | 56.0 MiB |
@@ -657,8 +657,8 @@ The runs below are on go1.26.10, `go version go1.26.10 darwin/arm64`, on 16 core
 The 100 passes at once open 200 connections to one listener, and a run of an earlier set of ten failed: 19 of its 100 passes ended in a connection reset or a broken pipe from the loopback server, whose listen queue is 128 (`kern.ipc.somaxconn`); the ten above all passed.
 The closest any measure came to its bound is 0.8 MiB, the cut answer with headers at their bound and a gzipped body over HTTP/1.1.
 No run put a pass at the ceiling of its reads, since their chunks do not all peak together.
-A first pass of `health-nodes` over 5,000 Nodes and their 5,000 Leases, the most `health.maxNodes` counts by default, took 275, 307 and 277 ms in three runs on go1.26.10, and a pass over 5,001 Nodes, which stops at the bound, 269, 306 and 271 ms (`TestATenantOfMaxNodesNodesIsCountedWholeAtTheOperatorsTimeout`, on envtest, on 16 cores of an Apple M4 Max, one run at a time).
-The race detector slows it tenfold, to 2.83, 2.90 and 2.80 s for 5,000 Nodes and 2.81, 2.86 and 2.77 s for 5,001, in three runs of `TestATenantOfMaxNodesNodesIsCountedWholeUnderTheRaceDetector`, which counts the same tenant with a `Timeout` of a minute, against the operator's of 5 s.
+A first pass of `health-nodes` over 5,000 Nodes and their 5,000 Leases, the most `health.maxNodes` counts by default, took 312, 296 and 309 ms in three runs on go1.26.10, and a pass over 5,001 Nodes, which stops at the bound, 299, 300 and 289 ms (`TestATenantOfMaxNodesNodesIsCountedWholeAtTheOperatorsTimeout`, on envtest, on 16 cores of an Apple M4 Max, one run at a time).
+The race detector slows it tenfold, to 2.93, 2.94 and 2.93 s for 5,000 Nodes and 2.92, 2.91 and 2.91 s for 5,001, in three runs of `TestATenantOfMaxNodesNodesIsCountedWholeUnderTheRaceDetector`, which counts the same tenant with a `Timeout` of a minute, against the operator's of 5 s.
 That first test is built without the race detector, and `make test` runs it in a step of its own.
 Between passes it keeps at most `health.maxNodes` Lease versions and Node summaries per tenant ([review checklist](review-checklist.md), item 10).
 The tenant's administrator can have any server answer the lists, so the pass bounds every string it keeps itself:
