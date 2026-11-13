@@ -59,6 +59,10 @@ func tooManyLeases(n int) string {
 	return fmt.Sprintf("more than %d Leases of kube-node-lease (health.maxNodes)", n) + beyond
 }
 
+func tooManyNodes(n int) string {
+	return fmt.Sprintf("more than %d Nodes (health.maxNodes)", n) + beyond
+}
+
 func truncatedNodes(total, ready int32) *lodiav1alpha1.NodesStatus {
 	return &lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: total, Ready: ready}, Truncated: true}
 }
@@ -227,7 +231,7 @@ func TestBothListsPageAndTheTenantsBeyondTheBoundsAreNotCounted(t *testing.T) {
 	})
 }
 
-func TestRow9AHeldTenantThatGrowsBeyondTheBoundIsReleasedAtOnce(t *testing.T) {
+func TestRow5AHeldTenantThatGrowsBeyondTheBoundIsReleasedAtOnce(t *testing.T) {
 	h := holding(t, "a", "b", "c")
 	h.r.MaxNodes = 3
 	joined(t, "d", corev1.ConditionTrue, h.start)
@@ -248,7 +252,7 @@ func TestRow9AHeldTenantThatGrowsBeyondTheBoundIsReleasedAtOnce(t *testing.T) {
 	}
 }
 
-func TestRow10ATenantBeyondTheBoundIsNotHeldWhateverIsSilent(t *testing.T) {
+func TestRow6ATenantBeyondTheBoundIsNotHeldWhateverIsSilent(t *testing.T) {
 	h := sampling(t, "a", "b", "c", "d")
 	h.r.MaxNodes = 3
 	for _, at := range []int{0, 20, 40} {
@@ -258,6 +262,81 @@ func TestRow10ATenantBeyondTheBoundIsNotHeldWhateverIsSilent(t *testing.T) {
 			t.Fatalf("a tenant beyond the bound got the Lease %+v at %d s", lease.Spec, at)
 		}
 	}
+}
+
+func TestRow5AHoldIsReleasedByAStopKnownFromAnEarlierPassWhileAccessReadyIsNotTrue(t *testing.T) {
+	h := holding(t, "a", "b", "c")
+	h.r.MaxNodes = 3
+	joined(t, "d", corev1.ConditionTrue, h.start)
+	h.fail(managerLease, http.MethodPut, http.StatusInternalServerError, metav1.StatusReasonInternalError)
+	h.at(25)
+	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+		t.Fatalf("a failed release left holder %q", holder)
+	}
+	h.inject(nil)
+	setAccessAt(t, h.cp, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding, get(t, h.cp).Generation)
+	h.at(30)
+	h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonTooManyNodes, tooManyLeases(3))
+	h.expectNoHealth()
+	if holder := h.holder(); holder != "" {
+		t.Fatalf("a tenant beyond the bound left holder %q while AccessReady was not True", holder)
+	}
+}
+
+func TestRow5AHoldIsReleasedByAStopOfTheNodesWhileTheLeaseListFails(t *testing.T) {
+	h := holding(t, "a", "b", "c")
+	h.r.MaxNodes = 3
+	addNode(t, "d", corev1.ConditionTrue, h.start, "v1.35.0")
+	h.fail(leaseListPath, http.MethodGet, http.StatusInternalServerError, metav1.StatusReasonInternalError)
+	h.at(30)
+	h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonTooManyNodes, tooManyNodes(3))
+	h.expectNoHealth()
+	expectNodes(t, h.cp, truncatedNodes(3, 3))
+	if holder := h.holder(); holder != "" {
+		t.Fatalf("a tenant beyond the bound left holder %q while its Lease list failed", holder)
+	}
+}
+
+func TestRow6ATenantBeyondTheBoundWithAFailingLeaseListOrNoAccessIsTooManyNodes(t *testing.T) {
+	for name, setup := range map[string]func(*holdRun){
+		"a failing Lease list": func(h *holdRun) {
+			h.fail(leaseListPath, http.MethodGet, http.StatusInternalServerError, metav1.StatusReasonInternalError)
+		},
+		"AccessReady not True": func(h *holdRun) {
+			setAccessAt(h.t, h.cp, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding, get(h.t, h.cp).Generation)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := sampling(t, "a", "b", "c")
+			h.r.MaxNodes = 3
+			h.at(0)
+			addNode(t, "d", corev1.ConditionTrue, h.start, "v1.35.0")
+			h.at(30)
+			h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonTooManyNodes, tooManyNodes(3))
+			setup(h)
+			h.at(35)
+			h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonTooManyNodes, tooManyNodes(3))
+			if lease := h.lease(); lease != nil {
+				t.Fatalf("a tenant beyond the bound got the Lease %+v", lease.Spec)
+			}
+		})
+	}
+}
+
+func TestRows3And4DisabledComeBeforeATenantBeyondTheBound(t *testing.T) {
+	h := holding(t, "a", "b", "c")
+	h.r.MaxNodes = 3
+	joined(t, "d", corev1.ConditionTrue, h.start)
+	updateSpec(t, h.cp, func(cp *lodiav1alpha1.ControlPlane) {
+		cp.Spec.Health = &lodiav1alpha1.Health{HoldControllerManager: new(false)}
+	})
+	h.at(25)
+	h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonDisabled, disabled)
+	if holder := h.holder(); holder != "" {
+		t.Fatalf("a disabled hold of a tenant beyond the bound left holder %q", holder)
+	}
+	h.at(30)
+	h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonDisabled, disabled)
 }
 
 func TestBackUnderTheBoundsTheClockOfTheLeasesStartsAfresh(t *testing.T) {
@@ -335,7 +414,7 @@ func TestATenantBeyondTheBoundLeavesNothingToTheControlPlaneRecreatedUnderItsNam
 	expectNotHeld(t, successor, silent(0, 3))
 }
 
-func TestRow9ReleasesAHoldOfATenantBeyondTheBoundBeforeAnyListOfNodes(t *testing.T) {
+func TestRow5ReleasesAHoldOfATenantBeyondTheBoundBeforeAnyListOfNodes(t *testing.T) {
 	h := holding(t, "a", "b", "c")
 	joined(t, "d", corev1.ConditionTrue, h.start)
 	h.fail(nodeListPath, http.MethodGet, http.StatusInternalServerError, metav1.StatusReasonInternalError)

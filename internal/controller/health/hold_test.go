@@ -328,7 +328,7 @@ func TestRow4DisabledTakesNothingAtOrAboveTheFraction(t *testing.T) {
 	expectNodes(t, h.cp, nodesOf(3, 3, 0, "v1.35.0"))
 }
 
-func TestRow5WithoutAccessAHoldRenews(t *testing.T) {
+func TestRow7WithoutAccessAHoldRenews(t *testing.T) {
 	h := holding(t, "a", "b", "c")
 	acquired := h.lease().Spec.AcquireTime
 	setAccessAt(t, h.cp, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding, get(t, h.cp).Generation)
@@ -341,7 +341,7 @@ func TestRow5WithoutAccessAHoldRenews(t *testing.T) {
 	}
 }
 
-func TestRow6WithoutAccessNotHeldWaits(t *testing.T) {
+func TestRow8WithoutAccessNotHeldWaits(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
 	h.at(0)
 	setAccessAt(t, h.cp, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding, get(t, h.cp).Generation)
@@ -352,7 +352,7 @@ func TestRow6WithoutAccessNotHeldWaits(t *testing.T) {
 	}
 }
 
-func TestRow7AFailedLeaseListRenewsAHold(t *testing.T) {
+func TestRow9AFailedLeaseListRenewsAHold(t *testing.T) {
 	h := holding(t, "a", "b", "c")
 	h.fail(leaseListPath, http.MethodGet, http.StatusInternalServerError, metav1.StatusReasonInternalError)
 	h.at(25)
@@ -361,7 +361,7 @@ func TestRow7AFailedLeaseListRenewsAHold(t *testing.T) {
 	h.renewedAt(25)
 }
 
-func TestRow8AFailedLeaseListWithoutAHoldReportsNotHeld(t *testing.T) {
+func TestRow10AFailedLeaseListWithoutAHoldReportsNotHeld(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
 	renew(t, lodiav1alpha1.ControllerManagerLease, "another_1", time.Now())
 	h.fail(leaseListPath, http.MethodGet, http.StatusInternalServerError, metav1.StatusReasonInternalError)

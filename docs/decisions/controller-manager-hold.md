@@ -24,7 +24,7 @@ The Health controller protects a tenant's workloads from an outage between the c
 - **The release.**
   Once fewer than 60% have been silent for 2 minutes, Health releases the lease the way client-go steps down (no holder, a 1-second duration); the controller manager takes it within seconds and starts afresh, counting its grace periods from its own start.
   A pass counts towards those 2 minutes only once the clock has run `silentAfter`, and a failed read of the kubeconfig or of the node Leases, or a return to 60% or more, clears the count.
-  A hold has no end of its own while `AccessReady` stays not True.
+  A hold has no end of its own while `AccessReady` stays not True, but for a tenant beyond a bound (row 5).
 - **It never fights.**
   Health takes the lease only when it has expired or when its holder's identity starts with the name of a pod Lodia runs for this `ControlPlane` (a leader's identity is `<pod name>_<uuid>`).
   Any other holder, such as a platform's own watchdog, is left alone and named in the message of `ControllerManagerHeld=False`, reason `HoldBlocked`.
@@ -82,12 +82,12 @@ A pass reads the Lease first, with a consistent GET, then takes the first row th
 | 2 | the read failed | kept, nothing applied | none |
 | 3 | disabled, held | `Disabled` | release at once |
 | 4 | disabled | `Disabled` | none |
-| 5 | `AccessReady` not True, held | `NodesSilent` | renew |
-| 6 | `AccessReady` not True | `WaitingForAccess` | none |
-| 7 | the Lease list failed, held | `NodesSilent` | renew |
-| 8 | the Lease list failed | `NotHeld`, saying the Leases could not be listed | none |
-| 9 | a list stopped at a bound, held | `TooManyNodes`, naming the bound | release at once |
-| 10 | a list stopped at a bound | `TooManyNodes`, naming the bound | none |
+| 5 | a list stopped at a bound, held | `TooManyNodes`, naming the bound | release at once |
+| 6 | a list stopped at a bound | `TooManyNodes`, naming the bound | none |
+| 7 | `AccessReady` not True, held | `NodesSilent` | renew |
+| 8 | `AccessReady` not True | `WaitingForAccess` | none |
+| 9 | the Lease list failed, held | `NodesSilent` | renew |
+| 10 | the Lease list failed | `NotHeld`, saying the Leases could not be listed | none |
 | 11 | no Node list of this run, held | `NodesSilent` | renew |
 | 12 | no Node list of this run | `NotHeld`, saying the nodes are not listed yet | none |
 | 13 | at or above the fraction, held | `NodesSilent` | renew, `acquireTime` kept |
@@ -97,6 +97,7 @@ A pass reads the Lease first, with a consistent GET, then takes the first row th
 | 17 | below, held, for `releaseAfter` | `NotHeld` | release: no holder, 1 s, as client-go does |
 | 18 | below | `NotHeld` | none |
 
+Whether a list stopped is what its last outcome says, and a list that fails keeps the outcome it had: a stop known from an earlier pass still ends a hold in row 5 when `AccessReady` is not True or the Lease list fails.
 A pass with no Lease list behind it, or with a list stopped at a bound, restarts the clock and clears the count towards the release, whichever row follows: rows 1, 2 and 5-10, rows 3 and 4 when the list failed, was stopped or `AccessReady` is not True, and a missing or foreign `<cp>-lodia-kubeconfig`.
 Rows 13-15 clear the count, and rows 11 and 12 neither grow nor clear it.
 A write that is refused or fails changes the row's condition:

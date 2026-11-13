@@ -150,6 +150,12 @@ func (r *NodesReconciler) selectRow(ctx context.Context, cp *lodiav1alpha1.Contr
 			return row{write: releaseLease, condition: disabled}, nil
 		}
 		return row{condition: disabled}, nil
+	case stop != "":
+		beyond := held(cp, lodiav1alpha1.ReasonTooManyNodes, stop+": Lodia does not count this tenant's nodes")
+		if ours {
+			return row{write: releaseLease, condition: beyond}, nil
+		}
+		return row{condition: beyond}, nil
 	case !access(cp):
 		if ours {
 			return row{write: renewLease, condition: nodesSilent(cp, accessNotTrue+keepsHolding)}, nil
@@ -161,12 +167,6 @@ func (r *NodesReconciler) selectRow(ctx context.Context, cp *lodiav1alpha1.Contr
 			return row{write: renewLease, condition: nodesSilent(cp, failed+keepsHolding)}, nil
 		}
 		return row{condition: held(cp, lodiav1alpha1.ReasonNotHeld, failed)}, nil
-	case stop != "":
-		beyond := held(cp, lodiav1alpha1.ReasonTooManyNodes, stop+": Lodia does not count this tenant's nodes")
-		if ours {
-			return row{write: releaseLease, condition: beyond}, nil
-		}
-		return row{condition: beyond}, nil
 	case s.listedAt.IsZero():
 		const notListed = "the nodes are not listed yet"
 		if ours {
