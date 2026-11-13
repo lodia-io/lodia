@@ -178,7 +178,9 @@ type nodeCondition struct {
 }
 
 // nodeConditionOf reads a Ready condition's status and time and keeps nothing
-// of a condition of another type, which it counts and no more.
+// of a condition of another type, which it counts and no more. A Node's writer
+// chooses the type, and the API server accepts one of any length, so a type past
+// maxWordRaw is another type and is not decoded.
 func nodeConditionOf(data []byte) (nodeCondition, error) {
 	var c nodeCondition
 	var status, since []byte
@@ -186,7 +188,7 @@ func nodeConditionOf(data []byte) (nodeCondition, error) {
 		switch string(key) {
 		case "type":
 			var s string
-			s, err = jsonscan.Text("status.conditions.type", value, maxWordRaw)
+			s, err = jsonscan.Word("status.conditions.type", value, maxWordRaw)
 			c.Type = corev1.NodeConditionType(s)
 		case "status":
 			status = value
@@ -200,7 +202,7 @@ func nodeConditionOf(data []byte) (nodeCondition, error) {
 	}
 	if status != nil {
 		var s string
-		if s, err = jsonscan.Text("status.conditions.status", status, maxWordRaw); err != nil {
+		if s, err = jsonscan.Word("status.conditions.status", status, maxWordRaw); err != nil {
 			return nodeCondition{}, err
 		}
 		c.Status = corev1.ConditionStatus(s)
@@ -230,7 +232,7 @@ func serviceOf(data []byte) (s service, err error) {
 			return jsonscan.Walk("spec", value, func(key, value []byte) (err error) {
 				if string(key) == "type" {
 					var t string
-					t, err = jsonscan.Text("spec.type", value, maxWordRaw)
+					t, err = jsonscan.Word("spec.type", value, maxWordRaw)
 					s.Spec.Type = corev1.ServiceType(t)
 				}
 				return err
@@ -257,7 +259,7 @@ func persistentVolumeOf(data []byte) (v persistentVolume, err error) {
 			return jsonscan.Walk("spec", value, func(key, value []byte) (err error) {
 				if string(key) == "persistentVolumeReclaimPolicy" {
 					var p string
-					p, err = jsonscan.Text("spec.persistentVolumeReclaimPolicy", value, maxWordRaw)
+					p, err = jsonscan.Word("spec.persistentVolumeReclaimPolicy", value, maxWordRaw)
 					v.Spec.PersistentVolumeReclaimPolicy = corev1.PersistentVolumeReclaimPolicy(p)
 				}
 				return err
@@ -284,7 +286,7 @@ func persistentVolumeClaimOf(data []byte) (c persistentVolumeClaim, err error) {
 			return jsonscan.Walk("status", value, func(key, value []byte) (err error) {
 				if string(key) == "phase" {
 					var p string
-					p, err = jsonscan.Text("status.phase", value, maxWordRaw)
+					p, err = jsonscan.Word("status.phase", value, maxWordRaw)
 					c.Status.Phase = corev1.PersistentVolumeClaimPhase(p)
 				}
 				return err
@@ -332,9 +334,10 @@ func webhookOf(data []byte) (w webhook, err error) {
 				return nil
 			})
 		case "failurePolicy":
-			var p *string
-			if p, err = optionalText("webhooks.failurePolicy", value, maxWordRaw); p != nil {
-				w.FailurePolicy = new(admissionregistrationv1.FailurePolicyType(*p))
+			if !jsonscan.Null(value) {
+				var p string
+				p, err = jsonscan.Word("webhooks.failurePolicy", value, maxWordRaw)
+				w.FailurePolicy = new(admissionregistrationv1.FailurePolicyType(p))
 			}
 		}
 		return err
@@ -486,7 +489,7 @@ func statusFrom(data []byte) (s statusBody, err error) {
 	err = jsonscan.Walk("the Status", data, func(key, value []byte) (err error) {
 		switch string(key) {
 		case "status":
-			s.Status, err = jsonscan.Text("status", value, maxWordRaw)
+			s.Status, err = jsonscan.Word("status", value, maxWordRaw)
 		case "message":
 			s.Message, err = jsonscan.Text("message", value, maxMessageRaw)
 			if tooLong := new(jsonscan.TooLong); errors.As(err, &tooLong) {
@@ -547,7 +550,8 @@ func failureOf(body []byte) (metav1.Status, bool) {
 }
 
 // decode reads a body, which encoding/json validates and nothing decodes, with
-// the projection of its kind.
+// the projection of its kind. A projection that fails returns what it read
+// before the failure, with the error.
 func decode[T any](body []byte, err error, project func([]byte) (*T, error)) (*T, error) {
 	if err != nil {
 		return nil, err
@@ -557,7 +561,7 @@ func decode[T any](body []byte, err error, project func([]byte) (*T, error)) (*T
 	}
 	out, err := project(body)
 	if err != nil {
-		return nil, fmt.Errorf("read the response: %w", err)
+		return out, fmt.Errorf("read the response: %w", err)
 	}
 	return out, nil
 }

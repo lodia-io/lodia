@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math/rand/v2"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -364,6 +365,49 @@ func TestTextDecodesWhatEncodingJSONDecodesUpToItsBound(t *testing.T) {
 				t.Errorf("Text returned %q, %v; want %q, %q", got, err, c.want, c.err)
 			}
 		})
+	}
+}
+
+func TestWordIsTextUpToItsBoundAndNoneOfTheWordsPastIt(t *testing.T) {
+	const most = 8
+	for _, c := range []struct {
+		name  string
+		value string
+		want  string
+		err   string
+	}{
+		{"null", `null`, "", ""},
+		{"empty", `""`, "", ""},
+		{"at the bound", `"12345678"`, "12345678", ""},
+		{"escaped, at the bound", `"\u00e9"`, "é", ""},
+		{"one byte past it", `"123456789"`, "", ""},
+		{"escapes count raw", `"\u00e9\u00e9"`, "", ""},
+		{"far past it", `"` + strings.Repeat("\xff", 1<<20) + `"`, "", ""},
+		{"a number", `1`, "", "the field is not a string"},
+		{"an object", `{}`, "", "the field is not a string"},
+		{"an object past the bound", `{"a":"123456789"}`, "", "the field is not a string"},
+		{"an array", `[]`, "", "the field is not a string"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := jsonscan.Word("the field", []byte(c.value), most)
+			if (err != nil) != (c.err != "") || err != nil && err.Error() != c.err || got != c.want {
+				t.Errorf("Word returned %q, %v; want %q, %q", got, err, c.want, c.err)
+			}
+		})
+	}
+}
+
+func TestWordDecodesNothingPastItsBound(t *testing.T) {
+	value := []byte(`"` + strings.Repeat("\xff", 4<<20) + `"`)
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	if _, err := jsonscan.Word("the field", value, 64); err != nil {
+		t.Fatal(err)
+	}
+	runtime.ReadMemStats(&after)
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 1<<16 {
+		t.Errorf("Word allocated %d bytes over a token of %d", allocated, len(value))
 	}
 }
 

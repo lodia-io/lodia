@@ -769,3 +769,40 @@ func TestRow9ALeaseListCutShortIsAFailedReadAndNeverAStop(t *testing.T) {
 		})
 	}
 }
+
+func TestANodeWithACustomConditionOfAnyTypeLengthIsCountedAndItsReadyRead(t *testing.T) {
+	for _, length := range []int{65, 316} {
+		t.Run(strconv.Itoa(length)+" bytes", func(t *testing.T) {
+			cp := tenantControlPlane(t)
+			start := time.Now().Truncate(time.Second)
+			r := nodesReconciler(clocktesting.NewFakePassiveClock(start))
+			joined(t, "a", corev1.ConditionTrue, start)
+			joined(t, "b", corev1.ConditionTrue, start)
+			node := &corev1.Node{}
+			if err := tenant.Get(t.Context(), client.ObjectKey{Name: "b"}, node); err != nil {
+				t.Fatal(err)
+			}
+			node.Status.Conditions = append([]corev1.NodeCondition{{
+				Type: corev1.NodeConditionType("example.com/" + strings.Repeat("k", length-len("example.com/"))), Status: corev1.ConditionFalse, LastTransitionTime: metav1.NewTime(start),
+			}}, node.Status.Conditions...)
+			if err := tenant.Status().Update(t.Context(), node); err != nil {
+				t.Fatalf("the API server refused a condition type of %d bytes: %v", length, err)
+			}
+			sample(t, r, cp)
+			expectNotHeld(t, cp, silent(0, 2))
+			expectNodes(t, cp, nodesOf(2, 2, 0, "v1.35.0"))
+		})
+	}
+}
+
+func TestAStopInsideAPageCountsTheItemsOfThatPageReadBeforeIt(t *testing.T) {
+	cp := tenantControlPlane(t)
+	start := time.Now().Truncate(time.Second)
+	r := nodesReconciler(clocktesting.NewFakePassiveClock(start))
+	joined(t, "a", corev1.ConditionTrue, start)
+	addNode(t, "b", corev1.ConditionTrue, start, strings.Repeat("v", 385))
+	joined(t, "c", corev1.ConditionTrue, start)
+	sample(t, r, cp)
+	expectTooMany(t, cp, "status.nodeInfo.kubeletVersion in the Nodes is longer than 384 bytes"+beyond)
+	expectNodes(t, cp, truncatedNodes(1, 1))
+}

@@ -314,14 +314,14 @@ func (r *NodesReconciler) list(ctx context.Context, tenant *tenant, s *sampling,
 func (r *NodesReconciler) listLeases(ctx context.Context, tenant *tenant) ([]leaseVersion, string, error) {
 	leases, end, err := listPages(ctx, leasePage, r.MaxNodes, func(ctx context.Context, options metav1.ListOptions) ([]leaseVersion, string, listEnd, error) {
 		page, err := tenant.leasePage(ctx, options)
-		if err != nil {
+		if page == nil {
 			return nil, "", listEnded, err
 		}
 		end := listEnded
 		if page.Items.over {
 			end = pageTooLong
 		}
-		return leaseVersions(page.Items.items), page.Metadata.Continue, end, nil
+		return leaseVersions(page.Items.items), page.Metadata.Continue, end, err
 	})
 	stop, err := r.stop("Leases of "+corev1.NamespaceNodeLease, leasePage, end, err)
 	return leases, stop, err
@@ -330,14 +330,14 @@ func (r *NodesReconciler) listLeases(ctx context.Context, tenant *tenant) ([]lea
 func (r *NodesReconciler) listNodes(ctx context.Context, tenant *tenant) ([]node, string, error) {
 	nodes, end, err := listPages(ctx, nodePage, r.MaxNodes, func(ctx context.Context, options metav1.ListOptions) ([]node, string, listEnd, error) {
 		page, err := tenant.nodePage(ctx, options)
-		if err != nil {
+		if page == nil {
 			return nil, "", listEnded, err
 		}
 		nodes, end := summarize(page.Items.items)
 		if end == listEnded && page.Items.over {
 			end = pageTooLong
 		}
-		return nodes, page.Metadata.Continue, end, nil
+		return nodes, page.Metadata.Continue, end, err
 	})
 	stop, err := r.stop("Nodes", nodePage, end, err)
 	return nodes, stop, err
@@ -370,15 +370,16 @@ func maxPages(size int64, most int) int {
 // an object of it was too large. It does not use pager.ListPager, whose
 // EachListItem fetches the next page while it hands over the last, even
 // unbuffered. Every page is a consistent read: the list sets no resourceVersion.
-// A failure returns the items of the pages before it.
+// A failure returns the items of the pages before it and those of its own page
+// that it read before the failure, at most most of them.
 func listPages[T any](ctx context.Context, size int64, most int, page func(context.Context, metav1.ListOptions) ([]T, string, listEnd, error)) (kept []T, end listEnd, err error) {
 	options := metav1.ListOptions{Limit: size}
 	for read := 1; ; read++ {
 		items, next, end, err := page(ctx, options)
-		if err != nil {
-			return kept, listEnded, err
-		}
 		kept = append(kept, items...)
+		if err != nil {
+			return kept[:min(len(kept), most)], listEnded, err
+		}
 		switch {
 		case len(kept) > most:
 			return kept[:most], tooManyItems, nil

@@ -528,19 +528,20 @@ The operator: two replicas; memory grows with the number of tenants it caches (l
 Health reads a tenant as JSON, and the tenant's administrator can have any server answer, an APIService naming a Service of their own included ([review checklist](review-checklist.md), item 10).
 So what a read holds is fixed by the constants below and not by what a tenant sends:
 - no object and no array of an answer reaches `encoding/json`, whose decoding multiplies the bytes it is given (an empty object becomes a struct, an invalid byte in a string three bytes, the key of a skipped field is unquoted and folded all the same): `internal/jsonscan` walks the body, which `json.Valid` has checked, and every value it hands over is a slice of it;
-- a scalar is decoded, by `encoding/json` or `strconv`, only when Health keeps the field it fills and the raw size of its token is within that field's bound, checked before the decode;
+- a scalar is decoded, by `encoding/json` or `strconv`, only when Health keeps the field it fills and the raw size of its token is within that field's bound, checked before the decode; a field Health only compares with a word (a condition's `type` and `status`, a Status's `status`, a `failurePolicy`, a Service's `type`, a PersistentVolume's reclaim policy, a claim's phase) is compared on its raw token, and one past its bound is none of the words and is neither decoded nor a stop nor a failed read;
 - a key is matched on its raw bytes and with its case, as Kubernetes' own decoder reads one ([json.go](https://github.com/kubernetes/apimachinery/blob/v0.37.1/pkg/runtime/serializer/json/json.go#L271)); a key with an escape is unquoted only up to 256 bytes, and any longer one is skipped without a copy;
 - an error names the field and its bound and nothing of the value: a time that does not parse is "not a time", not the text of the parser's error;
 - the body of an answer is cut at 8 MiB, `maxResponseBytes`, and its status line and headers at 64 KiB, `maxResponseHeaderBytes`, where `net/http` reads up to 10 MiB of them ([transport.go](https://github.com/golang/go/blob/go1.26.10/src/net/http/transport.go#L329-L334)); a kube-apiserver's are under 512 bytes (352 bytes of the biggest of eight answers on envtest of Kubernetes 1.35.0, 511 as an HTTP/2 header list), and over HTTP/2 the limit is the same figure and 320 bytes, counting 32 bytes more for each field ([transport.go](https://github.com/golang/net/blob/v0.60.0/http2/transport.go#L83-L98));
 - a request is sent once, `MaxRetries(0)`: client-go sends a request again up to ten times on a 429 or a 5xx that carries `Retry-After` ([request.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/request.go#L167)), and the next pass is Health's retry.
 
 The raw bound of a field counts the bytes of a string between its quotes, in which every character may be escaped as `\uXXXX`, six bytes.
-A token past its bound stops a list of the Leases or of the Nodes (`TooManyNodes`), makes a kind of a held restore "could not be listed", and fails any other read.
+A token of a field Health keeps, past its bound, stops a list of the Leases or of the Nodes (`TooManyNodes`), makes a kind of a held restore "could not be listed", and fails any other read; a stop inside a page counts the items of that page read before it.
 
 | field | raw bound |
 |---|---|
 | a name, a namespace | 2,048 bytes, 253 decoded: a longer name is counted and not kept |
-| a `resourceVersion`, a time, a condition's type and status, a `failurePolicy`, a Service's `type`, a PersistentVolume's reclaim policy, a claim's phase, a Status's `reason`, a cause's `reason` | 64 bytes |
+| a `resourceVersion`, a time, a Status's `reason`, a cause's `reason` | 64 bytes |
+| a condition's `type` and `status`, a Status's `status`, a `failurePolicy`, a Service's `type`, a PersistentVolume's reclaim policy, a claim's phase | 64 bytes: a longer token is none of the words, which are under 16 bytes, and is not decoded |
 | a `holderIdentity` | 512 bytes |
 | a kubelet version | 384 bytes, 64 decoded: a longer version is not kept |
 | a number | 11 bytes, the longest int32 |
@@ -548,7 +549,7 @@ A token past its bound stops a list of the Leases or of the Nodes (`TooManyNodes
 | a Status's `message` | 1,024 bytes; a longer one is replaced by a sentence that says so |
 
 A webhook's `url` and an APIService's `service` are read for being there and never decoded.
-A condition that is not `Ready` keeps nothing but being counted.
+A condition whose `type` is not `Ready` keeps nothing but being counted, whatever the length of its type: a Node's writer chooses it, and `ValidateNode` and `ValidateNodeUpdate` check no condition ([validation.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/apis/core/validation/validation.go#L7607-L7738)), so the API server keeps one of 316 bytes, the length the API's own convention for a condition's type allows ([types.go](https://github.com/kubernetes/apimachinery/blob/v0.37.1/pkg/apis/meta/v1/types.go#L1649-L1653)).
 Each array it keeps is read one element at a time, up to a bound:
 
 | array | bound | past it |

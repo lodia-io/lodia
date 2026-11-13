@@ -69,6 +69,15 @@ func Text(field string, value []byte, most int) (string, error) {
 	return s, nil
 }
 
+// Word is Text for a field a caller only compares with words: a string past
+// most bytes is none of them, and is neither decoded nor an error.
+func Word(field string, value []byte, most int) (string, error) {
+	if value[0] == '"' && !Within(value, most) {
+		return "", nil
+	}
+	return Text(field, value, most)
+}
+
 func Integer(field string, value []byte, most int) (*int32, error) {
 	switch {
 	case Null(value):

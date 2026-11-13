@@ -18,16 +18,19 @@ import (
 //     bytes, rounded up;
 //   - maxVersionRaw: a resourceVersion is a revision of at most 19 digits;
 //   - maxTimeRaw: a time with microseconds and an offset is 32 bytes;
-//   - maxWordRaw: a condition's type and status, a failure policy, a Service's
-//     type, a reclaim policy, a phase and a reason are words under 40 bytes;
+//   - maxWordRaw: a Status's reason and a cause's reason are words under 40
+//     bytes; a field Health only compares with a word (a condition's type and
+//     status, a Status's status, a failure policy, a Service's type, a reclaim
+//     policy, a phase) is read with jsonscan.Word, and a token past this bound
+//     is none of the words, which are under 16 bytes;
 //   - maxHolderRaw: a holderIdentity is a name, an underscore and a UUID, at
 //     most 290 bytes;
 //   - maxKubeletRaw: maxKubeletVersion bytes with every character escaped, 384;
 //   - maxNumberRaw: a number kept is an int32, at most 11 bytes;
 //   - maxMessageRaw: a Status's message past it is replaced by a sentence.
 //
-// A token past its bound fails the read, or stops a list of nodes, and the
-// error names the field and the bound and nothing of the value.
+// A token past its bound, but for a word, fails the read, or stops a list of
+// nodes, and the error names the field and the bound and nothing of the value.
 const (
 	maxNameRaw    = 2048
 	maxVersionRaw = 64
