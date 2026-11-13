@@ -181,7 +181,7 @@ func TestAFailedRequestIsTheStatusTheServerSentAndNeverMoreThanItsFields(t *test
 		return `{"kind":"Status","status":"Failure","reason":"` + reason + `","code":` + strconv.Itoa(code) + `,"message":"` + message + `"`
 	}
 	terminating := func(others int) string {
-		causes := strings.Repeat(`{"type":"Other"},`, others) + `{"type":"NamespaceTerminating"}`
+		causes := strings.Repeat(`{"reason":"FieldValueInvalid"},`, others) + `{"reason":"NamespaceTerminating"}`
 		return failure(403, "Forbidden", "terminating") + `,"details":{"causes":[` + causes + `]}}`
 	}
 	for _, c := range []struct {
@@ -198,8 +198,8 @@ func TestAFailedRequestIsTheStatusTheServerSentAndNeverMoreThanItsFields(t *test
 		{"an existing Lease", http.StatusConflict, failure(409, "AlreadyExists", "exists") + `}`, apierrors.IsAlreadyExists, "exists", false},
 		{"a refusal", http.StatusForbidden, failure(403, "Forbidden", "denied by a policy") + `}`, apierrors.IsForbidden, "denied by a policy", true},
 		{"a namespace being deleted", http.StatusForbidden, terminating(0), apierrors.IsForbidden, "terminating", false},
-		{"a namespace being deleted at the last cause it keeps", http.StatusForbidden, terminating(maxCauses - 1), apierrors.IsForbidden, "terminating", false},
-		{"a namespace being deleted past the causes it keeps", http.StatusForbidden, terminating(maxCauses), apierrors.IsForbidden, "terminating", true},
+		{"a namespace being deleted at the last cause it keeps", http.StatusForbidden, terminating(63), apierrors.IsForbidden, "terminating", false},
+		{"a namespace being deleted past the causes it keeps", http.StatusForbidden, terminating(64), apierrors.IsForbidden, "terminating", true},
 		{"a Status that is no failure", http.StatusInternalServerError, `{"kind":"Status","status":"Success","code":500,"message":"fine"}`, apierrors.IsInternalError, "an error on the server (\"unknown\") has prevented the request from succeeding", false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -225,6 +225,16 @@ func TestAFailedRequestIsTheStatusTheServerSentAndNeverMoreThanItsFields(t *test
 				t.Errorf("Refused is %t, want %t", got, c.refused)
 			}
 		})
+	}
+}
+
+func TestAFailedRequestKeepsNoMoreThan64OfAnyNumberOfCauses(t *testing.T) {
+	for _, causes := range []int{1, 63, 64, 65, 1000, 100_000} {
+		body := `{"kind":"Status","status":"Failure","reason":"Invalid","code":422,"details":{"causes":[` + strings.TrimSuffix(strings.Repeat(`{"reason":"FieldValueInvalid"},`, causes), ",") + `]}}`
+		failure, ok := failureOf([]byte(body))
+		if kept := len(failure.Details.Causes); !ok || kept != min(causes, 64) {
+			t.Errorf("a Status of %d causes keeps %d, want %d", causes, kept, min(causes, 64))
+		}
 	}
 }
 

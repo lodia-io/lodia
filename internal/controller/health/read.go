@@ -323,7 +323,8 @@ type statusBody struct {
 	Reason          metav1.StatusReason
 	Code            int32
 	Details         struct {
-		Causes array[struct{ Type metav1.CauseType }, statusCauses]
+		// A cause's type is under the key reason (metav1.StatusCause).
+		Causes array[struct{ Reason metav1.CauseType }, statusCauses]
 	}
 }
 
@@ -337,7 +338,7 @@ func failureOf(body []byte) (metav1.Status, bool) {
 		if failure.Details == nil {
 			failure.Details = &metav1.StatusDetails{}
 		}
-		failure.Details.Causes = append(failure.Details.Causes, metav1.StatusCause{Type: cause.Type})
+		failure.Details.Causes = append(failure.Details.Causes, metav1.StatusCause{Type: cause.Reason})
 	}
 	return failure, true
 }
