@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -62,7 +63,9 @@ func announcedNamesOfAHead(room int) []string {
 	return names
 }
 
-func heldOnceRead(t *testing.T, client *http.Client, url string, keys *int) int64 {
+type keysRead struct{ header, trailer int }
+
+func heldOnceRead(t *testing.T, client *http.Client, url string, keys *keysRead) int64 {
 	t.Helper()
 	return medianOf(func() int64 {
 		base := liveHeap()
@@ -74,7 +77,7 @@ func heldOnceRead(t *testing.T, client *http.Client, url string, keys *int) int6
 			t.Fatal(err)
 		}
 		now := liveHeap()
-		*keys = len(resp.Trailer)
+		*keys = keysRead{len(resp.Header), len(resp.Trailer)}
 		runtime.KeepAlive(resp)
 		_ = resp.Body.Close()
 		return int64(now) - int64(base)
@@ -93,10 +96,10 @@ func rawTenantClient(t *testing.T, url string) *http.Client {
 
 func TestAnHTTP2AnswersAnnouncedNamesAndTrailersAreHeldBesideItsHeadersAndNoMoreThanTrailersHTTP2(t *testing.T) {
 	sizedForTheBounds(t)
-	headers := distinctNames(budgetHTTP2-200, 32)
-	announced := canonicalPrefixed(distinctNames(budgetHTTP2-200, 33), "y")
-	trailers := canonicalPrefixed(distinctNames(budgetHTTP2-200, 33), "z")
-	var keys int
+	headers := distinctNames(32)
+	announced := canonicalPrefixed(distinctNames(33), "y")
+	trailers := canonicalPrefixed(distinctNames(33), "z")
+	var keys keysRead
 	held := func(announces, sendsTrailers bool) int64 {
 		client, url := tenantClient(t, http2, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			for _, name := range headers {
@@ -123,66 +126,135 @@ func TestAnHTTP2AnswersAnnouncedNamesAndTrailersAreHeldBesideItsHeadersAndNoMore
 	if len(announced) > fieldsOfABudget || len(trailers) > fieldsOfABudget {
 		t.Fatalf("%d names announced and %d trailers, want at most fieldsOfABudget, %d, of each", len(announced), len(trailers), fieldsOfABudget)
 	}
-	if keys < (len(announced)+len(trailers))*9/10 {
-		t.Errorf("the response has %d keys of Trailer, want most of the %d names announced and trailers sent", keys, len(announced)+len(trailers))
+	if keys.trailer < (len(announced)+len(trailers))*9/10 {
+		t.Errorf("the response has %d keys of Trailer, want most of the %d names announced and trailers sent", keys.trailer, len(announced)+len(trailers))
 	}
 	if more := int(with - without); more < parts/2 || more > trailersHTTP2 {
 		t.Errorf("the names and the trailers are held in %d bytes, want %d to trailersHTTP2, %d", more, parts/2, trailersHTTP2)
 	}
 }
 
-func TestAnHTTP1AnswersAnnouncedNamesAreHeldBesideItsHeadAndNoMoreThanHeadersHTTP1(t *testing.T) {
-	prefix := "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nTrailer: "
-	suffix := "\r\n\r\n"
-	names := announcedNamesOfAHead(maxResponseHeaderBytes - len(prefix) - len(suffix))
-	head := prefix + strings.Join(names, ",") + suffix
-	if len(head) > maxResponseHeaderBytes || len(head) < maxResponseHeaderBytes-8 {
+const tokenCharacters = "!#$%&'*+-.^_`|~0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+func canonicalFieldNames(room int) []string {
+	seen := map[string]bool{}
+	var names []string
+	for length := 1; ; length++ {
+		var extend func(prefix []byte) bool
+		extend = func(prefix []byte) bool {
+			if len(prefix) < length {
+				for i := range len(tokenCharacters) {
+					if !extend(append(prefix, tokenCharacters[i])) {
+						return false
+					}
+				}
+				return true
+			}
+			name := http.CanonicalHeaderKey(string(prefix))
+			if len(name) != length || seen[name] {
+				return true
+			}
+			if room < length+len(":\n") {
+				return false
+			}
+			seen[name] = true
+			names = append(names, name)
+			room -= length + len(":\n")
+			return true
+		}
+		if !extend(nil) {
+			return names
+		}
+	}
+}
+
+func TestAnHTTP1HeadOfFieldLinesEndingInALineFeedIsHeldAtMostHeadersHTTP1(t *testing.T) {
+	sizedForTheBounds(t)
+	const body = `{"metadata":{"resourceVersion":"1"}}`
+	start := "HTTP/1.1 200 OK\nContent-Type: application/json\nContent-Length: " + strconv.Itoa(len(body)) + "\n"
+	names := canonicalFieldNames(maxResponseHeaderBytes - len(start) - len("\n"))
+	head := start + strings.Join(names, ":\n") + ":\n\n"
+	if len(head) > maxResponseHeaderBytes || len(head) < maxResponseHeaderBytes-4 {
+		t.Fatalf("the head has %d bytes, want it at the bound of %d", len(head), maxResponseHeaderBytes)
+	}
+	url, _ := answerOnTCP(t, head, body)
+	var keys keysRead
+	held := heldOnceRead(t, rawTenantClient(t, url), url, &keys)
+	parts := len(names)*fieldLine + mapTable
+	t.Logf("a head of %d bytes of %d field lines ended by a line feed: %d keys read, held %.3f MiB; the parts add to %.3f MiB, headersHTTP1 is %.3f MiB",
+		len(head), len(names), keys.header, mib(uint64(held)), mib(uint64(parts)), mib(headersHTTP1))
+	if len(names) > fieldLinesHTTP1 || keys.header != len(names)+2 {
+		t.Errorf("a head of the bound carried %d field lines and was read as %d keys, want at most fieldLinesHTTP1, %d, and two keys more", len(names), keys.header, fieldLinesHTTP1)
+	}
+	if held < int64(parts)/2 || held > headersHTTP1 {
+		t.Errorf("the head is held in %d bytes, want %d to headersHTTP1, %d", held, parts/2, headersHTTP1)
+	}
+}
+
+func TestAnHTTP1HeadOfNamesAndFieldLinesTogetherWithTheTrailerValueIsHeldAtMostHeadersHTTP1(t *testing.T) {
+	sizedForTheBounds(t)
+	prefix := "HTTP/1.1 200 OK\nContent-Type: application/json\nTransfer-Encoding: chunked\n"
+	var lines []string
+	for _, name := range canonicalFieldNames(oneByteFieldNames * 3) {
+		if len(name) == 1 {
+			lines = append(lines, name)
+		}
+	}
+	fields := strings.Join(lines, ":\n") + ":\n"
+	const trailer, suffix = "Trailer: ", "\n\n"
+	names := announcedNamesOfAHead(maxResponseHeaderBytes - len(prefix) - len(fields) - len(trailer) - len(suffix))
+	value := strings.Join(names, ",")
+	head := prefix + fields + trailer + value + suffix
+	if len(head) > maxResponseHeaderBytes || len(head) < maxResponseHeaderBytes-4 {
 		t.Fatalf("the head has %d bytes, want it at the bound of %d", len(head), maxResponseHeaderBytes)
 	}
 	const body = `{"metadata":{"resourceVersion":"1"}}`
 	url, _ := answerOnTCP(t, head, fmt.Sprintf("%x\r\n%s\r\n0\r\n\r\n", len(body), body))
-	var keys int
+	var keys keysRead
 	held := heldOnceRead(t, rawTenantClient(t, url), url, &keys)
-	parts := len(names)*announcedName + mapTable
-	t.Logf("a head of %d bytes announcing %d names: %d keys of Trailer, held %.3f MiB; the parts add to %.3f MiB, headersHTTP1 is %.3f MiB",
-		len(head), len(names), keys, mib(uint64(held)), mib(uint64(parts)), mib(headersHTTP1))
-	if keys != len(names) {
-		t.Errorf("the response has %d keys of Trailer, want the %d names announced", keys, len(names))
+	oneByte := 0
+	for _, name := range names {
+		if len(name) == 1 {
+			oneByte++
+		}
 	}
-	if len(names) > announcedNamesHTTP1 {
-		t.Errorf("a head of the bound announced %d names, more than announcedNamesHTTP1, %d", len(names), announcedNamesHTTP1)
+	parts := len(names)*announcedName + len(lines)*fieldLine + 2*mapTable + len(value)
+	t.Logf("a head of %d bytes with %d field lines of one byte and a Trailer of %d names, %d of one byte: %d keys of Trailer, held %.3f MiB; the parts add to %.3f MiB, headersHTTP1 is %.3f MiB",
+		len(head), len(lines), len(names), oneByte, keys.trailer, mib(uint64(held)), mib(uint64(parts)), mib(headersHTTP1))
+	if keys.trailer != len(names) || keys.header != len(lines)+1 {
+		t.Errorf("the response has %d keys of Trailer and %d of the head, want the %d names announced and the %d field lines and Content-Type", keys.trailer, keys.header, len(names), len(lines))
+	}
+	if len(names) > announcedNamesHTTP1 || oneByte > oneByteNames || len(lines) > oneByteFieldNames {
+		t.Errorf("a head of the bound announced %d names, %d of one byte, and carried %d field lines of one byte, want at most %d, %d and %d", len(names), oneByte, len(lines), announcedNamesHTTP1, oneByteNames, oneByteFieldNames)
 	}
 	if held < int64(parts)/2 || held > headersHTTP1 {
-		t.Errorf("the names are held in %d bytes, want %d to headersHTTP1, %d", held, parts/2, headersHTTP1)
+		t.Errorf("the head is held in %d bytes, want %d to headersHTTP1, %d", held, parts/2, headersHTTP1)
 	}
 }
 
-func TestAnHTTP1ChunkedAnswersTrailersAreHeldAtItsEndAndNoMoreThanTrailersHTTP1(t *testing.T) {
+func TestAnHTTP1ChunkedAnswersTrailersEndingInALineFeedAreHeldAtItsEndAtMostTrailersHTTP1(t *testing.T) {
 	const body = `{"metadata":{"resourceVersion":"1"}}`
-	trailers := distinctNames(4096-2, 3)
-	if len(trailers) > trailerFieldsHTTP1 {
-		t.Fatalf("a trailer block of 4,096 bytes has %d fields, want at most trailerFieldsHTTP1, %d", len(trailers), trailerFieldsHTTP1)
-	}
-	var keys int
+	names := canonicalFieldNames(trailerBlockHTTP1)
+	var keys keysRead
 	held := func(sendsTrailers bool) int64 {
 		tail := "0\r\n"
 		if sendsTrailers {
-			for _, name := range trailers {
-				tail += name + ":\r\n"
-			}
+			tail += strings.Join(names[:len(names)-1], ":\n") + ":\n" + names[len(names)-1] + ":\r\n\r\n"
+		} else {
+			tail += "\r\n"
 		}
-		url, _ := answerOnTCP(t, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nTrailer: Zz\r\n\r\n", fmt.Sprintf("%x\r\n%s\r\n", len(body), body)+tail+"\r\n")
+		url, _ := answerOnTCP(t, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nTrailer: Zz\r\n\r\n", fmt.Sprintf("%x\r\n%s\r\n", len(body), body)+tail)
 		return heldOnceRead(t, rawTenantClient(t, url), url, &keys)
 	}
 	without := held(false)
 	with := held(true)
-	parts := len(trailers)*trailerFieldHTTP1 + 2*mapTable
-	t.Logf("%d trailers: %d keys of Trailer, held %.3f MiB more; the parts add to %.3f MiB, trailersHTTP1 is %.3f MiB",
-		len(trailers), keys, mib(uint64(with-without)), mib(uint64(parts)), mib(trailersHTTP1))
-	if keys != len(trailers)+1 {
-		t.Errorf("the response has %d keys of Trailer, want the %d trailers and the name announced", keys, len(trailers))
+	parts := len(names)*trailerFieldHTTP1 + 2*mapTable
+	t.Logf("%d trailers ended by a line feed: %d keys of Trailer, held %.3f MiB more; the parts add to %.3f MiB, trailersHTTP1 is %.3f MiB",
+		len(names), keys.trailer, mib(uint64(with-without)), mib(uint64(parts)), mib(trailersHTTP1))
+	if len(names) > trailerFieldsHTTP1 || keys.trailer != len(names)+1 {
+		t.Errorf("a block of %d bytes carried %d fields and the response has %d keys of Trailer, want at most trailerFieldsHTTP1, %d, and the name announced besides", trailerBlockHTTP1+3, len(names), keys.trailer, trailerFieldsHTTP1)
 	}
-	if more := int(with - without); more < len(trailers)*trailerFieldHTTP1/4 || more > trailersHTTP1 {
-		t.Errorf("the trailers are held in %d bytes, want %d to trailersHTTP1, %d", more, len(trailers)*trailerFieldHTTP1/4, trailersHTTP1)
+	if more := int(with - without); more < len(names)*trailerFieldHTTP1/4 || more > trailersHTTP1 {
+		t.Errorf("the trailers are held in %d bytes, want %d to trailersHTTP1, %d", more, len(names)*trailerFieldHTTP1/4, trailersHTTP1)
 	}
 }

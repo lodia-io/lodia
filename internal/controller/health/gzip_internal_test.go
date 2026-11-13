@@ -186,25 +186,37 @@ func (r *measuringReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
+const noise = 64
+
+func typicalOf(measure func() int64) int64 {
+	var all []int64
+	for range 15 {
+		all = append(all, measure())
+	}
+	slices.Sort(all)
+	return all[len(all)/2]
+}
+
 func heldByAGzipReader(t *testing.T, stream []byte) int64 {
 	t.Helper()
-	return medianOf(func() int64 {
+	return typicalOf(func() int64 {
+		var source io.Reader = plainReader{bytes.NewReader(stream)}
+		one := make([]byte, 1)
 		base := liveHeap()
-		reader, err := gzip.NewReader(plainReader{bytes.NewReader(stream)})
+		reader, err := gzip.NewReader(source)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := io.ReadFull(reader, make([]byte, 1)); err != nil {
+		if _, err := io.ReadFull(reader, one); err != nil {
 			t.Fatal(err)
 		}
 		now := liveHeap()
-		runtime.KeepAlive(reader)
+		runtime.KeepAlive([]any{reader, source, one})
 		return int64(now) - int64(base)
 	})
 }
 
-func TestAGzipReaderThatHasReadHoldsTheSumOfItsPartsAndNoMoreOnTheWorstStream(t *testing.T) {
-	const slack = 4 << 10
+func TestAGzipReaderThatHasReadHoldsTheSumOfItsPartsOnTheWorstStream(t *testing.T) {
 	for _, c := range []struct {
 		name   string
 		stream []byte
@@ -217,8 +229,8 @@ func TestAGzipReaderThatHasReadHoldsTheSumOfItsPartsAndNoMoreOnTheWorstStream(t 
 		t.Run(c.name, func(t *testing.T) {
 			held := heldByAGzipReader(t, c.stream)
 			t.Logf("a gzip.Reader that has read holds %d bytes, its parts add to %d, gzipReader is %d", held, c.parts, gzipReader)
-			if held < int64(c.parts)-slack || held > int64(c.parts)+slack {
-				t.Errorf("a gzip.Reader holds %d bytes, want %d bytes of its parts within %d", held, c.parts, slack)
+			if held < int64(c.parts)-noise || held > int64(c.parts)+noise {
+				t.Errorf("a gzip.Reader holds %d bytes, want the %d of its parts within %d", held, c.parts, noise)
 			}
 		})
 	}
@@ -226,52 +238,53 @@ func TestAGzipReaderThatHasReadHoldsTheSumOfItsPartsAndNoMoreOnTheWorstStream(t 
 
 func TestAGzipReaderThatIsResetHoldsNothingOfTheStreamItReadBefore(t *testing.T) {
 	crafted, plain := craftedGzip(true), gzipOfAByte(t)
-	held := medianOf(func() int64 {
+	held := typicalOf(func() int64 {
+		var first, second io.Reader = plainReader{bytes.NewReader(crafted)}, plainReader{bytes.NewReader(plain)}
+		one := make([]byte, 1)
 		base := liveHeap()
-		reader, err := gzip.NewReader(plainReader{bytes.NewReader(crafted)})
+		reader, err := gzip.NewReader(first)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := io.ReadFull(reader, make([]byte, 1)); err != nil {
+		if _, err := io.ReadFull(reader, one); err != nil {
 			t.Fatal(err)
 		}
-		if err := reader.Reset(plainReader{bytes.NewReader(plain)}); err != nil {
+		if err := reader.Reset(second); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := io.ReadFull(reader, make([]byte, 1)); err != nil {
+		if _, err := io.ReadFull(reader, one); err != nil {
 			t.Fatal(err)
 		}
 		now := liveHeap()
-		runtime.KeepAlive(reader)
+		runtime.KeepAlive([]any{reader, first, second, one})
 		return int64(now) - int64(base)
 	})
-	if want := int64(gzipFixedParts); held < want-4<<10 || held > want+4<<10 {
-		t.Errorf("a gzip.Reader reset to a stream of one byte holds %d bytes, want %d of its fixed parts within 4 KiB", held, want)
+	if want := int64(gzipFixedParts); held < want-noise || held > want+noise {
+		t.Errorf("a gzip.Reader reset to a stream of one byte holds %d bytes, want the %d of its fixed parts within %d", held, want, noise)
 	}
 }
 
 func TestAGzipReaderThatReadsALaterMembersHeaderHoldsItBesideTheFirstAndItsTables(t *testing.T) {
 	stream := append(craftedGzip(true), gzipHeaderOf(true)...)
-	var peak []int64
-	for range 5 {
-		base := liveHeap()
-		var seen int64
-		reader, err := gzip.NewReader(&measuringReader{data: stream, atEnd: func() { seen = int64(liveHeap()) - int64(base) }})
+	held := typicalOf(func() int64 {
+		var base, seen int64
+		source := &measuringReader{data: slices.Clone(stream), atEnd: func() { seen = int64(liveHeap()) - base }}
+		one := make([]byte, 1)
+		base = int64(liveHeap())
+		reader, err := gzip.NewReader(source)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := io.ReadFull(reader, make([]byte, 1)); err != nil {
+		if _, err := io.ReadFull(reader, one); err != nil {
 			t.Fatal(err)
 		}
-		runtime.KeepAlive(reader)
-		peak = append(peak, seen)
-	}
-	slices.Sort(peak)
-	held := peak[len(peak)/2]
-	floor := int64(gzipFixedParts + gzipLinks + gzipHeader + gzipExtra + gzipName - 4<<10)
-	t.Logf("a gzip.Reader that reads the header of a second member holds %d bytes of its own, its parts add to %d, gzipReader is %d", held, gzipParts-gzipWrapper, gzipReader)
-	if held < floor || held > gzipReader {
-		t.Errorf("a gzip.Reader holds %d bytes, want %d to %d", held, floor, gzipReader)
+		runtime.KeepAlive([]any{reader, source, one})
+		return seen
+	})
+	want := int64(gzipFixedParts + gzipLinks + gzipHeader + gzipExtra + gzipName)
+	t.Logf("a gzip.Reader that reads the header of a second member holds %d bytes of its own up to the last byte of it, its parts up to there add to %d, gzipParts less the wrapper is %d, gzipReader is %d", held, want, gzipParts-gzipWrapper, gzipReader)
+	if held < want-noise || held > want+noise {
+		t.Errorf("a gzip.Reader holds %d bytes, want the %d of its parts within %d", held, want, noise)
 	}
 }
 
@@ -301,8 +314,8 @@ func TestTheTenantClientsHoldAGzipReaderOfTheWorstStreamUnderGzipReader(t *testi
 			})
 			floor := int64(gzipFixedParts + gzipLinks + gzipHeader)
 			t.Logf("a response read by one byte holds %d bytes, a gzip.Reader of the worst stream %d, gzipReader is %d", held, floor, gzipReader)
-			if held < floor-4<<10 || held > gzipReader {
-				t.Errorf("a response of the worst gzip stream holds %d bytes once read by one byte, want %d to %d", held, floor-4<<10, gzipReader)
+			if held < floor || held > gzipReader {
+				t.Errorf("a response of the worst gzip stream holds %d bytes once read by one byte, want %d to %d", held, floor, gzipReader)
 			}
 		})
 	}

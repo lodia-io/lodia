@@ -396,17 +396,18 @@ func mib(bytes uint64) float64 { return float64(bytes) / (1 << 20) }
 const (
 	mebibyte = 1 << 20
 
-	connectionHTTP1 = 64 << 10
-	connectionHTTP2 = mebibyte + 64<<10
-	readAllAtMost   = 204 * mebibyte / 10
-	streamBuffer    = 4<<20 + 32<<10
-	headersHTTP1    = 24 * mebibyte / 10
-	headersHTTP2    = mebibyte / 2
-	trailersHTTP1   = 3 * mebibyte / 10
-	trailersHTTP2   = mebibyte
-	gzipReader      = 219 << 10
-	keptAtMost      = 2 * mebibyte
-	summariesAtMost = 4 * mebibyte
+	connectionMargin = 2 * mebibyte
+	connectionHTTP1  = connectionMargin
+	connectionHTTP2  = frameSize + hpackBuffer + connectionMargin
+	readAllAtMost    = 204 * mebibyte / 10
+	streamBuffer     = 4<<20 + 32<<10
+	headersHTTP1     = 25 * mebibyte / 10
+	headersHTTP2     = mebibyte / 2
+	trailersHTTP1    = 3 * mebibyte / 10
+	trailersHTTP2    = mebibyte
+	gzipReader       = 219 << 10
+	keptAtMost       = 2 * mebibyte
+	summariesAtMost  = 4 * mebibyte
 )
 
 func readsBound(p protocol, reads int) uint64 {
@@ -528,7 +529,8 @@ func TestMeasureTheLiveHeapOfAPassWhoseEveryReadIsAtItsWorst(t *testing.T) {
 	}
 }
 
-func distinctNames(budget, overhead int) []string {
+func distinctNames(overhead int) []string {
+	budget := budgetHTTP2 - 200
 	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
 	var names []string
 	for length, total := 1, len(alphabet); ; length, total = length+1, total*len(alphabet) {
@@ -574,13 +576,19 @@ func cutAnswers(t *testing.T, p protocol, body []byte, shape cutShape) *tenant {
 	if !p.http2 {
 		head := "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" + encoding + "Content-Length: " + strconv.Itoa(len(body)) + "\r\n"
 		if shape.announced {
-			head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" + encoding + "Transfer-Encoding: chunked\r\nTrailer: "
+			head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" + encoding + "Transfer-Encoding: chunked\r\n"
+			for _, name := range canonicalFieldNames(oneByteFieldNames * 3) {
+				if len(name) == 1 {
+					head += name + ":\n"
+				}
+			}
+			head += "Trailer: "
 			head += strings.Join(announcedNamesOfAHead(maxResponseHeaderBytes-len(head)-len("\r\n\r\n")), ",") + "\r\n"
 			body = []byte(fmt.Sprintf("%x\r\n%s\r\n0\r\n\r\n", len(body), body))
 		}
 		if shape.headers {
-			for _, name := range distinctNames(maxResponseHeaderBytes-len(head)-len("\r\n"), len(":\r\n")) {
-				head += name + ":\r\n"
+			for _, name := range canonicalFieldNames(maxResponseHeaderBytes - len(head) - len("\r\n")) {
+				head += name + ":\n"
 			}
 		}
 		head += "\r\n"
@@ -597,13 +605,13 @@ func cutAnswers(t *testing.T, p protocol, body []byte, shape cutShape) *tenant {
 	}
 	var names, announced, trailers []string
 	if shape.headers {
-		names = distinctNames(budgetHTTP2-200, 32)
+		names = distinctNames(32)
 	}
 	if shape.announced {
-		announced = canonicalPrefixed(distinctNames(budgetHTTP2-200, 33), "y")
+		announced = canonicalPrefixed(distinctNames(33), "y")
 	}
 	if shape.trailers {
-		trailers = canonicalPrefixed(distinctNames(budgetHTTP2-200, 33), "z")
+		trailers = canonicalPrefixed(distinctNames(33), "z")
 	}
 	_, tenant := p.tenant(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		for _, name := range names {

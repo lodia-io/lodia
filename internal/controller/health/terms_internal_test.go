@@ -5,6 +5,7 @@ package health
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"math"
 	"math/bits"
@@ -20,19 +21,32 @@ const (
 	budgetHTTP2     = maxResponseHeaderBytes + 320
 	fieldsOfABudget = budgetHTTP2 / fieldOfABudget
 
+	frameSize   = 16 << 10
+	hpackSaved  = 2 * (budgetHTTP2 + 8)
+	hpackBuffer = 256 << 10
+
 	mapSlot      = 94
 	mapTable     = 1024 * 41
 	nameCopy     = 16
+	valueCopy    = 16
 	valueSlice   = 16
 	decodedField = 40
 
 	announcedName     = mapSlot + nameCopy
+	fieldLine         = mapSlot + nameCopy + valueCopy + valueSlice
 	trailerField      = 2*mapSlot + nameCopy + valueSlice
 	trailerNamedField = 3 * valueSlice
 	trailersFrame     = 2 * fieldsOfABudget * decodedField
 
-	announcedNamesHTTP1 = 256 + (maxResponseHeaderBytes-2*256)/3
-	trailerFieldsHTTP1  = (4096 - 2) / 4
+	oneByteNames        = 256
+	oneByteFieldNames   = 77
+	twoByteFieldNames   = oneByteFieldNames * oneByteFieldNames
+	headRest            = maxResponseHeaderBytes - 2*oneByteNames - 3*oneByteFieldNames
+	announcedNamesHTTP1 = oneByteNames + (maxResponseHeaderBytes-2*oneByteNames)/3
+	headersHTTP1Parts   = oneByteNames*announcedName + oneByteFieldNames*fieldLine + (headRest*announcedName+2)/3 + 2*mapTable + maxResponseHeaderBytes
+	fieldLinesHTTP1     = oneByteFieldNames + twoByteFieldNames + (maxResponseHeaderBytes-3*oneByteFieldNames-4*twoByteFieldNames)/5
+	trailerBlockHTTP1   = 4096 - 3
+	trailerFieldsHTTP1  = oneByteFieldNames + (trailerBlockHTTP1-3*oneByteFieldNames)/4
 	trailerFieldHTTP1   = trailerField
 
 	gzipReaderStruct = 704
@@ -45,8 +59,8 @@ const (
 	gzipLinkTable    = 64 * 4
 	gzipLinkSlices   = 3456 + 192
 	gzipExtra        = 64 << 10
-	gzipName         = 1024
-	gzipComment      = 1024
+	gzipName         = 1152
+	gzipComment      = 1152
 	gzipRunes        = 2048
 	gzipWrapper      = 48
 
@@ -63,7 +77,7 @@ func TestEveryTermOfAReadIsAtLeastItsPartsAndLessThanTheStepOfItsRounding(t *tes
 		term, parts int
 		step        int
 	}{
-		{"the head of an HTTP/1.1 answer, the names it announces", headersHTTP1, announcedNamesHTTP1*announcedName + mapTable, mebibyte / 10},
+		{"the head of an HTTP/1.1 answer, its names, field lines and Trailer value", headersHTTP1, headersHTTP1Parts, mebibyte / 10},
 		{"the trailers of a chunked HTTP/1.1 answer", trailersHTTP1, trailerFieldsHTTP1*trailerFieldHTTP1 + 2*mapTable, mebibyte / 10},
 		{"the names a head announces and the trailers of an HTTP/2 answer", trailersHTTP2,
 			fieldsOfABudget*(announcedName+trailerField+trailerNamedField) + trailersFrame + 2*mapTable, mebibyte / 10},
@@ -86,6 +100,43 @@ func TestTheSizesTheTermsAreBuiltFromAreTheSourcesOnThisPlatform(t *testing.T) {
 	}
 	if mapSlot < (41*16+6)/7 {
 		t.Errorf("a map slot of 40 bytes and a control byte costs up to 16/7 of 41 bytes, %d, and mapSlot is %d", (41*16+6)/7, mapSlot)
+	}
+	runes := bytes.Repeat([]byte{0xe9}, 511)
+	converted := make([]rune, len(runes))
+	for i, b := range runes {
+		converted[i] = rune(b)
+	}
+	var (
+		sink  string
+		slice []rune
+	)
+	allocated := func(build func()) int {
+		const rounds = 10000
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		for range rounds {
+			build()
+		}
+		runtime.ReadMemStats(&after)
+		return int((after.TotalAlloc - before.TotalAlloc) / rounds)
+	}
+	if got := allocated(func() { sink = string(converted) }); got != gzipName || len(sink) != 1022 || gzipName != gzipComment {
+		t.Errorf("a name of 511 Latin-1 bytes becomes a string of %d bytes that takes %d, want 1,022 and gzipName and gzipComment, %d", len(sink), got, gzipName)
+	}
+	if got := allocated(func() { slice = make([]rune, 0, len(runes)) }); got != gzipRunes || cap(slice) != 511 {
+		t.Errorf("a slice of 511 runes takes %d bytes, want gzipRunes, %d", got, gzipRunes)
+	}
+}
+
+func TestTheHpackBufferIsWhatABytesBufferGrowsToByFramesWhileAFieldIsUnfinished(t *testing.T) {
+	sizedForTheBounds(t)
+	var saved bytes.Buffer
+	for saved.Len() <= hpackSaved {
+		saved.Write(make([]byte, frameSize))
+	}
+	if saved.Cap() != hpackBuffer {
+		t.Errorf("a buffer that takes frames of %d bytes until it holds more than the %d an unfinished field may take is %d bytes, want hpackBuffer, %d", frameSize, hpackSaved, saved.Cap(), hpackBuffer)
 	}
 }
 
@@ -135,17 +186,17 @@ func TestEveryFigureOfTheDerivationIsTheSumOfItsTermsRoundedUp(t *testing.T) {
 		decimals int
 		want     float64
 	}{
-		{"a read over HTTP/2, MiB", mib(readsBound(http2, 1)), 1, 27.3},
-		{"a read over HTTP/1.1, MiB", mib(readsBound(http1, 1)), 1, 23.4},
+		{"a read over HTTP/2, MiB", mib(readsBound(http2, 1)), 1, 28.5},
+		{"a read over HTTP/1.1, MiB", mib(readsBound(http1, 1)), 1, 25.5},
 		{"a read over HTTP/2 apart from its connection, MiB", mib(readsBound(http2, 1) - connectionHTTP2), 1, 26.2},
-		{"a read over HTTP/1.1 apart from its connection, MiB", mib(readsBound(http1, 1) - connectionHTTP1), 1, 23.4},
-		{"a pass of health-nodes over HTTP/2, MiB", mib(pass(http2)), 1, 57.4},
-		{"a pass of health-nodes over HTTP/1.1, MiB", mib(pass(http1)), 1, 50.8},
-		{"a pass of health over a held restore over HTTP/2, MiB", mib(readsBound(http2, 7)), 1, 184.1},
-		{"a pass of health over a held restore over HTTP/1.1, MiB", mib(readsBound(http1, 7)), 1, 163.7},
-		{"100 workers of health-nodes over HTTP/2, GiB", 100 * float64(pass(http2)) / gibibyte, 2, 5.61},
-		{"10 workers of health over HTTP/2, GiB", 10 * float64(readsBound(http2, 7)) / gibibyte, 2, 1.80},
-		{"100 passes of health-nodes over HTTP/1.1, GiB", 100 * float64(pass(http1)) / gibibyte, 1, 5.0},
+		{"a read over HTTP/1.1 apart from its connection, MiB", mib(readsBound(http1, 1) - connectionHTTP1), 1, 23.5},
+		{"a pass of health-nodes over HTTP/2, MiB", mib(pass(http2)), 1, 58.6},
+		{"a pass of health-nodes over HTTP/1.1, MiB", mib(pass(http1)), 1, 54.9},
+		{"a pass of health over a held restore over HTTP/2, MiB", mib(readsBound(http2, 7)), 1, 185.3},
+		{"a pass of health over a held restore over HTTP/1.1, MiB", mib(readsBound(http1, 7)), 1, 177.9},
+		{"100 workers of health-nodes over HTTP/2, GiB", 100 * float64(pass(http2)) / gibibyte, 2, 5.72},
+		{"10 workers of health over HTTP/2, GiB", 10 * float64(readsBound(http2, 7)) / gibibyte, 2, 1.81},
+		{"100 passes of health-nodes over HTTP/1.1, GiB", 100 * float64(pass(http1)) / gibibyte, 1, 5.4},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if got := roundedUp(c.got, c.decimals); math.Abs(got-c.want) > 1e-9 {
