@@ -379,6 +379,57 @@ func TestAStopOfTheLeaseListLeavesStatusNodesAsTheLastListOfNodesHasIt(t *testin
 	expectNodes(t, h.cp, nodesOf(3, 3, 0, "v1.35.0"))
 }
 
+func TestAStopOfTheNodesStandsWhileTheNextListOfNodesFails(t *testing.T) {
+	h := sampling(t, "a", "b", "c")
+	h.r.MaxNodes = 3
+	addNode(t, "d", corev1.ConditionTrue, h.start, "v1.34.0")
+	h.at(0)
+	h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonTooManyNodes, tooManyNodes(3))
+	expectNodes(t, h.cp, truncatedNodes(3, 3))
+	h.fail(nodeListPath, http.MethodGet, http.StatusInternalServerError, metav1.StatusReasonInternalError)
+	h.at(30)
+	h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonTooManyNodes, tooManyNodes(3))
+	expectNodes(t, h.cp, truncatedNodes(3, 3))
+	if lease := h.lease(); lease != nil {
+		t.Fatalf("a tenant beyond the bound got the Lease %+v", lease.Spec)
+	}
+}
+
+func TestAStopOfTheLeaseListStandsWhileTheNextLeaseListFails(t *testing.T) {
+	h := sampling(t, "a", "b", "c")
+	h.r.MaxNodes = 3
+	renewNodeLease(t, "x", time.Now())
+	h.at(0)
+	h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonTooManyNodes, tooManyLeases(3))
+	h.fail(leaseListPath, http.MethodGet, http.StatusInternalServerError, metav1.StatusReasonInternalError)
+	h.at(5)
+	h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonTooManyNodes, tooManyLeases(3))
+	expectNodes(t, h.cp, nodesOf(3, 3, 0, "v1.35.0"))
+	if lease := h.lease(); lease != nil {
+		t.Fatalf("a tenant beyond the bound got the Lease %+v", lease.Spec)
+	}
+}
+
+func TestBackUnderTheBoundOfTheNodesTheClockOfTheLeasesStartsAfresh(t *testing.T) {
+	h := sampling(t, "a", "b", "c")
+	h.r.MaxNodes = 3
+	h.at(0)
+	h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonNotHeld, silent(0, 3))
+	addNode(t, "d", corev1.ConditionTrue, h.start, "v1.35.0")
+	h.at(30)
+	h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonTooManyNodes, tooManyNodes(3))
+	if err := tenant.Delete(t.Context(), &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "d"}}); err != nil {
+		t.Fatal(err)
+	}
+	h.at(60)
+	h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonNotHeld, silent(0, 3))
+	if lease := h.lease(); lease != nil {
+		t.Fatalf("the Lease was taken on the first pass back under the bound: %+v", lease.Spec)
+	}
+	h.at(80)
+	h.expectCondition(metav1.ConditionTrue, lodiav1alpha1.ReasonNodesSilent, taken(3, 3, "60"))
+}
+
 func TestAReleaseThatFailsIsTriedAgainByTheNextPass(t *testing.T) {
 	h := holding(t, "a", "b", "c")
 	h.r.MaxNodes = 3
