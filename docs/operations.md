@@ -531,7 +531,7 @@ The 100 workers on such tenants at once need about 12 GiB.
 Between passes it keeps at most `health.maxNodes` Lease versions and Node summaries per tenant ([review checklist](review-checklist.md), item 10), and every string in them is bounded:
 - a Node's name and a Lease's name are DNS subdomains ([Node](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/apis/core/validation/validation.go#L300-L303), [Lease](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/apis/coordination/validation/validation.go#L35-L36)), at most 253 bytes ([validation.go](https://github.com/kubernetes/apimachinery/blob/v0.37.1/pkg/util/validation/validation.go#L190-L191));
 - a `resourceVersion` is a revision the API server formats, at most 20 digits ([api_object_versioner.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/storage/api_object_versioner.go#L38-L41));
-- a Node summary keeps a kubelet version only up to 64 bytes and a Ready status only if it is `True`, `False` or `Unknown`: the tenant's administrator writes both, and [`ValidateNodeUpdate`](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/apis/core/validation/validation.go#L7666-L7672) checks neither.
+- a Node summary keeps a kubelet version only up to 64 bytes and a Ready status only if it is `True`, `False` or `Unknown`: the tenant's administrator writes both, and [`ValidateNodeUpdate`](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/apis/core/validation/validation.go#L7666-L7738) checks neither.
 
 With every string at its bound a Node summary takes 395 bytes and a Lease version 385, so a tenant at the default `health.maxNodes` of 5,000 keeps 3.7 MiB between passes.
 The operator's pods set no requests or limits yet.
