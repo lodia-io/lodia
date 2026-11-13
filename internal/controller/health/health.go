@@ -432,89 +432,88 @@ const listLimit = 500
 func (r *Reconciler) actedOn(ctx context.Context, t *tenant) string {
 	type list struct {
 		kind string
-		read func(context.Context) (names []string, more bool, err error)
+		read func(context.Context) (tally, error)
 	}
 	items := []struct {
 		what  string
 		lists []list
 	}{
-		{"LoadBalancer Services", []list{{"Services", func(ctx context.Context) ([]string, bool, error) {
+		{"LoadBalancer Services", []list{{"Services", func(ctx context.Context) (tally, error) {
 			l, err := firstPage[service](ctx, t, "/api/v1/services")
 			if err != nil {
-				return nil, false, err
+				return tally{}, err
 			}
-			var names []string
+			found := tally{more: l.Metadata.Continue != ""}
 			for _, s := range l.Items.items {
 				if s.Spec.Type == corev1.ServiceTypeLoadBalancer {
-					names = append(names, s.Metadata.Namespace+"/"+s.Metadata.Name)
+					found.add(s.Metadata.Namespace, s.Metadata.Name)
 				}
 			}
-			return names, l.Metadata.Continue != "", nil
+			return found, nil
 		}}}},
-		{"PersistentVolumes with reclaimPolicy Delete", []list{{"PersistentVolumes", func(ctx context.Context) ([]string, bool, error) {
+		{"PersistentVolumes with reclaimPolicy Delete", []list{{"PersistentVolumes", func(ctx context.Context) (tally, error) {
 			l, err := firstPage[persistentVolume](ctx, t, "/api/v1/persistentvolumes")
 			if err != nil {
-				return nil, false, err
+				return tally{}, err
 			}
-			var names []string
+			found := tally{more: l.Metadata.Continue != ""}
 			for _, v := range l.Items.items {
 				if v.Spec.PersistentVolumeReclaimPolicy == corev1.PersistentVolumeReclaimDelete {
-					names = append(names, v.Metadata.Name)
+					found.add(v.Metadata.Name)
 				}
 			}
-			return names, l.Metadata.Continue != "", nil
+			return found, nil
 		}}}},
-		{"pending PersistentVolumeClaims", []list{{"PersistentVolumeClaims", func(ctx context.Context) ([]string, bool, error) {
+		{"pending PersistentVolumeClaims", []list{{"PersistentVolumeClaims", func(ctx context.Context) (tally, error) {
 			l, err := firstPage[persistentVolumeClaim](ctx, t, "/api/v1/persistentvolumeclaims")
 			if err != nil {
-				return nil, false, err
+				return tally{}, err
 			}
-			var names []string
+			found := tally{more: l.Metadata.Continue != ""}
 			for _, c := range l.Items.items {
 				if c.Status.Phase == corev1.ClaimPending {
-					names = append(names, c.Metadata.Namespace+"/"+c.Metadata.Name)
+					found.add(c.Metadata.Namespace, c.Metadata.Name)
 				}
 			}
-			return names, l.Metadata.Continue != "", nil
+			return found, nil
 		}}}},
 		{"webhooks that call a URL or fail closed", []list{
-			{"ValidatingWebhookConfigurations", func(ctx context.Context) ([]string, bool, error) {
+			{"ValidatingWebhookConfigurations", func(ctx context.Context) (tally, error) {
 				return outsideWebhooks(ctx, t, "/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations")
 			}},
-			{"MutatingWebhookConfigurations", func(ctx context.Context) ([]string, bool, error) {
+			{"MutatingWebhookConfigurations", func(ctx context.Context) (tally, error) {
 				return outsideWebhooks(ctx, t, "/apis/admissionregistration.k8s.io/v1/mutatingwebhookconfigurations")
 			}},
 		}},
-		{"APIServices served by a Service", []list{{"APIServices", func(ctx context.Context) ([]string, bool, error) {
+		{"APIServices served by a Service", []list{{"APIServices", func(ctx context.Context) (tally, error) {
 			l, err := firstPage[apiService](ctx, t, "/apis/apiregistration.k8s.io/v1/apiservices")
 			if err != nil {
-				return nil, false, err
+				return tally{}, err
 			}
-			var names []string
+			found := tally{more: l.Metadata.Continue != ""}
 			for _, a := range l.Items.items {
 				if a.Spec.Service {
-					names = append(names, a.Metadata.Name)
+					found.add(a.Metadata.Name)
 				}
 			}
-			return names, l.Metadata.Continue != "", nil
+			return found, nil
 		}}}},
-		{"CronJobs not suspended", []list{{"CronJobs", func(ctx context.Context) ([]string, bool, error) {
+		{"CronJobs not suspended", []list{{"CronJobs", func(ctx context.Context) (tally, error) {
 			l, err := firstPage[cronJob](ctx, t, "/apis/batch/v1/cronjobs")
 			if err != nil {
-				return nil, false, err
+				return tally{}, err
 			}
-			var names []string
+			found := tally{more: l.Metadata.Continue != ""}
 			for _, j := range l.Items.items {
 				if !ptr.Deref(j.Spec.Suspend, false) {
-					names = append(names, j.Metadata.Namespace+"/"+j.Metadata.Name)
+					found.add(j.Metadata.Namespace, j.Metadata.Name)
 				}
 			}
-			return names, l.Metadata.Continue != "", nil
+			return found, nil
 		}}}},
 	}
 	type answer struct {
-		names []string
-		more  bool
+		found tally
 		err   error
 	}
 	results := make([][]answer, len(items))
@@ -525,16 +524,16 @@ func (r *Reconciler) actedOn(ctx context.Context, t *tenant) string {
 			wg.Go(func() {
 				listing, cancel := context.WithTimeout(ctx, r.Timeout)
 				defer cancel()
-				names, more, err := l.read(listing)
-				results[i][j] = answer{names, more, err}
+				found, err := l.read(listing)
+				results[i][j] = answer{found, err}
 			})
 		}
 	}
 	wg.Wait()
 	var out []string
 	for i, item := range items {
-		var names, failed []string
-		more := false
+		var found tally
+		var failed []string
 		for j, l := range item.lists {
 			got := results[i][j]
 			if got.err != nil {
@@ -542,53 +541,111 @@ func (r *Reconciler) actedOn(ctx context.Context, t *tenant) string {
 				failed = append(failed, l.kind)
 				continue
 			}
-			names, more = append(names, got.names...), more || got.more
+			found.merge(got.found)
 		}
 		if len(failed) > 0 {
 			out = append(out, strings.Join(failed, " and ")+" could not be listed")
 			continue
 		}
-		out = append(out, counted(item.what, names, more))
+		out = append(out, counted(item.what, found))
 	}
 	return strings.Join(out, "; ")
 }
 
-// outsideWebhooks names the webhooks of one kind of configuration that act
+// outsideWebhooks counts the webhooks of one kind of configuration that act
 // outside the cluster; a configuration with more webhooks than maxWebhooks
 // makes the list fail.
-func outsideWebhooks(ctx context.Context, t *tenant, path string) ([]string, bool, error) {
+func outsideWebhooks(ctx context.Context, t *tenant, path string) (tally, error) {
 	l, err := firstPage[webhookConfiguration](ctx, t, path)
 	if err != nil {
-		return nil, false, err
+		return tally{}, err
 	}
-	var names []string
+	found := tally{more: l.Metadata.Continue != ""}
 	for _, c := range l.Items.items {
 		if c.Webhooks.over {
-			return nil, false, errOverBound
+			return tally{}, errOverBound
 		}
 		for _, w := range c.Webhooks.items {
 			if w.actsOutside() {
-				names = append(names, c.Metadata.Name+"/"+w.Name)
+				found.add(c.Metadata.Name, w.Name)
 			}
 		}
 	}
-	return names, l.Metadata.Continue != "", nil
+	return found, nil
 }
 
-func counted(what string, names []string, more bool) string {
-	n := strconv.Itoa(len(names))
-	if more {
+const shown = 3
+
+// tally counts what a held restore's controller manager acts on in one kind,
+// and keeps the shown names that sort first. A name with a part over maxName is
+// counted and not kept, so that the message stays under the schema's bound
+// (32,768 bytes) whatever the tenant answers; the kept names reuse their
+// buffers, so that no name is built for one that does not qualify.
+type tally struct {
+	n     int
+	names [][]byte
+	more  bool
+}
+
+func (t *tally) add(parts ...string) {
+	t.n++
+	var buf [2*maxName + 1]byte
+	name := buf[:0]
+	for i, part := range parts {
+		if len(part) > maxName {
+			return
+		}
+		if i > 0 {
+			name = append(name, '/')
+		}
+		name = append(name, part...)
+	}
+	t.keep(name)
+}
+
+func (t *tally) keep(name []byte) {
+	at := 0
+	for at < len(t.names) && bytes.Compare(t.names[at], name) < 0 {
+		at++
+	}
+	if at == shown {
+		return
+	}
+	var slot []byte
+	if len(t.names) == shown {
+		slot = t.names[shown-1][:0]
+		t.names = t.names[:shown-1]
+	} else {
+		slot = make([]byte, 0, 2*maxName+1)
+	}
+	t.names = slices.Insert(t.names, at, append(slot, name...))
+}
+
+func (t *tally) merge(other tally) {
+	t.n += other.n
+	t.more = t.more || other.more
+	for _, name := range other.names {
+		t.keep(name)
+	}
+}
+
+func counted(what string, t tally) string {
+	n := strconv.Itoa(t.n)
+	if t.more {
 		n += " or more"
 	}
-	if len(names) == 0 {
+	if len(t.names) == 0 {
 		return n + " " + what
 	}
-	slices.Sort(names)
-	shown := strings.Join(names[:min(3, len(names))], ", ")
-	if len(names) > 3 || more {
-		shown += "…"
+	names := make([]string, len(t.names))
+	for i, name := range t.names {
+		names[i] = string(name)
 	}
-	return n + " " + what + " (" + shown + ")"
+	quoted := strings.Join(names, ", ")
+	if t.n > len(t.names) || t.more {
+		quoted += "…"
+	}
+	return n + " " + what + " (" + quoted + ")"
 }
 
 // stale says why the leader Lease name does not lead, or nothing when it does.

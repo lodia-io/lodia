@@ -208,8 +208,8 @@ func readFirstPage[T any](path string) func(context.Context, *tenant, *NodesReco
 
 func readWebhooks(path string) func(context.Context, *tenant, *NodesReconciler) string {
 	return func(ctx context.Context, t *tenant, _ *NodesReconciler) string {
-		names, more, err := outsideWebhooks(ctx, t, path)
-		return fmt.Sprintf("named %d, more %t, error %v", len(names), more, err)
+		found, err := outsideWebhooks(ctx, t, path)
+		return fmt.Sprintf("named %d, more %t, error %v", found.n, found.more, err)
 	}
 }
 
