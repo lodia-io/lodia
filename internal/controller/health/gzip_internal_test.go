@@ -186,7 +186,7 @@ func (r *measuringReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-const noise = 64
+const noise = 32 << 10
 
 func typicalOf(measure func() int64) int64 {
 	var all []int64

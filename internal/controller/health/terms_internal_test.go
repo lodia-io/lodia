@@ -6,6 +6,7 @@ package health
 import (
 	"bufio"
 	"bytes"
+	"compress/flate"
 	"compress/gzip"
 	"math"
 	"math/bits"
@@ -14,6 +15,8 @@ import (
 	"runtime"
 	"strconv"
 	"testing"
+
+	utilnet "k8s.io/apimachinery/pkg/util/net"
 )
 
 const (
@@ -91,27 +94,10 @@ func TestEveryTermOfAReadIsAtLeastItsPartsAndLessThanTheStepOfItsRounding(t *tes
 	}
 }
 
-func TestTheSizesTheTermsAreBuiltFromAreTheSourcesOnThisPlatform(t *testing.T) {
-	if got := reflect.TypeFor[gzip.Reader]().Size(); got != 664 || got > gzipReaderStruct {
-		t.Errorf("a gzip.Reader is %d bytes, want 664, which the size class of %d holds", got, gzipReaderStruct)
-	}
-	if got := reflect.TypeFor[bufio.Reader]().Size(); got != 88 || got > gzipBufioStruct {
-		t.Errorf("a bufio.Reader is %d bytes, want 88, which the size class of %d holds", got, gzipBufioStruct)
-	}
-	if mapSlot < (41*16+6)/7 {
-		t.Errorf("a map slot of 40 bytes and a control byte costs up to 16/7 of 41 bytes, %d, and mapSlot is %d", (41*16+6)/7, mapSlot)
-	}
-	runes := bytes.Repeat([]byte{0xe9}, 511)
-	converted := make([]rune, len(runes))
-	for i, b := range runes {
-		converted[i] = rune(b)
-	}
-	var (
-		sink  string
-		slice []rune
-	)
-	allocated := func(build func()) int {
-		const rounds = 10000
+func allocatedBy(build func()) int {
+	const rounds = 10000
+	least := math.MaxInt
+	for range 5 {
 		var before, after runtime.MemStats
 		runtime.GC()
 		runtime.ReadMemStats(&before)
@@ -119,14 +105,118 @@ func TestTheSizesTheTermsAreBuiltFromAreTheSourcesOnThisPlatform(t *testing.T) {
 			build()
 		}
 		runtime.ReadMemStats(&after)
-		return int((after.TotalAlloc - before.TotalAlloc) / rounds)
+		least = min(least, int((after.TotalAlloc-before.TotalAlloc)/rounds))
 	}
-	if got := allocated(func() { sink = string(converted) }); got != gzipName || len(sink) != 1022 || gzipName != gzipComment {
-		t.Errorf("a name of 511 Latin-1 bytes becomes a string of %d bytes that takes %d, want 1,022 and gzipName and gzipComment, %d", len(sink), got, gzipName)
+	return least
+}
+
+func theWrapperOfTheGzipReaderTakes(t *testing.T) int {
+	t.Helper()
+	most := 0
+	for _, p := range protocols {
+		client, url := tenantClient(t, p, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Encoding", "gzip")
+			_, _ = w.Write(gzipOfAByte(t))
+		}))
+		bottom := client.Transport
+		for {
+			wrapper, ok := bottom.(utilnet.RoundTripperWrapper)
+			if !ok {
+				break
+			}
+			bottom = wrapper.WrappedRoundTripper()
+		}
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url+nodeLeasesPath, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := bottom.RoundTrip(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wrapperType := reflect.TypeOf(resp.Body).Elem()
+		_ = resp.Body.Close()
+		var made reflect.Value
+		most = max(most, allocatedBy(func() { made = reflect.New(wrapperType) }))
+		runtime.KeepAlive(made)
 	}
-	if got := allocated(func() { slice = make([]rune, 0, len(runes)) }); got != gzipRunes || cap(slice) != 511 {
-		t.Errorf("a slice of 511 runes takes %d bytes, want gzipRunes, %d", got, gzipRunes)
+	return most
+}
+
+func TestTheSizesTheTermsAreBuiltFromAreTheSourcesOnThisPlatform(t *testing.T) {
+	if got := reflect.TypeFor[gzip.Reader]().Size(); got != 664 {
+		t.Errorf("a gzip.Reader is %d bytes, want 664", got)
 	}
+	if got := reflect.TypeFor[bufio.Reader]().Size(); got != 88 {
+		t.Errorf("a bufio.Reader is %d bytes, want 88", got)
+	}
+	if mapSlot < (41*16+6)/7 {
+		t.Errorf("a map slot of 40 bytes and a control byte costs up to 16/7 of 41 bytes, %d, and mapSlot is %d", (41*16+6)/7, mapSlot)
+	}
+	flateReader := flate.NewReader(bytes.NewReader(nil))
+	decompressor := reflect.TypeOf(flateReader).Elem()
+	if got := decompressor.Size(); got != 4392 {
+		t.Errorf("flate's decompressor is %d bytes, want 4392", got)
+	}
+	pointee := func(field string) reflect.Type {
+		f, ok := decompressor.FieldByName(field)
+		if !ok {
+			t.Fatalf("flate's decompressor has no field %s", field)
+		}
+		return f.Type.Elem()
+	}
+	window := reflect.ValueOf(flateReader).Elem().FieldByName("dict").FieldByName("hist").Len()
+	runes := bytes.Repeat([]byte{0xe9}, 511)
+	converted := make([]rune, len(runes))
+	for i, b := range runes {
+		converted[i] = rune(b)
+	}
+	var (
+		text      string
+		made      reflect.Value
+		block     []byte
+		links     []uint32
+		linkSlice [][]uint32
+		buffered  *bufio.Reader
+		rune511   []rune
+	)
+	worstCopy := 0
+	for n := 1; n <= 16; n++ {
+		piece := runes[:n]
+		worstCopy = max(worstCopy, allocatedBy(func() { text = string(piece) }))
+	}
+	literalTables, distanceTables := mostLinkTables(286, 15), mostLinkTables(30, 15)
+	for _, c := range []struct {
+		name      string
+		got, want int
+	}{
+		{"a copy of a name of up to 16 bytes", worstCopy, nameCopy},
+		{"a copy of a value of up to 16 bytes", worstCopy, valueCopy},
+		{"an element of the slice of a header's values", int(reflect.TypeFor[string]().Size()), valueSlice},
+		{"a gzip.Reader", allocatedBy(func() { made = reflect.New(reflect.TypeFor[gzip.Reader]()) }), gzipReaderStruct},
+		{"a bufio.Reader", allocatedBy(func() { made = reflect.New(reflect.TypeFor[bufio.Reader]()) }), gzipBufioStruct},
+		{"a bufio.Reader of the default buffer, with its buffer", allocatedBy(func() { buffered = bufio.NewReader(plainReader{}) }), gzipBufioStruct + gzipBufioBuffer},
+		{"flate's decompressor", allocatedBy(func() { made = reflect.New(decompressor) }), gzipDecompressor},
+		{"the lengths of its two codes and of the code of lengths", allocatedBy(func() { made = reflect.New(pointee("bits")) }) + allocatedBy(func() { made = reflect.New(pointee("codebits")) }), gzipBitsTables},
+		{"flate's window", allocatedBy(func() { block = make([]byte, window) }), gzipWindow},
+		{"a table of the links of a prefix, of 64 entries", allocatedBy(func() { links = make([]uint32, 1<<6) }), gzipLinkTable},
+		{"the prefixes of the literal and length code and of the distance code", literalTables + distanceTables, gzipLinkTables},
+		{"the slices of their tables", allocatedBy(func() { linkSlice = make([][]uint32, literalTables) }) + allocatedBy(func() { linkSlice = make([][]uint32, distanceTables) }), gzipLinkSlices},
+		{"the extra field of a gzip header", allocatedBy(func() { block = make([]byte, 65535) }), gzipExtra},
+		{"a name of 511 Latin-1 bytes, as a string of 1,022 bytes", allocatedBy(func() { text = string(converted) }), gzipName},
+		{"a comment of 511 Latin-1 bytes", allocatedBy(func() { text = string(converted) }), gzipComment},
+		{"a slice of 511 runes", allocatedBy(func() { rune511 = make([]rune, 0, len(runes)) }), gzipRunes},
+		{"the transport's wrapper of the gzip reader", theWrapperOfTheGzipReaderTakes(t), gzipWrapper},
+	} {
+		if c.got != c.want {
+			t.Errorf("%s takes %d bytes, want %d", c.name, c.got, c.want)
+		}
+	}
+	if window != gzipWindow || len(text) != 1022 || cap(rune511) != 511 {
+		t.Errorf("flate's window is %d bytes, a name's string %d and a slice of runes %d, want %d, 1,022 and 511", window, len(text), cap(rune511), gzipWindow)
+	}
+	runtime.KeepAlive([]any{made, block, links, linkSlice, buffered})
 }
 
 func TestTheHpackBufferIsWhatABytesBufferGrowsToByFramesWhileAFieldIsUnfinished(t *testing.T) {
