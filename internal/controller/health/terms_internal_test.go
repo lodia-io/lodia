@@ -95,9 +95,9 @@ func TestEveryTermOfAReadIsAtLeastItsPartsAndLessThanTheStepOfItsRounding(t *tes
 }
 
 func allocatedBy(build func()) int {
-	const rounds = 10000
+	rounds := max(100, min(10000, (8<<20)/max(int(allocated(build)), 1)))
 	least := math.MaxInt
-	for range 5 {
+	for range 20 {
 		var before, after runtime.MemStats
 		runtime.GC()
 		runtime.ReadMemStats(&before)
@@ -105,7 +105,7 @@ func allocatedBy(build func()) int {
 			build()
 		}
 		runtime.ReadMemStats(&after)
-		least = min(least, int((after.TotalAlloc-before.TotalAlloc)/rounds))
+		least = min(least, int((after.TotalAlloc-before.TotalAlloc)/uint64(rounds)))
 	}
 	return least
 }
