@@ -367,10 +367,10 @@ func maxPages(size int64, most int) int {
 // token longer than maxContinue. The page function reduces a decoded page to
 // what the pass keeps, so that no list holds more than one decoded page, and
 // says whether the page ended the list early: it held more than size items, or
-// an object of it was too large. It does not use
-// pager.ListPager, whose EachListItem fetches the next page while it hands over
-// the last, even unbuffered. Every page is a consistent read: the list sets no
-// resourceVersion. A failure returns the items of the pages before it.
+// an object of it was too large. It does not use pager.ListPager, whose
+// EachListItem fetches the next page while it hands over the last, even
+// unbuffered. Every page is a consistent read: the list sets no resourceVersion.
+// A failure returns the items of the pages before it.
 func listPages[T any](ctx context.Context, size int64, most int, page func(context.Context, metav1.ListOptions) ([]T, string, listEnd, error)) (kept []T, end listEnd, err error) {
 	options := metav1.ListOptions{Limit: size}
 	for read := 1; ; read++ {
