@@ -16,6 +16,7 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	crzap "sigs.k8s.io/controller-runtime/pkg/log/zap"
 
@@ -25,11 +26,12 @@ import (
 func TestAFailedAnswerThatIsNoStatusCarriesNoByteOfItsBody(t *testing.T) {
 	const marker = "BODYBYTES"
 	for _, c := range []struct {
-		code  int
-		check func(error) bool
+		code   int
+		reason metav1.StatusReason
+		check  func(error) bool
 	}{
-		{http.StatusInternalServerError, apierrors.IsInternalError},
-		{http.StatusForbidden, apierrors.IsForbidden},
+		{http.StatusInternalServerError, metav1.StatusReasonInternalError, apierrors.IsInternalError},
+		{http.StatusForbidden, metav1.StatusReasonForbidden, apierrors.IsForbidden},
 	} {
 		for _, kind := range []struct {
 			name string
@@ -64,8 +66,8 @@ func TestAFailedAnswerThatIsNoStatusCarriesNoByteOfItsBody(t *testing.T) {
 						t.Fatal(err)
 					}
 					err = request.do(t.Context(), tenant)
-					if err == nil || !c.check(err) || err.Error() != noStatusMessage {
-						t.Fatalf("the error is %v, want one of code %d and the message %q", err, c.code, noStatusMessage)
+					if err == nil || !c.check(err) || apierrors.ReasonForError(err) != c.reason || err.Error() != noStatusMessage {
+						t.Fatalf("the error is %v of reason %q, want one of code %d, reason %q and the message %q", err, apierrors.ReasonForError(err), c.code, c.reason, noStatusMessage)
 					}
 					var logged bytes.Buffer
 					crzap.New(crzap.WriteTo(&logged)).Error(err, "the API server refused a write of the controller manager's Lease")
@@ -103,7 +105,7 @@ func TestAFailedAnswerThatIsNoStatusKeepsItsCodeReasonAndRetryAfter(t *testing.T
 	}
 	_, err = tenant.getLease(t.Context(), "x")
 	seconds, retry := apierrors.SuggestsClientDelay(err)
-	if !apierrors.IsTooManyRequests(err) || !retry || seconds != 7 || err.Error() != noStatusMessage {
-		t.Errorf("the error is %v, delay %d, %t; want a 429 that asks for 7 seconds and says %q", err, seconds, retry, noStatusMessage)
+	if !apierrors.IsTooManyRequests(err) || apierrors.ReasonForError(err) != metav1.StatusReasonTooManyRequests || !retry || seconds != 7 || err.Error() != noStatusMessage {
+		t.Errorf("the error is %v of reason %q, delay %d, %t; want a 429 of reason %q that asks for 7 seconds and says %q", err, apierrors.ReasonForError(err), seconds, retry, metav1.StatusReasonTooManyRequests, noStatusMessage)
 	}
 }

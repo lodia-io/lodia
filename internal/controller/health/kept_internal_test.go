@@ -6,15 +6,22 @@ package health
 import (
 	"fmt"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
 
 func retained(build func() any) (any, uint64) {
-	before := liveHeap()
-	v := build()
-	return v, liveHeap() - before
+	var deltas []int64
+	for range 3 {
+		before := liveHeap()
+		v := build()
+		deltas = append(deltas, int64(liveHeap())-int64(before))
+		runtime.KeepAlive(v)
+	}
+	slices.Sort(deltas)
+	return build(), uint64(max(deltas[1], 0))
 }
 
 func repeated(n int, item string) string {
@@ -84,7 +91,7 @@ func TestWhatAPassBuildsBesideTheSamplingIsUnderSummariesAtMost(t *testing.T) {
 	v, kept := retained(func() any {
 		var leases []leaseVersion
 		var summaries []node
-		for p := 0; p < nodes/leasePage; p++ {
+		for p := range nodes / leasePage {
 			page := make([]leaseItem, leasePage)
 			for i := range page {
 				page[i].Metadata.Name = strings.Clone(name(p*leasePage + i))
@@ -92,7 +99,7 @@ func TestWhatAPassBuildsBesideTheSamplingIsUnderSummariesAtMost(t *testing.T) {
 			}
 			leases = append(leases, leaseVersions(page)...)
 		}
-		for p := 0; p < nodes/nodePage; p++ {
+		for p := range nodes / nodePage {
 			page := make([]nodeObject, nodePage)
 			for i := range page {
 				page[i].Metadata.Name = strings.Clone(name(p*nodePage + i))

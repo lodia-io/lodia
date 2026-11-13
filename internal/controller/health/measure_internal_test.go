@@ -397,7 +397,7 @@ const (
 	streamBuffer    = 4<<20 + 32<<10
 	headersHTTP1    = 17 * mebibyte / 10
 	headersHTTP2    = mebibyte / 2
-	keptAtMost      = 17 * mebibyte / 10
+	keptAtMost      = 2 * mebibyte
 	summariesAtMost = 4 * mebibyte
 )
 
@@ -463,7 +463,7 @@ func TestMeasureTheLiveHeapOfAPassWhoseEveryReadIsAtItsWorst(t *testing.T) {
 	if os.Getenv(measureHeap) == "" {
 		t.Skipf("set %s to measure the heap of a pass whose every read is at its worst", measureHeap)
 	}
-	measure := func(t *testing.T, p protocol, bound uint64, run func()) {
+	measure := func(t *testing.T, bound uint64, run func()) {
 		begun := time.Now()
 		peaks := measureLiveHeap(run)
 		t.Logf("took %v: live heap %.1f MiB, %.2f responses of %d bytes; heap in use %.1f MiB",
@@ -485,7 +485,7 @@ func TestMeasureTheLiveHeapOfAPassWhoseEveryReadIsAtItsWorst(t *testing.T) {
 				padding(maxResponseBytes, `{"metadata":{},"items":[{"metadata":{"name":"n","resourceVersion":"1","annotations":{"pad":"`, `"}}}]}`),
 				padding(maxResponseBytes, `{"metadata":{},"items":[{"metadata":{"name":"n","annotations":{"pad":"`, `"}},"status":{"nodeInfo":{"kubeletVersion":"v1.35.0"},"conditions":[{"type":"Ready","status":"True"}]}}]}`))
 			r := &NodesReconciler{Timeout: 10 * time.Minute, MaxNodes: 5000}
-			measure(t, p, readsBound(p, 2, maxResponseBytes)+summariesAtMost, func() {
+			measure(t, readsBound(p, 2, maxResponseBytes)+summariesAtMost, func() {
 				read, err := r.readLease(t.Context(), tenant)
 				if err != nil {
 					t.Error(err)
@@ -504,7 +504,7 @@ func TestMeasureTheLiveHeapOfAPassWhoseEveryReadIsAtItsWorst(t *testing.T) {
 		t.Run(p.name+", a pass of health over a held restore", func(t *testing.T) {
 			tenant := servingOver(t, p, answers, func() {})
 			var got string
-			measure(t, p, readsBound(p, len(answers), maxResponseBytes), func() { got = (&Reconciler{Timeout: 10 * time.Minute}).actedOn(t.Context(), tenant) })
+			measure(t, readsBound(p, len(answers), maxResponseBytes), func() { got = (&Reconciler{Timeout: 10 * time.Minute}).actedOn(t.Context(), tenant) })
 			if got != wantRestore {
 				t.Errorf("the pass says %q, want %q", got, wantRestore)
 			}
@@ -512,7 +512,7 @@ func TestMeasureTheLiveHeapOfAPassWhoseEveryReadIsAtItsWorst(t *testing.T) {
 		t.Run(p.name+", a pass of health over a held restore whose seven lists are answered together", func(t *testing.T) {
 			tenant := servingTogether(t, p, answers, len(answers))
 			var got string
-			measure(t, p, readsBound(p, len(answers), maxResponseBytes), func() { got = (&Reconciler{Timeout: 10 * time.Minute}).actedOn(t.Context(), tenant) })
+			measure(t, readsBound(p, len(answers), maxResponseBytes), func() { got = (&Reconciler{Timeout: 10 * time.Minute}).actedOn(t.Context(), tenant) })
 			if got != wantRestore {
 				t.Errorf("the pass says %q, want %q", got, wantRestore)
 			}

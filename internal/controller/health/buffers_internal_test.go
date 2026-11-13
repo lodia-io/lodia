@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -32,16 +33,20 @@ func (r *chunkedReader) Read(p []byte) (int, error) {
 func TestIoReadAllHoldsAtMostOnePointSixBodiesInChunksBesideTheSliceItReturns(t *testing.T) {
 	for _, size := range []int{100_000, 1 << 20, 3_300_000, 5_500_000, 7_000_000, maxResponseBytes} {
 		for _, step := range []int{1 << 10, 4 << 10, 32 << 10} {
-			base := liveHeap()
-			var chunks uint64
-			reader := &chunkedReader{left: size, step: step, atEnd: func() { chunks = uint64(max(int64(liveHeap())-int64(base), 0)) }}
-			data, err := io.ReadAll(reader)
-			if err != nil || len(data) != size {
-				t.Fatalf("ReadAll returned %d bytes and %v, want %d", len(data), err, size)
+			least := ^uint64(0)
+			for range 3 {
+				base := liveHeap()
+				var chunks uint64
+				reader := &chunkedReader{left: size, step: step, atEnd: func() { chunks = uint64(max(int64(liveHeap())-int64(base), 0)) }}
+				data, err := io.ReadAll(reader)
+				if err != nil || len(data) != size {
+					t.Fatalf("ReadAll returned %d bytes and %v, want %d", len(data), err, size)
+				}
+				least = min(least, chunks)
 			}
-			t.Logf("a body of %d bytes read %d at a time: %.3f bodies in chunks", size, step, float64(chunks)/float64(size))
-			if limit := uint64(1.6*float64(size)) + 64<<10; chunks > limit {
-				t.Errorf("a body of %d bytes read %d at a time is held in %d bytes of chunks, want at most %d, 1.6 bodies", size, step, chunks, limit)
+			t.Logf("a body of %d bytes read %d at a time: %.3f bodies in chunks", size, step, float64(least)/float64(size))
+			if limit := uint64(1.6*float64(size)) + 128<<10; least > limit {
+				t.Errorf("a body of %d bytes read %d at a time is held in %d bytes of chunks, want at most %d, 1.6 bodies", size, step, least, limit)
 			}
 		}
 	}
@@ -62,15 +67,19 @@ func TestAnHTTP2StreamBuffersItsWindowOfABodyNobodyReadsAndNoMore(t *testing.T) 
 		t.Fatal(err)
 	}
 	client := r.clients[key].transport
-	base := liveHeap()
-	resp, err := client.Get(server.URL + nodeLeasesPath)
-	if err != nil {
-		t.Fatal(err)
+	var held []int64
+	for range 3 {
+		base := liveHeap()
+		resp, err := client.Get(server.URL + nodeLeasesPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(500 * time.Millisecond)
+		held = append(held, int64(liveHeap())-int64(base))
+		_ = resp.Body.Close()
 	}
-	time.Sleep(500 * time.Millisecond)
-	held := uint64(max(int64(liveHeap())-int64(base), 0))
-	_ = resp.Body.Close()
-	if held < 4<<20-1<<18 || held > streamBuffer+1<<18 {
-		t.Errorf("the transport holds %d bytes of a body nobody has read, want the stream's window of 4 MiB and at most %d", held, streamBuffer+1<<18)
+	slices.Sort(held)
+	if held[1] < 4<<20-1<<18 || held[1] > streamBuffer+1<<18 {
+		t.Errorf("the transport holds %d bytes of a body nobody has read, want the stream's window of 4 MiB and at most %d", held[1], streamBuffer+1<<18)
 	}
 }

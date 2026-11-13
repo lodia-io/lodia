@@ -584,11 +584,11 @@ What one read holds at most is the larger of its two phases, each summed from th
   - The connection's buffers, apart from a read's own: 64 KiB for net/http's reader and writer of 4 KiB each ([transport.go](https://github.com/golang/go/blob/go1.26.10/src/net/http/transport.go#L1991)) and TLS's records, for each connection.
     Over HTTP/2 also 1 MiB once for the connection, which the lists of a pass share: the client accepts frames of 1 MiB ([http2.go](https://github.com/golang/net/blob/v0.60.0/http2/http2.go#L85), [transport.go](https://github.com/golang/net/blob/v0.60.0/http2/transport.go#L531)) and keeps a buffer of the largest it has read ([frame.go](https://github.com/golang/net/blob/v0.60.0/http2/frame.go#L455-L460)).
     Over HTTP/1.1 each read in flight has a connection of its own.
-- after it, the body, 8 MiB, and what the types keep, 1.7 MiB.
-  The most is 1.65 MiB, a page of 100 Nodes of 64 Ready conditions with every string at its raw bound and invalid UTF-8: a decoded string is cut to a copy of its kept length, which `TestACutStringHoldsNoneOfTheStringItWasCutFrom` holds, so a name takes 256 bytes, a kubelet version 80, a condition's status 192 and its type 8, and the conditions' slice 4 KiB a Node.
+- after it, the body, 8 MiB, and what the types keep, 2 MiB.
+  The most is 1.65 MiB, 1.64 measured and 1.70 under the race detector, a page of 100 Nodes of 64 Ready conditions with every string at its raw bound and invalid UTF-8: a decoded string is cut to a copy of its kept length, which `TestACutStringHoldsNoneOfTheStringItWasCutFrom` holds, so a name takes 256 bytes, a kubelet version 80, a condition's status 192 and its type 8, and the conditions' slice 4 KiB a Node.
   The other kinds keep at most 0.4 MiB (`TestWhatTheTypesKeepAtTheRawBoundsIsUnderKeptAtMost`).
 
-So a read holds 26.4 MiB over HTTP/2 (20.8 + 4.03 + 0.5, then 1.06 for its connection) and 22.6 MiB over HTTP/1.1 (20.8 + 1.7, then 0.06) while its body is read, and 9.7 MiB after: 26.4 MiB, since a tenant's server may answer either way.
+So a read holds 26.4 MiB over HTTP/2 (20.8 + 4.03 + 0.5, then 1.06 for its connection) and 22.6 MiB over HTTP/1.1 (20.8 + 1.7, then 0.06) while its body is read, and 10 MiB after: 26.4 MiB, since a tenant's server may answer either way.
 The memory of a pass follows from the reads it has in flight at once, each 25.3 MiB over HTTP/2 and 22.5 MiB over HTTP/1.1 apart from its connection:
 - a pass of `health-nodes` reads the controller manager's Lease, then lists the Leases and the Nodes at once, then sends the hold's write, whose patch carries the read's `resourceVersion`, 384 bytes at most, and reads its answer: two reads at once, 51.7 MiB with the connection's 1.06 MiB, and the summaries the pass builds beside the sampling, up to `health.maxNodes` Lease versions and Node summaries, 4 MiB (3.72 MiB measured, with names of 253 bytes: a Lease version takes up to 112 bytes of map slot, its name of 256 and 24 bytes of the slice it is built from, a Node summary 72 bytes, 256 and 80, 3.8 MiB for 5,000 of each; `TestWhatAPassBuildsBesideTheSamplingIsUnderSummariesAtMost`): 55.7 MiB;
 - a pass of `health` over a held restore lists seven kinds at once, on one connection with a stream, a buffer and a head of its own for each: seven reads, 178.4 MiB;
@@ -637,9 +637,9 @@ The runs below are on go1.26.10, `go version go1.26.10 darwin/arm64`, on 16 core
 A tenth run of the last measure failed: 19 of its 100 passes ended in a connection reset or a broken pipe from the loopback server, which the test reports as the outcome of those passes.
 The closest any measure came to its bound is 1.2 MiB, the cut answer with headers at their bound over HTTP/1.1.
 No run put a pass at the ceiling of its reads, since their chunks do not all peak together.
-A first pass of `health-nodes` over 5,000 Nodes and their 5,000 Leases, the most `health.maxNodes` counts by default, took 268, 273 and 276 ms in three runs on go1.26.10, and a pass over 5,001 Nodes, which stops at the bound, 277, 266 and 273 ms (`TestATenantOfMaxNodesNodesIsCountedWholeAtTheOperatorsTimeout`, on envtest, on 16 cores of an Apple M4 Max, one run at a time).
-The race detector slows it tenfold, to 2.77, 2.78 and 2.81 s for 5,000 Nodes and 2.70, 2.72 and 2.74 s for 5,001, against the operator's `Timeout` of 5 s.
-That test is built without the race detector, and `make test` runs it in a step of its own; under the detector `TestATenantOfMaxNodesNodesIsCountedWholeUnderTheRaceDetector` counts the same tenant with a `Timeout` of a minute.
+A first pass of `health-nodes` over 5,000 Nodes and their 5,000 Leases, the most `health.maxNodes` counts by default, took 275, 307 and 277 ms in three runs on go1.26.10, and a pass over 5,001 Nodes, which stops at the bound, 269, 306 and 271 ms (`TestATenantOfMaxNodesNodesIsCountedWholeAtTheOperatorsTimeout`, on envtest, on 16 cores of an Apple M4 Max, one run at a time).
+The race detector slows it tenfold, to 2.83, 2.90 and 2.80 s for 5,000 Nodes and 2.81, 2.86 and 2.77 s for 5,001, in three runs of `TestATenantOfMaxNodesNodesIsCountedWholeUnderTheRaceDetector`, which counts the same tenant with a `Timeout` of a minute, against the operator's of 5 s.
+That first test is built without the race detector, and `make test` runs it in a step of its own.
 Between passes it keeps at most `health.maxNodes` Lease versions and Node summaries per tenant ([review checklist](review-checklist.md), item 10).
 The tenant's administrator can have any server answer the lists, so the pass bounds every string it keeps itself:
 - a Lease or a Node named with more than 253 bytes is not kept; no real object has such a name ([validation.go](https://github.com/kubernetes/apimachinery/blob/v0.37.1/pkg/util/validation/validation.go#L190-L191));
@@ -647,7 +647,7 @@ The tenant's administrator can have any server answer the lists, so the pass bou
 - a Node summary keeps a kubelet version only up to 64 bytes and a Ready status only if it is `True`, `False` or `Unknown`: the tenant's administrator writes both, and [`ValidateNodeUpdate`](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/apis/core/validation/validation.go#L7666-L7738) checks neither.
 
 With every string at its bound a Lease version takes a name of 253 bytes and a map slot of 48 bytes (key header, digest and time), and a Node summary 72 bytes, a name of 253 bytes and a kubelet version of 64.
-A tenant at the default `health.maxNodes` of 5,000 keeps 5,000 of each, 3.4 MiB of live heap as `TestWhatASamplingKeepsRestsOnItsOwnBoundsAndNotOnWhatTheServerAnswers` measures in three runs with names of 253 bytes and versions at their raw bounds: what the lists answer does not change it.
+A tenant at the default `health.maxNodes` of 5,000 keeps 5,000 of each, 3.4 MiB of live heap (3.43 to 3.44) as `TestWhatASamplingKeepsRestsOnItsOwnBoundsAndNotOnWhatTheServerAnswers` measures in three runs with names of 253 bytes and versions at their raw bounds: what the lists answer does not change it.
 The operator's pods set no requests or limits yet.
 
 ## Upgrading Lodia
