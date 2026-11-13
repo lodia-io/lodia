@@ -4,6 +4,7 @@
 package health
 
 import (
+	"net/http"
 	"slices"
 	"testing"
 
@@ -95,5 +96,48 @@ func TestTheCausesOfARealAPIServersRefusalAreWhatTheTypedClientReads(t *testing.
 				t.Errorf("Refused is %t, want %t", got, c.refused)
 			}
 		})
+	}
+}
+
+type measuringHeads struct {
+	next    http.RoundTripper
+	biggest *int
+	h2      *int
+}
+
+func (m measuringHeads) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := m.next.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	http1, http2 := len(resp.Proto)+1+len(resp.Status)+2+2, 0
+	for name, values := range resp.Header {
+		for _, value := range values {
+			http1 += len(name) + 2 + len(value) + 2
+			http2 += len(name) + len(value) + 32
+		}
+	}
+	*m.biggest, *m.h2 = max(*m.biggest, http1), max(*m.h2, http2)
+	return resp, nil
+}
+
+func TestAKubeAPIServersHeadersAreFarUnderTheBoundHealthReads(t *testing.T) {
+	_, tenant := startAPIServer(t)
+	var biggest, h2 int
+	tenant.api.Client.Transport = measuringHeads{tenant.api.Client.Transport, &biggest, &h2}
+	lease := func(name string) []byte {
+		return []byte(`{"apiVersion":"coordination.k8s.io/v1","kind":"Lease","metadata":{"name":"` + name + `","namespace":"kube-system"}}`)
+	}
+	_, _ = tenant.leasePage(t.Context(), metav1.ListOptions{Limit: leasePage})
+	_, _ = tenant.nodePage(t.Context(), metav1.ListOptions{Limit: nodePage})
+	_, _ = tenant.getLease(t.Context(), "absent")
+	_, _ = tenant.createLease(t.Context(), lease("held"))
+	_, _ = tenant.createLease(t.Context(), lease("held"))
+	_, _ = tenant.createLease(t.Context(), []byte(`{"metadata":{"name":"Not_A_Name","namespace":"kube-system"}}`))
+	_, _ = tenant.getLease(t.Context(), "held")
+	_, _ = tenant.do(t.Context(), tenant.api.Patch(types.MergePatchType).AbsPath(coordinationPath, "kube-system", "leases", "held").Body([]byte(`{"metadata":{"resourceVersion":"1"},"spec":{"holderIdentity":"x"}}`)))
+	t.Logf("the biggest head of 8 answers of a kube-apiserver, HTTP/1.1 counted: %d bytes; as an HTTP/2 header list: %d bytes; maxResponseHeaderBytes %d", biggest, h2, maxResponseHeaderBytes)
+	if biggest == 0 || biggest*16 > maxResponseHeaderBytes || h2*16 > maxResponseHeaderBytes {
+		t.Errorf("the biggest head is %d bytes, %d as an HTTP/2 list: want 1/16 of %d at most", biggest, h2, maxResponseHeaderBytes)
 	}
 }

@@ -10,17 +10,29 @@ import (
 	"net/http"
 )
 
-// maxResponseBytes is the longest response body Health reads from a tenant,
-// whose administrator writes the objects it lists.
-const maxResponseBytes = 8 << 20
+const (
+	// maxResponseBytes is the longest response body Health reads from a tenant,
+	// whose administrator writes the objects it lists.
+	maxResponseBytes = 8 << 20
+
+	// maxResponseHeaderBytes is the most bytes of status line and headers
+	// Health reads of a response; net/http reads up to 10 MiB of them
+	// otherwise. A kube-apiserver's are under 512 bytes (envtest, 1.35.0).
+	maxResponseHeaderBytes = 64 << 10
+)
 
 var errResponseTooLong = fmt.Errorf("the response is longer than maxResponseBytes, %d bytes", maxResponseBytes)
 
 // capResponses cuts every body at maxResponseBytes, so that the client's read
-// of it fails before anything is decoded. A request that wants to know the cut
-// carries a *bool under cutKey: client-go replaces the error of the read with
-// the status error for a response outside 2xx.
+// of it fails before anything is decoded, and the headers of every response at
+// maxResponseHeaderBytes. A request that wants to know the cut carries a *bool
+// under cutKey: client-go replaces the error of the read with the status error
+// for a response outside 2xx. next is the transport client-go builds for this
+// tenant alone, since its config sets a proxy, which it never caches.
 func capResponses(next http.RoundTripper) http.RoundTripper {
+	if transport, ok := next.(*http.Transport); ok {
+		transport.MaxResponseHeaderBytes = maxResponseHeaderBytes
+	}
 	return cappedTransport{next}
 }
 

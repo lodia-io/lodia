@@ -453,13 +453,15 @@ func (t *tenant) patchLease(ctx context.Context, patch []byte) (*leaderLease, er
 	return decode(body, err, leaderLeaseFrom)
 }
 
-// do sends the request, which asks for JSON, and returns the body of the
-// answer. A body cut at maxResponseBytes is errResponseTooLong whatever the
-// status. A Status of Failure is the error of a failed request, as client-go's
-// Result.Error reads it, but into the fields Health reads.
+// do sends the request once, which asks for JSON, and returns the body of the
+// answer: client-go sends a request again up to ten times on a 429 or a 5xx
+// that carries Retry-After, and the next pass is Health's retry. A body cut at
+// maxResponseBytes is errResponseTooLong whatever the status. A Status of
+// Failure is the error of a failed request, as client-go's Result.Error reads
+// it, but into the fields Health reads.
 func (t *tenant) do(ctx context.Context, request *rest.Request) ([]byte, error) {
 	var cut bool
-	body, err := request.DoRaw(context.WithValue(ctx, cutKey{}, &cut))
+	body, err := request.MaxRetries(0).DoRaw(context.WithValue(ctx, cutKey{}, &cut))
 	if cut {
 		return nil, errResponseTooLong
 	}
