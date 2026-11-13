@@ -216,6 +216,41 @@ func heldByAGzipReader(t *testing.T, stream []byte) int64 {
 	})
 }
 
+func mallocsOf(stream []byte) uint64 {
+	least := ^uint64(0)
+	for range 7 {
+		var before, after runtime.MemStats
+		one := make([]byte, 1)
+		source := plainReader{bytes.NewReader(stream)}
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		reader, err := gzip.NewReader(source)
+		if err != nil {
+			panic(err)
+		}
+		if _, err := io.ReadFull(reader, one); err != nil {
+			panic(err)
+		}
+		runtime.ReadMemStats(&after)
+		runtime.KeepAlive(reader)
+		least = min(least, after.Mallocs-before.Mallocs)
+	}
+	return least
+}
+
+func TestTheCraftedGzipStreamsMakeTheTablesAndTheHeaderTheirPartsAssume(t *testing.T) {
+	if got, want := mallocsOf(craftedGzip(false))-mallocsOf(gzipOfAByte(t)), uint64(gzipLinkTables+2); got != want {
+		t.Errorf("a reader of the crafted block makes %d allocations more than one of a stream of gzip.Writer, want %d: a table for each of the %d prefixes and a slice of them for each of two codes", got, want, gzipLinkTables)
+	}
+	reader, err := gzip.NewReader(bytes.NewReader(craftedGzip(true)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reader.Extra) != 1<<16-1 || len(reader.Name) != 1022 || len(reader.Comment) != 1022 {
+		t.Errorf("the header of the crafted stream has an extra field of %d bytes, a name of %d and a comment of %d, want 65,535, 1,022 and 1,022", len(reader.Extra), len(reader.Name), len(reader.Comment))
+	}
+}
+
 func TestAGzipReaderThatHasReadHoldsTheSumOfItsPartsOnTheWorstStream(t *testing.T) {
 	for _, c := range []struct {
 		name   string
