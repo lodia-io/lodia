@@ -1077,9 +1077,9 @@ type NodesStatus struct {
 	// +kubebuilder:validation:MaxLength=64
 	OldestKubelet string `json:"oldestKubelet,omitempty"`
 
-	// Truncated is true when Health stopped listing the Nodes, or the Leases
-	// of kube-node-lease, at a bound: total and ready count what it read, and
-	// outdatedKubelets and oldestKubelet are absent.
+	// Truncated is true when Health stopped listing the Nodes at a bound: total
+	// and ready count what it read, and outdatedKubelets and oldestKubelet are
+	// absent.
 	// +optional
 	Truncated bool `json:"truncated,omitempty"`
 }

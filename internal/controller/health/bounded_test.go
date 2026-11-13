@@ -221,7 +221,7 @@ func TestBothListsPageAndTheTenantsBeyondTheBoundsAreNotCounted(t *testing.T) {
 		})
 		pass(nodesReconciler(now), 20)
 		expectTooMany(t, cp, "a response listing the Leases of kube-node-lease is longer than 8388608 bytes"+beyond)
-		expectNodes(t, cp, truncatedNodes(120, 120))
+		expectNodes(t, cp, nodesOf(120, 120, 120, "v1.35.0"))
 
 		on(nodeListPath, func(w http.ResponseWriter, _ *http.Request) { writeOversizeList(w, "v1", "NodeList") })
 		pass(nodesReconciler(now), 25)
@@ -359,6 +359,26 @@ func TestBackUnderTheBoundsTheClockOfTheLeasesStartsAfresh(t *testing.T) {
 	h.expectCondition(metav1.ConditionTrue, lodiav1alpha1.ReasonNodesSilent, taken(3, 3, "60"))
 }
 
+func TestAStopOfTheLeaseListLeavesStatusNodesAsTheLastListOfNodesHasIt(t *testing.T) {
+	h := sampling(t, "a", "b", "c")
+	h.r.MaxNodes = 3
+	renewNodeLease(t, "x", time.Now())
+	for _, at := range []int{0, 5} {
+		h.at(at)
+		h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonTooManyNodes, tooManyLeases(3))
+		expectNodes(t, h.cp, nodesOf(3, 3, 0, "v1.35.0"))
+	}
+	addNode(t, "d", corev1.ConditionTrue, h.start, "v1.34.0")
+	h.at(30)
+	expectNodes(t, h.cp, truncatedNodes(3, 3))
+	if err := tenant.Delete(t.Context(), &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "d"}}); err != nil {
+		t.Fatal(err)
+	}
+	h.at(60)
+	h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonTooManyNodes, tooManyLeases(3))
+	expectNodes(t, h.cp, nodesOf(3, 3, 0, "v1.35.0"))
+}
+
 func TestAReleaseThatFailsIsTriedAgainByTheNextPass(t *testing.T) {
 	h := holding(t, "a", "b", "c")
 	h.r.MaxNodes = 3
@@ -422,7 +442,7 @@ func TestRow5ReleasesAHoldOfATenantBeyondTheBoundBeforeAnyListOfNodes(t *testing
 	h.r.MaxNodes = 3
 	h.at(25)
 	h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonTooManyNodes, tooManyLeases(3))
-	expectNodes(t, h.cp, truncatedNodes(0, 0))
+	expectNodes(t, h.cp, nodesOf(3, 3, 0, "v1.35.0"))
 	if holder := h.holder(); holder != "" {
 		t.Fatalf("a restarted operator with no list of Nodes left holder %q", holder)
 	}

@@ -452,15 +452,14 @@ func held(cp *lodiav1alpha1.ControlPlane, reason, message string) *metav1.Condit
 }
 
 func (s *sampling) status(cp *lodiav1alpha1.ControlPlane) *lodiav1alpha1.NodesStatus {
-	truncated := s.stopped() != ""
-	if s.listedAt.IsZero() && !truncated {
+	if s.listedAt.IsZero() {
 		return nil
 	}
 	running := ""
 	if cp.Status.Kubernetes != nil {
 		running = cp.Status.Kubernetes.Version
 	}
-	return nodesStatus(s.nodes, running, truncated)
+	return nodesStatus(s.nodes, running, s.nodesStop != "")
 }
 
 // nodesStatus counts the nodes; a kubelet is outdated when its minor is below
