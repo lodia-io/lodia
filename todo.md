@@ -248,6 +248,14 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   A node a platform removes therefore keeps a certificate its API server accepts for up to 30 days, and its kubelet may register its `Node` again in that time.
   `docs/decisions/staged-credential-rotation.md:22` sets the 30 days without weighing that window against the renewals a shorter lifetime costs: decide the lifetime, or a field for it, on that trade.
 
+## From the CI of the bounded reads (2026-11-13)
+
+- `TestAGrantThatChangesNoTemplateRollsNoPod` (`internal/controller/workloads/revision_test.go:268`) failed in the `verify` job of run [43357744832](https://github.com/lodia-io/lodia/actions/runs/43357744832), job 131663696983, at d378796 of #89, a pull request that touches nothing in `internal/controller/workloads`:
+  `Deployment kube-controller-manager is stamped "v0.0.0-test+running", want v0.0.1-test+next`, and the same for `kube-scheduler`.
+  Line 268 is the first `expectStamps` after the pass of the operator at the new revision: it left two of the three Deployments at the stamp of the old one, and the API server's Deployment carried the new.
+  The test passed three runs of three locally, `main` was green at bf28826, and none of the other failed runs among the last 60 of the repository names it.
+  The cause is not found.
+
 ## For the release that first drops a minor
 
 - A minor dropped from the version table stays renderable for one more release, as the source of an upgrade ([upgrades-and-maintenance-windows](docs/decisions/upgrades-and-maintenance-windows.md), "End of support"): build it in the release that first drops one, since no minor is dropped yet and the flag would have no data and no test that means anything.
