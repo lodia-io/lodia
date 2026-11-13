@@ -6,6 +6,8 @@ package health
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -68,7 +70,10 @@ func TestAFailedAnswerThatIsNoStatusCarriesNoByteOfItsBody(t *testing.T) {
 					var logged bytes.Buffer
 					crzap.New(crzap.WriteTo(&logged)).Error(err, "the API server refused a write of the controller manager's Lease")
 					condition := refusedRow(&lodiav1alpha1.ControlPlane{}, row{write: renewLease}, err).condition
-					for what, text := range map[string]string{"error": err.Error(), "log line": logged.String(), "condition message": condition.Message} {
+					var answered apierrors.APIStatus
+					_ = errors.As(err, &answered)
+					status := fmt.Sprintf("%+v", answered.Status())
+					for what, text := range map[string]string{"error": err.Error(), "log line": logged.String(), "condition message": condition.Message, "status": status} {
 						for _, seen := range kind.seen {
 							if strings.Contains(text, seen) {
 								t.Errorf("the %s carries the body: %.200q", what, text)

@@ -201,7 +201,16 @@ func TestAKeyOfAnyKindIsSkippedAndKeepsNothingOfTheTenant(t *testing.T) {
 }
 
 func TestAKeyThatUnquotesToAFieldNameIsTheField(t *testing.T) {
-	body := `{"metadata":{},"items":[{"metadata":{"name":"n","resourceVersion":"1"}}]}`
+	body := `{"metadata":{},"items":[{"metadata":{"n\u0061me":"n","resource\u0056ersion":"1"}}]}`
+	r, tenant := servingEveryPath(t, amplifier{status: http.StatusOK, body: []byte(body)})
+	kept, stop, err := r.listLeases(t.Context(), tenant)
+	if err != nil || stop != "" || len(kept) != 1 || kept[0].name != "n" || kept[0].version != versionOf("1") {
+		t.Errorf("kept %+v, stop %q, error %v, want the Lease n at version 1", kept, stop, err)
+	}
+}
+
+func TestAKeyOfAnotherCaseIsNotTheField(t *testing.T) {
+	body := `{"metadata":{},"items":[{"metadata":{"name":"n","NAME":"x","Name":"y","resourceversion":"2","resourceVersion":"1"},"Metadata":{"name":"z"}}]}`
 	r, tenant := servingEveryPath(t, amplifier{status: http.StatusOK, body: []byte(body)})
 	kept, stop, err := r.listLeases(t.Context(), tenant)
 	if err != nil || stop != "" || len(kept) != 1 || kept[0].name != "n" || kept[0].version != versionOf("1") {

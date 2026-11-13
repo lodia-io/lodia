@@ -161,7 +161,7 @@ func countATenantOfMaxNodes(t *testing.T, timeout time.Duration) {
 	leaseToken, nodeToken := continueTokens(t, tenant)
 	t.Logf("the longest continue token of %d Leases listed 500 to a page is %d bytes, of %d Nodes listed 100 to a page %d bytes", maxNodes, leaseToken, maxNodes, nodeToken)
 	if max(leaseToken, nodeToken) > 1024 {
-		t.Errorf("a kube-apiserver gave a continue token of %d bytes, want under a quarter of the 4,096 Health sends back", max(leaseToken, nodeToken))
+		t.Errorf("a kube-apiserver gave a continue token of %d bytes, want under a quarter of the 4,096 Health reads", max(leaseToken, nodeToken))
 	}
 	now := clocktesting.NewFakePassiveClock(time.Now().Truncate(time.Second))
 	pass := func() time.Duration {
@@ -200,6 +200,6 @@ func TestAContinueTokenOfNamesOf253BytesIsUnderAQuarterOfTheBoundHealthSendsBack
 		t.Fatalf("the lists gave no continue token: %d and %d bytes", leaseToken, nodeToken)
 	}
 	if max(leaseToken, nodeToken) > 1024 {
-		t.Errorf("a kube-apiserver gave a continue token of %d bytes, want under a quarter of the 4,096 Health sends back", max(leaseToken, nodeToken))
+		t.Errorf("a kube-apiserver gave a continue token of %d bytes, want under a quarter of the 4,096 Health reads", max(leaseToken, nodeToken))
 	}
 }

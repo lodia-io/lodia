@@ -741,18 +741,26 @@ func TestAWriteThatConflictsEveryTryIsRepeatedByTheNextPass(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
 	h.at(0)
 	renew(t, lodiav1alpha1.ControllerManagerLease, "", time.Now())
-	var patches atomic.Int32
+	var patches, reads, lists, others atomic.Int32
 	h.inject(func(w http.ResponseWriter, req *http.Request) bool {
-		if req.Method != http.MethodPatch || req.URL.Path != managerLease {
-			return false
+		switch {
+		case req.Method == http.MethodPatch && req.URL.Path == managerLease:
+			patches.Add(1)
+			refuse(w, http.StatusConflict, metav1.StatusReasonConflict)
+			return true
+		case req.Method == http.MethodGet && req.URL.Path == managerLease:
+			reads.Add(1)
+		case req.URL.Path == leaseListPath:
+			lists.Add(1)
+		default:
+			others.Add(1)
 		}
-		patches.Add(1)
-		refuse(w, http.StatusConflict, metav1.StatusReasonConflict)
-		return true
+		return false
 	})
 	h.at(20)
-	if patches.Load() < 2 {
-		t.Errorf("the write was tried %d times, want a retry on every conflict", patches.Load())
+	if patches.Load() != 5 || reads.Load() != 5 || lists.Load() != 1 || others.Load() != 0 {
+		t.Errorf("the pass sent %d patches, %d reads of the Lease, %d lists of the node Leases and %d other requests, want 5, 5, 1 and 0: the read, the patch and, on each conflict, the read and the patch again, up to retry.DefaultRetry's 5 tries",
+			patches.Load(), reads.Load(), lists.Load(), others.Load())
 	}
 	if holder := h.holder(); holder != "" {
 		t.Fatalf("a write that conflicted every try left holder %q", holder)

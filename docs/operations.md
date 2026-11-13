@@ -540,7 +540,7 @@ A token of a field Health keeps, past its bound, stops a list of the Leases or o
 
 | field | raw bound |
 |---|---|
-| a name, a namespace | 2,048 bytes, 253 decoded: a longer name is counted and not kept |
+| a name, a namespace | 2,048 bytes, 253 decoded: a Lease or a Node with a longer name is not counted, and only a held restore's tally counts such an object, without naming it |
 | a `resourceVersion`, a time, a Status's `reason`, a cause's `reason` | 64 bytes; the hold's patch carries the `resourceVersion` it read decoded and `json.Marshal`-escaped ([encode.go](https://github.com/golang/go/blob/go1.26.10/src/encoding/json/encode.go#L205-L216)): up to 192 bytes of invalid UTF-8, or 384 of `<`, `>` and `&`, which escape as six |
 | a condition's `type` and `status`, a Status's `status`, a `failurePolicy`, a Service's `type`, a PersistentVolume's reclaim policy, a claim's phase | 64 bytes: a longer token is none of the words, which are under 16 bytes, and is not decoded |
 | a `holderIdentity` | 512 bytes |

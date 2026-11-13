@@ -4,6 +4,8 @@
 package health
 
 import (
+	"context"
+	"net/http"
 	"runtime"
 	"strconv"
 	"strings"
@@ -182,6 +184,47 @@ func TestAFieldComparedOrSkippedIsNeverDecoded(t *testing.T) {
 			}
 			if limit := uint64(size / 16); got > limit {
 				t.Errorf("the read allocated %d bytes over a field of %d, want at most %d", got, size, limit)
+			}
+		})
+	}
+}
+
+func TestAStopInsideAPageKeepsTheItemsBeforeItAtMostMaxNodes(t *testing.T) {
+	long := strings.Repeat("a", maxNameRaw+1)
+	for _, c := range []struct {
+		name     string
+		maxNodes int
+		body     string
+		list     func(*NodesReconciler, *tenant) (int, string, error)
+		kept     int
+		stop     string
+	}{
+		{"Leases, two before the stop", 5000, `{"metadata":{},"items":[{"metadata":{"name":"a"}},{"metadata":{"name":"b"}},{"metadata":{"name":"` + long + `"}},{"metadata":{"name":"d"}}]}`,
+			func(r *NodesReconciler, t *tenant) (int, string, error) {
+				kept, stop, err := r.listLeases(context.Background(), t)
+				return len(kept), stop, err
+			}, 2, "metadata.name in the Leases of kube-node-lease is longer than 2048 bytes"},
+		{"Nodes, one before the stop", 5000, `{"metadata":{},"items":[{"metadata":{"name":"a"}},{"metadata":{"name":"` + long + `"}}]}`,
+			func(r *NodesReconciler, t *tenant) (int, string, error) {
+				kept, stop, err := r.listNodes(context.Background(), t)
+				return len(kept), stop, err
+			}, 1, "metadata.name in the Nodes is longer than 2048 bytes"},
+		{"Nodes, none before the stop", 5000, `{"metadata":{},"items":[{"metadata":{"name":"` + long + `"}}]}`,
+			func(r *NodesReconciler, t *tenant) (int, string, error) {
+				kept, stop, err := r.listNodes(context.Background(), t)
+				return len(kept), stop, err
+			}, 0, "metadata.name in the Nodes is longer than 2048 bytes"},
+		{"Nodes, three before the stop and maxNodes 2", 2, `{"metadata":{},"items":[{"metadata":{"name":"a"}},{"metadata":{"name":"b"}},{"metadata":{"name":"c"}},{"metadata":{"name":"` + long + `"}}]}`,
+			func(r *NodesReconciler, t *tenant) (int, string, error) {
+				kept, stop, err := r.listNodes(context.Background(), t)
+				return len(kept), stop, err
+			}, 2, "metadata.name in the Nodes is longer than 2048 bytes"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r, tenant := servingEveryPath(t, amplifier{status: http.StatusOK, body: []byte(c.body)})
+			r.MaxNodes = c.maxNodes
+			if kept, stop, err := c.list(r, tenant); kept != c.kept || stop != c.stop || err != nil {
+				t.Errorf("kept %d, stopped %q, error %v, want %d and %q", kept, stop, err, c.kept, c.stop)
 			}
 		})
 	}
