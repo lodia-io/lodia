@@ -32,7 +32,7 @@ The Health controller protects a tenant's workloads from an outage between the c
   Any other holder, such as a platform's own watchdog, is left alone and named in the message of `ControllerManagerHeld=False`, reason `HoldBlocked`.
 - **It fails safe.**
   A Lodia that stops renewing gives the lease back after 60 seconds, to upstream behaviour; a Lodia that restarts keeps a hold it finds with holder `lodia`.
-  A failed read of the node leases restarts the clock, and a lease held by `lodia` is still renewed.
+  A failed read of the node leases restarts the clock, and a lease held by `lodia` is still renewed, but for a tenant beyond a bound (row 5), whose hold is released.
   A paused `ControlPlane` gets no writes, so its hold lapses within those 60 seconds.
 - **Settings.**
   On by default, off for one `ControlPlane` with `spec.health.holdControllerManager: false` ([the field](../api/controlplane.md#spec)).
@@ -100,6 +100,7 @@ A pass reads the Lease first, with a consistent GET, then takes the first row th
 | 18 | below | `NotHeld` | none |
 
 Whether a list stopped is what its last outcome says, and a list that fails keeps the outcome it had: a stop known from an earlier pass still ends a hold in row 5 when `AccessReady` is not True or the Lease list fails.
+With the read of the controller manager's Lease failed nothing can be released, so rows 1 and 2 answer before the stop.
 A pass with no Lease list behind it, or with a list stopped at a bound, restarts the clock and clears the count towards the release, whichever row follows: rows 1, 2 and 5-10, rows 3 and 4 when the list failed, was stopped or `AccessReady` is not True, and a missing or foreign `<cp>-lodia-kubeconfig`.
 Rows 13-15 clear the count, and rows 11 and 12 neither grow nor clear it.
 A write that is refused or fails changes the row's condition:
