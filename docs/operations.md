@@ -200,7 +200,7 @@ The in-cluster path, `kubernetes` to `240.0.0.1:6443` through `apiserver-proxy` 
 | `AccessReady=False`, `Binding` | the tenant has not confirmed the bindings since its API server became ready; Lodia's log has the error. PKI recreates a missing binding with a ten-minute `system:masters` certificate on its next pass |
 | `ControllerManagerHeld=True`, `NodesSilent`; in the tenant, the Lease `kube-system/kube-controller-manager` held by `lodia` | most nodes cannot reach the API, so Health holds the controller manager; the [nodes cut off](#nodes-cut-off-from-the-control-plane) runbook |
 | `ControllerManagerHeld=False`, `HoldBlocked` | nodes are silent but another component holds the controller manager's lease, named in the message, for example a platform's own watchdog; run one of the two, not both; or the API server refused the write that would take it, which the message names |
-| `ControllerManagerHeld=False`, `TooManyNodes` | the tenant has more Nodes, or more Leases of `kube-node-lease`, than `health.maxNodes`, or a list of them went on past the pages that many fill and one more, or held a page of more items than its limit, or a Node of more than 64 conditions, or a `continue` token of more than 4,096 bytes, or a response listing them was over 8 MiB, which the message names; Lodia counts none of its nodes, holds no controller manager there and ends a hold at once, and `status.nodes.truncated` is true when it is the Nodes that stopped. A tenant's administrator creates both kinds of object freely: have the surplus deleted, or raise `health.maxNodes` ([settings](README.md#installation)) |
+| `ControllerManagerHeld=False`, `TooManyNodes` | the tenant has more Nodes, or more Leases of `kube-node-lease`, than `health.maxNodes`, or a list of them went on past the pages that many fill and one more, or held a page of more items than its limit, or a Node of more than 64 conditions, or a field longer than its bound ([capacity](#capacity)), a `continue` token of more than 4,096 bytes among them, or a response listing them was over 8 MiB, which the message names; Lodia counts none of its nodes, holds no controller manager there and ends a hold at once, and `status.nodes.truncated` is true when it is the Nodes that stopped. A tenant's administrator creates both kinds of object freely: have the surplus deleted, or raise `health.maxNodes` ([settings](README.md#installation)) |
 | `Reachable=False`, `ExternalProbeFailed`, nodes fine | the path the message names: `api:` the public endpoint, its Gateway listener, route status and certificate SANs; `tunnel:` the route `<cp>-tunnel`, the sidecar's `<cp>-tunnel-serving` and the tunnel's client certificate; `konnectivity:` the route `<cp>-konnectivity` and `<cp>-konnectivity-server`'s SANs |
 | `Reachable=False`, `InternalProbeFailed` | the API server does not answer `/readyz` on its in-namespace Service `<cp>-kube-apiserver`, or the operator cannot reach it; `APIServerReady`, the Deployment `<cp>-kube-apiserver` and the Service's endpoints say which |
 | Many tenants turn `Reachable=False` slowly behind one Gateway | a Gateway that does not answer costs a Health worker the 5-second timeout for each tenant, per pass, so a round over `N` tenants takes `N`/2 seconds on the 10 workers and the third failed probe comes that much later; tenants on other Gateways wait behind them, as they did behind a hung public probe |
@@ -213,7 +213,7 @@ The in-cluster path, `kubernetes` to `240.0.0.1:6443` through `apiserver-proxy` 
 | `Progressing=False`, `WaitingForWindow` for long | expected outside the window; `status.target.scheduledFor` says when it opens, and `lodia.io/maintain-requested-at` rolls the change now |
 | `Progressing=False`, `FleetLimit` | other tenants hold the slots, `status.maintenance.slotSince` present whatever their `Progressing` reads: they roll a change Lodia started, or failed one and keep their slots ([`LodiaMaintenanceHalted`](#lodiamaintenancehalted)); the operator's `fleet.maxConcurrentRollouts`; `status.target.scheduledFor` orders the queue |
 | `Progressing=False`, `Failed` or `MaintenanceFailed` | `status.kubernetes.upgrade.step` and `Progressing`'s message; the [stuck upgrade](#stuck-upgrade) runbook |
-| `Progressing=False`, `WaitingForNodes` | a kubelet more than three minors older than the next minor, `status.nodes.oldestKubelet`: upgrade the nodes first; or `status.nodes` is absent, Health not having listed the nodes yet: the tenant's API must answer it; or `status.nodes.truncated`, the message saying the nodes could not all be counted: the tenant's Nodes are beyond `health.maxNodes`, a page, a Node's conditions, a `continue` token or a response of 8 MiB, as `ControllerManagerHeld` `TooManyNodes` says |
+| `Progressing=False`, `WaitingForNodes` | a kubelet more than three minors older than the next minor, `status.nodes.oldestKubelet`: upgrade the nodes first; or `status.nodes` is absent, Health not having listed the nodes yet: the tenant's API must answer it; or `status.nodes.truncated`, the message saying the nodes could not all be counted: the tenant's Nodes are beyond `health.maxNodes`, a page, a Node's conditions, a field's bound or a response of 8 MiB, as `ControllerManagerHeld` `TooManyNodes` says |
 | `Progressing=False`, `TimeZoneUnsupported` | `spec.maintenance.window.timeZone` is not in the operator's zone database; an IANA name such as `Europe/Berlin` |
 | `Progressing=True`, `LatestGenerationNotObserved` for more than a few seconds | the first condition the message names has not taken the change up: its reason, which describes the generation it names, when it is False; otherwise what its controller waits on ([independent-controllers](decisions/independent-controllers.md)), which `Ready` names when that is not True; its controller's log (`controller="<name>"`) only when that is True at the new generation |
 | Nothing changes after editing `spec` | `metadata.generation` against `status.observedGeneration`; `spec.paused`; the operator's leader and its logs |
@@ -525,8 +525,31 @@ A highly available control plane's target stays 1.5 CPU and 2.5 GiB.
 A management cluster sized for N tenants needs the sum of their requests on its control plane nodes, plus room to roll one Deployment of every tenant (the fleet limit bounds how many roll at once), plus etcd volumes with low fsync latency.
 
 The operator: two replicas; memory grows with the number of tenants it caches (label-scoped, metadata-only for Secrets); the phase 4 gate is 200 tenants under 2 GiB.
-Health reads a tenant as JSON and decodes every response, in both reconcilers, into types of its own that hold only the fields it uses: the tenant's administrator can have any server answer, an APIService naming a Service of their own included, so a response decodes into nothing the API defines ([review checklist](review-checklist.md), item 10).
-The decoder skips a field the types lack and reads each array it keeps one element at a time, up to a bound:
+Health reads a tenant as JSON, and the tenant's administrator can have any server answer, an APIService naming a Service of their own included ([review checklist](review-checklist.md), item 10).
+So what a read holds is fixed by the constants below and not by what a tenant sends:
+- no object and no array of an answer reaches `encoding/json`, whose decoding multiplies the bytes it is given (an empty object becomes a struct, an invalid byte in a string three bytes, the key of a skipped field is unquoted and folded all the same): `internal/jsonscan` walks the body, which `json.Valid` has checked, and every value it hands over is a slice of it;
+- a scalar is decoded, by `encoding/json` or `strconv`, only when Health keeps the field it fills and the raw size of its token is within that field's bound, checked before the decode;
+- a key is matched on its raw bytes and with its case, as Kubernetes' own decoder reads one ([json.go](https://github.com/kubernetes/apimachinery/blob/v0.37.1/pkg/runtime/serializer/json/json.go#L271)); a key with an escape is unquoted only up to 256 bytes, and any longer one is skipped without a copy;
+- an error names the field and its bound and nothing of the value: a time that does not parse is "not a time", not the text of the parser's error;
+- the body of an answer is cut at 8 MiB, `maxResponseBytes`, and its status line and headers at 64 KiB, `maxResponseHeaderBytes`, where `net/http` reads up to 10 MiB of them ([transport.go](https://github.com/golang/go/blob/go1.26.10/src/net/http/transport.go#L329-L334)); a kube-apiserver's are under 512 bytes (352 bytes of the biggest of eight answers on envtest of Kubernetes 1.35.0, 511 as an HTTP/2 header list), and over HTTP/2 the limit is the same figure and 320 bytes, counting 32 bytes more for each field ([transport.go](https://github.com/golang/net/blob/v0.60.0/http2/transport.go#L83-L98));
+- a request is sent once, `MaxRetries(0)`: client-go sends a request again up to ten times on a 429 or a 5xx that carries `Retry-After` ([request.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/request.go#L167)), and the next pass is Health's retry.
+
+The raw bound of a field counts the bytes of a string between its quotes, in which every character may be escaped as `\uXXXX`, six bytes.
+A token past its bound stops a list of the Leases or of the Nodes (`TooManyNodes`), makes a kind of a held restore "could not be listed", and fails any other read.
+
+| field | raw bound |
+|---|---|
+| a name, a namespace | 2,048 bytes, 253 decoded: a longer name is counted and not kept |
+| a `resourceVersion`, a time, a condition's type and status, a `failurePolicy`, a Service's `type`, a PersistentVolume's reclaim policy, a claim's phase, a Status's `reason`, a cause's `reason` | 64 bytes |
+| a `holderIdentity` | 512 bytes |
+| a kubelet version | 384 bytes, 64 decoded: a longer version is not kept |
+| a number | 11 bytes, the longest int32 |
+| a `continue` token | 4,096 bytes, since client-go builds its query again for each use of the request ([request.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/request.go#L571-L582)), escaping every byte outside the unreserved set as three |
+| a Status's `message` | 1,024 bytes; a longer one is replaced by a sentence that says so |
+
+A webhook's `url` and an APIService's `service` are read for being there and never decoded.
+A condition that is not `Ready` keeps nothing but being counted.
+Each array it keeps is read one element at a time, up to a bound:
 
 | array | bound | past it |
 |---|---|---|
@@ -538,41 +561,49 @@ The decoder skips a field the types lack and reads each array it keeps one eleme
 | a failed request's `details.causes` | 64 | the rest are dropped |
 
 A pass of `health-nodes` holds one decoded page of each list at a time: a page becomes its Lease versions or Node summaries before the next is read.
-A `continue` token longer than 4,096 bytes is not sent back, since client-go builds its query again for each use of the request ([request.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/request.go#L571-L582)), escaping every byte outside the unreserved set as three: the list stops, `TooManyNodes`.
-The figures below are measured on go1.26.10, the toolchain `go.mod` names and CI builds with, since its `encoding/json` and `io.ReadAll` set them.
-Four tests measure the live heap and the heap in use at `GOGC=5`, so that the heap in use stays near the live heap, and run only when `LODIA_MEASURE_HEAP` is set:
-- `TestMeasureTheLiveHeapOfEveryReadOverAnAmplifyingResponse` answers each read with a response of 8 MiB in 26 shapes: nothing but empty objects where the read decodes an array, a body padded with bytes the types skip, and a string the types keep that holds 8 MiB of letters and an escape;
-- `TestMeasureTheLiveHeapOfAPassWhoseEveryReadIsAtItsWorst` runs a pass of `health-nodes` and a pass of `health` over a held restore with every read answered by that string, the held restore also with its seven lists answered together, by a server that waits until all seven requests are in;
-- `TestMeasureTheLiveHeapOfAPassOverAPageOf128000EmptyWebhooks` runs a pass over a held restore whose webhook lists answer 500 configurations of 256 empty webhooks, 8,353,025 bytes;
+A list of webhook configurations counts one configuration at a time and keeps no webhook.
+
+What one read holds at most is then:
+- its body, 8 MiB at most;
+- the chunks `io.ReadAll` keeps while it reads the body, and the slice it copies them into ([request.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/request.go#L1159), [io.go](https://github.com/golang/go/blob/go1.26.10/src/io/io.go#L709-L750)): a chunk is at least 15/16 full when the next starts and each is half again the size of the one before, so the chunks are 16/15 of the body at most, the open chunk 8/15 of it, and the slice the body, 2.6 bodies in all, 20.8 MiB;
+- what the types keep at the bounds above, under 0.5 MiB: the most is 0.45 MiB for a page of 100 Nodes of 64 conditions, then 0.36 MiB for 500 objects of a held restore and 0.23 MiB for 500 Leases;
+- the headers, 64 KiB.
+
+That is 21.4 MiB of live heap for a read, and the memory of a pass follows from the reads it has in flight at once:
+- a pass of `health-nodes` reads the controller manager's Lease, then lists the Leases and the Nodes at once, then sends the hold's write, whose patch carries the read's `resourceVersion`, 64 bytes at most, and reads its answer: two reads at once, 42.8 MiB;
+- a pass of `health` over a held restore lists seven kinds at once: seven reads, 150 MiB;
+- the 100 workers of `health-nodes` hold 100 times 42.8 MiB at most, 4.2 GiB, and the 10 workers of `health`, by default, 10 times 150 MiB, 1.5 GiB.
+
+At the default `GOGC` the heap in use may grow to about twice the live heap, so the operator's memory limit and `GOMEMLIMIT`, which are set when the operator is measured (`todo.md`, "From the chart"), start from about twice these figures.
+
+Four tests measure the live heap and the heap in use at `GOGC=5`, so that the heap in use stays near the live heap, and run only when `LODIA_MEASURE_HEAP` is set; the first two fail when a read or a pass holds more live heap than the figure above:
+- `TestMeasureTheLiveHeapOfEveryReadOverAnAmplifyingResponse` answers each read with a response of 8 MiB in 47 shapes: nothing but empty objects where the read keeps an array, a body padded with bytes the types skip, a key of letters, of escapes and of invalid UTF-8, and a field past its bound in each of those;
+- `TestMeasureTheLiveHeapOfAPassWhoseEveryReadIsAtItsWorst` runs a pass of `health-nodes`, with its Lease read, both lists answered together by a server that waits until both requests are in, and its renewal, and a pass of `health` over a held restore, the seven lists answered as they come and together, every answer a body of 8 MiB;
+- `TestMeasureTheLiveHeapOfAPassOverAPageOf128000EmptyWebhooks` runs a pass over a held restore whose webhook lists answer 500 configurations of 256 empty webhooks;
 - `TestMeasureTheLiveHeapOfPassesOverTenantsPaddedToTheirBounds` runs passes over a tenant padded to its bounds, with every page of Leases and of Nodes just under 8 MiB and the default `health.maxNodes`, one pass and 100 at once on 100 tenants.
 
 ```
 GOTOOLCHAIN=go1.26.10 LODIA_MEASURE_HEAP=1 KUBEBUILDER_ASSETS="$(go tool setup-envtest use 1.35.0 -p path)" go test -count=1 -v -run TestMeasureTheLiveHeap ./internal/controller/health/
 ```
 
-| the measure | live heap | heap in use |
-|---|---|---|
-| one read, the worst of 26 shapes | 16.3 MiB: 2.03 responses | 24.0 to 32.0 MiB: 3.0 to 4.0 responses |
-| one pass of `health-nodes`, both reads at their worst | 32.0 to 40.0 MiB | 48.0 to 56.0 MiB |
-| one pass of `health` over a held restore, seven reads at their worst | 64.4 to 88.2 MiB | 81.5 to 120.2 MiB |
-| the same, its seven lists answered together | 64.2 to 104.2 MiB: 8.0 to 13.0 responses | 88.2 to 144.2 MiB |
-| one pass of `health` over 500 configurations of 256 empty webhooks, one list or both | 20.7 to 20.8 MiB or 40.9 to 41.0 MiB | 21.6 to 21.7 MiB or 42.6 to 42.7 MiB |
-| one pass over a tenant padded to its bounds, 62 responses | 9.0 to 24.7 MiB | 24.6 to 32.6 MiB |
-| 100 passes at once on 100 tenants | 1.23 to 1.30 GiB, 12.6 to 13.3 MiB a pass | 1.33 to 1.37 GiB |
+These are measurements, not worst cases: the sampler reads the heap when it can, and a peak it misses is a peak it does not report, so each figure is a floor of what the read or the pass held, and the figures above are the ceiling.
+The runs below are on go1.26.10, `go version go1.26.10 darwin/arm64`, on 16 cores of an Apple M4 Max; `-count=1` and a process of its own each.
 
-Three runs each, 30 for the seven lists answered together, whose peak varies the most.
-A read holds its body and what the types keep, 0.2 MiB at most for a response of empty objects, and two copies the standard library makes:
-- `io.ReadAll`, which client-go reads a body with ([request.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/request.go#L1159)), keeps the chunks it has read until it has copied them into the slice it returns ([io.go](https://github.com/golang/go/blob/go1.26.10/src/io/io.go#L709-L750)): up to 2.55 times the body of heap in use in these measures, 20.4 MiB for a body of 8 MiB, which a collection sees only in part;
-- a string the types keep that holds an escape is unquoted into a buffer of its escaped length ([decode.go](https://github.com/golang/go/blob/go1.26.10/src/encoding/json/decode.go#L1218)) and then copied ([decode.go](https://github.com/golang/go/blob/go1.26.10/src/encoding/json/decode.go#L958-L962)): the body, the buffer and the string, three times the body.
+| the measure | runs | live heap | heap in use |
+|---|---|---|---|
+| one read, the most of 47 shapes | 3 | 8.0 to 12.4 MiB | 20.4 MiB: 2.55 bodies, in every run |
+| one pass of `health-nodes`, the Lease read, both lists answered together and the renewal | 10 | 16.3 to 32.6 MiB | 24.6 to 36.7 MiB |
+| one pass of `health` over a held restore, seven answers as they come | 10 | 56.4 to 73.5 MiB | 81.0 to 97.8 MiB |
+| the same, its seven lists answered together | 10 | 56.3 to 65.2 MiB | 73.2 to 97.4 MiB |
+| one pass of `health` over 500 configurations of 256 empty webhooks, named with 253 bytes, one list or both | 3 | 1.0 MiB or 0.2 to 1.5 MiB | 2.2 to 2.3 MiB or 1.3 to 2.7 MiB |
+| the same, named with 2,048 bytes | 3 | 1.9 to 2.1 MiB or 3.5 to 3.6 MiB | 3.3 MiB or 5.0 to 6.2 MiB |
+| one pass over a tenant padded to its bounds, 62 responses | 3 | 16.6 to 24.4 MiB | 20.1 to 32.7 MiB |
+| 100 passes at once on 100 tenants | 3 | 1.16 to 1.22 GiB, 11.9 to 12.5 MiB a pass | 1.29 to 1.41 GiB |
 
-The names, versions, tokens, holders and messages the types keep are such strings, and Health drops the one over its bound only after the decoder has built it.
-One shape, a Lease with a `resourceVersion` of escapes, reached 32.0 MiB, four responses, in all three runs; the others stayed at 24.0 to 24.3 MiB.
-A pass of `health-nodes` has two reads in flight and a pass of `health` over a held restore has seven.
-The seven start together, and a server that answers them together, an API server under load or an APIService of the administrator's own, puts them at their worst at the same time: that pass reached 104.2 MiB of live heap and 144.2 MiB of heap in use in 30 runs.
-Measured at their worst, 100 workers of `health-nodes` would hold 100 times 56.0 MiB, 5.5 GiB, and the 10 workers of `health`, by default, 10 times 144.2 MiB, 1.4 GiB; no run put 100 passes at their worst at once.
-At the default `GOGC` the heap in use may grow to about twice the live heap, so the operator's memory limit and `GOMEMLIMIT`, which are set when the operator is measured (`todo.md`, "From the chart"), start from about twice these figures.
-A first pass of `health-nodes` over 5,000 Nodes and their 5,000 Leases, the most `health.maxNodes` counts by default, took 453, 446 and 451 ms in three runs on go1.26.10, and a pass over 5,001 Nodes, which stops at the bound, 445, 442 and 439 ms (`TestATenantOfMaxNodesNodesIsCountedWholeAtTheOperatorsTimeout`, on envtest, on 16 cores of an Apple M4 Max, one run at a time).
-The decoder is `encoding/json`, which the race detector slows about tenfold: the same pass takes 4.6 s against the operator's `Timeout` of 5 s.
+A read's heap in use reached 2.55 bodies, `io.ReadAll`'s 2.6, in every run.
+No run put a pass at the ceiling of its reads, since their chunks do not all peak together.
+A first pass of `health-nodes` over 5,000 Nodes and their 5,000 Leases, the most `health.maxNodes` counts by default, took 268, 273 and 276 ms in three runs on go1.26.10, and a pass over 5,001 Nodes, which stops at the bound, 277, 266 and 273 ms (`TestATenantOfMaxNodesNodesIsCountedWholeAtTheOperatorsTimeout`, on envtest, on 16 cores of an Apple M4 Max, one run at a time).
+The race detector slows it tenfold, to 2.77, 2.78 and 2.81 s for 5,000 Nodes and 2.70, 2.72 and 2.74 s for 5,001, against the operator's `Timeout` of 5 s.
 That test is built without the race detector, and `make test` runs it in a step of its own; under the detector `TestATenantOfMaxNodesNodesIsCountedWholeUnderTheRaceDetector` counts the same tenant with a `Timeout` of a minute.
 Between passes it keeps at most `health.maxNodes` Lease versions and Node summaries per tenant ([review checklist](review-checklist.md), item 10).
 The tenant's administrator can have any server answer the lists, so the pass bounds every string it keeps itself:
@@ -581,7 +612,7 @@ The tenant's administrator can have any server answer the lists, so the pass bou
 - a Node summary keeps a kubelet version only up to 64 bytes and a Ready status only if it is `True`, `False` or `Unknown`: the tenant's administrator writes both, and [`ValidateNodeUpdate`](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/apis/core/validation/validation.go#L7666-L7738) checks neither.
 
 With every string at its bound a Lease version takes a name of 253 bytes and a map slot of 48 bytes (key header, digest and time), and a Node summary 72 bytes, a name of 253 bytes and a kubelet version of 64.
-A tenant at the default `health.maxNodes` of 5,000 keeps 5,000 of each, 3.7 MiB of live heap as `TestWhatASamplingKeepsRestsOnItsOwnBoundsAndNotOnWhatTheServerAnswers` measures with Lease versions of 8,000 bytes: what the lists answer does not change it.
+A tenant at the default `health.maxNodes` of 5,000 keeps 5,000 of each, 3.4 MiB of live heap as `TestWhatASamplingKeepsRestsOnItsOwnBoundsAndNotOnWhatTheServerAnswers` measures in three runs with names of 253 bytes and versions at their raw bounds: what the lists answer does not change it.
 The operator's pods set no requests or limits yet.
 
 ## Upgrading Lodia

@@ -385,7 +385,7 @@ func TestMeasureTheLiveHeapOfEveryReadOverAnAmplifyingResponse(t *testing.T) {
 func mib(bytes uint64) float64 { return float64(bytes) / (1 << 20) }
 
 // keptAtMost is what the types of one read keep at the bounds of this package:
-// 0.41 MiB for a page of 100 Nodes of 64 conditions, the most of any read.
+// 0.45 MiB for a page of 100 Nodes of 64 conditions, the most of any read.
 const keptAtMost = 1 << 19
 
 // structuralBound is the most live heap a read of a body holds: the chunks
