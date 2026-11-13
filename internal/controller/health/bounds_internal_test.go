@@ -6,6 +6,7 @@ package health
 import (
 	"bytes"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -302,14 +303,99 @@ func TestAFieldThatIsNotOfItsKindIsAFailedReadThatNamesTheField(t *testing.T) {
 	}
 }
 
+func readerOf[T any](read func([]byte) (T, error)) func([]byte) (any, error) {
+	return func(data []byte) (any, error) { return read(data) }
+}
+
 func TestAKeptFieldThatIsNullIsAbsent(t *testing.T) {
-	_, tenant := servingEveryPath(t, amplifier{status: http.StatusOK, body: []byte(`{"metadata":null,"spec":{"holderIdentity":null,"leaseDurationSeconds":null,"renewTime":null,"acquireTime":null,"leaseTransitions":null}}`)})
-	lease, err := tenant.getLease(t.Context(), "x")
-	if err != nil {
-		t.Fatal(err)
+	for _, c := range []struct {
+		name   string
+		read   func([]byte) (any, error)
+		absent string
+		nulls  []string
+	}{
+		{"a leader Lease", readerOf(leaderLeaseFrom), `{}`, []string{
+			`{"metadata":{"resourceVersion":null},"spec":{"holderIdentity":null,"leaseDurationSeconds":null,"renewTime":null,"acquireTime":null,"leaseTransitions":null}}`,
+			`{"metadata":null,"spec":null}`,
+		}},
+		{"a list of Leases", readerOf(func(data []byte) (*leaseList, error) { return listFrom(data, leasePage, leaseItemOf) }), `{}`, []string{
+			`{"metadata":{"continue":null},"items":null}`,
+			`{"metadata":null}`,
+		}},
+		{"a list of Nodes", readerOf(func(data []byte) (*nodeList, error) { return listFrom(data, nodePage, nodeOf) }), `{}`, []string{
+			`{"metadata":{"continue":null},"items":null}`,
+			`{"metadata":null}`,
+		}},
+		{"a Lease", readerOf(leaseItemOf), `{}`, []string{
+			`{"metadata":{"name":null,"resourceVersion":null}}`,
+			`{"metadata":null}`,
+		}},
+		{"a Node", readerOf(nodeOf), `{}`, []string{
+			`{"metadata":{"name":null},"status":{"nodeInfo":{"kubeletVersion":null},"conditions":null}}`,
+			`{"metadata":null,"status":null}`,
+			`{"status":{"nodeInfo":null}}`,
+		}},
+		{"a Ready condition", readerOf(func(data []byte) (nodeCondition, error) {
+			n, err := nodeOf([]byte(`{"status":{"conditions":[` + string(data) + `]}}`))
+			return n.Status.Conditions.items[0], err
+		}), `{"type":"Ready"}`, []string{`{"type":"Ready","status":null,"lastTransitionTime":null}`}},
+		{"a condition", readerOf(nodeConditionOf), `{}`, []string{`{"type":null,"status":null,"lastTransitionTime":null}`}},
+		{"a Service", readerOf(serviceOf), `{}`, []string{
+			`{"metadata":{"namespace":null,"name":null},"spec":{"type":null}}`,
+			`{"metadata":null,"spec":null}`,
+		}},
+		{"a PersistentVolume", readerOf(persistentVolumeOf), `{}`, []string{
+			`{"metadata":{"name":null},"spec":{"persistentVolumeReclaimPolicy":null}}`,
+			`{"metadata":null,"spec":null}`,
+		}},
+		{"a PersistentVolumeClaim", readerOf(persistentVolumeClaimOf), `{}`, []string{
+			`{"metadata":{"namespace":null,"name":null},"status":{"phase":null}}`,
+			`{"metadata":null,"status":null}`,
+		}},
+		{"a webhook configuration", readerOf(webhookConfigurationOf), `{}`, []string{
+			`{"metadata":{"name":null},"webhooks":null}`,
+			`{"metadata":null}`,
+		}},
+		{"a webhook", readerOf(webhookOf), `{}`, []string{
+			`{"name":null,"clientConfig":{"url":null},"failurePolicy":null}`,
+			`{"clientConfig":null}`,
+		}},
+		{"an APIService", readerOf(apiServiceOf), `{}`, []string{
+			`{"metadata":{"name":null},"spec":{"service":null}}`,
+			`{"metadata":null,"spec":null}`,
+		}},
+		{"a CronJob", readerOf(cronJobOf), `{}`, []string{
+			`{"metadata":{"namespace":null,"name":null},"spec":{"suspend":null}}`,
+			`{"metadata":null,"spec":null}`,
+		}},
+		{"a Status", readerOf(statusFrom), `{}`, []string{
+			`{"status":null,"message":null,"reason":null,"code":null,"details":{"causes":null}}`,
+			`{"details":null}`,
+		}},
+		{"a cause", readerOf(causeOf), `{}`, []string{`{"reason":null}`}},
+	} {
+		absent, err := c.read([]byte(c.absent))
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		for _, null := range c.nulls {
+			t.Run(c.name+", "+null, func(t *testing.T) {
+				if got, err := c.read([]byte(null)); err != nil || !reflect.DeepEqual(got, absent) {
+					t.Errorf("read %+v, error %v, want what %s reads, %+v", got, err, c.absent, absent)
+				}
+			})
+		}
 	}
-	if lease.Spec.HolderIdentity != nil || lease.Spec.LeaseDurationSeconds != nil || lease.Spec.RenewTime != nil || lease.Spec.AcquireTime != nil || lease.Spec.LeaseTransitions != nil || lease.Metadata.ResourceVersion != "" {
-		t.Errorf("the Lease holds %+v, want nothing", lease)
+}
+
+func TestAWebhookWhoseFailurePolicyIsNullFailsClosedAsTheDefaultDoes(t *testing.T) {
+	for _, body := range []string{`{}`, `{"failurePolicy":null}`, `{"clientConfig":{"url":null},"failurePolicy":null}`} {
+		if w, err := webhookOf([]byte(body)); err != nil || !w.actsOutside() {
+			t.Errorf("%s reads as %+v, error %v, want a webhook that fails closed", body, w, err)
+		}
+	}
+	if w, err := webhookOf([]byte(`{"failurePolicy":"Ignore"}`)); err != nil || w.actsOutside() {
+		t.Errorf("a webhook that ignores failures reads as %+v, error %v, want one that acts on nothing outside", w, err)
 	}
 }
 
