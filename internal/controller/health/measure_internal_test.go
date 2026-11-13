@@ -181,6 +181,14 @@ func fill(size int, head, tail string) []byte {
 	return out.Bytes()
 }
 
+func escaped(size int, head, tail string) []byte {
+	return []byte(head + strings.Repeat("a", size-len(head)-len(tail)-len(`\n`)) + `\n` + tail)
+}
+
+func padding(size int, head, tail string) []byte {
+	return []byte(head + strings.Repeat("a", size-len(head)-len(tail)) + tail)
+}
+
 type amplifier struct {
 	name   string
 	status int
@@ -211,6 +219,19 @@ func readWebhooks(path string) func(context.Context, *tenant, *NodesReconciler) 
 		found, err := outsideWebhooks(ctx, t, path)
 		return fmt.Sprintf("named %d, more %t, error %v", found.n, found.more, err)
 	}
+}
+
+func readLeaderHolder(ctx context.Context, t *tenant, _ *NodesReconciler) string {
+	lease, err := t.getLease(ctx, "kube-controller-manager")
+	if err != nil {
+		return fmt.Sprintf("error %v", err)
+	}
+	return fmt.Sprintf("holder of %d bytes", len(ptr.Deref(lease.Spec.HolderIdentity, "")))
+}
+
+func readLeaderError(ctx context.Context, t *tenant, _ *NodesReconciler) string {
+	_, err := t.getLease(ctx, "kube-controller-manager")
+	return fmt.Sprintf("error of %d bytes", len(err.Error()))
 }
 
 func readLeader(ctx context.Context, t *tenant, _ *NodesReconciler) string {
@@ -257,6 +278,17 @@ func amplifiers(size int) []amplifier {
 		{"a webhook configuration with empty webhooks", 200, fill(size, `{"items":[{"metadata":{"name":"c"},"webhooks":[`, `]}]}`), readWebhooks("/apis/admissionregistration.k8s.io/v1/mutatingwebhookconfigurations"), "named 0, more false, " + overItems},
 		{"a list of APIServices of empty items", 200, items, readFirstPage[apiService]("/apis/apiregistration.k8s.io/v1/apiservices"), overItems},
 		{"a list of CronJobs of empty items", 200, items, readFirstPage[cronJob]("/apis/batch/v1/cronjobs"), overItems},
+		{"a page of Leases of one Lease padded", 200, padding(size, `{"metadata":{},"items":[{"metadata":{"name":"n","resourceVersion":"1","annotations":{"pad":"`, `"}}}]}`), readLeases, `kept 1, stopped "", error <nil>`},
+		{"a leader Lease padded", 200, padding(size, `{"metadata":{"resourceVersion":"1","annotations":{"pad":"`, `"}},"spec":{"holderIdentity":"h"}}`), readLeader, leaseHolder},
+		{"a Lease with a resourceVersion of escapes", 200, escaped(size, `{"metadata":{},"items":[{"metadata":{"name":"n","resourceVersion":"`, `"}}]}`), readLeases, `kept 1, stopped "", error <nil>`},
+		{"a Lease named with escapes", 200, escaped(size, `{"metadata":{},"items":[{"metadata":{"name":"`, `"}}]}`), readLeases, `kept 0, stopped "", error <nil>`},
+		{"a page of Leases with a continue token of escapes", 200, escaped(size, `{"metadata":{"continue":"`, `"},"items":[]}`), readLeases, `kept 0, stopped "a page of the Leases of kube-node-lease carries a continue token longer than 4096 bytes", error <nil>`},
+		{"a Node with a kubelet version of escapes", 200, escaped(size, `{"metadata":{},"items":[{"metadata":{"name":"n"},"status":{"nodeInfo":{"kubeletVersion":"`, `"}}}]}`), readNodes, `kept 1, stopped "", error <nil>`},
+		{"a Node named with escapes", 200, escaped(size, `{"metadata":{},"items":[{"metadata":{"name":"`, `"}}]}`), readNodes, `kept 0, stopped "", error <nil>`},
+		{"a leader Lease with a holder of escapes", 200, escaped(size, `{"metadata":{"resourceVersion":"1"},"spec":{"holderIdentity":"`, `"}}`), readLeaderHolder, fmt.Sprintf("holder of %d bytes", size-len(`{"metadata":{"resourceVersion":"1"},"spec":{"holderIdentity":"`)-len(`"}}`)-1)},
+		{"a failed request with a message of escapes", 500, escaped(size, `{"kind":"Status","status":"Failure","reason":"InternalError","code":500,"message":"`, `"}`), readLeaderError, fmt.Sprintf("error of %d bytes", size-len(`{"kind":"Status","status":"Failure","reason":"InternalError","code":500,"message":"`)-len(`"}`)-1)},
+		{"a Service named with escapes", 200, escaped(size, `{"items":[{"metadata":{"namespace":"n","name":"`, `"},"spec":{"type":"LoadBalancer"}}]}`), readFirstPage[service]("/api/v1/services"), "error <nil>"},
+		{"a webhook configuration named with escapes", 200, escaped(size, `{"items":[{"webhooks":[{}],"metadata":{"name":"`, `"}}]}`), readWebhooks("/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations"), "named 1, more false, error <nil>"},
 	}
 }
 
@@ -277,7 +309,7 @@ func servingEveryPath(t *testing.T, c amplifier) (*NodesReconciler, *tenant) {
 	return r, tenant
 }
 
-func TestAResponseOfNothingButEmptyObjectsStopsOrFailsAtTheBoundOfItsArray(t *testing.T) {
+func TestAnAmplifyingResponseIsReadAsFarAsItsBoundsAllow(t *testing.T) {
 	for _, c := range amplifiers(1 << 20) {
 		t.Run(c.name, func(t *testing.T) {
 			r, tenant := servingEveryPath(t, c)
@@ -288,9 +320,9 @@ func TestAResponseOfNothingButEmptyObjectsStopsOrFailsAtTheBoundOfItsArray(t *te
 	}
 }
 
-func TestMeasureTheLiveHeapOfEveryReadOverAResponseOfNothingButEmptyObjects(t *testing.T) {
+func TestMeasureTheLiveHeapOfEveryReadOverAnAmplifyingResponse(t *testing.T) {
 	if os.Getenv(measureHeap) == "" {
-		t.Skipf("set %s to measure the heap of every read over a response of empty objects", measureHeap)
+		t.Skipf("set %s to measure the heap of every read over an amplifying response", measureHeap)
 	}
 	for _, c := range amplifiers(maxResponseBytes) {
 		t.Run(c.name, func(t *testing.T) {
@@ -305,3 +337,34 @@ func TestMeasureTheLiveHeapOfEveryReadOverAResponseOfNothingButEmptyObjects(t *t
 }
 
 func mib(bytes uint64) float64 { return float64(bytes) / (1 << 20) }
+
+func TestMeasureTheLiveHeapOfAPassWhoseEveryReadIsAtItsWorst(t *testing.T) {
+	if os.Getenv(measureHeap) == "" {
+		t.Skipf("set %s to measure the heap of a pass whose every read is at its worst", measureHeap)
+	}
+	measure := func(t *testing.T, run func()) {
+		begun := time.Now()
+		peaks := measureLiveHeap(run)
+		t.Logf("took %v: live heap %.1f MiB, %.2f responses of %d bytes; heap in use %.1f MiB",
+			time.Since(begun).Round(time.Millisecond), mib(peaks.live), float64(peaks.live)/maxResponseBytes, maxResponseBytes, mib(peaks.inUse))
+	}
+	t.Run("a pass of health-nodes", func(t *testing.T) {
+		tenant := servingPaths(t, map[string][]byte{
+			nodeLeasesPath: escaped(maxResponseBytes, `{"metadata":{},"items":[{"metadata":{"name":"n","resourceVersion":"`, `"}}]}`),
+			nodesPath:      escaped(maxResponseBytes, `{"metadata":{},"items":[{"metadata":{"name":"n"},"status":{"nodeInfo":{"kubeletVersion":"`, `"}}}]}`),
+		})
+		r := &NodesReconciler{Timeout: 10 * time.Minute, MaxNodes: 5000}
+		measure(t, func() {
+			if _, err := r.list(t.Context(), tenant, &sampling{}, time.Now()); err != nil {
+				t.Error(err)
+			}
+		})
+	})
+	t.Run("a pass of health over a held restore", func(t *testing.T) {
+		body := escaped(maxResponseBytes, `{"metadata":{},"items":[{"webhooks":[{}],"spec":{"type":"LoadBalancer"},"metadata":{"namespace":"n","name":"`, `"}}]}`)
+		tenant := servingPaths(t, map[string][]byte{
+			servicesPath: body, volumesPath: body, claimsPath: body, validatingPath: body, mutatingPath: body, apiServicePath: body, cronJobsPath: body,
+		})
+		measure(t, func() { _ = (&Reconciler{Timeout: 10 * time.Minute}).actedOn(t.Context(), tenant) })
+	})
+}

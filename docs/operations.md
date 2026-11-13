@@ -538,22 +538,36 @@ The decoder skips a field the types lack and reads each array it keeps one eleme
 | a failed request's `details.causes` | 64 | the rest are dropped |
 
 A pass of `health-nodes` holds one decoded page of each list at a time: a page becomes its Lease versions or Node summaries before the next is read.
-`TestMeasureTheLiveHeapOfEveryReadOverAResponseOfNothingButEmptyObjects` answers each read with a response of 8 MiB that is nothing but empty objects where the read decodes an array, and `TestMeasureTheLiveHeapOfPassesOverTenantsPaddedToTheirBounds` runs passes over a tenant padded to its bounds, with every page of Leases and of Nodes just under 8 MiB and the default `health.maxNodes`, one pass and 100 at once on 100 tenants.
-Both measure the live heap at `GOGC=5`, so that the heap in use stays near the live heap, and run only when `LODIA_MEASURE_HEAP` is set:
+A `continue` token longer than 4,096 bytes is not sent back, since client-go builds its query again for each use of the request ([request.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/request.go#L571-L582)), escaping every byte outside the unreserved set as three: the list stops, `TooManyNodes`.
+The figures below are measured on go1.26.10, the toolchain `go.mod` names and CI builds with, since its `encoding/json` and `io.ReadAll` set them.
+Four tests measure the live heap and the heap in use at `GOGC=5`, so that the heap in use stays near the live heap, and run only when `LODIA_MEASURE_HEAP` is set:
+- `TestMeasureTheLiveHeapOfEveryReadOverAnAmplifyingResponse` answers each read with a response of 8 MiB in 26 shapes: nothing but empty objects where the read decodes an array, a body padded with bytes the types skip, and a string the types keep that holds 8 MiB of letters and an escape;
+- `TestMeasureTheLiveHeapOfAPassWhoseEveryReadIsAtItsWorst` runs a pass of `health-nodes` and a pass of `health` over a held restore with every read answered by that string;
+- `TestMeasureTheLiveHeapOfAPassOverAPageOf128000EmptyWebhooks` runs a pass over a held restore whose webhook lists answer 500 configurations of 256 empty webhooks, 8,353,025 bytes;
+- `TestMeasureTheLiveHeapOfPassesOverTenantsPaddedToTheirBounds` runs passes over a tenant padded to its bounds, with every page of Leases and of Nodes just under 8 MiB and the default `health.maxNodes`, one pass and 100 at once on 100 tenants.
 
 ```
-LODIA_MEASURE_HEAP=1 KUBEBUILDER_ASSETS="$(go tool setup-envtest use 1.35.0 -p path)" go test -count=1 -v -run TestMeasureTheLiveHeap ./internal/controller/health/
+GOTOOLCHAIN=go1.26.10 LODIA_MEASURE_HEAP=1 KUBEBUILDER_ASSETS="$(go tool setup-envtest use 1.35.0 -p path)" go test -count=1 -v -run TestMeasureTheLiveHeap ./internal/controller/health/
 ```
 
-| the measure | live heap |
-|---|---|
-| one read, a response of 8 MiB of empty objects, 15 reads | 8.0 to 16.2 MiB: 0.99 to 2.03 responses, in three runs |
-| one pass over a tenant padded to its bounds, 62 responses | 9.4 to 16.6 MiB in four runs |
-| 100 passes at once on 100 tenants | 1.06 to 1.13 GiB, 10.9 to 11.5 MiB a pass, in three runs |
+| the measure | live heap | heap in use |
+|---|---|---|
+| one read, the worst of 26 shapes | 16.3 MiB: 2.03 responses | 24.0 to 32.0 MiB: 3.0 to 4.0 responses |
+| one pass of `health-nodes`, both reads at their worst | 32.0 to 40.0 MiB | 48.0 to 56.0 MiB |
+| one pass of `health` over a held restore, seven reads at their worst | 64.4 to 88.2 MiB | 81.5 to 120.2 MiB |
+| one pass of `health` over 500 configurations of 256 empty webhooks, one list or both | 20.7 to 20.8 MiB or 40.9 to 41.0 MiB | 21.6 to 21.7 MiB or 42.6 to 42.7 MiB |
+| one pass over a tenant padded to its bounds, 62 responses | 9.0 to 24.7 MiB | 24.6 to 32.6 MiB |
+| 100 passes at once on 100 tenants | 1.23 to 1.30 GiB, 12.6 to 13.3 MiB a pass | 1.33 to 1.37 GiB |
 
-A read of a response of 8 MiB of empty objects holds the body, 8.0 MiB, and about 0.2 MiB more, which is what the types keep and the decoder uses.
-A read holds up to two responses while client-go copies the body: `io.ReadAll` ([request.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/request.go#L1159)) keeps the chunks it read until it has copied them into the slice it returns ([io.go](https://github.com/golang/go/blob/go1.26.10/src/io/io.go#L709-L750)), and which of the two a collection sees depends on its timing.
-A pass of `health-nodes` has two reads in flight, so up to four responses, 32 MiB, and 100 such passes 3.1 GiB, which no run reached; a pass of `health` over a held restore has seven reads in flight, up to 112 MiB.
+Three runs each.
+A read holds its body and what the types keep, 0.2 MiB at most for a response of empty objects, and two copies the standard library makes:
+- `io.ReadAll`, which client-go reads a body with ([request.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/request.go#L1159)), keeps the chunks it has read until it has copied them into the slice it returns ([io.go](https://github.com/golang/go/blob/go1.26.10/src/io/io.go#L709-L750)): between 2.0 and 2.4 times the body in these measures, which a collection sees only in part;
+- a string the types keep that holds an escape is unquoted into a buffer of its escaped length ([decode.go](https://github.com/golang/go/blob/go1.26.10/src/encoding/json/decode.go#L1218)) and then copied ([decode.go](https://github.com/golang/go/blob/go1.26.10/src/encoding/json/decode.go#L958-L962)): the body, the buffer and the string, three times the body.
+
+The names, versions, tokens, holders and messages the types keep are such strings, and Health drops the one over its bound only after the decoder has built it.
+One shape in one run reached 32.0 MiB, four responses; the others stayed at 24.0 MiB.
+A pass of `health-nodes` has two reads in flight and a pass of `health` over a held restore has seven, which did not all peak together in these runs.
+Measured at their worst, 100 workers of `health-nodes` would hold 100 times 56.0 MiB, 5.5 GiB, and the 10 workers of `health`, by default, 10 times 120.2 MiB, 1.2 GiB; no run put 100 passes at their worst at once.
 At the default `GOGC` the heap in use may grow to about twice the live heap, so the operator's memory limit and `GOMEMLIMIT`, which are set when the operator is measured (`todo.md`, "From the chart"), start from about twice these figures.
 Between passes it keeps at most `health.maxNodes` Lease versions and Node summaries per tenant ([review checklist](review-checklist.md), item 10).
 The tenant's administrator can have any server answer the lists, so the pass bounds every string it keeps itself:
