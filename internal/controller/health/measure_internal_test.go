@@ -633,7 +633,6 @@ func TestMeasureTheLiveHeapOfAReadWhoseAnswerIsCutAtTheBoundWithHeadersAtTheirs(
 	random := make([]byte, 2*maxResponseBytes)
 	_, _ = rand.Read(random)
 	gzipped := gzipStored(t, random)
-	random = nil
 	const withTrailers = maxResponseBytes + 4<<20 - 64<<10
 	for _, p := range protocols {
 		shapes := []cutShape{{}, {headers: true}, {headers: true, gzipped: true}}

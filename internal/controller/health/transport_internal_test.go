@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -61,7 +62,7 @@ func TestARequestThatFailsBeforeItsAnswerCarriesNoByteOfTheTokenItAsksWith(t *te
 						case req.URL.Query().Get("continue") == "":
 							w.Header().Set("Content-Type", "application/json")
 							_, _ = w.Write([]byte(`{"metadata":{"continue":"` + kind.token + `"},"items":[]}`))
-						case failure.is == syscall.ECONNRESET:
+						case errors.Is(failure.is, syscall.ECONNRESET):
 							conn, _, err := w.(http.Hijacker).Hijack()
 							if err != nil {
 								t.Error(err)
@@ -107,6 +108,66 @@ func TestARequestThatFailsBeforeItsAnswerCarriesNoByteOfTheTokenItAsksWith(t *te
 					}
 				})
 			}
+		}
+	}
+}
+
+func TestAWriteThatFailsBeforeItsAnswerIsTheErrorWithItsVerbAndItsPath(t *testing.T) {
+	const lease = "/apis/coordination.k8s.io/v1/namespaces/kube-system/leases"
+	for _, c := range []struct {
+		name string
+		verb string
+		path string
+		do   func(context.Context, *tenant) error
+	}{
+		{"a read", "Get", lease + "/kube-controller-manager", func(ctx context.Context, t *tenant) error {
+			_, err := t.getLease(ctx, "kube-controller-manager")
+			return err
+		}},
+		{"a create", "Post", lease, func(ctx context.Context, t *tenant) error {
+			_, err := t.createLease(ctx, []byte(`{"metadata":{"name":"kube-controller-manager"}}`))
+			return err
+		}},
+		{"a patch", "Patch", lease + "/kube-controller-manager", func(ctx context.Context, t *tenant) error {
+			_, err := t.patchLease(ctx, []byte(`{}`))
+			return err
+		}},
+	} {
+		for _, failure := range []struct {
+			name string
+			is   error
+		}{
+			{"a deadline", context.DeadlineExceeded},
+			{"a reset", syscall.ECONNRESET},
+		} {
+			t.Run(c.name+", "+failure.name, func(t *testing.T) {
+				_, tenant := http1.tenant(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+					_, _ = io.Copy(io.Discard, req.Body)
+					if !errors.Is(failure.is, syscall.ECONNRESET) {
+						<-req.Context().Done()
+						return
+					}
+					conn, _, err := w.(http.Hijacker).Hijack()
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					if tcp, ok := conn.(*net.TCPConn); ok {
+						_ = tcp.SetLinger(0)
+					}
+					_ = conn.Close()
+				}))
+				ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+				defer cancel()
+				err := c.do(ctx, tenant)
+				if err == nil {
+					t.Fatal("the request did not fail")
+				}
+				t.Logf("the error is %d bytes: %q", len(err.Error()), err.Error())
+				if !strings.HasPrefix(err.Error(), c.verb+" "+strconv.Quote(c.path)+": ") || !errors.Is(err, failure.is) {
+					t.Errorf("the error is %q, want one that names %s %s and is %v", err, c.verb, c.path, failure.is)
+				}
+			})
 		}
 	}
 }
