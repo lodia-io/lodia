@@ -763,11 +763,14 @@ func (c *tenantClients) of(kubeconfig []byte) (*tenant, error) {
 	cfg.UserAgent = rest.DefaultKubernetesUserAgent()
 	// A QPS below zero turns client-go's limiter off. Its default, 5 requests a
 	// second with a burst of 10, stops a list of the Nodes at about 34 pages
-	// inside Timeout. Without it a pass sends at most maxPages requests for each
-	// of the two lists, the single reads of the Leases and one page of each list
-	// of a held restore, since tenant.do sends a request once, and capResponses
-	// cuts the headers and the body of every answer; the tenant's API server
-	// limits what it serves itself
+	// inside Timeout. Without it, since tenant.do sends a request once, a pass of
+	// health-nodes sends at most maxPages requests for each of the two lists and
+	// the hold's: a read of the controller manager's Lease, then up to
+	// retry.DefaultRetry's five patches, each after the first preceded by a read
+	// of the Lease again (5 patches and 5 reads when every patch conflicts); a
+	// pass of health sends the reads of the two leader Leases, or one page of each
+	// of a held restore's seven lists. capResponses cuts the headers and the body
+	// of every answer; the tenant's API server limits what it serves itself
 	// (https://kubernetes.io/docs/concepts/cluster-administration/flow-control/).
 	cfg.QPS = -1
 	cfg.Wrap(capResponses)

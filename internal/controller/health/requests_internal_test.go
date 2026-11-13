@@ -5,7 +5,6 @@ package health
 
 import (
 	"bufio"
-	"encoding/pem"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -18,8 +17,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/clientcmd"
-	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
 func TestARequestIsSentOnceWhateverTheServerSaysOfWhenToSendItAgain(t *testing.T) {
@@ -68,6 +65,7 @@ func answerOnTCP(t *testing.T, head, body string) (url string, requests *atomic.
 	}
 	t.Cleanup(func() { _ = listener.Close() })
 	requests = new(atomic.Int32)
+	reply := []byte(head + body)
 	go func() {
 		for {
 			conn, err := listener.Accept()
@@ -84,7 +82,7 @@ func answerOnTCP(t *testing.T, head, body string) (url string, requests *atomic.
 					}
 					requests.Add(1)
 					_ = request.Body.Close()
-					if _, err := conn.Write([]byte(head + body)); err != nil {
+					if _, err := conn.Write(reply); err != nil {
 						return
 					}
 				}
@@ -159,17 +157,8 @@ func TestTheHeadersOfAnHTTP2ResponseFailTheReadPastTheBound(t *testing.T) {
 			server.EnableHTTP2 = true
 			server.StartTLS()
 			t.Cleanup(server.Close)
-			kubeconfig, err := clientcmd.Write(clientcmdapi.Config{
-				Clusters:       map[string]*clientcmdapi.Cluster{"tenant": {Server: server.URL, CertificateAuthorityData: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})}},
-				AuthInfos:      map[string]*clientcmdapi.AuthInfo{"lodia": {}},
-				Contexts:       map[string]*clientcmdapi.Context{"tenant": {Cluster: "tenant", AuthInfo: "lodia"}},
-				CurrentContext: "tenant",
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
 			r := &NodesReconciler{Timeout: time.Minute, MaxNodes: 5000}
-			tenant, err := r.tenant(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfig)
+			tenant, err := r.tenant(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfigForTLS(t, server))
 			if err != nil {
 				t.Fatal(err)
 			}

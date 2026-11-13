@@ -6,14 +6,11 @@ package health
 import (
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
-
-	"k8s.io/apimachinery/pkg/types"
 )
 
 const (
@@ -37,7 +34,12 @@ func servingPaths(t *testing.T, answers map[string][]byte) *tenant {
 
 func serving(t *testing.T, answers map[string][]byte, beforeAnswering func()) *tenant {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	return servingOver(t, http1, answers, beforeAnswering)
+}
+
+func servingOver(t *testing.T, p protocol, answers map[string][]byte, beforeAnswering func()) *tenant {
+	t.Helper()
+	_, tenant := p.tenant(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		body, ok := answers[req.URL.Path]
 		if !ok {
 			body = []byte(emptyList)
@@ -47,11 +49,6 @@ func serving(t *testing.T, answers map[string][]byte, beforeAnswering func()) *t
 		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 		_, _ = w.Write(body)
 	}))
-	t.Cleanup(server.Close)
-	tenant, err := (&NodesReconciler{}).tenant(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfigFor(t, server.URL))
-	if err != nil {
-		t.Fatal(err)
-	}
 	return tenant
 }
 

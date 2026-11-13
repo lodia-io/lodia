@@ -4,6 +4,7 @@
 package health
 
 import (
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -44,10 +45,11 @@ const (
 	maxMessageRaw = 1024
 )
 
-// cut keeps the first most+1 bytes of s: a string over most is never kept, and
-// its length is all the readers ask of it.
+// cut keeps a copy of the first most+1 bytes of s: a string over most is never
+// kept, and its length is all the readers ask of it. A slice of s would hold all
+// of s, which is up to three times its raw bytes.
 func cut(s string, most int) string {
-	return s[:min(len(s), most+1)]
+	return strings.Clone(s[:min(len(s), most+1)])
 }
 
 func objectName(field string, value []byte) (string, error) {
