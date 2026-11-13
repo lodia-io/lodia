@@ -541,12 +541,12 @@ A token of a field Health keeps, past its bound, stops a list of the Leases or o
 | field | raw bound |
 |---|---|
 | a name, a namespace | 2,048 bytes, 253 decoded: a longer name is counted and not kept |
-| a `resourceVersion`, a time, a Status's `reason`, a cause's `reason` | 64 bytes |
+| a `resourceVersion`, a time, a Status's `reason`, a cause's `reason` | 64 bytes; the hold's patch carries the `resourceVersion` it read decoded and `json.Marshal`-escaped ([encode.go](https://github.com/golang/go/blob/go1.26.10/src/encoding/json/encode.go#L205-L216)): up to 192 bytes of invalid UTF-8, or 384 of `<`, `>` and `&`, which escape as six |
 | a condition's `type` and `status`, a Status's `status`, a `failurePolicy`, a Service's `type`, a PersistentVolume's reclaim policy, a claim's phase | 64 bytes: a longer token is none of the words, which are under 16 bytes, and is not decoded |
 | a `holderIdentity` | 512 bytes |
 | a kubelet version | 384 bytes, 64 decoded: a longer version is not kept |
 | a number | 11 bytes, the longest int32 |
-| a `continue` token | 4,096 bytes, since client-go builds its query again for each use of the request ([request.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/request.go#L571-L582)), escaping every byte outside the unreserved set as three |
+| a `continue` token | 4,096 raw bytes, which Health sends back decoded with the next request: up to 12,288 bytes when every byte is invalid UTF-8, three decoded for one, and client-go builds its query again for each use of the request ([request.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/request.go#L571-L582)), escaping every byte outside the unreserved set as three, so the query is at most 36,883 bytes (`TestWhatHealthSendsBackOfATokenAndAVersionAtTheirRawBoundsIsPinned`) |
 | a Status's `message` | 1,024 bytes; a longer one is replaced by a sentence that says so |
 
 A webhook's `url` and an APIService's `service` are read for being there and never decoded.
@@ -572,7 +572,7 @@ What one read holds at most is then:
 - the headers, 64 KiB.
 
 That is 21.4 MiB of live heap for a read, and the memory of a pass follows from the reads it has in flight at once:
-- a pass of `health-nodes` reads the controller manager's Lease, then lists the Leases and the Nodes at once, then sends the hold's write, whose patch carries the read's `resourceVersion`, 64 bytes at most, and reads its answer: two reads at once, 42.8 MiB;
+- a pass of `health-nodes` reads the controller manager's Lease, then lists the Leases and the Nodes at once, then sends the hold's write, whose patch carries the read's `resourceVersion`, 384 bytes at most, and reads its answer: two reads at once, 42.8 MiB;
 - a pass of `health` over a held restore lists seven kinds at once: seven reads, 150 MiB;
 - the 100 workers of `health-nodes` hold 100 times 42.8 MiB at most, 4.2 GiB, and the 10 workers of `health`, by default, 10 times 150 MiB, 1.5 GiB.
 

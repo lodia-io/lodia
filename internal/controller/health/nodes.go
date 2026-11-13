@@ -60,8 +60,10 @@ const (
 
 	maxName = 253
 
-	// maxContinue is the longest continue token Health sends back to a tenant:
-	// client-go's request escapes and copies it several times.
+	// maxContinue is the longest continue token Health reads, in raw bytes. The
+	// next request carries it decoded, up to three times as long when every byte
+	// is invalid UTF-8, and client-go's query escapes each byte outside the
+	// unreserved set as three: 36,883 bytes of query at the bound.
 	maxContinue = 4096
 )
 
