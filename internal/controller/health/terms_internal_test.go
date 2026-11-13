@@ -190,12 +190,12 @@ func TestEveryFigureOfTheDerivationIsTheSumOfItsTermsRoundedUp(t *testing.T) {
 		{"a read over HTTP/1.1, MiB", mib(readsBound(http1, 1)), 1, 25.5},
 		{"a read over HTTP/2 apart from its connection, MiB", mib(readsBound(http2, 1) - connectionHTTP2), 1, 26.2},
 		{"a read over HTTP/1.1 apart from its connection, MiB", mib(readsBound(http1, 1) - connectionHTTP1), 1, 23.5},
-		{"a pass of health-nodes over HTTP/2, MiB", mib(pass(http2)), 1, 58.6},
+		{"a pass of health-nodes over HTTP/2, MiB", mib(pass(http2)), 1, 60.9},
 		{"a pass of health-nodes over HTTP/1.1, MiB", mib(pass(http1)), 1, 54.9},
-		{"a pass of health over a held restore over HTTP/2, MiB", mib(readsBound(http2, 7)), 1, 185.3},
+		{"a pass of health over a held restore over HTTP/2, MiB", mib(readsBound(http2, 7)), 1, 198.9},
 		{"a pass of health over a held restore over HTTP/1.1, MiB", mib(readsBound(http1, 7)), 1, 177.9},
-		{"100 workers of health-nodes over HTTP/2, GiB", 100 * float64(pass(http2)) / gibibyte, 2, 5.72},
-		{"10 workers of health over HTTP/2, GiB", 10 * float64(readsBound(http2, 7)) / gibibyte, 2, 1.81},
+		{"100 workers of health-nodes over HTTP/2, GiB", 100 * float64(pass(http2)) / gibibyte, 2, 5.94},
+		{"10 workers of health over HTTP/2, GiB", 10 * float64(readsBound(http2, 7)) / gibibyte, 2, 1.95},
 		{"100 passes of health-nodes over HTTP/1.1, GiB", 100 * float64(pass(http1)) / gibibyte, 1, 5.4},
 	} {
 		t.Run(c.name, func(t *testing.T) {

@@ -411,12 +411,11 @@ const (
 )
 
 func readsBound(p protocol, reads int) uint64 {
-	each := uint64(readAllAtMost + headersHTTP1 + trailersHTTP1 + gzipReader)
-	connections := uint64(reads) * connectionHTTP1
+	each := uint64(readAllAtMost + headersHTTP1 + trailersHTTP1 + gzipReader + connectionHTTP1)
 	if p.http2 {
-		each, connections = readAllAtMost+headersHTTP2+trailersHTTP2+streamBuffer+gzipReader, connectionHTTP2
+		each = readAllAtMost + headersHTTP2 + trailersHTTP2 + streamBuffer + gzipReader + connectionHTTP2
 	}
-	return max(uint64(reads)*each+connections, uint64(reads)*(maxResponseBytes+keptAtMost))
+	return max(uint64(reads)*each, uint64(reads)*(maxResponseBytes+keptAtMost))
 }
 
 func servingTogether(t *testing.T, p protocol, answers map[string][]byte, requests int) *tenant {
