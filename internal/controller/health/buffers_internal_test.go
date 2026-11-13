@@ -6,11 +6,9 @@ package health
 import (
 	"bytes"
 	"compress/gzip"
-	"crypto/rand"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"runtime"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -157,88 +155,13 @@ func tenantClient(t *testing.T, p protocol, handler http.Handler) (*http.Client,
 	return r.clients[key].transport, server.URL
 }
 
-func medianOf(runs int, measure func() int64) int64 {
+func medianOf(measure func() int64) int64 {
 	var all []int64
-	for range runs {
+	for range 5 {
 		all = append(all, measure())
 	}
 	slices.Sort(all)
 	return all[len(all)/2]
-}
-
-func TestAnHTTP2AnswersTrailersAreHeldBesideItsHeadersAndNoMoreThanTrailersHTTP2(t *testing.T) {
-	headers := distinctNames(maxResponseHeaderBytes+320-200, 32)
-	var trailers []string
-	for _, name := range distinctNames(maxResponseHeaderBytes+320-200, 33) {
-		trailers = append(trailers, "t"+name)
-	}
-	var named int
-	held := func(withTrailers bool) int64 {
-		client, url := tenantClient(t, http2, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			for _, name := range headers {
-				w.Header()[http.CanonicalHeaderKey(name)] = []string{""}
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"metadata":{"resourceVersion":"1"}}`))
-			if withTrailers {
-				for _, name := range trailers {
-					w.Header()[http.TrailerPrefix+http.CanonicalHeaderKey(name)] = []string{""}
-				}
-			}
-		}))
-		return medianOf(5, func() int64 {
-			base := liveHeap()
-			resp, err := client.Get(url + nodeLeasesPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := io.Copy(io.Discard, resp.Body); err != nil {
-				t.Fatal(err)
-			}
-			now := liveHeap()
-			named = len(resp.Trailer)
-			runtime.KeepAlive(resp)
-			_ = resp.Body.Close()
-			return int64(now) - int64(base)
-		})
-	}
-	without := held(false)
-	with := held(true)
-	t.Logf("%d header names held %.3f MiB, with %d trailer names %.3f MiB, %.3f MiB more", len(headers), mib(uint64(without)), named, mib(uint64(with)), mib(uint64(with-without)))
-	if named < len(trailers)*9/10 {
-		t.Errorf("the response has %d trailer names, want most of the %d the server sent", named, len(trailers))
-	}
-	if with-without > trailersHTTP2 {
-		t.Errorf("the trailers are held in %d bytes, want at most trailersHTTP2, %d", with-without, trailersHTTP2)
-	}
-}
-
-type plainReader struct{ io.Reader }
-
-func TestAGzipReaderThatHasReadHoldsAtLeast32KiBAndAtMostGzipReader(t *testing.T) {
-	random := make([]byte, 64<<10)
-	_, _ = rand.Read(random)
-	var compressed bytes.Buffer
-	writer := gzip.NewWriter(&compressed)
-	_, _ = writer.Write(random)
-	_ = writer.Close()
-	held := medianOf(5, func() int64 {
-		base := liveHeap()
-		reader, err := gzip.NewReader(plainReader{bytes.NewReader(compressed.Bytes())})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := io.ReadFull(reader, make([]byte, 1)); err != nil {
-			t.Fatal(err)
-		}
-		now := liveHeap()
-		runtime.KeepAlive(reader)
-		return int64(now) - int64(base)
-	})
-	t.Logf("a gzip.Reader that has read holds %.1f KiB", float64(held)/1024)
-	if held < 32<<10 || held > gzipReader {
-		t.Errorf("a gzip.Reader holds %d bytes, want 32 KiB to gzipReader, %d bytes", held, gzipReader)
-	}
 }
 
 func TestTheTenantClientAsksForGzipAndReadsItOverEveryProtocol(t *testing.T) {

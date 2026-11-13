@@ -583,21 +583,49 @@ What one read holds at most is the larger of its two phases, each summed from th
     The transport buffers a stream's window, 4 MiB ([transport.go](https://github.com/golang/net/blob/v0.60.0/http2/transport.go#L46-L49)), and wastes at most twice its largest chunk of 16 KiB ([databuffer.go](https://github.com/golang/net/blob/v0.60.0/http2/databuffer.go#L11-L19)).
     A body longer than the cap leaves a full window buffered when the read is cut; `TestAnHTTP2StreamBuffersItsWindowOfABodyNobodyReadsAndNoMore` holds the buffer of a body nobody reads to that window.
     Over HTTP/1.1 the unread body is in the socket and not in the heap.
-  - The headers' map, up to 1.7 MiB over HTTP/1.1 and 0.5 MiB over HTTP/2.
+  - The headers' map, up to 2.4 MiB over HTTP/1.1 and 0.5 MiB over HTTP/2.
     net/http reads a response's head up to `maxResponseHeaderBytes` into a map of one slot for each name and a shared slice of strings for the values ([reader.go](https://github.com/golang/go/blob/go1.26.10/src/net/textproto/reader.go#L525-L533)).
     A field line is at least 4 bytes, and 77 token characters name 77 one-byte and 5,929 two-byte names, so at most 11,936 distinct names fit in 64 KiB.
     A field costs a slot of 40 bytes and a control byte, up to 16/7 of that after the table grows at a load of 7/8 and splits at 1,024 slots ([group.go](https://github.com/golang/go/blob/go1.26.10/src/internal/runtime/maps/group.go#L20), [table.go](https://github.com/golang/go/blob/go1.26.10/src/internal/runtime/maps/table.go#L19)), 94 bytes; its key and its value are strings of up to 16 bytes each, and its element of the shared slice 16: 142 bytes, 1.6 MiB.
+    A `Trailer` header of a chunked answer makes a key of the response's `Trailer` for each name it lists, in a map of its own, and a copy of the name ([fixTrailer](https://github.com/golang/go/blob/go1.26.10/src/net/http/transfer.go#L767-L806)).
+    A name costs the head 2 bytes at the least, the byte and its comma: with 256 names of one byte and the rest of 3 bytes at the least, 64 KiB list at most 21,930 names, each a slot of 94 bytes and a copy of 16, 110 bytes, and a table of 1,024 slots more, 41,984 bytes: 2.34 MiB.
+    The head's bytes are either field lines or names, so the term is the dearer of the two, 2.4 MiB.
+    `TestAnHTTP1AnswersAnnouncedNamesAreHeldBesideItsHeadAndNoMoreThanHeadersHTTP1` reads a head of 65,534 bytes that announces 21,880 names and finds 1.57 MiB.
     Over HTTP/2 the limit is the bound and 320 bytes, counted as name, value and 32 bytes a field ([config.go](https://github.com/golang/net/blob/v0.60.0/http2/config.go#L118-L125)), so at most 1,995 fields: 0.3 MiB of map, and 80 KB of decoded fields and the hpack table.
-  - Over HTTP/2, the trailers, up to 0.5 MiB.
+  - Over HTTP/2, the names a head announces and the trailers, up to 1.0 MiB.
+    The framer reads each HEADERS frame under two budgets of 65,856 bytes, the limit and 320 bytes: one for every field but `trailer`, counted as name, value and 32 bytes, and one for the names of the `trailer` fields, counted as each name's length and 32 bytes ([frame.go](https://github.com/golang/net/blob/v0.60.0/http2/frame.go#L1714-L1760)).
+    A field costs 33 bytes at the least, so a frame has at most 1,995 fields of each budget.
+    The head makes a key of the response's `Trailer` for each announced name, with a copy of it ([handleResponse](https://github.com/golang/net/blob/v0.60.0/http2/transport.go#L2060-L2068)): a slot of 94 bytes and the copy of 16, 110 bytes, 219,450 bytes for 1,995 names.
     An answer may end in a HEADERS frame of trailers, which the transport keeps in a map of its own, then in the response's `Trailer` ([processTrailers](https://github.com/golang/net/blob/v0.60.0/http2/transport.go#L2196-L2218), [copyTrailers](https://github.com/golang/net/blob/v0.60.0/http2/transport.go#L2492-L2501)).
-    The framer reads every HEADERS frame under the same budget as the head, so the trailers' map is the headers' map: at most 1,995 fields, 0.5 MiB ([frame.go](https://github.com/golang/net/blob/v0.60.0/http2/frame.go#L1714)).
+    Each of its fields costs a slot in both maps, a copy of its name and a slice of one value, 220 bytes, 438,900 bytes for 1,995 fields.
+    Its `trailer` fields, which the budget of the names counts, are appended to the values of one key: 48 bytes each, a slice element grown by up to a half and the string, 95,760 bytes for 1,995.
+    The decoded fields of the frame, 40 bytes each, 159,600 bytes for the 3,990 of both budgets, are held until the frame is processed, and each of the two maps may hold a table of 1,024 slots more, 83,968 bytes.
+    That is 997,678 bytes, 0.95 MiB: the term is 1.0 MiB.
     The server may send the frame once the reader has read to within a window of the end of the body, so at the cut of an answer of up to 12 MiB the trailers are held beside the full stream buffer.
-    `TestAnHTTP2AnswersTrailersAreHeldBesideItsHeadersAndNoMoreThanTrailersHTTP2` reads 1,914 header names, then the same with 1,860 trailer names, and finds 0.41 MiB more; the measures below send them at the limit.
-  - The gzip reader, 50 KiB, over both protocols.
-    A transport that sets no `Accept-Encoding` asks for gzip and reads a gzip answer through a reader of its own ([net/http transport.go](https://github.com/golang/go/blob/go1.26.10/src/net/http/transport.go#L2438-L2439), [x/net transport.go](https://github.com/golang/net/blob/v0.60.0/http2/transport.go#L2186-L2190)), which holds a `gzip.Reader` with its window of 32 KiB ([dict_decoder.go](https://github.com/golang/go/blob/go1.26.10/src/compress/flate/dict_decoder.go#L42-L43)).
-    client-go leaves compression on (`TestTheTenantClientAsksForGzipAndReadsItOverEveryProtocol`), and a kube-apiserver compresses an answer over 128 KiB, which it does by default since 1.16 ([writers.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/endpoints/handlers/responsewriters/writers.go#L152-L155), [kube_features.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/features/kube_features.go#L321-L324)), so the Node lists of an honest tenant come through it.
+    `TestAnHTTP2AnswersAnnouncedNamesAndTrailersAreHeldBesideItsHeadersAndNoMoreThanTrailersHTTP2` reads 1,914 header names, then the same with 1,861 names announced and 1,861 trailers, and finds 0.60 MiB more, where the parts of that many add to 0.67 MiB; the measures below send them at the limit.
+    A Go server declares no `Trailer` field among the trailers it sends ([declareTrailer](https://github.com/golang/go/blob/go1.26.10/src/net/http/h2_bundle.go#L6724-L6734), [ValidTrailerHeader](https://github.com/golang/go/blob/go1.26.10/src/vendor/golang.org/x/net/http/httpguts/guts.go#L20-L50)), so no measure reaches the `trailer` fields of a trailers frame, which the term counts from the framer.
+  - Over HTTP/1.1, the trailers of a chunked answer, up to 0.3 MiB.
+    net/http reads them once the body has ended, and only when the empty line that ends them is within its reader's buffer of 4 KiB ([readTrailer](https://github.com/golang/go/blob/go1.26.10/src/net/http/transfer.go#L894-L951)), so a block holds at most 1,023 field lines of 4 bytes.
+    It reads them into a map of its own, which `mergeSetHeader` copies into the map of the names the head announced ([L953-L959](https://github.com/golang/go/blob/go1.26.10/src/net/http/transfer.go#L953-L959)): a slot in each, a copy of the name and a slice of one value, 220 bytes, 225,060 bytes for 1,023 fields, and two tables of 1,024 slots more.
+    That is 309,028 bytes, 0.30 MiB.
+    The read has them before `io.ReadAll` allocates its slice, and the response keeps them while it does.
+    `TestAnHTTP1ChunkedAnswersTrailersAreHeldAtItsEndAndNoMoreThanTrailersHTTP1` reads 826 trailers after a head that announces one name and finds 0.06 MiB once the copy's source is garbage.
+  - The gzip reader, 219 KiB, over both protocols.
+    A transport that sets no `Accept-Encoding` asks for gzip and reads a gzip answer through a reader of its own, taken from a pool and put back when the read ends ([net/http transport.go](https://github.com/golang/go/blob/go1.26.10/src/net/http/transport.go#L2438-L2439), [L3120-L3151](https://github.com/golang/go/blob/go1.26.10/src/net/http/transport.go#L3120-L3151), [x/net transport.go](https://github.com/golang/net/blob/v0.60.0/http2/transport.go#L2802-L2830)).
+    client-go leaves compression on (`TestTheTenantClientAsksForGzipAndReadsItOverEveryProtocol`), and a kube-apiserver compresses an answer over 128 KiB, which it does by default since 1.16 ([writers.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/endpoints/handlers/responsewriters/writers.go#L152-L155), [kube_features.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/features/kube_features.go#L321-L324)), so the Node lists of an honest tenant come through it; the stream is the tenant's to choose, since the aggregator passes an APIService's `Content-Encoding` back.
     Over HTTP/2 the stream's buffer holds compressed bytes, at most its window, while the cap counts the decompressed ones.
-    `TestAGzipReaderThatHasReadHoldsAtLeast32KiBAndAtMostGzipReader` finds a reader that has read holds 44.4 KiB.
+    What a `gzip.Reader` holds, at go1.26.10 on 64-bit, is:
+    - the reader, 664 bytes, which takes 704, and a `bufio.Reader` of 88 bytes, which takes 96, with its buffer of 4,096, since the body is no `io.ByteReader` ([gunzip.go](https://github.com/golang/go/blob/go1.26.10/src/compress/gzip/gunzip.go#L74-L114));
+    - flate's decompressor, 4,392 bytes, which takes 4,864, with two Huffman decoders whose tables of 512 entries are in it, and `bits` and `codebits`, 2,528 and 152 bytes, which take 2,688 and 160 ([inflate.go](https://github.com/golang/go/blob/go1.26.10/src/compress/flate/inflate.go#L104-L109), [L267-L300](https://github.com/golang/go/blob/go1.26.10/src/compress/flate/inflate.go#L267-L300), [L807-L817](https://github.com/golang/go/blob/go1.26.10/src/compress/flate/inflate.go#L807-L817)); the fixed decoder is a package variable and no heap;
+    - the window, 32 KiB ([dict_decoder.go](https://github.com/golang/go/blob/go1.26.10/src/compress/flate/dict_decoder.go#L39-L43));
+    - the link tables of the last dynamic block, each Huffman decoder keeping one of 64 entries of 4 bytes for each 9-bit prefix that leads to a longer code, in a slice of 24 bytes a prefix, and nothing of an earlier block, since `init` and `Reset` clear the decoder first ([inflate.go](https://github.com/golang/go/blob/go1.26.10/src/compress/flate/inflate.go#L122-L124), [L167-L187](https://github.com/golang/go/blob/go1.26.10/src/compress/flate/inflate.go#L167-L187), [L786-L795](https://github.com/golang/go/blob/go1.26.10/src/compress/flate/inflate.go#L786-L795));
+      the code is complete (L167), so a prefix has two leaves or more, one of 15 bits seven or more under it, and the codes of 9 bits or fewer, which fill the other prefixes, need as many leaves as 512 less the long prefixes has bits set: of 286 symbols (L23) at most 137 prefixes, 8,768 entries of any longest length, and of 30 distances at most 8, 512 entries (`TestACompleteCodeHasAtMostAsManyLongPrefixesAsTheGzipTermCounts`);
+      the 145 tables take 256 bytes each and their slices 3,456 and 192: 40,768 bytes;
+    - the header of the first member, kept for the reader's life: the extra field up to 65,535 bytes, a large object of 65,536, and the name and the comment up to 511 bytes of Latin-1 each, which become 1,022 bytes of UTF-8 and take 1,024 ([gunzip.go](https://github.com/golang/go/blob/go1.26.10/src/compress/gzip/gunzip.go#L141-L169), [L199-L224](https://github.com/golang/go/blob/go1.26.10/src/compress/gzip/gunzip.go#L199-L224)): 67,584 bytes;
+    - the header of a later member, read while the first and the tables are held and dropped when it is read ([gunzip.go](https://github.com/golang/go/blob/go1.26.10/src/compress/gzip/gunzip.go#L262-L290)): the same and a slice of runes of 2,048 bytes, 69,632 bytes;
+    - the transport's wrapper, 48 bytes ([gzipReader](https://github.com/golang/go/blob/go1.26.10/src/net/http/transport.go#L3120)).
+    That is 223,408 bytes, 218.2 KiB: the term is 219 KiB.
+    `TestAGzipReaderThatHasReadHoldsTheSumOfItsPartsAndNoMoreOnTheWorstStream` finds, with a reader that has read one byte, 44.4 KiB for a stream of `gzip.Writer`, 84.2 for a code of 137 and 8 tables, and 150.4 with the extra field, the name and the comment, each within 4 KiB of its parts; `TestAGzipReaderThatReadsALaterMembersHeaderHoldsItBesideTheFirstAndItsTables` finds 215.6 KiB while the header of a second member is read; and `TestTheTenantClientsHoldAGzipReaderOfTheWorstStreamUnderGzipReader` reads the crafted stream through the tenant's clients, 152.7 KiB over HTTP/1.1 and 154.1 over HTTP/2.
   - The connection's buffers, apart from a read's own: 64 KiB for net/http's reader and writer of 4 KiB each ([transport.go](https://github.com/golang/go/blob/go1.26.10/src/net/http/transport.go#L1991)) and TLS's records, for each connection.
     Over HTTP/2 also 1 MiB once for the connection, which the lists of a pass share: the client accepts frames of 1 MiB ([http2.go](https://github.com/golang/net/blob/v0.60.0/http2/http2.go#L85), [transport.go](https://github.com/golang/net/blob/v0.60.0/http2/transport.go#L531)) and keeps a buffer of the largest it has read ([frame.go](https://github.com/golang/net/blob/v0.60.0/http2/frame.go#L455-L460)).
     Over HTTP/1.1 each read in flight has a connection of its own.
@@ -605,11 +633,11 @@ What one read holds at most is the larger of its two phases, each summed from th
   The most is 1.85 MiB, 1.83 measured and 1.90 under the race detector, a page of 100 Nodes of 64 Ready conditions with every string at its raw bound and invalid UTF-8: a decoded string is cut to a copy of its kept length, which `TestACutStringHoldsNoneOfTheStringItWasCutFrom` holds, so a name takes 256 bytes, a kubelet version 80, a condition's status 224 and its type 8, and the conditions' slice 4 KiB a Node.
   The other kinds keep at most 0.4 MiB (`TestWhatTheTypesKeepAtTheRawBoundsIsUnderKeptAtMost`).
 
-So a read holds 26.5 MiB over HTTP/2 (20.4 + 4.03 + 0.5 + 0.5 + 0.05, then 1.06 for its connection) and 22.2 MiB over HTTP/1.1 (20.4 + 1.7 + 0.05, then 0.06) while its body is read, and 10 MiB after: 26.5 MiB, since a tenant's server may answer either way.
-The memory of a pass follows from the reads it has in flight at once, each 25.5 MiB over HTTP/2 and 22.1 MiB over HTTP/1.1 apart from its connection:
-- a pass of `health-nodes` reads the controller manager's Lease, then lists the Leases and the Nodes at once, then sends the hold's write, whose patch carries the read's `resourceVersion`, 384 bytes at most, and reads its answer: two reads at once, 52.0 MiB with the connection's 1.06 MiB, and the summaries the pass builds beside the sampling, up to `health.maxNodes` Lease versions and Node summaries, 4 MiB (3.72 MiB measured, with names of 253 bytes: a Lease version takes up to 112 bytes of map slot, its name of 256 and 24 bytes of the slice it is built from, a Node summary 72 bytes, 256 and 80, 3.8 MiB for 5,000 of each; `TestWhatAPassBuildsBesideTheSamplingIsUnderSummariesAtMost`): 56.0 MiB;
-- a pass of `health` over a held restore lists seven kinds at once, on one connection with a stream, a buffer and a head of its own for each: seven reads, 179.4 MiB;
-- the 100 workers of `health-nodes` hold 100 times 56.0 MiB at most, 5.47 GiB, and the 10 workers of `health`, by default, 10 times 179.4 MiB, 1.75 GiB.
+So a read holds 27.3 MiB over HTTP/2 (20.4 + 4.03 + 0.5 + 1.0 + 0.22, then 1.06 for its connection) and 23.4 MiB over HTTP/1.1 (20.4 + 2.4 + 0.3 + 0.22, then 0.06) while its body is read, and 10 MiB after: 27.3 MiB, since a tenant's server may answer either way.
+The memory of a pass follows from the reads it has in flight at once, each 26.2 MiB over HTTP/2 and 23.4 MiB over HTTP/1.1 apart from its connection:
+- a pass of `health-nodes` reads the controller manager's Lease, then lists the Leases and the Nodes at once, then sends the hold's write, whose patch carries the read's `resourceVersion`, 384 bytes at most, and reads its answer: two reads at once, 53.4 MiB with the connection's 1.06 MiB, and the summaries the pass builds beside the sampling, up to `health.maxNodes` Lease versions and Node summaries, 4 MiB (3.72 MiB measured, with names of 253 bytes: a Lease version takes up to 112 bytes of map slot, its name of 256 and 24 bytes of the slice it is built from, a Node summary 72 bytes, 256 and 80, 3.8 MiB for 5,000 of each; `TestWhatAPassBuildsBesideTheSamplingIsUnderSummariesAtMost`): 57.4 MiB;
+- a pass of `health` over a held restore lists seven kinds at once, on one connection with a stream, a buffer and a head of its own for each: seven reads, 184.1 MiB;
+- the 100 workers of `health-nodes` hold 100 times 57.4 MiB at most, 5.61 GiB, and the 10 workers of `health`, by default, 10 times 184.1 MiB, 1.80 GiB.
 
 At the default `GOGC` the heap in use may grow to about twice the live heap, so the operator's memory limit and `GOMEMLIMIT`, which are set when the operator is measured (`todo.md`, "From the chart"), start from about twice these figures.
 
@@ -618,12 +646,12 @@ They answer over HTTP/1.1 and over HTTP/2 with TLS, as a kube-apiserver does.
 The first three fail when a read or a pass holds more heap in use than its structural figure, or ends in another outcome than the shape expects:
 - `TestMeasureTheLiveHeapOfEveryReadOverAnAmplifyingResponse` answers each read with a response of 8 MiB in 47 shapes: nothing but empty objects where the read keeps an array, a body padded with bytes the types skip, a key of letters, of escapes and of invalid UTF-8, and a field past its bound in each of those;
 - `TestMeasureTheLiveHeapOfAPassWhoseEveryReadIsAtItsWorst` runs a pass of `health-nodes`, with its Lease read, both lists answered together by a server that waits until both requests are in, and its renewal, and a pass of `health` over a held restore, the seven lists answered as they come and together, every answer a body of 8 MiB;
-- `TestMeasureTheLiveHeapOfAReadWhoseAnswerIsCutAtTheBoundWithHeadersAtTheirs` reads an answer of 16 MiB, which the cap cuts at 8 MiB, 100 times in a process, with the headers of a plain answer and with distinct names filling the bound, about 11,100 of them over HTTP/1.1 and as many as the HTTP/2 limit allows over HTTP/2, over HTTP/2 also with trailers of distinct names filling the same limit, after a body of 12 MiB so that they arrive before the read is cut, and with the body gzipped, of bytes that do not compress, so that the transport reads it through a decompressor;
+- `TestMeasureTheLiveHeapOfAReadWhoseAnswerIsCutAtTheBoundWithHeadersAtTheirs` reads an answer of 16 MiB, which the cap cuts at 8 MiB, 100 times in a process, with the headers of a plain answer, with distinct names filling the bound, about 11,100 of them over HTTP/1.1 and as many as the HTTP/2 limit allows over HTTP/2, and with a head that announces names filling it, about 21,900 of them in a chunked head over HTTP/1.1 and as many as the budget allows over HTTP/2, which also takes trailers of distinct names filling the same limit, after a body of 12 MiB so that they arrive before the read is cut, and with the body gzipped, of bytes that do not compress, so that the transport reads it through a decompressor;
 - `TestMeasureTheLiveHeapOfAPassOverAPageOf128000EmptyWebhooks` runs a pass over a held restore whose webhook lists answer 500 configurations of 256 empty webhooks;
 - `TestMeasureTheLiveHeapOfPassesOverTenantsPaddedToTheirBounds` runs passes over a tenant padded to its bounds, with every page of Leases and of Nodes just under 8 MiB and the default `health.maxNodes`, one pass and 100 at once on 100 tenants.
 
 The figure they compare is the heap in use.
-The live heap is what the last collection marked, objects allocated during it included, so it can read above anything alive at once: in 1,000 cut answers over HTTP/2 with the headers and the trailers at their bound and the body gzipped it read up to 39.2 MiB, where the heap in use did not pass 23.1 MiB.
+The live heap is what the last collection marked, objects allocated during it included, so it can read above anything alive at once: in 1,000 cut answers over HTTP/2 with the headers, the announced names and the trailers at their bound and the body gzipped it read up to 30.9 MiB, where the heap in use did not pass 24.7 MiB.
 
 ```
 GOTOOLCHAIN=go1.26.10 LODIA_MEASURE_HEAP=1 KUBEBUILDER_ASSETS="$(go tool setup-envtest use 1.35.0 -p path)" go test -count=1 -v -run TestMeasureTheLiveHeap ./internal/controller/health/
@@ -634,31 +662,34 @@ The runs below are on go1.26.10, `go version go1.26.10 darwin/arm64`, on 16 core
 
 | the measure | runs | live heap | heap in use | structural bound |
 |---|---|---|---|---|
-| one read, the most of 47 shapes, over HTTP/1.1 | 10 | 8.0 to 16.3 MiB | 20.4 MiB, in every run | 22.2 MiB |
-| the same, over HTTP/2 | 10 | 12.8 to 20.7 MiB | 20.9 to 21.4 MiB | 26.5 MiB |
-| a read whose answer of 16 MiB is cut, over HTTP/1.1 | 1,000 | 12.4 to 20.4 MiB | 20.4 MiB | 22.2 MiB |
-| the same, headers at their bound | 1,000 | 13.4 to 25.3 MiB | 21.4 MiB | 22.2 MiB |
-| the same, gzipped | 1,000 | 13.4 to 29.4 MiB | 21.4 MiB | 22.2 MiB |
-| the same, over HTTP/2 | 1,000 | 22.1 to 28.6 MiB | 22.4 to 22.7 MiB | 26.5 MiB |
-| the same, headers at their bound | 1,000 | 22.5 to 29.0 MiB | 22.6 to 23.1 MiB | 26.5 MiB |
-| the same, trailers at their bound | 1,000 | 22.1 to 28.9 MiB | 22.3 to 23.3 MiB | 26.5 MiB |
-| the same, gzipped | 1,000 | 21.9 to 39.2 MiB | 22.3 to 23.1 MiB | 26.5 MiB |
-| one pass of `health-nodes`, the Lease read, both lists answered together and the renewal, over HTTP/1.1 | 10 | 15.9 to 24.2 MiB | 24.1 to 32.4 MiB | 48.4 MiB |
-| the same, over HTTP/2 | 10 | 21.1 to 25.5 MiB | 33.2 to 41.5 MiB | 56.0 MiB |
-| one pass of `health` over a held restore, seven answers as they come, over HTTP/1.1 | 10 | 33.5 to 80.9 MiB | 66.0 to 114.0 MiB | 155.5 MiB |
-| the same, over HTTP/2 | 10 | 63.5 to 135.6 MiB | 96.1 to 144.0 MiB | 179.4 MiB |
-| the same, its seven lists answered together, over HTTP/1.1 | 10 | 56.0 to 73.1 MiB | 76.5 to 105.7 MiB | 155.5 MiB |
-| the same, over HTTP/2 | 10 | 87.5 to 143.7 MiB | 143.2 to 144.1 MiB | 179.4 MiB |
-| one pass of `health` over 500 configurations of 256 empty webhooks, named with 253 bytes, one list or both | 10 | 0.4 to 1.3 MiB or 0.5 to 2.2 MiB | 2.1 to 3.0 MiB or 1.7 to 3.8 MiB | |
-| the same, named with 2,048 bytes | 10 | 0.0 to 1.9 MiB or 3.4 to 4.5 MiB | 1.7 to 3.2 MiB or 5.5 to 6.3 MiB | |
-| one pass over a tenant padded to its bounds, 62 responses | 10 | 8.7 to 24.7 MiB | 21.7 to 32.8 MiB | 48.4 MiB |
-| 100 passes at once on 100 tenants | 10 | 1.13 to 1.31 GiB, 11.5 to 13.4 MiB a pass | 1.25 to 1.44 GiB | 4.7 GiB |
+| one read, the most of 47 shapes, over HTTP/1.1 | 10 | 8.0 to 12.4 MiB | 20.3 to 20.4 MiB | 23.4 MiB |
+| the same, over HTTP/2 | 10 | 12.8 to 20.7 MiB | 20.9 to 22.8 MiB | 27.3 MiB |
+| a read whose answer of 16 MiB is cut, over HTTP/1.1 | 1,000 | 12.4 to 24.3 MiB | 20.4 MiB | 23.4 MiB |
+| the same, headers at their bound | 1,000 | 13.3 to 33.3 MiB | 21.4 MiB | 23.4 MiB |
+| the same, headers at their bound, gzipped | 1,000 | 13.4 to 29.4 MiB | 21.4 MiB | 23.4 MiB |
+| the same, announced names at their bound | 1,000 | 9.9 to 25.9 MiB | 17.9 to 19.4 MiB | 23.4 MiB |
+| the same, announced names at their bound, gzipped | 1,000 | 20.4 to 28.4 MiB | 22.0 MiB | 23.4 MiB |
+| a read whose answer of 16 MiB is cut, over HTTP/2 | 1,000 | 22.1 to 29.6 MiB | 22.3 to 23.4 MiB | 27.3 MiB |
+| the same, headers at their bound | 1,000 | 22.5 to 29.2 MiB | 22.7 to 23.2 MiB | 27.3 MiB |
+| the same, trailers at their bound | 1,000 | 22.1 to 29.2 MiB | 21.9 to 23.1 MiB | 27.3 MiB |
+| the same, announced names at their bound | 1,000 | 22.1 to 29.0 MiB | 22.2 to 23.5 MiB | 27.3 MiB |
+| the same, gzipped | 1,000 | 21.8 to 30.9 MiB | 23.1 to 24.6 MiB | 27.3 MiB |
+| one pass of `health-nodes`, the Lease read, both lists answered together and the renewal, over HTTP/1.1 | 10 | 8.1 to 24.1 MiB | 16.1 to 32.5 MiB | 50.8 MiB |
+| the same, over HTTP/2 | 10 | 21.2 to 33.0 MiB | 33.3 to 41.3 MiB | 57.4 MiB |
+| one pass of `health` over a held restore, seven answers as they come, over HTTP/1.1 | 10 | 33.5 to 80.9 MiB | 73.5 to 114.0 MiB | 163.7 MiB |
+| the same, over HTTP/2 | 10 | 35.7 to 143.7 MiB | 95.8 to 144.2 MiB | 184.1 MiB |
+| the same, its seven lists answered together, over HTTP/1.1 | 10 | 48.5 to 80.9 MiB | 73.4 to 113.9 MiB | 163.7 MiB |
+| the same, over HTTP/2 | 10 | 87.4 to 143.7 MiB | 119.5 to 143.8 MiB | 184.1 MiB |
+| one pass of `health` over 500 configurations of 256 empty webhooks, named with 253 bytes, one list or both | 10 | 0.0 to 1.6 MiB or 0.6 to 3.6 MiB | 0.5 to 3.5 MiB or 2.1 to 7.0 MiB | |
+| the same, named with 2,048 bytes | 10 | 1.5 to 2.5 MiB or 2.3 to 5.8 MiB | 2.8 to 5.3 MiB or 3.9 to 10.0 MiB | |
+| one pass over a tenant padded to its bounds, 62 responses | 10 | 9.2 to 24.6 MiB | 18.4 to 32.7 MiB | 50.8 MiB |
+| 100 passes at once on 100 tenants | 10 | 1.12 to 1.30 GiB, 11.4 to 13.3 MiB a pass | 1.27 to 1.52 GiB | 5.0 GiB |
 
-The 100 passes at once open 200 connections to one listener, and a run of an earlier set of ten failed: 19 of its 100 passes ended in a connection reset or a broken pipe from the loopback server, whose listen queue is 128 (`kern.ipc.somaxconn`); the ten above all passed.
-The closest any measure came to its bound is 0.8 MiB, the cut answer with headers at their bound and a gzipped body over HTTP/1.1.
+The 100 passes at once open 200 connections to one listener, and two runs of twelve failed, 9 and 3 of their 100 passes ending in a connection reset or a broken pipe from the loopback server, whose listen queue is 128 (`kern.ipc.somaxconn`), while other work on the machine held its load at 25 on 16 cores; the ten above all passed.
+The closest any measure came to its bound is 1.4 MiB, the cut answer with announced names at their bound and a gzipped body over HTTP/1.1.
 No run put a pass at the ceiling of its reads, since their chunks do not all peak together.
-A first pass of `health-nodes` over 5,000 Nodes and their 5,000 Leases, the most `health.maxNodes` counts by default, took 312, 296 and 309 ms in three runs on go1.26.10, and a pass over 5,001 Nodes, which stops at the bound, 299, 300 and 289 ms (`TestATenantOfMaxNodesNodesIsCountedWholeAtTheOperatorsTimeout`, on envtest, on 16 cores of an Apple M4 Max, one run at a time).
-The race detector slows it tenfold, to 2.93, 2.94 and 2.93 s for 5,000 Nodes and 2.92, 2.91 and 2.91 s for 5,001, in three runs of `TestATenantOfMaxNodesNodesIsCountedWholeUnderTheRaceDetector`, which counts the same tenant with a `Timeout` of a minute, against the operator's of 5 s.
+A first pass of `health-nodes` over 5,000 Nodes and their 5,000 Leases, the most `health.maxNodes` counts by default, took 318, 309 and 314 ms in three runs on go1.26.10, and a pass over 5,001 Nodes, which stops at the bound, 300, 285 and 448 ms (`TestATenantOfMaxNodesNodesIsCountedWholeAtTheOperatorsTimeout`, on envtest, on 16 cores of an Apple M4 Max, one run at a time, the 448 ms with other work holding the machine's load at 25).
+The race detector slows it tenfold, to 2.97, 2.97 and 3.04 s for 5,000 Nodes and 2.94, 3.03 and 2.99 s for 5,001, in three runs of `TestATenantOfMaxNodesNodesIsCountedWholeUnderTheRaceDetector`, which counts the same tenant with a `Timeout` of a minute, against the operator's of 5 s.
 That first test is built without the race detector, and `make test` runs it in a step of its own.
 Between passes it keeps at most `health.maxNodes` Lease versions and Node summaries per tenant ([review checklist](review-checklist.md), item 10).
 The tenant's administrator can have any server answer the lists, so the pass bounds every string it keeps itself:

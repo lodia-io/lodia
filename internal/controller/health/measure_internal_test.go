@@ -398,16 +398,17 @@ const (
 	connectionHTTP2 = mebibyte + 64<<10
 	readAllAtMost   = 204 * mebibyte / 10
 	streamBuffer    = 4<<20 + 32<<10
-	headersHTTP1    = 17 * mebibyte / 10
+	headersHTTP1    = 24 * mebibyte / 10
 	headersHTTP2    = mebibyte / 2
-	trailersHTTP2   = mebibyte / 2
-	gzipReader      = 50 << 10
+	trailersHTTP1   = 3 * mebibyte / 10
+	trailersHTTP2   = mebibyte
+	gzipReader      = 219 << 10
 	keptAtMost      = 2 * mebibyte
 	summariesAtMost = 4 * mebibyte
 )
 
 func readsBound(p protocol, reads int) uint64 {
-	each := uint64(readAllAtMost + headersHTTP1 + gzipReader)
+	each := uint64(readAllAtMost + headersHTTP1 + trailersHTTP1 + gzipReader)
 	connections := uint64(reads) * connectionHTTP1
 	if p.http2 {
 		each, connections = readAllAtMost+headersHTTP2+trailersHTTP2+streamBuffer+gzipReader, connectionHTTP2
@@ -543,12 +544,15 @@ func distinctNames(budget, overhead int) []string {
 	}
 }
 
-type cutShape struct{ headers, trailers, gzipped bool }
+type cutShape struct{ headers, announced, trailers, gzipped bool }
 
 func (c cutShape) String() string {
 	name := "an answer of 16 MiB"
 	if c.headers {
 		name += ", headers at their bound"
+	}
+	if c.announced {
+		name += ", announced names at their bound"
 	}
 	if c.trailers {
 		name += ", trailers at their bound"
@@ -567,13 +571,18 @@ func cutAnswers(t *testing.T, p protocol, body []byte, shape cutShape) *tenant {
 	}
 	if !p.http2 {
 		head := "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" + encoding + "Content-Length: " + strconv.Itoa(len(body)) + "\r\n"
+		if shape.announced {
+			head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" + encoding + "Transfer-Encoding: chunked\r\nTrailer: "
+			head += strings.Join(announcedNamesOfAHead(maxResponseHeaderBytes-len(head)-len("\r\n\r\n")), ",") + "\r\n"
+			body = []byte(fmt.Sprintf("%x\r\n%s\r\n0\r\n\r\n", len(body), body))
+		}
 		if shape.headers {
 			for _, name := range distinctNames(maxResponseHeaderBytes-len(head)-len("\r\n"), len(":\r\n")) {
 				head += name + ":\r\n"
 			}
 		}
 		head += "\r\n"
-		if shape.headers && len(head) != maxResponseHeaderBytes && len(head) < maxResponseHeaderBytes-8 {
+		if (shape.headers || shape.announced) && len(head) != maxResponseHeaderBytes && len(head) < maxResponseHeaderBytes-8 {
 			t.Fatalf("the head has %d bytes, want it to fill the bound of %d", len(head), maxResponseHeaderBytes)
 		}
 		url, _ := answerOnTCP(t, head, string(body))
@@ -584,18 +593,22 @@ func cutAnswers(t *testing.T, p protocol, body []byte, shape cutShape) *tenant {
 		}
 		return tenant
 	}
-	var names, trailers []string
+	var names, announced, trailers []string
 	if shape.headers {
-		names = distinctNames(maxResponseHeaderBytes+320-200, 32)
+		names = distinctNames(budgetHTTP2-200, 32)
+	}
+	if shape.announced {
+		announced = canonicalPrefixed(distinctNames(budgetHTTP2-200, 33), "y")
 	}
 	if shape.trailers {
-		for _, name := range distinctNames(maxResponseHeaderBytes+320-200, 33) {
-			trailers = append(trailers, "t"+name)
-		}
+		trailers = canonicalPrefixed(distinctNames(budgetHTTP2-200, 33), "z")
 	}
 	_, tenant := p.tenant(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		for _, name := range names {
 			w.Header()[textproto.CanonicalMIMEHeaderKey(name)] = []string{""}
+		}
+		if announced != nil {
+			w.Header().Set("Trailer", strings.Join(announced, ","))
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if shape.gzipped {
@@ -603,7 +616,7 @@ func cutAnswers(t *testing.T, p protocol, body []byte, shape cutShape) *tenant {
 		}
 		_, _ = w.Write(body)
 		for _, name := range trailers {
-			w.Header()[http.TrailerPrefix+textproto.CanonicalMIMEHeaderKey(name)] = []string{""}
+			w.Header()[http.TrailerPrefix+name] = []string{""}
 		}
 	}))
 	return tenant
@@ -635,9 +648,9 @@ func TestMeasureTheLiveHeapOfAReadWhoseAnswerIsCutAtTheBoundWithHeadersAtTheirs(
 	gzipped := gzipStored(t, random)
 	const withTrailers = maxResponseBytes + 4<<20 - 64<<10
 	for _, p := range protocols {
-		shapes := []cutShape{{}, {headers: true}, {headers: true, gzipped: true}}
+		shapes := []cutShape{{}, {headers: true}, {headers: true, gzipped: true}, {announced: true}, {announced: true, gzipped: true}}
 		if p.http2 {
-			shapes = []cutShape{{}, {headers: true}, {headers: true, trailers: true}, {headers: true, trailers: true, gzipped: true}}
+			shapes = []cutShape{{}, {headers: true}, {headers: true, trailers: true}, {headers: true, announced: true, trailers: true}, {headers: true, announced: true, trailers: true, gzipped: true}}
 		}
 		for _, shape := range shapes {
 			t.Run(p.name+", "+shape.String(), func(t *testing.T) {
