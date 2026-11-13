@@ -136,8 +136,8 @@ func TestAStatusIsReadAtTheBoundsOfItsFieldsAndNeverPastThem(t *testing.T) {
 		most int
 		past string
 	}{
-		{"a reason", func(n int) string { return status(quotedOf(n), `"m"`, "500", `"c"`) }, 64, ""},
-		{"a cause's reason", func(n int) string { return status(`"r"`, `"m"`, "500", quotedOf(n)) }, 64, ""},
+		{"a reason", func(n int) string { return status(quotedOf(n), `"m"`, "500", `"c"`) }, maxWordRaw, ""},
+		{"a cause's reason", func(n int) string { return status(`"r"`, `"m"`, "500", quotedOf(n)) }, maxWordRaw, ""},
 		{"a message", func(n int) string { return status(`"r"`, quotedOf(n), "500", `"c"`) }, 1024, longMessage},
 		{"a code", func(n int) string { return status(`"r"`, `"m"`, integerOfLength(n), `"c"`) }, 11, ""},
 	} {

@@ -21,11 +21,12 @@ import (
 //     bytes, rounded up;
 //   - maxVersionRaw: a resourceVersion is a revision of at most 19 digits;
 //   - maxTimeRaw: a time with microseconds and an offset is 32 bytes;
-//   - maxWordRaw: a Status's reason and a cause's reason are words under 40
-//     bytes; a field Health only compares with a word (a condition's type and
-//     status, a Status's status, a failure policy, a Service's type, a reclaim
-//     policy, a phase) is read with jsonscan.Word, and a token past this bound
-//     is none of the words, which are under 16 bytes;
+//   - maxWordRaw: LoadBalancer, the longest word Health compares, with every
+//     character escaped, 72 bytes; a field Health only compares with a word (a
+//     condition's type and status, a Status's status, a failure policy, a
+//     Service's type, a reclaim policy, a phase) is read with jsonscan.Word,
+//     and a token past this bound is none of the words; a Status's reason and
+//     a cause's reason, words under 40 bytes, are read within it too;
 //   - maxHolderRaw: a holderIdentity is a name, an underscore and a UUID, at
 //     most 290 bytes;
 //   - maxKubeletRaw: maxKubeletVersion bytes with every character escaped, 384;
@@ -38,7 +39,7 @@ const (
 	maxNameRaw    = 2048
 	maxVersionRaw = 64
 	maxTimeRaw    = 64
-	maxWordRaw    = 64
+	maxWordRaw    = 72
 	maxHolderRaw  = 512
 	maxKubeletRaw = 6 * maxKubeletVersion
 	maxNumberRaw  = 11

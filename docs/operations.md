@@ -541,8 +541,9 @@ A token of a field Health keeps, past its bound, stops a list of the Leases or o
 | field | raw bound |
 |---|---|
 | a name, a namespace | 2,048 bytes, 253 decoded: a Lease or a Node with a longer name is not counted, and only a held restore's tally counts such an object, without naming it |
-| a `resourceVersion`, a time, a Status's `reason`, a cause's `reason` | 64 bytes; the hold's patch carries the `resourceVersion` it read decoded and `json.Marshal`-escaped ([encode.go](https://github.com/golang/go/blob/go1.26.10/src/encoding/json/encode.go#L205-L216)): up to 192 bytes of invalid UTF-8, or 384 of `<`, `>` and `&`, which escape as six |
-| a condition's `type` and `status`, a Status's `status`, a `failurePolicy`, a Service's `type`, a PersistentVolume's reclaim policy, a claim's phase | 64 bytes: a longer token is none of the words, which are under 16 bytes, and is not decoded |
+| a `resourceVersion`, a time | 64 bytes; the hold's patch carries the `resourceVersion` it read decoded and `json.Marshal`-escaped ([encode.go](https://github.com/golang/go/blob/go1.26.10/src/encoding/json/encode.go#L205-L216)): up to 192 bytes of invalid UTF-8, or 384 of `<`, `>` and `&`, which escape as six |
+| a Status's `reason`, a cause's `reason` | 72 bytes, the bound of a word |
+| a condition's `type` and `status`, a Status's `status`, a `failurePolicy`, a Service's `type`, a PersistentVolume's reclaim policy, a claim's phase | 72 bytes, `LoadBalancer` with every character escaped, the longest raw form of the words Health compares (`TestEveryWordHealthComparesIsReadAsItselfWithEveryCharacterEscapedAndMaxWordRawIsTheLongest`): a longer string is none of the words and is not decoded |
 | a `holderIdentity` | 512 bytes |
 | a kubelet version | 384 bytes, 64 decoded: a longer version is not kept |
 | a number | 11 bytes, the longest int32 |
@@ -585,7 +586,7 @@ What one read holds at most is the larger of its two phases, each summed from th
     Over HTTP/2 also 1 MiB once for the connection, which the lists of a pass share: the client accepts frames of 1 MiB ([http2.go](https://github.com/golang/net/blob/v0.60.0/http2/http2.go#L85), [transport.go](https://github.com/golang/net/blob/v0.60.0/http2/transport.go#L531)) and keeps a buffer of the largest it has read ([frame.go](https://github.com/golang/net/blob/v0.60.0/http2/frame.go#L455-L460)).
     Over HTTP/1.1 each read in flight has a connection of its own.
 - after it, the body, 8 MiB, and what the types keep, 2 MiB.
-  The most is 1.65 MiB, 1.64 measured and 1.70 under the race detector, a page of 100 Nodes of 64 Ready conditions with every string at its raw bound and invalid UTF-8: a decoded string is cut to a copy of its kept length, which `TestACutStringHoldsNoneOfTheStringItWasCutFrom` holds, so a name takes 256 bytes, a kubelet version 80, a condition's status 192 and its type 8, and the conditions' slice 4 KiB a Node.
+  The most is 1.85 MiB, 1.83 measured and 1.90 under the race detector, a page of 100 Nodes of 64 Ready conditions with every string at its raw bound and invalid UTF-8: a decoded string is cut to a copy of its kept length, which `TestACutStringHoldsNoneOfTheStringItWasCutFrom` holds, so a name takes 256 bytes, a kubelet version 80, a condition's status 224 and its type 8, and the conditions' slice 4 KiB a Node.
   The other kinds keep at most 0.4 MiB (`TestWhatTheTypesKeepAtTheRawBoundsIsUnderKeptAtMost`).
 
 So a read holds 26.4 MiB over HTTP/2 (20.8 + 4.03 + 0.5, then 1.06 for its connection) and 22.6 MiB over HTTP/1.1 (20.8 + 1.7, then 0.06) while its body is read, and 10 MiB after: 26.4 MiB, since a tenant's server may answer either way.

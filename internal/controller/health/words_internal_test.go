@@ -5,53 +5,60 @@ package health
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"runtime"
 	"strconv"
 	"strings"
 	"testing"
 
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+type wordField struct {
+	name  string
+	words []string
+	read  func(token string) (string, error)
+}
+
+var wordFields = []wordField{
+	{"a condition's type", []string{string(corev1.NodeReady)}, func(token string) (string, error) {
+		c, err := nodeConditionOf([]byte(`{"type":` + token + `,"status":"True"}`))
+		return string(c.Type) + string(c.Status), err
+	}},
+	{"a Ready condition's status", []string{string(corev1.ConditionTrue), string(corev1.ConditionFalse), string(corev1.ConditionUnknown)}, func(token string) (string, error) {
+		c, err := nodeConditionOf([]byte(`{"type":"Ready","status":` + token + `}`))
+		return string(c.Status), err
+	}},
+	{"a Status's status", []string{metav1.StatusFailure}, func(token string) (string, error) {
+		s, err := statusFrom([]byte(`{"status":` + token + `}`))
+		return s.Status, err
+	}},
+	{"a Service's type", []string{string(corev1.ServiceTypeLoadBalancer)}, func(token string) (string, error) {
+		s, err := serviceOf([]byte(`{"metadata":{"name":"s"},"spec":{"type":` + token + `}}`))
+		return string(s.Spec.Type), err
+	}},
+	{"a PersistentVolume's reclaim policy", []string{string(corev1.PersistentVolumeReclaimDelete)}, func(token string) (string, error) {
+		v, err := persistentVolumeOf([]byte(`{"metadata":{"name":"v"},"spec":{"persistentVolumeReclaimPolicy":` + token + `}}`))
+		return string(v.Spec.PersistentVolumeReclaimPolicy), err
+	}},
+	{"a PersistentVolumeClaim's phase", []string{string(corev1.ClaimPending)}, func(token string) (string, error) {
+		c, err := persistentVolumeClaimOf([]byte(`{"metadata":{"name":"c"},"status":{"phase":` + token + `}}`))
+		return string(c.Status.Phase), err
+	}},
+	{"a webhook's failure policy", []string{string(admissionregistrationv1.Fail)}, func(token string) (string, error) {
+		w, err := webhookOf([]byte(`{"failurePolicy":` + token + `}`))
+		if w.FailurePolicy == nil {
+			return "<nil>", err
+		}
+		return string(*w.FailurePolicy), err
+	}},
+}
+
 func TestAFieldOnlyComparedWithAWordIsNoneOfTheWordsPastItsBoundAndNeitherAStopNorAFailedRead(t *testing.T) {
-	for _, c := range []struct {
-		name string
-		read func(token string) (string, error)
-	}{
-		{"a condition's type", func(token string) (string, error) {
-			c, err := nodeConditionOf([]byte(`{"type":` + token + `,"status":"True"}`))
-			return string(c.Type) + string(c.Status), err
-		}},
-		{"a Ready condition's status", func(token string) (string, error) {
-			c, err := nodeConditionOf([]byte(`{"type":"Ready","status":` + token + `}`))
-			return string(c.Status), err
-		}},
-		{"a Status's status", func(token string) (string, error) {
-			s, err := statusFrom([]byte(`{"status":` + token + `}`))
-			return s.Status, err
-		}},
-		{"a Service's type", func(token string) (string, error) {
-			s, err := serviceOf([]byte(`{"metadata":{"name":"s"},"spec":{"type":` + token + `}}`))
-			return string(s.Spec.Type), err
-		}},
-		{"a PersistentVolume's reclaim policy", func(token string) (string, error) {
-			v, err := persistentVolumeOf([]byte(`{"metadata":{"name":"v"},"spec":{"persistentVolumeReclaimPolicy":` + token + `}}`))
-			return string(v.Spec.PersistentVolumeReclaimPolicy), err
-		}},
-		{"a PersistentVolumeClaim's phase", func(token string) (string, error) {
-			c, err := persistentVolumeClaimOf([]byte(`{"metadata":{"name":"c"},"status":{"phase":` + token + `}}`))
-			return string(c.Status.Phase), err
-		}},
-		{"a webhook's failure policy", func(token string) (string, error) {
-			w, err := webhookOf([]byte(`{"failurePolicy":` + token + `}`))
-			if w.FailurePolicy == nil {
-				return "<nil>", err
-			}
-			return string(*w.FailurePolicy), err
-		}},
-	} {
+	for _, c := range wordFields {
 		for _, n := range []int{maxWordRaw, maxWordRaw + 1, 316, 1 << 20} {
 			t.Run(c.name+", "+strconv.Itoa(n)+" bytes", func(t *testing.T) {
 				want := ""
@@ -63,6 +70,46 @@ func TestAFieldOnlyComparedWithAWordIsNoneOfTheWordsPastItsBoundAndNeitherAStopN
 				}
 			})
 		}
+	}
+}
+
+func escapedFully(word string) string {
+	var out strings.Builder
+	for _, r := range word {
+		out.WriteString(`\u` + fmt.Sprintf("%04x", r))
+	}
+	return out.String()
+}
+
+func TestEveryWordHealthComparesIsReadAsItselfWithEveryCharacterEscapedAndMaxWordRawIsTheLongest(t *testing.T) {
+	longest := 0
+	for _, c := range wordFields {
+		for _, word := range c.words {
+			raw := escapedFully(word)
+			longest = max(longest, len(raw))
+			t.Run(c.name+", "+word, func(t *testing.T) {
+				want := word
+				if c.name == "a condition's type" {
+					want += "True"
+				}
+				if got, err := c.read(`"` + raw + `"`); err != nil || got != want {
+					t.Errorf("read %d raw bytes of %q as %q, error %v, want %q", len(raw), word, got, err, want)
+				}
+				if got, err := c.read(`"` + raw + `a"`); err != nil || got == want {
+					t.Errorf("read %q followed by a letter as %q, error %v, want none of the words", word, got, err)
+				}
+			})
+		}
+	}
+	if longest != maxWordRaw {
+		t.Errorf("the longest word Health compares is %d bytes with every character escaped, and maxWordRaw is %d", longest, maxWordRaw)
+	}
+	for _, c := range wordFields {
+		t.Run(c.name+", one byte past the bound", func(t *testing.T) {
+			if got, err := c.read(quotedOf(maxWordRaw + 1)); err != nil || (got != "" && got != "<nil>") {
+				t.Errorf("read %d bytes as %q, error %v, want none of the words", maxWordRaw+1, got, err)
+			}
+		})
 	}
 }
 
