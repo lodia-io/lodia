@@ -237,6 +237,7 @@ func TestAListStopsOnceItHasReadMoreThanMaxNodes(t *testing.T) {
 }
 
 func TestAResponseOverTheBoundStopsTheListAfterTheBytesOfThePagesItRead(t *testing.T) {
+	sizedForTheBounds(t)
 	const (
 		leasesStop = "a response listing the Leases of kube-node-lease is longer than 8388608 bytes"
 		nodesStop  = "a response listing the Nodes is longer than 8388608 bytes"
@@ -361,6 +362,7 @@ func TestAFailureOnALaterPageIsAFailedListAndNotAStop(t *testing.T) {
 }
 
 func TestAContinueTokenOverItsBoundEndsTheListWithoutBeingSentBack(t *testing.T) {
+	sizedForTheBounds(t)
 	const (
 		leasesStop = "metadata.continue in the Leases of kube-node-lease is longer than 4096 bytes"
 		nodesStop  = "metadata.continue in the Nodes is longer than 4096 bytes"

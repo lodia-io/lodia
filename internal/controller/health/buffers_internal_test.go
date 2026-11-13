@@ -56,6 +56,7 @@ func sum(values []int) (total int) {
 }
 
 func TestIoReadAllHoldsAtMostItsChunksAndTheSliceItReturnsAtTheCut(t *testing.T) {
+	sizedForTheBounds(t)
 	for _, c := range []struct {
 		name string
 		slow bool
