@@ -392,9 +392,9 @@ func TestANamespaceBeingDeletedIsTheCauseRefusedLooksForWhateverTheEscapes(t *te
 				}
 			}
 			_, tenant := servingEveryPath(t, amplifier{status: http.StatusForbidden, body: body})
-			_, err := tenant.getLease(t.Context(), "x")
+			_, err := tenant.createLease(t.Context(), []byte(`{}`))
 			if got := apistatus.Refused(err); got != c.refused {
-				t.Errorf("Refused is %t of the answer with the cause %q, want %t", got, c.cause, c.refused)
+				t.Errorf("Refused is %t of the answer to a create with the cause %q, want %t", got, c.cause, c.refused)
 			}
 		})
 	}
