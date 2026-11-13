@@ -17,6 +17,13 @@ import (
 	"go.lodia.io/lodia/internal/jsonscan"
 )
 
+func sizedForMaxKey(tb testing.TB) {
+	tb.Helper()
+	if jsonscan.MaxKey > 256 {
+		tb.Fatalf("jsonscan.MaxKey is %d, past the 256 that the inputs of this test are sized for", jsonscan.MaxKey)
+	}
+}
+
 type member struct {
 	raw, key string
 	value    []byte
@@ -136,6 +143,7 @@ func TestTheElementsOfAnArrayAreWhatEncodingJSONReadsOfIt(t *testing.T) {
 }
 
 func TestTheMembersOfAnObjectAreWhatEncodingJSONReadsOfIt(t *testing.T) {
+	sizedForMaxKey(t)
 	long := func(n int) string { return strings.Repeat(`\n`, n/2) }
 	for _, data := range []string{
 		`{}`,
@@ -265,6 +273,7 @@ func randomKey(rng *rand.Rand) string {
 }
 
 func TestTheMembersOfAnyValidObjectAreWhatEncodingJSONReadsOfIt(t *testing.T) {
+	sizedForMaxKey(t)
 	rng := rand.New(rand.NewPCG(3, 4))
 	spaces := [...]string{"", " ", "\n", "\t ", "\r\n"}
 	documents := 0
@@ -310,6 +319,7 @@ func TestTheElementsOfAnyValidArrayAreWhatEncodingJSONReadsOfIt(t *testing.T) {
 }
 
 func FuzzWalk(f *testing.F) {
+	sizedForMaxKey(f)
 	for _, seed := range []string{
 		`{}`, `{"a":1}`, `{"a":true,"b":null}`, `{ "a" : [ 1 , { "b" : "}" } ] }`,
 		`{"na\u006de":"x","a\"b":"\\"}`, "{\"\xff\":1}", `{"a":1,"a":2}`,

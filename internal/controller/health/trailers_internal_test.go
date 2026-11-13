@@ -92,6 +92,7 @@ func rawTenantClient(t *testing.T, url string) *http.Client {
 }
 
 func TestAnHTTP2AnswersAnnouncedNamesAndTrailersAreHeldBesideItsHeadersAndNoMoreThanTrailersHTTP2(t *testing.T) {
+	sizedForTheBounds(t)
 	headers := distinctNames(budgetHTTP2-200, 32)
 	announced := canonicalPrefixed(distinctNames(budgetHTTP2-200, 33), "y")
 	trailers := canonicalPrefixed(distinctNames(budgetHTTP2-200, 33), "z")

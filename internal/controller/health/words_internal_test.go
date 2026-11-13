@@ -62,6 +62,7 @@ var wordFields = []wordField{
 }
 
 func TestAFieldOnlyComparedWithAWordIsNoneOfTheWordsPastItsBoundAndNeitherAStopNorAFailedRead(t *testing.T) {
+	sizedForTheBounds(t)
 	for _, c := range wordFields {
 		for _, n := range []int{maxWordRaw, maxWordRaw + 1, 316, 1 << 20} {
 			t.Run(c.name+", "+strconv.Itoa(n)+" bytes", func(t *testing.T) {
@@ -86,6 +87,7 @@ func escapedFully(word string) string {
 }
 
 func TestEveryWordAWordFieldIsComparedWithIsReadAsItselfWithEveryCharacterEscapedAndMaxWordRawIsTheLongest(t *testing.T) {
+	sizedForTheBounds(t)
 	longest := 0
 	for _, c := range wordFields {
 		for _, word := range c.words {
@@ -241,6 +243,7 @@ func TestAFieldComparedOrSkippedIsNeverDecoded(t *testing.T) {
 }
 
 func TestAStopInsideAPageKeepsTheItemsBeforeItAtMostMaxNodes(t *testing.T) {
+	sizedForTheBounds(t)
 	long := strings.Repeat("a", maxNameRaw+1)
 	for _, c := range []struct {
 		name     string
@@ -321,6 +324,7 @@ func asTheTypedClientReadsIt(t *testing.T, body []byte) error {
 }
 
 func TestEveryReasonAnErrorIsComparedWithIsReadAsItselfWithEveryCharacterEscapedAndMaxReasonRawIsTheLongest(t *testing.T) {
+	sizedForTheBounds(t)
 	longest := 0
 	for _, reason := range comparedReasons {
 		raw := escapedFully(string(reason))
@@ -361,6 +365,7 @@ func TestEveryReasonAnErrorIsComparedWithIsReadAsItselfWithEveryCharacterEscaped
 }
 
 func TestANamespaceBeingDeletedIsTheCauseRefusedLooksForWhateverTheEscapes(t *testing.T) {
+	sizedForTheBounds(t)
 	cause := string(corev1.NamespaceTerminatingCause)
 	raw := escapedFully(cause)
 	if len(raw) > maxReasonRaw || len(raw) != 6*len(cause) {

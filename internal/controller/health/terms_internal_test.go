@@ -156,6 +156,7 @@ func TestEveryFigureOfTheDerivationIsTheSumOfItsTermsRoundedUp(t *testing.T) {
 }
 
 func TestAMapOfHeadersHoldsAtMostASlotOfMapSlotBytesForEachKeyAndOneTableMore(t *testing.T) {
+	sizedForTheBounds(t)
 	for _, keys := range []int{fieldsOfABudget, announcedNamesHTTP1} {
 		names := make([]string, keys)
 		for i := range names {

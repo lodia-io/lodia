@@ -355,6 +355,7 @@ func servingEveryPath(t *testing.T, c amplifier) (*NodesReconciler, *tenant) {
 }
 
 func TestAnAmplifyingResponseIsReadAsFarAsItsBoundsAllow(t *testing.T) {
+	sizedForTheBounds(t)
 	for _, c := range amplifiers(1 << 20) {
 		t.Run(c.name, func(t *testing.T) {
 			r, tenant := servingEveryPath(t, c)
@@ -366,6 +367,7 @@ func TestAnAmplifyingResponseIsReadAsFarAsItsBoundsAllow(t *testing.T) {
 }
 
 func TestMeasureTheLiveHeapOfEveryReadOverAnAmplifyingResponse(t *testing.T) {
+	sizedForTheBounds(t)
 	if os.Getenv(measureHeap) == "" {
 		t.Skipf("set %s to measure the heap of every read over an amplifying response", measureHeap)
 	}
@@ -639,6 +641,7 @@ func gzipStored(t *testing.T, data []byte) []byte {
 }
 
 func TestMeasureTheLiveHeapOfAReadWhoseAnswerIsCutAtTheBoundWithHeadersAtTheirs(t *testing.T) {
+	sizedForTheBounds(t)
 	if os.Getenv(measureHeap) == "" {
 		t.Skipf("set %s to measure the heap of a read whose answer is cut, with headers at their bound", measureHeap)
 	}

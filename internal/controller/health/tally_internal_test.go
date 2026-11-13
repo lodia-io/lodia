@@ -57,6 +57,7 @@ func nameOf(prefix string, i, length int) string {
 }
 
 func TestATallyCountsEveryObjectAndKeepsTheThreeThatSortFirst(t *testing.T) {
+	sizedForTheBounds(t)
 	for _, c := range []struct {
 		name  string
 		names []string
@@ -83,6 +84,7 @@ func TestATallyCountsEveryObjectAndKeepsTheThreeThatSortFirst(t *testing.T) {
 }
 
 func TestATallyJoinsTheNamespaceAndTheNameAndKeepsNoPartOverMaxName(t *testing.T) {
+	sizedForTheBounds(t)
 	long := strings.Repeat("a", maxName+1)
 	exact := strings.Repeat("b", maxName)
 	for _, c := range []struct {
@@ -109,6 +111,7 @@ func TestATallyJoinsTheNamespaceAndTheNameAndKeepsNoPartOverMaxName(t *testing.T
 }
 
 func TestTwoTalliesMergeIntoTheCountAndTheThreeThatSortFirstOfBoth(t *testing.T) {
+	sizedForTheBounds(t)
 	var validating, mutating tally
 	for _, name := range []string{"x", "y", "z", "w"} {
 		validating.add(name)
@@ -126,6 +129,7 @@ func TestTwoTalliesMergeIntoTheCountAndTheThreeThatSortFirstOfBoth(t *testing.T)
 }
 
 func TestATallyBuildsNoNameForAnObjectThatDoesNotQualify(t *testing.T) {
+	sizedForTheBounds(t)
 	const webhooks = 128_000
 	config := strings.Repeat("c", maxName)
 	names := make([]string, webhooks)
@@ -168,6 +172,7 @@ func emptyWebhooks(configurations, nameLen int) []byte {
 }
 
 func TestAPageOf128000EmptyWebhooksIsACountAndThreeNamesInEachKindOfConfiguration(t *testing.T) {
+	sizedForTheBounds(t)
 	const configurations = listLimit
 	for _, c := range []struct {
 		name    string
@@ -214,6 +219,7 @@ func objectsOf(order func(int) int, object func(i int) string) []byte {
 }
 
 func TestTheMessageOfAHeldRestoreStaysUnderTheSchemasBoundWhateverTheTenantAnswers(t *testing.T) {
+	sizedForTheBounds(t)
 	descending := func(i int) int { return listLimit - 1 - i }
 	for _, c := range []struct {
 		name    string
@@ -277,6 +283,7 @@ func TestTheMessageOfAHeldRestoreStaysUnderTheSchemasBoundWhateverTheTenantAnswe
 }
 
 func TestMeasureTheLiveHeapOfAPassOverAPageOf128000EmptyWebhooks(t *testing.T) {
+	sizedForTheBounds(t)
 	if os.Getenv(measureHeap) == "" {
 		t.Skipf("set %s to measure the heap of a held restore's pass over a page of empty webhooks", measureHeap)
 	}

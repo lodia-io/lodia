@@ -43,6 +43,7 @@ func integerOfLength(n int) string {
 }
 
 func TestEveryKeptFieldIsReadAtItsBoundAndOneBytePastItStopsOrFailsTheRead(t *testing.T) {
+	sizedForTheBounds(t)
 	const (
 		leases = "the Leases of kube-node-lease"
 		nodes  = "the Nodes"
@@ -127,6 +128,7 @@ func TestEveryKeptFieldIsReadAtItsBoundAndOneBytePastItStopsOrFailsTheRead(t *te
 }
 
 func TestAStatusIsReadAtTheBoundsOfItsFieldsAndNeverPastThem(t *testing.T) {
+	sizedForTheBounds(t)
 	status := func(reason, message, code, cause string) string {
 		return `{"kind":"Status","status":"Failure","reason":` + reason + `,"message":` + message + `,"code":` + code + `,"details":{"causes":[{"reason":` + cause + `}]}}`
 	}
@@ -180,6 +182,7 @@ func TestAStatusIsReadAtTheBoundsOfItsFieldsAndNeverPastThem(t *testing.T) {
 }
 
 func TestAKeyOfAnyKindIsSkippedAndKeepsNothingOfTheTenant(t *testing.T) {
+	sizedForTheBounds(t)
 	for _, c := range []struct {
 		name string
 		key  string
@@ -220,6 +223,7 @@ func TestAKeyOfAnotherCaseIsNotTheField(t *testing.T) {
 }
 
 func TestAnErrorLoggedByTheOperatorsLoggerCarriesNothingOfTheValue(t *testing.T) {
+	sizedForTheBounds(t)
 	const marker = "MARKER"
 	for _, c := range []struct {
 		name string

@@ -146,6 +146,7 @@ func memberOf(name, kubelet string, ready corev1.ConditionStatus) nodeObject {
 }
 
 func TestALeaseOrANodeNamedBeyondTheBoundIsNotKept(t *testing.T) {
+	sizedForTheBounds(t)
 	atBound := strings.Repeat("a", maxName)
 	lease := func(name string) leaseItem {
 		var l leaseItem
@@ -189,6 +190,7 @@ func TestAChangeOfAResourceVersionIsSeenWhateverItsFormat(t *testing.T) {
 }
 
 func TestASummaryKeepsNoKubeletVersionOrReadyStatusBeyondItsBound(t *testing.T) {
+	sizedForTheBounds(t)
 	atBound := "v1.30.0-" + strings.Repeat("x", maxKubeletVersion-len("v1.30.0-"))
 	got, _ := summarize([]nodeObject{
 		memberOf("long", "v1.30.0-"+strings.Repeat("x", 80000), corev1.ConditionTrue),
@@ -213,6 +215,7 @@ func TestASummaryKeepsNoKubeletVersionOrReadyStatusBeyondItsBound(t *testing.T) 
 }
 
 func TestAKubeletVersionBeyondTheBoundCountsLikeAnUnparsableOne(t *testing.T) {
+	sizedForTheBounds(t)
 	counted := func(kubelet string) *lodiav1alpha1.NodesStatus {
 		nodes, _ := summarize([]nodeObject{memberOf("a", kubelet, corev1.ConditionTrue), memberOf("b", "v1.34.2", corev1.ConditionTrue)})
 		return nodesStatus(nodes, "v1.35.1", false)

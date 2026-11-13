@@ -34,6 +34,7 @@ func TestAWebhookActsOutsideWhenItCallsAURLOrFailsClosed(t *testing.T) {
 }
 
 func TestEveryKindOfAHeldRestoreSaysOrMoreWhenItsPageHasANextAndOnlyThen(t *testing.T) {
+	sizedForTheBounds(t)
 	const (
 		nothing = "0 LoadBalancer Services; 0 PersistentVolumes with reclaimPolicy Delete; 0 pending PersistentVolumeClaims" +
 			"; 0 webhooks that call a URL or fail closed; 0 APIServices served by a Service; 0 CronJobs not suspended"

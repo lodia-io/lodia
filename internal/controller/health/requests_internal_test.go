@@ -101,6 +101,7 @@ func headOf(size int, body string) string {
 }
 
 func TestTheHeadersOfAResponseFailTheReadOnceTheyAreOneBytePastTheBound(t *testing.T) {
+	sizedForTheBounds(t)
 	const body = `{"metadata":{},"items":[]}`
 	for _, c := range []struct {
 		name string
@@ -136,6 +137,7 @@ func TestTheHeadersOfAResponseFailTheReadOnceTheyAreOneBytePastTheBound(t *testi
 }
 
 func TestTheHeadersOfAnHTTP2ResponseFailTheReadPastTheBound(t *testing.T) {
+	sizedForTheBounds(t)
 	for _, c := range []struct {
 		name string
 		pad  int

@@ -68,6 +68,7 @@ func leaseListOf(size int) []byte {
 }
 
 func TestAResponseLongerThanTheBoundFailsBeforeItIsDecoded(t *testing.T) {
+	sizedForTheBounds(t)
 	for _, c := range []struct {
 		name       string
 		size       int
@@ -206,6 +207,7 @@ func everyRead() []tenantRead {
 }
 
 func TestAResponseOverTheBoundIsAStopOrAFailedReadAndNeverDecodedWhateverItsStatus(t *testing.T) {
+	sizedForTheBounds(t)
 	for _, read := range everyRead() {
 		for _, status := range []struct {
 			code    int
@@ -247,6 +249,7 @@ func TestAResponseOverTheBoundIsAStopOrAFailedReadAndNeverDecodedWhateverItsStat
 }
 
 func TestAFailedRequestOfExactlyTheBoundIsStillItsStatus(t *testing.T) {
+	sizedForTheBounds(t)
 	body := failureOver(http.StatusConflict, "Conflict", "the object has been modified", maxResponseBytes)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -269,6 +272,7 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 func TestTheCapFailsABodyPastTheBoundAndSaysSoToTheRequestThatAsked(t *testing.T) {
+	sizedForTheBounds(t)
 	for _, c := range []struct {
 		name    string
 		size    int

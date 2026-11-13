@@ -316,6 +316,7 @@ func TestAPageOfMoreItemsThanItsLimitStopsItsListAtTheItemsItHolds(t *testing.T)
 }
 
 func TestANodeWithMoreConditionsThanTheBoundStopsTheListBeforeIt(t *testing.T) {
+	sizedForTheBounds(t)
 	for _, c := range []struct {
 		name       string
 		conditions int
@@ -457,6 +458,7 @@ func liveHeap() uint64 {
 }
 
 func TestWhatASamplingKeepsRestsOnItsOwnBoundsAndNotOnWhatTheServerAnswers(t *testing.T) {
+	sizedForTheBounds(t)
 	const maxNodes = 5000
 	for _, c := range []struct {
 		name                            string

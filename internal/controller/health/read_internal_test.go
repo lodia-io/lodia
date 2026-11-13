@@ -20,6 +20,7 @@ import (
 )
 
 func TestAnArrayKeepsItsBoundAndSaysThereWasMore(t *testing.T) {
+	sizedForTheBounds(t)
 	elements := func(n int) string {
 		return "[" + strings.TrimSuffix(strings.Repeat(`{"type":"Ready"},`, n), ",") + "]"
 	}

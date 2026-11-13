@@ -16,6 +16,7 @@ import (
 )
 
 func TestWhatHealthSendsBackOfATokenAndAVersionAtTheirRawBoundsIsPinned(t *testing.T) {
+	sizedForTheBounds(t)
 	for _, c := range []struct {
 		name         string
 		byte         string
