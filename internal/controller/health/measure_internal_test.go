@@ -5,7 +5,9 @@ package health
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -379,7 +381,7 @@ func TestMeasureTheLiveHeapOfEveryReadOverAnAmplifyingResponse(t *testing.T) {
 				if outcome != c.want {
 					t.Errorf("the read says %q, want %q", outcome, c.want)
 				}
-				if bound := readsBound(p, 1, len(c.body)); peaks.inUse > bound {
+				if bound := readsBound(p, 1); peaks.inUse > bound {
 					t.Errorf("the read held %.2f MiB of heap in use, more than the structural bound of %.2f MiB", mib(peaks.inUse), mib(bound))
 				}
 			})
@@ -394,20 +396,23 @@ const (
 
 	connectionHTTP1 = 64 << 10
 	connectionHTTP2 = mebibyte + 64<<10
+	readAllAtMost   = 204 * mebibyte / 10
 	streamBuffer    = 4<<20 + 32<<10
 	headersHTTP1    = 17 * mebibyte / 10
 	headersHTTP2    = mebibyte / 2
+	trailersHTTP2   = mebibyte / 2
+	gzipReader      = 50 << 10
 	keptAtMost      = 2 * mebibyte
 	summariesAtMost = 4 * mebibyte
 )
 
-func readsBound(p protocol, reads, body int) uint64 {
-	each := uint64(2.6*float64(body)) + headersHTTP1
+func readsBound(p protocol, reads int) uint64 {
+	each := uint64(readAllAtMost + headersHTTP1 + gzipReader)
 	connections := uint64(reads) * connectionHTTP1
 	if p.http2 {
-		each, connections = uint64(2.6*float64(body))+headersHTTP2+streamBuffer, connectionHTTP2
+		each, connections = readAllAtMost+headersHTTP2+trailersHTTP2+streamBuffer+gzipReader, connectionHTTP2
 	}
-	return max(uint64(reads)*each+connections, uint64(reads)*(uint64(body)+keptAtMost))
+	return max(uint64(reads)*each+connections, uint64(reads)*(maxResponseBytes+keptAtMost))
 }
 
 func servingTogether(t *testing.T, p protocol, answers map[string][]byte, requests int) *tenant {
@@ -485,7 +490,7 @@ func TestMeasureTheLiveHeapOfAPassWhoseEveryReadIsAtItsWorst(t *testing.T) {
 				padding(maxResponseBytes, `{"metadata":{},"items":[{"metadata":{"name":"n","resourceVersion":"1","annotations":{"pad":"`, `"}}}]}`),
 				padding(maxResponseBytes, `{"metadata":{},"items":[{"metadata":{"name":"n","annotations":{"pad":"`, `"}},"status":{"nodeInfo":{"kubeletVersion":"v1.35.0"},"conditions":[{"type":"Ready","status":"True"}]}}]}`))
 			r := &NodesReconciler{Timeout: 10 * time.Minute, MaxNodes: 5000}
-			measure(t, readsBound(p, 2, maxResponseBytes)+summariesAtMost, func() {
+			measure(t, readsBound(p, 2)+summariesAtMost, func() {
 				read, err := r.readLease(t.Context(), tenant)
 				if err != nil {
 					t.Error(err)
@@ -504,7 +509,7 @@ func TestMeasureTheLiveHeapOfAPassWhoseEveryReadIsAtItsWorst(t *testing.T) {
 		t.Run(p.name+", a pass of health over a held restore", func(t *testing.T) {
 			tenant := servingOver(t, p, answers, func() {})
 			var got string
-			measure(t, readsBound(p, len(answers), maxResponseBytes), func() { got = (&Reconciler{Timeout: 10 * time.Minute}).actedOn(t.Context(), tenant) })
+			measure(t, readsBound(p, len(answers)), func() { got = (&Reconciler{Timeout: 10 * time.Minute}).actedOn(t.Context(), tenant) })
 			if got != wantRestore {
 				t.Errorf("the pass says %q, want %q", got, wantRestore)
 			}
@@ -512,7 +517,7 @@ func TestMeasureTheLiveHeapOfAPassWhoseEveryReadIsAtItsWorst(t *testing.T) {
 		t.Run(p.name+", a pass of health over a held restore whose seven lists are answered together", func(t *testing.T) {
 			tenant := servingTogether(t, p, answers, len(answers))
 			var got string
-			measure(t, readsBound(p, len(answers), maxResponseBytes), func() { got = (&Reconciler{Timeout: 10 * time.Minute}).actedOn(t.Context(), tenant) })
+			measure(t, readsBound(p, len(answers)), func() { got = (&Reconciler{Timeout: 10 * time.Minute}).actedOn(t.Context(), tenant) })
 			if got != wantRestore {
 				t.Errorf("the pass says %q, want %q", got, wantRestore)
 			}
@@ -538,17 +543,37 @@ func distinctNames(budget, overhead int) []string {
 	}
 }
 
-func cutAnswers(t *testing.T, p protocol, body []byte, headers bool) *tenant {
+type cutShape struct{ headers, trailers, gzipped bool }
+
+func (c cutShape) String() string {
+	name := "an answer of 16 MiB"
+	if c.headers {
+		name += ", headers at their bound"
+	}
+	if c.trailers {
+		name += ", trailers at their bound"
+	}
+	if c.gzipped {
+		name += ", gzipped"
+	}
+	return name
+}
+
+func cutAnswers(t *testing.T, p protocol, body []byte, shape cutShape) *tenant {
 	t.Helper()
+	encoding := ""
+	if shape.gzipped {
+		encoding = "Content-Encoding: gzip\r\n"
+	}
 	if !p.http2 {
-		head := "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + strconv.Itoa(len(body)) + "\r\n"
-		if headers {
+		head := "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" + encoding + "Content-Length: " + strconv.Itoa(len(body)) + "\r\n"
+		if shape.headers {
 			for _, name := range distinctNames(maxResponseHeaderBytes-len(head)-len("\r\n"), len(":\r\n")) {
 				head += name + ":\r\n"
 			}
 		}
 		head += "\r\n"
-		if headers && len(head) != maxResponseHeaderBytes && len(head) < maxResponseHeaderBytes-8 {
+		if shape.headers && len(head) != maxResponseHeaderBytes && len(head) < maxResponseHeaderBytes-8 {
 			t.Fatalf("the head has %d bytes, want it to fill the bound of %d", len(head), maxResponseHeaderBytes)
 		}
 		url, _ := answerOnTCP(t, head, string(body))
@@ -559,34 +584,73 @@ func cutAnswers(t *testing.T, p protocol, body []byte, headers bool) *tenant {
 		}
 		return tenant
 	}
-	var names []string
-	if headers {
+	var names, trailers []string
+	if shape.headers {
 		names = distinctNames(maxResponseHeaderBytes+320-200, 32)
+	}
+	if shape.trailers {
+		for _, name := range distinctNames(maxResponseHeaderBytes+320-200, 33) {
+			trailers = append(trailers, "t"+name)
+		}
 	}
 	_, tenant := p.tenant(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		for _, name := range names {
 			w.Header()[textproto.CanonicalMIMEHeaderKey(name)] = []string{""}
 		}
 		w.Header().Set("Content-Type", "application/json")
+		if shape.gzipped {
+			w.Header().Set("Content-Encoding", "gzip")
+		}
 		_, _ = w.Write(body)
+		for _, name := range trailers {
+			w.Header()[http.TrailerPrefix+textproto.CanonicalMIMEHeaderKey(name)] = []string{""}
+		}
 	}))
 	return tenant
+}
+
+func gzipStored(t *testing.T, data []byte) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	writer, err := gzip.NewWriterLevel(&out, gzip.NoCompression)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
 }
 
 func TestMeasureTheLiveHeapOfAReadWhoseAnswerIsCutAtTheBoundWithHeadersAtTheirs(t *testing.T) {
 	if os.Getenv(measureHeap) == "" {
 		t.Skipf("set %s to measure the heap of a read whose answer is cut, with headers at their bound", measureHeap)
 	}
-	body := bytes.Repeat([]byte("a"), 2*maxResponseBytes)
+	plain := bytes.Repeat([]byte("a"), 2*maxResponseBytes)
+	random := make([]byte, 2*maxResponseBytes)
+	_, _ = rand.Read(random)
+	gzipped := gzipStored(t, random)
+	random = nil
+	const withTrailers = maxResponseBytes + 4<<20 - 64<<10
 	for _, p := range protocols {
-		for _, headers := range []bool{false, true} {
-			name := p.name + ", an answer of 16 MiB"
-			if headers {
-				name += ", headers at their bound"
-			}
-			t.Run(name, func(t *testing.T) {
-				tenant := cutAnswers(t, p, body, headers)
-				bound := readsBound(p, 1, maxResponseBytes)
+		shapes := []cutShape{{}, {headers: true}, {headers: true, gzipped: true}}
+		if p.http2 {
+			shapes = []cutShape{{}, {headers: true}, {headers: true, trailers: true}, {headers: true, trailers: true, gzipped: true}}
+		}
+		for _, shape := range shapes {
+			t.Run(p.name+", "+shape.String(), func(t *testing.T) {
+				body := plain
+				if shape.gzipped {
+					body = gzipped
+				}
+				if shape.trailers {
+					body = body[:withTrailers]
+				}
+				tenant := cutAnswers(t, p, body, shape)
+				bound := readsBound(p, 1)
 				var most heapPeaks
 				var over, wrong int
 				var outcome error
