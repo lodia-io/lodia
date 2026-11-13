@@ -85,7 +85,7 @@ func escapedFully(word string) string {
 	return out.String()
 }
 
-func TestEveryWordHealthComparesIsReadAsItselfWithEveryCharacterEscapedAndMaxWordRawIsTheLongest(t *testing.T) {
+func TestEveryWordAWordFieldIsComparedWithIsReadAsItselfWithEveryCharacterEscapedAndMaxWordRawIsTheLongest(t *testing.T) {
 	longest := 0
 	for _, c := range wordFields {
 		for _, word := range c.words {
@@ -106,7 +106,7 @@ func TestEveryWordHealthComparesIsReadAsItselfWithEveryCharacterEscapedAndMaxWor
 		}
 	}
 	if longest != maxWordRaw {
-		t.Errorf("the longest word Health compares is %d bytes with every character escaped, and maxWordRaw is %d", longest, maxWordRaw)
+		t.Errorf("the longest word a field read with jsonscan.Word is compared with is %d bytes with every character escaped, and maxWordRaw is %d", longest, maxWordRaw)
 	}
 	for _, c := range wordFields {
 		t.Run(c.name+", one byte past the bound", func(t *testing.T) {

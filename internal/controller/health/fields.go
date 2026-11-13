@@ -21,11 +21,12 @@ import (
 //     bytes, rounded up;
 //   - maxVersionRaw: a resourceVersion is a revision of at most 19 digits;
 //   - maxTimeRaw: a time with microseconds and an offset is 32 bytes;
-//   - maxWordRaw: LoadBalancer, the longest word Health compares, with every
-//     character escaped, 72 bytes; a field Health only compares with a word (a
-//     condition's type and status, a Status's status, a failure policy, a
-//     Service's type, a reclaim policy, a phase) is read with jsonscan.Word,
-//     and a token past this bound is none of the words;
+//   - maxWordRaw: LoadBalancer, the longest word that a field read with
+//     jsonscan.Word is compared with, with every character escaped, 72 bytes;
+//     such a field (a condition's type and status, a Status's status, a failure
+//     policy, a Service's type, a reclaim policy, a phase) is only compared with
+//     a word, and a token past this bound is none of the words; a reason is
+//     compared with longer words and has maxReasonRaw;
 //   - maxReasonRaw: RequestEntityTooLarge, the longest of the reasons that
 //     apierrors compares a Status's reason with, with every character
 //     escaped, 126 bytes; a cause's reason is compared with
