@@ -46,7 +46,6 @@ func TestStatusNodesFollowsTheKubeletsVersions(t *testing.T) {
 		{"a distribution's suffix", kubelets(corev1.ConditionTrue, "v1.34.2+k3s1", "v1.35.0-eks-5e0fdde"), "", status(2, 2, 0, "v1.34.2+k3s1")},
 		{"an unparsable version is left out", kubelets(corev1.ConditionTrue, "not a version", "v1.35.0", ""), "", status(3, 3, 0, "v1.35.0")},
 		{"no parsable version", kubelets(corev1.ConditionTrue, "garbage", ""), "", status(2, 2, 0, "")},
-		{"a version past the schema's bound", kubelets(corev1.ConditionTrue, "v1.30.0-"+strings.Repeat("x", maxKubeletVersion), "v1.35.0"), "", status(2, 2, 0, "v1.35.0")},
 		{"only the nodes Ready=True are ready", append(kubelets(corev1.ConditionTrue, "v1.35.0"), append(kubelets(corev1.ConditionFalse, "v1.35.0"), kubelets(corev1.ConditionUnknown, "v1.35.0")...)...), "", status(3, 1, 0, "v1.35.0")},
 		{"an older minor is outdated", kubelets(corev1.ConditionTrue, "v1.34.9", "v1.33.1"), "v1.35.1", status(2, 2, 2, "v1.33.1")},
 		{"the same minor is not, whatever its patch", kubelets(corev1.ConditionTrue, "v1.35.0", "v1.35.1", "v1.35.2"), "v1.35.1", status(3, 3, 0, "v1.35.0")},
@@ -135,5 +134,50 @@ func TestOnlyTheLeasesListedAreRemembered(t *testing.T) {
 	}
 	if again := seen(got, []leaseVersion{lease("a", "2"), lease("c", "7")}, later.Add(time.Minute)); again["a"].at != later.Add(time.Minute) || again["c"].at != later {
 		t.Errorf("a changed Lease and an unchanged one are seen at %+v", again)
+	}
+}
+
+func TestASummaryKeepsNoKubeletVersionOrReadyStatusBeyondItsBound(t *testing.T) {
+	member := func(name, kubelet string, ready corev1.ConditionStatus) corev1.Node {
+		n := corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: name}}
+		n.Status.NodeInfo.KubeletVersion = kubelet
+		n.Status.Conditions = []corev1.NodeCondition{{Type: corev1.NodeReady, Status: ready}}
+		return n
+	}
+	atBound := "v1.30.0-" + strings.Repeat("x", maxKubeletVersion-len("v1.30.0-"))
+	got := summarize([]corev1.Node{
+		member("long", "v1.30.0-"+strings.Repeat("x", 80000), corev1.ConditionTrue),
+		member("over", atBound+"x", corev1.ConditionTrue),
+		member("at", atBound, corev1.ConditionTrue),
+		member("odd", "v1.35.0", corev1.ConditionStatus(strings.Repeat("x", 80000))),
+		member("unknown", "v1.35.0", corev1.ConditionUnknown),
+		member("false", "v1.35.0", corev1.ConditionFalse),
+	})
+	for i, want := range []node{
+		{name: "long", ready: corev1.ConditionTrue},
+		{name: "over", ready: corev1.ConditionTrue},
+		{name: "at", ready: corev1.ConditionTrue, kubelet: atBound},
+		{name: "odd", kubelet: "v1.35.0"},
+		{name: "unknown", ready: corev1.ConditionUnknown, kubelet: "v1.35.0"},
+		{name: "false", ready: corev1.ConditionFalse, kubelet: "v1.35.0"},
+	} {
+		if got[i] != want {
+			t.Errorf("summary %d keeps a name of %d bytes, a Ready status of %d and a kubelet version of %d, want %q, %q and %q", i, len(got[i].name), len(got[i].ready), len(got[i].kubelet), want.name, want.ready, want.kubelet)
+		}
+	}
+}
+
+func TestAKubeletVersionBeyondTheBoundCountsLikeAnUnparsableOne(t *testing.T) {
+	counted := func(kubelet string) *lodiav1alpha1.NodesStatus {
+		nodes := []corev1.Node{{}, {}}
+		nodes[0].Status.NodeInfo.KubeletVersion = kubelet
+		nodes[1].Status.NodeInfo.KubeletVersion = "v1.34.2"
+		for i := range nodes {
+			nodes[i].Status.Conditions = []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}
+		}
+		return nodesStatus(summarize(nodes), "v1.35.1", false)
+	}
+	if long, unparsable := counted("v1.30.0-"+strings.Repeat("x", 80000)), counted("garbage"); !equality.Semantic.DeepEqual(long, unparsable) {
+		t.Errorf("a kubelet version of 80 KB counts %+v, one that does not parse %+v", *long, *unparsable)
 	}
 }

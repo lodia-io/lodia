@@ -108,7 +108,17 @@ type nodeCount struct {
 
 // sampling is what a pass remembers of one control plane; only that control
 // plane's pass touches it. Its leases and nodes hold at most MaxNodes entries
-// each (docs/review-checklist.md, item 10).
+// each, and each string in them is bounded (docs/review-checklist.md, item 10):
+// a Node's name and a Lease's name are DNS subdomains, which the API validates
+// to at most 253 bytes
+// (https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/apis/core/validation/validation.go#L300-L303,
+// https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/apis/coordination/validation/validation.go#L35-L36,
+// https://github.com/kubernetes/apimachinery/blob/v0.37.1/pkg/util/validation/validation.go#L190-L191),
+// and a resourceVersion is a revision the API server formats, at most 20 digits
+// (https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/storage/api_object_versioner.go#L38-L41).
+// The tenant's administrator writes a Node's kubelet version and Ready status
+// and the API validates neither, so summarize keeps no kubelet version over
+// maxKubeletVersion and no Ready status but the three a condition has.
 type sampling struct {
 	uid    types.UID
 	leases map[string]renewal
@@ -389,15 +399,28 @@ func seen(previous map[string]renewal, leases []leaseVersion, now time.Time) map
 func summarize(nodes []corev1.Node) []node {
 	out := make([]node, 0, len(nodes))
 	for _, n := range nodes {
-		summary := node{name: n.Name, kubelet: n.Status.NodeInfo.KubeletVersion}
+		summary := node{name: n.Name}
+		if len(n.Status.NodeInfo.KubeletVersion) <= maxKubeletVersion {
+			summary.kubelet = n.Status.NodeInfo.KubeletVersion
+		}
 		for _, c := range n.Status.Conditions {
 			if c.Type == corev1.NodeReady {
-				summary.ready, summary.since = c.Status, c.LastTransitionTime.Time
+				summary.ready, summary.since = conditionStatus(c.Status), c.LastTransitionTime.Time
 			}
 		}
 		out = append(out, summary)
 	}
 	return out
+}
+
+// conditionStatus is status when it is one of the three a condition has, else
+// none: any other counts as a node that is not Ready.
+func conditionStatus(status corev1.ConditionStatus) corev1.ConditionStatus {
+	switch status {
+	case corev1.ConditionTrue, corev1.ConditionFalse, corev1.ConditionUnknown:
+		return status
+	}
+	return ""
 }
 
 // counts says whether a node's silence counts: its kubelet reports it Ready,
@@ -469,9 +492,6 @@ func nodesStatus(nodes []node, running string, truncated bool) *lodiav1alpha1.No
 }
 
 func kubeletVersion(reported string) *version.Version {
-	if len(reported) > maxKubeletVersion {
-		return nil
-	}
 	v, err := version.ParseSemantic(reported)
 	if err != nil {
 		return nil
