@@ -526,8 +526,19 @@ A management cluster sized for N tenants needs the sum of their requests on its 
 
 The operator: two replicas; memory grows with the number of tenants it caches (label-scoped, metadata-only for Secrets); the phase 4 gate is 200 tenants under 2 GiB.
 A pass of `health-nodes` holds one decoded page of each list at a time: a page becomes its Lease versions or Node summaries before the next is read.
-With every page of Leases and of Nodes at the 8 MiB bound and the default `health.maxNodes`, one pass peaked between 97 and 116 MiB of heap in use over seven runs, 12 to 14.5 responses of 8 MiB.
-The 100 workers on such tenants at once need about 12 GiB.
+`TestMeasureTheLiveHeapOfPassesOverTenantsPaddedToTheirBounds` measures the live heap of passes over a tenant padded to its bounds, with every page of Leases and of Nodes just under 8 MiB and the default `health.maxNodes`, at `GOGC=5` so that the heap in use stays near the live heap:
+
+```
+LODIA_MEASURE_HEAP=1 KUBEBUILDER_ASSETS="$(go tool setup-envtest use 1.35.0 -p path)" go test -count=1 -v -run TestMeasureTheLiveHeap ./internal/controller/health/
+```
+
+| the answer | one pass, live heap | 100 passes at once on 100 tenants, live heap |
+|---|---|---|
+| JSON, which the clients ask for | about 30 MiB | about 1.9 GiB |
+| protobuf, which a server of the tenant's administrator can answer | about 36 MiB | about 2.0 GiB |
+
+At the default `GOGC` the heap in use may grow to about twice the live heap, so the operator's memory limit and `GOMEMLIMIT`, which are set when the operator is measured (`todo.md`, "From the chart"), start from about twice these figures.
+The figures hold for pages that carry the 500 Leases or 100 Nodes the request asks for; a response of 8 MiB with more and smaller objects decodes to more, and they do not bound it.
 Between passes it keeps at most `health.maxNodes` Lease versions and Node summaries per tenant ([review checklist](review-checklist.md), item 10).
 The tenant's administrator can have any server answer the lists, so the pass bounds every string it keeps itself:
 - a Lease or a Node named with more than 253 bytes is not kept; no real object has such a name ([validation.go](https://github.com/kubernetes/apimachinery/blob/v0.37.1/pkg/util/validation/validation.go#L190-L191));
