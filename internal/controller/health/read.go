@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"iter"
+	"strconv"
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -19,15 +19,11 @@ import (
 	"k8s.io/utils/ptr"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/jsonscan"
 )
 
-// Every response Health reads from a tenant decodes into a type below, which
-// holds only the fields the read uses: the administrator of a tenant can have
-// any server answer, so a response decodes into nothing the API defines
-// (docs/review-checklist.md, item 10). encoding/json skips a field a type lacks
-// without keeping it, and matches a key to the field of that name without
-// regard to case, so the fields carry no tags. An array decodes one element at
-// a time, up to the bound of its array type.
+// Every response Health reads from a tenant is projected onto the types below
+// by internal/jsonscan, which keeps only the fields the read uses.
 
 const (
 	coordinationPath = "/apis/coordination.k8s.io/v1/namespaces/"
@@ -42,134 +38,63 @@ const (
 	maxCauses     = 64
 )
 
-type bound interface{ most() int }
-
-type (
-	leaseItems     struct{}
-	nodeItems      struct{}
-	listItems      struct{}
-	nodeConditions struct{}
-	webhooks       struct{}
-	statusCauses   struct{}
-)
-
-func (leaseItems) most() int     { return leasePage }
-func (nodeItems) most() int      { return nodePage }
-func (listItems) most() int      { return listLimit }
-func (nodeConditions) most() int { return maxConditions }
-func (webhooks) most() int       { return maxWebhooks }
-func (statusCauses) most() int   { return maxCauses }
-
-// array is a JSON array decoded one element at a time. It keeps the first
-// B.most() elements, and over says there was one more, which it does not
-// decode: the elements after the bound cost a scan and nothing else.
-type array[T any, B bound] struct {
-	items []T
-	over  bool
-}
-
-func (a *array[T, B]) UnmarshalJSON(data []byte) error {
-	if string(data) == "null" {
-		return nil
-	}
-	if data[0] != '[' {
-		return errors.New("not an array")
-	}
-	var b B
-	for element := range elements(data) {
-		if len(a.items) == b.most() {
-			a.over = true
-			return nil
-		}
-		var item T
-		if err := json.Unmarshal(element, &item); err != nil {
-			return err
-		}
-		a.items = append(a.items, item)
-	}
-	return nil
-}
-
-// elements yields the elements of a JSON array that encoding/json has
-// validated, each a slice of it: a json.Decoder would copy each element into a
-// buffer of its own, and an element may be most of the response.
-func elements(array []byte) iter.Seq[[]byte] {
-	return func(yield func([]byte) bool) {
-		i := skipSpace(array, 1)
-		for array[i] != ']' {
-			end := endOfValue(array, i)
-			if !yield(array[i:end]) {
-				return
-			}
-			i = skipSpace(array, end)
-			if array[i] == ',' {
-				i = skipSpace(array, i+1)
-			}
-		}
-	}
-}
-
-func skipSpace(data []byte, i int) int {
-	for data[i] == ' ' || data[i] == '\t' || data[i] == '\n' || data[i] == '\r' {
-		i++
-	}
-	return i
-}
-
-func endOfValue(data []byte, i int) int {
-	switch data[i] {
-	case '"':
-		return endOfString(data, i)
-	case '{', '[':
-		for depth := 0; ; i++ {
-			switch data[i] {
-			case '"':
-				i = endOfString(data, i) - 1
-			case '{', '[':
-				depth++
-			case '}', ']':
-				if depth--; depth == 0 {
-					return i + 1
-				}
-			}
-		}
-	}
-	for data[i] != ',' && data[i] != ']' && data[i] != ' ' && data[i] != '\t' && data[i] != '\n' && data[i] != '\r' {
-		i++
-	}
-	return i
-}
-
-func endOfString(data []byte, i int) int {
-	for i++; data[i] != '"'; i++ {
-		if data[i] == '\\' {
-			i++
-		}
-	}
-	return i + 1
-}
-
-// present says only that a field is there and not null: the webhook's URL and
-// the APIService's Service are read for that, not for their content.
-type present bool
-
-func (p *present) UnmarshalJSON(data []byte) error {
-	*p = string(data) != "null"
-	return nil
-}
-
-type listOf[T any, B bound] struct {
+type listOf[T any] struct {
 	Metadata struct{ Continue string }
-	Items    array[T, B]
+	Items    array[T]
 }
 
 type (
-	leaseList = listOf[leaseItem, leaseItems]
-	nodeList  = listOf[nodeObject, nodeItems]
+	leaseList = listOf[leaseItem]
+	nodeList  = listOf[nodeObject]
 )
+
+func listFrom[T any](data []byte, most int, element func([]byte) (T, error)) (*listOf[T], error) {
+	out := new(listOf[T])
+	err := jsonscan.Walk("the list", data, func(key, value []byte) (err error) {
+		switch string(key) {
+		case "metadata":
+			err = jsonscan.Walk("metadata", value, func(key, value []byte) (err error) {
+				if string(key) == "continue" {
+					out.Metadata.Continue, err = jsonscan.Text("metadata.continue", value, maxContinue)
+				}
+				return err
+			})
+		case "items":
+			out.Items, err = arrayOf("items", value, most, element)
+		}
+		return err
+	})
+	return out, err
+}
+
+// metadata reads the name, the namespace and the resourceVersion of an object
+// into the places it is given, and skips the rest.
+func metadata(data []byte, name, namespace, resourceVersion *string) error {
+	return jsonscan.Walk("metadata", data, func(key, value []byte) (err error) {
+		switch {
+		case string(key) == "name" && name != nil:
+			*name, err = objectName("metadata.name", value)
+		case string(key) == "namespace" && namespace != nil:
+			*namespace, err = objectName("metadata.namespace", value)
+		case string(key) == "resourceVersion" && resourceVersion != nil:
+			*resourceVersion, err = jsonscan.Text("metadata.resourceVersion", value, maxVersionRaw)
+		}
+		return err
+	})
+}
 
 type leaseItem struct {
 	Metadata struct{ Name, ResourceVersion string }
+}
+
+func leaseItemOf(data []byte) (l leaseItem, err error) {
+	err = jsonscan.Walk("a Lease", data, func(key, value []byte) error {
+		if string(key) == "metadata" {
+			return metadata(value, &l.Metadata.Name, nil, &l.Metadata.ResourceVersion)
+		}
+		return nil
+	})
+	return l, err
 }
 
 type leaderLease struct {
@@ -182,18 +107,108 @@ type leaderLease struct {
 	}
 }
 
+func leaderLeaseFrom(data []byte) (*leaderLease, error) {
+	l := new(leaderLease)
+	err := jsonscan.Walk("the Lease", data, func(key, value []byte) (err error) {
+		switch string(key) {
+		case "metadata":
+			err = metadata(value, nil, nil, &l.Metadata.ResourceVersion)
+		case "spec":
+			err = jsonscan.Walk("spec", value, func(key, value []byte) (err error) {
+				switch string(key) {
+				case "holderIdentity":
+					l.Spec.HolderIdentity, err = optionalText("spec.holderIdentity", value, maxHolderRaw)
+				case "leaseDurationSeconds":
+					l.Spec.LeaseDurationSeconds, err = jsonscan.Integer("spec.leaseDurationSeconds", value, maxNumberRaw)
+				case "acquireTime":
+					l.Spec.AcquireTime, err = optionalMicroTime("spec.acquireTime", value)
+				case "renewTime":
+					l.Spec.RenewTime, err = optionalMicroTime("spec.renewTime", value)
+				case "leaseTransitions":
+					l.Spec.LeaseTransitions, err = jsonscan.Integer("spec.leaseTransitions", value, maxNumberRaw)
+				}
+				return err
+			})
+		}
+		return err
+	})
+	return l, err
+}
+
 type nodeObject struct {
 	Metadata struct{ Name string }
 	Status   struct {
 		NodeInfo   struct{ KubeletVersion string }
-		Conditions array[nodeCondition, nodeConditions]
+		Conditions array[nodeCondition]
 	}
+}
+
+func nodeOf(data []byte) (n nodeObject, err error) {
+	err = jsonscan.Walk("a Node", data, func(key, value []byte) (err error) {
+		switch string(key) {
+		case "metadata":
+			err = metadata(value, &n.Metadata.Name, nil, nil)
+		case "status":
+			err = jsonscan.Walk("status", value, func(key, value []byte) (err error) {
+				switch string(key) {
+				case "nodeInfo":
+					err = jsonscan.Walk("status.nodeInfo", value, func(key, value []byte) (err error) {
+						if string(key) == "kubeletVersion" {
+							var version string
+							version, err = jsonscan.Text("status.nodeInfo.kubeletVersion", value, maxKubeletRaw)
+							n.Status.NodeInfo.KubeletVersion = cut(version, maxKubeletVersion)
+						}
+						return err
+					})
+				case "conditions":
+					n.Status.Conditions, err = arrayOf("status.conditions", value, maxConditions, nodeConditionOf)
+				}
+				return err
+			})
+		}
+		return err
+	})
+	return n, err
 }
 
 type nodeCondition struct {
 	Type               corev1.NodeConditionType
 	Status             corev1.ConditionStatus
 	LastTransitionTime metav1.Time
+}
+
+// nodeConditionOf reads a Ready condition's status and time and keeps nothing
+// of a condition of another type, which it counts and no more.
+func nodeConditionOf(data []byte) (nodeCondition, error) {
+	var c nodeCondition
+	var status, since []byte
+	err := jsonscan.Walk("a condition", data, func(key, value []byte) (err error) {
+		switch string(key) {
+		case "type":
+			var s string
+			s, err = jsonscan.Text("status.conditions.type", value, maxWordRaw)
+			c.Type = corev1.NodeConditionType(s)
+		case "status":
+			status = value
+		case "lastTransitionTime":
+			since = value
+		}
+		return err
+	})
+	if err != nil || c.Type != corev1.NodeReady {
+		return nodeCondition{}, err
+	}
+	if status != nil {
+		var s string
+		if s, err = jsonscan.Text("status.conditions.status", status, maxWordRaw); err != nil {
+			return nodeCondition{}, err
+		}
+		c.Status = corev1.ConditionStatus(s)
+	}
+	if since != nil {
+		c.LastTransitionTime, err = timeOf[metav1.Time]("status.conditions.lastTransitionTime", since)
+	}
+	return c, err
 }
 
 type (
@@ -206,11 +221,51 @@ type service struct {
 	Spec     struct{ Type corev1.ServiceType }
 }
 
+func serviceOf(data []byte) (s service, err error) {
+	err = jsonscan.Walk("a Service", data, func(key, value []byte) error {
+		switch string(key) {
+		case "metadata":
+			return metadata(value, &s.Metadata.Name, &s.Metadata.Namespace, nil)
+		case "spec":
+			return jsonscan.Walk("spec", value, func(key, value []byte) (err error) {
+				if string(key) == "type" {
+					var t string
+					t, err = jsonscan.Text("spec.type", value, maxWordRaw)
+					s.Spec.Type = corev1.ServiceType(t)
+				}
+				return err
+			})
+		}
+		return nil
+	})
+	return s, err
+}
+
 type persistentVolume struct {
 	Metadata named
 	Spec     struct {
 		PersistentVolumeReclaimPolicy corev1.PersistentVolumeReclaimPolicy
 	}
+}
+
+func persistentVolumeOf(data []byte) (v persistentVolume, err error) {
+	err = jsonscan.Walk("a PersistentVolume", data, func(key, value []byte) error {
+		switch string(key) {
+		case "metadata":
+			return metadata(value, &v.Metadata.Name, nil, nil)
+		case "spec":
+			return jsonscan.Walk("spec", value, func(key, value []byte) (err error) {
+				if string(key) == "persistentVolumeReclaimPolicy" {
+					var p string
+					p, err = jsonscan.Text("spec.persistentVolumeReclaimPolicy", value, maxWordRaw)
+					v.Spec.PersistentVolumeReclaimPolicy = corev1.PersistentVolumeReclaimPolicy(p)
+				}
+				return err
+			})
+		}
+		return nil
+	})
+	return v, err
 }
 
 type persistentVolumeClaim struct {
@@ -220,15 +275,71 @@ type persistentVolumeClaim struct {
 	}
 }
 
+func persistentVolumeClaimOf(data []byte) (c persistentVolumeClaim, err error) {
+	err = jsonscan.Walk("a PersistentVolumeClaim", data, func(key, value []byte) error {
+		switch string(key) {
+		case "metadata":
+			return metadata(value, &c.Metadata.Name, &c.Metadata.Namespace, nil)
+		case "status":
+			return jsonscan.Walk("status", value, func(key, value []byte) (err error) {
+				if string(key) == "phase" {
+					var p string
+					p, err = jsonscan.Text("status.phase", value, maxWordRaw)
+					c.Status.Phase = corev1.PersistentVolumeClaimPhase(p)
+				}
+				return err
+			})
+		}
+		return nil
+	})
+	return c, err
+}
+
 type webhookConfiguration struct {
 	Metadata named
-	Webhooks array[webhook, webhooks]
+	Webhooks array[webhook]
+}
+
+func webhookConfigurationOf(data []byte) (c webhookConfiguration, err error) {
+	err = jsonscan.Walk("a webhook configuration", data, func(key, value []byte) (err error) {
+		switch string(key) {
+		case "metadata":
+			err = metadata(value, &c.Metadata.Name, nil, nil)
+		case "webhooks":
+			c.Webhooks, err = arrayOf("webhooks", value, maxWebhooks, webhookOf)
+		}
+		return err
+	})
+	return c, err
 }
 
 type webhook struct {
 	Name          string
 	ClientConfig  struct{ URL present }
 	FailurePolicy *admissionregistrationv1.FailurePolicyType
+}
+
+func webhookOf(data []byte) (w webhook, err error) {
+	err = jsonscan.Walk("a webhook", data, func(key, value []byte) (err error) {
+		switch string(key) {
+		case "name":
+			w.Name, err = objectName("webhooks.name", value)
+		case "clientConfig":
+			err = jsonscan.Walk("webhooks.clientConfig", value, func(key, value []byte) error {
+				if string(key) == "url" {
+					w.ClientConfig.URL.set(value)
+				}
+				return nil
+			})
+		case "failurePolicy":
+			var p *string
+			if p, err = optionalText("webhooks.failurePolicy", value, maxWordRaw); p != nil {
+				w.FailurePolicy = new(admissionregistrationv1.FailurePolicyType(*p))
+			}
+		}
+		return err
+	})
+	return w, err
 }
 
 // actsOutside says whether a webhook calls a URL, which may be outside the
@@ -243,9 +354,45 @@ type apiService struct {
 	Spec     struct{ Service present }
 }
 
+func apiServiceOf(data []byte) (a apiService, err error) {
+	err = jsonscan.Walk("an APIService", data, func(key, value []byte) error {
+		switch string(key) {
+		case "metadata":
+			return metadata(value, &a.Metadata.Name, nil, nil)
+		case "spec":
+			return jsonscan.Walk("spec", value, func(key, value []byte) error {
+				if string(key) == "service" {
+					a.Spec.Service.set(value)
+				}
+				return nil
+			})
+		}
+		return nil
+	})
+	return a, err
+}
+
 type cronJob struct {
 	Metadata namespaced
 	Spec     struct{ Suspend *bool }
+}
+
+func cronJobOf(data []byte) (j cronJob, err error) {
+	err = jsonscan.Walk("a CronJob", data, func(key, value []byte) error {
+		switch string(key) {
+		case "metadata":
+			return metadata(value, &j.Metadata.Name, &j.Metadata.Namespace, nil)
+		case "spec":
+			return jsonscan.Walk("spec", value, func(key, value []byte) (err error) {
+				if string(key) == "suspend" {
+					j.Spec.Suspend, err = jsonscan.Boolean("spec.suspend", value)
+				}
+				return err
+			})
+		}
+		return nil
+	})
+	return j, err
 }
 
 // tenant reads inside a control plane as Lodia, over one transport. The pages
@@ -260,25 +407,31 @@ type tenant struct {
 func newTenant(api *rest.RESTClient) *tenant {
 	t := &tenant{api: api}
 	t.leasePage = func(ctx context.Context, options metav1.ListOptions) (*leaseList, error) {
-		return readList[leaseItem, leaseItems](ctx, t, nodeLeasesPath, options)
+		return readList(ctx, t, nodeLeasesPath, options, leasePage, leaseItemOf)
 	}
 	t.nodePage = func(ctx context.Context, options metav1.ListOptions) (*nodeList, error) {
-		return readList[nodeObject, nodeItems](ctx, t, nodesPath, options)
+		return readList(ctx, t, nodesPath, options, nodePage, nodeOf)
 	}
 	return t
 }
 
-var errOverBound = errors.New("the response has more elements in an array than Health reads")
+var (
+	errOverBound = errors.New("the response has more elements in an array than Health reads")
+	errNotJSON   = errors.New("the response is not JSON")
 
-func readList[T any, B bound](ctx context.Context, t *tenant, path string, options metav1.ListOptions) (*listOf[T, B], error) {
+	// longMessage is a Status's message past maxMessageRaw.
+	longMessage = "the server's message is longer than " + strconv.Itoa(maxMessageRaw) + " bytes"
+)
+
+func readList[T any](ctx context.Context, t *tenant, path string, options metav1.ListOptions, most int, element func([]byte) (T, error)) (*listOf[T], error) {
 	body, err := t.do(ctx, t.api.Get().AbsPath(path).VersionedParams(&options, metav1.ParameterCodec))
-	return decode[listOf[T, B]](body, err)
+	return decode(body, err, func(body []byte) (*listOf[T], error) { return listFrom(body, most, element) })
 }
 
 // firstPage reads the first page of the list at path, which is no answer of a
 // kube-apiserver when it holds more than listLimit items.
-func firstPage[T any](ctx context.Context, t *tenant, path string) (*listOf[T, listItems], error) {
-	page, err := readList[T, listItems](ctx, t, path, metav1.ListOptions{Limit: listLimit})
+func firstPage[T any](ctx context.Context, t *tenant, path string, element func([]byte) (T, error)) (*listOf[T], error) {
+	page, err := readList(ctx, t, path, metav1.ListOptions{Limit: listLimit}, listLimit, element)
 	if err == nil && page.Items.over {
 		err = errOverBound
 	}
@@ -287,17 +440,17 @@ func firstPage[T any](ctx context.Context, t *tenant, path string) (*listOf[T, l
 
 func (t *tenant) getLease(ctx context.Context, name string) (*leaderLease, error) {
 	body, err := t.do(ctx, t.api.Get().AbsPath(coordinationPath, lodiav1alpha1.LeaderElectionNamespace, "leases", name))
-	return decode[leaderLease](body, err)
+	return decode(body, err, leaderLeaseFrom)
 }
 
 func (t *tenant) createLease(ctx context.Context, body []byte) (*leaderLease, error) {
 	answer, err := t.do(ctx, t.api.Post().AbsPath(coordinationPath, lodiav1alpha1.LeaderElectionNamespace, "leases").SetHeader("Content-Type", "application/json").Body(body))
-	return decode[leaderLease](answer, err)
+	return decode(answer, err, leaderLeaseFrom)
 }
 
 func (t *tenant) patchLease(ctx context.Context, patch []byte) (*leaderLease, error) {
 	body, err := t.do(ctx, t.api.Patch(types.MergePatchType).AbsPath(coordinationPath, lodiav1alpha1.LeaderElectionNamespace, "leases", lodiav1alpha1.ControllerManagerLease).Body(patch))
-	return decode[leaderLease](body, err)
+	return decode(body, err, leaderLeaseFrom)
 }
 
 // do sends the request, which asks for JSON, and returns the body of the
@@ -323,14 +476,62 @@ type statusBody struct {
 	Reason          metav1.StatusReason
 	Code            int32
 	Details         struct {
-		// A cause's type is under the key reason (metav1.StatusCause).
-		Causes array[struct{ Reason metav1.CauseType }, statusCauses]
+		Causes array[metav1.CauseType]
 	}
 }
 
+func statusFrom(data []byte) (s statusBody, err error) {
+	err = jsonscan.Walk("the Status", data, func(key, value []byte) (err error) {
+		switch string(key) {
+		case "status":
+			s.Status, err = jsonscan.Text("status", value, maxWordRaw)
+		case "message":
+			s.Message, err = jsonscan.Text("message", value, maxMessageRaw)
+			if tooLong := new(jsonscan.TooLong); errors.As(err, &tooLong) {
+				s.Message, err = longMessage, nil
+			}
+		case "reason":
+			var reason string
+			reason, err = jsonscan.Text("reason", value, maxWordRaw)
+			s.Reason = metav1.StatusReason(reason)
+		case "code":
+			var code *int32
+			if code, err = jsonscan.Integer("code", value, maxNumberRaw); code != nil {
+				s.Code = *code
+			}
+		case "details":
+			err = jsonscan.Walk("details", value, func(key, value []byte) (err error) {
+				if string(key) == "causes" {
+					s.Details.Causes, err = arrayOf("details.causes", value, maxCauses, causeOf)
+				}
+				return err
+			})
+		}
+		return err
+	})
+	return s, err
+}
+
+// causeOf reads a cause's type, which a kube-apiserver writes under the key
+// reason (metav1.StatusCause).
+func causeOf(data []byte) (c metav1.CauseType, err error) {
+	err = jsonscan.Walk("a cause", data, func(key, value []byte) (err error) {
+		if string(key) == "reason" {
+			var reason string
+			reason, err = jsonscan.Text("details.causes.reason", value, maxWordRaw)
+			c = metav1.CauseType(reason)
+		}
+		return err
+	})
+	return c, err
+}
+
 func failureOf(body []byte) (metav1.Status, bool) {
-	var s statusBody
-	if json.Unmarshal(body, &s) != nil || s.Status != metav1.StatusFailure {
+	if !json.Valid(body) {
+		return metav1.Status{}, false
+	}
+	s, err := statusFrom(body)
+	if err != nil || s.Status != metav1.StatusFailure {
 		return metav1.Status{}, false
 	}
 	failure := metav1.Status{Status: s.Status, Message: s.Message, Reason: s.Reason, Code: s.Code}
@@ -338,18 +539,23 @@ func failureOf(body []byte) (metav1.Status, bool) {
 		if failure.Details == nil {
 			failure.Details = &metav1.StatusDetails{}
 		}
-		failure.Details.Causes = append(failure.Details.Causes, metav1.StatusCause{Type: cause.Reason})
+		failure.Details.Causes = append(failure.Details.Causes, metav1.StatusCause{Type: cause})
 	}
 	return failure, true
 }
 
-func decode[T any](body []byte, err error) (*T, error) {
+// decode reads a body, which encoding/json validates and nothing decodes, with
+// the projection of its kind.
+func decode[T any](body []byte, err error, project func([]byte) (*T, error)) (*T, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := new(T)
-	if err := json.Unmarshal(body, out); err != nil {
-		return nil, fmt.Errorf("decode the response: %w", err)
+	if !json.Valid(body) {
+		return nil, errNotJSON
+	}
+	out, err := project(body)
+	if err != nil {
+		return nil, fmt.Errorf("read the response: %w", err)
 	}
 	return out, nil
 }

@@ -1176,35 +1176,52 @@ func TestAHoldOfNoCountedNodeAfterTheOwnerDeletesThemEndsByTheRelease(t *testing
 	}
 }
 
-func TestALongHolderIsCutInTheMessageAndTheStatusIsApplied(t *testing.T) {
+func TestAHolderAtItsBoundIsQuotedWholeAndOneBytePastItIsAFailedRead(t *testing.T) {
 	for name, letter := range map[string]string{"of ASCII": "h", "of two-byte characters": "я"} {
-		t.Run(name, func(t *testing.T) {
+		holder := strings.Repeat(letter, 512/len(letter))
+		t.Run(name+" at the bound", func(t *testing.T) {
 			h := sampling(t, "a", "b", "c")
 			h.at(0)
-			renew(t, lodiav1alpha1.ControllerManagerLease, strings.Repeat(letter, 40000), time.Now())
+			renew(t, lodiav1alpha1.ControllerManagerLease, holder, time.Now())
 			before := h.lease()
 			h.at(20)
-			h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonHoldBlocked, silent(3, 3)+atOrAbove+"60%, but "+strings.Repeat(letter, 1024)+" holds Lease kube-system/kube-controller-manager")
+			h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonHoldBlocked, silent(3, 3)+atOrAbove+"60%, but "+holder+" holds Lease kube-system/kube-controller-manager")
 			h.expectUntouched(before)
 			expectNodes(t, h.cp, nodesOf(3, 3, 0, "v1.35.0"))
 			h.r.Client = noControlPlaneWrite(t, k8s)
 			h.at(25)
 		})
+		t.Run(name+" one byte past it", func(t *testing.T) {
+			h := sampling(t, "a", "b", "c")
+			h.at(0)
+			renew(t, lodiav1alpha1.ControllerManagerLease, holder+"h", time.Now())
+			before := h.lease()
+			h.at(20)
+			h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonNotHeld, silent(0, 3))
+			h.expectUntouched(before)
+		})
 	}
 }
 
 func TestALongRefusalIsCutInTheMessageAndTheStatusIsApplied(t *testing.T) {
-	deny := func(w http.ResponseWriter, req *http.Request) bool {
-		if req.URL.Path != managerLease || req.Method != http.MethodPatch {
-			return false
+	denyWith := func(answer func(http.ResponseWriter)) func(http.ResponseWriter, *http.Request) bool {
+		return func(w http.ResponseWriter, req *http.Request) bool {
+			if req.URL.Path != managerLease || req.Method != http.MethodPatch {
+				return false
+			}
+			answer(w)
+			return true
 		}
-		refuseSaying(w, http.StatusForbidden, metav1.StatusReasonForbidden, strings.Repeat("d", 40000))
-		return true
 	}
+	text := denyWith(func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(strings.Repeat("d", 40000)))
+	})
 	denial := strings.Repeat("d", 1024)
 	t.Run("of a renewal", func(t *testing.T) {
 		h := holding(t, "a", "b", "c")
-		h.inject(deny)
+		h.inject(text)
 		h.at(25)
 		h.expectSilent("the API server refused the renewal of Lease kube-system/kube-controller-manager: " + denial)
 		h.expectHealth(3, 3)
@@ -1213,9 +1230,25 @@ func TestALongRefusalIsCutInTheMessageAndTheStatusIsApplied(t *testing.T) {
 		h := sampling(t, "a", "b", "c")
 		h.at(0)
 		renew(t, lodiav1alpha1.ControllerManagerLease, "", time.Now())
-		h.inject(deny)
+		h.inject(text)
 		h.at(20)
 		h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonHoldBlocked, "the API server refused the take of Lease kube-system/kube-controller-manager: "+denial)
+	})
+	t.Run("whose Status says more than 1,024 bytes", func(t *testing.T) {
+		h := holding(t, "a", "b", "c")
+		h.inject(denyWith(func(w http.ResponseWriter) {
+			refuseSaying(w, http.StatusForbidden, metav1.StatusReasonForbidden, strings.Repeat("d", 1025))
+		}))
+		h.at(25)
+		h.expectSilent("the API server refused the renewal of Lease kube-system/kube-controller-manager: the server's message is longer than 1024 bytes")
+	})
+	t.Run("whose Status says 1,024 bytes", func(t *testing.T) {
+		h := holding(t, "a", "b", "c")
+		h.inject(denyWith(func(w http.ResponseWriter) {
+			refuseSaying(w, http.StatusForbidden, metav1.StatusReasonForbidden, denial)
+		}))
+		h.at(25)
+		h.expectSilent("the API server refused the renewal of Lease kube-system/kube-controller-manager: " + denial)
 	})
 }
 

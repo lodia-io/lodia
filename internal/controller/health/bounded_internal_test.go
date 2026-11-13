@@ -145,7 +145,13 @@ func failureOver(code int, reason, message string, size int) []byte {
 	return []byte(status + strings.Repeat(" ", size-len(status)))
 }
 
-func TestAResponseOverTheBoundIsAStopOrAFailedReadAndNeverDecodedWhateverItsStatus(t *testing.T) {
+type tenantRead struct {
+	name string
+	do   func(context.Context, *tenant, *NodesReconciler) (string, error)
+	stop string
+}
+
+func everyRead() []tenantRead {
 	const (
 		leasesStop = "a response listing the Leases of kube-node-lease is longer than 8388608 bytes"
 		nodesStop  = "a response listing the Nodes is longer than 8388608 bytes"
@@ -153,11 +159,7 @@ func TestAResponseOverTheBoundIsAStopOrAFailedReadAndNeverDecodedWhateverItsStat
 	failed := func(read func(context.Context, *tenant) error) func(context.Context, *tenant, *NodesReconciler) (string, error) {
 		return func(ctx context.Context, t *tenant, _ *NodesReconciler) (string, error) { return "", read(ctx, t) }
 	}
-	for _, read := range []struct {
-		name string
-		do   func(context.Context, *tenant, *NodesReconciler) (string, error)
-		stop string
-	}{
+	return []tenantRead{
 		{"the Leases of kube-node-lease", func(ctx context.Context, t *tenant, r *NodesReconciler) (string, error) {
 			_, stop, err := r.listLeases(ctx, t)
 			return stop, err
@@ -173,15 +175,15 @@ func TestAResponseOverTheBoundIsAStopOrAFailedReadAndNeverDecodedWhateverItsStat
 		{"a Lease created", failed(func(ctx context.Context, t *tenant) error { _, err := t.createLease(ctx, []byte(`{}`)); return err }), ""},
 		{"a Lease patched", failed(func(ctx context.Context, t *tenant) error { _, err := t.patchLease(ctx, []byte(`{}`)); return err }), ""},
 		{"Services", failed(func(ctx context.Context, t *tenant) error {
-			_, err := firstPage[service](ctx, t, servicesPath)
+			_, err := firstPage(ctx, t, servicesPath, serviceOf)
 			return err
 		}), ""},
 		{"PersistentVolumes", failed(func(ctx context.Context, t *tenant) error {
-			_, err := firstPage[persistentVolume](ctx, t, volumesPath)
+			_, err := firstPage(ctx, t, volumesPath, persistentVolumeOf)
 			return err
 		}), ""},
 		{"PersistentVolumeClaims", failed(func(ctx context.Context, t *tenant) error {
-			_, err := firstPage[persistentVolumeClaim](ctx, t, claimsPath)
+			_, err := firstPage(ctx, t, claimsPath, persistentVolumeClaimOf)
 			return err
 		}), ""},
 		{"ValidatingWebhookConfigurations", failed(func(ctx context.Context, t *tenant) error {
@@ -193,14 +195,18 @@ func TestAResponseOverTheBoundIsAStopOrAFailedReadAndNeverDecodedWhateverItsStat
 			return err
 		}), ""},
 		{"APIServices", failed(func(ctx context.Context, t *tenant) error {
-			_, err := firstPage[apiService](ctx, t, apiServicePath)
+			_, err := firstPage(ctx, t, apiServicePath, apiServiceOf)
 			return err
 		}), ""},
 		{"CronJobs", failed(func(ctx context.Context, t *tenant) error {
-			_, err := firstPage[cronJob](ctx, t, cronJobsPath)
+			_, err := firstPage(ctx, t, cronJobsPath, cronJobOf)
 			return err
 		}), ""},
-	} {
+	}
+}
+
+func TestAResponseOverTheBoundIsAStopOrAFailedReadAndNeverDecodedWhateverItsStatus(t *testing.T) {
+	for _, read := range everyRead() {
 		for _, status := range []struct {
 			code    int
 			reason  string

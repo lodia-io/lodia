@@ -439,7 +439,7 @@ func (r *Reconciler) actedOn(ctx context.Context, t *tenant) string {
 		lists []list
 	}{
 		{"LoadBalancer Services", []list{{"Services", func(ctx context.Context) (tally, error) {
-			l, err := firstPage[service](ctx, t, "/api/v1/services")
+			l, err := firstPage(ctx, t, "/api/v1/services", serviceOf)
 			if err != nil {
 				return tally{}, err
 			}
@@ -452,7 +452,7 @@ func (r *Reconciler) actedOn(ctx context.Context, t *tenant) string {
 			return found, nil
 		}}}},
 		{"PersistentVolumes with reclaimPolicy Delete", []list{{"PersistentVolumes", func(ctx context.Context) (tally, error) {
-			l, err := firstPage[persistentVolume](ctx, t, "/api/v1/persistentvolumes")
+			l, err := firstPage(ctx, t, "/api/v1/persistentvolumes", persistentVolumeOf)
 			if err != nil {
 				return tally{}, err
 			}
@@ -465,7 +465,7 @@ func (r *Reconciler) actedOn(ctx context.Context, t *tenant) string {
 			return found, nil
 		}}}},
 		{"pending PersistentVolumeClaims", []list{{"PersistentVolumeClaims", func(ctx context.Context) (tally, error) {
-			l, err := firstPage[persistentVolumeClaim](ctx, t, "/api/v1/persistentvolumeclaims")
+			l, err := firstPage(ctx, t, "/api/v1/persistentvolumeclaims", persistentVolumeClaimOf)
 			if err != nil {
 				return tally{}, err
 			}
@@ -486,7 +486,7 @@ func (r *Reconciler) actedOn(ctx context.Context, t *tenant) string {
 			}},
 		}},
 		{"APIServices served by a Service", []list{{"APIServices", func(ctx context.Context) (tally, error) {
-			l, err := firstPage[apiService](ctx, t, "/apis/apiregistration.k8s.io/v1/apiservices")
+			l, err := firstPage(ctx, t, "/apis/apiregistration.k8s.io/v1/apiservices", apiServiceOf)
 			if err != nil {
 				return tally{}, err
 			}
@@ -499,7 +499,7 @@ func (r *Reconciler) actedOn(ctx context.Context, t *tenant) string {
 			return found, nil
 		}}}},
 		{"CronJobs not suspended", []list{{"CronJobs", func(ctx context.Context) (tally, error) {
-			l, err := firstPage[cronJob](ctx, t, "/apis/batch/v1/cronjobs")
+			l, err := firstPage(ctx, t, "/apis/batch/v1/cronjobs", cronJobOf)
 			if err != nil {
 				return tally{}, err
 			}
@@ -553,24 +553,30 @@ func (r *Reconciler) actedOn(ctx context.Context, t *tenant) string {
 }
 
 // outsideWebhooks counts the webhooks of one kind of configuration that act
-// outside the cluster; a configuration with more webhooks than maxWebhooks
-// makes the list fail.
+// outside the cluster, one configuration at a time, so that the list keeps no
+// webhook; a configuration with more webhooks than maxWebhooks makes the list
+// fail.
 func outsideWebhooks(ctx context.Context, t *tenant, path string) (tally, error) {
-	l, err := firstPage[webhookConfiguration](ctx, t, path)
-	if err != nil {
-		return tally{}, err
-	}
-	found := tally{more: l.Metadata.Continue != ""}
-	for _, c := range l.Items.items {
+	var found tally
+	page, err := firstPage(ctx, t, path, func(data []byte) (struct{}, error) {
+		c, err := webhookConfigurationOf(data)
+		if err != nil {
+			return struct{}{}, err
+		}
 		if c.Webhooks.over {
-			return tally{}, errOverBound
+			return struct{}{}, errOverBound
 		}
 		for _, w := range c.Webhooks.items {
 			if w.actsOutside() {
 				found.add(c.Metadata.Name, w.Name)
 			}
 		}
+		return struct{}{}, nil
+	})
+	if err != nil {
+		return tally{}, err
 	}
+	found.more = page.Metadata.Continue != ""
 	return found, nil
 }
 

@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -26,6 +27,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
+
+	"go.lodia.io/lodia/internal/jsonscan"
 )
 
 const (
@@ -185,6 +188,28 @@ func escaped(size int, head, tail string) []byte {
 	return []byte(head + strings.Repeat("a", size-len(head)-len(tail)-len(`\n`)) + `\n` + tail)
 }
 
+func zeros(size int, head, tail string) []byte {
+	return []byte(head + strings.Repeat("0", size-len(head)-len(tail)) + tail)
+}
+
+const unknownFailure = `an error on the server ("unknown") has prevented the request from succeeding`
+
+func invalid(size int, head, tail string) []byte {
+	return append(append([]byte(head), bytes.Repeat([]byte{0xff}, size-len(head)-len(tail))...), tail...)
+}
+
+func escapedKey(raw int) []byte {
+	return []byte(`{"metadata":{},"items":[],"` + strings.Repeat(`\n`, raw/2) + `":0}`)
+}
+
+func leaseStop(field string, most int) string {
+	return fmt.Sprintf("kept 0, stopped %q, error <nil>", fmt.Sprintf("%s in the Leases of kube-node-lease is longer than %d bytes", field, most))
+}
+
+func nodeStop(field string, most int) string {
+	return fmt.Sprintf("kept 0, stopped %q, error <nil>", fmt.Sprintf("%s in the Nodes is longer than %d bytes", field, most))
+}
+
 func padding(size int, head, tail string) []byte {
 	return []byte(head + strings.Repeat("a", size-len(head)-len(tail)) + tail)
 }
@@ -207,9 +232,9 @@ func readNodes(ctx context.Context, t *tenant, r *NodesReconciler) string {
 	return fmt.Sprintf("kept %d, stopped %q, error %v", len(kept), stop, err)
 }
 
-func readFirstPage[T any](path string) func(context.Context, *tenant, *NodesReconciler) string {
+func readFirstPage[T any](path string, element func([]byte) (T, error)) func(context.Context, *tenant, *NodesReconciler) string {
 	return func(ctx context.Context, t *tenant, _ *NodesReconciler) string {
-		_, err := firstPage[T](ctx, t, path)
+		_, err := firstPage(ctx, t, path, element)
 		return fmt.Sprintf("error %v", err)
 	}
 }
@@ -271,24 +296,45 @@ func amplifiers(size int) []amplifier {
 		{"a leader Lease with empty managedFields", 200, object(`,"spec":{"holderIdentity":"h"}`), readLeader, leaseHolder},
 		{"an answer to a patch with empty managedFields", 200, object(`,"spec":{"holderIdentity":"h"}`), readPatched, leaseHolder},
 		{"a failed request with empty causes", 500, fill(size, `{"kind":"Status","status":"Failure","reason":"InternalError","code":500,"message":"m","details":{"causes":[`, `]}}`), readLeader, "error m"},
-		{"a list of Services of empty items", 200, items, readFirstPage[service]("/api/v1/services"), overItems},
-		{"a list of PersistentVolumes of empty items", 200, items, readFirstPage[persistentVolume]("/api/v1/persistentvolumes"), overItems},
-		{"a list of PersistentVolumeClaims of empty items", 200, items, readFirstPage[persistentVolumeClaim]("/api/v1/persistentvolumeclaims"), overItems},
+		{"a list of Services of empty items", 200, items, readFirstPage("/api/v1/services", serviceOf), overItems},
+		{"a list of PersistentVolumes of empty items", 200, items, readFirstPage("/api/v1/persistentvolumes", persistentVolumeOf), overItems},
+		{"a list of PersistentVolumeClaims of empty items", 200, items, readFirstPage("/api/v1/persistentvolumeclaims", persistentVolumeClaimOf), overItems},
 		{"a list of webhook configurations of empty items", 200, items, readWebhooks("/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations"), "named 0, more false, " + overItems},
-		{"a webhook configuration with empty webhooks", 200, fill(size, `{"items":[{"metadata":{"name":"c"},"webhooks":[`, `]}]}`), readWebhooks("/apis/admissionregistration.k8s.io/v1/mutatingwebhookconfigurations"), "named 0, more false, " + overItems},
-		{"a list of APIServices of empty items", 200, items, readFirstPage[apiService]("/apis/apiregistration.k8s.io/v1/apiservices"), overItems},
-		{"a list of CronJobs of empty items", 200, items, readFirstPage[cronJob]("/apis/batch/v1/cronjobs"), overItems},
+		{"a webhook configuration with empty webhooks", 200, fill(size, `{"items":[{"metadata":{"name":"c"},"webhooks":[`, `]}]}`), readWebhooks("/apis/admissionregistration.k8s.io/v1/mutatingwebhookconfigurations"), "named 0, more false, error read the response: " + strings.TrimPrefix(overItems, "error ")},
+		{"a list of APIServices of empty items", 200, items, readFirstPage("/apis/apiregistration.k8s.io/v1/apiservices", apiServiceOf), overItems},
+		{"a list of CronJobs of empty items", 200, items, readFirstPage("/apis/batch/v1/cronjobs", cronJobOf), overItems},
 		{"a page of Leases of one Lease padded", 200, padding(size, `{"metadata":{},"items":[{"metadata":{"name":"n","resourceVersion":"1","annotations":{"pad":"`, `"}}}]}`), readLeases, `kept 1, stopped "", error <nil>`},
 		{"a leader Lease padded", 200, padding(size, `{"metadata":{"resourceVersion":"1","annotations":{"pad":"`, `"}},"spec":{"holderIdentity":"h"}}`), readLeader, leaseHolder},
-		{"a Lease with a resourceVersion of escapes", 200, escaped(size, `{"metadata":{},"items":[{"metadata":{"name":"n","resourceVersion":"`, `"}}]}`), readLeases, `kept 1, stopped "", error <nil>`},
-		{"a Lease named with escapes", 200, escaped(size, `{"metadata":{},"items":[{"metadata":{"name":"`, `"}}]}`), readLeases, `kept 0, stopped "", error <nil>`},
-		{"a page of Leases with a continue token of escapes", 200, escaped(size, `{"metadata":{"continue":"`, `"},"items":[]}`), readLeases, `kept 0, stopped "a page of the Leases of kube-node-lease carries a continue token longer than 4096 bytes", error <nil>`},
-		{"a Node with a kubelet version of escapes", 200, escaped(size, `{"metadata":{},"items":[{"metadata":{"name":"n"},"status":{"nodeInfo":{"kubeletVersion":"`, `"}}}]}`), readNodes, `kept 1, stopped "", error <nil>`},
-		{"a Node named with escapes", 200, escaped(size, `{"metadata":{},"items":[{"metadata":{"name":"`, `"}}]}`), readNodes, `kept 0, stopped "", error <nil>`},
-		{"a leader Lease with a holder of escapes", 200, escaped(size, `{"metadata":{"resourceVersion":"1"},"spec":{"holderIdentity":"`, `"}}`), readLeaderHolder, fmt.Sprintf("holder of %d bytes", size-len(`{"metadata":{"resourceVersion":"1"},"spec":{"holderIdentity":"`)-len(`"}}`)-1)},
-		{"a failed request with a message of escapes", 500, escaped(size, `{"kind":"Status","status":"Failure","reason":"InternalError","code":500,"message":"`, `"}`), readLeaderError, fmt.Sprintf("error of %d bytes", size-len(`{"kind":"Status","status":"Failure","reason":"InternalError","code":500,"message":"`)-len(`"}`)-1)},
-		{"a Service named with escapes", 200, escaped(size, `{"items":[{"metadata":{"namespace":"n","name":"`, `"},"spec":{"type":"LoadBalancer"}}]}`), readFirstPage[service]("/api/v1/services"), "error <nil>"},
-		{"a webhook configuration named with escapes", 200, escaped(size, `{"items":[{"webhooks":[{}],"metadata":{"name":"`, `"}}]}`), readWebhooks("/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations"), "named 1, more false, error <nil>"},
+		{"a Lease with a resourceVersion of escapes", 200, escaped(size, `{"metadata":{},"items":[{"metadata":{"name":"n","resourceVersion":"`, `"}}]}`), readLeases, leaseStop("metadata.resourceVersion", maxVersionRaw)},
+		{"a Lease named with escapes", 200, escaped(size, `{"metadata":{},"items":[{"metadata":{"name":"`, `"}}]}`), readLeases, leaseStop("metadata.name", maxNameRaw)},
+		{"a Lease named with invalid UTF-8", 200, invalid(size, `{"metadata":{},"items":[{"metadata":{"name":"`, `"}}]}`), readLeases, leaseStop("metadata.name", maxNameRaw)},
+		{"a page of Leases with a continue token of escapes", 200, escaped(size, `{"metadata":{"continue":"`, `"},"items":[]}`), readLeases, leaseStop("metadata.continue", maxContinue)},
+		{"a page of Leases with a continue token of invalid UTF-8", 200, invalid(size, `{"metadata":{"continue":"`, `"},"items":[]}`), readLeases, leaseStop("metadata.continue", maxContinue)},
+		{"a page of Leases with a key of invalid UTF-8", 200, invalid(size, `{"metadata":{},"items":[],"`, `":0}`), readLeases, `kept 0, stopped "", error <nil>`},
+		{"a page of Leases with a key of letters", 200, padding(size, `{"metadata":{},"items":[],"`, `":0}`), readLeases, `kept 0, stopped "", error <nil>`},
+		{"a page of Leases with a key of escapes", 200, escaped(size, `{"metadata":{},"items":[],"`, `":0}`), readLeases, `kept 0, stopped "", error <nil>`},
+		{"a page of Leases with a key of escapes at the bound", 200, escapedKey(jsonscan.MaxKey), readLeases, `kept 0, stopped "", error <nil>`},
+		{"a page of Leases of one Lease padded with invalid UTF-8", 200, invalid(size, `{"metadata":{},"items":[{"metadata":{"name":"n","resourceVersion":"1","annotations":{"pad":"`, `"}}}]}`), readLeases, `kept 1, stopped "", error <nil>`},
+		{"a Node with a kubelet version of escapes", 200, escaped(size, `{"metadata":{},"items":[{"metadata":{"name":"n"},"status":{"nodeInfo":{"kubeletVersion":"`, `"}}}]}`), readNodes, nodeStop("status.nodeInfo.kubeletVersion", maxKubeletRaw)},
+		{"a Node named with escapes", 200, escaped(size, `{"metadata":{},"items":[{"metadata":{"name":"`, `"}}]}`), readNodes, nodeStop("metadata.name", maxNameRaw)},
+		{"a Node named with invalid UTF-8", 200, invalid(size, `{"metadata":{},"items":[{"metadata":{"name":"`, `"}}]}`), readNodes, nodeStop("metadata.name", maxNameRaw)},
+		{"a Node whose condition has a time of letters", 200, padding(size, `{"metadata":{},"items":[{"metadata":{"name":"n"},"status":{"conditions":[{"type":"Ready","status":"True","lastTransitionTime":"`, `"}]}}]}`), readNodes, nodeStop("status.conditions.lastTransitionTime", maxTimeRaw)},
+		{"a Node whose condition has a time of invalid UTF-8", 200, invalid(size, `{"metadata":{},"items":[{"metadata":{"name":"n"},"status":{"conditions":[{"type":"Ready","status":"True","lastTransitionTime":"`, `"}]}}]}`), readNodes, nodeStop("status.conditions.lastTransitionTime", maxTimeRaw)},
+		{"a Node whose condition has a time that is no time", 200, []byte(`{"metadata":{},"items":[{"metadata":{"name":"n"},"status":{"conditions":[{"type":"Ready","status":"True","lastTransitionTime":"` + strings.Repeat("a", maxTimeRaw) + `"}]}}]}`), readNodes, `kept 0, stopped "", error read the response: status.conditions.lastTransitionTime is not a time`},
+		{"a Node whose other condition has a time of letters", 200, padding(size, `{"metadata":{},"items":[{"metadata":{"name":"n"},"status":{"conditions":[{"type":"MemoryPressure","status":"False","lastTransitionTime":"`, `"}]}}]}`), readNodes, `kept 1, stopped "", error <nil>`},
+		{"a leader Lease with a holder of escapes", 200, escaped(size, `{"metadata":{"resourceVersion":"1"},"spec":{"holderIdentity":"`, `"}}`), readLeaderHolder, "error read the response: spec.holderIdentity is longer than 512 bytes"},
+		{"a leader Lease with a holder of invalid UTF-8", 200, invalid(size, `{"metadata":{"resourceVersion":"1"},"spec":{"holderIdentity":"`, `"}}`), readLeaderHolder, "error read the response: spec.holderIdentity is longer than 512 bytes"},
+		{"a leader Lease with a resourceVersion of escapes", 200, escaped(size, `{"metadata":{"resourceVersion":"`, `"},"spec":{"holderIdentity":"h"}}`), readLeader, "error read the response: metadata.resourceVersion is longer than 64 bytes"},
+		{"a leader Lease with a renewTime of invalid UTF-8", 200, invalid(size, `{"metadata":{"resourceVersion":"1"},"spec":{"renewTime":"`, `"}}`), readLeader, "error read the response: spec.renewTime is longer than 64 bytes"},
+		{"a leader Lease with an acquireTime of letters", 200, []byte(`{"metadata":{"resourceVersion":"1"},"spec":{"acquireTime":"` + strings.Repeat("a", maxTimeRaw) + `"}}`), readLeader, "error read the response: spec.acquireTime is not a time"},
+		{"a leader Lease with a number of digits", 200, zeros(size, `{"metadata":{"resourceVersion":"1"},"spec":{"leaseTransitions":1`, `}}`), readLeader, "error read the response: spec.leaseTransitions is longer than 11 bytes"},
+		{"a failed request with a message of escapes", 500, escaped(size, `{"kind":"Status","status":"Failure","reason":"InternalError","code":500,"message":"`, `"}`), readLeaderError, "error of " + strconv.Itoa(len(longMessage)) + " bytes"},
+		{"a failed request with a message of invalid UTF-8", 500, invalid(size, `{"kind":"Status","status":"Failure","reason":"InternalError","code":500,"message":"`, `"}`), readLeaderError, "error of " + strconv.Itoa(len(longMessage)) + " bytes"},
+		{"a failed request with a reason of invalid UTF-8", 500, invalid(size, `{"kind":"Status","status":"Failure","code":500,"message":"m","reason":"`, `"}`), readLeaderError, "error of " + strconv.Itoa(len(unknownFailure)) + " bytes"},
+		{"a Service named with escapes", 200, escaped(size, `{"items":[{"metadata":{"namespace":"n","name":"`, `"},"spec":{"type":"LoadBalancer"}}]}`), readFirstPage("/api/v1/services", serviceOf), "error read the response: metadata.name is longer than 2048 bytes"},
+		{"a Service of a type of invalid UTF-8", 200, invalid(size, `{"items":[{"metadata":{"namespace":"n","name":"s"},"spec":{"type":"`, `"}}]}`), readFirstPage("/api/v1/services", serviceOf), "error read the response: spec.type is longer than 64 bytes"},
+		{"a webhook configuration named with escapes", 200, escaped(size, `{"items":[{"webhooks":[{}],"metadata":{"name":"`, `"}}]}`), readWebhooks("/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations"), "named 0, more false, error read the response: metadata.name is longer than 2048 bytes"},
+		{"a webhook with a failure policy of invalid UTF-8", 200, invalid(size, `{"items":[{"metadata":{"name":"c"},"webhooks":[{"failurePolicy":"`, `"}]}]}`), readWebhooks("/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations"), "named 0, more false, error read the response: webhooks.failurePolicy is longer than 64 bytes"},
 	}
 }
 
@@ -338,6 +384,19 @@ func TestMeasureTheLiveHeapOfEveryReadOverAnAmplifyingResponse(t *testing.T) {
 
 func mib(bytes uint64) float64 { return float64(bytes) / (1 << 20) }
 
+// keptAtMost is what the types of one read keep at the bounds of this package:
+// 500 Leases of a name of 253 bytes and a version of 192, 100 Nodes of 64
+// conditions, 500 objects of a held restore of two names and a word, with
+// room to spare.
+const keptAtMost = 1 << 20
+
+// structuralBound is the most live heap a read of a body holds: the body, the
+// chunks io.ReadAll keeps until it has copied them into the slice it returns,
+// 2.6 bodies in all, and what the types keep.
+func structuralBound(body int) uint64 {
+	return uint64(2.6*float64(body)) + keptAtMost
+}
+
 func servingTogether(t *testing.T, answers map[string][]byte, requests int) *tenant {
 	t.Helper()
 	var (
@@ -355,38 +414,86 @@ func servingTogether(t *testing.T, answers map[string][]byte, requests int) *ten
 	})
 }
 
+func servingAPass(t *testing.T, lease, leases, nodes []byte) *tenant {
+	t.Helper()
+	var (
+		mu      sync.Mutex
+		arrived int
+	)
+	together := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		body := lease
+		switch req.URL.Path {
+		case nodeLeasesPath, nodesPath:
+			body = nodes
+			if req.URL.Path == nodeLeasesPath {
+				body = leases
+			}
+			mu.Lock()
+			if arrived++; arrived == 2 {
+				close(together)
+			}
+			mu.Unlock()
+			<-together
+		}
+		if req.Method == http.MethodPatch {
+			_, _ = io.Copy(io.Discard, req.Body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(server.Close)
+	tenant, err := (&NodesReconciler{}).tenant(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfigFor(t, server.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tenant
+}
+
 func TestMeasureTheLiveHeapOfAPassWhoseEveryReadIsAtItsWorst(t *testing.T) {
 	if os.Getenv(measureHeap) == "" {
 		t.Skipf("set %s to measure the heap of a pass whose every read is at its worst", measureHeap)
 	}
-	measure := func(t *testing.T, run func()) {
+	measure := func(t *testing.T, reads int, run func()) {
 		begun := time.Now()
 		peaks := measureLiveHeap(run)
 		t.Logf("took %v: live heap %.1f MiB, %.2f responses of %d bytes; heap in use %.1f MiB",
 			time.Since(begun).Round(time.Millisecond), mib(peaks.live), float64(peaks.live)/maxResponseBytes, maxResponseBytes, mib(peaks.inUse))
+		if bound := uint64(reads) * structuralBound(maxResponseBytes); peaks.live > bound {
+			t.Errorf("the pass held %.1f MiB of live heap, more than the structural bound of %.1f MiB", mib(peaks.live), mib(bound))
+		}
 	}
-	t.Run("a pass of health-nodes", func(t *testing.T) {
-		tenant := servingPaths(t, map[string][]byte{
-			nodeLeasesPath: escaped(maxResponseBytes, `{"metadata":{},"items":[{"metadata":{"name":"n","resourceVersion":"`, `"}}]}`),
-			nodesPath:      escaped(maxResponseBytes, `{"metadata":{},"items":[{"metadata":{"name":"n"},"status":{"nodeInfo":{"kubeletVersion":"`, `"}}}]}`),
-		})
+	t.Run("a pass of health-nodes: the Lease, both lists together and the renewal", func(t *testing.T) {
+		tenant := servingAPass(t,
+			padding(maxResponseBytes, `{"metadata":{"resourceVersion":"1","annotations":{"pad":"`, `"}},"spec":{"holderIdentity":"lodia"}}`),
+			padding(maxResponseBytes, `{"metadata":{},"items":[{"metadata":{"name":"n","resourceVersion":"1","annotations":{"pad":"`, `"}}}]}`),
+			padding(maxResponseBytes, `{"metadata":{},"items":[{"metadata":{"name":"n","annotations":{"pad":"`, `"}},"status":{"nodeInfo":{"kubeletVersion":"v1.35.0"},"conditions":[{"type":"Ready","status":"True"}]}}]}`))
 		r := &NodesReconciler{Timeout: 10 * time.Minute, MaxNodes: 5000}
-		measure(t, func() {
+		measure(t, 2, func() {
+			read, err := r.readLease(t.Context(), tenant)
+			if err != nil {
+				t.Error(err)
+				return
+			}
 			if _, err := r.list(t.Context(), tenant, &sampling{}, time.Now()); err != nil {
+				t.Error(err)
+			}
+			if _, err := r.writeLease(t.Context(), tenant, read, renewLease, time.Now()); err != nil {
 				t.Error(err)
 			}
 		})
 	})
-	body := escaped(maxResponseBytes, `{"metadata":{},"items":[{"webhooks":[{}],"spec":{"type":"LoadBalancer"},"metadata":{"namespace":"n","name":"`, `"}}]}`)
+	body := padding(maxResponseBytes, `{"items":[{"webhooks":[{}],"spec":{"type":"LoadBalancer"},"metadata":{"namespace":"n","name":"x"},"pad":"`, `"}]}`)
 	answers := map[string][]byte{
 		servicesPath: body, volumesPath: body, claimsPath: body, validatingPath: body, mutatingPath: body, apiServicePath: body, cronJobsPath: body,
 	}
 	t.Run("a pass of health over a held restore", func(t *testing.T) {
 		tenant := servingPaths(t, answers)
-		measure(t, func() { _ = (&Reconciler{Timeout: 10 * time.Minute}).actedOn(t.Context(), tenant) })
+		measure(t, len(answers), func() { _ = (&Reconciler{Timeout: 10 * time.Minute}).actedOn(t.Context(), tenant) })
 	})
 	t.Run("a pass of health over a held restore whose seven lists are answered together", func(t *testing.T) {
 		tenant := servingTogether(t, answers, len(answers))
-		measure(t, func() { _ = (&Reconciler{Timeout: 10 * time.Minute}).actedOn(t.Context(), tenant) })
+		measure(t, len(answers), func() { _ = (&Reconciler{Timeout: 10 * time.Minute}).actedOn(t.Context(), tenant) })
 	})
 }

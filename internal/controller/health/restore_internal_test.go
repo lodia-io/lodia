@@ -4,7 +4,6 @@
 package health
 
 import (
-	"encoding/json"
 	"path"
 	"strings"
 	"testing"
@@ -24,8 +23,8 @@ func TestAWebhookActsOutsideWhenItCallsAURLOrFailsClosed(t *testing.T) {
 		{"a URL that fails open", `{"clientConfig":{"url":"https://hooks.example.com/validate"},"failurePolicy":"Ignore"}`, true},
 		{"a null URL that fails open", `{"clientConfig":{"url":null,"service":{"name":"hooks"}},"failurePolicy":"Ignore"}`, false},
 	} {
-		var w webhook
-		if err := json.Unmarshal([]byte(row.webhook), &w); err != nil {
+		w, err := webhookOf([]byte(row.webhook))
+		if err != nil {
 			t.Fatal(err)
 		}
 		if got := w.actsOutside(); got != row.want {

@@ -361,8 +361,8 @@ func TestAFailureOnALaterPageIsAFailedListAndNotAStop(t *testing.T) {
 
 func TestAContinueTokenOverItsBoundEndsTheListWithoutBeingSentBack(t *testing.T) {
 	const (
-		leasesStop = "a page of the Leases of kube-node-lease carries a continue token longer than 4096 bytes"
-		nodesStop  = "a page of the Nodes carries a continue token longer than 4096 bytes"
+		leasesStop = "metadata.continue in the Leases of kube-node-lease is longer than 4096 bytes"
+		nodesStop  = "metadata.continue in the Nodes is longer than 4096 bytes"
 	)
 	for _, c := range []struct {
 		name                string
@@ -374,11 +374,11 @@ func TestAContinueTokenOverItsBoundEndsTheListWithoutBeingSentBack(t *testing.T)
 		sent                int
 	}{
 		{"Leases with a token of 4,096 bytes", nodeLeasesPath, 4096, 3, 1, 1201, 3, "", 4096},
-		{"Leases with a token of 4,097 bytes", nodeLeasesPath, 4097, 1, 1, 500, 3, leasesStop, 0},
-		{"Leases with a token of 4 MiB", nodeLeasesPath, maxResponseBytes / 2, 1, 1, 500, 3, leasesStop, 0},
+		{"Leases with a token of 4,097 bytes", nodeLeasesPath, 4097, 1, 1, 0, 3, leasesStop, 0},
+		{"Leases with a token of 4 MiB", nodeLeasesPath, maxResponseBytes / 2, 1, 1, 0, 3, leasesStop, 0},
 		{"Nodes with a token of 4,096 bytes", nodesPath, 4096, 1, 3, 3, 250, "", 4096},
-		{"Nodes with a token of 4,097 bytes", nodesPath, 4097, 1, 1, 3, 100, nodesStop, 0},
-		{"Nodes with a token of 4 MiB", nodesPath, maxResponseBytes / 2, 1, 1, 3, 100, nodesStop, 0},
+		{"Nodes with a token of 4,097 bytes", nodesPath, 4097, 1, 1, 3, 0, nodesStop, 0},
+		{"Nodes with a token of 4 MiB", nodesPath, maxResponseBytes / 2, 1, 1, 3, 0, nodesStop, 0},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := &servedTenant{leases: 1201, nodes: 250, tokenLen: map[string]int{c.path: c.tokenLen}}
@@ -464,9 +464,9 @@ func TestWhatASamplingKeepsRestsOnItsOwnBoundsAndNotOnWhatTheServerAnswers(t *te
 		kept                            int
 		retainedUnder                   int64
 	}{
-		{"names and versions of 8,000 bytes", 8000, 8000, 8000, 0, 1 << 20},
+		{"names at the raw bound", maxNameRaw, maxVersionRaw, maxKubeletRaw, 0, 1 << 20},
 		{"names of 254 bytes", maxName + 1, 1, 1, 0, 1 << 20},
-		{"names of 253 bytes and versions of 8,000", maxName, 8000, maxKubeletVersion, maxNodes, 5 << 20},
+		{"names of 253 bytes, versions at the raw bound and kubelet versions of 65 to 384 bytes", maxName, maxVersionRaw, maxKubeletRaw, maxNodes, 5 << 20},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := &servedTenant{leases: maxNodes, nodes: maxNodes, nameLen: c.nameLen, versionLen: c.versionLen, kubeletLen: c.kubeletLen}

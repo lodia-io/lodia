@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/jsonscan"
 	"go.lodia.io/lodia/internal/live"
 	"go.lodia.io/lodia/internal/statusapply"
 )
@@ -350,7 +351,6 @@ const (
 	tooManyPages
 	pageTooLong
 	nodeTooLarge
-	tokenTooLong
 )
 
 // maxPages is the most pages a list of most items reads: the pages that most
@@ -363,8 +363,8 @@ func maxPages(size int64, most int) int {
 // listPages reads a list a page at a time and keeps its first most items. It
 // asks for no page after one that left it with more than most items, nor after
 // maxPages(size, most) pages, whatever they hold: the administrator of a tenant
-// can serve the list from a server whose pages hold no item. It sends back no
-// token longer than maxContinue. The page function reduces a decoded page to
+// can serve the list from a server whose pages hold no item. The page function
+// reads no token longer than maxContinue. It reduces a decoded page to
 // what the pass keeps, so that no list holds more than one decoded page, and
 // says whether the page ended the list early: it held more than size items, or
 // an object of it was too large. It does not use pager.ListPager, whose
@@ -386,8 +386,6 @@ func listPages[T any](ctx context.Context, size int64, most int, page func(conte
 			return kept, end, nil
 		case next == "":
 			return kept, listEnded, nil
-		case len(next) > maxContinue:
-			return kept, tokenTooLong, nil
 		case read == maxPages(size, most):
 			return kept, tooManyPages, nil
 		}
@@ -397,13 +395,16 @@ func listPages[T any](ctx context.Context, size int64, most int, page func(conte
 
 // stop says why the list of what ended before its end, or nothing when it did
 // not: it saw more than MaxNodes items or a page after maxPages, a page of more
-// than size items, a Node of more than maxConditions conditions or a token
-// longer than maxContinue, or a response of it was longer than maxResponseBytes.
+// than size items or a Node of more than maxConditions conditions, a field
+// longer than its bound, or a response of it was longer than maxResponseBytes.
 // Another failure of the list is returned.
 func (r *NodesReconciler) stop(what string, size int64, end listEnd, err error) (string, error) {
+	var tooLong *jsonscan.TooLong
 	switch {
 	case errors.Is(err, errResponseTooLong):
 		return "a response listing the " + what + " is longer than " + strconv.Itoa(maxResponseBytes) + " bytes", nil
+	case errors.As(err, &tooLong):
+		return tooLong.Field + " in the " + what + " is longer than " + strconv.Itoa(tooLong.Most) + " bytes", nil
 	case err != nil:
 		return "", err
 	case end == tooManyItems:
@@ -414,8 +415,6 @@ func (r *NodesReconciler) stop(what string, size int64, end listEnd, err error) 
 		return "a page of the " + what + " holds more than " + strconv.FormatInt(size, 10) + " items", nil
 	case end == nodeTooLarge:
 		return "a Node has more than " + strconv.Itoa(maxConditions) + " conditions", nil
-	case end == tokenTooLong:
-		return "a page of the " + what + " carries a continue token longer than " + strconv.Itoa(maxContinue) + " bytes", nil
 	}
 	return "", nil
 }
