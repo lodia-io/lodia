@@ -6,6 +6,7 @@ package health_test
 import (
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -699,6 +700,71 @@ func TestAListOfAHeldRestoreBeyondItsBoundsIsAKindThatCouldNotBeListed(t *testin
 			reconcile(t, &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, Period: time.Hour, Timeout: 2 * time.Second, Clock: clock.RealClock{}}, cp)
 			if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonAwaitingRelease, actsOn+c.want); err != nil {
 				t.Error(err)
+			}
+		})
+	}
+}
+
+const partialLeaseList = `{"metadata":{},"items":[{"metadata":{"name":"a","resourceVersion":"1","annotations":{"pad":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`
+
+func sendPartially(w http.ResponseWriter, code int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(len(partialLeaseList)+1000))
+	w.WriteHeader(code)
+	_, _ = io.WriteString(w, partialLeaseList)
+	w.(http.Flusher).Flush()
+}
+
+func endConnection(t *testing.T, w http.ResponseWriter, reset bool) {
+	t.Helper()
+	conn, _, err := w.(http.Hijacker).Hijack()
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	if reset {
+		_ = conn.(*net.TCPConn).SetLinger(0)
+	}
+	_ = conn.Close()
+}
+
+func TestRow9ALeaseListCutShortIsAFailedReadAndNeverAStop(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		cut  func(*testing.T, http.ResponseWriter, *http.Request)
+	}{
+		{"a body shorter than its length", func(t *testing.T, w http.ResponseWriter, _ *http.Request) {
+			sendPartially(w, http.StatusOK)
+			endConnection(t, w, false)
+		}},
+		{"a connection reset", func(t *testing.T, w http.ResponseWriter, _ *http.Request) {
+			sendPartially(w, http.StatusOK)
+			endConnection(t, w, true)
+		}},
+		{"a body cut by the deadline", func(_ *testing.T, w http.ResponseWriter, req *http.Request) {
+			sendPartially(w, http.StatusOK)
+			<-req.Context().Done()
+		}},
+		{"a 500 cut by the deadline", func(_ *testing.T, w http.ResponseWriter, req *http.Request) {
+			sendPartially(w, http.StatusInternalServerError)
+			<-req.Context().Done()
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := holding(t, "a", "b", "c")
+			h.r.Timeout = 300 * time.Millisecond
+			h.inject(func(w http.ResponseWriter, req *http.Request) bool {
+				if req.URL.Path != leaseListPath || req.Method != http.MethodGet {
+					return false
+				}
+				c.cut(t, w, req)
+				return true
+			})
+			h.at(25)
+			h.expectSilent(failedLeaseMsg + keepsHolding)
+			h.renewedAt(25)
+			if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+				t.Fatalf("a Lease list that failed to the end of its body left holder %q", holder)
 			}
 		})
 	}
