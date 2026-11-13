@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -308,24 +307,32 @@ func (r *NodesReconciler) list(ctx context.Context, tenant *tenant, s *sampling,
 }
 
 func (r *NodesReconciler) listLeases(ctx context.Context, tenant *tenant) ([]leaseVersion, string, error) {
-	leases, end, err := listPages(ctx, leasePage, r.MaxNodes, func(ctx context.Context, options metav1.ListOptions) ([]leaseVersion, string, error) {
-		page, err := tenant.nodeLeases.List(ctx, options)
+	leases, end, err := listPages(ctx, leasePage, r.MaxNodes, func(ctx context.Context, options metav1.ListOptions) ([]leaseVersion, string, listEnd, error) {
+		page, err := tenant.leasePage(ctx, options)
 		if err != nil {
-			return nil, "", err
+			return nil, "", listEnded, err
 		}
-		return leaseVersions(page.Items), page.Continue, nil
+		end := listEnded
+		if page.Items.over {
+			end = pageTooLong
+		}
+		return leaseVersions(page.Items.items), page.Metadata.Continue, end, nil
 	})
 	stop, err := r.stop("Leases of "+corev1.NamespaceNodeLease, leasePage, end, err)
 	return leases, stop, err
 }
 
 func (r *NodesReconciler) listNodes(ctx context.Context, tenant *tenant) ([]node, string, error) {
-	nodes, end, err := listPages(ctx, nodePage, r.MaxNodes, func(ctx context.Context, options metav1.ListOptions) ([]node, string, error) {
-		page, err := tenant.core.Nodes().List(ctx, options)
+	nodes, end, err := listPages(ctx, nodePage, r.MaxNodes, func(ctx context.Context, options metav1.ListOptions) ([]node, string, listEnd, error) {
+		page, err := tenant.nodePage(ctx, options)
 		if err != nil {
-			return nil, "", err
+			return nil, "", listEnded, err
 		}
-		return summarize(page.Items), page.Continue, nil
+		nodes, end := summarize(page.Items.items)
+		if end == listEnded && page.Items.over {
+			end = pageTooLong
+		}
+		return nodes, page.Metadata.Continue, end, nil
 	})
 	stop, err := r.stop("Nodes", nodePage, end, err)
 	return nodes, stop, err
@@ -337,6 +344,8 @@ const (
 	listEnded listEnd = iota
 	tooManyItems
 	tooManyPages
+	pageTooLong
+	nodeTooLarge
 )
 
 // maxPages is the most pages a list of most items reads: the pages that most
@@ -351,25 +360,27 @@ func maxPages(size int64, most int) int {
 // maxPages(size, most) pages, whatever they hold: the administrator of a tenant
 // can serve the list from a server whose pages hold no item. The page
 // function reduces a decoded page to what the pass keeps, so that no list holds
-// more than one decoded page. It does not use pager.ListPager, whose
-// EachListItem fetches the next page while it hands over the last, even
-// unbuffered. Every page is a consistent read: the list sets no resourceVersion.
-// A failure returns the items of the pages before it.
-func listPages[T any](ctx context.Context, size int64, most int, page func(context.Context, metav1.ListOptions) ([]T, string, error)) (kept []T, end listEnd, err error) {
+// more than one decoded page, and says whether the page ended the list early:
+// it held more than size items, or an object of it was too large. It does not use
+// pager.ListPager, whose EachListItem fetches the next page while it hands over
+// the last, even unbuffered. Every page is a consistent read: the list sets no
+// resourceVersion. A failure returns the items of the pages before it.
+func listPages[T any](ctx context.Context, size int64, most int, page func(context.Context, metav1.ListOptions) ([]T, string, listEnd, error)) (kept []T, end listEnd, err error) {
 	options := metav1.ListOptions{Limit: size}
 	for read := 1; ; read++ {
-		items, next, err := page(ctx, options)
+		items, next, end, err := page(ctx, options)
 		if err != nil {
 			return kept, listEnded, err
 		}
 		kept = append(kept, items...)
-		if len(kept) > most {
+		switch {
+		case len(kept) > most:
 			return kept[:most], tooManyItems, nil
-		}
-		if next == "" {
+		case end != listEnded:
+			return kept, end, nil
+		case next == "":
 			return kept, listEnded, nil
-		}
-		if read == maxPages(size, most) {
+		case read == maxPages(size, most):
 			return kept, tooManyPages, nil
 		}
 		options.Continue = next
@@ -377,7 +388,8 @@ func listPages[T any](ctx context.Context, size int64, most int, page func(conte
 }
 
 // stop says why the list of what ended before its end, or nothing when it did
-// not: it saw more than MaxNodes items or a page after maxPages, or a response
+// not: it saw more than MaxNodes items or a page after maxPages, a page of more
+// than size items or a Node of more than maxConditions conditions, or a response
 // of it was longer than maxResponseBytes. Another failure of the list is
 // returned.
 func (r *NodesReconciler) stop(what string, size int64, end listEnd, err error) (string, error) {
@@ -390,6 +402,10 @@ func (r *NodesReconciler) stop(what string, size int64, end listEnd, err error) 
 		return "more than " + strconv.Itoa(r.MaxNodes) + " " + what + " (health.maxNodes)", nil
 	case end == tooManyPages:
 		return "more than " + strconv.Itoa(maxPages(size, r.MaxNodes)) + " pages of " + what + " (health.maxNodes)", nil
+	case end == pageTooLong:
+		return "a page of the " + what + " holds more than " + strconv.FormatInt(size, 10) + " items", nil
+	case end == nodeTooLarge:
+		return "a Node has more than " + strconv.Itoa(maxConditions) + " conditions", nil
 	}
 	return "", nil
 }
@@ -407,11 +423,11 @@ func versionOf(resourceVersion string) uint64 {
 	return h.Sum64()
 }
 
-func leaseVersions(leases []coordinationv1.Lease) []leaseVersion {
+func leaseVersions(leases []leaseItem) []leaseVersion {
 	out := make([]leaseVersion, 0, len(leases))
 	for _, l := range leases {
-		if len(l.Name) <= maxName {
-			out = append(out, leaseVersion{l.Name, versionOf(l.ResourceVersion)})
+		if len(l.Metadata.Name) <= maxName {
+			out = append(out, leaseVersion{l.Metadata.Name, versionOf(l.Metadata.ResourceVersion)})
 		}
 	}
 	return out
@@ -431,24 +447,29 @@ func seen(previous map[string]renewal, leases []leaseVersion, now time.Time) map
 	return next
 }
 
-func summarize(nodes []corev1.Node) []node {
+// summarize keeps the Nodes before the first that has more than maxConditions
+// conditions, and says by nodeTooLarge that it stopped there.
+func summarize(nodes []nodeObject) ([]node, listEnd) {
 	out := make([]node, 0, len(nodes))
 	for _, n := range nodes {
-		if len(n.Name) > maxName {
+		if n.Status.Conditions.over {
+			return out, nodeTooLarge
+		}
+		if len(n.Metadata.Name) > maxName {
 			continue
 		}
-		summary := node{name: n.Name}
+		summary := node{name: n.Metadata.Name}
 		if len(n.Status.NodeInfo.KubeletVersion) <= maxKubeletVersion {
 			summary.kubelet = n.Status.NodeInfo.KubeletVersion
 		}
-		for _, c := range n.Status.Conditions {
+		for _, c := range n.Status.Conditions.items {
 			if c.Type == corev1.NodeReady {
 				summary.ready, summary.since = conditionStatus(c.Status), c.LastTransitionTime.Time
 			}
 		}
 		out = append(out, summary)
 	}
-	return out
+	return out, listEnded
 }
 
 // conditionStatus is status when it is one of the three a condition has, else

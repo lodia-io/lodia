@@ -200,7 +200,7 @@ The in-cluster path, `kubernetes` to `240.0.0.1:6443` through `apiserver-proxy` 
 | `AccessReady=False`, `Binding` | the tenant has not confirmed the bindings since its API server became ready; Lodia's log has the error. PKI recreates a missing binding with a ten-minute `system:masters` certificate on its next pass |
 | `ControllerManagerHeld=True`, `NodesSilent`; in the tenant, the Lease `kube-system/kube-controller-manager` held by `lodia` | most nodes cannot reach the API, so Health holds the controller manager; the [nodes cut off](#nodes-cut-off-from-the-control-plane) runbook |
 | `ControllerManagerHeld=False`, `HoldBlocked` | nodes are silent but another component holds the controller manager's lease, named in the message, for example a platform's own watchdog; run one of the two, not both; or the API server refused the write that would take it, which the message names |
-| `ControllerManagerHeld=False`, `TooManyNodes` | the tenant has more Nodes, or more Leases of `kube-node-lease`, than `health.maxNodes`, or a list of them went on past the pages that many fill and one more, or a response listing them was over 8 MiB, which the message names; Lodia counts none of its nodes, holds no controller manager there and ends a hold at once, and `status.nodes.truncated` is true when it is the Nodes that stopped. A tenant's administrator creates both kinds of object freely: have the surplus deleted, or raise `health.maxNodes` ([settings](README.md#installation)) |
+| `ControllerManagerHeld=False`, `TooManyNodes` | the tenant has more Nodes, or more Leases of `kube-node-lease`, than `health.maxNodes`, or a list of them went on past the pages that many fill and one more, or held a page of more items than its limit, or a Node of more than 64 conditions, or a response listing them was over 8 MiB, which the message names; Lodia counts none of its nodes, holds no controller manager there and ends a hold at once, and `status.nodes.truncated` is true when it is the Nodes that stopped. A tenant's administrator creates both kinds of object freely: have the surplus deleted, or raise `health.maxNodes` ([settings](README.md#installation)) |
 | `Reachable=False`, `ExternalProbeFailed`, nodes fine | the path the message names: `api:` the public endpoint, its Gateway listener, route status and certificate SANs; `tunnel:` the route `<cp>-tunnel`, the sidecar's `<cp>-tunnel-serving` and the tunnel's client certificate; `konnectivity:` the route `<cp>-konnectivity` and `<cp>-konnectivity-server`'s SANs |
 | `Reachable=False`, `InternalProbeFailed` | the API server does not answer `/readyz` on its in-namespace Service `<cp>-kube-apiserver`, or the operator cannot reach it; `APIServerReady`, the Deployment `<cp>-kube-apiserver` and the Service's endpoints say which |
 | Many tenants turn `Reachable=False` slowly behind one Gateway | a Gateway that does not answer costs a Health worker the 5-second timeout for each tenant, per pass, so a round over `N` tenants takes `N`/2 seconds on the 10 workers and the third failed probe comes that much later; tenants on other Gateways wait behind them, as they did behind a hung public probe |
@@ -213,7 +213,7 @@ The in-cluster path, `kubernetes` to `240.0.0.1:6443` through `apiserver-proxy` 
 | `Progressing=False`, `WaitingForWindow` for long | expected outside the window; `status.target.scheduledFor` says when it opens, and `lodia.io/maintain-requested-at` rolls the change now |
 | `Progressing=False`, `FleetLimit` | other tenants hold the slots, `status.maintenance.slotSince` present whatever their `Progressing` reads: they roll a change Lodia started, or failed one and keep their slots ([`LodiaMaintenanceHalted`](#lodiamaintenancehalted)); the operator's `fleet.maxConcurrentRollouts`; `status.target.scheduledFor` orders the queue |
 | `Progressing=False`, `Failed` or `MaintenanceFailed` | `status.kubernetes.upgrade.step` and `Progressing`'s message; the [stuck upgrade](#stuck-upgrade) runbook |
-| `Progressing=False`, `WaitingForNodes` | a kubelet more than three minors older than the next minor, `status.nodes.oldestKubelet`: upgrade the nodes first; or `status.nodes` is absent, Health not having listed the nodes yet: the tenant's API must answer it; or `status.nodes.truncated`, the message saying the nodes could not all be counted: the tenant's Nodes are beyond `health.maxNodes` or a response of 8 MiB, as `ControllerManagerHeld` `TooManyNodes` says |
+| `Progressing=False`, `WaitingForNodes` | a kubelet more than three minors older than the next minor, `status.nodes.oldestKubelet`: upgrade the nodes first; or `status.nodes` is absent, Health not having listed the nodes yet: the tenant's API must answer it; or `status.nodes.truncated`, the message saying the nodes could not all be counted: the tenant's Nodes are beyond `health.maxNodes`, a page, a Node's conditions or a response of 8 MiB, as `ControllerManagerHeld` `TooManyNodes` says |
 | `Progressing=False`, `TimeZoneUnsupported` | `spec.maintenance.window.timeZone` is not in the operator's zone database; an IANA name such as `Europe/Berlin` |
 | `Progressing=True`, `LatestGenerationNotObserved` for more than a few seconds | the first condition the message names has not taken the change up: its reason, which describes the generation it names, when it is False; otherwise what its controller waits on ([independent-controllers](decisions/independent-controllers.md)), which `Ready` names when that is not True; its controller's log (`controller="<name>"`) only when that is True at the new generation |
 | Nothing changes after editing `spec` | `metadata.generation` against `status.observedGeneration`; `spec.paused`; the operator's leader and its logs |
@@ -525,20 +525,36 @@ A highly available control plane's target stays 1.5 CPU and 2.5 GiB.
 A management cluster sized for N tenants needs the sum of their requests on its control plane nodes, plus room to roll one Deployment of every tenant (the fleet limit bounds how many roll at once), plus etcd volumes with low fsync latency.
 
 The operator: two replicas; memory grows with the number of tenants it caches (label-scoped, metadata-only for Secrets); the phase 4 gate is 200 tenants under 2 GiB.
+Health reads a tenant as JSON and decodes every response, in both reconcilers, into types of its own that hold only the fields it uses: the tenant's administrator can have any server answer, an APIService naming a Service of their own included, so a response decodes into nothing the API defines ([review checklist](review-checklist.md), item 10).
+The decoder skips a field the types lack and reads each array it keeps one element at a time, up to a bound:
+
+| array | bound | past it |
+|---|---|---|
+| items of the Leases of `kube-node-lease` | 500, the page's `limit` | the list stops, `TooManyNodes` |
+| items of the Nodes | 100, the page's `limit` | the list stops, `TooManyNodes` |
+| a Node's `conditions` | 64 | the list stops at that Node, `TooManyNodes` |
+| items of each list of a held restore | 500 | the kind could not be listed |
+| a webhook configuration's `webhooks` | 256 | the kind could not be listed |
+| a failed request's `details.causes` | 64 | the rest are dropped |
+
 A pass of `health-nodes` holds one decoded page of each list at a time: a page becomes its Lease versions or Node summaries before the next is read.
-`TestMeasureTheLiveHeapOfPassesOverTenantsPaddedToTheirBounds` measures the live heap of passes over a tenant padded to its bounds, with every page of Leases and of Nodes just under 8 MiB and the default `health.maxNodes`, at `GOGC=5` so that the heap in use stays near the live heap:
+`TestMeasureTheLiveHeapOfEveryReadOverAResponseOfNothingButEmptyObjects` answers each read with a response of 8 MiB that is nothing but empty objects where the read decodes an array, and `TestMeasureTheLiveHeapOfPassesOverTenantsPaddedToTheirBounds` runs passes over a tenant padded to its bounds, with every page of Leases and of Nodes just under 8 MiB and the default `health.maxNodes`, one pass and 100 at once on 100 tenants.
+Both measure the live heap at `GOGC=5`, so that the heap in use stays near the live heap, and run only when `LODIA_MEASURE_HEAP` is set:
 
 ```
 LODIA_MEASURE_HEAP=1 KUBEBUILDER_ASSETS="$(go tool setup-envtest use 1.35.0 -p path)" go test -count=1 -v -run TestMeasureTheLiveHeap ./internal/controller/health/
 ```
 
-| the answer | one pass, live heap | 100 passes at once on 100 tenants, live heap |
-|---|---|---|
-| JSON, which the clients ask for | about 30 MiB | about 1.9 GiB |
-| protobuf, which a server of the tenant's administrator can answer | about 36 MiB | about 2.0 GiB |
+| the measure | live heap |
+|---|---|
+| one read, a response of 8 MiB of empty objects, 15 reads | 8.0 to 16.2 MiB: 0.99 to 2.03 responses, in three runs |
+| one pass over a tenant padded to its bounds, 62 responses | 9.4 to 16.6 MiB in four runs |
+| 100 passes at once on 100 tenants | 1.06 to 1.13 GiB, 10.9 to 11.5 MiB a pass, in three runs |
 
+A read of a response of 8 MiB of empty objects holds the body, 8.0 MiB, and about 0.2 MiB more, which is what the types keep and the decoder uses.
+A read holds up to two responses while client-go copies the body: `io.ReadAll` ([request.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/request.go#L1159)) keeps the chunks it read until it has copied them into the slice it returns ([io.go](https://github.com/golang/go/blob/go1.26.10/src/io/io.go#L709-L750)), and which of the two a collection sees depends on its timing.
+A pass of `health-nodes` has two reads in flight, so up to four responses, 32 MiB, and 100 such passes 3.1 GiB, which no run reached; a pass of `health` over a held restore has seven reads in flight, up to 112 MiB.
 At the default `GOGC` the heap in use may grow to about twice the live heap, so the operator's memory limit and `GOMEMLIMIT`, which are set when the operator is measured (`todo.md`, "From the chart"), start from about twice these figures.
-The figures hold for pages that carry the 500 Leases or 100 Nodes the request asks for; a response of 8 MiB with more and smaller objects decodes to more, and they do not bound it.
 Between passes it keeps at most `health.maxNodes` Lease versions and Node summaries per tenant ([review checklist](review-checklist.md), item 10).
 The tenant's administrator can have any server answer the lists, so the pass bounds every string it keeps itself:
 - a Lease or a Node named with more than 253 bytes is not kept; no real object has such a name ([validation.go](https://github.com/kubernetes/apimachinery/blob/v0.37.1/pkg/util/validation/validation.go#L190-L191));

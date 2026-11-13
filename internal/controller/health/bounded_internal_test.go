@@ -105,7 +105,7 @@ func TestAResponseLongerThanTheBoundFailsBeforeItIsDecoded(t *testing.T) {
 			read := &counting{next: r.clients[key].transport.Transport}
 			r.clients[key].transport.Transport = read
 
-			leases, err := tenant.nodeLeases.List(t.Context(), metav1.ListOptions{})
+			leases, err := tenant.leasePage(t.Context(), metav1.ListOptions{})
 			if c.wantErr != (err != nil) || c.wantErr && !errors.Is(err, errResponseTooLong) {
 				t.Fatalf("list of %d bytes returned %v, want the error of the bound: %t", c.size, err, c.wantErr)
 			}
@@ -115,8 +115,8 @@ func TestAResponseLongerThanTheBoundFailsBeforeItIsDecoded(t *testing.T) {
 			if got := read.bytes.Load(); got != c.wantBytes {
 				t.Errorf("the client read %d bytes of a response of %d, want %d", got, c.size, c.wantBytes)
 			}
-			if err == nil && len(leases.Items) != c.wantLeases {
-				t.Errorf("the response decoded to %d Leases, want %d", len(leases.Items), c.wantLeases)
+			if err == nil && len(leases.Items.items) != c.wantLeases {
+				t.Errorf("the response decoded to %d Leases, want %d", len(leases.Items.items), c.wantLeases)
 			}
 		})
 	}

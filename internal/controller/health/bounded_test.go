@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -332,7 +333,7 @@ func TestRow5AHoldIsReleasedByAStopKnownFromAnEarlierPassWhileAccessReadyIsNotTr
 	h := holding(t, "a", "b", "c")
 	h.r.MaxNodes = 3
 	joined(t, "d", corev1.ConditionTrue, h.start)
-	h.fail(managerLease, http.MethodPut, http.StatusInternalServerError, metav1.StatusReasonInternalError)
+	h.fail(managerLease, http.MethodPatch, http.StatusInternalServerError, metav1.StatusReasonInternalError)
 	h.at(25)
 	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
 		t.Fatalf("a failed release left holder %q", holder)
@@ -527,7 +528,7 @@ func TestAReleaseThatFailsIsTriedAgainByTheNextPass(t *testing.T) {
 	h := holding(t, "a", "b", "c")
 	h.r.MaxNodes = 3
 	joined(t, "d", corev1.ConditionTrue, h.start)
-	h.fail(managerLease, http.MethodPut, http.StatusInternalServerError, metav1.StatusReasonInternalError)
+	h.fail(managerLease, http.MethodPatch, http.StatusInternalServerError, metav1.StatusReasonInternalError)
 	h.at(25)
 	h.expectSilent(taken(3, 3, "60"))
 	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
@@ -589,5 +590,116 @@ func TestRow5ReleasesAHoldOfATenantBeyondTheBoundBeforeAnyListOfNodes(t *testing
 	expectNodes(t, h.cp, nodesOf(3, 3, 0, "v1.35.0"))
 	if holder := h.holder(); holder != "" {
 		t.Fatalf("a restarted operator with no list of Nodes left holder %q", holder)
+	}
+}
+
+func writeJSON(w http.ResponseWriter, body string) {
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = io.WriteString(w, body)
+}
+
+func itemsOf(n int, item func(i int) string) string {
+	items := make([]string, n)
+	for i := range items {
+		items[i] = item(i)
+	}
+	return `{"metadata":{},"items":[` + strings.Join(items, ",") + `]}`
+}
+
+func nodeWith(name string, conditions int) string {
+	items := []string{`{"type":"Ready","status":"True"}`}
+	for i := 1; i < conditions; i++ {
+		items = append(items, fmt.Sprintf(`{"type":"C%d","status":"False"}`, i))
+	}
+	return `{"metadata":{"name":"` + name + `"},"status":{"nodeInfo":{"kubeletVersion":"v1.35.0"},"conditions":[` + strings.Join(items, ",") + `]}}`
+}
+
+func TestAPageOrANodeBeyondItsBoundIsATenantBeyondTheBound(t *testing.T) {
+	names := []string{"a", "b", "c"}
+	nodes := func(conditions ...int) string {
+		return itemsOf(len(conditions), func(i int) string { return nodeWith(names[i], conditions[i]) })
+	}
+	for _, c := range []struct {
+		name    string
+		path    string
+		body    string
+		message string
+		nodes   *lodiav1alpha1.NodesStatus
+	}{
+		{"a Node with 65 conditions", nodeListPath, nodes(1, 65, 1), "a Node has more than 64 conditions" + beyond, truncatedNodes(1, 1)},
+		{"a Node with 64 conditions", nodeListPath, nodes(1, 64, 1), "", nodesOf(3, 3, 0, "v1.35.0")},
+		{"101 Nodes in a page of 100", nodeListPath, itemsOf(101, func(i int) string { return nodeWith(fmt.Sprintf("n%03d", i), 1) }),
+			"a page of the Nodes holds more than 100 items" + beyond, truncatedNodes(100, 100)},
+		{"501 Leases in a page of 500", leaseListPath, itemsOf(501, func(i int) string { return `{"metadata":{"name":"l` + strconv.Itoa(i) + `","resourceVersion":"1"}}` }),
+			"a page of the Leases of kube-node-lease holds more than 500 items" + beyond, nodesOf(3, 3, 0, "v1.35.0")},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := sampling(t, names...)
+			h.inject(func(w http.ResponseWriter, req *http.Request) bool {
+				if req.URL.Path != c.path {
+					return false
+				}
+				writeJSON(w, c.body)
+				return true
+			})
+			h.at(0)
+			if c.message == "" {
+				h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonNotHeld, silent(0, 3))
+			} else {
+				expectTooMany(t, h.cp, c.message)
+			}
+			expectNodes(t, h.cp, c.nodes)
+		})
+	}
+}
+
+func TestAListOfAHeldRestoreBeyondItsBoundsIsAKindThatCouldNotBeListed(t *testing.T) {
+	const (
+		services      = "0 LoadBalancer Services"
+		webhooks      = "0 webhooks that call a URL or fail closed"
+		rest          = "; 0 PersistentVolumes with reclaimPolicy Delete; 0 pending PersistentVolumeClaims; "
+		afterWebhooks = "; 0 APIServices served by a Service; 0 CronJobs not suspended"
+	)
+	configuration := func(webhooks int) string {
+		return itemsOf(1, func(int) string {
+			hooks := make([]string, webhooks)
+			for i := range hooks {
+				hooks[i] = `{"name":"w` + strconv.Itoa(i) + `","clientConfig":{"url":"https://hooks.example.com"},"failurePolicy":"Ignore"}`
+			}
+			return `{"metadata":{"name":"guard"},"webhooks":[` + strings.Join(hooks, ",") + `]}`
+		})
+	}
+	loadBalancers := func(n int) string {
+		return itemsOf(n, func(i int) string {
+			return `{"metadata":{"namespace":"ns","name":"s` + strconv.Itoa(i) + `"},"spec":{"type":"LoadBalancer"}}`
+		})
+	}
+	const validating, mutating = "/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations", "/apis/admissionregistration.k8s.io/v1/mutatingwebhookconfigurations"
+	for _, c := range []struct {
+		name   string
+		answer map[string]string
+		want   string
+	}{
+		{"500 Services", map[string]string{"/api/v1/services": loadBalancers(500)}, "500 LoadBalancer Services (ns/s0, ns/s1, ns/s10…)" + rest + webhooks + afterWebhooks},
+		{"501 Services", map[string]string{"/api/v1/services": loadBalancers(501)}, "Services could not be listed" + rest + webhooks + afterWebhooks},
+		{"256 webhooks", map[string]string{validating: configuration(256)}, services + rest + "256 webhooks that call a URL or fail closed (guard/w0, guard/w1, guard/w10…)" + afterWebhooks},
+		{"257 webhooks", map[string]string{validating: configuration(257)}, services + rest + "ValidatingWebhookConfigurations could not be listed" + afterWebhooks},
+		{"257 webhooks of both kinds", map[string]string{validating: configuration(257), mutating: configuration(257)}, services + rest + "ValidatingWebhookConfigurations and MutatingWebhookConfigurations could not be listed" + afterWebhooks},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cp := restoredControlPlane(t, lodiav1alpha1.RestoreHeld)
+			setAccess(t, cp)
+			writeKubeconfig(t, cp, throughProxy(t, func(w http.ResponseWriter, req *http.Request) bool {
+				body, ok := c.answer[req.URL.Path]
+				if ok {
+					writeJSON(w, body)
+				}
+				return ok
+			}))
+			reconcile(t, &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, Period: time.Hour, Timeout: 2 * time.Second, Clock: clock.RealClock{}}, cp)
+			if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonAwaitingRelease, actsOn+c.want); err != nil {
+				t.Error(err)
+			}
+		})
 	}
 }

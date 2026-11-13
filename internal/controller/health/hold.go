@@ -5,6 +5,7 @@ package health
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -109,10 +110,10 @@ func (r *NodesReconciler) holdOrRelease(ctx context.Context, cp *lodiav1alpha1.C
 
 // readLease reads the controller manager's Lease with a consistent GET; a
 // Lease that does not exist reads as nil, with no error.
-func (r *NodesReconciler) readLease(ctx context.Context, t *tenant) (*coordinationv1.Lease, error) {
+func (r *NodesReconciler) readLease(ctx context.Context, t *tenant) (*leaderLease, error) {
 	reading, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
-	lease, err := t.leases.Get(reading, lodiav1alpha1.ControllerManagerLease, metav1.GetOptions{})
+	lease, err := t.getLease(reading, lodiav1alpha1.ControllerManagerLease)
 	if apierrors.IsNotFound(err) {
 		return nil, nil
 	}
@@ -127,7 +128,7 @@ func (r *NodesReconciler) readLease(ctx context.Context, t *tenant) (*coordinati
 // list of the node Leases behind it, or with a list stopped at a bound,
 // restarts the clock and clears the count towards the release, whichever row
 // follows; a hold with no list goes on renewing, and one beyond a bound ends.
-func (r *NodesReconciler) selectRow(ctx context.Context, cp *lodiav1alpha1.ControlPlane, s *sampling, lease *coordinationv1.Lease, readErr error, listed bool, now time.Time) (row, error) {
+func (r *NodesReconciler) selectRow(ctx context.Context, cp *lodiav1alpha1.ControlPlane, s *sampling, lease *leaderLease, readErr error, listed bool, now time.Time) (row, error) {
 	stop := s.stopped()
 	if readErr != nil || !listed || stop != "" {
 		s.restart()
@@ -139,7 +140,7 @@ func (r *NodesReconciler) selectRow(ctx context.Context, cp *lodiav1alpha1.Contr
 		return row{}, nil
 	}
 	if lease != nil {
-		if version := versionOf(lease.ResourceVersion); s.leader.version != version {
+		if version := versionOf(lease.Metadata.ResourceVersion); s.leader.version != version {
 			s.leader = renewal{version: version, at: now}
 		}
 	}
@@ -252,7 +253,7 @@ func quoted(text string) string {
 	return string([]rune(text)[:maxQuoted])
 }
 
-func holdStatus(chosen row, lease *coordinationv1.Lease) *lodiav1alpha1.HealthStatus {
+func holdStatus(chosen row, lease *leaderLease) *lodiav1alpha1.HealthStatus {
 	if chosen.condition.Reason != lodiav1alpha1.ReasonNodesSilent {
 		return nil
 	}
@@ -266,7 +267,7 @@ func holdStatus(chosen row, lease *coordinationv1.Lease) *lodiav1alpha1.HealthSt
 	return &lodiav1alpha1.HealthStatus{ControllerManagerHold: hold}
 }
 
-func leaseHolder(lease *coordinationv1.Lease) string {
+func leaseHolder(lease *leaderLease) string {
 	if lease == nil {
 		return ""
 	}
@@ -275,7 +276,7 @@ func leaseHolder(lease *coordinationv1.Lease) string {
 
 // expired says whether the Lease has not changed for its duration, by the
 // operator's clock, as client-go's observed time works.
-func (s *sampling) expired(lease *coordinationv1.Lease, now time.Time) bool {
+func (s *sampling) expired(lease *leaderLease, now time.Time) bool {
 	return now.Sub(s.leader.at) >= time.Duration(ptr.Deref(lease.Spec.LeaseDurationSeconds, 0))*time.Second
 }
 
@@ -295,22 +296,24 @@ func (r *NodesReconciler) podOfControlPlane(ctx context.Context, cp *lodiav1alph
 	return false, nil
 }
 
-// writeLease makes the row's write, over the Lease as it was read, and keeps
-// the fields Lodia does not own; a Lease that does not exist is created.
-func (r *NodesReconciler) writeLease(ctx context.Context, t *tenant, read *coordinationv1.Lease, write leaseWrite, now time.Time) (*coordinationv1.Lease, error) {
-	lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Namespace: lodiav1alpha1.LeaderElectionNamespace, Name: lodiav1alpha1.ControllerManagerLease}}
-	if read != nil {
-		lease = read.DeepCopy()
-	}
+// writeLease makes the row's write: a merge patch of the Lease's spec that
+// carries the resourceVersion of the read, which the API server answers with a
+// conflict once the Lease has moved, so the fields it does not write are kept;
+// a Lease that does not exist is created.
+func (r *NodesReconciler) writeLease(ctx context.Context, t *tenant, read *leaderLease, write leaseWrite, now time.Time) (*leaderLease, error) {
 	at := new(metav1.NewMicroTime(now))
-	spec := &lease.Spec
+	var spec coordinationv1.LeaseSpec
 	switch write {
 	case noWrite:
 		return read, nil
 	case takeLease:
 		spec.HolderIdentity, spec.LeaseDurationSeconds = ptr.To(lodiav1alpha1.HoldHolderIdentity), new(heldLeaseSeconds)
 		spec.AcquireTime, spec.RenewTime = at, at
-		spec.LeaseTransitions = new(ptr.Deref(spec.LeaseTransitions, 0) + 1)
+		var transitions int32
+		if read != nil {
+			transitions = ptr.Deref(read.Spec.LeaseTransitions, 0)
+		}
+		spec.LeaseTransitions = new(transitions + 1)
 	case renewLease:
 		spec.LeaseDurationSeconds, spec.RenewTime = new(heldLeaseSeconds), at
 	case releaseLease:
@@ -320,7 +323,19 @@ func (r *NodesReconciler) writeLease(ctx context.Context, t *tenant, read *coord
 	writing, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
 	if read == nil {
-		return t.leases.Create(writing, lease, metav1.CreateOptions{})
+		body, err := json.Marshal(&coordinationv1.Lease{
+			TypeMeta:   metav1.TypeMeta{APIVersion: coordinationv1.SchemeGroupVersion.String(), Kind: "Lease"},
+			ObjectMeta: metav1.ObjectMeta{Namespace: lodiav1alpha1.LeaderElectionNamespace, Name: lodiav1alpha1.ControllerManagerLease},
+			Spec:       spec,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return t.createLease(writing, body)
 	}
-	return t.leases.Update(writing, lease, metav1.UpdateOptions{})
+	patch, err := json.Marshal(map[string]any{"metadata": map[string]string{"resourceVersion": read.Metadata.ResourceVersion}, "spec": spec})
+	if err != nil {
+		return nil, err
+	}
+	return t.patchLease(writing, patch)
 }

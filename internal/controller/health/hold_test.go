@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -661,7 +662,7 @@ func TestAKCMWriteBetweenReadAndWriteRetriesAndWins(t *testing.T) {
 	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", time.Now())
 	var puts atomic.Int32
 	h.inject(func(w http.ResponseWriter, req *http.Request) bool {
-		if req.Method == http.MethodPut && req.URL.Path == managerLease && puts.Add(1) == 1 {
+		if req.Method == http.MethodPatch && req.URL.Path == managerLease && puts.Add(1) == 1 {
 			renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", time.Now())
 		}
 		return false
@@ -683,7 +684,7 @@ func TestAConflictWhoseReReadFindsAHolderOutsideThePodsWritesNothing(t *testing.
 	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", time.Now())
 	var puts atomic.Int32
 	h.inject(func(w http.ResponseWriter, req *http.Request) bool {
-		if req.Method == http.MethodPut && req.URL.Path == managerLease && puts.Add(1) == 1 {
+		if req.Method == http.MethodPatch && req.URL.Path == managerLease && puts.Add(1) == 1 {
 			renew(t, lodiav1alpha1.ControllerManagerLease, "a-watchdog_1", time.Now())
 		}
 		return false
@@ -708,7 +709,7 @@ func TestAConflictWhoseReReadFailsAppliesNothingAndRestartsTheClock(t *testing.T
 			return false
 		}
 		switch {
-		case req.Method == http.MethodPut && puts.Add(1) == 1:
+		case req.Method == http.MethodPatch && puts.Add(1) == 1:
 			refuse(w, http.StatusConflict, metav1.StatusReasonConflict)
 			return true
 		case req.Method == http.MethodGet && gets.Add(1) == 2:
@@ -731,9 +732,69 @@ func TestAConflictThatRunsOutAppliesNothing(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
 	h.at(0)
 	renew(t, lodiav1alpha1.ControllerManagerLease, "", time.Now())
-	h.fail(managerLease, http.MethodPut, http.StatusConflict, metav1.StatusReasonConflict)
+	h.fail(managerLease, http.MethodPatch, http.StatusConflict, metav1.StatusReasonConflict)
 	h.r.Client = noControlPlaneWrite(t, k8s)
 	h.at(20)
+}
+
+func TestAWriteThatConflictsEveryTryIsRepeatedByTheNextPass(t *testing.T) {
+	h := sampling(t, "a", "b", "c")
+	h.at(0)
+	renew(t, lodiav1alpha1.ControllerManagerLease, "", time.Now())
+	var patches atomic.Int32
+	h.inject(func(w http.ResponseWriter, req *http.Request) bool {
+		if req.Method != http.MethodPatch || req.URL.Path != managerLease {
+			return false
+		}
+		patches.Add(1)
+		refuse(w, http.StatusConflict, metav1.StatusReasonConflict)
+		return true
+	})
+	h.at(20)
+	if patches.Load() < 2 {
+		t.Errorf("the write was tried %d times, want a retry on every conflict", patches.Load())
+	}
+	if holder := h.holder(); holder != "" {
+		t.Fatalf("a write that conflicted every try left holder %q", holder)
+	}
+	h.inject(nil)
+	h.at(25)
+	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+		t.Fatalf("the next pass left holder %q, want its write repeated", holder)
+	}
+	h.expectSilent(taken(3, 3, "60"))
+}
+
+func TestAWriteKeepsWhatTheHoldDoesNotWriteOfTheLease(t *testing.T) {
+	h := sampling(t, "a", "b", "c")
+	h.at(0)
+	renew(t, lodiav1alpha1.ControllerManagerLease, "", time.Now())
+	lease := h.lease()
+	lease.Labels, lease.Annotations = map[string]string{"owner": "someone"}, map[string]string{"note": "kept"}
+	if err := tenant.Update(t.Context(), lease); err != nil {
+		t.Fatal(err)
+	}
+	stored := h.lease()
+	if len(stored.Labels) == 0 || len(stored.Annotations) == 0 {
+		t.Fatalf("the API server kept no label or annotation of the Lease: %+v", stored.ObjectMeta)
+	}
+	kept := func(step string) {
+		t.Helper()
+		got := h.lease()
+		if !maps.Equal(got.Labels, stored.Labels) || !maps.Equal(got.Annotations, stored.Annotations) {
+			t.Errorf("after %s the Lease has labels %v and annotations %v, want %v and %v", step, got.Labels, got.Annotations, stored.Labels, stored.Annotations)
+		}
+	}
+	h.at(20)
+	if h.holder() != lodiav1alpha1.HoldHolderIdentity {
+		t.Fatalf("the take left holder %q", h.holder())
+	}
+	kept("the take")
+	h.back(25, 130, 145)
+	if h.holder() != "" {
+		t.Fatalf("the release left holder %q", h.holder())
+	}
+	kept("the release")
 }
 
 func TestNeverFightsAHolderOutsideThePodsWhileItRenews(t *testing.T) {
@@ -1134,7 +1195,7 @@ func TestALongHolderIsCutInTheMessageAndTheStatusIsApplied(t *testing.T) {
 
 func TestALongRefusalIsCutInTheMessageAndTheStatusIsApplied(t *testing.T) {
 	deny := func(w http.ResponseWriter, req *http.Request) bool {
-		if req.URL.Path != managerLease || req.Method != http.MethodPut {
+		if req.URL.Path != managerLease || req.Method != http.MethodPatch {
 			return false
 		}
 		refuseSaying(w, http.StatusForbidden, metav1.StatusReasonForbidden, strings.Repeat("d", 40000))
@@ -1163,7 +1224,7 @@ func TestARefusedTakeIsHoldBlockedAndNeverNodesSilent(t *testing.T) {
 		h := sampling(t, "a", "b", "c")
 		h.at(0)
 		renew(t, lodiav1alpha1.ControllerManagerLease, "", time.Now())
-		h.fail(managerLease, http.MethodPut, http.StatusForbidden, metav1.StatusReasonForbidden)
+		h.fail(managerLease, http.MethodPatch, http.StatusForbidden, metav1.StatusReasonForbidden)
 		h.at(20)
 		h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonHoldBlocked, "the API server refused the take of Lease kube-system/kube-controller-manager: injected: Forbidden")
 		h.expectNoHealth()
@@ -1186,7 +1247,7 @@ func TestARefusedTakeIsHoldBlockedAndNeverNodesSilent(t *testing.T) {
 
 func TestARefusedRenewalKeepsNodesSilentWithTheLeaseStillLodias(t *testing.T) {
 	h := holding(t, "a", "b", "c")
-	h.fail(managerLease, http.MethodPut, http.StatusForbidden, metav1.StatusReasonForbidden)
+	h.fail(managerLease, http.MethodPatch, http.StatusForbidden, metav1.StatusReasonForbidden)
 	before := h.lease()
 	h.at(25)
 	h.expectSilent("the API server refused the renewal of Lease kube-system/kube-controller-manager: injected: Forbidden")
@@ -1197,7 +1258,7 @@ func TestARefusedRenewalKeepsNodesSilentWithTheLeaseStillLodias(t *testing.T) {
 func TestARefusedReleaseKeepsNodesSilentAndTriesAgain(t *testing.T) {
 	h := holding(t, "a", "b", "c")
 	h.back(25, 130)
-	h.fail(managerLease, http.MethodPut, http.StatusForbidden, metav1.StatusReasonForbidden)
+	h.fail(managerLease, http.MethodPatch, http.StatusForbidden, metav1.StatusReasonForbidden)
 	h.back(145)
 	h.expectSilent("the API server refused the release of Lease kube-system/kube-controller-manager: injected: Forbidden")
 	h.expectHealth(0, 3)
@@ -1216,21 +1277,21 @@ func TestARefusedReleaseKeepsNodesSilentAndTriesAgain(t *testing.T) {
 func TestAWriteTimingOutOrFailingAppliesNothing(t *testing.T) {
 	for name, method := range map[string]func(http.ResponseWriter, *http.Request) bool{
 		"timing out": func(w http.ResponseWriter, req *http.Request) bool {
-			if req.URL.Path != managerLease || req.Method != http.MethodPut {
+			if req.URL.Path != managerLease || req.Method != http.MethodPatch {
 				return false
 			}
 			hang(w, req)
 			return true
 		},
 		"a 500": func(w http.ResponseWriter, req *http.Request) bool {
-			if req.URL.Path != managerLease || req.Method != http.MethodPut {
+			if req.URL.Path != managerLease || req.Method != http.MethodPatch {
 				return false
 			}
 			refuse(w, http.StatusInternalServerError, metav1.StatusReasonInternalError)
 			return true
 		},
 		"a 404": func(w http.ResponseWriter, req *http.Request) bool {
-			if req.URL.Path != managerLease || req.Method != http.MethodPut {
+			if req.URL.Path != managerLease || req.Method != http.MethodPatch {
 				return false
 			}
 			refuse(w, http.StatusNotFound, metav1.StatusReasonNotFound)

@@ -22,22 +22,16 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
-	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	utilnet "k8s.io/apimachinery/pkg/util/net"
-	admissionregistrationv1client "k8s.io/client-go/kubernetes/typed/admissionregistration/v1"
-	batchv1client "k8s.io/client-go/kubernetes/typed/batch/v1"
-	coordinationv1client "k8s.io/client-go/kubernetes/typed/coordination/v1"
-	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/events"
-	apiregistrationv1client "k8s.io/kube-aggregator/pkg/client/clientset_generated/clientset/typed/apiregistration/v1"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -117,17 +111,6 @@ type prober struct {
 	direct *http.Client
 	roots  *x509.CertPool
 	client *tls.Certificate
-}
-
-// tenant reads inside a control plane as Lodia, every client over the same
-// transport.
-type tenant struct {
-	leases       coordinationv1client.LeaseInterface
-	nodeLeases   coordinationv1client.LeaseInterface
-	core         corev1client.CoreV1Interface
-	admission    admissionregistrationv1client.AdmissionregistrationV1Interface
-	registration apiregistrationv1client.ApiregistrationV1Interface
-	batch        batchv1client.BatchV1Interface
 }
 
 // renewal is the digest of the resourceVersion of a Lease Health saw last, and
@@ -392,7 +375,7 @@ func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 		{lodiav1alpha1.ControllerManagerLease, lodiav1alpha1.ReasonControllerManagerNotLeading},
 		{lodiav1alpha1.SchedulerLease, lodiav1alpha1.ReasonSchedulerNotLeading},
 	} {
-		lease, err := tenant.leases.Get(reading, l.name, metav1.GetOptions{})
+		lease, err := tenant.getLease(reading, l.name)
 		var message string
 		switch {
 		case apierrors.IsNotFound(err):
@@ -403,7 +386,7 @@ func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 		case l.name == lodiav1alpha1.ControllerManagerLease && ptr.Deref(lease.Spec.HolderIdentity, "") == lodiav1alpha1.HoldHolderIdentity:
 			held = true
 		default:
-			message = r.stale(key, lease, now)
+			message = r.stale(key, l.name, lease, now)
 		}
 		if message != "" {
 			reason = cmp.Or(reason, l.reason)
@@ -447,7 +430,6 @@ const listLimit = 500
 // that cannot be listed says so in its place. The lists run at once, so a
 // tenant that does not answer holds a worker for one Timeout, not seven.
 func (r *Reconciler) actedOn(ctx context.Context, t *tenant) string {
-	page := metav1.ListOptions{Limit: listLimit}
 	type list struct {
 		kind string
 		read func(context.Context) (names []string, more bool, err error)
@@ -457,118 +439,94 @@ func (r *Reconciler) actedOn(ctx context.Context, t *tenant) string {
 		lists []list
 	}{
 		{"LoadBalancer Services", []list{{"Services", func(ctx context.Context) ([]string, bool, error) {
-			l, err := t.core.Services("").List(ctx, page)
+			l, err := firstPage[service](ctx, t, "/api/v1/services")
 			if err != nil {
 				return nil, false, err
 			}
 			var names []string
-			for _, s := range l.Items {
+			for _, s := range l.Items.items {
 				if s.Spec.Type == corev1.ServiceTypeLoadBalancer {
-					names = append(names, s.Namespace+"/"+s.Name)
+					names = append(names, s.Metadata.Namespace+"/"+s.Metadata.Name)
 				}
 			}
-			return names, l.Continue != "", nil
+			return names, l.Metadata.Continue != "", nil
 		}}}},
 		{"PersistentVolumes with reclaimPolicy Delete", []list{{"PersistentVolumes", func(ctx context.Context) ([]string, bool, error) {
-			l, err := t.core.PersistentVolumes().List(ctx, page)
+			l, err := firstPage[persistentVolume](ctx, t, "/api/v1/persistentvolumes")
 			if err != nil {
 				return nil, false, err
 			}
 			var names []string
-			for _, v := range l.Items {
+			for _, v := range l.Items.items {
 				if v.Spec.PersistentVolumeReclaimPolicy == corev1.PersistentVolumeReclaimDelete {
-					names = append(names, v.Name)
+					names = append(names, v.Metadata.Name)
 				}
 			}
-			return names, l.Continue != "", nil
+			return names, l.Metadata.Continue != "", nil
 		}}}},
 		{"pending PersistentVolumeClaims", []list{{"PersistentVolumeClaims", func(ctx context.Context) ([]string, bool, error) {
-			l, err := t.core.PersistentVolumeClaims("").List(ctx, page)
+			l, err := firstPage[persistentVolumeClaim](ctx, t, "/api/v1/persistentvolumeclaims")
 			if err != nil {
 				return nil, false, err
 			}
 			var names []string
-			for _, c := range l.Items {
+			for _, c := range l.Items.items {
 				if c.Status.Phase == corev1.ClaimPending {
-					names = append(names, c.Namespace+"/"+c.Name)
+					names = append(names, c.Metadata.Namespace+"/"+c.Metadata.Name)
 				}
 			}
-			return names, l.Continue != "", nil
+			return names, l.Metadata.Continue != "", nil
 		}}}},
 		{"webhooks that call a URL or fail closed", []list{
 			{"ValidatingWebhookConfigurations", func(ctx context.Context) ([]string, bool, error) {
-				l, err := t.admission.ValidatingWebhookConfigurations().List(ctx, page)
-				if err != nil {
-					return nil, false, err
-				}
-				var names []string
-				for _, c := range l.Items {
-					for _, w := range c.Webhooks {
-						if actsOutside(w.ClientConfig, w.FailurePolicy) {
-							names = append(names, c.Name+"/"+w.Name)
-						}
-					}
-				}
-				return names, l.Continue != "", nil
+				return outsideWebhooks(ctx, t, "/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations")
 			}},
 			{"MutatingWebhookConfigurations", func(ctx context.Context) ([]string, bool, error) {
-				l, err := t.admission.MutatingWebhookConfigurations().List(ctx, page)
-				if err != nil {
-					return nil, false, err
-				}
-				var names []string
-				for _, c := range l.Items {
-					for _, w := range c.Webhooks {
-						if actsOutside(w.ClientConfig, w.FailurePolicy) {
-							names = append(names, c.Name+"/"+w.Name)
-						}
-					}
-				}
-				return names, l.Continue != "", nil
+				return outsideWebhooks(ctx, t, "/apis/admissionregistration.k8s.io/v1/mutatingwebhookconfigurations")
 			}},
 		}},
 		{"APIServices served by a Service", []list{{"APIServices", func(ctx context.Context) ([]string, bool, error) {
-			l, err := t.registration.APIServices().List(ctx, page)
+			l, err := firstPage[apiService](ctx, t, "/apis/apiregistration.k8s.io/v1/apiservices")
 			if err != nil {
 				return nil, false, err
 			}
 			var names []string
-			for _, a := range l.Items {
-				if a.Spec.Service != nil {
-					names = append(names, a.Name)
+			for _, a := range l.Items.items {
+				if a.Spec.Service {
+					names = append(names, a.Metadata.Name)
 				}
 			}
-			return names, l.Continue != "", nil
+			return names, l.Metadata.Continue != "", nil
 		}}}},
 		{"CronJobs not suspended", []list{{"CronJobs", func(ctx context.Context) ([]string, bool, error) {
-			l, err := t.batch.CronJobs("").List(ctx, page)
+			l, err := firstPage[cronJob](ctx, t, "/apis/batch/v1/cronjobs")
 			if err != nil {
 				return nil, false, err
 			}
 			var names []string
-			for _, j := range l.Items {
+			for _, j := range l.Items.items {
 				if !ptr.Deref(j.Spec.Suspend, false) {
-					names = append(names, j.Namespace+"/"+j.Name)
+					names = append(names, j.Metadata.Namespace+"/"+j.Metadata.Name)
 				}
 			}
-			return names, l.Continue != "", nil
+			return names, l.Metadata.Continue != "", nil
 		}}}},
 	}
-	type listed struct {
+	type answer struct {
 		names []string
 		more  bool
 		err   error
 	}
-	results := make([][]listed, len(items))
+	results := make([][]answer, len(items))
 	var wg sync.WaitGroup
 	for i, item := range items {
-		results[i] = make([]listed, len(item.lists))
+		results[i] = make([]answer, len(item.lists))
 		for j, l := range item.lists {
 			wg.Go(func() {
 				listing, cancel := context.WithTimeout(ctx, r.Timeout)
 				defer cancel()
 				names, more, err := l.read(listing)
-				results[i][j] = listed{names, more, err}
+				results[i][j] = answer{names, more, err}
 			})
 		}
 	}
@@ -595,11 +553,26 @@ func (r *Reconciler) actedOn(ctx context.Context, t *tenant) string {
 	return strings.Join(out, "; ")
 }
 
-// actsOutside says whether a webhook calls a URL, which may be outside the
-// cluster, or fails closed, Fail being admissionregistration/v1's default
-// (https://github.com/kubernetes/api/blob/v0.37.1/admissionregistration/v1/types.go#L814-L817).
-func actsOutside(config admissionregistrationv1.WebhookClientConfig, policy *admissionregistrationv1.FailurePolicyType) bool {
-	return config.URL != nil || ptr.Deref(policy, admissionregistrationv1.Fail) == admissionregistrationv1.Fail
+// outsideWebhooks names the webhooks of one kind of configuration that act
+// outside the cluster; a configuration with more webhooks than maxWebhooks
+// makes the list fail.
+func outsideWebhooks(ctx context.Context, t *tenant, path string) ([]string, bool, error) {
+	l, err := firstPage[webhookConfiguration](ctx, t, path)
+	if err != nil {
+		return nil, false, err
+	}
+	var names []string
+	for _, c := range l.Items.items {
+		if c.Webhooks.over {
+			return nil, false, errOverBound
+		}
+		for _, w := range c.Webhooks.items {
+			if w.actsOutside() {
+				names = append(names, c.Metadata.Name+"/"+w.Name)
+			}
+		}
+	}
+	return names, l.Metadata.Continue != "", nil
 }
 
 func counted(what string, names []string, more bool) string {
@@ -618,10 +591,10 @@ func counted(what string, names []string, more bool) string {
 	return n + " " + what + " (" + shown + ")"
 }
 
-// stale says why lease does not lead, or nothing when it does.
-func (r *Reconciler) stale(key types.NamespacedName, lease *coordinationv1.Lease, now time.Time) string {
+// stale says why the leader Lease name does not lead, or nothing when it does.
+func (r *Reconciler) stale(key types.NamespacedName, name string, lease *leaderLease, now time.Time) string {
 	duration := time.Duration(ptr.Deref(lease.Spec.LeaseDurationSeconds, 0)) * time.Second
-	if now.Sub(r.changed(key, lease, now)) <= duration+leaderSlack {
+	if now.Sub(r.changed(key, name, lease, now)) <= duration+leaderSlack {
 		return ""
 	}
 	renewed := "never"
@@ -629,13 +602,13 @@ func (r *Reconciler) stale(key types.NamespacedName, lease *coordinationv1.Lease
 		renewed = t.UTC().Format(time.RFC3339)
 	}
 	if holder := ptr.Deref(lease.Spec.HolderIdentity, ""); holder != "" {
-		return fmt.Sprintf("Lease %s/%s of %s was last renewed %s", lease.Namespace, lease.Name, quoted(holder), renewed)
+		return fmt.Sprintf("Lease %s/%s of %s was last renewed %s", lodiav1alpha1.LeaderElectionNamespace, name, quoted(holder), renewed)
 	}
-	return fmt.Sprintf("Lease %s/%s has no holder; it was last renewed %s", lease.Namespace, lease.Name, renewed)
+	return fmt.Sprintf("Lease %s/%s has no holder; it was last renewed %s", lodiav1alpha1.LeaderElectionNamespace, name, renewed)
 }
 
-// changed returns when Health first saw the lease's current version.
-func (r *Reconciler) changed(key types.NamespacedName, lease *coordinationv1.Lease, now time.Time) time.Time {
+// changed returns when Health first saw the current version of the leader Lease name.
+func (r *Reconciler) changed(key types.NamespacedName, name string, lease *leaderLease, now time.Time) time.Time {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.renewals == nil {
@@ -644,10 +617,10 @@ func (r *Reconciler) changed(key types.NamespacedName, lease *coordinationv1.Lea
 	if r.renewals[key] == nil {
 		r.renewals[key] = map[string]renewal{}
 	}
-	seen, ok := r.renewals[key][lease.Name]
-	if version := versionOf(lease.ResourceVersion); !ok || seen.version != version {
+	seen, ok := r.renewals[key][name]
+	if version := versionOf(lease.Metadata.ResourceVersion); !ok || seen.version != version {
 		seen = renewal{version: version, at: now}
-		r.renewals[key][lease.Name] = seen
+		r.renewals[key][name] = seen
 	}
 	return seen.at
 }
@@ -734,42 +707,22 @@ func (c *tenantClients) of(kubeconfig []byte) (*tenant, error) {
 	// (https://kubernetes.io/docs/concepts/cluster-administration/flow-control/).
 	cfg.QPS = -1
 	cfg.Wrap(capResponses)
+	cfg.AcceptContentTypes, cfg.ContentType = "application/json", "application/json"
+	// client-go asks for a serializer, and DoRaw never uses it: no response is
+	// decoded into the API's types.
+	cfg.NegotiatedSerializer = scheme.Codecs.WithoutConversion()
 	transport, err := rest.HTTPClientFor(cfg)
 	if err != nil {
 		return nil, err
 	}
-	coordination, err := coordinationv1client.NewForConfigAndClient(cfg, transport)
-	if err != nil {
-		return nil, err
-	}
-	core, err := corev1client.NewForConfigAndClient(cfg, transport)
-	if err != nil {
-		return nil, err
-	}
-	admission, err := admissionregistrationv1client.NewForConfigAndClient(cfg, transport)
-	if err != nil {
-		return nil, err
-	}
-	registration, err := apiregistrationv1client.NewForConfigAndClient(cfg, transport)
-	if err != nil {
-		return nil, err
-	}
-	batch, err := batchv1client.NewForConfigAndClient(cfg, transport)
+	api, err := rest.UnversionedRESTClientForConfigAndClient(cfg, transport)
 	if err != nil {
 		return nil, err
 	}
 	if c.transport != nil {
 		utilnet.CloseIdleConnectionsFor(c.transport.Transport)
 	}
-	c.kubeconfig, c.transport = kubeconfig, transport
-	c.tenant = &tenant{
-		leases:       coordination.Leases(lodiav1alpha1.LeaderElectionNamespace),
-		nodeLeases:   coordination.Leases(corev1.NamespaceNodeLease),
-		core:         core,
-		admission:    admission,
-		registration: registration,
-		batch:        batch,
-	}
+	c.kubeconfig, c.transport, c.tenant = kubeconfig, transport, newTenant(api)
 	return c.tenant, nil
 }
 

@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -138,17 +137,27 @@ func TestOnlyTheLeasesListedAreRemembered(t *testing.T) {
 	}
 }
 
+func memberOf(name, kubelet string, ready corev1.ConditionStatus) nodeObject {
+	var n nodeObject
+	n.Metadata.Name = name
+	n.Status.NodeInfo.KubeletVersion = kubelet
+	n.Status.Conditions.items = []nodeCondition{{Type: corev1.NodeReady, Status: ready}}
+	return n
+}
+
 func TestALeaseOrANodeNamedBeyondTheBoundIsNotKept(t *testing.T) {
 	atBound := strings.Repeat("a", maxName)
-	lease := func(name string) coordinationv1.Lease {
-		return coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: name, ResourceVersion: "1"}}
+	lease := func(name string) leaseItem {
+		var l leaseItem
+		l.Metadata.Name, l.Metadata.ResourceVersion = name, "1"
+		return l
 	}
-	leases := leaseVersions([]coordinationv1.Lease{lease(atBound), lease(atBound + "a"), lease(strings.Repeat("a", 80000)), lease("short")})
+	leases := leaseVersions([]leaseItem{lease(atBound), lease(atBound + "a"), lease(strings.Repeat("a", 80000)), lease("short")})
 	if len(leases) != 2 || leases[0].name != atBound || leases[1].name != "short" {
 		t.Errorf("leaseVersions kept %d Leases, want the one of %d bytes and the short one", len(leases), maxName)
 	}
-	nodes := summarize([]corev1.Node{{ObjectMeta: metav1.ObjectMeta{Name: atBound}}, {ObjectMeta: metav1.ObjectMeta{Name: atBound + "a"}}, {ObjectMeta: metav1.ObjectMeta{Name: strings.Repeat("a", 80000)}}, {ObjectMeta: metav1.ObjectMeta{Name: "short"}}})
-	if len(nodes) != 2 || nodes[0].name != atBound || nodes[1].name != "short" {
+	nodes, end := summarize([]nodeObject{memberOf(atBound, "", ""), memberOf(atBound+"a", "", ""), memberOf(strings.Repeat("a", 80000), "", ""), memberOf("short", "", "")})
+	if end != listEnded || len(nodes) != 2 || nodes[0].name != atBound || nodes[1].name != "short" {
 		t.Errorf("summarize kept %d Nodes, want the one of %d bytes and the short one", len(nodes), maxName)
 	}
 }
@@ -180,20 +189,14 @@ func TestAChangeOfAResourceVersionIsSeenWhateverItsFormat(t *testing.T) {
 }
 
 func TestASummaryKeepsNoKubeletVersionOrReadyStatusBeyondItsBound(t *testing.T) {
-	member := func(name, kubelet string, ready corev1.ConditionStatus) corev1.Node {
-		n := corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: name}}
-		n.Status.NodeInfo.KubeletVersion = kubelet
-		n.Status.Conditions = []corev1.NodeCondition{{Type: corev1.NodeReady, Status: ready}}
-		return n
-	}
 	atBound := "v1.30.0-" + strings.Repeat("x", maxKubeletVersion-len("v1.30.0-"))
-	got := summarize([]corev1.Node{
-		member("long", "v1.30.0-"+strings.Repeat("x", 80000), corev1.ConditionTrue),
-		member("over", atBound+"x", corev1.ConditionTrue),
-		member("at", atBound, corev1.ConditionTrue),
-		member("odd", "v1.35.0", corev1.ConditionStatus(strings.Repeat("x", 80000))),
-		member("unknown", "v1.35.0", corev1.ConditionUnknown),
-		member("false", "v1.35.0", corev1.ConditionFalse),
+	got, _ := summarize([]nodeObject{
+		memberOf("long", "v1.30.0-"+strings.Repeat("x", 80000), corev1.ConditionTrue),
+		memberOf("over", atBound+"x", corev1.ConditionTrue),
+		memberOf("at", atBound, corev1.ConditionTrue),
+		memberOf("odd", "v1.35.0", corev1.ConditionStatus(strings.Repeat("x", 80000))),
+		memberOf("unknown", "v1.35.0", corev1.ConditionUnknown),
+		memberOf("false", "v1.35.0", corev1.ConditionFalse),
 	})
 	for i, want := range []node{
 		{name: "long", ready: corev1.ConditionTrue},
@@ -211,13 +214,8 @@ func TestASummaryKeepsNoKubeletVersionOrReadyStatusBeyondItsBound(t *testing.T) 
 
 func TestAKubeletVersionBeyondTheBoundCountsLikeAnUnparsableOne(t *testing.T) {
 	counted := func(kubelet string) *lodiav1alpha1.NodesStatus {
-		nodes := []corev1.Node{{}, {}}
-		nodes[0].Status.NodeInfo.KubeletVersion = kubelet
-		nodes[1].Status.NodeInfo.KubeletVersion = "v1.34.2"
-		for i := range nodes {
-			nodes[i].Status.Conditions = []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}
-		}
-		return nodesStatus(summarize(nodes), "v1.35.1", false)
+		nodes, _ := summarize([]nodeObject{memberOf("a", kubelet, corev1.ConditionTrue), memberOf("b", "v1.34.2", corev1.ConditionTrue)})
+		return nodesStatus(nodes, "v1.35.1", false)
 	}
 	if long, unparsable := counted("v1.30.0-"+strings.Repeat("x", 80000)), counted("garbage"); !equality.Semantic.DeepEqual(long, unparsable) {
 		t.Errorf("a kubelet version of 80 KB counts %+v, one that does not parse %+v", *long, *unparsable)

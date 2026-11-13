@@ -238,7 +238,7 @@ func TestAConflictWhoseReReadFailsKeepsThePassCount(t *testing.T) {
 			return false
 		}
 		switch req.Method {
-		case http.MethodPut:
+		case http.MethodPatch:
 			refuse(w, http.StatusConflict, metav1.StatusReasonConflict)
 			return true
 		case http.MethodGet:
@@ -263,7 +263,7 @@ func TestAConflictWhoseReReadFindsAnotherHolderCountsAsTheRetry(t *testing.T) {
 	createManagerPod(t, h.cp, "dev-kube-controller-manager-7d9")
 	var puts atomic.Int32
 	h.inject(func(w http.ResponseWriter, req *http.Request) bool {
-		if req.Method == http.MethodPut && req.URL.Path == managerLease && puts.Add(1) == 1 {
+		if req.Method == http.MethodPatch && req.URL.Path == managerLease && puts.Add(1) == 1 {
 			renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", time.Now())
 		}
 		return false

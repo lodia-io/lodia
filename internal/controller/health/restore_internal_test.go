@@ -4,26 +4,28 @@
 package health
 
 import (
+	"encoding/json"
 	"testing"
-
-	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 )
 
 func TestAWebhookActsOutsideWhenItCallsAURLOrFailsClosed(t *testing.T) {
-	url := "https://hooks.example.com/validate"
-	service := admissionregistrationv1.WebhookClientConfig{Service: &admissionregistrationv1.ServiceReference{Namespace: "shop", Name: "hooks"}}
+	service := `"clientConfig":{"service":{"namespace":"shop","name":"hooks"}}`
 	for _, row := range []struct {
-		name   string
-		config admissionregistrationv1.WebhookClientConfig
-		policy *admissionregistrationv1.FailurePolicyType
-		want   bool
+		name    string
+		webhook string
+		want    bool
 	}{
-		{"a Service that fails open", service, new(admissionregistrationv1.Ignore), false},
-		{"a Service that fails closed", service, new(admissionregistrationv1.Fail), true},
-		{"a Service without a failure policy", service, nil, true},
-		{"a URL that fails open", admissionregistrationv1.WebhookClientConfig{URL: &url}, new(admissionregistrationv1.Ignore), true},
+		{"a Service that fails open", `{` + service + `,"failurePolicy":"Ignore"}`, false},
+		{"a Service that fails closed", `{` + service + `,"failurePolicy":"Fail"}`, true},
+		{"a Service without a failure policy", `{` + service + `}`, true},
+		{"a URL that fails open", `{"clientConfig":{"url":"https://hooks.example.com/validate"},"failurePolicy":"Ignore"}`, true},
+		{"a null URL that fails open", `{"clientConfig":{"url":null,"service":{"name":"hooks"}},"failurePolicy":"Ignore"}`, false},
 	} {
-		if got := actsOutside(row.config, row.policy); got != row.want {
+		var w webhook
+		if err := json.Unmarshal([]byte(row.webhook), &w); err != nil {
+			t.Fatal(err)
+		}
+		if got := w.actsOutside(); got != row.want {
 			t.Errorf("%s acts outside: %t, want %t", row.name, got, row.want)
 		}
 	}
