@@ -528,12 +528,14 @@ The operator: two replicas; memory grows with the number of tenants it caches (l
 A pass of `health-nodes` holds one decoded page of each list at a time: a page becomes its Lease versions or Node summaries before the next is read.
 With every page of Leases and of Nodes at the 8 MiB bound and the default `health.maxNodes`, one pass peaked between 97 and 116 MiB of heap in use over seven runs, 12 to 14.5 responses of 8 MiB.
 The 100 workers on such tenants at once need about 12 GiB.
-Between passes it keeps at most `health.maxNodes` Lease versions and Node summaries per tenant ([review checklist](review-checklist.md), item 10), and every string in them is bounded:
-- a Node's name and a Lease's name are DNS subdomains ([Node](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/apis/core/validation/validation.go#L300-L303), [Lease](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/apis/coordination/validation/validation.go#L35-L36)), at most 253 bytes ([validation.go](https://github.com/kubernetes/apimachinery/blob/v0.37.1/pkg/util/validation/validation.go#L190-L191));
-- a `resourceVersion` is a revision the API server formats, at most 20 digits ([api_object_versioner.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/storage/api_object_versioner.go#L38-L41));
+Between passes it keeps at most `health.maxNodes` Lease versions and Node summaries per tenant ([review checklist](review-checklist.md), item 10).
+The tenant's administrator can have any server answer the lists, so the pass bounds every string it keeps itself:
+- a Lease or a Node named with more than 253 bytes is not kept; no real object has such a name ([validation.go](https://github.com/kubernetes/apimachinery/blob/v0.37.1/pkg/util/validation/validation.go#L190-L191));
+- a Lease version keeps a digest of its `resourceVersion`, 64 bits, whatever the form of the version;
 - a Node summary keeps a kubelet version only up to 64 bytes and a Ready status only if it is `True`, `False` or `Unknown`: the tenant's administrator writes both, and [`ValidateNodeUpdate`](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/apis/core/validation/validation.go#L7666-L7738) checks neither.
 
-With every string at its bound a Node summary takes 395 bytes and a Lease version 385, so a tenant at the default `health.maxNodes` of 5,000 keeps 3.7 MiB between passes.
+With every string at its bound a Lease version takes a name of 253 bytes and a map slot of 48 bytes (key header, digest and time), and a Node summary 72 bytes, a name of 253 bytes and a kubelet version of 64.
+A tenant at the default `health.maxNodes` of 5,000 keeps 5,000 of each, 3.7 MiB of live heap as `TestWhatASamplingKeepsRestsOnItsOwnBoundsAndNotOnWhatTheServerAnswers` measures with Lease versions of 8,000 bytes: what the lists answer does not change it.
 The operator's pods set no requests or limits yet.
 
 ## Upgrading Lodia

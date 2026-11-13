@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -119,21 +120,62 @@ func TestADeletedControlPlaneIsForgotten(t *testing.T) {
 
 func TestOnlyTheLeasesListedAreRemembered(t *testing.T) {
 	lease := func(name, resourceVersion string) leaseVersion {
-		return leaseVersion{name, resourceVersion}
+		return leaseVersion{name, versionOf(resourceVersion)}
 	}
 	first := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
 	later := first.Add(time.Minute)
 	known := seen(nil, []leaseVersion{lease("a", "1"), lease("b", "1")}, first)
 	got := seen(known, []leaseVersion{lease("a", "1"), lease("c", "7")}, later)
 	want := map[string]renewal{
-		"a": {resourceVersion: "1", at: first},
-		"c": {resourceVersion: "7", at: later},
+		"a": {version: versionOf("1"), at: first},
+		"c": {version: versionOf("7"), at: later},
 	}
 	if !maps.Equal(got, want) {
 		t.Errorf("seen is %+v, want %+v", got, want)
 	}
 	if again := seen(got, []leaseVersion{lease("a", "2"), lease("c", "7")}, later.Add(time.Minute)); again["a"].at != later.Add(time.Minute) || again["c"].at != later {
 		t.Errorf("a changed Lease and an unchanged one are seen at %+v", again)
+	}
+}
+
+func TestALeaseOrANodeNamedBeyondTheBoundIsNotKept(t *testing.T) {
+	atBound := strings.Repeat("a", maxName)
+	lease := func(name string) coordinationv1.Lease {
+		return coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: name, ResourceVersion: "1"}}
+	}
+	leases := leaseVersions([]coordinationv1.Lease{lease(atBound), lease(atBound + "a"), lease(strings.Repeat("a", 80000)), lease("short")})
+	if len(leases) != 2 || leases[0].name != atBound || leases[1].name != "short" {
+		t.Errorf("leaseVersions kept %d Leases, want the one of %d bytes and the short one", len(leases), maxName)
+	}
+	nodes := summarize([]corev1.Node{{ObjectMeta: metav1.ObjectMeta{Name: atBound}}, {ObjectMeta: metav1.ObjectMeta{Name: atBound + "a"}}, {ObjectMeta: metav1.ObjectMeta{Name: strings.Repeat("a", 80000)}}, {ObjectMeta: metav1.ObjectMeta{Name: "short"}}})
+	if len(nodes) != 2 || nodes[0].name != atBound || nodes[1].name != "short" {
+		t.Errorf("summarize kept %d Nodes, want the one of %d bytes and the short one", len(nodes), maxName)
+	}
+}
+
+func TestAChangeOfAResourceVersionIsSeenWhateverItsFormat(t *testing.T) {
+	long := strings.Repeat("9", 80000)
+	first := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	later := first.Add(time.Minute)
+	for _, c := range []struct {
+		name          string
+		before, after string
+		changed       bool
+	}{
+		{"the same number", "7", "7", false},
+		{"another number", "7", "8", true},
+		{"a longer number", "9", "99", true},
+		{"no version and one", "", "1", true},
+		{"a version that is no number", "a/b", "a/b", false},
+		{"another that is no number", "a/b", "a/c", true},
+		{"the same version of 80 KB", long, long, false},
+		{"versions of 80 KB that differ in their last byte", long, long[:len(long)-1] + "8", true},
+	} {
+		known := seen(nil, []leaseVersion{{"a", versionOf(c.before)}}, first)
+		got := seen(known, []leaseVersion{{"a", versionOf(c.after)}}, later)
+		if want := map[bool]time.Time{false: first, true: later}[c.changed]; !got["a"].at.Equal(want) {
+			t.Errorf("%s: the Lease was first seen at %v, want %v", c.name, got["a"].at, want)
+		}
 	}
 }
 

@@ -130,11 +130,11 @@ type tenant struct {
 	batch        batchv1client.BatchV1Interface
 }
 
-// renewal is the version of a leader Lease Health saw last, and when it saw
-// that version first.
+// renewal is the digest of the resourceVersion of a Lease Health saw last, and
+// when it saw that version first.
 type renewal struct {
-	resourceVersion string
-	at              time.Time
+	version uint64
+	at      time.Time
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
@@ -645,8 +645,8 @@ func (r *Reconciler) changed(key types.NamespacedName, lease *coordinationv1.Lea
 		r.renewals[key] = map[string]renewal{}
 	}
 	seen, ok := r.renewals[key][lease.Name]
-	if !ok || seen.resourceVersion != lease.ResourceVersion {
-		seen = renewal{resourceVersion: lease.ResourceVersion, at: now}
+	if version := versionOf(lease.ResourceVersion); !ok || seen.version != version {
+		seen = renewal{version: version, at: now}
 		r.renewals[key][lease.Name] = seen
 	}
 	return seen.at

@@ -138,8 +138,10 @@ func (r *NodesReconciler) selectRow(ctx context.Context, cp *lodiav1alpha1.Contr
 		}
 		return row{}, nil
 	}
-	if lease != nil && s.leader.resourceVersion != lease.ResourceVersion {
-		s.leader = renewal{resourceVersion: lease.ResourceVersion, at: now}
+	if lease != nil {
+		if version := versionOf(lease.ResourceVersion); s.leader.version != version {
+			s.leader = renewal{version: version, at: now}
+		}
 	}
 	holder := leaseHolder(lease)
 	ours := holder == lodiav1alpha1.HoldHolderIdentity

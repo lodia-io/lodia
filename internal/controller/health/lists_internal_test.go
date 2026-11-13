@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,6 +37,9 @@ type servedTenant struct {
 	oversize      map[string]int
 	failing       map[string]int
 	empty         map[string]int
+	nameLen       int
+	versionLen    int
+	kubeletLen    int
 
 	mu       sync.Mutex
 	requests []listRequest
@@ -93,7 +97,7 @@ func (f *servedTenant) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		annotations = map[string]string{"pad": strings.Repeat("x", maxResponseBytes)}
 	}
 	meta := func(i int) metav1.ObjectMeta {
-		m := metav1.ObjectMeta{Name: fmt.Sprintf("n%05d", i), ResourceVersion: "1"}
+		m := metav1.ObjectMeta{Name: padded(fmt.Sprintf("n%05d", i), f.nameLen), ResourceVersion: padded("1", f.versionLen)}
 		if i == from {
 			m.Annotations = annotations
 		}
@@ -105,7 +109,7 @@ func (f *servedTenant) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		out := corev1.NodeList{TypeMeta: metav1.TypeMeta{Kind: "NodeList", APIVersion: "v1"}, ListMeta: list}
 		for i := from; i < to; i++ {
 			n := corev1.Node{ObjectMeta: meta(i)}
-			n.Status.NodeInfo.KubeletVersion = "v1.35.0"
+			n.Status.NodeInfo.KubeletVersion = padded("v1.35.0", f.kubeletLen)
 			n.Status.Conditions = []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}
 			out.Items = append(out.Items, n)
 		}
@@ -117,6 +121,13 @@ func (f *servedTenant) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		out.Items = append(out.Items, coordinationv1.Lease{ObjectMeta: meta(i)})
 	}
 	_ = json.NewEncoder(w).Encode(out)
+}
+
+func padded(s string, length int) string {
+	if len(s) >= length {
+		return s
+	}
+	return s + strings.Repeat("x", length-len(s))
 }
 
 type listed struct {
@@ -302,6 +313,58 @@ func TestAListOfPagesWithNoItemsStopsAtItsBoundOfPagesAndNotBefore(t *testing.T)
 			if asked := len(f.asked(c.path)); asked != c.pages {
 				t.Errorf("the pages of %s were asked for %d times, want %d", c.path, asked, c.pages)
 			}
+		})
+	}
+}
+
+func liveHeap() uint64 {
+	runtime.GC()
+	runtime.GC()
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	return m.HeapAlloc
+}
+
+func TestWhatASamplingKeepsRestsOnItsOwnBoundsAndNotOnWhatTheServerAnswers(t *testing.T) {
+	const maxNodes = 5000
+	for _, c := range []struct {
+		name                            string
+		nameLen, versionLen, kubeletLen int
+		kept                            int
+		retainedUnder                   int64
+	}{
+		{"names and versions of 8,000 bytes", 8000, 8000, 8000, 0, 1 << 20},
+		{"names of 254 bytes", maxName + 1, 1, 1, 0, 1 << 20},
+		{"names of 253 bytes and versions of 8,000", maxName, 8000, maxKubeletVersion, maxNodes, 5 << 20},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := &servedTenant{leases: maxNodes, nodes: maxNodes, nameLen: c.nameLen, versionLen: c.versionLen, kubeletLen: c.kubeletLen}
+			before := liveHeap()
+			got := listTenant(t, f, maxNodes)
+			if got.err != nil || got.s.stopped() != "" {
+				t.Fatalf("list returned %v, stopped %q, want a list of 5,000 each that ended", got.err, got.s.stopped())
+			}
+			got.s.observe(got.leases, time.Now())
+			got.leases = nil
+			retained := int64(liveHeap()) - int64(before)
+			t.Logf("the sampling keeps %d Lease versions and %d Node summaries, %d bytes of heap", len(got.s.leases), len(got.s.nodes), retained)
+			if len(got.s.leases) != c.kept || len(got.s.nodes) != c.kept {
+				t.Errorf("the sampling keeps %d Lease versions and %d Node summaries, want %d each", len(got.s.leases), len(got.s.nodes), c.kept)
+			}
+			for name := range got.s.leases {
+				if len(name) > maxName {
+					t.Fatalf("the sampling keeps a Lease named with %d bytes", len(name))
+				}
+			}
+			for _, n := range got.s.nodes {
+				if len(n.name) > maxName || len(n.kubelet) > maxKubeletVersion {
+					t.Fatalf("the sampling keeps a Node named with %d bytes with a kubelet version of %d", len(n.name), len(n.kubelet))
+				}
+			}
+			if retained > c.retainedUnder {
+				t.Errorf("the sampling holds %d bytes of heap, more than %d", retained, c.retainedUnder)
+			}
+			runtime.KeepAlive(got)
 		})
 	}
 }

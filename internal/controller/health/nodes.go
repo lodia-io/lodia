@@ -7,6 +7,8 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"hash/fnv"
+	"io"
 	"strconv"
 	"sync"
 	"time"
@@ -55,6 +57,8 @@ const (
 
 	// maxKubeletVersion is status.nodes.oldestKubelet's schema bound.
 	maxKubeletVersion = 64
+
+	maxName = 253
 )
 
 // NodesReconciler samples a tenant's nodes, reports status.nodes, and holds the
@@ -108,17 +112,12 @@ type nodeCount struct {
 
 // sampling is what a pass remembers of one control plane; only that control
 // plane's pass touches it. Its leases and nodes hold at most MaxNodes entries
-// each, and each string in them is bounded (docs/review-checklist.md, item 10):
-// a Node's name and a Lease's name are DNS subdomains, which the API validates
-// to at most 253 bytes
-// (https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/apis/core/validation/validation.go#L300-L303,
-// https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/apis/coordination/validation/validation.go#L35-L36,
-// https://github.com/kubernetes/apimachinery/blob/v0.37.1/pkg/util/validation/validation.go#L190-L191),
-// and a resourceVersion is a revision the API server formats, at most 20 digits
-// (https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/storage/api_object_versioner.go#L38-L41).
-// The tenant's administrator writes a Node's kubelet version and Ready status
-// and the API validates neither, so summarize keeps no kubelet version over
-// maxKubeletVersion and no Ready status but the three a condition has.
+// each, and each string in them is bounded here, since the tenant's
+// administrator can have any server answer the lists
+// (docs/review-checklist.md, item 10): leaseVersions and summarize keep no
+// object whose name is over maxName; a Lease's resourceVersion is kept as a
+// digest of 8 bytes; summarize keeps no kubelet version over maxKubeletVersion
+// and no Ready status but the three a condition has.
 type sampling struct {
 	uid    types.UID
 	leases map[string]renewal
@@ -395,12 +394,25 @@ func (r *NodesReconciler) stop(what string, size int64, end listEnd, err error) 
 	return "", nil
 }
 
-type leaseVersion struct{ name, resourceVersion string }
+type leaseVersion struct {
+	name    string
+	version uint64
+}
+
+// versionOf digests a resourceVersion: the clock only asks whether it changed,
+// and a digest asks no format of it and takes 8 bytes.
+func versionOf(resourceVersion string) uint64 {
+	h := fnv.New64a()
+	_, _ = io.WriteString(h, resourceVersion)
+	return h.Sum64()
+}
 
 func leaseVersions(leases []coordinationv1.Lease) []leaseVersion {
-	out := make([]leaseVersion, len(leases))
-	for i, l := range leases {
-		out[i] = leaseVersion{l.Name, l.ResourceVersion}
+	out := make([]leaseVersion, 0, len(leases))
+	for _, l := range leases {
+		if len(l.Name) <= maxName {
+			out = append(out, leaseVersion{l.Name, versionOf(l.ResourceVersion)})
+		}
 	}
 	return out
 }
@@ -410,10 +422,10 @@ func leaseVersions(leases []coordinationv1.Lease) []leaseVersion {
 func seen(previous map[string]renewal, leases []leaseVersion, now time.Time) map[string]renewal {
 	next := make(map[string]renewal, len(leases))
 	for _, l := range leases {
-		if p, ok := previous[l.name]; ok && p.resourceVersion == l.resourceVersion {
+		if p, ok := previous[l.name]; ok && p.version == l.version {
 			next[l.name] = p
 		} else {
-			next[l.name] = renewal{resourceVersion: l.resourceVersion, at: now}
+			next[l.name] = renewal{version: l.version, at: now}
 		}
 	}
 	return next
@@ -422,6 +434,9 @@ func seen(previous map[string]renewal, leases []leaseVersion, now time.Time) map
 func summarize(nodes []corev1.Node) []node {
 	out := make([]node, 0, len(nodes))
 	for _, n := range nodes {
+		if len(n.Name) > maxName {
+			continue
+		}
 		summary := node{name: n.Name}
 		if len(n.Status.NodeInfo.KubeletVersion) <= maxKubeletVersion {
 			summary.kubelet = n.Status.NodeInfo.KubeletVersion
