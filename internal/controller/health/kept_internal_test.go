@@ -4,6 +4,7 @@
 package health
 
 import (
+	"errors"
 	"fmt"
 	"runtime"
 	"slices"
@@ -46,6 +47,7 @@ func TestWhatTheTypesKeepAtTheRawBoundsIsUnderKeptAtMost(t *testing.T) {
 		cron := `{"metadata":{"namespace":"` + s(maxNameRaw) + `","name":"` + s(maxNameRaw) + `"},"spec":{"suspend":false}}`
 		hook := `{"name":"` + s(maxNameRaw) + `","failurePolicy":"` + s(maxWordRaw) + `","clientConfig":{"url":"x"}}`
 		config := `{"metadata":{"name":"` + s(maxNameRaw) + `"},"webhooks":[` + repeated(maxWebhooks, hook) + `]}`
+		status := `{"kind":"Status","status":"Failure","reason":"` + s(maxReasonRaw) + `","message":"` + s(maxMessageRaw) + `","code":500,"details":{"causes":[` + repeated(maxCauses, `{"reason":"`+s(maxReasonRaw)+`"}`) + `]}}`
 		list := func(n int, item string) []byte {
 			return []byte(`{"metadata":{"continue":""},"items":[` + repeated(n, item) + `]}`)
 		}
@@ -61,6 +63,13 @@ func TestWhatTheTypesKeepAtTheRawBoundsIsUnderKeptAtMost(t *testing.T) {
 			{"500 PersistentVolumes", list(listLimit, pv), func(b []byte) (any, error) { return listFrom(b, listLimit, persistentVolumeOf) }},
 			{"500 CronJobs", list(listLimit, cron), func(b []byte) (any, error) { return listFrom(b, listLimit, cronJobOf) }},
 			{"one webhook configuration of 256 webhooks", []byte(config), func(b []byte) (any, error) { return webhookConfigurationOf(b) }},
+			{"a Status of 64 causes", []byte(status), func(b []byte) (any, error) {
+				failure, ok := failureOf(b)
+				if !ok {
+					return nil, errors.New(noStatusMessage)
+				}
+				return failure, nil
+			}},
 		} {
 			t.Run(c.name+", "+kind.name, func(t *testing.T) {
 				if len(c.body) > maxResponseBytes {

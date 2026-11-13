@@ -632,7 +632,7 @@ What one read holds at most is the larger of its two phases, each summed from th
     Over HTTP/1.1 each read in flight has a connection of its own.
 - after it, the body, 8 MiB, and what the types keep, 2 MiB.
   The most is 1.85 MiB, 1.83 measured and 1.90 under the race detector, a page of 100 Nodes of 64 Ready conditions with every string at its raw bound and invalid UTF-8: a decoded string is cut to a copy of its kept length, which `TestACutStringHoldsNoneOfTheStringItWasCutFrom` holds, so a name takes 256 bytes, a kubelet version 80, a condition's status 224 and its type 8, and the conditions' slice 4 KiB a Node.
-  The other kinds keep at most 0.4 MiB (`TestWhatTheTypesKeepAtTheRawBoundsIsUnderKeptAtMost`).
+  The other kinds keep at most 0.4 MiB, and a failed answer's Status, a message of 1,024 raw bytes, a reason and 64 causes of 126, 0.03 MiB (`TestWhatTheTypesKeepAtTheRawBoundsIsUnderKeptAtMost`).
 
 So a read holds 27.3 MiB over HTTP/2 (20.4 + 4.03 + 0.5 + 1.0 + 0.22, then 1.06 for its connection) and 23.4 MiB over HTTP/1.1 (20.4 + 2.4 + 0.3 + 0.22, then 0.06) while its body is read, and 10 MiB after: 27.3 MiB, since a tenant's server may answer either way.
 The memory of a pass follows from the reads it has in flight at once, each 26.2 MiB over HTTP/2 and 23.4 MiB over HTTP/1.1 apart from its connection:
