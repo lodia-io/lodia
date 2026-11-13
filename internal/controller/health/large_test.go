@@ -63,7 +63,7 @@ func kubeletNode(name string, at time.Time) *corev1.Node {
 			NodeInfo: corev1.NodeSystemInfo{
 				MachineID: "0123456789abcdef0123456789abcdef", SystemUUID: "01234567-89ab-cdef-0123-456789abcdef", BootID: "01234567-89ab-cdef-0123-456789abcdef",
 				KernelVersion: "6.8.0-1000-generic", OSImage: "Ubuntu 24.04.1 LTS", ContainerRuntimeVersion: "containerd://2.0.0",
-				KubeletVersion: "v1.35.0", KubeProxyVersion: "v1.35.0", OperatingSystem: "linux", Architecture: "amd64",
+				KubeletVersion: "v1.35.0", OperatingSystem: "linux", Architecture: "amd64",
 			},
 			Images: images,
 		},
@@ -145,6 +145,6 @@ func TestATenantOfMaxNodesNodesIsCountedWholeAtTheOperatorsTimeout(t *testing.T)
 	create(t, tenant, kubeletNode(fmt.Sprintf("node-%05d", maxNodes), time.Now()))
 	took = pass()
 	t.Logf("a first pass of %d Nodes took %v", maxNodes+1, took)
-	expectTooMany(t, cp, fmt.Sprintf("more than %d Nodes (health.maxNodes)", maxNodes)+beyond)
+	expectTooMany(t, cp, tooManyNodes(maxNodes))
 	expectNodes(t, cp, truncatedNodes(maxNodes, maxNodes))
 }
