@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"testing"
 
+	"golang.org/x/net/http2/hpack"
 	utilnet "k8s.io/apimachinery/pkg/util/net"
 )
 
@@ -194,6 +195,7 @@ func TestTheSizesTheTermsAreBuiltFromAreTheSourcesOnThisPlatform(t *testing.T) {
 		{"a copy of a name of up to 16 bytes", worstCopy, nameCopy},
 		{"a copy of a value of up to 16 bytes", worstCopy, valueCopy},
 		{"an element of the slice of a header's values", int(reflect.TypeFor[string]().Size()), valueSlice},
+		{"a decoded header field", int(reflect.TypeFor[hpack.HeaderField]().Size()), decodedField},
 		{"a gzip.Reader", allocatedBy(func() { made = reflect.New(reflect.TypeFor[gzip.Reader]()) }), gzipReaderStruct},
 		{"a bufio.Reader", allocatedBy(func() { made = reflect.New(reflect.TypeFor[bufio.Reader]()) }), gzipBufioStruct},
 		{"a bufio.Reader of the default buffer, with its buffer", allocatedBy(func() { buffered = bufio.NewReader(plainReader{}) }), gzipBufioStruct + gzipBufioBuffer},
