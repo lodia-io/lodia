@@ -66,6 +66,9 @@ func walked(tb testing.TB, data []byte) []member {
 	tb.Helper()
 	var out []member
 	err := jsonscan.Walk("the object", data, func(key, value []byte) error {
+		if len(out) > len(data) {
+			return errors.New("more members than bytes")
+		}
 		out = append(out, member{key: string(key), value: slices.Clone(value)})
 		return nil
 	})
@@ -96,6 +99,9 @@ func sameElements(tb testing.TB, data []byte) {
 	}
 	var got [][]byte
 	for element := range jsonscan.Elements(data) {
+		if len(got) > len(data) {
+			tb.Fatalf("Elements yields more elements of %q than it has bytes", data)
+		}
 		got = append(got, element)
 	}
 	if len(got) != len(raw) {
@@ -155,16 +161,17 @@ func TestTheMembersOfAnObjectAreWhatEncodingJSONReadsOfIt(t *testing.T) {
 	}
 }
 
-func TestAKeyWithAnEscapeIsMatchedUpToMaxKeyAndSkippedPast(t *testing.T) {
+func TestAKeyWithAnEscapeIsMatchedUpTo256BytesAndSkippedPast(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		raw  string
 		want bool
 	}{
-		{"a plain key far past it", strings.Repeat("a", 10*jsonscan.MaxKey), true},
-		{"a key with an escape at it", strings.Repeat("n", jsonscan.MaxKey-2) + `\n`, true},
-		{"a key with an escape one byte past it", strings.Repeat("n", jsonscan.MaxKey-1) + `\n`, false},
-		{"a key with an escape far past it", strings.Repeat(`\n`, 10*jsonscan.MaxKey), false},
+		{"a plain key far past it", strings.Repeat("a", 2560), true},
+		{"a plain key one byte past it", strings.Repeat("a", 257), true},
+		{"a key with an escape at it", strings.Repeat("n", 254) + `\n`, true},
+		{"a key with an escape one byte past it", strings.Repeat("n", 255) + `\n`, false},
+		{"a key with an escape far past it", strings.Repeat(`\n`, 2560), false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got := walked(t, []byte(`{"`+c.raw+`":1,"after":2}`))

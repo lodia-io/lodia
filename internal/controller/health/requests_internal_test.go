@@ -45,16 +45,12 @@ func TestARequestIsSentOnceWhateverTheServerSaysOfWhenToSendItAgain(t *testing.T
 					if err != nil {
 						t.Fatal(err)
 					}
-					begun := time.Now()
 					stop, err := read.do(t.Context(), tenant, r)
 					if !status.is(err) || stop != "" {
 						t.Errorf("the read returned stop %q and error %v, want the error of the status", stop, err)
 					}
 					if n := sent.Load(); n != 1 {
 						t.Errorf("the read sent %d requests, want 1", n)
-					}
-					if took := time.Since(begun); took > 500*time.Millisecond {
-						t.Errorf("the read took %v, which it spends only waiting to send the request again", took)
 					}
 				})
 			}

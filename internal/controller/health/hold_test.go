@@ -1330,6 +1330,22 @@ func TestAWriteTimingOutOrFailingAppliesNothing(t *testing.T) {
 			refuse(w, http.StatusNotFound, metav1.StatusReasonNotFound)
 			return true
 		},
+		"a 429 that asks to try again": func(w http.ResponseWriter, req *http.Request) bool {
+			if req.URL.Path != managerLease || req.Method != http.MethodPatch {
+				return false
+			}
+			w.Header().Set("Retry-After", "1")
+			refuse(w, http.StatusTooManyRequests, metav1.StatusReasonTooManyRequests)
+			return true
+		},
+		"a 503 that asks to try again": func(w http.ResponseWriter, req *http.Request) bool {
+			if req.URL.Path != managerLease || req.Method != http.MethodPatch {
+				return false
+			}
+			w.Header().Set("Retry-After", "1")
+			refuse(w, http.StatusServiceUnavailable, metav1.StatusReasonServiceUnavailable)
+			return true
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := sampling(t, "a", "b", "c")

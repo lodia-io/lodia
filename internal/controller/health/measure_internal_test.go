@@ -305,28 +305,28 @@ func amplifiers(size int) []amplifier {
 		{"a list of CronJobs of empty items", 200, items, readFirstPage("/apis/batch/v1/cronjobs", cronJobOf), overItems},
 		{"a page of Leases of one Lease padded", 200, padding(size, `{"metadata":{},"items":[{"metadata":{"name":"n","resourceVersion":"1","annotations":{"pad":"`, `"}}}]}`), readLeases, `kept 1, stopped "", error <nil>`},
 		{"a leader Lease padded", 200, padding(size, `{"metadata":{"resourceVersion":"1","annotations":{"pad":"`, `"}},"spec":{"holderIdentity":"h"}}`), readLeader, leaseHolder},
-		{"a Lease with a resourceVersion of escapes", 200, escaped(size, `{"metadata":{},"items":[{"metadata":{"name":"n","resourceVersion":"`, `"}}]}`), readLeases, leaseStop("metadata.resourceVersion", maxVersionRaw)},
-		{"a Lease named with escapes", 200, escaped(size, `{"metadata":{},"items":[{"metadata":{"name":"`, `"}}]}`), readLeases, leaseStop("metadata.name", maxNameRaw)},
-		{"a Lease named with invalid UTF-8", 200, invalid(size, `{"metadata":{},"items":[{"metadata":{"name":"`, `"}}]}`), readLeases, leaseStop("metadata.name", maxNameRaw)},
-		{"a page of Leases with a continue token of escapes", 200, escaped(size, `{"metadata":{"continue":"`, `"},"items":[]}`), readLeases, leaseStop("metadata.continue", maxContinue)},
-		{"a page of Leases with a continue token of invalid UTF-8", 200, invalid(size, `{"metadata":{"continue":"`, `"},"items":[]}`), readLeases, leaseStop("metadata.continue", maxContinue)},
+		{"a Lease with a resourceVersion of escapes", 200, escaped(size, `{"metadata":{},"items":[{"metadata":{"name":"n","resourceVersion":"`, `"}}]}`), readLeases, leaseStop("metadata.resourceVersion", 64)},
+		{"a Lease named with escapes", 200, escaped(size, `{"metadata":{},"items":[{"metadata":{"name":"`, `"}}]}`), readLeases, leaseStop("metadata.name", 2048)},
+		{"a Lease named with invalid UTF-8", 200, invalid(size, `{"metadata":{},"items":[{"metadata":{"name":"`, `"}}]}`), readLeases, leaseStop("metadata.name", 2048)},
+		{"a page of Leases with a continue token of escapes", 200, escaped(size, `{"metadata":{"continue":"`, `"},"items":[]}`), readLeases, leaseStop("metadata.continue", 4096)},
+		{"a page of Leases with a continue token of invalid UTF-8", 200, invalid(size, `{"metadata":{"continue":"`, `"},"items":[]}`), readLeases, leaseStop("metadata.continue", 4096)},
 		{"a page of Leases with a key of invalid UTF-8", 200, invalid(size, `{"metadata":{},"items":[],"`, `":0}`), readLeases, `kept 0, stopped "", error <nil>`},
 		{"a page of Leases with a key of letters", 200, padding(size, `{"metadata":{},"items":[],"`, `":0}`), readLeases, `kept 0, stopped "", error <nil>`},
 		{"a page of Leases with a key of escapes", 200, escaped(size, `{"metadata":{},"items":[],"`, `":0}`), readLeases, `kept 0, stopped "", error <nil>`},
 		{"a page of Leases with a key of escapes at the bound", 200, escapedKey(jsonscan.MaxKey), readLeases, `kept 0, stopped "", error <nil>`},
 		{"a page of Leases of one Lease padded with invalid UTF-8", 200, invalid(size, `{"metadata":{},"items":[{"metadata":{"name":"n","resourceVersion":"1","annotations":{"pad":"`, `"}}}]}`), readLeases, `kept 1, stopped "", error <nil>`},
-		{"a Node with a kubelet version of escapes", 200, escaped(size, `{"metadata":{},"items":[{"metadata":{"name":"n"},"status":{"nodeInfo":{"kubeletVersion":"`, `"}}}]}`), readNodes, nodeStop("status.nodeInfo.kubeletVersion", maxKubeletRaw)},
-		{"a Node named with escapes", 200, escaped(size, `{"metadata":{},"items":[{"metadata":{"name":"`, `"}}]}`), readNodes, nodeStop("metadata.name", maxNameRaw)},
-		{"a Node named with invalid UTF-8", 200, invalid(size, `{"metadata":{},"items":[{"metadata":{"name":"`, `"}}]}`), readNodes, nodeStop("metadata.name", maxNameRaw)},
-		{"a Node whose condition has a time of letters", 200, padding(size, `{"metadata":{},"items":[{"metadata":{"name":"n"},"status":{"conditions":[{"type":"Ready","status":"True","lastTransitionTime":"`, `"}]}}]}`), readNodes, nodeStop("status.conditions.lastTransitionTime", maxTimeRaw)},
-		{"a Node whose condition has a time of invalid UTF-8", 200, invalid(size, `{"metadata":{},"items":[{"metadata":{"name":"n"},"status":{"conditions":[{"type":"Ready","status":"True","lastTransitionTime":"`, `"}]}}]}`), readNodes, nodeStop("status.conditions.lastTransitionTime", maxTimeRaw)},
-		{"a Node whose condition has a time that is no time", 200, []byte(`{"metadata":{},"items":[{"metadata":{"name":"n"},"status":{"conditions":[{"type":"Ready","status":"True","lastTransitionTime":"` + strings.Repeat("a", maxTimeRaw) + `"}]}}]}`), readNodes, `kept 0, stopped "", error read the response: status.conditions.lastTransitionTime is not a time`},
+		{"a Node with a kubelet version of escapes", 200, escaped(size, `{"metadata":{},"items":[{"metadata":{"name":"n"},"status":{"nodeInfo":{"kubeletVersion":"`, `"}}}]}`), readNodes, nodeStop("status.nodeInfo.kubeletVersion", 384)},
+		{"a Node named with escapes", 200, escaped(size, `{"metadata":{},"items":[{"metadata":{"name":"`, `"}}]}`), readNodes, nodeStop("metadata.name", 2048)},
+		{"a Node named with invalid UTF-8", 200, invalid(size, `{"metadata":{},"items":[{"metadata":{"name":"`, `"}}]}`), readNodes, nodeStop("metadata.name", 2048)},
+		{"a Node whose condition has a time of letters", 200, padding(size, `{"metadata":{},"items":[{"metadata":{"name":"n"},"status":{"conditions":[{"type":"Ready","status":"True","lastTransitionTime":"`, `"}]}}]}`), readNodes, nodeStop("status.conditions.lastTransitionTime", 64)},
+		{"a Node whose condition has a time of invalid UTF-8", 200, invalid(size, `{"metadata":{},"items":[{"metadata":{"name":"n"},"status":{"conditions":[{"type":"Ready","status":"True","lastTransitionTime":"`, `"}]}}]}`), readNodes, nodeStop("status.conditions.lastTransitionTime", 64)},
+		{"a Node whose condition has a time that is no time", 200, []byte(`{"metadata":{},"items":[{"metadata":{"name":"n"},"status":{"conditions":[{"type":"Ready","status":"True","lastTransitionTime":"` + strings.Repeat("a", 64) + `"}]}}]}`), readNodes, `kept 0, stopped "", error read the response: status.conditions.lastTransitionTime is not a time`},
 		{"a Node whose other condition has a time of letters", 200, padding(size, `{"metadata":{},"items":[{"metadata":{"name":"n"},"status":{"conditions":[{"type":"MemoryPressure","status":"False","lastTransitionTime":"`, `"}]}}]}`), readNodes, `kept 1, stopped "", error <nil>`},
 		{"a leader Lease with a holder of escapes", 200, escaped(size, `{"metadata":{"resourceVersion":"1"},"spec":{"holderIdentity":"`, `"}}`), readLeaderHolder, "error read the response: spec.holderIdentity is longer than 512 bytes"},
 		{"a leader Lease with a holder of invalid UTF-8", 200, invalid(size, `{"metadata":{"resourceVersion":"1"},"spec":{"holderIdentity":"`, `"}}`), readLeaderHolder, "error read the response: spec.holderIdentity is longer than 512 bytes"},
 		{"a leader Lease with a resourceVersion of escapes", 200, escaped(size, `{"metadata":{"resourceVersion":"`, `"},"spec":{"holderIdentity":"h"}}`), readLeader, "error read the response: metadata.resourceVersion is longer than 64 bytes"},
 		{"a leader Lease with a renewTime of invalid UTF-8", 200, invalid(size, `{"metadata":{"resourceVersion":"1"},"spec":{"renewTime":"`, `"}}`), readLeader, "error read the response: spec.renewTime is longer than 64 bytes"},
-		{"a leader Lease with an acquireTime of letters", 200, []byte(`{"metadata":{"resourceVersion":"1"},"spec":{"acquireTime":"` + strings.Repeat("a", maxTimeRaw) + `"}}`), readLeader, "error read the response: spec.acquireTime is not a time"},
+		{"a leader Lease with an acquireTime of letters", 200, []byte(`{"metadata":{"resourceVersion":"1"},"spec":{"acquireTime":"` + strings.Repeat("a", 64) + `"}}`), readLeader, "error read the response: spec.acquireTime is not a time"},
 		{"a leader Lease with a number of digits", 200, zeros(size, `{"metadata":{"resourceVersion":"1"},"spec":{"leaseTransitions":1`, `}}`), readLeader, "error read the response: spec.leaseTransitions is longer than 11 bytes"},
 		{"a failed request with a message of escapes", 500, escaped(size, `{"kind":"Status","status":"Failure","reason":"InternalError","code":500,"message":"`, `"}`), readLeaderError, "error of " + strconv.Itoa(len(longMessage)) + " bytes"},
 		{"a failed request with a message of invalid UTF-8", 500, invalid(size, `{"kind":"Status","status":"Failure","reason":"InternalError","code":500,"message":"`, `"}`), readLeaderError, "error of " + strconv.Itoa(len(longMessage)) + " bytes"},
@@ -385,16 +385,14 @@ func TestMeasureTheLiveHeapOfEveryReadOverAnAmplifyingResponse(t *testing.T) {
 func mib(bytes uint64) float64 { return float64(bytes) / (1 << 20) }
 
 // keptAtMost is what the types of one read keep at the bounds of this package:
-// 500 Leases of a name of 253 bytes and a version of 192, 100 Nodes of 64
-// conditions, 500 objects of a held restore of two names and a word, with
-// room to spare.
-const keptAtMost = 1 << 20
+// 0.41 MiB for a page of 100 Nodes of 64 conditions, the most of any read.
+const keptAtMost = 1 << 19
 
-// structuralBound is the most live heap a read of a body holds: the body, the
-// chunks io.ReadAll keeps until it has copied them into the slice it returns,
-// 2.6 bodies in all, and what the types keep.
+// structuralBound is the most live heap a read of a body holds: the chunks
+// io.ReadAll keeps until it has copied them into the slice it returns, and the
+// slice, 2.6 bodies in all, what the types keep and the headers.
 func structuralBound(body int) uint64 {
-	return uint64(2.6*float64(body)) + keptAtMost
+	return uint64(2.6*float64(body)) + keptAtMost + maxResponseHeaderBytes
 }
 
 func servingTogether(t *testing.T, answers map[string][]byte, requests int) *tenant {

@@ -64,34 +64,34 @@ func TestEveryKeptFieldIsReadAtItsBoundAndOneBytePastItStopsOrFailsTheRead(t *te
 		stops   string
 		atBound string
 	}{
-		{"a Lease's name", leases, "metadata.name", maxNameRaw, quotedOf, item(`{"metadata":{"name":TOKEN}}`), leases, ""},
-		{"a Lease's resourceVersion", leases, "metadata.resourceVersion", maxVersionRaw, quotedOf, item(`{"metadata":{"name":"n","resourceVersion":TOKEN}}`), leases, ""},
-		{"a Node's name", nodes, "metadata.name", maxNameRaw, quotedOf, item(`{"metadata":{"name":TOKEN}}`), nodes, ""},
-		{"a Node's kubelet version", nodes, "status.nodeInfo.kubeletVersion", maxKubeletRaw, quotedOf, item(`{"metadata":{"name":"n"},"status":{"nodeInfo":{"kubeletVersion":TOKEN}}}`), nodes, ""},
-		{"a condition's type", nodes, "status.conditions.type", maxWordRaw, quotedOf, item(`{"metadata":{"name":"n"},"status":{"conditions":[{"type":TOKEN}]}}`), nodes, ""},
-		{"a Ready condition's status", nodes, "status.conditions.status", maxWordRaw, quotedOf, item(`{"metadata":{"name":"n"},"status":{"conditions":[{"type":"Ready","status":TOKEN}]}}`), nodes, ""},
-		{"a Ready condition's time", nodes, "status.conditions.lastTransitionTime", maxTimeRaw, timeOfLength, item(`{"metadata":{"name":"n"},"status":{"conditions":[{"type":"Ready","lastTransitionTime":TOKEN}]}}`), nodes, ""},
-		{"a leader Lease's resourceVersion", "a leader Lease", "metadata.resourceVersion", maxVersionRaw, quotedOf, whole(`{"metadata":{"resourceVersion":TOKEN}}`), "", ""},
-		{"a leader Lease's holder", "a leader Lease", "spec.holderIdentity", maxHolderRaw, quotedOf, whole(`{"spec":{"holderIdentity":TOKEN}}`), "", ""},
-		{"a leader Lease's duration", "a leader Lease", "spec.leaseDurationSeconds", maxNumberRaw, integerOfLength, whole(`{"spec":{"leaseDurationSeconds":TOKEN}}`), "", ""},
-		{"a leader Lease's transitions", "a leader Lease", "spec.leaseTransitions", maxNumberRaw, integerOfLength, whole(`{"spec":{"leaseTransitions":TOKEN}}`), "", ""},
-		{"a leader Lease's acquire time", "a leader Lease", "spec.acquireTime", maxTimeRaw, timeOfLength, whole(`{"spec":{"acquireTime":TOKEN}}`), "", "spec.acquireTime is not a time"},
-		{"a leader Lease's renew time", "a leader Lease", "spec.renewTime", maxTimeRaw, timeOfLength, whole(`{"spec":{"renewTime":TOKEN}}`), "", "spec.renewTime is not a time"},
-		{"a Service's name", "Services", "metadata.name", maxNameRaw, quotedOf, item(`{"metadata":{"name":TOKEN}}`), "", ""},
-		{"a Service's namespace", "Services", "metadata.namespace", maxNameRaw, quotedOf, item(`{"metadata":{"namespace":TOKEN,"name":"s"}}`), "", ""},
-		{"a Service's type", "Services", "spec.type", maxWordRaw, quotedOf, item(`{"metadata":{"name":"s"},"spec":{"type":TOKEN}}`), "", ""},
-		{"a Service list's token", "Services", "metadata.continue", maxContinue, quotedOf, whole(`{"metadata":{"continue":TOKEN},"items":[]}`), "", ""},
-		{"a PersistentVolume's name", "PersistentVolumes", "metadata.name", maxNameRaw, quotedOf, item(`{"metadata":{"name":TOKEN}}`), "", ""},
-		{"a PersistentVolume's reclaim policy", "PersistentVolumes", "spec.persistentVolumeReclaimPolicy", maxWordRaw, quotedOf, item(`{"metadata":{"name":"v"},"spec":{"persistentVolumeReclaimPolicy":TOKEN}}`), "", ""},
-		{"a PersistentVolumeClaim's namespace", "PersistentVolumeClaims", "metadata.namespace", maxNameRaw, quotedOf, item(`{"metadata":{"namespace":TOKEN,"name":"c"}}`), "", ""},
-		{"a PersistentVolumeClaim's name", "PersistentVolumeClaims", "metadata.name", maxNameRaw, quotedOf, item(`{"metadata":{"name":TOKEN}}`), "", ""},
-		{"a PersistentVolumeClaim's phase", "PersistentVolumeClaims", "status.phase", maxWordRaw, quotedOf, item(`{"metadata":{"name":"c"},"status":{"phase":TOKEN}}`), "", ""},
-		{"a webhook configuration's name", "ValidatingWebhookConfigurations", "metadata.name", maxNameRaw, quotedOf, item(`{"metadata":{"name":TOKEN},"webhooks":[{}]}`), "", ""},
-		{"a webhook's name", "MutatingWebhookConfigurations", "webhooks.name", maxNameRaw, quotedOf, item(`{"metadata":{"name":"c"},"webhooks":[{"name":TOKEN}]}`), "", ""},
-		{"a webhook's failure policy", "ValidatingWebhookConfigurations", "webhooks.failurePolicy", maxWordRaw, quotedOf, item(`{"metadata":{"name":"c"},"webhooks":[{"failurePolicy":TOKEN}]}`), "", ""},
-		{"an APIService's name", "APIServices", "metadata.name", maxNameRaw, quotedOf, item(`{"metadata":{"name":TOKEN}}`), "", ""},
-		{"a CronJob's namespace", "CronJobs", "metadata.namespace", maxNameRaw, quotedOf, item(`{"metadata":{"namespace":TOKEN,"name":"j"}}`), "", ""},
-		{"a CronJob's name", "CronJobs", "metadata.name", maxNameRaw, quotedOf, item(`{"metadata":{"name":TOKEN}}`), "", ""},
+		{"a Lease's name", leases, "metadata.name", 2048, quotedOf, item(`{"metadata":{"name":TOKEN}}`), leases, ""},
+		{"a Lease's resourceVersion", leases, "metadata.resourceVersion", 64, quotedOf, item(`{"metadata":{"name":"n","resourceVersion":TOKEN}}`), leases, ""},
+		{"a Node's name", nodes, "metadata.name", 2048, quotedOf, item(`{"metadata":{"name":TOKEN}}`), nodes, ""},
+		{"a Node's kubelet version", nodes, "status.nodeInfo.kubeletVersion", 384, quotedOf, item(`{"metadata":{"name":"n"},"status":{"nodeInfo":{"kubeletVersion":TOKEN}}}`), nodes, ""},
+		{"a condition's type", nodes, "status.conditions.type", 64, quotedOf, item(`{"metadata":{"name":"n"},"status":{"conditions":[{"type":TOKEN}]}}`), nodes, ""},
+		{"a Ready condition's status", nodes, "status.conditions.status", 64, quotedOf, item(`{"metadata":{"name":"n"},"status":{"conditions":[{"type":"Ready","status":TOKEN}]}}`), nodes, ""},
+		{"a Ready condition's time", nodes, "status.conditions.lastTransitionTime", 64, timeOfLength, item(`{"metadata":{"name":"n"},"status":{"conditions":[{"type":"Ready","lastTransitionTime":TOKEN}]}}`), nodes, ""},
+		{"a leader Lease's resourceVersion", "a leader Lease", "metadata.resourceVersion", 64, quotedOf, whole(`{"metadata":{"resourceVersion":TOKEN}}`), "", ""},
+		{"a leader Lease's holder", "a leader Lease", "spec.holderIdentity", 512, quotedOf, whole(`{"spec":{"holderIdentity":TOKEN}}`), "", ""},
+		{"a leader Lease's duration", "a leader Lease", "spec.leaseDurationSeconds", 11, integerOfLength, whole(`{"spec":{"leaseDurationSeconds":TOKEN}}`), "", ""},
+		{"a leader Lease's transitions", "a leader Lease", "spec.leaseTransitions", 11, integerOfLength, whole(`{"spec":{"leaseTransitions":TOKEN}}`), "", ""},
+		{"a leader Lease's acquire time", "a leader Lease", "spec.acquireTime", 64, timeOfLength, whole(`{"spec":{"acquireTime":TOKEN}}`), "", "spec.acquireTime is not a time"},
+		{"a leader Lease's renew time", "a leader Lease", "spec.renewTime", 64, timeOfLength, whole(`{"spec":{"renewTime":TOKEN}}`), "", "spec.renewTime is not a time"},
+		{"a Service's name", "Services", "metadata.name", 2048, quotedOf, item(`{"metadata":{"name":TOKEN}}`), "", ""},
+		{"a Service's namespace", "Services", "metadata.namespace", 2048, quotedOf, item(`{"metadata":{"namespace":TOKEN,"name":"s"}}`), "", ""},
+		{"a Service's type", "Services", "spec.type", 64, quotedOf, item(`{"metadata":{"name":"s"},"spec":{"type":TOKEN}}`), "", ""},
+		{"a Service list's token", "Services", "metadata.continue", 4096, quotedOf, whole(`{"metadata":{"continue":TOKEN},"items":[]}`), "", ""},
+		{"a PersistentVolume's name", "PersistentVolumes", "metadata.name", 2048, quotedOf, item(`{"metadata":{"name":TOKEN}}`), "", ""},
+		{"a PersistentVolume's reclaim policy", "PersistentVolumes", "spec.persistentVolumeReclaimPolicy", 64, quotedOf, item(`{"metadata":{"name":"v"},"spec":{"persistentVolumeReclaimPolicy":TOKEN}}`), "", ""},
+		{"a PersistentVolumeClaim's namespace", "PersistentVolumeClaims", "metadata.namespace", 2048, quotedOf, item(`{"metadata":{"namespace":TOKEN,"name":"c"}}`), "", ""},
+		{"a PersistentVolumeClaim's name", "PersistentVolumeClaims", "metadata.name", 2048, quotedOf, item(`{"metadata":{"name":TOKEN}}`), "", ""},
+		{"a PersistentVolumeClaim's phase", "PersistentVolumeClaims", "status.phase", 64, quotedOf, item(`{"metadata":{"name":"c"},"status":{"phase":TOKEN}}`), "", ""},
+		{"a webhook configuration's name", "ValidatingWebhookConfigurations", "metadata.name", 2048, quotedOf, item(`{"metadata":{"name":TOKEN},"webhooks":[{}]}`), "", ""},
+		{"a webhook's name", "MutatingWebhookConfigurations", "webhooks.name", 2048, quotedOf, item(`{"metadata":{"name":"c"},"webhooks":[{"name":TOKEN}]}`), "", ""},
+		{"a webhook's failure policy", "ValidatingWebhookConfigurations", "webhooks.failurePolicy", 64, quotedOf, item(`{"metadata":{"name":"c"},"webhooks":[{"failurePolicy":TOKEN}]}`), "", ""},
+		{"an APIService's name", "APIServices", "metadata.name", 2048, quotedOf, item(`{"metadata":{"name":TOKEN}}`), "", ""},
+		{"a CronJob's namespace", "CronJobs", "metadata.namespace", 2048, quotedOf, item(`{"metadata":{"namespace":TOKEN,"name":"j"}}`), "", ""},
+		{"a CronJob's name", "CronJobs", "metadata.name", 2048, quotedOf, item(`{"metadata":{"name":TOKEN}}`), "", ""},
 	} {
 		want := func(most int) string {
 			if c.stops != "" {
@@ -141,10 +141,10 @@ func TestAStatusIsReadAtTheBoundsOfItsFieldsAndNeverPastThem(t *testing.T) {
 		most int
 		past string
 	}{
-		{"a reason", func(n int) string { return status(quotedOf(n), `"m"`, "500", `"c"`) }, maxWordRaw, ""},
-		{"a cause's reason", func(n int) string { return status(`"r"`, `"m"`, "500", quotedOf(n)) }, maxWordRaw, ""},
-		{"a message", func(n int) string { return status(`"r"`, quotedOf(n), "500", `"c"`) }, maxMessageRaw, longMessage},
-		{"a code", func(n int) string { return status(`"r"`, `"m"`, integerOfLength(n), `"c"`) }, maxNumberRaw, ""},
+		{"a reason", func(n int) string { return status(quotedOf(n), `"m"`, "500", `"c"`) }, 64, ""},
+		{"a cause's reason", func(n int) string { return status(`"r"`, `"m"`, "500", quotedOf(n)) }, 64, ""},
+		{"a message", func(n int) string { return status(`"r"`, quotedOf(n), "500", `"c"`) }, 1024, longMessage},
+		{"a code", func(n int) string { return status(`"r"`, `"m"`, integerOfLength(n), `"c"`) }, 11, ""},
 	} {
 		for _, past := range []bool{false, true} {
 			n, name := c.most, c.name+" at its bound"
@@ -163,8 +163,8 @@ func TestAStatusIsReadAtTheBoundsOfItsFieldsAndNeverPastThem(t *testing.T) {
 						t.Errorf("the error says %q", got)
 					}
 				case !past && c.name == "a message":
-					if got := err.Error(); got != strings.Repeat("a", maxMessageRaw) {
-						t.Errorf("the error says %d bytes, want the message of %d bytes", len(got), maxMessageRaw)
+					if got := err.Error(); got != strings.Repeat("a", 1024) {
+						t.Errorf("the error says %d bytes, want the message of %d bytes", len(got), 1024)
 					}
 				case !past:
 					if got := err.Error(); got != "m" {
@@ -322,5 +322,29 @@ func TestATimeIsReadAsTheAPIsOwnTypeReadsIt(t *testing.T) {
 	if lease.Metadata.ResourceVersion != "7" || *lease.Spec.HolderIdentity != "h" || *lease.Spec.LeaseDurationSeconds != 15 || *lease.Spec.LeaseTransitions != 3 ||
 		!lease.Spec.AcquireTime.Time.Equal(acquired) || !lease.Spec.RenewTime.Time.Equal(renewed) {
 		t.Errorf("the Lease holds %+v", lease)
+	}
+}
+
+func TestAStringPastItsKeptLengthIsCutToOneByteMoreAndNeverHeld(t *testing.T) {
+	name, kubelet := strings.Repeat("a", 2048), strings.Repeat("v", 384)
+	l, err := leaseItemOf([]byte(`{"metadata":{"name":"` + name + `"}}`))
+	if err != nil || len(l.Metadata.Name) != 254 {
+		t.Errorf("a Lease named with 2,048 bytes holds a name of %d bytes, error %v, want 254", len(l.Metadata.Name), err)
+	}
+	n, err := nodeOf([]byte(`{"metadata":{"name":"` + name + `"},"status":{"nodeInfo":{"kubeletVersion":"` + kubelet + `"}}}`))
+	if err != nil || len(n.Metadata.Name) != 254 || len(n.Status.NodeInfo.KubeletVersion) != 65 {
+		t.Errorf("a Node named with 2,048 bytes with a kubelet version of 384 holds %d and %d bytes, error %v, want 254 and 65", len(n.Metadata.Name), len(n.Status.NodeInfo.KubeletVersion), err)
+	}
+	s, err := serviceOf([]byte(`{"metadata":{"namespace":"` + name + `","name":"` + name + `"}}`))
+	if err != nil || len(s.Metadata.Namespace) != 254 || len(s.Metadata.Name) != 254 {
+		t.Errorf("a Service named with 2,048 bytes holds %d and %d bytes, error %v, want 254 each", len(s.Metadata.Namespace), len(s.Metadata.Name), err)
+	}
+	w, err := webhookOf([]byte(`{"name":"` + name + `"}`))
+	if err != nil || len(w.Name) != 254 {
+		t.Errorf("a webhook named with 2,048 bytes holds a name of %d bytes, error %v, want 254", len(w.Name), err)
+	}
+	exact, err := leaseItemOf([]byte(`{"metadata":{"name":"` + name[:253] + `"}}`))
+	if err != nil || len(exact.Metadata.Name) != 253 {
+		t.Errorf("a Lease named with 253 bytes holds a name of %d bytes, error %v, want 253", len(exact.Metadata.Name), err)
 	}
 }

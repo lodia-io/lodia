@@ -294,7 +294,7 @@ func TestMeasureTheLiveHeapOfAPassOverAPageOf128000EmptyWebhooks(t *testing.T) {
 			return map[string][]byte{validatingPath: page, mutatingPath: page}
 		}, 2},
 	} {
-		for _, nameLen := range []int{maxName, 15_900} {
+		for _, nameLen := range []int{maxName, maxNameRaw} {
 			t.Run(fmt.Sprintf("%s named with %d bytes", c.name, nameLen), func(t *testing.T) {
 				page := emptyWebhooks(configurations, nameLen)
 				tenant := servingPaths(t, c.answers(page))
