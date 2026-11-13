@@ -14,7 +14,8 @@ import (
 
 // TestNothingIsPassedToEncodingJSONButAScalarToken pins the rule of
 // docs/operations.md: no object and no array of a tenant's answer is decoded
-// by encoding/json, whose decoding multiplies a tenant's bytes.
+// by encoding/json, whose decoding multiplies a tenant's bytes, directly or
+// through the UnmarshalJSON of an API type.
 func TestNothingIsPassedToEncodingJSONButAScalarToken(t *testing.T) {
 	allowed := map[string]bool{"jsonscan.go: Text": true, "jsonscan.go: keyOf": true}
 	found := map[string]bool{}
@@ -44,6 +45,9 @@ func TestNothingIsPassedToEncodingJSONButAScalarToken(t *testing.T) {
 					selector, ok := call.Fun.(*ast.SelectorExpr)
 					if !ok {
 						return true
+					}
+					if selector.Sel.Name == "UnmarshalJSON" {
+						t.Errorf("%s: %s calls an UnmarshalJSON, which hands its token to encoding/json", filepath.Base(file), fn.Name.Name)
 					}
 					pkg, ok := selector.X.(*ast.Ident)
 					if ok && pkg.Name == "json" && (selector.Sel.Name == "Unmarshal" || selector.Sel.Name == "NewDecoder") {

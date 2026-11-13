@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -208,7 +209,9 @@ func nodeConditionOf(data []byte) (nodeCondition, error) {
 		c.Status = corev1.ConditionStatus(s)
 	}
 	if since != nil {
-		c.LastTransitionTime, err = timeOf[metav1.Time]("status.conditions.lastTransitionTime", since)
+		var t time.Time
+		t, err = timeOf("status.conditions.lastTransitionTime", since, time.RFC3339)
+		c.LastTransitionTime = metav1.Time{Time: t}
 	}
 	return c, err
 }
