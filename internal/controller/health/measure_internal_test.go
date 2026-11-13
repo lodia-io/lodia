@@ -338,6 +338,23 @@ func TestMeasureTheLiveHeapOfEveryReadOverAnAmplifyingResponse(t *testing.T) {
 
 func mib(bytes uint64) float64 { return float64(bytes) / (1 << 20) }
 
+func servingTogether(t *testing.T, answers map[string][]byte, requests int) *tenant {
+	t.Helper()
+	var (
+		mu      sync.Mutex
+		arrived int
+	)
+	release := make(chan struct{})
+	return serving(t, answers, func() {
+		mu.Lock()
+		if arrived++; arrived == requests {
+			close(release)
+		}
+		mu.Unlock()
+		<-release
+	})
+}
+
 func TestMeasureTheLiveHeapOfAPassWhoseEveryReadIsAtItsWorst(t *testing.T) {
 	if os.Getenv(measureHeap) == "" {
 		t.Skipf("set %s to measure the heap of a pass whose every read is at its worst", measureHeap)
@@ -360,11 +377,16 @@ func TestMeasureTheLiveHeapOfAPassWhoseEveryReadIsAtItsWorst(t *testing.T) {
 			}
 		})
 	})
+	body := escaped(maxResponseBytes, `{"metadata":{},"items":[{"webhooks":[{}],"spec":{"type":"LoadBalancer"},"metadata":{"namespace":"n","name":"`, `"}}]}`)
+	answers := map[string][]byte{
+		servicesPath: body, volumesPath: body, claimsPath: body, validatingPath: body, mutatingPath: body, apiServicePath: body, cronJobsPath: body,
+	}
 	t.Run("a pass of health over a held restore", func(t *testing.T) {
-		body := escaped(maxResponseBytes, `{"metadata":{},"items":[{"webhooks":[{}],"spec":{"type":"LoadBalancer"},"metadata":{"namespace":"n","name":"`, `"}}]}`)
-		tenant := servingPaths(t, map[string][]byte{
-			servicesPath: body, volumesPath: body, claimsPath: body, validatingPath: body, mutatingPath: body, apiServicePath: body, cronJobsPath: body,
-		})
+		tenant := servingPaths(t, answers)
+		measure(t, func() { _ = (&Reconciler{Timeout: 10 * time.Minute}).actedOn(t.Context(), tenant) })
+	})
+	t.Run("a pass of health over a held restore whose seven lists are answered together", func(t *testing.T) {
+		tenant := servingTogether(t, answers, len(answers))
 		measure(t, func() { _ = (&Reconciler{Timeout: 10 * time.Minute}).actedOn(t.Context(), tenant) })
 	})
 }

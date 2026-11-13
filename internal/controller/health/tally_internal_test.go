@@ -32,11 +32,17 @@ const (
 
 func servingPaths(t *testing.T, answers map[string][]byte) *tenant {
 	t.Helper()
+	return serving(t, answers, func() {})
+}
+
+func serving(t *testing.T, answers map[string][]byte, beforeAnswering func()) *tenant {
+	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		body, ok := answers[req.URL.Path]
 		if !ok {
 			body = []byte(emptyList)
 		}
+		beforeAnswering()
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 		_, _ = w.Write(body)
