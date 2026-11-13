@@ -63,6 +63,14 @@ func tooManyNodes(n int) string {
 	return fmt.Sprintf("more than %d Nodes (health.maxNodes)", n) + beyond
 }
 
+func tooManyPagesOfLeases(n int) string {
+	return fmt.Sprintf("more than %d pages of Leases of kube-node-lease (health.maxNodes)", n) + beyond
+}
+
+func tooManyPagesOfNodes(n int) string {
+	return fmt.Sprintf("more than %d pages of Nodes (health.maxNodes)", n) + beyond
+}
+
 func truncatedNodes(total, ready int32) *lodiav1alpha1.NodesStatus {
 	return &lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: total, Ready: ready}, Truncated: true}
 }
@@ -104,6 +112,20 @@ func (a *askedPaths) take(path string) []url.Values {
 	out := a.asked[path]
 	delete(a.asked, path)
 	return out
+}
+
+func (a *askedPaths) count() (n int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, asked := range a.asked {
+		n += len(asked)
+	}
+	return n
+}
+
+func writePageWithNoItems(w http.ResponseWriter, apiVersion, kind string) {
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = io.WriteString(w, `{"kind":"`+kind+`","apiVersion":"`+apiVersion+`","metadata":{"resourceVersion":"1","continue":"more"},"items":[]}`)
 }
 
 func expectPages(t *testing.T, name string, asked []url.Values, limit string, continues int) {
@@ -229,6 +251,48 @@ func TestBothListsPageAndTheTenantsBeyondTheBoundsAreNotCounted(t *testing.T) {
 		expectNodes(t, cp, truncatedNodes(0, 0))
 		inject.Store(nil)
 	})
+}
+
+func TestAPassOverListsOfPagesWithNoItemsSendsAtMostTheRequestsTheBoundsAllow(t *testing.T) {
+	const leaderLeaseReads = 5
+	for _, c := range []struct {
+		name                string
+		leaseAsks, nodeAsks int
+		message             string
+		nodes               *lodiav1alpha1.NodesStatus
+	}{
+		{"the Leases", 11, 1, tooManyPagesOfLeases(11), nodesOf(0, 0, 0, "")},
+		{"the Nodes", 1, 51, tooManyPagesOfNodes(51), truncatedNodes(0, 0)},
+		{"both", 11, 51, tooManyPagesOfLeases(11), truncatedNodes(0, 0)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cp := tenantControlPlane(t)
+			var asked askedPaths
+			writeKubeconfig(t, cp, throughProxy(t, func(w http.ResponseWriter, req *http.Request) bool {
+				asked.add(req)
+				switch {
+				case req.URL.Path == leaseListPath && c.leaseAsks > 1:
+					writePageWithNoItems(w, "coordination.k8s.io/v1", "LeaseList")
+				case req.URL.Path == nodeListPath && c.nodeAsks > 1:
+					writePageWithNoItems(w, "v1", "NodeList")
+				default:
+					return false
+				}
+				return true
+			}))
+			r := nodesReconciler(clocktesting.NewFakePassiveClock(time.Now().Truncate(time.Second)))
+			begun := time.Now()
+			sample(t, r, cp)
+			t.Logf("a pass over lists that never end took %v", time.Since(begun))
+			if sent, most := asked.count(), c.leaseAsks+c.nodeAsks+leaderLeaseReads; sent > most {
+				t.Errorf("the pass sent %d requests, more than the %d its bounds allow", sent, most)
+			}
+			expectPages(t, "the Leases", asked.take(leaseListPath), "500", c.leaseAsks-1)
+			expectPages(t, "the Nodes", asked.take(nodeListPath), "100", c.nodeAsks-1)
+			expectTooMany(t, cp, c.message)
+			expectNodes(t, cp, c.nodes)
+		})
+	}
 }
 
 func TestRow5AHeldTenantThatGrowsBeyondTheBoundIsReleasedAtOnce(t *testing.T) {

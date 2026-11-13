@@ -35,6 +35,7 @@ type servedTenant struct {
 	leases, nodes int
 	oversize      map[string]int
 	failing       map[string]int
+	empty         map[string]int
 
 	mu       sync.Mutex
 	requests []listRequest
@@ -75,6 +76,16 @@ func (f *servedTenant) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	page := from/limit + 1
 	if f.failing[req.URL.Path] == page {
 		http.Error(w, "injected", http.StatusInternalServerError)
+		return
+	}
+	if n, ok := f.empty[req.URL.Path]; ok {
+		served, _ := strconv.Atoi(query.Get("continue"))
+		continued := ""
+		if served < n {
+			continued = strconv.Itoa(served + 1)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"metadata":{"resourceVersion":"1","continue":"` + continued + `"},"items":[]}`))
 		return
 	}
 	annotations := map[string]string(nil)
@@ -254,6 +265,42 @@ func TestAFailureOnALaterPageIsAFailedListAndNotAStop(t *testing.T) {
 			}
 			if got.s.stopped() != "" {
 				t.Errorf("a failed page is a stop: %q", got.s.stopped())
+			}
+		})
+	}
+}
+
+func TestAListOfPagesWithNoItemsStopsAtItsBoundOfPagesAndNotBefore(t *testing.T) {
+	for _, c := range []struct {
+		name, path string
+		maxNodes   int
+		tokens     int
+		pages      int
+		stopped    string
+	}{
+		{"Leases that never end", leasesPath, 5000, 1 << 20, 11, "more than 11 pages of Leases of kube-node-lease (health.maxNodes)"},
+		{"Nodes that never end", nodesPath, 5000, 1 << 20, 51, "more than 51 pages of Nodes (health.maxNodes)"},
+		{"Leases that end on the page of the bound", leasesPath, 5000, 10, 11, ""},
+		{"Leases with a token on the page of the bound", leasesPath, 5000, 11, 11, "more than 11 pages of Leases of kube-node-lease (health.maxNodes)"},
+		{"Nodes that end on the page of the bound", nodesPath, 5000, 50, 51, ""},
+		{"Nodes with a token on the page of the bound", nodesPath, 5000, 51, 51, "more than 51 pages of Nodes (health.maxNodes)"},
+		{"Leases at a bound under a page", leasesPath, 3, 1 << 20, 2, "more than 2 pages of Leases of kube-node-lease (health.maxNodes)"},
+		{"Leases at a bound that is a page", leasesPath, 500, 1 << 20, 2, "more than 2 pages of Leases of kube-node-lease (health.maxNodes)"},
+		{"Leases at a bound a page over", leasesPath, 501, 1 << 20, 3, "more than 3 pages of Leases of kube-node-lease (health.maxNodes)"},
+		{"Nodes at a bound that is a page", nodesPath, 100, 1 << 20, 2, "more than 2 pages of Nodes (health.maxNodes)"},
+		{"Nodes at a bound a page over", nodesPath, 101, 1 << 20, 3, "more than 3 pages of Nodes (health.maxNodes)"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := &servedTenant{leases: 3, nodes: 3, empty: map[string]int{c.path: c.tokens}}
+			got := listTenant(t, f, c.maxNodes)
+			if got.err != nil {
+				t.Fatal(got.err)
+			}
+			if got.s.stopped() != c.stopped {
+				t.Errorf("stopped %q, want %q", got.s.stopped(), c.stopped)
+			}
+			if asked := len(f.asked(c.path)); asked != c.pages {
+				t.Errorf("the pages of %s were asked for %d times, want %d", c.path, asked, c.pages)
 			}
 		})
 	}

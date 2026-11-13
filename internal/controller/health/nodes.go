@@ -309,65 +309,88 @@ func (r *NodesReconciler) list(ctx context.Context, tenant *tenant, s *sampling,
 }
 
 func (r *NodesReconciler) listLeases(ctx context.Context, tenant *tenant) ([]leaseVersion, string, error) {
-	leases, more, err := listPages(ctx, leasePage, r.MaxNodes, func(ctx context.Context, options metav1.ListOptions) ([]leaseVersion, string, error) {
+	leases, end, err := listPages(ctx, leasePage, r.MaxNodes, func(ctx context.Context, options metav1.ListOptions) ([]leaseVersion, string, error) {
 		page, err := tenant.nodeLeases.List(ctx, options)
 		if err != nil {
 			return nil, "", err
 		}
 		return leaseVersions(page.Items), page.Continue, nil
 	})
-	stop, err := r.stop("Leases of "+corev1.NamespaceNodeLease, more, err)
+	stop, err := r.stop("Leases of "+corev1.NamespaceNodeLease, leasePage, end, err)
 	return leases, stop, err
 }
 
 func (r *NodesReconciler) listNodes(ctx context.Context, tenant *tenant) ([]node, string, error) {
-	nodes, more, err := listPages(ctx, nodePage, r.MaxNodes, func(ctx context.Context, options metav1.ListOptions) ([]node, string, error) {
+	nodes, end, err := listPages(ctx, nodePage, r.MaxNodes, func(ctx context.Context, options metav1.ListOptions) ([]node, string, error) {
 		page, err := tenant.core.Nodes().List(ctx, options)
 		if err != nil {
 			return nil, "", err
 		}
 		return summarize(page.Items), page.Continue, nil
 	})
-	stop, err := r.stop("Nodes", more, err)
+	stop, err := r.stop("Nodes", nodePage, end, err)
 	return nodes, stop, err
 }
 
-// listPages reads a list a page at a time and keeps its first most items,
-// saying whether it saw more; it asks for no page after that. The page function
-// reduces a decoded page to what the pass keeps, so that no list holds more
-// than one decoded page. It does not use pager.ListPager, whose EachListItem
-// fetches the next page while it hands over the last, even unbuffered. Every
-// page is a consistent read: the list sets no resourceVersion. A failure
-// returns the items of the pages before it.
-func listPages[T any](ctx context.Context, size int64, most int, page func(context.Context, metav1.ListOptions) ([]T, string, error)) (kept []T, more bool, err error) {
+type listEnd int
+
+const (
+	listEnded listEnd = iota
+	tooManyItems
+	tooManyPages
+)
+
+// maxPages is the most pages a list of most items reads: the pages that most
+// items fill, and one more, since a tenant's API server fills every page, so by
+// then the list has ended or holds more than most items.
+func maxPages(size int64, most int) int {
+	return (most+int(size)-1)/int(size) + 1
+}
+
+// listPages reads a list a page at a time and keeps its first most items. It
+// asks for no page after one that left it with more than most items, nor after
+// maxPages(size, most) pages, whatever they hold: the administrator of a tenant
+// can serve the list from a server whose pages hold no item. The page
+// function reduces a decoded page to what the pass keeps, so that no list holds
+// more than one decoded page. It does not use pager.ListPager, whose
+// EachListItem fetches the next page while it hands over the last, even
+// unbuffered. Every page is a consistent read: the list sets no resourceVersion.
+// A failure returns the items of the pages before it.
+func listPages[T any](ctx context.Context, size int64, most int, page func(context.Context, metav1.ListOptions) ([]T, string, error)) (kept []T, end listEnd, err error) {
 	options := metav1.ListOptions{Limit: size}
-	for {
+	for read := 1; ; read++ {
 		items, next, err := page(ctx, options)
 		if err != nil {
-			return kept, false, err
+			return kept, listEnded, err
 		}
 		kept = append(kept, items...)
 		if len(kept) > most {
-			return kept[:most], true, nil
+			return kept[:most], tooManyItems, nil
 		}
 		if next == "" {
-			return kept, false, nil
+			return kept, listEnded, nil
+		}
+		if read == maxPages(size, most) {
+			return kept, tooManyPages, nil
 		}
 		options.Continue = next
 	}
 }
 
 // stop says why the list of what ended before its end, or nothing when it did
-// not: it saw more than MaxNodes items, or a response of it was longer than
-// maxResponseBytes. Another failure of the list is returned.
-func (r *NodesReconciler) stop(what string, more bool, err error) (string, error) {
+// not: it saw more than MaxNodes items or a page after maxPages, or a response
+// of it was longer than maxResponseBytes. Another failure of the list is
+// returned.
+func (r *NodesReconciler) stop(what string, size int64, end listEnd, err error) (string, error) {
 	switch {
 	case errors.Is(err, errResponseTooLong):
 		return "a response listing the " + what + " is longer than " + strconv.Itoa(maxResponseBytes) + " bytes", nil
 	case err != nil:
 		return "", err
-	case more:
+	case end == tooManyItems:
 		return "more than " + strconv.Itoa(r.MaxNodes) + " " + what + " (health.maxNodes)", nil
+	case end == tooManyPages:
+		return "more than " + strconv.Itoa(maxPages(size, r.MaxNodes)) + " pages of " + what + " (health.maxNodes)", nil
 	}
 	return "", nil
 }
