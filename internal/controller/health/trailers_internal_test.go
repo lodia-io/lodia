@@ -183,8 +183,8 @@ func TestAnHTTP1HeadOfFieldLinesEndingInALineFeedIsHeldAtMostHeadersHTTP1(t *tes
 	parts := len(names)*fieldLine + mapTable
 	t.Logf("a head of %d bytes of %d field lines ended by a line feed: %d keys read, held %.3f MiB; the parts add to %.3f MiB, headersHTTP1 is %.3f MiB",
 		len(head), len(names), keys.header, mib(uint64(held)), mib(uint64(parts)), mib(headersHTTP1))
-	if len(names) > fieldLinesHTTP1 || keys.header != len(names)+2 {
-		t.Errorf("a head of the bound carried %d field lines and was read as %d keys, want at most fieldLinesHTTP1, %d, and two keys more", len(names), keys.header, fieldLinesHTTP1)
+	if len(names) > fieldLinesHTTP1 || len(names) < fieldLinesHTTP1*9/10 || keys.header != len(names)+2 {
+		t.Errorf("a head of the bound carried %d field lines and was read as %d keys, want nine tenths of fieldLinesHTTP1, %d, to all of it, and two keys more", len(names), keys.header, fieldLinesHTTP1)
 	}
 	if held < int64(parts)/2 || held > headersHTTP1 {
 		t.Errorf("the head is held in %d bytes, want %d to headersHTTP1, %d", held, parts/2, headersHTTP1)
@@ -224,8 +224,8 @@ func TestAnHTTP1HeadOfNamesAndFieldLinesTogetherWithTheTrailerValueIsHeldAtMostH
 	if keys.trailer != len(names) || keys.header != len(lines)+1 {
 		t.Errorf("the response has %d keys of Trailer and %d of the head, want the %d names announced and the %d field lines and Content-Type", keys.trailer, keys.header, len(names), len(lines))
 	}
-	if len(names) > announcedNamesHTTP1 || oneByte > oneByteNames || len(lines) > oneByteFieldNames {
-		t.Errorf("a head of the bound announced %d names, %d of one byte, and carried %d field lines of one byte, want at most %d, %d and %d", len(names), oneByte, len(lines), announcedNamesHTTP1, oneByteNames, oneByteFieldNames)
+	if len(names) > announcedNamesHTTP1 || oneByte != 195 || len(lines) != 51 || oneByte > oneByteNames || len(lines) > oneByteFieldNames {
+		t.Errorf("a head of the bound announced %d names, %d of one byte, and carried %d field lines of one byte, want at most %d, and 195 and 51, which are at most %d and %d", len(names), oneByte, len(lines), announcedNamesHTTP1, oneByteNames, oneByteFieldNames)
 	}
 	if held < int64(parts)/2 || held > headersHTTP1 {
 		t.Errorf("the head is held in %d bytes, want %d to headersHTTP1, %d", held, parts/2, headersHTTP1)
@@ -234,7 +234,7 @@ func TestAnHTTP1HeadOfNamesAndFieldLinesTogetherWithTheTrailerValueIsHeldAtMostH
 
 func TestAnHTTP1ChunkedAnswersTrailersEndingInALineFeedAreHeldAtItsEndAtMostTrailersHTTP1(t *testing.T) {
 	const body = `{"metadata":{"resourceVersion":"1"}}`
-	names := canonicalFieldNames(trailerBlockHTTP1)
+	names := canonicalFieldNames(4096 - 3)
 	var keys keysRead
 	held := func(sendsTrailers bool) int64 {
 		tail := "0\r\n"
@@ -251,8 +251,8 @@ func TestAnHTTP1ChunkedAnswersTrailersEndingInALineFeedAreHeldAtItsEndAtMostTrai
 	parts := len(names)*trailerFieldHTTP1 + 2*mapTable
 	t.Logf("%d trailers ended by a line feed: %d keys of Trailer, held %.3f MiB more; the parts add to %.3f MiB, trailersHTTP1 is %.3f MiB",
 		len(names), keys.trailer, mib(uint64(with-without)), mib(uint64(parts)), mib(trailersHTTP1))
-	if len(names) > trailerFieldsHTTP1 || keys.trailer != len(names)+1 {
-		t.Errorf("a block of %d bytes carried %d fields and the response has %d keys of Trailer, want at most trailerFieldsHTTP1, %d, and the name announced besides", trailerBlockHTTP1+3, len(names), keys.trailer, trailerFieldsHTTP1)
+	if len(names) > trailerFieldsHTTP1 || len(names) != 1036 || keys.trailer != len(names)+1 {
+		t.Errorf("a block of 4,096 bytes carried %d fields and the response has %d keys of Trailer, want 1,036, at most trailerFieldsHTTP1, %d, and the name announced besides", len(names), keys.trailer, trailerFieldsHTTP1)
 	}
 	if more := int(with - without); more < len(names)*trailerFieldHTTP1/4 || more > trailersHTTP1 {
 		t.Errorf("the trailers are held in %d bytes, want %d to trailersHTTP1, %d", more, len(names)*trailerFieldHTTP1/4, trailersHTTP1)
