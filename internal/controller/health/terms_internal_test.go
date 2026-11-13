@@ -8,7 +8,10 @@ import (
 	"compress/gzip"
 	"math"
 	"math/bits"
+	"net/http"
 	"reflect"
+	"runtime"
+	"strconv"
 	"testing"
 )
 
@@ -149,5 +152,31 @@ func TestEveryFigureOfTheDerivationIsTheSumOfItsTermsRoundedUp(t *testing.T) {
 				t.Errorf("the terms add to %.4f, which rounded up is %.*f, want %.*f", c.got, c.decimals, got, c.decimals, c.want)
 			}
 		})
+	}
+}
+
+func TestAMapOfHeadersHoldsAtMostASlotOfMapSlotBytesForEachKeyAndOneTableMore(t *testing.T) {
+	for _, keys := range []int{fieldsOfABudget, announcedNamesHTTP1} {
+		names := make([]string, keys)
+		for i := range names {
+			names[i] = strconv.Itoa(i)
+		}
+		var most int64
+		for range 100 {
+			base := liveHeap()
+			header := make(http.Header)
+			for _, name := range names {
+				header[name] = nil
+			}
+			most = max(most, int64(liveHeap())-int64(base))
+			runtime.KeepAlive(header)
+		}
+		t.Logf("a map of %d keys held at the most of 100, %d bytes, %.1f a key", keys, most, float64(most)/float64(keys))
+		if bound := int64(keys*mapSlot + mapTable); most > bound {
+			t.Errorf("a map of %d keys held %d bytes, want at most %d: %d a key and a table of %d slots", keys, most, bound, mapSlot, 1024)
+		}
+		if least := int64(keys * 41); most < least {
+			t.Errorf("a map of %d keys held %d bytes at the most of 100, want at least a slot of 41 bytes a key, %d", keys, most, least)
+		}
 	}
 }
