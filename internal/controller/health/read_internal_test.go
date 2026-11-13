@@ -98,7 +98,7 @@ func TestAFailedRequestIsTheStatusTheServerSentAndNeverMoreThanItsFields(t *test
 		{"a namespace being deleted", http.StatusForbidden, terminating(0), apierrors.IsForbidden, "terminating", false},
 		{"a namespace being deleted at the last cause it keeps", http.StatusForbidden, terminating(63), apierrors.IsForbidden, "terminating", false},
 		{"a namespace being deleted past the causes it keeps", http.StatusForbidden, terminating(64), apierrors.IsForbidden, "terminating", true},
-		{"a Status that is no failure", http.StatusInternalServerError, `{"kind":"Status","status":"Success","code":500,"message":"fine"}`, apierrors.IsInternalError, "an error on the server (\"unknown\") has prevented the request from succeeding", false},
+		{"a Status that is no failure", http.StatusInternalServerError, `{"kind":"Status","status":"Success","code":500,"message":"fine"}`, apierrors.IsInternalError, noStatusMessage, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

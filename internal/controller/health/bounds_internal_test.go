@@ -169,8 +169,8 @@ func TestAStatusIsReadAtTheBoundsOfItsFieldsAndNeverPastThem(t *testing.T) {
 						t.Errorf("the error says %q, want %q", got, c.past)
 					}
 				default:
-					if got := err.Error(); got != unknownFailure {
-						t.Errorf("the error says %q, want the one client-go builds of the code, %q", got, unknownFailure)
+					if got := err.Error(); got != noStatusMessage {
+						t.Errorf("the error says %q, want Health's own, %q", got, noStatusMessage)
 					}
 				}
 			})

@@ -1213,26 +1213,24 @@ func TestALongRefusalIsCutInTheMessageAndTheStatusIsApplied(t *testing.T) {
 			return true
 		}
 	}
-	text := denyWith(func(w http.ResponseWriter) {
-		w.Header().Set("Content-Type", "text/plain")
-		w.WriteHeader(http.StatusForbidden)
-		_, _ = w.Write([]byte(strings.Repeat("d", 40000)))
+	longStatus := denyWith(func(w http.ResponseWriter) {
+		refuseSaying(w, http.StatusForbidden, metav1.StatusReasonForbidden, strings.Repeat("d", 40000))
 	})
-	denial := strings.Repeat("d", 1024)
+	const tooLong = "the server's message is longer than 1024 bytes"
 	t.Run("of a renewal", func(t *testing.T) {
 		h := holding(t, "a", "b", "c")
-		h.inject(text)
+		h.inject(longStatus)
 		h.at(25)
-		h.expectSilent("the API server refused the renewal of Lease kube-system/kube-controller-manager: " + denial)
+		h.expectSilent("the API server refused the renewal of Lease kube-system/kube-controller-manager: " + tooLong)
 		h.expectHealth(3, 3)
 	})
 	t.Run("of a take", func(t *testing.T) {
 		h := sampling(t, "a", "b", "c")
 		h.at(0)
 		renew(t, lodiav1alpha1.ControllerManagerLease, "", time.Now())
-		h.inject(text)
+		h.inject(longStatus)
 		h.at(20)
-		h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonHoldBlocked, "the API server refused the take of Lease kube-system/kube-controller-manager: "+denial)
+		h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonHoldBlocked, "the API server refused the take of Lease kube-system/kube-controller-manager: "+tooLong)
 	})
 	t.Run("whose Status says more than 1,024 bytes", func(t *testing.T) {
 		h := holding(t, "a", "b", "c")
@@ -1240,15 +1238,27 @@ func TestALongRefusalIsCutInTheMessageAndTheStatusIsApplied(t *testing.T) {
 			refuseSaying(w, http.StatusForbidden, metav1.StatusReasonForbidden, strings.Repeat("d", 1025))
 		}))
 		h.at(25)
-		h.expectSilent("the API server refused the renewal of Lease kube-system/kube-controller-manager: the server's message is longer than 1024 bytes")
+		h.expectSilent("the API server refused the renewal of Lease kube-system/kube-controller-manager: " + tooLong)
 	})
 	t.Run("whose Status says 1,024 bytes", func(t *testing.T) {
+		denial := strings.Repeat("d", 1024)
 		h := holding(t, "a", "b", "c")
 		h.inject(denyWith(func(w http.ResponseWriter) {
 			refuseSaying(w, http.StatusForbidden, metav1.StatusReasonForbidden, denial)
 		}))
 		h.at(25)
 		h.expectSilent("the API server refused the renewal of Lease kube-system/kube-controller-manager: " + denial)
+	})
+	t.Run("that is no Status", func(t *testing.T) {
+		h := holding(t, "a", "b", "c")
+		h.inject(denyWith(func(w http.ResponseWriter) {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(strings.Repeat("d", 40000)))
+		}))
+		h.at(25)
+		h.expectSilent("the API server refused the renewal of Lease kube-system/kube-controller-manager: the answer is no Status Health can read")
+		h.expectHealth(3, 3)
 	})
 }
 

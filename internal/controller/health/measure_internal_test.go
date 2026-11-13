@@ -192,8 +192,6 @@ func zeros(size int, head, tail string) []byte {
 	return []byte(head + strings.Repeat("0", size-len(head)-len(tail)) + tail)
 }
 
-const unknownFailure = `an error on the server ("unknown") has prevented the request from succeeding`
-
 func invalid(size int, head, tail string) []byte {
 	return append(append([]byte(head), bytes.Repeat([]byte{0xff}, size-len(head)-len(tail))...), tail...)
 }
@@ -330,7 +328,7 @@ func amplifiers(size int) []amplifier {
 		{"a leader Lease with a number of digits", 200, zeros(size, `{"metadata":{"resourceVersion":"1"},"spec":{"leaseTransitions":1`, `}}`), readLeader, "error read the response: spec.leaseTransitions is longer than 11 bytes"},
 		{"a failed request with a message of escapes", 500, escaped(size, `{"kind":"Status","status":"Failure","reason":"InternalError","code":500,"message":"`, `"}`), readLeaderError, "error of " + strconv.Itoa(len(longMessage)) + " bytes"},
 		{"a failed request with a message of invalid UTF-8", 500, invalid(size, `{"kind":"Status","status":"Failure","reason":"InternalError","code":500,"message":"`, `"}`), readLeaderError, "error of " + strconv.Itoa(len(longMessage)) + " bytes"},
-		{"a failed request with a reason of invalid UTF-8", 500, invalid(size, `{"kind":"Status","status":"Failure","code":500,"message":"m","reason":"`, `"}`), readLeaderError, "error of " + strconv.Itoa(len(unknownFailure)) + " bytes"},
+		{"a failed request with a reason of invalid UTF-8", 500, invalid(size, `{"kind":"Status","status":"Failure","code":500,"message":"m","reason":"`, `"}`), readLeaderError, "error of " + strconv.Itoa(len(noStatusMessage)) + " bytes"},
 		{"a Service named with escapes", 200, escaped(size, `{"items":[{"metadata":{"namespace":"n","name":"`, `"},"spec":{"type":"LoadBalancer"}}]}`), readFirstPage("/api/v1/services", serviceOf), "error read the response: metadata.name is longer than 2048 bytes"},
 		{"a Service of a type of invalid UTF-8", 200, invalid(size, `{"items":[{"metadata":{"namespace":"n","name":"s"},"spec":{"type":"`, `"}}]}`), readFirstPage("/api/v1/services", serviceOf), "error <nil>"},
 		{"a webhook configuration named with escapes", 200, escaped(size, `{"items":[{"webhooks":[{}],"metadata":{"name":"`, `"}}]}`), readWebhooks("/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations"), "named 0, more false, error read the response: metadata.name is longer than 2048 bytes"},

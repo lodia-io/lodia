@@ -461,7 +461,9 @@ func (t *tenant) patchLease(ctx context.Context, patch []byte) (*leaderLease, er
 // that carries Retry-After, and the next pass is Health's retry. A body cut at
 // maxResponseBytes is errResponseTooLong whatever the status. A Status of
 // Failure is the error of a failed request, as client-go's Result.Error reads
-// it, but into the fields Health reads.
+// it, but into the fields Health reads. Any other body of a failed answer is
+// the tenant's text, which client-go puts in its error, and which no log or
+// message of Health may carry: see noStatus.
 func (t *tenant) do(ctx context.Context, request *rest.Request) ([]byte, error) {
 	var cut bool
 	body, err := request.MaxRetries(0).DoRaw(context.WithValue(ctx, cutKey{}, &cut))
@@ -472,8 +474,30 @@ func (t *tenant) do(ctx context.Context, request *rest.Request) ([]byte, error) 
 		if failure, ok := failureOf(body); ok {
 			return nil, &apierrors.StatusError{ErrStatus: failure}
 		}
+		return nil, noStatus(err)
 	}
 	return body, err
+}
+
+const noStatusMessage = "the answer is no Status Health can read"
+
+// noStatus is the error client-go built of a failed answer that is no Status
+// within Health's bounds, without the tenant's text: its code, reason and
+// Retry-After, and a message of Health's own, in the place of the body.
+func noStatus(err error) error {
+	var answered apierrors.APIStatus
+	errors.As(err, &answered)
+	status := answered.Status()
+	return &apierrors.StatusError{ErrStatus: metav1.Status{
+		Status:  metav1.StatusFailure,
+		Code:    status.Code,
+		Reason:  status.Reason,
+		Message: noStatusMessage,
+		Details: &metav1.StatusDetails{
+			Causes:            []metav1.StatusCause{{Type: metav1.CauseTypeUnexpectedServerResponse}},
+			RetryAfterSeconds: status.Details.RetryAfterSeconds,
+		},
+	}}
 }
 
 type statusBody struct {
