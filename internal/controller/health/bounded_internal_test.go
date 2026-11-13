@@ -4,6 +4,7 @@
 package health
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -12,7 +13,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	utilnet "k8s.io/apimachinery/pkg/util/net"
@@ -134,5 +137,123 @@ func TestTheCapStillLetsAForgottenControlPlaneCloseItsIdleConnections(t *testing
 	utilnet.CloseIdleConnectionsFor(capResponses(below))
 	if !below.closed.Load() {
 		t.Error("CloseIdleConnectionsFor did not reach the transport below the cap")
+	}
+}
+
+func failureOver(code int, reason, message string, size int) []byte {
+	status := `{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"` + reason + `","code":` + strconv.Itoa(code) + `,"message":"` + message + `"}`
+	return []byte(status + strings.Repeat(" ", size-len(status)))
+}
+
+func TestAResponseOverTheBoundIsAStopOrAFailedReadAndNeverDecodedWhateverItsStatus(t *testing.T) {
+	const (
+		leasesStop = "a response listing the Leases of kube-node-lease is longer than 8388608 bytes"
+		nodesStop  = "a response listing the Nodes is longer than 8388608 bytes"
+	)
+	failed := func(read func(context.Context, *tenant) error) func(context.Context, *tenant, *NodesReconciler) (string, error) {
+		return func(ctx context.Context, t *tenant, _ *NodesReconciler) (string, error) { return "", read(ctx, t) }
+	}
+	for _, read := range []struct {
+		name string
+		do   func(context.Context, *tenant, *NodesReconciler) (string, error)
+		stop string
+	}{
+		{"the Leases of kube-node-lease", func(ctx context.Context, t *tenant, r *NodesReconciler) (string, error) {
+			_, stop, err := r.listLeases(ctx, t)
+			return stop, err
+		}, leasesStop},
+		{"the Nodes", func(ctx context.Context, t *tenant, r *NodesReconciler) (string, error) {
+			_, stop, err := r.listNodes(ctx, t)
+			return stop, err
+		}, nodesStop},
+		{"a leader Lease", failed(func(ctx context.Context, t *tenant) error {
+			_, err := t.getLease(ctx, "kube-controller-manager")
+			return err
+		}), ""},
+		{"a Lease created", failed(func(ctx context.Context, t *tenant) error { _, err := t.createLease(ctx, []byte(`{}`)); return err }), ""},
+		{"a Lease patched", failed(func(ctx context.Context, t *tenant) error { _, err := t.patchLease(ctx, []byte(`{}`)); return err }), ""},
+		{"Services", failed(func(ctx context.Context, t *tenant) error {
+			_, err := firstPage[service](ctx, t, servicesPath)
+			return err
+		}), ""},
+		{"PersistentVolumes", failed(func(ctx context.Context, t *tenant) error {
+			_, err := firstPage[persistentVolume](ctx, t, volumesPath)
+			return err
+		}), ""},
+		{"PersistentVolumeClaims", failed(func(ctx context.Context, t *tenant) error {
+			_, err := firstPage[persistentVolumeClaim](ctx, t, claimsPath)
+			return err
+		}), ""},
+		{"ValidatingWebhookConfigurations", failed(func(ctx context.Context, t *tenant) error {
+			_, err := outsideWebhooks(ctx, t, validatingPath)
+			return err
+		}), ""},
+		{"MutatingWebhookConfigurations", failed(func(ctx context.Context, t *tenant) error {
+			_, err := outsideWebhooks(ctx, t, mutatingPath)
+			return err
+		}), ""},
+		{"APIServices", failed(func(ctx context.Context, t *tenant) error {
+			_, err := firstPage[apiService](ctx, t, apiServicePath)
+			return err
+		}), ""},
+		{"CronJobs", failed(func(ctx context.Context, t *tenant) error {
+			_, err := firstPage[cronJob](ctx, t, cronJobsPath)
+			return err
+		}), ""},
+	} {
+		for _, status := range []struct {
+			code    int
+			reason  string
+			message string
+			is      func(error) bool
+		}{
+			{http.StatusInternalServerError, "InternalError", "an error", apierrors.IsInternalError},
+			{http.StatusConflict, "Conflict", "the object has been modified", apierrors.IsConflict},
+			{http.StatusNotFound, "NotFound", "not found", apierrors.IsNotFound},
+		} {
+			t.Run(read.name+", "+strconv.Itoa(status.code), func(t *testing.T) {
+				body := failureOver(status.code, status.reason, status.message, maxResponseBytes+1)
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+					w.WriteHeader(status.code)
+					_, _ = w.Write(body)
+				}))
+				t.Cleanup(server.Close)
+				r := &NodesReconciler{Timeout: time.Minute, MaxNodes: 5000}
+				tenant, err := r.tenant(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfigFor(t, server.URL))
+				if err != nil {
+					t.Fatal(err)
+				}
+				stop, err := read.do(t.Context(), tenant, r)
+				if read.stop != "" {
+					if err != nil || stop != read.stop {
+						t.Errorf("the list returned stop %q and error %v, want stop %q and none", stop, err, read.stop)
+					}
+					return
+				}
+				if !errors.Is(err, errResponseTooLong) || status.is(err) {
+					t.Errorf("the read returned %v, want the error of the bound and nothing the Status of the body says", err)
+				}
+			})
+		}
+	}
+}
+
+func TestAFailedRequestOfExactlyTheBoundIsStillItsStatus(t *testing.T) {
+	body := failureOver(http.StatusConflict, "Conflict", "the object has been modified", maxResponseBytes)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(server.Close)
+	tenant, err := (&NodesReconciler{}).tenant(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfigFor(t, server.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tenant.getLease(t.Context(), "kube-controller-manager"); !apierrors.IsConflict(err) {
+		t.Errorf("a Status of exactly %d bytes returned %v, want the conflict it says", maxResponseBytes, err)
 	}
 }
