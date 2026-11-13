@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -466,12 +467,18 @@ func (t *tenant) patchLease(ctx context.Context, patch []byte) (*leaderLease, er
 // Failure is the error of a failed request, as client-go's Result.Error reads
 // it, but into the fields Health reads. Any other body of a failed answer is
 // the tenant's text, which client-go puts in its error, and which no log or
-// message of Health may carry: see noStatus.
+// message of Health may carry: see noStatus. A request that fails before the
+// head of its answer is read returns net/http's error, whose URL carries the
+// query, and with it the continue token of a later page, up to 36,883 bytes:
+// the error is the same with the path in the place of the URL.
 func (t *tenant) do(ctx context.Context, request *rest.Request) ([]byte, error) {
 	var cut bool
 	body, err := request.MaxRetries(0).DoRaw(context.WithValue(ctx, cutKey{}, &cut))
 	if cut {
 		return nil, errResponseTooLong
+	}
+	if failed := new(url.Error); errors.As(err, &failed) {
+		return nil, &url.Error{Op: failed.Op, URL: request.URL().Path, Err: failed.Err}
 	}
 	if apierrors.IsUnexpectedServerError(err) {
 		if failure, ok := failureOf(body); ok {
