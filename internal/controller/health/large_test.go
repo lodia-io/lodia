@@ -5,6 +5,7 @@ package health_test
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	clocktesting "k8s.io/utils/clock/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
 const (
@@ -124,10 +126,46 @@ func seedKubeletNodes(t *testing.T, nodes, leases int) {
 	}
 }
 
+func longestContinue(t *testing.T, list func(token string) (next string, err error)) int {
+	t.Helper()
+	longest := 0
+	for token := ""; ; {
+		next, err := list(token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		longest = max(longest, len(next))
+		if next == "" {
+			return longest
+		}
+		token = next
+	}
+}
+
+func continueTokens(t *testing.T, c client.Client) (leases, nodes int) {
+	t.Helper()
+	leases = longestContinue(t, func(token string) (string, error) {
+		var list coordinationv1.LeaseList
+		err := c.List(t.Context(), &list, client.InNamespace(corev1.NamespaceNodeLease), client.Limit(500), client.Continue(token))
+		return list.Continue, err
+	})
+	nodes = longestContinue(t, func(token string) (string, error) {
+		var list corev1.NodeList
+		err := c.List(t.Context(), &list, client.Limit(100), client.Continue(token))
+		return list.Continue, err
+	})
+	return leases, nodes
+}
+
 func TestATenantOfMaxNodesNodesIsCountedWholeAtTheOperatorsTimeout(t *testing.T) {
 	const maxNodes = 5000
 	cp := tenantControlPlane(t)
 	seedKubeletNodes(t, maxNodes, maxNodes)
+	leaseToken, nodeToken := continueTokens(t, tenant)
+	t.Logf("the longest continue token of %d Leases listed 500 to a page is %d bytes, of %d Nodes listed 100 to a page %d bytes", maxNodes, leaseToken, maxNodes, nodeToken)
+	if max(leaseToken, nodeToken) > 1024 {
+		t.Errorf("a kube-apiserver gave a continue token of %d bytes, want under a quarter of the 4,096 Health sends back", max(leaseToken, nodeToken))
+	}
 	now := clocktesting.NewFakePassiveClock(time.Now().Truncate(time.Second))
 	pass := func() time.Duration {
 		r := nodesReconciler(now)
@@ -147,4 +185,24 @@ func TestATenantOfMaxNodesNodesIsCountedWholeAtTheOperatorsTimeout(t *testing.T)
 	t.Logf("a first pass of %d Nodes took %v", maxNodes+1, took)
 	expectTooMany(t, cp, tooManyNodes(maxNodes))
 	expectNodes(t, cp, truncatedNodes(maxNodes, maxNodes))
+}
+
+func TestAContinueTokenOfNamesOf253BytesIsUnderAQuarterOfTheBoundHealthSendsBack(t *testing.T) {
+	_, inside := startTenant(t, func(*envtest.APIServer) {})
+	name := func(i int) string { return fmt.Sprintf("%03d%s", i, strings.Repeat("a", 250)) }
+	for i := range 501 {
+		lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Namespace: corev1.NamespaceNodeLease, Name: name(i)}}
+		create(t, inside, lease)
+	}
+	for i := range 101 {
+		create(t, inside, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: name(i)}})
+	}
+	leaseToken, nodeToken := continueTokens(t, inside)
+	t.Logf("the longest continue token of Leases and Nodes named with 253 bytes is %d bytes for the Leases and %d for the Nodes", leaseToken, nodeToken)
+	if leaseToken == 0 || nodeToken == 0 {
+		t.Fatalf("the lists gave no continue token: %d and %d bytes", leaseToken, nodeToken)
+	}
+	if max(leaseToken, nodeToken) > 1024 {
+		t.Errorf("a kube-apiserver gave a continue token of %d bytes, want under a quarter of the 4,096 Health sends back", max(leaseToken, nodeToken))
+	}
 }

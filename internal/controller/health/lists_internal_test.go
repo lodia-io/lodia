@@ -33,6 +33,7 @@ type servedTenant struct {
 	failing       map[string]int
 	empty         map[string]int
 	overfull      map[string]int
+	tokenLen      map[string]int
 	conditions    map[int]int
 	nameLen       int
 	versionLen    int
@@ -73,7 +74,7 @@ func (f *servedTenant) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "limit "+query.Get("limit"), http.StatusBadRequest)
 		return
 	}
-	from, _ := strconv.Atoi(query.Get("continue"))
+	from, _ := strconv.Atoi(strings.TrimRight(query.Get("continue"), "x"))
 	page := from/limit + 1
 	to := min(from+limit, total)
 	if f.overfull[req.URL.Path] == page {
@@ -81,7 +82,7 @@ func (f *servedTenant) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	next := ""
 	if to < total {
-		next = strconv.Itoa(to)
+		next = padded(strconv.Itoa(to), f.tokenLen[req.URL.Path])
 	}
 	if f.failing[req.URL.Path] == page {
 		http.Error(w, "injected", http.StatusInternalServerError)
@@ -353,6 +354,59 @@ func TestAFailureOnALaterPageIsAFailedListAndNotAStop(t *testing.T) {
 			}
 			if got.s.stopped() != "" {
 				t.Errorf("a failed page is a stop: %q", got.s.stopped())
+			}
+		})
+	}
+}
+
+func TestAContinueTokenOverItsBoundEndsTheListWithoutBeingSentBack(t *testing.T) {
+	const (
+		leasesStop = "a page of the Leases of kube-node-lease carries a continue token longer than 4096 bytes"
+		nodesStop  = "a page of the Nodes carries a continue token longer than 4096 bytes"
+	)
+	for _, c := range []struct {
+		name                string
+		path                string
+		tokenLen            int
+		leaseAsks, nodeAsks int
+		leases, nodes       int
+		stopped             string
+		sent                int
+	}{
+		{"Leases with a token of 4,096 bytes", nodeLeasesPath, 4096, 3, 1, 1201, 3, "", 4096},
+		{"Leases with a token of 4,097 bytes", nodeLeasesPath, 4097, 1, 1, 500, 3, leasesStop, 0},
+		{"Leases with a token of 4 MiB", nodeLeasesPath, maxResponseBytes / 2, 1, 1, 500, 3, leasesStop, 0},
+		{"Nodes with a token of 4,096 bytes", nodesPath, 4096, 1, 3, 3, 250, "", 4096},
+		{"Nodes with a token of 4,097 bytes", nodesPath, 4097, 1, 1, 3, 100, nodesStop, 0},
+		{"Nodes with a token of 4 MiB", nodesPath, maxResponseBytes / 2, 1, 1, 3, 100, nodesStop, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := &servedTenant{leases: 1201, nodes: 250, tokenLen: map[string]int{c.path: c.tokenLen}}
+			if c.path == nodeLeasesPath {
+				f.nodes = 3
+			} else {
+				f.leases = 3
+			}
+			got := listTenant(t, f, 5000)
+			if got.err != nil {
+				t.Fatal(got.err)
+			}
+			if asked := len(f.asked(nodeLeasesPath)); asked != c.leaseAsks {
+				t.Errorf("the Leases were asked for %d times, want %d", asked, c.leaseAsks)
+			}
+			if asked := len(f.asked(nodesPath)); asked != c.nodeAsks {
+				t.Errorf("the Nodes were asked for %d times, want %d", asked, c.nodeAsks)
+			}
+			if len(got.leases) != c.leases || len(got.s.nodes) != c.nodes {
+				t.Errorf("list kept %d Leases and %d Nodes, want %d and %d", len(got.leases), len(got.s.nodes), c.leases, c.nodes)
+			}
+			if got.s.stopped() != c.stopped {
+				t.Errorf("stopped %q, want %q", got.s.stopped(), c.stopped)
+			}
+			for _, r := range f.asked(c.path)[1:] {
+				if sent := len(r.query.Get("continue")); sent != c.sent {
+					t.Errorf("a later page of %s was asked for with a token of %d bytes, want %d", c.path, sent, c.sent)
+				}
 			}
 		})
 	}

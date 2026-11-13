@@ -58,6 +58,10 @@ const (
 	maxKubeletVersion = 64
 
 	maxName = 253
+
+	// maxContinue is the longest continue token Health sends back to a tenant:
+	// client-go's request escapes and copies it several times.
+	maxContinue = 4096
 )
 
 // NodesReconciler samples a tenant's nodes, reports status.nodes, and holds the
@@ -346,6 +350,7 @@ const (
 	tooManyPages
 	pageTooLong
 	nodeTooLarge
+	tokenTooLong
 )
 
 // maxPages is the most pages a list of most items reads: the pages that most
@@ -358,10 +363,11 @@ func maxPages(size int64, most int) int {
 // listPages reads a list a page at a time and keeps its first most items. It
 // asks for no page after one that left it with more than most items, nor after
 // maxPages(size, most) pages, whatever they hold: the administrator of a tenant
-// can serve the list from a server whose pages hold no item. The page
-// function reduces a decoded page to what the pass keeps, so that no list holds
-// more than one decoded page, and says whether the page ended the list early:
-// it held more than size items, or an object of it was too large. It does not use
+// can serve the list from a server whose pages hold no item. It sends back no
+// token longer than maxContinue. The page function reduces a decoded page to
+// what the pass keeps, so that no list holds more than one decoded page, and
+// says whether the page ended the list early: it held more than size items, or
+// an object of it was too large. It does not use
 // pager.ListPager, whose EachListItem fetches the next page while it hands over
 // the last, even unbuffered. Every page is a consistent read: the list sets no
 // resourceVersion. A failure returns the items of the pages before it.
@@ -380,6 +386,8 @@ func listPages[T any](ctx context.Context, size int64, most int, page func(conte
 			return kept, end, nil
 		case next == "":
 			return kept, listEnded, nil
+		case len(next) > maxContinue:
+			return kept, tokenTooLong, nil
 		case read == maxPages(size, most):
 			return kept, tooManyPages, nil
 		}
@@ -389,9 +397,9 @@ func listPages[T any](ctx context.Context, size int64, most int, page func(conte
 
 // stop says why the list of what ended before its end, or nothing when it did
 // not: it saw more than MaxNodes items or a page after maxPages, a page of more
-// than size items or a Node of more than maxConditions conditions, or a response
-// of it was longer than maxResponseBytes. Another failure of the list is
-// returned.
+// than size items, a Node of more than maxConditions conditions or a token
+// longer than maxContinue, or a response of it was longer than maxResponseBytes.
+// Another failure of the list is returned.
 func (r *NodesReconciler) stop(what string, size int64, end listEnd, err error) (string, error) {
 	switch {
 	case errors.Is(err, errResponseTooLong):
@@ -406,6 +414,8 @@ func (r *NodesReconciler) stop(what string, size int64, end listEnd, err error) 
 		return "a page of the " + what + " holds more than " + strconv.FormatInt(size, 10) + " items", nil
 	case end == nodeTooLarge:
 		return "a Node has more than " + strconv.Itoa(maxConditions) + " conditions", nil
+	case end == tokenTooLong:
+		return "a page of the " + what + " carries a continue token longer than " + strconv.Itoa(maxContinue) + " bytes", nil
 	}
 	return "", nil
 }
