@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -120,13 +119,13 @@ func TestADeletedControlPlaneIsForgotten(t *testing.T) {
 }
 
 func TestOnlyTheLeasesListedAreRemembered(t *testing.T) {
-	lease := func(name, resourceVersion string) coordinationv1.Lease {
-		return coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: name, ResourceVersion: resourceVersion}}
+	lease := func(name, resourceVersion string) leaseVersion {
+		return leaseVersion{name, resourceVersion}
 	}
 	first := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
 	later := first.Add(time.Minute)
-	known := seen(nil, []coordinationv1.Lease{lease("a", "1"), lease("b", "1")}, first)
-	got := seen(known, []coordinationv1.Lease{lease("a", "1"), lease("c", "7")}, later)
+	known := seen(nil, []leaseVersion{lease("a", "1"), lease("b", "1")}, first)
+	got := seen(known, []leaseVersion{lease("a", "1"), lease("c", "7")}, later)
 	want := map[string]renewal{
 		"a": {resourceVersion: "1", at: first},
 		"c": {resourceVersion: "7", at: later},
@@ -134,7 +133,7 @@ func TestOnlyTheLeasesListedAreRemembered(t *testing.T) {
 	if !maps.Equal(got, want) {
 		t.Errorf("seen is %+v, want %+v", got, want)
 	}
-	if again := seen(got, []coordinationv1.Lease{lease("a", "2"), lease("c", "7")}, later.Add(time.Minute)); again["a"].at != later.Add(time.Minute) || again["c"].at != later {
+	if again := seen(got, []leaseVersion{lease("a", "2"), lease("c", "7")}, later.Add(time.Minute)); again["a"].at != later.Add(time.Minute) || again["c"].at != later {
 		t.Errorf("a changed Lease and an unchanged one are seen at %+v", again)
 	}
 }

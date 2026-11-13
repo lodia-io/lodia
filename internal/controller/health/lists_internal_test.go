@@ -109,7 +109,7 @@ func (f *servedTenant) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 }
 
 type listed struct {
-	leases []coordinationv1.Lease
+	leases []leaseVersion
 	err    error
 	s      *sampling
 	read   *counting

@@ -148,7 +148,7 @@ func (s *sampling) stopped() string {
 }
 
 // observe starts the clock, when it was forgotten, and notes the Leases listed.
-func (s *sampling) observe(leases []coordinationv1.Lease, now time.Time) {
+func (s *sampling) observe(leases []leaseVersion, now time.Time) {
 	if s.leases == nil {
 		s.restarted = now
 	}
@@ -266,11 +266,11 @@ func (r *NodesReconciler) sample(ctx context.Context, cp *lodiav1alpha1.ControlP
 // list reads the node Leases and, when the last list of Nodes is old, the
 // Nodes, at once under Timeout. A failed list of Nodes leaves the last good
 // one.
-func (r *NodesReconciler) list(ctx context.Context, tenant *tenant, s *sampling, now time.Time) ([]coordinationv1.Lease, error) {
+func (r *NodesReconciler) list(ctx context.Context, tenant *tenant, s *sampling, now time.Time) ([]leaseVersion, error) {
 	listing, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
 	var (
-		leases    []coordinationv1.Lease
+		leases    []leaseVersion
 		leaseStop string
 		leaseErr  error
 		nodes     []node
@@ -298,13 +298,13 @@ func (r *NodesReconciler) list(ctx context.Context, tenant *tenant, s *sampling,
 	return leases, nil
 }
 
-func (r *NodesReconciler) listLeases(ctx context.Context, tenant *tenant) ([]coordinationv1.Lease, string, error) {
-	leases, more, err := listPages(ctx, leasePage, r.MaxNodes, func(ctx context.Context, options metav1.ListOptions) ([]coordinationv1.Lease, string, error) {
+func (r *NodesReconciler) listLeases(ctx context.Context, tenant *tenant) ([]leaseVersion, string, error) {
+	leases, more, err := listPages(ctx, leasePage, r.MaxNodes, func(ctx context.Context, options metav1.ListOptions) ([]leaseVersion, string, error) {
 		page, err := tenant.nodeLeases.List(ctx, options)
 		if err != nil {
 			return nil, "", err
 		}
-		return page.Items, page.Continue, nil
+		return leaseVersions(page.Items), page.Continue, nil
 	})
 	stop, err := r.stop("Leases of "+corev1.NamespaceNodeLease, more, err)
 	return leases, stop, err
@@ -323,10 +323,12 @@ func (r *NodesReconciler) listNodes(ctx context.Context, tenant *tenant) ([]node
 }
 
 // listPages reads a list a page at a time and keeps its first most items,
-// saying whether it saw more; it asks for no page after that. It does not use
-// pager.ListPager, whose EachListItem fetches the next page while it hands
-// over the last, even unbuffered. Every page is a consistent read: the list
-// sets no resourceVersion. A failure returns the items of the pages before it.
+// saying whether it saw more; it asks for no page after that. The page function
+// reduces a decoded page to what the pass keeps, so that no list holds more
+// than one decoded page. It does not use pager.ListPager, whose EachListItem
+// fetches the next page while it hands over the last, even unbuffered. Every
+// page is a consistent read: the list sets no resourceVersion. A failure
+// returns the items of the pages before it.
 func listPages[T any](ctx context.Context, size int64, most int, page func(context.Context, metav1.ListOptions) ([]T, string, error)) (kept []T, more bool, err error) {
 	options := metav1.ListOptions{Limit: size}
 	for {
@@ -360,15 +362,25 @@ func (r *NodesReconciler) stop(what string, more bool, err error) (string, error
 	return "", nil
 }
 
+type leaseVersion struct{ name, resourceVersion string }
+
+func leaseVersions(leases []coordinationv1.Lease) []leaseVersion {
+	out := make([]leaseVersion, len(leases))
+	for i, l := range leases {
+		out[i] = leaseVersion{l.Name, l.ResourceVersion}
+	}
+	return out
+}
+
 // seen keeps, for every Lease listed, when its version was first seen: now for
 // a Lease new to the list or changed since the last one.
-func seen(previous map[string]renewal, leases []coordinationv1.Lease, now time.Time) map[string]renewal {
+func seen(previous map[string]renewal, leases []leaseVersion, now time.Time) map[string]renewal {
 	next := make(map[string]renewal, len(leases))
 	for _, l := range leases {
-		if p, ok := previous[l.Name]; ok && p.resourceVersion == l.ResourceVersion {
-			next[l.Name] = p
+		if p, ok := previous[l.name]; ok && p.resourceVersion == l.resourceVersion {
+			next[l.name] = p
 		} else {
-			next[l.Name] = renewal{resourceVersion: l.ResourceVersion, at: now}
+			next[l.name] = renewal{resourceVersion: l.resourceVersion, at: now}
 		}
 	}
 	return next

@@ -525,9 +525,11 @@ A highly available control plane's target stays 1.5 CPU and 2.5 GiB.
 A management cluster sized for N tenants needs the sum of their requests on its control plane nodes, plus room to roll one Deployment of every tenant (the fleet limit bounds how many roll at once), plus etcd volumes with low fsync latency.
 
 The operator: two replicas; memory grows with the number of tenants it caches (label-scoped, metadata-only for Secrets); the phase 4 gate is 200 tenants under 2 GiB.
-One `health-nodes` worker holds at most two responses of a tenant at once, a page of Leases and a page of Nodes, each at most 8 MiB before it is decoded, and keeps between passes at most `health.maxNodes` Lease versions and Node summaries per tenant ([review checklist](review-checklist.md), item 10).
-Its 100 workers hold at most 1.6 GiB of such responses at once.
-The memory of their decode is not measured yet, and the operator's pods set no requests or limits until it is.
+A pass of `health-nodes` holds one decoded page of each list at a time: a page becomes its Lease versions or Node summaries before the next is read.
+With every page of Leases and of Nodes at the 8 MiB bound and the default `health.maxNodes`, one pass peaked between 97 and 116 MiB of heap in use over seven runs, 12 to 14.5 responses of 8 MiB.
+The 100 workers on such tenants at once need about 12 GiB.
+Between passes it keeps at most `health.maxNodes` Lease versions and Node summaries per tenant ([review checklist](review-checklist.md), item 10).
+The operator's pods set no requests or limits yet.
 
 ## Upgrading Lodia
 
