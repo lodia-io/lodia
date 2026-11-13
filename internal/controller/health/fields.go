@@ -25,8 +25,11 @@ import (
 //     character escaped, 72 bytes; a field Health only compares with a word (a
 //     condition's type and status, a Status's status, a failure policy, a
 //     Service's type, a reclaim policy, a phase) is read with jsonscan.Word,
-//     and a token past this bound is none of the words; a Status's reason and
-//     a cause's reason, words under 40 bytes, are read within it too;
+//     and a token past this bound is none of the words;
+//   - maxReasonRaw: RequestEntityTooLarge, the longest of the reasons that
+//     apierrors compares a Status's reason with, with every character
+//     escaped, 126 bytes; a cause's reason is compared with
+//     NamespaceTerminating, 120;
 //   - maxHolderRaw: a holderIdentity is a name, an underscore and a UUID, at
 //     most 290 bytes;
 //   - maxKubeletRaw: maxKubeletVersion bytes with every character escaped, 384;
@@ -40,6 +43,7 @@ const (
 	maxVersionRaw = 64
 	maxTimeRaw    = 64
 	maxWordRaw    = 72
+	maxReasonRaw  = 126
 	maxHolderRaw  = 512
 	maxKubeletRaw = 6 * maxKubeletVersion
 	maxNumberRaw  = 11

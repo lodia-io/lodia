@@ -531,7 +531,7 @@ func statusFrom(data []byte) (s statusBody, err error) {
 			}
 		case "reason":
 			var reason string
-			reason, err = jsonscan.Text("reason", value, maxWordRaw)
+			reason, err = jsonscan.Text("reason", value, maxReasonRaw)
 			s.Reason = metav1.StatusReason(reason)
 		case "code":
 			var code *int32
@@ -557,7 +557,7 @@ func causeOf(data []byte) (c metav1.CauseType, err error) {
 	err = jsonscan.Walk("a cause", data, func(key, value []byte) (err error) {
 		if string(key) == "reason" {
 			var reason string
-			reason, err = jsonscan.Text("details.causes.reason", value, maxWordRaw)
+			reason, err = jsonscan.Text("details.causes.reason", value, maxReasonRaw)
 			c = metav1.CauseType(reason)
 		}
 		return err
