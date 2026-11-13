@@ -403,6 +403,35 @@ func TestRows3And4DisabledComeBeforeATenantBeyondTheBound(t *testing.T) {
 	h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonDisabled, disabled)
 }
 
+func TestRows1And2ComeBeforeATenantBeyondTheBound(t *testing.T) {
+	for _, c := range []struct {
+		name            string
+		noAccess        bool
+		reason, message string
+	}{
+		{"row 1, AccessReady not True", true, lodiav1alpha1.ReasonWaitingForAccess, notTrue},
+		{"row 2, AccessReady True", false, lodiav1alpha1.ReasonTooManyNodes, tooManyLeases(3)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := sampling(t, "a", "b", "c")
+			h.r.MaxNodes = 3
+			h.at(0)
+			joined(t, "d", corev1.ConditionTrue, h.start)
+			h.at(5)
+			h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonTooManyNodes, tooManyLeases(3))
+			if c.noAccess {
+				setAccessAt(t, h.cp, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding, get(t, h.cp).Generation)
+			}
+			h.fail(managerLease, http.MethodGet, http.StatusInternalServerError, metav1.StatusReasonInternalError)
+			before := h.lease()
+			h.at(10)
+			h.expectCondition(metav1.ConditionFalse, c.reason, c.message)
+			h.expectNoHealth()
+			h.expectUntouched(before)
+		})
+	}
+}
+
 func TestBackUnderTheBoundsTheClockOfTheLeasesStartsAfresh(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
 	h.r.MaxNodes = 3
