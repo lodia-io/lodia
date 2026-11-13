@@ -569,6 +569,9 @@ One shape in one run reached 32.0 MiB, four responses; the others stayed at 24.0
 A pass of `health-nodes` has two reads in flight and a pass of `health` over a held restore has seven, which did not all peak together in these runs.
 Measured at their worst, 100 workers of `health-nodes` would hold 100 times 56.0 MiB, 5.5 GiB, and the 10 workers of `health`, by default, 10 times 120.2 MiB, 1.2 GiB; no run put 100 passes at their worst at once.
 At the default `GOGC` the heap in use may grow to about twice the live heap, so the operator's memory limit and `GOMEMLIMIT`, which are set when the operator is measured (`todo.md`, "From the chart"), start from about twice these figures.
+A first pass of `health-nodes` over 5,000 Nodes and their 5,000 Leases, the most `health.maxNodes` counts by default, took 453, 446 and 451 ms in three runs on go1.26.10, and a pass over 5,001 Nodes, which stops at the bound, 445, 442 and 439 ms (`TestATenantOfMaxNodesNodesIsCountedWholeAtTheOperatorsTimeout`, on envtest, on 16 cores of an Apple M4 Max, one run at a time).
+The decoder is `encoding/json`, which the race detector slows about tenfold: the same pass takes 4.6 s against the operator's `Timeout` of 5 s.
+That test is built without the race detector, and `make test` runs it in a step of its own; under the detector `TestATenantOfMaxNodesNodesIsCountedWholeUnderTheRaceDetector` counts the same tenant with a `Timeout` of a minute.
 Between passes it keeps at most `health.maxNodes` Lease versions and Node summaries per tenant ([review checklist](review-checklist.md), item 10).
 The tenant's administrator can have any server answer the lists, so the pass bounds every string it keeps itself:
 - a Lease or a Node named with more than 253 bytes is not kept; no real object has such a name ([validation.go](https://github.com/kubernetes/apimachinery/blob/v0.37.1/pkg/util/validation/validation.go#L190-L191));

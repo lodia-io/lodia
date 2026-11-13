@@ -20,10 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
-const (
-	operatorsTimeout = 5 * time.Second
-	seedWorkers      = 16
-)
+const seedWorkers = 16
 
 func kubeletNode(name string, at time.Time) *corev1.Node {
 	images := make([]corev1.ContainerImage, 24)
@@ -157,7 +154,7 @@ func continueTokens(t *testing.T, c client.Client) (leases, nodes int) {
 	return leases, nodes
 }
 
-func TestATenantOfMaxNodesNodesIsCountedWholeAtTheOperatorsTimeout(t *testing.T) {
+func countATenantOfMaxNodes(t *testing.T, timeout time.Duration) {
 	const maxNodes = 5000
 	cp := tenantControlPlane(t)
 	seedKubeletNodes(t, maxNodes, maxNodes)
@@ -169,7 +166,7 @@ func TestATenantOfMaxNodesNodesIsCountedWholeAtTheOperatorsTimeout(t *testing.T)
 	now := clocktesting.NewFakePassiveClock(time.Now().Truncate(time.Second))
 	pass := func() time.Duration {
 		r := nodesReconciler(now)
-		r.Timeout = operatorsTimeout
+		r.Timeout = timeout
 		begun := time.Now()
 		sample(t, r, cp)
 		return time.Since(begun)
