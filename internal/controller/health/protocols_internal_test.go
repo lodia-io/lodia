@@ -40,8 +40,6 @@ func kubeconfigForTLS(t *testing.T, server *httptest.Server) []byte {
 	return out
 }
 
-// serve starts a server that answers with handler over the protocol, HTTP/2
-// over TLS as a kube-apiserver does, and returns a kubeconfig for it.
 func (p protocol) serve(t *testing.T, handler http.Handler) []byte {
 	t.Helper()
 	wanted := 1
