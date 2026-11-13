@@ -19,7 +19,10 @@ import (
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/serializer/protobuf"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes/scheme"
 )
 
 const (
@@ -40,6 +43,9 @@ type servedTenant struct {
 	nameLen       int
 	versionLen    int
 	kubeletLen    int
+	protobuf      bool
+	before        func(*http.Request)
+	wrap          func(*tenant)
 
 	mu       sync.Mutex
 	requests []listRequest
@@ -65,6 +71,9 @@ func (f *servedTenant) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	f.mu.Lock()
 	f.requests = append(f.requests, listRequest{req.URL.Path, req.URL.Query()})
 	f.mu.Unlock()
+	if f.before != nil {
+		f.before(req)
+	}
 	query := req.URL.Query()
 	limit, _ := strconv.Atoi(query.Get("limit"))
 	if limit != size {
@@ -104,7 +113,6 @@ func (f *servedTenant) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return m
 	}
 	list := metav1.ListMeta{ResourceVersion: "1", Continue: next}
-	w.Header().Set("Content-Type", "application/json")
 	if req.URL.Path == nodesPath {
 		out := corev1.NodeList{TypeMeta: metav1.TypeMeta{Kind: "NodeList", APIVersion: "v1"}, ListMeta: list}
 		for i := from; i < to; i++ {
@@ -113,13 +121,28 @@ func (f *servedTenant) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			n.Status.Conditions = []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}
 			out.Items = append(out.Items, n)
 		}
-		_ = json.NewEncoder(w).Encode(out)
+		f.write(w, &out)
 		return
 	}
 	out := coordinationv1.LeaseList{TypeMeta: metav1.TypeMeta{Kind: "LeaseList", APIVersion: "coordination.k8s.io/v1"}, ListMeta: list}
 	for i := from; i < to; i++ {
 		out.Items = append(out.Items, coordinationv1.Lease{ObjectMeta: meta(i)})
 	}
+	f.write(w, &out)
+}
+
+func (f *servedTenant) write(w http.ResponseWriter, out k8sruntime.Object) {
+	if f.protobuf {
+		body, err := k8sruntime.Encode(protobuf.NewSerializer(scheme.Scheme, scheme.Scheme), out)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/vnd.kubernetes.protobuf")
+		_, _ = w.Write(body)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
 }
 
@@ -149,6 +172,9 @@ func listTenant(t *testing.T, f *servedTenant, maxNodes int) listed {
 	}
 	read := &counting{next: r.clients[key].transport.Transport}
 	r.clients[key].transport.Transport = read
+	if f.wrap != nil {
+		f.wrap(tenant)
+	}
 	s := &sampling{}
 	leases, err := r.list(t.Context(), tenant, s, time.Now())
 	return listed{leases, err, s, read}
