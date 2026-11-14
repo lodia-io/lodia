@@ -104,6 +104,14 @@ func serveSilently(t *testing.T) tenantServer {
 	}))
 }
 
+func arrivesIn(t *testing.T, together chan struct{}, what string) {
+	select {
+	case <-together:
+	case <-time.After(10 * time.Second):
+		t.Errorf("%s did not arrive", what)
+	}
+}
+
 func settles(open *atomic.Int64, most int) (int64, bool) {
 	for range 1000 {
 		if got := open.Load(); got <= int64(most) {
@@ -365,7 +373,7 @@ func TestThePagesOfAListTakeTheConnectionsOfThePagesBeforeThem(t *testing.T) {
 			if listed.Add(1) == nodesReads {
 				close(bothIn)
 			}
-			<-bothIn
+			arrivesIn(t, bothIn, "every first page of a list")
 		}
 		switch req.URL.Path {
 		case nodesPath:
@@ -398,7 +406,7 @@ func TestThePagesOfAListTakeTheConnectionsOfThePagesBeforeThem(t *testing.T) {
 			close(together)
 		}
 		if arrived.Load() <= restoreReads {
-			<-together
+			arrivesIn(t, together, "every list of a held restore")
 		}
 		answerHonestly(w, req)
 	}))
