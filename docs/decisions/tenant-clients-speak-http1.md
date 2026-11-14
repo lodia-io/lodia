@@ -8,7 +8,7 @@ Built; `internal/controller/health` holds it.
 - Health's two clients of a tenant, `health`'s and `health-nodes`', set `h2` out of `NextProtos`, so that client-go configures no HTTP/2 for them ([http.go](https://github.com/kubernetes/apimachinery/blob/v0.37.1/pkg/util/net/http.go#L196-L208)) and every request goes over HTTP/1.1, whatever the tenant's server offers.
 - Each client's transport has `MaxConnsPerHost` equal to the most reads its pass has in flight at once: 2 for `health-nodes`, the two lists, and 7 for `health`, the lists of a held restore.
   net/http counts every connection of a host, dialing, in use and idle, and a dial past the cap waits for a connection to close or to be given back ([transport.go](https://github.com/golang/go/blob/go1.26.10/src/net/http/transport.go#L214-L219)).
-- An honest pass never waits on the cap, and a read that does ends at its own deadline: the argument and its tests are in [operations](../operations.md#capacity).
+- An honest pass never waits on the cap for a connection that another of its reads holds: a read waits only for a count that no read uses, a dial still in flight or a connection that is going, and ends at its own deadline at the latest; the argument and its tests are in [operations](../operations.md#capacity).
 
 ## Why
 
@@ -32,9 +32,9 @@ Built; `internal/controller/health` holds it.
 
 - A held restore reads over seven TCP connections of a tenant where HTTP/2 used one, and `health-nodes` over two: a TLS handshake for each of them when it is first opened or after 90 s idle, and the margin of 2 MiB for each connection in the figures of [operations](../operations.md#capacity).
 - A tenant at rest keeps at most 9 idle connections beside its summaries, 22.0 MiB, and a tenant whose server never answers keeps at most the cap of them open, whatever its cadence.
-- A read that needs a connection while net/http has not yet counted one down waits for it, at most until its own deadline; a tenant whose connections a server closes after every answer, a kube-apiserver's `--goaway-chance` among them, may wait a moment.
+- A read that finds the cap reached by a connection that no read uses waits for it, at most until its own deadline: a tenant whose connections a server closes after every answer, a kube-apiserver's `--goaway-chance` among them, or whose handshake is slow while a pass opens its connections, may make a read wait a moment.
 
 ## Code
 
 - `internal/controller/health` — `health.go` sets `NextProtos` and gives each client the cap of its reconciler, `restoreReads` and `nodesReads`; `bounded.go` sets `MaxConnsPerHost` beside the cap on a response.
-  `cap_internal_test.go` holds the protocol against a server that offers HTTP/2 first, the cap with the next read waiting and failing at its deadline, 40 passes against a server that closes after every answer and one that never answers, the pages of a list on the connections of the pages before them, the passes of both clients needing no more sockets than the cap against a server and a real kube-apiserver, and a changed kubeconfig.
+  `cap_internal_test.go` holds the protocol against a server that offers HTTP/2 first, the cap with the next read waiting and failing at its deadline, 40 passes against a server that closes after every answer and one that never answers, the pages of a list on the connections of the pages before them, the passes of both clients needing no more sockets than the cap against a server, a read waiting for a dial that is still in flight, the passes against a real kube-apiserver failing no read under the cap, and a changed kubeconfig.

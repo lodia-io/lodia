@@ -335,6 +335,107 @@ func TestAServerThatKeepsItsConnectionsOpenAndNeverAnswersLeavesAtMostTheCapOpen
 	}
 }
 
+func TestAReadPastTheCapWaitsForADialWhoseReadTookAnotherConnectionAndTakesTheConnectionOfThatDial(t *testing.T) {
+	for _, c := range clients {
+		t.Run(c.name, func(t *testing.T) {
+			var arrived, extra atomic.Int64
+			release := make(chan struct{}, c.reads)
+			server := serveCounted(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				switch {
+				case strings.HasSuffix(req.URL.Path, "/extra"):
+					extra.Add(1)
+				case strings.HasSuffix(req.URL.Path, "/quick"):
+				default:
+					arrived.Add(1)
+					select {
+					case <-release:
+					case <-req.Context().Done():
+					}
+				}
+				respondWith(w, leaseBody)
+			}))
+			tenant, _ := c.start(t, server.kubeconfig, time.Minute)
+			transport := transportOf(t, tenant)
+			gate, dialing := make(chan struct{}), make(chan struct{})
+			var dialed atomic.Bool
+			dial := transport.DialContext
+			transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+				if dialed.CompareAndSwap(false, true) {
+					close(dialing)
+					<-gate
+				}
+				return dial(ctx, network, address)
+			}
+			var opened sync.Once
+			open := func() { opened.Do(func() { close(gate) }) }
+			t.Cleanup(open)
+
+			var held sync.WaitGroup
+			read := func(name string) {
+				held.Go(func() {
+					if _, err := tenant.getLease(t.Context(), name); err != nil {
+						t.Error(err)
+					}
+				})
+			}
+			until := func(what string, done func() bool) {
+				t.Helper()
+				for range 1000 {
+					if done() {
+						return
+					}
+					time.Sleep(5 * time.Millisecond)
+				}
+				t.Fatalf("%s did not happen", what)
+			}
+			read("slow")
+			<-dialing
+			if _, err := tenant.getLease(t.Context(), "quick"); err != nil {
+				t.Fatal(err)
+			}
+			until("the read whose dial is held taking the connection of the read before it", func() bool { return arrived.Load() == 1 })
+			for i := range c.reads - 2 {
+				read("held" + strconv.Itoa(i))
+			}
+			until("every read the cap allows reaching the server", func() bool { return arrived.Load() == int64(c.reads-1) })
+			if open := server.listener.open.Load(); open != int64(c.reads-1) {
+				t.Fatalf("the server has %d connections open, want %d: the dial that is held, and the reads on the others", open, c.reads-1)
+			}
+
+			deadline, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+			_, err := tenant.getLease(deadline, "extra")
+			cancel()
+			if !errors.Is(err, context.DeadlineExceeded) || extra.Load() != 0 || server.listener.open.Load() != int64(c.reads-1) {
+				t.Errorf("the read past the cap returned %v, reached the server %d times and the server has %d connections open, want its deadline exceeded, 0 and %d", err, extra.Load(), server.listener.open.Load(), c.reads-1)
+			}
+
+			waiting := make(chan error, 1)
+			go func() {
+				_, err := tenant.getLease(t.Context(), "extra")
+				waiting <- err
+			}()
+			time.Sleep(300 * time.Millisecond)
+			if extra.Load() != 0 {
+				t.Errorf("a read past the cap reached the server while the dial it waits for was held")
+			}
+			open()
+			if err := <-waiting; err != nil {
+				t.Errorf("the read past the cap returned %v once the dial ended", err)
+			}
+			if extra.Load() != 1 || server.listener.open.Load() != int64(c.reads) {
+				t.Errorf("the read past the cap reached the server %d times and the server has %d connections open, want once, on the connection of the dial, and %d", extra.Load(), server.listener.open.Load(), c.reads)
+			}
+			for range c.reads - 1 {
+				release <- struct{}{}
+			}
+			held.Wait()
+			if peak := server.listener.peak.Load(); peak > int64(c.reads) {
+				t.Errorf("%d connections were open at once, want at most %d", peak, c.reads)
+			}
+		})
+	}
+}
+
 type reusedOrNot struct {
 	mu  sync.Mutex
 	got []bool
@@ -510,23 +611,21 @@ func TestAPassNeedsNoMoreConnectionsThanItsCapWhenTheCapIsLifted(t *testing.T) {
 	}
 }
 
-func TestAnHonestPassAgainstAKubeAPIServerNeedsNoMoreConnectionsThanItsCapAndFailsNoRead(t *testing.T) {
+func TestAPassAgainstAKubeAPIServerFailsNoReadUnderTheCap(t *testing.T) {
 	_, kubeconfig := startKubeAPIServer(t)
 	for _, c := range clients {
 		t.Run(c.name, func(t *testing.T) {
 			tenant, pass := c.start(t, kubeconfig, time.Minute)
-			transport := transportOf(t, tenant)
-			transport.MaxConnsPerHost = 0
 			var sockets socketCount
-			sockets.watch(transport)
+			sockets.watch(transportOf(t, tenant))
 			for i := range 40 {
 				if err := pass(t.Context()); err != nil {
 					t.Fatalf("pass %d: %v", i+1, err)
 				}
 			}
-			t.Logf("%s: %d sockets open at most over 40 passes, with no cap", c.name, sockets.peak.Load())
+			t.Logf("%s: %d sockets open at most over 40 passes, under a cap of %d", c.name, sockets.peak.Load(), c.reads)
 			if sockets.peak.Load() > int64(c.reads) {
-				t.Errorf("a pass had %d sockets open at once, want at most the %d reads of the cap, so that no read of an honest tenant waits on it", sockets.peak.Load(), c.reads)
+				t.Errorf("a pass had %d sockets open at once, want at most the cap, %d", sockets.peak.Load(), c.reads)
 			}
 		})
 	}
