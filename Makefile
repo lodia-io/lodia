@@ -114,7 +114,7 @@ monitoring: ## lint the collector's golden as promtool lints a scrape, check the
 
 .PHONY: verify
 verify: ## the check that says a change is done
-	@before="$$(cat $(GENERATED) | cksum)"; $(MAKE) --no-print-directory generate; \
+	@before="$$(cat $(GENERATED) | cksum)"; $(MAKE) --no-print-directory generate || exit 1; \
 	[ "$$before" = "$$(cat $(GENERATED) | cksum)" ] || { echo "make generate changed the generated files: review and commit them"; exit 1; }
 	go mod tidy -diff
 	cd api && go mod tidy -diff
