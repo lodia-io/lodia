@@ -218,6 +218,7 @@ func TestAGoawayAfterAPageOfLeasesPutsTheNextPageOnASecondConnectionWhileTheNode
 		dialed   atomic.Int32
 		nodeIn   = make(chan struct{})
 		secondIn = make(chan struct{})
+		answered atomic.Bool
 	)
 	waitFor := func(arrived chan struct{}, what string) {
 		select {
@@ -234,11 +235,15 @@ func TestAGoawayAfterAPageOfLeasesPutsTheNextPageOnASecondConnectionWhileTheNode
 		case strings.HasPrefix(req.path, nodesPath):
 			close(nodeIn)
 			waitFor(secondIn, "the second page of Leases")
+			answered.Store(true)
 			conn.write(answerHead(req.stream), answerBody(req.stream, nodesPage))
 		case strings.HasPrefix(req.path, nodeLeasesPath) && !strings.Contains(req.path, "continue="):
 			waitFor(nodeIn, "the Node list")
 			conn.write(answerHead(req.stream), conn.goAway(), answerBody(req.stream, leasesFirst))
 		case strings.HasPrefix(req.path, nodeLeasesPath):
+			if answered.Load() {
+				t.Errorf("the Node list was answered before the second page of Leases came")
+			}
 			close(secondIn)
 			conn.write(answerHead(req.stream), answerBody(req.stream, leasesPage))
 		default:
