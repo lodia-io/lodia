@@ -135,38 +135,3 @@ func TestTheHeadersOfAResponseFailTheReadOnceTheyAreOneBytePastTheBound(t *testi
 		})
 	}
 }
-
-func TestTheHeadersOfAnHTTP2ResponseFailTheReadPastTheBound(t *testing.T) {
-	sizedForTheBounds(t)
-	for _, c := range []struct {
-		name string
-		pad  int
-		fail bool
-	}{
-		{"headers of a quarter of the bound", maxResponseHeaderBytes / 4, false},
-		{"headers of twice the bound", 2 * maxResponseHeaderBytes, true},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			pad := strings.Repeat("a", c.pad)
-			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-				if req.ProtoMajor != 2 {
-					t.Errorf("the request came over HTTP/%d", req.ProtoMajor)
-				}
-				w.Header().Set("X-Pad", pad)
-				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(`{"metadata":{},"items":[]}`))
-			}))
-			server.EnableHTTP2 = true
-			server.StartTLS()
-			t.Cleanup(server.Close)
-			r := &NodesReconciler{Timeout: time.Minute, MaxNodes: 5000}
-			tenant, err := r.tenant(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfigForTLS(t, server))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := tenant.leasePage(t.Context(), metav1.ListOptions{Limit: leasePage}); (err != nil) != c.fail {
-				t.Errorf("headers of %d bytes returned %v, want a failure: %t", c.pad, err, c.fail)
-			}
-		})
-	}
-}

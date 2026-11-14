@@ -323,35 +323,31 @@ func TestAGzipReaderThatIsResetHoldsNothingOfTheStreamItReadBefore(t *testing.T)
 	runtime.KeepAlive(reader)
 }
 
-func TestTheTenantClientsHoldAGzipReaderOfTheWorstStreamUnderGzipReader(t *testing.T) {
+func TestTheTenantClientHoldsAGzipReaderOfTheWorstStreamUnderGzipReader(t *testing.T) {
 	stream := craftedGzip(true)
-	for _, p := range protocols {
-		t.Run(p.name, func(t *testing.T) {
-			client, url := tenantClient(t, p, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				w.Header().Set("Content-Encoding", "gzip")
-				_, _ = w.Write(stream)
-			}))
-			held := medianOf(func() int64 {
-				base := liveHeap()
-				resp, err := client.Get(url + nodeLeasesPath)
-				if err != nil {
-					t.Fatal(err)
-				}
-				one := make([]byte, 1)
-				if _, err := io.ReadFull(resp.Body, one); err != nil || one[0] != 'a' {
-					t.Fatalf("read %q, %v", one, err)
-				}
-				now := liveHeap()
-				runtime.KeepAlive(resp)
-				_ = resp.Body.Close()
-				return int64(now) - int64(base)
-			})
-			floor := int64(gzipFixedParts + gzipLinks + gzipHeader)
-			t.Logf("a response read by one byte holds %d bytes, a gzip.Reader of the worst stream %d, gzipReader is %d", held, floor, gzipReader)
-			if held < floor || held > gzipReader {
-				t.Errorf("a response of the worst gzip stream holds %d bytes once read by one byte, want %d to %d", held, floor, gzipReader)
-			}
-		})
+	client, url := tenantClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "gzip")
+		_, _ = w.Write(stream)
+	}))
+	held := medianOf(func() int64 {
+		base := liveHeap()
+		resp, err := client.Get(url + nodeLeasesPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		one := make([]byte, 1)
+		if _, err := io.ReadFull(resp.Body, one); err != nil || one[0] != 'a' {
+			t.Fatalf("read %q, %v", one, err)
+		}
+		now := liveHeap()
+		runtime.KeepAlive(resp)
+		_ = resp.Body.Close()
+		return int64(now) - int64(base)
+	})
+	floor := int64(gzipFixedParts + gzipLinks + gzipHeader)
+	t.Logf("a response read by one byte holds %d bytes, a gzip.Reader of the worst stream %d, gzipReader is %d", held, floor, gzipReader)
+	if held < floor || held > gzipReader {
+		t.Errorf("a response of the worst gzip stream holds %d bytes once read by one byte, want %d to %d", held, floor, gzipReader)
 	}
 }

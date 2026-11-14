@@ -46,6 +46,9 @@ const (
 	// are large objects, and the set the hold counts changes slowly.
 	nodesEvery = 30 * time.Second
 
+	// nodesReads is how many reads a pass has in flight at once, the two lists.
+	nodesReads = 2
+
 	// leasePage and nodePage are the limits of the pages of the two lists; a Node
 	// is the larger object.
 	leasePage = 500
@@ -627,7 +630,7 @@ func (r *NodesReconciler) tenant(key types.NamespacedName, kubeconfig []byte) (*
 		r.clients = map[types.NamespacedName]*tenantClients{}
 	}
 	if r.clients[key] == nil {
-		r.clients[key] = &tenantClients{}
+		r.clients[key] = &tenantClients{connections: nodesReads}
 	}
 	return r.clients[key].of(kubeconfig)
 }

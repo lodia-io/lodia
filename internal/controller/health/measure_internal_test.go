@@ -14,7 +14,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/textproto"
 	"os"
 	"runtime"
 	"runtime/debug"
@@ -351,7 +350,7 @@ func answering(c amplifier) http.Handler {
 
 func servingEveryPath(t *testing.T, c amplifier) (*NodesReconciler, *tenant) {
 	t.Helper()
-	return http1.tenant(t, answering(c))
+	return tenantOf(t, answering(c))
 }
 
 func TestAnAmplifyingResponseIsReadAsFarAsItsBoundsAllow(t *testing.T) {
@@ -371,23 +370,21 @@ func TestMeasureTheLiveHeapOfEveryReadOverAnAmplifyingResponse(t *testing.T) {
 	if os.Getenv(measureHeap) == "" {
 		t.Skipf("set %s to measure the heap of every read over an amplifying response", measureHeap)
 	}
-	for _, p := range protocols {
-		for _, c := range amplifiers(maxResponseBytes) {
-			t.Run(p.name+", "+c.name, func(t *testing.T) {
-				r, tenant := p.tenant(t, answering(c))
-				var outcome string
-				begun := time.Now()
-				peaks := measureLiveHeap(func() { outcome = c.read(t.Context(), tenant, r) })
-				t.Logf("a response of %d bytes took %v: live heap %.1f MiB, %.2f responses; heap in use %.1f MiB; %s",
-					len(c.body), time.Since(begun).Round(time.Millisecond), mib(peaks.live), float64(peaks.live)/maxResponseBytes, mib(peaks.inUse), outcome)
-				if outcome != c.want {
-					t.Errorf("the read says %q, want %q", outcome, c.want)
-				}
-				if bound := readsBound(p, 1); peaks.inUse > bound {
-					t.Errorf("the read held %.2f MiB of heap in use, more than the structural bound of %.2f MiB", mib(peaks.inUse), mib(bound))
-				}
-			})
-		}
+	for _, c := range amplifiers(maxResponseBytes) {
+		t.Run(c.name, func(t *testing.T) {
+			r, tenant := tenantOf(t, answering(c))
+			var outcome string
+			begun := time.Now()
+			peaks := measureLiveHeap(func() { outcome = c.read(t.Context(), tenant, r) })
+			t.Logf("a response of %d bytes took %v: live heap %.1f MiB, %.2f responses; heap in use %.1f MiB; %s",
+				len(c.body), time.Since(begun).Round(time.Millisecond), mib(peaks.live), float64(peaks.live)/maxResponseBytes, mib(peaks.inUse), outcome)
+			if outcome != c.want {
+				t.Errorf("the read says %q, want %q", outcome, c.want)
+			}
+			if bound := readsBound(1); peaks.inUse > bound {
+				t.Errorf("the read held %.2f MiB of heap in use, more than the structural bound of %.2f MiB", mib(peaks.inUse), mib(bound))
+			}
+		})
 	}
 }
 
@@ -398,34 +395,27 @@ const (
 
 	connectionMargin = 2 * mebibyte
 	connectionHTTP1  = connectionMargin
-	connectionHTTP2  = frameSize + hpackBuffer + connectionMargin
 	readAllAtMost    = 204 * mebibyte / 10
-	streamBuffer     = 4<<20 + 32<<10
 	headersHTTP1     = 25 * mebibyte / 10
-	headersHTTP2     = mebibyte / 2
 	trailersHTTP1    = 3 * mebibyte / 10
-	trailersHTTP2    = mebibyte
 	gzipReader       = 219 << 10
 	keptAtMost       = 2 * mebibyte
 	summariesAtMost  = 4 * mebibyte
 )
 
-func readsBound(p protocol, reads int) uint64 {
+func readsBound(reads int) uint64 {
 	each := uint64(readAllAtMost + headersHTTP1 + trailersHTTP1 + gzipReader + connectionHTTP1)
-	if p.http2 {
-		each = readAllAtMost + headersHTTP2 + trailersHTTP2 + streamBuffer + gzipReader + connectionHTTP2
-	}
 	return max(uint64(reads)*each, uint64(reads)*(maxResponseBytes+keptAtMost))
 }
 
-func servingTogether(t *testing.T, p protocol, answers map[string][]byte, requests int) *tenant {
+func servingTogether(t *testing.T, answers map[string][]byte, requests int) *tenant {
 	t.Helper()
 	var (
 		mu      sync.Mutex
 		arrived int
 	)
 	release := make(chan struct{})
-	return servingOver(t, p, answers, func() {
+	return serving(t, answers, func() {
 		mu.Lock()
 		if arrived++; arrived == requests {
 			close(release)
@@ -435,14 +425,14 @@ func servingTogether(t *testing.T, p protocol, answers map[string][]byte, reques
 	})
 }
 
-func servingAPass(t *testing.T, p protocol, lease, leases, nodes []byte) *tenant {
+func servingAPass(t *testing.T, lease, leases, nodes []byte) *tenant {
 	t.Helper()
 	var (
 		mu      sync.Mutex
 		arrived int
 	)
 	together := make(chan struct{})
-	_, tenant := p.tenant(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	_, tenant := tenantOf(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		body := lease
 		switch req.URL.Path {
 		case nodeLeasesPath, nodesPath:
@@ -484,70 +474,49 @@ func TestMeasureTheLiveHeapOfAPassWhoseEveryReadIsAtItsWorst(t *testing.T) {
 	answers := map[string][]byte{
 		servicesPath: body, volumesPath: body, claimsPath: body, validatingPath: body, mutatingPath: body, apiServicePath: body, cronJobsPath: body,
 	}
-	_, reference := http1.tenant(t, answering(amplifier{status: http.StatusOK, body: []byte(`{"items":[{"webhooks":[{}],"spec":{"type":"LoadBalancer"},"metadata":{"namespace":"n","name":"x"}}]}`)}))
+	reference := restoreTenantOf(t, answering(amplifier{status: http.StatusOK, body: []byte(`{"items":[{"webhooks":[{}],"spec":{"type":"LoadBalancer"},"metadata":{"namespace":"n","name":"x"}}]}`)}))
 	wantRestore := (&Reconciler{Timeout: 10 * time.Minute}).actedOn(t.Context(), reference)
-	for _, p := range protocols {
-		t.Run(p.name+", a pass of health-nodes: the Lease, both lists together and the renewal", func(t *testing.T) {
-			tenant := servingAPass(t, p,
-				padding(maxResponseBytes, `{"metadata":{"resourceVersion":"1","annotations":{"pad":"`, `"}},"spec":{"holderIdentity":"lodia"}}`),
-				padding(maxResponseBytes, `{"metadata":{},"items":[{"metadata":{"name":"n","resourceVersion":"1","annotations":{"pad":"`, `"}}}]}`),
-				padding(maxResponseBytes, `{"metadata":{},"items":[{"metadata":{"name":"n","annotations":{"pad":"`, `"}},"status":{"nodeInfo":{"kubeletVersion":"v1.35.0"},"conditions":[{"type":"Ready","status":"True"}]}}]}`))
-			r := &NodesReconciler{Timeout: 10 * time.Minute, MaxNodes: 5000}
-			measure(t, readsBound(p, 2)+summariesAtMost, func() {
-				read, err := r.readLease(t.Context(), tenant)
-				if err != nil {
-					t.Error(err)
-					return
-				}
-				s := &sampling{}
-				leases, err := r.list(t.Context(), tenant, s, time.Now())
-				if err != nil || len(leases) != 1 || len(s.nodes) != 1 || s.leasesStop != "" || s.nodesStop != "" {
-					t.Errorf("the lists returned %d Leases, %d Nodes, stops %q and %q, error %v, want one of each", len(leases), len(s.nodes), s.leasesStop, s.nodesStop, err)
-				}
-				if _, err := r.writeLease(t.Context(), tenant, read, renewLease, time.Now()); err != nil {
-					t.Error(err)
-				}
-			})
-		})
-		t.Run(p.name+", a pass of health over a held restore", func(t *testing.T) {
-			tenant := servingOver(t, p, answers, func() {})
-			var got string
-			measure(t, readsBound(p, len(answers)), func() { got = (&Reconciler{Timeout: 10 * time.Minute}).actedOn(t.Context(), tenant) })
-			if got != wantRestore {
-				t.Errorf("the pass says %q, want %q", got, wantRestore)
+	t.Run("a pass of health-nodes: the Lease, both lists together and the renewal", func(t *testing.T) {
+		tenant := servingAPass(t,
+			padding(maxResponseBytes, `{"metadata":{"resourceVersion":"1","annotations":{"pad":"`, `"}},"spec":{"holderIdentity":"lodia"}}`),
+			padding(maxResponseBytes, `{"metadata":{},"items":[{"metadata":{"name":"n","resourceVersion":"1","annotations":{"pad":"`, `"}}}]}`),
+			padding(maxResponseBytes, `{"metadata":{},"items":[{"metadata":{"name":"n","annotations":{"pad":"`, `"}},"status":{"nodeInfo":{"kubeletVersion":"v1.35.0"},"conditions":[{"type":"Ready","status":"True"}]}}]}`))
+		r := &NodesReconciler{Timeout: 10 * time.Minute, MaxNodes: 5000}
+		measure(t, readsBound(nodesReads)+summariesAtMost, func() {
+			read, err := r.readLease(t.Context(), tenant)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			s := &sampling{}
+			leases, err := r.list(t.Context(), tenant, s, time.Now())
+			if err != nil || len(leases) != 1 || len(s.nodes) != 1 || s.leasesStop != "" || s.nodesStop != "" {
+				t.Errorf("the lists returned %d Leases, %d Nodes, stops %q and %q, error %v, want one of each", len(leases), len(s.nodes), s.leasesStop, s.nodesStop, err)
+			}
+			if _, err := r.writeLease(t.Context(), tenant, read, renewLease, time.Now()); err != nil {
+				t.Error(err)
 			}
 		})
-		t.Run(p.name+", a pass of health over a held restore whose seven lists are answered together", func(t *testing.T) {
-			tenant := servingTogether(t, p, answers, len(answers))
-			var got string
-			measure(t, readsBound(p, len(answers)), func() { got = (&Reconciler{Timeout: 10 * time.Minute}).actedOn(t.Context(), tenant) })
-			if got != wantRestore {
-				t.Errorf("the pass says %q, want %q", got, wantRestore)
-			}
-		})
-	}
-}
-
-func distinctNames(overhead int) []string {
-	budget := budgetHTTP2 - 200
-	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
-	var names []string
-	for length, total := 1, len(alphabet); ; length, total = length+1, total*len(alphabet) {
-		for i := range total {
-			if budget < length+overhead {
-				return names
-			}
-			name := make([]byte, length)
-			for at, rest := length-1, i; at >= 0; at, rest = at-1, rest/len(alphabet) {
-				name[at] = alphabet[rest%len(alphabet)]
-			}
-			names = append(names, string(name))
-			budget -= length + overhead
+	})
+	t.Run("a pass of health over a held restore", func(t *testing.T) {
+		tenant := serving(t, answers, func() {})
+		var got string
+		measure(t, readsBound(restoreReads), func() { got = (&Reconciler{Timeout: 10 * time.Minute}).actedOn(t.Context(), tenant) })
+		if got != wantRestore {
+			t.Errorf("the pass says %q, want %q", got, wantRestore)
 		}
-	}
+	})
+	t.Run("a pass of health over a held restore whose seven lists are answered together", func(t *testing.T) {
+		tenant := servingTogether(t, answers, restoreReads)
+		var got string
+		measure(t, readsBound(restoreReads), func() { got = (&Reconciler{Timeout: 10 * time.Minute}).actedOn(t.Context(), tenant) })
+		if got != wantRestore {
+			t.Errorf("the pass says %q, want %q", got, wantRestore)
+		}
+	})
 }
 
-type cutShape struct{ headers, announced, trailers, gzipped bool }
+type cutShape struct{ headers, announced, gzipped bool }
 
 func (c cutShape) String() string {
 	name := "an answer of 16 MiB"
@@ -557,77 +526,45 @@ func (c cutShape) String() string {
 	if c.announced {
 		name += ", announced names at their bound"
 	}
-	if c.trailers {
-		name += ", trailers at their bound"
-	}
 	if c.gzipped {
 		name += ", gzipped"
 	}
 	return name
 }
 
-func cutAnswers(t *testing.T, p protocol, body []byte, shape cutShape) *tenant {
+func cutAnswers(t *testing.T, body []byte, shape cutShape) *tenant {
 	t.Helper()
 	encoding := ""
 	if shape.gzipped {
 		encoding = "Content-Encoding: gzip\r\n"
 	}
-	if !p.http2 {
-		head := "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" + encoding + "Content-Length: " + strconv.Itoa(len(body)) + "\r\n"
-		if shape.announced {
-			head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" + encoding + "Transfer-Encoding: chunked\r\n"
-			for _, name := range canonicalFieldNames(oneByteFieldNames * 3) {
-				if len(name) == 1 {
-					head += name + ":\n"
-				}
-			}
-			head += "Trailer: "
-			head += strings.Join(announcedNamesOfAHead(maxResponseHeaderBytes-len(head)-len("\r\n\r\n")), ",") + "\r\n"
-			body = []byte(fmt.Sprintf("%x\r\n%s\r\n0\r\n\r\n", len(body), body))
-		}
-		if shape.headers {
-			for _, name := range canonicalFieldNames(maxResponseHeaderBytes - len(head) - len("\r\n")) {
+	head := "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" + encoding + "Content-Length: " + strconv.Itoa(len(body)) + "\r\n"
+	if shape.announced {
+		head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" + encoding + "Transfer-Encoding: chunked\r\n"
+		for _, name := range canonicalFieldNames(oneByteFieldNames * 3) {
+			if len(name) == 1 {
 				head += name + ":\n"
 			}
 		}
-		head += "\r\n"
-		if (shape.headers || shape.announced) && len(head) != maxResponseHeaderBytes && len(head) < maxResponseHeaderBytes-8 {
-			t.Fatalf("the head has %d bytes, want it to fill the bound of %d", len(head), maxResponseHeaderBytes)
-		}
-		url, _ := answerOnTCP(t, head, string(body))
-		r := &NodesReconciler{Timeout: 10 * time.Minute, MaxNodes: 5000}
-		tenant, err := r.tenant(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfigFor(t, url))
-		if err != nil {
-			t.Fatal(err)
-		}
-		return tenant
+		head += "Trailer: "
+		head += strings.Join(announcedNamesOfAHead(maxResponseHeaderBytes-len(head)-len("\r\n\r\n")), ",") + "\r\n"
+		body = []byte(fmt.Sprintf("%x\r\n%s\r\n0\r\n\r\n", len(body), body))
 	}
-	var names, announced, trailers []string
 	if shape.headers {
-		names = distinctNames(32)
+		for _, name := range canonicalFieldNames(maxResponseHeaderBytes - len(head) - len("\r\n")) {
+			head += name + ":\n"
+		}
 	}
-	if shape.announced {
-		announced = canonicalPrefixed(distinctNames(33), "y")
+	head += "\r\n"
+	if (shape.headers || shape.announced) && len(head) != maxResponseHeaderBytes && len(head) < maxResponseHeaderBytes-8 {
+		t.Fatalf("the head has %d bytes, want it to fill the bound of %d", len(head), maxResponseHeaderBytes)
 	}
-	if shape.trailers {
-		trailers = canonicalPrefixed(distinctNames(33), "z")
+	url, _ := answerOnTCP(t, head, string(body))
+	r := &NodesReconciler{Timeout: 10 * time.Minute, MaxNodes: 5000}
+	tenant, err := r.tenant(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfigFor(t, url))
+	if err != nil {
+		t.Fatal(err)
 	}
-	_, tenant := p.tenant(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		for _, name := range names {
-			w.Header()[textproto.CanonicalMIMEHeaderKey(name)] = []string{""}
-		}
-		if announced != nil {
-			w.Header().Set("Trailer", strings.Join(announced, ","))
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if shape.gzipped {
-			w.Header().Set("Content-Encoding", "gzip")
-		}
-		_, _ = w.Write(body)
-		for _, name := range trailers {
-			w.Header()[http.TrailerPrefix+name] = []string{""}
-		}
-	}))
 	return tenant
 }
 
@@ -656,44 +593,34 @@ func TestMeasureTheLiveHeapOfAReadWhoseAnswerIsCutAtTheBoundWithHeadersAtTheirs(
 	random := make([]byte, 2*maxResponseBytes)
 	_, _ = rand.Read(random)
 	gzipped := gzipStored(t, random)
-	const withTrailers = maxResponseBytes + 4<<20 - 64<<10
-	for _, p := range protocols {
-		shapes := []cutShape{{}, {headers: true}, {headers: true, gzipped: true}, {announced: true}, {announced: true, gzipped: true}}
-		if p.http2 {
-			shapes = []cutShape{{}, {headers: true}, {headers: true, trailers: true}, {headers: true, announced: true, trailers: true}, {headers: true, announced: true, trailers: true, gzipped: true}}
-		}
-		for _, shape := range shapes {
-			t.Run(p.name+", "+shape.String(), func(t *testing.T) {
-				body := plain
-				if shape.gzipped {
-					body = gzipped
+	for _, shape := range []cutShape{{}, {headers: true}, {headers: true, gzipped: true}, {announced: true}, {announced: true, gzipped: true}} {
+		t.Run(shape.String(), func(t *testing.T) {
+			body := plain
+			if shape.gzipped {
+				body = gzipped
+			}
+			tenant := cutAnswers(t, body, shape)
+			bound := readsBound(1)
+			var most heapPeaks
+			var over, wrong int
+			var outcome error
+			for range measureCount {
+				peaks := measureLiveHeap(func() { _, outcome = tenant.getLease(t.Context(), "kube-controller-manager") })
+				most = heapPeaks{max(most.live, peaks.live), max(most.inUse, peaks.inUse)}
+				if peaks.inUse > bound {
+					over++
 				}
-				if shape.trailers {
-					body = body[:withTrailers]
+				if !errors.Is(outcome, errResponseTooLong) {
+					wrong++
 				}
-				tenant := cutAnswers(t, p, body, shape)
-				bound := readsBound(p, 1)
-				var most heapPeaks
-				var over, wrong int
-				var outcome error
-				for range measureCount {
-					peaks := measureLiveHeap(func() { _, outcome = tenant.getLease(t.Context(), "kube-controller-manager") })
-					most = heapPeaks{max(most.live, peaks.live), max(most.inUse, peaks.inUse)}
-					if peaks.inUse > bound {
-						over++
-					}
-					if !errors.Is(outcome, errResponseTooLong) {
-						wrong++
-					}
-				}
-				t.Logf("%d runs: the most live heap %.2f MiB, the most heap in use %.2f MiB; the structural bound %.2f MiB; %d runs over it", measureCount, mib(most.live), mib(most.inUse), mib(bound), over)
-				if wrong > 0 {
-					t.Errorf("%d runs did not end in %q, the last in %v", wrong, errResponseTooLong, outcome)
-				}
-				if over > 0 {
-					t.Errorf("%d runs held more heap in use than the structural bound of %.2f MiB, the most %.2f MiB", over, mib(bound), mib(most.inUse))
-				}
-			})
-		}
+			}
+			t.Logf("%d runs: the most live heap %.2f MiB, the most heap in use %.2f MiB; the structural bound %.2f MiB; %d runs over it", measureCount, mib(most.live), mib(most.inUse), mib(bound), over)
+			if wrong > 0 {
+				t.Errorf("%d runs did not end in %q, the last in %v", wrong, errResponseTooLong, outcome)
+			}
+			if over > 0 {
+				t.Errorf("%d runs held more heap in use than the structural bound of %.2f MiB, the most %.2f MiB", over, mib(bound), mib(most.inUse))
+			}
+		})
 	}
 }

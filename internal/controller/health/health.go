@@ -53,6 +53,10 @@ const (
 	Name         = "health"
 	FieldManager = "lodia/" + Name
 
+	// restoreReads is how many reads a pass has in flight at once, the seven
+	// lists of a held restore.
+	restoreReads = 7
+
 	// accessNotTrue is the message of a pass while AccessReady is not True:
 	// Reconciler reads nothing in the tenant then, and NodesReconciler reads only
 	// the controller manager's Lease, which it renews or releases if it holds it.
@@ -99,9 +103,10 @@ type Reconciler struct {
 // tenantClients are the clients of one tenant over one transport, and the
 // kubeconfig they were built from.
 type tenantClients struct {
-	kubeconfig []byte
-	tenant     *tenant
-	transport  *http.Client
+	kubeconfig  []byte
+	tenant      *tenant
+	transport   *http.Client
+	connections int
 }
 
 // prober holds what a control plane's probes verify and present: the client
@@ -743,7 +748,7 @@ func (r *Reconciler) tenant(key types.NamespacedName, kubeconfig []byte) (*tenan
 		r.clients = map[types.NamespacedName]*tenantClients{}
 	}
 	if r.clients[key] == nil {
-		r.clients[key] = &tenantClients{}
+		r.clients[key] = &tenantClients{connections: restoreReads}
 	}
 	return r.clients[key].of(kubeconfig)
 }
@@ -773,7 +778,12 @@ func (c *tenantClients) of(kubeconfig []byte) (*tenant, error) {
 	// of every answer; the tenant's API server limits what it serves itself
 	// (https://kubernetes.io/docs/concepts/cluster-administration/flow-control/).
 	cfg.QPS = -1
-	cfg.Wrap(capResponses)
+	cfg.Wrap(func(next http.RoundTripper) http.RoundTripper { return capResponses(next, c.connections) })
+	// Leaving h2 out of NextProtos keeps client-go from configuring HTTP/2
+	// (https://github.com/kubernetes/apimachinery/blob/v0.37.1/pkg/util/net/http.go#L196-L208):
+	// the transport counts and caps its connections, which an HTTP/2 pool does
+	// not.
+	cfg.NextProtos = []string{"http/1.1"}
 	cfg.AcceptContentTypes, cfg.ContentType = "application/json", "application/json"
 	// client-go asks for a serializer, and DoRaw never uses it: no response is
 	// decoded into the API's types.

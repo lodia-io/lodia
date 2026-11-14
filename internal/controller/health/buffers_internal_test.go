@@ -4,7 +4,6 @@
 package health
 
 import (
-	"bytes"
 	"compress/gzip"
 	"io"
 	"net/http"
@@ -104,53 +103,13 @@ func TestIoReadAllHoldsAtMostItsChunksAndTheSliceItReturnsAtTheCut(t *testing.T)
 	}
 }
 
-func TestAnHTTP2StreamBuffersItsWindowOfABodyNobodyReadsAndNoMore(t *testing.T) {
-	body := bytes.Repeat([]byte("a"), 12<<20)
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(body)
-	}))
-	server.EnableHTTP2 = true
-	server.StartTLS()
-	t.Cleanup(server.Close)
-	key := types.NamespacedName{Namespace: "team-a", Name: "dev"}
-	r := &NodesReconciler{Timeout: time.Minute, MaxNodes: 5000}
-	if _, err := r.tenant(key, kubeconfigForTLS(t, server)); err != nil {
-		t.Fatal(err)
-	}
-	client := r.clients[key].transport
-	var held []int64
-	for range 3 {
-		base := liveHeap()
-		resp, err := client.Get(server.URL + nodeLeasesPath)
-		if err != nil {
-			t.Fatal(err)
-		}
-		time.Sleep(500 * time.Millisecond)
-		held = append(held, int64(liveHeap())-int64(base))
-		_ = resp.Body.Close()
-	}
-	slices.Sort(held)
-	if held[1] < 4<<20-1<<18 || held[1] > streamBuffer+1<<18 {
-		t.Errorf("the transport holds %d bytes of a body nobody has read, want the stream's window of 4 MiB and at most %d", held[1], streamBuffer+1<<18)
-	}
-}
-
-func tenantClient(t *testing.T, p protocol, handler http.Handler) (*http.Client, string) {
+func tenantClient(t *testing.T, handler http.Handler) (*http.Client, string) {
 	t.Helper()
-	server := httptest.NewUnstartedServer(handler)
-	server.EnableHTTP2 = p.http2
-	kubeconfig := func() []byte { return kubeconfigFor(t, server.URL) }
-	if p.http2 {
-		server.StartTLS()
-		kubeconfig = func() []byte { return kubeconfigForTLS(t, server) }
-	} else {
-		server.Start()
-	}
+	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	key := types.NamespacedName{Namespace: "team-a", Name: "dev"}
 	r := &NodesReconciler{Timeout: time.Minute, MaxNodes: 5000}
-	if _, err := r.tenant(key, kubeconfig()); err != nil {
+	if _, err := r.tenant(key, kubeconfigFor(t, server.URL)); err != nil {
 		t.Fatal(err)
 	}
 	return r.clients[key].transport, server.URL
@@ -165,26 +124,22 @@ func medianOf(measure func() int64) int64 {
 	return all[len(all)/2]
 }
 
-func TestTheTenantClientAsksForGzipAndReadsItOverEveryProtocol(t *testing.T) {
+func TestTheTenantClientAsksForGzipAndReadsIt(t *testing.T) {
 	const body = `{"metadata":{"resourceVersion":"7"},"spec":{"holderIdentity":"x"}}`
-	for _, p := range protocols {
-		t.Run(p.name, func(t *testing.T) {
-			var asked atomic.Value
-			_, tenant := p.tenant(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-				asked.Store(req.Header.Get("Accept-Encoding"))
-				w.Header().Set("Content-Type", "application/json")
-				w.Header().Set("Content-Encoding", "gzip")
-				writer := gzip.NewWriter(w)
-				_, _ = io.WriteString(writer, body)
-				_ = writer.Close()
-			}))
-			lease, err := tenant.getLease(t.Context(), "kube-controller-manager")
-			if err != nil || lease.Metadata.ResourceVersion != "7" {
-				t.Errorf("a gzipped answer read as %+v, error %v, want resourceVersion 7", lease, err)
-			}
-			if got, _ := asked.Load().(string); got != "gzip" {
-				t.Errorf("the request asked for %q, want gzip", got)
-			}
-		})
+	var asked atomic.Value
+	_, tenant := tenantOf(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		asked.Store(req.Header.Get("Accept-Encoding"))
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "gzip")
+		writer := gzip.NewWriter(w)
+		_, _ = io.WriteString(writer, body)
+		_ = writer.Close()
+	}))
+	lease, err := tenant.getLease(t.Context(), "kube-controller-manager")
+	if err != nil || lease.Metadata.ResourceVersion != "7" {
+		t.Errorf("a gzipped answer read as %+v, error %v, want resourceVersion 7", lease, err)
+	}
+	if got, _ := asked.Load().(string); got != "gzip" {
+		t.Errorf("the request asked for %q, want gzip", got)
 	}
 }

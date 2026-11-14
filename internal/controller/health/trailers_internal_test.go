@@ -17,14 +17,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-func canonicalPrefixed(names []string, prefix string) []string {
-	out := make([]string, len(names))
-	for i, name := range names {
-		out[i] = http.CanonicalHeaderKey(prefix + name)
-	}
-	return out
-}
-
 func distinctCanonical(alphabet []byte, length int) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -92,46 +84,6 @@ func rawTenantClient(t *testing.T, url string) *http.Client {
 		t.Fatal(err)
 	}
 	return r.clients[key].transport
-}
-
-func TestAnHTTP2AnswersAnnouncedNamesAndTrailersAreHeldBesideItsHeadersAndNoMoreThanTrailersHTTP2(t *testing.T) {
-	sizedForTheBounds(t)
-	headers := distinctNames(32)
-	announced := canonicalPrefixed(distinctNames(33), "y")
-	trailers := canonicalPrefixed(distinctNames(33), "z")
-	var keys keysRead
-	held := func(announces, sendsTrailers bool) int64 {
-		client, url := tenantClient(t, http2, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			for _, name := range headers {
-				w.Header()[http.CanonicalHeaderKey(name)] = []string{""}
-			}
-			if announces {
-				w.Header().Set("Trailer", strings.Join(announced, ","))
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"metadata":{"resourceVersion":"1"}}`))
-			if sendsTrailers {
-				for _, name := range trailers {
-					w.Header()[http.TrailerPrefix+name] = []string{""}
-				}
-			}
-		}))
-		return heldOnceRead(t, client, url, &keys)
-	}
-	without := held(false, false)
-	with := held(true, true)
-	parts := len(announced)*announcedName + len(trailers)*trailerField + 2*mapTable
-	t.Logf("%d header names held %.3f MiB, with %d announced names and %d trailers %.3f MiB, %.3f MiB more; the parts add to %.3f MiB, trailersHTTP2 is %.3f MiB",
-		len(headers), mib(uint64(without)), len(announced), len(trailers), mib(uint64(with)), mib(uint64(with-without)), mib(uint64(parts)), mib(trailersHTTP2))
-	if len(announced) > fieldsOfABudget || len(trailers) > fieldsOfABudget {
-		t.Fatalf("%d names announced and %d trailers, want at most fieldsOfABudget, %d, of each", len(announced), len(trailers), fieldsOfABudget)
-	}
-	if keys.trailer < (len(announced)+len(trailers))*9/10 {
-		t.Errorf("the response has %d keys of Trailer, want most of the %d names announced and trailers sent", keys.trailer, len(announced)+len(trailers))
-	}
-	if more := int(with - without); more < parts/2 || more > trailersHTTP2 {
-		t.Errorf("the names and the trailers are held in %d bytes, want %d to trailersHTTP2, %d", more, parts/2, trailersHTTP2)
-	}
 }
 
 const tokenCharacters = "!#$%&'*+-.^_`|~0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"

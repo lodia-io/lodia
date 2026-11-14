@@ -135,7 +135,7 @@ func (i *idleCloser) CloseIdleConnections() { i.closed.Store(true) }
 
 func TestTheCapStillLetsAForgottenControlPlaneCloseItsIdleConnections(t *testing.T) {
 	below := &idleCloser{}
-	utilnet.CloseIdleConnectionsFor(capResponses(below))
+	utilnet.CloseIdleConnectionsFor(capResponses(below, 1))
 	if !below.closed.Load() {
 		t.Error("CloseIdleConnectionsFor did not reach the transport below the cap")
 	}
@@ -287,7 +287,7 @@ func TestTheCapFailsABodyPastTheBoundAndSaysSoToTheRequestThatAsked(t *testing.T
 			body := strings.NewReader(strings.Repeat("x", c.size))
 			transport := capResponses(roundTripFunc(func(*http.Request) (*http.Response, error) {
 				return &http.Response{StatusCode: http.StatusInternalServerError, Body: io.NopCloser(body)}, nil
-			}))
+			}), 1)
 			var cut bool
 			ctx := t.Context()
 			if c.flagged {

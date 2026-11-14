@@ -34,12 +34,7 @@ func servingPaths(t *testing.T, answers map[string][]byte) *tenant {
 
 func serving(t *testing.T, answers map[string][]byte, beforeAnswering func()) *tenant {
 	t.Helper()
-	return servingOver(t, http1, answers, beforeAnswering)
-}
-
-func servingOver(t *testing.T, p protocol, answers map[string][]byte, beforeAnswering func()) *tenant {
-	t.Helper()
-	_, tenant := p.tenant(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	return restoreTenantOf(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		body, ok := answers[req.URL.Path]
 		if !ok {
 			body = []byte(emptyList)
@@ -49,7 +44,6 @@ func servingOver(t *testing.T, p protocol, answers map[string][]byte, beforeAnsw
 		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 		_, _ = w.Write(body)
 	}))
-	return tenant
 }
 
 func nameOf(prefix string, i, length int) string {

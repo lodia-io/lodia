@@ -15,17 +15,6 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
-type protocol struct {
-	name  string
-	http2 bool
-}
-
-var (
-	http1     = protocol{"HTTP/1.1", false}
-	http2     = protocol{"HTTP/2", true}
-	protocols = []protocol{http1, http2}
-)
-
 func kubeconfigForTLS(t *testing.T, server *httptest.Server) []byte {
 	t.Helper()
 	out, err := clientcmd.Write(clientcmdapi.Config{
@@ -40,36 +29,29 @@ func kubeconfigForTLS(t *testing.T, server *httptest.Server) []byte {
 	return out
 }
 
-func (p protocol) serve(t *testing.T, handler http.Handler) []byte {
+func serveTenant(t *testing.T, handler http.Handler) []byte {
 	t.Helper()
-	wanted := 1
-	if p.http2 {
-		wanted = 2
-	}
-	checked := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.ProtoMajor != wanted {
-			t.Errorf("the request came over HTTP/%d, want HTTP/%d", req.ProtoMajor, wanted)
-		}
-		handler.ServeHTTP(w, req)
-	})
-	if !p.http2 {
-		server := httptest.NewServer(checked)
-		t.Cleanup(server.Close)
-		return kubeconfigFor(t, server.URL)
-	}
-	server := httptest.NewUnstartedServer(checked)
-	server.EnableHTTP2 = true
-	server.StartTLS()
+	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
-	return kubeconfigForTLS(t, server)
+	return kubeconfigFor(t, server.URL)
 }
 
-func (p protocol) tenant(t *testing.T, handler http.Handler) (*NodesReconciler, *tenant) {
+func tenantOf(t *testing.T, handler http.Handler) (*NodesReconciler, *tenant) {
 	t.Helper()
 	r := &NodesReconciler{Timeout: 10 * time.Minute, MaxNodes: 5000}
-	tenant, err := r.tenant(types.NamespacedName{Namespace: "team-a", Name: "dev"}, p.serve(t, handler))
+	tenant, err := r.tenant(types.NamespacedName{Namespace: "team-a", Name: "dev"}, serveTenant(t, handler))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return r, tenant
+}
+
+func restoreTenantOf(t *testing.T, handler http.Handler) *tenant {
+	t.Helper()
+	r := &Reconciler{Timeout: 10 * time.Minute}
+	tenant, err := r.tenant(types.NamespacedName{Namespace: "team-a", Name: "dev"}, serveTenant(t, handler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tenant
 }

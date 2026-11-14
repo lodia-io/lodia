@@ -19,31 +19,19 @@ import (
 	"strings"
 	"testing"
 
-	"golang.org/x/net/http2/hpack"
 	utilnet "k8s.io/apimachinery/pkg/util/net"
 )
 
 const (
-	fieldOfABudget  = 33
-	budgetHTTP2     = maxResponseHeaderBytes + 320
-	fieldsOfABudget = budgetHTTP2 / fieldOfABudget
+	mapSlot    = 94
+	mapTable   = 1024 * 41
+	nameCopy   = 16
+	valueCopy  = 16
+	valueSlice = 16
 
-	frameSize   = 16 << 10
-	hpackSaved  = 2 * (budgetHTTP2 + 8)
-	hpackBuffer = 256 << 10
-
-	mapSlot      = 94
-	mapTable     = 1024 * 41
-	nameCopy     = 16
-	valueCopy    = 16
-	valueSlice   = 16
-	decodedField = 40
-
-	announcedName     = mapSlot + nameCopy
-	fieldLine         = mapSlot + nameCopy + valueCopy + valueSlice
-	trailerField      = 2*mapSlot + nameCopy + valueSlice
-	trailerNamedField = 3 * valueSlice
-	trailersFrame     = 2 * fieldsOfABudget * decodedField
+	announcedName = mapSlot + nameCopy
+	fieldLine     = mapSlot + nameCopy + valueCopy + valueSlice
+	trailerField  = 2*mapSlot + nameCopy + valueSlice
 
 	oneByteNames        = 256
 	oneByteFieldNames   = 77
@@ -86,8 +74,6 @@ func TestEveryTermOfAReadIsAtLeastItsPartsAndLessThanTheStepOfItsRounding(t *tes
 	}{
 		{"the head of an HTTP/1.1 answer, its names, field lines and Trailer value", headersHTTP1, headersHTTP1Parts, mebibyte / 10},
 		{"the trailers of a chunked HTTP/1.1 answer", trailersHTTP1, trailerFieldsHTTP1*trailerFieldHTTP1 + 2*mapTable, mebibyte / 10},
-		{"the names a head announces and the trailers of an HTTP/2 answer", trailersHTTP2,
-			fieldsOfABudget*(announcedName+trailerField+trailerNamedField) + trailersFrame + 2*mapTable, mebibyte / 10},
 		{"a gzip reader", gzipReader, gzipParts, 1 << 10},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -116,35 +102,29 @@ func allocatedBy(build func()) int {
 
 func theWrapperOfTheGzipReader(t *testing.T) reflect.Type {
 	t.Helper()
-	var wrapper reflect.Type
-	for _, p := range protocols {
-		client, url := tenantClient(t, p, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Content-Encoding", "gzip")
-			_, _ = w.Write(gzipOfAByte(t))
-		}))
-		bottom := client.Transport
-		for {
-			wrapped, ok := bottom.(utilnet.RoundTripperWrapper)
-			if !ok {
-				break
-			}
-			bottom = wrapped.WrappedRoundTripper()
+	client, url := tenantClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "gzip")
+		_, _ = w.Write(gzipOfAByte(t))
+	}))
+	bottom := client.Transport
+	for {
+		wrapped, ok := bottom.(utilnet.RoundTripperWrapper)
+		if !ok {
+			break
 		}
-		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url+nodeLeasesPath, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp, err := bottom.RoundTrip(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		found := reflect.TypeOf(resp.Body).Elem()
-		_ = resp.Body.Close()
-		if wrapper == nil || found.Size() > wrapper.Size() {
-			wrapper = found
-		}
+		bottom = wrapped.WrappedRoundTripper()
 	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url+nodeLeasesPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := bottom.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapper := reflect.TypeOf(resp.Body).Elem()
+	_ = resp.Body.Close()
 	return wrapper
 }
 
@@ -207,7 +187,6 @@ func TestTheSizesTheTermsAreBuiltFromAreTheSourcesOnThisPlatform(t *testing.T) {
 		{"a copy of a name of up to 16 bytes", worstCopy, nameCopy},
 		{"a copy of a value of up to 16 bytes", worstCopy, valueCopy},
 		{"an element of the slice of a header's values", int(reflect.TypeFor[string]().Size()), valueSlice},
-		{"a decoded header field", int(reflect.TypeFor[hpack.HeaderField]().Size()), decodedField},
 		{"a gzip.Reader", allocatedBy(func() { made = reflect.New(reflect.TypeFor[gzip.Reader]()) }), gzipReaderStruct},
 		{"a bufio.Reader", allocatedBy(func() { made = reflect.New(reflect.TypeFor[bufio.Reader]()) }), gzipBufioStruct},
 		{"a bufio.Reader of the default buffer, with its buffer", allocatedBy(func() { buffered = bufio.NewReader(plainReader{}) }), gzipBufioStruct + gzipBufioBuffer},
@@ -231,17 +210,6 @@ func TestTheSizesTheTermsAreBuiltFromAreTheSourcesOnThisPlatform(t *testing.T) {
 		t.Errorf("flate's window is %d bytes, a name's string %d and a slice of runes %d, want %d, 1,022 and 511", window, len(text), cap(rune511), gzipWindow)
 	}
 	runtime.KeepAlive([]any{made, block, links, linkSlice, buffered})
-}
-
-func TestTheHpackBufferIsWhatABytesBufferGrowsToByFramesWhileAFieldIsUnfinished(t *testing.T) {
-	sizedForTheBounds(t)
-	var saved bytes.Buffer
-	for saved.Len() <= hpackSaved {
-		saved.Write(make([]byte, frameSize))
-	}
-	if saved.Cap() != hpackBuffer {
-		t.Errorf("a buffer that takes frames of %d bytes until it holds more than the %d an unfinished field may take is %d bytes, want hpackBuffer, %d", frameSize, hpackSaved, saved.Cap(), hpackBuffer)
-	}
 }
 
 func mostLinkTables(symbols, longest int) int {
@@ -283,40 +251,23 @@ func roundedUp(x float64, decimals int) float64 {
 
 func TestEveryFigureOfTheDerivationIsTheSumOfItsTermsRoundedUp(t *testing.T) {
 	const gibibyte = 1 << 30
-	pass := func(p protocol) uint64 { return readsBound(p, 2) + summariesAtMost }
-	connections := func(p protocol, reads int) uint64 {
-		each := uint64(connectionHTTP1)
-		if p.http2 {
-			each = connectionHTTP2
-		}
-		return uint64(connectionsKept(p, reads)) * each
-	}
-	atRest := func(p protocol) uint64 { return summariesAtMost + connections(p, 2) + connections(p, 7) }
+	pass := readsBound(nodesReads) + summariesAtMost
+	atRest := uint64(summariesAtMost + (nodesReads+restoreReads)*connectionHTTP1)
 	for _, c := range []struct {
 		name     string
 		got      float64
 		decimals int
 		want     float64
 	}{
-		{"a read over HTTP/2, MiB", mib(readsBound(http2, 1)), 1, 28.5},
-		{"a read over HTTP/1.1, MiB", mib(readsBound(http1, 1)), 1, 25.5},
-		{"a read over HTTP/2 apart from its connection, MiB", mib(readsBound(http2, 1) - connectionHTTP2), 1, 26.2},
-		{"a read over HTTP/1.1 apart from its connection, MiB", mib(readsBound(http1, 1) - connectionHTTP1), 1, 23.5},
-		{"the two reads of a pass of health-nodes over HTTP/2, MiB", mib(readsBound(http2, 2)), 1, 56.9},
-		{"the two reads of a pass of health-nodes over HTTP/1.1, MiB", mib(readsBound(http1, 2)), 1, 50.9},
-		{"a pass of health-nodes over HTTP/2, MiB", mib(pass(http2)), 1, 60.9},
-		{"a pass of health-nodes over HTTP/1.1, MiB", mib(pass(http1)), 1, 54.9},
-		{"a pass of health over a held restore over HTTP/2, MiB", mib(readsBound(http2, 7)), 1, 198.9},
-		{"a pass of health over a held restore over HTTP/1.1, MiB", mib(readsBound(http1, 7)), 1, 177.9},
-		{"the connections health-nodes' client keeps at rest over HTTP/2, MiB", mib(connections(http2, 2)), 1, 11.4},
-		{"the connections health's client keeps at rest over HTTP/2, MiB", mib(connections(http2, 7)), 1, 34},
-		{"a tenant at rest over HTTP/2, MiB", mib(atRest(http2)), 1, 49.4},
-		{"the connections health-nodes' client keeps at rest over HTTP/1.1, MiB", mib(connections(http1, 2)), 1, 8},
-		{"the connections health's client keeps at rest over HTTP/1.1, MiB", mib(connections(http1, 7)), 1, 28},
-		{"a tenant at rest over HTTP/1.1, MiB", mib(atRest(http1)), 1, 40},
-		{"100 workers of health-nodes over HTTP/2, GiB", 100 * float64(pass(http2)) / gibibyte, 2, 5.94},
-		{"10 workers of health over HTTP/2, GiB", 10 * float64(readsBound(http2, 7)) / gibibyte, 2, 1.95},
-		{"100 passes of health-nodes over HTTP/1.1, GiB", 100 * float64(pass(http1)) / gibibyte, 1, 5.4},
+		{"a read, MiB", mib(readsBound(1)), 1, 25.5},
+		{"a read apart from its connection, MiB", mib(readsBound(1) - connectionHTTP1), 1, 23.5},
+		{"the two reads of a pass of health-nodes, MiB", mib(readsBound(nodesReads)), 1, 50.9},
+		{"a pass of health-nodes, MiB", mib(pass), 1, 54.9},
+		{"a pass of health over a held restore, MiB", mib(readsBound(restoreReads)), 1, 177.9},
+		{"the connections of a tenant at rest, MiB", mib(uint64((nodesReads + restoreReads) * connectionHTTP1)), 1, 18},
+		{"a tenant at rest, MiB", mib(atRest), 1, 22},
+		{"100 passes of health-nodes, GiB", 100 * float64(pass) / gibibyte, 2, 5.36},
+		{"10 passes of health over a held restore, GiB", 10 * float64(readsBound(restoreReads)) / gibibyte, 2, 1.74},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if got := roundedUp(c.got, c.decimals); math.Abs(got-c.want) > 1e-9 {
@@ -357,7 +308,7 @@ func TestTheLeastAnHTTP1FieldLineAddsToAHeadIsFieldLineLessMapSlotSinceTheMapGro
 
 func TestAMapOfHeadersHoldsAtMostASlotOfMapSlotBytesForEachKeyAndOneTableMore(t *testing.T) {
 	sizedForTheBounds(t)
-	for _, keys := range []int{fieldsOfABudget, announcedNamesHTTP1} {
+	for _, keys := range []int{announcedNamesHTTP1} {
 		names := make([]string, keys)
 		for i := range names {
 			names[i] = strconv.Itoa(i)

@@ -55,7 +55,7 @@ func TestARequestThatFailsBeforeItsAnswerCarriesNoByteOfTheTokenItAsksWith(t *te
 				{"a reset", syscall.ECONNRESET},
 			} {
 				t.Run(l.name+", "+kind.name+", "+failure.name, func(t *testing.T) {
-					r, tenant := http1.tenant(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+					r, tenant := tenantOf(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 						switch {
 						case req.URL.Path != l.path:
 							w.Header().Set("Content-Type", "application/json")
@@ -142,7 +142,7 @@ func TestAWriteThatFailsBeforeItsAnswerIsTheErrorWithItsVerbAndItsPath(t *testin
 			{"a reset", syscall.ECONNRESET},
 		} {
 			t.Run(c.name+", "+failure.name, func(t *testing.T) {
-				_, tenant := http1.tenant(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				_, tenant := tenantOf(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 					_, _ = io.Copy(io.Discard, req.Body)
 					if !errors.Is(failure.is, syscall.ECONNRESET) {
 						<-req.Context().Done()

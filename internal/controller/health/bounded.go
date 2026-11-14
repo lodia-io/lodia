@@ -28,10 +28,13 @@ var errResponseTooLong = fmt.Errorf("the response is longer than maxResponseByte
 // maxResponseHeaderBytes. A request that wants to know the cut carries a *bool
 // under cutKey: client-go replaces the error of the read with the status error
 // for a response outside 2xx. next is the transport client-go builds for this
-// tenant alone, since its config sets a proxy, which it never caches.
-func capResponses(next http.RoundTripper) http.RoundTripper {
+// tenant alone, since its config sets a proxy, which it never caches. It has at
+// most connections connections open, dialing, in use and idle: a read past that
+// waits for one to close or be given back, at most its own deadline.
+func capResponses(next http.RoundTripper, connections int) http.RoundTripper {
 	if transport, ok := next.(*http.Transport); ok {
 		transport.MaxResponseHeaderBytes = maxResponseHeaderBytes
+		transport.MaxConnsPerHost = connections
 	}
 	return cappedTransport{next}
 }
