@@ -571,7 +571,7 @@ A list of webhook configurations counts one configuration at a time and keeps no
 What one read holds at most is the larger of its two phases, the body being read and after it.
 Its terms are of three kinds, and a figure is the terms and the margins added and rounded up:
 - what Health's code bounds, argued exactly from the code and its constants: the body under `maxResponseBytes` in `io.ReadAll`'s chunks and the slice it returns, what the types keep, the summaries a pass builds and the reads in flight at once;
-- the transport's buffers whose size grows with a limit the client sets, each the most its limit allows, with its source line: the header list, the names a head announces, the trailers and the gzip reader;
+- the transport's buffers whose size grows with a limit the client sets, each the most its limit allows, with its source line: the header list, the names a head announces and the trailers;
 - a margin of 2 MiB for each connection, for everything else that the standard library and the runtime allocate on the way and no term itemizes: the readers and writers of 4 KiB, TLS's records, the request's writer and the structures of a response.
   It is a margin and no derived term: the measures below confirm that the terms and the margin hold everything they see.
 
@@ -603,28 +603,9 @@ The phases, each term with the source of what runs in it:
     That is 313,208 bytes, 0.30 MiB.
     The read has them before `io.ReadAll` allocates its slice, and the response keeps them while it does.
     `TestAnHTTP1ChunkedAnswersTrailersEndingInALineFeedAreHeldAtItsEndAtMostTrailersHTTP1` reads the 1,036 field lines that 4,093 bytes carry after a head that announces one name and finds 0.11 MiB once the copy's source is garbage.
-  - The gzip reader, 219 KiB.
-    A transport that sets no `Accept-Encoding` asks for gzip and reads a gzip answer through a reader of its own, taken from a pool and put back when the read ends ([net/http transport.go](https://github.com/golang/go/blob/go1.26.10/src/net/http/transport.go#L2438-L2439), [L3120-L3151](https://github.com/golang/go/blob/go1.26.10/src/net/http/transport.go#L3120-L3151)).
-    client-go leaves compression on (`TestTheTenantClientAsksForGzipAndReadsIt`), and a kube-apiserver compresses an answer over 128 KiB, which it does by default since 1.16 ([writers.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/endpoints/handlers/responsewriters/writers.go#L152-L155), [kube_features.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/features/kube_features.go#L321-L324)), so the Node lists of an honest tenant come through it; the stream is the tenant's to choose, since the aggregator passes an APIService's `Content-Encoding` back.
-    What a `gzip.Reader` holds, at go1.26.10 on 64-bit, is:
-    - the reader, 664 bytes, which takes 704, and a `bufio.Reader` of 88 bytes, which takes 96, with its buffer of 4,096, since the body is no `io.ByteReader` ([gunzip.go](https://github.com/golang/go/blob/go1.26.10/src/compress/gzip/gunzip.go#L74-L114));
-    - flate's decompressor, 4,392 bytes, which takes 4,864, with two Huffman decoders whose tables of 512 entries are in it, and `bits` and `codebits`, 2,528 and 152 bytes, which take 2,688 and 160 ([inflate.go](https://github.com/golang/go/blob/go1.26.10/src/compress/flate/inflate.go#L104-L109), [L267-L300](https://github.com/golang/go/blob/go1.26.10/src/compress/flate/inflate.go#L267-L300), [L807-L817](https://github.com/golang/go/blob/go1.26.10/src/compress/flate/inflate.go#L807-L817)); the fixed decoder is a package variable and no heap;
-    - the window, 32 KiB ([dict_decoder.go](https://github.com/golang/go/blob/go1.26.10/src/compress/flate/dict_decoder.go#L39-L43));
-    - the link tables of the last dynamic block, each Huffman decoder keeping one of 64 entries of 4 bytes for each 9-bit prefix that leads to a longer code, in a slice of 24 bytes a prefix, and nothing of an earlier block, since `init` and `Reset` clear the decoder first ([inflate.go](https://github.com/golang/go/blob/go1.26.10/src/compress/flate/inflate.go#L122-L124), [L167-L187](https://github.com/golang/go/blob/go1.26.10/src/compress/flate/inflate.go#L167-L187), [L786-L795](https://github.com/golang/go/blob/go1.26.10/src/compress/flate/inflate.go#L786-L795));
-      the code is complete (L167), so a prefix has two leaves or more, one of 15 bits seven or more under it, and the codes of 9 bits or fewer, which fill the other prefixes, need as many leaves as 512 less the long prefixes has bits set: of 286 symbols (L23) at most 137 prefixes, 8,768 entries of any longest length, and of 30 distances at most 8, 512 entries (`TestACompleteCodeHasAtMostAsManyLongPrefixesAsTheGzipTermCounts`);
-      the 145 tables take 256 bytes each and their slices 3,456 and 192: 40,768 bytes;
-    - the header of the first member, kept for the reader's life: the extra field up to 65,535 bytes, a large object of 65,536, and the name and the comment up to 511 bytes of Latin-1 each, which `readString` turns into runes and then into a string, and the runtime allocates a string's UTF-8 length and 3 bytes ([gunzip.go](https://github.com/golang/go/blob/go1.26.10/src/compress/gzip/gunzip.go#L141-L170), [L199-L224](https://github.com/golang/go/blob/go1.26.10/src/compress/gzip/gunzip.go#L199-L224), [string.go](https://github.com/golang/go/blob/go1.26.10/src/runtime/string.go#L278)): 1,022 and 3 bytes, which take 1,152 (`TestTheSizesTheTermsAreBuiltFromAreTheSourcesOnThisPlatform`), 67,840 bytes;
-    - the header of a later member, read while the first and the tables are held and dropped when it is read ([gunzip.go](https://github.com/golang/go/blob/go1.26.10/src/compress/gzip/gunzip.go#L262-L290)): the same and a slice of runes of 2,048 bytes, 69,888 bytes;
-    - the transport's wrapper, 48 bytes ([gzipReader](https://github.com/golang/go/blob/go1.26.10/src/net/http/transport.go#L3120)).
-    That is 223,920 bytes, 218.7 KiB: the term is 219 KiB.
-    `TestTheSizesTheTermsAreBuiltFromAreTheSourcesOnThisPlatform` holds each of these sizes, and the copies of a name and a value that the HTTP/1.1 head's term counts, by allocating that part alone, 100 to 10,000 times up to 8 MiB: the least of 20 runs is the size, since allocations by other goroutines only add to a run.
-    `TestAGzipReaderAllocatesExactlyTheSumOfItsPartsAndTheRunesItConvertsOnEachWorstStream` reads one byte through a `gzip.Reader` and finds 45,376 bytes allocated for a stream of `gzip.Writer`, 86,144 for a code of 137 and 8 tables, and 158,080 with the extra field, the name and the comment: each its parts, and for the last the 4,096 bytes of the two slices of runes that the name and the comment pass through on their way to a string.
-    `TestAGzipReaderThatReadsALaterMembersHeaderAllocatesExactlyGzipPartsAndTheRunesOfItsThreeEarlierConversions` finds 230,064 bytes for the crafted stream, a second member's header and the transport's wrapper: `gzipParts` and the three slices of runes that are garbage by the time the last string is made.
-    `TestTheTenantClientHoldsAGzipReaderOfTheWorstStreamUnderGzipReader` reads the crafted stream through the tenant's client, 152 to 154 KiB of live heap.
-    `TestTheCraftedGzipStreamsMakeTheTablesAndTheHeaderTheirPartsAssume` holds the crafted streams to what the sum assumes: 145 tables and two slices of them, an extra field of 65,535 bytes, a name and a comment of 1,022.
-    The whole readers are measured as the parts are: the bytes the process allocated while one was built and read, the least of 20 runs of 100 to 10,000 rounds, which another goroutine can only add to, so the sums are equal and no tolerance is left.
-    That measure counts garbage with what is held, and the only garbage the readers make is the slices of runes.
-    A reader that is reset keeps nothing of the stream it read before, which an allocation count cannot show: `TestAGzipReaderThatIsResetHoldsNothingOfTheStreamItReadBefore` watches the extra field, the name, the comment, the buffered reader and its buffer and the 147 slices of the link tables of the crafted stream through weak pointers, and finds none alive after a `Reset` to another stream and two collections.
+  - No decompressor.
+    The tenant clients set `DisableCompression`, so that net/http asks for no gzip and decodes none ([transport.go](https://github.com/golang/go/blob/go1.26.10/src/net/http/transport.go#L2845-L2862)), and no gzip reader, which net/http's pool keeps past the read, is made.
+    `TestTheTenantClientsAskForNoCompression` finds no `Accept-Encoding` in a pass of either client, and `TestAGzipAnswerSentUnaskedIsAFailedReadThatKeepsNothingOfItsResponse` sends a gzip answer nobody asked for, a Lease and one of 9 MiB, and finds each read fail, as no JSON or at the cut, and its response unreachable after a collection.
   - The connection of each read in flight, and the margin.
     A read in flight has a connection of its own, and nothing of net/http's reader and writer of 4 KiB each ([transport.go](https://github.com/golang/go/blob/go1.26.10/src/net/http/transport.go#L1991)) is itemized: they are in the margin of 2 MiB.
     The tenant clients speak HTTP/1.1 only: `tenantClients.of` leaves `h2` out of `NextProtos`, and client-go configures HTTP/2 only for a transport whose `NextProtos` allows it ([http.go](https://github.com/kubernetes/apimachinery/blob/v0.37.1/pkg/util/net/http.go#L196-L208), [L131-L144](https://github.com/kubernetes/apimachinery/blob/v0.37.1/pkg/util/net/http.go#L131-L144)).
@@ -655,11 +636,11 @@ The phases, each term with the source of what runs in it:
   The most is 1.85 MiB, 1.83 measured and 1.90 under the race detector, a page of 100 Nodes of 64 Ready conditions with every string at its raw bound and invalid UTF-8: a decoded string is cut to a copy of its kept length, which `TestACutStringHoldsNoneOfTheStringItWasCutFrom` holds, so a name takes 256 bytes, a kubelet version 80, a condition's status 224 and its type 8, and the conditions' slice 4 KiB a Node.
   The other kinds keep at most 0.4 MiB, and a failed answer's Status, a message of 1,024 raw bytes, a reason and 64 causes of 126, 0.03 MiB (`TestWhatTheTypesKeepAtTheRawBoundsIsUnderKeptAtMost`).
 
-So a read holds 25.5 MiB while its body is read (20.4 + 2.5 + 0.3 + 0.22, then the margin of 2) and 10 MiB after: 25.5 MiB.
-The memory of a pass follows from the reads it has in flight at once, each with a connection of its own, 25.5 MiB, of which the margin's 2:
-- a pass of `health-nodes` reads the controller manager's Lease, then lists the Leases and the Nodes at once, then sends the hold's write, whose patch carries the read's `resourceVersion`, 384 bytes at most, and reads its answer: two reads at once, 50.9 MiB, and the summaries the pass builds beside the sampling, up to `health.maxNodes` Lease versions and Node summaries, 4 MiB (3.72 MiB measured, with names of 253 bytes: a Lease version takes up to 112 bytes of map slot, its name of 256 and 24 bytes of the slice it is built from, a Node summary 72 bytes, 256 and 80, 3.8 MiB for 5,000 of each; `TestWhatAPassBuildsBesideTheSamplingIsUnderSummariesAtMost`): 54.9 MiB;
-- a pass of `health` over a held restore lists seven kinds at once, each with a head and a connection of its own: seven reads, 177.9 MiB;
-- the 100 workers of `health-nodes` hold 100 passes at once, 5.36 GiB at most, and the 10 workers of `health`, by default, 10 held restores, 1.74 GiB.
+So a read holds 25.2 MiB while its body is read (20.4 + 2.5 + 0.3, then the margin of 2) and 10 MiB after: 25.2 MiB.
+The memory of a pass follows from the reads it has in flight at once, each with a connection of its own, 25.2 MiB, of which the margin's 2:
+- a pass of `health-nodes` reads the controller manager's Lease, then lists the Leases and the Nodes at once, then sends the hold's write, whose patch carries the read's `resourceVersion`, 384 bytes at most, and reads its answer: two reads at once, 50.4 MiB, and the summaries the pass builds beside the sampling, up to `health.maxNodes` Lease versions and Node summaries, 4 MiB (3.72 MiB measured, with names of 253 bytes: a Lease version takes up to 112 bytes of map slot, its name of 256 and 24 bytes of the slice it is built from, a Node summary 72 bytes, 256 and 80, 3.8 MiB for 5,000 of each; `TestWhatAPassBuildsBesideTheSamplingIsUnderSummariesAtMost`): 54.4 MiB;
+- a pass of `health` over a held restore lists seven kinds at once, each with a head and a connection of its own: seven reads, 176.4 MiB;
+- the 100 workers of `health-nodes` hold 100 passes at once, 5.32 GiB at most, and the 10 workers of `health`, by default, 10 held restores, 1.73 GiB.
 
 At the default `GOGC` the heap in use may grow to about twice the live heap, so the operator's memory limit and `GOMEMLIMIT`, which are set when the operator is measured (`todo.md`, "From the chart"), start from about twice these figures.
 
@@ -668,7 +649,7 @@ They answer over HTTP/1.1, as the tenant clients speak it.
 The first three fail when a read or a pass holds more heap in use than its structural figure, or ends in another outcome than the shape expects:
 - `TestMeasureTheLiveHeapOfEveryReadOverAnAmplifyingResponse` answers each read with a response of 8 MiB in 47 shapes: nothing but empty objects where the read keeps an array, a body padded with bytes the types skip, a key of letters, of escapes and of invalid UTF-8, and a field past its bound in each of those;
 - `TestMeasureTheLiveHeapOfAPassWhoseEveryReadIsAtItsWorst` runs a pass of `health-nodes`, with its Lease read, both lists answered together by a server that waits until both requests are in, and its renewal, and a pass of `health` over a held restore, the seven lists answered as they come and together, every answer a body of 8 MiB;
-- `TestMeasureTheLiveHeapOfAReadWhoseAnswerIsCutAtTheBoundWithHeadersAtTheirs` reads an answer of 16 MiB, which the cap cuts at 8 MiB, 100 times in a process, with the headers of a plain answer, with distinct names filling the bound, about 13,600 field lines ended by a line feed, and with a head that announces names filling it, 51 field lines of one byte and about 21,800 names in a chunked head, and with the body gzipped, of bytes that do not compress, so that the transport reads it through a decompressor;
+- `TestMeasureTheLiveHeapOfAReadWhoseAnswerIsCutAtTheBoundWithHeadersAtTheirs` reads an answer of 16 MiB, which the cap cuts at 8 MiB, 100 times in a process, with the headers of a plain answer, with distinct names filling the bound, about 13,600 field lines ended by a line feed, and with a head that announces names filling it, 51 field lines of one byte and about 21,800 names in a chunked head;
 - `TestMeasureTheLiveHeapOfAPassOverAPageOf128000EmptyWebhooks` runs a pass over a held restore whose webhook lists answer 500 configurations of 256 empty webhooks;
 - `TestMeasureTheLiveHeapOfPassesOverTenantsPaddedToTheirBounds` runs passes over a tenant padded to its bounds, with every page of Leases and of Nodes just under 8 MiB and the default `health.maxNodes`, one pass and 100 at once on 100 tenants.
 
@@ -684,22 +665,20 @@ The runs below are on go1.26.10, `go version go1.26.10 darwin/arm64`, on 16 core
 
 | the measure | runs | live heap | heap in use | structural bound |
 |---|---|---|---|---|
-| one read, the most of 47 shapes | 12 | 8.0 to 16.0 MiB | 20.3 to 20.4 MiB | 25.5 MiB |
-| a read whose answer of 16 MiB is cut | 1,200 | 12.4 to 21.6 MiB | 20.4 MiB | 25.5 MiB |
-| the same, headers at their bound | 1,200 | 13.5 to 33.4 MiB | 21.4 to 21.6 MiB | 25.5 MiB |
-| the same, headers at their bound, gzipped | 1,200 | 13.5 to 29.5 MiB | 21.5 to 21.6 MiB | 25.5 MiB |
-| the same, announced names at their bound | 1,200 | 9.9 to 25.9 MiB | 17.9 MiB | 25.5 MiB |
-| the same, announced names at their bound, gzipped | 1,200 | 14.1 to 28.4 MiB | 22.0 MiB | 25.5 MiB |
-| one pass of `health-nodes`, the Lease read, both lists answered together and the renewal | 12 | 8.1 to 24.2 MiB | 16.1 to 32.5 MiB | 54.9 MiB |
-| one pass of `health` over a held restore, seven answers as they come | 12 | 24.9 to 73.7 MiB | 49.7 to 114.0 MiB | 177.9 MiB |
-| the same, its seven lists answered together | 12 | 57.1 to 73.6 MiB | 81.6 to 113.9 MiB | 177.9 MiB |
+| one read, the most of 47 shapes | 12 | 8.0 to 16.0 MiB | 20.3 to 20.4 MiB | 25.2 MiB |
+| a read whose answer of 16 MiB is cut | 1,200 | 12.4 to 21.6 MiB | 20.4 MiB | 25.2 MiB |
+| the same, headers at their bound | 1,200 | 13.5 to 33.4 MiB | 21.4 to 21.6 MiB | 25.2 MiB |
+| the same, announced names at their bound | 1,200 | 9.9 to 25.9 MiB | 17.9 MiB | 25.2 MiB |
+| one pass of `health-nodes`, the Lease read, both lists answered together and the renewal | 12 | 8.1 to 24.2 MiB | 16.1 to 32.5 MiB | 54.4 MiB |
+| one pass of `health` over a held restore, seven answers as they come | 12 | 24.9 to 73.7 MiB | 49.7 to 114.0 MiB | 176.4 MiB |
+| the same, its seven lists answered together | 12 | 57.1 to 73.6 MiB | 81.6 to 113.9 MiB | 176.4 MiB |
 | one pass of `health` over 500 configurations of 256 empty webhooks, named with 253 bytes, one list or both | 12 | 0.0 to 1.1 MiB or 0.0 to 3.1 MiB | 0.8 to 3.3 MiB or 1.6 to 5.3 MiB | |
 | the same, named with 2,048 bytes | 12 | 0.0 to 2.2 MiB or 2.0 to 4.6 MiB | 0.2 to 3.8 MiB or 4.3 to 6.8 MiB | |
-| one pass over a tenant padded to its bounds, 62 responses | 12 | 8.7 to 24.6 MiB | 20.2 to 32.7 MiB | 54.9 MiB |
-| 100 passes at once on 100 tenants | 12 | 1.14 to 1.34 GiB, 11.7 to 13.7 MiB a pass | 1.26 to 1.52 GiB | 5.36 GiB |
+| one pass over a tenant padded to its bounds, 62 responses | 12 | 8.7 to 24.6 MiB | 20.2 to 32.7 MiB | 54.4 MiB |
+| 100 passes at once on 100 tenants | 12 | 1.14 to 1.34 GiB, 11.7 to 13.7 MiB a pass | 1.26 to 1.52 GiB | 5.32 GiB |
 
 The 100 passes at once open 200 connections to one listener, and two runs of the measures started together failed in it, passes ending in an unexpected EOF or in a pass that did not stop, from the loopback server, whose listen queue is 128 (`kern.ipc.somaxconn`); the twelve above ran one at a time and all passed.
-The closest any measure came to its bound is 3.4 MiB, the cut answer with announced names at their bound and a gzipped body over HTTP/1.1.
+The closest any measure came to its bound is 3.6 MiB, the cut answer with the headers at their bound.
 No run put a pass at the ceiling of its reads, since their chunks do not all peak together.
 A first pass of `health-nodes` over 5,000 Nodes and their 5,000 Leases, the most `health.maxNodes` counts by default, took 313, 295 and 293 ms in three runs on go1.26.10, and a pass over 5,001 Nodes, which stops at the bound, 295, 287 and 286 ms (`TestATenantOfMaxNodesNodesIsCountedWholeAtTheOperatorsTimeout`, on envtest, on 16 cores of an Apple M4 Max, one run at a time).
 The race detector slows it tenfold, to 2.90, 2.86 and 2.96 s for 5,000 Nodes and 2.83, 2.82 and 2.87 s for 5,001, in three runs of `TestATenantOfMaxNodesNodesIsCountedWholeUnderTheRaceDetector`, which counts the same tenant with a `Timeout` of a minute, against the operator's of 5 s.
@@ -715,9 +694,6 @@ A tenant at the default `health.maxNodes` of 5,000 keeps 5,000 of each, 3.4 MiB 
 A tenant has two clients, `health-nodes`' and `health`'s, and each keeps at most its cap of connections between passes, idle ones, 2 and 7: 9 in all, each 2 MiB by the rule of the derivation.
 A tenant at rest keeps at most 4 MiB of summaries and 18 MiB of connections, 22.0 MiB.
 The connections of a pass are among those 9: the figure of a pass counts them with its reads, and the figure at rest counts them idle, so that no connection is counted twice.
-net/http's `gzipPool` outlives the reads, and the figures do not count it.
-A `sync.Pool` drops an item once two garbage collections have passed since it was put ([pool.go](https://github.com/golang/go/blob/go1.26.10/src/sync/pool.go#L257-L281)).
-A gzip reader goes back to the pool reset to an empty reader ([transport.go](https://github.com/golang/go/blob/go1.26.10/src/net/http/transport.go#L3146-L3152)), which drops the header, the link tables and the buffered reader and keeps the reader's 704 bytes, flate's 4,864 with its lengths, 2,848, and its window of 32 KiB: 41,184 bytes for each read that ended and was not followed by another before two collections.
 The operator's pods set no requests or limits yet.
 
 ## Upgrading Lodia

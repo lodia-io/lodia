@@ -5,9 +5,7 @@ package health
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -398,13 +396,12 @@ const (
 	readAllAtMost    = 204 * mebibyte / 10
 	headersHTTP1     = 25 * mebibyte / 10
 	trailersHTTP1    = 3 * mebibyte / 10
-	gzipReader       = 219 << 10
 	keptAtMost       = 2 * mebibyte
 	summariesAtMost  = 4 * mebibyte
 )
 
 func readsBound(reads int) uint64 {
-	each := uint64(readAllAtMost + headersHTTP1 + trailersHTTP1 + gzipReader + connectionHTTP1)
+	each := uint64(readAllAtMost + headersHTTP1 + trailersHTTP1 + connectionHTTP1)
 	return max(uint64(reads)*each, uint64(reads)*(maxResponseBytes+keptAtMost))
 }
 
@@ -516,7 +513,7 @@ func TestMeasureTheLiveHeapOfAPassWhoseEveryReadIsAtItsWorst(t *testing.T) {
 	})
 }
 
-type cutShape struct{ headers, announced, gzipped bool }
+type cutShape struct{ headers, announced bool }
 
 func (c cutShape) String() string {
 	name := "an answer of 16 MiB"
@@ -526,21 +523,14 @@ func (c cutShape) String() string {
 	if c.announced {
 		name += ", announced names at their bound"
 	}
-	if c.gzipped {
-		name += ", gzipped"
-	}
 	return name
 }
 
 func cutAnswers(t *testing.T, body []byte, shape cutShape) *tenant {
 	t.Helper()
-	encoding := ""
-	if shape.gzipped {
-		encoding = "Content-Encoding: gzip\r\n"
-	}
-	head := "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" + encoding + "Content-Length: " + strconv.Itoa(len(body)) + "\r\n"
+	head := "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + strconv.Itoa(len(body)) + "\r\n"
 	if shape.announced {
-		head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" + encoding + "Transfer-Encoding: chunked\r\n"
+		head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n"
 		for _, name := range canonicalFieldNames(oneByteFieldNames * 3) {
 			if len(name) == 1 {
 				head += name + ":\n"
@@ -568,37 +558,14 @@ func cutAnswers(t *testing.T, body []byte, shape cutShape) *tenant {
 	return tenant
 }
 
-func gzipStored(t *testing.T, data []byte) []byte {
-	t.Helper()
-	var out bytes.Buffer
-	writer, err := gzip.NewWriterLevel(&out, gzip.NoCompression)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := writer.Write(data); err != nil {
-		t.Fatal(err)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return out.Bytes()
-}
-
 func TestMeasureTheLiveHeapOfAReadWhoseAnswerIsCutAtTheBoundWithHeadersAtTheirs(t *testing.T) {
 	sizedForTheBounds(t)
 	if os.Getenv(measureHeap) == "" {
 		t.Skipf("set %s to measure the heap of a read whose answer is cut, with headers at their bound", measureHeap)
 	}
-	plain := bytes.Repeat([]byte("a"), 2*maxResponseBytes)
-	random := make([]byte, 2*maxResponseBytes)
-	_, _ = rand.Read(random)
-	gzipped := gzipStored(t, random)
-	for _, shape := range []cutShape{{}, {headers: true}, {headers: true, gzipped: true}, {announced: true}, {announced: true, gzipped: true}} {
+	body := bytes.Repeat([]byte("a"), 2*maxResponseBytes)
+	for _, shape := range []cutShape{{}, {headers: true}, {announced: true}} {
 		t.Run(shape.String(), func(t *testing.T) {
-			body := plain
-			if shape.gzipped {
-				body = gzipped
-			}
 			tenant := cutAnswers(t, body, shape)
 			bound := readsBound(1)
 			var most heapPeaks

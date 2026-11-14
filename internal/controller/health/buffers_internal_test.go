@@ -4,16 +4,9 @@
 package health
 
 import (
-	"compress/gzip"
 	"io"
-	"net/http"
-	"net/http/httptest"
 	"slices"
-	"sync/atomic"
 	"testing"
-	"time"
-
-	"k8s.io/apimachinery/pkg/types"
 )
 
 type pacedReader struct {
@@ -103,18 +96,6 @@ func TestIoReadAllHoldsAtMostItsChunksAndTheSliceItReturnsAtTheCut(t *testing.T)
 	}
 }
 
-func tenantClient(t *testing.T, handler http.Handler) (*http.Client, string) {
-	t.Helper()
-	server := httptest.NewServer(handler)
-	t.Cleanup(server.Close)
-	key := types.NamespacedName{Namespace: "team-a", Name: "dev"}
-	r := &NodesReconciler{Timeout: time.Minute, MaxNodes: 5000}
-	if _, err := r.tenant(key, kubeconfigFor(t, server.URL)); err != nil {
-		t.Fatal(err)
-	}
-	return r.clients[key].transport, server.URL
-}
-
 func medianOf(measure func() int64) int64 {
 	var all []int64
 	for range 5 {
@@ -122,24 +103,4 @@ func medianOf(measure func() int64) int64 {
 	}
 	slices.Sort(all)
 	return all[len(all)/2]
-}
-
-func TestTheTenantClientAsksForGzipAndReadsIt(t *testing.T) {
-	const body = `{"metadata":{"resourceVersion":"7"},"spec":{"holderIdentity":"x"}}`
-	var asked atomic.Value
-	_, tenant := tenantOf(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		asked.Store(req.Header.Get("Accept-Encoding"))
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Content-Encoding", "gzip")
-		writer := gzip.NewWriter(w)
-		_, _ = io.WriteString(writer, body)
-		_ = writer.Close()
-	}))
-	lease, err := tenant.getLease(t.Context(), "kube-controller-manager")
-	if err != nil || lease.Metadata.ResourceVersion != "7" {
-		t.Errorf("a gzipped answer read as %+v, error %v, want resourceVersion 7", lease, err)
-	}
-	if got, _ := asked.Load().(string); got != "gzip" {
-		t.Errorf("the request asked for %q, want gzip", got)
-	}
 }

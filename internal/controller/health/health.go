@@ -784,6 +784,9 @@ func (c *tenantClients) of(kubeconfig []byte) (*tenant, error) {
 	// the transport counts and caps its connections, which an HTTP/2 pool does
 	// not.
 	cfg.NextProtos = []string{"http/1.1"}
+	// net/http then asks for no gzip and decodes none (https://github.com/golang/go/blob/go1.26.10/src/net/http/transport.go#L2845-L2862),
+	// so no gzip reader is made, whose pool keeps one past the read.
+	cfg.DisableCompression = true
 	cfg.AcceptContentTypes, cfg.ContentType = "application/json", "application/json"
 	// client-go asks for a serializer, and DoRaw never uses it: no response is
 	// decoded into the API's types.

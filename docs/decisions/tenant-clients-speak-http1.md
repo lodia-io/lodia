@@ -1,4 +1,4 @@
-# Health's tenant clients speak HTTP/1.1, and net/http caps their connections
+# Health's tenant clients speak HTTP/1.1 with no compression, and net/http caps their connections
 
 Decided 2026-11-14.
 Built; `internal/controller/health` holds it.
@@ -6,6 +6,7 @@ Built; `internal/controller/health` holds it.
 ## Decision
 
 - Health's two clients of a tenant, `health`'s and `health-nodes`', set `h2` out of `NextProtos`, so that client-go configures no HTTP/2 for them ([http.go](https://github.com/kubernetes/apimachinery/blob/v0.37.1/pkg/util/net/http.go#L196-L208)) and every request goes over HTTP/1.1, whatever the tenant's server offers.
+- Both set `DisableCompression`, so that net/http asks for no gzip and decodes none ([transport.go](https://github.com/golang/go/blob/go1.26.10/src/net/http/transport.go#L2845-L2862)).
 - Each client's transport has `MaxConnsPerHost` equal to the most reads its pass has in flight at once: 2 for `health-nodes`, the two lists, and 7 for `health`, the lists of a held restore.
   net/http counts every connection of a host, dialing, in use and idle, and a dial past the cap waits for a connection to close or to be given back ([transport.go](https://github.com/golang/go/blob/go1.26.10/src/net/http/transport.go#L214-L219)).
 - An honest pass never waits on the cap for a connection that another of its reads holds: a read waits only for a count that no read uses, a dial still in flight or a connection that is going, and ends at its own deadline at the latest; the argument and its tests are in [operations](../operations.md#capacity).
@@ -21,6 +22,10 @@ Built; `internal/controller/health` holds it.
   `MaxConnsPerHost` is documented, counts the states of a connection the same way for every server, and holds whatever the server does.
 - **Health gains nothing from HTTP/2.**
   It has no watch, at most two reads at once for `health-nodes` and seven for `health`, and reads the pages of a list one after another.
+- **A gzip reader is more than the figures can count.**
+  net/http's pool keeps a reader after the read, reset to an empty reader, which returns at the header before it resets the decompressor ([gunzip.go](https://github.com/golang/go/blob/go1.26.10/src/compress/gzip/gunzip.go#L103-L115), [L236-L240](https://github.com/golang/go/blob/go1.26.10/src/compress/gzip/gunzip.go#L236-L240), [transport.go](https://github.com/golang/go/blob/go1.26.10/src/net/http/transport.go#L3146-L3152)).
+  The decompressor keeps its link tables and the buffered reader over the body, 44,960 bytes beside the 41,184 of the reader, the decompressor and its window: 86,144 in all, and with the buffered reader the response of a read the cap or a deadline cut, its head up to 2.5 MiB, until a second collection.
+  Without compression no reader is made, and nothing of it needs a term, a part or a test.
 
 ## Rejected
 
@@ -30,6 +35,8 @@ Built; `internal/controller/health` holds it.
 
 ## Consequences
 
+- An answer of a tenant's API server crosses the management cluster's network uncompressed.
+  A page of 100 Nodes of 6.8 KB each is 683,549 bytes against 50,084 gzipped, 13.6 times more, measured on envtest's kube-apiserver 1.35.0; a tenant of 5,000 Nodes reads 50 of them, 34 MB, each time `health-nodes` samples it, every 30 s.
 - A held restore reads over seven TCP connections of a tenant where HTTP/2 used one, and `health-nodes` over two: a TLS handshake for each of them when it is first opened or after 90 s idle, and the margin of 2 MiB for each connection in the figures of [operations](../operations.md#capacity).
 - A tenant at rest keeps at most 9 idle connections beside its summaries, 22.0 MiB, and a tenant whose server never answers keeps at most the cap of them open, whatever its cadence.
 - A read that finds the cap reached by a connection that no read uses waits for it, at most until its own deadline: a tenant whose connections a server closes after every answer, a kube-apiserver's `--goaway-chance` among them, or whose handshake is slow while a pass opens its connections, may make a read wait a moment.
