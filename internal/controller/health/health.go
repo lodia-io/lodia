@@ -795,6 +795,7 @@ func (c *tenantClients) of(kubeconfig []byte) (*tenant, error) {
 	if err != nil {
 		return nil, err
 	}
+	transport.CheckRedirect = noRedirects
 	api, err := rest.UnversionedRESTClientForConfigAndClient(cfg, transport)
 	if err != nil {
 		return nil, err

@@ -8,6 +8,7 @@ import (
 	"compress/gzip"
 	"net/http"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -100,5 +101,45 @@ func TestAGzipAnswerSentUnaskedIsAFailedReadThatKeepsNothingOfItsResponse(t *tes
 				}
 			})
 		}
+	}
+}
+
+func TestTheTenantClientsFollowNoRedirectAndNameNoByteOfItsLocation(t *testing.T) {
+	const marker = "location-of-a-tenants-choosing"
+	for _, c := range clients {
+		t.Run(c.name, func(t *testing.T) {
+			var others []tenantServer
+			var reached atomic.Int64
+			for range 5 {
+				others = append(others, serveCounted(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+					reached.Add(1)
+					answerHonestly(w, req)
+				})))
+			}
+			var requests atomic.Int64
+			origin := serveCounted(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				other := others[int(requests.Add(1))%len(others)]
+				http.Redirect(w, req, "http://"+other.listener.Addr().String()+"/"+marker+req.URL.RequestURI(), http.StatusFound)
+			}))
+			tenant, pass := c.start(t, origin.kubeconfig, time.Minute)
+			_, err := tenant.getLease(t.Context(), "kube-controller-manager")
+			if err == nil || strings.Contains(err.Error(), marker) {
+				t.Errorf("a read redirected returned %v, want an error that names none of the Location", err)
+			}
+			if requests.Load() != 1 || reached.Load() != 0 {
+				t.Errorf("a read redirected to 5 hosts sent %d requests to its host and %d to the others, want 1 and 0", requests.Load(), reached.Load())
+			}
+			for range 10 {
+				_ = pass(t.Context())
+			}
+			time.Sleep(100 * time.Millisecond)
+			var open int64
+			for _, server := range append(others, origin) {
+				open += server.listener.peak.Load()
+			}
+			if reached.Load() != 0 || open > int64(c.reads) {
+				t.Errorf("10 passes redirected to 5 hosts reached the others %d times and had %d connections open at most across the 6 servers, want 0 and %d", reached.Load(), open, c.reads)
+			}
+		})
 	}
 }
