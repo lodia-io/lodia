@@ -108,7 +108,7 @@ func TestAFailedRequestIsTheStatusTheServerSentAndNeverMoreThanItsFields(t *test
 				_, _ = w.Write([]byte(c.body))
 			}))
 			t.Cleanup(server.Close)
-			r := &NodesReconciler{}
+			r := &NodesReconciler{Timeout: time.Minute}
 			tenant, err := r.tenant(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfigFor(t, server.URL))
 			if err != nil {
 				t.Fatal(err)
@@ -159,7 +159,7 @@ func TestAnAnswerThatIsNoJSONIsAFailedRead(t *testing.T) {
 				_, _ = w.Write([]byte(c.body))
 			}))
 			t.Cleanup(server.Close)
-			r := &NodesReconciler{}
+			r := &NodesReconciler{Timeout: time.Minute}
 			tenant, err := r.tenant(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfigFor(t, server.URL))
 			if err != nil {
 				t.Fatal(err)

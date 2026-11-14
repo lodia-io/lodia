@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"slices"
 	"testing"
+	"time"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -26,7 +27,7 @@ import (
 func startAPIServer(t *testing.T) (*kubernetes.Clientset, *tenant) {
 	t.Helper()
 	cfg, kubeconfig := startKubeAPIServer(t)
-	tenant, err := (&NodesReconciler{}).tenant(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfig)
+	tenant, err := (&NodesReconciler{Timeout: time.Minute}).tenant(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfig)
 	if err != nil {
 		t.Fatal(err)
 	}

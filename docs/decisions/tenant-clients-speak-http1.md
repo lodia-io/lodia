@@ -10,6 +10,7 @@ Built; `internal/controller/health` holds it.
 - Both follow no redirect, as the prober does, so that the one host of the kubeconfig is the only host they dial: a redirected read is a failed read that names no byte of the `Location`.
 - Each client's transport has `MaxConnsPerHost` equal to the most reads its pass has in flight at once: 2 for `health-nodes`, the two lists, and 7 for `health`, the lists of a held restore.
   net/http counts every connection of a host, dialing, in use and idle, and a dial past the cap waits for a connection to close or to be given back ([transport.go](https://github.com/golang/go/blob/go1.26.10/src/net/http/transport.go#L214-L219)).
+- Both bound a dial and a TLS handshake by the `Timeout` of their reconciler, as the prober does: net/http dials on a context detached from the request's, and client-go lets a dial run 30 s and a handshake 10 s ([cache.go](https://github.com/kubernetes/client-go/blob/v0.37.1/transport/cache.go#L122)).
 - An honest pass never waits on the cap for a connection that another of its reads holds: a read waits only for a count that no read uses, a dial still in flight or a connection that is going, and ends at its own deadline at the latest; the argument and its tests are in [operations](../operations.md#capacity).
 
 ## Why
@@ -43,7 +44,8 @@ Built; `internal/controller/health` holds it.
   A page of 100 Nodes of 6.8 KB each is 683,549 bytes against 50,084 gzipped, 13.6 times more, measured on envtest's kube-apiserver 1.35.0; a tenant of 5,000 Nodes reads 50 of them, 34 MB, each time `health-nodes` samples it, every 30 s.
 - A held restore reads over seven TCP connections of a tenant where HTTP/2 used one, and `health-nodes` over two: a TLS handshake for each of them when it is first opened or after 90 s idle, and the margin of 2 MiB for each connection in the figures of [operations](../operations.md#capacity).
 - A tenant at rest keeps at most 9 idle connections beside its summaries, 22.0 MiB, and a tenant whose server never answers keeps at most the cap of them open, whatever its cadence.
-- A read that finds the cap reached by a connection that no read uses waits for it, at most until its own deadline: a tenant whose connections a server closes after every answer, a kube-apiserver's `--goaway-chance` among them, or whose handshake is slow while a pass opens its connections, may make a read wait a moment.
+- A read can find the cap reached by a connection that no read uses, a connection that is going or the dial of another read, and wait for it, at most until its own deadline.
+  A dial ends within `Timeout` and its TLS handshake within `Timeout` after it, as the prober's do, so a place is held for at most the two; when a dial fails, a read that waits for its place dials only afterwards, and it can fail at its deadline behind a dial where its own dial would have succeeded, which only a failed dial makes happen.
 
 ## Code
 

@@ -100,7 +100,7 @@ func TestAResponseLongerThanTheBoundFailsBeforeItIsDecoded(t *testing.T) {
 				_, _ = w.Write(body)
 			}))
 			t.Cleanup(server.Close)
-			r := &Reconciler{}
+			r := &Reconciler{Timeout: time.Minute}
 			key := types.NamespacedName{Namespace: "team-a", Name: "dev"}
 			tenant, err := r.tenant(key, kubeconfigFor(t, server.URL))
 			if err != nil {
@@ -135,7 +135,7 @@ func (i *idleCloser) CloseIdleConnections() { i.closed.Store(true) }
 
 func TestTheCapStillLetsAForgottenControlPlaneCloseItsIdleConnections(t *testing.T) {
 	below := &idleCloser{}
-	utilnet.CloseIdleConnectionsFor(capResponses(below, 1))
+	utilnet.CloseIdleConnectionsFor(capResponses(below, 1, time.Minute))
 	if !below.closed.Load() {
 		t.Error("CloseIdleConnectionsFor did not reach the transport below the cap")
 	}
@@ -258,7 +258,7 @@ func TestAFailedRequestOfExactlyTheBoundIsStillItsStatus(t *testing.T) {
 		_, _ = w.Write(body)
 	}))
 	t.Cleanup(server.Close)
-	tenant, err := (&NodesReconciler{}).tenant(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfigFor(t, server.URL))
+	tenant, err := (&NodesReconciler{Timeout: time.Minute}).tenant(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfigFor(t, server.URL))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +287,7 @@ func TestTheCapFailsABodyPastTheBoundAndSaysSoToTheRequestThatAsked(t *testing.T
 			body := strings.NewReader(strings.Repeat("x", c.size))
 			transport := capResponses(roundTripFunc(func(*http.Request) (*http.Response, error) {
 				return &http.Response{StatusCode: http.StatusInternalServerError, Body: io.NopCloser(body)}, nil
-			}), 1)
+			}), 1, time.Minute)
 			var cut bool
 			ctx := t.Context()
 			if c.flagged {

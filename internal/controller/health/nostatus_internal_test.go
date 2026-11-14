@@ -61,7 +61,7 @@ func TestAFailedAnswerThatIsNoStatusCarriesNoByteOfItsBody(t *testing.T) {
 						_, _ = w.Write([]byte(kind.body))
 					}))
 					t.Cleanup(server.Close)
-					tenant, err := (&NodesReconciler{}).tenant(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfigFor(t, server.URL))
+					tenant, err := (&NodesReconciler{Timeout: time.Minute}).tenant(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfigFor(t, server.URL))
 					if err != nil {
 						t.Fatal(err)
 					}

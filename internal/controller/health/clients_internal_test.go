@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -17,7 +18,7 @@ import (
 )
 
 func TestAControlPlaneKeepsItsTenantClientsWhileItsKubeconfigStays(t *testing.T) {
-	r := &Reconciler{}
+	r := &Reconciler{Timeout: time.Minute}
 	key := types.NamespacedName{Namespace: "team-a", Name: "dev"}
 	kubeconfig := func(server string) []byte {
 		t.Helper()
@@ -75,7 +76,7 @@ func TestTheTenantClientNamesItselfAndAsksForJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &Reconciler{}
+	r := &Reconciler{Timeout: time.Minute}
 	tenant, err := r.tenant(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfig)
 	if err != nil {
 		t.Fatal(err)

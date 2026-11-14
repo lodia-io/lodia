@@ -630,7 +630,7 @@ func (r *NodesReconciler) tenant(key types.NamespacedName, kubeconfig []byte) (*
 		r.clients = map[types.NamespacedName]*tenantClients{}
 	}
 	if r.clients[key] == nil {
-		r.clients[key] = &tenantClients{connections: nodesReads}
+		r.clients[key] = &tenantClients{connections: nodesReads, timeout: r.Timeout}
 	}
 	return r.clients[key].of(kubeconfig)
 }

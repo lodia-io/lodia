@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
 
 const (
@@ -30,11 +31,13 @@ var errResponseTooLong = fmt.Errorf("the response is longer than maxResponseByte
 // for a response outside 2xx. next is the transport client-go builds for this
 // tenant alone, since its config sets a proxy, which it never caches. It has at
 // most connections connections open, dialing, in use and idle: a read past that
-// waits for one to close or be given back, at most its own deadline.
-func capResponses(next http.RoundTripper, connections int) http.RoundTripper {
+// waits for one to close or be given back, at most its own deadline. A TLS
+// handshake ends within timeout.
+func capResponses(next http.RoundTripper, connections int, timeout time.Duration) http.RoundTripper {
 	if transport, ok := next.(*http.Transport); ok {
 		transport.MaxResponseHeaderBytes = maxResponseHeaderBytes
 		transport.MaxConnsPerHost = connections
+		transport.TLSHandshakeTimeout = timeout
 	}
 	return cappedTransport{next}
 }

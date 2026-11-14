@@ -107,6 +107,8 @@ type tenantClients struct {
 	tenant      *tenant
 	transport   *http.Client
 	connections int
+	timeout     time.Duration
+	dial        func(ctx context.Context, network, address string) (net.Conn, error)
 }
 
 // prober holds what a control plane's probes verify and present: the client
@@ -748,7 +750,7 @@ func (r *Reconciler) tenant(key types.NamespacedName, kubeconfig []byte) (*tenan
 		r.clients = map[types.NamespacedName]*tenantClients{}
 	}
 	if r.clients[key] == nil {
-		r.clients[key] = &tenantClients{connections: restoreReads}
+		r.clients[key] = &tenantClients{connections: restoreReads, timeout: r.Timeout}
 	}
 	return r.clients[key].of(kubeconfig)
 }
@@ -778,7 +780,7 @@ func (c *tenantClients) of(kubeconfig []byte) (*tenant, error) {
 	// of every answer; the tenant's API server limits what it serves itself
 	// (https://kubernetes.io/docs/concepts/cluster-administration/flow-control/).
 	cfg.QPS = -1
-	cfg.Wrap(func(next http.RoundTripper) http.RoundTripper { return capResponses(next, c.connections) })
+	cfg.Wrap(func(next http.RoundTripper) http.RoundTripper { return capResponses(next, c.connections, c.timeout) })
 	// Leaving h2 out of NextProtos keeps client-go from configuring HTTP/2
 	// (https://github.com/kubernetes/apimachinery/blob/v0.37.1/pkg/util/net/http.go#L196-L208):
 	// the transport counts and caps its connections, which an HTTP/2 pool does
@@ -787,6 +789,7 @@ func (c *tenantClients) of(kubeconfig []byte) (*tenant, error) {
 	// net/http then asks for no gzip and decodes none (https://github.com/golang/go/blob/go1.26.10/src/net/http/transport.go#L2845-L2862),
 	// so no gzip reader is made, whose pool keeps one past the read.
 	cfg.DisableCompression = true
+	cfg.Dial = c.dialContext
 	cfg.AcceptContentTypes, cfg.ContentType = "application/json", "application/json"
 	// client-go asks for a serializer, and DoRaw never uses it: no response is
 	// decoded into the API's types.
@@ -805,6 +808,19 @@ func (c *tenantClients) of(kubeconfig []byte) (*tenant, error) {
 	}
 	c.kubeconfig, c.transport, c.tenant = kubeconfig, transport, newTenant(api)
 	return c.tenant, nil
+}
+
+// dialContext ends a dial within timeout, since net/http dials on a context
+// detached from the request's, as dial says; the TLS handshake that follows
+// has its own bound in capResponses. dial, when set, replaces the dialer in
+// tests.
+func (c *tenantClients) dialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	if c.dial != nil {
+		return c.dial(ctx, network, address)
+	}
+	return (&net.Dialer{}).DialContext(ctx, network, address)
 }
 
 // probe returns the status code the endpoint answered with, or 0 for none, and
