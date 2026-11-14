@@ -302,6 +302,8 @@ func TestEveryFigureOfTheDerivationIsTheSumOfItsTermsRoundedUp(t *testing.T) {
 		{"a read over HTTP/1.1, MiB", mib(readsBound(http1, 1)), 1, 25.5},
 		{"a read over HTTP/2 apart from its connection, MiB", mib(readsBound(http2, 1) - connectionHTTP2), 1, 26.2},
 		{"a read over HTTP/1.1 apart from its connection, MiB", mib(readsBound(http1, 1) - connectionHTTP1), 1, 23.5},
+		{"the two reads of a pass of health-nodes over HTTP/2, MiB", mib(readsBound(http2, 2)), 1, 56.9},
+		{"the two reads of a pass of health-nodes over HTTP/1.1, MiB", mib(readsBound(http1, 2)), 1, 50.9},
 		{"a pass of health-nodes over HTTP/2, MiB", mib(pass(http2)), 1, 60.9},
 		{"a pass of health-nodes over HTTP/1.1, MiB", mib(pass(http1)), 1, 54.9},
 		{"a pass of health over a held restore over HTTP/2, MiB", mib(readsBound(http2, 7)), 1, 198.9},
