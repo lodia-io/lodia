@@ -4,14 +4,19 @@
 package health
 
 import (
+	"crypto/tls"
+	"encoding/binary"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"golang.org/x/net/http2/hpack"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -124,35 +129,162 @@ func TestTheTwoListsOfAPassAreOnConnectionsOfTheirOwnOverHTTP2WhenTheServerAllow
 	}
 }
 
+const http2GoAway = 7
+
+type rawRequest struct {
+	conn   int
+	stream uint32
+	path   string
+}
+
+type rawConn struct {
+	c    *tls.Conn
+	mu   sync.Mutex
+	last uint32
+}
+
+func (c *rawConn) write(frames ...[]byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, frame := range frames {
+		if _, err := c.c.Write(frame); err != nil {
+			return
+		}
+	}
+}
+
+func (c *rawConn) goAway() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	payload := make([]byte, 8)
+	binary.BigEndian.PutUint32(payload, c.last)
+	return http2Frame(http2GoAway, 0, 0, payload)
+}
+
+func answerHead(stream uint32) []byte {
+	head := append([]byte{hpackStatus200}, hpackLiteral("content-type", "application/json")...)
+	return http2Frame(http2Headers, http2EndHeaders, stream, head)
+}
+
+func answerBody(stream uint32, body string) []byte {
+	return http2Frame(http2Data, http2EndStream, stream, []byte(body))
+}
+
+func serveRaw(c *tls.Conn, id int, handle func(conn *rawConn, req rawRequest)) {
+	defer func() { _ = c.Close() }()
+	if _, err := io.CopyN(io.Discard, c, int64(len("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"))); err != nil {
+		return
+	}
+	conn := &rawConn{c: c}
+	conn.write(http2Frame(http2Settings, 0, 0, nil))
+	decoder := hpack.NewDecoder(4096, nil)
+	head := make([]byte, 9)
+	for {
+		if _, err := io.ReadFull(c, head); err != nil {
+			return
+		}
+		payload := make([]byte, int(head[0])<<16|int(head[1])<<8|int(head[2]))
+		if _, err := io.ReadFull(c, payload); err != nil {
+			return
+		}
+		switch head[3] {
+		case http2Settings:
+			if head[4]&http2Ack == 0 {
+				conn.write(http2Frame(http2Settings, http2Ack, 0, nil))
+			}
+		case http2Headers:
+			fields, err := decoder.DecodeFull(payload)
+			if err != nil {
+				return
+			}
+			req := rawRequest{conn: id, stream: binary.BigEndian.Uint32(head[5:]) & (1<<31 - 1)}
+			for _, field := range fields {
+				if field.Name == ":path" {
+					req.path = field.Value
+				}
+			}
+			conn.mu.Lock()
+			conn.last = max(conn.last, req.stream)
+			conn.mu.Unlock()
+			go handle(conn, req)
+		}
+	}
+}
+
 func TestAGoawayAfterAPageOfLeasesPutsTheNextPageOnASecondConnectionWhileTheNodeListIsInFlightOnTheFirst(t *testing.T) {
 	var (
-		once         sync.Once
-		secondLeases = make(chan struct{})
+		mu       sync.Mutex
+		requests []rawRequest
+		dialed   atomic.Int32
+		nodeIn   = make(chan struct{})
+		secondIn = make(chan struct{})
 	)
-	got := listsOverHTTP2(t, 0, func(w http.ResponseWriter, req *http.Request) {
-		switch {
-		case req.URL.Path == nodesPath:
-			select {
-			case <-secondLeases:
-			case <-time.After(10 * time.Second):
-				t.Errorf("the second page of Leases never came")
-			}
-			respondWith(w, nodesPage)
-		case req.URL.Path != nodeLeasesPath:
-			respondWith(w, leaseBody)
-		case req.URL.Query().Get("continue") == "":
-			w.Header().Set("Connection", "close")
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			w.(http.Flusher).Flush()
-			time.Sleep(100 * time.Millisecond)
-			_, _ = io.WriteString(w, leasesFirst)
-		default:
-			once.Do(func() { close(secondLeases) })
-			respondWith(w, leasesPage)
+	waitFor := func(arrived chan struct{}, what string) {
+		select {
+		case <-arrived:
+		case <-time.After(10 * time.Second):
+			t.Errorf("%s never came", what)
 		}
-	})
-	if got.most != 2 {
-		t.Errorf("a pass was in flight on %d connections at once, want 2: the Node list on the first and the second page of Leases on a second", got.most)
+	}
+	handle := func(conn *rawConn, req rawRequest) {
+		mu.Lock()
+		requests = append(requests, req)
+		mu.Unlock()
+		switch {
+		case strings.HasPrefix(req.path, nodesPath):
+			close(nodeIn)
+			waitFor(secondIn, "the second page of Leases")
+			conn.write(answerHead(req.stream), answerBody(req.stream, nodesPage))
+		case strings.HasPrefix(req.path, nodeLeasesPath) && !strings.Contains(req.path, "continue="):
+			waitFor(nodeIn, "the Node list")
+			conn.write(answerHead(req.stream), conn.goAway(), answerBody(req.stream, leasesFirst))
+		case strings.HasPrefix(req.path, nodeLeasesPath):
+			close(secondIn)
+			conn.write(answerHead(req.stream), answerBody(req.stream, leasesPage))
+		default:
+			conn.write(answerHead(req.stream), answerBody(req.stream, leaseBody))
+		}
+	}
+	server := httptest.NewUnstartedServer(http.NotFoundHandler())
+	server.EnableHTTP2 = true
+	server.Config.TLSNextProto = map[string]func(*http.Server, *tls.Conn, http.Handler){
+		"h2": func(_ *http.Server, c *tls.Conn, _ http.Handler) { serveRaw(c, int(dialed.Add(1)), handle) },
+	}
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	r := &NodesReconciler{Timeout: time.Minute, MaxNodes: 5000}
+	key := types.NamespacedName{Namespace: "team-a", Name: "dev"}
+	tenant, err := r.tenant(key, kubeconfigForTLS(t, server))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { r.forget(key) })
+	if _, err := r.readLease(t.Context(), tenant); err != nil {
+		t.Fatal(err)
+	}
+	s := &sampling{}
+	leases, err := r.list(t.Context(), tenant, s, time.Now())
+	if err != nil || len(leases) != 2 || len(s.nodes) != 1 || s.leasesStop != "" || s.nodesStop != "" {
+		t.Errorf("the lists returned %d Leases, %d Nodes, stops %q and %q, error %v, want 2 and 1", len(leases), len(s.nodes), s.leasesStop, s.nodesStop, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	var first, nodes, second *rawRequest
+	for i, req := range requests {
+		t.Logf("connection %d, stream %d: %s", req.conn, req.stream, req.path)
+		switch {
+		case strings.HasPrefix(req.path, nodesPath):
+			nodes = &requests[i]
+		case strings.HasPrefix(req.path, nodeLeasesPath) && !strings.Contains(req.path, "continue="):
+			first = &requests[i]
+		case strings.HasPrefix(req.path, nodeLeasesPath):
+			second = &requests[i]
+		}
+	}
+	if first == nil || nodes == nil || second == nil {
+		t.Fatalf("the server saw %d requests, want the first page of Leases, the Node list and the second page of Leases among them", len(requests))
+	}
+	if first.conn != nodes.conn || second.conn == nodes.conn {
+		t.Errorf("the first page of Leases was on connection %d, the Node list on %d and the second page on %d, want the first two on one and the second page on another", first.conn, nodes.conn, second.conn)
 	}
 }
