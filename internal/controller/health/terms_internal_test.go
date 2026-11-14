@@ -272,6 +272,14 @@ func roundedUp(x float64, decimals int) float64 {
 func TestEveryFigureOfTheDerivationIsTheSumOfItsTermsRoundedUp(t *testing.T) {
 	const gibibyte = 1 << 30
 	pass := func(p protocol) uint64 { return readsBound(p, 2) + summariesAtMost }
+	connections := func(p protocol, reads int) uint64 {
+		each := uint64(connectionHTTP1)
+		if p.http2 {
+			each = connectionHTTP2
+		}
+		return uint64(connectionsKept(p, reads)) * each
+	}
+	atRest := func(p protocol) uint64 { return summariesAtMost + connections(p, 2) + connections(p, 7) }
 	for _, c := range []struct {
 		name     string
 		got      float64
@@ -286,6 +294,12 @@ func TestEveryFigureOfTheDerivationIsTheSumOfItsTermsRoundedUp(t *testing.T) {
 		{"a pass of health-nodes over HTTP/1.1, MiB", mib(pass(http1)), 1, 54.9},
 		{"a pass of health over a held restore over HTTP/2, MiB", mib(readsBound(http2, 7)), 1, 198.9},
 		{"a pass of health over a held restore over HTTP/1.1, MiB", mib(readsBound(http1, 7)), 1, 177.9},
+		{"the connections health-nodes' client keeps at rest over HTTP/2, MiB", mib(connections(http2, 2)), 1, 11.4},
+		{"the connections health's client keeps at rest over HTTP/2, MiB", mib(connections(http2, 7)), 1, 34},
+		{"a tenant at rest over HTTP/2, MiB", mib(atRest(http2)), 1, 49.4},
+		{"the connections health-nodes' client keeps at rest over HTTP/1.1, MiB", mib(connections(http1, 2)), 1, 8},
+		{"the connections health's client keeps at rest over HTTP/1.1, MiB", mib(connections(http1, 7)), 1, 28},
+		{"a tenant at rest over HTTP/1.1, MiB", mib(atRest(http1)), 1, 40},
 		{"100 workers of health-nodes over HTTP/2, GiB", 100 * float64(pass(http2)) / gibibyte, 2, 5.94},
 		{"10 workers of health over HTTP/2, GiB", 10 * float64(readsBound(http2, 7)) / gibibyte, 2, 1.95},
 		{"100 passes of health-nodes over HTTP/1.1, GiB", 100 * float64(pass(http1)) / gibibyte, 1, 5.4},

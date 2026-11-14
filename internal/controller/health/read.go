@@ -17,6 +17,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/client-go/rest"
 	"k8s.io/utils/ptr"
 
@@ -470,10 +471,17 @@ func (t *tenant) patchLease(ctx context.Context, patch []byte) (*leaderLease, er
 // message of Health may carry: see noStatus. A request that fails before the
 // head of its answer is read returns net/http's error, whose URL carries the
 // query, and with it the continue token of a later page, up to 36,883 bytes:
-// the error is the same with the path in the place of the URL.
+// the error is the same with the path in the place of the URL. A read that
+// fails before its answer or while its body comes closes the client's idle
+// connections: x/net counts a stream cancelled before the server sent any frame
+// against the connection's stream limit until a PING is answered, so a server
+// that never answers one would make every later read dial again.
 func (t *tenant) do(ctx context.Context, request *rest.Request) ([]byte, error) {
 	var cut bool
 	body, err := request.MaxRetries(0).DoRaw(context.WithValue(ctx, cutKey{}, &cut))
+	if cut || err != nil && !errors.As(err, new(apierrors.APIStatus)) {
+		utilnet.CloseIdleConnectionsFor(t.api.Client.Transport)
+	}
 	if cut {
 		return nil, errResponseTooLong
 	}
