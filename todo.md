@@ -179,9 +179,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 - The `Compact` layout, once built, renders a held restore's pod without the controller-manager container on the hold the `Split` layout renders as 0 replicas (`release` and `ran` in `internal/controller/workloads/workloads.go`); `Compact` is `Unsupported` until then (restore-replaces-the-source, compact-layout).
 - Health lists seven kinds in a held restore's tenant every period, a page of 500 each (`actedOn` in `internal/controller/health/health.go`); if inert tenants grow large, list them less often than the probe runs.
-- A tenant's server that sends a GOAWAY on an idle connection and keeps it open makes a Health client keep a connection for each read until x/net's idle timer closes it, 90 s later: x/net drops the connection from its pool at the GOAWAY ([transport.go](https://github.com/golang/net/blob/v0.60.0/http2/transport.go#L2502-L2514)), so `utilnet.CloseIdleConnectionsFor` in `tenant.do` does not reach it.
-  A raw HTTP/2 server (`serveRaw` in `connections_internal_test.go`) that writes a GOAWAY after each answer and keeps its connection left 15 connections open after 15 reads of one client.
-  At `health-nodes`' cadence that is every read of the last 90 s, 2.27 MiB each by the rule of `docs/operations.md`; bound the dials of a tenant client (`MaxConnsPerHost` makes a read wait until a dead connection closes) or shorten the tenant transport's idle timeout.
 
 ## From the restore (2026-11-02)
 
