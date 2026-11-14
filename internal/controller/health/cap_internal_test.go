@@ -355,6 +355,8 @@ func TestAReadPastTheCapWaitsForADialWhoseReadTookAnotherConnectionAndTakesTheCo
 				respondWith(w, leaseBody)
 			}))
 			tenant, _ := c.start(t, server.kubeconfig, time.Minute)
+			ctx, stop := context.WithTimeout(t.Context(), 10*time.Second)
+			t.Cleanup(stop)
 			transport := transportOf(t, tenant)
 			gate, dialing := make(chan struct{}), make(chan struct{})
 			var dialed atomic.Bool
@@ -373,7 +375,7 @@ func TestAReadPastTheCapWaitsForADialWhoseReadTookAnotherConnectionAndTakesTheCo
 			var held sync.WaitGroup
 			read := func(name string) {
 				held.Go(func() {
-					if _, err := tenant.getLease(t.Context(), name); err != nil {
+					if _, err := tenant.getLease(ctx, name); err != nil {
 						t.Error(err)
 					}
 				})
@@ -389,8 +391,12 @@ func TestAReadPastTheCapWaitsForADialWhoseReadTookAnotherConnectionAndTakesTheCo
 				t.Fatalf("%s did not happen", what)
 			}
 			read("slow")
-			<-dialing
-			if _, err := tenant.getLease(t.Context(), "quick"); err != nil {
+			select {
+			case <-dialing:
+			case <-ctx.Done():
+				t.Fatal("the first dial did not begin")
+			}
+			if _, err := tenant.getLease(ctx, "quick"); err != nil {
 				t.Fatal(err)
 			}
 			until("the read whose dial is held taking the connection of the read before it", func() bool { return arrived.Load() == 1 })
@@ -402,7 +408,7 @@ func TestAReadPastTheCapWaitsForADialWhoseReadTookAnotherConnectionAndTakesTheCo
 				t.Fatalf("the server has %d connections open, want %d: the dial that is held, and the reads on the others", open, c.reads-1)
 			}
 
-			deadline, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+			deadline, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 			_, err := tenant.getLease(deadline, "extra")
 			cancel()
 			if !errors.Is(err, context.DeadlineExceeded) || extra.Load() != 0 || server.listener.open.Load() != int64(c.reads-1) {
@@ -411,7 +417,7 @@ func TestAReadPastTheCapWaitsForADialWhoseReadTookAnotherConnectionAndTakesTheCo
 
 			waiting := make(chan error, 1)
 			go func() {
-				_, err := tenant.getLease(t.Context(), "extra")
+				_, err := tenant.getLease(ctx, "extra")
 				waiting <- err
 			}()
 			time.Sleep(300 * time.Millisecond)
