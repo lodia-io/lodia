@@ -357,7 +357,15 @@ func TestThePagesOfAListTakeTheConnectionsOfThePagesBeforeThem(t *testing.T) {
 		next := map[string]string{"": "t1", "t1": "t2"}[req.URL.Query().Get("continue")]
 		respondWith(w, `{"metadata":{"continue":"`+next+`"},"items":[`+item+`]}`)
 	}
+	var listed atomic.Int64
+	bothIn := make(chan struct{})
 	server := serveCounted(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if (req.URL.Path == nodesPath || req.URL.Path == nodeLeasesPath) && req.URL.Query().Get("continue") == "" {
+			if listed.Add(1) == nodesReads {
+				close(bothIn)
+			}
+			<-bothIn
+		}
 		switch req.URL.Path {
 		case nodesPath:
 			pageOf(w, req, `{"metadata":{"name":"n"},"status":{"nodeInfo":{"kubeletVersion":"v1.35.0"},"conditions":[{"type":"Ready","status":"True"}]}}`)
@@ -382,7 +390,17 @@ func TestThePagesOfAListTakeTheConnectionsOfThePagesBeforeThem(t *testing.T) {
 		t.Errorf("the six pages of the two lists reused a connection %d times and dialed %d, want 4 and 2: each list dials for its first page, and each next page takes the connection the page before gave back", reused, dialed)
 	}
 
-	restore := restoreTenantOf(t, http.HandlerFunc(answerHonestly))
+	var arrived atomic.Int64
+	together := make(chan struct{})
+	restore := restoreTenantOf(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if arrived.Add(1) == restoreReads {
+			close(together)
+		}
+		if arrived.Load() <= restoreReads {
+			<-together
+		}
+		answerHonestly(w, req)
+	}))
 	var first, second reusedOrNot
 	reader := &Reconciler{Timeout: time.Minute}
 	_ = reader.actedOn(first.trace(t.Context()), restore)
