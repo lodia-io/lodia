@@ -8,12 +8,15 @@ import (
 	"bytes"
 	"compress/flate"
 	"compress/gzip"
+	"fmt"
 	"math"
 	"math/bits"
 	"net/http"
+	"net/textproto"
 	"reflect"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 
 	"golang.org/x/net/http2/hpack"
@@ -111,9 +114,9 @@ func allocatedBy(build func()) int {
 	return least
 }
 
-func theWrapperOfTheGzipReaderTakes(t *testing.T) int {
+func theWrapperOfTheGzipReader(t *testing.T) reflect.Type {
 	t.Helper()
-	most := 0
+	var wrapper reflect.Type
 	for _, p := range protocols {
 		client, url := tenantClient(t, p, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -122,11 +125,11 @@ func theWrapperOfTheGzipReaderTakes(t *testing.T) int {
 		}))
 		bottom := client.Transport
 		for {
-			wrapper, ok := bottom.(utilnet.RoundTripperWrapper)
+			wrapped, ok := bottom.(utilnet.RoundTripperWrapper)
 			if !ok {
 				break
 			}
-			bottom = wrapper.WrappedRoundTripper()
+			bottom = wrapped.WrappedRoundTripper()
 		}
 		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url+nodeLeasesPath, nil)
 		if err != nil {
@@ -136,13 +139,22 @@ func theWrapperOfTheGzipReaderTakes(t *testing.T) int {
 		if err != nil {
 			t.Fatal(err)
 		}
-		wrapperType := reflect.TypeOf(resp.Body).Elem()
+		found := reflect.TypeOf(resp.Body).Elem()
 		_ = resp.Body.Close()
-		var made reflect.Value
-		most = max(most, allocatedBy(func() { made = reflect.New(wrapperType) }))
-		runtime.KeepAlive(made)
+		if wrapper == nil || found.Size() > wrapper.Size() {
+			wrapper = found
+		}
 	}
-	return most
+	return wrapper
+}
+
+func theWrapperOfTheGzipReaderTakes(t *testing.T) int {
+	t.Helper()
+	wrapper := theWrapperOfTheGzipReader(t)
+	var made reflect.Value
+	got := allocatedBy(func() { made = reflect.New(wrapper) })
+	runtime.KeepAlive(made)
+	return got
 }
 
 func TestTheSizesTheTermsAreBuiltFromAreTheSourcesOnThisPlatform(t *testing.T) {
@@ -309,6 +321,35 @@ func TestEveryFigureOfTheDerivationIsTheSumOfItsTermsRoundedUp(t *testing.T) {
 				t.Errorf("the terms add to %.4f, which rounded up is %.*f, want %.*f", c.got, c.decimals, got, c.decimals, c.want)
 			}
 		})
+	}
+}
+
+func TestTheLeastAnHTTP1FieldLineAddsToAHeadIsFieldLineLessMapSlotSinceTheMapGrowsInSteps(t *testing.T) {
+	head := func(lines int) string {
+		var text strings.Builder
+		for i := range lines {
+			fmt.Fprintf(&text, "X%015d: %016d\r\n", i, i)
+		}
+		return text.String() + "\r\n"
+	}
+	allocatedByReading := func(lines int) int {
+		text := head(lines)
+		source := strings.NewReader(text)
+		buffered := bufio.NewReader(source)
+		return allocatedBy(func() {
+			source.Reset(text)
+			buffered.Reset(source)
+			if _, err := textproto.NewReader(buffered).ReadMIMEHeader(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	least := math.MaxInt
+	for lines := 150; lines < 158; lines++ {
+		least = min(least, allocatedByReading(lines+1)-allocatedByReading(lines))
+	}
+	if want := fieldLine - mapSlot; least != want {
+		t.Errorf("a field line of a name and a value of 16 bytes adds %d bytes at the least to a head, want fieldLine less mapSlot, %d: a copy of each and an element of the slice of values", least, want)
 	}
 }
 
