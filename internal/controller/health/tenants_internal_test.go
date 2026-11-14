@@ -4,6 +4,8 @@
 package health
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
@@ -15,10 +17,10 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
-func kubeconfigForTLS(t *testing.T, server *httptest.Server) []byte {
+func kubeconfigWithCA(t *testing.T, server string, certificate *x509.Certificate) []byte {
 	t.Helper()
 	out, err := clientcmd.Write(clientcmdapi.Config{
-		Clusters:       map[string]*clientcmdapi.Cluster{"tenant": {Server: server.URL, CertificateAuthorityData: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})}},
+		Clusters:       map[string]*clientcmdapi.Cluster{"tenant": {Server: server, CertificateAuthorityData: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate.Raw})}},
 		AuthInfos:      map[string]*clientcmdapi.AuthInfo{"lodia": {}},
 		Contexts:       map[string]*clientcmdapi.Context{"tenant": {Cluster: "tenant", AuthInfo: "lodia"}},
 		CurrentContext: "tenant",
@@ -29,6 +31,19 @@ func kubeconfigForTLS(t *testing.T, server *httptest.Server) []byte {
 	return out
 }
 
+func kubeconfigForTLS(t *testing.T, server *httptest.Server) []byte {
+	t.Helper()
+	return kubeconfigWithCA(t, server.URL, server.Certificate())
+}
+
+func localTLS(t *testing.T) (*tls.Config, *x509.Certificate) {
+	t.Helper()
+	server := httptest.NewUnstartedServer(http.NotFoundHandler())
+	server.StartTLS()
+	defer server.Close()
+	return &tls.Config{Certificates: server.TLS.Certificates, MinVersion: tls.VersionTLS12}, server.Certificate()
+}
+
 func serveTenant(t *testing.T, handler http.Handler) []byte {
 	t.Helper()
 	server := httptest.NewServer(handler)
@@ -36,10 +51,27 @@ func serveTenant(t *testing.T, handler http.Handler) []byte {
 	return kubeconfigFor(t, server.URL)
 }
 
+func serveTenantTLS(t *testing.T, handler http.Handler) []byte {
+	t.Helper()
+	server := httptest.NewTLSServer(handler)
+	t.Cleanup(server.Close)
+	return kubeconfigForTLS(t, server)
+}
+
 func tenantOf(t *testing.T, handler http.Handler) (*NodesReconciler, *tenant) {
 	t.Helper()
+	return tenantAt(t, serveTenant(t, handler))
+}
+
+func tenantOverTLS(t *testing.T, handler http.Handler) (*NodesReconciler, *tenant) {
+	t.Helper()
+	return tenantAt(t, serveTenantTLS(t, handler))
+}
+
+func tenantAt(t *testing.T, kubeconfig []byte) (*NodesReconciler, *tenant) {
+	t.Helper()
 	r := &NodesReconciler{Timeout: 10 * time.Minute, MaxNodes: 5000}
-	tenant, err := r.tenant(types.NamespacedName{Namespace: "team-a", Name: "dev"}, serveTenant(t, handler))
+	tenant, err := r.tenant(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,8 +80,18 @@ func tenantOf(t *testing.T, handler http.Handler) (*NodesReconciler, *tenant) {
 
 func restoreTenantOf(t *testing.T, handler http.Handler) *tenant {
 	t.Helper()
+	return restoreTenantAt(t, serveTenant(t, handler))
+}
+
+func restoreTenantOverTLS(t *testing.T, handler http.Handler) *tenant {
+	t.Helper()
+	return restoreTenantAt(t, serveTenantTLS(t, handler))
+}
+
+func restoreTenantAt(t *testing.T, kubeconfig []byte) *tenant {
+	t.Helper()
 	r := &Reconciler{Timeout: 10 * time.Minute}
-	tenant, err := r.tenant(types.NamespacedName{Namespace: "team-a", Name: "dev"}, serveTenant(t, handler))
+	tenant, err := r.tenant(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfig)
 	if err != nil {
 		t.Fatal(err)
 	}

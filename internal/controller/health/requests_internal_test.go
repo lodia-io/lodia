@@ -5,6 +5,7 @@ package health
 
 import (
 	"bufio"
+	"crypto/tls"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -63,8 +64,23 @@ func answerOnTCP(t *testing.T, head, body string) (url string, requests *atomic.
 	if err != nil {
 		t.Fatal(err)
 	}
+	return "http://" + listener.Addr().String(), answerOn(t, listener, head, body)
+}
+
+func answerOnTLS(t *testing.T, head, body string) (kubeconfig []byte, requests *atomic.Int32) {
+	t.Helper()
+	config, certificate := localTLS(t)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return kubeconfigWithCA(t, "https://"+listener.Addr().String(), certificate), answerOn(t, tls.NewListener(listener, config), head, body)
+}
+
+func answerOn(t *testing.T, listener net.Listener, head, body string) *atomic.Int32 {
+	t.Helper()
 	t.Cleanup(func() { _ = listener.Close() })
-	requests = new(atomic.Int32)
+	requests := new(atomic.Int32)
 	reply := []byte(head + body)
 	go func() {
 		for {
@@ -89,7 +105,7 @@ func answerOnTCP(t *testing.T, head, body string) (url string, requests *atomic.
 			}()
 		}
 	}()
-	return "http://" + listener.Addr().String(), requests
+	return requests
 }
 
 // headOf is the status line and headers of an answer with body, padded by one

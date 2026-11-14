@@ -122,7 +122,7 @@ func TestMeasureTheLiveHeapOfPassesOverTenantsPaddedToTheirBounds(t *testing.T) 
 	}
 	leases, nodes := paddedPages(t)
 	var served atomic.Int64
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		body := nodes
 		if req.URL.Path == nodeLeasesPath {
 			body = leases
@@ -135,7 +135,7 @@ func TestMeasureTheLiveHeapOfPassesOverTenantsPaddedToTheirBounds(t *testing.T) 
 	t.Cleanup(server.Close)
 	r := &NodesReconciler{Timeout: 10 * time.Minute, MaxNodes: 5000}
 	pass := func(name string) {
-		tenant, err := r.tenant(types.NamespacedName{Namespace: "team-a", Name: name}, kubeconfigFor(t, server.URL))
+		tenant, err := r.tenant(types.NamespacedName{Namespace: "team-a", Name: name}, kubeconfigForTLS(t, server))
 		if err != nil {
 			t.Error(err)
 			return
@@ -370,7 +370,7 @@ func TestMeasureTheLiveHeapOfEveryReadOverAnAmplifyingResponse(t *testing.T) {
 	}
 	for _, c := range amplifiers(maxResponseBytes) {
 		t.Run(c.name, func(t *testing.T) {
-			r, tenant := tenantOf(t, answering(c))
+			r, tenant := tenantOverTLS(t, answering(c))
 			var outcome string
 			begun := time.Now()
 			peaks := measureLiveHeap(func() { outcome = c.read(t.Context(), tenant, r) })
@@ -412,7 +412,7 @@ func servingTogether(t *testing.T, answers map[string][]byte, requests int) *ten
 		arrived int
 	)
 	release := make(chan struct{})
-	return serving(t, answers, func() {
+	return servingOverTLS(t, answers, func() {
 		mu.Lock()
 		if arrived++; arrived == requests {
 			close(release)
@@ -429,7 +429,7 @@ func servingAPass(t *testing.T, lease, leases, nodes []byte) *tenant {
 		arrived int
 	)
 	together := make(chan struct{})
-	_, tenant := tenantOf(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	_, tenant := tenantOverTLS(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		body := lease
 		switch req.URL.Path {
 		case nodeLeasesPath, nodesPath:
@@ -471,7 +471,7 @@ func TestMeasureTheLiveHeapOfAPassWhoseEveryReadIsAtItsWorst(t *testing.T) {
 	answers := map[string][]byte{
 		servicesPath: body, volumesPath: body, claimsPath: body, validatingPath: body, mutatingPath: body, apiServicePath: body, cronJobsPath: body,
 	}
-	reference := restoreTenantOf(t, answering(amplifier{status: http.StatusOK, body: []byte(`{"items":[{"webhooks":[{}],"spec":{"type":"LoadBalancer"},"metadata":{"namespace":"n","name":"x"}}]}`)}))
+	reference := restoreTenantOverTLS(t, answering(amplifier{status: http.StatusOK, body: []byte(`{"items":[{"webhooks":[{}],"spec":{"type":"LoadBalancer"},"metadata":{"namespace":"n","name":"x"}}]}`)}))
 	wantRestore := (&Reconciler{Timeout: 10 * time.Minute}).actedOn(t.Context(), reference)
 	t.Run("a pass of health-nodes: the Lease, both lists together and the renewal", func(t *testing.T) {
 		tenant := servingAPass(t,
@@ -496,7 +496,7 @@ func TestMeasureTheLiveHeapOfAPassWhoseEveryReadIsAtItsWorst(t *testing.T) {
 		})
 	})
 	t.Run("a pass of health over a held restore", func(t *testing.T) {
-		tenant := serving(t, answers, func() {})
+		tenant := servingOverTLS(t, answers, func() {})
 		var got string
 		measure(t, readsBound(restoreReads), func() { got = (&Reconciler{Timeout: 10 * time.Minute}).actedOn(t.Context(), tenant) })
 		if got != wantRestore {
@@ -549,12 +549,8 @@ func cutAnswers(t *testing.T, body []byte, shape cutShape) *tenant {
 	if (shape.headers || shape.announced) && len(head) != maxResponseHeaderBytes && len(head) < maxResponseHeaderBytes-8 {
 		t.Fatalf("the head has %d bytes, want it to fill the bound of %d", len(head), maxResponseHeaderBytes)
 	}
-	url, _ := answerOnTCP(t, head, string(body))
-	r := &NodesReconciler{Timeout: 10 * time.Minute, MaxNodes: 5000}
-	tenant, err := r.tenant(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfigFor(t, url))
-	if err != nil {
-		t.Fatal(err)
-	}
+	kubeconfig, _ := answerOnTLS(t, head, string(body))
+	_, tenant := tenantAt(t, kubeconfig)
 	return tenant
 }
 

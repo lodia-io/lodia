@@ -34,7 +34,16 @@ func servingPaths(t *testing.T, answers map[string][]byte) *tenant {
 
 func serving(t *testing.T, answers map[string][]byte, beforeAnswering func()) *tenant {
 	t.Helper()
-	return restoreTenantOf(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	return restoreTenantOf(t, answersFrom(answers, beforeAnswering))
+}
+
+func servingOverTLS(t *testing.T, answers map[string][]byte, beforeAnswering func()) *tenant {
+	t.Helper()
+	return restoreTenantOverTLS(t, answersFrom(answers, beforeAnswering))
+}
+
+func answersFrom(answers map[string][]byte, beforeAnswering func()) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		body, ok := answers[req.URL.Path]
 		if !ok {
 			body = []byte(emptyList)
@@ -43,7 +52,7 @@ func serving(t *testing.T, answers map[string][]byte, beforeAnswering func()) *t
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 		_, _ = w.Write(body)
-	}))
+	})
 }
 
 func nameOf(prefix string, i, length int) string {
@@ -295,7 +304,7 @@ func TestMeasureTheLiveHeapOfAPassOverAPageOf128000EmptyWebhooks(t *testing.T) {
 		for _, nameLen := range []int{maxName, maxNameRaw} {
 			t.Run(fmt.Sprintf("%s named with %d bytes", c.name, nameLen), func(t *testing.T) {
 				page := emptyWebhooks(configurations, nameLen)
-				tenant := servingPaths(t, c.answers(page))
+				tenant := servingOverTLS(t, c.answers(page), func() {})
 				var message string
 				begun := time.Now()
 				peaks := measureLiveHeap(func() { message = (&Reconciler{Timeout: 10 * time.Minute}).actedOn(t.Context(), tenant) })
