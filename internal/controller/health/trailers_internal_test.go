@@ -200,13 +200,13 @@ func TestAnHTTP1ChunkedAnswersTrailersEndingInALineFeedAreHeldAtItsEndAtMostTrai
 	}
 	without := held(false)
 	with := held(true)
-	parts := len(names)*trailerFieldHTTP1 + 2*mapTable
+	parts := len(names)*trailerField + 2*mapTable
 	t.Logf("%d trailers ended by a line feed: %d keys of Trailer, held %.3f MiB more; the parts add to %.3f MiB, trailersHTTP1 is %.3f MiB",
 		len(names), keys.trailer, mib(uint64(with-without)), mib(uint64(parts)), mib(trailersHTTP1))
 	if len(names) > trailerFieldsHTTP1 || len(names) != 1036 || keys.trailer != len(names)+1 {
 		t.Errorf("a block of 4,096 bytes carried %d fields and the response has %d keys of Trailer, want 1,036, at most trailerFieldsHTTP1, %d, and the name announced besides", len(names), keys.trailer, trailerFieldsHTTP1)
 	}
-	if more := int(with - without); more < len(names)*trailerFieldHTTP1/4 || more > trailersHTTP1 {
-		t.Errorf("the trailers are held in %d bytes, want %d to trailersHTTP1, %d", more, len(names)*trailerFieldHTTP1/4, trailersHTTP1)
+	if more := int(with - without); more < len(names)*trailerField/4 || more > trailersHTTP1 {
+		t.Errorf("the trailers are held in %d bytes, want %d to trailersHTTP1, %d", more, len(names)*trailerField/4, trailersHTTP1)
 	}
 }

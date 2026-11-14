@@ -27,7 +27,7 @@ func TestAnHTTP1TrailerBlockReadAndMergedAllocatesAtMostItsPartsAndLessThanItsSm
 		}
 		maps.Copy(map[string][]string{"Zz": nil}, header)
 	})
-	parts := len(names)*trailerFieldHTTP1 + 2*mapTable
+	parts := len(names)*trailerField + 2*mapTable
 	smallest := len(names) * min(nameCopy, valueSlice)
 	t.Logf("%d trailers read and merged allocate %d bytes, the parts add to %d", len(names), got, parts)
 	if got > parts || parts-got >= smallest {

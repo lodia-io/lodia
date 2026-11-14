@@ -392,7 +392,6 @@ const (
 	mebibyte = 1 << 20
 
 	connectionMargin = 2 * mebibyte
-	connectionHTTP1  = connectionMargin
 	readAllAtMost    = 204 * mebibyte / 10
 	headersHTTP1     = 25 * mebibyte / 10
 	trailersHTTP1    = 3 * mebibyte / 10
@@ -401,7 +400,7 @@ const (
 )
 
 func readsBound(reads int) uint64 {
-	each := uint64(readAllAtMost + headersHTTP1 + trailersHTTP1 + connectionHTTP1)
+	each := uint64(readAllAtMost + headersHTTP1 + trailersHTTP1 + connectionMargin)
 	return max(uint64(reads)*each, uint64(reads)*(maxResponseBytes+keptAtMost))
 }
 

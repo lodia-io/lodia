@@ -37,7 +37,6 @@ const (
 	fieldLinesHTTP1     = oneByteFieldNames + twoByteFieldNames + (maxResponseHeaderBytes-3*oneByteFieldNames-4*twoByteFieldNames)/5
 	trailerBlockHTTP1   = 4096 - 3
 	trailerFieldsHTTP1  = oneByteFieldNames + (trailerBlockHTTP1-3*oneByteFieldNames)/4
-	trailerFieldHTTP1   = trailerField
 )
 
 func TestEveryTermOfAReadIsAtLeastItsPartsAndLessThanTheStepOfItsRounding(t *testing.T) {
@@ -47,7 +46,7 @@ func TestEveryTermOfAReadIsAtLeastItsPartsAndLessThanTheStepOfItsRounding(t *tes
 		step        int
 	}{
 		{"the head of an HTTP/1.1 answer, its names, field lines and Trailer value", headersHTTP1, headersHTTP1Parts, mebibyte / 10},
-		{"the trailers of a chunked HTTP/1.1 answer", trailersHTTP1, trailerFieldsHTTP1*trailerFieldHTTP1 + 2*mapTable, mebibyte / 10},
+		{"the trailers of a chunked HTTP/1.1 answer", trailersHTTP1, trailerFieldsHTTP1*trailerField + 2*mapTable, mebibyte / 10},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if c.term < c.parts || c.term-c.parts >= c.step {
@@ -107,7 +106,7 @@ func roundedUp(x float64, decimals int) float64 {
 func TestEveryFigureOfTheDerivationIsTheSumOfItsTermsRoundedUp(t *testing.T) {
 	const gibibyte = 1 << 30
 	pass := readsBound(nodesReads) + summariesAtMost
-	atRest := uint64(summariesAtMost + (nodesReads+restoreReads)*connectionHTTP1)
+	atRest := uint64(summariesAtMost + (nodesReads+restoreReads)*connectionMargin)
 	for _, c := range []struct {
 		name     string
 		got      float64
@@ -115,11 +114,11 @@ func TestEveryFigureOfTheDerivationIsTheSumOfItsTermsRoundedUp(t *testing.T) {
 		want     float64
 	}{
 		{"a read, MiB", mib(readsBound(1)), 1, 25.2},
-		{"a read apart from its connection, MiB", mib(readsBound(1) - connectionHTTP1), 1, 23.2},
+		{"a read apart from its connection, MiB", mib(readsBound(1) - connectionMargin), 1, 23.2},
 		{"the two reads of a pass of health-nodes, MiB", mib(readsBound(nodesReads)), 1, 50.4},
 		{"a pass of health-nodes, MiB", mib(pass), 1, 54.4},
 		{"a pass of health over a held restore, MiB", mib(readsBound(restoreReads)), 1, 176.4},
-		{"the connections of a tenant at rest, MiB", mib(uint64((nodesReads + restoreReads) * connectionHTTP1)), 1, 18},
+		{"the connections of a tenant at rest, MiB", mib(uint64((nodesReads + restoreReads) * connectionMargin)), 1, 18},
 		{"a tenant at rest, MiB", mib(atRest), 1, 22},
 		{"100 passes of health-nodes, GiB", 100 * float64(pass) / gibibyte, 2, 5.32},
 		{"10 passes of health over a held restore, GiB", 10 * float64(readsBound(restoreReads)) / gibibyte, 2, 1.73},
