@@ -4,12 +4,16 @@
 package health
 
 import (
+	"cmp"
 	"context"
+	"errors"
+	"hash/fnv"
+	"io"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -29,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/jsonscan"
 	"go.lodia.io/lodia/internal/live"
 	"go.lodia.io/lodia/internal/statusapply"
 )
@@ -41,12 +46,28 @@ const (
 	// are large objects, and the set the hold counts changes slowly.
 	nodesEvery = 30 * time.Second
 
+	// nodesReads is how many reads a pass has in flight at once, the two lists.
+	nodesReads = 2
+
+	// leasePage and nodePage are the limits of the pages of the two lists; a Node
+	// is the larger object.
+	leasePage = 500
+	nodePage  = 100
+
 	// unknownGrace is how long after the controller manager marked a node
 	// Unknown it still counts.
 	unknownGrace = 5 * time.Minute
 
 	// maxKubeletVersion is status.nodes.oldestKubelet's schema bound.
 	maxKubeletVersion = 64
+
+	maxName = 253
+
+	// maxContinue is the longest continue token Health reads, in raw bytes. The
+	// next request carries it decoded, up to three times as long when every byte
+	// is invalid UTF-8, and client-go's query escapes each byte outside the
+	// unreserved set as three: 36,883 bytes of query at the bound.
+	maxContinue = 4096
 )
 
 // NodesReconciler samples a tenant's nodes, reports status.nodes, and holds the
@@ -65,6 +86,10 @@ type NodesReconciler struct {
 	// Period is how often a control plane is sampled, Timeout how long its
 	// lists wait for an answer.
 	Period, Timeout time.Duration
+	// MaxNodes is the most Nodes, and the most Leases of kube-node-lease, of a
+	// tenant that Lodia counts: a list that has read more stops, and the
+	// tenant is not counted. It is positive.
+	MaxNodes int
 	// SilentAfter is how long a node's Lease may stay unchanged before the node
 	// is silent, HoldFraction the share of the counted nodes that are silent,
 	// in thousandths, at which the controller manager is held, and ReleaseAfter
@@ -95,12 +120,22 @@ type nodeCount struct {
 }
 
 // sampling is what a pass remembers of one control plane; only that control
-// plane's pass touches it.
+// plane's pass touches it. Its leases and nodes hold at most MaxNodes entries
+// each, and each string in them is bounded here, since the tenant's
+// administrator can have any server answer the lists
+// (docs/review-checklist.md, item 10): leaseVersions and summarize keep no
+// object whose name is over maxName; a Lease's resourceVersion is kept as a
+// digest of 8 bytes; summarize keeps no kubelet version over maxKubeletVersion
+// and no Ready status but the three a condition has.
 type sampling struct {
-	uid      types.UID
-	leases   map[string]renewal
-	nodes    []node
-	listedAt time.Time
+	uid    types.UID
+	leases map[string]renewal
+	nodes  []node
+	// nodesStop and leasesStop say why the last list of the Nodes, and the last
+	// list of the node Leases that did not fail, ended before its end; they are
+	// empty when it did not.
+	nodesStop, leasesStop string
+	listedAt              time.Time
 	// restarted is when the clock of the node Leases last started.
 	restarted time.Time
 	// below is when a held pass the clock trusted first read the nodes below
@@ -124,8 +159,14 @@ func (s *sampling) restart() {
 	s.leases, s.below = nil, time.Time{}
 }
 
+// stopped says why a list of this control plane ended before its end: the
+// tenant is then not counted.
+func (s *sampling) stopped() string {
+	return cmp.Or(s.leasesStop, s.nodesStop)
+}
+
 // observe starts the clock, when it was forgotten, and notes the Leases listed.
-func (s *sampling) observe(leases []coordinationv1.Lease, now time.Time) {
+func (s *sampling) observe(leases []leaseVersion, now time.Time) {
 	if s.leases == nil {
 		s.restarted = now
 	}
@@ -243,61 +284,217 @@ func (r *NodesReconciler) sample(ctx context.Context, cp *lodiav1alpha1.ControlP
 // list reads the node Leases and, when the last list of Nodes is old, the
 // Nodes, at once under Timeout. A failed list of Nodes leaves the last good
 // one.
-func (r *NodesReconciler) list(ctx context.Context, tenant *tenant, s *sampling, now time.Time) ([]coordinationv1.Lease, error) {
+func (r *NodesReconciler) list(ctx context.Context, tenant *tenant, s *sampling, now time.Time) ([]leaseVersion, error) {
 	listing, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
 	var (
-		leases   *coordinationv1.LeaseList
-		leaseErr error
-		nodes    *corev1.NodeList
-		nodeErr  error
-		wg       sync.WaitGroup
+		leases    []leaseVersion
+		leaseStop string
+		leaseErr  error
+		nodes     []node
+		nodeStop  string
+		nodeErr   error
+		wg        sync.WaitGroup
 	)
 	listNodes := s.listedAt.IsZero() || now.Sub(s.listedAt) >= nodesEvery
-	wg.Go(func() { leases, leaseErr = tenant.nodeLeases.List(listing, metav1.ListOptions{}) })
+	wg.Go(func() { leases, leaseStop, leaseErr = r.listLeases(listing, tenant) })
 	if listNodes {
-		wg.Go(func() { nodes, nodeErr = tenant.core.Nodes().List(listing, metav1.ListOptions{}) })
+		wg.Go(func() { nodes, nodeStop, nodeErr = r.listNodes(listing, tenant) })
 	}
 	wg.Wait()
 	if listNodes {
 		if nodeErr != nil {
 			logf.FromContext(ctx).Error(nodeErr, "list the tenant's Nodes")
 		} else {
-			s.nodes, s.listedAt = summarize(nodes.Items), now
+			s.nodes, s.nodesStop, s.listedAt = nodes, nodeStop, now
 		}
 	}
 	if leaseErr != nil {
 		return nil, leaseErr
 	}
-	return leases.Items, nil
+	s.leasesStop = leaseStop
+	return leases, nil
+}
+
+func (r *NodesReconciler) listLeases(ctx context.Context, tenant *tenant) ([]leaseVersion, string, error) {
+	leases, end, err := listPages(ctx, leasePage, r.MaxNodes, func(ctx context.Context, options metav1.ListOptions) ([]leaseVersion, string, listEnd, error) {
+		page, err := tenant.leasePage(ctx, options)
+		if page == nil {
+			return nil, "", listEnded, err
+		}
+		end := listEnded
+		if page.Items.over {
+			end = pageTooLong
+		}
+		return leaseVersions(page.Items.items), page.Metadata.Continue, end, err
+	})
+	stop, err := r.stop("Leases of "+corev1.NamespaceNodeLease, leasePage, end, err)
+	return leases, stop, err
+}
+
+func (r *NodesReconciler) listNodes(ctx context.Context, tenant *tenant) ([]node, string, error) {
+	nodes, end, err := listPages(ctx, nodePage, r.MaxNodes, func(ctx context.Context, options metav1.ListOptions) ([]node, string, listEnd, error) {
+		page, err := tenant.nodePage(ctx, options)
+		if page == nil {
+			return nil, "", listEnded, err
+		}
+		nodes, end := summarize(page.Items.items)
+		if end == listEnded && page.Items.over {
+			end = pageTooLong
+		}
+		return nodes, page.Metadata.Continue, end, err
+	})
+	stop, err := r.stop("Nodes", nodePage, end, err)
+	return nodes, stop, err
+}
+
+type listEnd int
+
+const (
+	listEnded listEnd = iota
+	tooManyItems
+	tooManyPages
+	pageTooLong
+	nodeTooLarge
+)
+
+// maxPages is the most pages a list of most items reads: the pages that most
+// items fill, and one more, since a tenant's API server fills every page, so by
+// then the list has ended or holds more than most items.
+func maxPages(size int64, most int) int {
+	return (most+int(size)-1)/int(size) + 1
+}
+
+// listPages reads a list a page at a time and keeps its first most items. It
+// asks for no page after one that left it with more than most items, nor after
+// maxPages(size, most) pages, whatever they hold: the administrator of a tenant
+// can serve the list from a server whose pages hold no item. The page function
+// reads no token longer than maxContinue. It reduces a decoded page to
+// what the pass keeps, so that no list holds more than one decoded page, and
+// says whether the page ended the list early: it held more than size items, or
+// an object of it was too large. It does not use pager.ListPager, whose
+// EachListItem fetches the next page while it hands over the last, even
+// unbuffered. Every page is a consistent read: the list sets no resourceVersion.
+// A failure returns the items of the pages before it and those of its own page
+// that it read before the failure, at most most of them.
+func listPages[T any](ctx context.Context, size int64, most int, page func(context.Context, metav1.ListOptions) ([]T, string, listEnd, error)) (kept []T, end listEnd, err error) {
+	options := metav1.ListOptions{Limit: size}
+	for read := 1; ; read++ {
+		items, next, end, err := page(ctx, options)
+		kept = append(kept, items...)
+		if err != nil {
+			return kept[:min(len(kept), most)], listEnded, err
+		}
+		switch {
+		case len(kept) > most:
+			return kept[:most], tooManyItems, nil
+		case end != listEnded:
+			return kept, end, nil
+		case next == "":
+			return kept, listEnded, nil
+		case read == maxPages(size, most):
+			return kept, tooManyPages, nil
+		}
+		options.Continue = next
+	}
+}
+
+// stop says why the list of what ended before its end, or nothing when it did
+// not: it saw more than MaxNodes items or a page after maxPages, a page of more
+// than size items or a Node of more than maxConditions conditions, a field
+// longer than its bound, or a response of it was longer than maxResponseBytes.
+// Another failure of the list is returned.
+func (r *NodesReconciler) stop(what string, size int64, end listEnd, err error) (string, error) {
+	var tooLong *jsonscan.TooLong
+	switch {
+	case errors.Is(err, errResponseTooLong):
+		return "a response listing the " + what + " is longer than " + strconv.Itoa(maxResponseBytes) + " bytes", nil
+	case errors.As(err, &tooLong):
+		return tooLong.Field + " in the " + what + " is longer than " + strconv.Itoa(tooLong.Most) + " bytes", nil
+	case err != nil:
+		return "", err
+	case end == tooManyItems:
+		return "more than " + strconv.Itoa(r.MaxNodes) + " " + what + " (health.maxNodes)", nil
+	case end == tooManyPages:
+		return "more than " + strconv.Itoa(maxPages(size, r.MaxNodes)) + " pages of " + what + " (health.maxNodes)", nil
+	case end == pageTooLong:
+		return "a page of the " + what + " holds more than " + strconv.FormatInt(size, 10) + " items", nil
+	case end == nodeTooLarge:
+		return "a Node has more than " + strconv.Itoa(maxConditions) + " conditions", nil
+	}
+	return "", nil
+}
+
+type leaseVersion struct {
+	name    string
+	version uint64
+}
+
+// versionOf digests a resourceVersion: the clock only asks whether it changed,
+// and a digest asks no format of it and takes 8 bytes.
+func versionOf(resourceVersion string) uint64 {
+	h := fnv.New64a()
+	_, _ = io.WriteString(h, resourceVersion)
+	return h.Sum64()
+}
+
+func leaseVersions(leases []leaseItem) []leaseVersion {
+	out := make([]leaseVersion, 0, len(leases))
+	for _, l := range leases {
+		if len(l.Metadata.Name) <= maxName {
+			out = append(out, leaseVersion{l.Metadata.Name, versionOf(l.Metadata.ResourceVersion)})
+		}
+	}
+	return out
 }
 
 // seen keeps, for every Lease listed, when its version was first seen: now for
 // a Lease new to the list or changed since the last one.
-func seen(previous map[string]renewal, leases []coordinationv1.Lease, now time.Time) map[string]renewal {
+func seen(previous map[string]renewal, leases []leaseVersion, now time.Time) map[string]renewal {
 	next := make(map[string]renewal, len(leases))
 	for _, l := range leases {
-		if p, ok := previous[l.Name]; ok && p.resourceVersion == l.ResourceVersion {
-			next[l.Name] = p
+		if p, ok := previous[l.name]; ok && p.version == l.version {
+			next[l.name] = p
 		} else {
-			next[l.Name] = renewal{resourceVersion: l.ResourceVersion, at: now}
+			next[l.name] = renewal{version: l.version, at: now}
 		}
 	}
 	return next
 }
 
-func summarize(nodes []corev1.Node) []node {
+// summarize keeps the Nodes before the first that has more than maxConditions
+// conditions, and says by nodeTooLarge that it stopped there.
+func summarize(nodes []nodeObject) ([]node, listEnd) {
 	out := make([]node, 0, len(nodes))
 	for _, n := range nodes {
-		summary := node{name: n.Name, kubelet: n.Status.NodeInfo.KubeletVersion}
-		for _, c := range n.Status.Conditions {
+		if n.Status.Conditions.over {
+			return out, nodeTooLarge
+		}
+		if len(n.Metadata.Name) > maxName {
+			continue
+		}
+		summary := node{name: n.Metadata.Name}
+		if len(n.Status.NodeInfo.KubeletVersion) <= maxKubeletVersion {
+			summary.kubelet = n.Status.NodeInfo.KubeletVersion
+		}
+		for _, c := range n.Status.Conditions.items {
 			if c.Type == corev1.NodeReady {
-				summary.ready, summary.since = c.Status, c.LastTransitionTime.Time
+				summary.ready, summary.since = conditionStatus(c.Status), c.LastTransitionTime.Time
 			}
 		}
 		out = append(out, summary)
 	}
-	return out
+	return out, listEnded
+}
+
+// conditionStatus is status when it is one of the three a condition has, else
+// none: any other counts as a node that is not Ready.
+func conditionStatus(status corev1.ConditionStatus) corev1.ConditionStatus {
+	switch status {
+	case corev1.ConditionTrue, corev1.ConditionFalse, corev1.ConditionUnknown:
+		return status
+	}
+	return ""
 }
 
 // counts says whether a node's silence counts: its kubelet reports it Ready,
@@ -336,18 +533,22 @@ func (s *sampling) status(cp *lodiav1alpha1.ControlPlane) *lodiav1alpha1.NodesSt
 	if cp.Status.Kubernetes != nil {
 		running = cp.Status.Kubernetes.Version
 	}
-	return nodesStatus(s.nodes, running)
+	return nodesStatus(s.nodes, running, s.nodesStop != "")
 }
 
 // nodesStatus counts the nodes; a kubelet is outdated when its minor is below
-// the minor of running, which counts none while it is absent or unparsable.
-func nodesStatus(nodes []node, running string) *lodiav1alpha1.NodesStatus {
-	status := &lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: int32(len(nodes))}}
+// the minor of running, which counts none while it is absent or unparsable. A
+// truncated list counts the nodes it read and tells nothing of the kubelets.
+func nodesStatus(nodes []node, running string, truncated bool) *lodiav1alpha1.NodesStatus {
+	status := &lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: int32(len(nodes))}, Truncated: truncated}
 	floor, _ := version.ParseSemantic(running)
 	var oldest *version.Version
 	for _, n := range nodes {
 		if n.ready == corev1.ConditionTrue {
 			status.Ready++
+		}
+		if truncated {
+			continue
 		}
 		kubelet := kubeletVersion(n.kubelet)
 		if kubelet == nil {
@@ -364,9 +565,6 @@ func nodesStatus(nodes []node, running string) *lodiav1alpha1.NodesStatus {
 }
 
 func kubeletVersion(reported string) *version.Version {
-	if len(reported) > maxKubeletVersion {
-		return nil
-	}
 	v, err := version.ParseSemantic(reported)
 	if err != nil {
 		return nil
@@ -432,7 +630,7 @@ func (r *NodesReconciler) tenant(key types.NamespacedName, kubeconfig []byte) (*
 		r.clients = map[types.NamespacedName]*tenantClients{}
 	}
 	if r.clients[key] == nil {
-		r.clients[key] = &tenantClients{}
+		r.clients[key] = &tenantClients{connections: nodesReads}
 	}
 	return r.clients[key].of(kubeconfig)
 }

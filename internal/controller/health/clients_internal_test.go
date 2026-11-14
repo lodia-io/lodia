@@ -41,10 +41,8 @@ func TestAControlPlaneKeepsItsTenantClientsWhileItsKubeconfigStays(t *testing.T)
 		return c
 	}
 	first := clients("https://dev-kube-apiserver.team-a.svc:443")
-	for name, c := range map[string]rest.Interface{"core": first.core.RESTClient(), "admission": first.admission.RESTClient(), "registration": first.registration.RESTClient(), "batch": first.batch.RESTClient()} {
-		if c.(*rest.RESTClient).Client != r.clients[key].transport {
-			t.Errorf("the %s client does not use the transport forget closes", name)
-		}
+	if first.api.Client != r.clients[key].transport {
+		t.Error("the tenant client does not use the transport forget closes")
 	}
 	if clients("https://dev-kube-apiserver.team-a.svc:443") != first {
 		t.Error("the same kubeconfig built second tenant clients")
@@ -60,10 +58,11 @@ func TestAControlPlaneKeepsItsTenantClientsWhileItsKubeconfigStays(t *testing.T)
 	}
 }
 
-func TestTheLeaseClientNamesItself(t *testing.T) {
-	var agent atomic.Value
+func TestTheTenantClientNamesItselfAndAsksForJSON(t *testing.T) {
+	var agent, accept atomic.Value
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		agent.Store(req.UserAgent())
+		accept.Store(req.Header.Get("Accept"))
 		http.NotFound(w, req)
 	}))
 	t.Cleanup(server.Close)
@@ -81,8 +80,13 @@ func TestTheLeaseClientNamesItself(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _ = tenant.leases.Get(t.Context(), "kube-scheduler", metav1.GetOptions{})
+	_, _ = tenant.getLease(t.Context(), "kube-scheduler")
+	_, _ = tenant.leasePage(t.Context(), metav1.ListOptions{Limit: leasePage})
+	_, _ = tenant.nodePage(t.Context(), metav1.ListOptions{Limit: nodePage})
 	if got, want := agent.Load(), rest.DefaultKubernetesUserAgent(); got != want {
-		t.Errorf("the Lease client sends the User-Agent %q, want %q", got, want)
+		t.Errorf("the tenant client sends the User-Agent %q, want %q", got, want)
+	}
+	if got := accept.Load(); got != "application/json" {
+		t.Errorf("the tenant client accepts %q, want application/json only", got)
 	}
 }

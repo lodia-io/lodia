@@ -22,22 +22,16 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
-	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	utilnet "k8s.io/apimachinery/pkg/util/net"
-	admissionregistrationv1client "k8s.io/client-go/kubernetes/typed/admissionregistration/v1"
-	batchv1client "k8s.io/client-go/kubernetes/typed/batch/v1"
-	coordinationv1client "k8s.io/client-go/kubernetes/typed/coordination/v1"
-	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/events"
-	apiregistrationv1client "k8s.io/kube-aggregator/pkg/client/clientset_generated/clientset/typed/apiregistration/v1"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -58,6 +52,10 @@ import (
 const (
 	Name         = "health"
 	FieldManager = "lodia/" + Name
+
+	// restoreReads is how many reads a pass has in flight at once, the seven
+	// lists of a held restore.
+	restoreReads = 7
 
 	// accessNotTrue is the message of a pass while AccessReady is not True:
 	// Reconciler reads nothing in the tenant then, and NodesReconciler reads only
@@ -105,9 +103,10 @@ type Reconciler struct {
 // tenantClients are the clients of one tenant over one transport, and the
 // kubeconfig they were built from.
 type tenantClients struct {
-	kubeconfig []byte
-	tenant     *tenant
-	transport  *http.Client
+	kubeconfig  []byte
+	tenant      *tenant
+	transport   *http.Client
+	connections int
 }
 
 // prober holds what a control plane's probes verify and present: the client
@@ -119,22 +118,11 @@ type prober struct {
 	client *tls.Certificate
 }
 
-// tenant reads inside a control plane as Lodia, every client over the same
-// transport.
-type tenant struct {
-	leases       coordinationv1client.LeaseInterface
-	nodeLeases   coordinationv1client.LeaseInterface
-	core         corev1client.CoreV1Interface
-	admission    admissionregistrationv1client.AdmissionregistrationV1Interface
-	registration apiregistrationv1client.ApiregistrationV1Interface
-	batch        batchv1client.BatchV1Interface
-}
-
-// renewal is the version of a leader Lease Health saw last, and when it saw
-// that version first.
+// renewal is the digest of the resourceVersion of a Lease Health saw last, and
+// when it saw that version first.
 type renewal struct {
-	resourceVersion string
-	at              time.Time
+	version uint64
+	at      time.Time
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
@@ -392,7 +380,7 @@ func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 		{lodiav1alpha1.ControllerManagerLease, lodiav1alpha1.ReasonControllerManagerNotLeading},
 		{lodiav1alpha1.SchedulerLease, lodiav1alpha1.ReasonSchedulerNotLeading},
 	} {
-		lease, err := tenant.leases.Get(reading, l.name, metav1.GetOptions{})
+		lease, err := tenant.getLease(reading, l.name)
 		var message string
 		switch {
 		case apierrors.IsNotFound(err):
@@ -403,7 +391,7 @@ func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 		case l.name == lodiav1alpha1.ControllerManagerLease && ptr.Deref(lease.Spec.HolderIdentity, "") == lodiav1alpha1.HoldHolderIdentity:
 			held = true
 		default:
-			message = r.stale(key, lease, now)
+			message = r.stale(key, l.name, lease, now)
 		}
 		if message != "" {
 			reason = cmp.Or(reason, l.reason)
@@ -447,136 +435,110 @@ const listLimit = 500
 // that cannot be listed says so in its place. The lists run at once, so a
 // tenant that does not answer holds a worker for one Timeout, not seven.
 func (r *Reconciler) actedOn(ctx context.Context, t *tenant) string {
-	page := metav1.ListOptions{Limit: listLimit}
 	type list struct {
 		kind string
-		read func(context.Context) (names []string, more bool, err error)
+		read func(context.Context) (tally, error)
 	}
 	items := []struct {
 		what  string
 		lists []list
 	}{
-		{"LoadBalancer Services", []list{{"Services", func(ctx context.Context) ([]string, bool, error) {
-			l, err := t.core.Services("").List(ctx, page)
+		{"LoadBalancer Services", []list{{"Services", func(ctx context.Context) (tally, error) {
+			l, err := firstPage(ctx, t, "/api/v1/services", serviceOf)
 			if err != nil {
-				return nil, false, err
+				return tally{}, err
 			}
-			var names []string
-			for _, s := range l.Items {
+			found := tally{more: l.Metadata.Continue != ""}
+			for _, s := range l.Items.items {
 				if s.Spec.Type == corev1.ServiceTypeLoadBalancer {
-					names = append(names, s.Namespace+"/"+s.Name)
+					found.add(s.Metadata.Namespace, s.Metadata.Name)
 				}
 			}
-			return names, l.Continue != "", nil
+			return found, nil
 		}}}},
-		{"PersistentVolumes with reclaimPolicy Delete", []list{{"PersistentVolumes", func(ctx context.Context) ([]string, bool, error) {
-			l, err := t.core.PersistentVolumes().List(ctx, page)
+		{"PersistentVolumes with reclaimPolicy Delete", []list{{"PersistentVolumes", func(ctx context.Context) (tally, error) {
+			l, err := firstPage(ctx, t, "/api/v1/persistentvolumes", persistentVolumeOf)
 			if err != nil {
-				return nil, false, err
+				return tally{}, err
 			}
-			var names []string
-			for _, v := range l.Items {
+			found := tally{more: l.Metadata.Continue != ""}
+			for _, v := range l.Items.items {
 				if v.Spec.PersistentVolumeReclaimPolicy == corev1.PersistentVolumeReclaimDelete {
-					names = append(names, v.Name)
+					found.add(v.Metadata.Name)
 				}
 			}
-			return names, l.Continue != "", nil
+			return found, nil
 		}}}},
-		{"pending PersistentVolumeClaims", []list{{"PersistentVolumeClaims", func(ctx context.Context) ([]string, bool, error) {
-			l, err := t.core.PersistentVolumeClaims("").List(ctx, page)
+		{"pending PersistentVolumeClaims", []list{{"PersistentVolumeClaims", func(ctx context.Context) (tally, error) {
+			l, err := firstPage(ctx, t, "/api/v1/persistentvolumeclaims", persistentVolumeClaimOf)
 			if err != nil {
-				return nil, false, err
+				return tally{}, err
 			}
-			var names []string
-			for _, c := range l.Items {
+			found := tally{more: l.Metadata.Continue != ""}
+			for _, c := range l.Items.items {
 				if c.Status.Phase == corev1.ClaimPending {
-					names = append(names, c.Namespace+"/"+c.Name)
+					found.add(c.Metadata.Namespace, c.Metadata.Name)
 				}
 			}
-			return names, l.Continue != "", nil
+			return found, nil
 		}}}},
 		{"webhooks that call a URL or fail closed", []list{
-			{"ValidatingWebhookConfigurations", func(ctx context.Context) ([]string, bool, error) {
-				l, err := t.admission.ValidatingWebhookConfigurations().List(ctx, page)
-				if err != nil {
-					return nil, false, err
-				}
-				var names []string
-				for _, c := range l.Items {
-					for _, w := range c.Webhooks {
-						if actsOutside(w.ClientConfig, w.FailurePolicy) {
-							names = append(names, c.Name+"/"+w.Name)
-						}
-					}
-				}
-				return names, l.Continue != "", nil
+			{"ValidatingWebhookConfigurations", func(ctx context.Context) (tally, error) {
+				return outsideWebhooks(ctx, t, "/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations")
 			}},
-			{"MutatingWebhookConfigurations", func(ctx context.Context) ([]string, bool, error) {
-				l, err := t.admission.MutatingWebhookConfigurations().List(ctx, page)
-				if err != nil {
-					return nil, false, err
-				}
-				var names []string
-				for _, c := range l.Items {
-					for _, w := range c.Webhooks {
-						if actsOutside(w.ClientConfig, w.FailurePolicy) {
-							names = append(names, c.Name+"/"+w.Name)
-						}
-					}
-				}
-				return names, l.Continue != "", nil
+			{"MutatingWebhookConfigurations", func(ctx context.Context) (tally, error) {
+				return outsideWebhooks(ctx, t, "/apis/admissionregistration.k8s.io/v1/mutatingwebhookconfigurations")
 			}},
 		}},
-		{"APIServices served by a Service", []list{{"APIServices", func(ctx context.Context) ([]string, bool, error) {
-			l, err := t.registration.APIServices().List(ctx, page)
+		{"APIServices served by a Service", []list{{"APIServices", func(ctx context.Context) (tally, error) {
+			l, err := firstPage(ctx, t, "/apis/apiregistration.k8s.io/v1/apiservices", apiServiceOf)
 			if err != nil {
-				return nil, false, err
+				return tally{}, err
 			}
-			var names []string
-			for _, a := range l.Items {
-				if a.Spec.Service != nil {
-					names = append(names, a.Name)
+			found := tally{more: l.Metadata.Continue != ""}
+			for _, a := range l.Items.items {
+				if a.Spec.Service {
+					found.add(a.Metadata.Name)
 				}
 			}
-			return names, l.Continue != "", nil
+			return found, nil
 		}}}},
-		{"CronJobs not suspended", []list{{"CronJobs", func(ctx context.Context) ([]string, bool, error) {
-			l, err := t.batch.CronJobs("").List(ctx, page)
+		{"CronJobs not suspended", []list{{"CronJobs", func(ctx context.Context) (tally, error) {
+			l, err := firstPage(ctx, t, "/apis/batch/v1/cronjobs", cronJobOf)
 			if err != nil {
-				return nil, false, err
+				return tally{}, err
 			}
-			var names []string
-			for _, j := range l.Items {
+			found := tally{more: l.Metadata.Continue != ""}
+			for _, j := range l.Items.items {
 				if !ptr.Deref(j.Spec.Suspend, false) {
-					names = append(names, j.Namespace+"/"+j.Name)
+					found.add(j.Metadata.Namespace, j.Metadata.Name)
 				}
 			}
-			return names, l.Continue != "", nil
+			return found, nil
 		}}}},
 	}
-	type listed struct {
-		names []string
-		more  bool
+	type answer struct {
+		found tally
 		err   error
 	}
-	results := make([][]listed, len(items))
+	results := make([][]answer, len(items))
 	var wg sync.WaitGroup
 	for i, item := range items {
-		results[i] = make([]listed, len(item.lists))
+		results[i] = make([]answer, len(item.lists))
 		for j, l := range item.lists {
 			wg.Go(func() {
 				listing, cancel := context.WithTimeout(ctx, r.Timeout)
 				defer cancel()
-				names, more, err := l.read(listing)
-				results[i][j] = listed{names, more, err}
+				found, err := l.read(listing)
+				results[i][j] = answer{found, err}
 			})
 		}
 	}
 	wg.Wait()
 	var out []string
 	for i, item := range items {
-		var names, failed []string
-		more := false
+		var found tally
+		var failed []string
 		for j, l := range item.lists {
 			got := results[i][j]
 			if got.err != nil {
@@ -584,44 +546,123 @@ func (r *Reconciler) actedOn(ctx context.Context, t *tenant) string {
 				failed = append(failed, l.kind)
 				continue
 			}
-			names, more = append(names, got.names...), more || got.more
+			found.merge(got.found)
 		}
 		if len(failed) > 0 {
 			out = append(out, strings.Join(failed, " and ")+" could not be listed")
 			continue
 		}
-		out = append(out, counted(item.what, names, more))
+		out = append(out, counted(item.what, found))
 	}
 	return strings.Join(out, "; ")
 }
 
-// actsOutside says whether a webhook calls a URL, which may be outside the
-// cluster, or fails closed, Fail being admissionregistration/v1's default
-// (https://github.com/kubernetes/api/blob/v0.37.1/admissionregistration/v1/types.go#L814-L817).
-func actsOutside(config admissionregistrationv1.WebhookClientConfig, policy *admissionregistrationv1.FailurePolicyType) bool {
-	return config.URL != nil || ptr.Deref(policy, admissionregistrationv1.Fail) == admissionregistrationv1.Fail
+// outsideWebhooks counts the webhooks of one kind of configuration that act
+// outside the cluster, one configuration at a time, so that the list keeps no
+// webhook; a configuration with more webhooks than maxWebhooks makes the list
+// fail.
+func outsideWebhooks(ctx context.Context, t *tenant, path string) (tally, error) {
+	var found tally
+	page, err := firstPage(ctx, t, path, func(data []byte) (struct{}, error) {
+		c, err := webhookConfigurationOf(data)
+		if err != nil {
+			return struct{}{}, err
+		}
+		if c.Webhooks.over {
+			return struct{}{}, errOverBound
+		}
+		for _, w := range c.Webhooks.items {
+			if w.actsOutside() {
+				found.add(c.Metadata.Name, w.Name)
+			}
+		}
+		return struct{}{}, nil
+	})
+	if err != nil {
+		return tally{}, err
+	}
+	found.more = page.Metadata.Continue != ""
+	return found, nil
 }
 
-func counted(what string, names []string, more bool) string {
-	n := strconv.Itoa(len(names))
-	if more {
+const shown = 3
+
+// tally counts what a held restore's controller manager acts on in one kind,
+// and keeps the shown names that sort first. A name with a part over maxName is
+// counted and not kept, so that the message stays under the schema's bound
+// (32,768 bytes) whatever the tenant answers; the kept names reuse their
+// buffers, so that no name is built for one that does not qualify.
+type tally struct {
+	n     int
+	names [][]byte
+	more  bool
+}
+
+func (t *tally) add(parts ...string) {
+	t.n++
+	var buf [2*maxName + 1]byte
+	name := buf[:0]
+	for i, part := range parts {
+		if len(part) > maxName {
+			return
+		}
+		if i > 0 {
+			name = append(name, '/')
+		}
+		name = append(name, part...)
+	}
+	t.keep(name)
+}
+
+func (t *tally) keep(name []byte) {
+	at := 0
+	for at < len(t.names) && bytes.Compare(t.names[at], name) < 0 {
+		at++
+	}
+	if at == shown {
+		return
+	}
+	var slot []byte
+	if len(t.names) == shown {
+		slot = t.names[shown-1][:0]
+		t.names = t.names[:shown-1]
+	} else {
+		slot = make([]byte, 0, 2*maxName+1)
+	}
+	t.names = slices.Insert(t.names, at, append(slot, name...))
+}
+
+func (t *tally) merge(other tally) {
+	t.n += other.n
+	t.more = t.more || other.more
+	for _, name := range other.names {
+		t.keep(name)
+	}
+}
+
+func counted(what string, t tally) string {
+	n := strconv.Itoa(t.n)
+	if t.more {
 		n += " or more"
 	}
-	if len(names) == 0 {
+	if len(t.names) == 0 {
 		return n + " " + what
 	}
-	slices.Sort(names)
-	shown := strings.Join(names[:min(3, len(names))], ", ")
-	if len(names) > 3 || more {
-		shown += "…"
+	names := make([]string, len(t.names))
+	for i, name := range t.names {
+		names[i] = string(name)
 	}
-	return n + " " + what + " (" + shown + ")"
+	quoted := strings.Join(names, ", ")
+	if t.n > len(t.names) || t.more {
+		quoted += "…"
+	}
+	return n + " " + what + " (" + quoted + ")"
 }
 
-// stale says why lease does not lead, or nothing when it does.
-func (r *Reconciler) stale(key types.NamespacedName, lease *coordinationv1.Lease, now time.Time) string {
+// stale says why the leader Lease name does not lead, or nothing when it does.
+func (r *Reconciler) stale(key types.NamespacedName, name string, lease *leaderLease, now time.Time) string {
 	duration := time.Duration(ptr.Deref(lease.Spec.LeaseDurationSeconds, 0)) * time.Second
-	if now.Sub(r.changed(key, lease, now)) <= duration+leaderSlack {
+	if now.Sub(r.changed(key, name, lease, now)) <= duration+leaderSlack {
 		return ""
 	}
 	renewed := "never"
@@ -629,13 +670,13 @@ func (r *Reconciler) stale(key types.NamespacedName, lease *coordinationv1.Lease
 		renewed = t.UTC().Format(time.RFC3339)
 	}
 	if holder := ptr.Deref(lease.Spec.HolderIdentity, ""); holder != "" {
-		return fmt.Sprintf("Lease %s/%s of %s was last renewed %s", lease.Namespace, lease.Name, quoted(holder), renewed)
+		return fmt.Sprintf("Lease %s/%s of %s was last renewed %s", lodiav1alpha1.LeaderElectionNamespace, name, quoted(holder), renewed)
 	}
-	return fmt.Sprintf("Lease %s/%s has no holder; it was last renewed %s", lease.Namespace, lease.Name, renewed)
+	return fmt.Sprintf("Lease %s/%s has no holder; it was last renewed %s", lodiav1alpha1.LeaderElectionNamespace, name, renewed)
 }
 
-// changed returns when Health first saw the lease's current version.
-func (r *Reconciler) changed(key types.NamespacedName, lease *coordinationv1.Lease, now time.Time) time.Time {
+// changed returns when Health first saw the current version of the leader Lease name.
+func (r *Reconciler) changed(key types.NamespacedName, name string, lease *leaderLease, now time.Time) time.Time {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.renewals == nil {
@@ -644,10 +685,10 @@ func (r *Reconciler) changed(key types.NamespacedName, lease *coordinationv1.Lea
 	if r.renewals[key] == nil {
 		r.renewals[key] = map[string]renewal{}
 	}
-	seen, ok := r.renewals[key][lease.Name]
-	if !ok || seen.resourceVersion != lease.ResourceVersion {
-		seen = renewal{resourceVersion: lease.ResourceVersion, at: now}
-		r.renewals[key][lease.Name] = seen
+	seen, ok := r.renewals[key][name]
+	if version := versionOf(lease.Metadata.ResourceVersion); !ok || seen.version != version {
+		seen = renewal{version: version, at: now}
+		r.renewals[key][name] = seen
 	}
 	return seen.at
 }
@@ -707,7 +748,7 @@ func (r *Reconciler) tenant(key types.NamespacedName, kubeconfig []byte) (*tenan
 		r.clients = map[types.NamespacedName]*tenantClients{}
 	}
 	if r.clients[key] == nil {
-		r.clients[key] = &tenantClients{}
+		r.clients[key] = &tenantClients{connections: restoreReads}
 	}
 	return r.clients[key].of(kubeconfig)
 }
@@ -725,42 +766,40 @@ func (c *tenantClients) of(kubeconfig []byte) (*tenant, error) {
 	}
 	cfg.Proxy = http.ProxyURL(nil)
 	cfg.UserAgent = rest.DefaultKubernetesUserAgent()
+	// A QPS below zero turns client-go's limiter off. Its default, 5 requests a
+	// second with a burst of 10, stops a list of the Nodes at about 34 pages
+	// inside Timeout. Without it, since tenant.do sends a request once, a pass of
+	// health-nodes sends at most maxPages requests for each of the two lists and
+	// the hold's: a read of the controller manager's Lease, then up to
+	// retry.DefaultRetry's five patches, each after the first preceded by a read
+	// of the Lease again (5 patches and 5 reads when every patch conflicts); a
+	// pass of health sends the reads of the two leader Leases, or one page of each
+	// of a held restore's seven lists. capResponses cuts the headers and the body
+	// of every answer; the tenant's API server limits what it serves itself
+	// (https://kubernetes.io/docs/concepts/cluster-administration/flow-control/).
+	cfg.QPS = -1
+	cfg.Wrap(func(next http.RoundTripper) http.RoundTripper { return capResponses(next, c.connections) })
+	// Leaving h2 out of NextProtos keeps client-go from configuring HTTP/2
+	// (https://github.com/kubernetes/apimachinery/blob/v0.37.1/pkg/util/net/http.go#L196-L208):
+	// the transport counts and caps its connections, which an HTTP/2 pool does
+	// not.
+	cfg.NextProtos = []string{"http/1.1"}
+	cfg.AcceptContentTypes, cfg.ContentType = "application/json", "application/json"
+	// client-go asks for a serializer, and DoRaw never uses it: no response is
+	// decoded into the API's types.
+	cfg.NegotiatedSerializer = scheme.Codecs.WithoutConversion()
 	transport, err := rest.HTTPClientFor(cfg)
 	if err != nil {
 		return nil, err
 	}
-	coordination, err := coordinationv1client.NewForConfigAndClient(cfg, transport)
-	if err != nil {
-		return nil, err
-	}
-	core, err := corev1client.NewForConfigAndClient(cfg, transport)
-	if err != nil {
-		return nil, err
-	}
-	admission, err := admissionregistrationv1client.NewForConfigAndClient(cfg, transport)
-	if err != nil {
-		return nil, err
-	}
-	registration, err := apiregistrationv1client.NewForConfigAndClient(cfg, transport)
-	if err != nil {
-		return nil, err
-	}
-	batch, err := batchv1client.NewForConfigAndClient(cfg, transport)
+	api, err := rest.UnversionedRESTClientForConfigAndClient(cfg, transport)
 	if err != nil {
 		return nil, err
 	}
 	if c.transport != nil {
 		utilnet.CloseIdleConnectionsFor(c.transport.Transport)
 	}
-	c.kubeconfig, c.transport = kubeconfig, transport
-	c.tenant = &tenant{
-		leases:       coordination.Leases(lodiav1alpha1.LeaderElectionNamespace),
-		nodeLeases:   coordination.Leases(corev1.NamespaceNodeLease),
-		core:         core,
-		admission:    admission,
-		registration: registration,
-		batch:        batch,
-	}
+	c.kubeconfig, c.transport, c.tenant = kubeconfig, transport, newTenant(api)
 	return c.tenant, nil
 }
 

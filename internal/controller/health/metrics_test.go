@@ -238,7 +238,7 @@ func TestAConflictWhoseReReadFailsKeepsThePassCount(t *testing.T) {
 			return false
 		}
 		switch req.Method {
-		case http.MethodPut:
+		case http.MethodPatch:
 			refuse(w, http.StatusConflict, metav1.StatusReasonConflict)
 			return true
 		case http.MethodGet:
@@ -263,7 +263,7 @@ func TestAConflictWhoseReReadFindsAnotherHolderCountsAsTheRetry(t *testing.T) {
 	createManagerPod(t, h.cp, "dev-kube-controller-manager-7d9")
 	var puts atomic.Int32
 	h.inject(func(w http.ResponseWriter, req *http.Request) bool {
-		if req.Method == http.MethodPut && req.URL.Path == managerLease && puts.Add(1) == 1 {
+		if req.Method == http.MethodPatch && req.URL.Path == managerLease && puts.Add(1) == 1 {
 			renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", time.Now())
 		}
 		return false
@@ -521,7 +521,7 @@ func TestCollectionsDuringPassesShareNothingUnlocked(t *testing.T) {
 		t.Fatalf("%d collections ran beside the passes", collections.Load())
 	}
 	want := `
-# HELP lodia_controlplane_nodes_silent The nodes that count whose Lease Health has not seen change for health.silentAfter, in its last list of the node Leases. Absent while that list is missing or the tenant's hold is off, before Health's first list of the Nodes, and until Health's clock of the Leases has run health.silentAfter.
+# HELP lodia_controlplane_nodes_silent The nodes that count whose Lease Health has not seen change for health.silentAfter, in its last list of the node Leases. Absent while that list is missing, or a list of the Leases or of the Nodes stopped at a bound, or the tenant's hold is off, before Health's first list of the Nodes, and until Health's clock of the Leases has run health.silentAfter.
 # TYPE lodia_controlplane_nodes_silent gauge
 lodia_controlplane_nodes_silent{controlplane="dev",namespace="` + h.cp.Namespace + `"} 3
 `

@@ -1,5 +1,6 @@
 # HELP lodia_controlplane_certificates_expiration_timestamp_seconds status.credentials.notAfter: the earliest expiry among the certificates PKI's Secrets hold for the ControlPlane, its CAs among them. It counts each Secret's own certificate and the newest complete etcd generation, and leaves out the replaced certificates in the CA bundles, the staged kubelet signer and a previous etcd generation.
 # TYPE lodia_controlplane_certificates_expiration_timestamp_seconds gauge
+lodia_controlplane_certificates_expiration_timestamp_seconds{controlplane="crowded",namespace="tenants"} 1.80216e+09
 lodia_controlplane_certificates_expiration_timestamp_seconds{controlplane="deleting",namespace="tenants"} 1.80216e+09
 lodia_controlplane_certificates_expiration_timestamp_seconds{controlplane="edge",namespace="tenants"} 1.80216e+09
 lodia_controlplane_certificates_expiration_timestamp_seconds{controlplane="failed",namespace="tenants"} 1.80216e+09
@@ -11,6 +12,7 @@ lodia_controlplane_certificates_expiration_timestamp_seconds{controlplane="upgra
 lodia_controlplane_certificates_expiration_timestamp_seconds{controlplane="waiting",namespace="tenants"} 1.80216e+09
 # HELP lodia_controlplane_component_replicas status.components.<component>.total: the replicas the component's Deployment asks for.
 # TYPE lodia_controlplane_component_replicas gauge
+lodia_controlplane_component_replicas{component="apiServer",controlplane="crowded",namespace="tenants"} 1
 lodia_controlplane_component_replicas{component="apiServer",controlplane="deleting",namespace="tenants"} 1
 lodia_controlplane_component_replicas{component="apiServer",controlplane="edge",namespace="tenants"} 3
 lodia_controlplane_component_replicas{component="apiServer",controlplane="failed",namespace="tenants"} 1
@@ -21,6 +23,7 @@ lodia_controlplane_component_replicas{component="apiServer",controlplane="rollin
 lodia_controlplane_component_replicas{component="apiServer",controlplane="starting",namespace="tenants"} 1
 lodia_controlplane_component_replicas{component="apiServer",controlplane="upgrading",namespace="tenants"} 1
 lodia_controlplane_component_replicas{component="apiServer",controlplane="waiting",namespace="tenants"} 1
+lodia_controlplane_component_replicas{component="controllerManager",controlplane="crowded",namespace="tenants"} 1
 lodia_controlplane_component_replicas{component="controllerManager",controlplane="deleting",namespace="tenants"} 1
 lodia_controlplane_component_replicas{component="controllerManager",controlplane="edge",namespace="tenants"} 2
 lodia_controlplane_component_replicas{component="controllerManager",controlplane="failed",namespace="tenants"} 1
@@ -30,6 +33,7 @@ lodia_controlplane_component_replicas{component="controllerManager",controlplane
 lodia_controlplane_component_replicas{component="controllerManager",controlplane="rolling",namespace="tenants"} 2
 lodia_controlplane_component_replicas{component="controllerManager",controlplane="upgrading",namespace="tenants"} 1
 lodia_controlplane_component_replicas{component="controllerManager",controlplane="waiting",namespace="tenants"} 1
+lodia_controlplane_component_replicas{component="scheduler",controlplane="crowded",namespace="tenants"} 1
 lodia_controlplane_component_replicas{component="scheduler",controlplane="deleting",namespace="tenants"} 1
 lodia_controlplane_component_replicas{component="scheduler",controlplane="edge",namespace="tenants"} 2
 lodia_controlplane_component_replicas{component="scheduler",controlplane="failed",namespace="tenants"} 1
@@ -41,6 +45,7 @@ lodia_controlplane_component_replicas{component="scheduler",controlplane="upgrad
 lodia_controlplane_component_replicas{component="scheduler",controlplane="waiting",namespace="tenants"} 1
 # HELP lodia_controlplane_component_replicas_ready status.components.<component>.ready: those of them that are ready.
 # TYPE lodia_controlplane_component_replicas_ready gauge
+lodia_controlplane_component_replicas_ready{component="apiServer",controlplane="crowded",namespace="tenants"} 1
 lodia_controlplane_component_replicas_ready{component="apiServer",controlplane="deleting",namespace="tenants"} 1
 lodia_controlplane_component_replicas_ready{component="apiServer",controlplane="edge",namespace="tenants"} 3
 lodia_controlplane_component_replicas_ready{component="apiServer",controlplane="failed",namespace="tenants"} 1
@@ -51,6 +56,7 @@ lodia_controlplane_component_replicas_ready{component="apiServer",controlplane="
 lodia_controlplane_component_replicas_ready{component="apiServer",controlplane="starting",namespace="tenants"} 0
 lodia_controlplane_component_replicas_ready{component="apiServer",controlplane="upgrading",namespace="tenants"} 1
 lodia_controlplane_component_replicas_ready{component="apiServer",controlplane="waiting",namespace="tenants"} 1
+lodia_controlplane_component_replicas_ready{component="controllerManager",controlplane="crowded",namespace="tenants"} 1
 lodia_controlplane_component_replicas_ready{component="controllerManager",controlplane="deleting",namespace="tenants"} 1
 lodia_controlplane_component_replicas_ready{component="controllerManager",controlplane="edge",namespace="tenants"} 2
 lodia_controlplane_component_replicas_ready{component="controllerManager",controlplane="failed",namespace="tenants"} 1
@@ -60,6 +66,7 @@ lodia_controlplane_component_replicas_ready{component="controllerManager",contro
 lodia_controlplane_component_replicas_ready{component="controllerManager",controlplane="rolling",namespace="tenants"} 1
 lodia_controlplane_component_replicas_ready{component="controllerManager",controlplane="upgrading",namespace="tenants"} 1
 lodia_controlplane_component_replicas_ready{component="controllerManager",controlplane="waiting",namespace="tenants"} 1
+lodia_controlplane_component_replicas_ready{component="scheduler",controlplane="crowded",namespace="tenants"} 1
 lodia_controlplane_component_replicas_ready{component="scheduler",controlplane="deleting",namespace="tenants"} 1
 lodia_controlplane_component_replicas_ready{component="scheduler",controlplane="edge",namespace="tenants"} 2
 lodia_controlplane_component_replicas_ready{component="scheduler",controlplane="failed",namespace="tenants"} 1
@@ -71,6 +78,45 @@ lodia_controlplane_component_replicas_ready{component="scheduler",controlplane="
 lodia_controlplane_component_replicas_ready{component="scheduler",controlplane="waiting",namespace="tenants"} 1
 # HELP lodia_controlplane_condition 1 for the status of each condition in status.conditions and 0 for its other two; a type absent from status has no series.
 # TYPE lodia_controlplane_condition gauge
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="False",type="APIServerReady"} 0
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="False",type="AccessReady"} 0
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="False",type="AddonsApplied"} 0
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="False",type="AddonsAvailable"} 0
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="False",type="BackupReady"} 0
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="False",type="CAValidityAcceptable"} 0
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="False",type="CertificatesReady"} 0
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="False",type="ControllerManagerHeld"} 1
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="False",type="ControllersLeading"} 0
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="False",type="DatastoreReady"} 0
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="False",type="Progressing"} 1
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="False",type="Reachable"} 0
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="False",type="Ready"} 0
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="True",type="APIServerReady"} 1
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="True",type="AccessReady"} 1
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="True",type="AddonsApplied"} 1
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="True",type="AddonsAvailable"} 1
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="True",type="BackupReady"} 1
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="True",type="CAValidityAcceptable"} 1
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="True",type="CertificatesReady"} 1
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="True",type="ControllerManagerHeld"} 0
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="True",type="ControllersLeading"} 1
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="True",type="DatastoreReady"} 1
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="True",type="Progressing"} 0
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="True",type="Reachable"} 1
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="True",type="Ready"} 1
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="Unknown",type="APIServerReady"} 0
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="Unknown",type="AccessReady"} 0
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="Unknown",type="AddonsApplied"} 0
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="Unknown",type="AddonsAvailable"} 0
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="Unknown",type="BackupReady"} 0
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="Unknown",type="CAValidityAcceptable"} 0
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="Unknown",type="CertificatesReady"} 0
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="Unknown",type="ControllerManagerHeld"} 0
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="Unknown",type="ControllersLeading"} 0
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="Unknown",type="DatastoreReady"} 0
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="Unknown",type="Progressing"} 0
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="Unknown",type="Reachable"} 0
+lodia_controlplane_condition{controlplane="crowded",namespace="tenants",status="Unknown",type="Ready"} 0
 lodia_controlplane_condition{controlplane="deleting",namespace="tenants",status="False",type="APIServerReady"} 0
 lodia_controlplane_condition{controlplane="deleting",namespace="tenants",status="False",type="AccessReady"} 0
 lodia_controlplane_condition{controlplane="deleting",namespace="tenants",status="False",type="AddonsApplied"} 0
@@ -466,6 +512,19 @@ lodia_controlplane_condition{controlplane="waiting",namespace="tenants",status="
 lodia_controlplane_condition{controlplane="waiting",namespace="tenants",status="Unknown",type="Ready"} 0
 # HELP lodia_controlplane_condition_last_transition_timestamp_seconds The lastTransitionTime of each condition in status.conditions.
 # TYPE lodia_controlplane_condition_last_transition_timestamp_seconds gauge
+lodia_controlplane_condition_last_transition_timestamp_seconds{controlplane="crowded",namespace="tenants",type="APIServerReady"} 1.7943837e+09
+lodia_controlplane_condition_last_transition_timestamp_seconds{controlplane="crowded",namespace="tenants",type="AccessReady"} 1.79438382e+09
+lodia_controlplane_condition_last_transition_timestamp_seconds{controlplane="crowded",namespace="tenants",type="AddonsApplied"} 1.79438358e+09
+lodia_controlplane_condition_last_transition_timestamp_seconds{controlplane="crowded",namespace="tenants",type="AddonsAvailable"} 1.79438352e+09
+lodia_controlplane_condition_last_transition_timestamp_seconds{controlplane="crowded",namespace="tenants",type="BackupReady"} 1.79438328e+09
+lodia_controlplane_condition_last_transition_timestamp_seconds{controlplane="crowded",namespace="tenants",type="CAValidityAcceptable"} 1.79438388e+09
+lodia_controlplane_condition_last_transition_timestamp_seconds{controlplane="crowded",namespace="tenants",type="CertificatesReady"} 1.79438394e+09
+lodia_controlplane_condition_last_transition_timestamp_seconds{controlplane="crowded",namespace="tenants",type="ControllerManagerHeld"} 1.79438334e+09
+lodia_controlplane_condition_last_transition_timestamp_seconds{controlplane="crowded",namespace="tenants",type="ControllersLeading"} 1.7943834e+09
+lodia_controlplane_condition_last_transition_timestamp_seconds{controlplane="crowded",namespace="tenants",type="DatastoreReady"} 1.79438376e+09
+lodia_controlplane_condition_last_transition_timestamp_seconds{controlplane="crowded",namespace="tenants",type="Progressing"} 1.79438322e+09
+lodia_controlplane_condition_last_transition_timestamp_seconds{controlplane="crowded",namespace="tenants",type="Reachable"} 1.79438346e+09
+lodia_controlplane_condition_last_transition_timestamp_seconds{controlplane="crowded",namespace="tenants",type="Ready"} 1.79438316e+09
 lodia_controlplane_condition_last_transition_timestamp_seconds{controlplane="deleting",namespace="tenants",type="APIServerReady"} 1.7943837e+09
 lodia_controlplane_condition_last_transition_timestamp_seconds{controlplane="deleting",namespace="tenants",type="AccessReady"} 1.79438382e+09
 lodia_controlplane_condition_last_transition_timestamp_seconds{controlplane="deleting",namespace="tenants",type="AddonsApplied"} 1.79438358e+09
@@ -599,6 +658,19 @@ lodia_controlplane_condition_last_transition_timestamp_seconds{controlplane="wai
 lodia_controlplane_condition_last_transition_timestamp_seconds{controlplane="waiting",namespace="tenants",type="Ready"} 1.79438316e+09
 # HELP lodia_controlplane_condition_reason 1 for the reason of each condition in status.conditions.
 # TYPE lodia_controlplane_condition_reason gauge
+lodia_controlplane_condition_reason{controlplane="crowded",namespace="tenants",reason="Applied",type="AddonsApplied"} 1
+lodia_controlplane_condition_reason{controlplane="crowded",namespace="tenants",reason="Available",type="AddonsAvailable"} 1
+lodia_controlplane_condition_reason{controlplane="crowded",namespace="tenants",reason="BackupSucceeded",type="BackupReady"} 1
+lodia_controlplane_condition_reason{controlplane="crowded",namespace="tenants",reason="Bound",type="AccessReady"} 1
+lodia_controlplane_condition_reason{controlplane="crowded",namespace="tenants",reason="Idle",type="Progressing"} 1
+lodia_controlplane_condition_reason{controlplane="crowded",namespace="tenants",reason="Issued",type="CertificatesReady"} 1
+lodia_controlplane_condition_reason{controlplane="crowded",namespace="tenants",reason="Leading",type="ControllersLeading"} 1
+lodia_controlplane_condition_reason{controlplane="crowded",namespace="tenants",reason="Reachable",type="Reachable"} 1
+lodia_controlplane_condition_reason{controlplane="crowded",namespace="tenants",reason="Ready",type="APIServerReady"} 1
+lodia_controlplane_condition_reason{controlplane="crowded",namespace="tenants",reason="Ready",type="DatastoreReady"} 1
+lodia_controlplane_condition_reason{controlplane="crowded",namespace="tenants",reason="Ready",type="Ready"} 1
+lodia_controlplane_condition_reason{controlplane="crowded",namespace="tenants",reason="TooManyNodes",type="ControllerManagerHeld"} 1
+lodia_controlplane_condition_reason{controlplane="crowded",namespace="tenants",reason="Valid",type="CAValidityAcceptable"} 1
 lodia_controlplane_condition_reason{controlplane="deleting",namespace="tenants",reason="Applied",type="AddonsApplied"} 1
 lodia_controlplane_condition_reason{controlplane="deleting",namespace="tenants",reason="Available",type="AddonsAvailable"} 1
 lodia_controlplane_condition_reason{controlplane="deleting",namespace="tenants",reason="BackupSucceeded",type="BackupReady"} 1
@@ -762,6 +834,7 @@ lodia_controlplane_datastore_has_leader{controlplane="upgrading",namespace="tena
 lodia_controlplane_datastore_has_leader{controlplane="waiting",namespace="tenants"} 0
 # HELP lodia_controlplane_datastore_members status.datastore.members.total: the members the etcd asks for.
 # TYPE lodia_controlplane_datastore_members gauge
+lodia_controlplane_datastore_members{controlplane="crowded",namespace="tenants"} 1
 lodia_controlplane_datastore_members{controlplane="deleting",namespace="tenants"} 1
 lodia_controlplane_datastore_members{controlplane="edge",namespace="tenants"} 3
 lodia_controlplane_datastore_members{controlplane="failed",namespace="tenants"} 1
@@ -773,6 +846,7 @@ lodia_controlplane_datastore_members{controlplane="upgrading",namespace="tenants
 lodia_controlplane_datastore_members{controlplane="waiting",namespace="tenants"} 1
 # HELP lodia_controlplane_datastore_members_ready status.datastore.members.ready: those of them that are ready.
 # TYPE lodia_controlplane_datastore_members_ready gauge
+lodia_controlplane_datastore_members_ready{controlplane="crowded",namespace="tenants"} 1
 lodia_controlplane_datastore_members_ready{controlplane="deleting",namespace="tenants"} 1
 lodia_controlplane_datastore_members_ready{controlplane="edge",namespace="tenants"} 3
 lodia_controlplane_datastore_members_ready{controlplane="failed",namespace="tenants"} 1
@@ -784,6 +858,7 @@ lodia_controlplane_datastore_members_ready{controlplane="upgrading",namespace="t
 lodia_controlplane_datastore_members_ready{controlplane="waiting",namespace="tenants"} 1
 # HELP lodia_controlplane_datastore_members_updated status.datastore.members.updated: those of them that run the Etcd's current spec and are available; absent while it is.
 # TYPE lodia_controlplane_datastore_members_updated gauge
+lodia_controlplane_datastore_members_updated{controlplane="crowded",namespace="tenants"} 1
 lodia_controlplane_datastore_members_updated{controlplane="deleting",namespace="tenants"} 1
 lodia_controlplane_datastore_members_updated{controlplane="edge",namespace="tenants"} 3
 lodia_controlplane_datastore_members_updated{controlplane="paused",namespace="tenants"} 1
@@ -807,6 +882,7 @@ lodia_controlplane_datastore_quota_bytes{controlplane="waiting",namespace="tenan
 # HELP lodia_controlplane_info 1 for every ControlPlane: its UID, status.kubernetes.version, empty while absent, spec.layout, and the members of spec.datastore and spec.endpoint that are set.
 # TYPE lodia_controlplane_info gauge
 lodia_controlplane_info{controlplane="aging",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="v1.35.10",layout="Split",namespace="tenants",uid="00000000-0000-0000-0000-000000000014"} 1
+lodia_controlplane_info{controlplane="crowded",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="v1.37.1",layout="Split",namespace="tenants",uid="00000000-0000-0000-0000-000000000016"} 1
 lodia_controlplane_info{controlplane="deleting",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="v1.37.1",layout="Split",namespace="tenants",uid="00000000-0000-0000-0000-000000000009"} 1
 lodia_controlplane_info{controlplane="edge",datastore="dedicated",endpoint_mode="gateway",kubernetes_version="v1.37.1",layout="Split",namespace="tenants",uid="00000000-0000-0000-0000-000000000002"} 1
 lodia_controlplane_info{controlplane="failed",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="v1.37.1",layout="Split",namespace="tenants",uid="00000000-0000-0000-0000-000000000004"} 1
@@ -824,6 +900,7 @@ lodia_controlplane_info{controlplane="waiting",datastore="dedicated",endpoint_mo
 # HELP lodia_controlplane_kubernetes_end_of_support_timestamp_seconds The end-of-support date, at 00:00 UTC, that the version table gives the minor of status.kubernetes.version; absent while the version is absent and for a minor outside the table.
 # TYPE lodia_controlplane_kubernetes_end_of_support_timestamp_seconds gauge
 lodia_controlplane_kubernetes_end_of_support_timestamp_seconds{controlplane="aging",namespace="tenants"} 1.8037728e+09
+lodia_controlplane_kubernetes_end_of_support_timestamp_seconds{controlplane="crowded",namespace="tenants"} 1.8246816e+09
 lodia_controlplane_kubernetes_end_of_support_timestamp_seconds{controlplane="deleting",namespace="tenants"} 1.8246816e+09
 lodia_controlplane_kubernetes_end_of_support_timestamp_seconds{controlplane="edge",namespace="tenants"} 1.8246816e+09
 lodia_controlplane_kubernetes_end_of_support_timestamp_seconds{controlplane="failed",namespace="tenants"} 1.8246816e+09
@@ -846,6 +923,7 @@ lodia_controlplane_maintenance_slot_since_timestamp_seconds{controlplane="paused
 # HELP lodia_controlplane_metadata_generation metadata.generation.
 # TYPE lodia_controlplane_metadata_generation gauge
 lodia_controlplane_metadata_generation{controlplane="aging",namespace="tenants"} 1
+lodia_controlplane_metadata_generation{controlplane="crowded",namespace="tenants"} 1
 lodia_controlplane_metadata_generation{controlplane="deleting",namespace="tenants"} 1
 lodia_controlplane_metadata_generation{controlplane="edge",namespace="tenants"} 3
 lodia_controlplane_metadata_generation{controlplane="failed",namespace="tenants"} 2
@@ -862,6 +940,7 @@ lodia_controlplane_metadata_generation{controlplane="upgrading",namespace="tenan
 lodia_controlplane_metadata_generation{controlplane="waiting",namespace="tenants"} 1
 # HELP lodia_controlplane_nodes status.nodes.total: the tenant's nodes.
 # TYPE lodia_controlplane_nodes gauge
+lodia_controlplane_nodes{controlplane="crowded",namespace="tenants"} 5000
 lodia_controlplane_nodes{controlplane="deleting",namespace="tenants"} 2
 lodia_controlplane_nodes{controlplane="edge",namespace="tenants"} 5
 lodia_controlplane_nodes{controlplane="failed",namespace="tenants"} 2
@@ -875,7 +954,7 @@ lodia_controlplane_nodes{controlplane="waiting",namespace="tenants"} 2
 # TYPE lodia_controlplane_nodes_counted gauge
 lodia_controlplane_nodes_counted{controlplane="edge",namespace="tenants"} 4
 lodia_controlplane_nodes_counted{controlplane="failed",namespace="tenants"} 2
-# HELP lodia_controlplane_nodes_outdated_kubelets status.nodes.outdatedKubelets: the tenant's nodes whose kubelet runs an older minor than status.kubernetes.version.
+# HELP lodia_controlplane_nodes_outdated_kubelets status.nodes.outdatedKubelets: the tenant's nodes whose kubelet runs an older minor than status.kubernetes.version; absent while status.nodes.truncated is true.
 # TYPE lodia_controlplane_nodes_outdated_kubelets gauge
 lodia_controlplane_nodes_outdated_kubelets{controlplane="deleting",namespace="tenants"} 0
 lodia_controlplane_nodes_outdated_kubelets{controlplane="edge",namespace="tenants"} 0
@@ -888,6 +967,7 @@ lodia_controlplane_nodes_outdated_kubelets{controlplane="upgrading",namespace="t
 lodia_controlplane_nodes_outdated_kubelets{controlplane="waiting",namespace="tenants"} 0
 # HELP lodia_controlplane_nodes_ready status.nodes.ready: the tenant's nodes that are Ready.
 # TYPE lodia_controlplane_nodes_ready gauge
+lodia_controlplane_nodes_ready{controlplane="crowded",namespace="tenants"} 4990
 lodia_controlplane_nodes_ready{controlplane="deleting",namespace="tenants"} 2
 lodia_controlplane_nodes_ready{controlplane="edge",namespace="tenants"} 4
 lodia_controlplane_nodes_ready{controlplane="failed",namespace="tenants"} 2
@@ -897,13 +977,14 @@ lodia_controlplane_nodes_ready{controlplane="restored",namespace="tenants"} 0
 lodia_controlplane_nodes_ready{controlplane="rolling",namespace="tenants"} 2
 lodia_controlplane_nodes_ready{controlplane="upgrading",namespace="tenants"} 2
 lodia_controlplane_nodes_ready{controlplane="waiting",namespace="tenants"} 2
-# HELP lodia_controlplane_nodes_silent The nodes that count whose Lease Health has not seen change for health.silentAfter, in its last list of the node Leases. Absent while that list is missing or the tenant's hold is off, before Health's first list of the Nodes, and until Health's clock of the Leases has run health.silentAfter.
+# HELP lodia_controlplane_nodes_silent The nodes that count whose Lease Health has not seen change for health.silentAfter, in its last list of the node Leases. Absent while that list is missing, or a list of the Leases or of the Nodes stopped at a bound, or the tenant's hold is off, before Health's first list of the Nodes, and until Health's clock of the Leases has run health.silentAfter.
 # TYPE lodia_controlplane_nodes_silent gauge
 lodia_controlplane_nodes_silent{controlplane="edge",namespace="tenants"} 1
 lodia_controlplane_nodes_silent{controlplane="failed",namespace="tenants"} 0
 # HELP lodia_controlplane_operator_revision_granted 1 when status.target.operatorRevision is the running operator's revision, else 0.
 # TYPE lodia_controlplane_operator_revision_granted gauge
 lodia_controlplane_operator_revision_granted{controlplane="aging",namespace="tenants"} 0
+lodia_controlplane_operator_revision_granted{controlplane="crowded",namespace="tenants"} 1
 lodia_controlplane_operator_revision_granted{controlplane="deleting",namespace="tenants"} 1
 lodia_controlplane_operator_revision_granted{controlplane="edge",namespace="tenants"} 1
 lodia_controlplane_operator_revision_granted{controlplane="failed",namespace="tenants"} 1
@@ -920,6 +1001,7 @@ lodia_controlplane_operator_revision_granted{controlplane="upgrading",namespace=
 lodia_controlplane_operator_revision_granted{controlplane="waiting",namespace="tenants"} 0
 # HELP lodia_controlplane_status_observed_generation status.observedGeneration: the newest generation every readiness condition has been reported for.
 # TYPE lodia_controlplane_status_observed_generation gauge
+lodia_controlplane_status_observed_generation{controlplane="crowded",namespace="tenants"} 1
 lodia_controlplane_status_observed_generation{controlplane="deleting",namespace="tenants"} 1
 lodia_controlplane_status_observed_generation{controlplane="edge",namespace="tenants"} 3
 lodia_controlplane_status_observed_generation{controlplane="failed",namespace="tenants"} 2

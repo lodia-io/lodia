@@ -1625,6 +1625,12 @@ spec:
                     format: int32
                     minimum: 0
                     type: integer
+                  truncated:
+                    description: |-
+                      Truncated is true when Health stopped listing the Nodes at a bound: total
+                      and ready count what it read, and outdatedKubelets and oldestKubelet are
+                      absent.
+                    type: boolean
                 required:
                 - ready
                 - total

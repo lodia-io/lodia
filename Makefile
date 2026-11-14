@@ -41,10 +41,11 @@ lint:
 	cd test/monitoring && golangci-lint run ./...
 
 .PHONY: test
-test: ## unit and envtest tests, those of RACE_PACKAGES with the race detector; envtest runs a real API server and etcd
+test: ## unit and envtest tests, those of RACE_PACKAGES with the race detector, and the test of health that counts a tenant of 5,000 Nodes at the operator's Timeout without it; envtest runs a real API server and etcd
 	# @todo: 60 s until we know what holds an API server past SIGTERM; see todo.md.
 	KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT=60s KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test $$(go list ./... | grep -vxF "$$(go list $(RACE_PACKAGES))")
 	KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT=60s KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test -race $(RACE_PACKAGES)
+	KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT=60s KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test -count=1 -run '^TestATenantOfMaxNodesNodesIsCountedWholeAtTheOperatorsTimeout$$' ./internal/controller/health
 	cd api && go test ./...
 
 .PHONY: restore-keys

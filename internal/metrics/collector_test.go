@@ -129,6 +129,21 @@ lodia_controlplane_condition_reason{controlplane="young",namespace="tenants",rea
 	}
 }
 
+func TestATruncatedListOfNodesHasNoOutdatedKubeletsSeries(t *testing.T) {
+	truncated := controlPlane("crowded", 10)
+	truncated.Status.Nodes = &lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: 5000, Ready: 4990}, OutdatedKubelets: 7, Truncated: true}
+	whole := controlPlane("calm", 11)
+	whole.Status.Nodes = &lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: 5, Ready: 4}, OutdatedKubelets: 1}
+	want := `
+# HELP lodia_controlplane_nodes_outdated_kubelets status.nodes.outdatedKubelets: the tenant's nodes whose kubelet runs an older minor than status.kubernetes.version; absent while status.nodes.truncated is true.
+# TYPE lodia_controlplane_nodes_outdated_kubelets gauge
+lodia_controlplane_nodes_outdated_kubelets{controlplane="calm",namespace="tenants"} 1
+`
+	if err := testutil.CollectAndCompare(collector(truncated, whole), strings.NewReader(want), "lodia_controlplane_nodes_outdated_kubelets"); err != nil {
+		t.Error(err)
+	}
+}
+
 func TestUnknownIsItsOwnSeries(t *testing.T) {
 	cp := controlPlane("young", 10)
 	cp.Status.Conditions = []metav1.Condition{{Type: lodiav1alpha1.ConditionReachable, Status: metav1.ConditionUnknown, Reason: lodiav1alpha1.ReasonReconciling, Message: "m", LastTransitionTime: *ago(time.Minute)}}

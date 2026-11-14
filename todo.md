@@ -148,7 +148,9 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 - A writer that refuses a new generation, `Unsupported`, `Refused` or `ObjectsControlledElsewhere`, turns its condition, and so `Ready`, False while the tenant still serves the previous one, though a readiness condition reports availability ([independent-controllers](docs/decisions/independent-controllers.md)).
   It needs its own answer to where a refusal shows while availability stays.
-- The required `e2e-ha` failed twice in G2's step that deletes the etcd leader's pod, one request answered 500 each time: run 40764385375 on #43, one on a reused connection in each loop, outside and inside the tenant, and run 42450529023 on #56, one of 480 inside the tenant on new connections, sent 2.4 ms after the deletion; the step wants none, and both passed on a rerun.
+- The required `e2e-ha` failed three times in G2's step that deletes the etcd leader's pod, one request answered 500 each time: run 40764385375 on #43, one on a reused connection in each loop, outside and inside the tenant, and run 42450529023 on #56, one of 480 inside the tenant on new connections, sent 2.4 ms after the deletion; the step wants none, and both passed on a rerun.
+  It failed the same way a third time in run [43430828031](https://github.com/lodia-io/lodia/actions/runs/43430828031), job 131903579810, at 4dc499c of #89, which changes the code of Health that writes `ControllersLeading`, an input of the `Ready` that G2's step holds: one of 580 requests outside the tenant, on new connections, at 13:13:48.937 in the step's first second, answered 500 `rpc error: code = Unknown desc = unexpected HTTP status code received from server: 200 (OK); malformed header: missing HTTP content-type`, a third message of the etcd client's, with the code `Unknown` where the earlier ones were `Internal`.
+  The request goes from the test to the tenant's API server and from it to its etcd, which #89 does not touch, and the answer is the etcd client's error passed on by the API server.
   The answer is the tenant's API server passing on an error of its etcd client, `rpc error: code = Internal desc = server closed the stream without sending trailers`: 1 of 193,299 reads over 30 deletions at 50 requests a second, sent 5 ms after its deletion, and 0 of 39,740 over 30 at 10.
   On a TLS listener etcd serves gRPC under its HTTP server ([serve.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/embed/serve.go#L243)), where a call gRPC no longer serves ends without a status ([server.go](https://github.com/grpc/grpc-go/blob/v1.83.2/server.go#L1130-L1132), [handler_server.go](https://github.com/grpc/grpc-go/blob/v1.83.2/internal/transport/handler_server.go#L219-L226)); the client calls that `Internal` ([http2_client.go](https://github.com/grpc/grpc-go/blob/v1.82.1/internal/transport/http2_client.go#L1270)) and retries a read only on `Unavailable` ([retry.go](https://github.com/etcd-io/etcd/blob/v3.7.0/client/v3/retry.go#L54-L75)), and the API server answers 500 to an error that is no `metav1.Status` ([status.go](https://github.com/kubernetes/apiserver/blob/v0.37.0/pkg/endpoints/handlers/responsewriters/status.go#L60-L81)).
   Which of those two paths ends the call, and why a call sent milliseconds after the deletion meets it, is not pinned.
@@ -188,11 +190,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - Workloads counts a `TLSRoute`'s `ResolvedRefs` False with reason `EndpointsNotFound` as resolved (the `@todo` in `internal/controller/workloads/gateway.go`): Envoy Gateway v1.9.3 sets it while the EndpointSlices of the route's Service list no endpoint for its port ([route.go](https://github.com/envoyproxy/gateway/blob/v1.9.3/internal/gatewayapi/route.go#L3119-L3125)), so while no API server pod has an address, and `Ready` would read `RouteNotAccepted` instead of `APIServerReady`'s reason; for an `HTTPRoute` it keeps `ResolvedRefs` True there, citing the Gateway API's conformance ([route.go](https://github.com/envoyproxy/gateway/blob/v1.9.3/internal/gatewayapi/route.go#L323-L330)).
   Once every Envoy Gateway release still supported upstream keeps a `TLSRoute`'s `ResolvedRefs` True there, and the gateway gate pins one: remove `noEndpoints`, the clause in `RoutesReady`'s comment in `api/v1alpha1/conditions.go` and in its row of `docs/api/controlplane.md`, and the tests that write `EndpointsNotFound` (`TestRoutesWithoutReadyEndpointsAreResolvedWhileTheAPIServerIsUnavailable` in `internal/controller/workloads`, `TestReadyInGatewayModeSaysWhyTheAPIServerIsDownWhileItsRoutesHaveNoEndpoints` in `internal/controller`).
   The upstream fix is [envoyproxy/gateway#10564](https://github.com/envoyproxy/gateway/pull/10564), open on 2026-11-08.
-
-## From Health's node sampling (2026-11-08)
-
-- `health-nodes` lists the Nodes every 30 seconds and the Leases every period, each in one response with no `limit`, so a response grows with the tenant's nodes.
-  If tenants of thousands of nodes appear, page both lists.
 
 ## From the CI of the refactoring (2026-11-09)
 
@@ -246,6 +243,20 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - `TestTheMetricsServeTheSamplesOfTheSamplerSetupReturns` (`internal/operator/operator_test.go`) starts its etcd on ports that `testserver.NewTestConfig` chose by listening on port 0 and closing ([test_server.go](https://github.com/kubernetes/apiserver/blob/v0.37.1/pkg/storage/etcd3/testserver/test_server.go#L37-L50)); a socket that takes such a port first fails the test on `bind: address already in use`, and on macOS the probe, on the wildcard address, also hands out a port another process holds on `127.0.0.1`.
   The datastore tests no longer have the window: their `etcdConfig` and `runEtcd` (`internal/controller/datastore/embeddedetcd_test.go`) give each etcd listeners that etcd itself binds.
   Share them with this test.
+
+## From the kubelet certificates' lifetime (2026-11-12)
+
+- A kubelet client certificate cannot be revoked, and a kubelet renews its own without asking for a lifetime: its certificate manager sets no `RequestedCertificateLifetime` ([kubelet.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/certificate/kubelet.go#L229-L248)), so the controller manager's `--cluster-signing-duration` alone sets it ([signer.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controller/certificates/signer/signer.go#L219-L237)).
+  A node a platform removes therefore keeps a certificate its API server accepts for up to 30 days, and its kubelet may register its `Node` again in that time.
+  `docs/decisions/staged-credential-rotation.md:22` sets the 30 days without weighing that window against the renewals a shorter lifetime costs: decide the lifetime, or a field for it, on that trade.
+
+## From the CI of the bounded reads (2026-11-13)
+
+- `TestAGrantThatChangesNoTemplateRollsNoPod` (`internal/controller/workloads/revision_test.go:268`) failed in the `verify` job of run [43357744832](https://github.com/lodia-io/lodia/actions/runs/43357744832), job 131663696983, at d378796 of #89, a pull request that touches nothing in `internal/controller/workloads`:
+  `Deployment kube-controller-manager is stamped "v0.0.0-test+running", want v0.0.1-test+next`, and the same for `kube-scheduler`.
+  Line 268 is the first `expectStamps` after the pass of the operator at the new revision: it left two of the three Deployments at the stamp of the old one, and the API server's Deployment carried the new.
+  The test passed three runs of three locally, `main` was green at bf28826, and none of the other failed runs among the last 60 of the repository names it.
+  The cause is not found.
 
 ## For the release that first drops a minor
 

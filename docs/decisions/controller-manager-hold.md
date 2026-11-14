@@ -9,6 +9,18 @@ The Health controller protects a tenant's workloads from an outage between the c
 
 - **It watches from inside.**
   Every 5 seconds, Health's period, for every awake `ControlPlane`, it reads the `Lease`s in `kube-node-lease` through the in-namespace Service, never through the public endpoint the nodes use, and the tenant's `Node`s every 30 seconds, since nodes are large objects and the set it counts changes slowly ([KEP-589](https://github.com/kubernetes/enhancements/blob/7eef794bb549a50c6b08c457556ff0eac98a4c6b/keps/sig-node/589-efficient-node-heartbeats/README.md#L31-L49)).
+  Both lists page, 500 Leases and 100 Nodes to a page, with no `resourceVersion` set: the first page is a most recent read and each next one continues it at the same version ([api-concepts.md](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/reference/using-api/api-concepts.md#L1628-L1629)).
+  A list stops once it has read more than `health.maxNodes` items, 5,000 by default, the most a cluster supports ([cluster-large.md](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/setup/best-practices/cluster-large.md#L12-L16)), or when a response is longer than 8 MiB or a string of a field of it longer than its bound, since the tenant's administrator writes these objects.
+  It also reads no more pages than `health.maxNodes` items fill and one more, 11 pages of Leases and 51 of Nodes by default, and stops at a further one: a tenant's API server fills every page of a list with no selector ([store.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/storage/etcd3/store.go#L840-L862)), so a list still going by then comes from a server of the administrator's own, which an APIService naming a Service puts in place of the API server's ([handler_proxy.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/kube-aggregator/pkg/apiserver/handler_proxy.go#L215-L219)) and whose pages may hold no item.
+  Health reads every response from a tenant with a scanner that decodes only the scalars it keeps, each within a bound of its raw size, checked before the decode, and each array one element at a time, up to its bound; no object or array reaches `encoding/json`, which would multiply a response the administrator can have any server write, and no error or message carries a byte of the tenant's beyond those bounds ([operations](../operations.md#capacity)).
+  Every request goes out once, and the headers of a response are cut at 64 KiB: client-go would send it again up to ten times on a 429 or a 5xx, and the next pass is the retry.
+  One read holds at most 25.5 MiB, a pass of `health-nodes` 54.9 MiB and a pass of `health` over a held restore 177.9 MiB: `io.ReadAll`'s chunks, the headers, the names a head announces, the trailers, the gzip reader and what the types keep at these bounds, each the most its limit allows, and a margin of 2 MiB for each connection that covers what no term itemizes, counted once for each read in flight ([operations](../operations.md#capacity)).
+  The tenant clients speak HTTP/1.1 only, with `MaxConnsPerHost` of the reads their pass has in flight at once, 2 for `health-nodes` and 7 for `health`, so a tenant at rest keeps at most 4 MiB of summaries and 9 idle connections, 22.0 MiB, whatever its server does ([tenant-clients-speak-http1](tenant-clients-speak-http1.md)).
+  A page of more items than its `limit`, a Node of more than 64 `conditions`, a string of a field it keeps longer than its bound or a `continue` token of more than 4,096 raw bytes, which Health sends back decoded with the next request, up to 12,288 bytes in a query of 36,883, stops a list like the bounds above, with `TooManyNodes` naming the page, the Node, the field or the token; an API server's token is the base64 of a small JSON of the next key and the revision, 403 bytes for names of 253 bytes at revision 1,234 and 423 at the largest revision, so 4,096 is 9.7 times the longest ([continue.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/storage/continue.go#L83-L93)); a webhook configuration of more than 256 `webhooks`, a field of a held restore's list longer than its bound, or a list of a held restore of more than a page, makes that kind "could not be listed" in the message of `ControllersLeading`.
+  A field Health only compares with a word, a condition's `type` among them, is compared on its raw token, and a string past its bound is none of the words and no stop, while a token that is no string fails the read: a Node's writer chooses the type, and the API server accepts one of any length ([validation.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/apis/core/validation/validation.go#L7607-L7738)).
+  A stop inside a page counts the items of that page that precede it.
+  A tenant whose list stopped is not counted: its Lease clock is forgotten, `ControllerManagerHeld` reads `TooManyNodes` naming the bound, a hold in place ends at once and none is taken, and a pass back under the bounds counts afresh.
+  `status.nodes.truncated` is true when the Node list stopped, since `status.nodes` counts Nodes; a stop of the Lease list leaves `status.nodes` as the last Node list has it ([the field](../api/controlplane.md#status)).
 - **A node is silent** once its lease has not changed for 20 seconds by the operator's clock, not by `renewTime`: a node anywhere keeps its own time.
   The clock lives in memory: a lease seen for the first time counts as renewed then, and so does every lease after a read that failed, since the kubelets could not renew meanwhile either, and an operator that restarts counts afresh.
   A failover of the operator inside a cut can therefore delay a hold past the grace period, the known limit of keeping the clock in memory.
@@ -21,13 +33,13 @@ The Health controller protects a tenant's workloads from an outage between the c
 - **The release.**
   Once fewer than 60% have been silent for 2 minutes, Health releases the lease the way client-go steps down (no holder, a 1-second duration); the controller manager takes it within seconds and starts afresh, counting its grace periods from its own start.
   A pass counts towards those 2 minutes only once the clock has run `silentAfter`, and a failed read of the kubeconfig or of the node Leases, or a return to 60% or more, clears the count.
-  A hold has no end of its own while `AccessReady` stays not True.
+  A hold has no end of its own while `AccessReady` stays not True, but for a tenant beyond a bound (row 5).
 - **It never fights.**
   Health takes the lease only when it has expired or when its holder's identity starts with the name of a pod Lodia runs for this `ControlPlane` (a leader's identity is `<pod name>_<uuid>`).
   Any other holder, such as a platform's own watchdog, is left alone and named in the message of `ControllerManagerHeld=False`, reason `HoldBlocked`.
 - **It fails safe.**
   A Lodia that stops renewing gives the lease back after 60 seconds, to upstream behaviour; a Lodia that restarts keeps a hold it finds with holder `lodia`.
-  A failed read of the node leases restarts the clock, and a lease held by `lodia` is still renewed.
+  A failed read of the node leases restarts the clock, and a lease held by `lodia` is still renewed, but for a tenant beyond a bound (row 5), whose hold is released.
   A paused `ControlPlane` gets no writes, so its hold lapses within those 60 seconds.
 - **Settings.**
   On by default, off for one `ControlPlane` with `spec.health.holdControllerManager: false` ([the field](../api/controlplane.md#spec)).
@@ -71,6 +83,8 @@ One dead machine of two is 50%, and its pods are evicted as upstream does.
 
 **The rows.**
 A pass reads the Lease first, with a consistent GET, then takes the first row that matches.
+Its write is a JSON merge patch of the Lease's `spec` that carries the `metadata.resourceVersion` it read: the API server answers a Lease that moved since with a conflict ([store.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/registry/generic/registry/store.go#L796-L810)), and every field of the Lease that a row does not write stays as it is.
+A Lease that does not exist is created whole.
 "Held" is holder `lodia` on the Lease just read, "below" includes fewer than 2 counted nodes, "free" is no Lease or no holder, and "expired" is no change for its `leaseDurationSeconds` by the operator's clock.
 
 | # | when | condition | write |
@@ -79,32 +93,36 @@ A pass reads the Lease first, with a consistent GET, then takes the first row th
 | 2 | the read failed | kept, nothing applied | none |
 | 3 | disabled, held | `Disabled` | release at once |
 | 4 | disabled | `Disabled` | none |
-| 5 | `AccessReady` not True, held | `NodesSilent` | renew |
-| 6 | `AccessReady` not True | `WaitingForAccess` | none |
-| 7 | the Lease list failed, held | `NodesSilent` | renew |
-| 8 | the Lease list failed | `NotHeld`, saying the Leases could not be listed | none |
-| 9 | no Node list of this run, held | `NodesSilent` | renew |
-| 10 | no Node list of this run | `NotHeld`, saying the nodes are not listed yet | none |
-| 11 | at or above the fraction, held | `NodesSilent` | renew, `acquireTime` kept |
-| 12 | at or above, the Lease free or expired, or held by a pod of this `ControlPlane` | `NodesSilent` | take: holder `lodia`, 60 s, `acquireTime` and `renewTime` now, transitions + 1 |
-| 13 | at or above | `HoldBlocked`, naming the holder | none |
-| 14 | below, held, for less than `releaseAfter` | `NodesSilent` | renew, or the Lease would lapse at 60 s |
-| 15 | below, held, for `releaseAfter` | `NotHeld` | release: no holder, 1 s, as client-go does |
-| 16 | below | `NotHeld` | none |
+| 5 | a list stopped at a bound, held | `TooManyNodes`, naming the bound | release at once |
+| 6 | a list stopped at a bound | `TooManyNodes`, naming the bound | none |
+| 7 | `AccessReady` not True, held | `NodesSilent` | renew |
+| 8 | `AccessReady` not True | `WaitingForAccess` | none |
+| 9 | the Lease list failed, held | `NodesSilent` | renew |
+| 10 | the Lease list failed | `NotHeld`, saying the Leases could not be listed | none |
+| 11 | no Node list of this run, held | `NodesSilent` | renew |
+| 12 | no Node list of this run | `NotHeld`, saying the nodes are not listed yet | none |
+| 13 | at or above the fraction, held | `NodesSilent` | renew, `acquireTime` kept |
+| 14 | at or above, the Lease free or expired, or held by a pod of this `ControlPlane` | `NodesSilent` | take: holder `lodia`, 60 s, `acquireTime` and `renewTime` now, transitions + 1 |
+| 15 | at or above | `HoldBlocked`, naming the holder | none |
+| 16 | below, held, for less than `releaseAfter` | `NodesSilent` | renew, or the Lease would lapse at 60 s |
+| 17 | below, held, for `releaseAfter` | `NotHeld` | release: no holder, 1 s, as client-go does |
+| 18 | below | `NotHeld` | none |
 
-A pass with no Lease list behind it restarts the clock and clears the count towards the release, whichever row follows: rows 1, 2 and 5-8, rows 3 and 4 when the list failed or `AccessReady` is not True, and a missing or foreign `<cp>-lodia-kubeconfig`.
-Rows 11-13 clear the count, and rows 9 and 10 neither grow nor clear it.
+Whether a list stopped is what its last outcome says, and a list that fails keeps the outcome it had: a stop known from an earlier pass still ends a hold in row 5 when `AccessReady` is not True or the Lease list fails.
+With the read of the controller manager's Lease failed nothing can be released, so rows 1 and 2 answer before the stop.
+A pass with no Lease list behind it, or with a list stopped at a bound, restarts the clock and clears the count towards the release, whichever row follows: rows 1, 2 and 5-10, rows 3 and 4 when the list failed, was stopped or `AccessReady` is not True, and a missing or foreign `<cp>-lodia-kubeconfig`.
+Rows 13-15 clear the count, and rows 11 and 12 neither grow nor clear it.
 A write that is refused or fails changes the row's condition:
 
 | the write | then |
 |---|---|
 | succeeded | the row's condition |
-| a conflict | the Lease is read again and **the row is selected again** from what it says, so a retry never writes over a holder row 12 does not allow; when the retries run out, as "failed otherwise" |
+| a conflict | the Lease is read again and **the row is selected again** from what it says, so a retry never writes over a holder row 14 does not allow; when the retries run out, as "failed otherwise" |
 | a take refused (`apistatus.Refused`: a webhook, `Forbidden`) | `HoldBlocked`, naming the refusal; the next pass tries again |
 | a renewal or a release refused | `NodesSilent`, the Lease still `lodia`'s; the next pass tries again, and a refused renewal lapses at 60 s if it lasts |
 | failed otherwise (a timeout, a 5xx, `NotFound`) | kept, nothing applied; the next pass reads what the Lease says |
 | a create meets `AlreadyExists` | nothing applied; the next pass reads it |
-| row 12's pod list failed | kept, nothing applied, no take |
+| row 14's pod list failed | kept, nothing applied, no take |
 
 `NodesSilent` is therefore written only after a write that held the Lease, or with the Lease read as `lodia`'s.
 `status.health.controllerManagerHold` goes with it, its counts absent on any row that has no list to count from.
@@ -143,8 +161,11 @@ A write that is refused or fails changes the row's condition:
 ## Code
 
 - `internal/controller/workloads` — `render.go` renders the controller manager's timings and the scheduler's lease from the constants in `api/v1alpha1/names.go`; `workloads_test.go` holds the flags.
-- `internal/operator` — `config.go` loads Health's settings from the operator's configuration file and refuses the ones that break the margin; `config_test.go` holds every refusal.
+- `internal/operator` — `config.go` loads Health's settings from the operator's configuration file and refuses the ones that break the margin and a `health.maxNodes` that is not positive; `config_test.go` holds every refusal.
 - `internal/controller/health` — `health.go` reports `ControllersLeading` from the two leader Leases; `health_test.go` holds a Lease that stops renewing.
-  `nodes.go` samples the node Leases and the Nodes on a queue of its own and reports `status.nodes` and `ControllerManagerHeld`; `nodes_test.go` holds the counting rules.
-  `hold.go` selects the row of the table above and writes the Lease; `hold_test.go` holds every row, each write's outcomes and the timings of the release.
+  `nodes.go` samples the node Leases and the Nodes on a queue of its own, pages both lists and stops them at the bounds, and reports `status.nodes` and `ControllerManagerHeld`; `nodes_test.go` holds the counting rules, and `lists_internal_test.go` the pages, the stops at `health.maxNodes`, at the pages bound and at a response over 8 MiB, with the bytes read, a page of more items than its limit, a Node of 65 conditions, a `continue` token of 4,097 bytes, a page that fails, and the heap the sampling keeps over names and versions at their bounds.
+  `read.go` holds the types a tenant's responses are read into and the requests, which ask for JSON and go out once, and `fields.go` the raw bound of each field and the reader of an array; `read_internal_test.go` holds the array bounds and the failed requests' Status, `bounds_internal_test.go` every kept field read at its bound and a byte past it, a key of any kind, an error and its log that carry nothing of the value, and `projection_internal_test.go` that no object or array of an answer reaches `encoding/json`, directly or through an `UnmarshalJSON`; `words_internal_test.go` a field only compared with a word past its bound, every word fully escaped, that none is decoded and a stop inside a page, `times_internal_test.go` a time read with the API types' layout, `cut_internal_test.go` a cut string holding none of the string it was cut from, `nostatus_internal_test.go` a failed answer that is no Status with none of its body in the error, its Status, the log or the condition, `sent_internal_test.go` what Health sends back of a token and a version, and `transport_internal_test.go` a request that fails before its answer with the verb and path in its error and none of the token it asked with.
+  `internal/jsonscan` is the scanner, with its tests against a `json.Decoder` and two fuzz tests.
+  `bounded.go` is the transport's cap on a response, on its headers and on its connections, for both reconcilers; `cap_internal_test.go` holds the cap on the connections, the protocol and the passes against it; `requests_internal_test.go` holds a request sent once whatever the answer says of sending it again, the headers at the bound and a byte past it; `bounded_internal_test.go` holds a body of exactly the bound and one a byte over, chunked and with a length, and `bounded_test.go` a held restore's list of a kind whose response is over, a tenant of more than a page counted whole, a pass over lists of pages with no item and the requests it sends, a page or a Node beyond its bound, a held restore's lists beyond theirs, the stops with their condition and status, a hold released at once and one never taken, rows 1 and 2 before the stop, and the clock afresh once back under the bounds; `large_test.go` holds a tenant of 5,000 Nodes counted whole at the operator's timeout, `decoded_internal_test.go` that no decoded page is reachable when the next one is requested, `measure_internal_test.go` what every read does with a response of empty objects and, when `LODIA_MEASURE_HEAP` is set, the heap of each and of passes, held to the structural bound, `kept_internal_test.go` what the types keep and what a pass builds at their bounds, `buffers_internal_test.go` `io.ReadAll`'s chunks, and `terms_internal_test.go`, `gzip_internal_test.go` and `trailers_internal_test.go` each term of the structural bound and every figure against its parts ([operations](../operations.md#capacity)).
+  `hold.go` selects the row of the table above and writes the Lease; `hold_internal_test.go` holds the patch each write sends, and `hold_test.go` every row, each write's outcomes, a conflict on every try and the fields of the Lease the hold does not write.
 - `test/e2e/hold_test.go` — gate G4: a highly available tenant behind the Gateway on a kind cluster, its two nodes cut off for 10 minutes, then one of them ([the gate](../../test/e2e/README.md#nightly-gate-g4-nodes-cut-off-from-the-gateway)).

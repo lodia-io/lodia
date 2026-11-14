@@ -50,7 +50,7 @@ var (
 	nodesReady = perControlPlane("lodia_controlplane_nodes_ready",
 		"status.nodes.ready: the tenant's nodes that are Ready.")
 	nodesOutdatedKubelets = perControlPlane("lodia_controlplane_nodes_outdated_kubelets",
-		"status.nodes.outdatedKubelets: the tenant's nodes whose kubelet runs an older minor than status.kubernetes.version.")
+		"status.nodes.outdatedKubelets: the tenant's nodes whose kubelet runs an older minor than status.kubernetes.version; absent while status.nodes.truncated is true.")
 	componentReplicas = perControlPlane("lodia_controlplane_component_replicas",
 		"status.components.<component>.total: the replicas the component's Deployment asks for.",
 		"component")
@@ -88,7 +88,7 @@ var (
 	endOfSupport = perControlPlane("lodia_controlplane_kubernetes_end_of_support_timestamp_seconds",
 		"The end-of-support date, at 00:00 UTC, that the version table gives the minor of status.kubernetes.version; absent while the version is absent and for a minor outside the table.")
 	nodesSilent = perControlPlane("lodia_controlplane_nodes_silent",
-		"The nodes that count whose Lease Health has not seen change for health.silentAfter, in its last list of the node Leases. Absent while that list is missing or the tenant's hold is off, before Health's first list of the Nodes, and until Health's clock of the Leases has run health.silentAfter.")
+		"The nodes that count whose Lease Health has not seen change for health.silentAfter, in its last list of the node Leases. Absent while that list is missing, or a list of the Leases or of the Nodes stopped at a bound, or the tenant's hold is off, before Health's first list of the Nodes, and until Health's clock of the Leases has run health.silentAfter.")
 	nodesCounted = perControlPlane("lodia_controlplane_nodes_counted",
 		"The nodes that count towards the hold of the controller manager in Health's last list of the node Leases: those with a Lease that are Ready, or turned Unknown less than 5 minutes before the hold began. Absent while lodia_controlplane_nodes_silent is.")
 	maxConcurrentRollouts = prometheus.NewDesc("lodia_fleet_max_concurrent_rollouts",
@@ -242,7 +242,9 @@ func (c *Collector) collect(ch chan<- prometheus.Metric, cp *lodiav1alpha1.Contr
 	if n := status.Nodes; n != nil {
 		emit(nodes, float64(n.Total))
 		emit(nodesReady, float64(n.Ready))
-		emit(nodesOutdatedKubelets, float64(n.OutdatedKubelets))
+		if !n.Truncated {
+			emit(nodesOutdatedKubelets, float64(n.OutdatedKubelets))
+		}
 	}
 	if silent, counted, ok := c.NodeCounts(client.ObjectKeyFromObject(cp), cp.UID); ok {
 		emit(nodesSilent, float64(silent))
