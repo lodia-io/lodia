@@ -616,7 +616,10 @@ The phases, each term with the source of what runs in it:
     The clients follow no redirect: `CheckRedirect` is `noRedirects`, as the prober's is, and the redirected read is a failed read that names no byte of the `Location`.
     `TestTheTenantClientsFollowNoRedirectAndNameNoByteOfItsLocation` has a server redirect every read to five other hosts and finds one request to the server, none to the others, and no more connections across the six than the cap.
     `TestTheReadPastTheCapWaitsForAConnectionToBeGivenBackAndFailsAtItsDeadlineWhenNoneIs` holds the cap's reads in flight and finds the next read, the 3rd and the 8th, wait without reaching the server, fail at its deadline when no connection comes back, and take the connection given back when one does.
-    `TestAServerThatClosesAfterEveryAnswerLeavesAtMostTheCapOpenAfterEachPass` and `TestAServerThatKeepsItsConnectionsOpenAndNeverAnswersLeavesAtMostTheCapOpenAfterEachPass` run 40 passes of each client against a server that closes after every answer and one that never answers, and find at most the cap open after each.
+    A pass leaves no connection open when the server closes it after every answer or when its deadline cuts its reads, with the cap or without.
+    net/http ends the connection of an answer with `Connection: close` and of a read whose body did not end at its end or whose request ended, when the read loop exits ([transport.go](https://github.com/golang/go/blob/go1.26.10/src/net/http/transport.go#L2373-L2381), [L2457-L2467](https://github.com/golang/go/blob/go1.26.10/src/net/http/transport.go#L2457-L2467), [L2291-L2294](https://github.com/golang/go/blob/go1.26.10/src/net/http/transport.go#L2291-L2294)).
+    `TestAServerThatClosesAfterEveryAnswerLeavesNoConnectionOpenAfterAPass` and `TestAServerThatNeverAnswersLeavesNoConnectionOpenAfterAPassItsDeadlineCut` run 40 passes of each client against each and find none open after each, and every read answered by the first.
+    The cap is held by the tests that make a read wait on it.
     An honest pass waits on the cap for no connection of its own:
     - the reads of a pass in flight at once are at most the cap.
       The two lists of `health-nodes` run at once, and its Lease reads and its write run before and after them; `health` runs the seven lists at once or its two leader Leases one after the other.

@@ -300,7 +300,7 @@ func TestTheReadPastTheCapWaitsForAConnectionToBeGivenBackAndFailsAtItsDeadlineW
 	}
 }
 
-func TestAServerThatClosesAfterEveryAnswerLeavesAtMostTheCapOpenAfterEachPass(t *testing.T) {
+func TestAServerThatClosesAfterEveryAnswerLeavesNoConnectionOpenAfterAPass(t *testing.T) {
 	for _, c := range clients {
 		t.Run(c.name, func(t *testing.T) {
 			server := serveCounted(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -312,23 +312,23 @@ func TestAServerThatClosesAfterEveryAnswerLeavesAtMostTheCapOpenAfterEachPass(t 
 				if err := pass(t.Context()); err != nil {
 					t.Fatalf("pass %d: %v", i+1, err)
 				}
-				if got, ok := settles(&server.listener.open, c.reads); !ok {
-					t.Fatalf("after %d passes, %d connections were open, want at most %d", i+1, got, c.reads)
+				if got, ok := settles(&server.listener.open, 0); !ok {
+					t.Fatalf("after %d passes, %d connections were open, want none", i+1, got)
 				}
 			}
 		})
 	}
 }
 
-func TestAServerThatKeepsItsConnectionsOpenAndNeverAnswersLeavesAtMostTheCapOpenAfterEachPass(t *testing.T) {
+func TestAServerThatNeverAnswersLeavesNoConnectionOpenAfterAPassItsDeadlineCut(t *testing.T) {
 	for _, c := range clients {
 		t.Run(c.name, func(t *testing.T) {
 			server := serveSilently(t)
 			_, pass := c.start(t, server.kubeconfig, 100*time.Millisecond)
 			for i := range 40 {
 				_ = pass(t.Context())
-				if got, ok := settles(&server.listener.open, c.reads); !ok {
-					t.Fatalf("after %d passes whose reads the deadline cut, %d connections were open, want at most %d", i+1, got, c.reads)
+				if got, ok := settles(&server.listener.open, 0); !ok {
+					t.Fatalf("after %d passes whose reads the deadline cut, %d connections were open, want none", i+1, got)
 				}
 			}
 		})
