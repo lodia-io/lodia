@@ -112,9 +112,9 @@ func arrivesIn(t *testing.T, together chan struct{}, what string) {
 	}
 }
 
-func settles(open *atomic.Int64, most int) (int64, bool) {
+func settles(open *atomic.Int64, want int) (int64, bool) {
 	for range 1000 {
-		if got := open.Load(); got <= int64(most) {
+		if got := open.Load(); got == int64(want) {
 			return got, true
 		}
 		time.Sleep(5 * time.Millisecond)

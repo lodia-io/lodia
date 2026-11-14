@@ -176,8 +176,8 @@ func behindAHeldPlace(t *testing.T, c passes, timeout time.Duration, tenant *ten
 
 	_, err = tenant.getLease(ctx, "behind")
 	got := starts()
-	if len(got) != c.reads+1 || got[c.reads] < timeout*9/10 || got[c.reads] > 3*timeout {
-		t.Errorf("the dials began at %v, want the cap's and one more, the last after Timeout, %v, and within 3 Timeouts", got, timeout)
+	if len(got) != c.reads+1 || got[c.reads] < timeout*9/10 || got[c.reads] > timeout*9/5 {
+		t.Errorf("the dials began at %v, want the cap's and one more, the last after Timeout, %v, and within 1.8 of them", got, timeout)
 	}
 	if err == nil {
 		t.Error("a read behind a dial that never ends succeeded")
