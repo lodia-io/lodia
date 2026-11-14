@@ -585,7 +585,7 @@ The phases, each term with the source of what runs in it:
     A reader that returns each chunk just past 15/16 full, as a body that arrives in pieces does, closes the 25th chunk at 7.75 MiB, before the cut, and opens the 26th: 8.3 MiB of closed chunks, 4.1 MiB open and the slice, 20.4 MiB.
     No chunk closes earlier than that, and the 27th, which opens at 11.6 MiB of body at the soonest, is past the cut, so 20.4 MiB is the most below it.
     `TestIoReadAllHoldsAtMostItsChunksAndTheSliceItReturnsAtTheCut` reads 1 to 8 MiB through the real `io.ReadAll` with each reader, finds the chunks' heap within 256 KiB of the sizes it offered, 16.27 and 20.38 MiB at 8 MiB, and nothing above 20.4 MiB.
-    One read of each of the 47 shapes below reaches 20.4 MiB of heap in use in every run.
+    One read of each of the 47 shapes below reaches 20.5 MiB of heap in use in every run.
   - The headers' map, up to 2.5 MiB.
     net/http reads a response's head up to `maxResponseHeaderBytes` into a map of one slot for each name and a shared slice of strings for the values ([reader.go](https://github.com/golang/go/blob/go1.26.10/src/net/textproto/reader.go#L516-L603)).
     It takes its lines from `bufio.Reader.ReadLine`, which ends a line at a line feed with or without a carriage return ([reader.go](https://github.com/golang/go/blob/go1.26.10/src/net/textproto/reader.go#L60-L81), [bufio.go](https://github.com/golang/go/blob/go1.26.10/src/bufio/bufio.go#L405-L438)), so a field line is 3 bytes at the least, a name of one byte, a colon and a line feed, and a name of a field is a token: 77 characters make 77 names of one byte and 5,929 of two ([reader.go](https://github.com/golang/go/blob/go1.26.10/src/net/textproto/reader.go#L686-L712)).
@@ -671,7 +671,7 @@ The first three fail when a read or a pass holds more heap in use than its struc
 - `TestMeasureTheLiveHeapOfPassesOverTenantsPaddedToTheirBounds` runs passes over a tenant padded to its bounds, with every page of Leases and of Nodes just under 8 MiB and the default `health.maxNodes`, one pass and 100 at once on 100 tenants.
 
 The figure they compare is the heap in use.
-The live heap is what the last collection marked, objects allocated during it included, so it can read above anything alive at once: in 1,200 cut answers with the headers at their bound it read up to 33.4 MiB, where the heap in use did not pass 21.6 MiB.
+The live heap is what the last collection marked, objects allocated during it included, so it can read above anything alive at once: in 1,200 cut answers with the headers at their bound it read up to 29.6 MiB, where the heap in use did not pass 21.6 MiB.
 
 ```
 GOTOOLCHAIN=go1.26.10 LODIA_MEASURE_HEAP=1 KUBEBUILDER_ASSETS="$(go tool setup-envtest use 1.35.0 -p path)" go test -count=1 -v -run TestMeasureTheLiveHeap ./internal/controller/health/
@@ -682,23 +682,23 @@ The runs below are on go1.26.10, `go version go1.26.10 darwin/arm64`, on 16 core
 
 | the measure | runs | live heap | heap in use | structural bound |
 |---|---|---|---|---|
-| one read, the most of 47 shapes | 12 | 8.0 to 16.0 MiB | 20.3 to 20.4 MiB | 25.2 MiB |
-| a read whose answer of 16 MiB is cut | 1,200 | 12.4 to 21.6 MiB | 20.4 MiB | 25.2 MiB |
-| the same, headers at their bound | 1,200 | 13.5 to 33.4 MiB | 21.4 to 21.6 MiB | 25.2 MiB |
-| the same, announced names at their bound | 1,200 | 9.9 to 25.9 MiB | 17.9 MiB | 25.2 MiB |
-| one pass of `health-nodes`, the Lease read, both lists answered together and the renewal | 12 | 8.1 to 24.2 MiB | 16.1 to 32.5 MiB | 54.4 MiB |
-| one pass of `health` over a held restore, seven answers as they come | 12 | 24.9 to 73.7 MiB | 49.7 to 114.0 MiB | 176.4 MiB |
-| the same, its seven lists answered together | 12 | 57.1 to 73.6 MiB | 81.6 to 113.9 MiB | 176.4 MiB |
-| one pass of `health` over 500 configurations of 256 empty webhooks, named with 253 bytes, one list or both | 12 | 0.0 to 1.1 MiB or 0.0 to 3.1 MiB | 0.8 to 3.3 MiB or 1.6 to 5.3 MiB | |
-| the same, named with 2,048 bytes | 12 | 0.0 to 2.2 MiB or 2.0 to 4.6 MiB | 0.2 to 3.8 MiB or 4.3 to 6.8 MiB | |
-| one pass over a tenant padded to its bounds, 62 responses | 12 | 8.7 to 24.6 MiB | 20.2 to 32.7 MiB | 54.4 MiB |
-| 100 passes at once on 100 tenants | 12 | 1.14 to 1.34 GiB, 11.7 to 13.7 MiB a pass | 1.26 to 1.52 GiB | 5.32 GiB |
+| one read, the most of 47 shapes | 12 | 8.1 to 20.4 MiB | 20.5 MiB | 25.2 MiB |
+| a read whose answer of 16 MiB is cut | 1,200 | 12.5 to 28.5 MiB | 20.5 MiB | 25.2 MiB |
+| the same, headers at their bound | 1,200 | 13.6 to 29.6 MiB | 21.6 MiB | 25.2 MiB |
+| the same, announced names at their bound | 1,200 | 9.9 to 18.8 MiB | 17.9 MiB | 25.2 MiB |
+| one pass of `health-nodes`, the Lease read, both lists answered together and the renewal | 12 | 20.6 to 32.8 MiB | 32.7 to 40.8 MiB | 54.4 MiB |
+| one pass of `health` over a held restore, seven answers as they come | 12 | 50.2 to 86.4 MiB | 93.6 to 130.8 MiB | 176.4 MiB |
+| the same, its seven lists answered together | 12 | 66.3 to 127.0 MiB | 90.8 to 143.0 MiB | 176.4 MiB |
+| one pass of `health` over 500 configurations of 256 empty webhooks, named with 253 bytes, one list or both | 12 | 1.1 to 1.4 MiB or 1.6 to 1.9 MiB | 2.4 to 2.9 MiB or 2.8 to 3.3 MiB | |
+| the same, named with 2,048 bytes | 12 | 1.6 to 2.3 MiB or 3.7 to 4.8 MiB | 3.0 to 3.6 MiB or 5.1 to 6.5 MiB | |
+| one pass over a tenant padded to its bounds, 62 responses | 12 | 12.9 to 30.6 MiB | 25.0 to 41.3 MiB | 54.4 MiB |
+| 100 passes at once on 100 tenants | 12 | 1.22 to 1.36 GiB, 12.4 to 13.9 MiB a pass | 1.30 to 1.54 GiB | 5.32 GiB |
 
-The 100 passes at once open 200 connections to one listener, and two runs of the measures started together failed in it, passes ending in an unexpected EOF or in a pass that did not stop, from the loopback server, whose listen queue is 128 (`kern.ipc.somaxconn`); the twelve above ran one at a time and all passed.
+The 100 passes at once open 200 connections to one listener, whose listen queue is 128 (`kern.ipc.somaxconn`); the twelve runs above ran one at a time.
 The closest any measure came to its bound is 3.6 MiB, the cut answer with the headers at their bound.
 No run put a pass at the ceiling of its reads, since their chunks do not all peak together.
-A first pass of `health-nodes` over 5,000 Nodes and their 5,000 Leases, the most `health.maxNodes` counts by default, took 313, 295 and 293 ms in three runs on go1.26.10, and a pass over 5,001 Nodes, which stops at the bound, 295, 287 and 286 ms (`TestATenantOfMaxNodesNodesIsCountedWholeAtTheOperatorsTimeout`, on envtest, on 16 cores of an Apple M4 Max, one run at a time).
-The race detector slows it tenfold, to 2.90, 2.86 and 2.96 s for 5,000 Nodes and 2.83, 2.82 and 2.87 s for 5,001, in three runs of `TestATenantOfMaxNodesNodesIsCountedWholeUnderTheRaceDetector`, which counts the same tenant with a `Timeout` of a minute, against the operator's of 5 s.
+A first pass of `health-nodes` over 5,000 Nodes and their 5,000 Leases, the most `health.maxNodes` counts by default, took 288, 282 and 276 ms in three runs on go1.26.10, and a pass over 5,001 Nodes, which stops at the bound, 284, 283 and 284 ms (`TestATenantOfMaxNodesNodesIsCountedWholeAtTheOperatorsTimeout`, on envtest, on 16 cores of an Apple M4 Max, one run at a time).
+The race detector slows it tenfold, to 2.71, 2.69 and 2.77 s for 5,000 Nodes and 2.66, 2.69 and 2.71 s for 5,001, in three runs of `TestATenantOfMaxNodesNodesIsCountedWholeUnderTheRaceDetector`, which counts the same tenant with a `Timeout` of a minute, against the operator's of 5 s.
 That first test is built without the race detector, and `make test` runs it in a step of its own.
 Between passes it keeps at most `health.maxNodes` Lease versions and Node summaries per tenant ([review checklist](review-checklist.md), item 10).
 The tenant's administrator can have any server answer the lists, so the pass bounds every string it keeps itself:
