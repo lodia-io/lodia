@@ -12,6 +12,7 @@ func TestATimeFieldHoldingAnObjectOrAnArrayIsNotATimeWhateverItsSize(t *testing.
 	if inAProcessOfItsOwn(t) {
 		return
 	}
+	defer theBodyRanToItsEnd(t)
 	const size = 4 << 20
 	for _, c := range []struct {
 		name  string

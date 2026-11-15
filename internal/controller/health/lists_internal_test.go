@@ -463,6 +463,7 @@ func TestWhatASamplingKeepsRestsOnItsOwnBoundsAndNotOnWhatTheServerAnswers(t *te
 	if inAProcessOfItsOwn(t) {
 		return
 	}
+	defer theBodyRanToItsEnd(t)
 	sizedForTheBounds(t)
 	const maxNodes = 5000
 	for _, c := range []struct {

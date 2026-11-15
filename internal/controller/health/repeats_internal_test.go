@@ -145,6 +145,7 @@ func TestASliceOfStringsTakesTheSizeClassOfItsBytesAndTheAllocatorsHeaderPastFiv
 	if inAProcessOfItsOwn(t) {
 		return
 	}
+	defer theBodyRanToItsEnd(t)
 	sizedForTheBounds(t)
 	tried := map[int]bool{}
 	for _, class := range append(sizeClasses[:], 3*mostSmallObject/2) {
@@ -171,6 +172,7 @@ func TestASliceOfPointersTakesTheSizeClassOfItsBytesAndTheAllocatorsHeaderOfEigh
 	if inAProcessOfItsOwn(t) {
 		return
 	}
+	defer theBodyRanToItsEnd(t)
 	tried := map[int]bool{}
 	for _, class := range sizeClasses {
 		for _, elements := range []int{class/8 - 1, class / 8, class/8 + 1} {
@@ -199,6 +201,7 @@ func TestAKeyRepeatedByLinesKeepsTheSliceAppendGrewToInTheBytesTheAllocatorTakes
 	if inAProcessOfItsOwn(t) {
 		return
 	}
+	defer theBodyRanToItsEnd(t)
 	sizedForTheBounds(t)
 	held := heldByRepeats()
 	read := func(lines int) []string {
@@ -363,7 +366,7 @@ func bruteDearest(s *searchedTail, valueLines func(announced int) (least, most i
 func TestTheDearestHeadByTheBoundsOfItsRepeatedBytesIsTheDearestByEveryChoiceOfThem(t *testing.T) {
 	s := searchOfTail(mapTail)
 	repeatedWins := 0
-	for _, w := range []struct{ from, to int }{{0, 0}, {0, 30}, {60, 90}, {1000, 1030}, {1267, 1267}, {5000, 5030}, {9000, 9030}, {12850, 12880}, {12988, 12988}, {13128, 13128}, {16000, 16030}, {21890, 21914}} {
+	for _, w := range []struct{ from, to int }{{0, 0}, {0, 2}, {60, 62}, {1000, 1002}, {1267, 1267}, {5000, 5002}, {9000, 9002}, {12850, 12852}, {12988, 12988}, {13128, 13128}, {16000, 16002}, {21912, 21914}} {
 		within := func(announced int) (int, int) {
 			if announced < w.from || announced > w.to {
 				return 1, 0

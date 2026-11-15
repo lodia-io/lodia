@@ -13,6 +13,7 @@ func TestACutStringHoldsNoneOfTheStringItWasCutFrom(t *testing.T) {
 	if inAProcessOfItsOwn(t) {
 		return
 	}
+	defer theBodyRanToItsEnd(t)
 	sizedForTheBounds(t)
 	const items = 2000
 	body := []byte(`{"metadata":{"name":"` + strings.Repeat("\xff", maxNameRaw) + `"},"status":{"nodeInfo":{"kubeletVersion":"` + strings.Repeat("\xff", maxKubeletRaw) + `"}}}`)

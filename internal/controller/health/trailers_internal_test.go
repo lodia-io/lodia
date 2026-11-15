@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/types"
+	utilnet "k8s.io/apimachinery/pkg/util/net"
 )
 
 func distinctCanonical(alphabet []byte, length int) []string {
@@ -79,7 +80,9 @@ func rawTenantClient(t *testing.T, url string) *http.Client {
 	if _, err := r.tenant(key, kubeconfigFor(t, url)); err != nil {
 		t.Fatal(err)
 	}
-	return r.clients[key].transport
+	client := r.clients[key].transport
+	t.Cleanup(func() { utilnet.CloseIdleConnectionsFor(client.Transport) })
+	return client
 }
 
 const tokenCharacters = "!#$%&'*+-.^_`|~0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -120,6 +123,7 @@ func TestAnHTTP1HeadOfFieldLinesEndingInALineFeedIsHeldAtMostHeadAndTrailersHTTP
 	if inAProcessOfItsOwn(t) {
 		return
 	}
+	defer theBodyRanToItsEnd(t)
 	sizedForTheBounds(t)
 	const body = `{"metadata":{"resourceVersion":"1"}}`
 	start := "HTTP/1.1 200 OK\nContent-Type: application/json\nContent-Length: " + strconv.Itoa(len(body)) + "\n"
@@ -146,6 +150,7 @@ func TestAnHTTP1HeadOfNamesAndFieldLinesTogetherWithTheTrailerValueIsHeldAtMostH
 	if inAProcessOfItsOwn(t) {
 		return
 	}
+	defer theBodyRanToItsEnd(t)
 	sizedForTheBounds(t)
 	prefix := "HTTP/1.1 200 OK\nContent-Type: application/json\nTransfer-Encoding: chunked\n"
 	var lines []string
@@ -187,6 +192,11 @@ func TestAnHTTP1HeadOfNamesAndFieldLinesTogetherWithTheTrailerValueIsHeldAtMostH
 }
 
 const (
+	countedNamesAtAQuadrillionth      = 12865
+	countedValueLinesAtAQuadrillionth = 5
+	countedBytesAtAQuadrillionth      = 2916688
+	countedNamesAtASeptillionth       = 13221
+
 	headOfAMixPrefix = "HTTP/1.1 200 OK\nContent-Type: application/json\nTransfer-Encoding: chunked\n"
 	headOfAMixKeys   = 3
 
@@ -281,21 +291,21 @@ func TestAnHTTP1HeadThatAnnouncesTheNamesOfTheDearestCountWithAFullBlockOfTraile
 	if inAProcessOfItsOwn(t) {
 		return
 	}
+	defer theBodyRanToItsEnd(t)
 	sizedForTheBounds(t)
-	dearest := theDearestHead()
 	trailers, block := theTrailersOfAFullBlock()
-	head := headOfAMix(t, headOfAMixPrefix, "\n\n", dearest.announced, trailers)
+	head := headOfAMix(t, headOfAMixPrefix, "\n\n", countedNamesAtAQuadrillionth, trailers)
 	client, url := answerWithTrailers(t, head, block)
 	var keys keysRead
 	held := heldOnceRead(t, client, url, &keys)
 	parts := head.parts()
-	t.Logf("a head of %d bytes of %d field lines and %d announced names, then %d trailers: held %.3f MiB; its parts add to %.3f MiB, the dearest of the count, %d lines and %d names, %.3f MiB, headAndTrailersHTTP1 is %.3f MiB",
-		len(head.text), head.fieldLines, head.announced, len(trailers), mib(uint64(held)), mib(uint64(parts.sum())), dearest.fieldLines, dearest.announced, mib(uint64(dearest.bytes())), mib(headAndTrailersHTTP1))
+	t.Logf("a head of %d bytes of %d field lines and %d announced names, then %d trailers: held %.3f MiB; its parts add to %.3f MiB, the dearest of the count, %.3f MiB, headAndTrailersHTTP1 is %.3f MiB",
+		len(head.text), head.fieldLines, head.announced, len(trailers), mib(uint64(held)), mib(uint64(parts.sum())), mib(countedBytesAtAQuadrillionth), mib(headAndTrailersHTTP1))
 	if keys.trailer != head.announced+len(trailers) || keys.header != head.fieldLines+1 || len(trailers) != 1036 {
 		t.Errorf("the response has %d keys of Trailer and %d of the head, want the %d names announced and the %d trailers, and the %d field lines and Content-Type", keys.trailer, keys.header, head.announced, len(trailers), head.fieldLines)
 	}
-	if held > int64(parts.sum()) || parts.sum() > dearest.bytes() || dearest.bytes() > headAndTrailersHTTP1 {
-		t.Errorf("the head with its trailers is held in %d bytes, its parts add to %d, the dearest head's to %d, want them in that order and the last at most headAndTrailersHTTP1, %d", held, parts.sum(), dearest.bytes(), headAndTrailersHTTP1)
+	if held > int64(parts.sum()) || parts.sum() > countedBytesAtAQuadrillionth || countedBytesAtAQuadrillionth > headAndTrailersHTTP1 {
+		t.Errorf("the head with its trailers is held in %d bytes, its parts add to %d, the dearest head's to %d, want them in that order and the last at most headAndTrailersHTTP1, %d", held, parts.sum(), countedBytesAtAQuadrillionth, headAndTrailersHTTP1)
 	}
 	if parts.trailers != trailersReadAtMost(len(trailers)) || parts.announcedMap != mapBytesAtMost(head.announced+len(trailers), 0) {
 		t.Errorf("the parts of the head with its trailers are %+v, want the trailers' own read, %d, and the map of the names announced and of the trailers, %d", parts, trailersReadAtMost(len(trailers)), mapBytesAtMost(head.announced+len(trailers), 0))
@@ -306,6 +316,7 @@ func TestTheMostAHeadOfDistinctNamesAndFieldLinesWithItsTrailersHoldsIsFoundBySc
 	if inAProcessOfItsOwn(t) {
 		return
 	}
+	defer theBodyRanToItsEnd(t)
 	sizedForTheBounds(t)
 	trailers, block := theTrailersOfAFullBlock()
 	carried := len(announcedNamesApartFrom(trailers, math.MaxInt, maxResponseHeaderBytes-len(headOfAMixPrefix)-len("Trailer: ")-len("\n\n")))
@@ -346,8 +357,8 @@ func TestTheHeadTheScanFindsMostWithItsTrailersIsHeldAtMostItsPartsAndTheTerm(t 
 	if inAProcessOfItsOwn(t) {
 		return
 	}
+	defer theBodyRanToItsEnd(t)
 	sizedForTheBounds(t)
-	dearest := theDearestHead()
 	trailers, block := theTrailersOfAFullBlock()
 	head := headOfAMix(t, headOfAMixPrefix, "\n\n", mostOfTheScanNames, trailers)
 	client, url := answerWithTrailers(t, head, block)
@@ -355,13 +366,13 @@ func TestTheHeadTheScanFindsMostWithItsTrailersIsHeldAtMostItsPartsAndTheTerm(t 
 	held := heldOnceRead(t, client, url, &keys)
 	parts := head.parts()
 	t.Logf("a head of %d bytes of %d field lines and %d announced names, then %d trailers: held %.3f MiB; its parts add to %.3f MiB, the dearest of the count, %.3f MiB, headAndTrailersHTTP1 is %.3f MiB",
-		len(head.text), head.fieldLines, head.announced, len(trailers), mib(uint64(held)), mib(uint64(parts.sum())), mib(uint64(dearest.bytes())), mib(headAndTrailersHTTP1))
+		len(head.text), head.fieldLines, head.announced, len(trailers), mib(uint64(held)), mib(uint64(parts.sum())), mib(countedBytesAtAQuadrillionth), mib(headAndTrailersHTTP1))
 	if head.announced != mostOfTheScanNames || head.fieldLines != mostOfTheScanLines || keys.trailer != mostOfTheScanNames+len(trailers) || keys.header != mostOfTheScanLines+1 {
 		t.Errorf("the head announces %d names and carries %d field lines, and the response has %d keys of Trailer and %d of the head, want the %d names and %d lines the scan found, and the %d trailers besides, and Content-Type",
 			head.announced, head.fieldLines, keys.trailer, keys.header, mostOfTheScanNames, mostOfTheScanLines, len(trailers))
 	}
-	if held > int64(parts.sum()) || parts.sum() > dearest.bytes() || dearest.bytes() > headAndTrailersHTTP1 {
-		t.Errorf("the head with its trailers is held in %d bytes, its parts add to %d, the dearest of the count's to %d, want them in that order and the last at most headAndTrailersHTTP1, %d", held, parts.sum(), dearest.bytes(), headAndTrailersHTTP1)
+	if held > int64(parts.sum()) || parts.sum() > countedBytesAtAQuadrillionth || countedBytesAtAQuadrillionth > headAndTrailersHTTP1 {
+		t.Errorf("the head with its trailers is held in %d bytes, its parts add to %d, the dearest of the count's to %d, want them in that order and the last at most headAndTrailersHTTP1, %d", held, parts.sum(), countedBytesAtAQuadrillionth, headAndTrailersHTTP1)
 	}
 }
 
@@ -384,9 +395,10 @@ func TestAnHTTP1HeadWhoseBlockOfTrailersRepeatsKeysIsHeldAtMostItsPartsAndHeadAn
 	if inAProcessOfItsOwn(t) {
 		return
 	}
+	defer theBodyRanToItsEnd(t)
 	sizedForTheBounds(t)
 	trailers, block, lines := theTrailersOfABlockThatRepeatsKeys()
-	head := headOfAMix(t, headOfAMixPrefix, "\n\n", theDearestHeadAt(1e-24).announced, trailers)
+	head := headOfAMix(t, headOfAMixPrefix, "\n\n", countedNamesAtASeptillionth, trailers)
 	client, url := answerWithTrailers(t, head, block)
 	var keys keysRead
 	held := heldOnceRead(t, client, url, &keys)
@@ -408,10 +420,10 @@ func TestAnHTTP1HeadWhoseTrailerValueIsOnSeveralLinesIsHeldAtMostItsPartsAndHead
 	if inAProcessOfItsOwn(t) {
 		return
 	}
+	defer theBodyRanToItsEnd(t)
 	sizedForTheBounds(t)
-	dearest := theDearestHeadAt(mapTail)
 	trailers, block := theTrailersOfAFullBlock()
-	head := headOfAMixOnLines(t, headOfAMixPrefix, "\n\n", dearest.announced, trailers, dearest.valueLines)
+	head := headOfAMixOnLines(t, headOfAMixPrefix, "\n\n", countedNamesAtAQuadrillionth, trailers, countedValueLinesAtAQuadrillionth)
 	client, url := answerWithTrailers(t, head, block)
 	var keys keysRead
 	held := heldOnceRead(t, client, url, &keys)

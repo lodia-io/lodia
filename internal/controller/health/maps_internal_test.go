@@ -435,6 +435,9 @@ type searchedTail struct {
 	byLineBytes []int
 	block       []int
 	blockKeys   []int
+
+	standard     sync.Once
+	standardHead countedHead
 }
 
 var searchedTails = struct {
@@ -576,12 +579,17 @@ func theDearestHeadWithValueLines(tail float64, lines int) countedHead {
 	})
 }
 
-func theDearestHeadAt(tail float64) countedHead { return searchOfTail(tail).dearest(valueLinesOf) }
+func theDearestHeadAt(tail float64) countedHead {
+	s := searchOfTail(tail)
+	s.standard.Do(func() { s.standardHead = s.dearest(valueLinesOf) })
+	return s.standardHead
+}
 
 func TestTheSizeClassesTheMapsAreBuiltFromAreTheAllocators(t *testing.T) {
 	if inAProcessOfItsOwn(t) {
 		return
 	}
+	defer theBodyRanToItsEnd(t)
 	for _, n := range append([]int{1, 9, 100, 1000, 32769, 41984, 49153, 98304}, sizeClasses[:]...) {
 		for _, size := range []int{n - 1, n, n + 1} {
 			if size < 16 {
@@ -643,6 +651,7 @@ func TestAMapOfHeadersHoldsAtMostWhatItsTablesTakeAtEverySplitPointAndOneKeyOnEa
 	if inAProcessOfItsOwn(t) {
 		return
 	}
+	defer theBodyRanToItsEnd(t)
 	sizedForTheBounds(t)
 	names := make([]string, mostKeysOfTheCount())
 	for i := range names {
@@ -760,6 +769,9 @@ func TestTheDearestHeadIsTheMixTheArgumentNamesAndItsPartsAreTheOnesItQuotes(t *
 	if dearest.fieldLines != 6640 || dearest.announced != 12865 || dearest.valueLines != 5 || dearest.blockKeys != 888 || dearest.headRepeated != 0 || dearest.bytes() != 2916688 || dearest.found != dearest.bytes() {
 		t.Errorf("the dearest head is %d field lines and %d announced names, the value on %d lines, then a block of %d keys, with %d bytes of its head spent on repeated lines, of %d bytes, found as %d, want 6,640, 12,865, 5, 888, 0, 2,916,688 and the same", dearest.fieldLines, dearest.announced, dearest.valueLines, dearest.blockKeys, dearest.headRepeated, dearest.bytes(), dearest.found)
 	}
+	if dearest.announced != countedNamesAtAQuadrillionth || dearest.valueLines != countedValueLinesAtAQuadrillionth || dearest.bytes() != countedBytesAtAQuadrillionth || theDearestHeadAt(1e-24).announced != countedNamesAtASeptillionth {
+		t.Errorf("the count's dearest heads announce %d and %d names, the first with its value on %d lines, of %d bytes, want the %d, %d, %d and %d the realized heads are built from", dearest.announced, theDearestHeadAt(1e-24).announced, dearest.valueLines, dearest.bytes(), countedNamesAtAQuadrillionth, countedNamesAtASeptillionth, countedValueLinesAtAQuadrillionth, countedBytesAtAQuadrillionth)
+	}
 	want := headParts{hint: 896, headerMap: 737936, elements: 108448, announcedMap: 1525008, copies: 312112, value: 47488, trailers: 129024, repeated: 7360, split: 49312}
 	if dearest.parts != want {
 		t.Errorf("its parts are %+v, want %+v", dearest.parts, want)
@@ -845,6 +857,7 @@ func TestTheWorstHintIsTheDearestOfEveryHintATenantCanSetByTheBytesTheAllocatorT
 	if inAProcessOfItsOwn(t) {
 		return
 	}
+	defer theBodyRanToItsEnd(t)
 	sizedForTheBounds(t)
 	taken := make([]int, mostMapHint+1)
 	for lo := 1; lo <= mostMapHint; {

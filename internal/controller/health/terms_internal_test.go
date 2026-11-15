@@ -61,6 +61,7 @@ func TestTheSizesTheTermsAreBuiltFromAreTheSourcesOnThisPlatform(t *testing.T) {
 	if inAProcessOfItsOwn(t) {
 		return
 	}
+	defer theBodyRanToItsEnd(t)
 	runes := bytes.Repeat([]byte{0xe9}, 16)
 	var text string
 	worstCopy := 0
@@ -120,6 +121,7 @@ func TestTheLeastAnHTTP1FieldLineAddsToAHeadIsItsCopiesAndAnElementOfTheSliceSin
 	if inAProcessOfItsOwn(t) {
 		return
 	}
+	defer theBodyRanToItsEnd(t)
 	head := func(lines int) string {
 		var text strings.Builder
 		for i := range lines {

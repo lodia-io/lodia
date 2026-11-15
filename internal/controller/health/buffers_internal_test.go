@@ -51,6 +51,7 @@ func TestIoReadAllHoldsAtMostItsChunksAndTheSliceItReturnsAtTheCut(t *testing.T)
 	if inAProcessOfItsOwn(t) {
 		return
 	}
+	defer theBodyRanToItsEnd(t)
 	sizedForTheBounds(t)
 	for _, c := range []struct {
 		name string

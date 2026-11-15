@@ -33,6 +33,7 @@ func TestWhatTheTypesKeepAtTheRawBoundsIsUnderKeptAtMost(t *testing.T) {
 	if inAProcessOfItsOwn(t) {
 		return
 	}
+	defer theBodyRanToItsEnd(t)
 	sizedForTheBounds(t)
 	for _, kind := range []struct {
 		name string
@@ -102,6 +103,7 @@ func TestWhatAPassBuildsBesideTheSamplingIsUnderSummariesAtMost(t *testing.T) {
 	if inAProcessOfItsOwn(t) {
 		return
 	}
+	defer theBodyRanToItsEnd(t)
 	sizedForTheBounds(t)
 	const nodes = 5000
 	name := func(i int) string { return fmt.Sprintf("%05d", i) + strings.Repeat("n", maxName-5) }
