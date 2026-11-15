@@ -557,3 +557,16 @@ func TestTheTermHoldsTheCountAtAChanceOfOneInAMillionAndAtOneInASeptillion(t *te
 		}
 	}
 }
+
+func TestTheWorstHintIsTheDearestOfEveryHintATenantCanSet(t *testing.T) {
+	for _, keys := range []int{0, 1, 9, 100, 663, 896, 897, 898, 1500, 6740} {
+		best := -1
+		for hint := 0; hint <= min(keys, 1000); hint++ {
+			best = max(best, mapBytesAtMost(keys, hint)+elementsOf(keys, hint))
+		}
+		hint, mapBytes, elements := worstHint(keys, mapTail)
+		if mapBytes+elements != best || mapBytes != mapBytesAtMost(keys, hint) || elements != elementsOf(keys, hint) {
+			t.Errorf("the worst hint of %d keys is %d, taking %d and %d bytes, want %d in all", keys, hint, mapBytes, elements, best)
+		}
+	}
+}

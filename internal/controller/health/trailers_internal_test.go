@@ -6,6 +6,7 @@ package health
 import (
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"runtime"
 	"slices"
@@ -39,21 +40,7 @@ func distinctCanonical(alphabet []byte, length int) []string {
 }
 
 func announcedNamesOfAHead(room int) []string {
-	var alphabet []byte
-	for c := 0x21; c <= 0xff; c++ {
-		if c != ',' && c != 0x7f {
-			alphabet = append(alphabet, byte(c))
-		}
-	}
-	var names []string
-	for _, name := range slices.Concat(distinctCanonical(alphabet, 1), distinctCanonical(alphabet, 2)) {
-		if room < len(name)+1 {
-			break
-		}
-		names = append(names, name)
-		room -= len(name) + 1
-	}
-	return names
+	return announcedNamesApartFrom(nil, math.MaxInt, room)
 }
 
 type keysRead struct{ header, trailer int }
@@ -289,6 +276,9 @@ func TestAnHTTP1HeadThatAnnouncesTheNamesOfTheDearestCountWithAFullBlockOfTraile
 	}
 	if held > int64(parts.sum()) || parts.sum() > dearest.bytes() || dearest.bytes() > headAndTrailersHTTP1 {
 		t.Errorf("the head with its trailers is held in %d bytes, its parts add to %d, the dearest head's to %d, want them in that order and the last at most headAndTrailersHTTP1, %d", held, parts.sum(), dearest.bytes(), headAndTrailersHTTP1)
+	}
+	if parts.trailers != trailersReadAtMost(len(trailers)) || parts.announcedMap != mapBytesAtMost(head.announced+len(trailers), 0) {
+		t.Errorf("the parts of the head with its trailers are %+v, want the trailers' own read, %d, and the map of the names announced and of the trailers, %d", parts, trailersReadAtMost(len(trailers)), mapBytesAtMost(head.announced+len(trailers), 0))
 	}
 }
 
