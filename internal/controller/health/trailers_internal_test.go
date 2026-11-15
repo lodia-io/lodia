@@ -43,7 +43,7 @@ func announcedNamesOfAHead(room int) []string {
 	return announcedNamesApartFrom(nil, math.MaxInt, room)
 }
 
-type keysRead struct{ header, trailer int }
+type keysRead struct{ header, trailer, repeated int }
 
 func heldByARead(t *testing.T, client *http.Client, url string, keys *keysRead) int64 {
 	t.Helper()
@@ -56,7 +56,12 @@ func heldByARead(t *testing.T, client *http.Client, url string, keys *keysRead) 
 		t.Fatal(err)
 	}
 	now := liveHeap()
-	*keys = keysRead{len(resp.Header), len(resp.Trailer)}
+	*keys = keysRead{header: len(resp.Header), trailer: len(resp.Trailer)}
+	for _, values := range resp.Trailer {
+		if len(values) > 1 {
+			keys.repeated += sizeClassP(valueSlice * cap(values))
+		}
+	}
 	runtime.KeepAlive(resp)
 	_ = resp.Body.Close()
 	return int64(now) - int64(base)
@@ -193,8 +198,8 @@ const (
 )
 
 type realizedHead struct {
-	text                                          string
-	fieldLines, announced, announcedBytes, trails int
+	text                                                      string
+	fieldLines, announced, announcedBytes, trails, valueLines int
 }
 
 func theTrailersOfAFullBlock() (names []string, block string) {
@@ -233,27 +238,36 @@ func announcedNamesApartFrom(trailers []string, count, room int) []string {
 
 func headOfAMix(t *testing.T, prefix, lineBreak string, announced int, trailers []string) realizedHead {
 	t.Helper()
+	return headOfAMixOnLines(t, prefix, lineBreak, announced, trailers, 1)
+}
+
+func headOfAMixOnLines(t *testing.T, prefix, lineBreak string, announced int, trailers []string, valueLines int) realizedHead {
+	t.Helper()
 	const trailer = "Trailer: "
 	names := announcedNamesApartFrom(trailers, announced, maxResponseHeaderBytes)
 	if len(names) != announced {
 		t.Fatalf("a head of %d announced names is asked for, and %d fit", announced, len(names))
 	}
-	value := strings.Join(names, ",")
-	room := maxResponseHeaderBytes - len(prefix) - len(trailer) - len(value) - len(lineBreak)
+	var lines []string
+	for line := range valueLines {
+		lines = append(lines, trailer+strings.Join(names[line*announced/valueLines:(line+1)*announced/valueLines], ","))
+	}
+	value := strings.Join(lines, "\n")
+	room := maxResponseHeaderBytes - len(prefix) - len(value) - len(lineBreak)
 	fields := canonicalFieldNames(room)
 	text := prefix
 	if len(fields) > 0 {
 		text += strings.Join(fields, ":\n") + ":\n"
 	}
-	text += trailer + value + lineBreak
+	text += value + lineBreak
 	if len(text) > maxResponseHeaderBytes {
 		t.Fatalf("the head has %d bytes, want at most the bound of %d", len(text), maxResponseHeaderBytes)
 	}
-	return realizedHead{text, len(fields), len(names), len(value) + 1, len(trailers)}
+	return realizedHead{text, len(fields), len(names), len(strings.Join(names, ",")) + 1, len(trailers), valueLines}
 }
 
 func (h realizedHead) parts() headParts {
-	return headPartsAtMost(headMix{keys: h.fieldLines + headOfAMixKeys, announced: h.announced, announcedBytes: h.announcedBytes, trailers: h.trails})
+	return headPartsAtMost(headMix{keys: h.fieldLines + headOfAMixKeys, announced: h.announced, announcedBytes: h.announcedBytes, valueLines: h.valueLines, trailers: h.trails})
 }
 
 func answerWithTrailers(t *testing.T, head realizedHead, block string) (client *http.Client, url string) {
@@ -348,5 +362,66 @@ func TestTheHeadTheScanFindsMostWithItsTrailersIsHeldAtMostItsPartsAndTheTerm(t 
 	}
 	if held > int64(parts.sum()) || parts.sum() > dearest.bytes() || dearest.bytes() > headAndTrailersHTTP1 {
 		t.Errorf("the head with its trailers is held in %d bytes, its parts add to %d, the dearest of the count's to %d, want them in that order and the last at most headAndTrailersHTTP1, %d", held, parts.sum(), dearest.bytes(), headAndTrailersHTTP1)
+	}
+}
+
+const (
+	ownKeysOfTheRepeatingBlock        = 200
+	keysTheRepeatingBlockRepeats      = 30
+	timesTheRepeatingBlockRepeatsThem = 32
+)
+
+func theTrailersOfABlockThatRepeatsKeys() (distinct []string, block string, lines int) {
+	distinct = canonicalFieldNames(trailerBlockHTTP1)[:ownKeysOfTheRepeatingBlock]
+	all := slices.Clone(distinct)
+	for _, name := range distinct[:keysTheRepeatingBlockRepeats] {
+		all = append(all, slices.Repeat([]string{name}, timesTheRepeatingBlockRepeatsThem)...)
+	}
+	return distinct, strings.Join(all[:len(all)-1], ":\n") + ":\n" + all[len(all)-1] + ":\r\n\r\n", len(all)
+}
+
+func TestAnHTTP1HeadWhoseBlockOfTrailersRepeatsKeysIsHeldAtMostItsPartsAndHeadAndTrailersHTTP1(t *testing.T) {
+	if inAProcessOfItsOwn(t) {
+		return
+	}
+	sizedForTheBounds(t)
+	trailers, block, lines := theTrailersOfABlockThatRepeatsKeys()
+	head := headOfAMix(t, headOfAMixPrefix, "\n\n", theDearestHeadAt(1e-24).announced, trailers)
+	client, url := answerWithTrailers(t, head, block)
+	var keys keysRead
+	held := heldOnceRead(t, client, url, &keys)
+	parts := headPartsAtMost(headMix{keys: head.fieldLines + headOfAMixKeys, announced: head.announced, announcedBytes: head.announcedBytes, trailers: len(trailers), trailerLines: lines, repeated: keys.repeated})
+	t.Logf("a head of %d bytes of %d field lines and %d announced names, then %d trailers on %d lines, %d of them repeated %d times: held %.3f MiB; its parts add to %.3f MiB, headAndTrailersHTTP1 is %.3f MiB",
+		len(head.text), head.fieldLines, head.announced, len(trailers), lines, keysTheRepeatingBlockRepeats, timesTheRepeatingBlockRepeatsThem, mib(uint64(held)), mib(uint64(parts.sum())), mib(headAndTrailersHTTP1))
+	if want := keysTheRepeatingBlockRepeats * heldByRepeats()[timesTheRepeatingBlockRepeatsThem]; keys.repeated != want || keys.trailer != head.announced+len(trailers) || lines < mostMapHint {
+		t.Errorf("the response has %d keys of Trailer and keeps %d bytes in the slices of repeated keys, from %d lines, want %d keys, %d bytes and at least %d lines", keys.trailer, keys.repeated, lines, head.announced+len(trailers), want, mostMapHint)
+	}
+	if want := trailersReadAtTail(len(trailers), mostMapHint, mapTail); parts.trailers != want {
+		t.Errorf("the trailers' own read is %d bytes in the parts, want %d: its map and slice of values at the hint of %d, and a copy of each of its %d names", parts.trailers, want, mostMapHint, len(trailers))
+	}
+	if held > int64(parts.sum()) || parts.sum() > headAndTrailersHTTP1 {
+		t.Errorf("the head with its trailers is held in %d bytes and its parts add to %d, want them in that order and the last at most headAndTrailersHTTP1, %d", held, parts.sum(), headAndTrailersHTTP1)
+	}
+}
+
+func TestAnHTTP1HeadWhoseTrailerValueIsOnSeveralLinesIsHeldAtMostItsPartsAndHeadAndTrailersHTTP1(t *testing.T) {
+	if inAProcessOfItsOwn(t) {
+		return
+	}
+	sizedForTheBounds(t)
+	dearest := theDearestHeadAt(mapTail)
+	trailers, block := theTrailersOfAFullBlock()
+	head := headOfAMixOnLines(t, headOfAMixPrefix, "\n\n", dearest.announced, trailers, dearest.valueLines)
+	client, url := answerWithTrailers(t, head, block)
+	var keys keysRead
+	held := heldOnceRead(t, client, url, &keys)
+	parts := head.parts()
+	t.Logf("a head of %d bytes of %d field lines and %d announced names on %d Trailer lines, then %d trailers: held %.3f MiB; its parts add to %.3f MiB, headAndTrailersHTTP1 is %.3f MiB",
+		len(head.text), head.fieldLines, head.announced, head.valueLines, len(trailers), mib(uint64(held)), mib(uint64(parts.sum())), mib(headAndTrailersHTTP1))
+	if head.valueLines < 2 || keys.trailer != head.announced+len(trailers) || parts.value != valueBytesAtMost(head.announcedBytes-1, head.valueLines) || parts.value <= valueBytesAtMost(head.announcedBytes-1, 1) {
+		t.Errorf("the head has its value on %d lines and the response %d keys of Trailer, and its parts take %d bytes for the value, want more than one line, %d keys and the strings of its lines, more than the one string's %d", head.valueLines, keys.trailer, parts.value, head.announced+len(trailers), valueBytesAtMost(head.announcedBytes-1, 1))
+	}
+	if held > int64(parts.sum()) || parts.sum() > headAndTrailersHTTP1 {
+		t.Errorf("the head with its trailers is held in %d bytes and its parts add to %d, want them in that order and the last at most headAndTrailersHTTP1, %d", held, parts.sum(), headAndTrailersHTTP1)
 	}
 }

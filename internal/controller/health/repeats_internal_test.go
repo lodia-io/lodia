@@ -167,6 +167,26 @@ func TestASliceOfStringsTakesTheSizeClassOfItsBytesAndTheAllocatorsHeaderPastFiv
 	}
 }
 
+func TestASliceOfPointersTakesTheSizeClassOfItsBytesAndTheAllocatorsHeaderOfEightBytes(t *testing.T) {
+	if inAProcessOfItsOwn(t) {
+		return
+	}
+	tried := map[int]bool{}
+	for _, class := range sizeClasses {
+		for _, elements := range []int{class/8 - 1, class / 8, class/8 + 1} {
+			if elements < 1 || tried[elements] || elements*8 <= mostWithoutHeader {
+				continue
+			}
+			tried[elements] = true
+			var made []*byte
+			if got, want := allocatedBy(func() { made = make([]*byte, elements) }), sizeClassP(8*elements); got != want {
+				t.Errorf("make([]*byte, %d) allocates %d bytes, want %d", elements, got, want)
+			}
+			runtime.KeepAlive(made)
+		}
+	}
+}
+
 func TestATableOfGroupsTakesTheSameSizeClassWithTheHeaderAndWithoutIt(t *testing.T) {
 	for slots := 8; slots <= 1024; slots *= 2 {
 		if got, want := tableBytes(slots), sizeClass(slots/8*mapGroup); got != want {
@@ -317,7 +337,7 @@ func TestABlockThatRepeatsTheKeysTheCountPicksKeepsTheSlicesTheCountAddsAndFills
 	}
 }
 
-func bruteDearest(s *searchedTail, valueLines func(announced int) (least, most int)) (found, foundWithNoRepeats int) {
+func bruteDearest(s *searchedTail, valueLines func(announced int) (least, most int)) (found, foundWithNoRepeats int, at countedHead) {
 	repeats := headRepeats()
 	for n := range s.block {
 		least, most := valueLines(n)
@@ -328,32 +348,38 @@ func bruteDearest(s *searchedTail, valueLines func(announced int) (least, most i
 			}
 			for repeated := 0; repeated <= min(room, mostHeadRepeatedBytes); repeated++ {
 				total := announcedPart(n, lines) + s.block[n] + s.byLineBytes[room-repeated] + int(repeats[repeated])
-				found = max(found, total)
+				if total > found {
+					found, at = total, countedHead{announced: n, valueLines: lines, headRepeated: repeated}
+				}
 				if repeated == 0 {
 					foundWithNoRepeats = max(foundWithNoRepeats, total)
 				}
 			}
 		}
 	}
-	return found, foundWithNoRepeats
+	return found, foundWithNoRepeats, at
 }
 
 func TestTheDearestHeadByTheBoundsOfItsRepeatedBytesIsTheDearestByEveryChoiceOfThem(t *testing.T) {
 	s := searchOfTail(mapTail)
 	repeatedWins := 0
-	for _, w := range []struct{ from, to int }{{0, 0}, {0, 30}, {60, 90}, {1000, 1030}, {5000, 5030}, {9000, 9030}, {12850, 12880}, {16000, 16030}, {21890, 21914}} {
+	for _, w := range []struct{ from, to int }{{0, 0}, {0, 30}, {60, 90}, {1000, 1030}, {1267, 1267}, {5000, 5030}, {9000, 9030}, {12850, 12880}, {12988, 12988}, {13128, 13128}, {16000, 16030}, {21890, 21914}} {
 		within := func(announced int) (int, int) {
 			if announced < w.from || announced > w.to {
 				return 1, 0
 			}
 			return valueLinesOf(announced)
 		}
-		found, withNoRepeats := bruteDearest(s, within)
-		if got := s.dearest(within); got.found != found || got.bytes() != found {
+		found, withNoRepeats, at := bruteDearest(s, within)
+		got := s.dearest(within)
+		if got.found != found || got.bytes() != found {
 			t.Errorf("among %d to %d announced names the dearest head is %d bytes, its parts add to %d, want %d, the dearest by every number of repeated bytes", w.from, w.to, got.found, got.bytes(), found)
 		}
 		if found > withNoRepeats {
 			repeatedWins++
+			if got.announced != at.announced || got.valueLines != at.valueLines || got.headRepeated != at.headRepeated {
+				t.Errorf("among %d to %d announced names the dearest head is at %d names, its value on %d lines and %d repeated bytes, want %d, %d and %d", w.from, w.to, got.announced, got.valueLines, got.headRepeated, at.announced, at.valueLines, at.headRepeated)
+			}
 		}
 	}
 	if repeatedWins == 0 {
@@ -385,6 +411,61 @@ func TestTheBlockTheCountAddsToANumberOfAnnouncedNamesIsTheDearestOfEveryNumberO
 		}
 		if overAThousand == 0 {
 			t.Errorf("at a chance of %g a depth no number of announced names read has a dearest block of more than 1,000 keys", tail)
+		}
+	}
+}
+
+func theMostRepeatsOfKeysBySteps(budget int) []int {
+	held := heldByRepeats()
+	var steps []int
+	for lines := 1; lines < len(held); lines++ {
+		if held[lines] > held[lines-1] {
+			steps = append(steps, lines)
+		}
+	}
+	withKeys := make([][]int, oneByteFieldNames+1)
+	withKeys[0] = make([]int, budget+1)
+	for keys := 1; keys <= oneByteFieldNames; keys++ {
+		withKeys[keys] = slices.Clone(withKeys[keys-1])
+		for spent := range withKeys[keys] {
+			for _, lines := range steps {
+				if 3*lines <= spent {
+					withKeys[keys][spent] = max(withKeys[keys][spent], withKeys[keys-1][spent-3*lines]+held[lines])
+				}
+			}
+		}
+	}
+	best := slices.Clone(withKeys[oneByteFieldNames])
+	for spent := range best {
+		for _, lines := range steps {
+			if 4*lines <= spent {
+				best[spent] = max(best[spent], best[spent-4*lines]+held[lines])
+			}
+		}
+	}
+	return best
+}
+
+func TestAHeadThatRepeatsKeysBuysTheSameAsAnotherSearchByStepsWhenItSpendsEnoughBytesToUseEveryKeyOfOneByte(t *testing.T) {
+	const most = 12000
+	repeats, want := headRepeats(), theMostRepeatsOfKeysBySteps(most)
+	for budget := range want {
+		if int(repeats[budget]) != want[budget] {
+			t.Fatalf("a head that repeats keys within %d bytes buys %d bytes of slices, want %d", budget, repeats[budget], want[budget])
+		}
+	}
+}
+
+func TestNoBlockRepeatsAsManyKeysAsThereAreKeysOfOneByteSoTheCostOfTheLastOfThemIsNone(t *testing.T) {
+	for keys := 1; keys <= trailerFieldsHTTP1; keys++ {
+		repeated := 0
+		for _, lines := range repeatsOfABlock(keys) {
+			if lines > 0 {
+				repeated++
+			}
+		}
+		if repeated >= oneByteFieldNames {
+			t.Errorf("a block of %d keys repeats %d of them, want fewer than the %d of one byte", keys, repeated, oneByteFieldNames)
 		}
 	}
 }

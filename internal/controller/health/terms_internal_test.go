@@ -16,6 +16,8 @@ import (
 )
 
 const (
+	headSlack = 6 * mebibyte / 10
+
 	nameCopy   = 16
 	valueCopy  = 16
 	valueSlice = 16
@@ -29,19 +31,13 @@ const (
 	trailerFieldsHTTP1  = oneByteFieldNames + (trailerBlockHTTP1-3*oneByteFieldNames)/4
 )
 
-func TestEveryTermOfAReadIsAtLeastItsPartsAndLessThanTheStepOfItsRounding(t *testing.T) {
-	for _, c := range []struct {
-		name        string
-		term, parts int
-		step        int
-	}{
-		{"the head of an HTTP/1.1 answer, its names, field lines and Trailer value, with the trailers merged into its names", headAndTrailersHTTP1, theDearestHeadAt(1e-24).bytes(), mebibyte / 10},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			if c.term < c.parts || c.term-c.parts >= c.step {
-				t.Errorf("the term is %d bytes and its parts add to %d, want the term at least the parts and under %d bytes more", c.term, c.parts, c.step)
-			}
-		})
+func TestTheTermOfTheHeadAndItsTrailersIsTheCountAtOneInASeptillionADepthAndRoomToSpare(t *testing.T) {
+	count := theDearestHeadAt(1e-24).bytes()
+	if got := fmt.Sprintf("%.2f", mib(uint64(count))); got != "2.80" {
+		t.Errorf("the count of the head and its trailers at 1e-24 a depth is %s MiB, want 2.80", got)
+	}
+	if count+headSlack > headAndTrailersHTTP1 {
+		t.Errorf("the term is %d bytes, want at least the count, %d, and the slack, %d", headAndTrailersHTTP1, count, headSlack)
 	}
 }
 
@@ -102,15 +98,15 @@ func TestEveryFigureOfTheDerivationIsTheSumOfItsTermsRoundedUp(t *testing.T) {
 		decimals int
 		want     float64
 	}{
-		{"a read, MiB", mib(readsBound(1)), 1, 25.3},
-		{"a read apart from its connection, MiB", mib(readsBound(1) - connectionMargin), 1, 23.3},
-		{"the two reads of a pass of health-nodes, MiB", mib(readsBound(nodesReads)), 1, 50.6},
-		{"a pass of health-nodes, MiB", mib(pass), 1, 54.6},
-		{"a pass of health over a held restore, MiB", mib(readsBound(restoreReads)), 1, 177.1},
+		{"a read, MiB", mib(readsBound(1)), 1, 25.9},
+		{"a read apart from its connection, MiB", mib(readsBound(1) - connectionMargin), 1, 23.9},
+		{"the two reads of a pass of health-nodes, MiB", mib(readsBound(nodesReads)), 1, 51.8},
+		{"a pass of health-nodes, MiB", mib(pass), 1, 55.8},
+		{"a pass of health over a held restore, MiB", mib(readsBound(restoreReads)), 1, 181.3},
 		{"the connections of a tenant at rest, MiB", mib(uint64((nodesReads + restoreReads) * connectionMargin)), 1, 18},
 		{"a tenant at rest, MiB", mib(atRest), 1, 22},
-		{"100 passes of health-nodes, GiB", 100 * float64(pass) / gibibyte, 2, 5.34},
-		{"10 passes of health over a held restore, GiB", 10 * float64(readsBound(restoreReads)) / gibibyte, 2, 1.73},
+		{"100 passes of health-nodes, GiB", 100 * float64(pass) / gibibyte, 2, 5.45},
+		{"10 passes of health over a held restore, GiB", 10 * float64(readsBound(restoreReads)) / gibibyte, 2, 1.78},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if got := roundedUp(c.got, c.decimals); math.Abs(got-c.want) > 1e-9 {

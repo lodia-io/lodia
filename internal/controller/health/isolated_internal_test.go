@@ -29,6 +29,9 @@ func inAProcessOfItsOwn(t *testing.T) (ranApart bool) {
 	if err != nil || !strings.Contains(string(output), "--- PASS: "+t.Name()+" ") {
 		t.Fatalf("%s did not pass in a process of its own: %v\n%s", t.Name(), err, output)
 	}
+	if testing.Verbose() {
+		t.Logf("%s", output)
+	}
 	return true
 }
 

@@ -792,8 +792,8 @@ func TestTheTermHoldsTheCountAtAChanceOfOneInAMillionAndAtOneInASeptillion(t *te
 		if dearest.fieldLines != c.fieldLines || dearest.announced != c.announced || dearest.valueLines != c.valueLines || dearest.blockKeys != c.blockKeys || dearest.headRepeated != 0 || dearest.bytes() != c.bytes || dearest.found != c.bytes || dearest.parts != c.parts {
 			t.Errorf("at a chance of %g a depth the dearest head is %d field lines and %d announced names, the value on %d lines, then a block of %d keys, of %d bytes, found as %d, with the parts %+v, want %d, %d, %d, %d, %d and the parts %+v", c.tail, dearest.fieldLines, dearest.announced, dearest.valueLines, dearest.blockKeys, dearest.bytes(), dearest.found, dearest.parts, c.fieldLines, c.announced, c.valueLines, c.blockKeys, c.bytes, c.parts)
 		}
-		if dearest.bytes() > headAndTrailersHTTP1 {
-			t.Errorf("at a chance of %g a depth the dearest head takes %d bytes, more than the term, %d", c.tail, dearest.bytes(), headAndTrailersHTTP1)
+		if dearest.bytes()+headSlack > headAndTrailersHTTP1 {
+			t.Errorf("at a chance of %g a depth the dearest head takes %d bytes, want it and the slack, %d, at most the term, %d", c.tail, dearest.bytes(), headSlack, headAndTrailersHTTP1)
 		}
 	}
 }
