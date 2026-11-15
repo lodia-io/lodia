@@ -506,6 +506,22 @@ func TestTheTailOfABinomialIsTheExactSumTheArgumentQuotes(t *testing.T) {
 	}
 }
 
+func TestTheTailOfABinomialOfFewTrialsIsTheExactSum(t *testing.T) {
+	for _, c := range []struct {
+		trials, atLeast int
+		p, want         float64
+	}{
+		{8, 1, 2.7218622682327275e-13, 2.1774898145841075e-12},
+		{16, 14, 0.1, 9.865e-13},
+		{32, 20, 0.1, 6.805576836257488e-13},
+	} {
+		got := binomialAtLeast(c.trials, c.p, c.atLeast)
+		if math.Abs(got-c.want) > c.want*1e-6 {
+			t.Errorf("%d trials of chance %g hold %d at least with chance %g, want %g, the exact sum", c.trials, c.p, c.atLeast, got, c.want)
+		}
+	}
+}
+
 func TestTheCountOfPrefixesThatHoldAMapIsTheUnionBoundNotTheBinomialQuantile(t *testing.T) {
 	for _, c := range []struct {
 		prefixes int
