@@ -585,7 +585,7 @@ The phases, each term with the source of what runs in it:
     A reader that returns each chunk just past 15/16 full, as a body that arrives in pieces does, closes the 25th chunk at 7.75 MiB, before the cut, and opens the 26th: 8.3 MiB of closed chunks, 4.1 MiB open and the slice, 20.4 MiB.
     No chunk closes earlier than that, and the 27th, which opens at 11.6 MiB of body at the soonest, is past the cut, so 20.4 MiB is the most below it.
     `TestIoReadAllHoldsAtMostItsChunksAndTheSliceItReturnsAtTheCut` reads 1 to 8 MiB through the real `io.ReadAll` with each reader, finds the chunks' heap within 256 KiB of the sizes it offered, 16.27 and 20.38 MiB at 8 MiB, and nothing above 20.4 MiB.
-    One read of each of the 47 shapes below reaches 20.5 MiB of heap in use in every run.
+    One read of each of the 47 shapes below reaches 20.5 to 20.6 MiB of heap in use in every run.
   - The headers' map and the names a head announces, up to 2.4 MiB.
     net/http reads a response's head up to `maxResponseHeaderBytes` into a map of one slot for each name and a shared slice of strings for the values, `make(MIMEHeader, hint)` with the lines it counts in the bytes it has read, at most 1,000, and `fixTrailer` makes a map of its own for the names a `Trailer` line lists, with no hint, and a copy of each name that is not already as it would be written ([reader.go](https://github.com/golang/go/blob/go1.26.10/src/net/textproto/reader.go#L516-L603), [fixTrailer](https://github.com/golang/go/blob/go1.26.10/src/net/http/transfer.go#L767-L806)).
     It takes its lines from `bufio.Reader.ReadLine`, which ends a line at a line feed with or without a carriage return ([reader.go](https://github.com/golang/go/blob/go1.26.10/src/net/textproto/reader.go#L60-L81), [bufio.go](https://github.com/golang/go/blob/go1.26.10/src/bufio/bufio.go#L405-L438)), so a field line is 3 bytes at the least, a name of one byte, a colon and a line feed, and a name of a field is a token: 77 characters make 77 names of one byte and 5,929 of two ([reader.go](https://github.com/golang/go/blob/go1.26.10/src/net/textproto/reader.go#L686-L712)).
@@ -608,8 +608,9 @@ The phases, each term with the source of what runs in it:
     `TestTheLeastAnHTTP1FieldLineAddsToAHeadIsItsCopiesAndAnElementOfTheSliceSinceTheMapGrowsInSteps` holds the 48 bytes of the key, the value and the slice's element: a head of 150 to 158 field lines of 16 bytes grows by 48 at the least with each line, the map's tables being allocated in steps that no one line shows.
     `TestTheSizesTheTermsAreBuiltFromAreTheSourcesOnThisPlatform` holds the copy of a name and of a value, 16 bytes each, and an element of the slice of values, 16, by allocating each alone, the least of 20 runs of 100 to 10,000 rounds, which allocations by other goroutines can only add to.
     The head is then a header map of its lines, two keys more than they are, and a map of the names, with the copies and the value: for a head of `l` lines and `n` names, in the bytes of the 65,536 of the head that the lines and the names leave, the most over every `n` and the most lines the rest buys.
-    The dearest head, found by `theDearestHead` over every `n` from 0 to 21,831 with the cheapest names, 77 field lines of one byte at 3 bytes, 5,929 of two at 4, and 256 names of one byte at 2 bytes and the rest of two at 3, is 5,682 field lines and 14,352 announced names, 16 times 897: the names' map takes 32 tables, 1,574,256 bytes, the header map of 5,684 keys 442,896, the copies 320,576, the elements 91,328 and the value 42,800; 2,471,856 bytes, 2.36 MiB, and the term is 2.4 MiB.
+    The dearest head, found by `theDearestHead` over every `n` from 0 to 21,831 with the cheapest names, 77 field lines of one byte at 3 bytes, 5,929 of two at 4, and 256 names of one byte at 2 bytes and the rest of two at 3, is 5,682 field lines and 14,352 announced names, 16 times 897: the names' map takes 32 tables, 1,574,192 bytes, the header map of 5,684 keys 442,832, the copies 320,576, the elements 91,328 and the value 42,800; 2,471,728 bytes, 2.36 MiB, and the term is 2.4 MiB.
     It is 2.31 to 2.36 MiB for any chance from 1e-6 to 1e-16, where a table more or fewer is 0.047 MiB.
+    `TestTheTailOfABinomialIsTheExactSumTheArgumentQuotes` holds the tail to the exact sums, and `TestTheDearestHeadIsTheMixTheArgumentNamesAndItsPartsAreTheOnesItQuotes` the mix and its five parts.
     `TestTheDearestHeadTheTablesAllowIsHeldAtMostItsPartsAndHeadersHTTP1` reads the head it builds from that mix, with names that cost more than the count's, 5,058 lines and 14,352 names, through Health's client, and finds it held at the most of its own parts and its parts at most the dearest's.
     `TestAnHTTP1HeadOfFieldLinesEndingInALineFeedIsHeldAtMostHeadersHTTP1` reads a head of 65,534 bytes of 13,634 field lines ended by a line feed, 13,636 keys, and `TestAnHTTP1HeadOfNamesAndFieldLinesTogetherWithTheTrailerValueIsHeldAtMostHeadersHTTP1` one of 51 field lines of one byte and a `Trailer` of 195 names of one byte and 21,636 of two, each at most its parts.
   - The trailers of a chunked answer, up to 0.3 MiB.
@@ -696,23 +697,23 @@ The runs below are on go1.26.10, `go version go1.26.10 darwin/arm64`, on 16 core
 
 | the measure | runs | live heap | heap in use | structural bound |
 |---|---|---|---|---|
-| one read, the most of 47 shapes | 12 | 8.1 to 20.4 MiB | 20.5 MiB | 25.2 MiB |
-| a read whose answer of 16 MiB is cut | 1,200 | 12.5 to 28.5 MiB | 20.5 MiB | 25.2 MiB |
-| the same, headers at their bound | 1,200 | 13.6 to 29.6 MiB | 21.6 MiB | 25.2 MiB |
-| the same, announced names at their bound | 1,200 | 9.9 to 18.8 MiB | 17.9 MiB | 25.2 MiB |
-| one pass of `health-nodes`, the Lease read, both lists answered together and the renewal | 12 | 20.6 to 32.8 MiB | 32.7 to 40.8 MiB | 54.4 MiB |
-| one pass of `health` over a held restore, seven answers as they come | 12 | 50.2 to 86.4 MiB | 93.6 to 130.8 MiB | 176.4 MiB |
-| the same, its seven lists answered together | 12 | 66.3 to 127.0 MiB | 90.8 to 143.0 MiB | 176.4 MiB |
-| one pass of `health` over 500 configurations of 256 empty webhooks, named with 253 bytes, one list or both | 12 | 1.1 to 1.4 MiB or 1.6 to 1.9 MiB | 2.4 to 2.9 MiB or 2.8 to 3.3 MiB | |
-| the same, named with 2,048 bytes | 12 | 1.6 to 2.3 MiB or 3.7 to 4.8 MiB | 3.0 to 3.6 MiB or 5.1 to 6.5 MiB | |
-| one pass over a tenant padded to its bounds, 62 responses | 12 | 12.9 to 30.6 MiB | 25.0 to 41.3 MiB | 54.4 MiB |
-| 100 passes at once on 100 tenants | 12 | 1.22 to 1.36 GiB, 12.4 to 13.9 MiB a pass | 1.30 to 1.54 GiB | 5.32 GiB |
+| one read, the most of 47 shapes | 12 | 8.1 to 20.4 MiB | 20.5 to 20.6 MiB | 25.1 MiB |
+| a read whose answer of 16 MiB is cut | 1,200 | 12.5 to 28.5 MiB | 20.5 MiB | 25.1 MiB |
+| the same, headers at their bound | 1,200 | 13.6 to 29.6 MiB | 21.6 MiB | 25.1 MiB |
+| the same, the dearest head | 1,200 | 10.1 to 26.1 MiB | 18.1 MiB | 25.1 MiB |
+| one pass of `health-nodes`, the Lease read, both lists answered together and the renewal | 12 | 20.4 to 28.4 MiB | 28.7 to 40.8 MiB | 54.2 MiB |
+| one pass of `health` over a held restore, seven answers as they come | 12 | 49.7 to 98.0 MiB | 70.3 to 122.8 MiB | 175.7 MiB |
+| the same, its seven lists answered together | 12 | 66.1 to 118.4 MiB | 90.4 to 143.0 MiB | 175.7 MiB |
+| one pass of `health` over 500 configurations of 256 empty webhooks, named with 253 bytes, one list or both | 12 | 1.2 to 1.4 MiB or 1.6 to 1.9 MiB | 2.4 to 2.7 MiB or 2.8 to 3.1 MiB | |
+| the same, named with 2,048 bytes | 12 | 2.1 to 2.3 MiB or 3.3 to 3.9 MiB | 3.4 to 3.8 MiB or 5.3 to 6.5 MiB | |
+| one pass over a tenant padded to its bounds, 62 responses | 12 | 13.0 to 41.4 MiB | 22.4 to 45.4 MiB | 54.2 MiB |
+| 100 passes at once on 100 tenants | 12 | 1.21 to 1.41 GiB, 12.4 to 14.4 MiB a pass | 1.34 to 1.58 GiB | 5.30 GiB |
 
 The 100 passes at once open 200 connections to one listener, whose listen queue is 128 (`kern.ipc.somaxconn`); the twelve runs above ran one at a time.
-The closest any measure came to its bound is 3.6 MiB, the cut answer with the headers at their bound.
+The closest any measure came to its bound is 3.5 MiB, the cut answer with the headers at their bound.
 No run put a pass at the ceiling of its reads, since their chunks do not all peak together.
-A first pass of `health-nodes` over 5,000 Nodes and their 5,000 Leases, the most `health.maxNodes` counts by default, took 288, 282 and 276 ms in three runs on go1.26.10, and a pass over 5,001 Nodes, which stops at the bound, 284, 283 and 284 ms (`TestATenantOfMaxNodesNodesIsCountedWholeAtTheOperatorsTimeout`, on envtest, on 16 cores of an Apple M4 Max, one run at a time).
-The race detector slows it tenfold, to 2.71, 2.69 and 2.77 s for 5,000 Nodes and 2.66, 2.69 and 2.71 s for 5,001, in three runs of `TestATenantOfMaxNodesNodesIsCountedWholeUnderTheRaceDetector`, which counts the same tenant with a `Timeout` of a minute, against the operator's of 5 s.
+A first pass of `health-nodes` over 5,000 Nodes and their 5,000 Leases, the most `health.maxNodes` counts by default, took 284, 269 and 272 ms in three runs on go1.26.10, and a pass over 5,001 Nodes, which stops at the bound, 278, 286 and 278 ms (`TestATenantOfMaxNodesNodesIsCountedWholeAtTheOperatorsTimeout`, on envtest, on 16 cores of an Apple M4 Max, one run at a time).
+The race detector slows it tenfold, to 2.67, 4.74 and 3.00 s for 5,000 Nodes and 2.62, 4.88 and 2.93 s for 5,001, in three runs of `TestATenantOfMaxNodesNodesIsCountedWholeUnderTheRaceDetector`, which counts the same tenant with a `Timeout` of a minute, against the operator's of 5 s.
 That first test is built without the race detector, and `make test` runs it in a step of its own.
 Between passes it keeps at most `health.maxNodes` Lease versions and Node summaries per tenant ([review checklist](review-checklist.md), item 10).
 The tenant's administrator can have any server answer the lists, so the pass bounds every string it keeps itself:

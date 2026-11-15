@@ -153,12 +153,26 @@ func alignLog2(n int) int {
 	return d
 }
 
-func headBytesAtMost(fieldLines, announced, announcedBytes int) int {
+type headParts struct{ headerMap, announcedMap, copies, elements, value int }
+
+func (p headParts) sum() int {
+	return p.headerMap + p.announcedMap + p.copies + p.elements + p.value
+}
+
+func headPartsAtMost(fieldLines, announced, announcedBytes int) headParts {
 	keys := fieldLines + headKeysOutsideTheLines
 	hint := min(keys, 1000)
-	header := mapBytesAtMost(keys, hint) + sizeClass(valueSlice*hint) + valueSlice*max(0, keys-1000) + nameCopy*keys
-	trailer := mapBytesAtMost(announced, 0) + nameCopy*announced + announcedBytes
-	return header + trailer
+	return headParts{
+		headerMap:    mapBytesAtMost(keys, hint),
+		announcedMap: mapBytesAtMost(announced, 0),
+		copies:       nameCopy * (keys + announced),
+		elements:     sizeClass(valueSlice*hint) + valueSlice*max(0, keys-1000),
+		value:        announcedBytes,
+	}
+}
+
+func headBytesAtMost(fieldLines, announced, announcedBytes int) int {
+	return headPartsAtMost(fieldLines, announced, announcedBytes).sum()
 }
 
 func trailersBytesAtMost(fields int) int {
@@ -298,5 +312,39 @@ func TestAMapOfHeadersHoldsAtMostWhatItsTablesTakeAtEverySplitPointAndOneKeyOnEa
 				}
 			}
 		})
+	}
+}
+
+func TestTheTailOfABinomialIsTheExactSumTheArgumentQuotes(t *testing.T) {
+	for _, c := range []struct {
+		trials int
+		depth  int
+		want   float64
+	}{
+		{5684, 3, 2.7218622682327275e-13},
+		{3000, 2, 6.858138278973632e-10},
+		{21831, 5, 8.173406719980120e-16},
+		{14352, 4, 0.5048723029221396},
+	} {
+		got := binomialAtLeast(c.trials, math.Pow(2, -float64(c.depth)), mapSplit)
+		if math.Abs(got-c.want) > c.want*1e-6 {
+			t.Errorf("a prefix of %d bits of %d keys holds %d of them with chance %g, want %g, the exact sum", c.depth, c.trials, mapSplit, got, c.want)
+		}
+	}
+}
+
+func TestTheDearestHeadIsTheMixTheArgumentNamesAndItsPartsAreTheOnesItQuotes(t *testing.T) {
+	dearest := theDearestHead()
+	if dearest.fieldLines != 5682 || dearest.announced != 14352 || dearest.bytes != 2471728 {
+		t.Errorf("the dearest head is %d field lines and %d announced names of %d bytes, want 5,682, 14,352 and 2,471,728", dearest.fieldLines, dearest.announced, dearest.bytes)
+	}
+	want := headParts{headerMap: 442832, announcedMap: 1574192, copies: 320576, elements: 91328, value: 42800}
+	if got := headPartsAtMost(dearest.fieldLines, dearest.announced, announcedBytes(dearest.announced)); got != want {
+		t.Errorf("its parts are %+v, want %+v", got, want)
+	}
+	for keys, tables := range map[int]int{896: 1, 897: 2, 449: 1, 14352: 32, 21831: 32} {
+		if got, want := (mapBytesAtMost(keys, 0)-mapStruct-sizeClass(8*alignUpPow2(max(1, tables))))/(tableBytes(1024)+mapTableStruct), tables; got != want {
+			t.Errorf("a map of %d keys has %d tables of 1,024 slots counted, want %d", keys, got, want)
+		}
 	}
 }

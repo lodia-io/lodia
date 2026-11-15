@@ -529,7 +529,7 @@ func cutAnswers(t *testing.T, body []byte, shape cutShape) *tenant {
 	t.Helper()
 	head := "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + strconv.Itoa(len(body)) + "\r\n"
 	if shape.announced {
-		head = theDearestHeadOf("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n", "\r\n").text
+		head = theDearestHeadOf("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n", "\r\n\r\n").text
 		body = []byte(fmt.Sprintf("%x\r\n%s\r\n0\r\n\r\n", len(body), body))
 	}
 	if shape.headers {
@@ -537,7 +537,9 @@ func cutAnswers(t *testing.T, body []byte, shape cutShape) *tenant {
 			head += name + ":\n"
 		}
 	}
-	head += "\r\n"
+	if !shape.announced {
+		head += "\r\n"
+	}
 	if (shape.headers || shape.announced) && len(head) != maxResponseHeaderBytes && len(head) < maxResponseHeaderBytes-8 {
 		t.Fatalf("the head has %d bytes, want it to fill the bound of %d", len(head), maxResponseHeaderBytes)
 	}
