@@ -41,7 +41,7 @@ Built; `internal/controller/health` holds it.
 ## Consequences
 
 - An answer of a tenant's API server crosses the management cluster's network uncompressed.
-  A page of 100 of the repository's kubelet Nodes is 750,385 bytes against 22,448 gzipped, 33 times more, measured on envtest's kube-apiserver 1.35.0 by `TestMeasureTheBytesOfAPageOf100KubeletNodesWithAndWithoutGzip`, which [operations](../operations.md#capacity) runs; a tenant of 5,000 Nodes reads 50 of them, 37.5 MB, each time `health-nodes` samples it, every 30 s.
+  A page of 100 of the repository's kubelet Nodes is 750,385 bytes, and 21,471 to 24,794 gzipped, 30 to 35 times fewer, in nine runs of `TestMeasureTheBytesOfAPageOf100KubeletNodesWithAndWithoutGzip` on envtest's kube-apiserver 1.35.0, which [operations](../operations.md#capacity) runs; a tenant of 5,000 Nodes reads 50 of them, 37.5 MB, each time `health-nodes` samples it, every 30 s.
 - A held restore reads over seven TCP connections of a tenant where HTTP/2 used one, and `health-nodes` over two: a TLS handshake for each of them when it is first opened or after 90 s idle, and the margin of 2 MiB for each connection in the figures of [operations](../operations.md#capacity).
 - A tenant at rest keeps at most 9 idle connections beside its summaries, 22.0 MiB, and a tenant whose server never answers keeps at most the cap of them open, whatever its cadence.
 - The connections of a client stay with the replica of a highly available tenant that they reached until they close, since `--goaway-chance` closes HTTP/2 connections only ([goaway.go](https://github.com/kubernetes/apiserver/blob/v0.37.1/pkg/server/filters/goaway.go#L67)): Health's reads go to the replicas its connections reached when they were dialed, not to each in turn.
