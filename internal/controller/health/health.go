@@ -817,10 +817,11 @@ func (c *tenantClients) of(kubeconfig []byte) (*tenant, error) {
 func (c *tenantClients) dialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
-	if c.dial != nil {
-		return c.dial(ctx, network, address)
+	dial := c.dial
+	if dial == nil {
+		dial = (&net.Dialer{}).DialContext
 	}
-	return (&net.Dialer{}).DialContext(ctx, network, address)
+	return dial(ctx, network, address)
 }
 
 // probe returns the status code the endpoint answered with, or 0 for none, and

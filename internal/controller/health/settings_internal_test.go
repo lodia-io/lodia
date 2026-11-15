@@ -274,3 +274,35 @@ func TestTheTenantClientsBoundTheirHandshakeByTheTimeoutOfTheirReconciler(t *tes
 		})
 	}
 }
+
+func TestTheDialFunctionOfAClientGetsAContextThatEndsWithinTimeoutWhicheverDialFunctionItIs(t *testing.T) {
+	const timeout = 7 * time.Second
+	for _, c := range []struct {
+		name   string
+		parent func() (context.Context, context.CancelFunc)
+		most   time.Duration
+	}{
+		{"net/http's context, with no deadline", func() (context.Context, context.CancelFunc) { return context.WithCancel(context.Background()) }, timeout},
+		{"a context that ends sooner", func() (context.Context, context.CancelFunc) {
+			return context.WithTimeout(context.Background(), time.Second)
+		}, time.Second},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var left time.Duration
+			var bounded bool
+			clients := &tenantClients{timeout: timeout, dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				deadline, ok := ctx.Deadline()
+				bounded, left = ok, time.Until(deadline)
+				return nil, errors.New("no connection")
+			}}
+			ctx, cancel := c.parent()
+			defer cancel()
+			if _, err := clients.dialContext(ctx, "tcp", "tenant.example:6443"); err == nil {
+				t.Fatal("the dial function that refuses returned a connection")
+			}
+			if !bounded || left <= 0 || left > c.most {
+				t.Errorf("the dial function got a context that ends in %v, bounded %t, want one that ends in at most %v", left, bounded, c.most)
+			}
+		})
+	}
+}
