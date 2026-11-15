@@ -547,7 +547,7 @@ func cutAnswers(t *testing.T, body []byte, shape cutShape) *tenant {
 	if !shape.announced {
 		head += "\r\n"
 	}
-	if (shape.headers || shape.announced) && len(head) != maxResponseHeaderBytes && len(head) < maxResponseHeaderBytes-8 {
+	if shape.headers && len(head) != maxResponseHeaderBytes && len(head) < maxResponseHeaderBytes-8 {
 		t.Fatalf("the head has %d bytes, want it to fill the bound of %d", len(head), maxResponseHeaderBytes)
 	}
 	kubeconfig, _ := answerOnTLS(t, head, string(body))
