@@ -313,18 +313,20 @@ var pieceBounds = sync.OnceValue(func() []int {
 
 var valueMemo = struct {
 	sync.Mutex
-	bytes map[[2]int]int
-}{bytes: map[[2]int]int{}}
+	bytes [][]int32
+}{}
 
 func valueBytesAtMost(length, lines int) int {
 	if lines <= 1 {
 		return sizeClass(length)
 	}
-	key := [2]int{length, lines}
 	valueMemo.Lock()
-	best, ok := valueMemo.bytes[key]
+	for len(valueMemo.bytes) <= lines {
+		valueMemo.bytes = append(valueMemo.bytes, make([]int32, maxResponseHeaderBytes+1))
+	}
+	best := int(valueMemo.bytes[lines][length])
 	valueMemo.Unlock()
-	if ok {
+	if best != 0 {
 		return best
 	}
 	best = sizeClass(length)
@@ -335,7 +337,7 @@ func valueBytesAtMost(length, lines int) int {
 		best = max(best, sizeClass(piece)+valueBytesAtMost(length-1-piece, lines-1))
 	}
 	valueMemo.Lock()
-	valueMemo.bytes[key] = best
+	valueMemo.bytes[lines][length] = int32(best)
 	valueMemo.Unlock()
 	return best
 }
@@ -450,13 +452,13 @@ func headsOf(tail float64, trailing func(headMix) headMix) []countedHead {
 	}
 }
 
-func mostKeysOfTheCount() int {
+var mostKeysOfTheCount = sync.OnceValue(func() int {
 	most := 0
 	for _, head := range headsCountedAt(mapTail) {
 		most = max(most, head.announced+trailerFieldsHTTP1, head.fieldLines+headKeysOutsideTheLines)
 	}
 	return most
-}
+})
 
 func theDearestHead() countedHead { return theDearestHeadAt(mapTail) }
 
@@ -505,7 +507,7 @@ func TestTheSizeClassesTheMapsAreBuiltFromAreTheAllocators(t *testing.T) {
 }
 
 func mapSplitPoints(hint func(keys int) int) []int {
-	points := map[int]bool{0: true, 1: true, 8: true}
+	points := map[int]bool{0: true, 1: true, 8: true, mostKeysOfTheCount(): true}
 	last := -1
 	for keys := 1; keys <= mostKeysOfTheCount(); keys++ {
 		if bytes := mapBytesAtMost(keys, hint(keys)); bytes != last {
