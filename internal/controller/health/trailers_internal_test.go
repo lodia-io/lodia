@@ -296,6 +296,7 @@ func TestTheMostAHeadOfDistinctNamesAndFieldLinesWithItsTrailersHoldsIsFoundBySc
 	sizedForTheBounds(t)
 	trailers, block := theTrailersOfAFullBlock()
 	var most, mostNames, mostLines int64
+	var scanned int
 	for announced := 12000; ; announced += 200 {
 		if len(announcedNamesApartFrom(trailers, announced, maxResponseHeaderBytes-len(headOfAMixPrefix)-len("Trailer: ")-len("\n\n"))) < announced {
 			break
@@ -304,6 +305,7 @@ func TestTheMostAHeadOfDistinctNamesAndFieldLinesWithItsTrailersHoldsIsFoundBySc
 		client, url := answerWithTrailers(t, head, block)
 		var keys keysRead
 		held := heldByARead(t, client, url, &keys)
+		scanned++
 		if parts := head.parts().sum(); held > int64(parts) || parts > headAndTrailersHTTP1 {
 			t.Errorf("a head of %d announced names and %d field lines is held in %d bytes and its parts add to %d, want the parts at most headAndTrailersHTTP1, %d", head.announced, head.fieldLines, held, parts, headAndTrailersHTTP1)
 		}
@@ -311,14 +313,17 @@ func TestTheMostAHeadOfDistinctNamesAndFieldLinesWithItsTrailersHoldsIsFoundBySc
 			most, mostNames, mostLines = held, int64(head.announced), int64(head.fieldLines)
 		}
 	}
+	if scanned < 49 {
+		t.Errorf("the scan read %d heads, want one in every 200 announced names from 12,000 to the most a head carries, at least 49", scanned)
+	}
 	pinned := headOfAMix(t, headOfAMixPrefix, "\n\n", mostOfTheScanNames, mostOfTheScanLines, trailers)
 	client, url := answerWithTrailers(t, pinned, block)
 	var keys keysRead
 	held := heldOnceRead(t, client, url, &keys)
 	t.Logf("the most a head of distinct names and field lines holds with its trailers, of the heads of 12,000 announced names and over in steps of 200: %.3f MiB, at %d announced names and %d field lines; the head of %d names and %d lines the realized test and the gated measures read holds %.3f MiB; the term is %.3f MiB",
 		mib(uint64(most)), mostNames, mostLines, mostOfTheScanNames, mostOfTheScanLines, mib(uint64(held)), mib(headAndTrailersHTTP1))
-	if held < most-mebibyte/10 {
-		t.Errorf("the head of %d names and %d lines holds %d bytes, more than 0.1 MiB under the %d the scan found at %d names and %d lines", mostOfTheScanNames, mostOfTheScanLines, held, most, mostNames, mostLines)
+	if held < most-mebibyte/10 || most < held-mebibyte/10 {
+		t.Errorf("the head of %d names and %d lines holds %d bytes, more than 0.1 MiB from the %d the scan found at %d names and %d lines", mostOfTheScanNames, mostOfTheScanLines, held, most, mostNames, mostLines)
 	}
 }
 
