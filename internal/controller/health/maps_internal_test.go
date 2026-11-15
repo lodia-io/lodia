@@ -709,6 +709,20 @@ func TestMoreTrailerLinesThanTheCountReadsHoldNoMoreThanTheMostItFinds(t *testin
 	}
 }
 
+func TestTheTableASplitHoldsIsTheOneOfTheNamesMapTheTrailersAreMergedInto(t *testing.T) {
+	for _, c := range []struct{ announced, trailers, want int }{
+		{13, 0, 0},
+		{896, 0, 0},
+		{897, 0, 49192},
+		{13, 1042, 49192},
+		{12815, 1042, 49312},
+	} {
+		if got := headPartsAtMost(headMix{keys: 3, announced: c.announced, trailers: c.trailers}).split; got != c.want {
+			t.Errorf("a head of %d announced names and %d trailers holds %d bytes of a split besides its tables, want %d: a table and the directory it replaces, once the map has split", c.announced, c.trailers, got, c.want)
+		}
+	}
+}
+
 func TestTheTrailersOwnReadIsTheSameAtEveryChanceSinceItsTwoTablesSplitWithNone(t *testing.T) {
 	for _, tail := range []float64{1e-6, mapTail, 1e-24, 1e-100} {
 		if got := trailersReadAtTail(trailerFieldsHTTP1, tail); got != 132160 {
