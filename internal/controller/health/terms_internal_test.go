@@ -8,32 +8,22 @@ import (
 	"bytes"
 	"fmt"
 	"math"
-	"net/http"
 	"net/textproto"
 	"reflect"
 	"runtime"
-	"strconv"
 	"strings"
 	"testing"
 )
 
 const (
-	mapSlot    = 94
-	mapTable   = 1024 * 41
 	nameCopy   = 16
 	valueCopy  = 16
 	valueSlice = 16
 
-	announcedName = mapSlot + nameCopy
-	fieldLine     = mapSlot + nameCopy + valueCopy + valueSlice
-	trailerField  = 2*mapSlot + nameCopy + valueSlice
-
 	oneByteNames        = 256
 	oneByteFieldNames   = 77
 	twoByteFieldNames   = oneByteFieldNames * oneByteFieldNames
-	headRest            = maxResponseHeaderBytes - 2*oneByteNames - 3*oneByteFieldNames
 	announcedNamesHTTP1 = oneByteNames + (maxResponseHeaderBytes-2*oneByteNames)/3
-	headersHTTP1Parts   = oneByteNames*announcedName + oneByteFieldNames*fieldLine + (headRest*announcedName+2)/3 + 2*mapTable + maxResponseHeaderBytes
 	fieldLinesHTTP1     = oneByteFieldNames + twoByteFieldNames + (maxResponseHeaderBytes-3*oneByteFieldNames-4*twoByteFieldNames)/5
 	trailerBlockHTTP1   = 4096 - 3
 	trailerFieldsHTTP1  = oneByteFieldNames + (trailerBlockHTTP1-3*oneByteFieldNames)/4
@@ -45,8 +35,8 @@ func TestEveryTermOfAReadIsAtLeastItsPartsAndLessThanTheStepOfItsRounding(t *tes
 		term, parts int
 		step        int
 	}{
-		{"the head of an HTTP/1.1 answer, its names, field lines and Trailer value", headersHTTP1, headersHTTP1Parts, mebibyte / 10},
-		{"the trailers of a chunked HTTP/1.1 answer", trailersHTTP1, trailerFieldsHTTP1*trailerField + 2*mapTable, mebibyte / 10},
+		{"the head of an HTTP/1.1 answer, its names, field lines and Trailer value", headersHTTP1, theDearestHead().bytes, mebibyte / 10},
+		{"the trailers of a chunked HTTP/1.1 answer", trailersHTTP1, trailersBytesAtMost(trailerFieldsHTTP1), mebibyte / 10},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if c.term < c.parts || c.term-c.parts >= c.step {
@@ -73,9 +63,6 @@ func allocatedBy(build func()) int {
 }
 
 func TestTheSizesTheTermsAreBuiltFromAreTheSourcesOnThisPlatform(t *testing.T) {
-	if mapSlot < (41*16+6)/7 {
-		t.Errorf("a map slot of 40 bytes and a control byte costs up to 16/7 of 41 bytes, %d, and mapSlot is %d", (41*16+6)/7, mapSlot)
-	}
 	runes := bytes.Repeat([]byte{0xe9}, 16)
 	var text string
 	worstCopy := 0
@@ -113,15 +100,15 @@ func TestEveryFigureOfTheDerivationIsTheSumOfItsTermsRoundedUp(t *testing.T) {
 		decimals int
 		want     float64
 	}{
-		{"a read, MiB", mib(readsBound(1)), 1, 25.2},
-		{"a read apart from its connection, MiB", mib(readsBound(1) - connectionMargin), 1, 23.2},
-		{"the two reads of a pass of health-nodes, MiB", mib(readsBound(nodesReads)), 1, 50.4},
-		{"a pass of health-nodes, MiB", mib(pass), 1, 54.4},
-		{"a pass of health over a held restore, MiB", mib(readsBound(restoreReads)), 1, 176.4},
+		{"a read, MiB", mib(readsBound(1)), 1, 25.1},
+		{"a read apart from its connection, MiB", mib(readsBound(1) - connectionMargin), 1, 23.1},
+		{"the two reads of a pass of health-nodes, MiB", mib(readsBound(nodesReads)), 1, 50.2},
+		{"a pass of health-nodes, MiB", mib(pass), 1, 54.2},
+		{"a pass of health over a held restore, MiB", mib(readsBound(restoreReads)), 1, 175.7},
 		{"the connections of a tenant at rest, MiB", mib(uint64((nodesReads + restoreReads) * connectionMargin)), 1, 18},
 		{"a tenant at rest, MiB", mib(atRest), 1, 22},
-		{"100 passes of health-nodes, GiB", 100 * float64(pass) / gibibyte, 2, 5.32},
-		{"10 passes of health over a held restore, GiB", 10 * float64(readsBound(restoreReads)) / gibibyte, 2, 1.73},
+		{"100 passes of health-nodes, GiB", 100 * float64(pass) / gibibyte, 2, 5.30},
+		{"10 passes of health over a held restore, GiB", 10 * float64(readsBound(restoreReads)) / gibibyte, 2, 1.72},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if got := roundedUp(c.got, c.decimals); math.Abs(got-c.want) > 1e-9 {
@@ -131,7 +118,7 @@ func TestEveryFigureOfTheDerivationIsTheSumOfItsTermsRoundedUp(t *testing.T) {
 	}
 }
 
-func TestTheLeastAnHTTP1FieldLineAddsToAHeadIsFieldLineLessMapSlotSinceTheMapGrowsInSteps(t *testing.T) {
+func TestTheLeastAnHTTP1FieldLineAddsToAHeadIsItsCopiesAndAnElementOfTheSliceSinceTheMapGrowsInSteps(t *testing.T) {
 	head := func(lines int) string {
 		var text strings.Builder
 		for i := range lines {
@@ -155,34 +142,7 @@ func TestTheLeastAnHTTP1FieldLineAddsToAHeadIsFieldLineLessMapSlotSinceTheMapGro
 	for lines := 150; lines < 158; lines++ {
 		least = min(least, allocatedByReading(lines+1)-allocatedByReading(lines))
 	}
-	if want := fieldLine - mapSlot; least != want {
-		t.Errorf("a field line of a name and a value of 16 bytes adds %d bytes at the least to a head, want fieldLine less mapSlot, %d: a copy of each and an element of the slice of values", least, want)
-	}
-}
-
-func TestAMapOfHeadersHoldsAtMostASlotOfMapSlotBytesForEachKeyAndOneTableMore(t *testing.T) {
-	sizedForTheBounds(t)
-	for _, keys := range []int{announcedNamesHTTP1} {
-		names := make([]string, keys)
-		for i := range names {
-			names[i] = strconv.Itoa(i)
-		}
-		var most int64
-		for range 100 {
-			base := liveHeap()
-			header := make(http.Header)
-			for _, name := range names {
-				header[name] = nil
-			}
-			most = max(most, int64(liveHeap())-int64(base))
-			runtime.KeepAlive(header)
-		}
-		t.Logf("a map of %d keys held at the most of 100, %d bytes, %.1f a key", keys, most, float64(most)/float64(keys))
-		if bound := int64(keys*mapSlot + mapTable); most > bound {
-			t.Errorf("a map of %d keys held %d bytes, want at most %d: %d a key and a table of %d slots", keys, most, bound, mapSlot, 1024)
-		}
-		if least := int64(keys * 41); most < least {
-			t.Errorf("a map of %d keys held %d bytes at the most of 100, want at least a slot of 41 bytes a key, %d", keys, most, least)
-		}
+	if want := nameCopy + valueCopy + valueSlice; least != want {
+		t.Errorf("a field line of a name and a value of 16 bytes adds %d bytes at the least to a head, want %d: a copy of each and an element of the slice of values", least, want)
 	}
 }

@@ -393,7 +393,7 @@ const (
 
 	connectionMargin = 2 * mebibyte
 	readAllAtMost    = 204 * mebibyte / 10
-	headersHTTP1     = 25 * mebibyte / 10
+	headersHTTP1     = 24 * mebibyte / 10
 	trailersHTTP1    = 3 * mebibyte / 10
 	keptAtMost       = 2 * mebibyte
 	summariesAtMost  = 4 * mebibyte
@@ -520,7 +520,7 @@ func (c cutShape) String() string {
 		name += ", headers at their bound"
 	}
 	if c.announced {
-		name += ", announced names at their bound"
+		name += ", the dearest head"
 	}
 	return name
 }
@@ -529,14 +529,7 @@ func cutAnswers(t *testing.T, body []byte, shape cutShape) *tenant {
 	t.Helper()
 	head := "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + strconv.Itoa(len(body)) + "\r\n"
 	if shape.announced {
-		head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n"
-		for _, name := range canonicalFieldNames(oneByteFieldNames * 3) {
-			if len(name) == 1 {
-				head += name + ":\n"
-			}
-		}
-		head += "Trailer: "
-		head += strings.Join(announcedNamesOfAHead(maxResponseHeaderBytes-len(head)-len("\r\n\r\n")), ",") + "\r\n"
+		head = theDearestHeadOf("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n", "\r\n").text
 		body = []byte(fmt.Sprintf("%x\r\n%s\r\n0\r\n\r\n", len(body), body))
 	}
 	if shape.headers {
