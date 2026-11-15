@@ -391,16 +391,15 @@ func mib(bytes uint64) float64 { return float64(bytes) / (1 << 20) }
 const (
 	mebibyte = 1 << 20
 
-	connectionMargin = 2 * mebibyte
-	readAllAtMost    = 204 * mebibyte / 10
-	headersHTTP1     = 24 * mebibyte / 10
-	trailersHTTP1    = 3 * mebibyte / 10
-	keptAtMost       = 2 * mebibyte
-	summariesAtMost  = 4 * mebibyte
+	connectionMargin     = 2 * mebibyte
+	readAllAtMost        = 204 * mebibyte / 10
+	headAndTrailersHTTP1 = 28 * mebibyte / 10
+	keptAtMost           = 2 * mebibyte
+	summariesAtMost      = 4 * mebibyte
 )
 
 func readsBound(reads int) uint64 {
-	each := uint64(readAllAtMost + headersHTTP1 + trailersHTTP1 + connectionMargin)
+	each := uint64(readAllAtMost + headAndTrailersHTTP1 + connectionMargin)
 	return max(uint64(reads)*each, uint64(reads)*(maxResponseBytes+keptAtMost))
 }
 
@@ -512,7 +511,7 @@ func TestMeasureTheLiveHeapOfAPassWhoseEveryReadIsAtItsWorst(t *testing.T) {
 	})
 }
 
-type cutShape struct{ headers, announced bool }
+type cutShape struct{ headers, announced, trailers bool }
 
 func (c cutShape) String() string {
 	name := "an answer of 16 MiB"
@@ -520,7 +519,10 @@ func (c cutShape) String() string {
 		name += ", headers at their bound"
 	}
 	if c.announced {
-		name += ", the dearest head"
+		name += ", the heaviest head"
+	}
+	if c.trailers {
+		name = "an answer of 8 MiB, the heaviest head and a full block of trailers"
 	}
 	return name
 }
@@ -529,8 +531,13 @@ func cutAnswers(t *testing.T, body []byte, shape cutShape) *tenant {
 	t.Helper()
 	head := "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + strconv.Itoa(len(body)) + "\r\n"
 	if shape.announced {
-		head = theDearestHeadOf("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n", "\r\n\r\n").text
-		body = []byte(fmt.Sprintf("%x\r\n%s\r\n0\r\n\r\n", len(body), body))
+		trailers, block := theTrailersOfAFullBlock()
+		head = headOfAMix(t, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n", "\r\n\r\n", mostOfTheScanNames, mostOfTheScanLines, trailers).text
+		end := "\r\n"
+		if shape.trailers {
+			end = block
+		}
+		body = []byte(fmt.Sprintf("%x\r\n%s\r\n0\r\n", len(body), body) + end)
 	}
 	if shape.headers {
 		for _, name := range canonicalFieldNames(maxResponseHeaderBytes - len(head) - len("\r\n")) {
@@ -554,9 +561,14 @@ func TestMeasureTheLiveHeapOfAReadWhoseAnswerIsCutAtTheBoundWithHeadersAtTheirs(
 		t.Skipf("set %s to measure the heap of a read whose answer is cut, with headers at their bound", measureHeap)
 	}
 	body := bytes.Repeat([]byte("a"), 2*maxResponseBytes)
-	for _, shape := range []cutShape{{}, {headers: true}, {announced: true}} {
+	whole := padding(maxResponseBytes, `{"metadata":{"resourceVersion":"1","annotations":{"pad":"`, `"}},"spec":{"holderIdentity":"lodia"}}`)
+	for _, shape := range []cutShape{{}, {headers: true}, {announced: true}, {announced: true, trailers: true}} {
 		t.Run(shape.String(), func(t *testing.T) {
-			tenant := cutAnswers(t, body, shape)
+			answer, want := body, errResponseTooLong
+			if shape.trailers {
+				answer, want = whole, nil
+			}
+			tenant := cutAnswers(t, answer, shape)
 			bound := readsBound(1)
 			var most heapPeaks
 			var over, wrong int
@@ -567,13 +579,13 @@ func TestMeasureTheLiveHeapOfAReadWhoseAnswerIsCutAtTheBoundWithHeadersAtTheirs(
 				if peaks.inUse > bound {
 					over++
 				}
-				if !errors.Is(outcome, errResponseTooLong) {
+				if !errors.Is(outcome, want) {
 					wrong++
 				}
 			}
 			t.Logf("%d runs: the most live heap %.2f MiB, the most heap in use %.2f MiB; the structural bound %.2f MiB; %d runs over it", measureCount, mib(most.live), mib(most.inUse), mib(bound), over)
 			if wrong > 0 {
-				t.Errorf("%d runs did not end in %q, the last in %v", wrong, errResponseTooLong, outcome)
+				t.Errorf("%d runs did not end in %v, the last in %v", wrong, want, outcome)
 			}
 			if over > 0 {
 				t.Errorf("%d runs held more heap in use than the structural bound of %.2f MiB, the most %.2f MiB", over, mib(bound), mib(most.inUse))
