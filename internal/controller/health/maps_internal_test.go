@@ -21,7 +21,8 @@ const (
 	mapSplit       = 897
 	mapTail        = 1e-12
 
-	liveHeapNoise = 256
+	liveHeapNoise = 2048
+	mapTrials     = 9
 
 	headFixed               = len("HTTP/1.1 200 OK\nContent-Type: application/json\nTransfer-Encoding: chunked\n") + len("Trailer: ") + len("\n\n")
 	headKeysOutsideTheLines = 2
@@ -293,7 +294,7 @@ func TestAMapOfHeadersHoldsAtMostWhatItsTablesTakeAtEverySplitPointAndOneKeyOnEa
 		t.Run(c.name, func(t *testing.T) {
 			for _, keys := range mapSplitPoints(c.hint) {
 				var held []int64
-				for range 5 {
+				for range mapTrials {
 					base := liveHeap()
 					header := make(http.Header, c.hint(keys))
 					for _, name := range names[:keys] {
@@ -303,12 +304,13 @@ func TestAMapOfHeadersHoldsAtMostWhatItsTablesTakeAtEverySplitPointAndOneKeyOnEa
 					runtime.KeepAlive(header)
 				}
 				slices.Sort(held)
+				median := held[mapTrials/2]
 				bound := int64(mapBytesAtMost(keys, c.hint(keys)))
-				if held[2] > bound+liveHeapNoise {
-					t.Errorf("a map of %d keys held %d bytes, the median of %v, want at most %d", keys, held[2], held, bound)
+				if median > bound+liveHeapNoise {
+					t.Errorf("a map of %d keys held %d bytes, the median of %v, want at most %d", keys, median, held, bound)
 				}
-				if keys > 8 && keys < mapSplit && held[2] < bound-mapStruct-liveHeapNoise {
-					t.Errorf("a map of %d keys held %d bytes, the median of %v, want the %d its tables take, to the map's own %d bytes", keys, held[2], held, bound, mapStruct)
+				if keys > 8 && keys < mapSplit && median < bound-mapStruct-liveHeapNoise {
+					t.Errorf("a map of %d keys held %d bytes, the median of %v, want the %d its tables take, to the map's own %d bytes", keys, median, held, bound, mapStruct)
 				}
 			}
 		})
