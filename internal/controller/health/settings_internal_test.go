@@ -306,3 +306,26 @@ func TestTheDialFunctionOfAClientGetsAContextThatEndsWithinTimeoutWhicheverDialF
 		})
 	}
 }
+
+func TestTheProductionDialerOfAClientIsBoundByTimeoutWhenNoDialFunctionIsSet(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+	for _, c := range []struct {
+		timeout  time.Duration
+		connects bool
+	}{
+		{time.Nanosecond, false},
+		{time.Minute, true},
+	} {
+		conn, err := (&tenantClients{timeout: c.timeout}).dialContext(context.Background(), "tcp", listener.Addr().String())
+		if conn != nil {
+			_ = conn.Close()
+		}
+		if (err == nil) != c.connects {
+			t.Errorf("a dial of a Timeout of %v to a listener that answers ended in %v, want a connection: %t", c.timeout, err, c.connects)
+		}
+	}
+}
