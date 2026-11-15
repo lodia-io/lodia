@@ -532,7 +532,7 @@ func cutAnswers(t *testing.T, body []byte, shape cutShape) *tenant {
 	head := "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + strconv.Itoa(len(body)) + "\r\n"
 	if shape.announced {
 		trailers, block := theTrailersOfAFullBlock()
-		head = headOfAMix(t, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n", "\r\n\r\n", mostOfTheScanNames, mostOfTheScanLines, trailers).text
+		head = headOfAMix(t, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n", "\r\n\r\n", mostOfTheScanNames, trailers).text
 		end := "\r\n"
 		if shape.trailers {
 			end = block

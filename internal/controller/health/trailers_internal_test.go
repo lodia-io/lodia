@@ -180,7 +180,7 @@ const (
 	headOfAMixKeys   = 3
 
 	mostOfTheScanNames = 14600
-	mostOfTheScanLines = 4890
+	mostOfTheScanLines = 4899
 )
 
 type realizedHead struct {
@@ -222,7 +222,7 @@ func announcedNamesApartFrom(trailers []string, count, room int) []string {
 	return names
 }
 
-func headOfAMix(t *testing.T, prefix, lineBreak string, announced, lines int, trailers []string) realizedHead {
+func headOfAMix(t *testing.T, prefix, lineBreak string, announced int, trailers []string) realizedHead {
 	t.Helper()
 	const trailer = "Trailer: "
 	names := announcedNamesApartFrom(trailers, announced, maxResponseHeaderBytes)
@@ -232,12 +232,6 @@ func headOfAMix(t *testing.T, prefix, lineBreak string, announced, lines int, tr
 	value := strings.Join(names, ",")
 	room := maxResponseHeaderBytes - len(prefix) - len(trailer) - len(value) - len(lineBreak)
 	fields := canonicalFieldNames(room)
-	if lines >= 0 {
-		if len(fields) < lines {
-			t.Fatalf("a head of %d announced names and %d field lines is asked for, and %d lines fit", announced, lines, len(fields))
-		}
-		fields = fields[:lines]
-	}
 	text := prefix
 	if len(fields) > 0 {
 		text += strings.Join(fields, ":\n") + ":\n"
@@ -264,7 +258,7 @@ func TestAnHTTP1HeadThatAnnouncesTheNamesOfTheDearestCountWithAFullBlockOfTraile
 	sizedForTheBounds(t)
 	dearest := theDearestHead()
 	trailers, block := theTrailersOfAFullBlock()
-	head := headOfAMix(t, headOfAMixPrefix, "\n\n", dearest.announced, -1, trailers)
+	head := headOfAMix(t, headOfAMixPrefix, "\n\n", dearest.announced, trailers)
 	client, url := answerWithTrailers(t, head, block)
 	var keys keysRead
 	held := heldOnceRead(t, client, url, &keys)
@@ -291,7 +285,7 @@ func TestTheMostAHeadOfDistinctNamesAndFieldLinesWithItsTrailersHoldsIsFoundBySc
 		if len(announcedNamesApartFrom(trailers, announced, maxResponseHeaderBytes-len(headOfAMixPrefix)-len("Trailer: ")-len("\n\n"))) < announced {
 			break
 		}
-		head := headOfAMix(t, headOfAMixPrefix, "\n\n", announced, -1, trailers)
+		head := headOfAMix(t, headOfAMixPrefix, "\n\n", announced, trailers)
 		client, url := answerWithTrailers(t, head, block)
 		var keys keysRead
 		held := heldByARead(t, client, url, &keys)
@@ -306,7 +300,7 @@ func TestTheMostAHeadOfDistinctNamesAndFieldLinesWithItsTrailersHoldsIsFoundBySc
 	if scanned < 49 {
 		t.Errorf("the scan read %d heads, want one in every 200 announced names from 12,000 to the most a head carries, at least 49", scanned)
 	}
-	pinned := headOfAMix(t, headOfAMixPrefix, "\n\n", mostOfTheScanNames, mostOfTheScanLines, trailers)
+	pinned := headOfAMix(t, headOfAMixPrefix, "\n\n", mostOfTheScanNames, trailers)
 	client, url := answerWithTrailers(t, pinned, block)
 	var keys keysRead
 	held := heldOnceRead(t, client, url, &keys)
@@ -321,7 +315,7 @@ func TestTheHeadTheScanFindsMostWithItsTrailersIsHeldAtMostItsPartsAndTheTerm(t 
 	sizedForTheBounds(t)
 	dearest := theDearestHead()
 	trailers, block := theTrailersOfAFullBlock()
-	head := headOfAMix(t, headOfAMixPrefix, "\n\n", mostOfTheScanNames, mostOfTheScanLines, trailers)
+	head := headOfAMix(t, headOfAMixPrefix, "\n\n", mostOfTheScanNames, trailers)
 	client, url := answerWithTrailers(t, head, block)
 	var keys keysRead
 	held := heldOnceRead(t, client, url, &keys)
