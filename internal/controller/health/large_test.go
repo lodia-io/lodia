@@ -5,6 +5,9 @@ package health_test
 
 import (
 	"fmt"
+	"io"
+	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +17,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clocktesting "k8s.io/utils/clock/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -202,4 +206,47 @@ func TestAContinueTokenOfNamesOf253BytesIsUnderAQuarterOfTheBoundHealthSendsBack
 	if max(leaseToken, nodeToken) > 1024 {
 		t.Errorf("a kube-apiserver gave a continue token of %d bytes, want under a quarter of the 4,096 Health reads", max(leaseToken, nodeToken))
 	}
+}
+
+func TestMeasureTheBytesOfAPageOf100KubeletNodesWithAndWithoutGzip(t *testing.T) {
+	if os.Getenv("LODIA_MEASURE_HEAP") == "" {
+		t.Skip("set LODIA_MEASURE_HEAP to measure the bytes of a page of 100 Nodes, as a tenant's API server sends it with and without gzip")
+	}
+	clearNodes(t)
+	defer clearNodes(t)
+	seedKubeletNodes(t, 100, 0)
+	cfg, err := clientcmd.RESTConfigFromKubeConfig(tenantKubeconfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.DisableCompression = true
+	client, err := rest.HTTPClientFor(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sizes := map[string]int{}
+	for _, encoding := range []string{"", "gzip"} {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, strings.TrimSuffix(cfg.Host, "/")+"/api/v1/nodes?limit=100", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Accept", "application/json")
+		if encoding != "" {
+			req.Header.Set("Accept-Encoding", encoding)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Encoding") != encoding {
+			t.Fatalf("Accept-Encoding %q: status %d, Content-Encoding %q", encoding, resp.StatusCode, resp.Header.Get("Content-Encoding"))
+		}
+		sizes[encoding] = len(body)
+	}
+	t.Logf("a page of 100 Nodes of the repository's kubeletNode: %d bytes without gzip, %d with it, %.1f times fewer", sizes[""], sizes["gzip"], float64(sizes[""])/float64(sizes["gzip"]))
 }
