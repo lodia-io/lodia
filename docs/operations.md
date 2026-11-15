@@ -705,7 +705,7 @@ The first three fail when a read or a pass holds more heap in use than its struc
   The uncompressed size carries the name of the test binary, which each Node's `managedFields` names as its manager: `go test`'s binary, `health.test`, gives 750,385 bytes, and a binary of a name five bytes longer 750,885.
 
 The figure they compare is the heap in use.
-The live heap is what the last collection marked, objects allocated during it included, so it can read above anything alive at once: in 1,200 cut answers it read up to 28.5 MiB, where the heap in use did not pass 20.5 MiB.
+The live heap is what the last collection marked, objects allocated during it included, so it can read above anything alive at once: in 1,200 cut answers with the headers at their bound it read up to 29.6 MiB, where the heap in use did not pass 21.6 MiB.
 
 ```
 GOTOOLCHAIN=go1.26.11 LODIA_MEASURE_HEAP=1 KUBEBUILDER_ASSETS="$(go tool setup-envtest use 1.35.0 -p path)" go test -count=1 -v -run TestMeasureTheLiveHeap ./internal/controller/health/
@@ -722,16 +722,16 @@ The runs below are on go1.26.11, `go version go1.26.11 darwin/arm64`, on 16 core
 |---|---|---|---|---|
 | one read, the most of 47 shapes | 12 | 8.1 to 20.4 MiB | 20.5 to 20.6 MiB | 25.2 MiB |
 | a read whose answer of 16 MiB is cut | 1,200 | 12.5 to 28.5 MiB | 20.5 MiB | 25.2 MiB |
-| the same, headers at their bound | 1,200 | 13.6 to 25.5 MiB | 21.6 MiB | 25.2 MiB |
-| the same, the heaviest head | 1,200 | 18.2 to 26.3 MiB | 18.3 MiB | 25.2 MiB |
-| a read of an answer of 8 MiB whole, the heaviest head and a full block of trailers | 1,200 | 10.6 to 18.7 MiB | 18.7 to 18.8 MiB | 25.2 MiB |
-| one pass of `health-nodes`, the Lease read, both lists answered together and the renewal | 12 | 20.6 to 28.6 MiB | 28.7 to 40.8 MiB | 54.4 MiB |
-| one pass of `health` over a held restore, seven answers as they come | 12 | 49.2 to 93.9 MiB | 82.0 to 130.9 MiB | 176.4 MiB |
-| the same, its seven lists answered together | 12 | 68.8 to 118.1 MiB | 86.3 to 143.0 MiB | 176.4 MiB |
-| one pass of `health` over 500 configurations of 256 empty webhooks, named with 253 bytes, one list or both | 12 | 1.4 to 1.7 MiB or 1.2 to 3.0 MiB | 2.7 to 3.2 MiB or 3.4 to 4.9 MiB | |
-| the same, named with 2,048 bytes | 12 | 1.5 to 3.1 MiB or 3.8 to 4.7 MiB | 2.8 to 4.3 MiB or 5.6 to 6.5 MiB | |
-| one pass over a tenant padded to its bounds, 62 responses | 12 | 13.2 to 33.3 MiB | 25.3 to 41.3 MiB | 54.4 MiB |
-| 100 passes at once on 100 tenants | 12 | 1.21 to 1.40 GiB, 12.4 to 14.3 MiB a pass | 1.34 to 1.53 GiB | 5.32 GiB |
+| the same, headers at their bound | 1,200 | 13.6 to 29.6 MiB | 21.6 MiB | 25.2 MiB |
+| the same, the heaviest head | 1,200 | 16.9 to 26.3 MiB | 18.2 to 18.3 MiB | 25.2 MiB |
+| a read of an answer of 8 MiB whole, the heaviest head and a full block of trailers | 1,200 | 10.5 to 18.6 MiB | 18.7 to 18.8 MiB | 25.2 MiB |
+| one pass of `health-nodes`, the Lease read, both lists answered together and the renewal | 12 | 20.3 to 32.8 MiB | 28.7 to 41.0 MiB | 54.4 MiB |
+| one pass of `health` over a held restore, seven answers as they come | 12 | 46.2 to 118.3 MiB | 78.4 to 131.0 MiB | 176.4 MiB |
+| the same, its seven lists answered together | 12 | 73.6 to 98.5 MiB | 105.6 to 130.5 MiB | 176.4 MiB |
+| one pass of `health` over 500 configurations of 256 empty webhooks, named with 253 bytes, one list or both | 12 | 1.3 to 1.7 MiB or 0.9 to 2.8 MiB | 2.6 to 3.1 MiB or 2.6 to 4.8 MiB | |
+| the same, named with 2,048 bytes | 12 | 1.5 to 2.2 MiB or 3.7 to 4.6 MiB | 2.9 to 3.5 MiB or 5.3 to 6.5 MiB | |
+| one pass over a tenant padded to its bounds, 62 responses | 12 | 13.0 to 28.7 MiB | 25.0 to 41.1 MiB | 54.4 MiB |
+| 100 passes at once on 100 tenants | 12 | 1.21 to 1.34 GiB, 12.3 to 13.7 MiB a pass | 1.32 to 1.50 GiB | 5.32 GiB |
 
 The 100 passes at once open 200 connections to one listener, whose listen queue is 128 (`kern.ipc.somaxconn`); the twelve runs above ran one at a time.
 The closest any measure came to its bound is 3.6 MiB, the cut answer with the headers at their bound.
