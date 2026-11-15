@@ -560,7 +560,11 @@ func TestAMapOfHeadersHoldsAtMostWhatItsTablesTakeAtEverySplitPointAndOneKeyOnEa
 		{"made with the hint of the keys it gets, at most 1,000", func(keys int) int { return min(keys, 1000) }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			for _, keys := range mapSplitPoints(c.hint) {
+			points := mapSplitPoints(c.hint)
+			if last := points[len(points)-1]; last != mostKeysOfTheCount() {
+				t.Fatalf("the last key count the test reads is %d, want the most the count's maps reach, %d", last, mostKeysOfTheCount())
+			}
+			for _, keys := range points {
 				hint := c.hint(keys)
 				bound := int64(mapBytesAtMost(keys, hint))
 				if keys < mapSplit {
