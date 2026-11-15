@@ -393,8 +393,8 @@ func TestAnHTTP1HeadWhoseBlockOfTrailersRepeatsKeysIsHeldAtMostItsPartsAndHeadAn
 	parts := headPartsAtMost(headMix{keys: head.fieldLines + headOfAMixKeys, announced: head.announced, announcedBytes: head.announcedBytes, trailers: len(trailers), trailerLines: lines, repeated: keys.repeated})
 	t.Logf("a head of %d bytes of %d field lines and %d announced names, then %d trailers on %d lines, %d of them repeated %d times: held %.3f MiB; its parts add to %.3f MiB, headAndTrailersHTTP1 is %.3f MiB",
 		len(head.text), head.fieldLines, head.announced, len(trailers), lines, keysTheRepeatingBlockRepeats, timesTheRepeatingBlockRepeatsThem, mib(uint64(held)), mib(uint64(parts.sum())), mib(headAndTrailersHTTP1))
-	if want := keysTheRepeatingBlockRepeats * heldByRepeats()[timesTheRepeatingBlockRepeatsThem]; keys.repeated != want || keys.trailer != head.announced+len(trailers) || lines < mostMapHint {
-		t.Errorf("the response has %d keys of Trailer and keeps %d bytes in the slices of repeated keys, from %d lines, want %d keys, %d bytes and at least %d lines", keys.trailer, keys.repeated, lines, head.announced+len(trailers), want, mostMapHint)
+	if want := keysTheRepeatingBlockRepeats * heldByRepeats()[timesTheRepeatingBlockRepeatsThem]; keys.repeated != want || parts.repeated != want || keys.trailer != head.announced+len(trailers) || lines < mostMapHint {
+		t.Errorf("the response has %d keys of Trailer and keeps %d bytes in the slices of repeated keys, its parts %d, from %d lines, want %d keys, %d bytes and at least %d lines", keys.trailer, keys.repeated, parts.repeated, lines, head.announced+len(trailers), want, mostMapHint)
 	}
 	if want := trailersReadAtTail(len(trailers), mostMapHint, mapTail); parts.trailers != want {
 		t.Errorf("the trailers' own read is %d bytes in the parts, want %d: its map and slice of values at the hint of %d, and a copy of each of its %d names", parts.trailers, want, mostMapHint, len(trailers))
