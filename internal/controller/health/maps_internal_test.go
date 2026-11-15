@@ -24,8 +24,10 @@ const (
 	liveHeapNoise = 2048
 	mapTrials     = 9
 
-	headFixed               = len("HTTP/1.1 200 \nTransfer-Encoding:chunked\nTrailer:") + len("\n\n")
+	headFixed               = len("HTTP/1.1 200\nTransfer-Encoding:chunked\nTrailer:") + len("\n\n") - len(",")
 	headKeysOutsideTheLines = 2
+	trailerLineBytes        = len("Trailer:")
+	mostTrailerLines        = 8
 )
 
 var sizeClasses = [...]int{
@@ -125,10 +127,7 @@ func shapeOfHint(hint int) hintShape {
 	return hintShape{initial, alignUpPow2(max(8, target/initial))}
 }
 
-type splitDepth struct {
-	depth, counted int
-	q              float64
-}
+type splitDepth struct{ depth, counted int }
 
 func splitDepths(keys, depth0 int, tail float64) []splitDepth {
 	var out []splitDepth
@@ -141,7 +140,7 @@ func splitDepths(keys, depth0 int, tail float64) []splitDepth {
 		if j == 0 && keys >= mapSplit {
 			m = 1
 		}
-		out = append(out, splitDepth{j, m, q})
+		out = append(out, splitDepth{j, m})
 	}
 	return out
 }
@@ -151,46 +150,54 @@ type mapKey struct {
 	tail                 float64
 }
 
+type mapTables struct{ bytes, split int }
+
 var mapMemo = struct {
 	sync.Mutex
-	bytes map[mapKey]int
-}{bytes: map[mapKey]int{}}
+	tables map[mapKey]mapTables
+}{tables: map[mapKey]mapTables{}}
 
 func mapBytesAtMost(keys, hint int) int { return mapBytesAtTail(keys, hint, mapTail) }
 
-func mapBytesAtTail(keys, hint int, tail float64) int {
+func mapBytesAtTail(keys, hint int, tail float64) int { return tablesOfAMap(keys, hint, tail).bytes }
+
+func mapSplitBytesAtTail(keys, hint int, tail float64) int {
+	return tablesOfAMap(keys, hint, tail).split
+}
+
+func tablesOfAMap(keys, hint int, tail float64) mapTables {
 	shape := shapeOfHint(hint)
 	if shape.initial == 0 && keys > 896 || shape.initial == 1 && keys >= mapSplit {
 		shape = hintShape{1, 1024}
 	}
 	key := mapKey{keys, shape.initial, shape.slots, tail}
 	mapMemo.Lock()
-	bytes, ok := mapMemo.bytes[key]
+	tables, ok := mapMemo.tables[key]
 	mapMemo.Unlock()
 	if !ok {
-		bytes = mapBytesOfShape(keys, shape, tail)
+		tables = mapTablesOfShape(keys, shape, tail)
 		mapMemo.Lock()
-		mapMemo.bytes[key] = bytes
+		mapMemo.tables[key] = tables
 		mapMemo.Unlock()
 	}
-	return bytes
+	return tables
 }
 
-func mapBytesOfShape(keys int, shape hintShape, tail float64) int {
+func mapTablesOfShape(keys int, shape hintShape, tail float64) mapTables {
 	initial, slots := shape.initial, shape.slots
 	if initial == 0 {
 		if keys == 0 {
-			return mapStruct
+			return mapTables{bytes: mapStruct}
 		}
 		if keys <= 8 {
-			return mapStruct + sizeClass(mapGroup)
+			return mapTables{bytes: mapStruct + sizeClass(mapGroup)}
 		}
 		single := 16
 		for single < 1024 && keys > single*7/8 {
 			single *= 2
 		}
 		if keys <= 896 {
-			return mapStruct + tableBytes(single) + mapTableStruct + sizeClass(8)
+			return mapTables{bytes: mapStruct + tableBytes(single) + mapTableStruct + sizeClass(8)}
 		}
 		initial, slots = 1, 1024
 	}
@@ -216,7 +223,11 @@ func mapBytesOfShape(keys int, shape hintShape, tail float64) int {
 	for slots < 1024 && count > slots*7/8 {
 		slots *= 2
 	}
-	return mapStruct + sizeClass(8<<deepest) + tables*mapTableStruct + unsplit*tableBytes(slots) + (tables-unsplit)*tableBytes(1024)
+	held := mapStruct + sizeClass(8<<deepest) + tables*mapTableStruct + unsplit*tableBytes(slots) + (tables-unsplit)*tableBytes(1024)
+	if splits == 0 {
+		return mapTables{bytes: held}
+	}
+	return mapTables{held, tableBytes(1024) + mapTableStruct + sizeClass(8<<(deepest-1))}
 }
 
 func elementsOf(keys, hint int) int {
@@ -256,7 +267,7 @@ func elementsSlack(hint int) int {
 }
 
 func worstHint(keys int, tail float64) (hint, mapBytes, elements int) {
-	top := min(keys, 1000)
+	const top = 1000
 	best := -1
 	try := func(h, bytes int) {
 		if total := bytes + elementsOf(keys, h); total > best {
@@ -279,20 +290,69 @@ func worstHint(keys int, tail float64) (hint, mapBytes, elements int) {
 	return hint, mapBytes, elements
 }
 
-func trailersReadAtMost(fields int) int {
+func trailersReadAtMost(fields int) int { return trailersReadAtTail(fields, mapTail) }
+
+func trailersReadAtTail(fields int, tail float64) int {
 	if fields == 0 {
 		return 0
 	}
 	hint := min(fields, 1000)
-	return mapBytesAtMost(fields, hint) + elementsOf(fields, hint) + nameCopy*fields
+	return mapBytesAtTail(fields, hint, tail) + elementsOf(fields, hint) + nameCopy*fields
 }
 
-type headMix struct{ keys, announced, announcedBytes, trailers int }
+var pieceBounds = sync.OnceValue(func() []int {
+	var bounds []int
+	for _, class := range sizeClasses {
+		bounds = append(bounds, class+1)
+	}
+	for page := 32768; page <= maxResponseHeaderBytes; page += 8192 {
+		bounds = append(bounds, page+1)
+	}
+	return bounds
+})
 
-type headParts struct{ hint, headerMap, elements, announcedMap, copies, value, trailers int }
+var valueMemo = struct {
+	sync.Mutex
+	bytes map[[2]int]int
+}{bytes: map[[2]int]int{}}
+
+func valueBytesAtMost(length, lines int) int {
+	if lines <= 1 {
+		return sizeClass(length)
+	}
+	key := [2]int{length, lines}
+	valueMemo.Lock()
+	best, ok := valueMemo.bytes[key]
+	valueMemo.Unlock()
+	if ok {
+		return best
+	}
+	best = sizeClass(length)
+	for _, piece := range pieceBounds() {
+		if piece >= length-1 {
+			break
+		}
+		best = max(best, sizeClass(piece)+valueBytesAtMost(length-1-piece, lines-1))
+	}
+	valueMemo.Lock()
+	valueMemo.bytes[key] = best
+	valueMemo.Unlock()
+	return best
+}
+
+func valueSliceBytes(lines int) int {
+	if lines <= 1 {
+		return 0
+	}
+	return sizeClass(valueSlice * alignUpPow2(lines))
+}
+
+type headMix struct{ keys, announced, announcedBytes, valueLines, trailers, trailersRead int }
+
+type headParts struct{ hint, headerMap, elements, announcedMap, copies, value, trailers, split int }
 
 func (p headParts) sum() int {
-	return p.headerMap + p.elements + p.announcedMap + p.copies + p.value + p.trailers
+	return p.headerMap + p.elements + p.announcedMap + p.copies + p.value + p.trailers + p.split
 }
 
 func headPartsAtMost(m headMix) headParts { return headPartsAtTail(m, mapTail) }
@@ -301,7 +361,12 @@ func headPartsAtTail(m headMix, tail float64) headParts {
 	hint, headerMap, elements := worstHint(m.keys, tail)
 	value := 0
 	if m.announcedBytes > 0 {
-		value = sizeClass(m.announcedBytes - 1)
+		value = valueBytesAtMost(m.announcedBytes-1, m.valueLines)
+		elements += valueSliceBytes(m.valueLines)
+	}
+	trailersRead := m.trailersRead
+	if trailersRead == 0 {
+		trailersRead = trailersReadAtTail(m.trailers, tail)
 	}
 	return headParts{
 		hint:         hint,
@@ -310,7 +375,8 @@ func headPartsAtTail(m headMix, tail float64) headParts {
 		announcedMap: mapBytesAtTail(m.announced+m.trailers, 0, tail),
 		copies:       nameCopy * (m.keys + m.announced),
 		value:        value,
-		trailers:     trailersReadAtMost(m.trailers),
+		trailers:     trailersRead,
+		split:        mapSplitBytesAtTail(m.announced+m.trailers, 0, tail),
 	}
 }
 
@@ -338,8 +404,8 @@ func fieldLinesIn(room int) int {
 }
 
 type countedHead struct {
-	fieldLines, announced int
-	parts                 headParts
+	fieldLines, announced, valueLines int
+	parts                             headParts
 }
 
 func (h countedHead) bytes() int { return h.parts.sum() }
@@ -355,21 +421,60 @@ func headsCountedAt(tail float64) []countedHead {
 	if heads, ok := headsMemo.counted[tail]; ok {
 		return heads
 	}
+	heads := headsOf(tail, func(m headMix) headMix { return m })
+	headsMemo.counted[tail] = heads
+	return heads
+}
+
+func headsOf(tail float64, trailing func(headMix) headMix) []countedHead {
 	var heads []countedHead
 	for announced := 0; ; announced++ {
 		cost := announcedBytes(announced)
 		room := maxResponseHeaderBytes - headFixed - cost
 		if room < 0 {
-			headsMemo.counted[tail] = heads
 			return heads
 		}
-		lines := fieldLinesIn(room)
-		mix := headMix{keys: lines + headKeysOutsideTheLines, announced: announced, announcedBytes: cost, trailers: trailerFieldsHTTP1}
-		heads = append(heads, countedHead{lines, announced, headPartsAtTail(mix, tail)})
+		var most countedHead
+		for valueLines := 1; valueLines <= max(1, min(announced, mostTrailerLines)); valueLines++ {
+			roomOfLines := room - trailerLineBytes*(valueLines-1)
+			if roomOfLines < 0 {
+				break
+			}
+			lines := fieldLinesIn(roomOfLines)
+			mix := trailing(headMix{keys: lines + headKeysOutsideTheLines, announced: announced, announcedBytes: cost, valueLines: valueLines, trailers: trailerFieldsHTTP1})
+			if head := (countedHead{lines, announced, valueLines, headPartsAtTail(mix, tail)}); head.bytes() > most.bytes() {
+				most = head
+			}
+		}
+		heads = append(heads, most)
 	}
 }
 
+func mostKeysOfTheCount() int {
+	most := 0
+	for _, head := range headsCountedAt(mapTail) {
+		most = max(most, head.announced+trailerFieldsHTTP1, head.fieldLines+headKeysOutsideTheLines)
+	}
+	return most
+}
+
 func theDearestHead() countedHead { return theDearestHeadAt(mapTail) }
+
+func theDearestHeadWithValueLines(tail float64, valueLines int) countedHead {
+	var most countedHead
+	for announced := valueLines; ; announced++ {
+		cost := announcedBytes(announced)
+		room := maxResponseHeaderBytes - headFixed - cost - trailerLineBytes*(valueLines-1)
+		if room < 0 {
+			return most
+		}
+		lines := fieldLinesIn(room)
+		mix := headMix{keys: lines + headKeysOutsideTheLines, announced: announced, announcedBytes: cost, valueLines: valueLines, trailers: trailerFieldsHTTP1}
+		if head := (countedHead{lines, announced, valueLines, headPartsAtTail(mix, tail)}); head.bytes() > most.bytes() {
+			most = head
+		}
+	}
+}
 
 func theDearestHeadAt(tail float64) countedHead {
 	var most countedHead
@@ -402,7 +507,7 @@ func TestTheSizeClassesTheMapsAreBuiltFromAreTheAllocators(t *testing.T) {
 func mapSplitPoints(hint func(keys int) int) []int {
 	points := map[int]bool{0: true, 1: true, 8: true}
 	last := -1
-	for keys := 1; keys <= announcedNamesHTTP1; keys++ {
+	for keys := 1; keys <= mostKeysOfTheCount(); keys++ {
 		if bytes := mapBytesAtMost(keys, hint(keys)); bytes != last {
 			points[keys-1], points[keys] = true, true
 			last = bytes
@@ -441,7 +546,7 @@ func tablesAMapGrowsThrough(keys int) int {
 
 func TestAMapOfHeadersHoldsAtMostWhatItsTablesTakeAtEverySplitPointAndOneKeyOnEachSideOfIt(t *testing.T) {
 	sizedForTheBounds(t)
-	names := make([]string, announcedNamesHTTP1)
+	names := make([]string, mostKeysOfTheCount())
 	for i := range names {
 		names[i] = strconv.Itoa(i)
 	}
@@ -550,14 +655,17 @@ func TestTheCountOfPrefixesThatHoldAMapIsTheUnionBoundNotTheBinomialQuantile(t *
 
 func TestTheDearestHeadIsTheMixTheArgumentNamesAndItsPartsAreTheOnesItQuotes(t *testing.T) {
 	dearest := theDearestHead()
-	if dearest.fieldLines != 6738 || dearest.announced != 12711 || dearest.bytes() != 2857152 {
-		t.Errorf("the dearest head is %d field lines and %d announced names of %d bytes, want 6,738, 12,711 and 2,857,152", dearest.fieldLines, dearest.announced, dearest.bytes())
+	if dearest.fieldLines != 6670 || dearest.announced != 12815 || dearest.valueLines != 5 || dearest.bytes() != 2912464 {
+		t.Errorf("the dearest head is %d field lines and %d announced names, the value on %d lines, of %d bytes, want 6,670, 12,815, 5 and 2,912,464", dearest.fieldLines, dearest.announced, dearest.valueLines, dearest.bytes())
 	}
-	want := headParts{hint: 897, headerMap: 737936, elements: 109872, announcedMap: 1525008, copies: 311216, value: 40960, trailers: 132160}
+	want := headParts{hint: 897, headerMap: 737936, elements: 108912, announcedMap: 1525008, copies: 311792, value: 47344, trailers: 132160, split: 49312}
 	if dearest.parts != want {
 		t.Errorf("its parts are %+v, want %+v", dearest.parts, want)
 	}
-	for keys, tables := range map[int]int{896: 1, 897: 2, 449: 1, 14352: 32, 21831: 33} {
+	if got := len(headsCountedAt(mapTail)); got != 21915 || headsCountedAt(mapTail)[got-1].announced != 21914 || mostKeysOfTheCount() != 22956 {
+		t.Errorf("the count reads %d mixes, to %d announced names and %d keys of a map, want 21,915, 21,914 and 22,956", got, headsCountedAt(mapTail)[got-1].announced, mostKeysOfTheCount())
+	}
+	for keys, tables := range map[int]int{896: 1, 897: 2, 449: 1, 14352: 32, 21831: 33, 22956: 33} {
 		if got, want := (mapBytesAtMost(keys, 0)-mapStruct-sizeClass(8*alignUpPow2(max(1, tables))))/(tableBytes(1024)+mapTableStruct), tables; got != want {
 			t.Errorf("a map of %d keys has %d tables of 1,024 slots counted, want %d", keys, got, want)
 		}
@@ -565,11 +673,58 @@ func TestTheDearestHeadIsTheMixTheArgumentNamesAndItsPartsAreTheOnesItQuotes(t *
 }
 
 func TestTheTermHoldsTheCountAtAChanceOfOneInAMillionAndAtOneInASeptillion(t *testing.T) {
-	for _, tail := range []float64{1e-6, mapTail, 1e-24} {
-		dearest := theDearestHeadAt(tail)
-		t.Logf("at a chance of %g a depth the dearest head is %d field lines and %d announced names of %d bytes, %.4f MiB; the term is %.4f MiB", tail, dearest.fieldLines, dearest.announced, dearest.bytes(), mib(uint64(dearest.bytes())), mib(headAndTrailersHTTP1))
+	for _, c := range []struct {
+		tail                                     float64
+		fieldLines, announced, valueLines, bytes int
+	}{
+		{1e-6, 6117, 13742, 3, 2666960},
+		{mapTail, 6670, 12815, 5, 2912464},
+		{1e-24, 6375, 13314, 2, 2912720},
+	} {
+		dearest := theDearestHeadAt(c.tail)
+		t.Logf("at a chance of %g a depth the dearest head is %d field lines and %d announced names, the value on %d lines, of %d bytes, %.4f MiB; the term is %.4f MiB, %d bytes over it", c.tail, dearest.fieldLines, dearest.announced, dearest.valueLines, dearest.bytes(), mib(uint64(dearest.bytes())), mib(headAndTrailersHTTP1), headAndTrailersHTTP1-dearest.bytes())
+		if dearest.fieldLines != c.fieldLines || dearest.announced != c.announced || dearest.valueLines != c.valueLines || dearest.bytes() != c.bytes {
+			t.Errorf("at a chance of %g a depth the dearest head is %d field lines and %d announced names, the value on %d lines, of %d bytes, want %d, %d, %d and %d", c.tail, dearest.fieldLines, dearest.announced, dearest.valueLines, dearest.bytes(), c.fieldLines, c.announced, c.valueLines, c.bytes)
+		}
 		if dearest.bytes() > headAndTrailersHTTP1 {
-			t.Errorf("at a chance of %g a depth the dearest head takes %d bytes, more than the term, %d", tail, dearest.bytes(), headAndTrailersHTTP1)
+			t.Errorf("at a chance of %g a depth the dearest head takes %d bytes, more than the term, %d", c.tail, dearest.bytes(), headAndTrailersHTTP1)
+		}
+	}
+}
+
+func TestMoreTrailerLinesThanTheCountReadsHoldNoMoreThanTheMostItFinds(t *testing.T) {
+	for _, tail := range []float64{mapTail, 1e-24} {
+		most := theDearestHeadAt(tail).bytes()
+		for _, lines := range []int{mostTrailerLines + 1, 2 * mostTrailerLines} {
+			if dearest := theDearestHeadWithValueLines(tail, lines); dearest.bytes() > most {
+				t.Errorf("at a chance of %g a depth a head with its value on %d lines takes %d bytes, more than the most the count finds on %d lines at most, %d", tail, lines, dearest.bytes(), mostTrailerLines, most)
+			}
+		}
+	}
+}
+
+func TestTheTrailersOwnReadIsTheSameAtEveryChanceSinceItsTwoTablesSplitWithNone(t *testing.T) {
+	for _, tail := range []float64{1e-6, mapTail, 1e-24, 1e-100} {
+		if got := trailersReadAtTail(trailerFieldsHTTP1, tail); got != 132160 {
+			t.Errorf("the trailers' own read takes %d bytes at a chance of %g a depth, want 132,160 at every chance", got, tail)
+		}
+	}
+}
+
+func TestABlockOfTrailersThatRepeatsOneKeyHoldsLessThanTheBlockTheCountTakes(t *testing.T) {
+	lines := trailerBlockHTTP1 / len("A:\n")
+	read := mapBytesAtMost(1, 1000) + sizeClass(valueSlice*1000) + sizeClass(valueSlice*alignUpPow2(lines)) + nameCopy
+	for _, tail := range []float64{mapTail, 1e-24} {
+		var most countedHead
+		for _, head := range headsOf(tail, func(m headMix) headMix { m.trailers, m.trailersRead = 1, read; return m }) {
+			if head.bytes() > most.bytes() {
+				most = head
+			}
+		}
+		dearest := theDearestHeadAt(tail)
+		t.Logf("at a chance of %g a depth a block of one name repeated %d times, read in %d bytes, makes the dearest head %d bytes at %d names, the count's %d", tail, lines, read, most.bytes(), most.announced, dearest.bytes())
+		if most.bytes() >= dearest.bytes() {
+			t.Errorf("at a chance of %g a depth a block that repeats one key takes %d bytes, want under the %d of the block the count takes", tail, most.bytes(), dearest.bytes())
 		}
 	}
 }
@@ -577,7 +732,7 @@ func TestTheTermHoldsTheCountAtAChanceOfOneInAMillionAndAtOneInASeptillion(t *te
 func TestTheWorstHintIsTheDearestOfEveryHintATenantCanSet(t *testing.T) {
 	for _, keys := range []int{0, 1, 9, 100, 663, 896, 897, 898, 1500, 6740} {
 		best := -1
-		for hint := 0; hint <= min(keys, 1000); hint++ {
+		for hint := 0; hint <= 1000; hint++ {
 			best = max(best, mapBytesAtMost(keys, hint)+elementsOf(keys, hint))
 		}
 		hint, mapBytes, elements := worstHint(keys, mapTail)
