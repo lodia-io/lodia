@@ -786,7 +786,7 @@ func (c *tenantClients) of(kubeconfig []byte) (*tenant, error) {
 	// the transport counts and caps its connections, which an HTTP/2 pool does
 	// not.
 	cfg.NextProtos = []string{"http/1.1"}
-	// net/http then asks for no gzip and decodes none (https://github.com/golang/go/blob/go1.26.10/src/net/http/transport.go#L2845-L2862),
+	// net/http then asks for no gzip and decodes none (https://github.com/golang/go/blob/go1.26.11/src/net/http/transport.go#L2845-L2862),
 	// so no gzip reader is made, whose pool keeps one past the read.
 	cfg.DisableCompression = true
 	cfg.Dial = c.dialContext
@@ -846,7 +846,7 @@ func (r *Reconciler) probe(ctx context.Context, prober *http.Client, url string)
 // verified against the bundle, as a pod's own connection through
 // apiserver-proxy does.
 // net/http dials and hands the inner TLS over on a context of its own, detached
-// from the request's (https://github.com/golang/go/blob/go1.26.10/src/net/http/transport.go#L1524-L1529),
+// from the request's (https://github.com/golang/go/blob/go1.26.11/src/net/http/transport.go#L1524-L1529),
 // so the dial and both handshakes need Timeout's bound here: without them a
 // stalled Gateway would keep a goroutine for every probe.
 func (r *Reconciler) throughTunnel(p *prober, tunnel lodiav1alpha1.HostPort) *http.Client {
