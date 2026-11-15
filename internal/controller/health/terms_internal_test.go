@@ -18,6 +18,8 @@ import (
 const (
 	headSlack = 6 * mebibyte / 10
 
+	allocationRepeats = 5
+
 	nameCopy   = 16
 	valueCopy  = 16
 	valueSlice = 16
@@ -44,7 +46,7 @@ func TestTheTermOfTheHeadAndItsTrailersIsTheCountAtOneInASeptillionADepthAndRoom
 func allocatedBy(build func()) int {
 	rounds := max(100, min(10000, (8<<20)/max(int(allocated(build)), 1)))
 	least := math.MaxInt
-	for range 20 {
+	for range allocationRepeats {
 		var before, after runtime.MemStats
 		runtime.GC()
 		runtime.ReadMemStats(&before)
