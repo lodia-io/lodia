@@ -52,6 +52,9 @@ var (
 )
 
 func TestMain(m *testing.M) {
+	if os.Getenv(health.OwnProcessEnv) != "" {
+		os.Exit(m.Run())
+	}
 	testenv.SkipUnlessAvailable("the health controller tests")
 	env := testenv.Start(testenv.Options{})
 	k8s = env.Client

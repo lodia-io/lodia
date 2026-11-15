@@ -393,7 +393,7 @@ const (
 
 	connectionMargin     = 2 * mebibyte
 	readAllAtMost        = 204 * mebibyte / 10
-	headAndTrailersHTTP1 = 28 * mebibyte / 10
+	headAndTrailersHTTP1 = 29 * mebibyte / 10
 	keptAtMost           = 2 * mebibyte
 	summariesAtMost      = 4 * mebibyte
 )

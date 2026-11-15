@@ -132,6 +132,9 @@ func TestTwoTalliesMergeIntoTheCountAndTheThreeThatSortFirstOfBoth(t *testing.T)
 }
 
 func TestATallyBuildsNoNameForAnObjectThatDoesNotQualify(t *testing.T) {
+	if inAProcessOfItsOwn(t) {
+		return
+	}
 	sizedForTheBounds(t)
 	const webhooks = 128_000
 	config := strings.Repeat("c", maxName)
@@ -153,6 +156,7 @@ func TestATallyBuildsNoNameForAnObjectThatDoesNotQualify(t *testing.T) {
 					got.add(config, order.at(i))
 				}
 			})
+			t.Logf("counting %d webhooks in %s order allocated %.0f times", webhooks, order.name, allocs)
 			if allocs > 16 {
 				t.Errorf("counting %d webhooks allocated %.0f times, want a count that does not grow with them", webhooks, allocs)
 			}

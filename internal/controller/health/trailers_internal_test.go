@@ -112,6 +112,9 @@ func canonicalFieldNames(room int) []string {
 }
 
 func TestAnHTTP1HeadOfFieldLinesEndingInALineFeedIsHeldAtMostHeadAndTrailersHTTP1(t *testing.T) {
+	if inAProcessOfItsOwn(t) {
+		return
+	}
 	sizedForTheBounds(t)
 	const body = `{"metadata":{"resourceVersion":"1"}}`
 	start := "HTTP/1.1 200 OK\nContent-Type: application/json\nContent-Length: " + strconv.Itoa(len(body)) + "\n"
@@ -135,6 +138,9 @@ func TestAnHTTP1HeadOfFieldLinesEndingInALineFeedIsHeldAtMostHeadAndTrailersHTTP
 }
 
 func TestAnHTTP1HeadOfNamesAndFieldLinesTogetherWithTheTrailerValueIsHeldAtMostHeadAndTrailersHTTP1(t *testing.T) {
+	if inAProcessOfItsOwn(t) {
+		return
+	}
 	sizedForTheBounds(t)
 	prefix := "HTTP/1.1 200 OK\nContent-Type: application/json\nTransfer-Encoding: chunked\n"
 	var lines []string
@@ -181,6 +187,9 @@ const (
 
 	mostOfTheScanNames = 14600
 	mostOfTheScanLines = 4899
+
+	namesTheScanCarries = 21865
+	headsTheScanReads   = 110
 )
 
 type realizedHead struct {
@@ -255,6 +264,9 @@ func answerWithTrailers(t *testing.T, head realizedHead, block string) (client *
 }
 
 func TestAnHTTP1HeadThatAnnouncesTheNamesOfTheDearestCountWithAFullBlockOfTrailersNoneOfThemAnnouncedIsHeldAtMostHeadAndTrailersHTTP1(t *testing.T) {
+	if inAProcessOfItsOwn(t) {
+		return
+	}
 	sizedForTheBounds(t)
 	dearest := theDearestHead()
 	trailers, block := theTrailersOfAFullBlock()
@@ -277,6 +289,9 @@ func TestAnHTTP1HeadThatAnnouncesTheNamesOfTheDearestCountWithAFullBlockOfTraile
 }
 
 func TestTheMostAHeadOfDistinctNamesAndFieldLinesWithItsTrailersHoldsIsFoundByScanningItsAnnouncedNames(t *testing.T) {
+	if inAProcessOfItsOwn(t) {
+		return
+	}
 	sizedForTheBounds(t)
 	trailers, block := theTrailersOfAFullBlock()
 	carried := len(announcedNamesApartFrom(trailers, math.MaxInt, maxResponseHeaderBytes-len(headOfAMixPrefix)-len("Trailer: ")-len("\n\n")))
@@ -299,8 +314,8 @@ func TestTheMostAHeadOfDistinctNamesAndFieldLinesWithItsTrailersHoldsIsFoundBySc
 			most, mostNames, mostLines = held, int64(head.announced), int64(head.fieldLines)
 		}
 	}
-	if first != 0 || carried-last >= 200 || scanned != carried/200+1 {
-		t.Errorf("the scan read %d heads from %d to %d announced names, want one in every 200 from 0 to the most a head carries, %d, which is %d heads", scanned, first, last, carried, carried/200+1)
+	if first != 0 || carried-last >= 200 || scanned != carried/200+1 || carried != namesTheScanCarries || scanned != headsTheScanReads {
+		t.Errorf("the scan read %d heads from %d to %d announced names, want one in every 200 from 0 to the most a head carries, %d, which is %d heads, and the %d names and %d heads the documents give", scanned, first, last, carried, carried/200+1, namesTheScanCarries, headsTheScanReads)
 	}
 	pinned := headOfAMix(t, headOfAMixPrefix, "\n\n", mostOfTheScanNames, trailers)
 	client, url := answerWithTrailers(t, pinned, block)
@@ -314,6 +329,9 @@ func TestTheMostAHeadOfDistinctNamesAndFieldLinesWithItsTrailersHoldsIsFoundBySc
 }
 
 func TestTheHeadTheScanFindsMostWithItsTrailersIsHeldAtMostItsPartsAndTheTerm(t *testing.T) {
+	if inAProcessOfItsOwn(t) {
+		return
+	}
 	sizedForTheBounds(t)
 	dearest := theDearestHead()
 	trailers, block := theTrailersOfAFullBlock()

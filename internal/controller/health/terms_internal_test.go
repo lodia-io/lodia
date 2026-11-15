@@ -35,7 +35,7 @@ func TestEveryTermOfAReadIsAtLeastItsPartsAndLessThanTheStepOfItsRounding(t *tes
 		term, parts int
 		step        int
 	}{
-		{"the head of an HTTP/1.1 answer, its names, field lines and Trailer value, with the trailers merged into its names", headAndTrailersHTTP1, theDearestHead().bytes(), mebibyte / 10},
+		{"the head of an HTTP/1.1 answer, its names, field lines and Trailer value, with the trailers merged into its names", headAndTrailersHTTP1, theDearestHeadAt(1e-24).bytes(), mebibyte / 10},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if c.term < c.parts || c.term-c.parts >= c.step {
@@ -62,6 +62,9 @@ func allocatedBy(build func()) int {
 }
 
 func TestTheSizesTheTermsAreBuiltFromAreTheSourcesOnThisPlatform(t *testing.T) {
+	if inAProcessOfItsOwn(t) {
+		return
+	}
 	runes := bytes.Repeat([]byte{0xe9}, 16)
 	var text string
 	worstCopy := 0
@@ -99,14 +102,14 @@ func TestEveryFigureOfTheDerivationIsTheSumOfItsTermsRoundedUp(t *testing.T) {
 		decimals int
 		want     float64
 	}{
-		{"a read, MiB", mib(readsBound(1)), 1, 25.2},
-		{"a read apart from its connection, MiB", mib(readsBound(1) - connectionMargin), 1, 23.2},
-		{"the two reads of a pass of health-nodes, MiB", mib(readsBound(nodesReads)), 1, 50.4},
-		{"a pass of health-nodes, MiB", mib(pass), 1, 54.4},
-		{"a pass of health over a held restore, MiB", mib(readsBound(restoreReads)), 1, 176.4},
+		{"a read, MiB", mib(readsBound(1)), 1, 25.3},
+		{"a read apart from its connection, MiB", mib(readsBound(1) - connectionMargin), 1, 23.3},
+		{"the two reads of a pass of health-nodes, MiB", mib(readsBound(nodesReads)), 1, 50.6},
+		{"a pass of health-nodes, MiB", mib(pass), 1, 54.6},
+		{"a pass of health over a held restore, MiB", mib(readsBound(restoreReads)), 1, 177.1},
 		{"the connections of a tenant at rest, MiB", mib(uint64((nodesReads + restoreReads) * connectionMargin)), 1, 18},
 		{"a tenant at rest, MiB", mib(atRest), 1, 22},
-		{"100 passes of health-nodes, GiB", 100 * float64(pass) / gibibyte, 2, 5.32},
+		{"100 passes of health-nodes, GiB", 100 * float64(pass) / gibibyte, 2, 5.34},
 		{"10 passes of health over a held restore, GiB", 10 * float64(readsBound(restoreReads)) / gibibyte, 2, 1.73},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -118,6 +121,9 @@ func TestEveryFigureOfTheDerivationIsTheSumOfItsTermsRoundedUp(t *testing.T) {
 }
 
 func TestTheLeastAnHTTP1FieldLineAddsToAHeadIsItsCopiesAndAnElementOfTheSliceSinceTheMapGrowsInSteps(t *testing.T) {
+	if inAProcessOfItsOwn(t) {
+		return
+	}
 	head := func(lines int) string {
 		var text strings.Builder
 		for i := range lines {

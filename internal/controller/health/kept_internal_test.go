@@ -30,6 +30,9 @@ func repeated(n int, item string) string {
 }
 
 func TestWhatTheTypesKeepAtTheRawBoundsIsUnderKeptAtMost(t *testing.T) {
+	if inAProcessOfItsOwn(t) {
+		return
+	}
 	sizedForTheBounds(t)
 	for _, kind := range []struct {
 		name string
@@ -96,6 +99,9 @@ func TestWhatTheTypesKeepAtTheRawBoundsIsUnderKeptAtMost(t *testing.T) {
 }
 
 func TestWhatAPassBuildsBesideTheSamplingIsUnderSummariesAtMost(t *testing.T) {
+	if inAProcessOfItsOwn(t) {
+		return
+	}
 	sizedForTheBounds(t)
 	const nodes = 5000
 	name := func(i int) string { return fmt.Sprintf("%05d", i) + strings.Repeat("n", maxName-5) }

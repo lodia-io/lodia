@@ -9,6 +9,9 @@ import (
 )
 
 func TestATimeFieldHoldingAnObjectOrAnArrayIsNotATimeWhateverItsSize(t *testing.T) {
+	if inAProcessOfItsOwn(t) {
+		return
+	}
 	const size = 4 << 20
 	for _, c := range []struct {
 		name  string
