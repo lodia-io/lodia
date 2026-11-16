@@ -15,7 +15,7 @@ Built; `internal/controller/health` holds it.
 
 ## Why
 
-- **Over HTTP/2 a server decides what the client's pool keeps.**
+- **Over HTTP/2 a server decides what the client's pool keeps**, and a tenant's server is its administrator's, who is untrusted ([who-is-trusted](who-is-trusted.md)).
   A stream the client cancels before the server sent a frame counts against the connection's stream limit until a PING is answered, so a server that allows one stream and answers none makes the client dial again for every read its deadline cuts.
   A GOAWAY on an idle connection makes x/net drop it from its pool, and it stays open for 90 s, out of the reach of the close of idle connections ([transport.go](https://github.com/golang/net/blob/v0.60.0/http2/transport.go#L2502-L2514)).
   Each of those was found one round after another, and each needed a term, a count and a test of its own.

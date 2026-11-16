@@ -36,9 +36,9 @@ excused.
    from observed state, nothing is Ready or Succeeded on empty input, and
    metrics are tested like status. A green condition over missing data is
    worse than a red one.
-10. **Bounded and isolated.** Every derived name and object has a computed
-    maximum that CEL enforces, per-tenant state is bounded, and every external
-    call has a timeout. One tenant's failure never blocks another's reconcile.
+10. **Bounded and isolated.**
+    Every derived name and object has a computed maximum that CEL enforces, per-tenant state is bounded whatever the tenant's untrusted administrator writes ([who-is-trusted](decisions/who-is-trusted.md)), and every external call has a timeout.
+    One tenant's failure never blocks another's reconcile.
 11. **Upgrading Lodia is safe.** Objects stored by the previous release
     reconcile without a manual step, and a change to what Lodia renders reaches
     tenants through their maintenance rules, never all at once

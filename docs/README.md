@@ -465,7 +465,7 @@ While most nodes are silent and the API server answers, Health holds the control
 
 ## Identity and tenancy
 
-- A `ControlPlane` is namespaced; the platform's RBAC on the namespace decides who creates clusters and who reads their Secrets.
+- A `ControlPlane` is namespaced; the platform's RBAC on the namespace decides who creates clusters and who reads their Secrets, and no tenant reaches the management cluster's API ([who-is-trusted](decisions/who-is-trusted.md)).
   Lodia's ClusterRoles, one per controller, are limited to its kinds, the workload kinds it renders, Secrets and ConfigMaps, the management nodes, a cluster-wide `list` on pods, to match a leader Lease's holder to a pod of the `ControlPlane`, Gateway API `TLSRoute`s and the Gateways they attach to, etcd-druid's `Etcd`, the StatefulSet etcd-druid runs for it and the claims of that StatefulSet, `get` on the namespaces, whose UIDs go into the backup prefix, and `get` on the admission policy `kubeconfigrequests.lodia.io` and its binding, by name; where they come from is below.
 - Every field Lodia writes has a field manager `lodia/<controller>`; another manager's fields on the same object are left alone.
 - No cross-tenant object: every Secret, Service and route is in the tenant's namespace, and NetworkPolicies keep its pods to their own arrows.
@@ -648,3 +648,4 @@ Each controller records an event for every transition of a condition it writes (
 - [e2e-on-a-named-cluster](decisions/e2e-on-a-named-cluster.md) — e2e refuses the current context; conformance nightly.
 - [releases-and-support](decisions/releases-and-support.md) — ko, cosign, attestations, the chart in GHCR; the three maintained Kubernetes minors.
 - [tenant-clients-speak-http1](decisions/tenant-clients-speak-http1.md) — Health reads a tenant over HTTP/1.1 with no compression and no redirect, a dial and a handshake within `Timeout`, and at most as many connections as a pass has reads in flight.
+- [who-is-trusted](decisions/who-is-trusted.md) — the management cluster is the platform's and no tenant reaches its API; a tenant's administrator is untrusted inside the tenant; deleting a `ControlPlane` needs a confirmation.
