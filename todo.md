@@ -216,7 +216,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 - `.golangci.yml` breaks its own header: it switches gosec off for `internal/testenv/` (`.golangci.yml:72-73`), a rule off for one repository, and no GitHub workflow compares the file, so "the lint job fails on any difference" does not hold here.
   Move the exclusion to `//nolint:gosec // <why>` at its sites in `internal/testenv/testenv.go`, so that Lodia and the Cluster API provider carry the same file byte for byte; the provider's `verify` then compares its copy with Lodia's at the commit it pins.
-- The six e2e jobs of `.github/workflows/ci.yml`, `e2e` to `e2e-maintenance`, set no `timeout-minutes`, so a hung run holds a runner for GitHub's default of 360 minutes; the nightlies set one.
 - A failed e2e run leaves nothing to read: the suite dumps no objects, events or logs, and the jobs upload no artifacts.
   A dump on failure that fits under go test's `-timeout`, and an upload step under `if: always()`.
 - `E2E_DIR` is one directory for every kind cluster (`Makefile:9`): two runs in one checkout share `work/e2e/kubeconfig`, kind makes the second cluster current in it, and the first run's helm, which reads the file on every call, follows it.
