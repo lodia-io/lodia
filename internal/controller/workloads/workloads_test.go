@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -412,36 +413,43 @@ func TestTheSpecIsRendered(t *testing.T) {
 func TestEveryFlagLodiaRendersIsRefusedOrMerged(t *testing.T) {
 	cp := running(t)
 	merged := map[string]bool{"enable-admission-plugins": true, "controllers": true}
+	const (
+		sets     = "Lodia sets this flag"
+		defaults = "Lodia relies on this flag's default"
+		conflict = "this flag conflicts with one Lodia sets"
+	)
 	components := map[string]struct {
-		alsoRefused []string
+		alsoRefused map[string]string
 		set         func(*lodiav1alpha1.ControlPlaneSpec, map[string]string)
 	}{
-		"kube-apiserver": {[]string{"anonymous-auth", "bind-address", "feature-gates", "service-account-key-file", "service-account-signing-key-file", "shutdown-send-retry-after"},
+		"kube-apiserver": {map[string]string{"anonymous-auth": conflict, "bind-address": defaults, "feature-gates": sets, "goaway-chance": sets,
+			"service-account-key-file": conflict, "service-account-signing-key-file": conflict, "shutdown-send-retry-after": defaults},
 			func(spec *lodiav1alpha1.ControlPlaneSpec, args map[string]string) {
 				spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: args}
 			}},
-		"kube-controller-manager": {[]string{"cluster-signing-cert-file", "cluster-signing-key-file", "feature-gates", "service-account-private-key-file"},
+		"kube-controller-manager": {map[string]string{"cluster-signing-cert-file": conflict, "cluster-signing-key-file": conflict, "feature-gates": sets,
+			"service-account-private-key-file": conflict, "secure-port": defaults},
 			func(spec *lodiav1alpha1.ControlPlaneSpec, args map[string]string) {
 				spec.ControllerManager = &lodiav1alpha1.Component{ExtraArgs: args}
 			}},
-		"kube-scheduler": {[]string{"config", "feature-gates"},
+		"kube-scheduler": {map[string]string{"config": conflict, "feature-gates": sets, "secure-port": defaults},
 			func(spec *lodiav1alpha1.ControlPlaneSpec, args map[string]string) {
 				spec.Scheduler = &lodiav1alpha1.Scheduler{ExtraArgs: args}
 			}},
 	}
 	for component, c := range components {
-		flags := c.alsoRefused
+		flags := maps.Clone(c.alsoRefused)
 		for _, arg := range deployment(t, cp, component).Spec.Template.Spec.Containers[0].Command[1:] {
 			if name, _, _ := strings.Cut(strings.TrimPrefix(arg, "--"), "="); !merged[name] {
-				flags = append(flags, name)
+				flags[name] = sets
 			}
 		}
-		for _, flag := range flags {
+		for flag, want := range flags {
 			spec := cp.Spec.DeepCopy()
 			c.set(spec, map[string]string{flag: "set by the tenant"})
 			tenant := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "flags", Namespace: cp.Namespace}, Spec: *spec}
-			if err := k8s.Create(t.Context(), tenant, client.DryRunAll); !apierrors.IsInvalid(err) || !strings.Contains(err.Error(), "Lodia sets this flag") {
-				t.Errorf("the extra arguments of %s take --%s: %v", component, flag, err)
+			if err := k8s.Create(t.Context(), tenant, client.DryRunAll); !apierrors.IsInvalid(err) || !strings.Contains(err.Error(), want) {
+				t.Errorf("the extra arguments of %s take --%s, want %q: %v", component, flag, want, err)
 			}
 		}
 	}

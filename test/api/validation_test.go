@@ -245,19 +245,38 @@ func TestControlPlaneValidation(t *testing.T) {
 func TestExtraArgsRefuseTheFlagsLodiaSets(t *testing.T) {
 	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")
-	const refused = "Lodia sets this flag"
+	const (
+		sets     = "Lodia sets this flag"
+		defaults = "Lodia relies on this flag's default"
+		conflict = "this flag conflicts with one Lodia sets"
+		exits    = "this flag makes the component exit, or report another version than the one it runs"
+	)
 	for component, flags := range map[string]map[string]string{
 		"apiServer": {
-			"goaway-chance": refused, "etcd-prefix": refused, "etcd-servers-overrides": refused, "max-requests-inflight": "",
-			"service-account-jwks-uri": refused, "service-account-max-token-expiration": "",
+			"goaway-chance": sets, "service-account-jwks-uri": sets, "authentication-config": sets, "authorization-mode": sets,
+			"etcd-prefix": defaults, "etcd-servers-overrides": defaults, "shutdown-send-retry-after": defaults, "bind-address": defaults,
+			"oidc-issuer-url": conflict, "oidc-client-id": conflict, "oidc-ca-file": conflict, "oidc-username-claim": conflict,
+			"oidc-username-prefix": conflict, "oidc-groups-claim": conflict, "oidc-groups-prefix": conflict, "oidc-signing-algs": conflict,
+			"oidc-required-claim": conflict, "anonymous-auth": conflict, "authorization-config": conflict, "authorization-policy-file": conflict,
+			"authorization-webhook-config-file": conflict, "authorization-webhook-version": conflict,
+			"authorization-webhook-cache-authorized-ttl": conflict, "authorization-webhook-cache-unauthorized-ttl": conflict,
+			"admission-control": conflict, "cert-dir": conflict, "service-account-key-file": conflict, "service-account-signing-key-file": conflict,
+			"help": exits, "version": exits,
+			"max-requests-inflight": "", "service-account-max-token-expiration": "", "authentication-token-webhook-config-file": "",
+			"disable-admission-plugins": "", "tls-sni-cert-key": "",
 		},
 		"controllerManager": {
-			"leader-elect-lease-duration": refused, "leader-elect-renew-deadline": refused, "leader-elect-retry-period": refused,
-			"leader-elect-resource-lock": refused, "leader-elect-resource-name": refused, "leader-elect-resource-namespace": refused,
-			"node-monitor-grace-period": refused, "node-monitor-period": refused, "terminated-pod-gc-threshold": "",
+			"leader-elect-lease-duration": sets, "leader-elect-renew-deadline": sets, "leader-elect-retry-period": sets,
+			"leader-elect-resource-lock": sets, "leader-elect-resource-name": sets, "leader-elect-resource-namespace": sets,
+			"node-monitor-grace-period": sets, "node-monitor-period": sets, "cluster-signing-kubelet-client-cert-file": sets,
+			"secure-port": defaults, "cluster-signing-cert-file": conflict, "cluster-signing-key-file": conflict, "master": conflict,
+			"service-account-private-key-file": conflict, "help": exits, "version": exits,
+			"terminated-pod-gc-threshold": "", "node-cidr-mask-size": "", "node-cidr-mask-size-ipv4": "",
 		},
 		"scheduler": {
-			"leader-elect-resource-lock": refused, "leader-elect-resource-name": refused, "leader-elect-resource-namespace": refused,
+			"leader-elect-resource-lock": sets, "leader-elect-resource-name": sets, "leader-elect-resource-namespace": sets, "kubeconfig": sets,
+			"secure-port": defaults, "config": conflict, "master": conflict,
+			"help": exits, "version": exits, "write-config-to": exits,
 			"leader-elect-lease-duration": "",
 		},
 	} {
@@ -271,6 +290,54 @@ func TestExtraArgsRefuseTheFlagsLodiaSets(t *testing.T) {
 	}
 }
 
+func TestExtraArgsRefuseWhatConflictsWithTheirValues(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	const (
+		disabled = "disable-admission-plugins cannot name NodeRestriction, which Lodia enables"
+		dual     = "kube-controller-manager refuses node-cidr-mask-size with two pod ranges"
+		ipv4     = "kube-controller-manager refuses node-cidr-mask-size-ipv4 with an IPv6 pod range alone"
+		ipv6     = "kube-controller-manager refuses node-cidr-mask-size-ipv6 with an IPv4 pod range alone"
+		signer   = "kube-apiserver refuses service-account-signing-endpoint, which Lodia sets, without ExternalServiceAccountTokenSigner"
+	)
+	args := func(component string, flags map[string]any) func(*testing.T, *unstructured.Unstructured) {
+		return func(t *testing.T, o *unstructured.Unstructured) { set(t, o, flags, "spec", component, "extraArgs") }
+	}
+	pods := func(cidrs ...any) func(*testing.T, *unstructured.Unstructured) {
+		return func(t *testing.T, o *unstructured.Unstructured) { set(t, o, cidrs, "spec", "network", "podCIDRs") }
+	}
+	for _, c := range []struct {
+		name   string
+		mutate []func(*testing.T, *unstructured.Unstructured)
+		want   string
+	}{
+		{"NodeRestriction disabled", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "NodeRestriction"})}, disabled},
+		{"NodeRestriction disabled among others", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "PodSecurity,NodeRestriction"})}, disabled},
+		{"another plugin disabled", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "PodSecurity,DefaultStorageClass"})}, ""},
+		{"a node mask size with one IPv4 range", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size": "26"})}, ""},
+		{"a node mask size with two ranges", []func(*testing.T, *unstructured.Unstructured){pods("10.244.0.0/16", "fd00:10:244::/56"), args("controllerManager", map[string]any{"node-cidr-mask-size": "26"})}, dual},
+		{"both node mask sizes with two ranges", []func(*testing.T, *unstructured.Unstructured){pods("10.244.0.0/16", "fd00:10:244::/56"), args("controllerManager", map[string]any{"node-cidr-mask-size-ipv4": "26", "node-cidr-mask-size-ipv6": "64"})}, ""},
+		{"an IPv4 node mask size with an IPv4 range", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size-ipv4": "26"})}, ""},
+		{"an IPv4 node mask size with an IPv6 range", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10:244::/56"), args("controllerManager", map[string]any{"node-cidr-mask-size-ipv4": "26"})}, ipv4},
+		{"an IPv6 node mask size with an IPv6 range", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10:244::/56"), args("controllerManager", map[string]any{"node-cidr-mask-size-ipv6": "64"})}, ""},
+		{"an IPv6 node mask size with an IPv4 range", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size-ipv6": "64"})}, ipv6},
+		{"the external signer's gate off", []func(*testing.T, *unstructured.Unstructured){func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, map[string]any{"ExternalServiceAccountTokenSigner": false}, "spec", "apiServer", "featureGates")
+		}}, signer},
+		{"the external signer's gate on", []func(*testing.T, *unstructured.Unstructured){func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, map[string]any{"ExternalServiceAccountTokenSigner": true}, "spec", "apiServer", "featureGates")
+		}}, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			obj := example(t, "controlplane-single.yaml", "values")
+			for _, mutate := range c.mutate {
+				mutate(t, obj)
+			}
+			expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), c.want)
+		})
+	}
+}
+
 func TestExtraArgsRefuseBindAddressInEverySpellingAndMode(t *testing.T) {
 	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")
@@ -280,14 +347,14 @@ func TestExtraArgsRefuseBindAddressInEverySpellingAndMode(t *testing.T) {
 		"loadBalancer": {"loadBalancer": map[string]any{}},
 		"nodePort":     {"nodePort": map[string]any{}},
 	} {
-		for component, admitted := range map[string]string{
-			"apiServer":         "max-requests-inflight",
-			"controllerManager": "terminated-pod-gc-threshold",
-			"scheduler":         "leader-elect-lease-duration",
+		for component, flags := range map[string]struct{ admitted, bind string }{
+			"apiServer":         {"max-requests-inflight", "Lodia relies on this flag's default"},
+			"controllerManager": {"terminated-pod-gc-threshold", "Lodia sets this flag"},
+			"scheduler":         {"leader-elect-lease-duration", "Lodia sets this flag"},
 		} {
 			for key, want := range map[string]string{
-				"bind-address": "Lodia sets this flag", "bind_address": spelling, "secure_port": spelling, "advertise_address": spelling,
-				"-bind-address": spelling, "Bind-Address": spelling, "etcd-prefix=x": spelling, admitted: "",
+				"bind-address": flags.bind, "bind_address": spelling, "secure_port": spelling, "advertise_address": spelling,
+				"-bind-address": spelling, "Bind-Address": spelling, "etcd-prefix=x": spelling, flags.admitted: "",
 			} {
 				t.Run(mode+"/"+component+"/"+key, func(t *testing.T) {
 					obj := example(t, "controlplane-ha.yaml", "bind")
