@@ -46,7 +46,7 @@ The field reference is [`docs/api/controlplane.md`](../api/controlplane.md); exa
 ## Consequences
 
 - The Go types, the CRD YAML and `docs/api/controlplane.md` change together.
-- `v1alpha1` may change incompatibly between minor releases of Lodia until `v1beta1`; the roadmap says when.
+- `v1alpha1` may change incompatibly until the maintainers declare it frozen, and changes only by addition from then on; a later version keeps its shape ([no-admission-webhooks](no-admission-webhooks.md#consequences)).
 
 ## Code
 
