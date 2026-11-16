@@ -1,7 +1,7 @@
 # Roadmap
 
 Five phases.
-Each ends with a gate: automated checks whose exit codes say the phase is done, and where a gate has a number, a number we measured.
+Each ends with a gate: checks that say the phase is done, automated wherever they can be, and where a gate has a number, a number we measured.
 A phase does not start before the previous gate is green, and a gate that fails after it passed is a regression, not a backlog item.
 A consumer of a phase's contract may be built in that phase, since it is what tests the contract: the Cluster API provider of phase 3 consumes phase 2's API.
 
