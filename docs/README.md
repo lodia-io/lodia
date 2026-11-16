@@ -414,7 +414,7 @@ The client CA's rotation:
 
 ```mermaid
 stateDiagram-v2
-  Idle --> Preparing: rotate-client-ca-start
+  Idle --> Preparing: a rotation is asked for
   Preparing --> Prepared: CA₂ in the API server's client bundle, every client certificate re-issued, the kubelet signer under CA₂
   Prepared --> Completing: one signing duration later (30 days), every kubelet renewed
   Completing --> Idle: CA₁ dropped from the bundle
@@ -633,7 +633,6 @@ Each controller records an event for every transition of a condition it writes (
 - [one-controlplane-per-cluster](decisions/one-controlplane-per-cluster.md) — five kinds; `ControlPlane` is the whole cluster; operations are objects of their own.
 - [independent-controllers](decisions/independent-controllers.md) — six controllers, one object, conditions as the only coupling.
 - [component-per-deployment](decisions/component-per-deployment.md) — a Deployment per component, konnectivity as the API server's sidecar, 4 or 9 pods.
-- [compact-layout](decisions/compact-layout.md) — no layout puts every component in one pod; `spec.layout` leaves the API.
 - [dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md) — an etcd per tenant through etcd-druid; a shared store as an option.
 - [restore-replaces-the-source](decisions/restore-replaces-the-source.md) — a `Backup` is a sealed copy; a `ControlPlane` restored from it replaces its source and stays inert until released.
 - [no-admission-webhooks](decisions/no-admission-webhooks.md) — CEL in the schema; conditions for what a schema cannot check; an admission policy for what it cannot see, the requester.

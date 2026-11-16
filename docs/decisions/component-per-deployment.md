@@ -1,7 +1,7 @@
 # Each control plane component runs in its own Deployment; etcd in its own StatefulSet
 
 Decided 2026-10-25.
-The `Split` layout is built, with high availability.
+Built, with high availability.
 
 ## Decision
 
@@ -13,8 +13,6 @@ A tenant namespace holds:
 | Deployment `<name>-kube-controller-manager` | `kube-controller-manager` | 1 | 2 | leader election; reaches the API through the namespace Service |
 | Deployment `<name>-kube-scheduler` | `kube-scheduler` | 1 | 2 | leader election; same path to the API |
 | etcd (a `StatefulSet` managed by etcd-druid) | `etcd`, `backup-restore` | 1 | 3 | own CA, quota, continuous snapshots to object storage |
-
-This is the `Split` layout, the only one ([compact-layout](compact-layout.md)).
 
 Four pods for a single control plane, nine for a highly available one.
 Each Deployment has its own readiness: the API server on `/readyz`, the two controllers on their secure health endpoints; none waits on another through init containers.

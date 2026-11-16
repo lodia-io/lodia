@@ -7,7 +7,7 @@ Built; `internal/controller/health` holds it.
 
 - Health's two clients of a tenant, `health`'s and `health-nodes`', set `h2` out of `NextProtos`, so that client-go configures no HTTP/2 for them ([http.go](https://github.com/kubernetes/apimachinery/blob/v0.37.1/pkg/util/net/http.go#L196-L208)) and every request goes over HTTP/1.1, whatever the tenant's server offers.
 - Both set `DisableCompression`, so that net/http asks for no gzip and decodes none ([transport.go](https://github.com/golang/go/blob/go1.26.11/src/net/http/transport.go#L2845-L2862)).
-- Both follow no redirect, as the prober does, so that the one host of the kubeconfig is the only host they dial: a redirected read is a failed read that names no byte of the `Location`.
+- Both follow no redirect, as the prober does, so that the one host of the kubeconfig is the only host they dial, whatever a group that the tenant's untrusted administrator serves answers ([who-is-trusted](who-is-trusted.md)): a redirected read is a failed read that names no byte of the `Location`.
 - Each client's transport has `MaxConnsPerHost` equal to the most reads its pass has in flight at once: 2 for `health-nodes`, the two lists, and 7 for `health`, the lists of a held restore.
   net/http counts every connection of a host, dialing, in use and idle, and a dial past the cap waits for a connection to close or to be given back ([transport.go](https://github.com/golang/go/blob/go1.26.11/src/net/http/transport.go#L214-L219)).
 - Both bound a dial and a TLS handshake by the `Timeout` of their reconciler, as the prober does: net/http dials on a context detached from the request's, and client-go lets a dial run 30 s and a handshake 10 s ([cache.go](https://github.com/kubernetes/client-go/blob/v0.37.1/transport/cache.go#L122)).
@@ -15,7 +15,7 @@ Built; `internal/controller/health` holds it.
 
 ## Why
 
-- **Over HTTP/2 a server decides what the client's pool keeps**, and a tenant's server is its administrator's, who is untrusted ([who-is-trusted](who-is-trusted.md)).
+- **Over HTTP/2 a server decides what the client's pool keeps.**
   A stream the client cancels before the server sent a frame counts against the connection's stream limit until a PING is answered, so a server that allows one stream and answers none makes the client dial again for every read its deadline cuts.
   A GOAWAY on an idle connection makes x/net drop it from its pool, and it stays open for 90 s, out of the reach of the close of idle connections ([transport.go](https://github.com/golang/net/blob/v0.60.0/http2/transport.go#L2502-L2514)).
   Each of those was found one round after another, and each needed a term, a count and a test of its own.

@@ -1,7 +1,7 @@
 # Roadmap
 
 Five phases.
-Each ends with a gate: an automated check whose exit code says the phase is done, a number we measured against a target, and a scenario someone can watch.
+Each ends with a gate: automated checks whose exit codes say the phase is done, and where a gate has a number, a number we measured.
 A phase does not start before the previous gate is green, and a gate that fails after it passed is a regression, not a backlog item.
 A consumer of a phase's contract may be built in that phase, since it is what tests the contract: the Cluster API provider of phase 3 consumes phase 2's API.
 
@@ -136,7 +136,6 @@ And through the phase, a Cluster API control plane provider in its own repositor
 
 Not in phase 3:
 
-- The `Compact` layout, withdrawn ([compact-layout](decisions/compact-layout.md)).
 - A shared `Datastore`, its write lock and migration between stores.
   The API server's compactor writes and watches `compact_rev_key`, a key outside `--etcd-prefix` ([compact.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/storage/etcd3/compact.go#L35)), so the API servers of tenants that share an etcd by prefix share that key.
 
@@ -145,7 +144,7 @@ Gate (a feature of the last stage adds its check here with its design):
 - e2e: a minor upgrade of a tenant that sets a feature gate the next minor removed stops at its rehearsal with the reason, its API server untouched, and a tenant without one steps as it does today; the minor upgrade's gate checks both.
 - e2e, every night: etcd-druid upgraded across a patch under a held tenant serves each request of the Datastore controller once and reports its revision once; a one-member tenant whose volume is deleted after a delta snapshot comes back with the key that delta holds.
 - e2e: a tenant whose JWT authenticator maps claims by CEL to groups, `uid` and `extra` and validates the user accepts a token of its issuer as that user, and an edit of the issuer applies without a restart of the API server.
-- e2e: deleting a `ControlPlane` without the confirmation is refused, and the Cluster API provider's e2e still deletes its cluster.
+- envtest: deleting a `ControlPlane` without the confirmation is refused; the Cluster API provider's e2e still deletes its cluster.
 - e2e: the gates pass with egress denied and the `restricted` security context on every control plane pod, and a control plane pod that dials the management network is refused.
 - e2e: a Cluster API `Cluster` whose control plane is Lodia's provider reaches `ControlPlaneInitialized`, and a `MachineDeployment` of Cluster API's Docker machines joins it through the kubeadm bootstrap provider.
 - e2e: start and complete a CA rotation while two nodes stay `Ready` and a workload keeps calling the API with a ServiceAccount token; the same for the ServiceAccount key and the encryption key; once the client CA rotation completes, an admin kubeconfig of the old client CA no longer works.
@@ -161,7 +160,7 @@ Done: Health's bounded reads, with the tenant clients of [tenant-clients-speak-h
 
 ## Phase 4 · Scale and community
 
-Scope: label-based sharding of tenants across operator replicas; zone spread; `v1beta1` with the lessons of the alpha; the documentation site; OpenSSF Scorecard; the first adopters.
+Scope: label-based sharding of tenants across operator replicas; zone spread; `v1beta1`, of `v1alpha1`'s frozen shape; the documentation site; OpenSSF Scorecard; the first adopters.
 
 Gate:
 
