@@ -147,9 +147,7 @@ func TestMinorUpgradeGate(t *testing.T) {
 			end := time.Now()
 			history.log(t, start, end)
 			after, logs := readLoopsPast(ctx, t, end, loops)
-			for i, l := range loops {
-				checkLoop(t, l.where, before[i], after[i], logs[i])
-			}
+			checkLoops(t, loops, before, after, logs)
 			stopLoops(ctx, t, loops)
 			upgrade.check(t)
 			kept := &corev1.Node{}

@@ -74,7 +74,6 @@ const (
 	konnectivityMetricsPort = 8134
 	dialDuration            = "konnectivity_network_proxy_server_dial_duration_seconds"
 	apiLoop                 = "apiloop"
-	apiLoopRate             = 10
 )
 
 var booted = regexp.MustCompile("Reached target .*Multi-User System.*|detected cgroup v1")
@@ -183,9 +182,7 @@ func TestPhase1Gate(t *testing.T) {
 			before, _ := readLoops(ctx, t, "both loops answer on new and reused connections", loops)
 			rollAPIServer(ctx, t, k8s, key)
 			after, logs := readLoops(ctx, t, "both loops' counts are read after the rollout", loops)
-			for i, l := range loops {
-				checkLoop(t, l.where, before[i], after[i], logs[i])
-			}
+			checkLoops(t, loops, before, after, logs)
 			stopLoops(ctx, t, loops)
 			return ctx
 		}).
@@ -948,19 +945,6 @@ func loopPod(namespace, kubeconfig string, image reference.NamedTagged, server s
 	}
 }
 
-type loopTally struct {
-	OK      int64 `json:"ok"`
-	Failed  int64 `json:"failed"`
-	Empty   int64 `json:"empty"`
-	Retried int64 `json:"retried"`
-}
-
-type loopCounts struct {
-	Time   time.Time `json:"time"`
-	Fresh  loopTally `json:"fresh"`
-	Reused loopTally `json:"reused"`
-}
-
 func readLoop(ctx context.Context, c kubernetes.Interface, pod *corev1.Pod) (loopCounts, string, error) {
 	raw, err := c.CoreV1().Pods(pod.Namespace).GetLogs(pod.Name, &corev1.PodLogOptions{}).DoRaw(ctx)
 	if err != nil {
@@ -980,32 +964,31 @@ func readLoop(ctx context.Context, c kubernetes.Interface, pod *corev1.Pod) (loo
 	return last, string(raw), nil
 }
 
-func checkLoop(t *testing.T, where string, before, after loopCounts, log string) {
+func checkLoops(t *testing.T, loops []apiLoopRun, before, after []loopCounts, logs []string, tolerated ...string) {
 	t.Helper()
-	seconds := after.Time.Sub(before.Time).Seconds()
-	failed := false
-	for _, mode := range []struct {
-		name          string
-		before, after loopTally
-	}{{"new connections", before.Fresh, after.Fresh}, {"reused connections", before.Reused, after.Reused}} {
-		ok, lost, empty, retried := mode.after.OK-mode.before.OK, mode.after.Failed-mode.before.Failed, mode.after.Empty-mode.before.Empty, mode.after.Retried-mode.before.Retried
-		expected := apiLoopRate * seconds
-		t.Logf("%s on %s, over %.0fs: %d answered of %.0f sent at %d per second, %d failed, %d found the kubernetes EndpointSlice empty, %d followed a Retry-After", where, mode.name, seconds, ok, expected, apiLoopRate, lost, empty, retried)
-		if lost != 0 || empty != 0 || float64(ok) < 0.95*expected {
-			failed = true
-			t.Errorf("%s on %s: %d failed and %d found the EndpointSlice empty; %d answered, want at least 95%% of %.0f", where, mode.name, lost, empty, ok, expected)
-		}
+	reads := make([]loopRead, len(loops))
+	for i, l := range loops {
+		reads[i] = loopRead{where: l.where, before: before[i], after: after[i], log: logs[i]}
 	}
-	if !failed {
+	report, faults := judgeLoops(reads, tolerated)
+	for _, line := range report {
+		t.Log(line)
+	}
+	for _, fault := range faults {
+		t.Error(fault)
+	}
+	if len(faults) == 0 {
 		return
 	}
-	for line := range strings.Lines(log) {
-		fields := strings.Fields(line)
-		if len(fields) < 2 || fields[0] != "failed" && fields[0] != "empty" && fields[0] != "retried" {
-			continue
-		}
-		if at, err := time.Parse(time.RFC3339Nano, fields[1]); err == nil && !at.Before(before.Time) {
-			t.Log(strings.TrimSpace(line))
+	for _, r := range reads {
+		for line := range strings.Lines(r.log) {
+			fields := strings.Fields(line)
+			if len(fields) < 2 || fields[0] != "failed" && fields[0] != "empty" && fields[0] != "retried" {
+				continue
+			}
+			if at, err := time.Parse(time.RFC3339Nano, fields[1]); err == nil && !at.Before(r.before.Time) {
+				t.Log(r.where + ": " + strings.TrimSpace(line))
+			}
 		}
 	}
 }

@@ -161,9 +161,7 @@ func TestGatewayGate(t *testing.T) {
 			before, _ := readLoops(ctx, t, "both loops' counts are read before the rollout", loops)
 			rollAPIServer(ctx, t, k8s, a)
 			after, logs := readLoops(ctx, t, "both loops' counts are read after the rollout", loops)
-			for i, l := range loops {
-				checkLoop(t, l.where, before[i], after[i], logs[i])
-			}
+			checkLoops(t, loops, before, after, logs)
 			return ctx
 		}).
 		Assess("a rollout of apiserver-proxy under the in-cluster loop: the surge pod schedules, the address stays, and the loop's clients reconnect", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
@@ -252,7 +250,7 @@ func TestGatewayGate(t *testing.T) {
 			t.Logf("a session to %s through the Gateway, its server verified against the cluster CA, without a client certificate: %v", tunnel.Host, err)
 			time.Sleep(5 * time.Second)
 			after, logs := readLoops(ctx, t, "the in-cluster loop's counts are read after it", inside)
-			checkLoop(t, inside[0].where, before[0], after[0], logs[0])
+			checkLoops(t, inside, before, after, logs)
 			stopLoops(ctx, t, loops)
 			return ctx
 		}).

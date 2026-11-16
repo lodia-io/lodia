@@ -179,9 +179,7 @@ func TestHighAvailabilityUpgrade(t *testing.T) {
 				return upgradeEnded(ctx, k8s, key, to)
 			})
 			after, logs := readLoopsPast(ctx, t, time.Now(), loops)
-			for i, l := range loops {
-				checkLoop(t, l.where, before[i], after[i], logs[i])
-			}
+			checkLoops(t, loops, before, after, logs)
 			stopLoops(ctx, t, loops)
 			upgrade.check(t)
 			return ctx

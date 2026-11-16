@@ -4,10 +4,11 @@
 // Command apiloop reads the kubernetes EndpointSlice from an API server at a
 // fixed rate on new connections and at the same rate on reused ones. It
 // follows an answer's Retry-After once, as client-go does, and retries
-// nothing else. It prints each request that fails, finds the slice empty or
-// follows a Retry-After, with the failed answer's Retry-After and body, and
-// every second the counts so far, after "counts ", as JSON; the e2e suite reads
-// them from its log.
+// nothing else. It prints each request that fails, with its number among its
+// connection kind's failures and the failed answer's Retry-After and body, each
+// that finds the slice empty or follows a Retry-After, and every second the
+// counts so far, after "counts ", as JSON; the e2e suite reads them from its
+// log.
 package main
 
 import (
@@ -125,8 +126,7 @@ func send(ctx context.Context, c *http.Client, url, name string, rate int, timeo
 				case ctx.Err() != nil:
 					return
 				case err != nil:
-					n.failed.Add(1)
-					fmt.Printf("failed %s %s: %v\n", start.UTC().Format(time.RFC3339Nano), name, err)
+					fmt.Printf("failed %s %s %d: %v\n", start.UTC().Format(time.RFC3339Nano), name, n.failed.Add(1), err)
 				case empty:
 					n.empty.Add(1)
 					fmt.Printf("empty %s %s\n", start.UTC().Format(time.RFC3339Nano), name)

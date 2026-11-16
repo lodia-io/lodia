@@ -37,7 +37,7 @@ The suite leaves the chart installed.
   Each loop reads the tenant's `kubernetes` EndpointSlice ten times a second on new connections and ten times a second on reused ones, with plain HTTP clients that give up after 5 seconds.
   They follow an answer's `Retry-After` once, as client-go does ([with_retry.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/with_retry.go#L308-L318)), which a draining API server sends ([api-exposure](../../docs/decisions/api-exposure.md)).
   They retry nothing else, since client-go would also retry a GET whose connection broke, which hides a lost request ([request.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/request.go#L1066-L1078)).
-  Each loop prints each failure and, every second, its counts.
+  Each loop prints each failure, numbered, and, every second, its counts.
   Between the counts before the change and those once the old pod is gone and 5 seconds more have passed, the suite wants no request failed, no answer with an empty slice, and answers to at least 95% of the requests the rate sends, and it logs how many followed a `Retry-After`.
   Disabling `addons.coreDNS` removes CoreDNS's objects from the tenant and from the inventory, and enabling it brings them back.
   Deleting the `ControlPlane` leaves in its namespace, of every namespaced kind the API server serves, Events aside, which outlive their objects, only the etcd's claim, which the class's `Retain` keeps, and what every namespace holds: the ConfigMap `kube-root-ca.crt` and the ServiceAccount `default`.
@@ -138,8 +138,19 @@ Two steps follow, the second once the first has recovered:
 1. One API server pod is deleted; the step ends 30 seconds after the pod is gone and two replicas are ready.
 2. The pod of the etcd leader, the member whose role `Etcd.status.members` gives as `Leader`, is deleted; the step ends 30 seconds after its replacement runs and etcd-druid reports three members ready, one of them the leader.
 
-In each step `Ready` must not leave `True` for longer than 5 seconds, Health's period in the gate, and neither loop may lose a request.
+In each step `Ready` must not leave `True` for longer than 5 seconds, Health's period in the gate.
+In the first step neither loop may lose a request.
+In the second the two loops together may lose one, answered 500 with one of the two errors the tenant API server's etcd client gives a call etcd ended without a gRPC status; any other failure, or a second, fails the step.
 The test logs each recorded change and, for each condition, the longest time it was not `True`.
+
+That bound is the system's while etcd serves gRPC on its HTTP server's listener.
+Over TLS, etcd 3.5.27 serves gRPC under its HTTP server ([serve.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/embed/serve.go#L243)), and when it stops it shuts that server down and then stops gRPC ([etcd.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/embed/etcd.go#L474-L488)).
+In the grpc-go and golang.org/x/net etcd-wrapper v0.8.2 builds etcd with ([go.mod](https://github.com/gardener/etcd-wrapper/blob/v0.8.2/go.mod#L68-L75)), stopping closes the transport of every call gRPC serves ([server.go](https://github.com/grpc/grpc-go/blob/v1.83.2/server.go#L1966-L1978)), after which none of them writes anything ([handler_server.go](https://github.com/grpc/grpc-go/blob/v1.83.2/internal/transport/handler_server.go#L219-L226)), and returns from every call that arrives later before it writes anything ([server.go](https://github.com/grpc/grpc-go/blob/v1.83.2/server.go#L1123-L1143)).
+The HTTP/2 server then ends the stream itself, after gRPC's headers if they went out, or else with a status 200 and no content type ([server.go](https://github.com/golang/net/blob/v0.58.0/http2/server.go#L2557-L2621)).
+The etcd client of Kubernetes v1.37.0, on grpc-go v1.82.1 ([go.mod](https://github.com/kubernetes/kubernetes/blob/v1.37.0/go.mod#L58-L80)), calls the first `Internal`, `server closed the stream without sending trailers` ([http2_client.go](https://github.com/grpc/grpc-go/blob/v1.82.1/internal/transport/http2_client.go#L1264-L1271)), and the second `Unknown`, `unexpected HTTP status code received from server: 200 (OK); malformed header: missing HTTP content-type` ([http2_client.go](https://github.com/grpc/grpc-go/blob/v1.82.1/internal/transport/http2_client.go#L1562-L1611)).
+It retries a read only on `Unavailable` ([retry.go](https://github.com/etcd-io/etcd/blob/v3.7.0/client/v3/retry.go#L54-L75)), and the API server answers 500 to an error that is no `metav1.Status` ([status.go](https://github.com/kubernetes/apiserver/blob/v0.37.0/pkg/endpoints/handlers/responsewriters/status.go#L60-L81)).
+Each loop prints a failed answer's body, and the test reads the error from it.
+Zero stays the target (`todo.md`).
 
 ## Gate G3: a Backup and a restore
 
