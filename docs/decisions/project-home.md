@@ -13,7 +13,7 @@ Decided 2026-10-23 as Brygga (`github.com/segla-io/brygga`, API group `brygga.se
 - **License:** Apache License 2.0, the license of the Kubernetes ecosystem and of every neighbour project we studied.
   Contributions are accepted under the Developer Certificate of Origin (DCO sign-off), not a CLA.
 - **API group:** `lodia.io`, first version `v1alpha1`.
-  Labels, annotations and finalizers use the same prefix (`lodia.io/control-plane`, `lodia.io/operation`, `lodia.io/datastore` as the finalizer, named after the controller that holds it).
+  Labels, annotations and finalizers use the same prefix (`lodia.io/control-plane`, `lodia.io/maintain-requested-at`, `lodia.io/datastore` as the finalizer, named after the controller that holds it).
 - **Field managers:** `lodia/<controller>` (`lodia/pki`, `lodia/workloads`, …), one per controller, so server-side apply ownership shows who wrote a field.
 
 ## Why

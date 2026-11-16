@@ -71,7 +71,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 ## From the contracts audit (2026-10-25)
 
 - Phase 3: `target.rotation.*`, which `Target` lacks, gets a stage enum of its own instead of sharing PKI's observed `RotationPhase`, and `rotation.ca` becomes `clusterCA`.
-- Phase 3: `Hibernated`, with Lifecycle as its writer, and the handled `lodia.io/operation` value recorded in `status`.
+- Phase 3: `Hibernated`, with Lifecycle as its writer.
 
 ## From the Tenant controller (2026-10-25)
 

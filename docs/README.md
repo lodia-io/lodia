@@ -177,7 +177,7 @@ The labels, annotations and the finalizer they share are defined in `api/v1alpha
 | annotation `lodia.io/etcd-formed` | the `Etcd` | Datastore, set to the `Etcd`'s UID once `DatastoreReady` first sees a ready member, and on every render after | Datastore, which reports `QuorumLost` only for an `Etcd` whose UID it holds |
 | annotation `lodia.io/etcd-reconcile-requested` | the `Etcd` | Datastore: `<generation>/<operator revision>/<run ID>` of its last request that etcd-druid reconcile the `Etcd`, written with that request, the run ID being that of etcd-druid's `status.lastOperation` | Datastore, which asks again until etcd-druid has served the request for the `Etcd`'s generation and `lodia.io/operator-revision` |
 | annotation `lodia.io/data-hash` | every Secret PKI writes | PKI: `DataHash` of the Secret's data, a SHA-256 that changes whenever the data does | Workloads, for the restart hashes of its pod templates |
-| annotation `lodia.io/operation` | a `ControlPlane` | the platform | Lifecycle and PKI, with rotations in phase 3 |
+| annotation `lodia.io/operation` | a `ControlPlane` | the platform | none: operations are objects, and the annotation is to go ([one-controlplane-per-cluster](decisions/one-controlplane-per-cluster.md)) |
 | annotation `lodia.io/maintain-requested-at` | a `ControlPlane` | the platform: a new value asks for the pending maintenance now | Lifecycle, which grants it outside the window, once per value, and records the value in `status.maintenance.lastHandled` |
 | annotation `lodia.io/operator-revision` | the Deployments Workloads renders and the `Etcd` the Datastore controller renders, never a pod template | Workloads and the Datastore controller: the operator revision the object was rendered with | each writer, which reports the revision in `status` once the object has rolled out |
 | annotation `lodia.io/sealed-uid` | a `Backup` | the backup reconciler of the Datastore controller: the `Backup`'s UID, once it is `Completed` | the backup reconciler, which never seals a `Backup` that carries it under another UID or without its `Completed` status (`SealLost`, [restore-replaces-the-source](decisions/restore-replaces-the-source.md)) |
@@ -630,7 +630,7 @@ Each controller records an event for every transition of a condition it writes (
 ## Decisions
 
 - [project-home](decisions/project-home.md) — Lodia, Apache-2.0, `go.lodia.io/lodia`, API group `lodia.io`.
-- [one-controlplane-per-cluster](decisions/one-controlplane-per-cluster.md) — five kinds; `ControlPlane` is the whole cluster; operations through an annotation.
+- [one-controlplane-per-cluster](decisions/one-controlplane-per-cluster.md) — five kinds; `ControlPlane` is the whole cluster; operations are objects of their own.
 - [independent-controllers](decisions/independent-controllers.md) — six controllers, one object, conditions as the only coupling.
 - [component-per-deployment](decisions/component-per-deployment.md) — a Deployment per component, konnectivity as the API server's sidecar, 4 or 9 pods.
 - [compact-layout](decisions/compact-layout.md) — no layout puts every component in one pod; `spec.layout: Compact` leaves the API.
