@@ -243,6 +243,13 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   The test passed three runs of three locally, `main` was green at bf28826, and none of the other failed runs among the last 60 of the repository names it.
   The cause is not found.
 
+## From the API before it freezes (2026-11-17)
+
+- `extraArgs` refuses the flags that conflict with what Lodia renders, and still accepts flags a component cannot run with: a key that is no flag of the component's minor, on which it exits; a flag that names a file, which no tenant can put into the pod (`audit-policy-file`, `admission-control-config-file`, `tls-sni-cert-key`, `token-auth-file`, `authentication-token-webhook-config-file`, `kubelet-certificate-authority`, `leader-migration-config`); `audit-log-*` without a policy, which kube-apiserver ignores; `runtime-config` turning off a group Tenant or Health needs; `request-timeout` above a minute, the default Workloads' termination grace period counts, which may cut a drain short (not measured); a `disable-admission-plugins` entry the tenant's own `enable-admission-plugins` names; `node-cidr-mask-size` beside `node-cidr-mask-size-ipv4` or `-ipv6`; and a feature gate locked or unknown in the minor.
+  Decide per kind whether the schema refuses it, a minor's flag table refuses it, or the docs say it.
+- The values of `extraArgs` have no length bound, so a CEL rule that splits one exceeds the CRD's cost budget (the `disable-admission-plugins` rule is a regular expression for it), and a tenant's value is bounded only by the object's size.
+- `network.podCIDRs` takes an IPv6 range wider than /48, beside which kube-controller-manager exits at its default node mask of /64: the node CIDR set refuses a mask more than 16 bits longer than the range ([cidr_set.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/nodeipam/ipam/cidrset/cidr_set.go#L82-L84), [core.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kube-controller-manager/app/core.go#L77)); the schema could refuse the range, or the node mask sizes against it.
+
 ## For the release that first drops a minor
 
 - A minor dropped from the version table stays renderable for one more release, as the source of an upgrade ([upgrades-and-maintenance-windows](docs/decisions/upgrades-and-maintenance-windows.md), "End of support"): build it in the release that first drops one, since no minor is dropped yet and the flag would have no data and no test that means anything.
