@@ -26,21 +26,6 @@ type LocalReference struct {
 	Name string `json:"name"`
 }
 
-// NamespacedReference names an object in a namespace, the same one when the
-// namespace is omitted.
-type NamespacedReference struct {
-	// Name of the object.
-	// +required
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=253
-	Name string `json:"name"`
-
-	// Namespace of the object.
-	// +optional
-	// +kubebuilder:validation:MaxLength=63
-	Namespace string `json:"namespace,omitempty"`
-}
-
 // UIDReference is an identity record: an object in the same namespace by its
 // name and the one object that had that name, since a name can be taken
 // again and a UID never. A reader does not follow it to the object, as it

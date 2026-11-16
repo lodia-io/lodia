@@ -23,7 +23,6 @@ Rules that hold across all of them:
 - A `ControlPlane` has one finalizer, `lodia.io/datastore`, which the Datastore controller holds ([deletion](../README.md#deletion)).
 - Imperative operations that are not desired state — starting or completing a credential rotation — are objects of their own, as a `Backup` and a `KubeconfigRequest` are: a right of their own in RBAC, CEL validation, and a status that records who asked and what happened.
   Whether there is one kind per operation or one for all is for the design of the first rotation ([roadmap](../roadmap.md)).
-  The annotation `lodia.io/operation`, which nothing reads, is to go.
 - Validation and defaults live in the CRD schema (CEL and defaults), not in a webhook ([no-admission-webhooks](no-admission-webhooks.md)).
 
 The field reference is [`docs/api/controlplane.md`](../api/controlplane.md); examples are in [`docs/api/examples/`](../api/examples/).
