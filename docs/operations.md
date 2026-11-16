@@ -254,6 +254,8 @@ If someone did and the Secrets are gone, a member that starts again cannot: the 
    The schema wants the class's `storage.size` at least twice the new quota, the `Etcd` caps it at half of the member's volume ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)), and the raise reaches every tenant on the class.
    Then compaction and defragmentation run, and the alarm is disarmed with `etcdctl alarm disarm`.
 
+Lodia never grows the volume of a running `Etcd`, and a class's `storage.size` reaches only an `Etcd` created without claims, so a tenant whose data outgrows half its volume gets a larger one only as a new `ControlPlane` restored from a `Backup`, under a class of the same store with a larger `storage.size`, which today gets new CAs and has every node join anew ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)).
+
 A restore stopped at its cleanup (`Restoring`, `etcd refuses the cleanup`) runs no API server, so step 2 does not apply: raise the quota as in step 3 and disarm the alarm, and Datastore sends the cleanup again within a minute.
 
 ### Restore a tenant from backup
