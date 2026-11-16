@@ -57,13 +57,13 @@ The Datastore controller is built for the dedicated case, of one member or three
 
 | | etcd-druid | own StatefulSet + etcd-backup-restore | etcd-io/etcd-operator | Cozystack etcd-operator |
 |---|---|---|---|---|
-| maturity | production at Gardener, v0.39 | the components are; the chart is an example | pre-release v0.2.0 | early alpha |
+| maturity | production at Gardener, v0.39 | the components are; the chart is an example | pre-release v0.3.0 | early alpha |
 | backups | full + delta, scheduled | the same sidecar | none yet (roadmap v0.4) | one-shot snapshot objects |
-| restore | automatic for one member; quorum loss by hand | automatic for one member | none | at bootstrap only |
+| restore | automatic for one member; quorum loss by hand | automatic for one member | a failed member recreated, or added back empty; quorum loss by hand | at bootstrap only |
 | scaling | 1 → 3 and back | static 1 or 3 | up and down | up and down |
 | hibernation | `replicas: 0`, snapshot first | by hand | no | `replicas: 0` |
 
-Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases), [etcd-backup-restore getting started](https://github.com/gardener/etcd-backup-restore/blob/master/docs/deployment/getting_started.md), [etcd-operator roadmap](https://github.com/etcd-io/etcd-operator/blob/main/docs/roadmap.md), [Cozystack etcd-operator](https://github.com/cozystack/etcd-operator).
+Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases), [etcd-backup-restore getting started](https://github.com/gardener/etcd-backup-restore/blob/master/docs/deployment/getting_started.md), [etcd-operator roadmap](https://github.com/etcd-io/etcd-operator/blob/v0.3.0/docs/roadmap.md) and [self-healing](https://github.com/etcd-io/etcd-operator/blob/v0.3.0/docs/design/etcd-member-lifecycle-and-self-healing-v0.3.0.md), [Cozystack etcd-operator](https://github.com/cozystack/etcd-operator).
 
 ## Rejected
 
@@ -77,6 +77,7 @@ Sources: [etcd-druid releases](https://github.com/gardener/etcd-druid/releases),
 - etcd-druid becomes a dependency with its own release cadence and image registry (Gardener's public Artifact Registry, amd64 and arm64); Lodia's version table pins the vendored chart and its images, and the operator configuration's registry mirror applies to them too.
 - The etcd version is the one etcd-druid's wrapper runs: etcd 3.5.27 with etcd-druid v0.39.0, while kubeadm defaults to 3.6.6 for Kubernetes 1.35 and 3.7.0 for 1.37 and accepts an external etcd from 3.5.24 ([1.35](https://github.com/kubernetes/kubernetes/blob/v1.35.0/cmd/kubeadm/app/constants/constants.go#L326-L329), [1.37](https://github.com/kubernetes/kubernetes/blob/v1.37.0/cmd/kubeadm/app/constants/constants.go#L326-L330)).
   `spec.etcd.image` and `spec.backup.image` let the version table pin newer builds; moving to 3.6 follows etcd-druid.
+- etcd-druid stays the engine through phase 3, and the code that names its types moves behind a seam of Lodia's own ([roadmap](../roadmap.md)); on 2027-03-01 at the latest the maintainers decide whether Lodia runs the etcd of a one-member tenant itself.
 - A restore from snapshot starts a new etcd cluster and, as etcd-druid does it, keeps the snapshot's revisions: clients with caches must relist.
   The spike measured it: until it restarted, the API server's cache listed 19 objects lost with the data and missed 16 of 17 written afterwards.
   A `ControlPlane` restored from a `Backup` is new, so no client of its source holds its revisions; for etcd-druid's own restore of a member that lost its data, the sidecar should bump the revisions, as etcd's `RevisionBump` and `MarkCompacted` can and the sidecar does not yet ([restorer.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapshot/restorer/restorer.go#L193-L205), [v3_snapshot.go](https://github.com/etcd-io/etcd/blob/v3.5.27/etcdutl/snapshot/v3_snapshot.go#L204-L212)), which is owed upstream (`todo.md`).
