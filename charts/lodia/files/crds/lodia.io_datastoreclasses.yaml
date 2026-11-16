@@ -87,14 +87,6 @@ spec:
                   retention:
                     description: Retention is how long snapshots are kept.
                     properties:
-                      afterDelete:
-                        description: |-
-                          AfterDelete is how long snapshots outlive their ControlPlane; no
-                          release deletes them yet.
-                        type: string
-                        x-kubernetes-validations:
-                        - message: must be a duration
-                          rule: duration(self) >= duration('0s')
                       fullSnapshots:
                         default: 30
                         description: |-

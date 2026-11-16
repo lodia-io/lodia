@@ -924,6 +924,7 @@ func TestRemovedFieldsAreUnknown(t *testing.T) {
 		{"controlplane-single.yaml", map[string]any{"name": "profiles"}, []string{"spec", "scheduler", "configRef"}},
 		{"controlplane-single.yaml", true, []string{"spec", "serviceAccount", "publicDiscovery"}},
 		{"controlplane-single.yaml", map[string]any{"name": "pool-a"}, []string{"spec", "datastore", "shared"}},
+		{"datastoreclass.yaml", "720h", []string{"spec", "backup", "retention", "afterDelete"}},
 	} {
 		field := strings.Join(c.path, ".")
 		t.Run(field, func(t *testing.T) {
@@ -1167,9 +1168,6 @@ func TestDatastoreClassValidation(t *testing.T) {
 		{"delta snapshots every 30 days", "30d", []string{"spec", "backup", "deltaSnapshotPeriod"}, "must be a duration"},
 		{"delta snapshots beyond a Go duration", "2562048h", []string{"spec", "backup", "deltaSnapshotPeriod"}, "must be a duration"},
 		{"delta snapshots every 90 seconds", "1m30s", []string{"spec", "backup", "deltaSnapshotPeriod"}, ""},
-		{"snapshots kept 30 days after deletion", "30d", []string{"spec", "backup", "retention", "afterDelete"}, "must be a duration"},
-		{"snapshots kept beyond a Go duration", "2562048h", []string{"spec", "backup", "retention", "afterDelete"}, "must be a duration"},
-		{"snapshots kept a negative time", "-1h", []string{"spec", "backup", "retention", "afterDelete"}, "must be a duration"},
 		{"a two-letter bucket", "ab", []string{"spec", "backup", "store", "bucket"}, "should match"},
 		{"a bucket with a slash", "backups/prod", []string{"spec", "backup", "store", "bucket"}, "should match"},
 		{"a 64-letter bucket", strings.Repeat("b", 64), []string{"spec", "backup", "store", "bucket"}, "spec.backup.store.bucket"},

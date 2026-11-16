@@ -213,10 +213,4 @@ type BackupRetention struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=3650
 	FullSnapshots int32 `json:"fullSnapshots,omitempty"`
-
-	// AfterDelete is how long snapshots outlive their ControlPlane; no
-	// release deletes them yet.
-	// +optional
-	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('0s')",message="must be a duration"
-	AfterDelete *metav1.Duration `json:"afterDelete,omitempty"`
 }

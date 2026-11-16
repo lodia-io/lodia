@@ -101,8 +101,7 @@ delta about 5 KB.
    owner references) and nothing removes the prefix in the bucket; only
    scale-in deletes the removed members' claims
    ([scale-in proposal](https://github.com/gardener/etcd-druid/blob/v0.39.0/docs/proposals/08-scale-in.md)).
-   `reclaimPolicy: Delete` and `retention.afterDelete` of a `DatastoreClass`
-   are Lodia's code.
+   `reclaimPolicy: Delete` of a `DatastoreClass` is Lodia's code.
 7. **Scheduled defragmentation skips small databases.** The sidecar
    defragments only above 3 GiB or with more than 1 GiB free
    ([constant](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/etcdutil/etcdutil.go#L34-L35),
