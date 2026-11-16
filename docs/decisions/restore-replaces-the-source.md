@@ -13,7 +13,7 @@ The restored `ControlPlane` gets new CAs, a new ServiceAccount key and a new enc
 **Inert until released.**
 The controller manager runs only once `spec.restoreFrom.release` is `Released` and no `ControlPlane` with the Backup's source UID exists in the namespace.
 `release` may be `Released` when the `ControlPlane` is created, for a source that is already gone ([the field](../api/controlplane.md#spec)).
-Until then Workloads renders the controller manager at 0 replicas in the Split layout, and its pod without that container in the Compact one; `APIServerReady` counts a component Lodia runs at 0 on purpose as available, its message saying the controller manager is held, so `AccessReady`, Tenant and Health, which wait on it, go on.
+Until then Workloads renders the controller manager at 0 replicas; `APIServerReady` counts a component Lodia runs at 0 on purpose as available, its message saying the controller manager is held, so `AccessReady`, Tenant and Health, which wait on it, go on.
 The API server serves the restored data, and the scheduler runs, harmless without nodes.
 Health reports `ControllersLeading=False`, reason `AwaitingRelease`, or `SourceExists` while the source does ([reasons](../api/controlplane.md#conditions-and-their-reasons)).
 

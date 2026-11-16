@@ -125,7 +125,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the docs review (2026-10-27)
 
-- A runbook in `docs/operations.md` for moving a tenant from `Compact` to `Split`: a new `ControlPlane` restored from a `Backup` (dedicated), or a migration (shared) (compact-layout).
 - konnectivity-server's Role in the tenant (`internal/controller/tenant/manifests/konnectivity.yaml` L13-L21) can update and delete every Lease in `kube-system`, the controller manager's and the scheduler's leader Leases included.
   The server needs its own Lease, `konnectivity-proxy-server-<server ID>` with a random ID at every start, and lists and deletes the expired ones labelled `k8s-app=konnectivity-server` ([server.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.35.0/cmd/server/app/server.go#L160-L171), [options.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.35.0/cmd/server/app/options/options.go#L413-L428), [gc_controller.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.35.0/pkg/server/leases/gc_controller.go#L56-L92)), so `resourceNames` cannot narrow the Role, since they restrict no `create` ([RBAC](https://kubernetes.io/docs/reference/access-authn-authz/rbac/#referring-to-resources)).
   A lease namespace of their own can: the server and the agents take `--lease-namespace` at v0.35.0, v0.36.0 and v0.37.0, `kube-system` by default ([server options.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.35.0/cmd/server/app/options/options.go#L164), [agent options.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.35.0/cmd/agent/app/options/options.go#L142)), and the server's Role and the agents' (L38-L46) would move there.
@@ -173,7 +172,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the restore's hold (2026-11-02)
 
-- The `Compact` layout, once built, renders a held restore's pod without the controller-manager container on the hold the `Split` layout renders as 0 replicas (`release` and `ran` in `internal/controller/workloads/workloads.go`); `Compact` is `Unsupported` until then (restore-replaces-the-source, compact-layout).
 - Health lists seven kinds in a held restore's tenant every period, a page of 500 each (`actedOn` in `internal/controller/health/health.go`); if inert tenants grow large, list them less often than the probe runs.
 
 ## From the restore (2026-11-02)

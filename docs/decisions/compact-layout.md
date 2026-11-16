@@ -1,47 +1,30 @@
-# A ControlPlane can run Compact: every control plane component in one pod, for development and free tiers
+# Lodia has no Compact layout: every control plane runs a Deployment per component
 
-Decided 2026-10-25.
-Not built.
+Decided 2026-11-12; it withdraws the `Compact` layout decided on 2026-10-25, which was never built.
 
 ## Decision
 
-- `spec.layout` is `Split` (the default, a Deployment per component, [component-per-deployment](component-per-deployment.md)) or `Compact` ([the field](../api/controlplane.md#spec)).
-- `Compact` renders one Deployment `<cp>-control-plane` with one replica and the containers `kube-apiserver`, `kube-controller-manager`, `kube-scheduler`, `konnectivity-server` and `lodia-signer`.
-  The controller manager and the scheduler reach the API on loopback at the API server's secure port, 6443 in every mode, and the serving certificate carries `127.0.0.1` as a SAN ([api-exposure](api-exposure.md)).
-- The datastore stays independent of the layout:
-
-| layout | datastore | pods per tenant |
-|---|---|---|
-| `Split`, single | dedicated | 4 |
-| `Split`, HA | dedicated | 9 |
-| `Compact` | dedicated | 2: the control plane and a one-member etcd |
-| `Compact` | shared | 1 |
-
-- Everything else is the same in both layouts: PKI and every rotation, the objects inside the tenant, backups of a dedicated etcd, hibernation, and the controller manager hold, which takes a lease and scales nothing ([controller-manager-hold](controller-manager-hold.md)).
+- Every control plane runs the layout of [component-per-deployment](component-per-deployment.md); no layout puts every component in one pod.
+- `spec.layout: Compact` leaves `v1alpha1` with the other fields no controller reads ([roadmap](../roadmap.md)); until then the schema accepts it and Workloads refuses it with `Unsupported` ([reasons](../api/controlplane.md#conditions-and-their-reasons)).
 
 ## Why
 
-- **Density is pod count as much as memory.**
-  A kubelet runs at most 110 pods by default (`maxPods`, [kubelet configuration](https://kubernetes.io/docs/reference/config-api/kubelet-config.v1beta1/)): four pods per tenant cap a node at about 27 tenants, one pod at up to 110 if memory allows.
-  Every pod also takes an address from the management cluster's pod range.
-- **Memory follows the processes, not the pods.**
-  The same processes run in either layout; the larger saving is a shared datastore and hibernation, and `Compact` lets those reach one pod per tenant.
-- **One renderer, two shapes.**
-  Only the Workloads controller knows the layout; the other five controllers do not care how many pods there are, so `Compact` adds no second code path to PKI, Datastore, Tenant, Health or Lifecycle.
+- **It saves pods, not memory.**
+  The same processes run in one pod as in four, and the API server alone is 227.7 of an idle tenant's 392.5 MiB ([Capacity](../operations.md#capacity)).
+- **The pod limit is a setting of the management cluster.**
+  A kubelet runs 110 pods by default, and its `maxPods` sets another limit ([kubelet configuration](https://kubernetes.io/docs/reference/config-api/kubelet-config.v1beta1/)).
+- **It costs a second shape of what Workloads renders:** a second render path, an upgrade step of its own, in which the API server, the controller manager and the scheduler change version in one rollout, and a held restore's pod without its controller manager.
+- A layout can come back as an added field or value, which is a compatible change.
 
 ## Rejected
 
-- `Compact` as the default — every restart-only change restarts the whole control plane, and there is no high availability.
-- An embedded store inside the one pod (SQLite through kine, or an etcd container) to make a dedicated store fit in one pod — a second storage path beside etcd-druid; `Compact` with a dedicated etcd is two pods with etcd-druid's backups.
-- Switching the layout in place — every component moves and the API is down for the switch; a new `ControlPlane` restored from a `Backup` does the same thing explicitly.
+- The `Compact` layout: one Deployment with every component and one replica, a pod per tenant on a shared store and two with a dedicated etcd — for the reasons above.
 
 ## Consequences
 
-- In `Compact`, a restart-only change (audit policy, egress or admission configuration, the etcd CA, the konnectivity certificate, the scheduler configuration) restarts every component of that control plane; renewals of reloaded certificates still restart nothing.
-- A single replica means the API is down for the seconds a pod restart or an upgrade takes; the maintenance window matters more than in `Split`.
-- Moving a tenant from `Compact` to `Split` is a new `ControlPlane` restored from a `Backup` (dedicated), or a migration (shared); its runbook is owed (`todo.md`).
-- The phase 3 gate runs a `Compact` tenant ([roadmap](../roadmap.md)).
+- A tenant takes four pods of the management cluster, nine when highly available ([component-per-deployment](component-per-deployment.md)); how many tenants a node holds is the management cluster's `maxPods` and pod range.
+- The controller manager always runs in a Deployment of its own, which a restore holds at 0 replicas and the hold stops through its lease ([restore-replaces-the-source](restore-replaces-the-source.md), [controller-manager-hold](controller-manager-hold.md)).
 
 ## Code
 
-none yet.
+- `internal/controller/workloads/workloads.go` — refuses `layout: Compact` with `Unsupported`.

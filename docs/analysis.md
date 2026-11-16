@@ -103,7 +103,6 @@ When two steps of a reconcile render the same Deployment (first without an add-o
 | operator releases roll the fleet | Lodia-initiated changes roll in each tenant's window, N at a time | [upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md) |
 | hibernation is uneven | hibernation with schedules, etcd included | [one-controlplane-per-cluster](decisions/one-controlplane-per-cluster.md) |
 | an outage between control plane and nodes evicts healthy pods | Health holds the controller manager's leader lease while most nodes are silent | [controller-manager-hold](decisions/controller-manager-hold.md) |
-| separate pods per component cost density | an optional `Compact` layout: one pod per tenant with a shared store | [compact-layout](decisions/compact-layout.md) |
 | control planes roll twice at creation | every component rendered in one pass by one controller | [independent-controllers](decisions/independent-controllers.md) |
 | a sequential reconcile makes failures global | six controllers with their own queues, coupled only by conditions | [independent-controllers](decisions/independent-controllers.md) |
 | standing admin credentials in the super-user group | short-lived kubeconfigs; the standing admin credential in a group RBAC governs | [short-lived-kubeconfigs](decisions/short-lived-kubeconfigs.md) |
