@@ -7,7 +7,7 @@ A phase does not start before the previous gate is green, and a gate that fails 
 | phase | delivers | gate |
 |---|---|---|
 | 0 · Foundations | the repository can build, test and ship; one control plane built by hand | `make verify` green in CI; the hand-built control plane runs a pod; the etcd spike has numbers |
-| 1 · Walking skeleton | a single-replica `ControlPlane` a real kubeadm node joins | e2e: `Ready` in under 3 minutes, node `Ready`, `kubectl logs` and `exec` through the tunnel, conformance passes |
+| 1 · Walking skeleton | a single-replica `ControlPlane` a real kubeadm node joins | e2e: `Ready` in under 90 seconds, node `Ready`, `kubectl logs` and `exec` through the tunnel, conformance passes |
 | 2 · Production | HA, Gateway exposure with in-cluster access, backups with `Backup` and restore, upgrades, maintenance windows, Health, metrics | zero failed API requests during a rollout and an upgrade; restore from backup passes conformance; nodes cut off for 10 minutes lose no pod |
 | 3 · Parity | shared etcd, migration by snapshot, staged rotations, hibernation, write lock, the `Compact` layout, a Cluster API provider | rotation keeps nodes `Ready` and tokens valid; sleep and wake keep data; migration freezes writes for seconds, reads never; a `Compact` tenant is one pod |
 | 4 · Scale and community | hundreds of tenants per operator, zone spread, `v1beta1`, docs site, supply-chain badges | 200 tenants on one management cluster within the resource budget; OpenSSF Scorecard ≥ 8 |
@@ -53,7 +53,7 @@ Scope: the thinnest path through every controller, single replica only, exposure
 
 Gate (the e2e suite in [`test/e2e`](../test/e2e/README.md): the first four are checked on every pull request by `TestPhase1Gate`, the fifth every night by `TestConformance`, which the [`nightly`](../.github/workflows/nightly.yml) workflow runs; the last was measured once, and the nightly records it again without asserting it):
 
-- A `ControlPlane` reaches `Ready` in under 3 minutes on kind.
+- A `ControlPlane` reaches `Ready` in under 90 seconds on kind.
 - A container running the kind node image joins with `kubeadm join --token …` and becomes `Ready`; a pod is scheduled on it and runs; `kubectl logs`, `exec` and `port-forward` work through the tunnel.
 - Disabling and re-enabling `addons.coreDNS` removes and restores its objects through the inventory.
 - Deleting the `ControlPlane` leaves nothing in the namespace but what the reclaim policy keeps.

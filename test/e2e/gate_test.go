@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/distribution/reference"
+	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	"github.com/prometheus/common/expfmt"
 	"github.com/prometheus/common/model"
 	appsv1 "k8s.io/api/apps/v1"
@@ -74,6 +75,7 @@ const (
 	konnectivityMetricsPort = 8134
 	dialDuration            = "konnectivity_network_proxy_server_dial_duration_seconds"
 	apiLoop                 = "apiloop"
+	readyWithin             = 90 * time.Second
 )
 
 var booted = regexp.MustCompile("Reached target .*Multi-User System.*|detected cgroup v1")
@@ -108,16 +110,17 @@ func TestPhase1Gate(t *testing.T) {
 			loop = image
 			return ctx
 		}).
-		Assess("Ready in under 3 minutes from the ControlPlane's creation", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("Ready within "+readyWithin.String()+" of the ControlPlane's creation, each stage on the way logged", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			cp := &lodiav1alpha1.ControlPlane{}
 			until(ctx, t, 3*time.Minute, "Ready=True", func(ctx context.Context) error {
 				return controlPlaneReady(ctx, k8s, key, cp)
 			})
 			ready := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionReady)
 			took := ready.LastTransitionTime.Sub(cp.CreationTimestamp.Time)
+			logStages(ctx, t, k8s, cp)
 			t.Logf("the ControlPlane turned Ready %s after its creation", took)
-			if took >= 3*time.Minute {
-				t.Errorf("Ready took %s; the gate wants under 3 minutes", took)
+			if took >= readyWithin {
+				t.Errorf("Ready took %s; the gate wants under %s", took, readyWithin)
 			}
 			version, err := buildVersion()
 			if err != nil {
@@ -235,6 +238,44 @@ func TestPhase1Gate(t *testing.T) {
 		}).
 		Feature()
 	testenv.Test(t, f)
+}
+
+func logStages(ctx context.Context, t *testing.T, k8s client.Client, cp *lodiav1alpha1.ControlPlane) {
+	t.Helper()
+	stages := []stage{{cp.CreationTimestamp.Time, "ControlPlane " + cp.Name + " created"}}
+	pods := &corev1.PodList{}
+	if err := k8s.List(ctx, pods, client.InNamespace(cp.Namespace), client.MatchingLabels{lodiav1alpha1.ControlPlaneLabel: cp.Name}); err != nil {
+		t.Fatal(err)
+	}
+	for _, pod := range pods.Items {
+		stages = append(stages, stage{pod.CreationTimestamp.Time, "pod " + pod.Name + " created"})
+		for _, c := range pod.Status.ContainerStatuses {
+			if c.Name == "etcd" && c.State.Running != nil {
+				stages = append(stages, stage{c.State.Running.StartedAt.Time, "pod " + pod.Name + ": container etcd started"})
+			}
+		}
+		for _, c := range pod.Status.Conditions {
+			if c.Type == corev1.PodReady && c.Status == corev1.ConditionTrue {
+				stages = append(stages, stage{c.LastTransitionTime.Time, "pod " + pod.Name + " Ready"})
+			}
+		}
+	}
+	etcd := &druidv1alpha1.Etcd{}
+	if err := k8s.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.EtcdName(cp.Name)}, etcd); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range etcd.Status.Conditions {
+		if c.Type == druidv1alpha1.ConditionTypeReady && c.Status == druidv1alpha1.ConditionTrue {
+			stages = append(stages, stage{c.LastTransitionTime.Time, "Etcd " + etcd.Name + " Ready, as etcd-druid's condition"})
+		}
+	}
+	for _, c := range cp.Status.Conditions {
+		stages = append(stages, stage{c.LastTransitionTime.Time, fmt.Sprintf("%s=%s %s", c.Type, c.Status, c.Reason)})
+	}
+	t.Logf("the stages of ControlPlane %s/%s from its creation at %s, each at the time its object records:", cp.Namespace, cp.Name, cp.CreationTimestamp.UTC().Format(time.RFC3339))
+	for _, line := range timeline(cp.CreationTimestamp.Time, stages) {
+		t.Log(line)
+	}
 }
 
 func throughKonnectivity(ctx context.Context, t *testing.T, cfg *envconf.Config, k8s client.Client, key client.ObjectKey, access *tenantAccess, node string) {

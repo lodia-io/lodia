@@ -26,7 +26,8 @@ The suite leaves the chart installed.
 - `TestExamplesOnAKindCluster`: the CRDs the chart installed accept every example in [`docs/api/examples`](../../docs/api/examples).
 - `TestAPIServerOnKind`: a `ControlPlane` in `nodePort` mode reports `APIServerReady=True`: a real kube-apiserver, controller manager and scheduler on PKI's certificates and the Datastore's etcd.
 - `TestPhase1Gate`: the per-pull-request part of the [phase 1 gate](../../docs/roadmap.md#phase-1--walking-skeleton).
-  A `ControlPlane` in `nodePort` mode, at the version of kind's default node image, turns `Ready`, and the suite logs the time from its creation, which must be under 3 minutes.
+  A `ControlPlane` in `nodePort` mode, at the version of kind's default node image, turns `Ready` under 90 seconds from its creation.
+  The suite logs each stage on the way, one line each, in the order of the times their objects record: each condition's last transition, each control plane pod's creation and readiness, the start of the `etcd` container, and etcd-druid's `Ready` condition on the `Etcd`.
   Its `status.target.operatorRevision` is that `VERSION` and a digest.
   Then [gate G7](#gate-g7-the-leaders-metrics) reads the operator's metrics and the event of the tenant's `Ready`.
   Anonymous requests reach the health paths and `cluster-info` and nothing else: `/version`, which RBAC grants unauthenticated users ([policy.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/plugin/pkg/auth/authorizer/rbac/bootstrappolicy/policy.go#L383-L388), [binding](https://github.com/kubernetes/kubernetes/blob/v1.37.0/plugin/pkg/auth/authorizer/rbac/bootstrappolicy/policy.go#L723)), answers 401.
