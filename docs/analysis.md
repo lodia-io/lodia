@@ -2,7 +2,7 @@
 
 Before designing Lodia we studied how the projects that run Kubernetes control planes as a service do it: what they host where, how they store, back up, rotate, upgrade and expose control planes, and what their users run into.
 This page is the summary; every statement links the project's own documentation, code or issue tracker.
-Survey date: 2026-10-23.
+Survey date: 2026-10-23; teuto.net's provider, k3k and Cozystack's nodes as of 2026-11-16.
 
 We describe problems as they appear across the category, not as faults of one project: most of them are hard trade-offs that every project resolves differently, and the projects below are the reason this space works at all.
 
@@ -18,8 +18,9 @@ We describe problems as they appear across the category, not as faults of one pr
 | [Kubermatic KKP](https://docs.kubermatic.com/kubermatic/main/architecture/) | seed clusters hosting user-cluster control planes, etcd per cluster | machine-controller |
 | [Cluster API KubeadmControlPlane](https://github.com/kubernetes-sigs/cluster-api/blob/main/docs/proposals/20191017-kubeadm-based-control-plane.md) | the baseline: control planes on machines with stacked etcd | Cluster API |
 | [Talos Omni](https://github.com/siderolabs/omni) | the reference for "we run your cluster's lifecycle" on Talos machines | Talos over a WireGuard link |
-| [Cozystack](https://cozystack.io/docs/v1.6/kubernetes/) | a platform built on a hosted control plane operator with etcd per tenant | KubeVirt VMs through Cluster API |
-| [k3k](https://github.com/rancher/k3k) | k3s control planes in pods, shared or virtual modes | agent pods or external workers |
+| [Cozystack](https://cozystack.io/docs/v1.6/kubernetes/) | a platform built on a hosted control plane operator with etcd per tenant | KubeVirt VMs running Talos Linux, through Cluster API and its Talos bootstrap provider, since v1.6.0 of 2026-07-22 ([changelog](https://github.com/cozystack/cozystack/blob/v1.7.1/docs/changelogs/v1.6.0.md#L159-L165)) |
+| [k3k](https://github.com/rancher/k3k/blob/v1.2.1/README.md) | K3s control planes in pods, in `shared` or `virtual` mode, and since v1.2.0 of 2026-08-27 in `hcp` mode: an agentless K3s control plane in the host cluster, which its CLI calls experimental ([types.go](https://github.com/rancher/k3k/blob/v1.2.1/pkg/apis/k3k.io/v1beta1/types.go#L428-L444), [cluster_create.go](https://github.com/rancher/k3k/blob/v1.2.1/cli/cmds/cluster_create.go#L96)) | the host cluster's nodes through a virtual kubelet in `shared` mode ([architecture](https://github.com/rancher/k3k/blob/v1.2.1/docs/architecture.md#L10)), agent pods in `virtual` mode, machines of the user's own through the K3s installer in `hcp` mode |
+| [teuto.net's Hosted Control Plane](https://github.com/teutonet/cluster-api-provider-hosted-control-plane/blob/v1.8.0/README.md) | a Cluster API control plane provider, built into clusterctl since Cluster API v1.12.0 ([providers_client.go](https://github.com/kubernetes-sigs/cluster-api/blob/v1.12.0/cmd/clusterctl/client/config/providers_client.go#L435-L439)): the API server, controller manager and scheduler as Deployments ([apiserverresources.go](https://github.com/teutonet/cluster-api-provider-hosted-control-plane/blob/v1.8.0/pkg/reconcilers/apiserverresources/apiserverresources.go#L181-L198)), an etcd StatefulSet per cluster that it runs itself ([reconciler.go](https://github.com/teutonet/cluster-api-provider-hosted-control-plane/blob/v1.8.0/pkg/reconcilers/etcd_cluster/reconciler.go#L193-L200)), with snapshots to S3 and a volume that grows when near full ([types](https://github.com/teutonet/cluster-api-provider-hosted-control-plane/blob/v1.8.0/api/v1alpha1/hostedcontrolplane_types.go#L153-L180)), reached through a Gateway's TLS passthrough listener by hostname, konnectivity too ([README](https://github.com/teutonet/cluster-api-provider-hosted-control-plane/blob/v1.8.0/README.md#L98-L161)) | Cluster API machines; it writes the objects `kubeadm join` reads ([reconciler.go](https://github.com/teutonet/cluster-api-provider-hosted-control-plane/blob/v1.8.0/pkg/reconcilers/workload/config/reconciler.go#L98-L214)) |
 
 ## What we found across the category
 
