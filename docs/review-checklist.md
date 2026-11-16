@@ -39,7 +39,7 @@ excused.
 10. **Bounded and isolated.**
     Every derived name and object has a computed maximum that CEL enforces, per-tenant state is bounded whatever the tenant's untrusted administrator writes ([who-is-trusted](decisions/who-is-trusted.md)), and every external call has a timeout.
     One tenant's failure never blocks another's reconcile.
-11. **Upgrading Lodia is safe.** Objects stored by the previous release
-    reconcile without a manual step, and a change to what Lodia renders reaches
-    tenants through their maintenance rules, never all at once
-    ([upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md)).
+11. **Upgrading Lodia is safe.**
+    A change to what Lodia renders reaches tenants through their maintenance rules, never all at once ([upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md)).
+    Until the maintainers freeze `v1alpha1` ([one-controlplane-per-cluster](decisions/one-controlplane-per-cluster.md#consequences)), a change to it may be incompatible, and keeps no alias, conversion or migration for what an earlier release stored, since no user has stored anything (check 3).
+    From the freeze on, objects stored by the previous release reconcile without a manual step, and `v1alpha1` changes only by addition.
