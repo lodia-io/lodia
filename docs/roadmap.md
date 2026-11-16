@@ -170,6 +170,6 @@ Gate:
 ## What is deliberately not on the roadmap
 
 - Machines: Lodia joins nodes, it does not create them.
-- SQL or NATS stores through kine: later, if users ask; the `Datastore` kind leaves room for a `driver`.
+- SQL or NATS stores through kine: later, if users ask.
 - A VPN between control plane and nodes: konnectivity is upstream and enough.
 - A Lodia agent on nodes.
