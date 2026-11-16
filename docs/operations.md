@@ -13,10 +13,10 @@ Installation is in [`README.md`](README.md#installation).
 | Upgrade Kubernetes | set `spec.version`; watch `status.kubernetes.upgrade` and `Progressing`; nodes follow at the owner's pace, at most three minors behind; Lodia goes one minor at a time, through a preflight and a `Backup` ([upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md)) |
 | Get patch updates automatically | `spec.maintenance.autoUpdate.kubernetesPatch: true` and a `maintenance.window` ([the field](api/controlplane.md#spec)) |
 | Roll pending maintenance now | `kubectl annotate controlplane <cp> lodia.io/maintain-requested-at="$(date -u +%FT%TZ)" --overwrite`; `status.maintenance.lastHandled` shows the value handled ([the annotation](api/controlplane.md#spec)) |
-| Rotate client identities (yearly, or after a leaked kubeconfig) | phase 3, not built: `kubectl annotate controlplane <cp> lodia.io/operation=rotate-client-ca-start`; it completes on its own after one kubelet signing duration (30 days), nodes untouched |
-| Rotate the ServiceAccount key | phase 3, not built: `…=rotate-serviceaccount-key-start`; when `status.credentials.rotation.serviceAccountKey.phase` is `Prepared` and no client holds an old token, `…=rotate-serviceaccount-key-complete` |
-| Rotate the etcd encryption key, the etcd CA, the front-proxy CA, the tunnel CA in `gateway` mode | phase 3, not built: `…=rotate-etcd-encryption-key-start`, `…=rotate-etcd-ca-start`, `…=rotate-front-proxy-ca-start`, `…=rotate-tunnel-ca-start`; each completes on its own |
-| Rotate the trust anchor (the cluster CA) | phase 3, not built: `…=rotate-ca-start`; when the phase is `Prepared`, add the new bundle (`<cp>-ca-bundle`) to every node's `/etc/kubernetes/pki/ca.crt` and kubelet kubeconfig, then `…=rotate-ca-complete` |
+| Rotate client identities (yearly, or after a leaked kubeconfig) | phase 3, not built: an operation object starts it ([one-controlplane-per-cluster](decisions/one-controlplane-per-cluster.md)); it completes on its own after one kubelet signing duration (30 days), nodes untouched |
+| Rotate the ServiceAccount key | phase 3, not built: start it; when `status.credentials.rotation.serviceAccountKey.phase` is `Prepared` and no client holds an old token, complete it |
+| Rotate the etcd encryption key, the etcd CA, the front-proxy CA, the tunnel CA in `gateway` mode | phase 3, not built: start each; each completes on its own |
+| Rotate the trust anchor (the cluster CA) | phase 3, not built: start it; when the phase is `Prepared`, add the new bundle (`<cp>-ca-bundle`) to every node's `/etc/kubernetes/pki/ca.crt` and kubelet kubeconfig, then complete it |
 | Hibernate and wake | phase 3, not built: `spec.hibernation.enabled: true` / `false`, or `spec.hibernation.schedules` |
 | Take a sealed copy | create a `Backup` ([example](api/examples/backup.yaml)); it is `Ready`, `Completed`, once sealed, and `status.snapshots` says where the copy is |
 | Replace a cluster from a `Backup` | create a new `ControlPlane` with `spec.restoreFrom.backupRef`; go through the [replace checklist](#replace-a-cluster-from-a-backup), or create the new one `Released` if the source is gone already; nodes join it anew with a new token ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)) |
@@ -254,6 +254,8 @@ If someone did and the Secrets are gone, a member that starts again cannot: the 
    The schema wants the class's `storage.size` at least twice the new quota, the `Etcd` caps it at half of the member's volume ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)), and the raise reaches every tenant on the class.
    Then compaction and defragmentation run, and the alarm is disarmed with `etcdctl alarm disarm`.
 
+Lodia never grows the volume of a running `Etcd`, and a class's `storage.size` reaches only an `Etcd` created without claims; growing a tenant's volume is not built.
+
 A restore stopped at its cleanup (`Restoring`, `etcd refuses the cleanup`) runs no API server, so step 2 does not apply: raise the quota as in step 3 and disarm the alarm, and Datastore sends the cleanup again within a minute.
 
 ### Restore a tenant from backup
@@ -322,10 +324,10 @@ Pre-upgrade `Backup`s have no owner, so they outlive their `ControlPlane`, one p
 
 ### Forced CA rotation
 
-Phase 3, not built: no controller reads `lodia.io/operation`, so the steps below do nothing yet.
+Phase 3, not built: the operation objects that start and complete a rotation do not exist yet ([one-controlplane-per-cluster](decisions/one-controlplane-per-cluster.md)).
 
-- **A kubeconfig or client certificate leaked:** rotate the client CA and complete it at once (`rotate-client-ca-start`, then `rotate-client-ca-complete`); every client certificate Lodia holds is already re-issued, and kubelets whose certificates are still under the old CA re-bootstrap with a new token (`kubeadm token create`, then on the node `kubeadm reset` and `kubeadm join`), or wait for the automatic completion after 30 days if the leak allows it.
-- **A tunnel client certificate leaked:** rotate the tunnel CA (`rotate-tunnel-ca-start`), which also restarts the sidecars to cut the sessions already open ([staged-credential-rotation](decisions/staged-credential-rotation.md)).
+- **A kubeconfig or client certificate leaked:** rotate the client CA and complete it at once; every client certificate Lodia holds is already re-issued, and kubelets whose certificates are still under the old CA re-bootstrap with a new token (`kubeadm token create`, then on the node `kubeadm reset` and `kubeadm join`), or wait for the automatic completion after 30 days if the leak allows it.
+- **A tunnel client certificate leaked:** rotate the tunnel CA, which also restarts the sidecars to cut the sessions already open ([staged-credential-rotation](decisions/staged-credential-rotation.md)).
 - **The cluster CA key leaked or the CA expires:** rotate the trust anchor.
   Start it, add the new bundle to every node (`/etc/kubernetes/pki/ca.crt` and the certificate authority in `/etc/kubernetes/kubelet.conf`), complete it.
   Between start and complete both CAs are trusted; completing before the nodes have the bundle cuts off every node that trusts only the old CA.
@@ -524,7 +526,7 @@ The nightly now runs on the public runner, 4 CPUs and 15.6 GiB, where run [40371
 A highly available control plane's target stays 1.5 CPU and 2.5 GiB.
 A management cluster sized for N tenants needs the sum of their requests on its control plane nodes, plus room to roll one Deployment of every tenant (the fleet limit bounds how many roll at once), plus etcd volumes with low fsync latency.
 
-The operator: two replicas; memory grows with the number of tenants it caches (label-scoped, metadata-only for Secrets); the phase 4 gate is 200 tenants under 2 GiB.
+The operator: two replicas; memory grows with the number of tenants it caches (label-scoped, metadata-only for Secrets); phase 3 measures it with 1,000 `ControlPlane`s on envtest ([roadmap](roadmap.md)).
 Health reads a tenant as JSON, and the tenant's administrator can have any server answer, an APIService naming a Service of their own included ([review checklist](review-checklist.md), item 10).
 So what a read holds is fixed by the constants below and not by what a tenant sends:
 - no object and no array of an answer reaches `encoding/json`, whose decoding multiplies the bytes it is given (an empty object becomes a struct, an invalid byte in a string three bytes, the key of a skipped field is unquoted and folded all the same): `internal/jsonscan` walks the body, which `json.Valid` has checked, and every value it hands over is a slice of it;
@@ -813,4 +815,4 @@ A `ControlPlane` stored with an `extraArgs` flag the new schema refuses keeps th
 | Tenant Kubernetes versions | the minors the Kubernetes project maintains, today 1.35, 1.36 and 1.37; a minor leaves Lodia's version table with the first release after it leaves upstream support, and stays renderable for one more release, only as the source of an upgrade; tenants are warned in `Progressing`'s message from 60 days before its end-of-support date, and by [`LodiaKubernetesEndOfSupport`](#lodiakubernetesendofsupport) from 30 days before |
 | Management cluster | a maintained minor with the CEL features the CRDs use: 1.35 or newer today |
 | Lodia versions | until 1.0, the latest minor gets fixes; from 1.0, the two latest minors |
-| API versions | `v1alpha1` may change between minors until `v1beta1`; from `v1beta1`, changes are additive and conversion needs no webhook |
+| API versions | `v1alpha1` may change incompatibly until the maintainers declare it frozen, and only by addition from then on; a later version keeps its shape and converts with no webhook ([one-controlplane-per-cluster](decisions/one-controlplane-per-cluster.md#consequences)) |

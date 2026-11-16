@@ -1,7 +1,7 @@
 # Lodia docs
 
 Lodia is an operator that runs Kubernetes control planes as pods on a management cluster, one `ControlPlane` object per tenant cluster.
-A control plane is a kube-apiserver with a konnectivity-server at its side, a kube-controller-manager, a kube-scheduler, each in its own Deployment (or all in one pod in the Compact layout), and an etcd of its own (or a prefix in a shared one); the tenant's worker nodes stand anywhere with outbound TCP 443 and join with `kubeadm join`.
+A control plane is a kube-apiserver with a konnectivity-server at its side, a kube-controller-manager, a kube-scheduler, each in its own Deployment, and an etcd of its own (or a prefix in a shared one); the tenant's worker nodes stand anywhere with outbound TCP 443 and join with `kubeadm join`.
 Six independent controllers keep every control plane certified, stored, running, reachable and up to date, and talk to each other only through status conditions.
 
 Go, controller-runtime; runs as a Deployment (`lodia-system`, two replicas, leader election) on a management cluster with a maintained Kubernetes minor (1.35 or newer today).
@@ -108,7 +108,7 @@ flowchart TB
   druid["etcd-druid"] -->|":8080 snapshots · :2379 scale-in"| etcd
 ```
 
-The pods of each layout are in [component-per-deployment](decisions/component-per-deployment.md) and [compact-layout](decisions/compact-layout.md).
+The pods are in [component-per-deployment](decisions/component-per-deployment.md).
 The objects of a tenant namespace, who writes and who reads each, and what a change does; the names one controller writes and another reads are in `api/v1alpha1/names.go` ([decision](decisions/independent-controllers.md)), while the CA keys, the staged kubelet signer and the ConfigMaps are their writer's alone:
 
 | object | writer | readers | on renewal or change |
@@ -177,7 +177,7 @@ The labels, annotations and the finalizer they share are defined in `api/v1alpha
 | annotation `lodia.io/etcd-formed` | the `Etcd` | Datastore, set to the `Etcd`'s UID once `DatastoreReady` first sees a ready member, and on every render after | Datastore, which reports `QuorumLost` only for an `Etcd` whose UID it holds |
 | annotation `lodia.io/etcd-reconcile-requested` | the `Etcd` | Datastore: `<generation>/<operator revision>/<run ID>` of its last request that etcd-druid reconcile the `Etcd`, written with that request, the run ID being that of etcd-druid's `status.lastOperation` | Datastore, which asks again until etcd-druid has served the request for the `Etcd`'s generation and `lodia.io/operator-revision` |
 | annotation `lodia.io/data-hash` | every Secret PKI writes | PKI: `DataHash` of the Secret's data, a SHA-256 that changes whenever the data does | Workloads, for the restart hashes of its pod templates |
-| annotation `lodia.io/operation` | a `ControlPlane` | the platform | Lifecycle and PKI, with rotations in phase 3 |
+| annotation `lodia.io/operation` | a `ControlPlane` | the platform | none: operations are objects, and the annotation is to go ([one-controlplane-per-cluster](decisions/one-controlplane-per-cluster.md)) |
 | annotation `lodia.io/maintain-requested-at` | a `ControlPlane` | the platform: a new value asks for the pending maintenance now | Lifecycle, which grants it outside the window, once per value, and records the value in `status.maintenance.lastHandled` |
 | annotation `lodia.io/operator-revision` | the Deployments Workloads renders and the `Etcd` the Datastore controller renders, never a pod template | Workloads and the Datastore controller: the operator revision the object was rendered with | each writer, which reports the revision in `status` once the object has rolled out |
 | annotation `lodia.io/sealed-uid` | a `Backup` | the backup reconciler of the Datastore controller: the `Backup`'s UID, once it is `Completed` | the backup reconciler, which never seals a `Backup` that carries it under another UID or without its `Completed` status (`SealLost`, [restore-replaces-the-source](decisions/restore-replaces-the-source.md)) |
@@ -369,7 +369,7 @@ Tenant renders every object at the oldest version the three components report, `
 It renders with the running operator once Lifecycle grants that revision; until then it creates only what the stored inventory lists and the tenant lacks, and writes nothing else but what [`target.operatorRevision`'s row](api/controlplane.md#status) names ([decision](decisions/upgrades-and-maintenance-windows.md)).
 The pinned component versions per minor are those kubeadm pins: CoreDNS v1.13.1 and etcd 3.6.6 for 1.35, CoreDNS v1.14.2 for 1.36, CoreDNS v1.14.6 for 1.37, and konnectivity 0.NN for Kubernetes 1.NN (kubeadm's constants at [v1.35.0](https://github.com/kubernetes/kubernetes/blob/v1.35.0/cmd/kubeadm/app/constants/constants.go), [v1.36.0](https://github.com/kubernetes/kubernetes/blob/v1.36.0/cmd/kubeadm/app/constants/constants.go) and [v1.37.1](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kubeadm/app/constants/constants.go)).
 
-Built without the write lock, which is phase 3's (`internal/controller/tenant`, the templates in its `manifests/`, taken from [kubeadm v1.35.0](https://github.com/kubernetes/kubernetes/tree/v1.35.0/cmd/kubeadm/app/phases) and [the hard way](hard-way.md)).
+Built (`internal/controller/tenant`, the templates in its `manifests/`, taken from [kubeadm v1.35.0](https://github.com/kubernetes/kubernetes/tree/v1.35.0/cmd/kubeadm/app/phases) and [the hard way](hard-way.md)), without the write lock, which phase 3 does not build ([roadmap](roadmap.md)).
 Once `AccessReady` is True for the generation, the controller applies every object as `lodia/tenant` through `<cp>-lodia-kubeconfig`, on a change of the inputs it reads and every 10 minutes; until then both conditions stay as they were at an earlier generation, or are `WaitingForAccess` at the generation they describe, but for an `AddonsApplied` that is `Refused`, `ObjectsControlledElsewhere` or `Applying`, which stays, and it uses `<cp>-lodia-kubeconfig`, `<cp>-ca-bundle` and, in `gateway` mode, `<cp>-tunnel-client` only once they exist and this `ControlPlane` controls them, looking again every minute.
 In `gateway` mode a pass first delivers `<cp>-tunnel-client`, under the same rule, before it reads any condition, and every 10 minutes while it waits: none of them proves the API server cannot take the renewal, and an expired certificate takes every pod's API.
 With a 10-second timeout on each request, it applies the pair to `kube-system/apiserver-proxy-client` if that exists and `lodia/tenant` applied it, so the first write stays the inventory's and another owner's Secret stays theirs; a failure is logged and the pass goes on.
@@ -414,7 +414,7 @@ The client CA's rotation:
 
 ```mermaid
 stateDiagram-v2
-  Idle --> Preparing: rotate-client-ca-start
+  Idle --> Preparing: a rotation is asked for
   Preparing --> Prepared: CA₂ in the API server's client bundle, every client certificate re-issued, the kubelet signer under CA₂
   Prepared --> Completing: one signing duration later (30 days), every kubelet renewed
   Completing --> Idle: CA₁ dropped from the bundle
@@ -465,7 +465,7 @@ While most nodes are silent and the API server answers, Health holds the control
 
 ## Identity and tenancy
 
-- A `ControlPlane` is namespaced; the platform's RBAC on the namespace decides who creates clusters and who reads their Secrets.
+- A `ControlPlane` is namespaced; the platform's RBAC on the namespace decides who creates clusters and who reads their Secrets, and no tenant reaches the management cluster's API ([who-is-trusted](decisions/who-is-trusted.md)).
   Lodia's ClusterRoles, one per controller, are limited to its kinds, the workload kinds it renders, Secrets and ConfigMaps, the management nodes, a cluster-wide `list` on pods, to match a leader Lease's holder to a pod of the `ControlPlane`, Gateway API `TLSRoute`s and the Gateways they attach to, etcd-druid's `Etcd`, the StatefulSet etcd-druid runs for it and the claims of that StatefulSet, `get` on the namespaces, whose UIDs go into the backup prefix, and `get` on the admission policy `kubeconfigrequests.lodia.io` and its binding, by name; where they come from is below.
 - Every field Lodia writes has a field manager `lodia/<controller>`; another manager's fields on the same object are left alone.
 - No cross-tenant object: every Secret, Service and route is in the tenant's namespace, and NetworkPolicies keep its pods to their own arrows.
@@ -531,7 +531,7 @@ The signer's image reaches the operator as `--signer-image`, and `lodia-tunnel`'
 Lodia reaches a tenant's API server through its in-namespace Service and ignores `HTTPS_PROXY` for that connection, so a site that sets a proxy on every pod needs no exception for it.
 
 Then a `DatastoreClass` with the bucket, and the first `ControlPlane`.
-Phase 4 brings signed and attested images, and how to verify them ([roadmap](roadmap.md), [releases-and-support](decisions/releases-and-support.md)).
+The first release, in phase 3, brings signed and attested images, and how to verify them ([roadmap](roadmap.md), [releases-and-support](decisions/releases-and-support.md)).
 
 Operator configuration (a file, passed as `--config`, mounted from a ConfigMap; the chart renders it from values).
 Without `--config` the defaults apply.
@@ -630,10 +630,9 @@ Each controller records an event for every transition of a condition it writes (
 ## Decisions
 
 - [project-home](decisions/project-home.md) — Lodia, Apache-2.0, `go.lodia.io/lodia`, API group `lodia.io`.
-- [one-controlplane-per-cluster](decisions/one-controlplane-per-cluster.md) — five kinds; `ControlPlane` is the whole cluster; operations through an annotation.
+- [one-controlplane-per-cluster](decisions/one-controlplane-per-cluster.md) — five kinds; `ControlPlane` is the whole cluster; operations are objects of their own.
 - [independent-controllers](decisions/independent-controllers.md) — six controllers, one object, conditions as the only coupling.
 - [component-per-deployment](decisions/component-per-deployment.md) — a Deployment per component, konnectivity as the API server's sidecar, 4 or 9 pods.
-- [compact-layout](decisions/compact-layout.md) — every component in one pod for development and free tiers; one pod per tenant with a shared store.
 - [dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md) — an etcd per tenant through etcd-druid; a shared store as an option.
 - [restore-replaces-the-source](decisions/restore-replaces-the-source.md) — a `Backup` is a sealed copy; a `ControlPlane` restored from it replaces its source and stays inert until released.
 - [no-admission-webhooks](decisions/no-admission-webhooks.md) — CEL in the schema; conditions for what a schema cannot check; an admission policy for what it cannot see, the requester.
@@ -648,3 +647,4 @@ Each controller records an event for every transition of a condition it writes (
 - [e2e-on-a-named-cluster](decisions/e2e-on-a-named-cluster.md) — e2e refuses the current context; conformance nightly.
 - [releases-and-support](decisions/releases-and-support.md) — ko, cosign, attestations, the chart in GHCR; the three maintained Kubernetes minors.
 - [tenant-clients-speak-http1](decisions/tenant-clients-speak-http1.md) — Health reads a tenant over HTTP/1.1 with no compression and no redirect, a dial and a handshake within `Timeout`, and at most as many connections as a pass has reads in flight.
+- [who-is-trusted](decisions/who-is-trusted.md) — the management cluster is the platform's and no tenant reaches its API; a tenant's administrator is untrusted inside the tenant; deleting a `ControlPlane` needs a confirmation.

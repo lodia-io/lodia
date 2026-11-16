@@ -10,7 +10,6 @@ Not built yet: the rendering of a dropped minor, in the release that first drops
 Lifecycle writes one `status.target.version`: the version the API server rolls to now, one minor at a time towards `spec.version`; a spec several minors ahead goes through the newest patch of each minor between, as the version table names it.
 
 - Workloads renders the API server, and konnectivity-server beside it, at `target.version`, and the controller manager and the scheduler at `status.components.apiServer.version`, the version every API server replica runs, or at `target.version` while none is reported.
-  The `Compact` layout runs all three in one pod at `target.version`.
 - Tenant renders every object inside the tenant at the oldest of the three components' versions.
 - Each reports what it rolled out in full, in `status.components` and `status.addons` ([status](../api/controlplane.md#status)).
 - `status.kubernetes.version` is the oldest of those four.
@@ -143,7 +142,6 @@ Lodia never removes the annotation, so a GitOps tool that keeps it does not figh
 ## Consequences
 
 - Lifecycle is the only controller that knows the maintenance windows and the fleet; it counts the tenants rolling a Lodia-initiated change from their `status` (`status.maintenance.slotSince`), not in memory, so a restarted operator neither forgets nor double-counts a rollout in progress.
-- In the `Compact` layout steps 3 and 4 are one rollout of the single pod: the API server, controller manager and scheduler change version together, which the skew policy allows ([compact-layout](compact-layout.md)).
 - `status.target` is part of the API users read: `target.version`, `target.operatorRevision`, `target.datastoreClass` and `target.scheduledFor`, with `Progressing`.
 - An operator release note states which tenants will roll (all with a changed render) and what changes, because the roll is deferred, not hidden.
 

@@ -1,7 +1,7 @@
 # Lodia runs no admission webhooks: validation and defaults live in the CRD schema, and the requester's check in an admission policy
 
 Decided 2026-10-25.
-The schema rules, the defaults, the controllers' conditions and the chart's admission policy for `KubeconfigRequest`s are built; the tenant write lock comes with phase 3 ([roadmap](../roadmap.md)).
+The schema rules, the defaults, the controllers' conditions and the chart's admission policy for `KubeconfigRequest`s are built; the tenant write lock is not, and phase 3 does not build it ([roadmap](../roadmap.md)).
 
 ## Decision
 
@@ -30,6 +30,8 @@ The schema rules, the defaults, the controllers' conditions and the chart's admi
 - Some invalid states are accepted and then reported: `Ready=False`, reason `DatastoreClassNotFound`.
   Documentation and the CLI show conditions first.
 - The CEL cost budget bounds rule complexity; rules are kept per field.
+- A later version that converts with `strategy: None` has the schema of `v1alpha1`, since that conversion changes only `apiVersion` ([versioning](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definition-versioning.md#L44-L50)).
+  So once `v1alpha1` is frozen its shape is permanent but for additions, unless a conversion webhook is decided as the exception ([one-controlplane-per-cluster](one-controlplane-per-cluster.md#consequences)).
 - An admission policy without its binding, or a binding without its policy, admits everything ([policy_source.go](https://github.com/kubernetes/kubernetes/blob/v1.35.10/staging/src/k8s.io/apiserver/pkg/admission/plugin/policy/generic/policy_source.go#L296-L322)), so the controller that relies on one refuses to act while it is not in place ([short-lived-kubeconfigs](short-lived-kubeconfigs.md)).
 
 ## Code

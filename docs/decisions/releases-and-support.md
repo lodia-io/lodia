@@ -1,7 +1,8 @@
 # Lodia ships signed multi-arch images built with ko and a Helm chart in GHCR, and supports the Kubernetes minors upstream maintains
 
 Decided 2026-10-25.
-The chart is built; the release workflow that builds, signs, attests and publishes the images and the chart is not.
+The chart is built; the release workflow that builds, signs, attests and publishes the images and the chart is not, and neither are Renovate, kube-api-linter and the OpenSSF Scorecard.
+The first release builds the workflow and Renovate ([roadmap](../roadmap.md)); kube-api-linter waits in `todo.md`, and the Scorecard is phase 4's.
 
 ## Decision
 
