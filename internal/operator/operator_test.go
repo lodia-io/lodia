@@ -51,6 +51,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/controller/health"
 	"go.lodia.io/lodia/internal/operator"
 	"go.lodia.io/lodia/internal/testenv"
@@ -181,7 +182,7 @@ func TestTheMetricsServeTheSamplesOfTheSamplerSetupReturns(t *testing.T) {
 	}
 	cp := createControlPlane(t, k8s)
 	etcd := &druidv1alpha1.Etcd{ObjectMeta: metav1.ObjectMeta{
-		Name: lodiav1alpha1.EtcdName(cp.Name), Namespace: cp.Namespace, UID: "etcd-of-dev",
+		Name: contract.EtcdName(cp.Name), Namespace: cp.Namespace, UID: "etcd-of-dev",
 		Annotations:     map[string]string{lodiav1alpha1.EtcdFormedAnnotation: "etcd-of-dev"},
 		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cp, lodiav1alpha1.GroupVersion.WithKind("ControlPlane"))},
 	}}

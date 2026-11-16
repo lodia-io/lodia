@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 )
 
 const (
@@ -90,10 +91,10 @@ func TestDatastoreOnKind(t *testing.T) {
 		}).
 		Assess("a member Secret deleted, PKI issues generation 2 under the same CA and the member rolls onto it", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			first := &corev1.Secret{}
-			if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: lodiav1alpha1.EtcdCertificateSecretName(controlPlane, lodiav1alpha1.EtcdCARole, 1)}, first); err != nil {
+			if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: contract.EtcdCertificateSecretName(controlPlane, contract.EtcdCARole, 1)}, first); err != nil {
 				t.Fatal(err)
 			}
-			member := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: tenant, Name: lodiav1alpha1.EtcdCertificateSecretName(controlPlane, lodiav1alpha1.EtcdClientRole, 1)}}
+			member := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: tenant, Name: contract.EtcdCertificateSecretName(controlPlane, contract.EtcdClientRole, 1)}}
 			if err := k8s.Delete(ctx, member); err != nil {
 				t.Fatal(err)
 			}
@@ -102,7 +103,7 @@ func TestDatastoreOnKind(t *testing.T) {
 				return issued(ctx, k8s, 2)
 			})
 			second := &corev1.Secret{}
-			if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: lodiav1alpha1.EtcdCertificateSecretName(controlPlane, lodiav1alpha1.EtcdCARole, 2)}, second); err != nil {
+			if err := k8s.Get(ctx, client.ObjectKey{Namespace: tenant, Name: contract.EtcdCertificateSecretName(controlPlane, contract.EtcdCARole, 2)}, second); err != nil {
 				t.Fatal(err)
 			}
 			if !bytes.Equal(first.Data[lodiav1alpha1.CACertKey], second.Data[lodiav1alpha1.CACertKey]) {
@@ -205,8 +206,8 @@ func issued(ctx context.Context, k8s client.Client, generation int) error {
 			names = append(names, secret.Name)
 		}
 	}
-	for _, certificate := range lodiav1alpha1.EtcdCertificateRoles() {
-		if name := lodiav1alpha1.EtcdCertificateSecretName(controlPlane, certificate, generation); !slices.Contains(names, name) {
+	for _, certificate := range contract.EtcdCertificateRoles() {
+		if name := contract.EtcdCertificateSecretName(controlPlane, certificate, generation); !slices.Contains(names, name) {
 			return fmt.Errorf("%s is missing; generation %d holds %s", name, generation, strings.Join(names, ", "))
 		}
 	}
@@ -270,8 +271,8 @@ func secretVolumes(pod *corev1.Pod) []string {
 
 func mountsGeneration(pod *corev1.Pod, generation int) error {
 	mounted := secretVolumes(pod)
-	for _, certificate := range lodiav1alpha1.EtcdCertificateRoles() {
-		if name := lodiav1alpha1.EtcdCertificateSecretName(controlPlane, certificate, generation); !slices.Contains(mounted, name) {
+	for _, certificate := range contract.EtcdCertificateRoles() {
+		if name := contract.EtcdCertificateSecretName(controlPlane, certificate, generation); !slices.Contains(mounted, name) {
 			return fmt.Errorf("pod %s does not mount %s; it mounts %s", pod.Name, name, strings.Join(mounted, ", "))
 		}
 	}

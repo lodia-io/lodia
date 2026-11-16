@@ -19,6 +19,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/apistatus"
+	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/ownership"
 )
 
@@ -61,7 +62,7 @@ func networkPolicy(cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, dru
 	if operatorNamespace != druidNamespace {
 		rules = append(rules, networkingv1ac.NetworkPolicyIngressRule().WithFrom(networkingv1ac.NetworkPolicyPeer().WithNamespaceSelector(namespace(operatorNamespace))).WithPorts(tcp(clientPort)))
 	}
-	return networkingv1ac.NetworkPolicy(lodiav1alpha1.EtcdName(cp.Name), cp.Namespace).
+	return networkingv1ac.NetworkPolicy(contract.EtcdName(cp.Name), cp.Namespace).
 		WithLabels(map[string]string{lodiav1alpha1.ControlPlaneLabel: cp.Name}).
 		WithOwnerReferences(metav1ac.OwnerReference().
 			WithAPIVersion(lodiav1alpha1.GroupVersion.String()).
@@ -81,7 +82,7 @@ func networkPolicy(cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, dru
 // held writes it only when it is missing. The first result says why the
 // policy is not written, the second carries a refusal for the log.
 func (r *Reconciler) applyNetworkPolicy(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) (*metav1.Condition, error) {
-	key := client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.EtcdName(cp.Name)}
+	key := client.ObjectKey{Namespace: cp.Namespace, Name: contract.EtcdName(cp.Name)}
 	current := &networkingv1.NetworkPolicy{}
 	err := r.Get(ctx, key, current)
 	if apierrors.IsNotFound(err) {

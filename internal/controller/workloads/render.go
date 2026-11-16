@@ -27,6 +27,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/certs"
+	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/versions"
 )
 
@@ -71,7 +72,7 @@ var restartOnly = map[string][]lodiav1alpha1.Secret{
 
 // anonymousPaths are what kubeadm join reads before it has credentials, and
 // the health paths.
-var anonymousPaths = []string{"/healthz", "/livez", lodiav1alpha1.APIServerReadyzPath, "/api/v1/namespaces/kube-public/configmaps/cluster-info"}
+var anonymousPaths = []string{"/healthz", "/livez", contract.APIServerReadyzPath, "/api/v1/namespaces/kube-public/configmaps/cluster-info"}
 
 func deploymentName(cp, component string) string { return cp + "-" + component }
 
@@ -256,7 +257,7 @@ func (r rendering) apiServer() *appsv1.Deployment {
 		"kubelet-preferred-address-types":             "InternalIP,ExternalIP,Hostname",
 		"proxy-client-cert-file":                      "/etc/lodia/front-proxy-client/" + lodiav1alpha1.TLSCertKey,
 		"proxy-client-key-file":                       "/etc/lodia/front-proxy-client/" + lodiav1alpha1.TLSPrivateKeyKey,
-		"requestheader-allowed-names":                 lodiav1alpha1.FrontProxyClientCommonName,
+		"requestheader-allowed-names":                 contract.FrontProxyClientCommonName,
 		"requestheader-client-ca-file":                "/etc/lodia/front-proxy-ca/" + lodiav1alpha1.CACertKey,
 		"requestheader-extra-headers-prefix":          "X-Remote-Extra-",
 		"requestheader-group-headers":                 "X-Remote-Group",
@@ -279,7 +280,7 @@ func (r rendering) apiServer() *appsv1.Deployment {
 		Image:          r.images.APIServer,
 		Command:        command(apiServer, flags, settings.ExtraArgs, settings.FeatureGates),
 		Ports:          []corev1.ContainerPort{{Name: "https", ContainerPort: kubernetesPort, Protocol: corev1.ProtocolTCP}},
-		ReadinessProbe: readinessProbe(lodiav1alpha1.APIServerReadyzPath, intstr.FromString("https")),
+		ReadinessProbe: readinessProbe(contract.APIServerReadyzPath, intstr.FromString("https")),
 		LivenessProbe:  livenessProbe("/livez", intstr.FromString("https")),
 		StartupProbe:   startupProbe("/livez", intstr.FromString("https")),
 		// @todo: kube-apiserver closes its signer connection on SIGTERM (kubernetes#142980), so the shutdown delay is a preStop sleep; undo with todo.md's signer item.
@@ -442,14 +443,14 @@ func (r rendering) controllerManager() *appsv1.Deployment {
 		"controllers":                              "*,bootstrap-signer-controller,token-cleaner-controller",
 		"kubeconfig":                               kubeconfig,
 		"leader-elect":                             "true",
-		"leader-elect-lease-duration":              lodiav1alpha1.ControllerManagerLeaseDuration.String(),
-		"leader-elect-renew-deadline":              lodiav1alpha1.ControllerManagerRenewDeadline.String(),
+		"leader-elect-lease-duration":              contract.ControllerManagerLeaseDuration.String(),
+		"leader-elect-renew-deadline":              contract.ControllerManagerRenewDeadline.String(),
 		"leader-elect-resource-lock":               resourcelock.LeasesResourceLock,
-		"leader-elect-resource-name":               lodiav1alpha1.ControllerManagerLease,
-		"leader-elect-resource-namespace":          lodiav1alpha1.LeaderElectionNamespace,
-		"leader-elect-retry-period":                lodiav1alpha1.ControllerManagerRetryPeriod.String(),
-		"node-monitor-grace-period":                strconv.Itoa(int(lodiav1alpha1.NodeMonitorGracePeriod/time.Second)) + "s",
-		"node-monitor-period":                      lodiav1alpha1.NodeMonitorPeriod.String(),
+		"leader-elect-resource-name":               contract.ControllerManagerLease,
+		"leader-elect-resource-namespace":          contract.LeaderElectionNamespace,
+		"leader-elect-retry-period":                contract.ControllerManagerRetryPeriod.String(),
+		"node-monitor-grace-period":                strconv.Itoa(int(contract.NodeMonitorGracePeriod/time.Second)) + "s",
+		"node-monitor-period":                      contract.NodeMonitorPeriod.String(),
 		"requestheader-client-ca-file":             "/etc/lodia/front-proxy-ca/" + lodiav1alpha1.CACertKey,
 		"root-ca-file":                             "/etc/lodia/ca-bundle/" + lodiav1alpha1.CACertKey,
 		"service-cluster-ip-range":                 joined(cp.Spec.Network.ServiceCIDRs),
@@ -491,8 +492,8 @@ func (r rendering) scheduler() *appsv1.Deployment {
 		"kubeconfig":                      kubeconfig,
 		"leader-elect":                    "true",
 		"leader-elect-resource-lock":      resourcelock.LeasesResourceLock,
-		"leader-elect-resource-name":      lodiav1alpha1.SchedulerLease,
-		"leader-elect-resource-namespace": lodiav1alpha1.LeaderElectionNamespace,
+		"leader-elect-resource-name":      contract.SchedulerLease,
+		"leader-elect-resource-namespace": contract.LeaderElectionNamespace,
 	}
 	container := corev1.Container{
 		Name:           scheduler,

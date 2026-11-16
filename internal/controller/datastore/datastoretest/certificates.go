@@ -22,6 +22,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 )
 
 func Generation(controlPlane *lodiav1alpha1.ControlPlane, g int) ([]*corev1.Secret, error) {
@@ -30,7 +31,7 @@ func Generation(controlPlane *lodiav1alpha1.ControlPlane, g int) ([]*corev1.Secr
 	if err != nil {
 		return nil, err
 	}
-	etcd := lodiav1alpha1.EtcdName(cp)
+	etcd := contract.EtcdName(cp)
 	service := func(names ...string) []string {
 		var dns []string
 		for _, name := range names {
@@ -41,21 +42,21 @@ func Generation(controlPlane *lodiav1alpha1.ControlPlane, g int) ([]*corev1.Secr
 	serverAndClient := []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}
 	loopback := []net.IP{net.IPv4(127, 0, 0, 1)}
 	leaves := []struct {
-		role       lodiav1alpha1.EtcdCertificateRole
+		role       contract.EtcdCertificateRole
 		commonName string
 		usages     []x509.ExtKeyUsage
 		dns        []string
 		ips        []net.IP
 	}{
-		{lodiav1alpha1.EtcdServerRole, etcd, serverAndClient, append(append([]string{etcd + "-local"}, service(etcd+"-client", "*."+etcd+"-peer")...), "localhost"), loopback},
-		{lodiav1alpha1.EtcdPeerRole, etcd + "-peer", serverAndClient, service(etcd+"-peer", "*."+etcd+"-peer"), nil},
-		{lodiav1alpha1.EtcdBackupRestoreRole, etcd + "-backup-restore", []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, append(append([]string{etcd + "-local"}, service(etcd+"-client")...), "localhost"), loopback},
-		{lodiav1alpha1.EtcdClientRole, etcd + "-client", []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, nil, nil},
+		{contract.EtcdServerRole, etcd, serverAndClient, append(append([]string{etcd + "-local"}, service(etcd+"-client", "*."+etcd+"-peer")...), "localhost"), loopback},
+		{contract.EtcdPeerRole, etcd + "-peer", serverAndClient, service(etcd+"-peer", "*."+etcd+"-peer"), nil},
+		{contract.EtcdBackupRestoreRole, etcd + "-backup-restore", []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, append(append([]string{etcd + "-local"}, service(etcd+"-client")...), "localhost"), loopback},
+		{contract.EtcdClientRole, etcd + "-client", []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, nil, nil},
 	}
 	labels := map[string]string{lodiav1alpha1.ControlPlaneLabel: cp, lodiav1alpha1.EtcdCertificatesLabel: strconv.Itoa(g)}
 	owner := metav1.NewControllerRef(controlPlane, lodiav1alpha1.GroupVersion.WithKind("ControlPlane"))
 	secrets := []*corev1.Secret{{
-		ObjectMeta: metav1.ObjectMeta{Name: lodiav1alpha1.EtcdCertificateSecretName(cp, lodiav1alpha1.EtcdCARole, g), Namespace: namespace, Labels: maps.Clone(labels), OwnerReferences: []metav1.OwnerReference{*owner}},
+		ObjectMeta: metav1.ObjectMeta{Name: contract.EtcdCertificateSecretName(cp, contract.EtcdCARole, g), Namespace: namespace, Labels: maps.Clone(labels), OwnerReferences: []metav1.OwnerReference{*owner}},
 		Type:       corev1.SecretTypeOpaque,
 		Data:       map[string][]byte{lodiav1alpha1.CACertKey: caPEM},
 	}}
@@ -65,7 +66,7 @@ func Generation(controlPlane *lodiav1alpha1.ControlPlane, g int) ([]*corev1.Secr
 			return nil, fmt.Errorf("issue the %s certificate: %w", l.role, err)
 		}
 		secrets = append(secrets, &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: lodiav1alpha1.EtcdCertificateSecretName(cp, l.role, g), Namespace: namespace, Labels: maps.Clone(labels), OwnerReferences: []metav1.OwnerReference{*owner}},
+			ObjectMeta: metav1.ObjectMeta{Name: contract.EtcdCertificateSecretName(cp, l.role, g), Namespace: namespace, Labels: maps.Clone(labels), OwnerReferences: []metav1.OwnerReference{*owner}},
 			Type:       corev1.SecretTypeTLS,
 			Data:       map[string][]byte{lodiav1alpha1.TLSCertKey: cert, lodiav1alpha1.TLSPrivateKeyKey: key},
 		})

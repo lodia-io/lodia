@@ -40,6 +40,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/restore"
 	"go.lodia.io/lodia/internal/statusapply"
 )
@@ -319,7 +320,7 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 func (r *BackupReconciler) sourceEtcd(ctx context.Context, source *lodiav1alpha1.ControlPlane) (*druidv1alpha1.Etcd, error) {
 	etcd := &druidv1alpha1.Etcd{}
-	if err := r.Get(ctx, client.ObjectKey{Namespace: source.Namespace, Name: lodiav1alpha1.EtcdName(source.Name)}, etcd); err != nil {
+	if err := r.Get(ctx, client.ObjectKey{Namespace: source.Namespace, Name: contract.EtcdName(source.Name)}, etcd); err != nil {
 		return nil, client.IgnoreNotFound(err)
 	}
 	if !metav1.IsControlledBy(etcd, source) {
@@ -338,7 +339,7 @@ func sealable(source *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) stri
 	case ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != source.Generation:
 		return fmt.Sprintf("DatastoreReady of %s is %s (%s) for generation %d", source.Name, ready.Status, ready.Reason, ready.ObservedGeneration)
 	case etcd == nil:
-		return fmt.Sprintf("ControlPlane %s controls no Etcd %s", source.Name, lodiav1alpha1.EtcdName(source.Name))
+		return fmt.Sprintf("ControlPlane %s controls no Etcd %s", source.Name, contract.EtcdName(source.Name))
 	}
 	return ""
 }
@@ -482,7 +483,7 @@ func (r *BackupReconciler) seal(ctx context.Context, etcd *druidv1alpha1.Etcd, u
 	defer func() { _ = c.Close() }()
 	ctx, cancel := context.WithTimeout(ctx, etcdRequestTimeout)
 	defer cancel()
-	key := lodiav1alpha1.BackupSealKey(uid)
+	key := contract.BackupSealKey(uid)
 	response, err := c.Txn(ctx).
 		If(clientv3.Compare(clientv3.CreateRevision(key), "=", 0)).
 		Then(clientv3.OpPut(key, string(uid))).

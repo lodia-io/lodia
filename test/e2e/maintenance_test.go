@@ -40,6 +40,7 @@ import (
 	"sigs.k8s.io/e2e-framework/third_party/helm"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 )
 
 const (
@@ -432,7 +433,7 @@ func recordClosed(ctx context.Context, t *testing.T, k8s client.Client, key clie
 		s.pods[p.Name] = p.UID
 	}
 	etcd := &druidv1alpha1.Etcd{}
-	if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: lodiav1alpha1.EtcdName(key.Name)}, etcd); err != nil {
+	if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: contract.EtcdName(key.Name)}, etcd); err != nil {
 		t.Fatal(err)
 	}
 	s.etcd, s.etcdRevision = etcd.Generation, etcd.Annotations[lodiav1alpha1.OperatorRevisionAnnotation]
@@ -452,7 +453,7 @@ func recordClosed(ctx context.Context, t *testing.T, k8s client.Client, key clie
 func buildBApplied(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey) error {
 	t.Helper()
 	etcd := &druidv1alpha1.Etcd{}
-	if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: lodiav1alpha1.EtcdName(key.Name)}, etcd); err != nil {
+	if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: contract.EtcdName(key.Name)}, etcd); err != nil {
 		return err
 	}
 	if s := etcd.Spec.Etcd.ClientService; s == nil || s.Annotations[buildBMark] != "b" {

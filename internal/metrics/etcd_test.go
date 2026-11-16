@@ -18,13 +18,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 	datastorectrl "go.lodia.io/lodia/internal/controller/datastore"
 )
 
 func etcdOf(cp *lodiav1alpha1.ControlPlane, quota string, period time.Duration, store, formed bool) *druidv1alpha1.Etcd {
 	etcd := &druidv1alpha1.Etcd{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: lodiav1alpha1.EtcdName(cp.Name), Namespace: cp.Namespace, UID: types.UID("etcd-of-" + string(cp.UID)),
+			Name: contract.EtcdName(cp.Name), Namespace: cp.Namespace, UID: types.UID("etcd-of-" + string(cp.UID)),
 			Labels:          map[string]string{lodiav1alpha1.ControlPlaneLabel: cp.Name},
 			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cp, lodiav1alpha1.GroupVersion.WithKind("ControlPlane"))},
 		},

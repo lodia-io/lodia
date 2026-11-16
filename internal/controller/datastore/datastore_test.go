@@ -47,6 +47,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/apistatus"
+	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/controller/datastore"
 	"go.lodia.io/lodia/internal/controller/datastore/datastoretest"
 	"go.lodia.io/lodia/internal/testenv"
@@ -306,15 +307,15 @@ func credentials(ns string) *corev1.Secret {
 	}
 }
 
-func writeGeneration(t *testing.T, ns, cp string, generation int, only ...lodiav1alpha1.EtcdCertificateRole) {
+func writeGeneration(t *testing.T, ns, cp string, generation int, only ...contract.EtcdCertificateRole) {
 	t.Helper()
 	secrets, err := datastoretest.Generation(getControlPlane(t, ns, cp), generation)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, secret := range secrets {
-		if len(only) > 0 && !slices.ContainsFunc(only, func(certificate lodiav1alpha1.EtcdCertificateRole) bool {
-			return secret.Name == lodiav1alpha1.EtcdCertificateSecretName(cp, certificate, generation)
+		if len(only) > 0 && !slices.ContainsFunc(only, func(certificate contract.EtcdCertificateRole) bool {
+			return secret.Name == contract.EtcdCertificateSecretName(cp, certificate, generation)
 		}) {
 			continue
 		}
@@ -824,7 +825,7 @@ func TestNewestCompleteGeneration(t *testing.T) {
 	writeGeneration(t, ns, "dev", 1)
 	waitEtcd(t, ns, "dev", namesGeneration(1))
 
-	writeGeneration(t, ns, "dev", 2, lodiav1alpha1.EtcdCARole, lodiav1alpha1.EtcdServerRole, lodiav1alpha1.EtcdPeerRole, lodiav1alpha1.EtcdBackupRestoreRole)
+	writeGeneration(t, ns, "dev", 2, contract.EtcdCARole, contract.EtcdServerRole, contract.EtcdPeerRole, contract.EtcdBackupRestoreRole)
 	settle(t, ns, "dev")
 	if err := namesGeneration(1)(getEtcd(t, ns, "dev")); err != nil {
 		t.Fatalf("four of five Secrets of generation 2: %v", err)
@@ -835,7 +836,7 @@ func TestNewestCompleteGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	terminating := secrets[slices.IndexFunc(secrets, func(s *corev1.Secret) bool {
-		return s.Name == lodiav1alpha1.EtcdCertificateSecretName("dev", lodiav1alpha1.EtcdClientRole, 2)
+		return s.Name == contract.EtcdCertificateSecretName("dev", contract.EtcdClientRole, 2)
 	})]
 	label := terminating.Labels[lodiav1alpha1.EtcdCertificatesLabel]
 	delete(terminating.Labels, lodiav1alpha1.EtcdCertificatesLabel)
@@ -872,7 +873,7 @@ func TestNewestCompleteGeneration(t *testing.T) {
 		return nil
 	})
 
-	writeGeneration(t, ns, "dev", 2, lodiav1alpha1.EtcdClientRole)
+	writeGeneration(t, ns, "dev", 2, contract.EtcdClientRole)
 	etcd := waitEtcd(t, ns, "dev", namesGeneration(2))
 
 	settle(t, ns, "dev")
@@ -891,7 +892,7 @@ func TestGenerationsMoveForward(t *testing.T) {
 	waitEtcd(t, ns, "dev", namesGeneration(2))
 
 	held := &corev1.Secret{}
-	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: lodiav1alpha1.EtcdCertificateSecretName("dev", lodiav1alpha1.EtcdClientRole, 2)}, held); err != nil {
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: contract.EtcdCertificateSecretName("dev", contract.EtcdClientRole, 2)}, held); err != nil {
 		t.Fatal(err)
 	}
 	patch := client.MergeFrom(held.DeepCopy())
@@ -960,8 +961,8 @@ func TestMountedSecretsMustExist(t *testing.T) {
 	waitEtcd(t, ns, cp, namesGeneration(2))
 	readyOn(t, ns, cp, 2)
 
-	for _, certificate := range lodiav1alpha1.EtcdCertificateRoles() {
-		if err := k8s.Delete(t.Context(), &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: lodiav1alpha1.EtcdCertificateSecretName(cp, certificate, 2)}}); err != nil {
+	for _, certificate := range contract.EtcdCertificateRoles() {
+		if err := k8s.Delete(t.Context(), &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: contract.EtcdCertificateSecretName(cp, certificate, 2)}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -975,7 +976,7 @@ func TestMountedSecretsMustExist(t *testing.T) {
 	waitEtcd(t, ns, cp, namesGeneration(3))
 	readyOn(t, ns, cp, 3)
 	terminating := &corev1.Secret{}
-	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: lodiav1alpha1.EtcdCertificateSecretName(cp, lodiav1alpha1.EtcdCARole, 3)}, terminating); err != nil {
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: contract.EtcdCertificateSecretName(cp, contract.EtcdCARole, 3)}, terminating); err != nil {
 		t.Fatal(err)
 	}
 	held := client.MergeFrom(terminating.DeepCopy())
@@ -1404,8 +1405,8 @@ func getCopy(t *testing.T, ns, cp string) *corev1.Secret {
 
 func certificateVolumes(cp string, generation int) []corev1.Volume {
 	var volumes []corev1.Volume
-	for _, certificate := range lodiav1alpha1.EtcdCertificateRoles() {
-		volumes = append(volumes, corev1.Volume{Name: string(certificate), VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: lodiav1alpha1.EtcdCertificateSecretName(cp, certificate, generation)}}})
+	for _, certificate := range contract.EtcdCertificateRoles() {
+		volumes = append(volumes, corev1.Volume{Name: string(certificate), VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: contract.EtcdCertificateSecretName(cp, certificate, generation)}}})
 	}
 	return volumes
 }

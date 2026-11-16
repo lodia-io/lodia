@@ -109,7 +109,7 @@ flowchart TB
 ```
 
 The pods are in [component-per-deployment](decisions/component-per-deployment.md).
-The objects of a tenant namespace, who writes and who reads each, and what a change does; the names one controller writes and another reads are in `api/v1alpha1/names.go` ([decision](decisions/independent-controllers.md)), while the CA keys, the staged kubelet signer and the ConfigMaps are their writer's alone:
+The objects of a tenant namespace, who writes and who reads each, and what a change does; the names one controller writes and another reads are in `api/v1alpha1/names.go`, or in `internal/contract` when only Lodia's controllers share them ([decision](decisions/independent-controllers.md)), while the CA keys, the staged kubelet signer and the ConfigMaps are their writer's alone:
 
 | object | writer | readers | on renewal or change |
 |---|---|---|---|
@@ -613,7 +613,7 @@ Each controller records an event for every transition of a condition it writes (
 
 - Names: `<cp>-<component>` for workloads and Services, `<cp>-<purpose>` for Secrets, `lodia.io/*` for labels, annotations and the finalizer.
 - Fields: a field named `<x>Ref` names an object its reader follows, by name in the namespace (`backupRef`, `secretRef`, `parentRef`); an identity record, `{name, uid}`, says which object a fact is about and is not followed, since the object may be gone: a `Backup`'s `status.source`, `status.restore.{backup, source}`.
-- Every reconcile is idempotent and uses server-side apply; no controller reads an object it did not render except through status, or by a name in `api/v1alpha1/names.go`.
+- Every reconcile is idempotent and uses server-side apply; no controller reads an object it did not render except through status, or by a name in `api/v1alpha1/names.go` or `internal/contract`.
 
 ## Deliberately not offered — and owed
 

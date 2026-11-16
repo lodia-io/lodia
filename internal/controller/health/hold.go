@@ -23,6 +23,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/apistatus"
+	"go.lodia.io/lodia/internal/contract"
 )
 
 const (
@@ -113,7 +114,7 @@ func (r *NodesReconciler) holdOrRelease(ctx context.Context, cp *lodiav1alpha1.C
 func (r *NodesReconciler) readLease(ctx context.Context, t *tenant) (*leaderLease, error) {
 	reading, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
-	lease, err := t.getLease(reading, lodiav1alpha1.ControllerManagerLease)
+	lease, err := t.getLease(reading, contract.ControllerManagerLease)
 	if apierrors.IsNotFound(err) {
 		return nil, nil
 	}
@@ -145,7 +146,7 @@ func (r *NodesReconciler) selectRow(ctx context.Context, cp *lodiav1alpha1.Contr
 		}
 	}
 	holder := leaseHolder(lease)
-	ours := holder == lodiav1alpha1.HoldHolderIdentity
+	ours := holder == contract.HoldHolderIdentity
 	switch {
 	case cp.Spec.Health != nil && !ptr.Deref(cp.Spec.Health.HoldControllerManager, true):
 		disabled := held(cp, lodiav1alpha1.ReasonDisabled, "spec.health.holdControllerManager is false")
@@ -203,7 +204,7 @@ func (r *NodesReconciler) selectRow(ctx context.Context, cp *lodiav1alpha1.Contr
 				return row{}, fmt.Errorf("list the pods of the ControlPlane: %w", err)
 			}
 			if !pod {
-				return row{condition: held(cp, lodiav1alpha1.ReasonHoldBlocked, share+", but "+quoted(holder)+" holds Lease "+lodiav1alpha1.LeaderElectionNamespace+"/"+lodiav1alpha1.ControllerManagerLease)}, nil
+				return row{condition: held(cp, lodiav1alpha1.ReasonHoldBlocked, share+", but "+quoted(holder)+" holds Lease "+contract.LeaderElectionNamespace+"/"+contract.ControllerManagerLease)}, nil
 			}
 		}
 		return decide(takeLease, nodesSilent(cp, share+holds))
@@ -237,7 +238,7 @@ func nodesSilent(cp *lodiav1alpha1.ControlPlane, message string) *metav1.Conditi
 // tells the refusal, and a renewal or a release keeps the Lease as it read it.
 func refusedRow(cp *lodiav1alpha1.ControlPlane, chosen row, err error) row {
 	verb := map[leaseWrite]string{takeLease: "take", renewLease: "renewal", releaseLease: "release"}[chosen.write]
-	message := "the API server refused the " + verb + " of Lease " + lodiav1alpha1.LeaderElectionNamespace + "/" + lodiav1alpha1.ControllerManagerLease + ": " + quoted(err.Error())
+	message := "the API server refused the " + verb + " of Lease " + contract.LeaderElectionNamespace + "/" + contract.ControllerManagerLease + ": " + quoted(err.Error())
 	if chosen.write == takeLease {
 		return row{condition: held(cp, lodiav1alpha1.ReasonHoldBlocked, message)}
 	}
@@ -307,7 +308,7 @@ func (r *NodesReconciler) writeLease(ctx context.Context, t *tenant, read *leade
 	case noWrite:
 		return read, nil
 	case takeLease:
-		spec.HolderIdentity, spec.LeaseDurationSeconds = ptr.To(lodiav1alpha1.HoldHolderIdentity), new(heldLeaseSeconds)
+		spec.HolderIdentity, spec.LeaseDurationSeconds = ptr.To(contract.HoldHolderIdentity), new(heldLeaseSeconds)
 		spec.AcquireTime, spec.RenewTime = at, at
 		var transitions int32
 		if read != nil {
@@ -325,7 +326,7 @@ func (r *NodesReconciler) writeLease(ctx context.Context, t *tenant, read *leade
 	if read == nil {
 		body, err := json.Marshal(&coordinationv1.Lease{
 			TypeMeta:   metav1.TypeMeta{APIVersion: coordinationv1.SchemeGroupVersion.String(), Kind: "Lease"},
-			ObjectMeta: metav1.ObjectMeta{Namespace: lodiav1alpha1.LeaderElectionNamespace, Name: lodiav1alpha1.ControllerManagerLease},
+			ObjectMeta: metav1.ObjectMeta{Namespace: contract.LeaderElectionNamespace, Name: contract.ControllerManagerLease},
 			Spec:       spec,
 		})
 		if err != nil {

@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/controller/health"
 )
 
@@ -336,7 +337,7 @@ func TestRow5AHoldIsReleasedByAStopKnownFromAnEarlierPassWhileAccessReadyIsNotTr
 	joined(t, "d", corev1.ConditionTrue, h.start)
 	h.fail(managerLease, http.MethodPatch, http.StatusInternalServerError, metav1.StatusReasonInternalError)
 	h.at(25)
-	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+	if holder := h.holder(); holder != contract.HoldHolderIdentity {
 		t.Fatalf("a failed release left holder %q", holder)
 	}
 	h.inject(nil)
@@ -532,7 +533,7 @@ func TestAReleaseThatFailsIsTriedAgainByTheNextPass(t *testing.T) {
 	h.fail(managerLease, http.MethodPatch, http.StatusInternalServerError, metav1.StatusReasonInternalError)
 	h.at(25)
 	h.expectSilent(taken(3, 3, "60"))
-	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+	if holder := h.holder(); holder != contract.HoldHolderIdentity {
 		t.Fatalf("a failed release left holder %q", holder)
 	}
 	h.inject(nil)
@@ -763,7 +764,7 @@ func TestRow9ALeaseListCutShortIsAFailedReadAndNeverAStop(t *testing.T) {
 			h.at(25)
 			h.expectSilent(failedLeaseMsg + keepsHolding)
 			h.renewedAt(25)
-			if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+			if holder := h.holder(); holder != contract.HoldHolderIdentity {
 				t.Fatalf("a Lease list that failed to the end of its body left holder %q", holder)
 			}
 		})

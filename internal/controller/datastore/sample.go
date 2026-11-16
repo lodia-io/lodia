@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 )
 
 const (
@@ -142,7 +143,7 @@ func (r *SampleReconciler) sampled(ctx context.Context, cp *lodiav1alpha1.Contro
 		return nil, nil
 	}
 	etcd := &druidv1alpha1.Etcd{}
-	if err := r.Cache.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.EtcdName(cp.Name)}, etcd); err != nil {
+	if err := r.Cache.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: contract.EtcdName(cp.Name)}, etcd); err != nil {
 		return nil, client.IgnoreNotFound(err)
 	}
 	if !metav1.IsControlledBy(etcd, cp) || !formed(etcd) {

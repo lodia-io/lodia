@@ -40,6 +40,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/controller/datastore"
 	"go.lodia.io/lodia/internal/operator"
 	"go.lodia.io/lodia/internal/testenv"
@@ -125,7 +126,7 @@ func (s *source) revision(t *testing.T) int64 {
 
 func (s *source) sealKey(t *testing.T, uid types.UID) *mvccpb.KeyValue {
 	t.Helper()
-	response, err := s.etcd.Client.Get(t.Context(), lodiav1alpha1.BackupSealKey(uid))
+	response, err := s.etcd.Client.Get(t.Context(), contract.BackupSealKey(uid))
 	if err != nil {
 		t.Fatal(err)
 	}

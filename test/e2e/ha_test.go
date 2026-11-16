@@ -23,6 +23,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 )
 
 const (
@@ -58,7 +59,7 @@ func TestHighAvailabilityGate(t *testing.T) {
 			until(ctx, t, 5*time.Minute, "Ready=True", func(ctx context.Context) error {
 				return controlPlaneReady(ctx, k8s, key, &lodiav1alpha1.ControlPlane{})
 			})
-			replicas := map[string]int{lodiav1alpha1.APIServerComponent: 2, "kube-controller-manager": 2, "kube-scheduler": 2, lodiav1alpha1.EtcdName(key.Name): 3}
+			replicas := map[string]int{lodiav1alpha1.APIServerComponent: 2, "kube-controller-manager": 2, "kube-scheduler": 2, contract.EtcdName(key.Name): 3}
 			zones := map[string][]string{}
 			until(ctx, t, 3*time.Minute, "every replica and every etcd member runs", func(ctx context.Context) error {
 				for name, want := range replicas {
@@ -88,7 +89,7 @@ func TestHighAvailabilityGate(t *testing.T) {
 				}
 			}
 			etcd := &policyv1.PodDisruptionBudget{}
-			if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: lodiav1alpha1.EtcdName(key.Name)}, etcd); err != nil {
+			if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: contract.EtcdName(key.Name)}, etcd); err != nil {
 				t.Fatal(err)
 			}
 			if s := etcd.Spec; s.MinAvailable == nil || s.MinAvailable.String() != "2" || ptr.Deref(s.UnhealthyPodEvictionPolicy, "") != policyv1.AlwaysAllow {
@@ -197,7 +198,7 @@ func etcdLeader(ctx context.Context, t *testing.T, k8s client.Client, key client
 	var leader string
 	until(ctx, t, 2*time.Minute, "etcd-druid reports three members ready, one of them the leader", func(ctx context.Context) error {
 		etcd := &druidv1alpha1.Etcd{}
-		if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: lodiav1alpha1.EtcdName(key.Name)}, etcd); err != nil {
+		if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: contract.EtcdName(key.Name)}, etcd); err != nil {
 			return err
 		}
 		var leaders []string

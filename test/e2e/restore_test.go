@@ -59,6 +59,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 )
 
 const (
@@ -578,7 +579,7 @@ func TestRestoreGate(t *testing.T) {
 					return err
 				}
 				etcd := &druidv1alpha1.Etcd{}
-				if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: lodiav1alpha1.EtcdName(key.Name)}, etcd); err != nil {
+				if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: contract.EtcdName(key.Name)}, etcd); err != nil {
 					return err
 				}
 				if !metav1.IsControlledBy(etcd, cp) {
@@ -795,7 +796,7 @@ func encryptionProviders(ctx context.Context, t *testing.T, k8s client.Client, n
 func etcdValue(ctx context.Context, t *testing.T, cfg *envconf.Config, k8s client.Client, key client.ObjectKey, etcdKey string) []byte {
 	t.Helper()
 	etcd := &druidv1alpha1.Etcd{}
-	if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: lodiav1alpha1.EtcdName(key.Name)}, etcd); err != nil {
+	if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: contract.EtcdName(key.Name)}, etcd); err != nil {
 		t.Fatal(err)
 	}
 	refs := etcd.Spec.Etcd.ClientUrlTLS

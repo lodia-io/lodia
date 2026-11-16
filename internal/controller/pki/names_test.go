@@ -13,11 +13,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 )
 
 func TestNoSecretNameOfOneControlPlaneIsAnothers(t *testing.T) {
 	suffixes := append([]string{string(lodiav1alpha1.EtcdBackupSecret)}, names(gatewayControlPlane())...)
-	for _, role := range lodiav1alpha1.EtcdCertificateRoles() {
+	for _, role := range contract.EtcdCertificateRoles() {
 		suffixes = append(suffixes, "etcd-"+string(role)+"-1", "etcd-"+string(role)+"-12")
 	}
 	for _, a := range suffixes {
@@ -99,10 +100,10 @@ func TestReservedNames(t *testing.T) {
 func TestTheEtcdCertificatesNameEtcdDruidsServices(t *testing.T) {
 	cp := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: "team-a"}}
 	etcd := &druidv1alpha1.Etcd{
-		ObjectMeta: metav1.ObjectMeta{Name: lodiav1alpha1.EtcdName(cp.Name), Namespace: cp.Namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: contract.EtcdName(cp.Name), Namespace: cp.Namespace},
 		Spec:       druidv1alpha1.EtcdSpec{Replicas: 3},
 	}
-	certificates := map[lodiav1alpha1.EtcdCertificateRole]*x509.Certificate{}
+	certificates := map[contract.EtcdCertificateRole]*x509.Certificate{}
 	for _, p := range (&tenant{cp: cp}).etcdProfiles() {
 		certificates[p.role] = &x509.Certificate{DNSNames: p.profile.DNSNames, IPAddresses: p.profile.IPAddresses}
 	}
@@ -111,10 +112,10 @@ func TestTheEtcdCertificatesNameEtcdDruidsServices(t *testing.T) {
 	for _, pod := range druidv1alpha1.GetAllPodNames(etcd.ObjectMeta, etcd.Spec.Replicas) {
 		members = append(members, pod+"."+druidv1alpha1.GetPeerServiceName(etcd.ObjectMeta)+"."+etcd.Namespace+".svc")
 	}
-	for role, hosts := range map[lodiav1alpha1.EtcdCertificateRole][]string{
-		lodiav1alpha1.EtcdServerRole:        append([]string{druidv1alpha1.GetClientServiceName(etcd.ObjectMeta), client}, members...),
-		lodiav1alpha1.EtcdPeerRole:          members,
-		lodiav1alpha1.EtcdBackupRestoreRole: {client},
+	for role, hosts := range map[contract.EtcdCertificateRole][]string{
+		contract.EtcdServerRole:        append([]string{druidv1alpha1.GetClientServiceName(etcd.ObjectMeta), client}, members...),
+		contract.EtcdPeerRole:          members,
+		contract.EtcdBackupRestoreRole: {client},
 	} {
 		for _, host := range hosts {
 			if err := certificates[role].VerifyHostname(host); err != nil {

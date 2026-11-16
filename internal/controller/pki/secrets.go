@@ -35,6 +35,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/certs"
+	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/ownership"
 	"go.lodia.io/lodia/internal/restore"
 )
@@ -74,6 +75,16 @@ func caBundles(cp *lodiav1alpha1.ControlPlane) []caBundle {
 	return bundles
 }
 
+// written are the Secrets PKI writes for every ControlPlane, the etcd
+// certificate generations and the tunnel's aside.
+var written = []lodiav1alpha1.Secret{
+	lodiav1alpha1.CABundleSecret, lodiav1alpha1.ClientCASecret, lodiav1alpha1.FrontProxyCASecret, lodiav1alpha1.EtcdCASecret,
+	lodiav1alpha1.KubeletSignerSecret, lodiav1alpha1.APIServerServingSecret, lodiav1alpha1.APIServerKubeletClientSecret, lodiav1alpha1.APIServerEtcdClientSecret,
+	lodiav1alpha1.FrontProxyClientSecret, lodiav1alpha1.KonnectivityServerSecret, lodiav1alpha1.KonnectivityKubeconfigSecret,
+	lodiav1alpha1.ControllerManagerKubeconfigSecret, lodiav1alpha1.SchedulerKubeconfigSecret, lodiav1alpha1.LodiaKubeconfigSecret, lodiav1alpha1.AdminKubeconfigSecret,
+	lodiav1alpha1.ServiceAccountKeysSecret, lodiav1alpha1.EncryptionConfigSecret,
+}
+
 // names are PKI's Secrets of a ControlPlane, <cp>-<name>, beside the etcd
 // generations <cp>-etcd-<role>-<g>. They are reserved: PKI finds them by name,
 // labelled or not. The tunnel's are reserved in gateway mode only, so that a
@@ -81,7 +92,7 @@ func caBundles(cp *lodiav1alpha1.ControlPlane) []caBundle {
 // immutable, stops none of its issuance.
 func names(cp *lodiav1alpha1.ControlPlane) []string {
 	names := []string{"cakey-cluster", "cakey-client", "cakey-front-proxy", "cakey-etcd", "cakey-kubeconfig-requests", kubeletSignerNext}
-	for _, s := range lodiav1alpha1.PKISecrets() {
+	for _, s := range written {
 		names = append(names, string(s))
 	}
 	if cp.Spec.Endpoint.Gateway != nil {
@@ -198,7 +209,7 @@ func (t *tenant) reserved(name string) (int, bool) {
 	if slices.Contains(names(t.cp), suffix) {
 		return 0, true
 	}
-	_, g, ok := lodiav1alpha1.ParseEtcdCertificateSecretName(t.cp.Name, name)
+	_, g, ok := contract.ParseEtcdCertificateSecretName(t.cp.Name, name)
 	return g, ok
 }
 
@@ -324,13 +335,13 @@ func (t *tenant) credentials() *lodiav1alpha1.CredentialsStatus {
 func (t *tenant) notAfter() *metav1.Time {
 	newest := 0
 	for name := range t.existing {
-		if _, g, ok := lodiav1alpha1.ParseEtcdCertificateSecretName(t.cp.Name, name); ok && g > newest && t.etcdComplete(g) {
+		if _, g, ok := contract.ParseEtcdCertificateSecretName(t.cp.Name, name); ok && g > newest && t.etcdComplete(g) {
 			newest = g
 		}
 	}
 	var earliest *metav1.Time
 	for name, s := range t.existing {
-		if _, g, ok := lodiav1alpha1.ParseEtcdCertificateSecretName(t.cp.Name, name); ok && g != newest || name == t.name(kubeletSignerNext) {
+		if _, g, ok := contract.ParseEtcdCertificateSecretName(t.cp.Name, name); ok && g != newest || name == t.name(kubeletSignerNext) {
 			continue
 		}
 		pem := data(s, lodiav1alpha1.TLSCertKey)
@@ -437,7 +448,7 @@ func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 		if err := r.bundle(ctx, t, t.secret(lodiav1alpha1.FrontProxyCASecret), frontProxy.Cert); err != nil {
 			return err
 		}
-		if err := r.tls(ctx, t, t.secret(lodiav1alpha1.FrontProxyClientSecret), frontProxy, certs.Profile{CommonName: lodiav1alpha1.FrontProxyClientCommonName, Usages: clientAuth}, r.LeafLifetime); err != nil {
+		if err := r.tls(ctx, t, t.secret(lodiav1alpha1.FrontProxyClientSecret), frontProxy, certs.Profile{CommonName: contract.FrontProxyClientCommonName, Usages: clientAuth}, r.LeafLifetime); err != nil {
 			return err
 		}
 	}
@@ -1106,7 +1117,7 @@ func (r *Reconciler) etcd(ctx context.Context, t *tenant) error {
 		if g == current || g == previous {
 			continue
 		}
-		for _, role := range lodiav1alpha1.EtcdCertificateRoles() {
+		for _, role := range contract.EtcdCertificateRoles() {
 			r.remove(ctx, t, t.existing[t.etcdName(role, g)])
 		}
 	}
@@ -1131,7 +1142,7 @@ func (r *Reconciler) remove(ctx context.Context, t *tenant, s *corev1.Secret) {
 // invisible to the label-filtered cache.
 func (r *Reconciler) adopt(ctx context.Context, t *tenant, g int) {
 	labels := map[string]string{lodiav1alpha1.EtcdCertificatesLabel: strconv.Itoa(g)}
-	for _, role := range lodiav1alpha1.EtcdCertificateRoles() {
+	for _, role := range contract.EtcdCertificateRoles() {
 		if s := t.existing[t.etcdName(role, g)]; s != nil && s.DeletionTimestamp == nil {
 			r.applySecret(ctx, t, s.Name, s.Type, s.Data, labels, true)
 		}
@@ -1146,7 +1157,7 @@ func (r *Reconciler) issueEtcd(ctx context.Context, t *tenant, g int, ca *certs.
 		return err
 	}
 	labels := map[string]string{lodiav1alpha1.EtcdCertificatesLabel: strconv.Itoa(g)}
-	r.applySecret(ctx, t, t.etcdName(lodiav1alpha1.EtcdCARole, g), corev1.SecretTypeOpaque, map[string][]byte{lodiav1alpha1.CACertKey: caPEM}, labels, true)
+	r.applySecret(ctx, t, t.etcdName(contract.EtcdCARole, g), corev1.SecretTypeOpaque, map[string][]byte{lodiav1alpha1.CACertKey: caPEM}, labels, true)
 	for _, p := range profiles {
 		c, err := ca.Issue(p.profile, t.now, r.LeafLifetime)
 		if err != nil {
@@ -1161,7 +1172,7 @@ func (r *Reconciler) issueEtcd(ctx context.Context, t *tenant, g int, ca *certs.
 }
 
 func (t *tenant) etcdComplete(g int) bool {
-	for _, role := range lodiav1alpha1.EtcdCertificateRoles() {
+	for _, role := range contract.EtcdCertificateRoles() {
 		if s := t.existing[t.etcdName(role, g)]; s == nil || s.DeletionTimestamp != nil {
 			return false
 		}
@@ -1169,15 +1180,15 @@ func (t *tenant) etcdComplete(g int) bool {
 	return true
 }
 
-func (t *tenant) etcdGeneration(g int, ca *certs.Certificate, profiles []etcdProfile) map[lodiav1alpha1.EtcdCertificateRole]*certs.Certificate {
+func (t *tenant) etcdGeneration(g int, ca *certs.Certificate, profiles []etcdProfile) map[contract.EtcdCertificateRole]*certs.Certificate {
 	if g == 0 || !t.etcdComplete(g) {
 		return nil
 	}
-	s := t.existing[t.etcdName(lodiav1alpha1.EtcdCARole, g)]
+	s := t.existing[t.etcdName(contract.EtcdCARole, g)]
 	if bundle, err := certs.ParseCerts(s.Data[lodiav1alpha1.CACertKey]); !isImmutable(s) || err != nil || len(bundle) != 1 || !bundle[0].Equal(ca.Cert) {
 		return nil
 	}
-	kept := make(map[lodiav1alpha1.EtcdCertificateRole]*certs.Certificate, len(profiles))
+	kept := make(map[contract.EtcdCertificateRole]*certs.Certificate, len(profiles))
 	for _, p := range profiles {
 		s := t.existing[t.etcdName(p.role, g)]
 		c, err := certs.Parse(s.Data[lodiav1alpha1.TLSCertKey], s.Data[lodiav1alpha1.TLSPrivateKeyKey])
@@ -1189,8 +1200,8 @@ func (t *tenant) etcdGeneration(g int, ca *certs.Certificate, profiles []etcdPro
 	return kept
 }
 
-func (t *tenant) etcdName(role lodiav1alpha1.EtcdCertificateRole, generation int) string {
-	return lodiav1alpha1.EtcdCertificateSecretName(t.cp.Name, role, generation)
+func (t *tenant) etcdName(role contract.EtcdCertificateRole, generation int) string {
+	return contract.EtcdCertificateSecretName(t.cp.Name, role, generation)
 }
 
 func (t *tenant) secret(s lodiav1alpha1.Secret) string {
@@ -1198,14 +1209,14 @@ func (t *tenant) secret(s lodiav1alpha1.Secret) string {
 }
 
 type etcdProfile struct {
-	role    lodiav1alpha1.EtcdCertificateRole
+	role    contract.EtcdCertificateRole
 	profile certs.Profile
 }
 
 // etcdProfiles are the certificates etcd-druid expects for the Etcd named
 // <cp>-etcd, as hack/etcd-spike/pki.sh issued them.
 func (t *tenant) etcdProfiles() []etcdProfile {
-	n := lodiav1alpha1.EtcdName(t.cp.Name)
+	n := contract.EtcdName(t.cp.Name)
 	forms := func(names ...string) []string {
 		var out []string
 		for _, s := range names {
@@ -1216,10 +1227,10 @@ func (t *tenant) etcdProfiles() []etcdProfile {
 	local := []string{n + "-local"}
 	loopback := []net.IP{net.ParseIP("127.0.0.1")}
 	return []etcdProfile{
-		{lodiav1alpha1.EtcdServerRole, certs.Profile{CommonName: n, Usages: serverClientAuth, DNSNames: slices.Concat(local, forms(n+"-client", "*."+n+"-peer"), []string{"localhost"}), IPAddresses: loopback}},
-		{lodiav1alpha1.EtcdPeerRole, certs.Profile{CommonName: n + "-peer", Usages: serverClientAuth, DNSNames: forms(n+"-peer", "*."+n+"-peer")}},
-		{lodiav1alpha1.EtcdBackupRestoreRole, certs.Profile{CommonName: n + "-backup-restore", Usages: serverAuth, DNSNames: slices.Concat(local, forms(n+"-client"), []string{"localhost"}), IPAddresses: loopback}},
-		{lodiav1alpha1.EtcdClientRole, certs.Profile{CommonName: n + "-client", Usages: clientAuth}},
+		{contract.EtcdServerRole, certs.Profile{CommonName: n, Usages: serverClientAuth, DNSNames: slices.Concat(local, forms(n+"-client", "*."+n+"-peer"), []string{"localhost"}), IPAddresses: loopback}},
+		{contract.EtcdPeerRole, certs.Profile{CommonName: n + "-peer", Usages: serverClientAuth, DNSNames: forms(n+"-peer", "*."+n+"-peer")}},
+		{contract.EtcdBackupRestoreRole, certs.Profile{CommonName: n + "-backup-restore", Usages: serverAuth, DNSNames: slices.Concat(local, forms(n+"-client"), []string{"localhost"}), IPAddresses: loopback}},
+		{contract.EtcdClientRole, certs.Profile{CommonName: n + "-client", Usages: clientAuth}},
 	}
 }
 

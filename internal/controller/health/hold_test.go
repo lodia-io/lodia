@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/controller/health"
 )
 
@@ -70,7 +71,7 @@ func holding(t *testing.T, nodes ...string) *holdRun {
 	h := sampling(t, nodes...)
 	h.at(0)
 	h.at(20)
-	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+	if holder := h.holder(); holder != contract.HoldHolderIdentity {
 		t.Fatalf("20 seconds of silence left the Lease with holder %q", holder)
 	}
 	return h
@@ -131,7 +132,7 @@ func hang(_ http.ResponseWriter, req *http.Request) {
 func (h *holdRun) lease() *coordinationv1.Lease {
 	h.t.Helper()
 	lease := &coordinationv1.Lease{}
-	err := tenant.Get(h.t.Context(), client.ObjectKey{Namespace: lodiav1alpha1.LeaderElectionNamespace, Name: lodiav1alpha1.ControllerManagerLease}, lease)
+	err := tenant.Get(h.t.Context(), client.ObjectKey{Namespace: contract.LeaderElectionNamespace, Name: contract.ControllerManagerLease}, lease)
 	if apierrors.IsNotFound(err) {
 		return nil
 	}
@@ -152,7 +153,7 @@ func (h *holdRun) holder() string {
 
 func (h *holdRun) acquiredBy(holder string, at time.Time) {
 	h.t.Helper()
-	renew(h.t, lodiav1alpha1.ControllerManagerLease, holder, time.Now())
+	renew(h.t, contract.ControllerManagerLease, holder, time.Now())
 	lease := h.lease()
 	lease.Spec.AcquireTime = &metav1.MicroTime{Time: at}
 	if err := tenant.Update(h.t.Context(), lease); err != nil {
@@ -364,7 +365,7 @@ func TestRow9AFailedLeaseListRenewsAHold(t *testing.T) {
 
 func TestRow10AFailedLeaseListWithoutAHoldReportsNotHeld(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
-	renew(t, lodiav1alpha1.ControllerManagerLease, "another_1", time.Now())
+	renew(t, contract.ControllerManagerLease, "another_1", time.Now())
 	h.fail(leaseListPath, http.MethodGet, http.StatusInternalServerError, metav1.StatusReasonInternalError)
 	before := h.lease()
 	h.at(0)
@@ -385,7 +386,7 @@ func TestRow11WithNoNodeListAHoldRenews(t *testing.T) {
 
 func TestRow12WithNoNodeListAndAnothersLeaseNotHeld(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
-	renew(t, lodiav1alpha1.ControllerManagerLease, "another_1", time.Now())
+	renew(t, contract.ControllerManagerLease, "another_1", time.Now())
 	h.fail(nodeListPath, http.MethodGet, http.StatusInternalServerError, metav1.StatusReasonInternalError)
 	before := h.lease()
 	h.at(0)
@@ -415,7 +416,7 @@ func TestRow14TakesAFreeLeaseOrAnExpiredOneOrAPodsOwn(t *testing.T) {
 		h.expectHealth(3, 3)
 		lease := h.lease()
 		at := h.start.Add(20 * time.Second)
-		if ptr.Deref(lease.Spec.HolderIdentity, "") != lodiav1alpha1.HoldHolderIdentity || ptr.Deref(lease.Spec.LeaseDurationSeconds, 0) != 60 ||
+		if ptr.Deref(lease.Spec.HolderIdentity, "") != contract.HoldHolderIdentity || ptr.Deref(lease.Spec.LeaseDurationSeconds, 0) != 60 ||
 			!lease.Spec.AcquireTime.Time.Equal(at) || !lease.Spec.RenewTime.Time.Equal(at) || ptr.Deref(lease.Spec.LeaseTransitions, 0) != 1 {
 			t.Errorf("the take left %+v", lease.Spec)
 		}
@@ -423,16 +424,16 @@ func TestRow14TakesAFreeLeaseOrAnExpiredOneOrAPodsOwn(t *testing.T) {
 	t.Run("a Lease without a holder", func(t *testing.T) {
 		h := sampling(t, "a", "b", "c")
 		h.at(0)
-		renew(t, lodiav1alpha1.ControllerManagerLease, "", time.Now())
+		renew(t, contract.ControllerManagerLease, "", time.Now())
 		h.at(20)
 		h.expectSilent(taken(3, 3, "60"))
-		if lease := h.lease(); ptr.Deref(lease.Spec.HolderIdentity, "") != lodiav1alpha1.HoldHolderIdentity || ptr.Deref(lease.Spec.LeaseTransitions, 0) != 1 {
+		if lease := h.lease(); ptr.Deref(lease.Spec.HolderIdentity, "") != contract.HoldHolderIdentity || ptr.Deref(lease.Spec.LeaseTransitions, 0) != 1 {
 			t.Errorf("the take left %+v", lease.Spec)
 		}
 	})
 	t.Run("an expired Lease", func(t *testing.T) {
 		h := sampling(t, "a", "b", "c")
-		renew(t, lodiav1alpha1.ControllerManagerLease, "another_1", time.Now())
+		renew(t, contract.ControllerManagerLease, "another_1", time.Now())
 		h.at(0)
 		before := h.lease().ResourceVersion
 		h.at(20)
@@ -448,10 +449,10 @@ func TestRow14TakesAFreeLeaseOrAnExpiredOneOrAPodsOwn(t *testing.T) {
 		h := sampling(t, "a", "b", "c")
 		h.at(0)
 		createManagerPod(t, h.cp, "dev-kube-controller-manager-7d9")
-		renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", time.Now())
+		renew(t, contract.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", time.Now())
 		h.at(20)
 		h.expectSilent(taken(3, 3, "60"))
-		if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+		if holder := h.holder(); holder != contract.HoldHolderIdentity {
 			t.Fatalf("a pod's Lease left holder %q", holder)
 		}
 	})
@@ -473,7 +474,7 @@ func TestATakeWritesItsOwnAcquireTimeOverTheLeaders(t *testing.T) {
 func TestRow15AnotherHolderIsNamedAndLeftAlone(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
 	h.at(0)
-	renew(t, lodiav1alpha1.ControllerManagerLease, "a-watchdog_1", time.Now())
+	renew(t, contract.ControllerManagerLease, "a-watchdog_1", time.Now())
 	before := h.lease()
 	h.at(20)
 	h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonHoldBlocked, silent(3, 3)+atOrAbove+"60%, but a-watchdog_1 holds Lease kube-system/kube-controller-manager")
@@ -487,7 +488,7 @@ func TestRow16BelowAHoldRenewsUntilReleaseAfter(t *testing.T) {
 	h.expectSilent(silent(0, 3) + ", below 60%" + holdsUntil)
 	h.expectHealth(0, 3)
 	h.renewedAt(55)
-	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+	if holder := h.holder(); holder != contract.HoldHolderIdentity {
 		t.Fatalf("the hold ended early, holder %q", holder)
 	}
 }
@@ -508,7 +509,7 @@ func TestRow17BelowForReleaseAfterReleasesLikeClientGo(t *testing.T) {
 
 func TestRow18BelowWithoutAHoldWritesNothing(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
-	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", time.Now())
+	renew(t, contract.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", time.Now())
 	before := h.lease()
 	h.at(0)
 	h.back(5, 25)
@@ -576,7 +577,7 @@ func TestAStatusApplyFailingAfterATakeIsRepairedByTheNextPass(t *testing.T) {
 		},
 	})
 	h.at(20)
-	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+	if holder := h.holder(); holder != contract.HoldHolderIdentity {
 		t.Fatalf("the take left holder %q", holder)
 	}
 	h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonNotHeld, silent(0, 3))
@@ -659,16 +660,16 @@ func TestAKCMWriteBetweenReadAndWriteRetriesAndWins(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
 	h.at(0)
 	createManagerPod(t, h.cp, "dev-kube-controller-manager-7d9")
-	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", time.Now())
+	renew(t, contract.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", time.Now())
 	var puts atomic.Int32
 	h.inject(func(w http.ResponseWriter, req *http.Request) bool {
 		if req.Method == http.MethodPatch && req.URL.Path == managerLease && puts.Add(1) == 1 {
-			renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", time.Now())
+			renew(t, contract.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", time.Now())
 		}
 		return false
 	})
 	h.at(20)
-	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+	if holder := h.holder(); holder != contract.HoldHolderIdentity {
 		t.Fatalf("the retry left holder %q", holder)
 	}
 	if puts.Load() != 2 {
@@ -681,11 +682,11 @@ func TestAConflictWhoseReReadFindsAHolderOutsideThePodsWritesNothing(t *testing.
 	h := sampling(t, "a", "b", "c")
 	h.at(0)
 	createManagerPod(t, h.cp, "dev-kube-controller-manager-7d9")
-	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", time.Now())
+	renew(t, contract.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", time.Now())
 	var puts atomic.Int32
 	h.inject(func(w http.ResponseWriter, req *http.Request) bool {
 		if req.Method == http.MethodPatch && req.URL.Path == managerLease && puts.Add(1) == 1 {
-			renew(t, lodiav1alpha1.ControllerManagerLease, "a-watchdog_1", time.Now())
+			renew(t, contract.ControllerManagerLease, "a-watchdog_1", time.Now())
 		}
 		return false
 	})
@@ -702,7 +703,7 @@ func TestAConflictWhoseReReadFindsAHolderOutsideThePodsWritesNothing(t *testing.
 func TestAConflictWhoseReReadFailsAppliesNothingAndRestartsTheClock(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
 	h.at(0)
-	renew(t, lodiav1alpha1.ControllerManagerLease, "", time.Now())
+	renew(t, contract.ControllerManagerLease, "", time.Now())
 	var puts, gets atomic.Int32
 	h.inject(func(w http.ResponseWriter, req *http.Request) bool {
 		if req.URL.Path != managerLease {
@@ -731,7 +732,7 @@ func TestAConflictWhoseReReadFailsAppliesNothingAndRestartsTheClock(t *testing.T
 func TestAConflictThatRunsOutAppliesNothing(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
 	h.at(0)
-	renew(t, lodiav1alpha1.ControllerManagerLease, "", time.Now())
+	renew(t, contract.ControllerManagerLease, "", time.Now())
 	h.fail(managerLease, http.MethodPatch, http.StatusConflict, metav1.StatusReasonConflict)
 	h.r.Client = noControlPlaneWrite(t, k8s)
 	h.at(20)
@@ -740,7 +741,7 @@ func TestAConflictThatRunsOutAppliesNothing(t *testing.T) {
 func TestAWriteThatConflictsEveryTryIsRepeatedByTheNextPass(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
 	h.at(0)
-	renew(t, lodiav1alpha1.ControllerManagerLease, "", time.Now())
+	renew(t, contract.ControllerManagerLease, "", time.Now())
 	var patches, reads, lists, others atomic.Int32
 	h.inject(func(w http.ResponseWriter, req *http.Request) bool {
 		switch {
@@ -767,7 +768,7 @@ func TestAWriteThatConflictsEveryTryIsRepeatedByTheNextPass(t *testing.T) {
 	}
 	h.inject(nil)
 	h.at(25)
-	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+	if holder := h.holder(); holder != contract.HoldHolderIdentity {
 		t.Fatalf("the next pass left holder %q, want its write repeated", holder)
 	}
 	h.expectSilent(taken(3, 3, "60"))
@@ -776,7 +777,7 @@ func TestAWriteThatConflictsEveryTryIsRepeatedByTheNextPass(t *testing.T) {
 func TestAWriteKeepsWhatTheHoldDoesNotWriteOfTheLease(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
 	h.at(0)
-	renew(t, lodiav1alpha1.ControllerManagerLease, "", time.Now())
+	renew(t, contract.ControllerManagerLease, "", time.Now())
 	lease := h.lease()
 	lease.Labels, lease.Annotations = map[string]string{"owner": "someone"}, map[string]string{"note": "kept"}
 	if err := tenant.Update(t.Context(), lease); err != nil {
@@ -794,7 +795,7 @@ func TestAWriteKeepsWhatTheHoldDoesNotWriteOfTheLease(t *testing.T) {
 		}
 	}
 	h.at(20)
-	if h.holder() != lodiav1alpha1.HoldHolderIdentity {
+	if h.holder() != contract.HoldHolderIdentity {
 		t.Fatalf("the take left holder %q", h.holder())
 	}
 	kept("the take")
@@ -810,7 +811,7 @@ func TestNeverFightsAHolderOutsideThePodsWhileItRenews(t *testing.T) {
 	h.at(0)
 	blocked := silent(3, 3) + atOrAbove + "60%, but a-watchdog_1 holds Lease kube-system/kube-controller-manager"
 	for _, at := range []int{18, 35, 49} {
-		renew(t, lodiav1alpha1.ControllerManagerLease, "a-watchdog_1", time.Now())
+		renew(t, contract.ControllerManagerLease, "a-watchdog_1", time.Now())
 		before := h.lease()
 		h.at(at + 2)
 		h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonHoldBlocked, blocked)
@@ -823,13 +824,13 @@ func TestNeverFightsAHolderOutsideThePodsWhileItRenews(t *testing.T) {
 func TestAHolderWhosePodIsGoneIsTakenOnlyOnceExpired(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
 	h.at(0)
-	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-gone_1", time.Now())
+	renew(t, contract.ControllerManagerLease, "dev-kube-controller-manager-gone_1", time.Now())
 	blocked := silent(3, 3) + atOrAbove + "60%, but dev-kube-controller-manager-gone_1 holds Lease kube-system/kube-controller-manager"
 	h.at(20)
 	h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonHoldBlocked, blocked)
 	h.at(34)
 	h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonHoldBlocked, blocked)
-	if holder := h.holder(); holder == lodiav1alpha1.HoldHolderIdentity {
+	if holder := h.holder(); holder == contract.HoldHolderIdentity {
 		t.Fatal("a holder not yet expired was taken over")
 	}
 	h.at(35)
@@ -844,7 +845,7 @@ func TestAHolderLikeAPodOfAnotherControlPlaneIsLeftAlone(t *testing.T) {
 		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "i"}}},
 	}
 	create(t, k8s, other)
-	renew(t, lodiav1alpha1.ControllerManagerLease, "other-kube-controller-manager_1", time.Now())
+	renew(t, contract.ControllerManagerLease, "other-kube-controller-manager_1", time.Now())
 	before := h.lease()
 	h.at(20)
 	h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonHoldBlocked, silent(3, 3)+atOrAbove+"60%, but other-kube-controller-manager_1 holds Lease kube-system/kube-controller-manager")
@@ -859,7 +860,7 @@ func TestAHolderLikeAPodOfTheSameNameInAnotherNamespaceIsLeftAlone(t *testing.T)
 		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "i"}}},
 	}
 	create(t, k8s, other)
-	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", time.Now())
+	renew(t, contract.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", time.Now())
 	before := h.lease()
 	h.at(20)
 	h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonHoldBlocked, silent(3, 3)+atOrAbove+"60%, but dev-kube-controller-manager-7d9_1 holds Lease kube-system/kube-controller-manager")
@@ -870,7 +871,7 @@ func TestAHolderWhoseNameStartsLikeAPodIsLeftAlone(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
 	h.at(0)
 	createManagerPod(t, h.cp, "dev-kube-controller-manager")
-	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-9_1", time.Now())
+	renew(t, contract.ControllerManagerLease, "dev-kube-controller-manager-9_1", time.Now())
 	before := h.lease()
 	h.at(20)
 	h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonHoldBlocked, silent(3, 3)+atOrAbove+"60%, but dev-kube-controller-manager-9_1 holds Lease kube-system/kube-controller-manager")
@@ -880,7 +881,7 @@ func TestAHolderWhoseNameStartsLikeAPodIsLeftAlone(t *testing.T) {
 func TestTheReleaseComesAtExactlyReleaseAfterAndNotBefore(t *testing.T) {
 	h := holding(t, "a", "b", "c")
 	h.back(25, 144)
-	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+	if holder := h.holder(); holder != contract.HoldHolderIdentity {
 		t.Fatalf("the hold ended 1 second before releaseAfter, holder %q", holder)
 	}
 	h.back(145)
@@ -907,7 +908,7 @@ func TestASecondHoldCountsTowardsItsReleaseAfresh(t *testing.T) {
 		h.back(170)
 		h.expectSilent(silent(0, 3) + ", below 60%" + holdsUntil)
 		h.back(289)
-		if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+		if holder := h.holder(); holder != contract.HoldHolderIdentity {
 			t.Fatalf("the second hold ended on the first one's count, holder %q", holder)
 		}
 		h.back(290)
@@ -917,13 +918,13 @@ func TestASecondHoldCountsTowardsItsReleaseAfresh(t *testing.T) {
 	})
 	t.Run("after another holder blocked it", func(t *testing.T) {
 		h := released(t)
-		renew(t, lodiav1alpha1.ControllerManagerLease, "a-watchdog_1", time.Now())
+		renew(t, contract.ControllerManagerLease, "a-watchdog_1", time.Now())
 		h.at(165)
 		h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonHoldBlocked, silent(3, 3)+atOrAbove+"60%, but a-watchdog_1 holds Lease kube-system/kube-controller-manager")
-		renew(t, lodiav1alpha1.ControllerManagerLease, lodiav1alpha1.HoldHolderIdentity, time.Now())
+		renew(t, contract.ControllerManagerLease, contract.HoldHolderIdentity, time.Now())
 		h.back(170)
 		h.expectSilent(silent(0, 3) + ", below 60%" + holdsUntil)
-		if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+		if holder := h.holder(); holder != contract.HoldHolderIdentity {
 			t.Fatalf("the hold ended on a count from before the blocked pass, holder %q", holder)
 		}
 	})
@@ -935,7 +936,7 @@ func TestAReturnAboveTheFractionRestartsTheTwoMinutes(t *testing.T) {
 	h.at(125)
 	h.expectSilent(taken(3, 3, "60"))
 	h.back(130, 249)
-	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+	if holder := h.holder(); holder != contract.HoldHolderIdentity {
 		t.Fatalf("the two minutes were not restarted, holder %q", holder)
 	}
 	h.back(250)
@@ -963,7 +964,7 @@ func TestAFailingReadEvery15SecondsKeepsTheHold(t *testing.T) {
 		h.back(at + 15)
 		h.expectSilent(failedLeaseMsg + keepsHolding)
 		at += 15
-		if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+		if holder := h.holder(); holder != contract.HoldHolderIdentity {
 			t.Fatalf("%d s after the hold the failing read let it end, holder %q", at-20, holder)
 		}
 	}
@@ -971,7 +972,7 @@ func TestAFailingReadEvery15SecondsKeepsTheHold(t *testing.T) {
 
 	failing.Store(false)
 	h.back(at+5, at+25, at+144)
-	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+	if holder := h.holder(); holder != contract.HoldHolderIdentity {
 		t.Fatalf("the release came before the clock had run silentAfter and releaseAfter, holder %q", holder)
 	}
 	h.back(at + 145)
@@ -994,11 +995,11 @@ func TestAFailedReadOfTheLeaseClearsTheCount(t *testing.T) {
 	failing.Store(true)
 	h.at(145)
 	failing.Store(false)
-	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+	if holder := h.holder(); holder != contract.HoldHolderIdentity {
 		t.Fatalf("a failed read released the hold, holder %q", holder)
 	}
 	h.back(150, 170, 289)
-	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+	if holder := h.holder(); holder != contract.HoldHolderIdentity {
 		t.Fatalf("the count survived the failed read, holder %q", holder)
 	}
 	h.back(290)
@@ -1021,7 +1022,7 @@ func TestARestartAdoptsTheHoldWithANodeListFailingLongerThanReleaseAfter(t *test
 	h.back(220)
 	h.expectSilent(silent(0, 3) + ", below 60%" + holdsUntil)
 	h.back(339)
-	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+	if holder := h.holder(); holder != contract.HoldHolderIdentity {
 		t.Fatalf("the hold ended before releaseAfter of counted passes, holder %q", holder)
 	}
 	h.back(340)
@@ -1035,7 +1036,7 @@ func TestARestartCountsNoPassTowardsTheReleaseBeforeSilentAfter(t *testing.T) {
 	h.back(25, 55)
 	h.r = nodesReconciler(h.now)
 	h.back(60, 75, 80, 199)
-	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+	if holder := h.holder(); holder != contract.HoldHolderIdentity {
 		t.Fatalf("the release counted passes the clock did not trust, holder %q", holder)
 	}
 	h.back(200)
@@ -1063,7 +1064,7 @@ func TestAWaitForAccessClearsTheCount(t *testing.T) {
 	h.expectSilent(notTrue + keepsHolding)
 	setAccessAt(t, h.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonBound, get(t, h.cp).Generation)
 	h.back(140, 160, 279)
-	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+	if holder := h.holder(); holder != contract.HoldHolderIdentity {
 		t.Fatalf("the count survived the wait for access, holder %q", holder)
 	}
 	h.back(280)
@@ -1083,7 +1084,7 @@ func TestAMissingKubeconfigClearsTheCount(t *testing.T) {
 	h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, "waiting for PKI to write dev-lodia-kubeconfig")
 	writeKubeconfig(t, h.cp, tenantKubeconfig)
 	h.back(140, 160, 279)
-	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+	if holder := h.holder(); holder != contract.HoldHolderIdentity {
 		t.Fatalf("the count survived the missing kubeconfig, holder %q", holder)
 	}
 	h.back(280)
@@ -1107,7 +1108,7 @@ func TestAFailedReadOfTheKubeconfigRestartsTheCountAndKeepsTheClock(t *testing.T
 	h.at(80)
 	h.r.Reader = reader
 	h.back(85, 204)
-	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+	if holder := h.holder(); holder != contract.HoldHolderIdentity {
 		t.Fatalf("the count survived the failed read of the kubeconfig, holder %q", holder)
 	}
 	h.back(205)
@@ -1121,7 +1122,7 @@ func TestAForeignFieldOfTheLeaseSurvivesEveryWrite(t *testing.T) {
 	h.at(0)
 	lease := &coordinationv1.Lease{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: lodiav1alpha1.LeaderElectionNamespace, Name: lodiav1alpha1.ControllerManagerLease,
+			Namespace: contract.LeaderElectionNamespace, Name: contract.ControllerManagerLease,
 			Labels: map[string]string{"foreign.example.com/label": "kept"}, Annotations: map[string]string{"foreign.example.com/note": "kept"},
 		},
 		Spec: coordinationv1.LeaseSpec{HolderIdentity: new(""), LeaseDurationSeconds: new(int32(15))},
@@ -1156,7 +1157,7 @@ func TestAHoldOfOneCountedNodeEndsByTheRelease(t *testing.T) {
 	h.expectSilent(silent(0, 1) + fewerThanTwo + ", below 60%" + holdsUntil)
 	h.expectHealth(0, 1)
 	h.back(149)
-	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+	if holder := h.holder(); holder != contract.HoldHolderIdentity {
 		t.Fatalf("the hold ended before releaseAfter, holder %q", holder)
 	}
 	h.back(150)
@@ -1175,7 +1176,7 @@ func TestAHoldOfNoCountedNodeAfterTheOwnerDeletesThemEndsByTheRelease(t *testing
 	h.at(30)
 	h.expectSilent(silent(0, 0) + fewerThanTwo + ", below 60%" + holdsUntil)
 	h.at(149)
-	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+	if holder := h.holder(); holder != contract.HoldHolderIdentity {
 		t.Fatalf("the hold ended before releaseAfter, holder %q", holder)
 	}
 	h.at(150)
@@ -1190,7 +1191,7 @@ func TestAHolderAtItsBoundIsQuotedWholeAndOneBytePastItIsAFailedRead(t *testing.
 		t.Run(name+" at the bound", func(t *testing.T) {
 			h := sampling(t, "a", "b", "c")
 			h.at(0)
-			renew(t, lodiav1alpha1.ControllerManagerLease, holder, time.Now())
+			renew(t, contract.ControllerManagerLease, holder, time.Now())
 			before := h.lease()
 			h.at(20)
 			h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonHoldBlocked, silent(3, 3)+atOrAbove+"60%, but "+holder+" holds Lease kube-system/kube-controller-manager")
@@ -1202,7 +1203,7 @@ func TestAHolderAtItsBoundIsQuotedWholeAndOneBytePastItIsAFailedRead(t *testing.
 		t.Run(name+" one byte past it", func(t *testing.T) {
 			h := sampling(t, "a", "b", "c")
 			h.at(0)
-			renew(t, lodiav1alpha1.ControllerManagerLease, holder+"h", time.Now())
+			renew(t, contract.ControllerManagerLease, holder+"h", time.Now())
 			before := h.lease()
 			h.at(20)
 			h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonNotHeld, silent(0, 3))
@@ -1235,7 +1236,7 @@ func TestALongRefusalIsCutInTheMessageAndTheStatusIsApplied(t *testing.T) {
 	t.Run("of a take", func(t *testing.T) {
 		h := sampling(t, "a", "b", "c")
 		h.at(0)
-		renew(t, lodiav1alpha1.ControllerManagerLease, "", time.Now())
+		renew(t, contract.ControllerManagerLease, "", time.Now())
 		h.inject(longStatus)
 		h.at(20)
 		h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonHoldBlocked, "the API server refused the take of Lease kube-system/kube-controller-manager: "+tooLong)
@@ -1274,7 +1275,7 @@ func TestARefusedTakeIsHoldBlockedAndNeverNodesSilent(t *testing.T) {
 	t.Run("an Update", func(t *testing.T) {
 		h := sampling(t, "a", "b", "c")
 		h.at(0)
-		renew(t, lodiav1alpha1.ControllerManagerLease, "", time.Now())
+		renew(t, contract.ControllerManagerLease, "", time.Now())
 		h.fail(managerLease, http.MethodPatch, http.StatusForbidden, metav1.StatusReasonForbidden)
 		h.at(20)
 		h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonHoldBlocked, "the API server refused the take of Lease kube-system/kube-controller-manager: injected: Forbidden")
@@ -1313,7 +1314,7 @@ func TestARefusedReleaseKeepsNodesSilentAndTriesAgain(t *testing.T) {
 	h.back(145)
 	h.expectSilent("the API server refused the release of Lease kube-system/kube-controller-manager: injected: Forbidden")
 	h.expectHealth(0, 3)
-	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+	if holder := h.holder(); holder != contract.HoldHolderIdentity {
 		t.Fatalf("a refused release left holder %q", holder)
 	}
 	h.inject(nil)
@@ -1370,7 +1371,7 @@ func TestAWriteTimingOutOrFailingAppliesNothing(t *testing.T) {
 			h.r.Timeout = 300 * time.Millisecond
 			h.at(0)
 			h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonNotHeld, silent(0, 3))
-			renew(t, lodiav1alpha1.ControllerManagerLease, "", time.Now())
+			renew(t, contract.ControllerManagerLease, "", time.Now())
 			h.inject(method)
 			h.r.Client = noControlPlaneWrite(t, k8s)
 			h.at(20)
@@ -1378,7 +1379,7 @@ func TestAWriteTimingOutOrFailingAppliesNothing(t *testing.T) {
 			h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonNotHeld, silent(0, 3))
 			h.inject(nil)
 			h.at(25)
-			if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+			if holder := h.holder(); holder != contract.HoldHolderIdentity {
 				t.Fatalf("the next pass did not take the Lease, holder %q", holder)
 			}
 		})
@@ -1398,7 +1399,7 @@ func TestACreateThatMeetsAlreadyExistsAppliesNothing(t *testing.T) {
 func TestAFailedPodListKeepsTheConditionAndTakesNothing(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
 	h.at(0)
-	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", time.Now())
+	renew(t, contract.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", time.Now())
 	before := h.lease()
 	h.r.Reader = interceptor.NewClient(k8s, interceptor.Funcs{
 		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
@@ -1417,7 +1418,7 @@ func TestThePodListGoesThroughTheHealthControllersRole(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
 	h.at(0)
 	createManagerPod(t, h.cp, "dev-kube-controller-manager-7d9")
-	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", time.Now())
+	renew(t, contract.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", time.Now())
 	reader, err := client.New(healthRole, client.Options{Scheme: k8s.Scheme()})
 	if err != nil {
 		t.Fatal(err)
@@ -1452,8 +1453,8 @@ func TestAHolderLodiaReadsHeldAndAStaleSchedulerNotLeading(t *testing.T) {
 	start := time.Now().Truncate(time.Second)
 	now := clocktesting.NewFakePassiveClock(start)
 	leaders := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: 5 * time.Second, Timeout: 2 * time.Second, Clock: now}
-	renew(t, lodiav1alpha1.ControllerManagerLease, lodiav1alpha1.HoldHolderIdentity, start)
-	renew(t, lodiav1alpha1.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
+	renew(t, contract.ControllerManagerLease, contract.HoldHolderIdentity, start)
+	renew(t, contract.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
 	reconcile(t, leaders, cp)
 	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonHeld, "Lodia holds the leader Lease of kube-controller-manager, and that of kube-scheduler is renewed"); err != nil {
 		t.Fatal(err)
@@ -1471,11 +1472,11 @@ func TestAHeldLeaseOfNoRecentRenewalStaysHeld(t *testing.T) {
 	start := time.Now().Truncate(time.Second)
 	now := clocktesting.NewFakePassiveClock(start)
 	leaders := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: 5 * time.Second, Timeout: 2 * time.Second, Clock: now}
-	renew(t, lodiav1alpha1.ControllerManagerLease, lodiav1alpha1.HoldHolderIdentity, start)
-	renew(t, lodiav1alpha1.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
+	renew(t, contract.ControllerManagerLease, contract.HoldHolderIdentity, start)
+	renew(t, contract.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
 	reconcile(t, leaders, cp)
 	now.SetTime(start.Add(26 * time.Second))
-	renew(t, lodiav1alpha1.SchedulerLease, "dev-kube-scheduler-5c4_2", start.Add(26*time.Second))
+	renew(t, contract.SchedulerLease, "dev-kube-scheduler-5c4_2", start.Add(26*time.Second))
 	reconcile(t, leaders, cp)
 	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonHeld, "Lodia holds the leader Lease of kube-controller-manager, and that of kube-scheduler is renewed"); err != nil {
 		t.Fatal(err)

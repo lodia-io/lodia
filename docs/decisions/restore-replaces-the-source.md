@@ -108,7 +108,8 @@ A ValidatingAdmissionPolicy could require a `restore` verb on the named `Backup`
 
 ## Code
 
-- `api/v1alpha1` — `RestoreFrom` with `Release`, `BackupStatus` with its `Ready` condition, `RestoreStatus`, `SnapshotLocation` and `BackupSnapshotLocation` with `StoreSecretFields`, the names `BackupEncryptionConfigSecretName`, `BackupSealKey` and `RestoreMarkerKey`, the annotation `SealedUIDAnnotation`, the finalizer `RestoreSourceFinalizer` and the reasons in `conditions.go`; `test/api/validation_test.go` holds their rules.
+- `api/v1alpha1` — `RestoreFrom` with `Release`, `BackupStatus` with its `Ready` condition, `RestoreStatus`, `SnapshotLocation` and `BackupSnapshotLocation` with `StoreSecretFields`, the name `BackupEncryptionConfigSecretName`, the annotation `SealedUIDAnnotation`, the finalizer `RestoreSourceFinalizer` and the reasons in `conditions.go`; `test/api/validation_test.go` holds their rules.
+- `internal/contract` — the etcd keys `BackupSealKey` and `RestoreMarkerKey`.
 - `internal/controller/datastore/backup.go` — the backup reconciler: the seal, the snapshot it waits for, the copy, the encryption keys, the mark and the finalizer; `etcdclient.go` dials a tenant's etcd for it and for the restore.
 - `internal/controller/datastore/restore.go` — the restore: the checks before the first `Etcd` and its copy, the seal check, `Cleanup`, the full snapshot it waits for and `status.restore`, and `CAPredatesControlPlane`; `datastore.go` runs them in a pass and keeps an `Etcd` that starts on the store at one member until the restore is complete; `restore_test.go` holds them.
 - `test/restorekeys` — the keys `Cleanup` deletes, against the API server of each minor Lodia runs (`make restore-keys`).

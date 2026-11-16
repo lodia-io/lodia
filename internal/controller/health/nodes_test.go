@@ -37,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/controller/health"
 	"go.lodia.io/lodia/internal/testenv"
 )
@@ -337,10 +338,10 @@ func TestANodeNamedLikeALeaderLeaseSharesNoClockWithIt(t *testing.T) {
 	nodes := nodesReconciler(now)
 	nodes.HoldFraction = 1000
 	leaders := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: 5 * time.Second, Timeout: 2 * time.Second, Clock: now}
-	joined(t, lodiav1alpha1.SchedulerLease, corev1.ConditionTrue, start)
+	joined(t, contract.SchedulerLease, corev1.ConditionTrue, start)
 	removeLeases(t)
-	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", start)
-	renew(t, lodiav1alpha1.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
+	renew(t, contract.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", start)
+	renew(t, contract.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
 	both := func(at time.Duration) {
 		now.SetTime(start.Add(at))
 		sample(t, nodes, cp)
@@ -348,7 +349,7 @@ func TestANodeNamedLikeALeaderLeaseSharesNoClockWithIt(t *testing.T) {
 	}
 
 	both(0)
-	renewNodeLease(t, lodiav1alpha1.SchedulerLease, time.Now())
+	renewNodeLease(t, contract.SchedulerLease, time.Now())
 	both(10 * time.Second)
 	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, "the leader Leases of kube-controller-manager and kube-scheduler are renewed"); err != nil {
 		t.Fatal(err)
@@ -361,7 +362,7 @@ func TestANodeNamedLikeALeaderLeaseSharesNoClockWithIt(t *testing.T) {
 		t.Fatalf("the node Lease of the same name renewed 16 seconds before: %v", err)
 	}
 
-	renew(t, lodiav1alpha1.SchedulerLease, "dev-kube-scheduler-5c4_2", start.Add(27*time.Second))
+	renew(t, contract.SchedulerLease, "dev-kube-scheduler-5c4_2", start.Add(27*time.Second))
 	both(30 * time.Second)
 	expectNotHeld(t, cp, silent(1, 1)+fewerThanTwo)
 }

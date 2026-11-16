@@ -44,6 +44,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/apistatus"
+	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/live"
 	"go.lodia.io/lodia/internal/ownership"
 	"go.lodia.io/lodia/internal/restore"
@@ -123,7 +124,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 	})
 	etcdPolicy := predicate.NewPredicateFuncs(func(policy client.Object) bool {
 		cp, ok := policy.GetLabels()[lodiav1alpha1.ControlPlaneLabel]
-		return ok && policy.GetName() == lodiav1alpha1.EtcdName(cp)
+		return ok && policy.GetName() == contract.EtcdName(cp)
 	})
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(Name).
@@ -183,7 +184,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	cp := &lodiav1alpha1.ControlPlane{}
 	if err := r.Get(ctx, req.NamespacedName, cp); err != nil {
 		if apierrors.IsNotFound(err) {
-			r.forget(client.ObjectKey{Namespace: req.Namespace, Name: lodiav1alpha1.EtcdName(req.Name)})
+			r.forget(client.ObjectKey{Namespace: req.Namespace, Name: contract.EtcdName(req.Name)})
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -410,7 +411,7 @@ func (r *Reconciler) readInputs(ctx context.Context, p *pass) (*outcome, error) 
 	}
 	if !found {
 		var roles []string
-		for _, role := range lodiav1alpha1.EtcdCertificateRoles() {
+		for _, role := range contract.EtcdCertificateRoles() {
 			roles = append(roles, string(role))
 		}
 		message := fmt.Sprintf("waiting for a complete generation of the etcd certificates that this ControlPlane controls: the Secrets %s-etcd-{%s}-<g> labelled %s=<g>",
@@ -789,7 +790,7 @@ func (r *Reconciler) druidPending(ctx context.Context) (string, error) {
 // there is none.
 func (r *Reconciler) statefulSet(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*appsv1.StatefulSet, error) {
 	sts := &appsv1.StatefulSet{}
-	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.EtcdName(cp.Name)}, sts); err != nil {
+	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: contract.EtcdName(cp.Name)}, sts); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil
 		}
@@ -845,7 +846,7 @@ func replaced(err error) bool {
 // runs.
 func (r *Reconciler) currentEtcd(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*druidv1alpha1.Etcd, error) {
 	etcd := &druidv1alpha1.Etcd{}
-	key := client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.EtcdName(cp.Name)}
+	key := client.ObjectKey{Namespace: cp.Namespace, Name: contract.EtcdName(cp.Name)}
 	err := r.Get(ctx, key, etcd)
 	if apierrors.IsNotFound(err) {
 		err = r.Reader.Get(ctx, key, etcd)
@@ -1001,8 +1002,8 @@ func newestCompleteGeneration(cp *lodiav1alpha1.ControlPlane, secrets []metav1.P
 			continue
 		}
 		complete := true
-		for _, certificate := range lodiav1alpha1.EtcdCertificateRoles() {
-			if labelled[lodiav1alpha1.EtcdCertificateSecretName(cp.Name, certificate, generation)] != label {
+		for _, certificate := range contract.EtcdCertificateRoles() {
+			if labelled[contract.EtcdCertificateSecretName(cp.Name, certificate, generation)] != label {
 				complete = false
 				break
 			}
@@ -1022,8 +1023,8 @@ func namedGeneration(cp string, etcd *druidv1alpha1.Etcd) (int, bool) {
 	if etcd == nil || etcd.Spec.Etcd.ClientUrlTLS == nil {
 		return 0, false
 	}
-	role, generation, ok := lodiav1alpha1.ParseEtcdCertificateSecretName(cp, etcd.Spec.Etcd.ClientUrlTLS.ServerTLSSecretRef.Name)
-	return generation, ok && role == lodiav1alpha1.EtcdServerRole
+	role, generation, ok := contract.ParseEtcdCertificateSecretName(cp, etcd.Spec.Etcd.ClientUrlTLS.ServerTLSSecretRef.Name)
+	return generation, ok && role == contract.EtcdServerRole
 }
 
 // Claims are matched by the name the StatefulSet attaches them by,
@@ -1046,7 +1047,7 @@ func (r *Reconciler) claims(ctx context.Context, cp *lodiav1alpha1.ControlPlane)
 }
 
 func claimOrdinal(cp, claim string) (int, bool) {
-	ordinal, named := strings.CutPrefix(claim, lodiav1alpha1.EtcdName(cp)+"-"+lodiav1alpha1.EtcdName(cp)+"-")
+	ordinal, named := strings.CutPrefix(claim, contract.EtcdName(cp)+"-"+contract.EtcdName(cp)+"-")
 	n, err := strconv.Atoi(ordinal)
 	return n, named && err == nil && n >= 0 && strconv.Itoa(n) == ordinal
 }
@@ -1164,7 +1165,7 @@ func (r *Reconciler) finalize(ctx context.Context, cp *lodiav1alpha1.ControlPlan
 	// Read from the API server: a deleted Etcd the cache still held would have
 	// the claims of one standing under the name since labelled, and reclaimed.
 	etcd := &druidv1alpha1.Etcd{}
-	switch err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.EtcdName(cp.Name)}, etcd); {
+	switch err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: contract.EtcdName(cp.Name)}, etcd); {
 	case apierrors.IsNotFound(err):
 		etcd = nil
 	case err != nil:
@@ -1196,7 +1197,7 @@ func (r *Reconciler) finalize(ctx context.Context, cp *lodiav1alpha1.ControlPlan
 	case etcd != nil:
 		return 10 * time.Second, nil
 	case foreign:
-		logf.FromContext(ctx).Info("leaving the Etcd and the claims its StatefulSet uses alone, the ControlPlane does not control it", "etcd", lodiav1alpha1.EtcdName(cp.Name))
+		logf.FromContext(ctx).Info("leaving the Etcd and the claims its StatefulSet uses alone, the ControlPlane does not control it", "etcd", contract.EtcdName(cp.Name))
 	default:
 		if err := r.reclaimClaims(ctx, cp); err != nil {
 			return 0, err

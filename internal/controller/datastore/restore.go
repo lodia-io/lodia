@@ -26,6 +26,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/certs"
+	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/restore"
 	"go.lodia.io/lodia/internal/versions"
 )
@@ -78,7 +79,7 @@ func Cleanup(ctx context.Context, kv clientv3.KV, controlPlane types.UID, value 
 	if keys >= cleanupBound {
 		return keys, 0, nil
 	}
-	marker := lodiav1alpha1.RestoreMarkerKey(controlPlane)
+	marker := contract.RestoreMarkerKey(controlPlane)
 	deletes = append(deletes, clientv3.OpDelete(cleanupKey), clientv3.OpPut(marker, string(value)))
 	response, err := kv.Txn(ctx).
 		If(clientv3.Compare(clientv3.CreateRevision(marker), "=", 0)).
@@ -361,7 +362,7 @@ func (r *Reconciler) checkRestore(ctx context.Context, cp *lodiav1alpha1.Control
 	defer func() { _ = c.Close() }()
 	var marker *clientv3.GetResponse
 	if err := request(ctx, func(ctx context.Context) (err error) {
-		marker, err = c.Get(ctx, lodiav1alpha1.RestoreMarkerKey(cp.UID))
+		marker, err = c.Get(ctx, contract.RestoreMarkerKey(cp.UID))
 		return err
 	}); err != nil {
 		return unanswered(ctx, cp, etcd, err), nil
@@ -370,7 +371,7 @@ func (r *Reconciler) checkRestore(ctx context.Context, cp *lodiav1alpha1.Control
 	var revision int64
 	if len(marker.Kvs) > 0 {
 		if err := json.Unmarshal(marker.Kvs[0].GetValue(), &value); err != nil {
-			return restoreCheck{}, fmt.Errorf("read the marker %s in the etcd of Etcd %s: %w", lodiav1alpha1.RestoreMarkerKey(cp.UID), etcd.Name, err)
+			return restoreCheck{}, fmt.Errorf("read the marker %s in the etcd of Etcd %s: %w", contract.RestoreMarkerKey(cp.UID), etcd.Name, err)
 		}
 		revision = marker.Kvs[0].GetCreateRevision()
 	} else {
@@ -438,7 +439,7 @@ func (r *Reconciler) cleanUp(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 	}
 	var seal *clientv3.GetResponse
 	if err := request(ctx, func(ctx context.Context) (err error) {
-		seal, err = c.Get(ctx, lodiav1alpha1.BackupSealKey(value.Backup.UID))
+		seal, err = c.Get(ctx, contract.BackupSealKey(value.Backup.UID))
 		return err
 	}); err != nil {
 		return restoreMarker{}, 0, new(unanswered(ctx, cp, etcd, err)), nil
@@ -446,7 +447,7 @@ func (r *Reconciler) cleanUp(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 	if len(seal.Kvs) == 0 || string(seal.Kvs[0].GetValue()) != string(value.Backup.UID) {
 		condition := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRestoreFailed, fmt.Sprintf(
 			"the restored etcd lacks %s, the seal of Backup %s: the copy is not that Backup's; nothing was cleaned up and no API server starts; delete this ControlPlane and restore another Backup",
-			lodiav1alpha1.BackupSealKey(value.Backup.UID), value.Backup.Name))
+			contract.BackupSealKey(value.Backup.UID), value.Backup.Name))
 		return restoreMarker{}, 0, &restoreCheck{condition: &condition}, nil
 	}
 	content, err := json.Marshal(value)

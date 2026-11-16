@@ -19,6 +19,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/controller/datastore"
 	"go.lodia.io/lodia/internal/versions"
 )
@@ -195,7 +196,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	c.ProbeFailures.Collect(ch)
 	for i := range list.Items {
 		cp := &list.Items[i]
-		c.collect(ch, cp, byName[types.NamespacedName{Namespace: cp.Namespace, Name: lodiav1alpha1.EtcdName(cp.Name)}])
+		c.collect(ch, cp, byName[types.NamespacedName{Namespace: cp.Namespace, Name: contract.EtcdName(cp.Name)}])
 	}
 }
 

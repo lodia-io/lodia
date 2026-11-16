@@ -37,6 +37,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/certs"
+	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/controller/health"
 	"go.lodia.io/lodia/internal/operator"
 	"go.lodia.io/lodia/internal/testenv"
@@ -410,8 +411,8 @@ func TestControllersLeadingFollowsTheLeaderLeases(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", start)
-	renew(t, lodiav1alpha1.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
+	renew(t, contract.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", start)
+	renew(t, contract.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
 	reconcile(t, r, cp)
 	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, "the leader Leases of kube-controller-manager and kube-scheduler are renewed"); err != nil {
 		t.Fatal(err)
@@ -435,20 +436,20 @@ func TestControllersLeadingFollowsTheLeaderLeases(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", start.Add(26*time.Second))
+	renew(t, contract.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", start.Add(26*time.Second))
 	reconcile(t, r, cp)
 	if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonSchedulerNotLeading,
 		"Lease kube-system/kube-scheduler of dev-kube-scheduler-5c4_2 was last renewed "+renewed); err != nil {
 		t.Fatal(err)
 	}
-	renew(t, lodiav1alpha1.SchedulerLease, "dev-kube-scheduler-8f1_3", start.Add(26*time.Second))
+	renew(t, contract.SchedulerLease, "dev-kube-scheduler-8f1_3", start.Add(26*time.Second))
 	reconcile(t, r, cp)
 	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, "the leader Leases of kube-controller-manager and kube-scheduler are renewed"); err != nil {
 		t.Fatal(err)
 	}
 
 	now.SetTime(start.Add(27 * time.Second))
-	release(t, lodiav1alpha1.SchedulerLease, start.Add(27*time.Second))
+	release(t, contract.SchedulerLease, start.Add(27*time.Second))
 	reconcile(t, r, cp)
 	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, "the leader Leases of kube-controller-manager and kube-scheduler are renewed"); err != nil {
 		t.Fatalf("the pass after a release: %v", err)
@@ -481,8 +482,8 @@ func TestAFailedLeaseReadKeepsControllersLeading(t *testing.T) {
 	now := clocktesting.NewFakePassiveClock(start)
 	r := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: 10 * time.Second, Timeout: 2 * time.Second, Clock: now}
 	writeKubeconfig(t, cp, tenantKubeconfig)
-	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", start)
-	renew(t, lodiav1alpha1.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
+	renew(t, contract.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", start)
+	renew(t, contract.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
 	reconcile(t, r, cp)
 	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, "the leader Leases of kube-controller-manager and kube-scheduler are renewed"); err != nil {
 		t.Fatal(err)
@@ -519,8 +520,8 @@ func TestAKeptConditionIsWrittenAtTheObjectsGeneration(t *testing.T) {
 	})
 	writeKubeconfig(t, cp, tenantKubeconfig)
 	start := time.Now().Truncate(time.Second)
-	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", start)
-	renew(t, lodiav1alpha1.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
+	renew(t, contract.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", start)
+	renew(t, contract.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
 	r := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: 10 * time.Second, Timeout: 2 * time.Second, Clock: clocktesting.NewFakePassiveClock(start)}
 	reconcile(t, r, cp)
 	const leading = "the leader Leases of kube-controller-manager and kube-scheduler are renewed"
@@ -561,8 +562,8 @@ func TestAKeptConditionIsDecidedFromTheServer(t *testing.T) {
 	})
 	writeKubeconfig(t, cp, tenantKubeconfig)
 	start := time.Now().Truncate(time.Second)
-	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", start)
-	renew(t, lodiav1alpha1.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
+	renew(t, contract.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", start)
+	renew(t, contract.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
 	const leading = "the leader Leases of kube-controller-manager and kube-scheduler are renewed"
 	now := clocktesting.NewFakePassiveClock(start)
 	r := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: 10 * time.Second, Timeout: 2 * time.Second, Clock: now}
@@ -677,8 +678,8 @@ func TestControllersLeadingWaitsForAccessReadyAtAnyGeneration(t *testing.T) {
 	now := clocktesting.NewFakePassiveClock(start)
 	r := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: 10 * time.Second, Timeout: 2 * time.Second, Clock: now}
 	writeKubeconfig(t, cp, tenantKubeconfig)
-	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", start)
-	renew(t, lodiav1alpha1.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
+	renew(t, contract.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", start)
+	renew(t, contract.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
 	reconcile(t, r, cp)
 	const leading = "the leader Leases of kube-controller-manager and kube-scheduler are renewed"
 	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, leading); err != nil {
@@ -941,8 +942,8 @@ func setAccessAt(t *testing.T, cp *lodiav1alpha1.ControlPlane, status metav1.Con
 
 func removeLeases(t *testing.T) {
 	t.Helper()
-	for _, name := range []string{lodiav1alpha1.ControllerManagerLease, lodiav1alpha1.SchedulerLease} {
-		lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Namespace: lodiav1alpha1.LeaderElectionNamespace, Name: name}}
+	for _, name := range []string{contract.ControllerManagerLease, contract.SchedulerLease} {
+		lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Namespace: contract.LeaderElectionNamespace, Name: name}}
 		if err := client.IgnoreNotFound(tenant.Delete(t.Context(), lease)); err != nil {
 			t.Fatal(err)
 		}
@@ -951,7 +952,7 @@ func removeLeases(t *testing.T) {
 
 func release(t *testing.T, name string, at time.Time) {
 	t.Helper()
-	lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Namespace: lodiav1alpha1.LeaderElectionNamespace, Name: name}}
+	lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Namespace: contract.LeaderElectionNamespace, Name: name}}
 	if err := tenant.Get(t.Context(), client.ObjectKeyFromObject(lease), lease); err != nil {
 		t.Fatal(err)
 	}
@@ -964,7 +965,7 @@ func release(t *testing.T, name string, at time.Time) {
 
 func renew(t *testing.T, name, holder string, at time.Time) {
 	t.Helper()
-	lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Namespace: lodiav1alpha1.LeaderElectionNamespace, Name: name}}
+	lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Namespace: contract.LeaderElectionNamespace, Name: name}}
 	err := tenant.Get(t.Context(), client.ObjectKeyFromObject(lease), lease)
 	if client.IgnoreNotFound(err) != nil {
 		t.Fatal(err)

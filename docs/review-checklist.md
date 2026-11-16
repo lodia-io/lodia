@@ -4,12 +4,12 @@ Every pull request is reviewed against these checks. Each names a failure
 that hosted control planes run into; a change that fails one is reworked, not
 excused.
 
-1. **One writer per field.** Every status field, condition, label, annotation
-   and shared name has one writer, declared in `api/v1alpha1`. Two writers
-   overwrite each other.
-2. **Controllers meet only through the API.** A controller reads what another
-   publishes in status, or an object named in `api/v1alpha1`; it never calls
-   another controller. Hidden coupling breaks when either side changes.
+1. **One writer per field.**
+   Every status field, condition, label, annotation and shared name has one writer, declared in `api/v1alpha1`, or in `internal/contract` when only Lodia's controllers share it.
+   Two writers overwrite each other.
+2. **Controllers meet only through the API.**
+   A controller reads what another publishes in status, or an object named in `api/v1alpha1` or `internal/contract`; it never calls another controller.
+   Hidden coupling breaks when either side changes.
 3. **No code for a case that cannot happen.** No branch for an unreachable
    state, such as a migration from a release nobody runs. Code that nothing
    exercises rots.

@@ -39,6 +39,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 )
 
 const (
@@ -147,7 +148,7 @@ func TestControllerManagerHold(t *testing.T) {
 				follow(ctx, t, tenantAPI, &coordinationv1.LeaseList{}, func(_ watch.EventType, obj client.Object, at time.Time) {
 					seen.observeLease(obj.(*coordinationv1.Lease), at)
 				},
-					client.InNamespace(lodiav1alpha1.LeaderElectionNamespace), client.MatchingFields{"metadata.name": lodiav1alpha1.ControllerManagerLease}),
+					client.InNamespace(contract.LeaderElectionNamespace), client.MatchingFields{"metadata.name": contract.ControllerManagerLease}),
 				follow(ctx, t, tenantAPI, &corev1.PodList{}, func(event watch.EventType, obj client.Object, at time.Time) {
 					seen.observePod(event, obj.(*corev1.Pod), at)
 				}),
@@ -194,10 +195,10 @@ func TestControllerManagerHold(t *testing.T) {
 			requireBlocked(ctx, t, nodes, targets)
 
 			var taken holderSample
-			until(ctx, t, time.Minute, "the Lease is held by "+lodiav1alpha1.HoldHolderIdentity, func(ctx context.Context) error {
+			until(ctx, t, time.Minute, "the Lease is held by "+contract.HoldHolderIdentity, func(ctx context.Context) error {
 				var ok bool
-				if taken, ok = seen.firstHolder(firstCut, func(s holderSample) bool { return s.holder == lodiav1alpha1.HoldHolderIdentity }); !ok {
-					return errors.New("its holder is not yet " + lodiav1alpha1.HoldHolderIdentity)
+				if taken, ok = seen.firstHolder(firstCut, func(s holderSample) bool { return s.holder == contract.HoldHolderIdentity }); !ok {
+					return errors.New("its holder is not yet " + contract.HoldHolderIdentity)
 				}
 				return nil
 			})
@@ -279,7 +280,7 @@ func TestControllerManagerHold(t *testing.T) {
 			until(ctx, t, time.Minute, "a controller manager holds the Lease again", func(ctx context.Context) error {
 				var ok bool
 				leading, ok = seen.firstHolder(released.at, func(s holderSample) bool {
-					return s.holder != "" && s.holder != lodiav1alpha1.HoldHolderIdentity
+					return s.holder != "" && s.holder != contract.HoldHolderIdentity
 				})
 				if !ok {
 					return errors.New("no controller manager holds it")
@@ -300,7 +301,7 @@ func TestControllerManagerHold(t *testing.T) {
 			end := released.at.Add(quietAfterRelease)
 			sleepUntil(ctx, t, end)
 			for _, h := range seen.holdersBetween(taken.at, released.at) {
-				if h.holder != lodiav1alpha1.HoldHolderIdentity {
+				if h.holder != contract.HoldHolderIdentity {
 					t.Errorf("at %s the holder was %q between the hold and its release", stamp(h.at), h.holder)
 				}
 			}
@@ -331,7 +332,7 @@ func TestControllerManagerHold(t *testing.T) {
 				if problems := nodeProblems(ctx, access.client); len(problems) > 0 {
 					return fmt.Errorf("nodes: %v", problems)
 				}
-				if holder := seen.lastHolder().holder; holder == "" || holder == lodiav1alpha1.HoldHolderIdentity {
+				if holder := seen.lastHolder().holder; holder == "" || holder == contract.HoldHolderIdentity {
 					return fmt.Errorf("the Lease is held by %q", holder)
 				}
 				pods, err := webPods(ctx, access.client)
@@ -372,7 +373,7 @@ func TestControllerManagerHold(t *testing.T) {
 				}
 				return nil
 			})
-			lowest, highest := lodiav1alpha1.NodeMonitorGracePeriod-kubeletRenewSpread, lodiav1alpha1.NodeMonitorGracePeriod+unknownLate
+			lowest, highest := contract.NodeMonitorGracePeriod-kubeletRenewSpread, contract.NodeMonitorGracePeriod+unknownLate
 			t.Logf("node %s turned Unknown at %s, %s after the cut", cut, stamp(unknown.at), unknown.at.Sub(cutAt))
 			if d := unknown.at.Sub(cutAt); d < lowest || d > highest {
 				t.Errorf("node %s turned Unknown %s after the cut, want %s to %s", cut, d, lowest, highest)
@@ -452,7 +453,7 @@ func TestControllerManagerHold(t *testing.T) {
 			end := time.Now()
 
 			for _, h := range seen.holdersBetween(cutAt, end) {
-				if h.holder == lodiav1alpha1.HoldHolderIdentity {
+				if h.holder == contract.HoldHolderIdentity {
 					t.Errorf("at %s the holder was %s while only one node was cut", stamp(h.at), h.holder)
 				}
 			}
