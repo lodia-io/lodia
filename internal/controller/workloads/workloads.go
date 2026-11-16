@@ -587,9 +587,6 @@ func (r *Reconciler) holding(cp *lodiav1alpha1.ControlPlane) metav1.Condition {
 // sets them is not Ready instead of running without them.
 func unsupported(cp *lodiav1alpha1.ControlPlane) []string {
 	var fields []string
-	if cp.Spec.Layout == lodiav1alpha1.LayoutCompact {
-		fields = append(fields, "layout Compact")
-	}
 	if a := cp.Spec.APIServer; a != nil {
 		if a.Authentication != nil && len(a.Authentication.JWT) > 0 {
 			fields = append(fields, "apiServer.authentication.jwt")

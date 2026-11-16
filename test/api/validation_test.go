@@ -158,9 +158,6 @@ func TestControlPlaneDefaults(t *testing.T) {
 	ensureNamespaces(t, "team-a")
 	obj := example(t, "controlplane-single.yaml", "defaults")
 	expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), "")
-	if layout, _, _ := unstructured.NestedString(obj.Object, "spec", "layout"); layout != "Split" {
-		t.Fatalf("layout = %q, want Split", layout)
-	}
 	if domain, _, _ := unstructured.NestedString(obj.Object, "spec", "network", "clusterDomain"); domain != "cluster.local" {
 		t.Fatalf("clusterDomain = %q, want cluster.local", domain)
 	}
@@ -190,14 +187,6 @@ func TestControlPlaneValidation(t *testing.T) {
 		{"bad CIDR", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, []any{"10.0.0.0/33"}, "spec", "network", "serviceCIDRs")
 		}, "must be a network in CIDR notation"},
-		{"compact with high availability", func(t *testing.T, o *unstructured.Unstructured) {
-			set(t, o, "Compact", "spec", "layout")
-			set(t, o, map[string]any{"failureTolerance": "Node"}, "spec", "highAvailability")
-		}, "the Compact layout runs one replica of everything"},
-		{"compact with two API servers", func(t *testing.T, o *unstructured.Unstructured) {
-			set(t, o, "Compact", "spec", "layout")
-			set(t, o, int64(2), "spec", "apiServer", "replicas")
-		}, "the Compact layout runs one API server"},
 		{"high availability with one API server", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, map[string]any{"failureTolerance": "Node"}, "spec", "highAvailability")
 			set(t, o, int64(1), "spec", "apiServer", "replicas")
@@ -341,7 +330,6 @@ func TestControlPlaneTransitions(t *testing.T) {
 		{"minor down", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, "v1.36.4", "spec", "version") }, "the Kubernetes minor version cannot decrease"},
 		{"patch down", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, "v1.37.0", "spec", "version") }, ""},
 		{"minor up", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, "v1.38.0", "spec", "version") }, ""},
-		{"layout changed", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, "Compact", "spec", "layout") }, "layout is immutable"},
 		{"datastore changed", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, map[string]any{"shared": map[string]any{"name": "pool-a"}}, "spec", "datastore")
 		}, "datastore is immutable"},
@@ -920,6 +908,32 @@ func TestAHostTakesTheHostnameRule(t *testing.T) {
 	host := rules(at(t, schema, "status.endpoint.apiServer.host"))
 	if len(hostname) != 1 || !slices.Equal(host, []string{"isIP(self) || " + hostname[0]}) {
 		t.Errorf("HostPort.host has the rules %q, want isIP(self) or the Hostname's %q", host, hostname)
+	}
+}
+
+func TestRemovedFieldsAreUnknown(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	for _, c := range []struct {
+		file  string
+		value any
+		path  []string
+	}{
+		{"controlplane-single.yaml", "Split", []string{"spec", "layout"}},
+	} {
+		field := strings.Join(c.path, ".")
+		t.Run(field, func(t *testing.T) {
+			obj := example(t, c.file, "removed")
+			set(t, obj, c.value, c.path...)
+			err := k8s.Create(context.Background(), obj.DeepCopy(), client.DryRunAll, client.FieldValidation("Strict"))
+			if err == nil || !strings.Contains(err.Error(), `unknown field "`+field+`"`) {
+				t.Fatalf("want %s refused as an unknown field under strict field validation, got %v", field, err)
+			}
+			expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), "")
+			if _, found, _ := unstructured.NestedFieldNoCopy(obj.Object, c.path...); found {
+				t.Errorf("%s is kept, want it pruned", field)
+			}
+		})
 	}
 }
 

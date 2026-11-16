@@ -43,8 +43,6 @@ type ControlPlaneList struct {
 }
 
 // ControlPlaneSpec is what the owner of the cluster wants.
-// +kubebuilder:validation:XValidation:rule="self.layout != 'Compact' || !has(self.highAvailability)",message="the Compact layout runs one replica of everything: remove highAvailability"
-// +kubebuilder:validation:XValidation:rule="self.layout != 'Compact' || !has(self.apiServer) || !has(self.apiServer.replicas) || self.apiServer.replicas == 1",message="the Compact layout runs one API server"
 // +kubebuilder:validation:XValidation:rule="!has(self.highAvailability) || !has(self.apiServer) || !has(self.apiServer.replicas) || self.apiServer.replicas >= 2",message="highAvailability runs at least two API servers"
 // +kubebuilder:validation:XValidation:rule="!has(self.apiServer) || !has(self.apiServer.advertiseAddress) || has(self.endpoint.gateway)",message="apiServer.advertiseAddress is set only with endpoint.gateway"
 // +kubebuilder:validation:XValidation:rule="!has(self.apiServer) || !has(self.apiServer.advertiseAddress) || !isIP(self.apiServer.advertiseAddress) || !isCIDR(self.network.serviceCIDRs[0]) || ip(self.apiServer.advertiseAddress).family() == cidr(self.network.serviceCIDRs[0]).ip().family()",message="apiServer.advertiseAddress must be of the family of the first service range"
@@ -61,13 +59,6 @@ type ControlPlaneSpec struct {
 	// +kubebuilder:validation:Pattern=`^v1\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`
 	// +kubebuilder:validation:XValidation:rule="int(self.split('.')[1]) >= int(oldSelf.split('.')[1])",message="the Kubernetes minor version cannot decrease"
 	Version string `json:"version"`
-
-	// Layout is Split, a Deployment per component, or Compact, every
-	// component in one pod.
-	// +optional
-	// +kubebuilder:default=Split
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="layout is immutable"
-	Layout Layout `json:"layout,omitempty"`
 
 	// HighAvailability runs every component with more than one replica,
 	// spread by FailureTolerance, and etcd with three members.
@@ -132,17 +123,6 @@ type ControlPlaneSpec struct {
 	// +optional
 	Paused bool `json:"paused,omitempty"`
 }
-
-// Layout is how the control plane's components are laid out in pods.
-// +kubebuilder:validation:Enum=Split;Compact
-type Layout string
-
-const (
-	// LayoutSplit runs each component in its own Deployment.
-	LayoutSplit Layout = "Split"
-	// LayoutCompact runs every component in one pod.
-	LayoutCompact Layout = "Compact"
-)
 
 // HighAvailability is the failure a control plane survives.
 type HighAvailability struct {

@@ -164,10 +164,10 @@ func TestAnAbsentKubernetesVersionKeepsTheInfoSeries(t *testing.T) {
 	upgrading := controlPlane("stepping", 11)
 	upgrading.Status.Kubernetes = &lodiav1alpha1.KubernetesStatus{Upgrade: &lodiav1alpha1.UpgradeStatus{Step: lodiav1alpha1.UpgradeStepAPIServer, StartedAt: *ago(time.Minute)}}
 	want := `
-# HELP lodia_controlplane_info 1 for every ControlPlane: its UID, status.kubernetes.version, empty while absent, spec.layout, and the members of spec.datastore and spec.endpoint that are set.
+# HELP lodia_controlplane_info 1 for every ControlPlane: its UID, status.kubernetes.version, empty while absent, and the members of spec.datastore and spec.endpoint that are set.
 # TYPE lodia_controlplane_info gauge
-lodia_controlplane_info{controlplane="stepping",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="",layout="Split",namespace="tenants",uid="00000000-0000-0000-0000-000000000011"} 1
-lodia_controlplane_info{controlplane="young",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="",layout="Split",namespace="tenants",uid="00000000-0000-0000-0000-000000000010"} 1
+lodia_controlplane_info{controlplane="stepping",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="",namespace="tenants",uid="00000000-0000-0000-0000-000000000011"} 1
+lodia_controlplane_info{controlplane="young",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="",namespace="tenants",uid="00000000-0000-0000-0000-000000000010"} 1
 `
 	if err := testutil.CollectAndCompare(collector(without, upgrading), strings.NewReader(want), "lodia_controlplane_info"); err != nil {
 		t.Error(err)

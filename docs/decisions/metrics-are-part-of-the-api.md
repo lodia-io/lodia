@@ -39,7 +39,7 @@ A metric is renamed only under a new name, and in `v1alpha1` the old one stays f
 
 | metric | labels besides `namespace` and `controlplane` | value | served |
 |---|---|---|---|
-| `lodia_controlplane_info` | `uid`, `kubernetes_version`, `layout`, `datastore` (`dedicated`, `shared`), `endpoint_mode` (`gateway`, `loadBalancer`, `nodePort`) | 1: `metadata.uid`, `status.kubernetes.version`, empty while it is absent, `spec.layout`, and the member of `spec.datastore` and of `spec.endpoint` that is set | yes |
+| `lodia_controlplane_info` | `uid`, `kubernetes_version`, `datastore` (`dedicated`, `shared`), `endpoint_mode` (`gateway`, `loadBalancer`, `nodePort`) | 1: `metadata.uid`, `status.kubernetes.version`, empty while it is absent, and the member of `spec.datastore` and of `spec.endpoint` that is set | yes |
 | `lodia_controlplane_condition` | `type`, `status` | 1 or 0, one-hot: each entry of `status.conditions` | yes |
 | `lodia_controlplane_condition_reason` | `type`, `reason` | 1: each entry's reason | yes |
 | `lodia_controlplane_condition_last_transition_timestamp_seconds` | `type` | each entry's `lastTransitionTime` | yes |
