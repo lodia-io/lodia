@@ -32,6 +32,7 @@ type world struct {
 	notReady            string
 	oldestKubelet       string
 	nodesAbsent         bool
+	nodesTruncated      bool
 	held                bool
 	generation, condGen int64
 	cond                *metav1.Condition
@@ -103,7 +104,7 @@ func (w world) controlPlane() *lodiav1alpha1.ControlPlane {
 		cp.Status.Conditions = append(cp.Status.Conditions, metav1.Condition{Type: lodiav1alpha1.ConditionControllerManagerHeld, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonNodesSilent})
 	}
 	if !w.nodesAbsent {
-		cp.Status.Nodes = &lodiav1alpha1.NodesStatus{OldestKubelet: w.oldestKubelet}
+		cp.Status.Nodes = &lodiav1alpha1.NodesStatus{OldestKubelet: w.oldestKubelet, Truncated: w.nodesTruncated}
 	}
 	return cp
 }
@@ -283,6 +284,10 @@ func TestDecide(t *testing.T) {
 			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonUpgrading, step: lodiav1alpha1.UpgradeStepBackup, since: startedNow, backup: name137, version: "v1.36.6"}},
 		{"no report of nodes waits for the first list", world{spec: "v1.37.1", target: "v1.36.6", reports: at("v1.36.6"), nodesAbsent: true},
 			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonWaitingForNodes, noUpgrade: true, message: "the nodes are not listed yet", version: "v1.36.6"}},
+		{"a truncated list of nodes waits, whatever else holds", world{spec: "v1.37.1", target: "v1.36.6", reports: at("v1.36.6"), nodesTruncated: true, held: true},
+			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonWaitingForNodes, noUpgrade: true, message: "the nodes could not all be counted", version: "v1.36.6"}},
+		{"the same tenant goes on once its list is not truncated", world{spec: "v1.37.1", target: "v1.36.6", reports: at("v1.36.6"), nodesTruncated: false},
+			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonUpgrading, step: lodiav1alpha1.UpgradeStepBackup, since: startedNow, backup: name137, version: "v1.36.6"}},
 		{"a tenant listed with no nodes passes", world{spec: "v1.37.1", target: "v1.36.6", reports: at("v1.36.6")},
 			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonUpgrading, step: lodiav1alpha1.UpgradeStepBackup, since: startedNow, backup: name137, version: "v1.36.6"}},
 		{"a hold is the fourth", world{spec: "v1.37.1", target: "v1.36.6", reports: at("v1.36.6"), held: true},

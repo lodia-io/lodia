@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -328,7 +329,7 @@ func TestRow4DisabledTakesNothingAtOrAboveTheFraction(t *testing.T) {
 	expectNodes(t, h.cp, nodesOf(3, 3, 0, "v1.35.0"))
 }
 
-func TestRow5WithoutAccessAHoldRenews(t *testing.T) {
+func TestRow7WithoutAccessAHoldRenews(t *testing.T) {
 	h := holding(t, "a", "b", "c")
 	acquired := h.lease().Spec.AcquireTime
 	setAccessAt(t, h.cp, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding, get(t, h.cp).Generation)
@@ -341,7 +342,7 @@ func TestRow5WithoutAccessAHoldRenews(t *testing.T) {
 	}
 }
 
-func TestRow6WithoutAccessNotHeldWaits(t *testing.T) {
+func TestRow8WithoutAccessNotHeldWaits(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
 	h.at(0)
 	setAccessAt(t, h.cp, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding, get(t, h.cp).Generation)
@@ -352,7 +353,7 @@ func TestRow6WithoutAccessNotHeldWaits(t *testing.T) {
 	}
 }
 
-func TestRow7AFailedLeaseListRenewsAHold(t *testing.T) {
+func TestRow9AFailedLeaseListRenewsAHold(t *testing.T) {
 	h := holding(t, "a", "b", "c")
 	h.fail(leaseListPath, http.MethodGet, http.StatusInternalServerError, metav1.StatusReasonInternalError)
 	h.at(25)
@@ -361,7 +362,7 @@ func TestRow7AFailedLeaseListRenewsAHold(t *testing.T) {
 	h.renewedAt(25)
 }
 
-func TestRow8AFailedLeaseListWithoutAHoldReportsNotHeld(t *testing.T) {
+func TestRow10AFailedLeaseListWithoutAHoldReportsNotHeld(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
 	renew(t, lodiav1alpha1.ControllerManagerLease, "another_1", time.Now())
 	h.fail(leaseListPath, http.MethodGet, http.StatusInternalServerError, metav1.StatusReasonInternalError)
@@ -372,7 +373,7 @@ func TestRow8AFailedLeaseListWithoutAHoldReportsNotHeld(t *testing.T) {
 	h.expectUntouched(before)
 }
 
-func TestRow9WithNoNodeListAHoldRenews(t *testing.T) {
+func TestRow11WithNoNodeListAHoldRenews(t *testing.T) {
 	h := holding(t, "a", "b", "c")
 	h.r = nodesReconciler(h.now)
 	h.fail(nodeListPath, http.MethodGet, http.StatusInternalServerError, metav1.StatusReasonInternalError)
@@ -382,7 +383,7 @@ func TestRow9WithNoNodeListAHoldRenews(t *testing.T) {
 	h.renewedAt(25)
 }
 
-func TestRow10WithNoNodeListAndAnothersLeaseNotHeld(t *testing.T) {
+func TestRow12WithNoNodeListAndAnothersLeaseNotHeld(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
 	renew(t, lodiav1alpha1.ControllerManagerLease, "another_1", time.Now())
 	h.fail(nodeListPath, http.MethodGet, http.StatusInternalServerError, metav1.StatusReasonInternalError)
@@ -393,7 +394,7 @@ func TestRow10WithNoNodeListAndAnothersLeaseNotHeld(t *testing.T) {
 	h.expectUntouched(before)
 }
 
-func TestRow11AtOrAboveAHoldRenewsAndKeepsAcquireTime(t *testing.T) {
+func TestRow13AtOrAboveAHoldRenewsAndKeepsAcquireTime(t *testing.T) {
 	h := holding(t, "a", "b", "c")
 	acquired := h.lease().Spec.AcquireTime
 	h.at(25)
@@ -405,7 +406,7 @@ func TestRow11AtOrAboveAHoldRenewsAndKeepsAcquireTime(t *testing.T) {
 	}
 }
 
-func TestRow12TakesAFreeLeaseOrAnExpiredOneOrAPodsOwn(t *testing.T) {
+func TestRow14TakesAFreeLeaseOrAnExpiredOneOrAPodsOwn(t *testing.T) {
 	t.Run("no Lease", func(t *testing.T) {
 		h := sampling(t, "a", "b", "c")
 		h.at(0)
@@ -469,7 +470,7 @@ func TestATakeWritesItsOwnAcquireTimeOverTheLeaders(t *testing.T) {
 	}
 }
 
-func TestRow13AnotherHolderIsNamedAndLeftAlone(t *testing.T) {
+func TestRow15AnotherHolderIsNamedAndLeftAlone(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
 	h.at(0)
 	renew(t, lodiav1alpha1.ControllerManagerLease, "a-watchdog_1", time.Now())
@@ -480,7 +481,7 @@ func TestRow13AnotherHolderIsNamedAndLeftAlone(t *testing.T) {
 	h.expectUntouched(before)
 }
 
-func TestRow14BelowAHoldRenewsUntilReleaseAfter(t *testing.T) {
+func TestRow16BelowAHoldRenewsUntilReleaseAfter(t *testing.T) {
 	h := holding(t, "a", "b", "c")
 	h.back(25, 55)
 	h.expectSilent(silent(0, 3) + ", below 60%" + holdsUntil)
@@ -491,7 +492,7 @@ func TestRow14BelowAHoldRenewsUntilReleaseAfter(t *testing.T) {
 	}
 }
 
-func TestRow15BelowForReleaseAfterReleasesLikeClientGo(t *testing.T) {
+func TestRow17BelowForReleaseAfterReleasesLikeClientGo(t *testing.T) {
 	h := holding(t, "a", "b", "c")
 	transitions := ptr.Deref(h.lease().Spec.LeaseTransitions, 0)
 	h.back(25, 145)
@@ -505,7 +506,7 @@ func TestRow15BelowForReleaseAfterReleasesLikeClientGo(t *testing.T) {
 	}
 }
 
-func TestRow16BelowWithoutAHoldWritesNothing(t *testing.T) {
+func TestRow18BelowWithoutAHoldWritesNothing(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
 	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", time.Now())
 	before := h.lease()
@@ -661,7 +662,7 @@ func TestAKCMWriteBetweenReadAndWriteRetriesAndWins(t *testing.T) {
 	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", time.Now())
 	var puts atomic.Int32
 	h.inject(func(w http.ResponseWriter, req *http.Request) bool {
-		if req.Method == http.MethodPut && req.URL.Path == managerLease && puts.Add(1) == 1 {
+		if req.Method == http.MethodPatch && req.URL.Path == managerLease && puts.Add(1) == 1 {
 			renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", time.Now())
 		}
 		return false
@@ -683,7 +684,7 @@ func TestAConflictWhoseReReadFindsAHolderOutsideThePodsWritesNothing(t *testing.
 	renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", time.Now())
 	var puts atomic.Int32
 	h.inject(func(w http.ResponseWriter, req *http.Request) bool {
-		if req.Method == http.MethodPut && req.URL.Path == managerLease && puts.Add(1) == 1 {
+		if req.Method == http.MethodPatch && req.URL.Path == managerLease && puts.Add(1) == 1 {
 			renew(t, lodiav1alpha1.ControllerManagerLease, "a-watchdog_1", time.Now())
 		}
 		return false
@@ -708,7 +709,7 @@ func TestAConflictWhoseReReadFailsAppliesNothingAndRestartsTheClock(t *testing.T
 			return false
 		}
 		switch {
-		case req.Method == http.MethodPut && puts.Add(1) == 1:
+		case req.Method == http.MethodPatch && puts.Add(1) == 1:
 			refuse(w, http.StatusConflict, metav1.StatusReasonConflict)
 			return true
 		case req.Method == http.MethodGet && gets.Add(1) == 2:
@@ -731,9 +732,77 @@ func TestAConflictThatRunsOutAppliesNothing(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
 	h.at(0)
 	renew(t, lodiav1alpha1.ControllerManagerLease, "", time.Now())
-	h.fail(managerLease, http.MethodPut, http.StatusConflict, metav1.StatusReasonConflict)
+	h.fail(managerLease, http.MethodPatch, http.StatusConflict, metav1.StatusReasonConflict)
 	h.r.Client = noControlPlaneWrite(t, k8s)
 	h.at(20)
+}
+
+func TestAWriteThatConflictsEveryTryIsRepeatedByTheNextPass(t *testing.T) {
+	h := sampling(t, "a", "b", "c")
+	h.at(0)
+	renew(t, lodiav1alpha1.ControllerManagerLease, "", time.Now())
+	var patches, reads, lists, others atomic.Int32
+	h.inject(func(w http.ResponseWriter, req *http.Request) bool {
+		switch {
+		case req.Method == http.MethodPatch && req.URL.Path == managerLease:
+			patches.Add(1)
+			refuse(w, http.StatusConflict, metav1.StatusReasonConflict)
+			return true
+		case req.Method == http.MethodGet && req.URL.Path == managerLease:
+			reads.Add(1)
+		case req.URL.Path == leaseListPath:
+			lists.Add(1)
+		default:
+			others.Add(1)
+		}
+		return false
+	})
+	h.at(20)
+	if patches.Load() != 5 || reads.Load() != 5 || lists.Load() != 1 || others.Load() != 0 {
+		t.Errorf("the pass sent %d patches, %d reads of the Lease, %d lists of the node Leases and %d other requests, want 5, 5, 1 and 0: the read, the patch and, on each conflict, the read and the patch again, up to retry.DefaultRetry's 5 tries",
+			patches.Load(), reads.Load(), lists.Load(), others.Load())
+	}
+	if holder := h.holder(); holder != "" {
+		t.Fatalf("a write that conflicted every try left holder %q", holder)
+	}
+	h.inject(nil)
+	h.at(25)
+	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+		t.Fatalf("the next pass left holder %q, want its write repeated", holder)
+	}
+	h.expectSilent(taken(3, 3, "60"))
+}
+
+func TestAWriteKeepsWhatTheHoldDoesNotWriteOfTheLease(t *testing.T) {
+	h := sampling(t, "a", "b", "c")
+	h.at(0)
+	renew(t, lodiav1alpha1.ControllerManagerLease, "", time.Now())
+	lease := h.lease()
+	lease.Labels, lease.Annotations = map[string]string{"owner": "someone"}, map[string]string{"note": "kept"}
+	if err := tenant.Update(t.Context(), lease); err != nil {
+		t.Fatal(err)
+	}
+	stored := h.lease()
+	if len(stored.Labels) == 0 || len(stored.Annotations) == 0 {
+		t.Fatalf("the API server kept no label or annotation of the Lease: %+v", stored.ObjectMeta)
+	}
+	kept := func(step string) {
+		t.Helper()
+		got := h.lease()
+		if !maps.Equal(got.Labels, stored.Labels) || !maps.Equal(got.Annotations, stored.Annotations) {
+			t.Errorf("after %s the Lease has labels %v and annotations %v, want %v and %v", step, got.Labels, got.Annotations, stored.Labels, stored.Annotations)
+		}
+	}
+	h.at(20)
+	if h.holder() != lodiav1alpha1.HoldHolderIdentity {
+		t.Fatalf("the take left holder %q", h.holder())
+	}
+	kept("the take")
+	h.back(25, 130, 145)
+	if h.holder() != "" {
+		t.Fatalf("the release left holder %q", h.holder())
+	}
+	kept("the release")
 }
 
 func TestNeverFightsAHolderOutsideThePodsWhileItRenews(t *testing.T) {
@@ -1115,46 +1184,89 @@ func TestAHoldOfNoCountedNodeAfterTheOwnerDeletesThemEndsByTheRelease(t *testing
 	}
 }
 
-func TestALongHolderIsCutInTheMessageAndTheStatusIsApplied(t *testing.T) {
+func TestAHolderAtItsBoundIsQuotedWholeAndOneBytePastItIsAFailedRead(t *testing.T) {
 	for name, letter := range map[string]string{"of ASCII": "h", "of two-byte characters": "я"} {
-		t.Run(name, func(t *testing.T) {
+		holder := strings.Repeat(letter, 512/len(letter))
+		t.Run(name+" at the bound", func(t *testing.T) {
 			h := sampling(t, "a", "b", "c")
 			h.at(0)
-			renew(t, lodiav1alpha1.ControllerManagerLease, strings.Repeat(letter, 40000), time.Now())
+			renew(t, lodiav1alpha1.ControllerManagerLease, holder, time.Now())
 			before := h.lease()
 			h.at(20)
-			h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonHoldBlocked, silent(3, 3)+atOrAbove+"60%, but "+strings.Repeat(letter, 1024)+" holds Lease kube-system/kube-controller-manager")
+			h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonHoldBlocked, silent(3, 3)+atOrAbove+"60%, but "+holder+" holds Lease kube-system/kube-controller-manager")
 			h.expectUntouched(before)
 			expectNodes(t, h.cp, nodesOf(3, 3, 0, "v1.35.0"))
 			h.r.Client = noControlPlaneWrite(t, k8s)
 			h.at(25)
 		})
+		t.Run(name+" one byte past it", func(t *testing.T) {
+			h := sampling(t, "a", "b", "c")
+			h.at(0)
+			renew(t, lodiav1alpha1.ControllerManagerLease, holder+"h", time.Now())
+			before := h.lease()
+			h.at(20)
+			h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonNotHeld, silent(0, 3))
+			h.expectUntouched(before)
+		})
 	}
 }
 
 func TestALongRefusalIsCutInTheMessageAndTheStatusIsApplied(t *testing.T) {
-	deny := func(w http.ResponseWriter, req *http.Request) bool {
-		if req.URL.Path != managerLease || req.Method != http.MethodPut {
-			return false
+	denyWith := func(answer func(http.ResponseWriter)) func(http.ResponseWriter, *http.Request) bool {
+		return func(w http.ResponseWriter, req *http.Request) bool {
+			if req.URL.Path != managerLease || req.Method != http.MethodPatch {
+				return false
+			}
+			answer(w)
+			return true
 		}
-		refuseSaying(w, http.StatusForbidden, metav1.StatusReasonForbidden, strings.Repeat("d", 40000))
-		return true
 	}
-	denial := strings.Repeat("d", 1024)
+	longStatus := denyWith(func(w http.ResponseWriter) {
+		refuseSaying(w, http.StatusForbidden, metav1.StatusReasonForbidden, strings.Repeat("d", 40000))
+	})
+	const tooLong = "the server's message is longer than 1024 bytes"
 	t.Run("of a renewal", func(t *testing.T) {
 		h := holding(t, "a", "b", "c")
-		h.inject(deny)
+		h.inject(longStatus)
 		h.at(25)
-		h.expectSilent("the API server refused the renewal of Lease kube-system/kube-controller-manager: " + denial)
+		h.expectSilent("the API server refused the renewal of Lease kube-system/kube-controller-manager: " + tooLong)
 		h.expectHealth(3, 3)
 	})
 	t.Run("of a take", func(t *testing.T) {
 		h := sampling(t, "a", "b", "c")
 		h.at(0)
 		renew(t, lodiav1alpha1.ControllerManagerLease, "", time.Now())
-		h.inject(deny)
+		h.inject(longStatus)
 		h.at(20)
-		h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonHoldBlocked, "the API server refused the take of Lease kube-system/kube-controller-manager: "+denial)
+		h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonHoldBlocked, "the API server refused the take of Lease kube-system/kube-controller-manager: "+tooLong)
+	})
+	t.Run("whose Status says more than 1,024 bytes", func(t *testing.T) {
+		h := holding(t, "a", "b", "c")
+		h.inject(denyWith(func(w http.ResponseWriter) {
+			refuseSaying(w, http.StatusForbidden, metav1.StatusReasonForbidden, strings.Repeat("d", 1025))
+		}))
+		h.at(25)
+		h.expectSilent("the API server refused the renewal of Lease kube-system/kube-controller-manager: " + tooLong)
+	})
+	t.Run("whose Status says 1,024 bytes", func(t *testing.T) {
+		denial := strings.Repeat("d", 1024)
+		h := holding(t, "a", "b", "c")
+		h.inject(denyWith(func(w http.ResponseWriter) {
+			refuseSaying(w, http.StatusForbidden, metav1.StatusReasonForbidden, denial)
+		}))
+		h.at(25)
+		h.expectSilent("the API server refused the renewal of Lease kube-system/kube-controller-manager: " + denial)
+	})
+	t.Run("that is no Status", func(t *testing.T) {
+		h := holding(t, "a", "b", "c")
+		h.inject(denyWith(func(w http.ResponseWriter) {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(strings.Repeat("d", 40000)))
+		}))
+		h.at(25)
+		h.expectSilent("the API server refused the renewal of Lease kube-system/kube-controller-manager: the answer is no Status Health can read")
+		h.expectHealth(3, 3)
 	})
 }
 
@@ -1163,7 +1275,7 @@ func TestARefusedTakeIsHoldBlockedAndNeverNodesSilent(t *testing.T) {
 		h := sampling(t, "a", "b", "c")
 		h.at(0)
 		renew(t, lodiav1alpha1.ControllerManagerLease, "", time.Now())
-		h.fail(managerLease, http.MethodPut, http.StatusForbidden, metav1.StatusReasonForbidden)
+		h.fail(managerLease, http.MethodPatch, http.StatusForbidden, metav1.StatusReasonForbidden)
 		h.at(20)
 		h.expectCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonHoldBlocked, "the API server refused the take of Lease kube-system/kube-controller-manager: injected: Forbidden")
 		h.expectNoHealth()
@@ -1186,7 +1298,7 @@ func TestARefusedTakeIsHoldBlockedAndNeverNodesSilent(t *testing.T) {
 
 func TestARefusedRenewalKeepsNodesSilentWithTheLeaseStillLodias(t *testing.T) {
 	h := holding(t, "a", "b", "c")
-	h.fail(managerLease, http.MethodPut, http.StatusForbidden, metav1.StatusReasonForbidden)
+	h.fail(managerLease, http.MethodPatch, http.StatusForbidden, metav1.StatusReasonForbidden)
 	before := h.lease()
 	h.at(25)
 	h.expectSilent("the API server refused the renewal of Lease kube-system/kube-controller-manager: injected: Forbidden")
@@ -1197,7 +1309,7 @@ func TestARefusedRenewalKeepsNodesSilentWithTheLeaseStillLodias(t *testing.T) {
 func TestARefusedReleaseKeepsNodesSilentAndTriesAgain(t *testing.T) {
 	h := holding(t, "a", "b", "c")
 	h.back(25, 130)
-	h.fail(managerLease, http.MethodPut, http.StatusForbidden, metav1.StatusReasonForbidden)
+	h.fail(managerLease, http.MethodPatch, http.StatusForbidden, metav1.StatusReasonForbidden)
 	h.back(145)
 	h.expectSilent("the API server refused the release of Lease kube-system/kube-controller-manager: injected: Forbidden")
 	h.expectHealth(0, 3)
@@ -1216,24 +1328,40 @@ func TestARefusedReleaseKeepsNodesSilentAndTriesAgain(t *testing.T) {
 func TestAWriteTimingOutOrFailingAppliesNothing(t *testing.T) {
 	for name, method := range map[string]func(http.ResponseWriter, *http.Request) bool{
 		"timing out": func(w http.ResponseWriter, req *http.Request) bool {
-			if req.URL.Path != managerLease || req.Method != http.MethodPut {
+			if req.URL.Path != managerLease || req.Method != http.MethodPatch {
 				return false
 			}
 			hang(w, req)
 			return true
 		},
 		"a 500": func(w http.ResponseWriter, req *http.Request) bool {
-			if req.URL.Path != managerLease || req.Method != http.MethodPut {
+			if req.URL.Path != managerLease || req.Method != http.MethodPatch {
 				return false
 			}
 			refuse(w, http.StatusInternalServerError, metav1.StatusReasonInternalError)
 			return true
 		},
 		"a 404": func(w http.ResponseWriter, req *http.Request) bool {
-			if req.URL.Path != managerLease || req.Method != http.MethodPut {
+			if req.URL.Path != managerLease || req.Method != http.MethodPatch {
 				return false
 			}
 			refuse(w, http.StatusNotFound, metav1.StatusReasonNotFound)
+			return true
+		},
+		"a 429 that asks to try again": func(w http.ResponseWriter, req *http.Request) bool {
+			if req.URL.Path != managerLease || req.Method != http.MethodPatch {
+				return false
+			}
+			w.Header().Set("Retry-After", "1")
+			refuse(w, http.StatusTooManyRequests, metav1.StatusReasonTooManyRequests)
+			return true
+		},
+		"a 503 that asks to try again": func(w http.ResponseWriter, req *http.Request) bool {
+			if req.URL.Path != managerLease || req.Method != http.MethodPatch {
+				return false
+			}
+			w.Header().Set("Retry-After", "1")
+			refuse(w, http.StatusServiceUnavailable, metav1.StatusReasonServiceUnavailable)
 			return true
 		},
 	} {

@@ -63,7 +63,7 @@ func taken(n, of int, percent string) string {
 func nodesReconciler(now clock.PassiveClock) *health.NodesReconciler {
 	return &health.NodesReconciler{
 		Client: k8s, Reader: k8s, Period: 5 * time.Second, Timeout: 2 * time.Second,
-		SilentAfter: 20 * time.Second, HoldFraction: 600, ReleaseAfter: 2 * time.Minute, Clock: now,
+		SilentAfter: 20 * time.Second, HoldFraction: 600, ReleaseAfter: 2 * time.Minute, MaxNodes: 5000, Clock: now,
 	}
 }
 
@@ -1014,7 +1014,7 @@ func TestATenantWhoseAPIServerHangsDoesNotStopAnothersSamples(t *testing.T) {
 		return (&health.NodesReconciler{
 			Client: mgr.GetClient(), Reader: kubeconfigOverride{Reader: mgr.GetAPIReader(), key: client.ObjectKey{Namespace: hung.Namespace, Name: lodiav1alpha1.LodiaKubeconfigSecret.Name(hung.Name)}, kubeconfig: kubeconfig},
 			Period: 100 * time.Millisecond, Timeout: timeout,
-			SilentAfter: time.Second, HoldFraction: 600, ReleaseAfter: time.Minute, Clock: clock.RealClock{},
+			SilentAfter: time.Second, HoldFraction: 600, ReleaseAfter: time.Minute, MaxNodes: 5000, Clock: clock.RealClock{},
 		}).SetupWithManager(mgr, 2)
 	})
 	testenv.Eventually(t, func() error {
@@ -1054,7 +1054,7 @@ func TestAPassDoesNotDependOnThePublicEndpoint(t *testing.T) {
 		}
 		return (&health.NodesReconciler{
 			Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Period: time.Hour, Timeout: 10 * time.Second,
-			SilentAfter: 20 * time.Second, HoldFraction: 600, Clock: clock.RealClock{},
+			SilentAfter: 20 * time.Second, HoldFraction: 600, MaxNodes: 5000, Clock: clock.RealClock{},
 		}).SetupWithManager(mgr, 1)
 	})
 	testenv.Eventually(t, func() error {

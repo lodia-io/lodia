@@ -232,7 +232,12 @@ func golden() []client.Object {
 	legacy := controlPlane("legacy", 15)
 	legacy.Status.Kubernetes = &lodiav1alpha1.KubernetesStatus{Version: "v1.34.9"}
 
-	tenants := []client.Object{fresh, edge, restored, failed, queued, upgrading, paused, starting, rolling, waiting, overdue, shared, deleting, aging, legacy}
+	crowded := controlPlane("crowded", 16)
+	steady(crowded, "v1.37.1")
+	crowded.Status.Conditions = conditions(crowded, map[string]state{lodiav1alpha1.ConditionControllerManagerHeld: {metav1.ConditionFalse, lodiav1alpha1.ReasonTooManyNodes}})
+	crowded.Status.Nodes = &lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: 5000, Ready: 4990}, Truncated: true}
+
+	tenants := []client.Object{fresh, edge, restored, failed, queued, upgrading, paused, starting, rolling, waiting, overdue, shared, deleting, aging, legacy, crowded}
 	return append(tenants, goldenEtcds(tenants)...)
 }
 

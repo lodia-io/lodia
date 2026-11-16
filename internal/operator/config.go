@@ -50,6 +50,7 @@ type HealthConfig struct {
 	SilentAfter         metav1.Duration `json:"silentAfter"`
 	HoldFraction        Thousandths     `json:"holdFraction"`
 	ReleaseAfter        metav1.Duration `json:"releaseAfter"`
+	MaxNodes            int             `json:"maxNodes"`
 }
 
 // Thousandths is a fraction held as a whole number of thousandths, rounded
@@ -76,6 +77,7 @@ func DefaultConfig() Config {
 			SilentAfter:         metav1.Duration{Duration: 20 * time.Second},
 			HoldFraction:        600,
 			ReleaseAfter:        metav1.Duration{Duration: 2 * time.Minute},
+			MaxNodes:            5000,
 		},
 		Fleet: FleetConfig{MaxConcurrentRollouts: 5},
 	}
@@ -112,6 +114,8 @@ func (h HealthConfig) validate() error {
 		return fmt.Errorf("health.releaseAfter is %s, want a positive duration", h.ReleaseAfter.Duration)
 	case h.FailuresBeforeFalse <= 0:
 		return fmt.Errorf("health.failuresBeforeFalse is %d, want a positive number", h.FailuresBeforeFalse)
+	case h.MaxNodes <= 0:
+		return fmt.Errorf("health.maxNodes is %d, want a positive number: with none Lodia counts no tenant's nodes", h.MaxNodes)
 	case h.HoldFraction <= 500 || h.HoldFraction > 1000:
 		return fmt.Errorf("health.holdFraction is %d thousandths, want more than 500 and at most 1000: one dead machine of two must not start a hold", h.HoldFraction)
 	case max(period, silentAfter) > lodiav1alpha1.NodeMonitorGracePeriod:

@@ -159,10 +159,11 @@ const (
 
 // ControllerManagerHeld.
 const (
-	ReasonNodesSilent = "NodesSilent"
-	ReasonNotHeld     = "NotHeld"
-	ReasonHoldBlocked = "HoldBlocked"
-	ReasonDisabled    = "Disabled"
+	ReasonNodesSilent  = "NodesSilent"
+	ReasonNotHeld      = "NotHeld"
+	ReasonHoldBlocked  = "HoldBlocked"
+	ReasonDisabled     = "Disabled"
+	ReasonTooManyNodes = "TooManyNodes"
 )
 
 // Progressing and Ready.
@@ -220,6 +221,7 @@ var WarningReasons = map[string]WarningGroup{
 	ReasonCAPredatesControlPlane:          WarningRefusal,
 	ReasonRouteNotAccepted:                WarningRefusal,
 	ReasonHostnameConflict:                WarningRefusal,
+	ReasonTooManyNodes:                    WarningRefusal,
 
 	ReasonFailed:                   WarningFailure,
 	ReasonMaintenanceFailed:        WarningFailure,

@@ -539,7 +539,7 @@ func TestTheMetricsServeTheCountsOfTheSourcesHealthNodes(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	nodes := &health.NodesReconciler{Client: k8s, Reader: k8s, Timeout: 5 * time.Second, Clock: clock.RealClock{}}
+	nodes := &health.NodesReconciler{Client: k8s, Reader: k8s, Timeout: 5 * time.Second, MaxNodes: 5000, Clock: clock.RealClock{}}
 	if _, err := nodes.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 		t.Fatal(err)
 	}
