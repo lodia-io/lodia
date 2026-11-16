@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/distribution/reference"
+	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	"github.com/prometheus/common/expfmt"
 	"github.com/prometheus/common/model"
 	appsv1 "k8s.io/api/apps/v1"
@@ -74,7 +75,7 @@ const (
 	konnectivityMetricsPort = 8134
 	dialDuration            = "konnectivity_network_proxy_server_dial_duration_seconds"
 	apiLoop                 = "apiloop"
-	apiLoopRate             = 10
+	readyWithin             = 90 * time.Second
 )
 
 var booted = regexp.MustCompile("Reached target .*Multi-User System.*|detected cgroup v1")
@@ -109,16 +110,17 @@ func TestPhase1Gate(t *testing.T) {
 			loop = image
 			return ctx
 		}).
-		Assess("Ready in under 3 minutes from the ControlPlane's creation", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("Ready within "+readyWithin.String()+" of the ControlPlane's creation, each stage on the way logged", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			cp := &lodiav1alpha1.ControlPlane{}
 			until(ctx, t, 3*time.Minute, "Ready=True", func(ctx context.Context) error {
 				return controlPlaneReady(ctx, k8s, key, cp)
 			})
 			ready := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionReady)
 			took := ready.LastTransitionTime.Sub(cp.CreationTimestamp.Time)
+			logStages(ctx, t, k8s, cp)
 			t.Logf("the ControlPlane turned Ready %s after its creation", took)
-			if took >= 3*time.Minute {
-				t.Errorf("Ready took %s; the gate wants under 3 minutes", took)
+			if took >= readyWithin {
+				t.Errorf("Ready took %s; the gate wants under %s", took, readyWithin)
 			}
 			version, err := buildVersion()
 			if err != nil {
@@ -180,12 +182,10 @@ func TestPhase1Gate(t *testing.T) {
 				return coreDNSAvailable(ctx, access.client)
 			})
 			loops := startLoops(ctx, t, cfg, k8s, access, key, node, loop)
-			before, _ := readLoops(ctx, t, "both loops answer on new and reused connections", loops)
-			rollAPIServer(ctx, t, k8s, key)
-			after, logs := readLoops(ctx, t, "both loops' counts are read after the rollout", loops)
-			for i, l := range loops {
-				checkLoop(t, l.where, before[i], after[i], logs[i])
-			}
+			before := readLoops(ctx, t, "both loops answer on new and reused connections", loops)
+			rolled := rollAPIServer(ctx, t, k8s, key)
+			after, logs := readLoopsPast(ctx, t, rolled.Add(apiLoopTimeout+time.Second), loops)
+			checkLoops(t, loops, before, after, logs)
 			stopLoops(ctx, t, loops)
 			return ctx
 		}).
@@ -238,6 +238,44 @@ func TestPhase1Gate(t *testing.T) {
 		}).
 		Feature()
 	testenv.Test(t, f)
+}
+
+func logStages(ctx context.Context, t *testing.T, k8s client.Client, cp *lodiav1alpha1.ControlPlane) {
+	t.Helper()
+	stages := []stage{{cp.CreationTimestamp.Time, "ControlPlane " + cp.Name + " created"}}
+	pods := &corev1.PodList{}
+	if err := k8s.List(ctx, pods, client.InNamespace(cp.Namespace), client.MatchingLabels{lodiav1alpha1.ControlPlaneLabel: cp.Name}); err != nil {
+		t.Fatal(err)
+	}
+	for _, pod := range pods.Items {
+		stages = append(stages, stage{pod.CreationTimestamp.Time, "pod " + pod.Name + " created"})
+		for _, c := range pod.Status.ContainerStatuses {
+			if c.Name == "etcd" && c.State.Running != nil {
+				stages = append(stages, stage{c.State.Running.StartedAt.Time, "pod " + pod.Name + ": container etcd started"})
+			}
+		}
+		for _, c := range pod.Status.Conditions {
+			if c.Type == corev1.PodReady && c.Status == corev1.ConditionTrue {
+				stages = append(stages, stage{c.LastTransitionTime.Time, "pod " + pod.Name + " Ready"})
+			}
+		}
+	}
+	etcd := &druidv1alpha1.Etcd{}
+	if err := k8s.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.EtcdName(cp.Name)}, etcd); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range etcd.Status.Conditions {
+		if c.Type == druidv1alpha1.ConditionTypeReady && c.Status == druidv1alpha1.ConditionTrue {
+			stages = append(stages, stage{c.LastTransitionTime.Time, "Etcd " + etcd.Name + " Ready, as etcd-druid's condition"})
+		}
+	}
+	for _, c := range cp.Status.Conditions {
+		stages = append(stages, stage{c.LastTransitionTime.Time, fmt.Sprintf("%s=%s %s", c.Type, c.Status, c.Reason)})
+	}
+	t.Logf("the stages of ControlPlane %s/%s from its creation at %s, each at the time its object records:", cp.Namespace, cp.Name, cp.CreationTimestamp.UTC().Format(time.RFC3339))
+	for _, line := range timeline(cp.CreationTimestamp.Time, stages) {
+		t.Log(line)
+	}
 }
 
 func throughKonnectivity(ctx context.Context, t *testing.T, cfg *envconf.Config, k8s client.Client, key client.ObjectKey, access *tenantAccess, node string) {
@@ -322,7 +360,7 @@ func throughKonnectivity(ctx context.Context, t *testing.T, cfg *envconf.Config,
 	oneDial("port-forward")
 }
 
-func rollAPIServer(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey) {
+func rollAPIServer(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey) time.Time {
 	t.Helper()
 	cp := &lodiav1alpha1.ControlPlane{}
 	if err := k8s.Get(ctx, key, cp); err != nil {
@@ -348,7 +386,7 @@ func rollAPIServer(ctx context.Context, t *testing.T, k8s client.Client, key cli
 		}
 		return nil
 	})
-	time.Sleep(5 * time.Second)
+	return time.Now()
 }
 
 func createTenant(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey, class string, change ...func(*lodiav1alpha1.ControlPlaneSpec)) {
@@ -907,14 +945,32 @@ func startLoops(ctx context.Context, t *testing.T, cfg *envconf.Config, k8s clie
 	}
 }
 
-func readLoops(ctx context.Context, t *testing.T, what string, loops []apiLoopRun) ([]loopCounts, []string) {
+func readLoops(ctx context.Context, t *testing.T, what string, loops []apiLoopRun) []loopCounts {
+	t.Helper()
+	counts := make([]loopCounts, len(loops))
+	until(ctx, t, 2*time.Minute, what, func(ctx context.Context) error {
+		for i, l := range loops {
+			var err error
+			if counts[i], _, err = readLoop(ctx, l.api, l.pod); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return counts
+}
+
+func readLoopsPast(ctx context.Context, t *testing.T, end time.Time, loops []apiLoopRun) ([]loopCounts, []string) {
 	t.Helper()
 	counts, logs := make([]loopCounts, len(loops)), make([]string, len(loops))
-	until(ctx, t, 2*time.Minute, what, func(ctx context.Context) error {
+	until(ctx, t, 2*time.Minute, "each loop reports counts later than "+end.Format(time.RFC3339Nano), func(ctx context.Context) error {
 		for i, l := range loops {
 			var err error
 			if counts[i], logs[i], err = readLoop(ctx, l.api, l.pod); err != nil {
 				return err
+			}
+			if !counts[i].Time.After(end) {
+				return fmt.Errorf("pod %s/%s last reported its counts at %s, not later than the end at %s", l.pod.Namespace, l.pod.Name, counts[i].Time, end)
 			}
 		}
 		return nil
@@ -940,25 +996,12 @@ func loopPod(namespace, kubeconfig string, image reference.NamedTagged, server s
 				Name:            apiLoop,
 				Image:           image.String(),
 				ImagePullPolicy: corev1.PullNever,
-				Args:            []string{"--kubeconfig=/etc/apiloop/" + lodiav1alpha1.KubeconfigKey, "--server=" + server, "--rate=" + strconv.Itoa(apiLoopRate)},
+				Args:            []string{"--kubeconfig=/etc/apiloop/" + lodiav1alpha1.KubeconfigKey, "--server=" + server, "--rate=" + strconv.Itoa(apiLoopRate), "--timeout=" + apiLoopTimeout.String()},
 				VolumeMounts:    []corev1.VolumeMount{{Name: "kubeconfig", MountPath: "/etc/apiloop", ReadOnly: true}},
 			}},
 			Volumes: []corev1.Volume{{Name: "kubeconfig", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: kubeconfig}}}},
 		},
 	}
-}
-
-type loopTally struct {
-	OK      int64 `json:"ok"`
-	Failed  int64 `json:"failed"`
-	Empty   int64 `json:"empty"`
-	Retried int64 `json:"retried"`
-}
-
-type loopCounts struct {
-	Time   time.Time `json:"time"`
-	Fresh  loopTally `json:"fresh"`
-	Reused loopTally `json:"reused"`
 }
 
 func readLoop(ctx context.Context, c kubernetes.Interface, pod *corev1.Pod) (loopCounts, string, error) {
@@ -980,32 +1023,31 @@ func readLoop(ctx context.Context, c kubernetes.Interface, pod *corev1.Pod) (loo
 	return last, string(raw), nil
 }
 
-func checkLoop(t *testing.T, where string, before, after loopCounts, log string) {
+func checkLoops(t *testing.T, loops []apiLoopRun, before, after []loopCounts, logs []string, tolerated ...string) {
 	t.Helper()
-	seconds := after.Time.Sub(before.Time).Seconds()
-	failed := false
-	for _, mode := range []struct {
-		name          string
-		before, after loopTally
-	}{{"new connections", before.Fresh, after.Fresh}, {"reused connections", before.Reused, after.Reused}} {
-		ok, lost, empty, retried := mode.after.OK-mode.before.OK, mode.after.Failed-mode.before.Failed, mode.after.Empty-mode.before.Empty, mode.after.Retried-mode.before.Retried
-		expected := apiLoopRate * seconds
-		t.Logf("%s on %s, over %.0fs: %d answered of %.0f sent at %d per second, %d failed, %d found the kubernetes EndpointSlice empty, %d followed a Retry-After", where, mode.name, seconds, ok, expected, apiLoopRate, lost, empty, retried)
-		if lost != 0 || empty != 0 || float64(ok) < 0.95*expected {
-			failed = true
-			t.Errorf("%s on %s: %d failed and %d found the EndpointSlice empty; %d answered, want at least 95%% of %.0f", where, mode.name, lost, empty, ok, expected)
-		}
+	reads := make([]loopRead, len(loops))
+	for i, l := range loops {
+		reads[i] = loopRead{where: l.where, before: before[i], after: after[i], log: logs[i]}
 	}
-	if !failed {
+	report, faults := judgeLoops(reads, tolerated)
+	for _, line := range report {
+		t.Log(line)
+	}
+	for _, fault := range faults {
+		t.Error(fault)
+	}
+	if len(faults) == 0 {
 		return
 	}
-	for line := range strings.Lines(log) {
-		fields := strings.Fields(line)
-		if len(fields) < 2 || fields[0] != "failed" && fields[0] != "empty" && fields[0] != "retried" {
-			continue
-		}
-		if at, err := time.Parse(time.RFC3339Nano, fields[1]); err == nil && !at.Before(before.Time) {
-			t.Log(strings.TrimSpace(line))
+	for _, r := range reads {
+		for line := range strings.Lines(r.log) {
+			fields := strings.Fields(line)
+			if len(fields) < 2 || fields[0] != "failed" && fields[0] != "empty" && fields[0] != "retried" {
+				continue
+			}
+			if at, err := time.Parse(time.RFC3339Nano, fields[1]); err == nil && !at.Before(r.before.Time) {
+				t.Log(r.where + ": " + strings.TrimSpace(line))
+			}
 		}
 	}
 }

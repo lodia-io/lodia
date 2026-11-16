@@ -41,6 +41,8 @@ import (
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 )
 
+const policyGrace = 10 * time.Second
+
 func requestKubeconfigs(ctx context.Context, t *testing.T, cfg *envconf.Config, k8s client.Client, key client.ObjectKey, node string) {
 	t.Helper()
 	const name = "requester"
@@ -252,10 +254,13 @@ func requestKubeconfigs(ctx context.Context, t *testing.T, cfg *envconf.Config, 
 	if err := k8s.Get(ctx, client.ObjectKeyFromObject(rendered), binding); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(time.Until(binding.CreationTimestamp.Add(7 * time.Second)))
+	graceEnds := binding.CreationTimestamp.Add(policyGrace)
 	early, _, err := ask(username, "")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !early.CreationTimestamp.Time.Before(graceEnds) {
+		t.Fatalf("KubeconfigRequest %s was created %s after the binding, not within the grace of %s", early.Name, early.CreationTimestamp.Sub(binding.CreationTimestamp.Time), policyGrace)
 	}
 	until(ctx, t, time.Minute, "KubeconfigRequest "+early.Name+", created within the grace, is not answered", func(ctx context.Context) error {
 		if err := requester.Get(ctx, client.ObjectKeyFromObject(early), early); err != nil {
@@ -269,10 +274,19 @@ func requestKubeconfigs(ctx context.Context, t *testing.T, cfg *envconf.Config, 
 	if early.Status.Kubeconfig != nil {
 		t.Error("a request created within the grace holds a kubeconfig")
 	}
-	time.Sleep(time.Until(binding.CreationTimestamp.Add(11 * time.Second)))
-	kr, privateKey, err = ask(username, "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	until(ctx, t, time.Minute, "a KubeconfigRequest is created at or after the end of the grace", func(context.Context) error {
+		if wait := time.Until(graceEnds); wait > 0 {
+			return fmt.Errorf("the grace ends in %s by the test's clock", wait.Round(time.Millisecond))
+		}
+		if kr, privateKey, err = ask(username, ""); err != nil {
+			return err
+		}
+		if kr.CreationTimestamp.Time.Before(graceEnds) {
+			return fmt.Errorf("KubeconfigRequest %s was created %s after the binding", kr.Name, kr.CreationTimestamp.Sub(binding.CreationTimestamp.Time))
+		}
+		return nil
+	})
+	t.Logf("KubeconfigRequests %s and %s were created %s and %s after the binding, whose grace is %s", early.Name, kr.Name,
+		early.CreationTimestamp.Sub(binding.CreationTimestamp.Time), kr.CreationTimestamp.Sub(binding.CreationTimestamp.Time), policyGrace)
 	answered(kr, privateKey)
 }

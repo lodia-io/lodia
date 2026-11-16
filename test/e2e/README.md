@@ -26,7 +26,8 @@ The suite leaves the chart installed.
 - `TestExamplesOnAKindCluster`: the CRDs the chart installed accept every example in [`docs/api/examples`](../../docs/api/examples).
 - `TestAPIServerOnKind`: a `ControlPlane` in `nodePort` mode reports `APIServerReady=True`: a real kube-apiserver, controller manager and scheduler on PKI's certificates and the Datastore's etcd.
 - `TestPhase1Gate`: the per-pull-request part of the [phase 1 gate](../../docs/roadmap.md#phase-1--walking-skeleton).
-  A `ControlPlane` in `nodePort` mode, at the version of kind's default node image, turns `Ready`, and the suite logs the time from its creation, which must be under 3 minutes.
+  A `ControlPlane` in `nodePort` mode, at the version of kind's default node image, turns `Ready` under 90 seconds from its creation.
+  The suite logs each stage on the way, one line each, in the order of the times their objects record: each condition's last transition, each control plane pod's creation and readiness, the start of the `etcd` container, and etcd-druid's `Ready` condition on the `Etcd`.
   Its `status.target.operatorRevision` is that `VERSION` and a digest.
   Then [gate G7](#gate-g7-the-leaders-metrics) reads the operator's metrics and the event of the tenant's `Ready`.
   Anonymous requests reach the health paths and `cluster-info` and nothing else: `/version`, which RBAC grants unauthenticated users ([policy.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/plugin/pkg/auth/authorizer/rbac/bootstrappolicy/policy.go#L383-L388), [binding](https://github.com/kubernetes/kubernetes/blob/v1.37.0/plugin/pkg/auth/authorizer/rbac/bootstrappolicy/policy.go#L723)), answers 401.
@@ -37,8 +38,8 @@ The suite leaves the chart installed.
   Each loop reads the tenant's `kubernetes` EndpointSlice ten times a second on new connections and ten times a second on reused ones, with plain HTTP clients that give up after 5 seconds.
   They follow an answer's `Retry-After` once, as client-go does ([with_retry.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/with_retry.go#L308-L318)), which a draining API server sends ([api-exposure](../../docs/decisions/api-exposure.md)).
   They retry nothing else, since client-go would also retry a GET whose connection broke, which hides a lost request ([request.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/request.go#L1066-L1078)).
-  Each loop prints each failure and, every second, its counts.
-  Between the counts before the change and those once the old pod is gone and 5 seconds more have passed, the suite wants no request failed, no answer with an empty slice, and answers to at least 95% of the requests the rate sends, and it logs how many followed a `Retry-After`.
+  Each loop prints each failure, numbered, and, every second, its counts.
+  Between the counts before the change and the first each loop reports more than 6 seconds after the old pod is gone, past the 5 seconds a request may take, the suite wants no request failed, no answer with an empty slice, and answers to at least 95% of the requests the rate sends, and it logs how many followed a `Retry-After`.
   Disabling `addons.coreDNS` removes CoreDNS's objects from the tenant and from the inventory, and enabling it brings them back.
   Deleting the `ControlPlane` leaves in its namespace, of every namespaced kind the API server serves, Events aside, which outlive their objects, only the etcd's claim, which the class's `Retain` keeps, and what every namespace holds: the ConfigMap `kube-root-ca.crt` and the ServiceAccount `default`.
 
@@ -106,12 +107,12 @@ Each is a job of its own, with its own kind cluster.
 It sits behind the build tag `maintenance` with `e2e`, and `make e2e-maintenance` runs it on a kind cluster of its own; the `e2e-maintenance` job of [`ci.yml`](../../.github/workflows/ci.yml) runs that on every pull request.
 
 Three `ControlPlane`s in `nodePort` mode, with windows in UTC around the time the test starts: `open` from two hours before to two hours after, `closed` from four hours after to five, and `anytime` with none, so that every edge is at least an hour away.
-Once each is `Ready` and `Idle`, every part reporting the suite's operator revision A, the test records `closed`'s Deployment generations, pod UIDs, `Etcd` generation and `lodia.io/operator-revision`, revision A, and the resourceVersion of its inventory inside the tenant, and a watch of every `ControlPlane` records each status of the three from then on.
+Once each is `Ready` and `Idle`, every part reporting the suite's operator revision A, the test records `closed`'s Deployment generations, pod UIDs, `Etcd` generation and `lodia.io/operator-revision`, revision A, and the resourceVersions of its inventory and of the ClusterRole `kubeadm:get-nodes` inside the tenant, and a watch of every `ControlPlane` records each status of the three from then on.
 
-1. The suite builds the operator again under its `VERSION` with `-b`, and the signer under the tag `e2e-b`, since ko builds reproducibly and the same signer built again is the same image; the chart upgrades to both with `--reuse-values`, and a running replica of build B takes the Lease `lodia.io`.
-2. Within 3 minutes of that, `open` and `anytime` report revision B, `B`'s `VERSION` and a digest, in every `components.*`, `addons` and `datastore`, their API server's template runs signer B, they were seen `Maintaining` and are `Idle`.
+1. The suite builds the operator again under its `VERSION` with `-b`, from a copy of the tree with [`testdata/build-b.patch`](testdata/build-b.patch) applied, and fails if it no longer applies: B's Datastore renders the annotation `lodia.io/e2e-build` on the `Etcd`'s client Service, and B's Tenant puts it on the ClusterRole `kubeadm:get-nodes` in the tenant.
+   It builds the signer under the tag `e2e-b`, since ko builds reproducibly and the same signer built again is the same image; the chart upgrades to both with `--reuse-values`, and a running replica of build B takes the Lease `lodia.io`.
+2. Within 3 minutes of that, `open` and `anytime` report revision B, `B`'s `VERSION` and a digest, in every `components.*`, `addons` and `datastore`, their API server's template runs signer B, they were seen `Maintaining` and are `Idle`, and their `Etcd` and that ClusterRole carry B's annotation.
 3. `closed` is `WaitingForWindow`, `target.scheduledFor` its window's start, its revision A and every part reporting revision A, from its first such status on and for 2 more minutes, and nothing recorded of it changed; no status of the three was seen with `Ready` other than True.
-   A and B render the same `Etcd` and the same objects in the tenant, so a Datastore or a Tenant that ignored the hold would show only in those reports and the `Etcd`'s stamp.
 4. An edit of `closed`'s `addons.coreDNS.replicas` grants it revision B within 30 seconds, and its API server rolls to signer B, while it was never seen `Maintaining` by a watch that stayed unbroken.
 
 ## Nightly: the fleet limit
@@ -138,8 +139,19 @@ Two steps follow, the second once the first has recovered:
 1. One API server pod is deleted; the step ends 30 seconds after the pod is gone and two replicas are ready.
 2. The pod of the etcd leader, the member whose role `Etcd.status.members` gives as `Leader`, is deleted; the step ends 30 seconds after its replacement runs and etcd-druid reports three members ready, one of them the leader.
 
-In each step `Ready` must not leave `True` for longer than 5 seconds, Health's period in the gate, and neither loop may lose a request.
+In each step `Ready` must not leave `True` for longer than 5 seconds, Health's period in the gate.
+In the first step neither loop may lose a request.
+In the second each loop may lose one, answered 500 with one of the two errors the tenant API server's etcd client gives a call etcd ended without a gRPC status; any other failure, or a second in a loop, fails the step.
 The test logs each recorded change and, for each condition, the longest time it was not `True`.
+
+That bound is the system's while etcd serves gRPC on its HTTP server's listener.
+Over TLS, etcd 3.5.27 serves gRPC under its HTTP server ([serve.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/embed/serve.go#L243)), and when it stops it shuts that server down and then stops gRPC ([etcd.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/embed/etcd.go#L474-L488)).
+In the grpc-go and golang.org/x/net etcd-wrapper v0.8.2 builds etcd with ([go.mod](https://github.com/gardener/etcd-wrapper/blob/v0.8.2/go.mod#L68-L75)), stopping closes the transport of every call gRPC serves ([server.go](https://github.com/grpc/grpc-go/blob/v1.83.2/server.go#L1966-L1978)), after which none of them writes anything ([handler_server.go](https://github.com/grpc/grpc-go/blob/v1.83.2/internal/transport/handler_server.go#L219-L226)), and returns from every call that arrives later before it writes anything ([server.go](https://github.com/grpc/grpc-go/blob/v1.83.2/server.go#L1123-L1143)).
+The HTTP/2 server then ends the stream itself, after gRPC's headers if they went out, or else with a status 200 and no content type ([server.go](https://github.com/golang/net/blob/v0.58.0/http2/server.go#L2557-L2621)).
+The etcd client of Kubernetes v1.37.0, on grpc-go v1.82.1 ([go.mod](https://github.com/kubernetes/kubernetes/blob/v1.37.0/go.mod#L58-L80)), calls the first `Internal`, `server closed the stream without sending trailers` ([http2_client.go](https://github.com/grpc/grpc-go/blob/v1.82.1/internal/transport/http2_client.go#L1264-L1271)), and the second `Unknown`, `unexpected HTTP status code received from server: 200 (OK); malformed header: missing HTTP content-type` ([http2_client.go](https://github.com/grpc/grpc-go/blob/v1.82.1/internal/transport/http2_client.go#L1562-L1611)).
+It retries a read only on `Unavailable` ([retry.go](https://github.com/etcd-io/etcd/blob/v3.7.0/client/v3/retry.go#L54-L75)), and the API server answers 500 to an error that is no `metav1.Status` ([status.go](https://github.com/kubernetes/apiserver/blob/v0.37.0/pkg/endpoints/handlers/responsewriters/status.go#L60-L81)).
+Each loop prints a failed answer's body, and the test reads the error from it.
+Zero stays the target (`todo.md`).
 
 ## Gate G3: a Backup and a restore
 

@@ -99,7 +99,7 @@ func TestMinorUpgradeGate(t *testing.T) {
 		}).
 		Assess("the loops run from before the edit", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			loops = startLoops(ctx, t, cfg, k8s, access, key, node, loop)
-			before, _ = readLoops(ctx, t, "both loops answer on new and reused connections", loops)
+			before = readLoops(ctx, t, "both loops answer on new and reused connections", loops)
 			history = record(ctx, t, k8s, key)
 			upgrade = watchUpgrade(ctx, t, k8s, key)
 			return ctx
@@ -147,9 +147,7 @@ func TestMinorUpgradeGate(t *testing.T) {
 			end := time.Now()
 			history.log(t, start, end)
 			after, logs := readLoopsPast(ctx, t, end, loops)
-			for i, l := range loops {
-				checkLoop(t, l.where, before[i], after[i], logs[i])
-			}
+			checkLoops(t, loops, before, after, logs)
 			stopLoops(ctx, t, loops)
 			upgrade.check(t)
 			kept := &corev1.Node{}
@@ -333,24 +331,6 @@ func pullAddons(ctx context.Context, t *testing.T, node, version string) {
 			return err
 		})
 	}
-}
-
-func readLoopsPast(ctx context.Context, t *testing.T, end time.Time, loops []apiLoopRun) ([]loopCounts, []string) {
-	t.Helper()
-	counts, logs := make([]loopCounts, len(loops)), make([]string, len(loops))
-	until(ctx, t, 2*time.Minute, "both loops report counts later than the end", func(ctx context.Context) error {
-		for i, l := range loops {
-			var err error
-			if counts[i], logs[i], err = readLoop(ctx, l.api, l.pod); err != nil {
-				return err
-			}
-			if !counts[i].Time.After(end) {
-				return fmt.Errorf("pod %s/%s last reported its counts at %s, not later than the end at %s", l.pod.Namespace, l.pod.Name, counts[i].Time, end)
-			}
-		}
-		return nil
-	})
-	return counts, logs
 }
 
 func expectLogsAndExec(ctx context.Context, t *testing.T, access *tenantAccess, web *corev1.Pod) {

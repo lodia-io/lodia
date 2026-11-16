@@ -7,7 +7,7 @@ A phase does not start before the previous gate is green, and a gate that fails 
 | phase | delivers | gate |
 |---|---|---|
 | 0 · Foundations | the repository can build, test and ship; one control plane built by hand | `make verify` green in CI; the hand-built control plane runs a pod; the etcd spike has numbers |
-| 1 · Walking skeleton | a single-replica `ControlPlane` a real kubeadm node joins | e2e: `Ready` in under 3 minutes, node `Ready`, `kubectl logs` and `exec` through the tunnel, conformance passes |
+| 1 · Walking skeleton | a single-replica `ControlPlane` a real kubeadm node joins | e2e: `Ready` in under 90 seconds, node `Ready`, `kubectl logs` and `exec` through the tunnel, conformance passes |
 | 2 · Production | HA, Gateway exposure with in-cluster access, backups with `Backup` and restore, upgrades, maintenance windows, Health, metrics | zero failed API requests during a rollout and an upgrade; restore from backup passes conformance; nodes cut off for 10 minutes lose no pod |
 | 3 · Parity | shared etcd, migration by snapshot, staged rotations, hibernation, write lock, the `Compact` layout, a Cluster API provider | rotation keeps nodes `Ready` and tokens valid; sleep and wake keep data; migration freezes writes for seconds, reads never; a `Compact` tenant is one pod |
 | 4 · Scale and community | hundreds of tenants per operator, zone spread, `v1beta1`, docs site, supply-chain badges | 200 tenants on one management cluster within the resource budget; OpenSSF Scorecard ≥ 8 |
@@ -53,7 +53,7 @@ Scope: the thinnest path through every controller, single replica only, exposure
 
 Gate (the e2e suite in [`test/e2e`](../test/e2e/README.md): the first four are checked on every pull request by `TestPhase1Gate`, the fifth every night by `TestConformance`, which the [`nightly`](../.github/workflows/nightly.yml) workflow runs; the last was measured once, and the nightly records it again without asserting it):
 
-- A `ControlPlane` reaches `Ready` in under 3 minutes on kind.
+- A `ControlPlane` reaches `Ready` in under 90 seconds on kind.
 - A container running the kind node image joins with `kubeadm join --token …` and becomes `Ready`; a pod is scheduled on it and runs; `kubectl logs`, `exec` and `port-forward` work through the tunnel.
 - Disabling and re-enabling `addons.coreDNS` removes and restores its objects through the inventory.
 - Deleting the `ControlPlane` leaves nothing in the namespace but what the reclaim policy keeps.
@@ -86,13 +86,13 @@ Gate:
 
 - e2e: during a rolling update of the API server and during a minor upgrade (two kind node images), a client loop of 20 requests per second against the public endpoint, and one from a pod in the tenant through `kubernetes.default`, record zero failures.
   The minor upgrade is [`TestMinorUpgradeGate`](../test/e2e/README.md#gate-g1-a-minor-upgrade), on every pull request; a chain of two minors and an upgrade of a highly available tenant run in [`nightly-upgrade`](../test/e2e/README.md#nightly-the-chain-and-a-highly-available-upgrade).
-- e2e: delete an API server pod and an etcd pod of an HA control plane; `Ready` never turns False for longer than 5 seconds, and the same two loops record zero failures.
+- e2e: delete an API server pod and an etcd pod of an HA control plane; `Ready` never turns False for longer than 5 seconds, and the same two loops record zero failures for the API server pod and at most one each for the etcd pod, a call etcd ended without a status ([gate G2](../test/e2e/README.md#gate-g2-a-highly-available-control-plane)).
 - e2e: a `Backup` of A; B, created with `restoreFrom` it, stays inert while it serves A's namespaces and Secrets, and a `Released` B still waits, `SourceExists`; deleting A releases B, a node joins it, and the conformance smoke subset passes; every pull request checks it with [`TestRestoreGate`](../test/e2e/README.md#gate-g3-a-backup-and-a-restore).
 - e2e: cut both workers of a tenant off from the Gateway for 10 minutes; within 30 seconds Lodia holds the controller manager's lease and the controller manager exits; no node is tainted and every pod keeps its UID; reconnect, and the lease is released 2 minutes later.
   Cut one worker of two: no hold, and its pods move to the other after the toleration, as upstream does ([controller-manager-hold](decisions/controller-manager-hold.md)).
   `TestControllerManagerHold` checks both every night in [`nightly-hold`](../test/e2e/README.md#nightly-gate-g4-nodes-cut-off-from-the-gateway).
 - e2e: an operator upgrade re-renders a tenant only inside its window; outside it, `Progressing` is False, `WaitingForWindow`, and `status.target.scheduledFor` is the window's next start; an edit of the tenant's spec renders it at once.
-  [`TestOperatorUpgradeInWindows`](../test/e2e/README.md#gate-g5-an-operator-upgrade-in-windows) checks it on every pull request, and the fleet limit runs in [`nightly-upgrade`](../test/e2e/README.md#nightly-the-fleet-limit).
+  [`TestOperatorUpgradeInWindows`](../test/e2e/README.md#gate-g5-an-operator-upgrade-in-windows) checks it on every pull request with an upgrade that changes the `Etcd` and an object in the tenant, and the fleet limit runs in [`nightly-upgrade`](../test/e2e/README.md#nightly-the-fleet-limit).
 - e2e: behind the metrics filter, the operator's leader serves a tenant's `Ready`, its etcd's leader and size, and the standby none of Lodia's series; the tenant's turn to `Ready` is an event regarding it.
   [Gate G7](../test/e2e/README.md#gate-g7-the-leaders-metrics), a step of `TestPhase1Gate`, checks both on every pull request.
 - Measured: API p99 latency through the Gateway against a direct Service, overhead under 5 ms on kind.
