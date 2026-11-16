@@ -14,7 +14,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-const apiLoopRate = 10
+const (
+	apiLoopRate    = 10
+	apiLoopTimeout = 5 * time.Second
+)
 
 // endedWithoutStatus are the errors the tenant API server's etcd client gives
 // a call etcd ended without a gRPC status (test/e2e/README.md, gate G2).

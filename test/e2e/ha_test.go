@@ -108,7 +108,7 @@ func TestHighAvailabilityGate(t *testing.T) {
 			return ctx
 		}).
 		Assess("an API server pod deleted, Ready stays True and neither loop loses a request", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			before, _ := readLoops(ctx, t, "both loops' counts are read before the step", loops)
+			before := readLoops(ctx, t, "both loops' counts are read before the step", loops)
 			pod := apiServerPod(ctx, t, k8s, key)
 			start := time.Now()
 			if err := k8s.Delete(ctx, pod); err != nil {
@@ -129,13 +129,14 @@ func TestHighAvailabilityGate(t *testing.T) {
 				return nil
 			})
 			time.Sleep(settle)
-			history.check(t, start, time.Now(), gateBound)
-			after, logs := readLoops(ctx, t, "both loops' counts are read after the step", loops)
+			end := time.Now()
+			history.check(t, start, end, gateBound)
+			after, logs := readLoopsPast(ctx, t, end, loops)
 			checkLoops(t, loops, before, after, logs)
 			return ctx
 		}).
 		Assess("the etcd leader's pod deleted, Ready stays True and the loops lose at most one request, to a call etcd ended without a status", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			before, _ := readLoops(ctx, t, "both loops' counts are read before the step", loops)
+			before := readLoops(ctx, t, "both loops' counts are read before the step", loops)
 			leader := etcdLeader(ctx, t, k8s, key)
 			start := time.Now()
 			if err := k8s.Delete(ctx, leader); err != nil {
@@ -154,8 +155,9 @@ func TestHighAvailabilityGate(t *testing.T) {
 			})
 			t.Logf("pod %s is the etcd leader now", etcdLeader(ctx, t, k8s, key).Name)
 			time.Sleep(settle)
-			history.check(t, start, time.Now(), gateBound)
-			after, logs := readLoops(ctx, t, "both loops' counts are read after the step", loops)
+			end := time.Now()
+			history.check(t, start, end, gateBound)
+			after, logs := readLoopsPast(ctx, t, end, loops)
 			checkLoops(t, loops, before, after, logs, endedWithoutStatus...)
 			return ctx
 		}).

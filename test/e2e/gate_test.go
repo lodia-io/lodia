@@ -182,9 +182,9 @@ func TestPhase1Gate(t *testing.T) {
 				return coreDNSAvailable(ctx, access.client)
 			})
 			loops := startLoops(ctx, t, cfg, k8s, access, key, node, loop)
-			before, _ := readLoops(ctx, t, "both loops answer on new and reused connections", loops)
-			rollAPIServer(ctx, t, k8s, key)
-			after, logs := readLoops(ctx, t, "both loops' counts are read after the rollout", loops)
+			before := readLoops(ctx, t, "both loops answer on new and reused connections", loops)
+			rolled := rollAPIServer(ctx, t, k8s, key)
+			after, logs := readLoopsPast(ctx, t, rolled.Add(apiLoopTimeout+time.Second), loops)
 			checkLoops(t, loops, before, after, logs)
 			stopLoops(ctx, t, loops)
 			return ctx
@@ -360,7 +360,7 @@ func throughKonnectivity(ctx context.Context, t *testing.T, cfg *envconf.Config,
 	oneDial("port-forward")
 }
 
-func rollAPIServer(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey) {
+func rollAPIServer(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey) time.Time {
 	t.Helper()
 	cp := &lodiav1alpha1.ControlPlane{}
 	if err := k8s.Get(ctx, key, cp); err != nil {
@@ -386,7 +386,7 @@ func rollAPIServer(ctx context.Context, t *testing.T, k8s client.Client, key cli
 		}
 		return nil
 	})
-	time.Sleep(5 * time.Second)
+	return time.Now()
 }
 
 func createTenant(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey, class string, change ...func(*lodiav1alpha1.ControlPlaneSpec)) {
@@ -945,14 +945,32 @@ func startLoops(ctx context.Context, t *testing.T, cfg *envconf.Config, k8s clie
 	}
 }
 
-func readLoops(ctx context.Context, t *testing.T, what string, loops []apiLoopRun) ([]loopCounts, []string) {
+func readLoops(ctx context.Context, t *testing.T, what string, loops []apiLoopRun) []loopCounts {
+	t.Helper()
+	counts := make([]loopCounts, len(loops))
+	until(ctx, t, 2*time.Minute, what, func(ctx context.Context) error {
+		for i, l := range loops {
+			var err error
+			if counts[i], _, err = readLoop(ctx, l.api, l.pod); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return counts
+}
+
+func readLoopsPast(ctx context.Context, t *testing.T, end time.Time, loops []apiLoopRun) ([]loopCounts, []string) {
 	t.Helper()
 	counts, logs := make([]loopCounts, len(loops)), make([]string, len(loops))
-	until(ctx, t, 2*time.Minute, what, func(ctx context.Context) error {
+	until(ctx, t, 2*time.Minute, "each loop reports counts later than "+end.Format(time.RFC3339Nano), func(ctx context.Context) error {
 		for i, l := range loops {
 			var err error
 			if counts[i], logs[i], err = readLoop(ctx, l.api, l.pod); err != nil {
 				return err
+			}
+			if !counts[i].Time.After(end) {
+				return fmt.Errorf("pod %s/%s last reported its counts at %s, not later than the end at %s", l.pod.Namespace, l.pod.Name, counts[i].Time, end)
 			}
 		}
 		return nil
@@ -978,7 +996,7 @@ func loopPod(namespace, kubeconfig string, image reference.NamedTagged, server s
 				Name:            apiLoop,
 				Image:           image.String(),
 				ImagePullPolicy: corev1.PullNever,
-				Args:            []string{"--kubeconfig=/etc/apiloop/" + lodiav1alpha1.KubeconfigKey, "--server=" + server, "--rate=" + strconv.Itoa(apiLoopRate)},
+				Args:            []string{"--kubeconfig=/etc/apiloop/" + lodiav1alpha1.KubeconfigKey, "--server=" + server, "--rate=" + strconv.Itoa(apiLoopRate), "--timeout=" + apiLoopTimeout.String()},
 				VolumeMounts:    []corev1.VolumeMount{{Name: "kubeconfig", MountPath: "/etc/apiloop", ReadOnly: true}},
 			}},
 			Volumes: []corev1.Volume{{Name: "kubeconfig", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: kubeconfig}}}},

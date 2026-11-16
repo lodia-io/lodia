@@ -39,7 +39,7 @@ The suite leaves the chart installed.
   They follow an answer's `Retry-After` once, as client-go does ([with_retry.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/with_retry.go#L308-L318)), which a draining API server sends ([api-exposure](../../docs/decisions/api-exposure.md)).
   They retry nothing else, since client-go would also retry a GET whose connection broke, which hides a lost request ([request.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/request.go#L1066-L1078)).
   Each loop prints each failure, numbered, and, every second, its counts.
-  Between the counts before the change and those once the old pod is gone and 5 seconds more have passed, the suite wants no request failed, no answer with an empty slice, and answers to at least 95% of the requests the rate sends, and it logs how many followed a `Retry-After`.
+  Between the counts before the change and the first each loop reports more than 6 seconds after the old pod is gone, past the 5 seconds a request may take, the suite wants no request failed, no answer with an empty slice, and answers to at least 95% of the requests the rate sends, and it logs how many followed a `Retry-After`.
   Disabling `addons.coreDNS` removes CoreDNS's objects from the tenant and from the inventory, and enabling it brings them back.
   Deleting the `ControlPlane` leaves in its namespace, of every namespaced kind the API server serves, Events aside, which outlive their objects, only the etcd's claim, which the class's `Retain` keeps, and what every namespace holds: the ConfigMap `kube-root-ca.crt` and the ServiceAccount `default`.
 

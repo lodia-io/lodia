@@ -158,9 +158,9 @@ func TestGatewayGate(t *testing.T) {
 			return ctx
 		}).
 		Assess("G1: an API server rollout loses no request from outside through the Gateway or from inside through the tunnel", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			before, _ := readLoops(ctx, t, "both loops' counts are read before the rollout", loops)
-			rollAPIServer(ctx, t, k8s, a)
-			after, logs := readLoops(ctx, t, "both loops' counts are read after the rollout", loops)
+			before := readLoops(ctx, t, "both loops' counts are read before the rollout", loops)
+			rolled := rollAPIServer(ctx, t, k8s, a)
+			after, logs := readLoopsPast(ctx, t, rolled.Add(apiLoopTimeout+time.Second), loops)
 			checkLoops(t, loops, before, after, logs)
 			return ctx
 		}).
@@ -174,7 +174,7 @@ func TestGatewayGate(t *testing.T) {
 			if len(old) != 1 || running(&old[0]) != nil {
 				t.Fatalf("%d apiserver-proxy pods before the rollout, want one running", len(old))
 			}
-			before, _ := readLoops(ctx, t, "the in-cluster loop's counts are read before the rollout", inside)
+			before := readLoops(ctx, t, "the in-cluster loop's counts are read before the rollout", inside)
 			patch := client.MergeFrom(ds.DeepCopy())
 			ds.Spec.Template.Annotations = map[string]string{"lodia.io/e2e-rollout": time.Now().UTC().Format(time.RFC3339)}
 			if err := access.client.Patch(ctx, ds, patch); err != nil {
@@ -205,7 +205,7 @@ func TestGatewayGate(t *testing.T) {
 			if err != nil {
 				t.Fatalf("the rollout of %s: %v", apiserverProxy, err)
 			}
-			gone, _ := readLoops(ctx, t, "the in-cluster loop's counts are read once pod "+old[0].Name+" is gone", inside)
+			gone := readLoops(ctx, t, "the in-cluster loop's counts are read once pod "+old[0].Name+" is gone", inside)
 			t.Logf("the rollout finished; the address was on lo in %d of %d samples", samples-len(lost), samples)
 			if surge == "" {
 				t.Error("no new pod ran on the node beside the old one")
@@ -215,14 +215,19 @@ func TestGatewayGate(t *testing.T) {
 			if len(lost) > 0 {
 				t.Errorf("the address left lo during the rollout:\n%s", strings.Join(lost, "\n"))
 			}
-			time.Sleep(10 * time.Second)
-			after, _ := readLoops(ctx, t, "the in-cluster loop's counts are read 10 seconds later", inside)
 			t.Logf("over the rollout the in-cluster loop had %d of %d requests fail on new connections and %d of %d on reused ones",
 				gone[0].Fresh.Failed-before[0].Fresh.Failed, gone[0].Fresh.OK+gone[0].Fresh.Failed-before[0].Fresh.OK-before[0].Fresh.Failed,
 				gone[0].Reused.Failed-before[0].Reused.Failed, gone[0].Reused.OK+gone[0].Reused.Failed-before[0].Reused.OK-before[0].Reused.Failed)
-			if after[0].Fresh.OK <= gone[0].Fresh.OK || after[0].Reused.OK <= gone[0].Reused.OK {
-				t.Errorf("after the old pod went the in-cluster loop answered %d more on new connections and %d more on reused ones", after[0].Fresh.OK-gone[0].Fresh.OK, after[0].Reused.OK-gone[0].Reused.OK)
-			}
+			until(ctx, t, 30*time.Second, "both of the in-cluster loop's clients get answers again once pod "+old[0].Name+" is gone", func(ctx context.Context) error {
+				after, _, err := readLoop(ctx, inside[0].api, inside[0].pod)
+				if err != nil {
+					return err
+				}
+				if after.Fresh.OK <= gone[0].Fresh.OK || after.Reused.OK <= gone[0].Reused.OK {
+					return fmt.Errorf("%d more answers on new connections and %d more on reused ones", after.Fresh.OK-gone[0].Fresh.OK, after.Reused.OK-gone[0].Reused.OK)
+				}
+				return nil
+			})
 			return ctx
 		}).
 		Assess("a client without the tunnel's client certificate is refused at the sidecar, while the proxy's path keeps working", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
@@ -236,7 +241,7 @@ func TestGatewayGate(t *testing.T) {
 			if !cas.AppendCertsFromPEM(access.cfg.CAData) {
 				t.Fatal("the admin kubeconfig holds no CA")
 			}
-			before, _ := readLoops(ctx, t, "the in-cluster loop's counts are read before the stranger's session", inside)
+			before := readLoops(ctx, t, "the in-cluster loop's counts are read before the stranger's session", inside)
 			dialer := &tls.Dialer{NetDialer: &net.Dialer{Timeout: 10 * time.Second}, Config: &tls.Config{ServerName: tunnel.Host, RootCAs: cas, MinVersion: tls.VersionTLS13}}
 			conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(gatewayAddress, strconv.Itoa(int(tunnel.Port))))
 			if err == nil {
@@ -248,8 +253,7 @@ func TestGatewayGate(t *testing.T) {
 				t.Errorf("a session to %s through the Gateway without a client certificate: %v, want the sidecar's certificate required alert", tunnel.Host, err)
 			}
 			t.Logf("a session to %s through the Gateway, its server verified against the cluster CA, without a client certificate: %v", tunnel.Host, err)
-			time.Sleep(5 * time.Second)
-			after, logs := readLoops(ctx, t, "the in-cluster loop's counts are read after it", inside)
+			after, logs := readLoopsPast(ctx, t, time.Now().Add(apiLoopTimeout+time.Second), inside)
 			checkLoops(t, inside, before, after, logs)
 			stopLoops(ctx, t, loops)
 			return ctx
