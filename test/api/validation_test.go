@@ -149,7 +149,7 @@ func TestExamplesAreAccepted(t *testing.T) {
 	ensureNamespaces(t, "team-a", "team-b")
 	for _, obj := range examples(t) {
 		t.Run(obj.GetKind()+"/"+obj.GetName(), func(t *testing.T) {
-			expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), "")
+			expect(t, k8s.Create(context.Background(), obj, client.DryRunAll, client.FieldValidation("Strict")), "")
 		})
 	}
 }
