@@ -49,7 +49,7 @@ func inTheStepWithoutEnvtest(t *testing.T) {
 func inTheStep(t stepT, beside *goroutinesBeside, within time.Duration) {
 	t.Helper()
 	if os.Getenv(WithoutEnvtestEnv) == "" {
-		t.Skipf("it counts allocations or reads the heap in a process with no envtest and no manager, which the step of make test with %s set runs it in", WithoutEnvtestEnv)
+		t.Skipf("it counts allocations or reads the heap, or holds the quiet of the process those tests share, in a process with no envtest and no manager, which the step of make test with %s set runs it in", WithoutEnvtestEnv)
 		return
 	}
 	if left := beside.leftover(within); left != "" {
@@ -140,7 +140,10 @@ func TestTheStepWithoutEnvtestRunsExactlyTheTestsThatSkipOutsideItAndTheMainRunL
 	for _, want := range []string{
 		"APART_TESTS = $(subst $(space),|,$(strip $(APART)))\n",
 		"\tKUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT=60s KUBEBUILDER_ASSETS=\"$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)\" go test -race -skip '^($(APART_TESTS))$$' $(RACE_PACKAGES)\n",
-		"\t" + WithoutEnvtestEnv + "=1 go test -race -count=1 -run '^($(APART_TESTS))$$' ./internal/controller/health\n",
+		"{ " + WithoutEnvtestEnv + "=1 go test -race -count=1 -v -run '^($(APART_TESTS))$$' ./internal/controller/health; echo $$? > \"$$st\"; } 2>&1 | tee \"$$out\"; \\\n",
+		"\tstatus=\"$$(cat \"$$st\")\"; [ -n \"$$status\" ] || status=1; \\\n",
+		"\tfor t in $(APART); do grep -q \"^--- PASS: $$t (\" \"$$out\" || { echo \"$$t did not pass in the step without envtest\"; status=1; }; done; \\\n",
+		"\trm -f \"$$out\" \"$$st\"; exit $$status\n",
 	} {
 		if strings.Count(string(makefile), want) != 1 {
 			t.Errorf("the Makefile does not hold exactly one line %q", want)
