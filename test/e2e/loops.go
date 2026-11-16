@@ -46,16 +46,16 @@ type loopRead struct {
 }
 
 type lostRequest struct {
-	where, mode, err string
+	mode, err string
 }
 
 // judgeLoops reports what each loop answered over a step and what fails it;
-// one failed request passes only when tolerated names its message.
+// one failed request in a loop passes only when tolerated names its message.
 func judgeLoops(reads []loopRead, tolerated []string) (report, faults []string) {
-	var lost []lostRequest
 	for _, r := range reads {
 		seconds := r.after.Time.Sub(r.before.Time).Seconds()
 		expected := apiLoopRate * seconds
+		var lost []lostRequest
 		for _, mode := range []struct {
 			name, key     string
 			before, after loopTally
@@ -70,22 +70,22 @@ func judgeLoops(reads []loopRead, tolerated []string) (report, faults []string) 
 				faults = append(faults, fmt.Sprintf("%s on %s: %d failed, and the log holds %d of them", r.where, mode.name, failed, len(errs)))
 			}
 			for _, err := range errs {
-				lost = append(lost, lostRequest{r.where, mode.name, err})
+				lost = append(lost, lostRequest{mode.name, err})
 			}
 		}
-	}
-	lines := make([]string, len(lost))
-	for i, l := range lost {
-		lines[i] = fmt.Sprintf("%s on %s: %s", l.where, l.mode, l.err)
-	}
-	switch {
-	case len(lost) == 0:
-	case len(lost) == 1 && tolerable(lost[0].err, tolerated):
-		report = append(report, "the step tolerates its one failed request, a call etcd ended without a status: "+lines[0])
-	case len(tolerated) == 0:
-		faults = append(faults, fmt.Sprintf("%d requests failed; the step tolerates none:\n%s", len(lost), strings.Join(lines, "\n")))
-	default:
-		faults = append(faults, fmt.Sprintf("%d requests failed; the step tolerates one, answered 500 with one of %q:\n%s", len(lost), tolerated, strings.Join(lines, "\n")))
+		lines := make([]string, len(lost))
+		for i, l := range lost {
+			lines[i] = fmt.Sprintf("%s on %s: %s", r.where, l.mode, l.err)
+		}
+		switch {
+		case len(lost) == 0:
+		case len(lost) == 1 && tolerable(lost[0].err, tolerated):
+			report = append(report, "the step tolerates the loop's one failed request, a call etcd ended without a status: "+lines[0])
+		case len(tolerated) == 0:
+			faults = append(faults, fmt.Sprintf("%s: %d requests failed; the step tolerates none:\n%s", r.where, len(lost), strings.Join(lines, "\n")))
+		default:
+			faults = append(faults, fmt.Sprintf("%s: %d requests failed; the step tolerates one in each loop, answered 500 with one of %q:\n%s", r.where, len(lost), tolerated, strings.Join(lines, "\n")))
+		}
 	}
 	return report, faults
 }

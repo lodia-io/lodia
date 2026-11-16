@@ -141,7 +141,7 @@ Two steps follow, the second once the first has recovered:
 
 In each step `Ready` must not leave `True` for longer than 5 seconds, Health's period in the gate.
 In the first step neither loop may lose a request.
-In the second the two loops together may lose one, answered 500 with one of the two errors the tenant API server's etcd client gives a call etcd ended without a gRPC status; any other failure, or a second, fails the step.
+In the second each loop may lose one, answered 500 with one of the two errors the tenant API server's etcd client gives a call etcd ended without a gRPC status; any other failure, or a second in a loop, fails the step.
 The test logs each recorded change and, for each condition, the longest time it was not `True`.
 
 That bound is the system's while etcd serves gRPC on its HTTP server's listener.

@@ -135,7 +135,7 @@ func TestHighAvailabilityGate(t *testing.T) {
 			checkLoops(t, loops, before, after, logs)
 			return ctx
 		}).
-		Assess("the etcd leader's pod deleted, Ready stays True and the loops lose at most one request, to a call etcd ended without a status", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("the etcd leader's pod deleted, Ready stays True and each loop loses at most one request, to a call etcd ended without a status", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			before := readLoops(ctx, t, "both loops' counts are read before the step", loops)
 			leader := etcdLeader(ctx, t, k8s, key)
 			start := time.Now()

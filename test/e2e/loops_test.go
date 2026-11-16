@@ -49,7 +49,7 @@ func step(where string, failedBefore int64, failures ...lost) loopRead {
 	return r
 }
 
-func TestTheEtcdStepToleratesOneRequestLostToACallEtcdEndedWithoutAStatusAndTheAPIServerStepNone(t *testing.T) {
+func TestTheEtcdStepToleratesOneRequestInEachLoopLostToACallEtcdEndedWithoutAStatusAndTheAPIServerStepNone(t *testing.T) {
 	internal := answered("500 Internal Server Error", "", endedWithoutStatus[0], 500)
 	unknown := answered("500 Internal Server Error", "", endedWithoutStatus[1], 500)
 	if unknown != unknownFromCI {
@@ -63,20 +63,22 @@ func TestTheEtcdStepToleratesOneRequestLostToACallEtcdEndedWithoutAStatusAndTheA
 		reads     []loopRead
 		tolerated []string
 		want      string
+		tolerates int
 	}{
-		{"no request lost in the etcd step", []loopRead{step(outside, 1), step(inside, 0)}, endedWithoutStatus, ""},
-		{"no request lost in the API server step", []loopRead{step(outside, 1), step(inside, 0)}, nil, ""},
-		{"a failure after the step's counts", []loopRead{step(outside, 1), later}, nil, ""},
-		{"server closed the stream without sending trailers", []loopRead{step(outside, 1, lost{"reused", 2, internal}), step(inside, 0)}, endedWithoutStatus, ""},
-		{"missing HTTP content-type", []loopRead{step(outside, 1, lost{"fresh", 2, unknownFromCI}), step(inside, 0)}, endedWithoutStatus, ""},
-		{"another error", []loopRead{step(outside, 1), step(inside, 0, lost{"fresh", 1, answered("500 Internal Server Error", "", "etcdserver: leader changed", 500)})}, endedWithoutStatus, "1 requests failed; the step tolerates one"},
-		{"a timeout", []loopRead{step(outside, 1, lost{"fresh", 2, "context deadline exceeded"}), step(inside, 0)}, endedWithoutStatus, "1 requests failed; the step tolerates one"},
-		{"the message answered 503", []loopRead{step(outside, 1, lost{"fresh", 2, answered("503 Service Unavailable", "", endedWithoutStatus[0], 503)}), step(inside, 0)}, endedWithoutStatus, "1 requests failed; the step tolerates one"},
-		{"the message with a Retry-After", []loopRead{step(outside, 1, lost{"fresh", 2, answered("500 Internal Server Error", "1", endedWithoutStatus[0], 500)}), step(inside, 0)}, endedWithoutStatus, "1 requests failed; the step tolerates one"},
-		{"two in one loop", []loopRead{step(outside, 1, lost{"fresh", 2, internal}, lost{"reused", 2, unknown}), step(inside, 0)}, endedWithoutStatus, "2 requests failed; the step tolerates one"},
-		{"one in each loop", []loopRead{step(outside, 1, lost{"reused", 2, internal}), step(inside, 0, lost{"reused", 1, internal})}, endedWithoutStatus, "2 requests failed; the step tolerates one"},
-		{"one in the API server step", []loopRead{step(outside, 1, lost{"fresh", 2, internal}), step(inside, 0)}, nil, "1 requests failed; the step tolerates none"},
-		{"one the log does not hold", []loopRead{step(outside, 1, lost{"fresh", 0, ""}), step(inside, 0)}, endedWithoutStatus, "1 failed, and the log holds 0 of them"},
+		{"no request lost in the etcd step", []loopRead{step(outside, 1), step(inside, 0)}, endedWithoutStatus, "", 0},
+		{"no request lost in the API server step", []loopRead{step(outside, 1), step(inside, 0)}, nil, "", 0},
+		{"a failure after the step's counts", []loopRead{step(outside, 1), later}, nil, "", 0},
+		{"server closed the stream without sending trailers", []loopRead{step(outside, 1, lost{"reused", 2, internal}), step(inside, 0)}, endedWithoutStatus, "", 1},
+		{"missing HTTP content-type", []loopRead{step(outside, 1, lost{"fresh", 2, unknownFromCI}), step(inside, 0)}, endedWithoutStatus, "", 1},
+		{"one in each loop", []loopRead{step(outside, 1, lost{"reused", 2, internal}), step(inside, 0, lost{"reused", 1, unknown})}, endedWithoutStatus, "", 2},
+		{"another error", []loopRead{step(outside, 1), step(inside, 0, lost{"fresh", 1, answered("500 Internal Server Error", "", "etcdserver: leader changed", 500)})}, endedWithoutStatus, "inside the tenant: 1 requests failed; the step tolerates one in each loop", 0},
+		{"a timeout", []loopRead{step(outside, 1, lost{"fresh", 2, "context deadline exceeded"}), step(inside, 0)}, endedWithoutStatus, "outside the tenant: 1 requests failed; the step tolerates one in each loop", 0},
+		{"the message answered 503", []loopRead{step(outside, 1, lost{"fresh", 2, answered("503 Service Unavailable", "", endedWithoutStatus[0], 503)}), step(inside, 0)}, endedWithoutStatus, "outside the tenant: 1 requests failed; the step tolerates one in each loop", 0},
+		{"the message with a Retry-After", []loopRead{step(outside, 1, lost{"fresh", 2, answered("500 Internal Server Error", "1", endedWithoutStatus[0], 500)}), step(inside, 0)}, endedWithoutStatus, "outside the tenant: 1 requests failed; the step tolerates one in each loop", 0},
+		{"two in one loop", []loopRead{step(outside, 1, lost{"fresh", 2, internal}, lost{"reused", 2, unknown}), step(inside, 0)}, endedWithoutStatus, "outside the tenant: 2 requests failed; the step tolerates one in each loop", 0},
+		{"two in one loop and one in the other", []loopRead{step(outside, 1, lost{"reused", 2, internal}), step(inside, 0, lost{"fresh", 1, unknown}, lost{"reused", 1, internal})}, endedWithoutStatus, "inside the tenant: 2 requests failed; the step tolerates one in each loop", 1},
+		{"one in the API server step", []loopRead{step(outside, 1, lost{"fresh", 2, internal}), step(inside, 0)}, nil, "outside the tenant: 1 requests failed; the step tolerates none", 0},
+		{"one the log does not hold", []loopRead{step(outside, 1, lost{"fresh", 0, ""}), step(inside, 0)}, endedWithoutStatus, "1 failed, and the log holds 0 of them", 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -87,9 +89,11 @@ func TestTheEtcdStepToleratesOneRequestLostToACallEtcdEndedWithoutAStatusAndTheA
 			case c.want != "" && !strings.Contains(got, c.want):
 				t.Fatalf("want a fault with %q, got %q", c.want, got)
 			}
-			tolerated := slices.ContainsFunc(report, func(line string) bool { return strings.HasPrefix(line, "the step tolerates its one failed request") })
-			if want := c.want == "" && strings.Contains(strings.Join(report, "\n"), " 1 failed,"); tolerated != want || len(report) < 2*len(c.reads) {
-				t.Fatalf("the report says the step tolerated a failed request %t, want %t, in %d lines for %d loops: %q", tolerated, want, len(report), len(c.reads), report)
+			tolerated := len(slices.DeleteFunc(slices.Clone(report), func(line string) bool {
+				return !strings.HasPrefix(line, "the step tolerates the loop's one failed request")
+			}))
+			if tolerated != c.tolerates || len(report) < 2*len(c.reads) {
+				t.Fatalf("the report tolerates %d failed requests, want %d, in %d lines for %d loops: %q", tolerated, c.tolerates, len(report), len(c.reads), report)
 			}
 		})
 	}
