@@ -1,0 +1,25 @@
+diff --git a/internal/controller/datastore/etcd.go b/internal/controller/datastore/etcd.go
+index 1cef698..f273dd4 100644
+--- a/internal/controller/datastore/etcd.go
++++ b/internal/controller/datastore/etcd.go
+@@ -77,6 +77,7 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
+ 	if current != nil {
+ 		etcd.UID = current.UID
+ 	}
++	etcd.Spec.Etcd.ClientService = &druidv1alpha1.ClientService{Annotations: map[string]string{"lodia.io/e2e-build": "b"}}
+ 	switch ha := cp.Spec.HighAvailability; {
+ 	case membersHeld(members, current, sts):
+ 		etcd.Spec.Replicas = current.Spec.Replicas
+diff --git a/internal/controller/tenant/manifests/bootstrap.yaml b/internal/controller/tenant/manifests/bootstrap.yaml
+index 833dfa3..f65364d 100644
+--- a/internal/controller/tenant/manifests/bootstrap.yaml
++++ b/internal/controller/tenant/manifests/bootstrap.yaml
+@@ -58,6 +58,8 @@ apiVersion: rbac.authorization.k8s.io/v1
+ kind: ClusterRole
+ metadata:
+   name: kubeadm:get-nodes
++  annotations:
++    lodia.io/e2e-build: b
+ rules:
+ - apiGroups: [""]
+   resources: [nodes]

@@ -9,7 +9,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -21,6 +25,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,7 +42,12 @@ import (
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 )
 
-const signerTagB = "e2e-b"
+const (
+	signerTagB        = "e2e-b"
+	buildBPatch       = "testdata/build-b.patch"
+	buildBMark        = "lodia.io/e2e-build"
+	buildBClusterRole = "kubeadm:get-nodes"
+)
 
 func TestOperatorUpgradeInWindows(t *testing.T) {
 	var (
@@ -100,7 +110,7 @@ func TestOperatorUpgradeInWindows(t *testing.T) {
 			upgraded = time.Now()
 			return ctx
 		}).
-		Assess("within 3 minutes open and anytime run revision B with signer B, Maintaining then Idle, and stay Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("within 3 minutes open and anytime run revision B with signer B and B's Etcd and object in the tenant, Maintaining then Idle, and stay Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			for _, key := range []client.ObjectKey{open, anytime} {
 				until(ctx, t, 3*time.Minute-time.Since(upgraded), key.Namespace+" runs revision B in every part and is Idle", func(ctx context.Context) error {
 					cp := &lodiav1alpha1.ControlPlane{}
@@ -130,6 +140,9 @@ func TestOperatorUpgradeInWindows(t *testing.T) {
 					return o.revision == revisionB && o.progressing == lodiav1alpha1.ReasonMaintaining && o.progressingStatus == metav1.ConditionTrue
 				}) {
 					t.Errorf("%s was never seen Progressing True Maintaining at revision B", key.Namespace)
+				}
+				if err := buildBApplied(ctx, t, k8s, key); err != nil {
+					t.Errorf("%s reports revision B: %v", key.Namespace, err)
 				}
 			}
 			return ctx
@@ -225,16 +238,52 @@ func buildSecond(ctx context.Context, t *testing.T, cfg *envconf.Config) secondB
 		t.Fatal(err)
 	}
 	b := secondBuild{version: version + "-b"}
-	if b.operator, err = buildAs(ctx, cfg.KubeconfigFile(), "./cmd/lodia", b.version); err != nil {
+	if b.operator, err = buildAs(ctx, cfg.KubeconfigFile(), patchedTree(ctx, t, buildBPatch), "./cmd/lodia", b.version); err != nil {
 		t.Fatal(err)
 	}
-	signer, err := buildAs(ctx, cfg.KubeconfigFile(), "./cmd/lodia-signer", version, signerTagB)
+	signer, err := buildAs(ctx, cfg.KubeconfigFile(), root, "./cmd/lodia-signer", version, signerTagB)
 	if err != nil {
 		t.Fatal(err)
 	}
 	b.signer = signer.Name() + ":" + signerTagB
-	t.Logf("build B: %s at %s, and %s", b.operator, b.version, b.signer)
+	t.Logf("build B: %s at %s from the tree with %s, and %s", b.operator, b.version, buildBPatch, b.signer)
 	return b
+}
+
+func patchedTree(ctx context.Context, t *testing.T, patch string) string {
+	t.Helper()
+	list := exec.CommandContext(ctx, "git", "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+	list.Dir = root
+	files, err := list.Output()
+	if err != nil {
+		t.Fatalf("list the tree: %v", err)
+	}
+	tree := t.TempDir()
+	for name := range strings.SplitSeq(strings.TrimSuffix(string(files), "\x00"), "\x00") {
+		data, err := os.ReadFile(filepath.Join(root, name))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(tree, name)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(tree, name), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	file, err := filepath.Abs(patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apply := exec.CommandContext(ctx, "git", "apply", file)
+	apply.Dir = tree
+	if out, err := apply.CombinedOutput(); err != nil {
+		t.Fatalf("%s no longer applies, so build B would render what build A renders; make it apply again: %v\n%s", patch, err, out)
+	}
+	return tree
 }
 
 func upgradeTo(ctx context.Context, t *testing.T, cfg *envconf.Config, b secondBuild, values ...string) {
@@ -358,10 +407,11 @@ type closedState struct {
 	etcd         int64
 	etcdRevision string
 	inventory    string
+	clusterRole  string
 }
 
 func (s closedState) equal(other closedState) bool {
-	return maps.Equal(s.deployments, other.deployments) && maps.Equal(s.pods, other.pods) && s.etcd == other.etcd && s.etcdRevision == other.etcdRevision && s.inventory == other.inventory
+	return maps.Equal(s.deployments, other.deployments) && maps.Equal(s.pods, other.pods) && s.etcd == other.etcd && s.etcdRevision == other.etcdRevision && s.inventory == other.inventory && s.clusterRole == other.clusterRole
 }
 
 func recordClosed(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey) closedState {
@@ -386,12 +436,36 @@ func recordClosed(ctx context.Context, t *testing.T, k8s client.Client, key clie
 		t.Fatal(err)
 	}
 	s.etcd, s.etcdRevision = etcd.Generation, etcd.Annotations[lodiav1alpha1.OperatorRevisionAnnotation]
+	tenant := openTenant(ctx, t, k8s, key).client
 	inventory := &corev1.ConfigMap{}
-	if err := openTenant(ctx, t, k8s, key).client.Get(ctx, client.ObjectKey{Namespace: metav1.NamespaceSystem, Name: "lodia-inventory"}, inventory); err != nil {
+	if err := tenant.Get(ctx, client.ObjectKey{Namespace: metav1.NamespaceSystem, Name: "lodia-inventory"}, inventory); err != nil {
 		t.Fatal(err)
 	}
-	s.inventory = inventory.ResourceVersion
+	role := &rbacv1.ClusterRole{}
+	if err := tenant.Get(ctx, client.ObjectKey{Name: buildBClusterRole}, role); err != nil {
+		t.Fatal(err)
+	}
+	s.inventory, s.clusterRole = inventory.ResourceVersion, role.ResourceVersion
 	return s
+}
+
+func buildBApplied(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey) error {
+	t.Helper()
+	etcd := &druidv1alpha1.Etcd{}
+	if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: lodiav1alpha1.EtcdName(key.Name)}, etcd); err != nil {
+		return err
+	}
+	if s := etcd.Spec.Etcd.ClientService; s == nil || s.Annotations[buildBMark] != "b" {
+		return fmt.Errorf("Etcd %s's spec.etcd.clientService is %+v, without B's %s", etcd.Name, s, buildBMark)
+	}
+	role := &rbacv1.ClusterRole{}
+	if err := openTenant(ctx, t, k8s, key).client.Get(ctx, client.ObjectKey{Name: buildBClusterRole}, role); err != nil {
+		return err
+	}
+	if role.Annotations[buildBMark] != "b" {
+		return fmt.Errorf("the tenant's ClusterRole %s has the annotations %v, without B's %s", role.Name, role.Annotations, buildBMark)
+	}
+	return nil
 }
 
 func waitingForWindow(o observation, revision string, opens time.Time) error {

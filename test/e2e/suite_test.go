@@ -113,10 +113,10 @@ func build(ctx context.Context, kubeconfig, command string) (reference.NamedTagg
 	if err != nil {
 		return nil, err
 	}
-	return buildAs(ctx, kubeconfig, command, version)
+	return buildAs(ctx, kubeconfig, root, command, version)
 }
 
-func buildAs(ctx context.Context, kubeconfig, command, version string, tags ...string) (reference.NamedTagged, error) {
+func buildAs(ctx context.Context, kubeconfig, dir, command, version string, tags ...string) (reference.NamedTagged, error) {
 	cluster, err := kindCluster(kubeconfig)
 	if err != nil {
 		return nil, err
@@ -126,7 +126,7 @@ func buildAs(ctx context.Context, kubeconfig, command, version string, tags ...s
 		args = append(args, "--tags="+strings.Join(tags, ","))
 	}
 	ko := exec.CommandContext(ctx, "go", append(args, command)...)
-	ko.Dir = root
+	ko.Dir = dir
 	ko.Env = append(os.Environ(), "KO_DOCKER_REPO=kind.local", "KIND_CLUSTER_NAME="+cluster, "VERSION="+version)
 	var stderr bytes.Buffer
 	ko.Stderr = &stderr

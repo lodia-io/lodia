@@ -92,7 +92,7 @@ Gate:
   Cut one worker of two: no hold, and its pods move to the other after the toleration, as upstream does ([controller-manager-hold](decisions/controller-manager-hold.md)).
   `TestControllerManagerHold` checks both every night in [`nightly-hold`](../test/e2e/README.md#nightly-gate-g4-nodes-cut-off-from-the-gateway).
 - e2e: an operator upgrade re-renders a tenant only inside its window; outside it, `Progressing` is False, `WaitingForWindow`, and `status.target.scheduledFor` is the window's next start; an edit of the tenant's spec renders it at once.
-  [`TestOperatorUpgradeInWindows`](../test/e2e/README.md#gate-g5-an-operator-upgrade-in-windows) checks it on every pull request, and the fleet limit runs in [`nightly-upgrade`](../test/e2e/README.md#nightly-the-fleet-limit).
+  [`TestOperatorUpgradeInWindows`](../test/e2e/README.md#gate-g5-an-operator-upgrade-in-windows) checks it on every pull request with an upgrade that changes the `Etcd` and an object in the tenant, and the fleet limit runs in [`nightly-upgrade`](../test/e2e/README.md#nightly-the-fleet-limit).
 - e2e: behind the metrics filter, the operator's leader serves a tenant's `Ready`, its etcd's leader and size, and the standby none of Lodia's series; the tenant's turn to `Ready` is an event regarding it.
   [Gate G7](../test/e2e/README.md#gate-g7-the-leaders-metrics), a step of `TestPhase1Gate`, checks both on every pull request.
 - Measured: API p99 latency through the Gateway against a direct Service, overhead under 5 ms on kind.
