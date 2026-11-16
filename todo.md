@@ -222,12 +222,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - `test/e2e/suite_test.go:123-132` runs ko through `go run` with `Output()` and no `WaitDelay`: a cancelled context kills `go`, ko keeps the pipe open, and the test waits for ko to end.
   A `GOARCH` in the environment also makes ko refuse `--platform`; ko's environment should drop it.
 - Six Markdown files are hard-wrapped against `CONTRIBUTING.md:27`: `CLAUDE.md`, `SECURITY.md`, `ADOPTERS.md`, `CODE_OF_CONDUCT.md`, `docs/review-checklist.md` and `docs/etcd-spike-2026-10.md`.
-- Stale lines:
-  - `CONTRIBUTING.md:20` leaves out `make e2e-upgrade` and `make e2e-maintenance`, which CI runs on every pull request, and the nightlies of `nightly-ha.yml` and `nightly-upgrade.yml`;
-  - `CONTRIBUTING.md:11` says every other tool runs through `go tool`, but ko and hydrophone run through `go run` (`Makefile:1-5`);
-  - `CLAUDE.md`'s `make verify` leaves out `restore-keys` (`Makefile:82`);
-  - `README.md:6-7` says phase 1 and controllers built for one replica, while high availability and most of phase 2 are built;
-  - `docs/decisions/releases-and-support.md:4` names only the release workflow as not built, but Renovate and kube-api-linter are not built either (this file, "From the skeleton").
 - The ten e2e targets of the Makefile repeat create, run, remove and delete, each with its own list of node containers to remove, and the suite's `Finish` removes them again.
   A label that `startNode` (`test/e2e/gate_test.go`) puts on each container, a removal by that label, and one `define` recipe would leave one copy.
 

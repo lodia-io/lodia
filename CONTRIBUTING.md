@@ -8,7 +8,7 @@ Taking part means following the [code of conduct](CODE_OF_CONDUCT.md).
 ## Build and test
 
 You need Go (the version in `go.mod`), Docker for the end-to-end suite, [golangci-lint](https://golangci-lint.run/) v2.13.2, [Helm](https://helm.sh/) v4.3.1, promtool from [Prometheus v3.15.1](https://github.com/prometheus/prometheus/releases/tag/v3.15.1) and dashboard-linter [v0.4.0](https://github.com/grafana/dashboard-linter/releases/tag/v0.4.0).
-Every other tool runs through `go tool`.
+Every other tool runs through `go tool`, except ko and hydrophone, which run through `go run` at a version of their own (`Makefile`).
 
 | command | does |
 |---|---|
@@ -17,7 +17,7 @@ Every other tool runs through `go tool`.
 | `make e2e` | the end-to-end suite on a kind cluster of its own ([`test/e2e/README.md`](test/e2e/README.md)) |
 | `make conformance` | the Kubernetes conformance suite against a tenant with two nodes, on a kind cluster of its own ([`test/e2e/README.md`](test/e2e/README.md#nightly-conformance-and-the-idle-control-plane)) |
 
-CI runs `make verify`, `make e2e`, `make e2e-ha`, `make e2e-restore` and `make e2e-gateway` on every pull request, and `make conformance`, `make e2e-gateway-g6`, `make conformance-gateway` and `make e2e-hold` every night.
+CI runs `make verify`, `make e2e`, `make e2e-ha`, `make e2e-restore`, `make e2e-gateway`, `make e2e-upgrade` and `make e2e-maintenance` on every pull request, and every night `make conformance`, `make e2e-gateway-g6`, `make conformance-gateway`, `make e2e-hold`, `make e2e-upgrade-ha`, and `make e2e-ha`, `make e2e-upgrade` and `make e2e-maintenance` with their nightly tests.
 
 `test/rules/lodia_test.yaml`, promtool's cases of the alert rules, is generated and never edited by hand.
 To add or change a case, edit the alert's function in `test/rules/cases_test.go`, run `go test ./test/rules/ -update` and commit the file it rewrites.
