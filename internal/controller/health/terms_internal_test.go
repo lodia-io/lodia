@@ -44,6 +44,7 @@ func TestTheTermOfTheHeadAndItsTrailersIsTheCountAtOneInASeptillionADepthAndRoom
 }
 
 func allocatedBy(build func()) int {
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
 	rounds := max(100, min(10000, (8<<20)/max(int(allocated(build)), 1)))
 	least := math.MaxInt
 	for range allocationRepeats {
@@ -143,5 +144,20 @@ func TestTheLeastAnHTTP1FieldLineAddsToAHeadIsItsCopiesAndAnElementOfTheSliceSin
 	}
 	if want := nameCopy + valueCopy + valueSlice; least != want {
 		t.Errorf("a field line of a name and a value of 16 bytes adds %d bytes at the least to a head, want %d: a copy of each and an element of the slice of values", least, want)
+	}
+}
+
+func TestAllocatedByRunsItsBuildsAtOneProcAndRestoresTheProcsAfterIt(t *testing.T) {
+	before := runtime.GOMAXPROCS(0)
+	if before < 2 {
+		t.Skipf("only %d proc to put back", before)
+	}
+	var seen []int
+	allocatedBy(func() { seen = append(seen[:0], runtime.GOMAXPROCS(0)) })
+	if len(seen) != 1 || seen[0] != 1 {
+		t.Errorf("allocatedBy ran its build at %v procs, want 1, as testing.AllocsPerRun does", seen)
+	}
+	if after := runtime.GOMAXPROCS(0); after != before {
+		t.Errorf("allocatedBy left %d procs where it found %d", after, before)
 	}
 }
