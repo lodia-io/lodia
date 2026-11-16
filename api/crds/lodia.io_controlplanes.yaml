@@ -152,23 +152,6 @@ spec:
               apiServer:
                 description: APIServer configures kube-apiserver.
                 properties:
-                  admission:
-                    description: Admission names a ConfigMap with an AdmissionConfiguration.
-                    properties:
-                      configRef:
-                        description: ConfigRef names a ConfigMap with an AdmissionConfiguration.
-                        properties:
-                          name:
-                            description: Name of the object.
-                            maxLength: 253
-                            minLength: 1
-                            type: string
-                        required:
-                        - name
-                        type: object
-                    required:
-                    - configRef
-                    type: object
                   advertiseAddress:
                     description: |-
                       AdvertiseAddress is the address apiserver-proxy owns on every node in
@@ -180,101 +163,6 @@ spec:
                     - message: must be a unicast IP address in canonical form, neither
                         loopback nor link-local
                       rule: isIP(self) && ip.isCanonical(self) && ip(self).isGlobalUnicast()
-                  audit:
-                    description: Audit configures audit logging.
-                    properties:
-                      policyRef:
-                        description: PolicyRef names a ConfigMap with key policy.yaml.
-                        properties:
-                          name:
-                            description: Name of the object.
-                            maxLength: 253
-                            minLength: 1
-                            type: string
-                        required:
-                        - name
-                        type: object
-                    required:
-                    - policyRef
-                    type: object
-                  authentication:
-                    description: |-
-                      Authentication configures structured authentication; the anonymous
-                      section is Lodia's.
-                    properties:
-                      jwt:
-                        description: JWT authenticators, such as OIDC providers.
-                        items:
-                          description: JWTAuthenticator accepts tokens from one issuer.
-                          properties:
-                            claimMappings:
-                              description: ClaimMappings say which claims become the
-                                user name and groups.
-                              properties:
-                                groups:
-                                  description: Groups is the claim for the groups.
-                                  properties:
-                                    claim:
-                                      description: Claim is the JWT claim.
-                                      maxLength: 253
-                                      minLength: 1
-                                      type: string
-                                    prefix:
-                                      description: Prefix is added to the claim's
-                                        value.
-                                      maxLength: 64
-                                      type: string
-                                  required:
-                                  - claim
-                                  type: object
-                                username:
-                                  description: Username is the claim for the user
-                                    name.
-                                  properties:
-                                    claim:
-                                      description: Claim is the JWT claim.
-                                      maxLength: 253
-                                      minLength: 1
-                                      type: string
-                                    prefix:
-                                      description: Prefix is added to the claim's
-                                        value.
-                                      maxLength: 64
-                                      type: string
-                                  required:
-                                  - claim
-                                  type: object
-                              type: object
-                            issuer:
-                              description: Issuer is the token issuer.
-                              properties:
-                                audiences:
-                                  description: Audiences accepted in the tokens.
-                                  items:
-                                    maxLength: 253
-                                    type: string
-                                  maxItems: 8
-                                  minItems: 1
-                                  type: array
-                                  x-kubernetes-list-type: set
-                                url:
-                                  description: URL is the issuer's https URL.
-                                  maxLength: 512
-                                  type: string
-                                  x-kubernetes-validations:
-                                  - message: must be an https URL
-                                    rule: self.startsWith('https://')
-                              required:
-                              - audiences
-                              - url
-                              type: object
-                          required:
-                          - issuer
-                          type: object
-                        maxItems: 8
-                        type: array
-                        x-kubernetes-list-type: atomic
-                    type: object
                   encryption:
                     description: Encryption configures encryption of Secrets at rest.
                     properties:
@@ -880,20 +768,6 @@ spec:
               scheduler:
                 description: Scheduler configures kube-scheduler.
                 properties:
-                  configRef:
-                    description: |-
-                      ConfigRef names a ConfigMap with a KubeSchedulerConfiguration; Lodia
-                      overrides its client connection and its leader election's resource
-                      lock, name and namespace.
-                    properties:
-                      name:
-                        description: Name of the object.
-                        maxLength: 253
-                        minLength: 1
-                        type: string
-                    required:
-                    - name
-                    type: object
                   extraArgs:
                     additionalProperties:
                       type: string
@@ -991,11 +865,6 @@ spec:
                     x-kubernetes-validations:
                     - message: must be an https URL
                       rule: self.startsWith('https://')
-                  publicDiscovery:
-                    description: |-
-                      PublicDiscovery lets unauthenticated clients read the discovery
-                      documents, for federation.
-                    type: boolean
                 type: object
               version:
                 description: |-

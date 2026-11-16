@@ -85,7 +85,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the Workloads controller (2026-10-25)
 
-- JWT authentication, an audit policy, an admission and a scheduler configuration and `serviceAccount.publicDiscovery` are not rendered: they turn `APIServerReady` False with `Unsupported` until they are built.
 - The NetworkPolicies isolate each component's ingress alone; the default-deny set and egress, the README's arrows, come later.
 - The control plane pods set no securityContext: give them one that passes Pod Security `restricted`, the API server and the signer under one user (From lodia-signer, above).
 - Workloads lists the management nodes uncached on every pass of a `nodePort` `ControlPlane`; an informer on Nodes, which carry no control-plane label and so need a cache rule of their own, would serve them from memory.

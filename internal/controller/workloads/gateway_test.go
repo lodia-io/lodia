@@ -189,36 +189,6 @@ func TestTheAdvertiseAddressAndTheListenersPortArePublished(t *testing.T) {
 		"--service-account-issuer=https://api.dev."+zone+":8443", "--service-account-jwks-uri=https://api.dev."+zone+":8443/openid/v1/jwks")
 }
 
-func TestAFieldNotBuiltYetHidesNoneOfTheGatewayPath(t *testing.T) {
-	ns := namespace(t)
-	createGateway(t, ns)
-	cp := createNamed(t, ns, "dev", onGateway(ns, "dev"), func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.ServiceAccount = &lodiav1alpha1.ServiceAccount{PublicDiscovery: true}
-	})
-	accept(t, cp)
-	testenv.Eventually(t, func() error {
-		if err := expectRoutes(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonAccepted); err != nil {
-			return err
-		}
-		return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported)
-	})
-	if c := condition(t, cp); c.Message != "not built yet: serviceAccount.publicDiscovery" {
-		t.Errorf("APIServerReady says %q", c.Message)
-	}
-	expectEndpoint(t, cp, lodiav1alpha1.EndpointStatus{
-		APIServer:    lodiav1alpha1.HostPort{Host: "api.dev." + zone, Port: 443},
-		Konnectivity: lodiav1alpha1.HostPort{Host: "konnectivity.dev." + zone, Port: 443},
-		InCluster:    lodiav1alpha1.HostPort{Host: "240.0.0.1", Port: 6443},
-		Tunnel:       &lodiav1alpha1.HostPort{Host: "tunnel.dev." + zone, Port: 443},
-	})
-	if svc := getService(t, cp); svc.Spec.Type != corev1.ServiceTypeClusterIP || !metav1.IsControlledBy(svc, cp) {
-		t.Errorf("the Service is %s, controlled by %v", svc.Spec.Type, metav1.GetControllerOf(svc))
-	}
-	if n := deployments(t, cp); n != 0 {
-		t.Errorf("%d Deployments for a ControlPlane with a field not built yet", n)
-	}
-}
-
 func TestEveryListenerCheckIsGatewayUnsupported(t *testing.T) {
 	terminate := passthrough("tls", "*."+zone, 443)
 	terminate.TLS = &gatewayv1.ListenerTLSConfig{Mode: new(gatewayv1.TLSModeTerminate), CertificateRefs: []gatewayv1.SecretObjectReference{{Name: "serving"}}}

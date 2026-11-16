@@ -409,50 +409,6 @@ func TestTheSpecIsRendered(t *testing.T) {
 		"--controllers=*,bootstrap-signer-controller,token-cleaner-controller,-ttl-controller")
 }
 
-func TestWhatIsNotBuiltYetIsSaid(t *testing.T) {
-	ha := controlPlane(t, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
-		spec.Scheduler = &lodiav1alpha1.Scheduler{ConfigRef: &lodiav1alpha1.LocalReference{Name: "profiles"}}
-	})
-	testenv.Eventually(t, func() error { return expectCondition(ha, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported) })
-	if c := condition(t, ha); c.Message != "not built yet: scheduler.configRef" {
-		t.Errorf("APIServerReady says %q", c.Message)
-	}
-	setIngress(t, ha, corev1.LoadBalancerIngress{IP: lbAddress})
-	testenv.Eventually(t, func() error {
-		if e := get(t, ha).Status.Endpoint; e == nil || e.APIServer.Host != lbAddress {
-			return fmt.Errorf("status.endpoint is %+v", e)
-		}
-		return expectCondition(ha, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported)
-	})
-	if c := meta.FindStatusCondition(get(t, ha).Status.Conditions, lodiav1alpha1.ConditionRoutesReady); c != nil {
-		t.Errorf("a loadBalancer ControlPlane has %+v", c)
-	}
-
-	ignored := controlPlane(t, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.APIServer = &lodiav1alpha1.APIServer{Replicas: new(int32(2))}
-		spec.ServiceAccount = &lodiav1alpha1.ServiceAccount{PublicDiscovery: true}
-	})
-	testenv.Eventually(t, func() error { return expectCondition(ignored, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported) })
-	if c := condition(t, ignored); c.Message != "not built yet: serviceAccount.publicDiscovery" {
-		t.Errorf("APIServerReady says %q", c.Message)
-	}
-}
-
-func TestAnUnsupportedFieldKeepsTheEndpoint(t *testing.T) {
-	cp := running(t)
-	published := get(t, cp).Status.Endpoint
-	fresh := get(t, cp)
-	fresh.Spec.ServiceAccount = &lodiav1alpha1.ServiceAccount{PublicDiscovery: true}
-	if err := k8s.Update(t.Context(), fresh); err != nil {
-		t.Fatal(err)
-	}
-	testenv.Eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported) })
-	if e := get(t, cp).Status.Endpoint; e == nil || *e != *published {
-		t.Errorf("status.endpoint is %+v once the ControlPlane asks for a field not built yet, want %+v", e, published)
-	}
-}
-
 func TestEveryFlagLodiaRendersIsRefusedOrMerged(t *testing.T) {
 	cp := running(t)
 	merged := map[string]bool{"enable-admission-plugins": true, "controllers": true}

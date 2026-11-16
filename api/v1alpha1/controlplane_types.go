@@ -303,22 +303,9 @@ type APIServer struct {
 	// +kubebuilder:validation:XValidation:rule="isIP(self) && ip.isCanonical(self) && ip(self).isGlobalUnicast()",message="must be a unicast IP address in canonical form, neither loopback nor link-local"
 	AdvertiseAddress string `json:"advertiseAddress,omitempty"`
 
-	// Authentication configures structured authentication; the anonymous
-	// section is Lodia's.
-	// +optional
-	Authentication *Authentication `json:"authentication,omitempty"`
-
-	// Audit configures audit logging.
-	// +optional
-	Audit *Audit `json:"audit,omitempty"`
-
 	// Encryption configures encryption of Secrets at rest.
 	// +optional
 	Encryption *Encryption `json:"encryption,omitempty"`
-
-	// Admission names a ConfigMap with an AdmissionConfiguration.
-	// +optional
-	Admission *Admission `json:"admission,omitempty"`
 
 	// ExtraArgs are flags passed to kube-apiserver, each under its name as
 	// kube-apiserver spells it. The flags Lodia sets are refused, but for
@@ -340,75 +327,6 @@ type APIServer struct {
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
-// Authentication is the part of AuthenticationConfiguration a tenant sets.
-type Authentication struct {
-	// JWT authenticators, such as OIDC providers.
-	// +optional
-	// +listType=atomic
-	// +kubebuilder:validation:MaxItems=8
-	JWT []JWTAuthenticator `json:"jwt,omitempty"`
-}
-
-// JWTAuthenticator accepts tokens from one issuer.
-type JWTAuthenticator struct {
-	// Issuer is the token issuer.
-	// +required
-	Issuer Issuer `json:"issuer"`
-
-	// ClaimMappings say which claims become the user name and groups.
-	// +optional
-	ClaimMappings *ClaimMappings `json:"claimMappings,omitempty"`
-}
-
-// Issuer is a token issuer and the audiences it issues for.
-type Issuer struct {
-	// URL is the issuer's https URL.
-	// +required
-	// +kubebuilder:validation:MaxLength=512
-	// +kubebuilder:validation:XValidation:rule="self.startsWith('https://')",message="must be an https URL"
-	URL string `json:"url"`
-
-	// Audiences accepted in the tokens.
-	// +required
-	// +listType=set
-	// +kubebuilder:validation:MinItems=1
-	// +kubebuilder:validation:MaxItems=8
-	// +kubebuilder:validation:items:MaxLength=253
-	Audiences []string `json:"audiences"`
-}
-
-// ClaimMappings map claims to the user name and groups.
-type ClaimMappings struct {
-	// Username is the claim for the user name.
-	// +optional
-	Username *PrefixedClaim `json:"username,omitempty"`
-
-	// Groups is the claim for the groups.
-	// +optional
-	Groups *PrefixedClaim `json:"groups,omitempty"`
-}
-
-// PrefixedClaim is a claim and a prefix added to its value.
-type PrefixedClaim struct {
-	// Claim is the JWT claim.
-	// +required
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=253
-	Claim string `json:"claim"`
-
-	// Prefix is added to the claim's value.
-	// +optional
-	// +kubebuilder:validation:MaxLength=64
-	Prefix string `json:"prefix,omitempty"`
-}
-
-// Audit names an audit policy.
-type Audit struct {
-	// PolicyRef names a ConfigMap with key policy.yaml.
-	// +required
-	PolicyRef LocalReference `json:"policyRef"`
-}
-
 // Encryption is how Secrets are encrypted in the datastore.
 type Encryption struct {
 	// Provider is None, secretbox or aescbc.
@@ -420,13 +338,6 @@ type Encryption struct {
 // EncryptionProvider is an encryption at rest provider.
 // +kubebuilder:validation:Enum=None;secretbox;aescbc
 type EncryptionProvider string
-
-// Admission names an admission configuration.
-type Admission struct {
-	// ConfigRef names a ConfigMap with an AdmissionConfiguration.
-	// +required
-	ConfigRef LocalReference `json:"configRef"`
-}
 
 // Component configures kube-controller-manager.
 type Component struct {
@@ -469,12 +380,6 @@ type Scheduler struct {
 	// Resources override the operator's defaults.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
-
-	// ConfigRef names a ConfigMap with a KubeSchedulerConfiguration; Lodia
-	// overrides its client connection and its leader election's resource
-	// lock, name and namespace.
-	// +optional
-	ConfigRef *LocalReference `json:"configRef,omitempty"`
 }
 
 // Addons are the components Lodia runs inside the tenant cluster.
@@ -653,11 +558,6 @@ type ServiceAccount struct {
 	// +kubebuilder:validation:MaxLength=512
 	// +kubebuilder:validation:XValidation:rule="self.startsWith('https://')",message="must be an https URL"
 	Issuer string `json:"issuer,omitempty"`
-
-	// PublicDiscovery lets unauthenticated clients read the discovery
-	// documents, for federation.
-	// +optional
-	PublicDiscovery bool `json:"publicDiscovery,omitempty"`
 }
 
 // RestoreFrom names the Backup a new control plane starts from. The

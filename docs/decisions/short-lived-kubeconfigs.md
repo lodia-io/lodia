@@ -51,7 +51,7 @@ The admin kubeconfig in `lodia:cluster-admins`, Lodia's own credential, the thre
 - The requester's management groups in the certificate — they mean nothing in the tenant, and `system:masters` there would be `system:masters` here.
 - The request's UID as the certificate's user UID — a user's UID names the user across credentials ([user.go](https://github.com/kubernetes/kubernetes/blob/v1.35.10/staging/src/k8s.io/apiserver/pkg/authentication/user/user.go#L24-L27)), and `credential-id` already names the credential.
 - Only short-lived access, no standing admin credential — automation on top needs a credential it can store; a group RBAC governs is the compromise.
-- OIDC as the only way in — Lodia supports structured authentication configuration for it, but a cluster must be reachable before an identity provider is wired.
+- OIDC as the only way in — a cluster must be reachable before an identity provider is wired.
 
 ## Consequences
 
