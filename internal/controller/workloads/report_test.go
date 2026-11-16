@@ -186,13 +186,13 @@ func TestAKonnectivityPinChangesNoVersion(t *testing.T) {
 }
 
 func TestAControllerManagerHeldAtZeroReportsItsTemplate(t *testing.T) {
-	cp := restored(t, namespace(t), lodiav1alpha1.RestoreHeld)
+	cp := restored(t, namespace(t), lodiav1alpha1.RestorePending)
 	expectComponents(t, cp, "1/1/1 0/0/0 1/1/1")
 	expectVersions(t, cp, "v1.37.1 v1.37.1 v1.37.1")
 }
 
 func TestAnUnobservedTemplateOfAHeldControllerManagerReportsNothing(t *testing.T) {
-	cp := restored(t, namespace(t), lodiav1alpha1.RestoreHeld)
+	cp := restored(t, namespace(t), lodiav1alpha1.RestorePending)
 	expectVersions(t, cp, "v1.37.1 v1.37.1 v1.37.1")
 	setTargetVersion(t, cp, "v1.37.2")
 	eventuallyImages(t, cp, "v1.37.2", "kube-apiserver")

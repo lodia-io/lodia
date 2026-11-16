@@ -39,7 +39,7 @@ func writeOversizeList(w http.ResponseWriter, apiVersion, kind string) {
 }
 
 func TestAResponseLongerThanTheBoundIsAListThatCouldNotBeRead(t *testing.T) {
-	cp := restoredControlPlane(t, lodiav1alpha1.RestoreHeld)
+	cp := restoredControlPlane(t, lodiav1alpha1.RestorePending)
 	setAccess(t, cp)
 	writeKubeconfig(t, cp, throughProxy(t, func(w http.ResponseWriter, req *http.Request) bool {
 		if req.URL.Path != "/api/v1/services" {
@@ -688,7 +688,7 @@ func TestAListOfAHeldRestoreBeyondItsBoundsIsAKindThatCouldNotBeListed(t *testin
 		{"257 webhooks of both kinds", map[string]string{validating: configuration(257), mutating: configuration(257)}, services + rest + "ValidatingWebhookConfigurations and MutatingWebhookConfigurations could not be listed" + afterWebhooks},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			cp := restoredControlPlane(t, lodiav1alpha1.RestoreHeld)
+			cp := restoredControlPlane(t, lodiav1alpha1.RestorePending)
 			setAccess(t, cp)
 			writeKubeconfig(t, cp, throughProxy(t, func(w http.ResponseWriter, req *http.Request) bool {
 				body, ok := c.answer[req.URL.Path]

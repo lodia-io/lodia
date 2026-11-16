@@ -696,9 +696,10 @@ func TestRestoreFromAtCreation(t *testing.T) {
 	for _, c := range []struct {
 		name, release, want, stored string
 	}{
-		{"held by default", "", "", "Held"},
+		{"pending by default", "", "", "Pending"},
+		{"held", "Held", `supported values: "Pending", "Released"`, ""},
 		{"released at once", "Released", "", "Released"},
-		{"another release", "Paused", `supported values: "Held", "Released"`, ""},
+		{"another release", "Paused", `supported values: "Pending", "Released"`, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			obj := example(t, "controlplane-single.yaml", "restored")
@@ -723,19 +724,19 @@ func TestRestoreFromTransitions(t *testing.T) {
 		mutate     func(*testing.T, *unstructured.Unstructured)
 		want       string
 	}{
-		{"removed", "Held", func(t *testing.T, o *unstructured.Unstructured) {
+		{"removed", "Pending", func(t *testing.T, o *unstructured.Unstructured) {
 			unstructured.RemoveNestedField(o.Object, "spec", "restoreFrom")
 		}, "restoreFrom can be set only when the ControlPlane is created, and never removed"},
-		{"another Backup", "Held", func(t *testing.T, o *unstructured.Unstructured) {
+		{"another Backup", "Pending", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, "weekly", "spec", "restoreFrom", "backupRef", "name")
 		}, "restoreFrom.backupRef is immutable"},
-		{"released", "Held", func(t *testing.T, o *unstructured.Unstructured) {
+		{"released", "Pending", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, "Released", "spec", "restoreFrom", "release")
 		}, ""},
-		{"held again", "Released", func(t *testing.T, o *unstructured.Unstructured) {
-			set(t, o, "Held", "spec", "restoreFrom", "release")
-		}, "restoreFrom.release moves only from Held to Released"},
-		{"kept while something else changes", "Held", func(t *testing.T, o *unstructured.Unstructured) {
+		{"pending again", "Released", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "Pending", "spec", "restoreFrom", "release")
+		}, "restoreFrom.release moves only from Pending to Released"},
+		{"kept while something else changes", "Pending", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, true, "spec", "paused")
 		}, ""},
 	}

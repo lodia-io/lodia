@@ -557,22 +557,22 @@ type RestoreFrom struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="restoreFrom.backupRef is immutable"
 	BackupRef LocalReference `json:"backupRef"`
 
-	// Release is Held until the owner has made sure nothing outside the
+	// Release is Pending until the owner has made sure nothing outside the
 	// cluster acts on the restored objects, then Released, for good.
 	// +optional
-	// +kubebuilder:default=Held
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf || oldSelf == 'Held'",message="restoreFrom.release moves only from Held to Released"
+	// +kubebuilder:default=Pending
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf || oldSelf == 'Pending'",message="restoreFrom.release moves only from Pending to Released"
 	Release RestoreRelease `json:"release,omitempty"`
 }
 
 // RestoreRelease says whether a restored control plane may run its
 // controller manager.
-// +kubebuilder:validation:Enum=Held;Released
+// +kubebuilder:validation:Enum=Pending;Released
 type RestoreRelease string
 
 const (
-	// RestoreHeld keeps the controller manager stopped.
-	RestoreHeld RestoreRelease = "Held"
+	// RestorePending keeps the controller manager stopped.
+	RestorePending RestoreRelease = "Pending"
 	// RestoreReleased lets it run once the Backup's source is gone.
 	RestoreReleased RestoreRelease = "Released"
 )

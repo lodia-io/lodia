@@ -176,7 +176,7 @@ func TestAvailabilityIsAReadyReplicaOfEachComponent(t *testing.T) {
 	stale.Status.ObservedGeneration = 1
 	stale0 := deployment(apiServer, 2, 0, true)
 	stale0.Status.ObservedGeneration = 1
-	const held = "kube-controller-manager is held at 0 replicas until the restore is released: spec.restoreFrom.release is Held"
+	const held = "kube-controller-manager is held at 0 replicas until the restore is released: spec.restoreFrom.release is Pending"
 	for _, row := range []struct {
 		name        string
 		deployments []*appsv1.Deployment

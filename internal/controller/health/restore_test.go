@@ -31,7 +31,7 @@ import (
 	"go.lodia.io/lodia/internal/controller/health"
 )
 
-const actsOn = "spec.restoreFrom.release is Held; once released, the controller manager acts on: "
+const actsOn = "spec.restoreFrom.release is Pending; once released, the controller manager acts on: "
 
 func TestAHeldRestoreNamesWhatItsControllerManagerActsOn(t *testing.T) {
 	kubeconfig, inside := startTenant(t, func(api *envtest.APIServer) {
@@ -113,7 +113,7 @@ func TestAHeldRestoreNamesWhatItsControllerManagerActsOn(t *testing.T) {
 		})
 	}
 
-	cp := restoredControlPlane(t, lodiav1alpha1.RestoreHeld)
+	cp := restoredControlPlane(t, lodiav1alpha1.RestorePending)
 	setAccess(t, cp)
 	writeKubeconfig(t, cp, kubeconfig)
 	r := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, Period: time.Hour, Timeout: 2 * time.Second, Clock: clock.RealClock{}}
@@ -139,7 +139,7 @@ func TestAKindTheTenantDoesNotServeIsSaidInItsPlace(t *testing.T) {
 	kubeconfig, _ := startTenant(t, func(api *envtest.APIServer) {
 		api.Configure().Set("runtime-config", "batch/v1=false")
 	})
-	cp := restoredControlPlane(t, lodiav1alpha1.RestoreHeld)
+	cp := restoredControlPlane(t, lodiav1alpha1.RestorePending)
 	setAccess(t, cp)
 	writeKubeconfig(t, cp, kubeconfig)
 	reconcile(t, &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, Period: time.Hour, Timeout: 2 * time.Second, Clock: clock.RealClock{}}, cp)
@@ -176,7 +176,7 @@ func TestEachListWaitsItsOwnTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cp := restoredControlPlane(t, lodiav1alpha1.RestoreHeld)
+	cp := restoredControlPlane(t, lodiav1alpha1.RestorePending)
 	setAccess(t, cp)
 	writeKubeconfig(t, cp, kubeconfig)
 	reconcile(t, &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, Period: time.Hour, Timeout: 500 * time.Millisecond, Clock: clock.RealClock{}}, cp)
@@ -195,7 +195,7 @@ func TestATenantThatDoesNotAnswerHoldsAPassForOneTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cp := restoredControlPlane(t, lodiav1alpha1.RestoreHeld)
+	cp := restoredControlPlane(t, lodiav1alpha1.RestorePending)
 	setAccess(t, cp)
 	writeKubeconfig(t, cp, kubeconfig)
 	timeout := 500 * time.Millisecond
@@ -212,7 +212,7 @@ func TestATenantThatDoesNotAnswerHoldsAPassForOneTimeout(t *testing.T) {
 }
 
 func TestARestoreLeadsOnceReleasedWithItsSourceGone(t *testing.T) {
-	cp := restoredControlPlane(t, lodiav1alpha1.RestoreHeld)
+	cp := restoredControlPlane(t, lodiav1alpha1.RestorePending)
 	prod := &lodiav1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: cp.Namespace, Finalizers: []string{"test.lodia.io/keep"}},
 		Spec:       *cp.Spec.DeepCopy(),

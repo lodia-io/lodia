@@ -141,7 +141,7 @@ func golden() []client.Object {
 
 	restored := controlPlane("restored", 3)
 	restored.Spec.Endpoint = lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}}
-	restored.Spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "edge-before"}, Release: lodiav1alpha1.RestoreHeld}
+	restored.Spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "edge-before"}, Release: lodiav1alpha1.RestorePending}
 	steady(restored, "v1.36.4")
 	restored.Status.Conditions = conditions(restored, map[string]state{
 		lodiav1alpha1.ConditionAddonsAvailable:    {metav1.ConditionFalse, lodiav1alpha1.ReasonRolloutPending},

@@ -472,7 +472,7 @@ func (r *Reconciler) release(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 	}
 	var unmet []string
 	if restoring.Release != lodiav1alpha1.RestoreReleased {
-		unmet = append(unmet, "spec.restoreFrom.release is Held")
+		unmet = append(unmet, "spec.restoreFrom.release is Pending")
 	}
 	if cp.Status.Restore == nil {
 		unmet = append(unmet, "the restore is not complete")

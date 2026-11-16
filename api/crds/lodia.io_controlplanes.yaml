@@ -740,17 +740,17 @@ spec:
                     - message: restoreFrom.backupRef is immutable
                       rule: self == oldSelf
                   release:
-                    default: Held
+                    default: Pending
                     description: |-
-                      Release is Held until the owner has made sure nothing outside the
+                      Release is Pending until the owner has made sure nothing outside the
                       cluster acts on the restored objects, then Released, for good.
                     enum:
-                    - Held
+                    - Pending
                     - Released
                     type: string
                     x-kubernetes-validations:
-                    - message: restoreFrom.release moves only from Held to Released
-                      rule: self == oldSelf || oldSelf == 'Held'
+                    - message: restoreFrom.release moves only from Pending to Released
+                      rule: self == oldSelf || oldSelf == 'Pending'
                 required:
                 - backupRef
                 type: object

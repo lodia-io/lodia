@@ -1012,7 +1012,7 @@ func TestASameHostnameRestoreWaitsForItsSource(t *testing.T) {
 	prod := sourceOnGateway(t, ns)
 	leftover := handmade(t, ns, "prod-kube-apiserver", "api.prod."+zone, ns, "tls", controllerOf(prod))
 	cp := createNamed(t, ns, "restored", onGateway(ns, "prod"), func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "prod-backup"}, Release: lodiav1alpha1.RestoreHeld}
+		spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "prod-backup"}, Release: lodiav1alpha1.RestorePending}
 	})
 	inputsReady(t, cp)
 	setRestore(t, cp, lodiav1alpha1.UIDReference{Name: prod.Name, UID: prod.UID})
@@ -1024,7 +1024,7 @@ func TestASameHostnameRestoreWaitsForItsSource(t *testing.T) {
 			return err
 		}
 		return expectAt(cp, 1, metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
-			heldUntil+"spec.restoreFrom.release is Held; ControlPlane prod (UID "+string(prod.UID)+"), the Backup's source, exists; AddonsApplied is not True for generation 1")
+			heldUntil+"spec.restoreFrom.release is Pending; ControlPlane prod (UID "+string(prod.UID)+"), the Backup's source, exists; AddonsApplied is not True for generation 1")
 	})
 	if c := routesReady(t, cp); !strings.Contains(c.Message, "api.prod."+zone+" by ControlPlane "+ns+"/prod (UID "+string(prod.UID)+")") {
 		t.Errorf("RoutesReady says %q", c.Message)

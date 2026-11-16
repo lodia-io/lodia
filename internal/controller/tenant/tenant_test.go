@@ -801,8 +801,8 @@ func TestAHeldControllerManagerLeavesTheAddonsToTheRelease(t *testing.T) {
 		refresh(t, cp)
 		ready := conditionAt(lodiav1alpha1.ConditionAPIServerReady, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, cp.Generation)
 		unmet := fmt.Sprintf("the restore is not complete; AddonsApplied is not True for generation %d", cp.Generation)
-		if cp.Spec.RestoreFrom.Release == lodiav1alpha1.RestoreHeld {
-			unmet = "spec.restoreFrom.release is Held; " + unmet
+		if cp.Spec.RestoreFrom.Release == lodiav1alpha1.RestorePending {
+			unmet = "spec.restoreFrom.release is Pending; " + unmet
 		}
 		ready["message"] = "kube-controller-manager is held at 0 replicas until the restore is released: " + unmet
 		applyStatus(t, cp, "test/"+lodiav1alpha1.ConditionAPIServerReady, map[string]any{"conditions": []any{ready}})

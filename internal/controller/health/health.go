@@ -363,7 +363,7 @@ func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 	if restoring := cp.Spec.RestoreFrom; restoring != nil {
 		if restoring.Release != lodiav1alpha1.RestoreReleased {
 			return newCondition(cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionFalse, lodiav1alpha1.ReasonAwaitingRelease,
-				"spec.restoreFrom.release is Held; once released, the controller manager acts on: "+r.actedOn(ctx, tenant)), nil
+				"spec.restoreFrom.release is Pending; once released, the controller manager acts on: "+r.actedOn(ctx, tenant)), nil
 		}
 		source, err := restore.Source(ctx, r.Client, cp)
 		if err != nil {

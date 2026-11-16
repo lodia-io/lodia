@@ -275,7 +275,7 @@ func TestRestoreGate(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				if held := "kube-controller-manager is held at 0 replicas until the restore is released: spec.restoreFrom.release is Held"; !strings.Contains(c.Message, held) {
+				if held := "kube-controller-manager is held at 0 replicas until the restore is released: spec.restoreFrom.release is Pending"; !strings.Contains(c.Message, held) {
 					return fmt.Errorf("APIServerReady's message lacks %q: %s", held, c.Message)
 				}
 				return nil
