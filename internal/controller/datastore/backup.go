@@ -186,8 +186,6 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	case status.Source != nil && status.Source.UID != source.UID:
 		return report(metav1.ConditionFalse, lodiav1alpha1.ReasonControlPlaneNotFound, fmt.Sprintf("ControlPlane %s has UID %s, not %s, which this Backup started from", name, source.UID, status.Source.UID), 0)
-	case source.Spec.Datastore.Dedicated == nil:
-		return report(metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, "ControlPlane "+name+" has spec.datastore.shared, which a Backup does not support yet", 0)
 	}
 	etcd, err := r.sourceEtcd(ctx, source)
 	if err != nil {

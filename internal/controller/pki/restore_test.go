@@ -166,9 +166,6 @@ func TestARestoreWaitsForItsBackup(t *testing.T) {
 		{"a Backup without a store", func(t *testing.T, namespace string) {
 			setReady(t, newBackup(t, namespace), metav1.ConditionFalse, lodiav1alpha1.ReasonNoBackupStore)
 		}, "Backup " + backupName + " is NoBackupStore: NoBackupStore; restore another Backup"},
-		{"an unsupported Backup", func(t *testing.T, namespace string) {
-			setReady(t, newBackup(t, namespace), metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported)
-		}, "Backup " + backupName + " is Unsupported: Unsupported; restore another Backup"},
 		{"a Backup whose seal is lost", func(t *testing.T, namespace string) {
 			setReady(t, newBackup(t, namespace), metav1.ConditionFalse, lodiav1alpha1.ReasonSealLost)
 		}, "Backup " + backupName + " is SealLost: SealLost; restore another Backup"},

@@ -804,7 +804,7 @@ func controlPlaneIn(t *testing.T, ns string, endpoint lodiav1alpha1.Endpoint) *l
 		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: ns},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
 			Version:   "v1.35.0",
-			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{}},
+			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: lodiav1alpha1.DedicatedDatastore{}},
 			Endpoint:  endpoint,
 			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
 		},

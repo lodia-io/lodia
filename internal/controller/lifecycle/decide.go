@@ -473,7 +473,7 @@ func (f facts) takeBackup(c *change, next, minor string) {
 	}
 }
 
-var backupFailures = []string{lodiav1alpha1.ReasonFailed, lodiav1alpha1.ReasonSealLost, lodiav1alpha1.ReasonUnsupported}
+var backupFailures = []string{lodiav1alpha1.ReasonFailed, lodiav1alpha1.ReasonSealLost}
 
 func completed(ready *metav1.Condition) bool {
 	return ready != nil && ready.Status == metav1.ConditionTrue && ready.Reason == lodiav1alpha1.ReasonCompleted
@@ -558,7 +558,7 @@ func notAtTarget(cp *lodiav1alpha1.ControlPlane, target string) []string {
 // deadline, or a class's credentials Secret missing
 // (docs/decisions/upgrades-and-maintenance-windows.md).
 var upgradeFailures = []string{
-	lodiav1alpha1.ReasonRefused, lodiav1alpha1.ReasonObjectsControlledElsewhere, lodiav1alpha1.ReasonUnsupported, lodiav1alpha1.ReasonProgressDeadlineExceeded,
+	lodiav1alpha1.ReasonRefused, lodiav1alpha1.ReasonObjectsControlledElsewhere, lodiav1alpha1.ReasonProgressDeadlineExceeded,
 	lodiav1alpha1.ReasonSecretNotFound,
 }
 

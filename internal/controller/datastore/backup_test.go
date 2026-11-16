@@ -747,13 +747,6 @@ func TestABackupThatCannotBeTaken(t *testing.T) {
 		readyOn(t, ns, sourceName, 1)
 		finalBackup(t, ns, (&source{ns: ns}).reconciler(cached), readyIs(metav1.ConditionFalse, lodiav1alpha1.ReasonNoBackupStore, "the ControlPlane's class "+ns+" has no backup store"))
 	})
-	t.Run("Unsupported", func(t *testing.T) {
-		ns := namespace(t)
-		shared := controlPlane(ns, sourceName, "")
-		shared.Spec.Datastore = lodiav1alpha1.DatastoreChoice{Shared: &lodiav1alpha1.SharedDatastore{Name: "pool"}}
-		create(t, shared)
-		finalBackup(t, ns, (&source{ns: ns}).reconciler(cached), readyIs(metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, "ControlPlane src has spec.datastore.shared"))
-	})
 	t.Run("ControlPlaneNotFound, absent", func(t *testing.T) {
 		ns := namespace(t)
 		r := (&source{ns: ns}).reconciler(cached)
@@ -1071,11 +1064,7 @@ func TestBackupReadyFollowsEtcdDruid(t *testing.T) {
 	createClass(t, newClass(ns+"-plain", "Retain"))
 	create(t, controlPlane(ns, "backed", ns))
 	create(t, controlPlane(ns, "plain", ns+"-plain"))
-	shared := controlPlane(ns, "shared", "")
-	shared.Spec.Datastore = lodiav1alpha1.DatastoreChoice{Shared: &lodiav1alpha1.SharedDatastore{Name: "pool"}}
-	create(t, shared)
 
-	waitBackupReady(t, ns, "shared", metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, "spec.datastore.shared is not supported yet")
 	waitBackupReady(t, ns, "backed", metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, "this ControlPlane has no Etcd yet")
 	writeGeneration(t, ns, "plain", 1)
 	waitBackupReady(t, ns, "plain", metav1.ConditionFalse, lodiav1alpha1.ReasonNoBackupStore, "Etcd plain-etcd has no backup store: its class has none")

@@ -292,7 +292,7 @@ func controlPlane(ns, name, className string) *lodiav1alpha1.ControlPlane {
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
 			Version:   "v1.37.1",
-			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{ClassName: className}},
+			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: lodiav1alpha1.DedicatedDatastore{ClassName: className}},
 			Endpoint:  lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}},
 			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
 		},
@@ -1481,18 +1481,6 @@ func setEtcdStatus(t *testing.T, ns, cp string, mutate func(*druidv1alpha1.EtcdS
 		return k8s.Status().Update(t.Context(), etcd)
 	}); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestUnsupported(t *testing.T) {
-	t.Parallel()
-	ns := namespace(t)
-	shared := controlPlane(ns, "shared", "")
-	shared.Spec.Datastore = lodiav1alpha1.DatastoreChoice{Shared: &lodiav1alpha1.SharedDatastore{Name: "pool"}}
-	create(t, shared)
-	waitCondition(t, ns, "shared", metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, "spec.datastore.shared is not supported yet")
-	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: "shared-etcd"}, &networkingv1.NetworkPolicy{}); !apierrors.IsNotFound(err) {
-		t.Errorf("want no NetworkPolicy for a shared store, got %v", err)
 	}
 }
 

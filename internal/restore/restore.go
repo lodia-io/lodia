@@ -44,7 +44,7 @@ func Final(backup *lodiav1alpha1.Backup, ready *metav1.Condition) bool {
 		return false
 	}
 	switch ready.Reason {
-	case lodiav1alpha1.ReasonUnsupported, lodiav1alpha1.ReasonNoBackupStore, lodiav1alpha1.ReasonFailed:
+	case lodiav1alpha1.ReasonNoBackupStore, lodiav1alpha1.ReasonFailed:
 		return true
 	case lodiav1alpha1.ReasonControlPlaneNotFound:
 		return backup.Status.StartedAt != nil

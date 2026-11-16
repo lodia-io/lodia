@@ -79,7 +79,7 @@ func controlPlane(name string, uid int) *lodiav1alpha1.ControlPlane {
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "tenants", UID: types.UID(fmt.Sprintf("00000000-0000-0000-0000-%012d", uid)), Generation: 1},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
 			Version:   "v1.37.1",
-			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{}},
+			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: lodiav1alpha1.DedicatedDatastore{}},
 			Endpoint:  lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}},
 			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
 		},
@@ -202,22 +202,6 @@ func golden() []client.Object {
 	overdue := controlPlane("overdue", 13)
 	overdue.Status.Target = &lodiav1alpha1.Target{Version: "v1.37.1", OperatorRevision: previous, ScheduledFor: ago(24 * time.Hour)}
 
-	shared := controlPlane("shared", 8)
-	shared.Spec.Datastore = lodiav1alpha1.DatastoreChoice{Shared: &lodiav1alpha1.SharedDatastore{Name: "pool"}}
-	shared.Status.Conditions = conditions(shared, map[string]state{
-		lodiav1alpha1.ConditionAccessReady:           {metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer},
-		lodiav1alpha1.ConditionDatastoreReady:        {metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported},
-		lodiav1alpha1.ConditionAPIServerReady:        {metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore},
-		lodiav1alpha1.ConditionAddonsApplied:         {metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess},
-		lodiav1alpha1.ConditionAddonsAvailable:       {metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess},
-		lodiav1alpha1.ConditionReachable:             {metav1.ConditionUnknown, lodiav1alpha1.ReasonReconciling},
-		lodiav1alpha1.ConditionControllersLeading:    {metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess},
-		lodiav1alpha1.ConditionControllerManagerHeld: {metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess},
-		lodiav1alpha1.ConditionBackupReady:           {metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported},
-		lodiav1alpha1.ConditionReady:                 {metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported},
-	})
-	shared.Status.Target = &lodiav1alpha1.Target{Version: "v1.37.1", OperatorRevision: running}
-
 	deleting := controlPlane("deleting", 9)
 	deleting.DeletionTimestamp = ago(5 * time.Minute)
 	deleting.Finalizers = []string{lodiav1alpha1.DatastoreFinalizer}
@@ -235,7 +219,7 @@ func golden() []client.Object {
 	crowded.Status.Conditions = conditions(crowded, map[string]state{lodiav1alpha1.ConditionControllerManagerHeld: {metav1.ConditionFalse, lodiav1alpha1.ReasonTooManyNodes}})
 	crowded.Status.Nodes = &lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: 5000, Ready: 4990}, Truncated: true}
 
-	tenants := []client.Object{fresh, edge, restored, failed, queued, upgrading, paused, starting, rolling, waiting, overdue, shared, deleting, aging, legacy, crowded}
+	tenants := []client.Object{fresh, edge, restored, failed, queued, upgrading, paused, starting, rolling, waiting, overdue, deleting, aging, legacy, crowded}
 	return append(tenants, goldenEtcds(tenants)...)
 }
 

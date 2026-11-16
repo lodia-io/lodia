@@ -158,7 +158,7 @@ func (r *Reconciler) controlPlanesUsing(ctx context.Context, class client.Object
 	var requests []reconcile.Request
 	for i := range controlPlanes.Items {
 		cp := &controlPlanes.Items[i]
-		if d := cp.Spec.Datastore.Dedicated; d != nil && (d.ClassName == "" || d.ClassName == class.GetName()) {
+		if name := cp.Spec.Datastore.Dedicated.ClassName; name == "" || name == class.GetName() {
 			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 		}
 	}
@@ -198,15 +198,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		if err := live.Datastore(ctx, r.Reader, cp, lodiav1alpha1.ConditionDatastoreReady, lodiav1alpha1.ConditionBackupReady); err != nil {
 			return ctrl.Result{}, fmt.Errorf("read ControlPlane %s: %w", cp.Name, err)
 		}
-	}
-	if cp.Spec.Datastore.Dedicated == nil {
-		if !cp.DeletionTimestamp.IsZero() {
-			return ctrl.Result{}, nil
-		}
-		unsupported := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, "spec.datastore.shared is not supported yet")
-		backup := unsupported
-		backup.Type = lodiav1alpha1.ConditionBackupReady
-		return ctrl.Result{}, r.applyStatus(ctx, cp, nil, cp.Status.Restore, unsupported, backup)
 	}
 	if !cp.DeletionTimestamp.IsZero() {
 		requeueAfter, err := r.finalize(ctx, cp)

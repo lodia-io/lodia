@@ -391,23 +391,12 @@ spec:
                         maxLength: 253
                         type: string
                     type: object
-                  shared:
-                    description: Shared is a prefix in an etcd several tenants share.
-                    properties:
-                      name:
-                        description: Name of the Datastore.
-                        maxLength: 253
-                        minLength: 1
-                        type: string
-                    required:
-                    - name
-                    type: object
+                required:
+                - dedicated
                 type: object
                 x-kubernetes-validations:
                 - message: datastore is immutable in v1alpha1
                   rule: self == oldSelf
-                - message: set exactly one of dedicated and shared
-                  rule: has(self.dedicated) != has(self.shared)
               endpoint:
                 description: Endpoint is how nodes, people and pods reach the API
                   server.

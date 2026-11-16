@@ -1,7 +1,7 @@
 # Lodia
 
 Lodia runs Kubernetes control planes as pods on a management cluster, one per tenant cluster, and lets worker nodes anywhere join them with `kubeadm`.
-Each control plane is an ordinary set of Deployments with an etcd of its own or a prefix in a shared one, described by one `ControlPlane` object; six independent controllers keep it certified, stored, running, reachable and up to date, and keep the tenant's workloads alive when the path to its nodes breaks.
+Each control plane is an ordinary set of Deployments with an etcd of its own, described by one `ControlPlane` object; six independent controllers keep it certified, stored, running, reachable and up to date, and keep the tenant's workloads alive when the path to its nodes breaks.
 
 **Status: phase 3 of the [roadmap](docs/roadmap.md); phase 2's gate is built.**
 The six controllers are built, high availability included, and the Helm chart in [`charts/lodia`](charts/lodia) installs them from a checkout: there is no release yet.

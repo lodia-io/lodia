@@ -28,7 +28,6 @@ func addKnownTypes(s *runtime.Scheme) error {
 	s.AddKnownTypes(GroupVersion,
 		&ControlPlane{}, &ControlPlaneList{},
 		&DatastoreClass{}, &DatastoreClassList{},
-		&Datastore{}, &DatastoreList{},
 		&KubeconfigRequest{}, &KubeconfigRequestList{},
 		&Backup{}, &BackupList{},
 	)

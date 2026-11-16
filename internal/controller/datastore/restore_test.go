@@ -660,8 +660,6 @@ func TestARestoreStartsOnlyFromASealedCompatibleBackupInTheClasssStore(t *testin
 			lodiav1alpha1.ReasonRestoreFailed, "Backup a-1 is Failed: the copy failed: denied; create another Backup; restore another Backup"},
 		{"no store", restoreSetup{backup: readyAs(metav1.ConditionFalse, lodiav1alpha1.ReasonNoBackupStore, "no store")},
 			lodiav1alpha1.ReasonRestoreFailed, "Backup a-1 is NoBackupStore: no store; restore another Backup"},
-		{"unsupported", restoreSetup{backup: readyAs(metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, "shared")},
-			lodiav1alpha1.ReasonRestoreFailed, "Backup a-1 is Unsupported: shared; restore another Backup"},
 		{"seal lost", restoreSetup{backup: readyAs(metav1.ConditionFalse, lodiav1alpha1.ReasonSealLost, "sealed as x")},
 			lodiav1alpha1.ReasonRestoreFailed, "Backup a-1 is SealLost: sealed as x; restore another Backup"},
 		{"keys controlled elsewhere", restoreSetup{backup: readyAs(metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere, "Secret a-1.encryption-config exists")},

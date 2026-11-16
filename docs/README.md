@@ -1,7 +1,7 @@
 # Lodia docs
 
 Lodia is an operator that runs Kubernetes control planes as pods on a management cluster, one `ControlPlane` object per tenant cluster.
-A control plane is a kube-apiserver with a konnectivity-server at its side, a kube-controller-manager, a kube-scheduler, each in its own Deployment, and an etcd of its own (or a prefix in a shared one); the tenant's worker nodes stand anywhere with outbound TCP 443 and join with `kubeadm join`.
+A control plane is a kube-apiserver with a konnectivity-server at its side, a kube-controller-manager, a kube-scheduler, each in its own Deployment, and an etcd of its own; the tenant's worker nodes stand anywhere with outbound TCP 443 and join with `kubeadm join`.
 Six independent controllers keep every control plane certified, stored, running, reachable and up to date, and talk to each other only through status conditions.
 
 Go, controller-runtime; runs as a Deployment (`lodia-system`, two replicas, leader election) on a management cluster with a maintained Kubernetes minor (1.35 or newer today).
@@ -14,7 +14,7 @@ A wave or a phase named beside a feature is where it is built, and until then it
 | owns | meaning |
 |---|---|
 | `ControlPlane` | the desired and observed state of one tenant control plane ([field reference](api/controlplane.md)) |
-| `DatastoreClass`, `Datastore` | how a dedicated etcd is built; a shared etcd several tenants use by prefix |
+| `DatastoreClass` | how a dedicated etcd is built |
 | `KubeconfigRequest`, `Backup` | a short-lived credential for a person; a sealed copy of a tenant's etcd, from which a new `ControlPlane` replaces it |
 | the tenant namespace's control plane objects | Deployments, Services, PodDisruptionBudgets, NetworkPolicies, Gateway routes, Secrets, ConfigMaps, the etcd resource; all owned by the `ControlPlane` and labelled `lodia.io/control-plane` |
 | the PKI of every tenant | CAs, leaf certificates, kubeconfigs, ServiceAccount keys, encryption keys, their renewal and staged rotation |
@@ -44,7 +44,7 @@ The field reference with every rule is [`api/controlplane.md`](api/controlplane.
 | controller | writes | condition | needs |
 |---|---|---|---|
 | PKI | Secrets with certificates, keys and kubeconfigs; the tenant's bindings for Lodia, the admin group and the kubelet client; the answers to `KubeconfigRequest`s, which it deletes at their deadline | `CertificatesReady`, `AccessReady`; `CAValidityAcceptable` outside `Ready`; a `KubeconfigRequest`'s `Ready` | `status.endpoint`; `APIServerReady` for the bindings; the admission policy `kubeconfigrequests.lodia.io` for requests; for a restore without an encryption configuration, its `Backup` |
-| Datastore | the `Etcd` of a dedicated etcd and its NetworkPolicy, or a user and role in a shared store; backups and defragmentation; a `Backup`'s seal, its copy and its encryption keys | `DatastoreReady`; `BackupReady` outside `Ready`; a `Backup`'s `Ready` | a complete generation of PKI's etcd certificates; for a `Backup`, its source's `DatastoreReady` |
+| Datastore | the `Etcd` of a dedicated etcd and its NetworkPolicy; backups and defragmentation; a `Backup`'s seal, its copy and its encryption keys | `DatastoreReady`; `BackupReady` outside `Ready`; a `Backup`'s `Ready` | a complete generation of PKI's etcd certificates; for a `Backup`, its source's `DatastoreReady` |
 | Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady`; `RoutesReady` in `gateway` mode | `status.target`, `status.datastore`, `CertificatesReady`, `DatastoreReady`; `status.restore` and `AddonsApplied` before it starts a restored `ControlPlane`'s controller manager |
 | Tenant | objects inside the tenant cluster, with an inventory | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
 | Health | status, and the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable`, `ControllersLeading`; `ControllerManagerHeld` outside `Ready`; `status.nodes` | `status.endpoint`, the CA bundle and, in `gateway` mode, `<cp>-tunnel-client`; `AccessReady` and `<cp>-lodia-kubeconfig` for `ControllersLeading`'s leader Leases, the node Leases and a held restore's lists; the kubeconfig alone to read the controller manager's Lease and to renew or release a hold of it |
@@ -469,14 +469,13 @@ While most nodes are silent and the API server answers, Health holds the control
   Lodia's ClusterRoles, one per controller, are limited to its kinds, the workload kinds it renders, Secrets and ConfigMaps, the management nodes, a cluster-wide `list` on pods, to match a leader Lease's holder to a pod of the `ControlPlane`, Gateway API `TLSRoute`s and the Gateways they attach to, etcd-druid's `Etcd`, the StatefulSet etcd-druid runs for it and the claims of that StatefulSet, `get` on the namespaces, whose UIDs go into the backup prefix, and `get` on the admission policy `kubeconfigrequests.lodia.io` and its binding, by name; where they come from is below.
 - Every field Lodia writes has a field manager `lodia/<controller>`; another manager's fields on the same object are left alone.
 - No cross-tenant object: every Secret, Service and route is in the tenant's namespace, and NetworkPolicies keep its pods to their own arrows.
-  A shared `Datastore` is the one deliberate exception, labelled as such.
 - A class's backup credentials reach every tenant's snapshots on that class: `<cp>-etcd-backup` puts them into every tenant namespace, and they read every tenant's prefix, though not the encryption keys, which stay in the management cluster.
   Whoever reads Secrets in one tenant namespace therefore reads every tenant's snapshots on that class.
   Two rules bound it until the credentials are scoped to one tenant's prefix: Secrets in tenant namespaces are readable by Lodia and the platform's administrators only, so automation gets `get` on `<cp>-admin-kubeconfig` by `resourceNames` and never the namespace's Secrets; and a class per trust boundary.
 
 Each controller declares the verbs it calls with `+kubebuilder:rbac` markers in its package; `make generate` writes them into one ClusterRole per controller in [`charts/lodia/files/rbac/`](../charts/lodia/files/rbac/), and the chart binds the operator's ServiceAccount to every one.
 Each controller's envtest suite runs it as a user bound to its generated ClusterRole and nothing else (PKI's direct passes read the `ControlPlane` through the envtest admin, standing in for the manager's cache), with the `OwnerReferencesPermissionEnforcement` admission plugin on for PKI, the Datastore controller and Workloads.
-For the Datastore controller, leaving out any one verb fails a test, except `list` on the five kinds the cache holds: client-go fills the cache with a streaming watch where the API server offers one, on by default since 1.35, and falls back to `list` where it does not ([known_features.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/client-go/features/known_features.go#L141-L144), [reflector.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/client-go/tools/cache/reflector.go#L470-L509)).
+For the Datastore controller, leaving out any one verb fails a test, except `list` on the four kinds the cache holds: client-go fills the cache with a streaming watch where the API server offers one, on by default since 1.35, and falls back to `list` where it does not ([known_features.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/client-go/features/known_features.go#L141-L144), [reflector.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/client-go/tools/cache/reflector.go#L470-L509)).
 
 The verbs nobody would guess from the calls:
 
@@ -630,10 +629,10 @@ Each controller records an event for every transition of a condition it writes (
 ## Decisions
 
 - [project-home](decisions/project-home.md) — Lodia, Apache-2.0, `go.lodia.io/lodia`, API group `lodia.io`.
-- [one-controlplane-per-cluster](decisions/one-controlplane-per-cluster.md) — five kinds; `ControlPlane` is the whole cluster; operations are objects of their own.
+- [one-controlplane-per-cluster](decisions/one-controlplane-per-cluster.md) — four kinds; `ControlPlane` is the whole cluster; operations are objects of their own.
 - [independent-controllers](decisions/independent-controllers.md) — six controllers, one object, conditions as the only coupling.
 - [component-per-deployment](decisions/component-per-deployment.md) — a Deployment per component, konnectivity as the API server's sidecar, 4 or 9 pods.
-- [dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md) — an etcd per tenant through etcd-druid; a shared store as an option.
+- [dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md) — an etcd per tenant through etcd-druid.
 - [restore-replaces-the-source](decisions/restore-replaces-the-source.md) — a `Backup` is a sealed copy; a `ControlPlane` restored from it replaces its source and stays inert until released.
 - [no-admission-webhooks](decisions/no-admission-webhooks.md) — CEL in the schema; conditions for what a schema cannot check; an admission policy for what it cannot see, the requester.
 - [nodes-join-with-kubeadm](decisions/nodes-join-with-kubeadm.md) — `kubeadm join`; Lodia writes the bootstrap objects; no `k8s.io/kubernetes` import.

@@ -178,7 +178,7 @@ func gatewayTenant(ns string) (*lodiav1alpha1.DatastoreClass, *gatewayv1.Gateway
 		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: ns},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
 			Version:   "v1.35.0",
-			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{}},
+			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: lodiav1alpha1.DedicatedDatastore{}},
 			Endpoint: lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
 				ParentRef: lodiav1alpha1.ParentReference{Name: "shared", Namespace: ns, SectionName: "tls"},
 				Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.com", Konnectivity: "konnectivity.dev.example.com", Tunnel: "tunnel.dev.example.com"},

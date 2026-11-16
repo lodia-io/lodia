@@ -209,10 +209,6 @@ func (c *Collector) collect(ch chan<- prometheus.Metric, cp *lodiav1alpha1.Contr
 	if status.Kubernetes != nil {
 		version = status.Kubernetes.Version
 	}
-	datastore := lodiav1alpha1.MetricDatastoreDedicated
-	if cp.Spec.Datastore.Shared != nil {
-		datastore = lodiav1alpha1.MetricDatastoreShared
-	}
 	endpoint := lodiav1alpha1.MetricEndpointNodePort
 	switch {
 	case cp.Spec.Endpoint.Gateway != nil:
@@ -220,7 +216,7 @@ func (c *Collector) collect(ch chan<- prometheus.Metric, cp *lodiav1alpha1.Contr
 	case cp.Spec.Endpoint.LoadBalancer != nil:
 		endpoint = lodiav1alpha1.MetricEndpointLoadBalancer
 	}
-	emit(info, 1, string(cp.UID), version, datastore, endpoint)
+	emit(info, 1, string(cp.UID), version, lodiav1alpha1.MetricDatastoreDedicated, endpoint)
 	minor, _ := versions.Minor(version)
 	if day, ok := versions.EndOfSupport(minor); ok {
 		emit(endOfSupport, float64(day.Unix()))

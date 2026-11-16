@@ -437,7 +437,7 @@ A [CA rotation](#forced-ca-rotation) mends it, from phase 3.
 ### LodiaBackupStale
 
 Warning, after 5 minutes of `BackupReady` reading `BackupFailed`, which etcd-druid reports once the last delta snapshot is three delta snapshot periods old ([check_backup_ready.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/health/condition/check_backup_ready.go#L101-L120)), or `Unknown` for more than three periods since its last transition, as a store that never worked reads: 20 minutes after the last snapshot at the class's default period.
-A class without a backup store (`NoBackupStore`), a shared datastore (`Unsupported`) and a class whose `deltaSnapshotPeriod` is below a second, which takes no delta snapshots, never fire it.
+A class without a backup store (`NoBackupStore`) and a class whose `deltaSnapshotPeriod` is below a second, which takes no delta snapshots, never fire it.
 Look at the backup sidecar's log in the etcd's pods and at the class's bucket credentials; etcd-druid's message is in the condition.
 
 ### LodiaEtcdSpaceNearQuota

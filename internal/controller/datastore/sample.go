@@ -133,12 +133,12 @@ func (r *SampleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	return again()
 }
 
-// sampled is the Etcd of cp to sample: cp's own and formed, of a dedicated
-// etcd neither paused nor being deleted; nil otherwise. An etcd that never
-// had a ready member is on its way, a new one or a restore's, and has no
-// leader to page about.
+// sampled is the Etcd of cp to sample: cp's own and formed, of a ControlPlane
+// neither paused nor being deleted; nil otherwise. An etcd that never had a
+// ready member is on its way, a new one or a restore's, and has no leader to
+// page about.
 func (r *SampleReconciler) sampled(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*druidv1alpha1.Etcd, error) {
-	if !cp.DeletionTimestamp.IsZero() || cp.Spec.Paused || cp.Spec.Datastore.Dedicated == nil {
+	if !cp.DeletionTimestamp.IsZero() || cp.Spec.Paused {
 		return nil, nil
 	}
 	etcd := &druidv1alpha1.Etcd{}

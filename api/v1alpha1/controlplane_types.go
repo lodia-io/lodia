@@ -140,16 +140,11 @@ type HighAvailability struct {
 // +kubebuilder:validation:Enum=Node;Zone
 type FailureTolerance string
 
-// DatastoreChoice is exactly one of Dedicated and Shared.
-// +kubebuilder:validation:XValidation:rule="has(self.dedicated) != has(self.shared)",message="set exactly one of dedicated and shared"
+// DatastoreChoice is the kind of store.
 type DatastoreChoice struct {
 	// Dedicated is an etcd of the tenant's own.
-	// +optional
-	Dedicated *DedicatedDatastore `json:"dedicated,omitempty"`
-
-	// Shared is a prefix in an etcd several tenants share.
-	// +optional
-	Shared *SharedDatastore `json:"shared,omitempty"`
+	// +required
+	Dedicated DedicatedDatastore `json:"dedicated"`
 }
 
 // DedicatedDatastore is built from a DatastoreClass.
@@ -158,15 +153,6 @@ type DedicatedDatastore struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=253
 	ClassName string `json:"className,omitempty"`
-}
-
-// SharedDatastore names a Datastore.
-type SharedDatastore struct {
-	// Name of the Datastore.
-	// +required
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=253
-	Name string `json:"name"`
 }
 
 // Endpoint is exactly one of Gateway, LoadBalancer and NodePort.

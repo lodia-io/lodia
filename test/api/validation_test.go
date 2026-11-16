@@ -25,6 +25,7 @@ import (
 	"github.com/robfig/cron/v3"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -175,12 +176,9 @@ func TestControlPlaneValidation(t *testing.T) {
 		{"major other than 1", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, "v2.0.0", "spec", "version") }, "spec.version"},
 		{"a minor with a leading zero", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, "v1.037.1", "spec", "version") }, "spec.version"},
 		{"a patch with a leading zero", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, "v1.37.01", "spec", "version") }, "spec.version"},
-		{"two datastores", func(t *testing.T, o *unstructured.Unstructured) {
-			set(t, o, map[string]any{"dedicated": map[string]any{}, "shared": map[string]any{"name": "pool-a"}}, "spec", "datastore")
-		}, "set exactly one of dedicated and shared"},
 		{"no datastore", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, map[string]any{}, "spec", "datastore")
-		}, "set exactly one of dedicated and shared"},
+		}, "spec.datastore.dedicated: Required value"},
 		{"two endpoints", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, map[string]any{"loadBalancer": map[string]any{}, "nodePort": map[string]any{}}, "spec", "endpoint")
 		}, "set exactly one of gateway, loadBalancer and nodePort"},
@@ -331,7 +329,7 @@ func TestControlPlaneTransitions(t *testing.T) {
 		{"patch down", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, "v1.37.0", "spec", "version") }, ""},
 		{"minor up", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, "v1.38.0", "spec", "version") }, ""},
 		{"datastore changed", func(t *testing.T, o *unstructured.Unstructured) {
-			set(t, o, map[string]any{"shared": map[string]any{"name": "pool-a"}}, "spec", "datastore")
+			set(t, o, map[string]any{"dedicated": map[string]any{"className": "fast-ssd"}}, "spec", "datastore")
 		}, "datastore is immutable"},
 		{"network changed", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, []any{"10.100.0.0/16"}, "spec", "network", "podCIDRs")
@@ -925,6 +923,7 @@ func TestRemovedFieldsAreUnknown(t *testing.T) {
 		{"controlplane-single.yaml", map[string]any{"configRef": map[string]any{"name": "admission"}}, []string{"spec", "apiServer", "admission"}},
 		{"controlplane-single.yaml", map[string]any{"name": "profiles"}, []string{"spec", "scheduler", "configRef"}},
 		{"controlplane-single.yaml", true, []string{"spec", "serviceAccount", "publicDiscovery"}},
+		{"controlplane-single.yaml", map[string]any{"name": "pool-a"}, []string{"spec", "datastore", "shared"}},
 	} {
 		field := strings.Join(c.path, ".")
 		t.Run(field, func(t *testing.T) {
@@ -1149,11 +1148,12 @@ func TestRequestsAndBackupsCannotChange(t *testing.T) {
 	}
 }
 
-func TestDatastoreEndpointsAreHTTPS(t *testing.T) {
+func TestTheDatastoreKindIsGone(t *testing.T) {
 	needsEnvtest(t)
-	obj := example(t, "datastore.yaml", "plain")
-	set(t, obj, []any{"http://etcd-0.pool-a.etcd.svc:2379"}, "spec", "endpoints")
-	expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), "must be an https URL")
+	obj := decode(t, "{apiVersion: lodia.io/v1alpha1, kind: Datastore, metadata: {name: pool-a}, spec: {endpoints: [https://etcd-0.pool-a.etcd.svc:2379]}}")
+	if err := k8s.Create(context.Background(), obj, client.DryRunAll); !meta.IsNoMatchError(err) {
+		t.Fatalf("want no kind Datastore served, got %v", err)
+	}
 }
 
 func TestDatastoreClassValidation(t *testing.T) {

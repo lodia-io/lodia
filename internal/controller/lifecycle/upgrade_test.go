@@ -43,7 +43,7 @@ func quietControlPlane(t *testing.T) *lodiav1alpha1.ControlPlane {
 		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: ns.Name},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
 			Version:   "v1.37.1",
-			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{}},
+			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: lodiav1alpha1.DedicatedDatastore{}},
 			Endpoint:  lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}},
 			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
 		},
