@@ -52,7 +52,7 @@ var (
 )
 
 func TestMain(m *testing.M) {
-	if os.Getenv(health.OwnProcessEnv) != "" {
+	if os.Getenv(health.WithoutEnvtestEnv) != "" {
 		os.Exit(m.Run())
 	}
 	testenv.SkipUnlessAvailable("the health controller tests")

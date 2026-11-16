@@ -142,10 +142,7 @@ func repeatsOfABlock(keys int) []int {
 }
 
 func TestASliceOfStringsTakesTheSizeClassOfItsBytesAndTheAllocatorsHeaderPastFiveHundredAndTwelve(t *testing.T) {
-	if inAProcessOfItsOwn(t) {
-		return
-	}
-	defer theBodyRanToItsEnd(t)
+	inTheStepWithoutEnvtest(t)
 	sizedForTheBounds(t)
 	tried := map[int]bool{}
 	for _, class := range append(sizeClasses[:], 3*mostSmallObject/2) {
@@ -169,10 +166,7 @@ func TestASliceOfStringsTakesTheSizeClassOfItsBytesAndTheAllocatorsHeaderPastFiv
 }
 
 func TestASliceOfPointersTakesTheSizeClassOfItsBytesAndTheAllocatorsHeaderOfEightBytes(t *testing.T) {
-	if inAProcessOfItsOwn(t) {
-		return
-	}
-	defer theBodyRanToItsEnd(t)
+	inTheStepWithoutEnvtest(t)
 	tried := map[int]bool{}
 	for _, class := range sizeClasses {
 		for _, elements := range []int{class/8 - 1, class / 8, class/8 + 1} {
@@ -198,10 +192,7 @@ func TestATableOfGroupsTakesTheSameSizeClassWithTheHeaderAndWithoutIt(t *testing
 }
 
 func TestAKeyRepeatedByLinesKeepsTheSliceAppendGrewToInTheBytesTheAllocatorTakesForIt(t *testing.T) {
-	if inAProcessOfItsOwn(t) {
-		return
-	}
-	defer theBodyRanToItsEnd(t)
+	inTheStepWithoutEnvtest(t)
 	sizedForTheBounds(t)
 	held := heldByRepeats()
 	read := func(lines int) []string {

@@ -132,10 +132,7 @@ func TestTwoTalliesMergeIntoTheCountAndTheThreeThatSortFirstOfBoth(t *testing.T)
 }
 
 func TestATallyBuildsNoNameForAnObjectThatDoesNotQualify(t *testing.T) {
-	if inAProcessOfItsOwn(t) {
-		return
-	}
-	defer theBodyRanToItsEnd(t)
+	inTheStepWithoutEnvtest(t)
 	sizedForTheBounds(t)
 	const webhooks = 128_000
 	config := strings.Repeat("c", maxName)

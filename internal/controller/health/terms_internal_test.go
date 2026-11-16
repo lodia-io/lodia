@@ -60,10 +60,7 @@ func allocatedBy(build func()) int {
 }
 
 func TestTheSizesTheTermsAreBuiltFromAreTheSourcesOnThisPlatform(t *testing.T) {
-	if inAProcessOfItsOwn(t) {
-		return
-	}
-	defer theBodyRanToItsEnd(t)
+	inTheStepWithoutEnvtest(t)
 	runes := bytes.Repeat([]byte{0xe9}, 16)
 	var text string
 	worstCopy := 0
@@ -120,10 +117,7 @@ func TestEveryFigureOfTheDerivationIsTheSumOfItsTermsRoundedUp(t *testing.T) {
 }
 
 func TestTheLeastAnHTTP1FieldLineAddsToAHeadIsItsCopiesAndAnElementOfTheSliceSinceTheMapGrowsInSteps(t *testing.T) {
-	if inAProcessOfItsOwn(t) {
-		return
-	}
-	defer theBodyRanToItsEnd(t)
+	inTheStepWithoutEnvtest(t)
 	head := func(lines int) string {
 		var text strings.Builder
 		for i := range lines {

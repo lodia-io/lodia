@@ -13,6 +13,39 @@ E2E_MAINTENANCE_TEST ?= TestOperatorUpgradeInWindows
 CHART = charts/lodia
 CONTROLLERS = datastore health lifecycle pki tenant workloads
 RACE_PACKAGES = ./internal/controller/health ./internal/metrics
+# The tests that count allocations or read the heap: make test runs them in a step of their own, in a process with no envtest and no manager, and leaves them out of the step of RACE_PACKAGES.
+empty :=
+space := $(empty) $(empty)
+APART = \
+	TestABlockOfTrailersIsMergedIntoAMapOfOneNameInAllocationsEqualToItsParts \
+	TestABlockOfTrailersOfNamesNoAllocatorSharesIsReadInAllocationsEqualToItsParts \
+	TestACutStringHoldsNoneOfTheStringItWasCutFrom \
+	TestAFieldComparedOrSkippedIsNeverDecoded \
+	TestAGuardSkipsOutsideTheStepAndFailsInItWhenAnEarlierTestLeftGoroutinesBeside \
+	TestAKeyRepeatedByLinesKeepsTheSliceAppendGrewToInTheBytesTheAllocatorTakesForIt \
+	TestAMapOfHeadersHoldsAtMostWhatItsTablesTakeAtEverySplitPointAndOneKeyOnEachSideOfIt \
+	TestASliceOfPointersTakesTheSizeClassOfItsBytesAndTheAllocatorsHeaderOfEightBytes \
+	TestASliceOfStringsTakesTheSizeClassOfItsBytesAndTheAllocatorsHeaderPastFiveHundredAndTwelve \
+	TestAStepStartsABodyOnlyWhenTheGoroutinesOfEarlierTestsHaveEnded \
+	TestATallyBuildsNoNameForAnObjectThatDoesNotQualify \
+	TestATestOfTheStepWithoutEnvtestRunsBesideNoGoroutineOfTheSuite \
+	TestATimeFieldHoldingAnObjectOrAnArrayIsNotATimeWhateverItsSize \
+	TestAnHTTP1HeadOfFieldLinesEndingInALineFeedIsHeldAtMostHeadAndTrailersHTTP1 \
+	TestAnHTTP1HeadOfNamesAndFieldLinesTogetherWithTheTrailerValueIsHeldAtMostHeadAndTrailersHTTP1 \
+	TestAnHTTP1HeadThatAnnouncesTheNamesOfTheDearestCountWithAFullBlockOfTrailersNoneOfThemAnnouncedIsHeldAtMostHeadAndTrailersHTTP1 \
+	TestAnHTTP1HeadWhoseBlockOfTrailersRepeatsKeysIsHeldAtMostItsPartsAndHeadAndTrailersHTTP1 \
+	TestAnHTTP1HeadWhoseTrailerValueIsOnSeveralLinesIsHeldAtMostItsPartsAndHeadAndTrailersHTTP1 \
+	TestIoReadAllHoldsAtMostItsChunksAndTheSliceItReturnsAtTheCut \
+	TestTheHeadTheScanFindsMostWithItsTrailersIsHeldAtMostItsPartsAndTheTerm \
+	TestTheLeastAnHTTP1FieldLineAddsToAHeadIsItsCopiesAndAnElementOfTheSliceSinceTheMapGrowsInSteps \
+	TestTheMostAHeadOfDistinctNamesAndFieldLinesWithItsTrailersHoldsIsFoundByScanningItsAnnouncedNames \
+	TestTheSizeClassesTheMapsAreBuiltFromAreTheAllocators \
+	TestTheSizesTheTermsAreBuiltFromAreTheSourcesOnThisPlatform \
+	TestTheWorstHintIsTheDearestOfEveryHintATenantCanSetByTheBytesTheAllocatorTakesForTheSlice \
+	TestWhatAPassBuildsBesideTheSamplingIsUnderSummariesAtMost \
+	TestWhatASamplingKeepsRestsOnItsOwnBoundsAndNotOnWhatTheServerAnswers \
+	TestWhatTheTypesKeepAtTheRawBoundsIsUnderKeptAtMost
+APART_TESTS = $(subst $(space),|,$(strip $(APART)))
 DASHBOARDS = $(wildcard $(CHART)/files/dashboards/*.json)
 METRICS = metrics.service.enabled=true,metrics.serviceMonitor.enabled=true,metrics.rules.enabled=true,metrics.dashboards.enabled=true
 GENERATED = api/v1alpha1/zz_generated.deepcopy.go api/crds/*.yaml $(CHART)/files/crds/*.yaml $(CHART)/files/rbac/*.yaml
@@ -44,7 +77,8 @@ lint:
 test: ## unit and envtest tests, those of RACE_PACKAGES with the race detector, and the test of health that counts a tenant of 5,000 Nodes at the operator's Timeout without it; envtest runs a real API server and etcd
 	# @todo: 60 s until we know what holds an API server past SIGTERM; see todo.md.
 	KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT=60s KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test $$(go list ./... | grep -vxF "$$(go list $(RACE_PACKAGES))")
-	KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT=60s KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test -race $(RACE_PACKAGES)
+	KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT=60s KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test -race -skip '^($(APART_TESTS))$$' $(RACE_PACKAGES)
+	LODIA_HEALTH_TEST_WITHOUT_ENVTEST=1 go test -race -count=1 -run '^($(APART_TESTS))$$' ./internal/controller/health
 	KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT=60s KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test -count=1 -run '^TestATenantOfMaxNodesNodesIsCountedWholeAtTheOperatorsTimeout$$' ./internal/controller/health
 	cd api && go test ./...
 

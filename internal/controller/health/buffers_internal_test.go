@@ -48,10 +48,7 @@ func sum(values []int) (total int) {
 }
 
 func TestIoReadAllHoldsAtMostItsChunksAndTheSliceItReturnsAtTheCut(t *testing.T) {
-	if inAProcessOfItsOwn(t) {
-		return
-	}
-	defer theBodyRanToItsEnd(t)
+	inTheStepWithoutEnvtest(t)
 	sizedForTheBounds(t)
 	for _, c := range []struct {
 		name string

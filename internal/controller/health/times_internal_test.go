@@ -9,10 +9,7 @@ import (
 )
 
 func TestATimeFieldHoldingAnObjectOrAnArrayIsNotATimeWhateverItsSize(t *testing.T) {
-	if inAProcessOfItsOwn(t) {
-		return
-	}
-	defer theBodyRanToItsEnd(t)
+	inTheStepWithoutEnvtest(t)
 	const size = 4 << 20
 	for _, c := range []struct {
 		name  string

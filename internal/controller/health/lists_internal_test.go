@@ -460,10 +460,7 @@ func liveHeap() uint64 {
 }
 
 func TestWhatASamplingKeepsRestsOnItsOwnBoundsAndNotOnWhatTheServerAnswers(t *testing.T) {
-	if inAProcessOfItsOwn(t) {
-		return
-	}
-	defer theBodyRanToItsEnd(t)
+	inTheStepWithoutEnvtest(t)
 	sizedForTheBounds(t)
 	const maxNodes = 5000
 	for _, c := range []struct {

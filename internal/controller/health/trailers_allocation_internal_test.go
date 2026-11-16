@@ -30,10 +30,7 @@ func theNamesOfABlockNoAllocatorShares(count int) (names []string, block string)
 }
 
 func TestABlockOfTrailersOfNamesNoAllocatorSharesIsReadInAllocationsEqualToItsParts(t *testing.T) {
-	if inAProcessOfItsOwn(t) {
-		return
-	}
-	defer theBodyRanToItsEnd(t)
+	inTheStepWithoutEnvtest(t)
 	for _, count := range []int{292, 1100} {
 		names, block := theNamesOfABlockNoAllocatorShares(count)
 		source := strings.NewReader(block)
@@ -52,10 +49,7 @@ func TestABlockOfTrailersOfNamesNoAllocatorSharesIsReadInAllocationsEqualToItsPa
 }
 
 func TestABlockOfTrailersIsMergedIntoAMapOfOneNameInAllocationsEqualToItsParts(t *testing.T) {
-	if inAProcessOfItsOwn(t) {
-		return
-	}
-	defer theBodyRanToItsEnd(t)
+	inTheStepWithoutEnvtest(t)
 	names, block := theNamesOfABlockNoAllocatorShares(292)
 	header, err := textproto.NewReader(bufio.NewReader(strings.NewReader(block))).ReadMIMEHeader()
 	if err != nil {

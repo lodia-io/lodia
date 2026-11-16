@@ -155,10 +155,7 @@ func allocated(run func()) uint64 {
 }
 
 func TestAFieldComparedOrSkippedIsNeverDecoded(t *testing.T) {
-	if inAProcessOfItsOwn(t) {
-		return
-	}
-	defer theBodyRanToItsEnd(t)
+	inTheStepWithoutEnvtest(t)
 	const size = 4 << 20
 	huge := `"` + strings.Repeat("\xff", size) + `"`
 	hugeKey := `"` + strings.Repeat(`\n`, size/2) + `"`
