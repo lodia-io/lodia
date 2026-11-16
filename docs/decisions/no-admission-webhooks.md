@@ -1,7 +1,7 @@
 # Lodia runs no admission webhooks: validation and defaults live in the CRD schema, and the requester's check in an admission policy
 
 Decided 2026-10-25.
-The schema rules, the defaults, the controllers' conditions and the chart's admission policy for `KubeconfigRequest`s are built; the tenant write lock comes with phase 3 ([roadmap](../roadmap.md)).
+The schema rules, the defaults, the controllers' conditions and the chart's admission policy for `KubeconfigRequest`s are built; the tenant write lock is not, and phase 3 does not build it ([roadmap](../roadmap.md)).
 
 ## Decision
 

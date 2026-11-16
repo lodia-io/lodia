@@ -1,7 +1,7 @@
 # One ControlPlane object describes one tenant cluster; four small objects describe storage classes, shared stores, access and snapshots
 
 Decided 2026-10-25.
-The five kinds are built as types and CRDs; the six controllers act on `ControlPlane`, the Datastore controller also on `DatastoreClass` and `Backup`, PKI on `KubeconfigRequest`, and nothing yet on `Datastore`, the shared store of phase 3.
+The five kinds are built as types and CRDs; the six controllers act on `ControlPlane`, the Datastore controller also on `DatastoreClass` and `Backup`, PKI on `KubeconfigRequest`, and nothing on `Datastore`, the shared store, which phase 3 does not build ([roadmap](../roadmap.md)).
 
 ## Decision
 

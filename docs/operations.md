@@ -524,7 +524,7 @@ The nightly now runs on the public runner, 4 CPUs and 15.6 GiB, where run [40371
 A highly available control plane's target stays 1.5 CPU and 2.5 GiB.
 A management cluster sized for N tenants needs the sum of their requests on its control plane nodes, plus room to roll one Deployment of every tenant (the fleet limit bounds how many roll at once), plus etcd volumes with low fsync latency.
 
-The operator: two replicas; memory grows with the number of tenants it caches (label-scoped, metadata-only for Secrets); the phase 4 gate is 200 tenants under 2 GiB.
+The operator: two replicas; memory grows with the number of tenants it caches (label-scoped, metadata-only for Secrets); phase 3 measures it with 1,000 `ControlPlane`s on envtest ([roadmap](roadmap.md)).
 Health reads a tenant as JSON, and the tenant's administrator can have any server answer, an APIService naming a Service of their own included ([review checklist](review-checklist.md), item 10).
 So what a read holds is fixed by the constants below and not by what a tenant sends:
 - no object and no array of an answer reaches `encoding/json`, whose decoding multiplies the bytes it is given (an empty object becomes a struct, an invalid byte in a string three bytes, the key of a skipped field is unquoted and folded all the same): `internal/jsonscan` walks the body, which `json.Valid` has checked, and every value it hands over is a slice of it;

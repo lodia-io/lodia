@@ -369,7 +369,7 @@ Tenant renders every object at the oldest version the three components report, `
 It renders with the running operator once Lifecycle grants that revision; until then it creates only what the stored inventory lists and the tenant lacks, and writes nothing else but what [`target.operatorRevision`'s row](api/controlplane.md#status) names ([decision](decisions/upgrades-and-maintenance-windows.md)).
 The pinned component versions per minor are those kubeadm pins: CoreDNS v1.13.1 and etcd 3.6.6 for 1.35, CoreDNS v1.14.2 for 1.36, CoreDNS v1.14.6 for 1.37, and konnectivity 0.NN for Kubernetes 1.NN (kubeadm's constants at [v1.35.0](https://github.com/kubernetes/kubernetes/blob/v1.35.0/cmd/kubeadm/app/constants/constants.go), [v1.36.0](https://github.com/kubernetes/kubernetes/blob/v1.36.0/cmd/kubeadm/app/constants/constants.go) and [v1.37.1](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kubeadm/app/constants/constants.go)).
 
-Built without the write lock, which is phase 3's (`internal/controller/tenant`, the templates in its `manifests/`, taken from [kubeadm v1.35.0](https://github.com/kubernetes/kubernetes/tree/v1.35.0/cmd/kubeadm/app/phases) and [the hard way](hard-way.md)).
+Built (`internal/controller/tenant`, the templates in its `manifests/`, taken from [kubeadm v1.35.0](https://github.com/kubernetes/kubernetes/tree/v1.35.0/cmd/kubeadm/app/phases) and [the hard way](hard-way.md)), without the write lock, which phase 3 does not build ([roadmap](roadmap.md)).
 Once `AccessReady` is True for the generation, the controller applies every object as `lodia/tenant` through `<cp>-lodia-kubeconfig`, on a change of the inputs it reads and every 10 minutes; until then both conditions stay as they were at an earlier generation, or are `WaitingForAccess` at the generation they describe, but for an `AddonsApplied` that is `Refused`, `ObjectsControlledElsewhere` or `Applying`, which stays, and it uses `<cp>-lodia-kubeconfig`, `<cp>-ca-bundle` and, in `gateway` mode, `<cp>-tunnel-client` only once they exist and this `ControlPlane` controls them, looking again every minute.
 In `gateway` mode a pass first delivers `<cp>-tunnel-client`, under the same rule, before it reads any condition, and every 10 minutes while it waits: none of them proves the API server cannot take the renewal, and an expired certificate takes every pod's API.
 With a 10-second timeout on each request, it applies the pair to `kube-system/apiserver-proxy-client` if that exists and `lodia/tenant` applied it, so the first write stays the inventory's and another owner's Secret stays theirs; a failure is logged and the pass goes on.
@@ -531,7 +531,7 @@ The signer's image reaches the operator as `--signer-image`, and `lodia-tunnel`'
 Lodia reaches a tenant's API server through its in-namespace Service and ignores `HTTPS_PROXY` for that connection, so a site that sets a proxy on every pod needs no exception for it.
 
 Then a `DatastoreClass` with the bucket, and the first `ControlPlane`.
-Phase 4 brings signed and attested images, and how to verify them ([roadmap](roadmap.md), [releases-and-support](decisions/releases-and-support.md)).
+The first release, in phase 3, brings signed and attested images, and how to verify them ([roadmap](roadmap.md), [releases-and-support](decisions/releases-and-support.md)).
 
 Operator configuration (a file, passed as `--config`, mounted from a ConfigMap; the chart renders it from values).
 Without `--config` the defaults apply.

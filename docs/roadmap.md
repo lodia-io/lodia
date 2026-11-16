@@ -3,19 +3,15 @@
 Five phases.
 Each ends with a gate: an automated check whose exit code says the phase is done, a number we measured against a target, and a scenario someone can watch.
 A phase does not start before the previous gate is green, and a gate that fails after it passed is a regression, not a backlog item.
+A consumer of a phase's contract may be built in that phase, since it is what tests the contract: the Cluster API provider of phase 3 consumes phase 2's API.
 
 | phase | delivers | gate |
 |---|---|---|
 | 0 · Foundations | the repository can build, test and ship; one control plane built by hand | `make verify` green in CI; the hand-built control plane runs a pod; the etcd spike has numbers |
 | 1 · Walking skeleton | a single-replica `ControlPlane` a real kubeadm node joins | e2e: `Ready` in under 90 seconds, node `Ready`, `kubectl logs` and `exec` through the tunnel, conformance passes |
 | 2 · Production | HA, Gateway exposure with in-cluster access, backups with `Backup` and restore, upgrades, maintenance windows, Health, metrics | zero failed API requests during a rollout and an upgrade; restore from backup passes conformance; nodes cut off for 10 minutes lose no pod |
-| 3 · Parity | shared etcd, migration by snapshot, staged rotations, hibernation, write lock, the `Compact` layout, a Cluster API provider | rotation keeps nodes `Ready` and tokens valid; sleep and wake keep data; migration freezes writes for seconds, reads never; a `Compact` tenant is one pod |
-| 4 · Scale and community | hundreds of tenants per operator, zone spread, `v1beta1`, docs site, supply-chain badges | 200 tenants on one management cluster within the resource budget; OpenSSF Scorecard ≥ 8 |
-
-Segla moves to Lodia in phase 3, through Lodia's Cluster API provider.
-Segla keeps Cluster API for the worker pools it will create through it, and Cluster API's kubeadm bootstrap provider joins a worker only once a control plane provider reports the control plane initialized ([kubeadmconfig_controller.go](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/bootstrap/kubeadm/reconcilers/kubeadmconfig/kubeadmconfig_controller.go#L351-L367)).
-Its `cluster` service then swaps the `KamajiControlPlane` for the provider's object, its agent drops its own API proxy, and its regional watchdog steps down for Lodia's controller manager hold.
-That work is tracked in Segla's repositories, not here.
+| 3 · Released, hardened, ahead | a first release and an API ready to freeze; control planes hardened for tenants whose administrators are untrusted; rehearsed upgrades, templates, rewind, proven backups, staged rotations, hibernation, a tenant that can move; a Cluster API provider | an upgrade stops at its rehearsal, not at a broken API server; control plane pods reach only their own paths; rotations keep nodes `Ready`; sleep and wake keep data; a restore keeps its nodes |
+| 4 · Scale and community | sharding across operator replicas, zone spread, `v1beta1`, docs site, supply-chain badges | OpenSSF Scorecard ≥ 8 |
 
 ## Phase 0 · Foundations
 
@@ -98,26 +94,78 @@ Gate:
 - Measured: API p99 latency through the Gateway against a direct Service, overhead under 5 ms on kind.
   `TestGatewayOverhead` measures it in [`nightly-gateway`](../test/e2e/README.md#nightly-g6-and-conformance-behind-the-gateway); on 2026-11-08 on Docker Desktop's kernel 6.12.54-linuxkit with 16 CPUs, Δp99 was 0.06 ms through the Gateway and 0.17 ms through the tunnel on reused connections, and 0.11 and 0.99 ms on new ones, with no error.
 
-## Phase 3 · Parity
+## Phase 3 · Released, hardened, ahead
 
-Scope: shared `Datastore` with a user and prefix per tenant; migration between stores through a write lock and a snapshot; staged rotation of the CA, the ServiceAccount key and the etcd encryption key; hibernation with schedules; the `ValidatingAdmissionPolicy` write lock; the `Compact` layout; a Cluster API control plane provider in its own repository.
+Three stages, in this order: a release a platform can pin, then control planes safe for tenants whose administrators are untrusted ([who-is-trusted](decisions/who-is-trusted.md)), then the features that put Lodia ahead.
 
-Gate:
+Scope, to a first release:
 
-- e2e: start and complete a CA rotation while two nodes stay `Ready` and a workload keeps calling the API with a ServiceAccount token; the same for the ServiceAccount key and the encryption key.
-- e2e: hibernate, wait, wake; every object and Secret is there, nodes rejoin without intervention.
-- e2e: migrate a tenant from a shared `Datastore` to a dedicated etcd; writes are refused for at most 30 seconds, reads succeed throughout.
-- e2e: a `Compact` `ControlPlane` on a shared `Datastore` runs as one pod; a node joins, the conformance smoke subset passes, and the controller manager hold works as in `Split` ([compact-layout](decisions/compact-layout.md)).
+- Health's reads of a tenant bounded, whatever its server answers ([controller-manager-hold](decisions/controller-manager-hold.md)).
+- Gates that say what they test: G2's bound, G5's changed `Etcd` and object in the tenant, the phase 1 gate's stages ([gates](../test/e2e/README.md)).
+- The API before it freezes: every field no controller reads leaves `v1alpha1`, the `Datastore` kind with them, and comes back with the change that builds it; `restoreFrom.release: Held` becomes `Pending`; the names only Lodia's controllers share leave the public module.
+- A synthetic fleet of 1,000 `ControlPlane`s on envtest, run on demand and every night, and the operator's memory request and limit set from its numbers.
+- One client of a tenant for PKI, Tenant and Health, with Health's bounds on every read, and the Secrets it needs read from the cache.
+- Read-your-writes: a controller's next pass sees the status it wrote, whatever its cache's lag.
+- Structured authentication: `apiServer.authentication.jwt` as upstream's `JWTAuthenticator`, an issuer's edit applied without a restart.
+- The rehearsal of a minor step: before the API server moves, a short-lived copy of the tenant's data under the next minor's API server shows that the step will start and every resource still reads; Kubernetes 1.38 joins the version table after it.
+- etcd-druid v0.39.2, nightlies that pin how Lodia asks it to reconcile and how a member restores through delta snapshots, and a seam that keeps its types out of the controllers ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)).
+- A first release: the release workflow, signed images, the chart at a version, Renovate ([releases-and-support](decisions/releases-and-support.md)).
+
+Scope, to the first production tenant:
+
+- Deleting a `ControlPlane` needs a confirmation, which an admission policy of the chart checks and the Cluster API provider gives ([who-is-trusted](decisions/who-is-trusted.md)).
+- Control plane pods locked down: egress denied but for the paths a control plane needs, the `restricted` security context on every container, a memory limit per component.
+- Sizing and prerequisites: what one tenant takes of a node's pods, pod range and volumes; a management cluster that runs nothing else and encrypts its data at rest.
+
+Scope, ahead, each feature designed first:
+
+- A credential of its own for the Cluster API provider and for each extension, and a status field that says whether a cluster may act outside itself.
+- Operations as objects, and the client CA rotation ([one-controlplane-per-cluster](decisions/one-controlplane-per-cluster.md)).
+- Templates: a new cluster from a prepared one, every object under a new UID.
+- Rewind: a namespace or a resource type brought back from etcd's history.
+- Backups that are proven: a drill per tenant, its result in status.
+- No surprise rollouts: a digest of what each tenant renders, a canary, a report before an upgrade.
+- What a tenant's own users see: an audit policy, the ServiceAccount issuer's public discovery, a scheduler configuration, the control plane's logs.
+- The cheapest idle tenant: hibernation with schedules, a class for small tenants.
+- The other rotations: the cluster CA, the ServiceAccount key, the encryption key, and the etcd, front-proxy and tunnel CAs ([staged-credential-rotation](decisions/staged-credential-rotation.md)).
+- A second version of the controller manager hold, which today leaves a tenant of one node alone, and its margin per minor.
+- Upkeep and adoption: a generated field reference, code the controllers share, a nightly with a DRA driver.
+- Last, a tenant that can move: a restore that keeps the tenant's identity, so its nodes stay without joining again, which [restore-replaces-the-source](decisions/restore-replaces-the-source.md) leaves to this phase; then a move between management clusters, and an import.
+
+And through the phase, a Cluster API control plane provider in its own repository.
+
+Not in phase 3:
+
+- The `Compact` layout, withdrawn ([compact-layout](decisions/compact-layout.md)).
+- A shared `Datastore`, its write lock and migration between stores.
+  The API server's compactor writes and watches `compact_rev_key`, a key outside `--etcd-prefix` ([compact.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/storage/etcd3/compact.go#L35)), so the API servers of tenants that share an etcd by prefix share that key.
+
+Gate (a feature of the last stage adds its check here with its design):
+
+- e2e: a minor upgrade of a tenant that sets a feature gate the next minor removed stops at its rehearsal with the reason, its API server untouched, and a tenant without one steps as it does today; the minor upgrade's gate checks both.
+- e2e, every night: etcd-druid upgraded across a patch under a held tenant serves each request of the Datastore controller once and reports its revision once; a one-member tenant whose volume is deleted after a delta snapshot comes back with the key that delta holds.
+- e2e: a tenant whose JWT authenticator maps claims by CEL to groups, `uid` and `extra` and validates the user accepts a token of its issuer as that user, and an edit of the issuer applies without a restart of the API server.
+- e2e: deleting a `ControlPlane` without the confirmation is refused, and the Cluster API provider's e2e still deletes its cluster.
+- e2e: the gates pass with egress denied and the `restricted` security context on every control plane pod, and a control plane pod that dials the management network is refused.
 - e2e: a Cluster API `Cluster` whose control plane is Lodia's provider reaches `ControlPlaneInitialized`, and a `MachineDeployment` of Cluster API's Docker machines joins it through the kubeadm bootstrap provider.
+- e2e: start and complete a CA rotation while two nodes stay `Ready` and a workload keeps calling the API with a ServiceAccount token; the same for the ServiceAccount key and the encryption key; once the client CA rotation completes, an admin kubeconfig of the old client CA no longer works.
+- e2e: a `ControlPlane` created from a template reaches `Ready` with the template's objects, each under a new UID.
+- e2e: a namespace deleted in a tenant is rewound from etcd's history and its objects are back.
+- e2e: a tenant's backup drill restores its newest snapshot without touching the tenant, and its result is in status.
+- e2e: an operator upgrade that changes nothing a tenant renders rolls nothing of it.
+- e2e: hibernate, wait, wake; every object and Secret is there, nodes rejoin without intervention.
+- e2e: a `ControlPlane` restored from a `Backup` with its identity kept: its nodes stay `Ready` without joining again and every pod keeps its UID; a move to another management cluster loses no acknowledged write.
+- Measured: the operator with 1,000 `ControlPlane`s on envtest, its memory and how long a spec change takes to reconcile; the numbers set the chart's memory request and limit.
+
+Done: Health's bounded reads, with the tenant clients of [tenant-clients-speak-http1](decisions/tenant-clients-speak-http1.md); the gates that say what they test.
 
 ## Phase 4 · Scale and community
 
-Scope: label-based sharding of tenants across operator replicas; zone spread; 200 tenants on one test management cluster with kwok-simulated nodes; `v1beta1` with the lessons of the alpha; the documentation site; signed images, SBOMs, provenance; OpenSSF Scorecard; the first adopters.
+Scope: label-based sharding of tenants across operator replicas; zone spread; `v1beta1` with the lessons of the alpha; the documentation site; OpenSSF Scorecard; the first adopters.
 
 Gate:
 
-- 200 `ControlPlane`s reach `Ready`; the operator stays under 2 GiB of memory and reconciles a spec change in under 10 seconds at that scale.
-- Scorecard ≥ 8; every image signed and with provenance.
+- Scorecard ≥ 8.
 
 ## What is deliberately not on the roadmap
 
