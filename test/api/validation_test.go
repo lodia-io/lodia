@@ -329,6 +329,7 @@ func TestExtraArgsRefuseWhatConflictsWithTheirValues(t *testing.T) {
 		{"a node mask size with one IPv4 range", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size": "26"})}, ""},
 		{"a node mask size with two ranges", []func(*testing.T, *unstructured.Unstructured){pods("10.244.0.0/16", "fd00:10:244::/56"), args("controllerManager", map[string]any{"node-cidr-mask-size": "26"})}, dual},
 		{"both node mask sizes with two ranges", []func(*testing.T, *unstructured.Unstructured){pods("10.244.0.0/16", "fd00:10:244::/56"), args("controllerManager", map[string]any{"node-cidr-mask-size-ipv4": "26", "node-cidr-mask-size-ipv6": "64"})}, ""},
+		{"an IPv4 node mask size with two ranges, the IPv6 one first", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10:244::/56", "10.244.0.0/16"), args("controllerManager", map[string]any{"node-cidr-mask-size-ipv4": "26"})}, ""},
 		{"an IPv4 node mask size with an IPv4 range", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size-ipv4": "26"})}, ""},
 		{"an IPv4 node mask size with an IPv6 range", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10:244::/56"), args("controllerManager", map[string]any{"node-cidr-mask-size-ipv4": "26"})}, ipv4},
 		{"an IPv6 node mask size with an IPv6 range", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10:244::/56"), args("controllerManager", map[string]any{"node-cidr-mask-size-ipv6": "64"})}, ""},
