@@ -355,10 +355,10 @@ func busy(a, b operatorStats) string {
 	return fmt.Sprintf("writes %s; queued %s", counts(writes, 0), counts(queued, 0))
 }
 
-func (f *fleet) net(requests map[string]int64, window time.Duration, share float64) map[string]int64 {
+func (f *fleet) net(requests map[string]int64, window time.Duration, tenants int) map[string]int64 {
 	out := map[string]int64{}
 	for k, v := range requests {
-		if n := v - int64(math.Round(f.atRest[k]*window.Seconds()*share)); n > 0 {
+		if n := v - int64(math.Round(f.atRest[k]*window.Seconds()*float64(tenants))); n > 0 {
 			out[k] = n
 		}
 	}
@@ -385,7 +385,7 @@ func (f *fleet) rest() {
 	d := diff(before, after)
 	f.atRest = map[string]float64{}
 	for k, v := range d.requests {
-		f.atRest[k] = float64(v) / after.at.Sub(before.at).Seconds()
+		f.atRest[k] = float64(v) / after.at.Sub(before.at).Seconds() / float64(f.size)
 	}
 	secrets := float64(d.requests["get secrets"]) / restWindow.Seconds()
 	f.report("at rest, %d tenants, over %s: %.1f requests/s to the API server: %s", f.size, restWindow, float64(total(d.requests))/restWindow.Seconds(), counts(d.requests, restWindow))
@@ -491,7 +491,7 @@ func (f *fleet) updateOne() {
 	d := diff(quiet, after)
 	window := after.at.Sub(quiet.at)
 	f.report("one ControlPlane updated (a label): passes %s (beside the fleet's %s in as long before it); its namespace's requests %s, less the reads a tenant sends at rest in the %s it took to settle: %s",
-		counts(only(d.reconciles), 0), counts(only(background.reconciles), 0), counts(d.tracked, 0), window.Round(time.Second), counts(f.net(d.tracked, window, 1/float64(f.size)), 0))
+		counts(only(d.reconciles), 0), counts(only(background.reconciles), 0), counts(d.tracked, 0), window.Round(time.Second), counts(f.net(d.tracked, window, 1), 0))
 }
 
 func only(m map[string]float64) map[string]float64 {
@@ -521,9 +521,9 @@ func (f *fleet) updateAll() {
 	took := changed.Sub(start)
 	peak, _, _ := s.end()
 	d := diff(before, after)
-	caused := f.net(d.requests, after.at.Sub(before.at), 1)
-	f.report("every ControlPlane updated at once: settled in %s; passes %s; requests %d, less those of %s at rest %d: %s; peak %s",
-		took.Round(time.Second), counts(only(d.reconciles), 0), total(d.requests), after.at.Sub(before.at).Round(time.Second), total(caused), counts(caused, 0), peak)
+	caused := f.net(d.requests, after.at.Sub(before.at), f.size)
+	f.report("every ControlPlane updated at once: settled in %s; passes %s; requests %d, of which besides those of %d tenants at rest over %s %d: %s; peak %s",
+		took.Round(time.Second), counts(only(d.reconciles), 0), total(d.requests), f.size, after.at.Sub(before.at).Round(time.Second), total(caused), counts(caused, 0), peak)
 }
 
 func (f *fleet) each(from, to int, do func(int)) {
@@ -600,9 +600,9 @@ func (f *fleet) restart() {
 	after, changed := f.settle(30 * time.Minute)
 	took := changed.Sub(f.op.started)
 	peak, last, _ := s.end()
-	caused := f.net(after.Requests, after.at.Sub(f.op.started), 1)
-	f.report("a restart over %d tenants: settled in %s; passes %s; requests %d, less those of %s at rest %d: %s", f.size, took.Round(time.Second), counts(after.Reconciles, 0), total(after.Requests),
-		after.at.Sub(f.op.started).Round(time.Second), total(caused), counts(caused, 0))
+	caused := f.net(after.Requests, after.at.Sub(f.op.started), f.size)
+	f.report("a restart over %d tenants: settled in %s; passes %s; requests %d, of which besides those of %d tenants at rest over %s %d: %s", f.size, took.Round(time.Second), counts(after.Reconciles, 0), total(after.Requests),
+		f.size, after.at.Sub(f.op.started).Round(time.Second), total(caused), counts(caused, 0))
 	f.report("a restart: peak %s; after it %s", peak, last)
 }
 
@@ -748,9 +748,9 @@ func (f *fleet) defaultWave() {
 	peak, _, _ := s.end()
 	window := to.at.Sub(from.at)
 	d := diff(from, to)
-	caused := f.net(d.requests, window, 1)
-	f.report("a wave at the default %d slots, from its second minute to its %s: %.1f tenants granted a minute, %d granted and %d queued at the end; passes %s; requests less those at rest %.1f/s: %s; peak %s",
-		settings.MaxConcurrentRollouts, defaultWave, float64(after-before)/window.Minutes(), after, waiting, counts(only(d.reconciles), window), float64(total(caused))/window.Seconds(), counts(caused, window), peak)
+	caused := f.net(d.requests, window, f.size)
+	f.report("a wave at the default %d slots, from its second minute to its %s: %.1f tenants granted a minute, %d granted and %d queued at the end; passes %s; requests besides those of %d tenants at rest %.1f/s: %s; peak %s",
+		settings.MaxConcurrentRollouts, defaultWave, float64(after-before)/window.Minutes(), after, waiting, counts(only(d.reconciles), window), f.size, float64(total(caused))/window.Seconds(), counts(caused, window), peak)
 }
 
 func (f *fleet) write() {
