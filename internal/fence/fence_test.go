@@ -116,6 +116,25 @@ func TestAWriteHoldsTheFenceUntilTheCacheShowsIt(t *testing.T) {
 	}
 }
 
+func TestAWriteTheCacheNeverShowsWaitsTenSecondsWithNoDeadlineOfItsOwn(t *testing.T) {
+	var f fence.Fence
+	if err := f.Acquire(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	defer f.Release()
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() { done <- f.Wrote(t.Context(), showing("99"), written("101"), nil) }()
+	select {
+	case err := <-done:
+		if waited := time.Since(start); err != nil || f.Cached() || waited < 10*time.Second {
+			t.Errorf("a write the cache never showed returned %v after %s with Cached %t, want no error after 10s and the API server", err, waited.Round(time.Millisecond), f.Cached())
+		}
+	case <-time.After(12 * time.Second):
+		t.Fatal("a write the cache never showed still waits after 12s, want 10s")
+	}
+}
+
 func TestAFenceIsHeldByOneHolderAtATimeUntilItsDeadline(t *testing.T) {
 	var f fence.Fence
 	if err := f.Acquire(t.Context()); err != nil {
