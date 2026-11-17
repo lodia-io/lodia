@@ -730,7 +730,7 @@ func TestTheNodesListedAfterTheLeasesShareTheirTimeoutAndOneCutKeepsTheLastList(
 			<-req.Context().Done()
 			return
 		case slow.Load() && req.URL.Path == nodeLeasesPath:
-			time.Sleep(150 * time.Millisecond)
+			time.Sleep(250 * time.Millisecond)
 		}
 		answerHonestly(w, req)
 	}))
@@ -746,8 +746,8 @@ func TestTheNodesListedAfterTheLeasesShareTheirTimeoutAndOneCutKeepsTheLastList(
 	if err != nil || len(leases) != 1 {
 		t.Errorf("the Leases answered within the Timeout returned %d, error %v, want one", len(leases), err)
 	}
-	if took < r.Timeout || took > r.Timeout+200*time.Millisecond {
-		t.Errorf("the two lists took %v, want their one Timeout of %v", took, r.Timeout)
+	if took < r.Timeout || took > r.Timeout+150*time.Millisecond {
+		t.Errorf("the two lists took %v, want their one Timeout of %v: the Leases took 250ms of it", took, r.Timeout)
 	}
 	if len(s.nodes) != 1 || !s.listedAt.Equal(renewedAt) {
 		t.Errorf("the list of Nodes the Timeout cut left %d Nodes listed at %v, want the last good list, of %v", len(s.nodes), s.listedAt, renewedAt)
