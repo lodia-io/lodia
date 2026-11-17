@@ -396,7 +396,7 @@ func (r *restore) copied(t *testing.T) *druidv1alpha1.Etcd {
 
 func (r *restore) marker(t *testing.T) int64 {
 	t.Helper()
-	response := r.etcd.get(t, contract.RestoreMarkerKey(r.controlPlane(t).UID))
+	response := r.etcd.get(t, datastore.RestoreMarkerKey(r.controlPlane(t).UID))
 	if len(response.Kvs) == 0 {
 		return 0
 	}
@@ -616,7 +616,7 @@ type restoreMarkerJSON struct {
 
 func restoreMarkerValue(t *testing.T, r *restore) restoreMarkerJSON {
 	t.Helper()
-	response := r.etcd.get(t, contract.RestoreMarkerKey(r.controlPlane(t).UID))
+	response := r.etcd.get(t, datastore.RestoreMarkerKey(r.controlPlane(t).UID))
 	if len(response.Kvs) == 0 {
 		t.Fatal("no marker")
 	}
@@ -880,7 +880,7 @@ func TestTheCleanupFunction(t *testing.T) {
 	if again != 1 || len(e.get(t, cleanedKeys[0]).Kvs) == 0 {
 		t.Errorf("a second cleanup deleted what was written after the first")
 	}
-	marker := e.get(t, contract.RestoreMarkerKey(uid))
+	marker := e.get(t, datastore.RestoreMarkerKey(uid))
 	if string(marker.Kvs[0].GetValue()) != "first" || marker.Kvs[0].GetModRevision() != revision {
 		t.Errorf("the marker holds %q at revision %d, want the first cleanup's at %d", marker.Kvs[0].GetValue(), marker.Kvs[0].GetModRevision(), revision)
 	}
@@ -1373,7 +1373,7 @@ func TestDataFromBeforeTheCleanupIsCleanedUpAgain(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, err := r.etcd.Delete(t.Context(), contract.RestoreMarkerKey(r.controlPlane(t).UID)); err != nil {
+			if _, err := r.etcd.Delete(t.Context(), datastore.RestoreMarkerKey(r.controlPlane(t).UID)); err != nil {
 				t.Fatal(err)
 			}
 			r.etcd.put(t, cleanedKeys[0])
@@ -1930,7 +1930,7 @@ func TestARestoreReadThatFailsIsNoAnswer(t *testing.T) {
 		name string
 		key  func(*testing.T, *restore) string
 	}{
-		{"the marker", func(t *testing.T, r *restore) string { return contract.RestoreMarkerKey(r.controlPlane(t).UID) }},
+		{"the marker", func(t *testing.T, r *restore) string { return datastore.RestoreMarkerKey(r.controlPlane(t).UID) }},
 		{"the seal", func(_ *testing.T, r *restore) string { return contract.BackupSealKey(r.backup.UID) }},
 	} {
 		t.Run(c.name, func(t *testing.T) {

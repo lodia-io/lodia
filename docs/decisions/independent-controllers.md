@@ -23,7 +23,7 @@ Rules:
   Blocked work is a condition with a reason, not a retry loop.
   A name one controller writes and another reads, with its shape and its one writer, lives in one of two homes.
   `api/v1alpha1` holds what an importer may rely on: the types, the conditions and their reasons, the labels and annotations, the Secrets of a tenant namespace with their keys, the API server's Service, and the Backups and the admission policy a platform handles (`names.go`).
-  `internal/contract` holds what only Lodia's controllers share: the names and generations of the etcd certificates, the `Etcd`'s name, the seal and marker keys in etcd, the leader Leases and the hold's holder, the controller manager's timings, and the values one controller renders and another relies on.
+  `internal/contract` holds what only Lodia's controllers share: the names and generations of the etcd certificates, the `Etcd`'s name, the seal key in etcd, the leader Leases and the hold's holder, the controller manager's timings, and the values one controller renders and another relies on.
   A name only its writer uses stays in the writer's package.
 - The public address is known only once Workloads' Service has one (a load balancer's, a node's), or the Gateway's listener its port, so Workloads publishes `status.endpoint` from it, whole, before it waits on anything, in `gateway` mode never taking a published one back, and PKI, Tenant and Health read it: the serving certificate's addresses, the kubeconfigs' server, `cluster-info`, the agents' server, the external probe.
 - Each controller has its own work queue, worker count and rate limiter; a failure in one tenant's datastore does not delay certificate renewal in another.

@@ -55,6 +55,13 @@ var cleanupRanges = []string{
 
 const cleanupKey = "/registry/configmaps/kube-system/extension-apiserver-authentication"
 
+// RestoreMarkerKey is the etcd key of the cleanup of a restored etcd: its one
+// transaction deletes what bound the data to the source unless the key
+// exists, and creates it.
+func RestoreMarkerKey(controlPlane types.UID) string {
+	return "/lodia.io/restores/" + string(controlPlane)
+}
+
 // Cleanup unbinds a restored etcd's data from its source in one transaction
 // that also puts RestoreMarkerKey(controlPlane) with value, and does nothing
 // once that key exists. It returns how many keys it deletes and the revision
@@ -79,7 +86,7 @@ func Cleanup(ctx context.Context, kv clientv3.KV, controlPlane types.UID, value 
 	if keys >= cleanupBound {
 		return keys, 0, nil
 	}
-	marker := contract.RestoreMarkerKey(controlPlane)
+	marker := RestoreMarkerKey(controlPlane)
 	deletes = append(deletes, clientv3.OpDelete(cleanupKey), clientv3.OpPut(marker, string(value)))
 	response, err := kv.Txn(ctx).
 		If(clientv3.Compare(clientv3.CreateRevision(marker), "=", 0)).
@@ -362,7 +369,7 @@ func (r *Reconciler) checkRestore(ctx context.Context, cp *lodiav1alpha1.Control
 	defer func() { _ = c.Close() }()
 	var marker *clientv3.GetResponse
 	if err := request(ctx, func(ctx context.Context) (err error) {
-		marker, err = c.Get(ctx, contract.RestoreMarkerKey(cp.UID))
+		marker, err = c.Get(ctx, RestoreMarkerKey(cp.UID))
 		return err
 	}); err != nil {
 		return unanswered(ctx, cp, etcd, err), nil
@@ -371,7 +378,7 @@ func (r *Reconciler) checkRestore(ctx context.Context, cp *lodiav1alpha1.Control
 	var revision int64
 	if len(marker.Kvs) > 0 {
 		if err := json.Unmarshal(marker.Kvs[0].GetValue(), &value); err != nil {
-			return restoreCheck{}, fmt.Errorf("read the marker %s in the etcd of Etcd %s: %w", contract.RestoreMarkerKey(cp.UID), etcd.Name, err)
+			return restoreCheck{}, fmt.Errorf("read the marker %s in the etcd of Etcd %s: %w", RestoreMarkerKey(cp.UID), etcd.Name, err)
 		}
 		revision = marker.Kvs[0].GetCreateRevision()
 	} else {

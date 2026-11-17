@@ -66,13 +66,6 @@ func EtcdName(controlPlane string) string { return controlPlane + "-etcd" }
 // controller requires in the restored etcd.
 func BackupSealKey(backup types.UID) string { return "/lodia.io/backups/" + string(backup) }
 
-// RestoreMarkerKey is the etcd key of the Datastore controller's cleanup of
-// a restored etcd: its one transaction deletes what bound the data to the
-// source unless the key exists, and creates it.
-func RestoreMarkerKey(controlPlane types.UID) string {
-	return "/lodia.io/restores/" + string(controlPlane)
-}
-
 // The values beside the names that one controller renders and another relies
 // on.
 const (
