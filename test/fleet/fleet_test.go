@@ -50,7 +50,7 @@ const (
 	reportEnv = "LODIA_FLEET_REPORT"
 
 	nodesPerTenant = 3
-	restWindow     = 30 * time.Second
+	restWindow     = time.Minute
 	hangWindow     = 60 * time.Second
 	boundsWindow   = 30 * time.Second
 	settledFor     = 5 * time.Second
@@ -59,6 +59,8 @@ const (
 	idleTimeout  = 100 * time.Second
 	firstVersion = "v0.0.0-fleet"
 	nextVersion  = "v0.0.1-fleet"
+	thirdVersion = "v0.0.2-fleet"
+	defaultWave  = 10 * time.Minute
 )
 
 // periodic are the controllers that pass every tenant on a period of their
@@ -84,6 +86,7 @@ type fleet struct {
 	op       *operatorProcess
 	size     int
 	lines    []string
+	atRest   map[string]float64
 }
 
 func (f *fleet) report(format string, args ...any) {
@@ -94,28 +97,13 @@ func (f *fleet) report(format string, args ...any) {
 
 func TestFleet(t *testing.T) {
 	size, hanging := knobs(t)
-	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
-		t.Skip("KUBEBUILDER_ASSETS is not set; run make fleet")
-	}
 	dir := t.TempDir()
 	if keep := os.Getenv(reportEnv); keep != "" {
 		dir = filepath.Dir(keep)
 	}
-	logs, err := os.Create(filepath.Join(dir, "platform.log"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = logs.Close() })
-	ctrl.SetLogger(logger(logs))
-	cfg, admin := startManagement(t)
-	grantOperator(t, admin)
-	f := &fleet{t: t, cfg: cfg, admin: admin, dir: dir}
-	f.platform = startPlatform(t, cfg, admin, logs)
-	f.cache = f.platform.mgr.GetCache()
-	f.tenants = startTenants(t, admin, cfg, nodesPerTenant)
-	f.settings = operatorSettings{Tenants: f.tenants.address(), Etcd: startEtcd(t), Version: firstVersion, MaxConcurrentRollouts: operator.DefaultConfig().Fleet.MaxConcurrentRollouts}
+	f := startFleet(t, dir)
 	f.report("fleet of %d gateway tenants on one Gateway, %d nodes each, %.0f%% of them hanging in their phase; GOMAXPROCS %s, %s", size, nodesPerTenant, hanging*100, os.Getenv("GOMAXPROCS"), runtimeVersion())
-	f.op = startOperator(t, dir, cfg, f.settings)
+	f.op = startOperator(t, dir, f.cfg, f.settings)
 
 	f.create(1, size)
 	f.rest()
@@ -130,7 +118,29 @@ func TestFleet(t *testing.T) {
 	f.wave()
 	f.hang(hanging)
 	f.bound()
+	f.defaultWave()
 	f.write()
+}
+
+func startFleet(t *testing.T, dir string) *fleet {
+	t.Helper()
+	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
+		t.Skip("KUBEBUILDER_ASSETS is not set; run make fleet")
+	}
+	logs, err := os.Create(filepath.Join(dir, "platform.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = logs.Close() })
+	ctrl.SetLogger(logger(logs))
+	cfg, admin := startManagement(t)
+	grantOperator(t, admin)
+	f := &fleet{t: t, cfg: cfg, admin: admin, dir: dir}
+	f.platform = startPlatform(t, cfg, admin, logs)
+	f.cache = f.platform.mgr.GetCache()
+	f.tenants = startTenants(t, admin, cfg, nodesPerTenant)
+	f.settings = operatorSettings{Tenants: f.tenants.address(), Etcd: startEtcd(t), Version: firstVersion, MaxConcurrentRollouts: operator.DefaultConfig().Fleet.MaxConcurrentRollouts}
+	return f
 }
 
 func knobs(t *testing.T) (int, float64) {
@@ -302,27 +312,47 @@ func (f *fleet) settle(timeout time.Duration) (operatorStats, time.Time) {
 		if err != nil {
 			f.t.Fatal(err)
 		}
-		if !changed.IsZero() && sameReconciles(last, s) {
+		if why := busy(last, s); !changed.IsZero() && why == "" {
 			if time.Since(changed) >= settledFor {
 				return s, changed
 			}
 		} else {
+			if time.Now().After(deadline) {
+				f.t.Fatalf("the operator did not settle within %s: %s", timeout, why)
+			}
 			last, changed = s, time.Now()
-		}
-		if time.Now().After(deadline) {
-			f.t.Fatalf("the operator did not settle within %s: %s", timeout, counts(diff(last, s).reconciles, 0))
 		}
 		time.Sleep(time.Second)
 	}
 }
 
-func sameReconciles(a, b operatorStats) bool {
-	for name, n := range b.Reconciles {
-		if !slices.Contains(periodic, name) && a.Reconciles[name] != n {
-			return false
+func busy(a, b operatorStats) string {
+	writes := map[string]int64{}
+	for k, v := range b.Requests {
+		if verb, _, _ := strings.Cut(k, " "); slices.Contains([]string{"create", "update", "patch", "delete"}, verb) && v != a.Requests[k] {
+			writes[k] = v - a.Requests[k]
 		}
 	}
-	return true
+	queued := map[string]float64{}
+	for name, n := range b.Depth {
+		if n > 0 && !slices.Contains(periodic, name) {
+			queued[name] = n
+		}
+	}
+	if len(writes) == 0 && len(queued) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("writes %s; queued %s", counts(writes, 0), counts(queued, 0))
+}
+
+func (f *fleet) net(requests map[string]int64, window time.Duration, share float64) map[string]int64 {
+	out := map[string]int64{}
+	for k, v := range requests {
+		if n := v - int64(math.Round(f.atRest[k]*window.Seconds()*share)); n > 0 {
+			out[k] = n
+		}
+	}
+	return out
 }
 
 func (f *fleet) rest() {
@@ -343,6 +373,10 @@ func (f *fleet) rest() {
 	}
 	intervals := f.tenants.record.take()
 	d := diff(before, after)
+	f.atRest = map[string]float64{}
+	for k, v := range d.requests {
+		f.atRest[k] = float64(v) / after.at.Sub(before.at).Seconds()
+	}
 	secrets := float64(d.requests["get secrets"]) / restWindow.Seconds()
 	f.report("at rest, %d tenants, over %s: %.1f requests/s to the API server: %s", f.size, restWindow, float64(total(d.requests))/restWindow.Seconds(), counts(d.requests, restWindow))
 	f.report("at rest: uncached Secret reads %.1f/s, %.2f per tenant per 5 s; status writes %.2f/s; etcd-druid's refresh %.1f status writes/s",
@@ -445,8 +479,9 @@ func (f *fleet) updateOne() {
 	f.label(1, "one")
 	after, _ := f.settle(time.Minute)
 	d := diff(quiet, after)
-	f.report("one ControlPlane updated (a label): passes %s (beside the fleet's %s in as long before it); its namespace's requests %s",
-		counts(only(d.reconciles), 0), counts(only(background.reconciles), 0), counts(d.tracked, 0))
+	window := after.at.Sub(quiet.at)
+	f.report("one ControlPlane updated (a label): passes %s (beside the fleet's %s in as long before it); its namespace's requests %s, less the reads a tenant sends at rest in the %s it took to settle: %s",
+		counts(only(d.reconciles), 0), counts(only(background.reconciles), 0), counts(d.tracked, 0), window.Round(time.Second), counts(f.net(d.tracked, window, 1/float64(f.size)), 0))
 }
 
 func only(m map[string]float64) map[string]float64 {
@@ -476,8 +511,9 @@ func (f *fleet) updateAll() {
 	took := changed.Sub(start)
 	peak, _, _ := s.end()
 	d := diff(before, after)
-	f.report("every ControlPlane updated at once: settled in %s; passes %s; requests %d: %s; peak %s",
-		took.Round(time.Second), counts(only(d.reconciles), 0), total(d.requests), counts(d.requests, 0), peak)
+	caused := f.net(d.requests, after.at.Sub(before.at), 1)
+	f.report("every ControlPlane updated at once: settled in %s; passes %s; requests %d, less those of %s at rest %d: %s; peak %s",
+		took.Round(time.Second), counts(only(d.reconciles), 0), total(d.requests), after.at.Sub(before.at).Round(time.Second), total(caused), counts(caused, 0), peak)
 }
 
 func (f *fleet) each(from, to int, do func(int)) {
@@ -536,9 +572,16 @@ func (f *fleet) lists() {
 	cps, cpsBytes, cpsWire := read(&lodiav1alpha1.ControlPlaneList{})
 	routes := &gatewayv1.TLSRouteList{}
 	tls, tlsBytes, tlsWire := read(routes)
-	f.report("a list of the %d ControlPlanes from the cache with copies: %s, %s allocated", f.size, cached, mib(cachedBytes))
-	f.report("an uncached list of the %d ControlPlanes, a slot's grant: %s, %s on the wire, %s allocated", f.size, cps, mib(uint64(cpsWire)), mib(cpsBytes))
-	f.report("an uncached list of the %d TLSRoutes, a route's write: %s, %s on the wire, %s allocated", len(routes.Items), tls, mib(uint64(tlsWire)), mib(tlsBytes))
+	shared, sharedBytes, err := timed(20, func() error {
+		return f.cache.List(f.t.Context(), &lodiav1alpha1.ControlPlaneList{}, client.UnsafeDisableDeepCopy)
+	})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	f.report("a list of the %d ControlPlanes from the cache with copies, a gateway tenant's pass: %s, %s allocated", f.size, cached, mib(cachedBytes))
+	f.report("a list of the %d ControlPlanes from the cache without copies, a slot's count: %s, %s allocated", f.size, shared, mib(sharedBytes))
+	f.report("an uncached list of the %d ControlPlanes, the first grant of an operator: %s, %s on the wire, %s allocated", f.size, cps, mib(uint64(cpsWire)), mib(cpsBytes))
+	f.report("an uncached list of the %d TLSRoutes, the first route write of an operator on a Gateway: %s, %s on the wire, %s allocated", len(routes.Items), tls, mib(uint64(tlsWire)), mib(tlsBytes))
 }
 
 func (f *fleet) restart() {
@@ -547,7 +590,9 @@ func (f *fleet) restart() {
 	after, changed := f.settle(30 * time.Minute)
 	took := changed.Sub(f.op.started)
 	peak, last, _ := s.end()
-	f.report("a restart over %d tenants: settled in %s; passes %s; requests %d: %s", f.size, took.Round(time.Second), counts(after.Reconciles, 0), total(after.Requests), counts(after.Requests, 0))
+	caused := f.net(after.Requests, after.at.Sub(f.op.started), 1)
+	f.report("a restart over %d tenants: settled in %s; passes %s; requests %d, less those of %s at rest %d: %s", f.size, took.Round(time.Second), counts(after.Reconciles, 0), total(after.Requests),
+		after.at.Sub(f.op.started).Round(time.Second), total(caused), counts(caused, 0))
 	f.report("a restart: peak %s; after it %s", peak, last)
 }
 
@@ -578,11 +623,6 @@ func (f *fleet) wave() {
 	f.report("a wave over %d tenants with %d slots: every tenant on the new revision and Ready in %s, settled in %s; status writes %d, %.1f/s, at most %d in a second",
 		f.size, f.size, rolledIn.Round(time.Second), took.Round(time.Second), after.Requests[statusWrites], float64(after.Requests[statusWrites])/took.Seconds(), busiest)
 	f.report("a wave: passes %s; requests %d: %s; peak %s", counts(after.Reconciles, 0), total(after.Requests), counts(after.Requests, 0), peak)
-	defaults := operator.DefaultConfig()
-	settling := time.Duration(defaults.Health.FailuresBeforeFalse)*(defaults.Health.Period.Duration+5*time.Second) + 15*time.Second
-	rounds := math.Ceil(float64(f.size) / float64(defaults.Fleet.MaxConcurrentRollouts))
-	f.report("a wave at the default %d slots: %.0f rounds of at least the settling, %s, beside the time a round takes to roll: more than %s for %d tenants",
-		defaults.Fleet.MaxConcurrentRollouts, rounds, settling, (time.Duration(rounds) * settling).Round(time.Minute), f.size)
 }
 
 func rolled(cp *lodiav1alpha1.ControlPlane, revision string) bool {
@@ -659,6 +699,48 @@ func (f *fleet) bound() {
 	}
 	f.report("%d of %d tenants answering at Health's bounds, over %s: peak %s; at the end %s; health-nodes passes an honest tenant every %s, a bounded one every %s",
 		n, f.size, boundsWindow, peak, last, quantiles(intervals[kindNodeLeases+"/"+classHonest]), quantiles(intervals[kindNodeLeases+"/"+classBounded]))
+}
+
+func (f *fleet) defaultWave() {
+	f.op.stop(f.t)
+	settings := f.settings
+	settings.Version = thirdVersion
+	s := f.start(settings)
+	revision, err := operator.Inputs{Version: thirdVersion, SignerImage: "registry.example/lodia-signer:fleet", TunnelImage: "registry.example/lodia-tunnel:fleet",
+		EtcdDruidVersion: druidVersion, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace}.Revision()
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	granted := func() (int, int) {
+		g, waiting := 0, 0
+		for _, cp := range f.list() {
+			switch {
+			case cp.Status.Target != nil && cp.Status.Target.OperatorRevision == revision:
+				g++
+			case cp.Status.Target != nil && cp.Status.Target.ScheduledFor != nil:
+				waiting++
+			}
+		}
+		return g, waiting
+	}
+	time.Sleep(time.Minute)
+	from, err := f.op.read(f.t.Context())
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	before, _ := granted()
+	time.Sleep(defaultWave - time.Minute)
+	to, err := f.op.read(f.t.Context())
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	after, waiting := granted()
+	peak, _, _ := s.end()
+	window := to.at.Sub(from.at)
+	d := diff(from, to)
+	caused := f.net(d.requests, window, 1)
+	f.report("a wave at the default %d slots, from its second minute to its %s: %.1f tenants granted a minute, %d granted and %d queued at the end; passes %s; requests less those at rest %.1f/s: %s; peak %s",
+		settings.MaxConcurrentRollouts, defaultWave, float64(after-before)/window.Minutes(), after, waiting, counts(only(d.reconciles), window), float64(total(caused))/window.Seconds(), counts(caused, window), peak)
 }
 
 func (f *fleet) write() {

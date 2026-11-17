@@ -208,6 +208,7 @@ type operatorStats struct {
 	Goroutines int                `json:"goroutines"`
 	NumGC      uint32             `json:"numGC"`
 	CPU        float64            `json:"cpu"`
+	at         time.Time
 }
 
 func statsHandler(counted *requests) http.Handler {
@@ -371,6 +372,7 @@ func (p *operatorProcess) get(ctx context.Context, path string, out any) error {
 func (p *operatorProcess) read(ctx context.Context) (operatorStats, error) {
 	var s operatorStats
 	err := p.get(ctx, "/stats", &s)
+	s.at = time.Now()
 	return s, err
 }
 
