@@ -99,7 +99,7 @@ flowchart LR
 
 ## Code
 
-- `internal/operator` — the scheme, the cache rules above and the controllers: PKI registered as `pki` and its kubeconfig request reconciler as `kubeconfigrequest`, the Datastore controller as `datastore`, Lifecycle as `lifecycle`, Tenant as `tenant`, Health as `health` and, for the nodes, as `health-nodes`, and Workloads as `workloads`, each with ten workers, but `health-nodes` with a hundred, and a one-minute reconcile timeout.
+- `internal/operator` — the scheme, the cache rules above and the controllers: PKI registered as `pki` and its kubeconfig request reconciler as `kubeconfigrequest`, the Datastore controller as `datastore`, Lifecycle as `lifecycle`, Tenant as `tenant`, Health as `health` and, for the nodes, as `health-nodes`, and Workloads as `workloads`, each with the workers of its `controllers.<name>.workers` ([README](../README.md#installation)), and a one-minute reconcile timeout.
   `cmd/lodia/main.go` runs them in one manager, after `GatewayAPI` says whether the cache can hold the Gateway API's kinds; every controller's tests take the cache from it.
 - `internal/contract` — the names only Lodia's controllers share, above; `api/v1alpha1/names.go` the names an importer may rely on.
 - `internal/statusapply` — every status apply, with a deadline of its own for a pass that used up its time, none for one the manager's shutdown cancelled, which writes nothing, and the first pass, the wait at a generation and True at a generation; the generation a condition describes stays with its writer.
