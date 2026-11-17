@@ -251,12 +251,10 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the synthetic fleet (2026-11-17)
 
-- A pass of `health` over a tenant that does not answer holds a worker for two `Timeout`s, the probes and then the leader Leases, which go through the in-namespace Service whose probe has just failed: with 32 of 315 tenants hanging the others were passed every 20 s at the median and 35 s at the most instead of 5 s ([Scale](docs/operations.md#scale)), past the 30 s in which Lifecycle's settling expects `Reachable` to turn False.
-  Reading the Leases only when the Service's probe answered would halve it; `controllers.health.workers` is the lever until then, at 181.3 MiB of the worst case for each worker.
 - Tenant and PKI build a tenant client for every pass, whose connections stay idle for 90 s after it: the fleet saw about 7 for each tenant after its creation, 42 KiB each; pass 7's one client for a tenant removes them.
 - Workloads' mappers of TLSRoute, Gateway and ControlPlane events list every `ControlPlane` from the cache with copies for each event, as a gateway tenant's pass does: at 315 tenants one such list took 0.7 ms and allocated 2.8 MiB; an index of the gateway tenants by Gateway would read only those that share one.
-- The etcd sampler passed each tenant twice a minute in the fleet's window at rest, a few minutes after the fleet's creation, and once a minute later in the run, where its period is a minute: find what brings the second pass.
 - The fleet's etcd-druid is a stand-in, so etcd-druid's own scale is still unmeasured (above, "From the design").
+- A Gateway's route writes run one at a time, each waiting for the cache to show it, about 67 ms a write while 50 gateway tenants were created beside 3,000 routes, so the creation of 1,000 tenants, 3,000 writes, took about 4.7 minutes ([Scale](docs/operations.md#scale)): Lodia's routes hold one hostname each, so a fence for each hostname, with the Gateway's first read from the API server, would let the writes of different hostnames run at once.
 
 ## For the release that first drops a minor
 
