@@ -176,9 +176,15 @@ func TestControlPlaneValidation(t *testing.T) {
 		{"major other than 1", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, "v2.0.0", "spec", "version") }, "spec.version"},
 		{"a minor with a leading zero", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, "v1.037.1", "spec", "version") }, "spec.version"},
 		{"a patch with a leading zero", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, "v1.37.01", "spec", "version") }, "spec.version"},
-		{"no datastore", func(t *testing.T, o *unstructured.Unstructured) {
+		{"an empty datastore", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, map[string]any{}, "spec", "datastore")
-		}, "spec.datastore.dedicated: Required value"},
+		}, ""},
+		{"a class name of 253 characters", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, strings.Repeat("c", 253), "spec", "datastore", "className")
+		}, ""},
+		{"a class name of 254 characters", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, strings.Repeat("c", 254), "spec", "datastore", "className")
+		}, "spec.datastore.className: Too long"},
 		{"two endpoints", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, map[string]any{"loadBalancer": map[string]any{}, "nodePort": map[string]any{}}, "spec", "endpoint")
 		}, "set exactly one of gateway, loadBalancer and nodePort"},
@@ -395,9 +401,6 @@ func TestControlPlaneTransitions(t *testing.T) {
 		{"minor down", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, "v1.36.4", "spec", "version") }, "the Kubernetes minor version cannot decrease"},
 		{"patch down", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, "v1.37.0", "spec", "version") }, ""},
 		{"minor up", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, "v1.38.0", "spec", "version") }, ""},
-		{"datastore changed", func(t *testing.T, o *unstructured.Unstructured) {
-			set(t, o, map[string]any{"dedicated": map[string]any{"className": "fast-ssd"}}, "spec", "datastore")
-		}, "datastore is immutable"},
 		{"network changed", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, []any{"10.100.0.0/16"}, "spec", "network", "podCIDRs")
 		}, "network is immutable"},
@@ -557,6 +560,39 @@ func storeUnderAnOlderSchema(t *testing.T, group string, stored *unstructured.Un
 		}
 		return nil
 	})
+}
+
+func TestTheDatastoreClassCannotChange(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	const immutable = "datastore.className is immutable in v1alpha1"
+	for i, c := range []struct {
+		name     string
+		from, to map[string]any
+		want     string
+	}{
+		{"absent, then empty", nil, map[string]any{}, ""},
+		{"absent, then an empty class name", nil, map[string]any{"className": ""}, ""},
+		{"an empty class name, then absent", map[string]any{"className": ""}, nil, ""},
+		{"absent, then a class", nil, map[string]any{"className": "fast-ssd"}, immutable},
+		{"a class, then absent", map[string]any{"className": "fast-ssd"}, nil, immutable},
+		{"a class, then another", map[string]any{"className": "fast-ssd"}, map[string]any{"className": "slow-hdd"}, immutable},
+		{"a class kept", map[string]any{"className": "fast-ssd"}, map[string]any{"className": "fast-ssd"}, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			obj := example(t, "controlplane-single.yaml", fmt.Sprintf("datastore-%d", i))
+			if c.from != nil {
+				set(t, obj, c.from, "spec", "datastore")
+			}
+			update(t, obj, func(t *testing.T, o *unstructured.Unstructured) {
+				if c.to == nil {
+					unstructured.RemoveNestedField(o.Object, "spec", "datastore")
+					return
+				}
+				set(t, o, c.to, "spec", "datastore")
+			}, c.want)
+		})
+	}
 }
 
 func TestHighAvailabilityTransitions(t *testing.T) {
@@ -992,6 +1028,7 @@ func TestRemovedFieldsAreUnknown(t *testing.T) {
 		{"controlplane-single.yaml", map[string]any{"name": "profiles"}, []string{"spec", "scheduler", "configRef"}},
 		{"controlplane-single.yaml", true, []string{"spec", "serviceAccount", "publicDiscovery"}},
 		{"controlplane-single.yaml", map[string]any{"name": "pool-a"}, []string{"spec", "datastore", "shared"}},
+		{"controlplane-single.yaml", map[string]any{"className": "fast-ssd"}, []string{"spec", "datastore", "dedicated"}},
 		{"datastoreclass.yaml", "720h", []string{"spec", "backup", "retention", "afterDelete"}},
 	} {
 		field := strings.Join(c.path, ".")

@@ -804,10 +804,9 @@ func controlPlaneIn(t *testing.T, ns string, endpoint lodiav1alpha1.Endpoint) *l
 	cp := &lodiav1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: ns},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
-			Version:   "v1.35.0",
-			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: lodiav1alpha1.DedicatedDatastore{}},
-			Endpoint:  endpoint,
-			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
+			Version:  "v1.35.0",
+			Endpoint: endpoint,
+			Network:  lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
 		},
 	}
 	if err := k8s.Create(t.Context(), cp); err != nil {

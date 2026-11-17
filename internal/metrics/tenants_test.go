@@ -78,10 +78,9 @@ func controlPlane(name string, uid int) *lodiav1alpha1.ControlPlane {
 	return &lodiav1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "tenants", UID: types.UID(fmt.Sprintf("00000000-0000-0000-0000-%012d", uid)), Generation: 1},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
-			Version:   "v1.37.1",
-			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: lodiav1alpha1.DedicatedDatastore{}},
-			Endpoint:  lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}},
-			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
+			Version:  "v1.37.1",
+			Endpoint: lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}},
+			Network:  lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
 		},
 	}
 }

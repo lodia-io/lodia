@@ -10,8 +10,7 @@ spec:
   highAvailability:
     failureTolerance: Node          # Node | Zone
   datastore:
-    dedicated:
-      className: fast-ssd           # a DatastoreClass; omitted → the default class
+    className: fast-ssd             # a DatastoreClass; omitted → the default class
   endpoint:
     gateway:
       parentRef: {name: tenants, namespace: gateway, sectionName: tls}

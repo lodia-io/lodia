@@ -39,7 +39,7 @@ func TestAPIServerOnKind(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: controlPlane, Namespace: apiTenant},
 				Spec: lodiav1alpha1.ControlPlaneSpec{
 					Version:   "v1.37.1",
-					Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: lodiav1alpha1.DedicatedDatastore{ClassName: "e2e-api"}},
+					Datastore: lodiav1alpha1.DatastoreSettings{ClassName: "e2e-api"},
 					Endpoint:  lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}},
 					Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
 				},

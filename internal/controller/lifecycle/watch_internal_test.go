@@ -22,7 +22,7 @@ func TestAClassMapsToTheControlPlanesWhoseEtcdRunsIt(t *testing.T) {
 	tenant := func(namespace, specClass, runs string) *lodiav1alpha1.ControlPlane {
 		cp := &lodiav1alpha1.ControlPlane{
 			ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: "dev"},
-			Spec:       lodiav1alpha1.ControlPlaneSpec{Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: lodiav1alpha1.DedicatedDatastore{ClassName: specClass}}},
+			Spec:       lodiav1alpha1.ControlPlaneSpec{Datastore: lodiav1alpha1.DatastoreSettings{ClassName: specClass}},
 		}
 		if runs != "" {
 			cp.Status.Datastore = &lodiav1alpha1.DatastoreStatus{Class: &lodiav1alpha1.DatastoreClassStatus{Name: runs, DatastoreClassGeneration: lodiav1alpha1.DatastoreClassGeneration{UID: "11111111-0000-0000-0000-000000000001", Generation: 1}}}

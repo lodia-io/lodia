@@ -50,6 +50,7 @@ type ControlPlaneList struct {
 // +kubebuilder:validation:XValidation:rule="(has(self.apiServer) && has(self.apiServer.advertiseAddress) ? [self.apiServer.advertiseAddress] : has(self.endpoint.gateway) ? ['240.0.0.1'] : []).all(a, !isIP(a) || !(self.network.serviceCIDRs + self.network.podCIDRs).exists(c, isCIDR(c) && cidr(c).containsIP(a)))",message="the advertise address, apiServer.advertiseAddress or 240.0.0.1 in gateway mode, must lie outside the service and pod ranges"
 // +kubebuilder:validation:XValidation:rule="!has(self.endpoint.gateway) || (has(self.apiServer) && has(self.apiServer.advertiseAddress) ? has(oldSelf.apiServer) && has(oldSelf.apiServer.advertiseAddress) && oldSelf.apiServer.advertiseAddress == self.apiServer.advertiseAddress : !has(oldSelf.apiServer) || !has(oldSelf.apiServer.advertiseAddress))",message="apiServer.advertiseAddress is immutable"
 // +kubebuilder:validation:XValidation:rule="has(self.restoreFrom) == has(oldSelf.restoreFrom)",message="restoreFrom can be set only when the ControlPlane is created, and never removed"
+// +kubebuilder:validation:XValidation:rule="has(self.datastore) && has(self.datastore.className) && size(self.datastore.className) > 0 ? has(oldSelf.datastore) && has(oldSelf.datastore.className) && oldSelf.datastore.className == self.datastore.className : !has(oldSelf.datastore) || !has(oldSelf.datastore.className) || size(oldSelf.datastore.className) == 0",message="datastore.className is immutable in v1alpha1"
 // +kubebuilder:validation:XValidation:rule="!has(self.controllerManager) || !has(self.controllerManager.extraArgs) || !('node-cidr-mask-size' in self.controllerManager.extraArgs) || size(self.network.podCIDRs) == 1",message="kube-controller-manager refuses node-cidr-mask-size with two pod ranges: use node-cidr-mask-size-ipv4 and node-cidr-mask-size-ipv6"
 // +kubebuilder:validation:XValidation:rule="!has(self.controllerManager) || !has(self.controllerManager.extraArgs) || !('node-cidr-mask-size-ipv4' in self.controllerManager.extraArgs) || size(self.network.podCIDRs) != 1 || !isCIDR(self.network.podCIDRs[0]) || cidr(self.network.podCIDRs[0]).ip().family() == 4",message="kube-controller-manager refuses node-cidr-mask-size-ipv4 with an IPv6 pod range alone"
 // +kubebuilder:validation:XValidation:rule="!has(self.controllerManager) || !has(self.controllerManager.extraArgs) || !('node-cidr-mask-size-ipv6' in self.controllerManager.extraArgs) || size(self.network.podCIDRs) != 1 || !isCIDR(self.network.podCIDRs[0]) || cidr(self.network.podCIDRs[0]).ip().family() == 6",message="kube-controller-manager refuses node-cidr-mask-size-ipv6 with an IPv4 pod range alone"
@@ -68,10 +69,10 @@ type ControlPlaneSpec struct {
 	// +optional
 	HighAvailability *HighAvailability `json:"highAvailability,omitempty"`
 
-	// Datastore is where the cluster's data lives.
-	// +required
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="datastore is immutable in v1alpha1"
-	Datastore DatastoreChoice `json:"datastore"`
+	// Datastore is where the cluster's data lives: an etcd of the tenant's
+	// own.
+	// +optional
+	Datastore DatastoreSettings `json:"datastore,omitzero"`
 
 	// Endpoint is how nodes, people and pods reach the API server.
 	// +required
@@ -143,16 +144,10 @@ type HighAvailability struct {
 // +kubebuilder:validation:Enum=Node;Zone
 type FailureTolerance string
 
-// DatastoreChoice is the kind of store.
-type DatastoreChoice struct {
-	// Dedicated is an etcd of the tenant's own.
-	// +required
-	Dedicated DedicatedDatastore `json:"dedicated"`
-}
-
-// DedicatedDatastore is built from a DatastoreClass.
-type DedicatedDatastore struct {
-	// ClassName names a DatastoreClass; empty means the default class.
+// DatastoreSettings is how the tenant's etcd is built.
+type DatastoreSettings struct {
+	// ClassName names the DatastoreClass the etcd is built from; empty
+	// means the default class.
 	// +optional
 	// +kubebuilder:validation:MaxLength=253
 	ClassName string `json:"className,omitempty"`

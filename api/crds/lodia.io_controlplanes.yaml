@@ -403,23 +403,17 @@ spec:
                     type: object
                 type: object
               datastore:
-                description: Datastore is where the cluster's data lives.
+                description: |-
+                  Datastore is where the cluster's data lives: an etcd of the tenant's
+                  own.
                 properties:
-                  dedicated:
-                    description: Dedicated is an etcd of the tenant's own.
-                    properties:
-                      className:
-                        description: ClassName names a DatastoreClass; empty means
-                          the default class.
-                        maxLength: 253
-                        type: string
-                    type: object
-                required:
-                - dedicated
+                  className:
+                    description: |-
+                      ClassName names the DatastoreClass the etcd is built from; empty
+                      means the default class.
+                    maxLength: 253
+                    type: string
                 type: object
-                x-kubernetes-validations:
-                - message: datastore is immutable in v1alpha1
-                  rule: self == oldSelf
               endpoint:
                 description: Endpoint is how nodes, people and pods reach the API
                   server.
@@ -898,7 +892,6 @@ spec:
                 - message: the Kubernetes minor version cannot decrease
                   rule: int(self.split('.')[1]) >= int(oldSelf.split('.')[1])
             required:
-            - datastore
             - endpoint
             - network
             - version
@@ -934,6 +927,12 @@ spec:
             - message: restoreFrom can be set only when the ControlPlane is created,
                 and never removed
               rule: has(self.restoreFrom) == has(oldSelf.restoreFrom)
+            - message: datastore.className is immutable in v1alpha1
+              rule: 'has(self.datastore) && has(self.datastore.className) && size(self.datastore.className)
+                > 0 ? has(oldSelf.datastore) && has(oldSelf.datastore.className) &&
+                oldSelf.datastore.className == self.datastore.className : !has(oldSelf.datastore)
+                || !has(oldSelf.datastore.className) || size(oldSelf.datastore.className)
+                == 0'
             - message: 'kube-controller-manager refuses node-cidr-mask-size with two
                 pod ranges: use node-cidr-mask-size-ipv4 and node-cidr-mask-size-ipv6'
               rule: '!has(self.controllerManager) || !has(self.controllerManager.extraArgs)

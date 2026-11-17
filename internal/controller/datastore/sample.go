@@ -62,8 +62,8 @@ type EtcdSample struct {
 	Alarms []string
 }
 
-// SampleReconciler samples the etcd of every dedicated ControlPlane whose
-// Etcd is formed, once a minute, for Lodia's metrics; it writes nothing.
+// SampleReconciler samples the etcd of every ControlPlane whose Etcd is
+// formed, once a minute, for Lodia's metrics; it writes nothing.
 type SampleReconciler struct {
 	// Cache reads the ControlPlanes and their Etcds.
 	Cache client.Reader

@@ -893,10 +893,9 @@ func TestUseDefaultGatewaysOnTheExperimentalCRDIsLeftAlone(t *testing.T) {
 	cp := &lodiav1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: ns.Name},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
-			Version:   version,
-			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: lodiav1alpha1.DedicatedDatastore{}},
-			Endpoint:  onGateway(ns.Name, "dev"),
-			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
+			Version:  version,
+			Endpoint: onGateway(ns.Name, "dev"),
+			Network:  lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
 		},
 	}
 	for _, obj := range []client.Object{ns, gw, cp} {
@@ -1333,10 +1332,9 @@ func createNamed(t *testing.T, ns, name string, endpoint lodiav1alpha1.Endpoint,
 	cp := &lodiav1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
-			Version:   version,
-			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: lodiav1alpha1.DedicatedDatastore{}},
-			Endpoint:  endpoint,
-			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
+			Version:  version,
+			Endpoint: endpoint,
+			Network:  lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
 		},
 	}
 	for _, c := range change {

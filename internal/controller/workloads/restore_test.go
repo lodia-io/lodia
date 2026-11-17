@@ -368,11 +368,10 @@ func source(t *testing.T, ns string, finalizers ...string) *lodiav1alpha1.Contro
 	prod := &lodiav1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: ns, Finalizers: finalizers},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
-			Version:   version,
-			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: lodiav1alpha1.DedicatedDatastore{}},
-			Endpoint:  loadBalancer(),
-			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
-			Paused:    true,
+			Version:  version,
+			Endpoint: loadBalancer(),
+			Network:  lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
+			Paused:   true,
 		},
 	}
 	if err := k8s.Create(t.Context(), prod); err != nil {

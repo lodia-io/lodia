@@ -159,7 +159,7 @@ func (r *Reconciler) controlPlanesUsing(ctx context.Context, class client.Object
 	var requests []reconcile.Request
 	for i := range controlPlanes.Items {
 		cp := &controlPlanes.Items[i]
-		if name := cp.Spec.Datastore.Dedicated.ClassName; name == "" || name == class.GetName() {
+		if name := cp.Spec.Datastore.ClassName; name == "" || name == class.GetName() {
 			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 		}
 	}
@@ -890,7 +890,7 @@ func className(cp *lodiav1alpha1.ControlPlane, current *druidv1alpha1.Etcd, clai
 	}); i >= 0 {
 		return claims[i].Annotations[lodiav1alpha1.DatastoreClassAnnotation], true
 	}
-	return cp.Spec.Datastore.Dedicated.ClassName, false
+	return cp.Spec.Datastore.ClassName, false
 }
 
 func (r *Reconciler) class(ctx context.Context, name string, byClaims bool) (*lodiav1alpha1.DatastoreClass, metav1.Condition, error) {
