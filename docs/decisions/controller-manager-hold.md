@@ -41,6 +41,7 @@ The Health controller protects a tenant's workloads from an outage between the c
 - **It fails safe.**
   A Lodia that stops renewing gives the lease back after 60 seconds, to upstream behaviour; a Lodia that restarts keeps a hold it finds with holder `lodia`.
   A failed read of the node leases restarts the clock, and a lease held by `lodia` is still renewed, but for a tenant beyond a bound (row 5), whose hold is released.
+  A hold in place is renewed only by a pass that reads the controller manager's Lease, rows 1 and 2 writing nothing, and a pass one of whose reads ran into the `Timeout` comes back a period after it ends: an outage of the in-namespace path that begins just after a renewal lets the Lease lapse once it lasts about 55 seconds, where it took about 59 when such a pass came back a second after it ended (the trade under the margin below).
   A paused `ControlPlane` gets no writes, so its hold lapses within those 60 seconds.
 - **Settings.**
   On by default, off for one `ControlPlane` with `spec.health.holdControllerManager: false` ([the field](../api/controlplane.md#spec)).
@@ -78,6 +79,14 @@ The margin is the grace period less 10.4 + 20 + 5 + 12 seconds:
 | 60 s (Lodia's) | 12.6 s |
 
 A grace period of 60 seconds marks a node that really died 10 seconds later than upstream does, and its pods are evicted 300 seconds after that, as before.
+
+A read of the tenant that runs into Health's `Timeout`, 5 seconds, during a cut can cost a hold more than this margin.
+A failed read restarts the clock, so the hold comes no sooner than 20 seconds after the first good list that follows, and the exit up to 12 seconds after the hold: the hold is in time only while that list comes at most 28 seconds after the first silent node's last renewal, which Lodia's clock does not move.
+`health-nodes` comes back a period after a pass one of whose reads ran into its `Timeout`, as `health` does, so that list comes up to 10 seconds after the hung read began, where it came up to 6 seconds after while such a pass came back a second after it ended.
+So a single read that hangs from 18 to 22 seconds after the first silent node's last renewal makes the hold late, which a second after the pass left in time; one that hangs earlier leaves it in time either way, and one that hangs later makes it late either way.
+A take whose write hangs costs the same 4 seconds, since the next take comes a period after that pass, not a second.
+This trade was taken on 2026-11-17 for what it buys: a tenant that does not answer holds a worker of `health-nodes` for 5 seconds of every 10, not of every 6, so the 100 workers fill at about 200 such tenants, not about 120, and with 105 of 1,050 tenants hanging an honest tenant's sample came at most 0.3 seconds late, where it came 3.4 seconds late ([operations](../operations.md#scale)).
+Many tenants hanging at once is when every tenant needs its hold, so hanging tenants must not take the workers the others' samples need.
 
 It does not tell whose side broke: 60% of a cluster silent at once is a cut from the control plane, the provider's or the customer's, and there is nowhere to evict to either way.
 One dead machine of two is 50%, and its pods are evicted as upstream does.
