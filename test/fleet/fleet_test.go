@@ -10,6 +10,7 @@ package fleet
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -130,6 +131,18 @@ func TestEveryConnectionToATenantGoesThroughTheDial(t *testing.T) {
 	f.waitFor("every ControlPlane Ready, its nodes counted", time.Now(), 2*time.Minute, func(cp *lodiav1alpha1.ControlPlane) bool {
 		return readyAt(cp) && cp.Status.Nodes != nil && cp.Status.Nodes.Total == nodesPerTenant
 	})
+}
+
+func TestTheRestIsSubtractedForEachTenantTheFleetHasInTheWindow(t *testing.T) {
+	f := &fleet{size: 1000}
+	f.rested(map[string]int64{"get secrets": 50_000}, time.Minute)
+	f.size = 1050
+	if got, want := f.net(map[string]int64{"get secrets": 30_000, "patch services": 7}, 30*time.Second), map[string]int64{"get secrets": 3_750, "patch services": 7}; !maps.Equal(got, want) {
+		t.Errorf("30 s of a fleet of 1,050 beside a rest of 50,000 reads a minute at 1,000 tenants nets %v, want %v", got, want)
+	}
+	if got, want := f.less(map[string]int64{"get secrets": 7, "patch services": 1}, 6*time.Second, 1), map[string]int64{"get secrets": 2, "patch services": 1}; !maps.Equal(got, want) {
+		t.Errorf("6 s of one tenant nets %v, want %v", got, want)
+	}
 }
 
 func startFleet(t *testing.T, dir string) *fleet {
@@ -355,7 +368,20 @@ func busy(a, b operatorStats) string {
 	return fmt.Sprintf("writes %s; queued %s", counts(writes, 0), counts(queued, 0))
 }
 
-func (f *fleet) net(requests map[string]int64, window time.Duration, tenants int) map[string]int64 {
+func (f *fleet) rested(requests map[string]int64, window time.Duration) {
+	f.atRest = map[string]float64{}
+	for k, v := range requests {
+		f.atRest[k] = float64(v) / window.Seconds() / float64(f.size)
+	}
+}
+
+// net is requests less what the fleet's tenants, as many as it has now, send
+// at rest in window.
+func (f *fleet) net(requests map[string]int64, window time.Duration) map[string]int64 {
+	return f.less(requests, window, f.size)
+}
+
+func (f *fleet) less(requests map[string]int64, window time.Duration, tenants int) map[string]int64 {
 	out := map[string]int64{}
 	for k, v := range requests {
 		if n := v - int64(math.Round(f.atRest[k]*window.Seconds()*float64(tenants))); n > 0 {
@@ -383,10 +409,7 @@ func (f *fleet) rest() {
 	}
 	intervals := f.tenants.record.take()
 	d := diff(before, after)
-	f.atRest = map[string]float64{}
-	for k, v := range d.requests {
-		f.atRest[k] = float64(v) / after.at.Sub(before.at).Seconds() / float64(f.size)
-	}
+	f.rested(d.requests, after.at.Sub(before.at))
 	secrets := float64(d.requests["get secrets"]) / restWindow.Seconds()
 	f.report("at rest, %d tenants, over %s: %.1f requests/s to the API server: %s", f.size, restWindow, float64(total(d.requests))/restWindow.Seconds(), counts(d.requests, restWindow))
 	f.report("at rest: uncached Secret reads %.1f/s, %.2f per tenant per 5 s; status writes %.2f/s; etcd-druid's refresh %.1f status writes/s",
@@ -491,7 +514,7 @@ func (f *fleet) updateOne() {
 	d := diff(quiet, after)
 	window := after.at.Sub(quiet.at)
 	f.report("one ControlPlane updated (a label): passes %s (beside the fleet's %s in as long before it); its namespace's requests %s, less the reads a tenant sends at rest in the %s it took to settle: %s",
-		counts(only(d.reconciles), 0), counts(only(background.reconciles), 0), counts(d.tracked, 0), window.Round(time.Second), counts(f.net(d.tracked, window, 1), 0))
+		counts(only(d.reconciles), 0), counts(only(background.reconciles), 0), counts(d.tracked, 0), window.Round(time.Second), counts(f.less(d.tracked, window, 1), 0))
 }
 
 func only(m map[string]float64) map[string]float64 {
@@ -521,7 +544,7 @@ func (f *fleet) updateAll() {
 	took := changed.Sub(start)
 	peak, _, _ := s.end()
 	d := diff(before, after)
-	caused := f.net(d.requests, after.at.Sub(before.at), f.size)
+	caused := f.net(d.requests, after.at.Sub(before.at))
 	f.report("every ControlPlane updated at once: settled in %s; passes %s; requests %d, of which besides those of %d tenants at rest over %s %d: %s; peak %s",
 		took.Round(time.Second), counts(only(d.reconciles), 0), total(d.requests), f.size, after.at.Sub(before.at).Round(time.Second), total(caused), counts(caused, 0), peak)
 }
@@ -600,7 +623,7 @@ func (f *fleet) restart() {
 	after, changed := f.settle(30 * time.Minute)
 	took := changed.Sub(f.op.started)
 	peak, last, _ := s.end()
-	caused := f.net(after.Requests, after.at.Sub(f.op.started), f.size)
+	caused := f.net(after.Requests, after.at.Sub(f.op.started))
 	f.report("a restart over %d tenants: settled in %s; passes %s; requests %d, of which besides those of %d tenants at rest over %s %d: %s", f.size, took.Round(time.Second), counts(after.Reconciles, 0), total(after.Requests),
 		f.size, after.at.Sub(f.op.started).Round(time.Second), total(caused), counts(caused, 0))
 	f.report("a restart: peak %s; after it %s", peak, last)
@@ -748,7 +771,7 @@ func (f *fleet) defaultWave() {
 	peak, _, _ := s.end()
 	window := to.at.Sub(from.at)
 	d := diff(from, to)
-	caused := f.net(d.requests, window, f.size)
+	caused := f.net(d.requests, window)
 	f.report("a wave at the default %d slots, from its second minute to its %s: %.1f tenants granted a minute, %d granted and %d queued at the end; passes %s; requests besides those of %d tenants at rest %.1f/s: %s; peak %s",
 		settings.MaxConcurrentRollouts, defaultWave, float64(after-before)/window.Minutes(), after, waiting, counts(only(d.reconciles), window), f.size, float64(total(caused))/window.Seconds(), counts(caused, window), peak)
 }
