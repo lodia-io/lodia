@@ -817,6 +817,54 @@ func TestAPassThatRunsIntoItsTimeoutRequeuesAPeriodAfterItsEnd(t *testing.T) {
 	}
 }
 
+func TestAPassAfterOneThatRanIntoItsTimeoutRequeuesByItsOwnEnd(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		period time.Duration
+		answer time.Duration
+	}{
+		{name: "in time", period: 2 * time.Second},
+		{name: "longer than the period", period: 100 * time.Millisecond, answer: 400 * time.Millisecond},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cp := tenantControlPlane(t)
+			var hanging atomic.Bool
+			hanging.Store(true)
+			writeKubeconfig(t, cp, throughProxy(t, func(_ http.ResponseWriter, req *http.Request) bool {
+				if req.URL.Path != leaseListPath {
+					return false
+				}
+				if hanging.Load() {
+					<-req.Context().Done()
+					return true
+				}
+				time.Sleep(c.answer)
+				return false
+			}))
+			r := nodesReconciler(clock.RealClock{})
+			r.Period, r.Timeout = c.period, time.Second
+			req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}
+			result, err := r.Reconcile(t.Context(), req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.RequeueAfter != c.period {
+				t.Fatalf("a pass that ran into its Timeout requeues after %s, want the period %s", result.RequeueAfter, c.period)
+			}
+			hanging.Store(false)
+			started := time.Now()
+			result, err = r.Reconcile(t.Context(), req)
+			took := time.Since(started)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := result.RequeueAfter; got < max(c.period-took, time.Second) || got > max(c.period, time.Second) || got == c.period {
+				t.Errorf("the next pass, which took %s at a period of %s, requeues after %s, want the period less the pass, or a second when that is less", took, c.period, got)
+			}
+		})
+	}
+}
+
 func TestAFailingPassReturnsNoError(t *testing.T) {
 	cp := tenantControlPlane(t)
 	start := time.Now().Truncate(time.Second)
