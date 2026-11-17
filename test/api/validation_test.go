@@ -305,8 +305,11 @@ func TestExtraArgsRefuseWhatConflictsWithTheirValues(t *testing.T) {
 		ipv4     = "kube-controller-manager refuses node-cidr-mask-size-ipv4 with an IPv6 pod range alone"
 		ipv6     = "kube-controller-manager refuses node-cidr-mask-size-ipv6 with an IPv4 pod range alone"
 		signer   = "kube-apiserver refuses service-account-signing-endpoint, which Lodia sets, without ExternalServiceAccountTokenSigner"
-		tokens   = "kube-apiserver refuses service-account-max-token-expiration above 8760h"
+		tokens   = "kube-apiserver refuses service-account-max-token-expiration under 1h, and above 8760h"
 		narrow   = "kube-controller-manager refuses a pod range narrower than the node mask of its family"
+		plugins  = "disable-admission-plugins is plugin names of letters and digits joined by commas, and nothing else"
+		lifetime = "service-account-max-token-expiration is a duration as Go prints it, without its zero units"
+		masks    = "a node mask size is a decimal number without a sign or a leading zero"
 	)
 	args := func(component string, flags map[string]any) func(*testing.T, *unstructured.Unstructured) {
 		return func(t *testing.T, o *unstructured.Unstructured) { set(t, o, flags, "spec", component, "extraArgs") }
@@ -323,10 +326,27 @@ func TestExtraArgsRefuseWhatConflictsWithTheirValues(t *testing.T) {
 		{"NodeRestriction disabled among others", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "PodSecurity,NodeRestriction"})}, disabled},
 		{"NodeRestriction disabled first among others", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "NodeRestriction,PodSecurity"})}, disabled},
 		{"NodeRestriction disabled between others", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "PodSecurity,NodeRestriction,DefaultStorageClass"})}, disabled},
-		{"NodeRestriction disabled quoted", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": `"NodeRestriction"`})}, disabled},
-		{"NodeRestriction disabled quoted among others", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": `PodSecurity,"NodeRestriction",DefaultStorageClass`})}, disabled},
+		{"NodeRestriction disabled quoted", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": `"NodeRestriction"`})}, plugins},
+		{"NodeRestriction disabled quoted among others", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": `PodSecurity,"NodeRestriction",DefaultStorageClass`})}, plugins},
+		{"NodeRestriction disabled before a line break", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "NodeRestriction\n"})}, plugins},
+		{"NodeRestriction disabled after a line break", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "\nNodeRestriction"})}, plugins},
+		{"NodeRestriction disabled before a carriage return", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "NodeRestriction\r"})}, plugins},
+		{"NodeRestriction disabled before a line break and another plugin", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "NodeRestriction\nPodSecurity"})}, plugins},
+		{"NodeRestriction disabled quoted before a line break", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "\"NodeRestriction\"\n"})}, plugins},
+		{"plugins disabled with a space", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "PodSecurity, DefaultStorageClass"})}, plugins},
+		{"plugins disabled with an empty entry", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "PodSecurity,,DefaultStorageClass"})}, plugins},
+		{"plugins disabled with a trailing comma", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "PodSecurity,"})}, plugins},
+		{"no plugin disabled", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": ""})}, plugins},
 		{"another plugin disabled", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "PodSecurity,DefaultStorageClass"})}, ""},
+		{"one other plugin disabled", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "PodSecurity"})}, ""},
 		{"a node mask size with one IPv4 range", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size": "26"})}, ""},
+		{"a node mask size with a leading zero", []func(*testing.T, *unstructured.Unstructured){pods("10.244.0.0/22"), args("controllerManager", map[string]any{"node-cidr-mask-size": "024"})}, masks},
+		{"an IPv4 node mask size with a leading zero", []func(*testing.T, *unstructured.Unstructured){pods("10.244.0.0/22"), args("controllerManager", map[string]any{"node-cidr-mask-size-ipv4": "024"})}, masks},
+		{"an IPv6 node mask size with a leading zero", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10:244::/56"), args("controllerManager", map[string]any{"node-cidr-mask-size-ipv6": "064"})}, masks},
+		{"a node mask size in hexadecimal", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size": "0x18"})}, masks},
+		{"a node mask size with a sign", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size": "+24"})}, masks},
+		{"a negative node mask size", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size": "-24"})}, masks},
+		{"a node mask size with a space", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size": " 24"})}, masks},
 		{"a node mask size with two ranges", []func(*testing.T, *unstructured.Unstructured){pods("10.244.0.0/16", "fd00:10:244::/56"), args("controllerManager", map[string]any{"node-cidr-mask-size": "26"})}, dual},
 		{"both node mask sizes with two ranges", []func(*testing.T, *unstructured.Unstructured){pods("10.244.0.0/16", "fd00:10:244::/56"), args("controllerManager", map[string]any{"node-cidr-mask-size-ipv4": "26", "node-cidr-mask-size-ipv6": "64"})}, ""},
 		{"an IPv4 node mask size with two ranges, the IPv6 one first", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10:244::/56", "10.244.0.0/16"), args("controllerManager", map[string]any{"node-cidr-mask-size-ipv4": "26"})}, ""},
@@ -354,6 +374,18 @@ func TestExtraArgsRefuseWhatConflictsWithTheirValues(t *testing.T) {
 		{"tokens of the signer's longest life", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "8760h"})}, ""},
 		{"tokens of an hour", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "1h"})}, ""},
 		{"tokens of more than the signer's longest life", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "8760h1s"})}, tokens},
+		{"tokens of an hour and a half", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "1h30m"})}, ""},
+		{"tokens of less than an hour", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "59m59s"})}, tokens},
+		{"tokens of half an hour", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "30m"})}, tokens},
+		{"tokens of a negative life", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "-1h"})}, lifetime},
+		{"tokens of an hour and a half in minutes", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "90m"})}, lifetime},
+		{"tokens of an hour in seconds", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "3600s"})}, lifetime},
+		{"tokens of an hour and a half as a fraction", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "1.5h"})}, lifetime},
+		{"tokens of an hour with a zero unit", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "1h0m"})}, lifetime},
+		{"tokens of the signer's longest life as Go prints it", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "8760h0m0s"})}, lifetime},
+		{"tokens of an hour with a leading zero", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "01h"})}, lifetime},
+		{"tokens of an hour and sixty minutes", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "1h60m"})}, lifetime},
+		{"tokens of an empty life", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": ""})}, lifetime},
 		{"the external signer's gate off", []func(*testing.T, *unstructured.Unstructured){func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, map[string]any{"ExternalServiceAccountTokenSigner": false}, "spec", "apiServer", "featureGates")
 		}}, signer},
