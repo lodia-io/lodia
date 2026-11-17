@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"reflect"
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,8 +36,29 @@ const (
 // Config is the operator's configuration file, read with --config. It holds
 // only the sections some feature reads; a key outside them refuses to start.
 type Config struct {
-	Health HealthConfig `json:"health"`
-	Fleet  FleetConfig  `json:"fleet"`
+	Health      HealthConfig      `json:"health"`
+	Fleet       FleetConfig       `json:"fleet"`
+	Controllers ControllersConfig `json:"controllers"`
+}
+
+// ControllersConfig holds each controller's settings, by the controller's
+// name.
+type ControllersConfig struct {
+	PKI               ControllerConfig `json:"pki"`
+	KubeconfigRequest ControllerConfig `json:"kubeconfigrequest"`
+	Datastore         ControllerConfig `json:"datastore"`
+	Backup            ControllerConfig `json:"backup"`
+	DatastoreSample   ControllerConfig `json:"datastore-sample"`
+	Lifecycle         ControllerConfig `json:"lifecycle"`
+	Tenant            ControllerConfig `json:"tenant"`
+	Health            ControllerConfig `json:"health"`
+	HealthNodes       ControllerConfig `json:"health-nodes"`
+	Workloads         ControllerConfig `json:"workloads"`
+}
+
+// ControllerConfig holds a controller's concurrent reconciles.
+type ControllerConfig struct {
+	Workers int `json:"workers"`
 }
 
 // FleetConfig holds the fleet limit.
@@ -80,6 +103,11 @@ func DefaultConfig() Config {
 			MaxNodes:            5000,
 		},
 		Fleet: FleetConfig{MaxConcurrentRollouts: 5},
+		Controllers: ControllersConfig{
+			PKI: ControllerConfig{10}, KubeconfigRequest: ControllerConfig{10}, Datastore: ControllerConfig{10}, Backup: ControllerConfig{10},
+			DatastoreSample: ControllerConfig{10}, Lifecycle: ControllerConfig{10}, Tenant: ControllerConfig{10}, Health: ControllerConfig{10},
+			HealthNodes: ControllerConfig{100}, Workloads: ControllerConfig{10},
+		},
 	}
 }
 
@@ -102,7 +130,21 @@ func LoadConfig(path string) (Config, error) {
 	if n := cfg.Fleet.MaxConcurrentRollouts; n < 1 {
 		return Config{}, fmt.Errorf("fleet.maxConcurrentRollouts is %d, want at least 1: with none no change Lodia starts ever rolls", n)
 	}
+	if err := cfg.Controllers.validate(); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
+}
+
+func (c ControllersConfig) validate() error {
+	controllers := reflect.ValueOf(c)
+	for i := range controllers.NumField() {
+		name, _, _ := strings.Cut(controllers.Type().Field(i).Tag.Get("json"), ",")
+		if n := controllers.Field(i).Interface().(ControllerConfig).Workers; n < 1 {
+			return fmt.Errorf("controllers.%s.workers is %d, want at least 1", name, n)
+		}
+	}
+	return nil
 }
 
 func (h HealthConfig) validate() error {

@@ -39,15 +39,6 @@ import (
 	"go.lodia.io/lodia/internal/metrics"
 )
 
-// workers is the default of controllers.<name>.workers, a key the operator
-// does not read yet (docs/README.md, Operator configuration).
-const workers = 10
-
-// nodesWorkers is health-nodes' workers: a tenant that hangs holds one for the
-// timeout, and it takes this many at once to delay another's samples
-// (docs/decisions/controller-manager-hold.md).
-const nodesWorkers = 100
-
 const healthTimeout = 5 * time.Second
 
 // etcdDruidStatusSync is how often etcd-druid syncs an Etcd's status, its
@@ -156,6 +147,7 @@ func Setup(mgr ctrl.Manager, in Inputs) (*Sources, error) {
 	if err != nil {
 		return nil, err
 	}
+	workers := in.Config.Controllers
 	if err := (&pki.Reconciler{
 		Client:              mgr.GetClient(),
 		Reader:              mgr.GetAPIReader(),
@@ -166,10 +158,10 @@ func Setup(mgr ctrl.Manager, in Inputs) (*Sources, error) {
 		SignerPropagation:   5 * time.Minute,
 		Clock:               clock.RealClock{},
 		Dial:                in.Dial,
-	}).SetupWithManager(mgr, workers); err != nil {
+	}).SetupWithManager(mgr, workers.PKI.Workers); err != nil {
 		return nil, fmt.Errorf("set up the pki controller: %w", err)
 	}
-	if err := (&pki.KubeconfigRequestReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Clock: clock.RealClock{}, PolicyGrace: 10 * time.Second}).SetupWithManager(mgr, workers); err != nil {
+	if err := (&pki.KubeconfigRequestReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Clock: clock.RealClock{}, PolicyGrace: 10 * time.Second}).SetupWithManager(mgr, workers.KubeconfigRequest.Workers); err != nil {
 		return nil, fmt.Errorf("set up the kubeconfig request reconciler: %w", err)
 	}
 	dialEtcd := func(ctx context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client, error) {
@@ -185,31 +177,31 @@ func Setup(mgr ctrl.Manager, in Inputs) (*Sources, error) {
 		OperatorNamespace:   in.OperatorNamespace,
 		EtcdClient:          dialEtcd,
 		Clock:               clock.RealClock{},
-	}).SetupWithManager(mgr, workers); err != nil {
+	}).SetupWithManager(mgr, workers.Datastore.Workers); err != nil {
 		return nil, fmt.Errorf("set up the datastore controller: %w", err)
 	}
-	if err := (&datastore.BackupReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdClient: dialEtcd, Clock: clock.RealClock{}}).SetupWithManager(mgr, workers); err != nil {
+	if err := (&datastore.BackupReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdClient: dialEtcd, Clock: clock.RealClock{}}).SetupWithManager(mgr, workers.Backup.Workers); err != nil {
 		return nil, fmt.Errorf("set up the backup reconciler: %w", err)
 	}
 	sampler := &datastore.SampleReconciler{Cache: mgr.GetCache(), EtcdClient: dialEtcd, Clock: clock.RealClock{}}
-	if err := sampler.SetupWithManager(mgr, workers); err != nil {
+	if err := sampler.SetupWithManager(mgr, workers.DatastoreSample.Workers); err != nil {
 		return nil, fmt.Errorf("set up the etcd sampler: %w", err)
 	}
-	if err := newLifecycle(mgr.GetClient(), mgr.GetAPIReader(), in.Config, revision).SetupWithManager(mgr, workers); err != nil {
+	if err := newLifecycle(mgr.GetClient(), mgr.GetAPIReader(), in.Config, revision).SetupWithManager(mgr, workers.Lifecycle.Workers); err != nil {
 		return nil, fmt.Errorf("set up the lifecycle controller: %w", err)
 	}
-	if err := (&tenant.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), ApplyPeriod: 10 * time.Minute, TunnelImage: in.TunnelImage, Revision: revision, Dial: in.Dial}).SetupWithManager(mgr, workers); err != nil {
+	if err := (&tenant.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), ApplyPeriod: 10 * time.Minute, TunnelImage: in.TunnelImage, Revision: revision, Dial: in.Dial}).SetupWithManager(mgr, workers.Tenant.Workers); err != nil {
 		return nil, fmt.Errorf("set up the tenant controller: %w", err)
 	}
 	sources := &Sources{Health: newHealth(mgr.GetClient(), mgr.GetAPIReader(), in.Config.Health), Nodes: newNodes(mgr.GetClient(), mgr.GetAPIReader(), in.Config.Health), Etcd: sampler}
 	sources.Health.DialContext, sources.Nodes.DialContext = in.Dial, in.Dial
-	if err := sources.Health.SetupWithManager(mgr, workers); err != nil {
+	if err := sources.Health.SetupWithManager(mgr, workers.Health.Workers); err != nil {
 		return nil, fmt.Errorf("set up the health controller: %w", err)
 	}
-	if err := sources.Nodes.SetupWithManager(mgr, nodesWorkers); err != nil {
+	if err := sources.Nodes.SetupWithManager(mgr, workers.HealthNodes.Workers); err != nil {
 		return nil, fmt.Errorf("set up the health nodes reconciler: %w", err)
 	}
-	if err := (&workloads.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), SignerImage: in.SignerImage, TunnelImage: in.TunnelImage, GatewayAPI: in.GatewayAPI, Revision: revision}).SetupWithManager(mgr, workers); err != nil {
+	if err := (&workloads.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), SignerImage: in.SignerImage, TunnelImage: in.TunnelImage, GatewayAPI: in.GatewayAPI, Revision: revision}).SetupWithManager(mgr, workers.Workloads.Workers); err != nil {
 		return nil, fmt.Errorf("set up the workloads controller: %w", err)
 	}
 	return sources, nil

@@ -732,7 +732,7 @@ So a read holds 25.9 MiB while its body is read (20.4 + 3.5, then the margin of 
 The memory of a pass follows from the reads it has in flight at once, each with a connection of its own, 25.9 MiB, of which the margin's 2:
 - a pass of `health-nodes` reads the controller manager's Lease, then lists the Leases and then the Nodes, then sends the hold's write, whose patch carries the read's `resourceVersion`, 384 bytes at most, and reads its answer: one read at a time, 25.9 MiB, and the summaries the pass builds beside the sampling, up to `health.maxNodes` Lease versions and Node summaries, 4 MiB (3.72 MiB measured, with names of 253 bytes: a Lease version takes up to 112 bytes of map slot, its name of 256 and 24 bytes of the slice it is built from, a Node summary 72 bytes, 256 and 80, 3.8 MiB for 5,000 of each; `TestWhatAPassBuildsBesideTheSamplingIsUnderSummariesAtMost`): 29.9 MiB;
 - a pass of `health` over a held restore lists seven kinds at once, each with a head and a connection of its own: seven reads, 181.3 MiB;
-- the 100 workers of `health-nodes` hold 100 passes at once, 2.92 GiB at most, and the 10 workers of `health`, by default, 10 held restores, 1.78 GiB.
+- the 100 workers of `health-nodes`, by default, hold 100 passes at once, 2.92 GiB at most, and the 10 workers of `health` 10 held restores, 1.78 GiB; `controllers.<name>.workers` scales each.
 
 At the default `GOGC` the heap in use may grow to about twice the live heap, so the operator's memory limit and `GOMEMLIMIT`, which are set when the operator is measured (`todo.md`, "From the chart"), start from about twice these figures.
 

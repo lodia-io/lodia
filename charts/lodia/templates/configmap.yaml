@@ -16,3 +16,8 @@ data:
       maxNodes: {{ int .Values.health.maxNodes }}
     fleet:
       maxConcurrentRollouts: {{ int .Values.fleet.maxConcurrentRollouts }}
+    controllers:
+      {{- range $name, $controller := .Values.controllers }}
+      {{ $name }}:
+        workers: {{ int $controller.workers }}
+      {{- end }}
