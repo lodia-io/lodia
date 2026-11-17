@@ -305,11 +305,11 @@ func TestExtraArgsRefuseWhatConflictsWithTheirValues(t *testing.T) {
 		ipv4     = "kube-controller-manager refuses node-cidr-mask-size-ipv4 with an IPv6 pod range alone"
 		ipv6     = "kube-controller-manager refuses node-cidr-mask-size-ipv6 with an IPv4 pod range alone"
 		signer   = "kube-apiserver refuses service-account-signing-endpoint, which Lodia sets, without ExternalServiceAccountTokenSigner"
-		tokens   = "kube-apiserver refuses service-account-max-token-expiration under 1h, and above 8760h"
+		tokens   = "kube-apiserver refuses a service-account-max-token-expiration other than 0 under 1h, and one above 8760h"
 		narrow   = "kube-controller-manager refuses a pod range narrower than the node mask of its family"
 		plugins  = "disable-admission-plugins is plugin names of letters and digits joined by commas, and nothing else"
 		lifetime = "service-account-max-token-expiration is a duration as Go prints it, without its zero units"
-		masks    = "a node mask size is a decimal number without a sign or a leading zero"
+		masks    = "a node mask size is a positive decimal number without a sign or a leading zero"
 	)
 	args := func(component string, flags map[string]any) func(*testing.T, *unstructured.Unstructured) {
 		return func(t *testing.T, o *unstructured.Unstructured) { set(t, o, flags, "spec", component, "extraArgs") }
@@ -343,6 +343,8 @@ func TestExtraArgsRefuseWhatConflictsWithTheirValues(t *testing.T) {
 		{"a node mask size with a leading zero", []func(*testing.T, *unstructured.Unstructured){pods("10.244.0.0/22"), args("controllerManager", map[string]any{"node-cidr-mask-size": "024"})}, masks},
 		{"an IPv4 node mask size with a leading zero", []func(*testing.T, *unstructured.Unstructured){pods("10.244.0.0/22"), args("controllerManager", map[string]any{"node-cidr-mask-size-ipv4": "024"})}, masks},
 		{"an IPv6 node mask size with a leading zero", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10:244::/56"), args("controllerManager", map[string]any{"node-cidr-mask-size-ipv6": "064"})}, masks},
+		{"a node mask size of 0 beside an IPv6 range of everything", []func(*testing.T, *unstructured.Unstructured){pods("::/0"), args("controllerManager", map[string]any{"node-cidr-mask-size-ipv6": "0"})}, masks},
+		{"a node mask size of 0", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size": "0"})}, masks},
 		{"a node mask size in hexadecimal", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size": "0x18"})}, masks},
 		{"a node mask size with a sign", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size": "+24"})}, masks},
 		{"a negative node mask size", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size": "-24"})}, masks},
@@ -376,6 +378,9 @@ func TestExtraArgsRefuseWhatConflictsWithTheirValues(t *testing.T) {
 		{"tokens of more than the signer's longest life", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "8760h1s"})}, tokens},
 		{"tokens of an hour and a half", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "1h30m"})}, ""},
 		{"tokens of less than an hour", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "59m59s"})}, tokens},
+		{"tokens with hours, minutes and seconds", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "2h1m1s"})}, ""},
+		{"tokens with hours and seconds", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "1h30s"})}, ""},
+		{"tokens with sixty seconds", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "1h60s"})}, lifetime},
 		{"tokens of half an hour", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "30m"})}, tokens},
 		{"tokens of a negative life", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "-1h"})}, lifetime},
 		{"tokens of an hour and a half in minutes", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "90m"})}, lifetime},

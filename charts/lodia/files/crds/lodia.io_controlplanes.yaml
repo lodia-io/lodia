@@ -231,9 +231,9 @@ spec:
                       rule: '!(''service-account-max-token-expiration'' in self) ||
                         size(self[''service-account-max-token-expiration'']) > 0 &&
                         self[''service-account-max-token-expiration''].matches(''^([1-9][0-9]*h)?([1-9]m|[1-5][0-9]m)?([1-9]s|[1-5][0-9]s)?$'')'
-                    - message: kube-apiserver refuses service-account-max-token-expiration
-                        under 1h, and above 8760h, the longest token lodia-signer
-                        signs
+                    - message: kube-apiserver refuses a service-account-max-token-expiration
+                        other than 0 under 1h, and one above 8760h, the longest token
+                        lodia-signer signs; 0 means 8760h, so leave the flag out instead
                       rule: '!(''service-account-max-token-expiration'' in self) ||
                         duration(self[''service-account-max-token-expiration'']) >=
                         duration(''1h'') && duration(self[''service-account-max-token-expiration''])
@@ -351,11 +351,11 @@ spec:
                     - message: this flag conflicts with one Lodia sets
                       rule: '!self.exists(k, k in [''cluster-signing-cert-file'',
                         ''cluster-signing-key-file'', ''master'', ''service-account-private-key-file''])'
-                    - message: a node mask size is a decimal number without a sign
-                        or a leading zero, since kube-controller-manager reads 024
-                        as octal
+                    - message: a node mask size is a positive decimal number without
+                        a sign or a leading zero, since kube-controller-manager reads
+                        024 as octal and 0 as unset
                       rule: '[''node-cidr-mask-size'', ''node-cidr-mask-size-ipv4'',
-                        ''node-cidr-mask-size-ipv6''].all(k, !(k in self) || self[k].matches(''^(0|[1-9][0-9]*)$''))'
+                        ''node-cidr-mask-size-ipv6''].all(k, !(k in self) || self[k].matches(''^[1-9][0-9]*$''))'
                     - message: this flag makes the component exit, or report another
                         version than the one it runs
                       rule: '!self.exists(k, k in [''help'', ''version''])'
