@@ -47,8 +47,9 @@ const (
 	// are large objects, and the set the hold counts changes slowly.
 	nodesEvery = 30 * time.Second
 
-	// nodesReads is how many reads a pass has in flight at once, the two lists.
-	nodesReads = 2
+	// nodesReads is how many reads a pass has in flight at once: its lists go
+	// one after the other, so that a pass holds one response at a time.
+	nodesReads = 1
 
 	// leasePage and nodePage are the limits of the pages of the two lists; a Node
 	// is the larger object.
@@ -285,30 +286,16 @@ func (r *NodesReconciler) sample(ctx context.Context, cp *lodiav1alpha1.ControlP
 	return r.holdOrRelease(ctx, cp, tenant, s, now)
 }
 
-// list reads the node Leases and, when the last list of Nodes is old, the
-// Nodes, at once under Timeout. A failed list of Nodes leaves the last good
-// one.
+// list reads the node Leases and then, when the last list of Nodes is old,
+// the Nodes, both under one Timeout. A failed list of Nodes leaves the last
+// good one.
 func (r *NodesReconciler) list(ctx context.Context, tenant *tenant, s *sampling, now time.Time) ([]leaseVersion, error) {
 	listing, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
-	var (
-		leases    []leaseVersion
-		leaseStop string
-		leaseErr  error
-		nodes     []node
-		nodeStop  string
-		nodeErr   error
-		wg        sync.WaitGroup
-	)
-	listNodes := s.listedAt.IsZero() || now.Sub(s.listedAt) >= nodesEvery
-	wg.Go(func() { leases, leaseStop, leaseErr = r.listLeases(listing, tenant) })
-	if listNodes {
-		wg.Go(func() { nodes, nodeStop, nodeErr = r.listNodes(listing, tenant) })
-	}
-	wg.Wait()
-	if listNodes {
-		if nodeErr != nil {
-			logf.FromContext(ctx).Error(nodeErr, "list the tenant's Nodes")
+	leases, leaseStop, leaseErr := r.listLeases(listing, tenant)
+	if s.listedAt.IsZero() || now.Sub(s.listedAt) >= nodesEvery {
+		if nodes, nodeStop, err := r.listNodes(listing, tenant); err != nil {
+			logf.FromContext(ctx).Error(err, "list the tenant's Nodes")
 		} else {
 			s.nodes, s.nodesStop, s.listedAt = nodes, nodeStop, now
 		}

@@ -112,6 +112,21 @@ func arrivesIn(t *testing.T, together chan struct{}, what string) {
 	}
 }
 
+func inFlightTogether(reads int) func() chan struct{} {
+	var mu sync.Mutex
+	arrived, together := 0, make(chan struct{})
+	return func() chan struct{} {
+		mu.Lock()
+		defer mu.Unlock()
+		current := together
+		if arrived++; arrived%reads == 0 {
+			close(together)
+			together = make(chan struct{})
+		}
+		return current
+	}
+}
+
 func settles(open *atomic.Int64, want int) (int64, bool) {
 	for range 1000 {
 		if got := open.Load(); got == int64(want) {
@@ -338,6 +353,9 @@ func TestAServerThatNeverAnswersLeavesNoConnectionOpenAfterAPassItsDeadlineCut(t
 func TestAReadPastTheCapWaitsForADialWhoseReadTookAnotherConnectionAndTakesTheConnectionOfThatDial(t *testing.T) {
 	for _, c := range clients {
 		t.Run(c.name, func(t *testing.T) {
+			if c.reads < 2 {
+				t.Skipf("%s has one connection, so no read takes another while a dial is held; a read behind the dial waits for it, as TestADialHeldPastTimeoutGivesItsPlaceBackAtTimeoutAndAReadBehindItDialsAfterwards holds", c.name)
+			}
 			var arrived, extra atomic.Int64
 			release := make(chan struct{}, c.reads)
 			server := serveCounted(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -473,15 +491,7 @@ func TestThePagesOfAListTakeTheConnectionsOfThePagesBeforeThem(t *testing.T) {
 		next := map[string]string{"": "t1", "t1": "t2"}[req.URL.Query().Get("continue")]
 		respondWith(w, `{"metadata":{"continue":"`+next+`"},"items":[`+item+`]}`)
 	}
-	var listed atomic.Int64
-	bothIn := make(chan struct{})
 	server := serveCounted(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if (req.URL.Path == nodesPath || req.URL.Path == nodeLeasesPath) && req.URL.Query().Get("continue") == "" {
-			if listed.Add(1) == nodesReads {
-				close(bothIn)
-			}
-			arrivesIn(t, bothIn, "every first page of a list")
-		}
 		switch req.URL.Path {
 		case nodesPath:
 			pageOf(w, req, `{"metadata":{"name":"n"},"status":{"nodeInfo":{"kubeletVersion":"v1.35.0"},"conditions":[{"type":"Ready","status":"True"}]}}`)
@@ -502,19 +512,13 @@ func TestThePagesOfAListTakeTheConnectionsOfThePagesBeforeThem(t *testing.T) {
 	if err != nil || len(leases) != 3 || len(s.nodes) != 3 {
 		t.Fatalf("the lists returned %d Leases and %d Nodes, error %v, want 3 of each", len(leases), len(s.nodes), err)
 	}
-	if reused, dialed := seen.counts(); reused != 4 || dialed != 2 {
-		t.Errorf("the six pages of the two lists reused a connection %d times and dialed %d, want 4 and 2: each list dials for its first page, and each next page takes the connection the page before gave back", reused, dialed)
+	if reused, dialed := seen.counts(); reused != 5 || dialed != 1 {
+		t.Errorf("the six pages of the two lists reused a connection %d times and dialed %d, want 5 and 1: the lists go one after the other, and each page takes the connection the page before gave back", reused, dialed)
 	}
 
-	var arrived atomic.Int64
-	together := make(chan struct{})
+	together := inFlightTogether(restoreReads)
 	restore := restoreTenantOf(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if arrived.Add(1) == restoreReads {
-			close(together)
-		}
-		if arrived.Load() <= restoreReads {
-			arrivesIn(t, together, "every list of a held restore")
-		}
+		arrivesIn(t, together(), "every list of a held restore")
 		answerHonestly(w, req)
 	}))
 	var first, second reusedOrNot
@@ -524,8 +528,34 @@ func TestThePagesOfAListTakeTheConnectionsOfThePagesBeforeThem(t *testing.T) {
 	if reused, dialed := first.counts(); reused != 0 || dialed != restoreReads {
 		t.Errorf("the first pass over a held restore reused %d connections and dialed %d, want 0 and %d", reused, dialed, restoreReads)
 	}
-	if reused, dialed := second.counts(); reused != restoreReads || dialed != 0 {
-		t.Errorf("the second pass over a held restore reused %d connections and dialed %d, want %d and 0", reused, dialed, restoreReads)
+	if reused, dialed := second.counts(); reused != 1 || dialed != restoreReads-1 {
+		t.Errorf("the second pass over a held restore reused %d connections and dialed %d, want 1 and %d: the client keeps one connection idle", reused, dialed, restoreReads-1)
+	}
+}
+
+func TestAPassLeavesOneConnectionIdleWhateverItHadInFlight(t *testing.T) {
+	for _, c := range clients {
+		t.Run(c.name, func(t *testing.T) {
+			together := inFlightTogether(c.reads)
+			server := serveCounted(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if c.reads > 1 {
+					arrivesIn(t, together(), "every read of the pass")
+				}
+				answerHonestly(w, req)
+			}))
+			_, pass := c.start(t, server.kubeconfig, time.Minute)
+			for i := range 3 {
+				if err := pass(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				if got, ok := settles(&server.listener.open, 1); !ok {
+					t.Fatalf("pass %d left %d connections open, want 1", i+1, got)
+				}
+			}
+			if peak := server.listener.peak.Load(); peak != int64(c.reads) {
+				t.Errorf("the passes had %d connections open at most, want the %d reads of a pass in flight at once", peak, c.reads)
+			}
+		})
 	}
 }
 
@@ -601,7 +631,7 @@ func TestAPassNeedsNoMoreConnectionsThanItsCapWhenTheCapIsLifted(t *testing.T) {
 			if transport.MaxConnsPerHost != c.reads {
 				t.Errorf("the transport caps its connections at %d, want the %d reads of a pass of %s", transport.MaxConnsPerHost, c.reads, c.name)
 			}
-			transport.MaxConnsPerHost = 0
+			transport.MaxConnsPerHost, transport.MaxIdleConnsPerHost = 0, c.reads
 			var sockets socketCount
 			sockets.watch(transport)
 			for i := range 40 {
@@ -689,5 +719,37 @@ func TestAKubeconfigThatChangesClosesTheOldClientsIdleConnectionsAndTheNewClient
 	readTogether(changed)
 	if got, peak := server.listener.open.Load(), server.listener.peak.Load(); got != nodesReads || peak > nodesReads {
 		t.Errorf("the new client has %d connections open, %d at the most, want %d", got, peak, nodesReads)
+	}
+}
+
+func TestTheNodesListedAfterTheLeasesShareTheirTimeoutAndOneCutKeepsTheLastList(t *testing.T) {
+	var slow atomic.Bool
+	r, tenant := tenantOf(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch {
+		case slow.Load() && req.URL.Path == nodesPath:
+			<-req.Context().Done()
+			return
+		case slow.Load() && req.URL.Path == nodeLeasesPath:
+			time.Sleep(150 * time.Millisecond)
+		}
+		answerHonestly(w, req)
+	}))
+	r.Timeout = 300 * time.Millisecond
+	s := &sampling{}
+	if _, err := r.list(t.Context(), tenant, s, renewedAt); err != nil || len(s.nodes) != 1 {
+		t.Fatalf("the first lists returned %d Nodes, error %v, want one", len(s.nodes), err)
+	}
+	slow.Store(true)
+	begun := time.Now()
+	leases, err := r.list(t.Context(), tenant, s, renewedAt.Add(nodesEvery))
+	took := time.Since(begun)
+	if err != nil || len(leases) != 1 {
+		t.Errorf("the Leases answered within the Timeout returned %d, error %v, want one", len(leases), err)
+	}
+	if took < r.Timeout || took > r.Timeout+200*time.Millisecond {
+		t.Errorf("the two lists took %v, want their one Timeout of %v", took, r.Timeout)
+	}
+	if len(s.nodes) != 1 || !s.listedAt.Equal(renewedAt) {
+		t.Errorf("the list of Nodes the Timeout cut left %d Nodes listed at %v, want the last good list, of %v", len(s.nodes), s.listedAt, renewedAt)
 	}
 }

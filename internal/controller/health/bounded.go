@@ -20,6 +20,10 @@ const (
 	// Health reads of a response; net/http reads up to 10 MiB of them
 	// otherwise. A kube-apiserver's are under 512 bytes (envtest, 1.35.0).
 	maxResponseHeaderBytes = 64 << 10
+
+	// idleConnections is how many connections a tenant client keeps idle
+	// between passes (docs/operations.md, Capacity).
+	idleConnections = 1
 )
 
 var errResponseTooLong = fmt.Errorf("the response is longer than maxResponseBytes, %d bytes", maxResponseBytes)
@@ -31,12 +35,15 @@ var errResponseTooLong = fmt.Errorf("the response is longer than maxResponseByte
 // for a response outside 2xx. next is the transport client-go builds for this
 // tenant alone, since its config sets a proxy, which it never caches. It has at
 // most connections connections open, dialing, in use and idle: a read past that
-// waits for one to close or be given back, at most its own deadline. A TLS
-// handshake ends within timeout.
+// waits for one to close or be given back, at most its own deadline. It keeps
+// one of them idle, which every pass of a tenant at rest reuses, and closes the
+// others a held restore's pass dialed as it gives them back. A TLS handshake
+// ends within timeout.
 func capResponses(next http.RoundTripper, connections int, timeout time.Duration) http.RoundTripper {
 	if transport, ok := next.(*http.Transport); ok {
 		transport.MaxResponseHeaderBytes = maxResponseHeaderBytes
 		transport.MaxConnsPerHost = connections
+		transport.MaxIdleConnsPerHost = idleConnections
 		transport.TLSHandshakeTimeout = timeout
 	}
 	return cappedTransport{next}

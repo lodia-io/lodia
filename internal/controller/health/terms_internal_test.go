@@ -92,7 +92,7 @@ func roundedUp(x float64, decimals int) float64 {
 func TestEveryFigureOfTheDerivationIsTheSumOfItsTermsRoundedUp(t *testing.T) {
 	const gibibyte = 1 << 30
 	pass := readsBound(nodesReads) + summariesAtMost
-	atRest := uint64(summariesAtMost + (nodesReads+restoreReads)*connectionMargin)
+	atRest := uint64(summariesAtMost + 2*idleConnections*connectionMargin)
 	for _, c := range []struct {
 		name     string
 		got      float64
@@ -101,12 +101,12 @@ func TestEveryFigureOfTheDerivationIsTheSumOfItsTermsRoundedUp(t *testing.T) {
 	}{
 		{"a read, MiB", mib(readsBound(1)), 1, 25.9},
 		{"a read apart from its connection, MiB", mib(readsBound(1) - connectionMargin), 1, 23.9},
-		{"the two reads of a pass of health-nodes, MiB", mib(readsBound(nodesReads)), 1, 51.8},
-		{"a pass of health-nodes, MiB", mib(pass), 1, 55.8},
+		{"the read of a pass of health-nodes, MiB", mib(readsBound(nodesReads)), 1, 25.9},
+		{"a pass of health-nodes, MiB", mib(pass), 1, 29.9},
 		{"a pass of health over a held restore, MiB", mib(readsBound(restoreReads)), 1, 181.3},
-		{"the connections of a tenant at rest, MiB", mib(uint64((nodesReads + restoreReads) * connectionMargin)), 1, 18},
-		{"a tenant at rest, MiB", mib(atRest), 1, 22},
-		{"100 passes of health-nodes, GiB", 100 * float64(pass) / gibibyte, 2, 5.45},
+		{"the connections of a tenant at rest, MiB", mib(uint64(2 * idleConnections * connectionMargin)), 1, 4},
+		{"a tenant at rest, MiB", mib(atRest), 1, 8},
+		{"100 passes of health-nodes, GiB", 100 * float64(pass) / gibibyte, 2, 2.92},
 		{"10 passes of health over a held restore, GiB", 10 * float64(readsBound(restoreReads)) / gibibyte, 2, 1.78},
 	} {
 		t.Run(c.name, func(t *testing.T) {

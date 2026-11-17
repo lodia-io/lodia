@@ -422,25 +422,13 @@ func servingTogether(t *testing.T, answers map[string][]byte, requests int) *ten
 
 func servingAPass(t *testing.T, lease, leases, nodes []byte) *tenant {
 	t.Helper()
-	var (
-		mu      sync.Mutex
-		arrived int
-	)
-	together := make(chan struct{})
 	_, tenant := tenantOverTLS(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		body := lease
 		switch req.URL.Path {
-		case nodeLeasesPath, nodesPath:
+		case nodeLeasesPath:
+			body = leases
+		case nodesPath:
 			body = nodes
-			if req.URL.Path == nodeLeasesPath {
-				body = leases
-			}
-			mu.Lock()
-			if arrived++; arrived == 2 {
-				close(together)
-			}
-			mu.Unlock()
-			<-together
 		}
 		if req.Method == http.MethodPatch {
 			_, _ = io.Copy(io.Discard, req.Body)
@@ -471,7 +459,7 @@ func TestMeasureTheLiveHeapOfAPassWhoseEveryReadIsAtItsWorst(t *testing.T) {
 	}
 	reference := restoreTenantOverTLS(t, answering(amplifier{status: http.StatusOK, body: []byte(`{"items":[{"webhooks":[{}],"spec":{"type":"LoadBalancer"},"metadata":{"namespace":"n","name":"x"}}]}`)}))
 	wantRestore := (&Reconciler{Timeout: 10 * time.Minute}).actedOn(t.Context(), reference)
-	t.Run("a pass of health-nodes: the Lease, both lists together and the renewal", func(t *testing.T) {
+	t.Run("a pass of health-nodes: the Lease, the two lists and the renewal", func(t *testing.T) {
 		tenant := servingAPass(t,
 			padding(maxResponseBytes, `{"metadata":{"resourceVersion":"1","annotations":{"pad":"`, `"}},"spec":{"holderIdentity":"lodia"}}`),
 			padding(maxResponseBytes, `{"metadata":{},"items":[{"metadata":{"name":"n","resourceVersion":"1","annotations":{"pad":"`, `"}}}]}`),
