@@ -45,12 +45,12 @@ fleet:
 
 resources:
   requests:
-    cpu: "1"
-    memory: 2Gi
+    cpu: 300m
+    memory: 512Mi
   limits:
-    memory: 8Gi
+    memory: 10Gi
 
-goMemLimit: 7GiB
+goMemLimit: 9GiB
 
 controllers:
   pki:
