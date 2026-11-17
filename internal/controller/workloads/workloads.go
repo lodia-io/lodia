@@ -259,14 +259,11 @@ func (r *Reconciler) reconcile(ctx context.Context, cp *lodiav1alpha1.ControlPla
 	return out, errors.Join(routesErr, err)
 }
 
-// rollout says what is not built, or waits on the endpoint and the inputs of
-// the control plane's pods, then renders and applies them.
+// rollout waits on the endpoint and the inputs of the control plane's pods,
+// then renders and applies them.
 func (r *Reconciler) rollout(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, waiting *metav1.Condition, requeueAfter time.Duration) (*outcome, error) {
 	report := func(condition metav1.Condition) *outcome {
 		return &outcome{endpoint: endpoint, condition: condition, requeueAfter: requeueAfter}
-	}
-	if fields := unsupported(cp); len(fields) > 0 {
-		return report(newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, "not built yet: "+strings.Join(fields, ", "))), nil
 	}
 	if waiting != nil {
 		return report(*waiting), nil
@@ -475,7 +472,7 @@ func (r *Reconciler) release(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 	}
 	var unmet []string
 	if restoring.Release != lodiav1alpha1.RestoreReleased {
-		unmet = append(unmet, "spec.restoreFrom.release is Held")
+		unmet = append(unmet, "spec.restoreFrom.release is Pending")
 	}
 	if cp.Status.Restore == nil {
 		unmet = append(unmet, "the restore is not complete")
@@ -581,33 +578,6 @@ func granted(cp *lodiav1alpha1.ControlPlane) string {
 func (r *Reconciler) holding(cp *lodiav1alpha1.ControlPlane) metav1.Condition {
 	return newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget,
 		fmt.Sprintf("waiting for Lifecycle to grant the running operator revision %s; status.target.operatorRevision is %s", r.Revision, granted(cp)))
-}
-
-// unsupported names the fields this release does not render, so a ControlPlane that
-// sets them is not Ready instead of running without them.
-func unsupported(cp *lodiav1alpha1.ControlPlane) []string {
-	var fields []string
-	if cp.Spec.Layout == lodiav1alpha1.LayoutCompact {
-		fields = append(fields, "layout Compact")
-	}
-	if a := cp.Spec.APIServer; a != nil {
-		if a.Authentication != nil && len(a.Authentication.JWT) > 0 {
-			fields = append(fields, "apiServer.authentication.jwt")
-		}
-		if a.Audit != nil {
-			fields = append(fields, "apiServer.audit")
-		}
-		if a.Admission != nil {
-			fields = append(fields, "apiServer.admission")
-		}
-	}
-	if s := cp.Spec.Scheduler; s != nil && s.ConfigRef != nil {
-		fields = append(fields, "scheduler.configRef")
-	}
-	if sa := cp.Spec.ServiceAccount; sa != nil && sa.PublicDiscovery {
-		fields = append(fields, "serviceAccount.publicDiscovery")
-	}
-	return fields
 }
 
 // controlledElsewhere reports the objects under Workloads' names that another

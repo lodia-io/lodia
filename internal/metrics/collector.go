@@ -19,6 +19,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/controller/datastore"
 	"go.lodia.io/lodia/internal/versions"
 )
@@ -30,8 +31,8 @@ const listTimeout = 5 * time.Second
 
 var (
 	info = perControlPlane("lodia_controlplane_info",
-		"1 for every ControlPlane: its UID, status.kubernetes.version, empty while absent, spec.layout, and the members of spec.datastore and spec.endpoint that are set.",
-		"uid", "kubernetes_version", "layout", "datastore", "endpoint_mode")
+		"1 for every ControlPlane: its UID, status.kubernetes.version, empty while absent, and the member of spec.endpoint that is set.",
+		"uid", "kubernetes_version", "endpoint_mode")
 	condition = perControlPlane("lodia_controlplane_condition",
 		"1 for the status of each condition in status.conditions and 0 for its other two; a type absent from status has no series.",
 		"type", "status")
@@ -195,7 +196,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	c.ProbeFailures.Collect(ch)
 	for i := range list.Items {
 		cp := &list.Items[i]
-		c.collect(ch, cp, byName[types.NamespacedName{Namespace: cp.Namespace, Name: lodiav1alpha1.EtcdName(cp.Name)}])
+		c.collect(ch, cp, byName[types.NamespacedName{Namespace: cp.Namespace, Name: contract.EtcdName(cp.Name)}])
 	}
 }
 
@@ -209,10 +210,6 @@ func (c *Collector) collect(ch chan<- prometheus.Metric, cp *lodiav1alpha1.Contr
 	if status.Kubernetes != nil {
 		version = status.Kubernetes.Version
 	}
-	datastore := lodiav1alpha1.MetricDatastoreDedicated
-	if cp.Spec.Datastore.Shared != nil {
-		datastore = lodiav1alpha1.MetricDatastoreShared
-	}
 	endpoint := lodiav1alpha1.MetricEndpointNodePort
 	switch {
 	case cp.Spec.Endpoint.Gateway != nil:
@@ -220,7 +217,7 @@ func (c *Collector) collect(ch chan<- prometheus.Metric, cp *lodiav1alpha1.Contr
 	case cp.Spec.Endpoint.LoadBalancer != nil:
 		endpoint = lodiav1alpha1.MetricEndpointLoadBalancer
 	}
-	emit(info, 1, string(cp.UID), version, string(cp.Spec.Layout), datastore, endpoint)
+	emit(info, 1, string(cp.UID), version, endpoint)
 	minor, _ := versions.Minor(version)
 	if day, ok := versions.EndOfSupport(minor); ok {
 		emit(endOfSupport, float64(day.Unix()))

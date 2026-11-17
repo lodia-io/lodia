@@ -1,6 +1,5 @@
 # A production ControlPlane: highly available, exposed through a shared
-# Gateway by SNI, OIDC for people, audit and encryption at rest, a maintenance
-# window at night.
+# Gateway by SNI, encryption at rest, a maintenance window at night.
 apiVersion: lodia.io/v1alpha1
 kind: ControlPlane
 metadata:
@@ -11,8 +10,7 @@ spec:
   highAvailability:
     failureTolerance: Node          # Node | Zone
   datastore:
-    dedicated:
-      className: fast-ssd           # a DatastoreClass; omitted → the default class
+    className: fast-ssd             # a DatastoreClass; omitted → the default class
   endpoint:
     gateway:
       parentRef: {name: tenants, namespace: gateway, sectionName: tls}
@@ -26,17 +24,6 @@ spec:
     podCIDRs: [10.244.0.0/16]
     clusterDomain: cluster.local
   apiServer:
-    authentication:                 # structured authentication configuration
-      jwt:
-        - issuer:
-            url: https://id.example.com
-            audiences: [kubernetes]
-          claimMappings:
-            username: {claim: email, prefix: "oidc:"}
-            groups: {claim: groups, prefix: "oidc:"}
-      # anonymous access is Lodia's: only cluster-info and the health paths
-    audit:
-      policyRef: {name: audit-default}   # a ConfigMap in this namespace, key policy.yaml
     encryption:
       provider: secretbox                 # None | secretbox | aescbc
     featureGates: {}

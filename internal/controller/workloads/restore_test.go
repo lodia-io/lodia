@@ -33,17 +33,17 @@ var gone = lodiav1alpha1.UIDReference{Name: "prod", UID: "0b6c2f4e-8d1a-4c3e-9f5
 func TestAHeldRestoreRunsNoControllerManagerAndCountsItAvailable(t *testing.T) {
 	ns := namespace(t)
 	prod := source(t, ns)
-	cp := restored(t, ns, lodiav1alpha1.RestoreHeld)
+	cp := restored(t, ns, lodiav1alpha1.RestorePending)
 	for _, step := range []struct {
 		name, unmet string
 		change      func()
 	}{
-		{"nothing", "spec.restoreFrom.release is Held; the restore is not complete; AddonsApplied is not True for generation 1", func() {}},
-		{"the restore completed", "spec.restoreFrom.release is Held; ControlPlane prod (UID " + string(prod.UID) + "), the Backup's source, exists; AddonsApplied is not True for generation 1",
+		{"nothing", "spec.restoreFrom.release is Pending; the restore is not complete; AddonsApplied is not True for generation 1", func() {}},
+		{"the restore completed", "spec.restoreFrom.release is Pending; ControlPlane prod (UID " + string(prod.UID) + "), the Backup's source, exists; AddonsApplied is not True for generation 1",
 			func() { setRestore(t, cp, lodiav1alpha1.UIDReference{Name: prod.Name, UID: prod.UID}) }},
-		{"AddonsApplied", "spec.restoreFrom.release is Held; ControlPlane prod (UID " + string(prod.UID) + "), the Backup's source, exists",
+		{"AddonsApplied", "spec.restoreFrom.release is Pending; ControlPlane prod (UID " + string(prod.UID) + "), the Backup's source, exists",
 			func() { setTrue(t, cp, lodiav1alpha1.ConditionAddonsApplied, lodiav1alpha1.ReasonApplied) }},
-		{"the source's deletion", "spec.restoreFrom.release is Held", func() {
+		{"the source's deletion", "spec.restoreFrom.release is Pending", func() {
 			if err := k8s.Delete(t.Context(), prod); err != nil {
 				t.Fatal(err)
 			}
@@ -61,7 +61,7 @@ func TestAHeldRestoreRunsNoControllerManagerAndCountsItAvailable(t *testing.T) {
 }
 
 func TestARestoredControlPlaneWhoseControllerManagerIsHeldGetsAKubernetesVersion(t *testing.T) {
-	cp := restored(t, namespace(t), lodiav1alpha1.RestoreHeld)
+	cp := restored(t, namespace(t), lodiav1alpha1.RestorePending)
 	expectComponents(t, cp, "1/1/1 0/0/0 1/1/1")
 	applyStatus(t, cp, "test/addons", map[string]any{"addons": map[string]any{"version": version}})
 	lifecycleReconciler := &lifecycle.Reconciler{Client: k8s, Reader: k8s, Clock: clock.RealClock{}}
@@ -132,14 +132,14 @@ func TestTheSourcesDeletionAloneReleasesItsReplacement(t *testing.T) {
 func TestTheReleaseWaitsForAddonsAppliedAtItsGenerationAndHoldsForGood(t *testing.T) {
 	ns := namespace(t)
 	prod := source(t, ns)
-	cp := restored(t, ns, lodiav1alpha1.RestoreHeld)
+	cp := restored(t, ns, lodiav1alpha1.RestorePending)
 	setRestore(t, cp, lodiav1alpha1.UIDReference{Name: prod.Name, UID: prod.UID})
 	setTrue(t, cp, lodiav1alpha1.ConditionAddonsApplied, lodiav1alpha1.ReasonApplied)
 	if err := k8s.Delete(t.Context(), prod); err != nil {
 		t.Fatal(err)
 	}
 	testenv.Eventually(t, func() error {
-		return expectAt(cp, 1, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, heldUntil+"spec.restoreFrom.release is Held")
+		return expectAt(cp, 1, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, heldUntil+"spec.restoreFrom.release is Pending")
 	})
 
 	update(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.RestoreFrom.Release = lodiav1alpha1.RestoreReleased })
@@ -179,7 +179,7 @@ func TestTheReleaseWaitsForAddonsAppliedAtItsGenerationAndHoldsForGood(t *testin
 }
 
 func TestAControllerManagerScaledByHandIsReleased(t *testing.T) {
-	cp := restored(t, namespace(t), lodiav1alpha1.RestoreHeld)
+	cp := restored(t, namespace(t), lodiav1alpha1.RestorePending)
 	pause(t, cp)
 	r := &workloads.Reconciler{Client: unpaused(), Reader: k8s, SignerImage: signerImage, Revision: revision}
 	testenv.Eventually(t, func() error {
@@ -248,7 +248,7 @@ func TestAnOrphanedControllerManagerReleasesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cp := restored(t, ns, lodiav1alpha1.RestoreHeld)
+	cp := restored(t, ns, lodiav1alpha1.RestorePending)
 	testenv.Eventually(t, func() error {
 		d := deployment(t, cp, "kube-controller-manager")
 		if !metav1.IsControlledBy(d, cp) || *d.Spec.Replicas != 0 {
@@ -276,8 +276,8 @@ func TestAMetReleaseInAWaitCountsTheControllerManagerAtZeroAvailable(t *testing.
 }
 
 func TestAWaitKeepsTheHeldMessage(t *testing.T) {
-	cp := restored(t, namespace(t), lodiav1alpha1.RestoreHeld)
-	unmet := "spec.restoreFrom.release is Held; the restore is not complete; AddonsApplied is not True for generation "
+	cp := restored(t, namespace(t), lodiav1alpha1.RestorePending)
+	unmet := "spec.restoreFrom.release is Pending; the restore is not complete; AddonsApplied is not True for generation "
 	testenv.Eventually(t, func() error {
 		return expectAt(cp, 1, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, heldUntil+unmet+"1")
 	})
@@ -368,11 +368,10 @@ func source(t *testing.T, ns string, finalizers ...string) *lodiav1alpha1.Contro
 	prod := &lodiav1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: ns, Finalizers: finalizers},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
-			Version:   version,
-			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{}},
-			Endpoint:  loadBalancer(),
-			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
-			Paused:    true,
+			Version:  version,
+			Endpoint: loadBalancer(),
+			Network:  lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
+			Paused:   true,
 		},
 	}
 	if err := k8s.Create(t.Context(), prod); err != nil {

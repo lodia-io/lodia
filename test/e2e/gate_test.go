@@ -64,6 +64,7 @@ import (
 	kindcluster "sigs.k8s.io/kind/pkg/cluster"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 )
 
 const (
@@ -210,7 +211,7 @@ func TestPhase1Gate(t *testing.T) {
 			until(ctx, t, 3*time.Minute, "the ControlPlane is gone", func(ctx context.Context) error {
 				return gone(k8s.Get(ctx, key, &lodiav1alpha1.ControlPlane{}))
 			})
-			etcd := lodiav1alpha1.EtcdName(controlPlane)
+			etcd := contract.EtcdName(controlPlane)
 			kept := []string{"PersistentVolumeClaim " + etcd + "-" + etcd + "-0"}
 			served, err := discovery.NewDiscoveryClientForConfig(cfg.Client().RESTConfig())
 			if err != nil {
@@ -261,7 +262,7 @@ func logStages(ctx context.Context, t *testing.T, k8s client.Client, cp *lodiav1
 		}
 	}
 	etcd := &druidv1alpha1.Etcd{}
-	if err := k8s.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.EtcdName(cp.Name)}, etcd); err != nil {
+	if err := k8s.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: contract.EtcdName(cp.Name)}, etcd); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range etcd.Status.Conditions {
@@ -401,7 +402,7 @@ func createTenant(ctx context.Context, t *testing.T, k8s client.Client, key clie
 		ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
 			Version:   version,
-			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{ClassName: class}},
+			Datastore: lodiav1alpha1.DatastoreSettings{ClassName: class},
 			Endpoint:  lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}},
 			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.32.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{gatePodCIDR}},
 			Addons:    &lodiav1alpha1.Addons{KubeProxy: &lodiav1alpha1.KubeProxy{Conntrack: &lodiav1alpha1.KubeProxyConntrack{MaxPerCore: new(int32(0))}}},

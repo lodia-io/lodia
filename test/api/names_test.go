@@ -18,13 +18,14 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 )
 
 func TestDerivedNamesFitTheLongestControlPlaneName(t *testing.T) {
 	longestRevisionHash := strconv.FormatUint(math.MaxUint32, 10)
 	for length, fits := range map[int]bool{32: true, 33: false} {
 		controlPlane := strings.Repeat("a", length)
-		etcd := metav1.ObjectMeta{Name: lodiav1alpha1.EtcdName(controlPlane)}
+		etcd := metav1.ObjectMeta{Name: contract.EtcdName(controlPlane)}
 		errs := slices.Concat(
 			validation.IsDNS1035Label(lodiav1alpha1.APIServerServiceName(controlPlane)),
 			validation.IsDNS1035Label(druidv1alpha1.GetClientServiceName(etcd)),
@@ -68,17 +69,5 @@ func TestAPreUpgradeBackupNameIsABackupName(t *testing.T) {
 	}
 	if got := lodiav1alpha1.PreUpgradeBackupName("dev", "1.37", "u"); got != "dev-pre-upgrade-v1.37-u" {
 		t.Errorf("the name of the example is %s", got)
-	}
-}
-
-func TestNoSecretNameOfOneControlPlaneIsAnothers(t *testing.T) {
-	secrets := append(lodiav1alpha1.PKISecrets(), lodiav1alpha1.EtcdBackupSecret,
-		lodiav1alpha1.TunnelServingSecret, lodiav1alpha1.TunnelCASecret, lodiav1alpha1.TunnelClientSecret)
-	for _, a := range secrets {
-		for _, b := range secrets {
-			if prefix, found := strings.CutSuffix(string(b), "-"+string(a)); found {
-				t.Errorf("%s of a ControlPlane x is %s of a ControlPlane x-%s in the same namespace", b.Name("x"), a, prefix)
-			}
-		}
 	}
 }

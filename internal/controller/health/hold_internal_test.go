@@ -14,7 +14,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/types"
 
-	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 )
 
 type sent struct {
@@ -52,7 +52,7 @@ func TestAWriteSendsAMergePatchOfTheSpecItWritesUnderTheResourceVersionItRead(t 
 		write leaseWrite
 		spec  map[string]any
 	}{
-		{"a take", takeLease, map[string]any{"holderIdentity": lodiav1alpha1.HoldHolderIdentity, "leaseDurationSeconds": 60.0, "acquireTime": at, "renewTime": at, "leaseTransitions": 5.0}},
+		{"a take", takeLease, map[string]any{"holderIdentity": contract.HoldHolderIdentity, "leaseDurationSeconds": 60.0, "acquireTime": at, "renewTime": at, "leaseTransitions": 5.0}},
 		{"a renewal", renewLease, map[string]any{"leaseDurationSeconds": 60.0, "renewTime": at}},
 		{"a release", releaseLease, map[string]any{"holderIdentity": "", "leaseDurationSeconds": 1.0, "acquireTime": at, "renewTime": at}},
 	} {
@@ -119,8 +119,8 @@ func TestAFirstWriteCreatesTheLeaseWhole(t *testing.T) {
 	want := map[string]any{
 		"apiVersion": "coordination.k8s.io/v1",
 		"kind":       "Lease",
-		"metadata":   map[string]any{"name": lodiav1alpha1.ControllerManagerLease, "namespace": lodiav1alpha1.LeaderElectionNamespace},
-		"spec":       map[string]any{"holderIdentity": lodiav1alpha1.HoldHolderIdentity, "leaseDurationSeconds": 60.0, "acquireTime": at, "renewTime": at, "leaseTransitions": 1.0},
+		"metadata":   map[string]any{"name": contract.ControllerManagerLease, "namespace": contract.LeaderElectionNamespace},
+		"spec":       map[string]any{"holderIdentity": contract.HoldHolderIdentity, "leaseDurationSeconds": 60.0, "acquireTime": at, "renewTime": at, "leaseTransitions": 1.0},
 	}
 	if wantJSON, _ := json.Marshal(want); string(wantJSON) != mustMarshal(t, got.body) {
 		t.Errorf("the Lease created is %s, want %s", mustMarshal(t, got.body), wantJSON)

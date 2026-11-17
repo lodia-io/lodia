@@ -46,6 +46,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/certs"
+	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/controller/datastore"
 	"go.lodia.io/lodia/internal/testenv"
 )
@@ -251,7 +252,7 @@ func newRestore(t *testing.T, setup restoreSetup) *restore {
 	t.Cleanup(func() { restoredEtcds.Delete(key) })
 	if !setup.noBackup {
 		r.backup = sealedBackup(t, r.ns, backupName, r.source, setup.backup)
-		if _, err := r.etcd.Put(t.Context(), lodiav1alpha1.BackupSealKey(r.backup.UID), string(r.backup.UID)); err != nil {
+		if _, err := r.etcd.Put(t.Context(), contract.BackupSealKey(r.backup.UID), string(r.backup.UID)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -395,7 +396,7 @@ func (r *restore) copied(t *testing.T) *druidv1alpha1.Etcd {
 
 func (r *restore) marker(t *testing.T) int64 {
 	t.Helper()
-	response := r.etcd.get(t, lodiav1alpha1.RestoreMarkerKey(r.controlPlane(t).UID))
+	response := r.etcd.get(t, datastore.RestoreMarkerKey(r.controlPlane(t).UID))
 	if len(response.Kvs) == 0 {
 		return 0
 	}
@@ -615,7 +616,7 @@ type restoreMarkerJSON struct {
 
 func restoreMarkerValue(t *testing.T, r *restore) restoreMarkerJSON {
 	t.Helper()
-	response := r.etcd.get(t, lodiav1alpha1.RestoreMarkerKey(r.controlPlane(t).UID))
+	response := r.etcd.get(t, datastore.RestoreMarkerKey(r.controlPlane(t).UID))
 	if len(response.Kvs) == 0 {
 		t.Fatal("no marker")
 	}
@@ -660,8 +661,6 @@ func TestARestoreStartsOnlyFromASealedCompatibleBackupInTheClasssStore(t *testin
 			lodiav1alpha1.ReasonRestoreFailed, "Backup a-1 is Failed: the copy failed: denied; create another Backup; restore another Backup"},
 		{"no store", restoreSetup{backup: readyAs(metav1.ConditionFalse, lodiav1alpha1.ReasonNoBackupStore, "no store")},
 			lodiav1alpha1.ReasonRestoreFailed, "Backup a-1 is NoBackupStore: no store; restore another Backup"},
-		{"unsupported", restoreSetup{backup: readyAs(metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, "shared")},
-			lodiav1alpha1.ReasonRestoreFailed, "Backup a-1 is Unsupported: shared; restore another Backup"},
 		{"seal lost", restoreSetup{backup: readyAs(metav1.ConditionFalse, lodiav1alpha1.ReasonSealLost, "sealed as x")},
 			lodiav1alpha1.ReasonRestoreFailed, "Backup a-1 is SealLost: sealed as x; restore another Backup"},
 		{"keys controlled elsewhere", restoreSetup{backup: readyAs(metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere, "Secret a-1.encryption-config exists")},
@@ -794,12 +793,12 @@ func TestARestoreFromACopyWithoutItsSealCleansUpNothing(t *testing.T) {
 		seal func(t *testing.T, r *restore)
 	}{
 		{"absent", func(t *testing.T, r *restore) {
-			if _, err := r.etcd.Delete(t.Context(), lodiav1alpha1.BackupSealKey(r.backup.UID)); err != nil {
+			if _, err := r.etcd.Delete(t.Context(), contract.BackupSealKey(r.backup.UID)); err != nil {
 				t.Fatal(err)
 			}
 		}},
 		{"of another Backup", func(t *testing.T, r *restore) {
-			if _, err := r.etcd.Put(t.Context(), lodiav1alpha1.BackupSealKey(r.backup.UID), "5e1f7c3a-0000-4000-8000-0000000000ff"); err != nil {
+			if _, err := r.etcd.Put(t.Context(), contract.BackupSealKey(r.backup.UID), "5e1f7c3a-0000-4000-8000-0000000000ff"); err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -881,7 +880,7 @@ func TestTheCleanupFunction(t *testing.T) {
 	if again != 1 || len(e.get(t, cleanedKeys[0]).Kvs) == 0 {
 		t.Errorf("a second cleanup deleted what was written after the first")
 	}
-	marker := e.get(t, lodiav1alpha1.RestoreMarkerKey(uid))
+	marker := e.get(t, datastore.RestoreMarkerKey(uid))
 	if string(marker.Kvs[0].GetValue()) != "first" || marker.Kvs[0].GetModRevision() != revision {
 		t.Errorf("the marker holds %q at revision %d, want the first cleanup's at %d", marker.Kvs[0].GetValue(), marker.Kvs[0].GetModRevision(), revision)
 	}
@@ -1374,7 +1373,7 @@ func TestDataFromBeforeTheCleanupIsCleanedUpAgain(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, err := r.etcd.Delete(t.Context(), lodiav1alpha1.RestoreMarkerKey(r.controlPlane(t).UID)); err != nil {
+			if _, err := r.etcd.Delete(t.Context(), datastore.RestoreMarkerKey(r.controlPlane(t).UID)); err != nil {
 				t.Fatal(err)
 			}
 			r.etcd.put(t, cleanedKeys[0])
@@ -1931,8 +1930,8 @@ func TestARestoreReadThatFailsIsNoAnswer(t *testing.T) {
 		name string
 		key  func(*testing.T, *restore) string
 	}{
-		{"the marker", func(t *testing.T, r *restore) string { return lodiav1alpha1.RestoreMarkerKey(r.controlPlane(t).UID) }},
-		{"the seal", func(_ *testing.T, r *restore) string { return lodiav1alpha1.BackupSealKey(r.backup.UID) }},
+		{"the marker", func(t *testing.T, r *restore) string { return datastore.RestoreMarkerKey(r.controlPlane(t).UID) }},
+		{"the seal", func(_ *testing.T, r *restore) string { return contract.BackupSealKey(r.backup.UID) }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := newRestore(t, restoreSetup{})

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -409,83 +410,46 @@ func TestTheSpecIsRendered(t *testing.T) {
 		"--controllers=*,bootstrap-signer-controller,token-cleaner-controller,-ttl-controller")
 }
 
-func TestWhatIsNotBuiltYetIsSaid(t *testing.T) {
-	ha := controlPlane(t, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
-		spec.Scheduler = &lodiav1alpha1.Scheduler{ConfigRef: &lodiav1alpha1.LocalReference{Name: "profiles"}}
-	})
-	testenv.Eventually(t, func() error { return expectCondition(ha, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported) })
-	if c := condition(t, ha); c.Message != "not built yet: scheduler.configRef" {
-		t.Errorf("APIServerReady says %q", c.Message)
-	}
-	setIngress(t, ha, corev1.LoadBalancerIngress{IP: lbAddress})
-	testenv.Eventually(t, func() error {
-		if e := get(t, ha).Status.Endpoint; e == nil || e.APIServer.Host != lbAddress {
-			return fmt.Errorf("status.endpoint is %+v", e)
-		}
-		return expectCondition(ha, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported)
-	})
-	if c := meta.FindStatusCondition(get(t, ha).Status.Conditions, lodiav1alpha1.ConditionRoutesReady); c != nil {
-		t.Errorf("a loadBalancer ControlPlane has %+v", c)
-	}
-
-	ignored := controlPlane(t, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.APIServer = &lodiav1alpha1.APIServer{Replicas: new(int32(2))}
-		spec.ServiceAccount = &lodiav1alpha1.ServiceAccount{PublicDiscovery: true}
-	})
-	testenv.Eventually(t, func() error { return expectCondition(ignored, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported) })
-	if c := condition(t, ignored); c.Message != "not built yet: serviceAccount.publicDiscovery" {
-		t.Errorf("APIServerReady says %q", c.Message)
-	}
-}
-
-func TestAnUnsupportedFieldKeepsTheEndpoint(t *testing.T) {
-	cp := running(t)
-	published := get(t, cp).Status.Endpoint
-	fresh := get(t, cp)
-	fresh.Spec.ServiceAccount = &lodiav1alpha1.ServiceAccount{PublicDiscovery: true}
-	if err := k8s.Update(t.Context(), fresh); err != nil {
-		t.Fatal(err)
-	}
-	testenv.Eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported) })
-	if e := get(t, cp).Status.Endpoint; e == nil || *e != *published {
-		t.Errorf("status.endpoint is %+v once the ControlPlane asks for a field not built yet, want %+v", e, published)
-	}
-}
-
 func TestEveryFlagLodiaRendersIsRefusedOrMerged(t *testing.T) {
 	cp := running(t)
 	merged := map[string]bool{"enable-admission-plugins": true, "controllers": true}
+	const (
+		sets     = "Lodia sets this flag"
+		defaults = "Lodia relies on this flag's default"
+		conflict = "this flag conflicts with one Lodia sets"
+	)
 	components := map[string]struct {
-		alsoRefused []string
+		alsoRefused map[string]string
 		set         func(*lodiav1alpha1.ControlPlaneSpec, map[string]string)
 	}{
-		"kube-apiserver": {[]string{"anonymous-auth", "bind-address", "feature-gates", "service-account-key-file", "service-account-signing-key-file", "shutdown-send-retry-after"},
+		"kube-apiserver": {map[string]string{"anonymous-auth": conflict, "bind-address": defaults, "feature-gates": sets, "goaway-chance": sets,
+			"service-account-key-file": conflict, "service-account-signing-key-file": conflict, "shutdown-send-retry-after": defaults},
 			func(spec *lodiav1alpha1.ControlPlaneSpec, args map[string]string) {
 				spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: args}
 			}},
-		"kube-controller-manager": {[]string{"cluster-signing-cert-file", "cluster-signing-key-file", "feature-gates", "service-account-private-key-file"},
+		"kube-controller-manager": {map[string]string{"cluster-signing-cert-file": conflict, "cluster-signing-key-file": conflict, "feature-gates": sets,
+			"service-account-private-key-file": conflict, "secure-port": defaults},
 			func(spec *lodiav1alpha1.ControlPlaneSpec, args map[string]string) {
 				spec.ControllerManager = &lodiav1alpha1.Component{ExtraArgs: args}
 			}},
-		"kube-scheduler": {[]string{"config", "feature-gates"},
+		"kube-scheduler": {map[string]string{"config": conflict, "feature-gates": sets, "secure-port": defaults},
 			func(spec *lodiav1alpha1.ControlPlaneSpec, args map[string]string) {
 				spec.Scheduler = &lodiav1alpha1.Scheduler{ExtraArgs: args}
 			}},
 	}
 	for component, c := range components {
-		flags := c.alsoRefused
+		flags := maps.Clone(c.alsoRefused)
 		for _, arg := range deployment(t, cp, component).Spec.Template.Spec.Containers[0].Command[1:] {
 			if name, _, _ := strings.Cut(strings.TrimPrefix(arg, "--"), "="); !merged[name] {
-				flags = append(flags, name)
+				flags[name] = sets
 			}
 		}
-		for _, flag := range flags {
+		for flag, want := range flags {
 			spec := cp.Spec.DeepCopy()
 			c.set(spec, map[string]string{flag: "set by the tenant"})
 			tenant := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "flags", Namespace: cp.Namespace}, Spec: *spec}
-			if err := k8s.Create(t.Context(), tenant, client.DryRunAll); !apierrors.IsInvalid(err) || !strings.Contains(err.Error(), "Lodia sets this flag") {
-				t.Errorf("the extra arguments of %s take --%s: %v", component, flag, err)
+			if err := k8s.Create(t.Context(), tenant, client.DryRunAll); !apierrors.IsInvalid(err) || !strings.Contains(err.Error(), want) {
+				t.Errorf("the extra arguments of %s take --%s, want %q: %v", component, flag, want, err)
 			}
 		}
 	}
@@ -1625,10 +1589,9 @@ func create(t *testing.T, ns string, endpoint lodiav1alpha1.Endpoint, change ...
 	cp := &lodiav1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: ns},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
-			Version:   version,
-			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{}},
-			Endpoint:  endpoint,
-			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
+			Version:  version,
+			Endpoint: endpoint,
+			Network:  lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
 		},
 	}
 	for _, c := range change {

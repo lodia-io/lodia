@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/controller/datastore"
 	"go.lodia.io/lodia/internal/controller/health"
 	"go.lodia.io/lodia/internal/metrics"
@@ -222,7 +223,7 @@ func TestCountsDuringAHoldCountAnUnknownNodeFromTheHoldsStart(t *testing.T) {
 	joined(t, "c", corev1.ConditionUnknown, h.start.Add(-4*time.Minute))
 	h.at(0)
 	h.at(20)
-	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+	if holder := h.holder(); holder != contract.HoldHolderIdentity {
 		t.Fatalf("20 seconds of silence left the Lease with holder %q", holder)
 	}
 	h.at(90)
@@ -264,13 +265,13 @@ func TestAConflictWhoseReReadFindsAnotherHolderCountsAsTheRetry(t *testing.T) {
 	var puts atomic.Int32
 	h.inject(func(w http.ResponseWriter, req *http.Request) bool {
 		if req.Method == http.MethodPatch && req.URL.Path == managerLease && puts.Add(1) == 1 {
-			renew(t, lodiav1alpha1.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", time.Now())
+			renew(t, contract.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", time.Now())
 		}
 		return false
 	})
 	h.at(40)
 	h.inject(nil)
-	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+	if holder := h.holder(); holder != contract.HoldHolderIdentity {
 		t.Fatalf("the retry left holder %q", holder)
 	}
 	h.expectSilent(taken(2, 2, "60"))

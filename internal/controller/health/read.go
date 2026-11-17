@@ -20,7 +20,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/utils/ptr"
 
-	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/jsonscan"
 )
 
@@ -446,17 +446,17 @@ func firstPage[T any](ctx context.Context, t *tenant, path string, element func(
 }
 
 func (t *tenant) getLease(ctx context.Context, name string) (*leaderLease, error) {
-	body, err := t.do(ctx, t.api.Get().AbsPath(coordinationPath, lodiav1alpha1.LeaderElectionNamespace, "leases", name))
+	body, err := t.do(ctx, t.api.Get().AbsPath(coordinationPath, contract.LeaderElectionNamespace, "leases", name))
 	return decode(body, err, leaderLeaseFrom)
 }
 
 func (t *tenant) createLease(ctx context.Context, body []byte) (*leaderLease, error) {
-	answer, err := t.do(ctx, t.api.Post().AbsPath(coordinationPath, lodiav1alpha1.LeaderElectionNamespace, "leases").SetHeader("Content-Type", "application/json").Body(body))
+	answer, err := t.do(ctx, t.api.Post().AbsPath(coordinationPath, contract.LeaderElectionNamespace, "leases").SetHeader("Content-Type", "application/json").Body(body))
 	return decode(answer, err, leaderLeaseFrom)
 }
 
 func (t *tenant) patchLease(ctx context.Context, patch []byte) (*leaderLease, error) {
-	body, err := t.do(ctx, t.api.Patch(types.MergePatchType).AbsPath(coordinationPath, lodiav1alpha1.LeaderElectionNamespace, "leases", lodiav1alpha1.ControllerManagerLease).Body(patch))
+	body, err := t.do(ctx, t.api.Patch(types.MergePatchType).AbsPath(coordinationPath, contract.LeaderElectionNamespace, "leases", contract.ControllerManagerLease).Body(patch))
 	return decode(body, err, leaderLeaseFrom)
 }
 

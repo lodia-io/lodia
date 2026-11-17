@@ -102,7 +102,6 @@ func Cache(gatewayAPI bool) (cache.Options, error) {
 	byObject := map[client.Object]cache.ByObject{
 		&lodiav1alpha1.ControlPlane{}:      everything,
 		&lodiav1alpha1.DatastoreClass{}:    everything,
-		&lodiav1alpha1.Datastore{}:         everything,
 		&lodiav1alpha1.KubeconfigRequest{}: everything,
 		&lodiav1alpha1.Backup{}:            everything,
 	}

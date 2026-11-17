@@ -51,6 +51,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/controller/health"
 	"go.lodia.io/lodia/internal/operator"
 	"go.lodia.io/lodia/internal/testenv"
@@ -181,7 +182,7 @@ func TestTheMetricsServeTheSamplesOfTheSamplerSetupReturns(t *testing.T) {
 	}
 	cp := createControlPlane(t, k8s)
 	etcd := &druidv1alpha1.Etcd{ObjectMeta: metav1.ObjectMeta{
-		Name: lodiav1alpha1.EtcdName(cp.Name), Namespace: cp.Namespace, UID: "etcd-of-dev",
+		Name: contract.EtcdName(cp.Name), Namespace: cp.Namespace, UID: "etcd-of-dev",
 		Annotations:     map[string]string{lodiav1alpha1.EtcdFormedAnnotation: "etcd-of-dev"},
 		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cp, lodiav1alpha1.GroupVersion.WithKind("ControlPlane"))},
 	}}
@@ -354,8 +355,7 @@ func createControlPlane(t *testing.T, k8s client.Client) *lodiav1alpha1.ControlP
 	cp := &lodiav1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: ns.Name},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
-			Version:   "v1.37.1",
-			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{}},
+			Version: "v1.37.1",
 			Endpoint: lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
 				ParentRef: lodiav1alpha1.ParentReference{Name: "edge", Namespace: "gateways", SectionName: "tls"},
 				Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.com", Konnectivity: "konnectivity.dev.example.com", Tunnel: "tunnel.dev.example.com"},
@@ -463,10 +463,9 @@ func TestHealthsMetricsAreServedByLodiasCollectorAloneOnceElected(t *testing.T) 
 	cp := &lodiav1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: ns.Name},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
-			Version:   "v1.37.1",
-			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{}},
-			Endpoint:  lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}},
-			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
+			Version:  "v1.37.1",
+			Endpoint: lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}},
+			Network:  lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
 		},
 	}
 	if err := k8s.Create(t.Context(), cp); err != nil {

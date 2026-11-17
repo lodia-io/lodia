@@ -320,8 +320,6 @@ func TestDecide(t *testing.T) {
 			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonFailed, step: lodiav1alpha1.UpgradeStepBackup, since: t0, message: "delete it", version: "v1.36.6"}},
 		{"Backup SealLost is Failed", world{spec: "v1.37.1", target: "v1.36.6", step: lodiav1alpha1.UpgradeStepBackup, reports: at("v1.36.6"), backupReason: lodiav1alpha1.ReasonSealLost, backupStatus: metav1.ConditionFalse},
 			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonFailed, step: lodiav1alpha1.UpgradeStepBackup, since: t0, version: "v1.36.6"}},
-		{"Backup Unsupported is Failed", world{spec: "v1.37.1", target: "v1.36.6", step: lodiav1alpha1.UpgradeStepBackup, reports: at("v1.36.6"), backupReason: lodiav1alpha1.ReasonUnsupported, backupStatus: metav1.ConditionFalse},
-			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonFailed, step: lodiav1alpha1.UpgradeStepBackup, since: t0, version: "v1.36.6"}},
 		{"Backup WaitingForDatastore is quoted", world{spec: "v1.37.1", target: "v1.36.6", step: lodiav1alpha1.UpgradeStepBackup, reports: at("v1.36.6"), backupReason: lodiav1alpha1.ReasonWaitingForDatastore, backupStatus: metav1.ConditionFalse},
 			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonUpgrading, step: lodiav1alpha1.UpgradeStepBackup, since: t0, message: lodiav1alpha1.ReasonWaitingForDatastore + ": ", version: "v1.36.6"}},
 		{"Backup Snapshotting is quoted", world{spec: "v1.37.1", target: "v1.36.6", step: lodiav1alpha1.UpgradeStepBackup, reports: at("v1.36.6"), backupReason: lodiav1alpha1.ReasonSnapshotting},
@@ -362,7 +360,6 @@ func TestFailedAndItsClearing(t *testing.T) {
 	}{
 		{"Refused", metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonRefused, ObservedGeneration: 3, Message: "the tenant refuses"}},
 		{"ObjectsControlledElsewhere", metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonObjectsControlledElsewhere, ObservedGeneration: 3, Message: "held elsewhere"}},
-		{"Unsupported", metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonUnsupported, ObservedGeneration: 3, Message: "not built"}},
 		{"ProgressDeadlineExceeded available", metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonProgressDeadlineExceeded, ObservedGeneration: 3, Message: "past the deadline"}},
 		{"ProgressDeadlineExceeded unavailable", metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonProgressDeadlineExceeded, ObservedGeneration: 3, Message: "past the deadline"}},
 	} {
@@ -374,7 +371,7 @@ func TestFailedAndItsClearing(t *testing.T) {
 			check(t, w.facts(), want{target: version, reason: lodiav1alpha1.ReasonUpgrading, step: lodiav1alpha1.UpgradeStepAPIServer, since: &started, version: "v1.37.0"})
 		})
 	}
-	for _, reason := range []string{lodiav1alpha1.ReasonFailed, lodiav1alpha1.ReasonSealLost, lodiav1alpha1.ReasonUnsupported} {
+	for _, reason := range []string{lodiav1alpha1.ReasonFailed, lodiav1alpha1.ReasonSealLost} {
 		t.Run("the Backup's "+reason+" clears once it is deleted", func(t *testing.T) {
 			failed := world{spec: "v1.37.1", target: "v1.36.6", step: lodiav1alpha1.UpgradeStepBackup, reports: at("v1.36.6"), backupReason: reason, backupStatus: metav1.ConditionFalse}
 			check(t, failed.facts(), want{target: "v1.36.6", reason: lodiav1alpha1.ReasonFailed, step: lodiav1alpha1.UpgradeStepBackup, since: &started, version: "v1.36.6"})

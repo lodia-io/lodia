@@ -13,7 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 
-	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 )
 
 const (
@@ -118,15 +118,15 @@ func (h HealthConfig) validate() error {
 		return fmt.Errorf("health.maxNodes is %d, want a positive number: with none Lodia counts no tenant's nodes", h.MaxNodes)
 	case h.HoldFraction <= 500 || h.HoldFraction > 1000:
 		return fmt.Errorf("health.holdFraction is %d thousandths, want more than 500 and at most 1000: one dead machine of two must not start a hold", h.HoldFraction)
-	case max(period, silentAfter) > lodiav1alpha1.NodeMonitorGracePeriod:
-		return fmt.Errorf("health.period %s and health.silentAfter %s must each fit the node monitor grace period %s", period, silentAfter, lodiav1alpha1.NodeMonitorGracePeriod)
+	case max(period, silentAfter) > contract.NodeMonitorGracePeriod:
+		return fmt.Errorf("health.period %s and health.silentAfter %s must each fit the node monitor grace period %s", period, silentAfter, contract.NodeMonitorGracePeriod)
 	case silentAfter <= renewalSpread+period:
 		return fmt.Errorf("health.silentAfter is %s, want more than %s, the kubelets' renewals %s apart and one period, or a healthy node reads as silent", silentAfter, renewalSpread+period, renewalSpread)
 	}
-	hold := silentAfter + period + renewalSpread + lodiav1alpha1.ControllerManagerRenewDeadline + lodiav1alpha1.ControllerManagerRetryPeriod + holdSlack
-	if hold > lodiav1alpha1.NodeMonitorGracePeriod {
+	hold := silentAfter + period + renewalSpread + contract.ControllerManagerRenewDeadline + contract.ControllerManagerRetryPeriod + holdSlack
+	if hold > contract.NodeMonitorGracePeriod {
 		return fmt.Errorf("health.silentAfter %s, health.period %s, the kubelets' renewals %s apart, the controller manager's renew deadline %s and retry period %s and %s of slack add up to %s, past the node monitor grace period %s: the first node could be marked before the controller manager exits",
-			silentAfter, period, renewalSpread, lodiav1alpha1.ControllerManagerRenewDeadline, lodiav1alpha1.ControllerManagerRetryPeriod, holdSlack, hold, lodiav1alpha1.NodeMonitorGracePeriod)
+			silentAfter, period, renewalSpread, contract.ControllerManagerRenewDeadline, contract.ControllerManagerRetryPeriod, holdSlack, hold, contract.NodeMonitorGracePeriod)
 	}
 	return nil
 }

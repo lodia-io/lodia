@@ -75,10 +75,6 @@ const (
 	// Secret into a pod template from its metadata alone.
 	DataHashAnnotation = "lodia.io/data-hash"
 
-	// OperationAnnotation, set by the platform, requests an operation such
-	// as a rotation (docs/decisions/one-controlplane-per-cluster.md).
-	OperationAnnotation = "lodia.io/operation"
-
 	// MaintainRequestedAtAnnotation, set by the platform on a ControlPlane,
 	// asks Lifecycle for the maintenance pending now, outside the window:
 	// each new value once, recorded in status.maintenance.lastHandled.

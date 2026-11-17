@@ -7,7 +7,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 ## From the design (2026-10-23)
 
 - Check whether kube-apiserver reloads `--proxy-client-cert-file` and whether konnectivity-server reloads `--cluster-cert`; each proven reload removes a rollout from certificate renewal.
-- Propose upstream a task of etcd-druid that deletes a prefix in the store (dedicated-etcd-by-default): `retention.afterDelete`, a deleted `ControlPlane`'s last snapshots and a deleted or failed `Backup`'s copy under `…/backups/<Backup UID>` wait for it, and platforms use their bucket's lifecycle rules meanwhile, which must spare the copy of a `Backup` that exists (`docs/operations.md`).
+- Propose upstream a task of etcd-druid that deletes a prefix in the store (dedicated-etcd-by-default): a deleted `ControlPlane`'s last snapshots and a deleted or failed `Backup`'s copy under `…/backups/<Backup UID>` wait for it, and platforms use their bucket's lifecycle rules meanwhile, which must spare the copy of a `Backup` that exists (`docs/operations.md`).
 - etcd-backup-restore restores without etcd's `RevisionBump` and `MarkCompacted`, so a member it restores keeps the snapshot's revisions; propose the bump upstream (dedicated-etcd-by-default; the etcd spike's finding 5 measured the stale cache).
 - etcd-druid's scale at ~1000 `Etcd` objects with its default `concurrentSyncs: 3` is not documented; measure in phase 4 or ask the maintainers.
 
@@ -85,7 +85,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the Workloads controller (2026-10-25)
 
-- JWT authentication, an audit policy, an admission and a scheduler configuration and `serviceAccount.publicDiscovery` are not rendered: they turn `APIServerReady` False with `Unsupported` until they are built.
 - The NetworkPolicies isolate each component's ingress alone; the default-deny set and egress, the README's arrows, come later.
 - The control plane pods set no securityContext: give them one that passes Pod Security `restricted`, the API server and the signer under one user (From lodia-signer, above).
 - Workloads lists the management nodes uncached on every pass of a `nodePort` `ControlPlane`; an informer on Nodes, which carry no control-plane label and so need a cache rule of their own, would serve them from memory.
@@ -105,7 +104,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the backup prefix (2026-10-26)
 
-- `docs/api/examples/datastore.yaml` puts a tenant of a shared etcd under `/lodia/<namespace>/<name>/`, while dedicated-etcd-by-default grants each tenant `/<prefix>/<uid>/`; the example should say the decision's prefix when the shared `Datastore` is built.
 - The `v1/` prefix rule: the schema refuses a `DatastoreClass` backup prefix that contains `v1/` or ends in `v1` (the `@todo` in `api/v1alpha1/datastore_types.go`), since etcd-backup-restore v0.45.1 takes the last `v1/` anywhere in a key for its layout ([snapshot.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapstore/snapshot.go#L39-L59)).
   Remove the rule, its cases in `test/api/validation_test.go` and its mentions in the docs once the sidecar of the etcd-druid release Lodia pins reads a key relative to its store prefix.
 
@@ -145,7 +143,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From availability surviving a spec change (2026-10-28)
 
-- A writer that refuses a new generation, `Unsupported`, `Refused` or `ObjectsControlledElsewhere`, turns its condition, and so `Ready`, False while the tenant still serves the previous one, though a readiness condition reports availability ([independent-controllers](docs/decisions/independent-controllers.md)).
+- A writer that refuses a new generation, `Refused` or `ObjectsControlledElsewhere`, turns its condition, and so `Ready`, False while the tenant still serves the previous one, though a readiness condition reports availability ([independent-controllers](docs/decisions/independent-controllers.md)).
   It needs its own answer to where a refusal shows while availability stays.
 - G2's step that deletes the etcd leader's pod tolerates one failed request in each loop, answered 500 with the etcd client's error for a call etcd ended without a gRPC status, `Internal` or `Unknown` ([gate G2](test/e2e/README.md#gate-g2-a-highly-available-control-plane)); the target is zero.
   The required `e2e-ha` failed three times in that step while it wanted zero, each time on requests answered 500: run 40764385375 on #43, one on a reused connection in each loop, sent 21 ms (inside the tenant) and 32 ms (outside) after the deletion the test logged; run 42450529023 on #56, one of 480 inside the tenant on new connections, sent 2.4 ms after the deletion; and run [43430828031](https://github.com/lodia-io/lodia/actions/runs/43430828031) on #89, one of 580 outside the tenant on new connections in the step's first second, `Unknown`, the first whose body the loops logged.
@@ -244,6 +242,13 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   Line 268 is the first `expectStamps` after the pass of the operator at the new revision: it left two of the three Deployments at the stamp of the old one, and the API server's Deployment carried the new.
   The test passed three runs of three locally, `main` was green at bf28826, and none of the other failed runs among the last 60 of the repository names it.
   The cause is not found.
+
+## From the API before it freezes (2026-11-17)
+
+- `extraArgs` refuses the flags that conflict with what Lodia renders, and checks the values of only the flags its rules name, each in one form first; it passes every other value through as written, and a value a component refuses makes it exit.
+  The kinds known that it accepts and a component cannot run with: a key that is no flag of the component's minor, on which it exits; a flag that names a file, which no tenant can put into the pod (`audit-policy-file`, `admission-control-config-file`, `tls-sni-cert-key`, `token-auth-file`, `authentication-token-webhook-config-file`, `kubelet-certificate-authority`, `leader-migration-config`); `audit-log-*` without a policy, which kube-apiserver ignores; `runtime-config` turning off a group Tenant or Health needs; `request-timeout` above a minute, the default Workloads' termination grace period counts, which may cut a drain short (not measured); a `disable-admission-plugins` entry the tenant's own `enable-admission-plugins` names; `node-cidr-mask-size` beside `node-cidr-mask-size-ipv4` or `-ipv6`; a node mask size above its family's width, 32 or 128, from which the controller manager builds node ranges with no mask ([cidr_set.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/nodeipam/ipam/cidrset/cidr_set.go#L92), since `net.CIDRMask` returns nil past the width), or one beyond int32, which it refuses (neither run); a feature gate locked or unknown in the minor; and `emulated-version` or `min-compatibility-version`, with which a component serves the APIs and gates of an older minor than its image, the one Lodia reports and renders the tenant's objects for ([registry.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/component-base/compatibility/registry.go#L245-L259)), not proven to break anything.
+  Decide per kind whether the schema refuses it, a minor's flag table refuses it, or the docs say it.
+- The values of `extraArgs` have no length bound, so a CEL rule that splits one exceeds the CRD's cost budget (the rules on `disable-admission-plugins` are regular expressions for it), and a tenant's value is bounded only by the object's size.
 
 ## For the release that first drops a minor
 

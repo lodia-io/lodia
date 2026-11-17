@@ -206,7 +206,7 @@ func createStoreTenant(ctx context.Context, t *testing.T, k8s client.Client, key
 		ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
 			Version:   kubernetes,
-			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{ClassName: class}},
+			Datastore: lodiav1alpha1.DatastoreSettings{ClassName: class},
 			Endpoint:  lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}},
 			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.32.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{gatePodCIDR}},
 			Addons:    &lodiav1alpha1.Addons{KubeProxy: &lodiav1alpha1.KubeProxy{Conntrack: &lodiav1alpha1.KubeProxyConntrack{MaxPerCore: new(int32(0))}}},

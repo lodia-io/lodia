@@ -43,6 +43,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/live"
 	"go.lodia.io/lodia/internal/ownership"
 	"go.lodia.io/lodia/internal/restore"
@@ -266,7 +267,7 @@ func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPla
 // or what answered.
 func (r *Reconciler) probes(ctx context.Context, cp *lodiav1alpha1.ControlPlane, p *prober, url string) (string, string) {
 	gateway := cp.Spec.Endpoint.Gateway != nil
-	internal := lodiav1alpha1.APIServerServiceURL(cp.Namespace, cp.Name) + lodiav1alpha1.APIServerReadyzPath
+	internal := lodiav1alpha1.APIServerServiceURL(cp.Namespace, cp.Name) + contract.APIServerReadyzPath
 	var (
 		apiCode, internalCode, tunnelCode       int
 		apiErr, internalErr, tunnelErr          error
@@ -363,7 +364,7 @@ func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 	if restoring := cp.Spec.RestoreFrom; restoring != nil {
 		if restoring.Release != lodiav1alpha1.RestoreReleased {
 			return newCondition(cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionFalse, lodiav1alpha1.ReasonAwaitingRelease,
-				"spec.restoreFrom.release is Held; once released, the controller manager acts on: "+r.actedOn(ctx, tenant)), nil
+				"spec.restoreFrom.release is Pending; once released, the controller manager acts on: "+r.actedOn(ctx, tenant)), nil
 		}
 		source, err := restore.Source(ctx, r.Client, cp)
 		if err != nil {
@@ -379,18 +380,18 @@ func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 	now := r.Clock.Now()
 	reason, messages, held := "", []string(nil), false
 	for _, l := range []struct{ name, reason string }{
-		{lodiav1alpha1.ControllerManagerLease, lodiav1alpha1.ReasonControllerManagerNotLeading},
-		{lodiav1alpha1.SchedulerLease, lodiav1alpha1.ReasonSchedulerNotLeading},
+		{contract.ControllerManagerLease, lodiav1alpha1.ReasonControllerManagerNotLeading},
+		{contract.SchedulerLease, lodiav1alpha1.ReasonSchedulerNotLeading},
 	} {
 		lease, err := tenant.getLease(reading, l.name)
 		var message string
 		switch {
 		case apierrors.IsNotFound(err):
-			message = "Lease " + lodiav1alpha1.LeaderElectionNamespace + "/" + l.name + " does not exist"
+			message = "Lease " + contract.LeaderElectionNamespace + "/" + l.name + " does not exist"
 		case err != nil:
 			logf.FromContext(ctx).Error(err, "read a leader Lease", "lease", l.name)
 			return nil, live.Conditions(ctx, r.Reader, cp, lodiav1alpha1.ConditionControllersLeading)
-		case l.name == lodiav1alpha1.ControllerManagerLease && ptr.Deref(lease.Spec.HolderIdentity, "") == lodiav1alpha1.HoldHolderIdentity:
+		case l.name == contract.ControllerManagerLease && ptr.Deref(lease.Spec.HolderIdentity, "") == contract.HoldHolderIdentity:
 			held = true
 		default:
 			message = r.stale(key, l.name, lease, now)
@@ -672,9 +673,9 @@ func (r *Reconciler) stale(key types.NamespacedName, name string, lease *leaderL
 		renewed = t.UTC().Format(time.RFC3339)
 	}
 	if holder := ptr.Deref(lease.Spec.HolderIdentity, ""); holder != "" {
-		return fmt.Sprintf("Lease %s/%s of %s was last renewed %s", lodiav1alpha1.LeaderElectionNamespace, name, quoted(holder), renewed)
+		return fmt.Sprintf("Lease %s/%s of %s was last renewed %s", contract.LeaderElectionNamespace, name, quoted(holder), renewed)
 	}
-	return fmt.Sprintf("Lease %s/%s has no holder; it was last renewed %s", lodiav1alpha1.LeaderElectionNamespace, name, renewed)
+	return fmt.Sprintf("Lease %s/%s has no holder; it was last renewed %s", contract.LeaderElectionNamespace, name, renewed)
 }
 
 // changed returns when Health first saw the current version of the leader Lease name.
@@ -904,7 +905,7 @@ func endpoint(cp *lodiav1alpha1.ControlPlane) string {
 	if cp.Status.Endpoint == nil {
 		return ""
 	}
-	return "https://" + hostPort(cp.Status.Endpoint.APIServer) + lodiav1alpha1.APIServerReadyzPath
+	return "https://" + hostPort(cp.Status.Endpoint.APIServer) + contract.APIServerReadyzPath
 }
 
 func hostPort(address lodiav1alpha1.HostPort) string {

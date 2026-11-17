@@ -40,6 +40,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/controller/datastore"
 	"go.lodia.io/lodia/internal/operator"
 	"go.lodia.io/lodia/internal/testenv"
@@ -125,7 +126,7 @@ func (s *source) revision(t *testing.T) int64 {
 
 func (s *source) sealKey(t *testing.T, uid types.UID) *mvccpb.KeyValue {
 	t.Helper()
-	response, err := s.etcd.Client.Get(t.Context(), lodiav1alpha1.BackupSealKey(uid))
+	response, err := s.etcd.Client.Get(t.Context(), contract.BackupSealKey(uid))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -747,13 +748,6 @@ func TestABackupThatCannotBeTaken(t *testing.T) {
 		readyOn(t, ns, sourceName, 1)
 		finalBackup(t, ns, (&source{ns: ns}).reconciler(cached), readyIs(metav1.ConditionFalse, lodiav1alpha1.ReasonNoBackupStore, "the ControlPlane's class "+ns+" has no backup store"))
 	})
-	t.Run("Unsupported", func(t *testing.T) {
-		ns := namespace(t)
-		shared := controlPlane(ns, sourceName, "")
-		shared.Spec.Datastore = lodiav1alpha1.DatastoreChoice{Shared: &lodiav1alpha1.SharedDatastore{Name: "pool"}}
-		create(t, shared)
-		finalBackup(t, ns, (&source{ns: ns}).reconciler(cached), readyIs(metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, "ControlPlane src has spec.datastore.shared"))
-	})
 	t.Run("ControlPlaneNotFound, absent", func(t *testing.T) {
 		ns := namespace(t)
 		r := (&source{ns: ns}).reconciler(cached)
@@ -1071,11 +1065,7 @@ func TestBackupReadyFollowsEtcdDruid(t *testing.T) {
 	createClass(t, newClass(ns+"-plain", "Retain"))
 	create(t, controlPlane(ns, "backed", ns))
 	create(t, controlPlane(ns, "plain", ns+"-plain"))
-	shared := controlPlane(ns, "shared", "")
-	shared.Spec.Datastore = lodiav1alpha1.DatastoreChoice{Shared: &lodiav1alpha1.SharedDatastore{Name: "pool"}}
-	create(t, shared)
 
-	waitBackupReady(t, ns, "shared", metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, "spec.datastore.shared is not supported yet")
 	waitBackupReady(t, ns, "backed", metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, "this ControlPlane has no Etcd yet")
 	writeGeneration(t, ns, "plain", 1)
 	waitBackupReady(t, ns, "plain", metav1.ConditionFalse, lodiav1alpha1.ReasonNoBackupStore, "Etcd plain-etcd has no backup store: its class has none")

@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/controller/health"
 )
 
@@ -39,7 +40,7 @@ func writeOversizeList(w http.ResponseWriter, apiVersion, kind string) {
 }
 
 func TestAResponseLongerThanTheBoundIsAListThatCouldNotBeRead(t *testing.T) {
-	cp := restoredControlPlane(t, lodiav1alpha1.RestoreHeld)
+	cp := restoredControlPlane(t, lodiav1alpha1.RestorePending)
 	setAccess(t, cp)
 	writeKubeconfig(t, cp, throughProxy(t, func(w http.ResponseWriter, req *http.Request) bool {
 		if req.URL.Path != "/api/v1/services" {
@@ -336,7 +337,7 @@ func TestRow5AHoldIsReleasedByAStopKnownFromAnEarlierPassWhileAccessReadyIsNotTr
 	joined(t, "d", corev1.ConditionTrue, h.start)
 	h.fail(managerLease, http.MethodPatch, http.StatusInternalServerError, metav1.StatusReasonInternalError)
 	h.at(25)
-	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+	if holder := h.holder(); holder != contract.HoldHolderIdentity {
 		t.Fatalf("a failed release left holder %q", holder)
 	}
 	h.inject(nil)
@@ -532,7 +533,7 @@ func TestAReleaseThatFailsIsTriedAgainByTheNextPass(t *testing.T) {
 	h.fail(managerLease, http.MethodPatch, http.StatusInternalServerError, metav1.StatusReasonInternalError)
 	h.at(25)
 	h.expectSilent(taken(3, 3, "60"))
-	if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+	if holder := h.holder(); holder != contract.HoldHolderIdentity {
 		t.Fatalf("a failed release left holder %q", holder)
 	}
 	h.inject(nil)
@@ -688,7 +689,7 @@ func TestAListOfAHeldRestoreBeyondItsBoundsIsAKindThatCouldNotBeListed(t *testin
 		{"257 webhooks of both kinds", map[string]string{validating: configuration(257), mutating: configuration(257)}, services + rest + "ValidatingWebhookConfigurations and MutatingWebhookConfigurations could not be listed" + afterWebhooks},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			cp := restoredControlPlane(t, lodiav1alpha1.RestoreHeld)
+			cp := restoredControlPlane(t, lodiav1alpha1.RestorePending)
 			setAccess(t, cp)
 			writeKubeconfig(t, cp, throughProxy(t, func(w http.ResponseWriter, req *http.Request) bool {
 				body, ok := c.answer[req.URL.Path]
@@ -763,7 +764,7 @@ func TestRow9ALeaseListCutShortIsAFailedReadAndNeverAStop(t *testing.T) {
 			h.at(25)
 			h.expectSilent(failedLeaseMsg + keepsHolding)
 			h.renewedAt(25)
-			if holder := h.holder(); holder != lodiav1alpha1.HoldHolderIdentity {
+			if holder := h.holder(); holder != contract.HoldHolderIdentity {
 				t.Fatalf("a Lease list that failed to the end of its body left holder %q", holder)
 			}
 		})

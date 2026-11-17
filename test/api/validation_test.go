@@ -25,6 +25,7 @@ import (
 	"github.com/robfig/cron/v3"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -148,7 +149,7 @@ func TestExamplesAreAccepted(t *testing.T) {
 	ensureNamespaces(t, "team-a", "team-b")
 	for _, obj := range examples(t) {
 		t.Run(obj.GetKind()+"/"+obj.GetName(), func(t *testing.T) {
-			expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), "")
+			expect(t, k8s.Create(context.Background(), obj, client.DryRunAll, client.FieldValidation("Strict")), "")
 		})
 	}
 }
@@ -158,9 +159,6 @@ func TestControlPlaneDefaults(t *testing.T) {
 	ensureNamespaces(t, "team-a")
 	obj := example(t, "controlplane-single.yaml", "defaults")
 	expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), "")
-	if layout, _, _ := unstructured.NestedString(obj.Object, "spec", "layout"); layout != "Split" {
-		t.Fatalf("layout = %q, want Split", layout)
-	}
 	if domain, _, _ := unstructured.NestedString(obj.Object, "spec", "network", "clusterDomain"); domain != "cluster.local" {
 		t.Fatalf("clusterDomain = %q, want cluster.local", domain)
 	}
@@ -178,26 +176,21 @@ func TestControlPlaneValidation(t *testing.T) {
 		{"major other than 1", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, "v2.0.0", "spec", "version") }, "spec.version"},
 		{"a minor with a leading zero", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, "v1.037.1", "spec", "version") }, "spec.version"},
 		{"a patch with a leading zero", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, "v1.37.01", "spec", "version") }, "spec.version"},
-		{"two datastores", func(t *testing.T, o *unstructured.Unstructured) {
-			set(t, o, map[string]any{"dedicated": map[string]any{}, "shared": map[string]any{"name": "pool-a"}}, "spec", "datastore")
-		}, "set exactly one of dedicated and shared"},
-		{"no datastore", func(t *testing.T, o *unstructured.Unstructured) {
+		{"an empty datastore", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, map[string]any{}, "spec", "datastore")
-		}, "set exactly one of dedicated and shared"},
+		}, ""},
+		{"a class name of 253 characters", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, strings.Repeat("c", 253), "spec", "datastore", "className")
+		}, ""},
+		{"a class name of 254 characters", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, strings.Repeat("c", 254), "spec", "datastore", "className")
+		}, "spec.datastore.className: Too long"},
 		{"two endpoints", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, map[string]any{"loadBalancer": map[string]any{}, "nodePort": map[string]any{}}, "spec", "endpoint")
 		}, "set exactly one of gateway, loadBalancer and nodePort"},
 		{"bad CIDR", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, []any{"10.0.0.0/33"}, "spec", "network", "serviceCIDRs")
 		}, "must be a network in CIDR notation"},
-		{"compact with high availability", func(t *testing.T, o *unstructured.Unstructured) {
-			set(t, o, "Compact", "spec", "layout")
-			set(t, o, map[string]any{"failureTolerance": "Node"}, "spec", "highAvailability")
-		}, "the Compact layout runs one replica of everything"},
-		{"compact with two API servers", func(t *testing.T, o *unstructured.Unstructured) {
-			set(t, o, "Compact", "spec", "layout")
-			set(t, o, int64(2), "spec", "apiServer", "replicas")
-		}, "the Compact layout runs one API server"},
 		{"high availability with one API server", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, map[string]any{"failureTolerance": "Node"}, "spec", "highAvailability")
 			set(t, o, int64(1), "spec", "apiServer", "replicas")
@@ -258,19 +251,38 @@ func TestControlPlaneValidation(t *testing.T) {
 func TestExtraArgsRefuseTheFlagsLodiaSets(t *testing.T) {
 	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")
-	const refused = "Lodia sets this flag"
+	const (
+		sets     = "Lodia sets this flag"
+		defaults = "Lodia relies on this flag's default"
+		conflict = "this flag conflicts with one Lodia sets"
+		exits    = "this flag makes the component exit, or report another version than the one it runs"
+	)
 	for component, flags := range map[string]map[string]string{
 		"apiServer": {
-			"goaway-chance": refused, "etcd-prefix": refused, "etcd-servers-overrides": refused, "max-requests-inflight": "",
-			"service-account-jwks-uri": refused, "service-account-max-token-expiration": "",
+			"goaway-chance": sets, "service-account-jwks-uri": sets, "authentication-config": sets, "authorization-mode": sets,
+			"etcd-prefix": defaults, "etcd-servers-overrides": defaults, "shutdown-send-retry-after": defaults, "bind-address": defaults,
+			"oidc-issuer-url": conflict, "oidc-client-id": conflict, "oidc-ca-file": conflict, "oidc-username-claim": conflict,
+			"oidc-username-prefix": conflict, "oidc-groups-claim": conflict, "oidc-groups-prefix": conflict, "oidc-signing-algs": conflict,
+			"oidc-required-claim": conflict, "anonymous-auth": conflict, "authorization-config": conflict, "authorization-policy-file": conflict,
+			"authorization-webhook-config-file": conflict, "authorization-webhook-version": conflict,
+			"authorization-webhook-cache-authorized-ttl": conflict, "authorization-webhook-cache-unauthorized-ttl": conflict,
+			"admission-control": conflict, "cert-dir": conflict, "service-account-key-file": conflict, "service-account-signing-key-file": conflict,
+			"help": exits, "version": exits,
+			"max-requests-inflight": "", "authentication-token-webhook-config-file": "",
+			"disable-admission-plugins": "", "tls-sni-cert-key": "",
 		},
 		"controllerManager": {
-			"leader-elect-lease-duration": refused, "leader-elect-renew-deadline": refused, "leader-elect-retry-period": refused,
-			"leader-elect-resource-lock": refused, "leader-elect-resource-name": refused, "leader-elect-resource-namespace": refused,
-			"node-monitor-grace-period": refused, "node-monitor-period": refused, "terminated-pod-gc-threshold": "",
+			"leader-elect-lease-duration": sets, "leader-elect-renew-deadline": sets, "leader-elect-retry-period": sets,
+			"leader-elect-resource-lock": sets, "leader-elect-resource-name": sets, "leader-elect-resource-namespace": sets,
+			"node-monitor-grace-period": sets, "node-monitor-period": sets, "cluster-signing-kubelet-client-cert-file": sets,
+			"secure-port": defaults, "cluster-signing-cert-file": conflict, "cluster-signing-key-file": conflict, "master": conflict,
+			"service-account-private-key-file": conflict, "help": exits, "version": exits, "authorization-always-allow-paths": defaults,
+			"terminated-pod-gc-threshold": "",
 		},
 		"scheduler": {
-			"leader-elect-resource-lock": refused, "leader-elect-resource-name": refused, "leader-elect-resource-namespace": refused,
+			"leader-elect-resource-lock": sets, "leader-elect-resource-name": sets, "leader-elect-resource-namespace": sets, "kubeconfig": sets,
+			"secure-port": defaults, "authorization-always-allow-paths": defaults, "config": conflict, "master": conflict,
+			"help": exits, "version": exits, "write-config-to": exits,
 			"leader-elect-lease-duration": "",
 		},
 	} {
@@ -284,6 +296,118 @@ func TestExtraArgsRefuseTheFlagsLodiaSets(t *testing.T) {
 	}
 }
 
+func TestExtraArgsRefuseWhatConflictsWithTheirValues(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	const (
+		disabled = "disable-admission-plugins cannot name NodeRestriction, which Lodia enables"
+		dual     = "kube-controller-manager refuses node-cidr-mask-size with two pod ranges"
+		ipv4     = "kube-controller-manager refuses node-cidr-mask-size-ipv4 with an IPv6 pod range alone"
+		ipv6     = "kube-controller-manager refuses node-cidr-mask-size-ipv6 with an IPv4 pod range alone"
+		signer   = "kube-apiserver refuses service-account-signing-endpoint, which Lodia sets, without ExternalServiceAccountTokenSigner"
+		tokens   = "kube-apiserver refuses a service-account-max-token-expiration other than 0 under 1h, and one above 8760h"
+		narrow   = "kube-controller-manager refuses a pod range narrower than the node mask of its family"
+		plugins  = "disable-admission-plugins is plugin names of letters and digits joined by commas, and nothing else"
+		lifetime = "service-account-max-token-expiration is a duration as Go prints it, without its zero units"
+		masks    = "a node mask size is a positive decimal number without a sign or a leading zero"
+	)
+	args := func(component string, flags map[string]any) func(*testing.T, *unstructured.Unstructured) {
+		return func(t *testing.T, o *unstructured.Unstructured) { set(t, o, flags, "spec", component, "extraArgs") }
+	}
+	pods := func(cidrs ...any) func(*testing.T, *unstructured.Unstructured) {
+		return func(t *testing.T, o *unstructured.Unstructured) { set(t, o, cidrs, "spec", "network", "podCIDRs") }
+	}
+	for _, c := range []struct {
+		name   string
+		mutate []func(*testing.T, *unstructured.Unstructured)
+		want   string
+	}{
+		{"NodeRestriction disabled", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "NodeRestriction"})}, disabled},
+		{"NodeRestriction disabled among others", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "PodSecurity,NodeRestriction"})}, disabled},
+		{"NodeRestriction disabled first among others", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "NodeRestriction,PodSecurity"})}, disabled},
+		{"NodeRestriction disabled between others", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "PodSecurity,NodeRestriction,DefaultStorageClass"})}, disabled},
+		{"NodeRestriction disabled quoted", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": `"NodeRestriction"`})}, plugins},
+		{"NodeRestriction disabled quoted among others", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": `PodSecurity,"NodeRestriction",DefaultStorageClass`})}, plugins},
+		{"NodeRestriction disabled before a line break", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "NodeRestriction\n"})}, plugins},
+		{"NodeRestriction disabled after a line break", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "\nNodeRestriction"})}, plugins},
+		{"NodeRestriction disabled before a carriage return", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "NodeRestriction\r"})}, plugins},
+		{"NodeRestriction disabled before a line break and another plugin", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "NodeRestriction\nPodSecurity"})}, plugins},
+		{"NodeRestriction disabled quoted before a line break", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "\"NodeRestriction\"\n"})}, plugins},
+		{"plugins disabled with a space", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "PodSecurity, DefaultStorageClass"})}, plugins},
+		{"plugins disabled with an empty entry", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "PodSecurity,,DefaultStorageClass"})}, plugins},
+		{"plugins disabled with a trailing comma", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "PodSecurity,"})}, plugins},
+		{"no plugin disabled", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": ""})}, plugins},
+		{"another plugin disabled", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "PodSecurity,DefaultStorageClass"})}, ""},
+		{"one other plugin disabled", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "PodSecurity"})}, ""},
+		{"a node mask size with one IPv4 range", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size": "26"})}, ""},
+		{"a node mask size with a leading zero", []func(*testing.T, *unstructured.Unstructured){pods("10.244.0.0/22"), args("controllerManager", map[string]any{"node-cidr-mask-size": "024"})}, masks},
+		{"an IPv4 node mask size with a leading zero", []func(*testing.T, *unstructured.Unstructured){pods("10.244.0.0/22"), args("controllerManager", map[string]any{"node-cidr-mask-size-ipv4": "024"})}, masks},
+		{"an IPv6 node mask size with a leading zero", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10:244::/56"), args("controllerManager", map[string]any{"node-cidr-mask-size-ipv6": "064"})}, masks},
+		{"a node mask size of 0 beside an IPv6 range of everything", []func(*testing.T, *unstructured.Unstructured){pods("::/0"), args("controllerManager", map[string]any{"node-cidr-mask-size-ipv6": "0"})}, masks},
+		{"a node mask size of 0", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size": "0"})}, masks},
+		{"a node mask size in hexadecimal", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size": "0x18"})}, masks},
+		{"a node mask size with a sign", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size": "+24"})}, masks},
+		{"a negative node mask size", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size": "-24"})}, masks},
+		{"a node mask size with a space", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size": " 24"})}, masks},
+		{"a node mask size with two ranges", []func(*testing.T, *unstructured.Unstructured){pods("10.244.0.0/16", "fd00:10:244::/56"), args("controllerManager", map[string]any{"node-cidr-mask-size": "26"})}, dual},
+		{"both node mask sizes with two ranges", []func(*testing.T, *unstructured.Unstructured){pods("10.244.0.0/16", "fd00:10:244::/56"), args("controllerManager", map[string]any{"node-cidr-mask-size-ipv4": "26", "node-cidr-mask-size-ipv6": "64"})}, ""},
+		{"an IPv4 node mask size with two ranges, the IPv6 one first", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10:244::/56", "10.244.0.0/16"), args("controllerManager", map[string]any{"node-cidr-mask-size-ipv4": "26"})}, ""},
+		{"an IPv4 node mask size with an IPv4 range", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size-ipv4": "26"})}, ""},
+		{"an IPv4 node mask size with an IPv6 range", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10:244::/56"), args("controllerManager", map[string]any{"node-cidr-mask-size-ipv4": "26"})}, ipv4},
+		{"an IPv6 node mask size with an IPv6 range", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10:244::/56"), args("controllerManager", map[string]any{"node-cidr-mask-size-ipv6": "64"})}, ""},
+		{"an IPv6 node mask size with an IPv4 range", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size-ipv6": "64"})}, ipv6},
+		{"a pod range of the default IPv4 node mask", []func(*testing.T, *unstructured.Unstructured){pods("10.244.0.0/24")}, ""},
+		{"a pod range narrower than the default IPv4 node mask", []func(*testing.T, *unstructured.Unstructured){pods("10.244.0.0/25")}, narrow},
+		{"a pod range of a node mask size", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size": "16"})}, ""},
+		{"a pod range narrower than a node mask size", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size": "12"})}, narrow},
+		{"a pod range narrower than an IPv4 node mask size", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size-ipv4": "15"})}, narrow},
+		{"an IPv6 pod range of the default node mask", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10:244::/64")}, ""},
+		{"an IPv6 pod range narrower than the default node mask", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10:244::/80")}, narrow},
+		{"an IPv6 pod range one bit narrower than the default node mask", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10:244::/65")}, narrow},
+		{"an IPv6 pod range of an IPv6 node mask size", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10:244::/96"), args("controllerManager", map[string]any{"node-cidr-mask-size-ipv6": "112"})}, ""},
+		{"an IPv6 pod range narrower than an IPv6 node mask size", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10:244::/60"), args("controllerManager", map[string]any{"node-cidr-mask-size-ipv6": "56"})}, narrow},
+		{"an IPv6 pod range 16 bits wider than a node mask size", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10::/40"), args("controllerManager", map[string]any{"node-cidr-mask-size": "56"})}, ""},
+		{"an IPv6 pod range 17 bits wider than a node mask size", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10:244::/64"), args("controllerManager", map[string]any{"node-cidr-mask-size": "81"})}, narrow},
+		{"an IPv6 pod range narrower than a node mask size", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10:244::/60"), args("controllerManager", map[string]any{"node-cidr-mask-size": "56"})}, narrow},
+		{"an IPv6 pod range 16 bits wider than the default node mask", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10::/48")}, ""},
+		{"an IPv6 pod range 17 bits wider than the default node mask", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10::/47")}, narrow},
+		{"an IPv6 pod range 17 bits wider than an IPv6 node mask size", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10:244::/56"), args("controllerManager", map[string]any{"node-cidr-mask-size-ipv6": "73"})}, narrow},
+		{"the IPv6 range of two narrower than its node mask", []func(*testing.T, *unstructured.Unstructured){pods("10.244.0.0/16", "fd00:10:244::/96")}, narrow},
+		{"tokens of the signer's longest life", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "8760h"})}, ""},
+		{"tokens of an hour", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "1h"})}, ""},
+		{"tokens of more than the signer's longest life", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "8760h1s"})}, tokens},
+		{"tokens of an hour and a half", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "1h30m"})}, ""},
+		{"tokens of less than an hour", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "59m59s"})}, tokens},
+		{"tokens with hours, minutes and seconds", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "2h1m1s"})}, ""},
+		{"tokens with hours and seconds", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "1h30s"})}, ""},
+		{"tokens with sixty seconds", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "1h60s"})}, lifetime},
+		{"tokens of half an hour", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "30m"})}, tokens},
+		{"tokens of a negative life", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "-1h"})}, lifetime},
+		{"tokens of an hour and a half in minutes", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "90m"})}, lifetime},
+		{"tokens of an hour in seconds", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "3600s"})}, lifetime},
+		{"tokens of an hour and a half as a fraction", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "1.5h"})}, lifetime},
+		{"tokens of an hour with a zero unit", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "1h0m"})}, lifetime},
+		{"tokens of the signer's longest life as Go prints it", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "8760h0m0s"})}, lifetime},
+		{"tokens of an hour with a leading zero", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "01h"})}, lifetime},
+		{"tokens of an hour and sixty minutes", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "1h60m"})}, lifetime},
+		{"tokens of an empty life", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": ""})}, lifetime},
+		{"the external signer's gate off", []func(*testing.T, *unstructured.Unstructured){func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, map[string]any{"ExternalServiceAccountTokenSigner": false}, "spec", "apiServer", "featureGates")
+		}}, signer},
+		{"the external signer's gate on", []func(*testing.T, *unstructured.Unstructured){func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, map[string]any{"ExternalServiceAccountTokenSigner": true}, "spec", "apiServer", "featureGates")
+		}}, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			obj := example(t, "controlplane-single.yaml", "values")
+			for _, mutate := range c.mutate {
+				mutate(t, obj)
+			}
+			expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), c.want)
+		})
+	}
+}
+
 func TestExtraArgsRefuseBindAddressInEverySpellingAndMode(t *testing.T) {
 	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")
@@ -293,14 +417,14 @@ func TestExtraArgsRefuseBindAddressInEverySpellingAndMode(t *testing.T) {
 		"loadBalancer": {"loadBalancer": map[string]any{}},
 		"nodePort":     {"nodePort": map[string]any{}},
 	} {
-		for component, admitted := range map[string]string{
-			"apiServer":         "max-requests-inflight",
-			"controllerManager": "terminated-pod-gc-threshold",
-			"scheduler":         "leader-elect-lease-duration",
+		for component, flags := range map[string]struct{ admitted, bind string }{
+			"apiServer":         {"max-requests-inflight", "Lodia relies on this flag's default"},
+			"controllerManager": {"terminated-pod-gc-threshold", "Lodia sets this flag"},
+			"scheduler":         {"leader-elect-lease-duration", "Lodia sets this flag"},
 		} {
 			for key, want := range map[string]string{
-				"bind-address": "Lodia sets this flag", "bind_address": spelling, "secure_port": spelling, "advertise_address": spelling,
-				"-bind-address": spelling, "Bind-Address": spelling, "etcd-prefix=x": spelling, admitted: "",
+				"bind-address": flags.bind, "bind_address": spelling, "secure_port": spelling, "advertise_address": spelling,
+				"-bind-address": spelling, "Bind-Address": spelling, "etcd-prefix=x": spelling, flags.admitted: "",
 			} {
 				t.Run(mode+"/"+component+"/"+key, func(t *testing.T) {
 					obj := example(t, "controlplane-ha.yaml", "bind")
@@ -341,10 +465,6 @@ func TestControlPlaneTransitions(t *testing.T) {
 		{"minor down", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, "v1.36.4", "spec", "version") }, "the Kubernetes minor version cannot decrease"},
 		{"patch down", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, "v1.37.0", "spec", "version") }, ""},
 		{"minor up", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, "v1.38.0", "spec", "version") }, ""},
-		{"layout changed", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, "Compact", "spec", "layout") }, "layout is immutable"},
-		{"datastore changed", func(t *testing.T, o *unstructured.Unstructured) {
-			set(t, o, map[string]any{"shared": map[string]any{"name": "pool-a"}}, "spec", "datastore")
-		}, "datastore is immutable"},
 		{"network changed", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, []any{"10.100.0.0/16"}, "spec", "network", "podCIDRs")
 		}, "network is immutable"},
@@ -504,6 +624,41 @@ func storeUnderAnOlderSchema(t *testing.T, group string, stored *unstructured.Un
 		}
 		return nil
 	})
+}
+
+func TestTheDatastoreClassCannotChange(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	const immutable = "datastore.className is immutable in v1alpha1"
+	for i, c := range []struct {
+		name     string
+		from, to map[string]any
+		want     string
+	}{
+		{"absent, then empty", nil, map[string]any{}, ""},
+		{"absent, then an empty class name", nil, map[string]any{"className": ""}, ""},
+		{"an empty class name, then absent", map[string]any{"className": ""}, nil, ""},
+		{"empty, then absent", map[string]any{}, nil, ""},
+		{"empty, then a class", map[string]any{}, map[string]any{"className": "fast-ssd"}, immutable},
+		{"absent, then a class", nil, map[string]any{"className": "fast-ssd"}, immutable},
+		{"a class, then absent", map[string]any{"className": "fast-ssd"}, nil, immutable},
+		{"a class, then another", map[string]any{"className": "fast-ssd"}, map[string]any{"className": "slow-hdd"}, immutable},
+		{"a class kept", map[string]any{"className": "fast-ssd"}, map[string]any{"className": "fast-ssd"}, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			obj := example(t, "controlplane-single.yaml", fmt.Sprintf("datastore-%d", i))
+			if c.from != nil {
+				set(t, obj, c.from, "spec", "datastore")
+			}
+			update(t, obj, func(t *testing.T, o *unstructured.Unstructured) {
+				if c.to == nil {
+					unstructured.RemoveNestedField(o.Object, "spec", "datastore")
+					return
+				}
+				set(t, o, c.to, "spec", "datastore")
+			}, c.want)
+		})
+	}
 }
 
 func TestHighAvailabilityTransitions(t *testing.T) {
@@ -710,9 +865,10 @@ func TestRestoreFromAtCreation(t *testing.T) {
 	for _, c := range []struct {
 		name, release, want, stored string
 	}{
-		{"held by default", "", "", "Held"},
+		{"pending by default", "", "", "Pending"},
+		{"held", "Held", `supported values: "Pending", "Released"`, ""},
 		{"released at once", "Released", "", "Released"},
-		{"another release", "Paused", `supported values: "Held", "Released"`, ""},
+		{"another release", "Paused", `supported values: "Pending", "Released"`, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			obj := example(t, "controlplane-single.yaml", "restored")
@@ -737,19 +893,19 @@ func TestRestoreFromTransitions(t *testing.T) {
 		mutate     func(*testing.T, *unstructured.Unstructured)
 		want       string
 	}{
-		{"removed", "Held", func(t *testing.T, o *unstructured.Unstructured) {
+		{"removed", "Pending", func(t *testing.T, o *unstructured.Unstructured) {
 			unstructured.RemoveNestedField(o.Object, "spec", "restoreFrom")
 		}, "restoreFrom can be set only when the ControlPlane is created, and never removed"},
-		{"another Backup", "Held", func(t *testing.T, o *unstructured.Unstructured) {
+		{"another Backup", "Pending", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, "weekly", "spec", "restoreFrom", "backupRef", "name")
 		}, "restoreFrom.backupRef is immutable"},
-		{"released", "Held", func(t *testing.T, o *unstructured.Unstructured) {
+		{"released", "Pending", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, "Released", "spec", "restoreFrom", "release")
 		}, ""},
-		{"held again", "Released", func(t *testing.T, o *unstructured.Unstructured) {
-			set(t, o, "Held", "spec", "restoreFrom", "release")
-		}, "restoreFrom.release moves only from Held to Released"},
-		{"kept while something else changes", "Held", func(t *testing.T, o *unstructured.Unstructured) {
+		{"pending again", "Released", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "Pending", "spec", "restoreFrom", "release")
+		}, "restoreFrom.release moves only from Pending to Released"},
+		{"kept while something else changes", "Pending", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, true, "spec", "paused")
 		}, ""},
 	}
@@ -920,6 +1076,40 @@ func TestAHostTakesTheHostnameRule(t *testing.T) {
 	host := rules(at(t, schema, "status.endpoint.apiServer.host"))
 	if len(hostname) != 1 || !slices.Equal(host, []string{"isIP(self) || " + hostname[0]}) {
 		t.Errorf("HostPort.host has the rules %q, want isIP(self) or the Hostname's %q", host, hostname)
+	}
+}
+
+func TestRemovedFieldsAreUnknown(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	for _, c := range []struct {
+		file  string
+		value any
+		path  []string
+	}{
+		{"controlplane-single.yaml", "Split", []string{"spec", "layout"}},
+		{"controlplane-single.yaml", map[string]any{"jwt": []any{map[string]any{"issuer": map[string]any{"url": "https://id.example.com", "audiences": []any{"kubernetes"}}}}}, []string{"spec", "apiServer", "authentication"}},
+		{"controlplane-single.yaml", map[string]any{"policyRef": map[string]any{"name": "audit"}}, []string{"spec", "apiServer", "audit"}},
+		{"controlplane-single.yaml", map[string]any{"configRef": map[string]any{"name": "admission"}}, []string{"spec", "apiServer", "admission"}},
+		{"controlplane-single.yaml", map[string]any{"name": "profiles"}, []string{"spec", "scheduler", "configRef"}},
+		{"controlplane-single.yaml", true, []string{"spec", "serviceAccount", "publicDiscovery"}},
+		{"controlplane-single.yaml", map[string]any{"name": "pool-a"}, []string{"spec", "datastore", "shared"}},
+		{"controlplane-single.yaml", map[string]any{"className": "fast-ssd"}, []string{"spec", "datastore", "dedicated"}},
+		{"datastoreclass.yaml", "720h", []string{"spec", "backup", "retention", "afterDelete"}},
+	} {
+		field := strings.Join(c.path, ".")
+		t.Run(field, func(t *testing.T) {
+			obj := example(t, c.file, "removed")
+			set(t, obj, c.value, c.path...)
+			err := k8s.Create(context.Background(), obj.DeepCopy(), client.DryRunAll, client.FieldValidation("Strict"))
+			if err == nil || !strings.Contains(err.Error(), `unknown field "`+field+`"`) {
+				t.Fatalf("want %s refused as an unknown field under strict field validation, got %v", field, err)
+			}
+			expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), "")
+			if _, found, _ := unstructured.NestedFieldNoCopy(obj.Object, c.path...); found {
+				t.Errorf("%s is kept, want it pruned", field)
+			}
+		})
 	}
 }
 
@@ -1130,11 +1320,12 @@ func TestRequestsAndBackupsCannotChange(t *testing.T) {
 	}
 }
 
-func TestDatastoreEndpointsAreHTTPS(t *testing.T) {
+func TestTheDatastoreKindIsGone(t *testing.T) {
 	needsEnvtest(t)
-	obj := example(t, "datastore.yaml", "plain")
-	set(t, obj, []any{"http://etcd-0.pool-a.etcd.svc:2379"}, "spec", "endpoints")
-	expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), "must be an https URL")
+	obj := decode(t, "{apiVersion: lodia.io/v1alpha1, kind: Datastore, metadata: {name: pool-a}, spec: {endpoints: [https://etcd-0.pool-a.etcd.svc:2379]}}")
+	if err := k8s.Create(context.Background(), obj, client.DryRunAll); !meta.IsNoMatchError(err) {
+		t.Fatalf("want no kind Datastore served, got %v", err)
+	}
 }
 
 func TestDatastoreClassValidation(t *testing.T) {
@@ -1148,9 +1339,6 @@ func TestDatastoreClassValidation(t *testing.T) {
 		{"delta snapshots every 30 days", "30d", []string{"spec", "backup", "deltaSnapshotPeriod"}, "must be a duration"},
 		{"delta snapshots beyond a Go duration", "2562048h", []string{"spec", "backup", "deltaSnapshotPeriod"}, "must be a duration"},
 		{"delta snapshots every 90 seconds", "1m30s", []string{"spec", "backup", "deltaSnapshotPeriod"}, ""},
-		{"snapshots kept 30 days after deletion", "30d", []string{"spec", "backup", "retention", "afterDelete"}, "must be a duration"},
-		{"snapshots kept beyond a Go duration", "2562048h", []string{"spec", "backup", "retention", "afterDelete"}, "must be a duration"},
-		{"snapshots kept a negative time", "-1h", []string{"spec", "backup", "retention", "afterDelete"}, "must be a duration"},
 		{"a two-letter bucket", "ab", []string{"spec", "backup", "store", "bucket"}, "should match"},
 		{"a bucket with a slash", "backups/prod", []string{"spec", "backup", "store", "bucket"}, "should match"},
 		{"a 64-letter bucket", strings.Repeat("b", 64), []string{"spec", "backup", "store", "bucket"}, "spec.backup.store.bucket"},

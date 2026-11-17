@@ -1,7 +1,7 @@
 # Lodia docs
 
 Lodia is an operator that runs Kubernetes control planes as pods on a management cluster, one `ControlPlane` object per tenant cluster.
-A control plane is a kube-apiserver with a konnectivity-server at its side, a kube-controller-manager, a kube-scheduler, each in its own Deployment, and an etcd of its own (or a prefix in a shared one); the tenant's worker nodes stand anywhere with outbound TCP 443 and join with `kubeadm join`.
+A control plane is a kube-apiserver with a konnectivity-server at its side, a kube-controller-manager, a kube-scheduler, each in its own Deployment, and an etcd of its own; the tenant's worker nodes stand anywhere with outbound TCP 443 and join with `kubeadm join`.
 Six independent controllers keep every control plane certified, stored, running, reachable and up to date, and talk to each other only through status conditions.
 
 Go, controller-runtime; runs as a Deployment (`lodia-system`, two replicas, leader election) on a management cluster with a maintained Kubernetes minor (1.35 or newer today).
@@ -14,7 +14,7 @@ A wave or a phase named beside a feature is where it is built, and until then it
 | owns | meaning |
 |---|---|
 | `ControlPlane` | the desired and observed state of one tenant control plane ([field reference](api/controlplane.md)) |
-| `DatastoreClass`, `Datastore` | how a dedicated etcd is built; a shared etcd several tenants use by prefix |
+| `DatastoreClass` | how a dedicated etcd is built |
 | `KubeconfigRequest`, `Backup` | a short-lived credential for a person; a sealed copy of a tenant's etcd, from which a new `ControlPlane` replaces it |
 | the tenant namespace's control plane objects | Deployments, Services, PodDisruptionBudgets, NetworkPolicies, Gateway routes, Secrets, ConfigMaps, the etcd resource; all owned by the `ControlPlane` and labelled `lodia.io/control-plane` |
 | the PKI of every tenant | CAs, leaf certificates, kubeconfigs, ServiceAccount keys, encryption keys, their renewal and staged rotation |
@@ -28,9 +28,7 @@ And deliberately not: machines and their operating systems (a Cluster API provid
 
 ```mermaid
 flowchart LR
-  DSC[DatastoreClass<br/>cluster-scoped] -- dedicated --> CP
-  DS[Datastore<br/>cluster-scoped] -. shared .-> CP
-  CP[("ControlPlane<br/>namespaced")]
+  CP[("ControlPlane<br/>namespaced")] -- datastore.className --> DSC[DatastoreClass<br/>cluster-scoped]
   KR[KubeconfigRequest] --> CP
   BK[Backup] --> CP
   CP -. restoreFrom .-> BK
@@ -44,7 +42,7 @@ The field reference with every rule is [`api/controlplane.md`](api/controlplane.
 | controller | writes | condition | needs |
 |---|---|---|---|
 | PKI | Secrets with certificates, keys and kubeconfigs; the tenant's bindings for Lodia, the admin group and the kubelet client; the answers to `KubeconfigRequest`s, which it deletes at their deadline | `CertificatesReady`, `AccessReady`; `CAValidityAcceptable` outside `Ready`; a `KubeconfigRequest`'s `Ready` | `status.endpoint`; `APIServerReady` for the bindings; the admission policy `kubeconfigrequests.lodia.io` for requests; for a restore without an encryption configuration, its `Backup` |
-| Datastore | the `Etcd` of a dedicated etcd and its NetworkPolicy, or a user and role in a shared store; backups and defragmentation; a `Backup`'s seal, its copy and its encryption keys | `DatastoreReady`; `BackupReady` outside `Ready`; a `Backup`'s `Ready` | a complete generation of PKI's etcd certificates; for a `Backup`, its source's `DatastoreReady` |
+| Datastore | the `Etcd` of a dedicated etcd and its NetworkPolicy; backups and defragmentation; a `Backup`'s seal, its copy and its encryption keys | `DatastoreReady`; `BackupReady` outside `Ready`; a `Backup`'s `Ready` | a complete generation of PKI's etcd certificates; for a `Backup`, its source's `DatastoreReady` |
 | Workloads | Deployments, Services, PDBs, NetworkPolicies, ConfigMaps, routes | `APIServerReady`; `RoutesReady` in `gateway` mode | `status.target`, `status.datastore`, `CertificatesReady`, `DatastoreReady`; `status.restore` and `AddonsApplied` before it starts a restored `ControlPlane`'s controller manager |
 | Tenant | objects inside the tenant cluster, with an inventory | `AddonsApplied`, `AddonsAvailable` | `AccessReady` |
 | Health | status, and the controller manager's leader Lease inside the tenant while most nodes are silent | `Reachable`, `ControllersLeading`; `ControllerManagerHeld` outside `Ready`; `status.nodes` | `status.endpoint`, the CA bundle and, in `gateway` mode, `<cp>-tunnel-client`; `AccessReady` and `<cp>-lodia-kubeconfig` for `ControllersLeading`'s leader Leases, the node Leases and a held restore's lists; the kubeconfig alone to read the controller manager's Lease and to renew or release a hold of it |
@@ -109,7 +107,7 @@ flowchart TB
 ```
 
 The pods are in [component-per-deployment](decisions/component-per-deployment.md).
-The objects of a tenant namespace, who writes and who reads each, and what a change does; the names one controller writes and another reads are in `api/v1alpha1/names.go` ([decision](decisions/independent-controllers.md)), while the CA keys, the staged kubelet signer and the ConfigMaps are their writer's alone:
+The objects of a tenant namespace, who writes and who reads each, and what a change does; the names one controller writes and another reads are in `api/v1alpha1/names.go`, or in `internal/contract` when only Lodia's controllers share them ([decision](decisions/independent-controllers.md)), while the CA keys, the staged kubelet signer and the ConfigMaps are their writer's alone:
 
 | object | writer | readers | on renewal or change |
 |---|---|---|---|
@@ -141,7 +139,7 @@ The objects of a tenant namespace, who writes and who reads each, and what a cha
 | Service `<cp>-kube-apiserver` | Workloads | PKI, which names it in certificates and kubeconfigs | — |
 | TLSRoutes `<cp>-kube-apiserver`, `<cp>-konnectivity` and `<cp>-tunnel`, in `gateway` mode: each one hostname to its port of the Service, on the listener `parentRef` names | Workloads | the Gateway | written only when one differs from its render, and while Workloads holds its writes only when it is missing, and deleted while another `ControlPlane` owns one of the hostnames ([api-exposure](decisions/api-exposure.md)) |
 | ConfigMap `<cp>-authentication-config` (an `AuthenticationConfiguration` whose anonymous section admits only `cluster-info` and the health paths) | Workloads | the API server | the API server restarts: a reload never changes the anonymous section ([authentication.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/kubeapiserver/options/authentication.go#L797-L799)) |
-| ConfigMap `<cp>-egress-selector` (the cluster's traffic through konnectivity-server's socket); `audit-policy`, `admission-config` / `scheduler-config` later | Workloads | the API server / the scheduler | that component restarts |
+| ConfigMap `<cp>-egress-selector` (the cluster's traffic through konnectivity-server's socket) | Workloads | the API server | the API server restarts |
 
 Sources: the reload behaviour of each flag is in the [kube-apiserver](https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/) and [kube-controller-manager](https://kubernetes.io/docs/reference/command-line-tools-reference/kube-controller-manager/) references and their dynamic certificate controllers in [apiserver](https://github.com/kubernetes/kubernetes/tree/release-1.35/staging/src/k8s.io/apiserver/pkg/server/dynamiccertificates).
 Every key is ECDSA P-256 except the ServiceAccount signing key, and a PKI pass over an unchanged `ControlPlane` writes nothing.
@@ -177,7 +175,6 @@ The labels, annotations and the finalizer they share are defined in `api/v1alpha
 | annotation `lodia.io/etcd-formed` | the `Etcd` | Datastore, set to the `Etcd`'s UID once `DatastoreReady` first sees a ready member, and on every render after | Datastore, which reports `QuorumLost` only for an `Etcd` whose UID it holds |
 | annotation `lodia.io/etcd-reconcile-requested` | the `Etcd` | Datastore: `<generation>/<operator revision>/<run ID>` of its last request that etcd-druid reconcile the `Etcd`, written with that request, the run ID being that of etcd-druid's `status.lastOperation` | Datastore, which asks again until etcd-druid has served the request for the `Etcd`'s generation and `lodia.io/operator-revision` |
 | annotation `lodia.io/data-hash` | every Secret PKI writes | PKI: `DataHash` of the Secret's data, a SHA-256 that changes whenever the data does | Workloads, for the restart hashes of its pod templates |
-| annotation `lodia.io/operation` | a `ControlPlane` | the platform | none: operations are objects, and the annotation is to go ([one-controlplane-per-cluster](decisions/one-controlplane-per-cluster.md)) |
 | annotation `lodia.io/maintain-requested-at` | a `ControlPlane` | the platform: a new value asks for the pending maintenance now | Lifecycle, which grants it outside the window, once per value, and records the value in `status.maintenance.lastHandled` |
 | annotation `lodia.io/operator-revision` | the Deployments Workloads renders and the `Etcd` the Datastore controller renders, never a pod template | Workloads and the Datastore controller: the operator revision the object was rendered with | each writer, which reports the revision in `status` once the object has rolled out |
 | annotation `lodia.io/sealed-uid` | a `Backup` | the backup reconciler of the Datastore controller: the `Backup`'s UID, once it is `Completed` | the backup reconciler, which never seals a `Backup` that carries it under another UID or without its `Completed` status (`SealLost`, [restore-replaces-the-source](decisions/restore-replaces-the-source.md)) |
@@ -209,7 +206,6 @@ Its liveness probe is `/livez?exclude=etcd`, so that an etcd outage restarts no 
 A restored `ControlPlane`'s controller manager runs at 0 replicas until its release, which `APIServerReady` counts as available ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)).
 Adding `highAvailability` keeps the etcd's quorum, its new members joining as learners; removing it restarts the remaining member, since etcd-druid rolls the members whenever their count changes: its pod template carries a checksum of the ConfigMap ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L219-L226)) whose `initial-cluster` names every member ([etcdconfig.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/configmap/etcdconfig.go#L150-L160)).
 That restart leaves `Ready` False for about 20 seconds, in which the controller manager and the scheduler usually lose their leases and restart, since each exits when it loses its lease ([controllermanager.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kube-controller-manager/app/controllermanager.go#L412-L416), [server.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kube-scheduler/app/server.go#L328-L339)).
-A `ControlPlane` that asks for what Workloads does not render yet is `APIServerReady=False` (`Unsupported`, [reasons](api/controlplane.md#conditions-and-their-reasons)) rather than run without it.
 
 The dedicated etcd is etcd-druid's `Etcd` `<cp>-etcd`, which the Datastore controller renders from the `DatastoreClass` and the newest complete generation of the etcd certificates, under the `ControlPlane`'s finalizer `lodia.io/datastore`, which it holds from before the first `Etcd` exists.
 etcd-druid turns it into the StatefulSet `<cp>-etcd`, the client Service `<cp>-etcd-client` (`https://<cp>-etcd-client.<ns>.svc:2379`, the address Workloads gives the API server's `--etcd-servers`), the peer Service `<cp>-etcd-peer`, a ConfigMap, member leases and a PodDisruptionBudget, all owned by the `Etcd` ([helper.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/helper.go)).
@@ -225,7 +221,7 @@ With `restoreFrom`, it waits for the `Backup`'s copy in the `ControlPlane`'s pre
 Without, it refuses an empty etcd while `<cp>-ca-bundle` holds a CA older than the `ControlPlane` (`CAPredatesControlPlane`).
 With `restoreFrom`, an `Etcd` created again over the `ControlPlane`'s claims asks for as many members as they held, since each member restarts with the members its data names ([server.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/etcdserver/server.go#L474-L539)).
 
-An `Etcd` follows the class recorded on it when it was created ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)), and one created again over this `ControlPlane`'s claims, after someone deleted it, takes the class they record rather than `className` or the current default, which could give it another bucket and placement.
+An `Etcd` follows the class recorded on it when it was created ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)), and one created again over this `ControlPlane`'s claims, after someone deleted it, takes the class they record rather than `datastore.className` or the current default, which could give it another bucket and placement.
 An edit of that class that changes the `Etcd`'s spec rolls its members, a single member with an outage, since etcd-druid carries the class's store, prefix and schedules into the backup sidecar's arguments ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L430-L601)) and updates the StatefulSet with `RollingUpdate` ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L57)), so it reaches an `Etcd` only once Lifecycle grants the class's UID and generation, in the tenant's maintenance window, on `lodia.io/maintain-requested-at` or in a slot the tenant holds ([`target.datastoreClass`](api/controlplane.md#status)); a new `Etcd` takes the class as it is.
 Until then, and while the class is held or gone, a pass applies the class fields of the `Etcd` it read under that `Etcd`'s `resourceVersion`, so that a pass on a stale cache writes no older class back.
 What each field of the class becomes ([etcd.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/etcd.go), [store.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/store.go)); everything the class does not set is etcd-druid's default:
@@ -245,7 +241,6 @@ What each field of the class becomes ([etcd.go](https://github.com/gardener/etcd
 | `backup.store.secretRef` | `spec.backup.store.secretRef` | `<cp>-etcd-backup`, the copy, with the class Secret's data |
 | `backup.fullSnapshotSchedule`, `.deltaSnapshotPeriod` | `spec.backup.fullSnapshotSchedule`, `.deltaSnapshotPeriod` | the delta period bounds what a restore loses ([etcd spike](etcd-spike-2026-10.md), finding 5) |
 | `backup.retention.fullSnapshots` | `spec.backup.garbageCollectionPolicy: LimitBased`, `.maxBackupsLimitBasedGC` | the newest full snapshots kept, whatever took them ([garbagecollector.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapshot/snapshotter/garbagecollector.go#L171-L203)): the schedule's, each `Backup`'s, each that etcd-druid takes before it rolls the members ([statefulset.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/statefulset.go#L285)) and each of compaction's, so they span fewer days than the schedule alone gives; only the newest keeps the deltas after it ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)) |
-| `backup.retention.afterDelete` | — | not built ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)) |
 | `placement.nodeSelector`, `.tolerations`, `.priorityClassName` | `spec.schedulingConstraints.affinity` (as required node affinity), `.tolerations`, `spec.priorityClassName` | the `Etcd` has no node selector |
 | the `ControlPlane`'s `highAvailability` | `spec.replicas`, `spec.schedulingConstraints.topologySpreadConstraints`, the annotation `resources.druid.gardener.cloud/allow-unhealthy-pod-eviction` | 3 members with `highAvailability`, 1 without; neither change starts while etcd-druid's last scale is incomplete, since its schema refuses the opposite direction meanwhile ([etcd.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/etcd.go#L72-L74)); adding it also waits until every member runs the `Etcd`'s current spec and is available, since the StatefulSet controller replaces at once a member of etcd-druid's Parallel pods that is not available when the spec changes ([stateful_set_control.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/controller/statefulset/stateful_set_control.go#L875-L894), [builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L43)), which would restart a member still restarting after a removal and start the new members with none to join through; removing it waits for etcd-druid to list `<cp>-etcd-0`, the one member it keeps ([helper.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/helper.go#L146-L153)), as ready, and for no other member, so it backs out of one that never comes up, as etcd-druid removes one surplus member per pass, only while that keeps quorum, and moves the leadership off it first ([memberremoval.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/memberremoval.go#L31-L96)); the members spread over three nodes, and with `Zone` over three zones too, beside the class's placement; the annotation lets etcd-druid's PodDisruptionBudget evict an unhealthy member always ([poddisruptionbudget.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/poddistruptionbudget/poddisruptionbudget.go#L121-L125)); 0 while hibernating comes with phase 3 |
 | the etcd certificates, generation `g` | `spec.etcd.clientUrlTls`, `spec.etcd.peerUrlTls`, `spec.backup.tls` | all three name one complete generation, with `dataKey: ca.crt` on the CA; a generation counts only while its five Secrets are this `ControlPlane`'s (its controller reference), so a predecessor's or an orphaned one never starts an etcd before PKI has checked and adopted it; the `Etcd` never moves below the generation it names: the newest complete one is older while a Secret of the named one is being deleted ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)) |
@@ -425,7 +420,7 @@ stateDiagram-v2
 A `DatastoreClass` with a backup store gives every dedicated etcd continuous snapshots: a full snapshot on the class's schedule, `0 0 * * *` by default, and a delta every few minutes, with retention in the class; placing the full snapshot inside the tenant's maintenance window, as Gardener does for its shoots ([backup and restore](https://github.com/gardener/gardener/blob/master/docs/concepts/backup-restore.md)), is owed with phase 2's wave 2 (`todo.md`).
 A `Backup` is a sealed copy ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)), and a new `ControlPlane` with `restoreFrom` replaces its source.
 
-Migration between stores (shared → dedicated, or between classes): Tenant applies a `ValidatingAdmissionPolicy` that refuses writes, Datastore takes a final snapshot and restores it into the target, Workloads rolls the API server onto the new endpoints, Tenant lifts the lock.
+Migration between classes: Tenant applies a `ValidatingAdmissionPolicy` that refuses writes, Datastore takes a final snapshot and restores it into the target, Workloads rolls the API server onto the new endpoints, Tenant lifts the lock.
 Reads work throughout; writes stop for the copy.
 
 ### Deletion
@@ -435,7 +430,7 @@ A claim of another `ControlPlane` is never touched, and neither is an `Etcd` `<c
 Deletion reads the `Etcd` from the API server, not the cache: a deleted `Etcd` the cache still held would have the claims of one standing under the name since labelled as this `ControlPlane`'s, and reclaimed.
 Each delete, of the `Etcd` and of a claim, names the UID it read, so what stands under the name since is not deleted: the API server answers with a conflict ([delete.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/registry/rest/delete.go#L83-L87)).
 Then the finalizer goes and the owner references garbage-collect the rest of the namespace objects.
-Deletion takes no final snapshot, so the last snapshots of a deleted `ControlPlane` are the continuous ones, and nothing deletes them (`retention.afterDelete` is not built, [dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)).
+Deletion takes no final snapshot, so the last snapshots of a deleted `ControlPlane` are the continuous ones, and nothing deletes them ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)).
 
 ## Health
 
@@ -469,14 +464,13 @@ While most nodes are silent and the API server answers, Health holds the control
   Lodia's ClusterRoles, one per controller, are limited to its kinds, the workload kinds it renders, Secrets and ConfigMaps, the management nodes, a cluster-wide `list` on pods, to match a leader Lease's holder to a pod of the `ControlPlane`, Gateway API `TLSRoute`s and the Gateways they attach to, etcd-druid's `Etcd`, the StatefulSet etcd-druid runs for it and the claims of that StatefulSet, `get` on the namespaces, whose UIDs go into the backup prefix, and `get` on the admission policy `kubeconfigrequests.lodia.io` and its binding, by name; where they come from is below.
 - Every field Lodia writes has a field manager `lodia/<controller>`; another manager's fields on the same object are left alone.
 - No cross-tenant object: every Secret, Service and route is in the tenant's namespace, and NetworkPolicies keep its pods to their own arrows.
-  A shared `Datastore` is the one deliberate exception, labelled as such.
 - A class's backup credentials reach every tenant's snapshots on that class: `<cp>-etcd-backup` puts them into every tenant namespace, and they read every tenant's prefix, though not the encryption keys, which stay in the management cluster.
   Whoever reads Secrets in one tenant namespace therefore reads every tenant's snapshots on that class.
   Two rules bound it until the credentials are scoped to one tenant's prefix: Secrets in tenant namespaces are readable by Lodia and the platform's administrators only, so automation gets `get` on `<cp>-admin-kubeconfig` by `resourceNames` and never the namespace's Secrets; and a class per trust boundary.
 
 Each controller declares the verbs it calls with `+kubebuilder:rbac` markers in its package; `make generate` writes them into one ClusterRole per controller in [`charts/lodia/files/rbac/`](../charts/lodia/files/rbac/), and the chart binds the operator's ServiceAccount to every one.
 Each controller's envtest suite runs it as a user bound to its generated ClusterRole and nothing else (PKI's direct passes read the `ControlPlane` through the envtest admin, standing in for the manager's cache), with the `OwnerReferencesPermissionEnforcement` admission plugin on for PKI, the Datastore controller and Workloads.
-For the Datastore controller, leaving out any one verb fails a test, except `list` on the five kinds the cache holds: client-go fills the cache with a streaming watch where the API server offers one, on by default since 1.35, and falls back to `list` where it does not ([known_features.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/client-go/features/known_features.go#L141-L144), [reflector.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/client-go/tools/cache/reflector.go#L470-L509)).
+For the Datastore controller, leaving out any one verb fails a test, except `list` on seven of the eight kinds it watches, `Backup`s, `DatastoreClass`es, `Etcd`s, `EtcdCopyBackupsTask`s, `EtcdOpsTask`s, NetworkPolicies and Secrets, but not `ControlPlane`s, which the backup reconciler also lists from the API server, past its cache: client-go fills the cache with a streaming watch where the API server offers one, on by default since 1.35, and falls back to `list` where it does not ([known_features.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/client-go/features/known_features.go#L141-L144), [reflector.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/client-go/tools/cache/reflector.go#L470-L509)).
 
 The verbs nobody would guess from the calls:
 
@@ -616,7 +610,7 @@ Each controller records an event for every transition of a condition it writes (
 
 - Names: `<cp>-<component>` for workloads and Services, `<cp>-<purpose>` for Secrets, `lodia.io/*` for labels, annotations and the finalizer.
 - Fields: a field named `<x>Ref` names an object its reader follows, by name in the namespace (`backupRef`, `secretRef`, `parentRef`); an identity record, `{name, uid}`, says which object a fact is about and is not followed, since the object may be gone: a `Backup`'s `status.source`, `status.restore.{backup, source}`.
-- Every reconcile is idempotent and uses server-side apply; no controller reads an object it did not render except through status, or by a name in `api/v1alpha1/names.go`.
+- Every reconcile is idempotent and uses server-side apply; no controller reads an object it did not render except through status, or by a name in `api/v1alpha1/names.go` or `internal/contract`.
 
 ## Deliberately not offered — and owed
 
@@ -630,10 +624,10 @@ Each controller records an event for every transition of a condition it writes (
 ## Decisions
 
 - [project-home](decisions/project-home.md) — Lodia, Apache-2.0, `go.lodia.io/lodia`, API group `lodia.io`.
-- [one-controlplane-per-cluster](decisions/one-controlplane-per-cluster.md) — five kinds; `ControlPlane` is the whole cluster; operations are objects of their own.
+- [one-controlplane-per-cluster](decisions/one-controlplane-per-cluster.md) — four kinds; `ControlPlane` is the whole cluster; operations are objects of their own.
 - [independent-controllers](decisions/independent-controllers.md) — six controllers, one object, conditions as the only coupling.
 - [component-per-deployment](decisions/component-per-deployment.md) — a Deployment per component, konnectivity as the API server's sidecar, 4 or 9 pods.
-- [dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md) — an etcd per tenant through etcd-druid; a shared store as an option.
+- [dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md) — an etcd per tenant through etcd-druid.
 - [restore-replaces-the-source](decisions/restore-replaces-the-source.md) — a `Backup` is a sealed copy; a `ControlPlane` restored from it replaces its source and stays inert until released.
 - [no-admission-webhooks](decisions/no-admission-webhooks.md) — CEL in the schema; conditions for what a schema cannot check; an admission policy for what it cannot see, the requester.
 - [nodes-join-with-kubeadm](decisions/nodes-join-with-kubeadm.md) — `kubeadm join`; Lodia writes the bootstrap objects; no `k8s.io/kubernetes` import.

@@ -94,7 +94,7 @@ When two steps of a reconcile render the same Deployment (first without an add-o
 |---|---|---|
 | a secret change restarts everything | a Deployment per component; reloadable files are not hashed into pod templates, restart-only files roll only their consumer | [component-per-deployment](decisions/component-per-deployment.md) |
 | CA rotation is manual and touches nodes | staged rotation of CA, ServiceAccount key and encryption key, with the old and new valid together | [staged-credential-rotation](decisions/staged-credential-rotation.md) |
-| shared datastores make isolation a code property | etcd per tenant by default through etcd-druid; a shared store only by choice | [dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md) |
+| shared datastores make isolation a code property | an etcd per tenant through etcd-druid | [dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md) |
 | webhooks couple availability | no admission webhooks; CEL in the schema; conditions for the rest | [no-admission-webhooks](decisions/no-admission-webhooks.md) |
 | backups cover less than expected | continuous snapshots per tenant, restore into a new `ControlPlane`, the encryption key kept with them | [dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md) |
 | one LB per control plane | a shared Gateway by SNI; in-cluster access through apiserver-proxy | [api-exposure](decisions/api-exposure.md) |

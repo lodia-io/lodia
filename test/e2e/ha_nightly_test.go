@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 )
 
 func TestHighAvailabilityRemovedAndRestored(t *testing.T) {
@@ -112,7 +113,7 @@ func shaped(ctx context.Context, k8s client.Client, key client.ObjectKey, member
 		return err
 	}
 	etcd := &druidv1alpha1.Etcd{}
-	if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: lodiav1alpha1.EtcdName(key.Name)}, etcd); err != nil {
+	if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: contract.EtcdName(key.Name)}, etcd); err != nil {
 		return err
 	}
 	if etcd.Spec.Replicas != members || ptr.Deref(etcd.Status.ObservedGeneration, 0) != etcd.Generation || etcd.Status.ReadyReplicas != members || len(etcd.Status.Members) != int(members) || !druidv1alpha1.HasScaleOperationCompleted(etcd) {
@@ -147,7 +148,7 @@ func shaped(ctx context.Context, k8s client.Client, key client.ObjectKey, member
 
 func explainEtcd(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey, since time.Time) {
 	t.Helper()
-	name := lodiav1alpha1.EtcdName(key.Name)
+	name := contract.EtcdName(key.Name)
 	sts := &appsv1.StatefulSet{}
 	if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: name}, sts); err != nil {
 		t.Log(err)

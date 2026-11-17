@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 )
 
 const (
@@ -61,8 +62,8 @@ type EtcdSample struct {
 	Alarms []string
 }
 
-// SampleReconciler samples the etcd of every dedicated ControlPlane whose
-// Etcd is formed, once a minute, for Lodia's metrics; it writes nothing.
+// SampleReconciler samples the etcd of every ControlPlane whose Etcd is
+// formed, once a minute, for Lodia's metrics; it writes nothing.
 type SampleReconciler struct {
 	// Cache reads the ControlPlanes and their Etcds.
 	Cache client.Reader
@@ -133,16 +134,16 @@ func (r *SampleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	return again()
 }
 
-// sampled is the Etcd of cp to sample: cp's own and formed, of a dedicated
-// etcd neither paused nor being deleted; nil otherwise. An etcd that never
-// had a ready member is on its way, a new one or a restore's, and has no
-// leader to page about.
+// sampled is the Etcd of cp to sample: cp's own and formed, of a ControlPlane
+// neither paused nor being deleted; nil otherwise. An etcd that never had a
+// ready member is on its way, a new one or a restore's, and has no leader to
+// page about.
 func (r *SampleReconciler) sampled(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*druidv1alpha1.Etcd, error) {
-	if !cp.DeletionTimestamp.IsZero() || cp.Spec.Paused || cp.Spec.Datastore.Dedicated == nil {
+	if !cp.DeletionTimestamp.IsZero() || cp.Spec.Paused {
 		return nil, nil
 	}
 	etcd := &druidv1alpha1.Etcd{}
-	if err := r.Cache.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.EtcdName(cp.Name)}, etcd); err != nil {
+	if err := r.Cache.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: contract.EtcdName(cp.Name)}, etcd); err != nil {
 		return nil, client.IgnoreNotFound(err)
 	}
 	if !metav1.IsControlledBy(etcd, cp) || !formed(etcd) {

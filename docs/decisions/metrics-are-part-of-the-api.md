@@ -8,7 +8,7 @@ Built: the collector, served by the leader alone, with every metric below that t
 **A metric of Lodia's is a contract like a status field:** its name, its label names and their values, its unit and its meaning.
 Names are `lodia_<object>_<what>[_<unit>]`; every metric of a `ControlPlane` carries the labels `namespace` and `controlplane`.
 A label takes an object's name or a value of a set fixed in `api/v1alpha1`, never an error string or a value read from a tenant.
-A metric is renamed only under a new name, and in `v1alpha1` the old one stays for one minor, with a release note.
+A metric changes in the three periods of `v1alpha1` that check 11 of the [review checklist](../review-checklist.md) names: until the first real user's tenant is created, a name, a label or a value changes in place, with no alias; from then until the freeze, a metric is renamed only under a new name, and the old one stays for one minor, with a release note; from the freeze on, metrics and their labels are only added.
 
 - **One collector** in the operator builds them at scrape time from its cache, as cert-manager builds its certificate metrics from its listers ([certificate_collector.go](https://github.com/cert-manager/cert-manager/blob/v1.21.3/internal/collectors/certificate_collector.go#L28-L112)) and HyperShift its hosted clusters' from a list ([metrics.go](https://github.com/openshift/hypershift/blob/v0.1.86/hypershift-operator/controllers/hostedcluster/metrics/metrics.go#L237-L267)), with no histogram per tenant.
 - **The leader alone serves them.**
@@ -39,7 +39,7 @@ A metric is renamed only under a new name, and in `v1alpha1` the old one stays f
 
 | metric | labels besides `namespace` and `controlplane` | value | served |
 |---|---|---|---|
-| `lodia_controlplane_info` | `uid`, `kubernetes_version`, `layout`, `datastore` (`dedicated`, `shared`), `endpoint_mode` (`gateway`, `loadBalancer`, `nodePort`) | 1: `metadata.uid`, `status.kubernetes.version`, empty while it is absent, `spec.layout`, and the member of `spec.datastore` and of `spec.endpoint` that is set | yes |
+| `lodia_controlplane_info` | `uid`, `kubernetes_version`, `endpoint_mode` (`gateway`, `loadBalancer`, `nodePort`) | 1: `metadata.uid`, `status.kubernetes.version`, empty while it is absent, and the member of `spec.endpoint` that is set | yes |
 | `lodia_controlplane_condition` | `type`, `status` | 1 or 0, one-hot: each entry of `status.conditions` | yes |
 | `lodia_controlplane_condition_reason` | `type`, `reason` | 1: each entry's reason | yes |
 | `lodia_controlplane_condition_last_transition_timestamp_seconds` | `type` | each entry's `lastTransitionTime` | yes |

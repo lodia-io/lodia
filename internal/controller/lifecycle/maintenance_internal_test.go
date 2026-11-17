@@ -476,7 +476,6 @@ func TestAChangeInASlotSettles(t *testing.T) {
 	for _, cause := range []metav1.Condition{
 		{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonRefused, Message: "refused"},
 		{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonObjectsControlledElsewhere, Message: "kept elsewhere"},
-		{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonUnsupported, Message: "not built"},
 		{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonProgressDeadlineExceeded, Message: "available, past the deadline"},
 		{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonProgressDeadlineExceeded, Message: "unavailable, past the deadline"},
 	} {

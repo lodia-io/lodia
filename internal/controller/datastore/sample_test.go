@@ -491,10 +491,6 @@ func TestWhatIsNotSampledIsForgotten(t *testing.T) {
 			cp.Spec.Paused = true
 			return []client.Object{cp, etcd}
 		}, time.Minute},
-		{"shared", func(cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) []client.Object {
-			cp.Spec.Datastore = lodiav1alpha1.DatastoreChoice{Shared: &lodiav1alpha1.SharedDatastore{Name: "pool"}}
-			return []client.Object{cp, etcd}
-		}, time.Minute},
 		{"without its Etcd", func(cp *lodiav1alpha1.ControlPlane, _ *druidv1alpha1.Etcd) []client.Object {
 			return []client.Object{cp}
 		}, time.Minute},

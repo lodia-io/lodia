@@ -1,17 +1,16 @@
-# One ControlPlane object describes one tenant cluster; four small objects describe storage classes, shared stores, access and snapshots
+# One ControlPlane object describes one tenant cluster; three small objects describe storage classes, access and snapshots
 
 Decided 2026-10-25.
-The five kinds are built as types and CRDs; the six controllers act on `ControlPlane`, the Datastore controller also on `DatastoreClass` and `Backup`, PKI on `KubeconfigRequest`, and nothing on `Datastore`, the shared store, which phase 3 does not build ([roadmap](../roadmap.md)).
+The four kinds are built as types and CRDs; the six controllers act on `ControlPlane`, the Datastore controller also on `DatastoreClass` and `Backup`, PKI on `KubeconfigRequest`.
 
 ## Decision
 
-Five custom resources in `lodia.io/v1alpha1`:
+Four custom resources in `lodia.io/v1alpha1`:
 
 | kind | scope | one per | holds |
 |---|---|---|---|
 | `ControlPlane` | namespaced | tenant cluster | the whole desired state of a control plane: version, availability, datastore choice, endpoint, network, component settings, addons, maintenance and, from phase 3, hibernation |
 | `DatastoreClass` | cluster | kind of dedicated etcd | the template a dedicated etcd is built from: members, storage, quota, backup store and schedules, defragmentation |
-| `Datastore` | cluster | shared etcd pool | endpoints and credentials of an etcd that several tenants share by key prefix |
 | `KubeconfigRequest` | namespaced | request | a short-lived kubeconfig for a person's own key, in its status; the request is deleted when it expires |
 | `Backup` | namespaced | snapshot | an on-demand full snapshot of a tenant's etcd, named so a new `ControlPlane` can be restored from it |
 
@@ -24,7 +23,6 @@ Rules that hold across all of them:
 - A `ControlPlane` has one finalizer, `lodia.io/datastore`, which the Datastore controller holds ([deletion](../README.md#deletion)).
 - Imperative operations that are not desired state — starting or completing a credential rotation — are objects of their own, as a `Backup` and a `KubeconfigRequest` are: a right of their own in RBAC, CEL validation, and a status that records who asked and what happened.
   Whether there is one kind per operation or one for all is for the design of the first rotation ([roadmap](../roadmap.md)).
-  The annotation `lodia.io/operation`, which nothing reads, is to go.
 - Validation and defaults live in the CRD schema (CEL and defaults), not in a webhook ([no-admission-webhooks](no-admission-webhooks.md)).
 
 The field reference is [`docs/api/controlplane.md`](../api/controlplane.md); examples are in [`docs/api/examples/`](../api/examples/).
@@ -50,4 +48,4 @@ The field reference is [`docs/api/controlplane.md`](../api/controlplane.md); exa
 
 ## Code
 
-- `api/v1alpha1/controlplane_types.go`, `datastore_types.go` and `access_types.go` — the five kinds; `api/crds/` is generated from them.
+- `api/v1alpha1/controlplane_types.go`, `datastore_types.go` and `access_types.go` — the four kinds; `api/crds/` is generated from them.

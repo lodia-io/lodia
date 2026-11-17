@@ -43,8 +43,6 @@ type ControlPlaneList struct {
 }
 
 // ControlPlaneSpec is what the owner of the cluster wants.
-// +kubebuilder:validation:XValidation:rule="self.layout != 'Compact' || !has(self.highAvailability)",message="the Compact layout runs one replica of everything: remove highAvailability"
-// +kubebuilder:validation:XValidation:rule="self.layout != 'Compact' || !has(self.apiServer) || !has(self.apiServer.replicas) || self.apiServer.replicas == 1",message="the Compact layout runs one API server"
 // +kubebuilder:validation:XValidation:rule="!has(self.highAvailability) || !has(self.apiServer) || !has(self.apiServer.replicas) || self.apiServer.replicas >= 2",message="highAvailability runs at least two API servers"
 // +kubebuilder:validation:XValidation:rule="!has(self.apiServer) || !has(self.apiServer.advertiseAddress) || has(self.endpoint.gateway)",message="apiServer.advertiseAddress is set only with endpoint.gateway"
 // +kubebuilder:validation:XValidation:rule="!has(self.apiServer) || !has(self.apiServer.advertiseAddress) || !isIP(self.apiServer.advertiseAddress) || !isCIDR(self.network.serviceCIDRs[0]) || ip(self.apiServer.advertiseAddress).family() == cidr(self.network.serviceCIDRs[0]).ip().family()",message="apiServer.advertiseAddress must be of the family of the first service range"
@@ -52,6 +50,11 @@ type ControlPlaneList struct {
 // +kubebuilder:validation:XValidation:rule="(has(self.apiServer) && has(self.apiServer.advertiseAddress) ? [self.apiServer.advertiseAddress] : has(self.endpoint.gateway) ? ['240.0.0.1'] : []).all(a, !isIP(a) || !(self.network.serviceCIDRs + self.network.podCIDRs).exists(c, isCIDR(c) && cidr(c).containsIP(a)))",message="the advertise address, apiServer.advertiseAddress or 240.0.0.1 in gateway mode, must lie outside the service and pod ranges"
 // +kubebuilder:validation:XValidation:rule="!has(self.endpoint.gateway) || (has(self.apiServer) && has(self.apiServer.advertiseAddress) ? has(oldSelf.apiServer) && has(oldSelf.apiServer.advertiseAddress) && oldSelf.apiServer.advertiseAddress == self.apiServer.advertiseAddress : !has(oldSelf.apiServer) || !has(oldSelf.apiServer.advertiseAddress))",message="apiServer.advertiseAddress is immutable"
 // +kubebuilder:validation:XValidation:rule="has(self.restoreFrom) == has(oldSelf.restoreFrom)",message="restoreFrom can be set only when the ControlPlane is created, and never removed"
+// +kubebuilder:validation:XValidation:rule="has(self.datastore) && has(self.datastore.className) && size(self.datastore.className) > 0 ? has(oldSelf.datastore) && has(oldSelf.datastore.className) && oldSelf.datastore.className == self.datastore.className : !has(oldSelf.datastore) || !has(oldSelf.datastore.className) || size(oldSelf.datastore.className) == 0",message="datastore.className is immutable in v1alpha1"
+// +kubebuilder:validation:XValidation:rule="!has(self.controllerManager) || !has(self.controllerManager.extraArgs) || !('node-cidr-mask-size' in self.controllerManager.extraArgs) || size(self.network.podCIDRs) == 1",message="kube-controller-manager refuses node-cidr-mask-size with two pod ranges: use node-cidr-mask-size-ipv4 and node-cidr-mask-size-ipv6"
+// +kubebuilder:validation:XValidation:rule="!has(self.controllerManager) || !has(self.controllerManager.extraArgs) || !('node-cidr-mask-size-ipv4' in self.controllerManager.extraArgs) || size(self.network.podCIDRs) != 1 || !isCIDR(self.network.podCIDRs[0]) || cidr(self.network.podCIDRs[0]).ip().family() == 4",message="kube-controller-manager refuses node-cidr-mask-size-ipv4 with an IPv6 pod range alone"
+// +kubebuilder:validation:XValidation:rule="!has(self.controllerManager) || !has(self.controllerManager.extraArgs) || !('node-cidr-mask-size-ipv6' in self.controllerManager.extraArgs) || size(self.network.podCIDRs) != 1 || !isCIDR(self.network.podCIDRs[0]) || cidr(self.network.podCIDRs[0]).ip().family() == 6",message="kube-controller-manager refuses node-cidr-mask-size-ipv6 with an IPv4 pod range alone"
+// +kubebuilder:validation:XValidation:rule="self.network.podCIDRs.all(c, !isCIDR(c) || (cidr(c).ip().family() == 4 ? cidr(c).prefixLength() <= (has(self.controllerManager) && has(self.controllerManager.extraArgs) && 'node-cidr-mask-size-ipv4' in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs['node-cidr-mask-size-ipv4']) : has(self.controllerManager) && has(self.controllerManager.extraArgs) && 'node-cidr-mask-size' in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs['node-cidr-mask-size']) : 24) : cidr(c).prefixLength() <= (has(self.controllerManager) && has(self.controllerManager.extraArgs) && 'node-cidr-mask-size-ipv6' in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs['node-cidr-mask-size-ipv6']) : has(self.controllerManager) && has(self.controllerManager.extraArgs) && 'node-cidr-mask-size' in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs['node-cidr-mask-size']) : 64) && (has(self.controllerManager) && has(self.controllerManager.extraArgs) && 'node-cidr-mask-size-ipv6' in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs['node-cidr-mask-size-ipv6']) : has(self.controllerManager) && has(self.controllerManager.extraArgs) && 'node-cidr-mask-size' in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs['node-cidr-mask-size']) : 64) - cidr(c).prefixLength() <= 16))",message="kube-controller-manager refuses a pod range narrower than the node mask of its family, 24 for IPv4 and 64 for IPv6 unless controllerManager.extraArgs sets it, and an IPv6 range more than 16 bits wider than it"
 type ControlPlaneSpec struct {
 	// Version is the Kubernetes version, vMAJOR.MINOR.PATCH, any patch of a
 	// minor Lodia runs. The minor never decreases; Lodia upgrades one minor
@@ -62,22 +65,15 @@ type ControlPlaneSpec struct {
 	// +kubebuilder:validation:XValidation:rule="int(self.split('.')[1]) >= int(oldSelf.split('.')[1])",message="the Kubernetes minor version cannot decrease"
 	Version string `json:"version"`
 
-	// Layout is Split, a Deployment per component, or Compact, every
-	// component in one pod.
-	// +optional
-	// +kubebuilder:default=Split
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="layout is immutable"
-	Layout Layout `json:"layout,omitempty"`
-
 	// HighAvailability runs every component with more than one replica,
 	// spread by FailureTolerance, and etcd with three members.
 	// +optional
 	HighAvailability *HighAvailability `json:"highAvailability,omitempty"`
 
-	// Datastore is where the cluster's data lives.
-	// +required
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="datastore is immutable in v1alpha1"
-	Datastore DatastoreChoice `json:"datastore"`
+	// Datastore is where the cluster's data lives: an etcd of the tenant's
+	// own.
+	// +optional
+	Datastore DatastoreSettings `json:"datastore,omitzero"`
 
 	// Endpoint is how nodes, people and pods reach the API server.
 	// +required
@@ -133,17 +129,6 @@ type ControlPlaneSpec struct {
 	Paused bool `json:"paused,omitempty"`
 }
 
-// Layout is how the control plane's components are laid out in pods.
-// +kubebuilder:validation:Enum=Split;Compact
-type Layout string
-
-const (
-	// LayoutSplit runs each component in its own Deployment.
-	LayoutSplit Layout = "Split"
-	// LayoutCompact runs every component in one pod.
-	LayoutCompact Layout = "Compact"
-)
-
 // HighAvailability is the failure a control plane survives.
 type HighAvailability struct {
 	// FailureTolerance is Node, replicas spread over nodes by
@@ -160,33 +145,13 @@ type HighAvailability struct {
 // +kubebuilder:validation:Enum=Node;Zone
 type FailureTolerance string
 
-// DatastoreChoice is exactly one of Dedicated and Shared.
-// +kubebuilder:validation:XValidation:rule="has(self.dedicated) != has(self.shared)",message="set exactly one of dedicated and shared"
-type DatastoreChoice struct {
-	// Dedicated is an etcd of the tenant's own.
-	// +optional
-	Dedicated *DedicatedDatastore `json:"dedicated,omitempty"`
-
-	// Shared is a prefix in an etcd several tenants share.
-	// +optional
-	Shared *SharedDatastore `json:"shared,omitempty"`
-}
-
-// DedicatedDatastore is built from a DatastoreClass.
-type DedicatedDatastore struct {
-	// ClassName names a DatastoreClass; empty means the default class.
+// DatastoreSettings is how the tenant's etcd is built.
+type DatastoreSettings struct {
+	// ClassName names the DatastoreClass the etcd is built from; empty
+	// means the default class.
 	// +optional
 	// +kubebuilder:validation:MaxLength=253
 	ClassName string `json:"className,omitempty"`
-}
-
-// SharedDatastore names a Datastore.
-type SharedDatastore struct {
-	// Name of the Datastore.
-	// +required
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=253
-	Name string `json:"name"`
 }
 
 // Endpoint is exactly one of Gateway, LoadBalancer and NodePort.
@@ -323,110 +288,37 @@ type APIServer struct {
 	// +kubebuilder:validation:XValidation:rule="isIP(self) && ip.isCanonical(self) && ip(self).isGlobalUnicast()",message="must be a unicast IP address in canonical form, neither loopback nor link-local"
 	AdvertiseAddress string `json:"advertiseAddress,omitempty"`
 
-	// Authentication configures structured authentication; the anonymous
-	// section is Lodia's.
-	// +optional
-	Authentication *Authentication `json:"authentication,omitempty"`
-
-	// Audit configures audit logging.
-	// +optional
-	Audit *Audit `json:"audit,omitempty"`
-
 	// Encryption configures encryption of Secrets at rest.
 	// +optional
 	Encryption *Encryption `json:"encryption,omitempty"`
 
-	// Admission names a ConfigMap with an AdmissionConfiguration.
-	// +optional
-	Admission *Admission `json:"admission,omitempty"`
-
 	// ExtraArgs are flags passed to kube-apiserver, each under its name as
-	// kube-apiserver spells it. The flags Lodia sets are refused, but for
-	// enable-admission-plugins, whose entries follow Lodia's; featureGates sets
-	// feature-gates.
+	// kube-apiserver spells it. The flags Lodia sets, those whose defaults it
+	// relies on, those that conflict with either and those that end the
+	// process are refused, but for enable-admission-plugins, whose entries
+	// follow Lodia's; featureGates sets feature-gates.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
 	// +kubebuilder:validation:XValidation:rule="self.all(k, k.matches('^[a-z0-9]+(-[a-z0-9]+)*$'))",message="a key must be a flag's name as the component spells it: lowercase letters and digits in words joined by single dashes"
-	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['advertise-address', 'allow-privileged', 'anonymous-auth', 'authentication-config', 'authorization-mode', 'bind-address', 'client-ca-file', 'egress-selector-config-file', 'enable-bootstrap-token-auth', 'encryption-provider-config', 'encryption-provider-config-automatic-reload', 'endpoint-reconciler-type', 'etcd-cafile', 'etcd-certfile', 'etcd-keyfile', 'etcd-prefix', 'etcd-servers', 'etcd-servers-overrides', 'feature-gates', 'goaway-chance', 'kubelet-client-certificate', 'kubelet-client-key', 'kubelet-preferred-address-types', 'proxy-client-cert-file', 'proxy-client-key-file', 'requestheader-allowed-names', 'requestheader-client-ca-file', 'requestheader-extra-headers-prefix', 'requestheader-group-headers', 'requestheader-username-headers', 'secure-port', 'service-account-issuer', 'service-account-jwks-uri', 'service-account-key-file', 'service-account-signing-endpoint', 'service-account-signing-key-file', 'service-cluster-ip-range', 'shutdown-delay-duration', 'shutdown-send-retry-after', 'shutdown-watch-termination-grace-period', 'tls-cert-file', 'tls-private-key-file'])",message="Lodia sets this flag"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['advertise-address', 'allow-privileged', 'authentication-config', 'authorization-mode', 'client-ca-file', 'egress-selector-config-file', 'enable-bootstrap-token-auth', 'encryption-provider-config', 'encryption-provider-config-automatic-reload', 'endpoint-reconciler-type', 'etcd-cafile', 'etcd-certfile', 'etcd-keyfile', 'etcd-servers', 'feature-gates', 'goaway-chance', 'kubelet-client-certificate', 'kubelet-client-key', 'kubelet-preferred-address-types', 'proxy-client-cert-file', 'proxy-client-key-file', 'requestheader-allowed-names', 'requestheader-client-ca-file', 'requestheader-extra-headers-prefix', 'requestheader-group-headers', 'requestheader-username-headers', 'secure-port', 'service-account-issuer', 'service-account-jwks-uri', 'service-account-signing-endpoint', 'service-cluster-ip-range', 'shutdown-delay-duration', 'shutdown-watch-termination-grace-period', 'tls-cert-file', 'tls-private-key-file'])",message="Lodia sets this flag"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['bind-address', 'etcd-prefix', 'etcd-servers-overrides', 'shutdown-send-retry-after'])",message="Lodia relies on this flag's default"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['admission-control', 'anonymous-auth', 'authorization-config', 'authorization-policy-file', 'authorization-webhook-cache-authorized-ttl', 'authorization-webhook-cache-unauthorized-ttl', 'authorization-webhook-config-file', 'authorization-webhook-version', 'cert-dir', 'service-account-key-file', 'service-account-signing-key-file'] || k.startsWith('oidc-'))",message="this flag conflicts with one Lodia sets"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['help', 'version'])",message="this flag makes the component exit, or report another version than the one it runs"
+	// +kubebuilder:validation:XValidation:rule="!('disable-admission-plugins' in self) || self['disable-admission-plugins'].matches('^[A-Za-z0-9]+(,[A-Za-z0-9]+)*$')",message="disable-admission-plugins is plugin names of letters and digits joined by commas, and nothing else, since kube-apiserver reads it as CSV"
+	// +kubebuilder:validation:XValidation:rule="!('disable-admission-plugins' in self) || !self['disable-admission-plugins'].matches('(^|,)NodeRestriction(,|$)')",message="disable-admission-plugins cannot name NodeRestriction, which Lodia enables"
+	// +kubebuilder:validation:XValidation:rule="!('service-account-max-token-expiration' in self) || size(self['service-account-max-token-expiration']) > 0 && self['service-account-max-token-expiration'].matches('^([1-9][0-9]*h)?([1-9]m|[1-5][0-9]m)?([1-9]s|[1-5][0-9]s)?$')",message="service-account-max-token-expiration is a duration as Go prints it, without its zero units: hours, then minutes and seconds under 60, as 720h or 1h30m"
+	// +kubebuilder:validation:XValidation:rule="!('service-account-max-token-expiration' in self) || duration(self['service-account-max-token-expiration']) >= duration('1h') && duration(self['service-account-max-token-expiration']) <= duration('8760h')",message="kube-apiserver refuses a service-account-max-token-expiration other than 0 under 1h, and one above 8760h, the longest token lodia-signer signs; 0 means 8760h, so leave the flag out instead"
 	ExtraArgs map[string]string `json:"extraArgs,omitempty"`
 
 	// FeatureGates are passed to kube-apiserver.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
+	// +kubebuilder:validation:XValidation:rule="!('ExternalServiceAccountTokenSigner' in self) || self['ExternalServiceAccountTokenSigner']",message="kube-apiserver refuses service-account-signing-endpoint, which Lodia sets, without ExternalServiceAccountTokenSigner"
 	FeatureGates map[string]bool `json:"featureGates,omitempty"`
 
 	// Resources override the operator's defaults.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
-}
-
-// Authentication is the part of AuthenticationConfiguration a tenant sets.
-type Authentication struct {
-	// JWT authenticators, such as OIDC providers.
-	// +optional
-	// +listType=atomic
-	// +kubebuilder:validation:MaxItems=8
-	JWT []JWTAuthenticator `json:"jwt,omitempty"`
-}
-
-// JWTAuthenticator accepts tokens from one issuer.
-type JWTAuthenticator struct {
-	// Issuer is the token issuer.
-	// +required
-	Issuer Issuer `json:"issuer"`
-
-	// ClaimMappings say which claims become the user name and groups.
-	// +optional
-	ClaimMappings *ClaimMappings `json:"claimMappings,omitempty"`
-}
-
-// Issuer is a token issuer and the audiences it issues for.
-type Issuer struct {
-	// URL is the issuer's https URL.
-	// +required
-	// +kubebuilder:validation:MaxLength=512
-	// +kubebuilder:validation:XValidation:rule="self.startsWith('https://')",message="must be an https URL"
-	URL string `json:"url"`
-
-	// Audiences accepted in the tokens.
-	// +required
-	// +listType=set
-	// +kubebuilder:validation:MinItems=1
-	// +kubebuilder:validation:MaxItems=8
-	// +kubebuilder:validation:items:MaxLength=253
-	Audiences []string `json:"audiences"`
-}
-
-// ClaimMappings map claims to the user name and groups.
-type ClaimMappings struct {
-	// Username is the claim for the user name.
-	// +optional
-	Username *PrefixedClaim `json:"username,omitempty"`
-
-	// Groups is the claim for the groups.
-	// +optional
-	Groups *PrefixedClaim `json:"groups,omitempty"`
-}
-
-// PrefixedClaim is a claim and a prefix added to its value.
-type PrefixedClaim struct {
-	// Claim is the JWT claim.
-	// +required
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=253
-	Claim string `json:"claim"`
-
-	// Prefix is added to the claim's value.
-	// +optional
-	// +kubebuilder:validation:MaxLength=64
-	Prefix string `json:"prefix,omitempty"`
-}
-
-// Audit names an audit policy.
-type Audit struct {
-	// PolicyRef names a ConfigMap with key policy.yaml.
-	// +required
-	PolicyRef LocalReference `json:"policyRef"`
 }
 
 // Encryption is how Secrets are encrypted in the datastore.
@@ -441,23 +333,21 @@ type Encryption struct {
 // +kubebuilder:validation:Enum=None;secretbox;aescbc
 type EncryptionProvider string
 
-// Admission names an admission configuration.
-type Admission struct {
-	// ConfigRef names a ConfigMap with an AdmissionConfiguration.
-	// +required
-	ConfigRef LocalReference `json:"configRef"`
-}
-
 // Component configures kube-controller-manager.
 type Component struct {
 	// ExtraArgs are flags passed to the component, each under its name as the
-	// component spells it. The flags Lodia sets are refused, but for
-	// controllers, whose entries follow Lodia's; featureGates sets
-	// feature-gates.
+	// component spells it. The flags Lodia sets, those whose defaults it
+	// relies on, those that conflict with either and those that end the
+	// process are refused, but for controllers, whose entries follow Lodia's;
+	// featureGates sets feature-gates.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
 	// +kubebuilder:validation:XValidation:rule="self.all(k, k.matches('^[a-z0-9]+(-[a-z0-9]+)*$'))",message="a key must be a flag's name as the component spells it: lowercase letters and digits in words joined by single dashes"
-	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['allocate-node-cidrs', 'authentication-kubeconfig', 'authorization-kubeconfig', 'bind-address', 'client-ca-file', 'cluster-cidr', 'cluster-name', 'cluster-signing-cert-file', 'cluster-signing-duration', 'cluster-signing-key-file', 'cluster-signing-kubelet-client-cert-file', 'cluster-signing-kubelet-client-key-file', 'feature-gates', 'kubeconfig', 'leader-elect', 'leader-elect-lease-duration', 'leader-elect-renew-deadline', 'leader-elect-resource-lock', 'leader-elect-resource-name', 'leader-elect-resource-namespace', 'leader-elect-retry-period', 'node-monitor-grace-period', 'node-monitor-period', 'requestheader-client-ca-file', 'root-ca-file', 'service-account-private-key-file', 'service-cluster-ip-range', 'use-service-account-credentials'])",message="Lodia sets this flag"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['allocate-node-cidrs', 'authentication-kubeconfig', 'authorization-kubeconfig', 'bind-address', 'client-ca-file', 'cluster-cidr', 'cluster-name', 'cluster-signing-duration', 'cluster-signing-kubelet-client-cert-file', 'cluster-signing-kubelet-client-key-file', 'feature-gates', 'kubeconfig', 'leader-elect', 'leader-elect-lease-duration', 'leader-elect-renew-deadline', 'leader-elect-resource-lock', 'leader-elect-resource-name', 'leader-elect-resource-namespace', 'leader-elect-retry-period', 'node-monitor-grace-period', 'node-monitor-period', 'requestheader-client-ca-file', 'root-ca-file', 'service-cluster-ip-range', 'use-service-account-credentials'])",message="Lodia sets this flag"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['authorization-always-allow-paths', 'secure-port'])",message="Lodia relies on this flag's default"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['cluster-signing-cert-file', 'cluster-signing-key-file', 'master', 'service-account-private-key-file'])",message="this flag conflicts with one Lodia sets"
+	// +kubebuilder:validation:XValidation:rule="['node-cidr-mask-size', 'node-cidr-mask-size-ipv4', 'node-cidr-mask-size-ipv6'].all(k, !(k in self) || self[k].matches('^[1-9][0-9]*$'))",message="a node mask size is a positive decimal number without a sign or a leading zero, since kube-controller-manager reads 024 as octal and 0 as unset"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['help', 'version'])",message="this flag makes the component exit, or report another version than the one it runs"
 	ExtraArgs map[string]string `json:"extraArgs,omitempty"`
 
 	// FeatureGates are passed to the component.
@@ -473,12 +363,16 @@ type Component struct {
 // Scheduler configures kube-scheduler.
 type Scheduler struct {
 	// ExtraArgs are flags passed to kube-scheduler, each under its name as
-	// kube-scheduler spells it; the flags Lodia sets are refused, and
-	// featureGates sets feature-gates.
+	// kube-scheduler spells it. The flags Lodia sets, those whose defaults it
+	// relies on, those that conflict with either and those that end the
+	// process are refused; featureGates sets feature-gates.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
 	// +kubebuilder:validation:XValidation:rule="self.all(k, k.matches('^[a-z0-9]+(-[a-z0-9]+)*$'))",message="a key must be a flag's name as the component spells it: lowercase letters and digits in words joined by single dashes"
-	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['authentication-kubeconfig', 'authorization-kubeconfig', 'bind-address', 'config', 'feature-gates', 'kubeconfig', 'leader-elect', 'leader-elect-resource-lock', 'leader-elect-resource-name', 'leader-elect-resource-namespace'])",message="Lodia sets this flag"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['authentication-kubeconfig', 'authorization-kubeconfig', 'bind-address', 'feature-gates', 'kubeconfig', 'leader-elect', 'leader-elect-resource-lock', 'leader-elect-resource-name', 'leader-elect-resource-namespace'])",message="Lodia sets this flag"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['authorization-always-allow-paths', 'secure-port'])",message="Lodia relies on this flag's default"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['config', 'master'])",message="this flag conflicts with one Lodia sets"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['help', 'version', 'write-config-to'])",message="this flag makes the component exit, or report another version than the one it runs"
 	ExtraArgs map[string]string `json:"extraArgs,omitempty"`
 
 	// FeatureGates are passed to kube-scheduler.
@@ -489,12 +383,6 @@ type Scheduler struct {
 	// Resources override the operator's defaults.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
-
-	// ConfigRef names a ConfigMap with a KubeSchedulerConfiguration; Lodia
-	// overrides its client connection and its leader election's resource
-	// lock, name and namespace.
-	// +optional
-	ConfigRef *LocalReference `json:"configRef,omitempty"`
 }
 
 // Addons are the components Lodia runs inside the tenant cluster.
@@ -673,11 +561,6 @@ type ServiceAccount struct {
 	// +kubebuilder:validation:MaxLength=512
 	// +kubebuilder:validation:XValidation:rule="self.startsWith('https://')",message="must be an https URL"
 	Issuer string `json:"issuer,omitempty"`
-
-	// PublicDiscovery lets unauthenticated clients read the discovery
-	// documents, for federation.
-	// +optional
-	PublicDiscovery bool `json:"publicDiscovery,omitempty"`
 }
 
 // RestoreFrom names the Backup a new control plane starts from. The
@@ -691,22 +574,22 @@ type RestoreFrom struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="restoreFrom.backupRef is immutable"
 	BackupRef LocalReference `json:"backupRef"`
 
-	// Release is Held until the owner has made sure nothing outside the
+	// Release is Pending until the owner has made sure nothing outside the
 	// cluster acts on the restored objects, then Released, for good.
 	// +optional
-	// +kubebuilder:default=Held
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf || oldSelf == 'Held'",message="restoreFrom.release moves only from Held to Released"
+	// +kubebuilder:default=Pending
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf || oldSelf == 'Pending'",message="restoreFrom.release moves only from Pending to Released"
 	Release RestoreRelease `json:"release,omitempty"`
 }
 
 // RestoreRelease says whether a restored control plane may run its
 // controller manager.
-// +kubebuilder:validation:Enum=Held;Released
+// +kubebuilder:validation:Enum=Pending;Released
 type RestoreRelease string
 
 const (
-	// RestoreHeld keeps the controller manager stopped.
-	RestoreHeld RestoreRelease = "Held"
+	// RestorePending keeps the controller manager stopped.
+	RestorePending RestoreRelease = "Pending"
 	// RestoreReleased lets it run once the Backup's source is gone.
 	RestoreReleased RestoreRelease = "Released"
 )

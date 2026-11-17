@@ -15,7 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 
-	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/operator"
 )
 
@@ -56,9 +56,9 @@ func TestWithoutAFileTheDefaultsApply(t *testing.T) {
 func TestTheDefaultsLeaveTheMarginAgainstTheGracePeriod(t *testing.T) {
 	h := operator.DefaultConfig().Health
 	got := h.SilentAfter.Duration + h.Period.Duration + 10400*time.Millisecond +
-		lodiav1alpha1.ControllerManagerRenewDeadline + lodiav1alpha1.ControllerManagerRetryPeriod + 10*time.Second
-	if got != 57400*time.Millisecond || got > lodiav1alpha1.NodeMonitorGracePeriod || lodiav1alpha1.NodeMonitorGracePeriod != 60*time.Second {
-		t.Errorf("the defaults add up to %s against a grace period of %s, want 57.4s against 60s", got, lodiav1alpha1.NodeMonitorGracePeriod)
+		contract.ControllerManagerRenewDeadline + contract.ControllerManagerRetryPeriod + 10*time.Second
+	if got != 57400*time.Millisecond || got > contract.NodeMonitorGracePeriod || contract.NodeMonitorGracePeriod != 60*time.Second {
+		t.Errorf("the defaults add up to %s against a grace period of %s, want 57.4s against 60s", got, contract.NodeMonitorGracePeriod)
 	}
 }
 
@@ -155,8 +155,8 @@ func TestADurationWrittenAsANumberRefusesToStart(t *testing.T) {
 
 func TestTheHealthSettingsAreCheckedBeforeTheManagerStarts(t *testing.T) {
 	const (
-		grace       = lodiav1alpha1.NodeMonitorGracePeriod
-		controllers = lodiav1alpha1.ControllerManagerRenewDeadline + lodiav1alpha1.ControllerManagerRetryPeriod
+		grace       = contract.NodeMonitorGracePeriod
+		controllers = contract.ControllerManagerRenewDeadline + contract.ControllerManagerRetryPeriod
 		renewals    = 10400 * time.Millisecond
 		slack       = 10 * time.Second
 	)

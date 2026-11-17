@@ -7,8 +7,6 @@ metadata:
   namespace: team-a
 spec:
   version: v1.37.1
-  datastore:
-    dedicated: {}
   endpoint:
     loadBalancer: {}
   network:

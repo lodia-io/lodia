@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 )
 
 // allowUnhealthyPodEviction on an Etcd lets its PodDisruptionBudget evict an
@@ -48,14 +49,14 @@ const allowUnhealthyPodEviction = "resources.druid.gardener.cloud/allow-unhealth
 // layout and ignores the snapshots it misreads
 // (etcd-backup-restore@v0.45.1 pkg/snapstore/snapshot.go#L39-L59).
 func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, namespaceUID types.UID, generation int, current *druidv1alpha1.Etcd, claims []corev1.PersistentVolumeClaim, sts *appsv1.StatefulSet, members int32) (*druidv1alpha1.Etcd, string) {
-	secret := func(certificate lodiav1alpha1.EtcdCertificateRole) corev1.SecretReference {
-		return corev1.SecretReference{Name: lodiav1alpha1.EtcdCertificateSecretName(cp.Name, certificate, generation)}
+	secret := func(certificate contract.EtcdCertificateRole) corev1.SecretReference {
+		return corev1.SecretReference{Name: contract.EtcdCertificateSecretName(cp.Name, certificate, generation)}
 	}
 	// etcd-druid reads the CA under ca.crt for the members and under
 	// bundle.crt for its own calls to the sidecar unless the key is named
 	// (etcd-druid@v0.39.0 internal/component/statefulset/builder.go#L468,
 	// internal/controller/compaction/snapshot.go#L87).
-	ca := druidv1alpha1.SecretReference{SecretReference: secret(lodiav1alpha1.EtcdCARole), DataKey: new(lodiav1alpha1.CACertKey)}
+	ca := druidv1alpha1.SecretReference{SecretReference: secret(contract.EtcdCARole), DataKey: new(lodiav1alpha1.CACertKey)}
 	etcd := &druidv1alpha1.Etcd{
 		TypeMeta:   metav1.TypeMeta{APIVersion: druidv1alpha1.SchemeGroupVersion.String(), Kind: "Etcd"},
 		ObjectMeta: etcdMeta(cp),
@@ -63,11 +64,11 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 			Replicas: members,
 			Labels:   map[string]string{lodiav1alpha1.ControlPlaneLabel: cp.Name},
 			Etcd: druidv1alpha1.EtcdConfig{
-				ClientUrlTLS: &druidv1alpha1.TLSConfig{TLSCASecretRef: ca, ServerTLSSecretRef: secret(lodiav1alpha1.EtcdServerRole), ClientTLSSecretRef: secret(lodiav1alpha1.EtcdClientRole)},
-				PeerUrlTLS:   &druidv1alpha1.PeerTLSConfig{TLSConfig: druidv1alpha1.TLSConfig{TLSCASecretRef: ca, ServerTLSSecretRef: secret(lodiav1alpha1.EtcdPeerRole)}},
+				ClientUrlTLS: &druidv1alpha1.TLSConfig{TLSCASecretRef: ca, ServerTLSSecretRef: secret(contract.EtcdServerRole), ClientTLSSecretRef: secret(contract.EtcdClientRole)},
+				PeerUrlTLS:   &druidv1alpha1.PeerTLSConfig{TLSConfig: druidv1alpha1.TLSConfig{TLSCASecretRef: ca, ServerTLSSecretRef: secret(contract.EtcdPeerRole)}},
 			},
 			Backup: druidv1alpha1.BackupSpec{
-				TLS: &druidv1alpha1.TLSConfig{TLSCASecretRef: ca, ServerTLSSecretRef: secret(lodiav1alpha1.EtcdBackupRestoreRole), ClientTLSSecretRef: secret(lodiav1alpha1.EtcdClientRole)},
+				TLS: &druidv1alpha1.TLSConfig{TLSCASecretRef: ca, ServerTLSSecretRef: secret(contract.EtcdBackupRestoreRole), ClientTLSSecretRef: secret(contract.EtcdClientRole)},
 			},
 		},
 	}
@@ -196,7 +197,7 @@ func store(cp *lodiav1alpha1.ControlPlane, backup *lodiav1alpha1.EtcdBackup, nam
 
 func etcdMeta(cp *lodiav1alpha1.ControlPlane) metav1.ObjectMeta {
 	return metav1.ObjectMeta{
-		Name:            lodiav1alpha1.EtcdName(cp.Name),
+		Name:            contract.EtcdName(cp.Name),
 		Namespace:       cp.Namespace,
 		Labels:          map[string]string{lodiav1alpha1.ControlPlaneLabel: cp.Name},
 		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cp, lodiav1alpha1.GroupVersion.WithKind("ControlPlane"))},
@@ -225,17 +226,17 @@ func copied(cp *lodiav1alpha1.ControlPlane, current *druidv1alpha1.Etcd, generat
 	if formed(current) || current.Status.ReadyReplicas > 0 {
 		metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, lodiav1alpha1.EtcdFormedAnnotation, string(current.UID))
 	}
-	name := func(certificate lodiav1alpha1.EtcdCertificateRole) string {
-		return lodiav1alpha1.EtcdCertificateSecretName(cp.Name, certificate, generation)
+	name := func(certificate contract.EtcdCertificateRole) string {
+		return contract.EtcdCertificateSecretName(cp.Name, certificate, generation)
 	}
 	if tls := etcd.Spec.Etcd.ClientUrlTLS; tls != nil {
-		tls.TLSCASecretRef.Name, tls.ServerTLSSecretRef.Name, tls.ClientTLSSecretRef.Name = name(lodiav1alpha1.EtcdCARole), name(lodiav1alpha1.EtcdServerRole), name(lodiav1alpha1.EtcdClientRole)
+		tls.TLSCASecretRef.Name, tls.ServerTLSSecretRef.Name, tls.ClientTLSSecretRef.Name = name(contract.EtcdCARole), name(contract.EtcdServerRole), name(contract.EtcdClientRole)
 	}
 	if peer := etcd.Spec.Etcd.PeerUrlTLS; peer != nil {
-		peer.TLSCASecretRef.Name, peer.ServerTLSSecretRef.Name = name(lodiav1alpha1.EtcdCARole), name(lodiav1alpha1.EtcdPeerRole)
+		peer.TLSCASecretRef.Name, peer.ServerTLSSecretRef.Name = name(contract.EtcdCARole), name(contract.EtcdPeerRole)
 	}
 	if tls := etcd.Spec.Backup.TLS; tls != nil {
-		tls.TLSCASecretRef.Name, tls.ServerTLSSecretRef.Name, tls.ClientTLSSecretRef.Name = name(lodiav1alpha1.EtcdCARole), name(lodiav1alpha1.EtcdBackupRestoreRole), name(lodiav1alpha1.EtcdClientRole)
+		tls.TLSCASecretRef.Name, tls.ServerTLSSecretRef.Name, tls.ClientTLSSecretRef.Name = name(contract.EtcdCARole), name(contract.EtcdBackupRestoreRole), name(contract.EtcdClientRole)
 	}
 	return etcd
 }

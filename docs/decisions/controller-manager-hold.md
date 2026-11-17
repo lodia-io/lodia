@@ -28,7 +28,7 @@ The Health controller protects a tenant's workloads from an outage between the c
 - **A node counts** if it has a lease and is `Ready`, or if the controller manager marked it `Unknown` less than 5 minutes before the hold began.
   A node its kubelet reports `NotReady` does not count, and a cluster with one counted node is never held: its silence cannot be told from a dead machine.
 - **The hold.**
-  When 60% or more of the counted nodes are silent and the API server answers, Health writes the Lease `kube-system/kube-controller-manager` inside the tenant (`LeaderElectionNamespace` and `ControllerManagerLease` in `api/v1alpha1/names.go`) with holder `lodia` (`HoldHolderIdentity`) and a 60-second duration, and renews it every round.
+  When 60% or more of the counted nodes are silent and the API server answers, Health writes the Lease `kube-system/kube-controller-manager` inside the tenant (`LeaderElectionNamespace` and `ControllerManagerLease` in `internal/contract`) with holder `lodia` (`HoldHolderIdentity`) and a 60-second duration, and renews it every round.
   The controller manager's leader fails its next renewal, gives up within its renew deadline (10 seconds) and exits; restarted, it waits on a lease that keeps being renewed.
   Nothing marks the nodes, nothing taints them, nothing evicts their pods.
 - **The release.**
@@ -47,7 +47,7 @@ The Health controller protects a tenant's workloads from an outage between the c
   The thresholds and the period are [operator configuration](../README.md#installation).
 - **Lodia owns the timings the hold races.**
   The hold works only if the controller manager exits before its node lifecycle controller marks the first silent node.
-  Workloads renders that controller's grace period and the controller manager's leader election from constants in `api/v1alpha1/names.go`, and the schema refuses every one of them in `controllerManager.extraArgs`:
+  Workloads renders that controller's grace period and the controller manager's leader election from constants in `internal/contract`, and the schema refuses every one of them in `controllerManager.extraArgs`:
 
   | flag | value | constant |
   |---|---|---|
@@ -160,7 +160,7 @@ A write that is refused or fails changes the row's condition:
 
 ## Code
 
-- `internal/controller/workloads` — `render.go` renders the controller manager's timings and the scheduler's lease from the constants in `api/v1alpha1/names.go`; `workloads_test.go` holds the flags.
+- `internal/controller/workloads` — `render.go` renders the controller manager's timings and the scheduler's lease from the constants in `internal/contract`; `workloads_test.go` holds the flags.
 - `internal/operator` — `config.go` loads Health's settings from the operator's configuration file and refuses the ones that break the margin and a `health.maxNodes` that is not positive; `config_test.go` holds every refusal.
 - `internal/controller/health` — `health.go` reports `ControllersLeading` from the two leader Leases; `health_test.go` holds a Lease that stops renewing.
   `nodes.go` samples the node Leases and the Nodes on a queue of its own, pages both lists and stops them at the bounds, and reports `status.nodes` and `ControllerManagerHeld`; `nodes_test.go` holds the counting rules, and `lists_internal_test.go` the pages, the stops at `health.maxNodes`, at the pages bound and at a response over 8 MiB, with the bytes read, a page of more items than its limit, a Node of 65 conditions, a `continue` token of 4,097 bytes, a page that fails, and the heap the sampling keeps over names and versions at their bounds.

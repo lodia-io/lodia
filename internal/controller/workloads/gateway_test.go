@@ -189,36 +189,6 @@ func TestTheAdvertiseAddressAndTheListenersPortArePublished(t *testing.T) {
 		"--service-account-issuer=https://api.dev."+zone+":8443", "--service-account-jwks-uri=https://api.dev."+zone+":8443/openid/v1/jwks")
 }
 
-func TestAFieldNotBuiltYetHidesNoneOfTheGatewayPath(t *testing.T) {
-	ns := namespace(t)
-	createGateway(t, ns)
-	cp := createNamed(t, ns, "dev", onGateway(ns, "dev"), func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.ServiceAccount = &lodiav1alpha1.ServiceAccount{PublicDiscovery: true}
-	})
-	accept(t, cp)
-	testenv.Eventually(t, func() error {
-		if err := expectRoutes(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonAccepted); err != nil {
-			return err
-		}
-		return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported)
-	})
-	if c := condition(t, cp); c.Message != "not built yet: serviceAccount.publicDiscovery" {
-		t.Errorf("APIServerReady says %q", c.Message)
-	}
-	expectEndpoint(t, cp, lodiav1alpha1.EndpointStatus{
-		APIServer:    lodiav1alpha1.HostPort{Host: "api.dev." + zone, Port: 443},
-		Konnectivity: lodiav1alpha1.HostPort{Host: "konnectivity.dev." + zone, Port: 443},
-		InCluster:    lodiav1alpha1.HostPort{Host: "240.0.0.1", Port: 6443},
-		Tunnel:       &lodiav1alpha1.HostPort{Host: "tunnel.dev." + zone, Port: 443},
-	})
-	if svc := getService(t, cp); svc.Spec.Type != corev1.ServiceTypeClusterIP || !metav1.IsControlledBy(svc, cp) {
-		t.Errorf("the Service is %s, controlled by %v", svc.Spec.Type, metav1.GetControllerOf(svc))
-	}
-	if n := deployments(t, cp); n != 0 {
-		t.Errorf("%d Deployments for a ControlPlane with a field not built yet", n)
-	}
-}
-
 func TestEveryListenerCheckIsGatewayUnsupported(t *testing.T) {
 	terminate := passthrough("tls", "*."+zone, 443)
 	terminate.TLS = &gatewayv1.ListenerTLSConfig{Mode: new(gatewayv1.TLSModeTerminate), CertificateRefs: []gatewayv1.SecretObjectReference{{Name: "serving"}}}
@@ -923,10 +893,9 @@ func TestUseDefaultGatewaysOnTheExperimentalCRDIsLeftAlone(t *testing.T) {
 	cp := &lodiav1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: ns.Name},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
-			Version:   version,
-			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{}},
-			Endpoint:  onGateway(ns.Name, "dev"),
-			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
+			Version:  version,
+			Endpoint: onGateway(ns.Name, "dev"),
+			Network:  lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
 		},
 	}
 	for _, obj := range []client.Object{ns, gw, cp} {
@@ -1042,7 +1011,7 @@ func TestASameHostnameRestoreWaitsForItsSource(t *testing.T) {
 	prod := sourceOnGateway(t, ns)
 	leftover := handmade(t, ns, "prod-kube-apiserver", "api.prod."+zone, ns, "tls", controllerOf(prod))
 	cp := createNamed(t, ns, "restored", onGateway(ns, "prod"), func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "prod-backup"}, Release: lodiav1alpha1.RestoreHeld}
+		spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "prod-backup"}, Release: lodiav1alpha1.RestorePending}
 	})
 	inputsReady(t, cp)
 	setRestore(t, cp, lodiav1alpha1.UIDReference{Name: prod.Name, UID: prod.UID})
@@ -1054,7 +1023,7 @@ func TestASameHostnameRestoreWaitsForItsSource(t *testing.T) {
 			return err
 		}
 		return expectAt(cp, 1, metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
-			heldUntil+"spec.restoreFrom.release is Held; ControlPlane prod (UID "+string(prod.UID)+"), the Backup's source, exists; AddonsApplied is not True for generation 1")
+			heldUntil+"spec.restoreFrom.release is Pending; ControlPlane prod (UID "+string(prod.UID)+"), the Backup's source, exists; AddonsApplied is not True for generation 1")
 	})
 	if c := routesReady(t, cp); !strings.Contains(c.Message, "api.prod."+zone+" by ControlPlane "+ns+"/prod (UID "+string(prod.UID)+")") {
 		t.Errorf("RoutesReady says %q", c.Message)
@@ -1363,10 +1332,9 @@ func createNamed(t *testing.T, ns, name string, endpoint lodiav1alpha1.Endpoint,
 	cp := &lodiav1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
-			Version:   version,
-			Datastore: lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{}},
-			Endpoint:  endpoint,
-			Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
+			Version:  version,
+			Endpoint: endpoint,
+			Network:  lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
 		},
 	}
 	for _, c := range change {

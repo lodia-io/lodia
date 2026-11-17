@@ -33,6 +33,5 @@ spec:
     deltaSnapshotPeriod: 5m
     retention:
       fullSnapshots: 30                   # the newest 30 full snapshots, each Backup's included; deltas only after the newest
-      afterDelete: 720h                   # how long snapshots outlive their ControlPlane; not deleted by any release yet
   placement:
     nodeSelector: {node-role.example.com/control-planes: "true"}

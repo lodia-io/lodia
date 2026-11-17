@@ -153,7 +153,7 @@
     {
       "type": "stat",
       "title": "Cluster",
-      "description": "status.kubernetes.version, spec.layout, the datastore and the endpoint mode.",
+      "description": "status.kubernetes.version and the endpoint mode.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -199,8 +199,8 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (kubernetes_version, layout, datastore, endpoint_mode) (lodia_controlplane_info{namespace=\"$namespace\",controlplane=\"$controlplane\"})",
-          "legendFormat": "{{kubernetes_version}} / {{layout}} / {{datastore}} / {{endpoint_mode}}",
+          "expr": "max by (kubernetes_version, endpoint_mode) (lodia_controlplane_info{namespace=\"$namespace\",controlplane=\"$controlplane\"})",
+          "legendFormat": "{{kubernetes_version}} / {{endpoint_mode}}",
           "refId": "A",
           "instant": true,
           "range": false

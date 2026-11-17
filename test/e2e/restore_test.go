@@ -59,6 +59,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 )
 
 const (
@@ -275,7 +276,7 @@ func TestRestoreGate(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				if held := "kube-controller-manager is held at 0 replicas until the restore is released: spec.restoreFrom.release is Held"; !strings.Contains(c.Message, held) {
+				if held := "kube-controller-manager is held at 0 replicas until the restore is released: spec.restoreFrom.release is Pending"; !strings.Contains(c.Message, held) {
 					return fmt.Errorf("APIServerReady's message lacks %q: %s", held, c.Message)
 				}
 				return nil
@@ -578,7 +579,7 @@ func TestRestoreGate(t *testing.T) {
 					return err
 				}
 				etcd := &druidv1alpha1.Etcd{}
-				if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: lodiav1alpha1.EtcdName(key.Name)}, etcd); err != nil {
+				if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: contract.EtcdName(key.Name)}, etcd); err != nil {
 					return err
 				}
 				if !metav1.IsControlledBy(etcd, cp) {
@@ -687,7 +688,7 @@ func restoreSpec(t *testing.T, from *lodiav1alpha1.RestoreFrom) lodiav1alpha1.Co
 	t.Helper()
 	return lodiav1alpha1.ControlPlaneSpec{
 		Version:     kindNodeVersion(t),
-		Datastore:   lodiav1alpha1.DatastoreChoice{Dedicated: &lodiav1alpha1.DedicatedDatastore{ClassName: restoreClass}},
+		Datastore:   lodiav1alpha1.DatastoreSettings{ClassName: restoreClass},
 		Endpoint:    lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}},
 		Network:     lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.32.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{gatePodCIDR}},
 		Addons:      &lodiav1alpha1.Addons{KubeProxy: &lodiav1alpha1.KubeProxy{Conntrack: &lodiav1alpha1.KubeProxyConntrack{MaxPerCore: new(int32(0))}}},
@@ -795,7 +796,7 @@ func encryptionProviders(ctx context.Context, t *testing.T, k8s client.Client, n
 func etcdValue(ctx context.Context, t *testing.T, cfg *envconf.Config, k8s client.Client, key client.ObjectKey, etcdKey string) []byte {
 	t.Helper()
 	etcd := &druidv1alpha1.Etcd{}
-	if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: lodiav1alpha1.EtcdName(key.Name)}, etcd); err != nil {
+	if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: contract.EtcdName(key.Name)}, etcd); err != nil {
 		t.Fatal(err)
 	}
 	refs := etcd.Spec.Etcd.ClientUrlTLS
