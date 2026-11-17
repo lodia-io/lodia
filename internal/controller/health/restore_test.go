@@ -261,6 +261,39 @@ func TestARestoreLeadsOnceReleasedWithItsSourceGone(t *testing.T) {
 	}
 }
 
+func TestARestoreWhoseServiceHangsListsNothingAndStillNamesItsSource(t *testing.T) {
+	cp := restoredControlPlane(t, lodiav1alpha1.RestorePending)
+	pause(t, cp)
+	prod := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: cp.Namespace}, Spec: *cp.Spec.DeepCopy()}
+	prod.Spec.RestoreFrom, prod.Spec.Paused = nil, true
+	if err := k8s.Create(t.Context(), prod); err != nil {
+		t.Fatal(err)
+	}
+	e := serve(t)
+	writeBundle(t, cp, e)
+	publish(t, cp, e)
+	setRestore(t, cp, prod)
+	setAccess(t, cp)
+	writeKubeconfig(t, cp, tenantKubeconfig)
+	const timeout = 500 * time.Millisecond
+	r := &health.Reconciler{Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: blackHole, Period: 10 * time.Second, Timeout: timeout, Clock: clock.RealClock{}}
+	for _, release := range []lodiav1alpha1.RestoreRelease{lodiav1alpha1.RestorePending, lodiav1alpha1.RestoreReleased} {
+		if release == lodiav1alpha1.RestoreReleased {
+			releaseRestore(t, cp)
+		}
+		began := time.Now()
+		r.Client = unpaused(t, cp)
+		reconcile(t, r, cp)
+		if took := time.Since(began); took > timeout+300*time.Millisecond {
+			t.Errorf("a pass over a %s restore whose Service hangs took %s, want its one Timeout of %s and at most 300ms more", release, took.Round(time.Millisecond), timeout)
+		}
+	}
+	if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonSourceExists,
+		"ControlPlane prod (UID "+string(prod.UID)+"), the Backup's source, still exists in the namespace; delete it to release this one"); err != nil {
+		t.Error(err)
+	}
+}
+
 func TestAReleasedRestoreNotCompleteReadsTheLeases(t *testing.T) {
 	cp := restoredControlPlane(t, lodiav1alpha1.RestoreReleased)
 	setAccess(t, cp)

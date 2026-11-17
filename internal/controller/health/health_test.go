@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -406,6 +407,89 @@ func TestAPassOverATenantThatHangsEverywhereHoldsItsWorkerForOneTimeout(t *testi
 		if took := time.Since(start); took < timeout || took > timeout+300*time.Millisecond {
 			t.Errorf("pass %d over a tenant that hangs on every path took %s, want its one Timeout of %s and at most 300ms more", pass+1, took.Round(time.Millisecond), timeout)
 		}
+	}
+}
+
+func TestAPassWhoseServiceHangsStillWaitsForAccessAndForgetsTheLeases(t *testing.T) {
+	cp := controlPlane(t)
+	e := serve(t)
+	writeBundle(t, cp, e)
+	publish(t, cp, e)
+	setAccess(t, cp)
+	testenv.Eventually(t, func() error {
+		return expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, "waiting for PKI to write dev-lodia-kubeconfig")
+	})
+	writeKubeconfig(t, cp, tenantKubeconfig)
+	start := time.Now().Truncate(time.Second)
+	renew(t, contract.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", start)
+	renew(t, contract.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
+	var hanging atomic.Bool
+	const timeout = 500 * time.Millisecond
+	now := clocktesting.NewFakePassiveClock(start)
+	r := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, Period: 10 * time.Second, Timeout: timeout, Clock: now,
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			if hanging.Load() {
+				return blackHole(ctx, network, address)
+			}
+			return dialService(ctx, network, address)
+		}}
+	reconcile(t, r, cp)
+	const leading = "the leader Leases of kube-controller-manager and kube-scheduler are renewed"
+	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, leading); err != nil {
+		t.Fatal(err)
+	}
+	pause(t, cp)
+
+	hanging.Store(true)
+	for _, c := range []struct {
+		change func()
+		want   string
+	}{
+		{func() { setAccessAt(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding, get(t, cp).Generation) }, "AccessReady is not True"},
+		{func() {
+			setAccess(t, cp)
+			secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: cp.Namespace, Name: lodiav1alpha1.LodiaKubeconfigSecret.Name(cp.Name)}}
+			if err := k8s.Delete(t.Context(), secret); err != nil {
+				t.Fatal(err)
+			}
+		}, "waiting for PKI to write dev-lodia-kubeconfig"},
+	} {
+		c.change()
+		began := time.Now()
+		r.Client = unpaused(t, cp)
+		reconcile(t, r, cp)
+		if took := time.Since(began); took > timeout+300*time.Millisecond {
+			t.Errorf("a pass whose Service hangs took %s, want its one Timeout of %s and at most 300ms more", took.Round(time.Millisecond), timeout)
+		}
+		if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, c.want); err != nil {
+			t.Errorf("a pass whose Service hangs: %v", err)
+		}
+	}
+
+	writeKubeconfig(t, cp, tenantKubeconfig)
+	r.Client = unpaused(t, cp)
+	reconcile(t, r, cp)
+	injected := errors.New("injected: the API server did not answer")
+	r.Client = unpaused(t, cp)
+	r.Reader = interceptor.NewClient(k8s, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
+				return injected
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !errors.Is(err, injected) {
+		t.Errorf("a pass that keeps ControllersLeading while the Service hangs and cannot read it from the server returned %v, want the read's error", err)
+	}
+	r.Reader = k8s
+
+	hanging.Store(false)
+	now.SetTime(start.Add(26 * time.Second))
+	r.Client = unpaused(t, cp)
+	reconcile(t, r, cp)
+	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, leading); err != nil {
+		t.Errorf("the Leases seen again after a wait while the Service hung: %v", err)
 	}
 }
 
@@ -996,6 +1080,30 @@ func renew(t *testing.T, name, holder string, at time.Time) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+func pause(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+	t.Helper()
+	paused := get(t, cp)
+	paused.Spec.Paused = true
+	if err := k8s.Update(t.Context(), paused); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func unpaused(t *testing.T, cp *lodiav1alpha1.ControlPlane) client.WithWatch {
+	t.Helper()
+	held := get(t, cp)
+	held.Spec.Paused = false
+	return interceptor.NewClient(k8s, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if plane, ok := obj.(*lodiav1alpha1.ControlPlane); ok && key == client.ObjectKeyFromObject(cp) {
+				held.DeepCopyInto(plane)
+				return nil
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
 }
 
 func expectLeading(t *testing.T, cp *lodiav1alpha1.ControlPlane, status metav1.ConditionStatus, reason, message string) error {

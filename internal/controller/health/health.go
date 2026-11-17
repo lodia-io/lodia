@@ -188,11 +188,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if failed == "" {
 		r.count(req.NamespacedName, false)
 	}
-	var leading *metav1.Condition
-	if failed != lodiav1alpha1.ReasonInternalProbeFailed {
-		if leading, err = r.leading(ctx, cp); err != nil {
-			return ctrl.Result{}, err
-		}
+	leading, err := r.leading(ctx, cp, failed == lodiav1alpha1.ReasonInternalProbeFailed)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
 	if err := r.apply(ctx, cp, ptr.Deref(reachable, previous(cp, lodiav1alpha1.ConditionReachable)), ptr.Deref(leading, previous(cp, lodiav1alpha1.ConditionControllersLeading))); err != nil {
 		return ctrl.Result{}, err
@@ -207,9 +205,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 // True after fewer than r.FailuresBeforeFalse failed probes in a row. It also
 // returns the reason of a failed probe, empty when none failed: a success
 // clears the count at once, and a failure counts only once the pass has
-// applied its conditions. After a failed probe of the in-namespace Service,
-// the pass reads nothing more in the tenant, which is the address its reads
-// go to, so that a tenant that hangs holds a worker for one Timeout.
+// applied its conditions.
 func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*metav1.Condition, string, error) {
 	key := client.ObjectKeyFromObject(cp)
 	url := endpoint(cp)
@@ -353,8 +349,11 @@ func answered(code int) string {
 }
 
 // leading returns nil to keep the condition as the API server holds it when a
-// read of a Lease fails (docs/README.md, Health).
-func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*metav1.Condition, error) {
+// read of a Lease fails (docs/README.md, Health). When the in-namespace
+// Service, the address of every read in the tenant, has just failed its probe,
+// it decides only what reads nothing in the tenant and keeps the condition
+// otherwise, so that a tenant that hangs holds a worker for one Timeout.
+func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane, unanswered bool) (*metav1.Condition, error) {
 	key := client.ObjectKeyFromObject(cp)
 	if !access(cp) {
 		r.forget(key)
@@ -368,15 +367,8 @@ func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 		r.forget(key)
 		return newCondition(cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, waiting), nil
 	}
-	tenant, err := r.tenant(key, kubeconfig)
-	if err != nil {
-		return nil, err
-	}
-	if restoring := cp.Spec.RestoreFrom; restoring != nil {
-		if restoring.Release != lodiav1alpha1.RestoreReleased {
-			return newCondition(cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionFalse, lodiav1alpha1.ReasonAwaitingRelease,
-				"spec.restoreFrom.release is Pending; once released, the controller manager acts on: "+r.actedOn(ctx, tenant)), nil
-		}
+	restoring := cp.Spec.RestoreFrom
+	if restoring != nil && restoring.Release == lodiav1alpha1.RestoreReleased {
 		source, err := restore.Source(ctx, r.Client, cp)
 		if err != nil {
 			return nil, err
@@ -385,6 +377,17 @@ func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 			return newCondition(cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionFalse, lodiav1alpha1.ReasonSourceExists,
 				fmt.Sprintf("ControlPlane %s (UID %s), the Backup's source, still exists in the namespace; delete it to release this one", source.Name, source.UID)), nil
 		}
+	}
+	if unanswered {
+		return nil, live.Conditions(ctx, r.Reader, cp, lodiav1alpha1.ConditionControllersLeading)
+	}
+	tenant, err := r.tenant(key, kubeconfig)
+	if err != nil {
+		return nil, err
+	}
+	if restoring != nil && restoring.Release != lodiav1alpha1.RestoreReleased {
+		return newCondition(cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionFalse, lodiav1alpha1.ReasonAwaitingRelease,
+			"spec.restoreFrom.release is Pending; once released, the controller manager acts on: "+r.actedOn(ctx, tenant)), nil
 	}
 	reading, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
