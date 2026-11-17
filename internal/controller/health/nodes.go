@@ -9,6 +9,7 @@ import (
 	"errors"
 	"hash/fnv"
 	"io"
+	"net"
 	"strconv"
 	"sync"
 	"time"
@@ -103,6 +104,9 @@ type NodesReconciler struct {
 	// SampleLag observes how much later than its due time each pass starts;
 	// nil observes nothing.
 	SampleLag prometheus.Histogram
+	// DialContext, when set, opens the tenant clients' connections, as
+	// Reconciler's does. It is nil in production.
+	DialContext func(ctx context.Context, network, address string) (net.Conn, error)
 
 	mu      sync.Mutex
 	samples map[types.NamespacedName]*sampling
@@ -630,7 +634,7 @@ func (r *NodesReconciler) tenant(key types.NamespacedName, kubeconfig []byte) (*
 		r.clients = map[types.NamespacedName]*tenantClients{}
 	}
 	if r.clients[key] == nil {
-		r.clients[key] = &tenantClients{connections: nodesReads, timeout: r.Timeout}
+		r.clients[key] = &tenantClients{connections: nodesReads, timeout: r.Timeout, dial: r.DialContext}
 	}
 	return r.clients[key].of(kubeconfig)
 }

@@ -9,6 +9,7 @@ package operator
 import (
 	"context"
 	"fmt"
+	"net"
 	"time"
 
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
@@ -122,7 +123,9 @@ func Cache(gatewayAPI bool) (cache.Options, error) {
 // lodia-tunnel's, which runs on each node of a gateway tenant,
 // EtcdDruidVersion, EtcdDruidNamespace and EtcdDruidDeployment etcd-druid's,
 // OperatorNamespace the operator's, which each etcd's NetworkPolicy admits,
-// and GatewayAPI what GatewayAPI found.
+// and GatewayAPI what GatewayAPI found. Dial, when set, opens every
+// connection PKI, Tenant and Health make to a tenant, whose names nothing
+// outside a cluster resolves; it is nil in production.
 type Inputs struct {
 	Config              Config
 	Version             string
@@ -133,6 +136,7 @@ type Inputs struct {
 	EtcdDruidDeployment string
 	OperatorNamespace   string
 	GatewayAPI          bool
+	Dial                func(ctx context.Context, network, address string) (net.Conn, error)
 }
 
 // Sources are the controllers Setup registers whose memory Lodia's metrics
@@ -161,6 +165,7 @@ func Setup(mgr ctrl.Manager, in Inputs) (*Sources, error) {
 		CAExpiryNotice:      365 * 24 * time.Hour,
 		SignerPropagation:   5 * time.Minute,
 		Clock:               clock.RealClock{},
+		Dial:                in.Dial,
 	}).SetupWithManager(mgr, workers); err != nil {
 		return nil, fmt.Errorf("set up the pki controller: %w", err)
 	}
@@ -193,10 +198,11 @@ func Setup(mgr ctrl.Manager, in Inputs) (*Sources, error) {
 	if err := newLifecycle(mgr.GetClient(), mgr.GetAPIReader(), in.Config, revision).SetupWithManager(mgr, workers); err != nil {
 		return nil, fmt.Errorf("set up the lifecycle controller: %w", err)
 	}
-	if err := (&tenant.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), ApplyPeriod: 10 * time.Minute, TunnelImage: in.TunnelImage, Revision: revision}).SetupWithManager(mgr, workers); err != nil {
+	if err := (&tenant.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), ApplyPeriod: 10 * time.Minute, TunnelImage: in.TunnelImage, Revision: revision, Dial: in.Dial}).SetupWithManager(mgr, workers); err != nil {
 		return nil, fmt.Errorf("set up the tenant controller: %w", err)
 	}
 	sources := &Sources{Health: newHealth(mgr.GetClient(), mgr.GetAPIReader(), in.Config.Health), Nodes: newNodes(mgr.GetClient(), mgr.GetAPIReader(), in.Config.Health), Etcd: sampler}
+	sources.Health.DialContext, sources.Nodes.DialContext = in.Dial, in.Dial
 	if err := sources.Health.SetupWithManager(mgr, workers); err != nil {
 		return nil, fmt.Errorf("set up the health controller: %w", err)
 	}

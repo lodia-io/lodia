@@ -87,9 +87,9 @@ type Reconciler struct {
 	FailuresBeforeFalse int
 	// Clock tells when a leader Lease was seen to change.
 	Clock clock.PassiveClock
-	// DialContext, when set, dials the probes of the public endpoint and of
-	// the in-namespace Service, whose name nothing outside a cluster resolves.
-	// It is nil in production.
+	// DialContext, when set, opens every connection to the tenant: the probes,
+	// the tunnel's and konnectivity's included, and the tenant clients', whose
+	// names nothing outside a cluster resolves. It is nil in production.
 	DialContext func(ctx context.Context, network, address string) (net.Conn, error)
 	// ProbeFailures counts every failed probe by its path, the label path;
 	// nil counts nothing.
@@ -751,7 +751,7 @@ func (r *Reconciler) tenant(key types.NamespacedName, kubeconfig []byte) (*tenan
 		r.clients = map[types.NamespacedName]*tenantClients{}
 	}
 	if r.clients[key] == nil {
-		r.clients[key] = &tenantClients{connections: restoreReads, timeout: r.Timeout}
+		r.clients[key] = &tenantClients{connections: restoreReads, timeout: r.Timeout, dial: r.DialContext}
 	}
 	return r.clients[key].of(kubeconfig)
 }
@@ -851,14 +851,11 @@ func (r *Reconciler) probe(ctx context.Context, prober *http.Client, url string)
 // so the dial and both handshakes need Timeout's bound here: without them a
 // stalled Gateway would keep a goroutine for every probe.
 func (r *Reconciler) throughTunnel(p *prober, tunnel lodiav1alpha1.HostPort) *http.Client {
-	dialer := &tls.Dialer{
-		NetDialer: &net.Dialer{Timeout: r.Timeout},
-		Config:    &tls.Config{ServerName: tunnel.Host, RootCAs: p.roots, Certificates: []tls.Certificate{*p.client}, MinVersion: tls.VersionTLS13},
-	}
+	outer := &tls.Config{ServerName: tunnel.Host, RootCAs: p.roots, Certificates: []tls.Certificate{*p.client}, MinVersion: tls.VersionTLS13}
 	return &http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return dialer.DialContext(ctx, "tcp", hostPort(tunnel))
+				return r.dialTLS(ctx, hostPort(tunnel), outer)
 			},
 			TLSClientConfig:     &tls.Config{RootCAs: p.roots, MinVersion: tls.VersionTLS12},
 			TLSHandshakeTimeout: r.Timeout,
@@ -871,12 +868,28 @@ func (r *Reconciler) throughTunnel(p *prober, tunnel lodiav1alpha1.HostPort) *ht
 // handshake completes a TLS handshake with the konnectivity host, verified
 // against the bundle.
 func (r *Reconciler) handshake(ctx context.Context, p *prober, target lodiav1alpha1.HostPort) error {
-	dialer := &tls.Dialer{NetDialer: &net.Dialer{Timeout: r.Timeout}, Config: &tls.Config{ServerName: target.Host, RootCAs: p.roots, MinVersion: tls.VersionTLS12}}
-	conn, err := dialer.DialContext(ctx, "tcp", hostPort(target))
+	conn, err := r.dialTLS(ctx, hostPort(target), &tls.Config{ServerName: target.Host, RootCAs: p.roots, MinVersion: tls.VersionTLS12})
 	if err != nil {
 		return err
 	}
 	return conn.Close()
+}
+
+// dialTLS dials address and completes a TLS handshake with config, both
+// within Timeout, as tls.Dialer does with a net.Dialer of that timeout.
+func (r *Reconciler) dialTLS(ctx context.Context, address string, config *tls.Config) (*tls.Conn, error) {
+	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
+	defer cancel()
+	raw, err := r.dial(ctx, "tcp", address)
+	if err != nil {
+		return nil, err
+	}
+	conn := tls.Client(raw, config)
+	if err := conn.HandshakeContext(ctx); err != nil {
+		_ = raw.Close()
+		return nil, err
+	}
+	return conn, nil
 }
 
 // count counts a failed probe of a ControlPlane, or clears its count. Every
