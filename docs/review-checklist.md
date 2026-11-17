@@ -41,5 +41,6 @@ excused.
     One tenant's failure never blocks another's reconcile.
 11. **Upgrading Lodia is safe.**
     A change to what Lodia renders reaches tenants through their maintenance rules, never all at once ([upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md)).
-    Until the maintainers freeze `v1alpha1` ([one-controlplane-per-cluster](decisions/one-controlplane-per-cluster.md#consequences)), a change to it may be incompatible, and keeps no alias, conversion or migration for what an earlier release stored, since no user has stored anything (check 3).
+    Until the first real user's tenant is created, a change to `v1alpha1` may be incompatible and keeps no alias, conversion or migration, since no user has stored anything (check 3).
+    From that tenant's creation until the maintainers freeze `v1alpha1` ([one-controlplane-per-cluster](decisions/one-controlplane-per-cluster.md#consequences)), a change may still be incompatible, and it comes with what carries that tenant's stored objects to the new shape.
     From the freeze on, objects stored by the previous release reconcile without a manual step, and `v1alpha1` changes only by addition.
