@@ -4,8 +4,11 @@
 package health
 
 import (
+	"net/http"
 	"path"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -62,6 +65,39 @@ func TestEveryKindOfAHeldRestoreSaysOrMoreWhenItsPageHasANextAndOnlyThen(t *test
 					t.Errorf("the message says %q, want %q", got, want)
 				}
 			})
+		}
+	}
+}
+
+func TestHeldRestoresListAtMostHeldRestoresAtOnceWhateverTheWorkers(t *testing.T) {
+	var inFlight, most atomic.Int32
+	hang := http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
+		n := inFlight.Add(1)
+		defer inFlight.Add(-1)
+		for m := most.Load(); n > m && !most.CompareAndSwap(m, n); m = most.Load() {
+		}
+		<-req.Context().Done()
+	})
+	const timeout = 500 * time.Millisecond
+	r := &Reconciler{Timeout: timeout}
+	var passes sync.WaitGroup
+	took := make([]time.Duration, 2*heldRestores)
+	said := make([]string, len(took))
+	for i := range took {
+		tenant := restoreTenantOf(t, hang)
+		passes.Go(func() {
+			start := time.Now()
+			said[i] = r.actedOn(t.Context(), tenant)
+			took[i] = time.Since(start)
+		})
+	}
+	passes.Wait()
+	if got, want := most.Load(), int32(heldRestores*restoreReads); got != want {
+		t.Errorf("%d passes over held restores had %d lists in flight at once, want %d, those of %d passes", len(took), got, want, heldRestores)
+	}
+	for i := range took {
+		if took[i] > timeout+300*time.Millisecond || strings.Count(said[i], "could not be listed") != 6 {
+			t.Errorf("a pass took %s and said %q, want every kind not listed within its Timeout", took[i], said[i])
 		}
 	}
 }

@@ -43,6 +43,37 @@ health:
 fleet:
   maxConcurrentRollouts: 5
 
+resources:
+  requests:
+    cpu: 300m
+    memory: 512Mi
+  limits:
+    memory: 10Gi
+
+goMemLimit: 9GiB
+
+controllers:
+  pki:
+    workers: 10
+  kubeconfigrequest:
+    workers: 10
+  datastore:
+    workers: 10
+  backup:
+    workers: 10
+  datastore-sample:
+    workers: 10
+  lifecycle:
+    workers: 10
+  tenant:
+    workers: 10
+  health:
+    workers: 100
+  health-nodes:
+    workers: 100
+  workloads:
+    workers: 10
+
 metrics:
   service:
     enabled: false

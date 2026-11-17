@@ -36,6 +36,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/apiserver/pkg/storage/etcd3/testserver"
+	"k8s.io/client-go/features"
+	clientfeaturestesting "k8s.io/client-go/features/testing"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
@@ -52,7 +54,11 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/contract"
+	"go.lodia.io/lodia/internal/controller/datastore"
 	"go.lodia.io/lodia/internal/controller/health"
+	"go.lodia.io/lodia/internal/controller/lifecycle"
+	"go.lodia.io/lodia/internal/controller/tenant"
+	"go.lodia.io/lodia/internal/controller/workloads"
 	"go.lodia.io/lodia/internal/operator"
 	"go.lodia.io/lodia/internal/testenv"
 )
@@ -227,6 +233,81 @@ func TestTheMetricsServeTheSamplesOfTheSamplerSetupReturns(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestEachControllerRunsTheWorkersOfItsKey(t *testing.T) {
+	cfg := start(t)
+	options, err := operator.Cache(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+		Scheme:     operator.Scheme(),
+		Metrics:    metricsserver.Options{BindAddress: "0"},
+		Cache:      options,
+		Controller: config.Controller{SkipNameValidation: new(true)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := testInputs
+	in.Config.Controllers = operator.ControllersConfig{
+		PKI: operator.ControllerConfig{Workers: 21}, KubeconfigRequest: operator.ControllerConfig{Workers: 22}, Datastore: operator.ControllerConfig{Workers: 23},
+		Backup: operator.ControllerConfig{Workers: 24}, DatastoreSample: operator.ControllerConfig{Workers: 25}, Lifecycle: operator.ControllerConfig{Workers: 26},
+		Tenant: operator.ControllerConfig{Workers: 27}, Health: operator.ControllerConfig{Workers: 28}, HealthNodes: operator.ControllerConfig{Workers: 29},
+		Workloads: operator.ControllerConfig{Workers: 30},
+	}
+	if _, err := operator.Setup(mgr, in); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan error, 1)
+	go func() { stopped <- mgr.Start(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-stopped; err != nil {
+			t.Errorf("manager: %v", err)
+		}
+	})
+	want := map[string]float64{
+		"pki": 21, "kubeconfigrequest": 22, datastore.Name: 23, datastore.BackupName: 24, datastore.SampleName: 25,
+		lifecycle.Name: 26, tenant.Name: 27, health.Name: 28, health.NodesName: 29, workloads.Name: 30,
+	}
+	testenv.Eventually(t, func() error {
+		families, err := ctrlmetrics.Registry.Gather()
+		if err != nil {
+			return err
+		}
+		got := map[string]float64{}
+		for _, family := range families {
+			if family.GetName() == "controller_runtime_max_concurrent_reconciles" {
+				for _, m := range family.GetMetric() {
+					got[m.GetLabel()[0].GetValue()] = m.GetGauge().GetValue()
+				}
+			}
+		}
+		var wrong []string
+		for name, n := range want {
+			if got[name] != n {
+				wrong = append(wrong, fmt.Sprintf("%s runs %v workers, want %v", name, got[name], n))
+			}
+		}
+		if len(wrong) > 0 {
+			return errors.New(strings.Join(wrong, "; "))
+		}
+		return nil
+	})
+}
+
+func TestSetupRefusesWithAnInformerGateOffBeforeItRegistersAnything(t *testing.T) {
+	for _, gate := range []features.Feature{features.InOrderInformers, features.AtomicFIFO} {
+		t.Run(string(gate), func(t *testing.T) {
+			clientfeaturestesting.SetFeatureDuringTest(t, gate, false)
+			if _, err := operator.Setup(nil, testInputs); err == nil || !strings.Contains(err.Error(), string(gate)) {
+				t.Errorf("Setup with client-go's %s off returned %v, want a refusal naming the gate", gate, err)
+			}
+		})
+	}
 }
 
 type roundTripper func(*http.Request) (*http.Response, error)

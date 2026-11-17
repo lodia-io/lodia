@@ -170,7 +170,7 @@ func TestAGatewayEventPassesWhatTheListenerCheckReads(t *testing.T) {
 	}
 }
 
-func TestAWriteWaitsForTheGatewaysSemaphoreUntilThePasssDeadline(t *testing.T) {
+func TestAWriteWaitsForTheGatewaysFenceUntilThePasssDeadline(t *testing.T) {
 	cp := ranked("t", "dev", 0, "shared", "api.x", "konnectivity.x", "tunnel.x")
 	gw := &gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Namespace: "gateways", Name: "shared"}}
 	var lists atomic.Int32
@@ -182,20 +182,50 @@ func TestAWriteWaitsForTheGatewaysSemaphoreUntilThePasssDeadline(t *testing.T) {
 		},
 	})
 	r := &Reconciler{Reader: reader}
-	held := r.semaphore(client.ObjectKeyFromObject(gw))
-	if err := held.Acquire(t.Context(), 1); err != nil {
+	held := r.fence(client.ObjectKeyFromObject(gw))
+	if err := held.Acquire(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
 	if _, err := r.write(ctx, cp, gw, 443, routes(cp)[0]); !errors.Is(err, context.DeadlineExceeded) || lists.Load() != 0 {
-		t.Errorf("a write while another holds the Gateway's semaphore returned %v after %d reads, want the deadline before any", err, lists.Load())
+		t.Errorf("a write while another holds the Gateway's fence returned %v after %d reads, want the deadline before any", err, lists.Load())
 	}
-	held.Release(1)
+	held.Release()
 	if _, err := r.write(t.Context(), cp, gw, 443, routes(cp)[0]); !errors.Is(err, listed) || lists.Load() != 1 {
-		t.Errorf("a write once the semaphore is free returned %v after %d reads, want the read's", err, lists.Load())
+		t.Errorf("a write once the fence is free returned %v after %d reads, want the read's", err, lists.Load())
 	}
-	if other := r.semaphore(types.NamespacedName{Namespace: "gateways", Name: "private"}); other == held {
-		t.Error("two Gateways share a semaphore")
+	if other := r.fence(types.NamespacedName{Namespace: "gateways", Name: "private"}); other == held {
+		t.Error("two Gateways share a fence")
+	}
+}
+
+func TestTheCacheGivesAWriteTheRoutesThatMayHoldItsHostnameAndNoOther(t *testing.T) {
+	route := func(name string, hostnames ...gatewayv1.Hostname) *gatewayv1.TLSRoute {
+		return &gatewayv1.TLSRoute{ObjectMeta: metav1.ObjectMeta{Namespace: "t", Name: name}, Spec: gatewayv1.TLSRouteSpec{Hostnames: hostnames}}
+	}
+	cache := fake.NewClientBuilder().WithScheme(scheme(t)).WithIndex(&gatewayv1.TLSRoute{}, hostnamesIndex, routeHostnames).WithObjects(
+		route("exact", "api.dev.example.com"),
+		route("parent", "*.dev.example.com"),
+		route("grandparent", "*.example.com"),
+		route("top", "*.com"),
+		route("bare"),
+		route("several", "other.example.org", "api.dev.example.com"),
+		route("sibling", "konnectivity.dev.example.com"),
+		route("deeper", "*.api.dev.example.com"),
+		route("elsewhere", "*.example.org"),
+	).Build()
+	r := &Reconciler{Client: cache}
+	got, err := r.mayHold(t.Context(), true, "api.dev.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, route := range got {
+		names = append(names, route.Name)
+	}
+	slices.Sort(names)
+	if want := []string{"bare", "exact", "grandparent", "parent", "several", "top"}; !slices.Equal(names, want) {
+		t.Errorf("the cache gave %v, want %v", names, want)
 	}
 }

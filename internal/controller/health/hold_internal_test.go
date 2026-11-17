@@ -65,7 +65,7 @@ func TestAWriteSendsAMergePatchOfTheSpecItWritesUnderTheResourceVersionItRead(t 
 			if err != nil {
 				t.Fatal(err)
 			}
-			written, err := r.writeLease(t.Context(), tenant, read, c.write, now)
+			written, err := r.writeLease(t.Context(), tenant, &sampling{}, read, c.write, now)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -106,7 +106,7 @@ func TestAFirstWriteCreatesTheLeaseWhole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.writeLease(t.Context(), tenant, nil, takeLease, now); err != nil {
+	if _, err := r.writeLease(t.Context(), tenant, &sampling{}, nil, takeLease, now); err != nil {
 		t.Fatal(err)
 	}
 	if len(requests.sent) != 1 {

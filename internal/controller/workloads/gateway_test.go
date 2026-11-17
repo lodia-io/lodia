@@ -728,53 +728,192 @@ func TestTwoConcurrentCreationsOfOneHostnameYieldOneRoute(t *testing.T) {
 	ns := namespace(t)
 	a := createNamed(t, ns, "a", onGateway(ns, "race"))
 	b := createNamed(t, ns, "b", onGateway(ns, "race"))
-	gw := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Name: "shared", Namespace: ns},
-		Spec:       gatewayv1.GatewaySpec{GatewayClassName: "example", Listeners: []gatewayv1.Listener{passthrough("tls", "*."+zone, 443)}},
-	}
+	gw := sharedGateway(ns)
 	var gets, lists, applies atomic.Int32
-	stale := interceptor.NewClient(k8s, interceptor.Funcs{
+	var mu sync.Mutex
+	applied := map[client.ObjectKey]bool{}
+	cache := interceptor.NewClient(indexed(k8s), interceptor.Funcs{
 		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 			switch o := obj.(type) {
 			case *gatewayv1.Gateway:
 				gw.DeepCopyInto(o)
 				return nil
 			case *gatewayv1.TLSRoute:
-				gets.Add(1)
-				return apierrors.NewNotFound(schema.GroupResource{Group: gatewayv1.GroupName, Resource: "tlsroutes"}, key.Name)
+				mu.Lock()
+				seen := applied[key]
+				mu.Unlock()
+				if !seen {
+					gets.Add(1)
+					return apierrors.NewNotFound(schema.GroupResource{Group: gatewayv1.GroupName, Resource: "tlsroutes"}, key.Name)
+				}
 			}
 			return c.Get(ctx, key, obj, opts...)
 		},
 		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
-			switch list.(type) {
-			case *lodiav1alpha1.ControlPlaneList:
+			if _, ok := list.(*lodiav1alpha1.ControlPlaneList); ok {
 				return nil
-			case *gatewayv1.TLSRouteList:
-				if lists.Add(1) == 1 {
-					if err := c.List(ctx, list, opts...); err != nil {
-						return err
-					}
-					waitFor(time.Minute, func() bool { return gets.Load() >= 2 })
-					if waitFor(2*time.Second, func() bool { return lists.Load() >= 2 }) {
-						waitFor(time.Minute, func() bool { return applies.Load() >= 1 })
-					}
-					return nil
-				}
 			}
 			return c.List(ctx, list, opts...)
 		},
 		Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
 			err := c.Apply(ctx, obj, opts...)
 			if kindOf(t, obj) == "TLSRoute" {
+				mu.Lock()
+				applied[keyOf(t, obj)] = true
+				mu.Unlock()
 				applies.Add(1)
 			}
 			return err
 		},
 	})
-	r := &workloads.Reconciler{Client: stale, Reader: stale, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: revision}
-	errs := make([]error, 2)
+	reader := interceptor.NewClient(k8s, interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*gatewayv1.TLSRouteList); ok && lists.Add(1) == 1 {
+				if err := c.List(ctx, list, opts...); err != nil {
+					return err
+				}
+				waitFor(time.Minute, func() bool { return gets.Load() >= 2 })
+				if waitFor(2*time.Second, func() bool { return lists.Load() >= 2 }) {
+					waitFor(time.Minute, func() bool { return applies.Load() >= 1 })
+				}
+				return nil
+			}
+			return c.List(ctx, list, opts...)
+		},
+	})
+	r := &workloads.Reconciler{Client: cache, Reader: reader, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: revision}
+	reconcileAtOnce(t, r, a, b)
+	expectOneRouteEach(t, ns, "race")
+	if n := lists.Load(); n != 1 {
+		t.Errorf("the passes read the routes without the cache %d times, want once, before the first write showed in the cache", n)
+	}
+}
+
+func TestOnceTheCacheHoldsAWriteTheWritesOnItsGatewayReadTheirHostnameFromItWhateverItsLag(t *testing.T) {
+	ns := namespace(t)
+	first := createNamed(t, ns, "first", onGateway(ns, "first"))
+	a := createNamed(t, ns, "a", onGateway(ns, "lagging"))
+	b := createNamed(t, ns, "b", onGateway(ns, "lagging"))
+	c := createNamed(t, ns, "c", onGateway(ns, "kept"))
+	d := createNamed(t, ns, "d", onGateway(ns, "wild"))
+	for i := range 20 {
+		handmade(t, ns, fmt.Sprintf("bystander-%d", i), fmt.Sprintf("api.bystander-%d.%s", i, zone), ns, "tls")
+	}
+	gw := sharedGateway(ns)
+	gw.Spec.Listeners = append(gw.Spec.Listeners, passthrough("exact", "api.wild."+zone, 443))
+	const lag = 300 * time.Millisecond
+	var mu sync.Mutex
+	shownAt := map[client.ObjectKey]time.Time{}
+	hidden := func(key client.ObjectKey) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		at, ok := shownAt[key]
+		return ok && time.Now().Before(at)
+	}
+	var unrelated atomic.Int32
+	cache := interceptor.NewClient(indexed(k8s), interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			switch o := obj.(type) {
+			case *gatewayv1.Gateway:
+				gw.DeepCopyInto(o)
+				return nil
+			case *gatewayv1.TLSRoute:
+				if hidden(key) {
+					return apierrors.NewNotFound(schema.GroupResource{Group: gatewayv1.GroupName, Resource: "tlsroutes"}, key.Name)
+				}
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			switch l := list.(type) {
+			case *lodiav1alpha1.ControlPlaneList:
+				return nil
+			case *gatewayv1.TLSRouteList:
+				if err := c.List(ctx, list, opts...); err != nil {
+					return err
+				}
+				l.Items = slices.DeleteFunc(l.Items, func(route gatewayv1.TLSRoute) bool { return hidden(client.ObjectKeyFromObject(&route)) })
+				for _, route := range l.Items {
+					if route.Namespace == ns && !strings.HasPrefix(route.Name, "a-") && !strings.HasPrefix(route.Name, "b-") {
+						unrelated.Add(1)
+					}
+				}
+				return nil
+			}
+			return c.List(ctx, list, opts...)
+		},
+		Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+			err := c.Apply(ctx, obj, opts...)
+			if kindOf(t, obj) == "TLSRoute" {
+				mu.Lock()
+				shownAt[keyOf(t, obj)] = time.Now().Add(lag)
+				mu.Unlock()
+			}
+			return err
+		},
+	})
+	var lists atomic.Int32
+	reader := interceptor.NewClient(k8s, interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*gatewayv1.TLSRouteList); ok {
+				lists.Add(1)
+			}
+			return c.List(ctx, list, opts...)
+		},
+	})
+	r := &workloads.Reconciler{Client: cache, Reader: reader, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: revision}
+	start := time.Now()
+	reconcileAtOnce(t, r, first)
+	if took := time.Since(start); took < 3*lag {
+		t.Errorf("three writes took %s, want each to wait %s for the cache to show it", took, lag)
+	}
+	if n := lists.Load(); n != 1 {
+		t.Errorf("the first pass read the routes without the cache %d times, want once, before its first write showed", n)
+	}
+
+	unrelated.Store(0)
+	reconcileAtOnce(t, r, a, b)
+	expectOneRouteEach(t, ns, "lagging")
+	if n := lists.Load(); n != 1 {
+		t.Errorf("two passes on a cache that holds a write read the routes without it %d times in all, want none after the first", n-1)
+	}
+	if n := unrelated.Load(); n != 0 {
+		t.Errorf("the writes of the race's three hostnames read %d of the 23 other routes on the Gateway from the cache, want none", n)
+	}
+
+	foreign := newRoute(ns, "c-kube-apiserver", "api.kept."+zone, ns, "tls", foreignController())
+	mu.Lock()
+	shownAt[client.ObjectKeyFromObject(foreign)] = time.Now().Add(time.Hour)
+	mu.Unlock()
+	if err := k8s.Create(t.Context(), foreign); err != nil {
+		t.Fatal(err)
+	}
+	reconcileAtOnce(t, r, c)
+	if fresh := tlsRoute(t, ns, foreign.Name); fresh.ResourceVersion != foreign.ResourceVersion || len(fresh.OwnerReferences) != 1 {
+		t.Errorf("a route another owner keeps under the name, which the cache lacks, was written: %+v", fresh.ObjectMeta)
+	}
+
+	handmade(t, ns, "wildcard", "*.wild."+zone, ns, "exact")
+	reconcileAtOnce(t, r, d)
+	for name, want := range map[string]bool{"d-kube-apiserver": false, "d-konnectivity": true, "d-tunnel": true} {
+		if got := tlsRouteOrNil(t, ns, name) != nil; got != want {
+			t.Errorf("TLSRoute %s exists %t, want %t: a wildcard holds api.wild on the listener that names it", name, got, want)
+		}
+	}
+}
+
+func sharedGateway(ns string) *gatewayv1.Gateway {
+	return &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "shared", Namespace: ns},
+		Spec:       gatewayv1.GatewaySpec{GatewayClassName: "example", Listeners: []gatewayv1.Listener{passthrough("tls", "*."+zone, 443)}},
+	}
+}
+
+func reconcileAtOnce(t *testing.T, r *workloads.Reconciler, cps ...*lodiav1alpha1.ControlPlane) {
+	t.Helper()
+	errs := make([]error, len(cps))
 	var passes sync.WaitGroup
-	for i, cp := range []*lodiav1alpha1.ControlPlane{a, b} {
+	for i, cp := range cps {
 		passes.Go(func() {
 			_, errs[i] = r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 		})
@@ -783,6 +922,10 @@ func TestTwoConcurrentCreationsOfOneHostnameYieldOneRoute(t *testing.T) {
 	if err := errors.Join(errs...); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func expectOneRouteEach(t *testing.T, ns, prefix string) {
+	t.Helper()
 	list := &gatewayv1.TLSRouteList{}
 	if err := k8s.List(t.Context(), list, client.InNamespace(ns)); err != nil {
 		t.Fatal(err)
@@ -793,9 +936,9 @@ func TestTwoConcurrentCreationsOfOneHostnameYieldOneRoute(t *testing.T) {
 			routes[string(h)] = append(routes[string(h)], route.Name)
 		}
 	}
-	for _, prefix := range []string{"api", "konnectivity", "tunnel"} {
-		if got := routes[prefix+".race."+zone]; len(got) != 1 {
-			t.Errorf("%s.race.%s has the routes %v, want one", prefix, zone, got)
+	for _, name := range []string{"api", "konnectivity", "tunnel"} {
+		if got := routes[name+"."+prefix+"."+zone]; len(got) != 1 {
+			t.Errorf("%s.%s.%s has the routes %v, want one", name, prefix, zone, got)
 		}
 	}
 }
@@ -916,7 +1059,7 @@ func TestUseDefaultGatewaysOnTheExperimentalCRDIsLeftAlone(t *testing.T) {
 			return c.List(ctx, list, opts...)
 		},
 	})
-	r := &workloads.Reconciler{Client: experimental, Reader: reader, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: revision}
+	r := &workloads.Reconciler{Client: indexed(experimental), Reader: reader, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: revision}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 		t.Fatal(err)
 	}
@@ -939,8 +1082,8 @@ func TestUseDefaultGatewaysOnTheExperimentalCRDIsLeftAlone(t *testing.T) {
 	if route.Spec.UseDefaultGateways != gatewayv1.GatewayDefaultScopeAll || route.ResourceVersion != before {
 		t.Errorf("useDefaultGateways is %q at resourceVersion %s, want All left at %s", route.Spec.UseDefaultGateways, route.ResourceVersion, before)
 	}
-	if n := lists.Load(); n != 1 {
-		t.Errorf("the pass read the routes without the cache %d times, want once, for the route that compares unequal", n)
+	if n := lists.Load(); n != 0 {
+		t.Errorf("the pass read the routes without the cache %d times, want none: the cache holds the routes of its first pass", n)
 	}
 }
 
@@ -1119,13 +1262,7 @@ func TestARestartBetweenWritesGoesThroughTheUncachedRead(t *testing.T) {
 	cp := gatewayRunning(t)
 	before := resourceVersions(t, cp.Namespace, &gatewayv1.TLSRouteList{})
 	var lists atomic.Int32
-	restarted := interceptor.NewClient(k8s, interceptor.Funcs{
-		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-			if _, ok := obj.(*gatewayv1.TLSRoute); ok {
-				return apierrors.NewNotFound(schema.GroupResource{Group: gatewayv1.GroupName, Resource: "tlsroutes"}, key.Name)
-			}
-			return c.Get(ctx, key, obj, opts...)
-		},
+	reader := interceptor.NewClient(k8s, interceptor.Funcs{
 		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
 			if _, ok := list.(*gatewayv1.TLSRouteList); ok {
 				lists.Add(1)
@@ -1133,12 +1270,12 @@ func TestARestartBetweenWritesGoesThroughTheUncachedRead(t *testing.T) {
 			return c.List(ctx, list, opts...)
 		},
 	})
-	r := &workloads.Reconciler{Client: restarted, Reader: restarted, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: revision}
+	r := &workloads.Reconciler{Client: lackingRoutes(t, k8s), Reader: reader, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: revision}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 		t.Fatal(err)
 	}
 	if n := lists.Load(); n != 3 {
-		t.Errorf("the pass read the routes without the cache %d times, want once per route", n)
+		t.Errorf("the pass read the routes without the cache %d times, want once per route: a write that leaves a route as it was shows nothing in the cache", n)
 	}
 	if after := resourceVersions(t, cp.Namespace, &gatewayv1.TLSRouteList{}); fmt.Sprint(after) != fmt.Sprint(before) {
 		t.Errorf("the routes moved: %v, then %v", before, after)
@@ -1219,15 +1356,7 @@ func TestAPredecessorsRoutesWaitForTheGarbageCollector(t *testing.T) {
 	if tlsRouteOrNil(t, ns, "dev-konnectivity") != nil {
 		t.Error("a route was written for a hostname the predecessor's route holds")
 	}
-	uncached := interceptor.NewClient(k8s, interceptor.Funcs{
-		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-			if _, ok := obj.(*gatewayv1.TLSRoute); ok {
-				return apierrors.NewNotFound(schema.GroupResource{Group: gatewayv1.GroupName, Resource: "tlsroutes"}, key.Name)
-			}
-			return c.Get(ctx, key, obj, opts...)
-		},
-	})
-	r := &workloads.Reconciler{Client: uncached, Reader: k8s, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: revision}
+	r := &workloads.Reconciler{Client: lackingRoutes(t, k8s), Reader: k8s, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: revision}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 		t.Fatal(err)
 	}
@@ -1655,6 +1784,81 @@ func kindOf(t *testing.T, obj runtime.ApplyConfiguration) string {
 		t.Fatal(err)
 	}
 	return typed.Kind
+}
+
+func keyOf(t *testing.T, obj runtime.ApplyConfiguration) client.ObjectKey {
+	t.Helper()
+	raw, err := json.Marshal(obj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var typed struct {
+		Metadata metav1.ObjectMeta `json:"metadata"`
+	}
+	if err := json.Unmarshal(raw, &typed); err != nil {
+		t.Fatal(err)
+	}
+	return client.ObjectKey{Namespace: typed.Metadata.Namespace, Name: typed.Metadata.Name}
+}
+
+func lackingRoutes(t *testing.T, c client.WithWatch) client.WithWatch {
+	var mu sync.Mutex
+	applied := map[client.ObjectKey]bool{}
+	lacks := func(key client.ObjectKey) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return !applied[key]
+	}
+	return interceptor.NewClient(indexed(c), interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*gatewayv1.TLSRoute); ok && lacks(key) {
+				return apierrors.NewNotFound(schema.GroupResource{Group: gatewayv1.GroupName, Resource: "tlsroutes"}, key.Name)
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if err := c.List(ctx, list, opts...); err != nil {
+				return err
+			}
+			if routes, ok := list.(*gatewayv1.TLSRouteList); ok {
+				routes.Items = slices.DeleteFunc(routes.Items, func(route gatewayv1.TLSRoute) bool { return lacks(client.ObjectKeyFromObject(&route)) })
+			}
+			return nil
+		},
+		Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+			err := c.Apply(ctx, obj, opts...)
+			if err == nil && kindOf(t, obj) == "TLSRoute" {
+				mu.Lock()
+				applied[keyOf(t, obj)] = true
+				mu.Unlock()
+			}
+			return err
+		},
+	})
+}
+
+func indexed(c client.WithWatch) client.WithWatch {
+	return interceptor.NewClient(c, interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			o := (&client.ListOptions{}).ApplyOptions(opts)
+			routes, ok := list.(*gatewayv1.TLSRouteList)
+			if !ok || o.FieldSelector == nil || o.FieldSelector.Empty() {
+				return c.List(ctx, list, opts...)
+			}
+			hostname, ok := o.FieldSelector.RequiresExactMatch(workloads.HostnamesIndex)
+			if !ok {
+				return fmt.Errorf("no index for %s", o.FieldSelector)
+			}
+			all := &gatewayv1.TLSRouteList{}
+			if err := c.List(ctx, all); err != nil {
+				return err
+			}
+			routes.Items = slices.DeleteFunc(all.Items, func(route gatewayv1.TLSRoute) bool {
+				return !slices.Contains(workloads.RouteHostnames(&route), hostname)
+			})
+			return nil
+		},
+	})
 }
 
 func waitFor(timeout time.Duration, done func() bool) bool {

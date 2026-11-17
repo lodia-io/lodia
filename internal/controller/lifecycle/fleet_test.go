@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -239,7 +240,18 @@ func TestTwoTenantsRacingForTheLastSlotGetOne(t *testing.T) {
 	if err := quiet.List(t.Context(), before); err != nil {
 		t.Fatal(err)
 	}
-	snapshot := interceptor.NewClient(quiet, interceptor.Funcs{
+	frozen := interceptor.NewClient(quiet, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if cp, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
+				for i := range before.Items {
+					if client.ObjectKeyFromObject(&before.Items[i]) == key {
+						before.Items[i].DeepCopyInto(cp)
+						return nil
+					}
+				}
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
 		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
 			if cps, ok := list.(*lodiav1alpha1.ControlPlaneList); ok {
 				before.DeepCopyInto(cps)
@@ -250,59 +262,58 @@ func TestTwoTenantsRacingForTheLastSlotGetOne(t *testing.T) {
 	})
 	var (
 		mu       sync.Mutex
-		counting bool
+		written  bool
 		overlaps int
-		first    = true
+		lists    int
 	)
-	writer := interceptor.NewClient(snapshot, interceptor.Funcs{
+	writer := interceptor.NewClient(frozen, interceptor.Funcs{
 		SubResourceApply: func(ctx context.Context, c client.Client, subResource string, obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
 			err := c.SubResource(subResource).Apply(ctx, obj, opts...)
 			mu.Lock()
-			counting = false
+			written = true
 			mu.Unlock()
 			return err
 		},
 	})
+	entered, started := make(chan struct{}), make(chan struct{})
 	reader := interceptor.NewClient(quiet, interceptor.Funcs{
 		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
 			mu.Lock()
-			if counting {
+			lists++
+			first := lists == 1
+			if !first && !written {
 				overlaps++
 			}
-			counting = true
-			wait := first
-			first = false
 			mu.Unlock()
-			err := c.List(ctx, list, opts...)
-			if wait {
-				time.Sleep(time.Second)
+			if first {
+				close(entered)
+				<-started
+				time.Sleep(200 * time.Millisecond)
 			}
-			return err
+			return c.List(ctx, list, opts...)
 		},
 	})
 	r := fleetReconciler(writer, reader, later, 1)
-	errs := make(chan error, 2)
-	for _, cp := range []*lodiav1alpha1.ControlPlane{a, b} {
-		go func() {
-			_, err := passOf(t.Context(), r, cp)
-			errs <- err
-		}()
+	holder := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_, err := passOf(ctx, r, a)
+		holder <- err
+	}()
+	<-entered
+	close(started)
+	if _, err := passOf(t.Context(), r, b); err != nil {
+		t.Fatal(err)
 	}
-	for range 2 {
-		if err := <-errs; err != nil {
-			t.Fatal(err)
-		}
+	if err := <-holder; err != nil {
+		t.Fatal(err)
 	}
-	if overlaps != 0 {
-		t.Errorf("a second pass counted the fleet without the cache %d times while the first had not written its grant", overlaps)
+	if overlaps != 0 || lists != 2 {
+		t.Errorf("the second pass counted the fleet without the cache %d times before the first wrote its grant, and the two %d times, want none and twice: the cache never showed the grant", overlaps, lists)
 	}
-	reasons := map[string]int{}
-	for _, cp := range []*lodiav1alpha1.ControlPlane{a, b} {
-		reasons[meta.FindStatusCondition(getQuiet(t, cp).Status.Conditions, lodiav1alpha1.ConditionProgressing).Reason]++
-	}
-	if reasons[lodiav1alpha1.ReasonMaintaining] != 1 || reasons[lodiav1alpha1.ReasonFleetLimit] != 1 {
-		t.Errorf("two tenants that both saw the last slot free ended %v, want one Maintaining and one FleetLimit", reasons)
-	}
+	expectMaintenance(t, a, lodiav1alpha1.ReasonMaintaining, runningRevision)
+	expectMaintenance(t, b, lodiav1alpha1.ReasonFleetLimit, otherRevision)
 }
 
 func TestARestartedOperatorCountsTheSlotsFromStatus(t *testing.T) {
@@ -554,7 +565,7 @@ func TestAStaleCacheNeverRevokesAGrantOrASlot(t *testing.T) {
 	}
 }
 
-func TestASlotPassThatCannotFinishWritesNothingAndFreesTheSemaphore(t *testing.T) {
+func TestASlotPassThatCannotFinishWritesNothingAndFreesTheFence(t *testing.T) {
 	injected := errors.New("injected: the API server did not answer")
 	cp := fleetTenant(t, "edges")
 	r := fleetReconciler(synced(quiet), quiet, later, 1)
@@ -594,7 +605,7 @@ func TestASlotPassThatCannotFinishWritesNothingAndFreesTheSemaphore(t *testing.T
 		r.Client, r.Reader = quiet, quiet
 		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 		if _, err := passOf(ctx, r, cp); err != nil {
-			t.Errorf("%s: the next pass of the same reconciler returned %v: the semaphore was not released", broken.name, err)
+			t.Errorf("%s: the next pass of the same reconciler returned %v: the fence was not released", broken.name, err)
 		}
 		cancel()
 		expectMaintenance(t, cp, lodiav1alpha1.ReasonMaintaining, runningRevision)
@@ -602,8 +613,8 @@ func TestASlotPassThatCannotFinishWritesNothingAndFreesTheSemaphore(t *testing.T
 	}
 }
 
-func TestAPassWaitingForTheSemaphoreEndsAtItsDeadline(t *testing.T) {
-	a, b := fleetTenant(t, "semaphore-a"), fleetTenant(t, "semaphore-b")
+func TestAPassWaitingForTheFenceEndsAtItsDeadline(t *testing.T) {
+	a, b := fleetTenant(t, "fence-a"), fleetTenant(t, "fence-b")
 	release, entered := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	reader := interceptor.NewClient(quiet, interceptor.Funcs{
@@ -628,13 +639,102 @@ func TestAPassWaitingForTheSemaphoreEndsAtItsDeadline(t *testing.T) {
 	begun := time.Now()
 	_, err := passOf(ctx, r, b)
 	if waited := time.Since(begun); !errors.Is(err, context.DeadlineExceeded) || waited > 3*time.Second {
-		t.Errorf("a pass whose deadline ends while another holds the semaphore returned %v after %s, want its deadline after a second", err, waited.Round(10*time.Millisecond))
+		t.Errorf("a pass whose deadline ends while another holds the fence returned %v after %s, want its deadline after a second", err, waited.Round(10*time.Millisecond))
 	}
 	if err := <-holder; err != nil {
 		t.Fatal(err)
 	}
 	expectMaintenance(t, a, lodiav1alpha1.ReasonMaintaining, runningRevision)
 	expectMaintenance(t, b, lodiav1alpha1.ReasonIdle, otherRevision)
+}
+
+func TestGrantsAfterOneHasShownInTheCacheReadNoFleetFromTheAPIServer(t *testing.T) {
+	var tenants []*lodiav1alpha1.ControlPlane
+	for i := range 5 {
+		tenants = append(tenants, fleetTenant(t, fmt.Sprintf("cost-%d", i)))
+	}
+	lists := 0
+	r := fleetReconciler(quiet, listCounting(&lists), later, 4)
+	for _, cp := range tenants[:4] {
+		mustPass(t, r, cp)
+		expectMaintenance(t, cp, lodiav1alpha1.ReasonMaintaining, runningRevision)
+	}
+	mustPass(t, r, tenants[4])
+	expectMaintenance(t, tenants[4], lodiav1alpha1.ReasonFleetLimit, otherRevision)
+	if lists != 1 {
+		t.Errorf("four grants and a refusal listed the fleet without the cache %d times, want once, before the first grant showed in the cache", lists)
+	}
+}
+
+func TestAGrantHoldsTheFenceUntilTheCacheShowsItSoTheNextCountsIt(t *testing.T) {
+	x, y := fleetTenant(t, "lag-x"), fleetTenant(t, "lag-y")
+	before := getQuiet(t, x)
+	const lag = 300 * time.Millisecond
+	var mu sync.Mutex
+	var shownAt time.Time
+	hidden := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return shownAt.IsZero() || time.Now().Before(shownAt)
+	}
+	granted := make(chan struct{})
+	cache := interceptor.NewClient(quiet, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if cp, ok := obj.(*lodiav1alpha1.ControlPlane); ok && key.Namespace == x.Namespace && hidden() {
+				before.DeepCopyInto(cp)
+				return nil
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if err := c.List(ctx, list, opts...); err != nil {
+				return err
+			}
+			if cps, ok := list.(*lodiav1alpha1.ControlPlaneList); ok && hidden() {
+				for i := range cps.Items {
+					if cps.Items[i].Namespace == x.Namespace {
+						before.DeepCopyInto(&cps.Items[i])
+					}
+				}
+			}
+			return nil
+		},
+		SubResourceApply: func(ctx context.Context, c client.Client, subResource string, obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
+			err := c.SubResource(subResource).Apply(ctx, obj, opts...)
+			if err == nil && slotOn(getQuiet(t, x)) != nil {
+				mu.Lock()
+				first := shownAt.IsZero()
+				if first {
+					shownAt = time.Now().Add(lag)
+				}
+				mu.Unlock()
+				if first {
+					close(granted)
+				}
+			}
+			return err
+		},
+	})
+	lists := 0
+	r := fleetReconciler(cache, listCounting(&lists), later, 1)
+	held := make(chan time.Duration, 1)
+	go func() {
+		start := time.Now()
+		if _, err := passOf(context.Background(), r, x); err != nil {
+			t.Error(err)
+		}
+		held <- time.Since(start)
+	}()
+	<-granted
+	mustPass(t, r, y)
+	if took := <-held; took < lag {
+		t.Errorf("the grant's pass returned after %s, before the cache showed the grant %s after the write", took, lag)
+	}
+	expectMaintenance(t, x, lodiav1alpha1.ReasonMaintaining, runningRevision)
+	expectMaintenance(t, y, lodiav1alpha1.ReasonFleetLimit, otherRevision)
+	if lists != 1 {
+		t.Errorf("the two passes listed the fleet without the cache %d times, want once, the first grant's", lists)
+	}
 }
 
 func TestARecountOnAStaleCacheKeepsTheQueuePlace(t *testing.T) {
@@ -644,9 +744,10 @@ func TestARecountOnAStaleCacheKeepsTheQueuePlace(t *testing.T) {
 	seedLifecycle(t, z, otherRevision, lodiav1alpha1.ReasonFleetLimit, &waitingSince, nil)
 	stale := getQuiet(t, z)
 	idle(z.Namespace)(stale)
+	var served atomic.Bool
 	cache := interceptor.NewClient(cacheShowing(idle(x.Namespace)), interceptor.Funcs{
 		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-			if cp, ok := obj.(*lodiav1alpha1.ControlPlane); ok && key.Namespace == z.Namespace {
+			if cp, ok := obj.(*lodiav1alpha1.ControlPlane); ok && key.Namespace == z.Namespace && !served.Swap(true) {
 				stale.DeepCopyInto(cp)
 				return nil
 			}

@@ -66,11 +66,11 @@ func TestWhatHealthSendsBackOfATokenAndAVersionAtTheirRawBoundsIsPinned(t *testi
 			if len(next) != c.token || query != c.query {
 				t.Errorf("the second page was asked with a token of %d bytes in a query of %d, want %d and %d", len(next), query, c.token, c.query)
 			}
-			read, err := r.readLease(t.Context(), tenant)
+			read, err := r.readLease(t.Context(), tenant, &sampling{})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := r.writeLease(t.Context(), tenant, read, renewLease, time.Now()); err != nil {
+			if _, err := r.writeLease(t.Context(), tenant, &sampling{}, read, renewLease, time.Now()); err != nil {
 				t.Fatal(err)
 			}
 			const key = `"resourceVersion":"`

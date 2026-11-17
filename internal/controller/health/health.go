@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"golang.org/x/sync/semaphore"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -58,6 +59,10 @@ const (
 	// lists of a held restore.
 	restoreReads = 7
 
+	// heldRestores is how many passes over a held restore list at once, so that
+	// the memory of their lists does not grow with the workers.
+	heldRestores = 10
+
 	// accessNotTrue is the message of a pass while AccessReady is not True:
 	// Reconciler reads nothing in the tenant then, and NodesReconciler reads only
 	// the controller manager's Lease, which it renews or releases if it holds it.
@@ -87,9 +92,9 @@ type Reconciler struct {
 	FailuresBeforeFalse int
 	// Clock tells when a leader Lease was seen to change.
 	Clock clock.PassiveClock
-	// DialContext, when set, dials the probes of the public endpoint and of
-	// the in-namespace Service, whose name nothing outside a cluster resolves.
-	// It is nil in production.
+	// DialContext, when set, opens every connection to the tenant: the probes,
+	// the tunnel's and konnectivity's included, and the tenant clients', whose
+	// names nothing outside a cluster resolves. It is nil in production.
 	DialContext func(ctx context.Context, network, address string) (net.Conn, error)
 	// ProbeFailures counts every failed probe by its path, the label path;
 	// nil counts nothing.
@@ -99,6 +104,7 @@ type Reconciler struct {
 	failures map[types.NamespacedName]int
 	renewals map[types.NamespacedName]map[string]renewal
 	clients  map[types.NamespacedName]*tenantClients
+	restores *semaphore.Weighted
 }
 
 // tenantClients are the clients of one tenant over one transport, and the
@@ -179,17 +185,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if !failed {
+	if failed == "" {
 		r.count(req.NamespacedName, false)
 	}
-	leading, err := r.leading(ctx, cp)
+	leading, err := r.leading(ctx, cp, failed == lodiav1alpha1.ReasonInternalProbeFailed)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if err := r.apply(ctx, cp, ptr.Deref(reachable, previous(cp, lodiav1alpha1.ConditionReachable)), ptr.Deref(leading, previous(cp, lodiav1alpha1.ConditionControllersLeading))); err != nil {
 		return ctrl.Result{}, err
 	}
-	if failed {
+	if failed != "" {
 		r.count(req.NamespacedName, true)
 	}
 	return ctrl.Result{RequeueAfter: r.Period}, nil
@@ -197,29 +203,30 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 // reachable returns nil to keep the condition as the API server holds it: a
 // True after fewer than r.FailuresBeforeFalse failed probes in a row. It also
-// says whether its probe failed: a success clears the count at once, and a
-// failure counts only once the pass has applied its conditions.
-func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*metav1.Condition, bool, error) {
+// returns the reason of a failed probe, empty when none failed: a success
+// clears the count at once, and a failure counts only once the pass has
+// applied its conditions.
+func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*metav1.Condition, string, error) {
 	key := client.ObjectKeyFromObject(cp)
 	url := endpoint(cp)
 	if url == "" {
-		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint"), false, nil
+		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint"), "", nil
 	}
 	gateway := cp.Spec.Endpoint.Gateway != nil
 	if gateway && cp.Status.Endpoint.Tunnel == nil {
-		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint.tunnel"), false, nil
+		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint.tunnel"), "", nil
 	}
 	name := lodiav1alpha1.CABundleSecret.Name(cp.Name)
 	secret := &corev1.Secret{}
 	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: name}, secret); err != nil {
 		if apierrors.IsNotFound(err) {
-			return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the CA bundle "+name), false, nil
+			return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the CA bundle "+name), "", nil
 		}
-		return nil, false, err
+		return nil, "", err
 	}
 	if ref := ownership.ControlledElsewhere(secret, cp); ref != nil {
 		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates,
-			fmt.Sprintf("Secret %s is kept by %s %s with UID %s", name, ref.Kind, ref.Name, ref.UID)), false, nil
+			fmt.Sprintf("Secret %s is kept by %s %s with UID %s", name, ref.Kind, ref.Name, ref.UID)), "", nil
 	}
 	var pair *corev1.Secret
 	if gateway {
@@ -227,35 +234,35 @@ func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPla
 		pairName := lodiav1alpha1.TunnelClientSecret.Name(cp.Name)
 		if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: pairName}, pair); err != nil {
 			if apierrors.IsNotFound(err) {
-				return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the tunnel's client certificate "+pairName), false, nil
+				return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the tunnel's client certificate "+pairName), "", nil
 			}
-			return nil, false, err
+			return nil, "", err
 		}
 		if ref := ownership.ControlledElsewhere(pair, cp); ref != nil {
 			return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates,
-				fmt.Sprintf("Secret %s is kept by %s %s with UID %s", pairName, ref.Kind, ref.Name, ref.UID)), false, nil
+				fmt.Sprintf("Secret %s is kept by %s %s with UID %s", pairName, ref.Kind, ref.Name, ref.UID)), "", nil
 		}
 	}
 	prober := r.prober(secret.Data[lodiav1alpha1.CACertKey], pair)
 	if prober == nil {
-		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "the CA bundle "+name+" holds no certificate"), false, nil
+		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "the CA bundle "+name+" holds no certificate"), "", nil
 	}
 	if gateway && prober.client == nil {
-		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "the tunnel's client certificate "+pair.Name+" holds no certificate and key"), false, nil
+		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "the tunnel's client certificate "+pair.Name+" holds no certificate and key"), "", nil
 	}
 	reason, answer := r.probes(ctx, cp, prober, url)
 	if reason == "" {
-		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, answer), false, nil
+		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, answer), "", nil
 	}
 	if r.failed(key)+1 < r.FailuresBeforeFalse {
 		if err := live.Conditions(ctx, r.Reader, cp, lodiav1alpha1.ConditionReachable); err != nil {
-			return nil, false, err
+			return nil, "", err
 		}
 		if previous := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionReachable); previous != nil && previous.Status == metav1.ConditionTrue {
-			return nil, true, nil
+			return nil, reason, nil
 		}
 	}
-	return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, reason, answer), true, nil
+	return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, reason, answer), reason, nil
 }
 
 // probes runs the control plane's probes at once, each under Timeout, so that
@@ -342,8 +349,11 @@ func answered(code int) string {
 }
 
 // leading returns nil to keep the condition as the API server holds it when a
-// read of a Lease fails (docs/README.md, Health).
-func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*metav1.Condition, error) {
+// read of a Lease fails (docs/README.md, Health). When the in-namespace
+// Service, the address of every read in the tenant, has just failed its probe,
+// it decides only what reads nothing in the tenant and keeps the condition
+// otherwise, so that a tenant that hangs holds a worker for one Timeout.
+func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane, unanswered bool) (*metav1.Condition, error) {
 	key := client.ObjectKeyFromObject(cp)
 	if !access(cp) {
 		r.forget(key)
@@ -357,15 +367,8 @@ func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 		r.forget(key)
 		return newCondition(cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, waiting), nil
 	}
-	tenant, err := r.tenant(key, kubeconfig)
-	if err != nil {
-		return nil, err
-	}
-	if restoring := cp.Spec.RestoreFrom; restoring != nil {
-		if restoring.Release != lodiav1alpha1.RestoreReleased {
-			return newCondition(cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionFalse, lodiav1alpha1.ReasonAwaitingRelease,
-				"spec.restoreFrom.release is Pending; once released, the controller manager acts on: "+r.actedOn(ctx, tenant)), nil
-		}
+	restoring := cp.Spec.RestoreFrom
+	if restoring != nil && restoring.Release == lodiav1alpha1.RestoreReleased {
 		source, err := restore.Source(ctx, r.Client, cp)
 		if err != nil {
 			return nil, err
@@ -374,6 +377,17 @@ func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 			return newCondition(cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionFalse, lodiav1alpha1.ReasonSourceExists,
 				fmt.Sprintf("ControlPlane %s (UID %s), the Backup's source, still exists in the namespace; delete it to release this one", source.Name, source.UID)), nil
 		}
+	}
+	if unanswered {
+		return nil, live.Conditions(ctx, r.Reader, cp, lodiav1alpha1.ConditionControllersLeading)
+	}
+	tenant, err := r.tenant(key, kubeconfig)
+	if err != nil {
+		return nil, err
+	}
+	if restoring != nil && restoring.Release != lodiav1alpha1.RestoreReleased {
+		return newCondition(cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionFalse, lodiav1alpha1.ReasonAwaitingRelease,
+			"spec.restoreFrom.release is Pending; once released, the controller manager acts on: "+r.actedOn(ctx, tenant)), nil
 	}
 	reading, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
@@ -524,20 +538,31 @@ func (r *Reconciler) actedOn(ctx context.Context, t *tenant) string {
 		found tally
 		err   error
 	}
+	listing, cancel := context.WithTimeout(ctx, r.Timeout)
+	defer cancel()
 	results := make([][]answer, len(items))
-	var wg sync.WaitGroup
 	for i, item := range items {
 		results[i] = make([]answer, len(item.lists))
-		for j, l := range item.lists {
-			wg.Go(func() {
-				listing, cancel := context.WithTimeout(ctx, r.Timeout)
-				defer cancel()
-				found, err := l.read(listing)
-				results[i][j] = answer{found, err}
-			})
-		}
 	}
-	wg.Wait()
+	if err := r.restoreLists().Acquire(listing, 1); err != nil {
+		for i := range results {
+			for j := range results[i] {
+				results[i][j] = answer{err: err}
+			}
+		}
+	} else {
+		var wg sync.WaitGroup
+		for i, item := range items {
+			for j, l := range item.lists {
+				wg.Go(func() {
+					found, err := l.read(listing)
+					results[i][j] = answer{found, err}
+				})
+			}
+		}
+		wg.Wait()
+		r.restoreLists().Release(1)
+	}
 	var out []string
 	for i, item := range items {
 		var found tally
@@ -706,6 +731,15 @@ func (r *Reconciler) forget(key types.NamespacedName) {
 	delete(r.clients, key)
 }
 
+func (r *Reconciler) restoreLists() *semaphore.Weighted {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.restores == nil {
+		r.restores = semaphore.NewWeighted(heldRestores)
+	}
+	return r.restores
+}
+
 // prober verifies the endpoint against bundle, or is nil when bundle holds no
 // certificate. Its client pair is pair's, and nil outside gateway mode or when
 // pair holds no certificate and key.
@@ -715,10 +749,11 @@ func (r *Reconciler) prober(bundle []byte, pair *corev1.Secret) *prober {
 		return nil
 	}
 	direct := &http.Transport{
-		DialContext:         r.dial,
-		TLSClientConfig:     &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
-		TLSHandshakeTimeout: r.Timeout,
-		DisableKeepAlives:   true,
+		DialContext:            r.dial,
+		TLSClientConfig:        &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
+		TLSHandshakeTimeout:    r.Timeout,
+		DisableKeepAlives:      true,
+		MaxResponseHeaderBytes: maxResponseHeaderBytes,
 	}
 	p := &prober{direct: &http.Client{Transport: direct, CheckRedirect: noRedirects}, roots: roots}
 	if pair != nil {
@@ -751,7 +786,7 @@ func (r *Reconciler) tenant(key types.NamespacedName, kubeconfig []byte) (*tenan
 		r.clients = map[types.NamespacedName]*tenantClients{}
 	}
 	if r.clients[key] == nil {
-		r.clients[key] = &tenantClients{connections: restoreReads, timeout: r.Timeout}
+		r.clients[key] = &tenantClients{connections: restoreReads, timeout: r.Timeout, dial: r.DialContext}
 	}
 	return r.clients[key].of(kubeconfig)
 }
@@ -851,18 +886,16 @@ func (r *Reconciler) probe(ctx context.Context, prober *http.Client, url string)
 // so the dial and both handshakes need Timeout's bound here: without them a
 // stalled Gateway would keep a goroutine for every probe.
 func (r *Reconciler) throughTunnel(p *prober, tunnel lodiav1alpha1.HostPort) *http.Client {
-	dialer := &tls.Dialer{
-		NetDialer: &net.Dialer{Timeout: r.Timeout},
-		Config:    &tls.Config{ServerName: tunnel.Host, RootCAs: p.roots, Certificates: []tls.Certificate{*p.client}, MinVersion: tls.VersionTLS13},
-	}
+	outer := &tls.Config{ServerName: tunnel.Host, RootCAs: p.roots, Certificates: []tls.Certificate{*p.client}, MinVersion: tls.VersionTLS13}
 	return &http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return dialer.DialContext(ctx, "tcp", hostPort(tunnel))
+				return r.dialTLS(ctx, hostPort(tunnel), outer)
 			},
-			TLSClientConfig:     &tls.Config{RootCAs: p.roots, MinVersion: tls.VersionTLS12},
-			TLSHandshakeTimeout: r.Timeout,
-			DisableKeepAlives:   true,
+			TLSClientConfig:        &tls.Config{RootCAs: p.roots, MinVersion: tls.VersionTLS12},
+			TLSHandshakeTimeout:    r.Timeout,
+			DisableKeepAlives:      true,
+			MaxResponseHeaderBytes: maxResponseHeaderBytes,
 		},
 		CheckRedirect: noRedirects,
 	}
@@ -871,12 +904,28 @@ func (r *Reconciler) throughTunnel(p *prober, tunnel lodiav1alpha1.HostPort) *ht
 // handshake completes a TLS handshake with the konnectivity host, verified
 // against the bundle.
 func (r *Reconciler) handshake(ctx context.Context, p *prober, target lodiav1alpha1.HostPort) error {
-	dialer := &tls.Dialer{NetDialer: &net.Dialer{Timeout: r.Timeout}, Config: &tls.Config{ServerName: target.Host, RootCAs: p.roots, MinVersion: tls.VersionTLS12}}
-	conn, err := dialer.DialContext(ctx, "tcp", hostPort(target))
+	conn, err := r.dialTLS(ctx, hostPort(target), &tls.Config{ServerName: target.Host, RootCAs: p.roots, MinVersion: tls.VersionTLS12})
 	if err != nil {
 		return err
 	}
 	return conn.Close()
+}
+
+// dialTLS dials address and completes a TLS handshake with config, both
+// within Timeout, as tls.Dialer does with a net.Dialer of that timeout.
+func (r *Reconciler) dialTLS(ctx context.Context, address string, config *tls.Config) (*tls.Conn, error) {
+	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
+	defer cancel()
+	raw, err := r.dial(ctx, "tcp", address)
+	if err != nil {
+		return nil, err
+	}
+	conn := tls.Client(raw, config)
+	if err := conn.HandshakeContext(ctx); err != nil {
+		_ = raw.Close()
+		return nil, err
+	}
+	return conn, nil
 }
 
 // count counts a failed probe of a ControlPlane, or clears its count. Every

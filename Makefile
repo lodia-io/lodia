@@ -10,6 +10,9 @@ E2E_DIR ?= $(CURDIR)/work/e2e
 E2E_HA_TEST ?= TestHighAvailabilityGate
 E2E_UPGRADE_TEST ?= TestMinorUpgradeGate
 E2E_MAINTENANCE_TEST ?= TestOperatorUpgradeInWindows
+FLEET_TENANTS ?= 1000
+FLEET_HANGING ?= 0.1
+FLEET_DIR ?= $(CURDIR)/work/fleet
 CHART = charts/lodia
 CONTROLLERS = datastore health lifecycle pki tenant workloads
 RACE_PACKAGES = ./internal/controller/health ./internal/metrics
@@ -84,6 +87,12 @@ test: ## unit and envtest tests, those of RACE_PACKAGES with the race detector, 
 	rm -f "$$out" "$$st"; exit $$status
 	KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT=60s KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test -count=1 -run '^TestATenantOfMaxNodesNodesIsCountedWholeAtTheOperatorsTimeout$$' ./internal/controller/health
 	cd api && go test ./...
+
+.PHONY: fleet
+fleet: ## the operator against a synthetic fleet of FLEET_TENANTS ControlPlanes on envtest, FLEET_HANGING of whose tenants hang in one phase; the report and the logs go to FLEET_DIR (docs/operations.md, Scale)
+	mkdir -p $(FLEET_DIR)
+	KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" LODIA_FLEET_TENANTS=$(FLEET_TENANTS) LODIA_FLEET_HANGING=$(FLEET_HANGING) LODIA_FLEET_REPORT=$(FLEET_DIR)/report.txt \
+		go test -count=1 -v -timeout 4h -run '^TestFleet$$' ./test/fleet
 
 .PHONY: restore-keys
 restore-keys: ## the etcd keys a restore's cleanup deletes, against the API server of each minor Lodia runs

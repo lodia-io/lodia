@@ -9,10 +9,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
-	"golang.org/x/sync/semaphore"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -26,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/fence"
 	"go.lodia.io/lodia/internal/statusapply"
 	"go.lodia.io/lodia/internal/versions"
 )
@@ -57,7 +56,7 @@ func readiness(cp *lodiav1alpha1.ControlPlane) []string {
 type Reconciler struct {
 	client.Client
 	// Reader reads the ControlPlane as the API server holds it, before a write,
-	// and the fleet before a slot is taken.
+	// and the fleet before a slot is taken until a grant has shown in the cache.
 	Reader client.Reader
 	// Events records the transitions of the conditions it writes;
 	// SetupWithManager sets it.
@@ -72,8 +71,7 @@ type Reconciler struct {
 	// rolled out.
 	Settling time.Duration
 
-	once  sync.Once
-	slots *semaphore.Weighted
+	slots fence.Fence
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
@@ -120,9 +118,10 @@ func (r *Reconciler) controlPlanesOn(ctx context.Context, class client.Object) [
 // something, from the object as the API server holds it, comparing the write
 // with that copy: a pass on a cache behind Lifecycle's own write would undo it
 // (docs/decisions/independent-controllers.md). A decision that takes a slot
-// of the fleet, counted from the cache, is made again under a semaphore from
-// the fleet the API server holds, and written under it, so that two passes
-// never take one slot.
+// of the fleet, counted from the cache, is made again under the fleet's fence
+// and written under it, so that two passes never take one slot: from the
+// fleet the API server holds until a write under the fence has shown in the
+// cache, and from the cache, which then holds every grant, after.
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	cached := &lodiav1alpha1.ControlPlane{}
 	if err := r.Get(ctx, req.NamespacedName, cached); err != nil {
@@ -143,18 +142,27 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 	d := decide(gathered)
-	if d.takesSlot {
-		slots := r.semaphore()
-		if err := slots.Acquire(ctx, 1); err != nil {
+	fenced := d.takesSlot
+	if fenced {
+		if err := r.slots.Acquire(ctx); err != nil {
 			return ctrl.Result{}, err
 		}
-		defer slots.Release(1)
-		if gathered, err = r.gather(ctx, current, r.Reader); err != nil {
+		defer r.slots.Release()
+		fleet := r.Reader
+		if r.slots.Cached() {
+			fleet = r.Client
+		}
+		if gathered, err = r.gather(ctx, current, fleet); err != nil {
 			return ctrl.Result{}, err
 		}
 		d = decide(gathered)
 	}
-	if err := (statusapply.Writer{Client: r.Client, Reader: r.Reader, Manager: FieldManager, Events: r.Events}).Apply(ctx, current, d.status, d.fieldsDiffer(current)); err != nil {
+	version, err := (statusapply.Writer{Client: r.Client, Reader: r.Reader, Manager: FieldManager, Events: r.Events}).ApplyVersion(ctx, current, d.status, d.fieldsDiffer(current))
+	if fenced && d.takesSlot {
+		written := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Namespace: current.Namespace, Name: current.Name, ResourceVersion: version}}
+		err = r.slots.Wrote(ctx, r.Client, written, err)
+	}
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if d.createBackup != "" {
@@ -167,11 +175,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 	}
 	return ctrl.Result{RequeueAfter: d.requeue}, nil
-}
-
-func (r *Reconciler) semaphore() *semaphore.Weighted {
-	r.once.Do(func() { r.slots = semaphore.NewWeighted(1) })
-	return r.slots
 }
 
 // gather reads what a pass decides from: the Backup of the minor step and the

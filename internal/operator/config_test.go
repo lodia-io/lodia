@@ -5,17 +5,26 @@ package operator_test
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 
 	"go.lodia.io/lodia/internal/contract"
+	"go.lodia.io/lodia/internal/controller/datastore"
+	"go.lodia.io/lodia/internal/controller/health"
+	"go.lodia.io/lodia/internal/controller/lifecycle"
+	"go.lodia.io/lodia/internal/controller/tenant"
+	"go.lodia.io/lodia/internal/controller/workloads"
 	"go.lodia.io/lodia/internal/operator"
 )
 
@@ -27,6 +36,8 @@ func load(t *testing.T, content string) (operator.Config, error) {
 	}
 	return operator.LoadConfig(path)
 }
+
+func workers(n int) operator.ControllerConfig { return operator.ControllerConfig{Workers: n} }
 
 func seconds(s float64) metav1.Duration {
 	return metav1.Duration{Duration: time.Duration(s * float64(time.Second))}
@@ -43,6 +54,10 @@ func TestWithoutAFileTheDefaultsApply(t *testing.T) {
 			MaxNodes:            5000,
 		},
 		Fleet: operator.FleetConfig{MaxConcurrentRollouts: 5},
+		Controllers: operator.ControllersConfig{
+			PKI: workers(10), KubeconfigRequest: workers(10), Datastore: workers(10), Backup: workers(10), DatastoreSample: workers(10),
+			Lifecycle: workers(10), Tenant: workers(10), Health: workers(100), HealthNodes: workers(100), Workloads: workers(10),
+		},
 	}
 	got, err := operator.LoadConfig("")
 	if err != nil || got != want {
@@ -68,8 +83,9 @@ func TestTheChartsValuesAreTheDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	var values struct {
-		Health operator.HealthConfig `json:"health"`
-		Fleet  operator.FleetConfig  `json:"fleet"`
+		Health      operator.HealthConfig      `json:"health"`
+		Fleet       operator.FleetConfig       `json:"fleet"`
+		Controllers operator.ControllersConfig `json:"controllers"`
 	}
 	if err := yaml.Unmarshal(raw, &values); err != nil {
 		t.Fatal(err)
@@ -79,6 +95,74 @@ func TestTheChartsValuesAreTheDefaults(t *testing.T) {
 	}
 	if want := operator.DefaultConfig().Fleet; values.Fleet != want {
 		t.Errorf("the chart's fleet values are %+v, want the operator's defaults %+v", values.Fleet, want)
+	}
+	if want := operator.DefaultConfig().Controllers; values.Controllers != want {
+		t.Errorf("the chart's controllers values are %+v, want the operator's defaults %+v", values.Controllers, want)
+	}
+}
+
+func TestEachControllersWorkersComeFromTheKeyOfItsName(t *testing.T) {
+	names := []string{"pki", "kubeconfigrequest", datastore.Name, datastore.BackupName, datastore.SampleName, lifecycle.Name, tenant.Name, health.Name, health.NodesName, workloads.Name}
+	var content strings.Builder
+	content.WriteString("controllers:\n")
+	for i, name := range names {
+		fmt.Fprintf(&content, "  %s:\n    workers: %d\n", name, 11+i)
+	}
+	got, err := load(t, content.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := got.Controllers
+	for i, field := range []operator.ControllerConfig{c.PKI, c.KubeconfigRequest, c.Datastore, c.Backup, c.DatastoreSample, c.Lifecycle, c.Tenant, c.Health, c.HealthNodes, c.Workloads} {
+		if field.Workers != 11+i {
+			t.Errorf("controllers.%s.workers is %d, want %d", names[i], field.Workers, 11+i)
+		}
+	}
+	got, err = load(t, "controllers:\n  health:\n    workers: 30\n  workloads: {}\n")
+	want := operator.DefaultConfig()
+	want.Controllers.Health.Workers = 30
+	if err != nil || got != want {
+		t.Errorf("a file that sets health's workers alone gives %+v, %v, want %+v", got, err, want)
+	}
+}
+
+func TestAControllerWithoutWorkersOrOfNoNameRefusesToStart(t *testing.T) {
+	for _, c := range []struct{ name, content, refused string }{
+		{"no workers", "controllers:\n  health-nodes:\n    workers: 0\n", "controllers.health-nodes.workers"},
+		{"fewer than none", "controllers:\n  tenant:\n    workers: -1\n", "controllers.tenant.workers"},
+		{"a name no controller has", "controllers:\n  nodes:\n    workers: 10\n", `"nodes"`},
+		{"a key beside workers", "controllers:\n  health:\n    worker: 10\n", `"worker"`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got, err := load(t, c.content); err == nil || !strings.Contains(err.Error(), c.refused) {
+				t.Errorf("LoadConfig returned %+v, %v, want an error that names %s", got, err, c.refused)
+			}
+		})
+	}
+}
+
+func TestTheChartsGoMemLimitIsBetweenItsMemoryRequestAndLimit(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "charts", "lodia", "values.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var values struct {
+		Resources  corev1.ResourceRequirements `json:"resources"`
+		GoMemLimit string                      `json:"goMemLimit"`
+	}
+	if err := yaml.Unmarshal(raw, &values); err != nil {
+		t.Fatal(err)
+	}
+	units := map[string]int64{"KiB": 1 << 10, "MiB": 1 << 20, "GiB": 1 << 30, "TiB": 1 << 40}
+	number, unit := strings.TrimRightFunc(values.GoMemLimit, unicode.IsLetter), strings.TrimLeftFunc(values.GoMemLimit, unicode.IsDigit)
+	n, err := strconv.ParseInt(number, 10, 64)
+	if err != nil || units[unit] == 0 {
+		t.Fatalf("goMemLimit is %q, want a whole number of KiB, MiB, GiB or TiB, as the Go runtime reads it", values.GoMemLimit)
+	}
+	soft := n * units[unit]
+	request, limit := values.Resources.Requests.Memory().Value(), values.Resources.Limits.Memory().Value()
+	if request == 0 || soft < request || soft >= limit {
+		t.Errorf("goMemLimit is %d bytes beside a memory request of %d and a limit of %d, want it at least the request and below the limit", soft, request, limit)
 	}
 }
 
