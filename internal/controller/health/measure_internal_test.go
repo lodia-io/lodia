@@ -466,17 +466,17 @@ func TestMeasureTheLiveHeapOfAPassWhoseEveryReadIsAtItsWorst(t *testing.T) {
 			padding(maxResponseBytes, `{"metadata":{},"items":[{"metadata":{"name":"n","annotations":{"pad":"`, `"}},"status":{"nodeInfo":{"kubeletVersion":"v1.35.0"},"conditions":[{"type":"Ready","status":"True"}]}}]}`))
 		r := &NodesReconciler{Timeout: 10 * time.Minute, MaxNodes: 5000}
 		measure(t, readsBound(nodesReads)+summariesAtMost, func() {
-			read, err := r.readLease(t.Context(), tenant)
+			s := &sampling{}
+			read, err := r.readLease(t.Context(), tenant, s)
 			if err != nil {
 				t.Error(err)
 				return
 			}
-			s := &sampling{}
 			leases, err := r.list(t.Context(), tenant, s, time.Now())
 			if err != nil || len(leases) != 1 || len(s.nodes) != 1 || s.leasesStop != "" || s.nodesStop != "" {
 				t.Errorf("the lists returned %d Leases, %d Nodes, stops %q and %q, error %v, want one of each", len(leases), len(s.nodes), s.leasesStop, s.nodesStop, err)
 			}
-			if _, err := r.writeLease(t.Context(), tenant, read, renewLease, time.Now()); err != nil {
+			if _, err := r.writeLease(t.Context(), tenant, s, read, renewLease, time.Now()); err != nil {
 				t.Error(err)
 			}
 		})

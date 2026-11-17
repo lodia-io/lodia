@@ -1386,6 +1386,22 @@ func TestAWriteTimingOutOrFailingAppliesNothing(t *testing.T) {
 	}
 }
 
+func TestAWriteThatRunsIntoItsTimeoutRequeuesAPeriodAfterItsEnd(t *testing.T) {
+	h := sampling(t, "a", "b", "c")
+	h.r.Timeout = 300 * time.Millisecond
+	h.at(0)
+	renew(t, contract.ControllerManagerLease, "", time.Now())
+	h.inject(func(w http.ResponseWriter, req *http.Request) bool {
+		if req.URL.Path != managerLease || req.Method != http.MethodPatch {
+			return false
+		}
+		hang(w, req)
+		return true
+	})
+	h.r.Period = 100 * time.Millisecond
+	h.at(20)
+}
+
 func TestACreateThatMeetsAlreadyExistsAppliesNothing(t *testing.T) {
 	h := sampling(t, "a", "b", "c")
 	h.at(0)

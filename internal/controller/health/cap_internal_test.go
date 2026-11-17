@@ -155,12 +155,13 @@ func nodesPasses(t *testing.T, kubeconfig []byte, timeout time.Duration) (*tenan
 	}
 	t.Cleanup(func() { r.forget(key) })
 	return tenant, func(ctx context.Context) error {
-		read, first := r.readLease(ctx, tenant)
-		_, err := r.list(ctx, tenant, &sampling{}, renewedAt)
+		s := &sampling{}
+		read, first := r.readLease(ctx, tenant, s)
+		_, err := r.list(ctx, tenant, s, renewedAt)
 		if first == nil {
 			first = err
 		}
-		_, err = r.writeLease(ctx, tenant, read, renewLease, renewedAt)
+		_, err = r.writeLease(ctx, tenant, s, read, renewLease, renewedAt)
 		if first == nil {
 			first = err
 		}

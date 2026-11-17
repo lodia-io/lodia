@@ -792,6 +792,31 @@ func TestAPassLongerThanThePeriodStillRequeues(t *testing.T) {
 	}
 }
 
+func TestAPassThatRunsIntoItsTimeoutRequeuesAPeriodAfterItsEnd(t *testing.T) {
+	for _, hanging := range []string{managerLease, leaseListPath} {
+		cp := tenantControlPlane(t)
+		writeKubeconfig(t, cp, throughProxy(t, func(_ http.ResponseWriter, req *http.Request) bool {
+			if req.URL.Path == hanging {
+				<-req.Context().Done()
+				return true
+			}
+			return false
+		}))
+		r := nodesReconciler(clock.RealClock{})
+		r.Timeout = 300 * time.Millisecond
+		for _, period := range []time.Duration{100 * time.Millisecond, 2 * time.Second} {
+			r.Period = period
+			result, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.RequeueAfter != period {
+				t.Errorf("a pass whose read of %s ran into its Timeout of %s at a period of %s requeues after %s, want the period", hanging, r.Timeout, period, result.RequeueAfter)
+			}
+		}
+	}
+}
+
 func TestAFailingPassReturnsNoError(t *testing.T) {
 	cp := tenantControlPlane(t)
 	start := time.Now().Truncate(time.Second)

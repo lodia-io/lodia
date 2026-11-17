@@ -156,6 +156,8 @@ type sampling struct {
 	// count is what this pass counted, once the clock of the node Leases has
 	// run SilentAfter and while the hold is on, else nil.
 	count *nodeCount
+	// ranOut is whether a read of this pass ran into its Timeout.
+	ranOut bool
 }
 
 // restart forgets the clock of the node Leases and the count towards the
@@ -222,7 +224,7 @@ func (r *NodesReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		}
 		logf.FromContext(ctx).Error(err, "read the ControlPlane")
 		r.unread(req.NamespacedName)
-		result, _ := r.again(now)
+		result, _ := r.again(now, false)
 		return result, nil
 	}
 	if !cp.DeletionTimestamp.IsZero() || cp.Spec.Paused {
@@ -233,25 +235,43 @@ func (r *NodesReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if !s.due.IsZero() && r.SampleLag != nil {
 		r.SampleLag.Observe(max(now.Sub(s.due), 0).Seconds())
 	}
-	s.count = nil
+	s.count, s.ranOut = nil, false
 	if err := r.sample(ctx, cp, s, now); err != nil {
 		logf.FromContext(ctx).Error(err, "sample the tenant's nodes")
 	}
 	r.publish(req.NamespacedName, s)
-	result, due := r.again(now)
+	result, due := r.again(now, s.ranOut)
 	s.due = due
 	return result, nil
 }
 
 // again requeues a Period after now, or in a second when the pass took longer,
-// and returns when the next pass is due: controller-runtime adds the request
-// once Reconcile returns. It returns no error on any path: controller-runtime
-// does not requeue a non-positive RequeueAfter, and an error goes to a backoff
-// that reaches 1,000 s (https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/internal/controller/controller.go#L498-L516).
-func (r *NodesReconciler) again(now time.Time) (ctrl.Result, time.Time) {
+// and a Period after the pass's end when one of its reads ran into its
+// Timeout, as Reconciler does, so that a tenant that does not answer holds a
+// worker for one Timeout in every Timeout and Period. It returns when the next
+// pass is due: controller-runtime adds the request once Reconcile returns. It
+// returns no error on any path: controller-runtime does not requeue a
+// non-positive RequeueAfter, and an error goes to a backoff that reaches
+// 1,000 s (https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/internal/controller/controller.go#L498-L516).
+func (r *NodesReconciler) again(now time.Time, ranOut bool) (ctrl.Result, time.Time) {
 	end := r.Clock.Now()
 	after := max(r.Period-end.Sub(now), time.Second)
+	if ranOut {
+		after = r.Period
+	}
 	return ctrl.Result{RequeueAfter: after}, end.Add(after)
+}
+
+// within bounds one read of the tenant by Timeout; its cancel notes on s that
+// the read ran into it.
+func (r *NodesReconciler) within(ctx context.Context, s *sampling) (context.Context, context.CancelFunc) {
+	bounded, cancel := context.WithTimeout(ctx, r.Timeout)
+	return bounded, func() {
+		if errors.Is(bounded.Err(), context.DeadlineExceeded) {
+			s.ranOut = true
+		}
+		cancel()
+	}
 }
 
 // sample takes one pass over cp; an error only ends it, to be logged.
@@ -290,7 +310,7 @@ func (r *NodesReconciler) sample(ctx context.Context, cp *lodiav1alpha1.ControlP
 // the Nodes, both under one Timeout. A failed list of Nodes leaves the last
 // good one.
 func (r *NodesReconciler) list(ctx context.Context, tenant *tenant, s *sampling, now time.Time) ([]leaseVersion, error) {
-	listing, cancel := context.WithTimeout(ctx, r.Timeout)
+	listing, cancel := r.within(ctx, s)
 	defer cancel()
 	leases, leaseStop, leaseErr := r.listLeases(listing, tenant)
 	if s.listedAt.IsZero() || now.Sub(s.listedAt) >= nodesEvery {

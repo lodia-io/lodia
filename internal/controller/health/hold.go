@@ -66,7 +66,7 @@ type row struct {
 // and the Nodes, selects a row and makes its write, then reports. A conflict selects the row again from the Lease as it stands then,
 // so that a retry never writes over a holder the table does not allow.
 func (r *NodesReconciler) holdOrRelease(ctx context.Context, cp *lodiav1alpha1.ControlPlane, t *tenant, s *sampling, now time.Time) error {
-	lease, readErr := r.readLease(ctx, t)
+	lease, readErr := r.readLease(ctx, t, s)
 	listed := false
 	if readErr == nil && access(cp) {
 		items, err := r.list(ctx, t, s, now)
@@ -81,14 +81,14 @@ func (r *NodesReconciler) holdOrRelease(ctx context.Context, cp *lodiav1alpha1.C
 	first := true
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		if !first {
-			lease, readErr = r.readLease(ctx, t)
+			lease, readErr = r.readLease(ctx, t, s)
 		}
 		first = false
 		var err error
 		if chosen, err = r.selectRow(ctx, cp, s, lease, readErr, listed, now); err != nil {
 			return err
 		}
-		written, err := r.writeLease(ctx, t, lease, chosen.write, now)
+		written, err := r.writeLease(ctx, t, s, lease, chosen.write, now)
 		if err == nil {
 			lease = written
 			return nil
@@ -111,8 +111,8 @@ func (r *NodesReconciler) holdOrRelease(ctx context.Context, cp *lodiav1alpha1.C
 
 // readLease reads the controller manager's Lease with a consistent GET; a
 // Lease that does not exist reads as nil, with no error.
-func (r *NodesReconciler) readLease(ctx context.Context, t *tenant) (*leaderLease, error) {
-	reading, cancel := context.WithTimeout(ctx, r.Timeout)
+func (r *NodesReconciler) readLease(ctx context.Context, t *tenant, s *sampling) (*leaderLease, error) {
+	reading, cancel := r.within(ctx, s)
 	defer cancel()
 	lease, err := t.getLease(reading, contract.ControllerManagerLease)
 	if apierrors.IsNotFound(err) {
@@ -301,7 +301,7 @@ func (r *NodesReconciler) podOfControlPlane(ctx context.Context, cp *lodiav1alph
 // carries the resourceVersion of the read, which the API server answers with a
 // conflict once the Lease has moved, so the fields it does not write are kept;
 // a Lease that does not exist is created.
-func (r *NodesReconciler) writeLease(ctx context.Context, t *tenant, read *leaderLease, write leaseWrite, now time.Time) (*leaderLease, error) {
+func (r *NodesReconciler) writeLease(ctx context.Context, t *tenant, s *sampling, read *leaderLease, write leaseWrite, now time.Time) (*leaderLease, error) {
 	at := new(metav1.NewMicroTime(now))
 	var spec coordinationv1.LeaseSpec
 	switch write {
@@ -321,7 +321,7 @@ func (r *NodesReconciler) writeLease(ctx context.Context, t *tenant, read *leade
 		spec.HolderIdentity, spec.LeaseDurationSeconds = new(""), new(releasedLeaseSeconds)
 		spec.AcquireTime, spec.RenewTime = at, at
 	}
-	writing, cancel := context.WithTimeout(ctx, r.Timeout)
+	writing, cancel := r.within(ctx, s)
 	defer cancel()
 	if read == nil {
 		body, err := json.Marshal(&coordinationv1.Lease{
