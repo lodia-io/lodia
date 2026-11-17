@@ -268,7 +268,7 @@ func TestExtraArgsRefuseTheFlagsLodiaSets(t *testing.T) {
 			"authorization-webhook-cache-authorized-ttl": conflict, "authorization-webhook-cache-unauthorized-ttl": conflict,
 			"admission-control": conflict, "cert-dir": conflict, "service-account-key-file": conflict, "service-account-signing-key-file": conflict,
 			"help": exits, "version": exits,
-			"max-requests-inflight": "", "service-account-max-token-expiration": "", "authentication-token-webhook-config-file": "",
+			"max-requests-inflight": "", "authentication-token-webhook-config-file": "",
 			"disable-admission-plugins": "", "tls-sni-cert-key": "",
 		},
 		"controllerManager": {
@@ -276,12 +276,12 @@ func TestExtraArgsRefuseTheFlagsLodiaSets(t *testing.T) {
 			"leader-elect-resource-lock": sets, "leader-elect-resource-name": sets, "leader-elect-resource-namespace": sets,
 			"node-monitor-grace-period": sets, "node-monitor-period": sets, "cluster-signing-kubelet-client-cert-file": sets,
 			"secure-port": defaults, "cluster-signing-cert-file": conflict, "cluster-signing-key-file": conflict, "master": conflict,
-			"service-account-private-key-file": conflict, "help": exits, "version": exits,
-			"terminated-pod-gc-threshold": "", "node-cidr-mask-size": "", "node-cidr-mask-size-ipv4": "",
+			"service-account-private-key-file": conflict, "help": exits, "version": exits, "authorization-always-allow-paths": defaults,
+			"terminated-pod-gc-threshold": "",
 		},
 		"scheduler": {
 			"leader-elect-resource-lock": sets, "leader-elect-resource-name": sets, "leader-elect-resource-namespace": sets, "kubeconfig": sets,
-			"secure-port": defaults, "config": conflict, "master": conflict,
+			"secure-port": defaults, "authorization-always-allow-paths": defaults, "config": conflict, "master": conflict,
 			"help": exits, "version": exits, "write-config-to": exits,
 			"leader-elect-lease-duration": "",
 		},
@@ -305,6 +305,8 @@ func TestExtraArgsRefuseWhatConflictsWithTheirValues(t *testing.T) {
 		ipv4     = "kube-controller-manager refuses node-cidr-mask-size-ipv4 with an IPv6 pod range alone"
 		ipv6     = "kube-controller-manager refuses node-cidr-mask-size-ipv6 with an IPv4 pod range alone"
 		signer   = "kube-apiserver refuses service-account-signing-endpoint, which Lodia sets, without ExternalServiceAccountTokenSigner"
+		tokens   = "kube-apiserver refuses service-account-max-token-expiration above 8760h"
+		narrow   = "kube-controller-manager refuses a pod range narrower than the node mask of its family"
 	)
 	args := func(component string, flags map[string]any) func(*testing.T, *unstructured.Unstructured) {
 		return func(t *testing.T, o *unstructured.Unstructured) { set(t, o, flags, "spec", component, "extraArgs") }
@@ -319,6 +321,10 @@ func TestExtraArgsRefuseWhatConflictsWithTheirValues(t *testing.T) {
 	}{
 		{"NodeRestriction disabled", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "NodeRestriction"})}, disabled},
 		{"NodeRestriction disabled among others", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "PodSecurity,NodeRestriction"})}, disabled},
+		{"NodeRestriction disabled first among others", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "NodeRestriction,PodSecurity"})}, disabled},
+		{"NodeRestriction disabled between others", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "PodSecurity,NodeRestriction,DefaultStorageClass"})}, disabled},
+		{"NodeRestriction disabled quoted", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": `"NodeRestriction"`})}, disabled},
+		{"NodeRestriction disabled quoted among others", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": `PodSecurity,"NodeRestriction",DefaultStorageClass`})}, disabled},
 		{"another plugin disabled", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"disable-admission-plugins": "PodSecurity,DefaultStorageClass"})}, ""},
 		{"a node mask size with one IPv4 range", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size": "26"})}, ""},
 		{"a node mask size with two ranges", []func(*testing.T, *unstructured.Unstructured){pods("10.244.0.0/16", "fd00:10:244::/56"), args("controllerManager", map[string]any{"node-cidr-mask-size": "26"})}, dual},
@@ -327,6 +333,20 @@ func TestExtraArgsRefuseWhatConflictsWithTheirValues(t *testing.T) {
 		{"an IPv4 node mask size with an IPv6 range", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10:244::/56"), args("controllerManager", map[string]any{"node-cidr-mask-size-ipv4": "26"})}, ipv4},
 		{"an IPv6 node mask size with an IPv6 range", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10:244::/56"), args("controllerManager", map[string]any{"node-cidr-mask-size-ipv6": "64"})}, ""},
 		{"an IPv6 node mask size with an IPv4 range", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size-ipv6": "64"})}, ipv6},
+		{"a pod range of the default IPv4 node mask", []func(*testing.T, *unstructured.Unstructured){pods("10.244.0.0/24")}, ""},
+		{"a pod range narrower than the default IPv4 node mask", []func(*testing.T, *unstructured.Unstructured){pods("10.244.0.0/25")}, narrow},
+		{"a pod range of a node mask size", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size": "16"})}, ""},
+		{"a pod range narrower than a node mask size", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size": "12"})}, narrow},
+		{"a pod range narrower than an IPv4 node mask size", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size-ipv4": "15"})}, narrow},
+		{"an IPv6 pod range of the default node mask", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10:244::/64")}, ""},
+		{"an IPv6 pod range narrower than the default node mask", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10:244::/80")}, narrow},
+		{"an IPv6 pod range 16 bits wider than the default node mask", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10::/48")}, ""},
+		{"an IPv6 pod range 17 bits wider than the default node mask", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10::/47")}, narrow},
+		{"an IPv6 pod range 17 bits wider than an IPv6 node mask size", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10:244::/56"), args("controllerManager", map[string]any{"node-cidr-mask-size-ipv6": "73"})}, narrow},
+		{"the IPv6 range of two narrower than its node mask", []func(*testing.T, *unstructured.Unstructured){pods("10.244.0.0/16", "fd00:10:244::/96")}, narrow},
+		{"tokens of the signer's longest life", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "8760h"})}, ""},
+		{"tokens of an hour", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "1h"})}, ""},
+		{"tokens of more than the signer's longest life", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "8760h1s"})}, tokens},
 		{"the external signer's gate off", []func(*testing.T, *unstructured.Unstructured){func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, map[string]any{"ExternalServiceAccountTokenSigner": false}, "spec", "apiServer", "featureGates")
 		}}, signer},

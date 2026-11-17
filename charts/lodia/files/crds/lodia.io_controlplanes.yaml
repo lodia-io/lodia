@@ -220,7 +220,12 @@ spec:
                       rule: '!self.exists(k, k in [''help'', ''version''])'
                     - message: disable-admission-plugins cannot name NodeRestriction,
                         which Lodia enables
-                      rule: '!(''disable-admission-plugins'' in self) || !self[''disable-admission-plugins''].matches(''(^|,)NodeRestriction(,|$)'')'
+                      rule: '!(''disable-admission-plugins'' in self) || !self[''disable-admission-plugins''].matches(''(^|,)"?NodeRestriction"?(,|$)'')'
+                    - message: kube-apiserver refuses service-account-max-token-expiration
+                        above 8760h, the longest token lodia-signer signs
+                      rule: '!(''service-account-max-token-expiration'' in self) ||
+                        duration(self[''service-account-max-token-expiration'']) <=
+                        duration(''8760h'')'
                   featureGates:
                     additionalProperties:
                       type: boolean
@@ -329,7 +334,8 @@ spec:
                         ''node-monitor-period'', ''requestheader-client-ca-file'',
                         ''root-ca-file'', ''service-cluster-ip-range'', ''use-service-account-credentials''])'
                     - message: Lodia relies on this flag's default
-                      rule: '!self.exists(k, k in [''secure-port''])'
+                      rule: '!self.exists(k, k in [''authorization-always-allow-paths'',
+                        ''secure-port''])'
                     - message: this flag conflicts with one Lodia sets
                       rule: '!self.exists(k, k in [''cluster-signing-cert-file'',
                         ''cluster-signing-key-file'', ''master'', ''service-account-private-key-file''])'
@@ -795,7 +801,8 @@ spec:
                         ''kubeconfig'', ''leader-elect'', ''leader-elect-resource-lock'',
                         ''leader-elect-resource-name'', ''leader-elect-resource-namespace''])'
                     - message: Lodia relies on this flag's default
-                      rule: '!self.exists(k, k in [''secure-port''])'
+                      rule: '!self.exists(k, k in [''authorization-always-allow-paths'',
+                        ''secure-port''])'
                     - message: this flag conflicts with one Lodia sets
                       rule: '!self.exists(k, k in [''config'', ''master''])'
                     - message: this flag makes the component exit, or report another
@@ -950,6 +957,26 @@ spec:
                 || !(''node-cidr-mask-size-ipv6'' in self.controllerManager.extraArgs)
                 || size(self.network.podCIDRs) != 1 || !isCIDR(self.network.podCIDRs[0])
                 || cidr(self.network.podCIDRs[0]).ip().family() == 6'
+            - message: kube-controller-manager refuses a pod range narrower than the
+                node mask of its family, 24 for IPv4 and 64 for IPv6 unless controllerManager.extraArgs
+                sets it, and an IPv6 range more than 16 bits wider than it
+              rule: 'self.network.podCIDRs.all(c, !isCIDR(c) || (cidr(c).ip().family()
+                == 4 ? cidr(c).prefixLength() <= (has(self.controllerManager) && has(self.controllerManager.extraArgs)
+                && ''node-cidr-mask-size-ipv4'' in self.controllerManager.extraArgs
+                ? int(self.controllerManager.extraArgs[''node-cidr-mask-size-ipv4''])
+                : has(self.controllerManager) && has(self.controllerManager.extraArgs)
+                && ''node-cidr-mask-size'' in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs[''node-cidr-mask-size''])
+                : 24) : cidr(c).prefixLength() <= (has(self.controllerManager) &&
+                has(self.controllerManager.extraArgs) && ''node-cidr-mask-size-ipv6''
+                in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs[''node-cidr-mask-size-ipv6''])
+                : has(self.controllerManager) && has(self.controllerManager.extraArgs)
+                && ''node-cidr-mask-size'' in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs[''node-cidr-mask-size''])
+                : 64) && (has(self.controllerManager) && has(self.controllerManager.extraArgs)
+                && ''node-cidr-mask-size-ipv6'' in self.controllerManager.extraArgs
+                ? int(self.controllerManager.extraArgs[''node-cidr-mask-size-ipv6''])
+                : has(self.controllerManager) && has(self.controllerManager.extraArgs)
+                && ''node-cidr-mask-size'' in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs[''node-cidr-mask-size''])
+                : 64) - cidr(c).prefixLength() <= 16))'
           status:
             description: ControlPlaneStatus is what Lodia observed and did.
             properties:
