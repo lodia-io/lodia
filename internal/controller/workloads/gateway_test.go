@@ -1264,8 +1264,8 @@ func TestARestartBetweenWritesGoesThroughTheUncachedRead(t *testing.T) {
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 		t.Fatal(err)
 	}
-	if n := lists.Load(); n != 1 {
-		t.Errorf("the pass read the routes without the cache %d times, want once, until its first write showed in the cache", n)
+	if n := lists.Load(); n != 3 {
+		t.Errorf("the pass read the routes without the cache %d times, want once per route: a write that leaves a route as it was shows nothing in the cache", n)
 	}
 	if after := resourceVersions(t, cp.Namespace, &gatewayv1.TLSRouteList{}); fmt.Sprint(after) != fmt.Sprint(before) {
 		t.Errorf("the routes moved: %v, then %v", before, after)
