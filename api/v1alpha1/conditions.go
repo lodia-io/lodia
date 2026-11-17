@@ -26,9 +26,10 @@ const (
 // awaited, False: X is a condition type without "Ready", or Ready itself
 // (WaitingForReady), a spec or status field (WaitingForWindow,
 // WaitingForNodes), or the kind of a named object that is not ready yet.
-// Unsupported is what this release does not build, the field named in the
-// message; <Capability>Unsupported is an environment that cannot serve the
-// spec. <Kind>NotFound is a named object that does not exist. Refused is the
+// Unsupported is a Kubernetes version this release does not run, or a minor
+// step it does not take, the version or the minor named in the message;
+// <Capability>Unsupported is an environment that cannot serve the spec.
+// <Kind>NotFound is a named object that does not exist. Refused is the
 // API server a controller writes to refusing one of its objects, False, the
 // object named in the message.
 // ObjectsControlledElsewhere is an object under a writer's names that another
