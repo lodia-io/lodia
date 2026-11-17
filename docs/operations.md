@@ -831,7 +831,7 @@ Between them it waits until the operator has settled: for 5 s, no controller but
 The requests of a change, one update, every update, a restart and the wave at the default slots, are given also less what the tenants of the fleet send at rest in as long, by the rate of a tenant at rest times the tenants the fleet has then, one for one tenant's namespace, since the periodic reads of the window are not the change's.
 The operator serves what it counts, its requests by verb and resource, its passes by controller, its heap and its CPU, and the test reads its resident set with `ps`.
 The runs below are on go1.26.11, one at a time: on Linux, a VM of 16 vCPUs and 64 GB, `n2-standard-16`, Ubuntu 24.04, with `GOMAXPROCS=8`, 1 run of 100 tenants and 2 of 1,000; on 16 cores of an Apple M4 Max with `GOMAXPROCS=8`, 2 runs of 300; and on the nightly runner, 2 runs of 300 at its 4 CPUs.
-A window of a few seconds can hold more of the periodic reads of Secrets than their average at rest: the runner's 18 to 20 requests of one update and 5,400 to 5,760 of every update are 2 and 359 such reads more.
+A window of a few seconds can hold more of the periodic reads of Secrets than their average at rest: the 18 to 20 requests of one update on the runner and at 1,000 tenants on Linux, and the runner's 5,400 to 5,760 of every update, hold 2 and 359 such reads more.
 Each nightly run writes its report into the summary of its workflow run.
 
 | | 100 tenants, Linux | 300 tenants, the Mac | 300 tenants, the runner | 1,000 tenants, Linux |
@@ -844,7 +844,7 @@ Each nightly run writes its report into the summary of its workflow run.
 | idle connections at rest, one for each client of each tenant, and what each holds of live heap and stacks | 200; 49 KiB | 600; 42 to 48 KiB | 600; 53 KiB | 2,000; 26 to 43 KiB |
 | a handshake more, when every answer closes its connection, in the operator's CPU | 1.43 ms | 0.51 to 0.65 ms | 0.81 to 0.87 ms | 1.68 to 1.70 ms |
 | a `ControlPlane`, as JSON | 10,604 bytes, 4,712 of status and 5,209 of `managedFields` | the same | the same | the same |
-| one `ControlPlane` updated, a label | one pass of PKI, Lifecycle, Workloads and the Datastore controller; 18 requests besides the reads of the window at rest | the same | the same, 18 to 20 | the same |
+| one `ControlPlane` updated, a label | one pass of PKI, Lifecycle, Workloads and the Datastore controller; 18 requests besides the reads of the window at rest | the same | the same, 18 to 20 | the same, 18 to 20 |
 | every `ControlPlane` updated at once: settled in, requests besides those at rest | 2 s, 1,821 | 3 s, 5,400 | 11 s, 5,400 to 5,760 | 22 s, 18,002 to 18,004 |
 | a batch of gateway tenants beside the routes of the fleet: every route Accepted, every one Ready, the median and the most | 5 beside 300 routes: 0.5 s; 2.5 s | 15 beside 900: 0.5 and 1.0 s; 2.5 and 3.0 s | 15 beside 900: 4.1 to 4.2 and 5.2 to 5.6 s; 8.7 to 8.8 and 9.8 s | 50 beside 3,000: 10.0 to 10.6 and 11.5 to 12.2 s; 15.2 to 15.8 and 17.8 to 17.9 s |
 | a list of every `ControlPlane` from the cache with copies, a gateway tenant's pass | 0.74 ms, 0.9 MiB allocated | 0.64 to 0.66 ms, 2.8 MiB | 1.03 to 1.50 ms, 2.8 MiB | 8.85 to 9.73 ms, 9.2 MiB |
