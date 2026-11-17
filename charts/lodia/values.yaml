@@ -68,7 +68,7 @@ controllers:
   tenant:
     workers: 10
   health:
-    workers: 10
+    workers: 100
   health-nodes:
     workers: 100
   workloads:

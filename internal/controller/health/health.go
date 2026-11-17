@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"golang.org/x/sync/semaphore"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -57,6 +58,10 @@ const (
 	// restoreReads is how many reads a pass has in flight at once, the seven
 	// lists of a held restore.
 	restoreReads = 7
+
+	// heldRestores is how many passes over a held restore list at once, so that
+	// the memory of their lists does not grow with the workers.
+	heldRestores = 10
 
 	// accessNotTrue is the message of a pass while AccessReady is not True:
 	// Reconciler reads nothing in the tenant then, and NodesReconciler reads only
@@ -99,6 +104,7 @@ type Reconciler struct {
 	failures map[types.NamespacedName]int
 	renewals map[types.NamespacedName]map[string]renewal
 	clients  map[types.NamespacedName]*tenantClients
+	restores *semaphore.Weighted
 }
 
 // tenantClients are the clients of one tenant over one transport, and the
@@ -529,20 +535,31 @@ func (r *Reconciler) actedOn(ctx context.Context, t *tenant) string {
 		found tally
 		err   error
 	}
+	listing, cancel := context.WithTimeout(ctx, r.Timeout)
+	defer cancel()
 	results := make([][]answer, len(items))
-	var wg sync.WaitGroup
 	for i, item := range items {
 		results[i] = make([]answer, len(item.lists))
-		for j, l := range item.lists {
-			wg.Go(func() {
-				listing, cancel := context.WithTimeout(ctx, r.Timeout)
-				defer cancel()
-				found, err := l.read(listing)
-				results[i][j] = answer{found, err}
-			})
-		}
 	}
-	wg.Wait()
+	if err := r.restoreLists().Acquire(listing, 1); err != nil {
+		for i := range results {
+			for j := range results[i] {
+				results[i][j] = answer{err: err}
+			}
+		}
+	} else {
+		var wg sync.WaitGroup
+		for i, item := range items {
+			for j, l := range item.lists {
+				wg.Go(func() {
+					found, err := l.read(listing)
+					results[i][j] = answer{found, err}
+				})
+			}
+		}
+		wg.Wait()
+		r.restoreLists().Release(1)
+	}
 	var out []string
 	for i, item := range items {
 		var found tally
@@ -714,6 +731,15 @@ func (r *Reconciler) forget(key types.NamespacedName) {
 // prober verifies the endpoint against bundle, or is nil when bundle holds no
 // certificate. Its client pair is pair's, and nil outside gateway mode or when
 // pair holds no certificate and key.
+func (r *Reconciler) restoreLists() *semaphore.Weighted {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.restores == nil {
+		r.restores = semaphore.NewWeighted(heldRestores)
+	}
+	return r.restores
+}
+
 func (r *Reconciler) prober(bundle []byte, pair *corev1.Secret) *prober {
 	roots := x509.NewCertPool()
 	if !roots.AppendCertsFromPEM(bundle) {

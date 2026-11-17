@@ -90,9 +90,17 @@ func roundedUp(x float64, decimals int) float64 {
 }
 
 func TestEveryFigureOfTheDerivationIsTheSumOfItsTermsRoundedUp(t *testing.T) {
-	const gibibyte = 1 << 30
+	const (
+		gibibyte         = 1 << 30
+		probeHeads       = 3
+		probeConnections = 5
+		healthWorkers    = 100
+	)
 	pass := readsBound(nodesReads) + summariesAtMost
 	atRest := uint64(summariesAtMost + 2*idleConnections*connectionMargin)
+	probes := uint64(probeHeads*headAndTrailersHTTP1 + probeConnections*connectionMargin)
+	probing := max(probes, readsBound(1))
+	healthWorst := heldRestores*readsBound(restoreReads) + (healthWorkers-heldRestores)*probing
 	for _, c := range []struct {
 		name     string
 		got      float64
@@ -107,7 +115,11 @@ func TestEveryFigureOfTheDerivationIsTheSumOfItsTermsRoundedUp(t *testing.T) {
 		{"the connections of a tenant at rest, MiB", mib(uint64(2 * idleConnections * connectionMargin)), 1, 4},
 		{"a tenant at rest, MiB", mib(atRest), 1, 8},
 		{"100 passes of health-nodes, GiB", 100 * float64(pass) / gibibyte, 2, 2.92},
-		{"10 passes of health over a held restore, GiB", 10 * float64(readsBound(restoreReads)) / gibibyte, 2, 1.78},
+		{"the held restores' lists at once, GiB", heldRestores * float64(readsBound(restoreReads)) / gibibyte, 2, 1.78},
+		{"the probes of a pass of health, MiB", mib(probes), 1, 20.5},
+		{"a pass of health that probes and reads its leader Leases, MiB", mib(probing), 1, 25.9},
+		{"the 100 workers of health, the held restores among them, GiB", float64(healthWorst) / gibibyte, 2, 4.05},
+		{"health and health-nodes at their default workers, GiB", float64(healthWorst+100*pass) / gibibyte, 2, 6.97},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if got := roundedUp(c.got, c.decimals); math.Abs(got-c.want) > 1e-9 {

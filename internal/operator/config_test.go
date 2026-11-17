@@ -56,7 +56,7 @@ func TestWithoutAFileTheDefaultsApply(t *testing.T) {
 		Fleet: operator.FleetConfig{MaxConcurrentRollouts: 5},
 		Controllers: operator.ControllersConfig{
 			PKI: workers(10), KubeconfigRequest: workers(10), Datastore: workers(10), Backup: workers(10), DatastoreSample: workers(10),
-			Lifecycle: workers(10), Tenant: workers(10), Health: workers(10), HealthNodes: workers(100), Workloads: workers(10),
+			Lifecycle: workers(10), Tenant: workers(10), Health: workers(100), HealthNodes: workers(100), Workloads: workers(10),
 		},
 	}
 	got, err := operator.LoadConfig("")

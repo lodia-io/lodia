@@ -105,7 +105,7 @@ func DefaultConfig() Config {
 		Fleet: FleetConfig{MaxConcurrentRollouts: 5},
 		Controllers: ControllersConfig{
 			PKI: ControllerConfig{10}, KubeconfigRequest: ControllerConfig{10}, Datastore: ControllerConfig{10}, Backup: ControllerConfig{10},
-			DatastoreSample: ControllerConfig{10}, Lifecycle: ControllerConfig{10}, Tenant: ControllerConfig{10}, Health: ControllerConfig{10},
+			DatastoreSample: ControllerConfig{10}, Lifecycle: ControllerConfig{10}, Tenant: ControllerConfig{10}, Health: ControllerConfig{100},
 			HealthNodes: ControllerConfig{100}, Workloads: ControllerConfig{10},
 		},
 	}
