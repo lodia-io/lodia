@@ -254,7 +254,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - Tenant and PKI build a tenant client for every pass, whose connections stay idle for 90 s after it: the fleet saw about 7 for each tenant after its creation, 42 KiB each; pass 7's one client for a tenant removes them.
 - Workloads' mappers of TLSRoute, Gateway and ControlPlane events list every `ControlPlane` from the cache with copies for each event, as a gateway tenant's pass does: at 315 tenants one such list took 0.7 ms and allocated 2.8 MiB; an index of the gateway tenants by Gateway would read only those that share one.
 - The fleet's etcd-druid is a stand-in, so etcd-druid's own scale is still unmeasured (above, "From the design").
-- A Gateway's route writes run one at a time, each waiting for the cache to show it, about 67 ms a write while 50 gateway tenants were created beside 3,000 routes, so the creation of 1,000 tenants, 3,000 writes, took about 4.7 minutes ([Scale](docs/operations.md#scale)): Lodia's routes hold one hostname each, so a fence for each hostname, with the Gateway's first read from the API server, would let the writes of different hostnames run at once.
+- A Gateway's route writes run one at a time, each waiting for the cache to show it: the 150 writes of 50 gateway tenants created beside 3,000 routes were done 11.5 to 12.2 s after they began, about 80 ms a write, and the 3,000 of the creation of 1,000 tenants took about 4.7 minutes, about 94 ms a write with the API server busier ([Scale](docs/operations.md#scale)): Lodia's routes hold one hostname each, so a fence for each hostname, with the Gateway's first read from the API server, would let the writes of different hostnames run at once.
 
 ## For the release that first drops a minor
 
