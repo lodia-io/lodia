@@ -795,10 +795,12 @@ func TestOnceTheCacheHoldsAWriteTheWritesOnItsGatewayReadTheirHostnameFromItWhat
 	a := createNamed(t, ns, "a", onGateway(ns, "lagging"))
 	b := createNamed(t, ns, "b", onGateway(ns, "lagging"))
 	c := createNamed(t, ns, "c", onGateway(ns, "kept"))
+	d := createNamed(t, ns, "d", onGateway(ns, "wild"))
 	for i := range 20 {
 		handmade(t, ns, fmt.Sprintf("bystander-%d", i), fmt.Sprintf("api.bystander-%d.%s", i, zone), ns, "tls")
 	}
 	gw := sharedGateway(ns)
+	gw.Spec.Listeners = append(gw.Spec.Listeners, passthrough("exact", "api.wild."+zone, 443))
 	const lag = 300 * time.Millisecond
 	var mu sync.Mutex
 	shownAt := map[client.ObjectKey]time.Time{}
@@ -889,6 +891,14 @@ func TestOnceTheCacheHoldsAWriteTheWritesOnItsGatewayReadTheirHostnameFromItWhat
 	reconcileAtOnce(t, r, c)
 	if fresh := tlsRoute(t, ns, foreign.Name); fresh.ResourceVersion != foreign.ResourceVersion || len(fresh.OwnerReferences) != 1 {
 		t.Errorf("a route another owner keeps under the name, which the cache lacks, was written: %+v", fresh.ObjectMeta)
+	}
+
+	handmade(t, ns, "wildcard", "*.wild."+zone, ns, "exact")
+	reconcileAtOnce(t, r, d)
+	for name, want := range map[string]bool{"d-kube-apiserver": false, "d-konnectivity": true, "d-tunnel": true} {
+		if got := tlsRouteOrNil(t, ns, name) != nil; got != want {
+			t.Errorf("TLSRoute %s exists %t, want %t: a wildcard holds api.wild on the listener that names it", name, got, want)
+		}
 	}
 }
 

@@ -199,3 +199,33 @@ func TestAWriteWaitsForTheGatewaysFenceUntilThePasssDeadline(t *testing.T) {
 		t.Error("two Gateways share a fence")
 	}
 }
+
+func TestTheCacheGivesAWriteTheRoutesThatMayHoldItsHostnameAndNoOther(t *testing.T) {
+	route := func(name string, hostnames ...gatewayv1.Hostname) *gatewayv1.TLSRoute {
+		return &gatewayv1.TLSRoute{ObjectMeta: metav1.ObjectMeta{Namespace: "t", Name: name}, Spec: gatewayv1.TLSRouteSpec{Hostnames: hostnames}}
+	}
+	cache := fake.NewClientBuilder().WithScheme(scheme(t)).WithIndex(&gatewayv1.TLSRoute{}, hostnamesIndex, routeHostnames).WithObjects(
+		route("exact", "api.dev.example.com"),
+		route("parent", "*.dev.example.com"),
+		route("grandparent", "*.example.com"),
+		route("top", "*.com"),
+		route("bare"),
+		route("several", "other.example.org", "api.dev.example.com"),
+		route("sibling", "konnectivity.dev.example.com"),
+		route("deeper", "*.api.dev.example.com"),
+		route("elsewhere", "*.example.org"),
+	).Build()
+	r := &Reconciler{Client: cache}
+	got, err := r.mayHold(t.Context(), true, "api.dev.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, route := range got {
+		names = append(names, route.Name)
+	}
+	slices.Sort(names)
+	if want := []string{"bare", "exact", "grandparent", "parent", "several", "top"}; !slices.Equal(names, want) {
+		t.Errorf("the cache gave %v, want %v", names, want)
+	}
+}
