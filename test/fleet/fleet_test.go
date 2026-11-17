@@ -122,6 +122,16 @@ func TestFleet(t *testing.T) {
 	f.write()
 }
 
+func TestEveryConnectionToATenantGoesThroughTheDial(t *testing.T) {
+	dir := t.TempDir()
+	f := startFleet(t, dir)
+	f.op = startOperator(t, dir, f.cfg, f.settings)
+	f.createOnly(1, 2)
+	f.waitFor("every ControlPlane Ready, its nodes counted", time.Now(), 5*time.Minute, func(cp *lodiav1alpha1.ControlPlane) bool {
+		return readyAt(cp) && cp.Status.Nodes != nil && cp.Status.Nodes.Total == nodesPerTenant
+	})
+}
+
 func startFleet(t *testing.T, dir string) *fleet {
 	t.Helper()
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
