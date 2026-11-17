@@ -9,6 +9,7 @@ package fence
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/resourceversion"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/features"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -28,7 +30,13 @@ const (
 // A Fence lets one check and its write run at a time. Until a write made
 // under it has shown in the cache, its holder's check reads the API server;
 // from then on, the cache. A watch delivers the changes of a kind in the order
-// of their resourceVersion, so a cache that holds a write holds every earlier
+// of their resourceVersion, and client-go's informer applies them in that
+// order: a watch's events under the feature gate InOrderInformers, GA and
+// locked on, and the list of a relist, after a watch it cannot resume, at once
+// under AtomicFIFO, Beta, on by default and not locked
+// (https://github.com/kubernetes/client-go/blob/v0.37.1/features/known_features.go#L112-L130,
+// https://github.com/kubernetes/client-go/blob/v0.37.1/tools/cache/controller.go#L1063-L1094),
+// which Ordered checks. So a cache that holds a write holds every earlier
 // change of the kind, an earlier leader's writes included, and each write
 // waits for the cache to hold it before the fence is released. A write whose
 // outcome is unknown, or that the cache does not hold within seenWithin, sends
@@ -37,6 +45,17 @@ type Fence struct {
 	once   sync.Once
 	lock   *semaphore.Weighted
 	cached bool
+}
+
+// Ordered returns an error unless gates have client-go's informers apply a
+// kind's changes in order, as a Fence needs.
+func Ordered(gates features.Gates) error {
+	for _, gate := range []features.Feature{features.InOrderInformers, features.AtomicFIFO} {
+		if !gates.Enabled(gate) {
+			return fmt.Errorf("client-go's feature gate %s is off, so the cache may apply a kind's changes out of order and a route's write or a slot's grant could miss an earlier one: unset KUBE_FEATURE_%s", gate, gate)
+		}
+	}
+	return nil
 }
 
 // Acquire takes the fence, or returns ctx's error.

@@ -36,6 +36,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/apiserver/pkg/storage/etcd3/testserver"
+	"k8s.io/client-go/features"
+	clientfeaturestesting "k8s.io/client-go/features/testing"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
@@ -295,6 +297,17 @@ func TestEachControllerRunsTheWorkersOfItsKey(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestSetupRefusesWithAnInformerGateOffBeforeItRegistersAnything(t *testing.T) {
+	for _, gate := range []features.Feature{features.InOrderInformers, features.AtomicFIFO} {
+		t.Run(string(gate), func(t *testing.T) {
+			clientfeaturestesting.SetFeatureDuringTest(t, gate, false)
+			if _, err := operator.Setup(nil, testInputs); err == nil || !strings.Contains(err.Error(), string(gate)) {
+				t.Errorf("Setup with client-go's %s off returned %v, want a refusal naming the gate", gate, err)
+			}
+		})
+	}
 }
 
 type roundTripper func(*http.Request) (*http.Response, error)

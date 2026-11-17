@@ -20,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/selection"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/features"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/utils/clock"
@@ -36,6 +37,7 @@ import (
 	"go.lodia.io/lodia/internal/controller/pki"
 	"go.lodia.io/lodia/internal/controller/tenant"
 	"go.lodia.io/lodia/internal/controller/workloads"
+	"go.lodia.io/lodia/internal/fence"
 	"go.lodia.io/lodia/internal/metrics"
 )
 
@@ -141,8 +143,12 @@ type Sources struct {
 }
 
 // Setup registers every controller with the manager and returns the Sources
-// Metrics serves.
+// Metrics serves. It refuses while client-go's informers may apply a kind's
+// changes out of order, which the fences of Workloads and Lifecycle rely on.
 func Setup(mgr ctrl.Manager, in Inputs) (*Sources, error) {
+	if err := fence.Ordered(features.FeatureGates()); err != nil {
+		return nil, err
+	}
 	revision, err := in.Revision()
 	if err != nil {
 		return nil, err
