@@ -140,6 +140,9 @@ func TestTheRestIsSubtractedForEachTenantTheFleetHasInTheWindow(t *testing.T) {
 	if got, want := f.net(map[string]int64{"get secrets": 30_000, "patch services": 7}, 30*time.Second), map[string]int64{"get secrets": 3_750, "patch services": 7}; !maps.Equal(got, want) {
 		t.Errorf("30 s of a fleet of 1,050 beside a rest of 50,000 reads a minute at 1,000 tenants nets %v, want %v", got, want)
 	}
+	if got, want := f.net(map[string]int64{"get secrets": 26_000, "patch services": 7}, 30*time.Second), map[string]int64{"patch services": 7}; !maps.Equal(got, want) {
+		t.Errorf("30 s of a fleet of 1,050 that read fewer Secrets than at rest nets %v, want %v", got, want)
+	}
 	if got, want := f.less(map[string]int64{"get secrets": 7, "patch services": 1}, 6*time.Second, 1), map[string]int64{"get secrets": 2, "patch services": 1}; !maps.Equal(got, want) {
 		t.Errorf("6 s of one tenant nets %v, want %v", got, want)
 	}
