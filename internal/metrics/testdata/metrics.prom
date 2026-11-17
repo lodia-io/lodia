@@ -814,23 +814,23 @@ lodia_controlplane_datastore_quota_bytes{controlplane="rolling",namespace="tenan
 lodia_controlplane_datastore_quota_bytes{controlplane="starting",namespace="tenants"} 4.294967296e+09
 lodia_controlplane_datastore_quota_bytes{controlplane="upgrading",namespace="tenants"} 4.294967296e+09
 lodia_controlplane_datastore_quota_bytes{controlplane="waiting",namespace="tenants"} 4.294967296e+09
-# HELP lodia_controlplane_info 1 for every ControlPlane: its UID, status.kubernetes.version, empty while absent, and the members of spec.datastore and spec.endpoint that are set.
+# HELP lodia_controlplane_info 1 for every ControlPlane: its UID, status.kubernetes.version, empty while absent, and the member of spec.endpoint that is set.
 # TYPE lodia_controlplane_info gauge
-lodia_controlplane_info{controlplane="aging",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="v1.35.10",namespace="tenants",uid="00000000-0000-0000-0000-000000000014"} 1
-lodia_controlplane_info{controlplane="crowded",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="v1.37.1",namespace="tenants",uid="00000000-0000-0000-0000-000000000016"} 1
-lodia_controlplane_info{controlplane="deleting",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="v1.37.1",namespace="tenants",uid="00000000-0000-0000-0000-000000000009"} 1
-lodia_controlplane_info{controlplane="edge",datastore="dedicated",endpoint_mode="gateway",kubernetes_version="v1.37.1",namespace="tenants",uid="00000000-0000-0000-0000-000000000002"} 1
-lodia_controlplane_info{controlplane="failed",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="v1.37.1",namespace="tenants",uid="00000000-0000-0000-0000-000000000004"} 1
-lodia_controlplane_info{controlplane="fresh",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="",namespace="tenants",uid="00000000-0000-0000-0000-000000000001"} 1
-lodia_controlplane_info{controlplane="legacy",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="v1.34.9",namespace="tenants",uid="00000000-0000-0000-0000-000000000015"} 1
-lodia_controlplane_info{controlplane="overdue",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="",namespace="tenants",uid="00000000-0000-0000-0000-000000000013"} 1
-lodia_controlplane_info{controlplane="paused",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="v1.37.1",namespace="tenants",uid="00000000-0000-0000-0000-000000000007"} 1
-lodia_controlplane_info{controlplane="queued",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="v1.37.1",namespace="tenants",uid="00000000-0000-0000-0000-000000000005"} 1
-lodia_controlplane_info{controlplane="restored",datastore="dedicated",endpoint_mode="nodePort",kubernetes_version="v1.36.4",namespace="tenants",uid="00000000-0000-0000-0000-000000000003"} 1
-lodia_controlplane_info{controlplane="rolling",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="v1.36.4",namespace="tenants",uid="00000000-0000-0000-0000-000000000011"} 1
-lodia_controlplane_info{controlplane="starting",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="",namespace="tenants",uid="00000000-0000-0000-0000-000000000010"} 1
-lodia_controlplane_info{controlplane="upgrading",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="v1.36.4",namespace="tenants",uid="00000000-0000-0000-0000-000000000006"} 1
-lodia_controlplane_info{controlplane="waiting",datastore="dedicated",endpoint_mode="loadBalancer",kubernetes_version="v1.37.1",namespace="tenants",uid="00000000-0000-0000-0000-000000000012"} 1
+lodia_controlplane_info{controlplane="aging",endpoint_mode="loadBalancer",kubernetes_version="v1.35.10",namespace="tenants",uid="00000000-0000-0000-0000-000000000014"} 1
+lodia_controlplane_info{controlplane="crowded",endpoint_mode="loadBalancer",kubernetes_version="v1.37.1",namespace="tenants",uid="00000000-0000-0000-0000-000000000016"} 1
+lodia_controlplane_info{controlplane="deleting",endpoint_mode="loadBalancer",kubernetes_version="v1.37.1",namespace="tenants",uid="00000000-0000-0000-0000-000000000009"} 1
+lodia_controlplane_info{controlplane="edge",endpoint_mode="gateway",kubernetes_version="v1.37.1",namespace="tenants",uid="00000000-0000-0000-0000-000000000002"} 1
+lodia_controlplane_info{controlplane="failed",endpoint_mode="loadBalancer",kubernetes_version="v1.37.1",namespace="tenants",uid="00000000-0000-0000-0000-000000000004"} 1
+lodia_controlplane_info{controlplane="fresh",endpoint_mode="loadBalancer",kubernetes_version="",namespace="tenants",uid="00000000-0000-0000-0000-000000000001"} 1
+lodia_controlplane_info{controlplane="legacy",endpoint_mode="loadBalancer",kubernetes_version="v1.34.9",namespace="tenants",uid="00000000-0000-0000-0000-000000000015"} 1
+lodia_controlplane_info{controlplane="overdue",endpoint_mode="loadBalancer",kubernetes_version="",namespace="tenants",uid="00000000-0000-0000-0000-000000000013"} 1
+lodia_controlplane_info{controlplane="paused",endpoint_mode="loadBalancer",kubernetes_version="v1.37.1",namespace="tenants",uid="00000000-0000-0000-0000-000000000007"} 1
+lodia_controlplane_info{controlplane="queued",endpoint_mode="loadBalancer",kubernetes_version="v1.37.1",namespace="tenants",uid="00000000-0000-0000-0000-000000000005"} 1
+lodia_controlplane_info{controlplane="restored",endpoint_mode="nodePort",kubernetes_version="v1.36.4",namespace="tenants",uid="00000000-0000-0000-0000-000000000003"} 1
+lodia_controlplane_info{controlplane="rolling",endpoint_mode="loadBalancer",kubernetes_version="v1.36.4",namespace="tenants",uid="00000000-0000-0000-0000-000000000011"} 1
+lodia_controlplane_info{controlplane="starting",endpoint_mode="loadBalancer",kubernetes_version="",namespace="tenants",uid="00000000-0000-0000-0000-000000000010"} 1
+lodia_controlplane_info{controlplane="upgrading",endpoint_mode="loadBalancer",kubernetes_version="v1.36.4",namespace="tenants",uid="00000000-0000-0000-0000-000000000006"} 1
+lodia_controlplane_info{controlplane="waiting",endpoint_mode="loadBalancer",kubernetes_version="v1.37.1",namespace="tenants",uid="00000000-0000-0000-0000-000000000012"} 1
 # HELP lodia_controlplane_kubernetes_end_of_support_timestamp_seconds The end-of-support date, at 00:00 UTC, that the version table gives the minor of status.kubernetes.version; absent while the version is absent and for a minor outside the table.
 # TYPE lodia_controlplane_kubernetes_end_of_support_timestamp_seconds gauge
 lodia_controlplane_kubernetes_end_of_support_timestamp_seconds{controlplane="aging",namespace="tenants"} 1.8037728e+09
