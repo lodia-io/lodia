@@ -179,17 +179,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if !failed {
+	if failed == "" {
 		r.count(req.NamespacedName, false)
 	}
-	leading, err := r.leading(ctx, cp)
-	if err != nil {
-		return ctrl.Result{}, err
+	var leading *metav1.Condition
+	if failed != lodiav1alpha1.ReasonInternalProbeFailed {
+		if leading, err = r.leading(ctx, cp); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 	if err := r.apply(ctx, cp, ptr.Deref(reachable, previous(cp, lodiav1alpha1.ConditionReachable)), ptr.Deref(leading, previous(cp, lodiav1alpha1.ConditionControllersLeading))); err != nil {
 		return ctrl.Result{}, err
 	}
-	if failed {
+	if failed != "" {
 		r.count(req.NamespacedName, true)
 	}
 	return ctrl.Result{RequeueAfter: r.Period}, nil
@@ -197,29 +199,32 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 // reachable returns nil to keep the condition as the API server holds it: a
 // True after fewer than r.FailuresBeforeFalse failed probes in a row. It also
-// says whether its probe failed: a success clears the count at once, and a
-// failure counts only once the pass has applied its conditions.
-func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*metav1.Condition, bool, error) {
+// returns the reason of a failed probe, empty when none failed: a success
+// clears the count at once, and a failure counts only once the pass has
+// applied its conditions. After a failed probe of the in-namespace Service,
+// the pass reads nothing more in the tenant, which is the address its reads
+// go to, so that a tenant that hangs holds a worker for one Timeout.
+func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*metav1.Condition, string, error) {
 	key := client.ObjectKeyFromObject(cp)
 	url := endpoint(cp)
 	if url == "" {
-		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint"), false, nil
+		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint"), "", nil
 	}
 	gateway := cp.Spec.Endpoint.Gateway != nil
 	if gateway && cp.Status.Endpoint.Tunnel == nil {
-		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint.tunnel"), false, nil
+		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint.tunnel"), "", nil
 	}
 	name := lodiav1alpha1.CABundleSecret.Name(cp.Name)
 	secret := &corev1.Secret{}
 	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: name}, secret); err != nil {
 		if apierrors.IsNotFound(err) {
-			return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the CA bundle "+name), false, nil
+			return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the CA bundle "+name), "", nil
 		}
-		return nil, false, err
+		return nil, "", err
 	}
 	if ref := ownership.ControlledElsewhere(secret, cp); ref != nil {
 		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates,
-			fmt.Sprintf("Secret %s is kept by %s %s with UID %s", name, ref.Kind, ref.Name, ref.UID)), false, nil
+			fmt.Sprintf("Secret %s is kept by %s %s with UID %s", name, ref.Kind, ref.Name, ref.UID)), "", nil
 	}
 	var pair *corev1.Secret
 	if gateway {
@@ -227,35 +232,35 @@ func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPla
 		pairName := lodiav1alpha1.TunnelClientSecret.Name(cp.Name)
 		if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: pairName}, pair); err != nil {
 			if apierrors.IsNotFound(err) {
-				return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the tunnel's client certificate "+pairName), false, nil
+				return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the tunnel's client certificate "+pairName), "", nil
 			}
-			return nil, false, err
+			return nil, "", err
 		}
 		if ref := ownership.ControlledElsewhere(pair, cp); ref != nil {
 			return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates,
-				fmt.Sprintf("Secret %s is kept by %s %s with UID %s", pairName, ref.Kind, ref.Name, ref.UID)), false, nil
+				fmt.Sprintf("Secret %s is kept by %s %s with UID %s", pairName, ref.Kind, ref.Name, ref.UID)), "", nil
 		}
 	}
 	prober := r.prober(secret.Data[lodiav1alpha1.CACertKey], pair)
 	if prober == nil {
-		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "the CA bundle "+name+" holds no certificate"), false, nil
+		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "the CA bundle "+name+" holds no certificate"), "", nil
 	}
 	if gateway && prober.client == nil {
-		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "the tunnel's client certificate "+pair.Name+" holds no certificate and key"), false, nil
+		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "the tunnel's client certificate "+pair.Name+" holds no certificate and key"), "", nil
 	}
 	reason, answer := r.probes(ctx, cp, prober, url)
 	if reason == "" {
-		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, answer), false, nil
+		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, answer), "", nil
 	}
 	if r.failed(key)+1 < r.FailuresBeforeFalse {
 		if err := live.Conditions(ctx, r.Reader, cp, lodiav1alpha1.ConditionReachable); err != nil {
-			return nil, false, err
+			return nil, "", err
 		}
 		if previous := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionReachable); previous != nil && previous.Status == metav1.ConditionTrue {
-			return nil, true, nil
+			return nil, reason, nil
 		}
 	}
-	return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, reason, answer), true, nil
+	return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, reason, answer), reason, nil
 }
 
 // probes runs the control plane's probes at once, each under Timeout, so that
@@ -715,10 +720,11 @@ func (r *Reconciler) prober(bundle []byte, pair *corev1.Secret) *prober {
 		return nil
 	}
 	direct := &http.Transport{
-		DialContext:         r.dial,
-		TLSClientConfig:     &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
-		TLSHandshakeTimeout: r.Timeout,
-		DisableKeepAlives:   true,
+		DialContext:            r.dial,
+		TLSClientConfig:        &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
+		TLSHandshakeTimeout:    r.Timeout,
+		DisableKeepAlives:      true,
+		MaxResponseHeaderBytes: maxResponseHeaderBytes,
 	}
 	p := &prober{direct: &http.Client{Transport: direct, CheckRedirect: noRedirects}, roots: roots}
 	if pair != nil {
@@ -857,9 +863,10 @@ func (r *Reconciler) throughTunnel(p *prober, tunnel lodiav1alpha1.HostPort) *ht
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return r.dialTLS(ctx, hostPort(tunnel), outer)
 			},
-			TLSClientConfig:     &tls.Config{RootCAs: p.roots, MinVersion: tls.VersionTLS12},
-			TLSHandshakeTimeout: r.Timeout,
-			DisableKeepAlives:   true,
+			TLSClientConfig:        &tls.Config{RootCAs: p.roots, MinVersion: tls.VersionTLS12},
+			TLSHandshakeTimeout:    r.Timeout,
+			DisableKeepAlives:      true,
+			MaxResponseHeaderBytes: maxResponseHeaderBytes,
 		},
 		CheckRedirect: noRedirects,
 	}

@@ -391,6 +391,24 @@ func TestASuccessfulProbeClearsTheCountInAPassThatFails(t *testing.T) {
 	}
 }
 
+func TestAPassOverATenantThatHangsEverywhereHoldsItsWorkerForOneTimeout(t *testing.T) {
+	cp := controlPlane(t)
+	e := serve(t)
+	publish(t, cp, e)
+	writeBundle(t, cp, e)
+	setAccess(t, cp)
+	writeKubeconfig(t, cp, tenantKubeconfig)
+	const timeout = 500 * time.Millisecond
+	r := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: blackHole, Period: time.Hour, Timeout: timeout, Clock: clock.RealClock{}}
+	for pass := range failuresBeforeFalse + 1 {
+		start := time.Now()
+		reconcile(t, r, cp)
+		if took := time.Since(start); took < timeout || took > timeout+300*time.Millisecond {
+			t.Errorf("pass %d over a tenant that hangs on every path took %s, want its one Timeout of %s and at most 300ms more", pass+1, took.Round(time.Millisecond), timeout)
+		}
+	}
+}
+
 func TestControllersLeadingFollowsTheLeaderLeases(t *testing.T) {
 	cp := controlPlane(t)
 	testenv.Eventually(t, func() error {
