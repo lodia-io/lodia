@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strings"
 
-	"golang.org/x/sync/semaphore"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -26,6 +25,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/apistatus"
+	"go.lodia.io/lodia/internal/fence"
 	"go.lodia.io/lodia/internal/ownership"
 )
 
@@ -296,29 +296,39 @@ func unchanged(current, desired *gatewayv1.TLSRoute) bool {
 }
 
 // write applies route unless another route on its Gateway holds its hostname,
-// or another owner keeps a route under its name, as the API server holds them:
-// it reads the routes without the cache under a semaphore of the Gateway, so
-// that two ControlPlanes never both create one hostname, whatever the cache
-// holds. The order among ControlPlanes comes from the cache, so a lagging one
-// at worst lets a younger one create first, which then deletes its routes.
+// or another owner keeps a route under its name. It runs under the Gateway's
+// fence, so that two ControlPlanes never both create one hostname, whatever
+// the cache holds: the route under its name is read from the API server, and
+// the routes that may hold its hostname from the API server until a route
+// written under the fence has shown in the cache, and from the cache, which
+// then holds every route Workloads wrote, after. The order among ControlPlanes
+// comes from the cache, so a lagging one at worst lets a younger one create
+// first, which then deletes its routes.
 func (r *Reconciler) write(ctx context.Context, cp *lodiav1alpha1.ControlPlane, gw *gatewayv1.Gateway, port int32, route *gatewayv1.TLSRoute) (*routeProblem, error) {
-	writes := r.semaphore(client.ObjectKeyFromObject(gw))
-	if err := writes.Acquire(ctx, 1); err != nil {
+	writes := r.fence(client.ObjectKeyFromObject(gw))
+	if err := writes.Acquire(ctx); err != nil {
 		return nil, err
 	}
-	defer writes.Release(1)
-	list := &gatewayv1.TLSRouteList{}
-	if err := r.Reader.List(ctx, list); err != nil {
+	defer writes.Release()
+	stored := &gatewayv1.TLSRoute{}
+	switch err := r.Reader.Get(ctx, client.ObjectKeyFromObject(route), stored); {
+	case apierrors.IsNotFound(err):
+	case err != nil:
 		return nil, err
+	default:
+		if owner := ownership.ControlledElsewhere(stored, cp); owner != nil {
+			problem := heldElsewhere(route, owner)
+			return &problem, nil
+		}
 	}
 	hostname := string(route.Spec.Hostnames[0])
-	for i := range list.Items {
-		other := &list.Items[i]
+	others, err := r.mayHold(ctx, writes.Cached(), hostname)
+	if err != nil {
+		return nil, err
+	}
+	for i := range others {
+		other := &others[i]
 		if other.Namespace == route.Namespace && other.Name == route.Name {
-			if owner := ownership.ControlledElsewhere(other, cp); owner != nil {
-				problem := heldElsewhere(route, owner)
-				return &problem, nil
-			}
 			continue
 		}
 		if slices.Contains(held(other, gw, port), hostname) {
@@ -326,17 +336,64 @@ func (r *Reconciler) write(ctx context.Context, cp *lodiav1alpha1.ControlPlane, 
 				fmt.Sprintf("hostname %s is held by TLSRoute %s/%s on Gateway %s/%s; Workloads writes no route for it until that one is gone", hostname, other.Namespace, other.Name, gw.Namespace, gw.Name)}, nil
 		}
 	}
-	return nil, r.apply(ctx, cp, route)
+	return nil, writes.Wrote(ctx, r.Client, route, r.apply(ctx, cp, route))
 }
 
-func (r *Reconciler) semaphore(gateway types.NamespacedName) *semaphore.Weighted {
+// mayHold are the routes that may hold hostname: from the cache, those that
+// name it, a wildcard that covers it, or no hostname, the only routes held
+// can find it in; from the API server, every route.
+func (r *Reconciler) mayHold(ctx context.Context, cached bool, hostname string) ([]gatewayv1.TLSRoute, error) {
+	if !cached {
+		list := &gatewayv1.TLSRouteList{}
+		err := r.Reader.List(ctx, list)
+		return list.Items, err
+	}
+	keys := []string{hostname, noHostnames}
+	labels := strings.Split(hostname, ".")
+	for i := 1; i < len(labels); i++ {
+		keys = append(keys, "*."+strings.Join(labels[i:], "."))
+	}
+	var out []gatewayv1.TLSRoute
+	for _, key := range keys {
+		list := &gatewayv1.TLSRouteList{}
+		if err := r.List(ctx, list, client.MatchingFields{hostnamesIndex: key}, client.UnsafeDisableDeepCopy); err != nil {
+			return nil, err
+		}
+		out = append(out, list.Items...)
+	}
+	return out, nil
+}
+
+// hostnamesIndex indexes the cached routes by each of their hostnames, or by
+// noHostnames, which no route can name, when they have none.
+const (
+	hostnamesIndex = "spec.hostnames"
+	noHostnames    = "*"
+)
+
+func routeHostnames(obj client.Object) []string {
+	route, ok := obj.(*gatewayv1.TLSRoute)
+	if !ok {
+		return nil
+	}
+	if len(route.Spec.Hostnames) == 0 {
+		return []string{noHostnames}
+	}
+	out := make([]string, 0, len(route.Spec.Hostnames))
+	for _, h := range route.Spec.Hostnames {
+		out = append(out, string(h))
+	}
+	return out
+}
+
+func (r *Reconciler) fence(gateway types.NamespacedName) *fence.Fence {
 	r.writes.Lock()
 	defer r.writes.Unlock()
 	if r.gateways == nil {
-		r.gateways = map[types.NamespacedName]*semaphore.Weighted{}
+		r.gateways = map[types.NamespacedName]*fence.Fence{}
 	}
 	if _, ok := r.gateways[gateway]; !ok {
-		r.gateways[gateway] = semaphore.NewWeighted(1)
+		r.gateways[gateway] = &fence.Fence{}
 	}
 	return r.gateways[gateway]
 }

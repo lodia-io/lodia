@@ -227,7 +227,7 @@ func TestAHeldPassWritesNothingThatExistsAndReportsWhatRuns(t *testing.T) {
 			settle(t, cp)
 			before := objectsOf(t, cp)
 
-			held := operatorAt(k8s, next)
+			held := operatorAt(indexed(k8s), next)
 			passOf(t, held, cp)
 			passOf(t, held, cp)
 			expectNoWrites(t, cp, before, "a held pass over objects its render changes")

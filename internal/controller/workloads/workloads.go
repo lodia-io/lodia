@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/distribution/reference"
-	"golang.org/x/sync/semaphore"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -46,6 +45,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/apistatus"
+	"go.lodia.io/lodia/internal/fence"
 	"go.lodia.io/lodia/internal/live"
 	"go.lodia.io/lodia/internal/ownership"
 	"go.lodia.io/lodia/internal/restore"
@@ -93,7 +93,7 @@ type Reconciler struct {
 	Revision string
 
 	writes   sync.Mutex
-	gateways map[types.NamespacedName]*semaphore.Weighted
+	gateways map[types.NamespacedName]*fence.Fence
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
@@ -114,6 +114,9 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 		WatchesMetadata(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(controlPlaneOf), builder.WithPredicates(readOnce)).
 		Watches(&lodiav1alpha1.ControlPlane{}, handler.EnqueueRequestsFromMapFunc(r.replacements))
 	if r.GatewayAPI {
+		if err := mgr.GetFieldIndexer().IndexField(context.Background(), &gatewayv1.TLSRoute{}, hostnamesIndex, routeHostnames); err != nil {
+			return err
+		}
 		b = b.Owns(&gatewayv1.TLSRoute{}).
 			Watches(&gatewayv1.TLSRoute{}, handler.EnqueueRequestsFromMapFunc(r.holders)).
 			Watches(&gatewayv1.Gateway{}, handler.EnqueueRequestsFromMapFunc(r.parented), builder.WithPredicates(listenersChanged)).

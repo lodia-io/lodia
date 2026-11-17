@@ -103,14 +103,21 @@ type Writer struct {
 // that copy holds with another reason, since a writer tells its first pass
 // from a cache that can lag behind its own last write.
 func (w Writer) Apply(ctx context.Context, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed bool) error {
-	_, err := w.write(ctx, cp, desired, changed)
+	_, _, err := w.write(ctx, cp, desired, changed)
 	return err
+}
+
+// ApplyVersion is Apply returning the resourceVersion its write left, empty
+// when it wrote nothing.
+func (w Writer) ApplyVersion(ctx context.Context, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed bool) (string, error) {
+	_, version, err := w.write(ctx, cp, desired, changed)
+	return version, err
 }
 
 // ApplyInto is Apply for a writer that goes on from its own conditions in the
 // same pass: it leaves cp with the conditions it wrote.
 func (w Writer) ApplyInto(ctx context.Context, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed bool) error {
-	written, err := w.write(ctx, cp, desired, changed)
+	written, _, err := w.write(ctx, cp, desired, changed)
 	if written != nil {
 		cp.Status.Conditions = written
 	}
@@ -129,17 +136,18 @@ func Live(ctx context.Context, reader client.Reader, cp *lodiav1alpha1.ControlPl
 	return live.Object(ctx, reader, cp)
 }
 
-// write returns the conditions it wrote among cp's, nil when it wrote none.
-func (w Writer) write(ctx context.Context, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed bool) ([]metav1.Condition, error) {
+// write returns the conditions it wrote among cp's, nil when it wrote none,
+// and the resourceVersion the write left.
+func (w Writer) write(ctx context.Context, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed bool) ([]metav1.Condition, string, error) {
 	ctx, cancel, err := ownDeadline(ctx)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer cancel()
 	if !changed && !slices.ContainsFunc(desired.Conditions, func(c metav1.Condition) bool {
 		return Differs(meta.FindStatusCondition(cp.Status.Conditions, c.Type), c)
 	}) {
-		return nil, nil
+		return nil, "", nil
 	}
 	conditionTypes := make([]string, 0, len(desired.Conditions))
 	for _, c := range desired.Conditions {
@@ -147,7 +155,7 @@ func (w Writer) write(ctx context.Context, cp *lodiav1alpha1.ControlPlane, desir
 	}
 	read := cp.DeepCopy()
 	if err := live.Conditions(ctx, w.Reader, read, conditionTypes...); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	conditions := slices.Clone(desired.Conditions)
 	for i, c := range conditions {
@@ -158,21 +166,22 @@ func (w Writer) write(ctx context.Context, cp *lodiav1alpha1.ControlPlane, desir
 	}
 	all, applied, conditionsChanged, err := Merge(read.Status.Conditions, conditions...)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if !changed && !conditionsChanged {
-		return nil, nil
+		return nil, "", nil
 	}
 	fields, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&desired)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	fields["conditions"] = applied
-	if err := w.apply(ctx, "ControlPlane", map[string]any{"name": cp.Name, "namespace": cp.Namespace}, fields); err != nil {
-		return nil, err
+	version, err := w.apply(ctx, "ControlPlane", map[string]any{"name": cp.Name, "namespace": cp.Namespace}, fields)
+	if err != nil {
+		return nil, "", err
 	}
 	w.record("ControlPlane", cp, read.Status.Conditions, conditions)
-	return all, nil
+	return all, version, nil
 }
 
 // ApplyLocked writes fields and conditions under the resourceVersion obj was
@@ -195,7 +204,7 @@ func (w Writer) ApplyLocked(ctx context.Context, kind string, obj client.Object,
 	}
 	status := maps.Clone(fields)
 	status["conditions"] = applied
-	if err := w.apply(ctx, kind, map[string]any{"name": obj.GetName(), "namespace": obj.GetNamespace(), "resourceVersion": obj.GetResourceVersion()}, status); err != nil {
+	if _, err := w.apply(ctx, kind, map[string]any{"name": obj.GetName(), "namespace": obj.GetNamespace(), "resourceVersion": obj.GetResourceVersion()}, status); err != nil {
 		return err
 	}
 	w.record(kind, obj, read, conditions)
@@ -213,14 +222,15 @@ func ownDeadline(ctx context.Context) (context.Context, context.CancelFunc, erro
 	return ctx, cancel, nil
 }
 
-func (w Writer) apply(ctx context.Context, kind string, metadata, fields map[string]any) error {
+func (w Writer) apply(ctx context.Context, kind string, metadata, fields map[string]any) (string, error) {
 	u := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": lodiav1alpha1.GroupVersion.String(),
 		"kind":       kind,
 		"metadata":   metadata,
 		"status":     fields,
 	}}
-	return w.Client.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(u), client.FieldOwner(w.Manager), client.ForceOwnership)
+	err := w.Client.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(u), client.FieldOwner(w.Manager), client.ForceOwnership)
+	return u.GetResourceVersion(), err
 }
 
 // record records each condition written whose status or reason differs from
