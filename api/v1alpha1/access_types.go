@@ -238,10 +238,10 @@ type StoreSecretFields struct {
 }
 
 // BackupSeal is the seal of a Backup: before the copy, the backup
-// reconciler puts the key BackupSealKey into the source's etcd and copies
-// only once a full snapshot reached its revision, and a restore proves it
-// came from this Backup, and holds the source's data at least up to it, by
-// finding the key.
+// reconciler puts the key /lodia.io/backups/<Backup UID> into the source's
+// etcd and copies only once a full snapshot reached its revision, and a
+// restore proves it came from this Backup, and holds the source's data at
+// least up to it, by finding the key.
 type BackupSeal struct {
 	// Revision of the seal key in the source's etcd.
 	// +required

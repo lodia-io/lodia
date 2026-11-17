@@ -18,7 +18,7 @@ A consumer of a phase's contract may be built in that phase, since it is what te
 Scope:
 
 - Repository: Go module, `make verify` (golangci-lint, unit tests, envtest), GitHub Actions, DCO check, the community files.
-- The CRD types for `ControlPlane`, `DatastoreClass`, `Datastore`, `KubeconfigRequest` and `Backup` with every CEL rule from [`api/controlplane.md`](api/controlplane.md), and an envtest table of accepted and rejected manifests.
+- The CRD types for `ControlPlane`, `DatastoreClass`, `KubeconfigRequest` and `Backup` with every CEL rule from [`api/controlplane.md`](api/controlplane.md), and an envtest table of accepted and rejected manifests.
 - The e2e harness: a kind cluster named `kind-lodia-e2e-*`, and the refusal to run elsewhere ([decision](decisions/e2e-on-a-named-cluster.md)).
 - **The hard way, once:** one tenant control plane assembled by hand in kind, following [`hard-way.md`](hard-way.md): certificates with `openssl`, etcd, kube-apiserver with konnectivity-server, controller manager, scheduler, then `kubeadm join` of a container running the kind node image.
   Its *What we learned* table feeds the decisions, its files become the first templates, and it is where the team learns every flag it will automate.

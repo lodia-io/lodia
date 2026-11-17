@@ -143,7 +143,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From availability surviving a spec change (2026-10-28)
 
-- A writer that refuses a new generation, `Unsupported`, `Refused` or `ObjectsControlledElsewhere`, turns its condition, and so `Ready`, False while the tenant still serves the previous one, though a readiness condition reports availability ([independent-controllers](docs/decisions/independent-controllers.md)).
+- A writer that refuses a new generation, `Refused` or `ObjectsControlledElsewhere`, turns its condition, and so `Ready`, False while the tenant still serves the previous one, though a readiness condition reports availability ([independent-controllers](docs/decisions/independent-controllers.md)).
   It needs its own answer to where a refusal shows while availability stays.
 - G2's step that deletes the etcd leader's pod tolerates one failed request in each loop, answered 500 with the etcd client's error for a call etcd ended without a gRPC status, `Internal` or `Unknown` ([gate G2](test/e2e/README.md#gate-g2-a-highly-available-control-plane)); the target is zero.
   The required `e2e-ha` failed three times in that step while it wanted zero, each time on requests answered 500: run 40764385375 on #43, one on a reused connection in each loop, sent 21 ms (inside the tenant) and 32 ms (outside) after the deletion the test logged; run 42450529023 on #56, one of 480 inside the tenant on new connections, sent 2.4 ms after the deletion; and run [43430828031](https://github.com/lodia-io/lodia/actions/runs/43430828031) on #89, one of 580 outside the tenant on new connections in the step's first second, `Unknown`, the first whose body the loops logged.

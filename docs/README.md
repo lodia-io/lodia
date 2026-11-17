@@ -28,9 +28,7 @@ And deliberately not: machines and their operating systems (a Cluster API provid
 
 ```mermaid
 flowchart LR
-  DSC[DatastoreClass<br/>cluster-scoped] -- dedicated --> CP
-  DS[Datastore<br/>cluster-scoped] -. shared .-> CP
-  CP[("ControlPlane<br/>namespaced")]
+  CP[("ControlPlane<br/>namespaced")] -- datastore.className --> DSC[DatastoreClass<br/>cluster-scoped]
   KR[KubeconfigRequest] --> CP
   BK[Backup] --> CP
   CP -. restoreFrom .-> BK
@@ -208,7 +206,6 @@ Its liveness probe is `/livez?exclude=etcd`, so that an etcd outage restarts no 
 A restored `ControlPlane`'s controller manager runs at 0 replicas until its release, which `APIServerReady` counts as available ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)).
 Adding `highAvailability` keeps the etcd's quorum, its new members joining as learners; removing it restarts the remaining member, since etcd-druid rolls the members whenever their count changes: its pod template carries a checksum of the ConfigMap ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L219-L226)) whose `initial-cluster` names every member ([etcdconfig.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/configmap/etcdconfig.go#L150-L160)).
 That restart leaves `Ready` False for about 20 seconds, in which the controller manager and the scheduler usually lose their leases and restart, since each exits when it loses its lease ([controllermanager.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kube-controller-manager/app/controllermanager.go#L412-L416), [server.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kube-scheduler/app/server.go#L328-L339)).
-A `ControlPlane` that asks for what Workloads does not render yet is `APIServerReady=False` (`Unsupported`, [reasons](api/controlplane.md#conditions-and-their-reasons)) rather than run without it.
 
 The dedicated etcd is etcd-druid's `Etcd` `<cp>-etcd`, which the Datastore controller renders from the `DatastoreClass` and the newest complete generation of the etcd certificates, under the `ControlPlane`'s finalizer `lodia.io/datastore`, which it holds from before the first `Etcd` exists.
 etcd-druid turns it into the StatefulSet `<cp>-etcd`, the client Service `<cp>-etcd-client` (`https://<cp>-etcd-client.<ns>.svc:2379`, the address Workloads gives the API server's `--etcd-servers`), the peer Service `<cp>-etcd-peer`, a ConfigMap, member leases and a PodDisruptionBudget, all owned by the `Etcd` ([helper.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/helper.go)).
@@ -423,7 +420,7 @@ stateDiagram-v2
 A `DatastoreClass` with a backup store gives every dedicated etcd continuous snapshots: a full snapshot on the class's schedule, `0 0 * * *` by default, and a delta every few minutes, with retention in the class; placing the full snapshot inside the tenant's maintenance window, as Gardener does for its shoots ([backup and restore](https://github.com/gardener/gardener/blob/master/docs/concepts/backup-restore.md)), is owed with phase 2's wave 2 (`todo.md`).
 A `Backup` is a sealed copy ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)), and a new `ControlPlane` with `restoreFrom` replaces its source.
 
-Migration between stores (shared → dedicated, or between classes): Tenant applies a `ValidatingAdmissionPolicy` that refuses writes, Datastore takes a final snapshot and restores it into the target, Workloads rolls the API server onto the new endpoints, Tenant lifts the lock.
+Migration between classes: Tenant applies a `ValidatingAdmissionPolicy` that refuses writes, Datastore takes a final snapshot and restores it into the target, Workloads rolls the API server onto the new endpoints, Tenant lifts the lock.
 Reads work throughout; writes stop for the copy.
 
 ### Deletion

@@ -5,7 +5,7 @@ The schema rules, the defaults, the controllers' conditions and the chart's admi
 
 ## Decision
 
-- Every validation of a Lodia object is a CEL rule (`x-kubernetes-validations`) or an OpenAPI constraint in the CRD schema: formats, enums, unions ("exactly one of `dedicated` and `shared`"), immutability (`self == oldSelf`), and transitions such as "the Kubernetes minor never decreases".
+- Every validation of a Lodia object is a CEL rule (`x-kubernetes-validations`) or an OpenAPI constraint in the CRD schema: formats, enums, unions ("exactly one of `gateway`, `loadBalancer` and `nodePort`"), immutability (`self == oldSelf`), and transitions such as "the Kubernetes minor never decreases".
 - Defaults are schema defaults.
 - What a schema cannot check (a `DatastoreClass` that does not exist, a Gateway that lacks a listener) is reported as a condition on the object with a reason, not rejected at admission.
 - What a schema cannot see, the requester, is checked in the management cluster by an admission policy the API server evaluates, shipped with the chart: the `ValidatingAdmissionPolicy` `kubeconfigrequests.lodia.io` ([short-lived-kubeconfigs](short-lived-kubeconfigs.md)).
