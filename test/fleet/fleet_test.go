@@ -127,7 +127,7 @@ func TestEveryConnectionToATenantGoesThroughTheDial(t *testing.T) {
 	f := startFleet(t, dir)
 	f.op = startOperator(t, dir, f.cfg, f.settings)
 	f.createOnly(1, 2)
-	f.waitFor("every ControlPlane Ready, its nodes counted", time.Now(), 5*time.Minute, func(cp *lodiav1alpha1.ControlPlane) bool {
+	f.waitFor("every ControlPlane Ready, its nodes counted", time.Now(), 2*time.Minute, func(cp *lodiav1alpha1.ControlPlane) bool {
 		return readyAt(cp) && cp.Status.Nodes != nil && cp.Status.Nodes.Total == nodesPerTenant
 	})
 }
