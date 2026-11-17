@@ -43,6 +43,15 @@ health:
 fleet:
   maxConcurrentRollouts: 5
 
+resources:
+  requests:
+    cpu: "1"
+    memory: 2Gi
+  limits:
+    memory: 8Gi
+
+goMemLimit: 7GiB
+
 controllers:
   pki:
     workers: 10

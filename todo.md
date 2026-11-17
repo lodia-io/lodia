@@ -96,7 +96,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 ## From the chart (2026-10-26)
 
 - etcd-druid's CRDs come from its chart's `crds/` directory, which Helm applies only when it installs a release (`docs/README.md`, Installation): a bump of the dependency needs its CRDs applied by hand first; decide whether the chart templates them or the release notes carry the step.
-- The operator's pods set no requests or limits until the operator is measured.
 
 ## From #29's review (2026-10-26)
 
@@ -249,6 +248,15 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   The kinds known that it accepts and a component cannot run with: a key that is no flag of the component's minor, on which it exits; a flag that names a file, which no tenant can put into the pod (`audit-policy-file`, `admission-control-config-file`, `tls-sni-cert-key`, `token-auth-file`, `authentication-token-webhook-config-file`, `kubelet-certificate-authority`, `leader-migration-config`); `audit-log-*` without a policy, which kube-apiserver ignores; `runtime-config` turning off a group Tenant or Health needs; `request-timeout` above a minute, the default Workloads' termination grace period counts, which may cut a drain short (not measured); a `disable-admission-plugins` entry the tenant's own `enable-admission-plugins` names; `node-cidr-mask-size` beside `node-cidr-mask-size-ipv4` or `-ipv6`; a node mask size above its family's width, 32 or 128, from which the controller manager builds node ranges with no mask ([cidr_set.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/nodeipam/ipam/cidrset/cidr_set.go#L92), since `net.CIDRMask` returns nil past the width), or one beyond int32, which it refuses (neither run); a feature gate locked or unknown in the minor; and `emulated-version` or `min-compatibility-version`, with which a component serves the APIs and gates of an older minor than its image, the one Lodia reports and renders the tenant's objects for ([registry.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/component-base/compatibility/registry.go#L245-L259)), not proven to break anything.
   Decide per kind whether the schema refuses it, a minor's flag table refuses it, or the docs say it.
 - The values of `extraArgs` have no length bound, so a CEL rule that splits one exceeds the CRD's cost budget (the rules on `disable-admission-plugins` are regular expressions for it), and a tenant's value is bounded only by the object's size.
+
+## From the synthetic fleet (2026-11-17)
+
+- A pass of `health` over a tenant that does not answer holds a worker for two `Timeout`s, the probes and then the leader Leases, which go through the in-namespace Service whose probe has just failed: with 32 of 315 tenants hanging the others were passed every 20 s at the median and 35 s at the most instead of 5 s ([Scale](docs/operations.md#scale)), past the 30 s in which Lifecycle's settling expects `Reachable` to turn False.
+  Reading the Leases only when the Service's probe answered would halve it; `controllers.health.workers` is the lever until then, at 181.3 MiB of the worst case for each worker.
+- Tenant and PKI build a tenant client for every pass, whose connections stay idle for 90 s after it: the fleet saw about 7 for each tenant after its creation, 42 KiB each; pass 7's one client for a tenant removes them.
+- Workloads' mappers of TLSRoute, Gateway and ControlPlane events list every `ControlPlane` from the cache with copies for each event, as a gateway tenant's pass does: at 315 tenants one such list took 0.7 ms and allocated 2.8 MiB; an index of the gateway tenants by Gateway would read only those that share one.
+- The etcd sampler passed each tenant twice a minute in the fleet's window at rest, a few minutes after the fleet's creation, and once a minute later in the run, where its period is a minute: find what brings the second pass.
+- The fleet's etcd-druid is a stand-in, so etcd-druid's own scale is still unmeasured (above, "From the design").
 
 ## For the release that first drops a minor
 

@@ -526,7 +526,7 @@ The nightly now runs on the public runner, 4 CPUs and 15.6 GiB, where run [40371
 A highly available control plane's target stays 1.5 CPU and 2.5 GiB.
 A management cluster sized for N tenants needs the sum of their requests on its control plane nodes, plus room to roll one Deployment of every tenant (the fleet limit bounds how many roll at once), plus etcd volumes with low fsync latency.
 
-The operator: two replicas; memory grows with the number of tenants it caches (label-scoped, metadata-only for Secrets); phase 3 measures it with 1,000 `ControlPlane`s on envtest ([roadmap](roadmap.md)).
+The operator: two replicas; memory grows with the number of tenants it caches (label-scoped, metadata-only for Secrets) and reads, as the synthetic fleet measures ([Scale](#scale)).
 Health reads a tenant as JSON, and the tenant's administrator can have any server answer, an APIService naming a Service of their own included ([review checklist](review-checklist.md), item 10).
 So what a read holds is fixed by the constants below and not by what a tenant sends:
 - no object and no array of an answer reaches `encoding/json`, whose decoding multiplies the bytes it is given (an empty object becomes a struct, an invalid byte in a string three bytes, the key of a skipped field is unquoted and folded all the same): `internal/jsonscan` walks the body, which `json.Valid` has checked, and every value it hands over is a slice of it;
@@ -720,6 +720,7 @@ The phases, each term with the source of what runs in it:
       Measured against a real kube-apiserver with `MaxConnsPerHost` set to 0, 40 passes of `health` had at most 7 sockets open in each of 40 runs without the race detector and in 38 of 40 under it, and 8 and 10 in the other two, beside a burner of 8 threads at a load average of 38 and 31: a read of an honest tenant can wait on the cap for a slow dial, and never for a connection that another read holds.
     Each connection takes the margin of 2 MiB once, and a client has at most its cap of them: the connections of a pass are those of its reads, and a tenant at rest has one of each client idle, never both.
     A client keeps one connection idle between passes, `MaxIdleConnsPerHost` of 1, `idleConnections`, and closes the others as they are given back, for 90 s at most, client-go's `IdleConnTimeout` ([http.go](https://github.com/kubernetes/apimachinery/blob/v0.37.1/pkg/util/net/http.go#L123-L124)): every pass of a tenant at rest reuses it, a held restore's pass dials six, and `TestAPassLeavesOneConnectionIdleWhateverItHadInFlight` finds one connection open after each pass of either client.
+    The fleet measures what an idle connection holds, 46 to 48 KiB of live heap and stacks, and what a handshake more costs, 0.6 ms of CPU ([Scale](#scale)).
     A kube-apiserver's `--goaway-chance`, which Lodia sets to 0.001 when it runs more than one replica (`internal/controller/workloads/render.go`), sets `Connection: close` on an HTTP/2 request only ([goaway.go](https://github.com/kubernetes/apiserver/blob/v0.37.1/pkg/server/filters/goaway.go#L67)), so it closes no connection of Health's.
     Over HTTP/1.1 a connection stays with the replica of a highly available tenant that it reached, through the Service, until it closes: when it has been idle for 90 s ([http.go](https://github.com/kubernetes/apimachinery/blob/v0.37.1/pkg/util/net/http.go#L123-L124)), when the replica ends it or when a read on it fails.
     A read on such a connection reads what a read on any replica would: Health's reads ask for no `resourceVersion`, and a Get or a List with none is a most recent read, consistent whichever replica serves it ([api-concepts](https://kubernetes.io/docs/reference/using-api/api-concepts/#resource-versions); a Get with none is served from etcd, [delegator.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/storage/cacher/delegator.go#L109-L114)).
@@ -734,7 +735,7 @@ The memory of a pass follows from the reads it has in flight at once, each with 
 - a pass of `health` over a held restore lists seven kinds at once, each with a head and a connection of its own: seven reads, 181.3 MiB;
 - the 100 workers of `health-nodes`, by default, hold 100 passes at once, 2.92 GiB at most, and the 10 workers of `health` 10 held restores, 1.78 GiB; `controllers.<name>.workers` scales each.
 
-At the default `GOGC` the heap in use may grow to about twice the live heap, so the operator's memory limit and `GOMEMLIMIT`, which are set when the operator is measured (`todo.md`, "From the chart"), start from about twice these figures.
+At the default `GOGC` the heap in use may grow to about twice the live heap; the operator's memory limit and `GOMEMLIMIT` are in [Scale](#scale).
 
 Five tests measure the live heap and the heap in use at `GOGC=5`, so that the heap in use stays near the live heap, and a sixth the bytes of a page of Nodes; they run only when `LODIA_MEASURE_HEAP` is set.
 They answer over TLS and HTTP/1.1, as the tenant clients speak it, so that the records of TLS and its buffers are in what they measure and the margin of 2 MiB for each connection has to cover them.
@@ -797,7 +798,92 @@ A tenant at the default `health.maxNodes` of 5,000 keeps 5,000 of each, 3.4 MiB 
 A tenant has two clients, `health-nodes`' and `health`'s, and each keeps one connection idle between passes: 2 in all, each 2 MiB by the rule of the derivation.
 A tenant at rest keeps at most 4 MiB of summaries and 4 MiB of connections, 8.0 MiB.
 The connections of a pass are those 2 and the ones it dials: the figure of a pass counts them with its reads, and the figure at rest counts them idle, so that no connection is counted twice.
-The operator's pods set no requests or limits yet.
+
+## Scale
+
+`test/fleet` runs the operator, every controller as `operator.Setup` registers them and in a process of its own, against envtest's API server and a fleet of gateway `ControlPlane`s on one Gateway, every connection to a tenant dialed to stand-ins through `Inputs.Dial`, and reports what the operator asks of the API server, how often it passes each tenant and what it holds.
+One knob sets the size of the fleet, the other the share of its tenants that hang in one phase:
+
+```
+make fleet FLEET_TENANTS=1000 FLEET_HANGING=0.1
+```
+
+A run needs a checkout, the Go of `go.mod` and setup-envtest's assets of Kubernetes 1.35.0, which `go tool setup-envtest` fetches on the first run, 157 MB; it needs no Docker and no kube context, since envtest starts a kube-apiserver and an etcd of its own and nothing reads a kubeconfig.
+It writes the report, the operator's log and the stand-ins' log to `work/fleet/`.
+At 300 tenants its process tree held 4.4 GiB at the most, the kube-apiserver 2.6 GiB of it, and took up to 13 cores while it created the fleet and in the wave and about one at rest, on 16 cores of an Apple M4 Max with `GOMAXPROCS=8`.
+The tree grows by about 9 MiB a tenant, 6 of them the kube-apiserver's, to about 10 GiB at 1,000 tenants, so a run of 1,000 wants 8 cores, 32 GiB and 20 GB of disk.
+`nightly-fleet` runs 300 tenants every night on GitHub's `ubuntu-24.04` runner, 4 CPUs, 16 GB and 14 GB of disk ([runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)), 3.6 times the memory the tree takes, and any number on demand; a run of 1,000 is by hand.
+
+| stand-in | for | leaves out |
+|---|---|---|
+| one TLS listener that tells the tenant and the path from the name a handshake asks for, and presents the certificate PKI wrote for that path | each tenant's API server behind its Service and the Gateway, lodia-tunnel and konnectivity-server | the network and the Gateway's listener; HTTP/2, which PKI's and Tenant's clients would speak to a kube-apiserver |
+| leader Leases renewed every 2 s, three node Leases renewed every 10 s and three kubelet Nodes | the tenant's controller manager, scheduler and kubelets | tenants of many nodes |
+| a store of what PKI and Tenant apply, under the field manager that applies it, with every Deployment and DaemonSet rolled out, and the discovery envtest serves | the tenant's API server and controllers | validation, admission and the merges of several field managers |
+| Deployments and StatefulSets whose status follows their spec | the management cluster's controllers and kubelets | pods |
+| an etcd-druid that serves a new `Etcd`, and a request to reconcile one, with a ready status, and writes new timestamps into every status every 15 s | etcd-druid | the etcd's pods, volumes and snapshots |
+| a Gateway that accepts every route | the Gateway's implementation | `attachedRoutes` and the data path |
+| one etcd member that every sample reads, after the two Secret reads of `datastore.DialEtcd` | each tenant's etcd | TLS to etcd |
+| the operator as its ServiceAccount, bound to the chart's ClusterRoles, under the API server's priority and fairness | the operator's identity | leader election and the scrape of Lodia's collector |
+
+A run creates the fleet and waits until every `ControlPlane` is Ready; it measures the fleet at rest once the idle connections of the creation have closed, then the idle connections, one `ControlPlane` updated and every one at once, a batch of gateway tenants beside the routes of the fleet, with the operator stopped the lists that a gateway tenant's pass, a route's write and a slot's grant take, a restart, a wave of a new revision with a slot for every tenant, the most a wave writes at once, a share of the tenants hanging on every path, and a tenth of them, at most 100, answering their lists of Leases and Nodes at Health's bounds.
+The operator serves what it counts, its requests by verb and resource, its passes by controller, its heap and its CPU, and the test reads its resident set with `ps`.
+The runs below are on go1.26.11 on 16 cores of an Apple M4 Max with `GOMAXPROCS=8`, one at a time; the column of 1,000 tenants waits for the run by hand, and each nightly run writes its report into the summary of its workflow run.
+
+| | 100 tenants, 1 run | 300 tenants, 2 runs | 1,000 tenants |
+|---|---|---|---|
+| every `ControlPlane` Ready after the creation | 17 s | 54 to 56 s | waits for the run |
+| requests to the API server at rest | 86.7 a second, every one an uncached read of a Secret | 260 a second, every one an uncached read of a Secret | waits for the run |
+| passes at rest | 20 a second of `health` and of `health-nodes`, 3.3 of `datastore-sample` | 60 a second of `health` and of `health-nodes`, 10 of `datastore-sample` | waits for the run |
+| a tenant passed by `health` and by `health-nodes` at rest | every 5.0 s, 5.02 s at the most | every 5.0 s, 5.02 s at the most | waits for the run |
+| the operator at rest: resident set, heap in use, live heap, stacks | 228 MiB, 94 MiB, 40 MiB, 9 MiB | 407 to 486 MiB, 197 to 202 MiB, 92 to 96 MiB, 16 MiB | waits for the run |
+| idle connections at rest, and what each holds | 200; 47 KiB each | 600, one for each client of each tenant; 46 to 48 KiB of live heap and stacks each | waits for the run |
+| a handshake more, when every answer closes its connection | 0.66 ms | 0.60 to 0.62 ms of the operator's CPU | waits for the run |
+| a `ControlPlane`, as JSON | 10,604 bytes, 4,712 of status and 5,209 of `managedFields` | the same | the same |
+| one `ControlPlane` updated, a label | one pass of PKI, Lifecycle, Workloads and the Datastore controller, 22 requests to the API server | the same | waits for the run |
+| every `ControlPlane` updated at once | settled in 1 s, 2,469 requests | settled in 3 s, 7,416 to 7,427 requests | waits for the run |
+| a batch of 5 or 15 gateway tenants beside the routes of the fleet: every route Accepted, every one Ready | 0.5 s, 1.5 s beside 300 routes | 2.5 s, 3.5 s beside 900 routes | waits for the run |
+| a list of every `ControlPlane` from the cache with copies | 0.19 ms, 0.9 MiB allocated | 0.59 to 0.64 ms, 2.8 MiB allocated | waits for the run |
+| an uncached list of every `ControlPlane`, a slot's grant | 21 ms, 1.1 MiB on the wire, 4.3 MiB allocated | 62 to 66 ms, 3.2 MiB on the wire, 13.2 MiB allocated | waits for the run |
+| an uncached list of every `TLSRoute`, a route's write | 11 ms, 315 routes, 0.6 MiB on the wire, 2.8 MiB allocated | 35 to 38 ms, 945 routes, 1.7 MiB on the wire, 8.4 MiB allocated | waits for the run |
+| a restart | settled in 1 s; 3,589 requests; heap in use 93 MiB at the most | settled in 3 s; 10,729 requests; heap in use 234 to 252 MiB at the most | waits for the run |
+| a wave with a slot for every tenant: every tenant on the revision and Ready, every slot free | 5 s, 50 s | 28 s, 72 to 73 s | waits for the run |
+| the wave's status writes, and its most in a second | 979, 214 | 2,655 to 2,669, 94 to 102 | waits for the run |
+| the wave's peak: resident set, heap in use, live heap | 236 MiB, 153 MiB, 81 MiB | 539 to 548 MiB, 403 to 423 MiB, 223 to 233 MiB | waits for the run |
+| a tenth of the tenants hanging: an honest tenant passed by `health`, by `health-nodes` | 11 of 105: every 5.0 s at the median, 15 s at the most; every 5.0 s | 32 of 315: every 20 s at the median, 35 s at the most; every 5.0 s | waits for the run |
+| a tenth of the tenants at Health's bounds: heap in use at the most | 264 MiB | 253 to 260 MiB | waits for the run |
+
+What the numbers answer:
+- **Uncached Secret reads.**
+  At rest the operator sends the API server nothing but reads of Secrets, 4.33 for each tenant in 5 s: `<cp>-ca-bundle`, `<cp>-tunnel-client` and `<cp>-lodia-kubeconfig` in each pass of `health`, `<cp>-lodia-kubeconfig` in each pass of `health-nodes`, and the two of `DialEtcd` in each pass of the etcd sampler, which passed each tenant twice a minute in that window and once a minute later in the run ([todo](../todo.md)): 867 a second at 1,000 tenants by that rate.
+- **What a change costs.**
+  One `ControlPlane` updated costs one pass each of PKI, Lifecycle, Workloads and the Datastore controller, 22 requests to the API server and PKI's three bindings in the tenant; `health` and `health-nodes` pass only on what they read, and Tenant only on its inputs.
+  A restart costs every tenant two passes of `health` and `health-nodes` and one of every other controller, 34 requests, 15 of them reads of Secrets, and settled in 3 s at 315 tenants.
+  A wave costs each tenant about 32 passes of PKI, Lifecycle, Workloads, the Datastore controller and Tenant, about 175 requests beside the reads Health makes at rest, and 8.4 status writes; with a slot for every tenant the 315 were on the new revision in 28 s and free of their slots 45 s later, the settling.
+  At the default 5 slots a round takes the settling and the few seconds a handful of tenants takes to roll, 5 s for 105 at once, so a wave of 1,000 tenants takes 200 rounds, about 2.8 hours.
+- **A gateway tenant's pass.**
+  Its list of every `ControlPlane` from the cache with copies took 0.6 ms and allocated 2.8 MiB at 315 tenants, 9 KiB a tenant; Workloads' mappers of route, Gateway and `ControlPlane` events take the same list for each event ([todo](../todo.md)).
+- **Route writes.**
+  A route's write lists every `TLSRoute` past the cache under the Gateway's semaphore, 35 to 38 ms for 945 routes; a batch of 15 tenants, 45 routes written one at a time, had every route Accepted 2.5 s after it began.
+- **A slot of the fleet.**
+  A grant lists every `ControlPlane` past the cache under the global semaphore: 62 to 66 ms, 3.2 MiB on the wire and 13.2 MiB allocated at 315 tenants, 42 KiB a tenant.
+- **Tenants that do not answer.**
+  A pass of `health` over a tenant that hangs holds its worker for its probes and then for its leader Leases, a `Timeout` each, so its 10 workers by default pass the others late once the hanging tenants hold them: with 32 of 315 hanging an honest tenant was passed every 20 s at the median and 35 s at the most, past the 30 s in which Lifecycle's settling expects `Reachable` to turn False.
+  `health-nodes`, 100 workers, passed every tenant every 5 s throughout: a hanging tenant holds one of its workers for the one `Timeout` of the controller manager's Lease.
+  `controllers.health.workers` sets `health`'s workers ([README](README.md)); each costs a held restore of the worst case below.
+- **The status.**
+  A `ControlPlane` is 10.6 KB of JSON, half of it `managedFields`, under a hundredth of etcd's limit on an object; at rest the controllers write no status, since each writes only a change, and a wave writes 8.4 statuses a tenant, 94 to 102 in its busiest second with every tenant in a slot and a handful a second at the default 5 slots.
+  Splitting `status` into an object of its own would spare the watchers of the `ControlPlane` a copy of 10.6 KB for each of those writes and cost a second object, its writes and its ownership for every tenant: keep `status` where it is, and look again when a field of it grows with a tenant's nodes or objects.
+
+The operator's memory:
+- At rest the operator holds about 0.53 MiB of heap in use for each tenant beside about 40 MiB of its own, and 1.1 MiB of resident set beside 117 MiB; macOS keeps memory the heap gave back in the resident set, which makes it the larger figure.
+- An idle connection holds 46 to 48 KiB of live heap and stacks, measured by the drop when every answer closes its connection, and a handshake more costs 0.6 ms of CPU.
+  Each tenant client keeps one connection idle between passes and closes the others as they are given back, for client-go's 90 s at most: 2 for a tenant at rest, about 0.1 MiB, where 9 were possible before, and a held restore's pass dials six, about 4 ms of CPU each pass; keeping none would cost every tenant two handshakes every 5 s, about 0.25 of a CPU at 1,000 tenants by the same measure.
+  By the rule of [Capacity](#capacity), 2 MiB for each connection, a tenant at rest keeps at most 8.0 MiB, 4 of them summaries of `health.maxNodes` Nodes.
+- Each pass of `health-nodes` reads its two lists one after the other, which halves the worst case of 100 passes at once at Health's bounds: 2.92 GiB, 29.9 MiB a pass, where the two lists at once make 5.45 GiB; the 100 passes measured 0.90 to 0.93 GiB of heap in use ([Capacity](#capacity)).
+  It costs a tenant of 5,000 Nodes about 25 ms every 30 s: a first pass over it took 295 to 305 ms, and 270 to 285 ms with the two lists at once, three runs each.
+  Fewer workers would cost every tenant the samples that hanging tenants delay, and a shared bound on responses in flight would still leave the heads and the margins of every read in flight, 5.5 MiB each, unbounded, and let as many slow tenants as it has places stall every other read.
+- The chart sizes the operator for 1,000 tenants: a request of 2 GiB of memory, the resident set at rest by the slope above, 1.2 GiB, with two thirds of room, and of one CPU, the CPU at rest by its slope, 0.12 of a CPU at 100 tenants and 0.31 to 0.33 at 300, with no limit; a limit of 8 GiB, the wave's peak resident set by its slope, 1.7 GiB, and the worst case of Health's default workers, 2.92 GiB of `health-nodes` and 1.78 GiB of `health`, with a quarter of room; and `GOMEMLIMIT` at 7 GiB, a GiB under the limit for what the Go runtime does not count, and above the live heap of that worst case at rest, about 5 GiB.
+  These figures wait for the run of 1,000 tenants; a platform with fewer tenants sets `resources` and `goMemLimit` by the slopes, and one that raises `controllers.health-nodes.workers` or `controllers.health.workers` raises the limit by 29.9 MiB or 181.3 MiB for each worker.
 
 ## Upgrading Lodia
 

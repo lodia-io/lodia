@@ -9,10 +9,13 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 
@@ -135,6 +138,31 @@ func TestAControllerWithoutWorkersOrOfNoNameRefusesToStart(t *testing.T) {
 				t.Errorf("LoadConfig returned %+v, %v, want an error that names %s", got, err, c.refused)
 			}
 		})
+	}
+}
+
+func TestTheChartsGoMemLimitIsBetweenItsMemoryRequestAndLimit(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "charts", "lodia", "values.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var values struct {
+		Resources  corev1.ResourceRequirements `json:"resources"`
+		GoMemLimit string                      `json:"goMemLimit"`
+	}
+	if err := yaml.Unmarshal(raw, &values); err != nil {
+		t.Fatal(err)
+	}
+	units := map[string]int64{"KiB": 1 << 10, "MiB": 1 << 20, "GiB": 1 << 30, "TiB": 1 << 40}
+	number, unit := strings.TrimRightFunc(values.GoMemLimit, unicode.IsLetter), strings.TrimLeftFunc(values.GoMemLimit, unicode.IsDigit)
+	n, err := strconv.ParseInt(number, 10, 64)
+	if err != nil || units[unit] == 0 {
+		t.Fatalf("goMemLimit is %q, want a whole number of KiB, MiB, GiB or TiB, as the Go runtime reads it", values.GoMemLimit)
+	}
+	soft := n * units[unit]
+	request, limit := values.Resources.Requests.Memory().Value(), values.Resources.Limits.Memory().Value()
+	if request == 0 || soft < request || soft >= limit {
+		t.Errorf("goMemLimit is %d bytes beside a memory request of %d and a limit of %d, want it at least the request and below the limit", soft, request, limit)
 	}
 }
 

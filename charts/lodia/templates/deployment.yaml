@@ -60,6 +60,11 @@ spec:
             httpGet:
               path: /readyz
               port: health
+          env:
+            - name: GOMEMLIMIT
+              value: {{ .Values.goMemLimit | quote }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
             - name: config
               mountPath: /etc/lodia
