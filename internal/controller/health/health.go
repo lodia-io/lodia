@@ -731,9 +731,6 @@ func (r *Reconciler) forget(key types.NamespacedName) {
 	delete(r.clients, key)
 }
 
-// prober verifies the endpoint against bundle, or is nil when bundle holds no
-// certificate. Its client pair is pair's, and nil outside gateway mode or when
-// pair holds no certificate and key.
 func (r *Reconciler) restoreLists() *semaphore.Weighted {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -743,6 +740,9 @@ func (r *Reconciler) restoreLists() *semaphore.Weighted {
 	return r.restores
 }
 
+// prober verifies the endpoint against bundle, or is nil when bundle holds no
+// certificate. Its client pair is pair's, and nil outside gateway mode or when
+// pair holds no certificate and key.
 func (r *Reconciler) prober(bundle []byte, pair *corev1.Secret) *prober {
 	roots := x509.NewCertPool()
 	if !roots.AppendCertsFromPEM(bundle) {
