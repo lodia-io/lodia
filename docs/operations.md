@@ -840,7 +840,7 @@ Each nightly run writes its report into the summary of its workflow run.
 | | 100 tenants, Linux | 300 tenants, the Mac | 300 tenants, the runner | 1,000 tenants, Linux |
 |---|---|---|---|---|
 | every `ControlPlane` Ready after the creation | 27 s | 42 to 45 s | 1 min 59 s to 2 min 17 s | 4 min 39 s to 4 min 42 s |
-| requests to the API server at rest | not measured | not measured | none, 0.0 a second over a minute (the `fleet` job at 22e953b) | not measured |
+| requests to the API server at rest | not measured | not measured | 0.0 to 0.1 a second over a minute, watches only, and no read of a Secret (the `fleet` job at 22e953b and 4f97d79) | not measured |
 | passes at rest | 20 a second of `health` and of `health-nodes`, 1.7 of `datastore-sample` | 60, and 5.0 | 60, and 5.0 | 200, and 16.7 |
 | a tenant passed by `health` and by `health-nodes` at rest | every 5.0 s, 5.02 s at the most | every 5.0 s, 5.02 to 5.05 s at the most | every 5.0 s, 5.05 to 5.06 s at the most | every 5.0 s, 5.04 to 5.06 s at the most |
 | the operator at rest: resident set, heap in use, live heap, stacks | 171 MiB, 85 MiB, 38 MiB, 10 MiB | 346 to 398 MiB, 198 to 219 MiB, 94 to 97 MiB, 18 to 20 MiB | 343 MiB, 223 to 225 MiB, 92 to 94 MiB, 19 to 20 MiB | 877 to 886 MiB, 641 to 684 MiB, 288 to 297 MiB, 40 to 42 MiB |
@@ -864,7 +864,7 @@ Each nightly run writes its report into the summary of its workflow run.
 
 What the numbers answer:
 - **Secret reads.**
-  Tenant, `health`, `health-nodes` and `DialEtcd` read the access Secrets from memory for as long as their `resourceVersion` stays ([decision](decisions/one-client-for-a-tenant.md)), so that a tenant at rest sends the API server none: the runner's 300 tenants sent it no request over a minute at rest.
+  Tenant, `health`, `health-nodes` and `DialEtcd` read the access Secrets from memory for as long as their `resourceVersion` stays ([decision](decisions/one-client-for-a-tenant.md)), so that a tenant at rest sends the API server no read of a Secret: the runner's 300 tenants sent it none over a minute at rest, in 0.0 to 0.1 requests a second in all, watches only.
   PKI's passes over each tenant every 10 minutes read: its two lists of the namespace's Secrets without the cache, the labelled ones whole and every one's metadata, about 3.3 a second at 1,000 tenants, none of which the minute at rest held.
 - **What a change costs.**
   One `ControlPlane` updated costs one pass each of PKI, Lifecycle, Workloads and the Datastore controller, 18 requests to the API server besides the reads of its window at rest and PKI's three bindings in the tenant; `health` and `health-nodes` pass only on what they read, and Tenant only on its inputs.
@@ -895,13 +895,16 @@ The operator's memory:
 - An idle connection holds 26 to 53 KiB of live heap and stacks, measured by the drop when every answer closes its connection, and a handshake more costs 0.5 to 1.7 ms of CPU.
   Each tenant client keeps one connection idle between passes and closes the others as they are given back, for client-go's 90 s at most: 2 for a tenant at rest, about 0.1 MiB, where 9 were possible before, and a held restore's pass dials six, 3 to 10 ms of CPU each pass; keeping none would cost every tenant two handshakes every 5 s, about 0.7 of a CPU at 1,000 tenants by the measure there; Tenant's client and PKI's keep one each for 90 s after a pass every 10 minutes.
   By the rule of [Capacity](#capacity), 2 MiB for each connection, a tenant at rest keeps at most 8.1 MiB, and 12.1 MiB for 90 s of every 10 minutes.
-  The runner's live heap at rest at 300 tenants, 104.7 MiB (the `fleet` job at 22e953b), stands 10.9 to 13.1 MiB over the two runs of the runner's column above, taken before Tenant and PKI kept a client for each tenant and the access Secrets' copies were kept: 34 KiB a tenant, 10.0 MiB.
+  The runner's live heap at rest at 300 tenants was 104.7 MiB in the `fleet` job at 22e953b and 111.9 MiB at 4f97d79, beside the 91.6 and 93.8 MiB of the two runs of the runner's column above, which were taken before Tenant and PKI kept a client for each tenant and the access Secrets' copies were kept.
+  Two runs of nearly the same code spread by 7.2 MiB, so a point sample of the live heap cannot attribute the rise.
+  The two structural measures of [Capacity](#capacity), `TestMeasureWhatTheCopiesOfATenantsAccessSecretsHold` and `TestMeasureWhatAKeptClientOfATenantHolds`, put the copies and the clients at 34 KiB a tenant, 10.0 MiB at 300 tenants.
 - Each pass of `health-nodes` reads its two lists one after the other, which halves the worst case of 100 passes at once at Health's bounds: 2.92 GiB, 29.9 MiB a pass, where the two lists at once make 5.45 GiB; the 100 passes measured 0.90 to 0.93 GiB of heap in use ([Capacity](#capacity)).
   It costs a tenant of 5,000 Nodes about 25 ms every 30 s: a first pass over it took 295 to 305 ms, and 270 to 285 ms with the two lists at once, three runs each.
   Fewer workers would cost every tenant the samples that hanging tenants delay, and a shared bound on responses in flight would still leave the heads and the margins of every read in flight, 5.5 MiB each, unbounded, and let as many slow tenants as it has places stall every other read.
 - The chart's requests fit about 100 tenants, by the run of 100 on Linux above: 512 MiB of memory, over a resident set of 171 MiB at rest and 385 MiB at the most with a tenth of the tenants at Health's bounds, and 300 millicores, over 0.23 of a CPU at rest; it sets no CPU limit.
   Its memory limit, 10 GiB, covers what does not grow with the fleet, Health's worst case at its default workers, 6.97 GiB, and Tenant's and PKI's, 0.53 GiB ([Capacity](#capacity)), beside the resident set of those 100 tenants at its most, 7.9 GiB in all, with more than a quarter of room; `GOMEMLIMIT`, 9 GiB, is a GiB under the limit, for what the Go runtime does not count, and above that sum.
-  A platform with more tenants sets `resources` and `goMemLimit` by the table below, from the runs above on Linux, the resident set at its most with a tenth of the tenants at Health's bounds and the CPU at rest with room, and the limit over Health's worst case, Tenant's and PKI's and that resident set with at least a quarter of room; one that raises `controllers.health-nodes.workers`, `controllers.health.workers`, `controllers.tenant.workers` or `controllers.pki.workers` raises the limit by 29.9, 25.9, 28.3 or 25.9 MiB for each worker.
+  A platform with more tenants sets `resources` and `goMemLimit` by the table below, from the runs above, the resident set at its most with a tenth of the tenants at Health's bounds and the CPU at rest with room, and the limit over Health's worst case, Tenant's and PKI's and that resident set with at least a quarter of room; one that raises `controllers.health-nodes.workers`, `controllers.health.workers`, `controllers.tenant.workers` or `controllers.pki.workers` raises the limit by 29.9, 25.9, 28.3 or 25.9 MiB for each worker.
+  The room is the limit over that sum less one, from the highest resident set of a row's runs: 27.0% at 100 tenants (385 MiB), 31.6% at 300 (the Mac's 877 MiB; 35.3% for the runner's 642.6 MiB, the higher of its two runs at 22e953b and 4f97d79) and 32.5% at 1,000 (1,596 MiB).
 
 | tenants | memory request | CPU request | memory limit | `goMemLimit` |
 |---|---|---|---|---|
