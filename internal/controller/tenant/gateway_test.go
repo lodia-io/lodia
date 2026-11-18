@@ -915,6 +915,7 @@ type slowTenant struct {
 	*tenantStand
 	delay     atomic.Int64
 	delivered atomic.Bool
+	holding   atomic.Pointer[string]
 	mu        sync.Mutex
 	inventory string
 	log       []string
@@ -937,12 +938,16 @@ func answersSlowly(t *testing.T, cp *lodiav1alpha1.ControlPlane, delay time.Dura
 		s.mu.Lock()
 		s.log = append(s.log, r.Method+" "+r.URL.Path)
 		s.mu.Unlock()
+		inventory := strings.HasSuffix(r.URL.Path, "/lodia-inventory")
+		if method := s.holding.Load(); method != nil && r.Method == *method && !inventory {
+			<-r.Context().Done()
+			return
+		}
 		select {
 		case <-time.After(time.Duration(s.delay.Load())):
 		case <-r.Context().Done():
 			return
 		}
-		inventory := strings.HasSuffix(r.URL.Path, "/lodia-inventory")
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case inventory && r.Method == http.MethodPatch:
@@ -981,6 +986,16 @@ func (s *slowTenant) sent() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return slices.Clone(s.log)
+}
+
+func (s *slowTenant) holds(method string) {
+	s.holding.Store(&method)
+}
+
+func (s *slowTenant) lists(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.inventory = strings.TrimSuffix(s.inventory, "]") + `,{"version":"v1","kind":"ConfigMap","namespace":"kube-system","name":"` + name + `"}]`
 }
 
 func slowSetUp(t *testing.T, namespace string, gateway, held bool, delay time.Duration) (*tenant.Reconciler, *lodiav1alpha1.ControlPlane, *slowTenant) {
@@ -1165,6 +1180,35 @@ func TestThePairIsDeliveredToATenantThatAnswersEveryRequestIn6s(t *testing.T) {
 	t.Logf("the pass sent %d requests in %s and returned %v", len(sent), elapsed, err)
 	if !s.delivered.Load() {
 		t.Error("the tunnel's pair was not delivered to a tenant that answers its read and its apply in 6 s each")
+	}
+}
+
+func TestATenantThatHoldsOneKindOfWriteCostsThePassThatRequestsDeadline(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		namespace string
+		gateway   bool
+		held      string
+		timeouts  time.Duration
+	}{
+		{"tenant-held-applies-load-balancer", false, http.MethodPatch, 30 * time.Second},
+		{"tenant-held-applies-gateway", true, http.MethodPatch, 40 * time.Second},
+		{"tenant-held-deletes", false, http.MethodDelete, 30 * time.Second},
+	} {
+		t.Run(c.namespace, func(t *testing.T) {
+			t.Parallel()
+			r, cp, s := slowSetUp(t, c.namespace, c.gateway, false, 0)
+			if _, _, err := slowPass(t, r, cp, s); err != nil {
+				t.Fatal(err)
+			}
+			s.lists("left")
+			s.holds(c.held)
+			elapsed, _, err := slowPass(t, r, cp, s)
+			t.Logf("a pass on a tenant that holds every %s took %s and returned %v", c.held, elapsed, err)
+			if err == nil || elapsed < c.timeouts || elapsed > c.timeouts+5*time.Second {
+				t.Errorf("a pass on a tenant that holds every %s took %s and returned %v, want an error after %s", c.held, elapsed, err, c.timeouts)
+			}
+		})
 	}
 }
 
