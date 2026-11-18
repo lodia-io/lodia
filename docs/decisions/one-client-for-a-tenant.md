@@ -35,7 +35,7 @@ Built; `internal/tenantclient` and `internal/secretcache` hold it.
 - **No kind Tenant writes needs discovery.**
   Its kinds are the render's, and a table holds each one's version, resource and scope.
 - **A client that follows `Retry-After` is not a bound.**
-  client-go sends a request up to 11 times, the first and 10 retries, on a 429 or a 5xx that carries `Retry-After` ([request.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/request.go#L167), [with_retry.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/with_retry.go#L161-L163)), each wait as long as the server says; a request now goes once and its pass returns the error, which controller-runtime requeues with its backoff, 5 ms doubling to 1,000 s ([controller.go](https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/controller/controller.go#L273)).
+  client-go sends a request up to 11 times, the first and 10 retries, on a 429 or a 5xx that carries `Retry-After` ([request.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/request.go#L167), [with_retry.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/with_retry.go#L161-L163)), each wait as long as the server says; a request now goes once and its pass returns the error, which controller-runtime requeues with its backoff, 5 ms doubling to 1,000 s ([controller.go](https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/controller/controller.go#L272-L273)).
 
 - **A Secret's data read from memory is as old as the cache.**
   A copy is kept only at the UID and `resourceVersion` the cache holds, so a copy from memory is never older than the cache's view, which lags the API server by the time its watch takes to deliver a write.
@@ -45,7 +45,7 @@ Built; `internal/tenantclient` and `internal/secretcache` hold it.
   A wait is never decided on a copy: where a copy would make Tenant, `health` or `health-nodes` wait or report a Secret unusable, because another owner keeps it, this `ControlPlane` does not control it or it holds no certificate or key pair, the pass reads that Secret from the API server and decides on what it holds.
   A pass that waits sends that read, and a tenant at rest never does.
 - **At rest the operator sends the API server no read of a Secret.**
-  They were its only requests, 4.16 for each tenant in 5 s, 833 a second at 1,000 tenants ([operations](../operations.md#scale)), and the cache already knows each Secret's `resourceVersion`, since PKI's `Owns(&corev1.Secret{}, builder.OnlyMetadata)` holds the metadata of the Secrets under the operator's label selector.
+  Three in each pass of `health` and one in each of `health-nodes`, every 5 s, and the two of `DialEtcd` in the sampler's pass once a minute were its only requests, 833 a second at 1,000 tenants, and the cache already knows each Secret's `resourceVersion`, since PKI's `Owns(&corev1.Secret{}, builder.OnlyMetadata)` holds the metadata of the Secrets under the operator's label selector.
 
 ## Rejected
 
