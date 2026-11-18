@@ -146,7 +146,6 @@ type Sources struct {
 	Secrets client.Reader
 }
 
-// controllers are the reconcilers Setup registers, built.
 type controllers struct {
 	secrets   *secretcache.Reader
 	pki       *pki.Reconciler
