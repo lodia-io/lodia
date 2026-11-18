@@ -4,10 +4,26 @@
 package operator
 
 import (
+	"context"
+	"crypto/x509"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	toolscache "k8s.io/client-go/tools/cache"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/certs"
 )
 
 func TestHealthRunsOnTheFilesValues(t *testing.T) {
@@ -111,5 +127,118 @@ func TestTheMetricsServeTheCounterAndHistogramOfTheSources(t *testing.T) {
 	}
 	if got.SampleLag == nil || got.SampleLag != sources.Nodes.SampleLag {
 		t.Error("the metrics serve another histogram than the one health-nodes observes")
+	}
+}
+
+type managerOf struct {
+	ctrl.Manager
+	cache  cache.Cache
+	reader client.Reader
+}
+
+func (m managerOf) GetCache() cache.Cache       { return m.cache }
+func (m managerOf) GetAPIReader() client.Reader { return m.reader }
+func (m managerOf) GetClient() client.Client    { return nil }
+
+type secretsOf map[client.ObjectKey]*corev1.Secret
+
+type cacheOf struct {
+	cache.Cache
+	secrets secretsOf
+}
+
+func (c cacheOf) Get(_ context.Context, key client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
+	secret, ok := c.secrets[key]
+	if !ok {
+		return apierrors.NewNotFound(schema.GroupResource{Resource: "secrets"}, key.Name)
+	}
+	held := obj.(*metav1.PartialObjectMetadata)
+	held.UID, held.ResourceVersion = secret.UID, secret.ResourceVersion
+	return nil
+}
+
+func (c cacheOf) GetInformer(context.Context, client.Object, ...cache.InformerGetOption) (cache.Informer, error) {
+	return informerOf{}, nil
+}
+
+type informerOf struct{ cache.Informer }
+
+func (informerOf) AddEventHandler(toolscache.ResourceEventHandler) (toolscache.ResourceEventHandlerRegistration, error) {
+	return nil, nil
+}
+
+type liveSecrets struct {
+	secrets secretsOf
+	reads   atomic.Int32
+}
+
+func (l *liveSecrets) Get(_ context.Context, key client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
+	l.reads.Add(1)
+	secret, ok := l.secrets[key]
+	if !ok {
+		return apierrors.NewNotFound(schema.GroupResource{Resource: "secrets"}, key.Name)
+	}
+	secret.DeepCopyInto(obj.(*corev1.Secret))
+	return nil
+}
+
+func (l *liveSecrets) List(context.Context, client.ObjectList, ...client.ListOption) error {
+	return nil
+}
+
+func TestEveryReconcilerThatReadsTheAccessSecretsReadsThemThroughTheOneReader(t *testing.T) {
+	ca, err := certs.NewCA("etcd", time.Now(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := ca.Issue(certs.Profile{CommonName: "client", Usages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}, time.Now(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caPEM, err := certs.CertPEM(ca.Cert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM, err := certs.CertPEM(leaf.Cert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM, err := certs.KeyPEM(leaf.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets := secretsOf{}
+	for name, data := range map[string]map[string][]byte{
+		"dev-etcd-client": {corev1.TLSCertKey: certPEM, corev1.TLSPrivateKeyKey: keyPEM},
+		"dev-etcd-ca":     {lodiav1alpha1.CACertKey: caPEM},
+	} {
+		key := client.ObjectKey{Namespace: "team-a", Name: name}
+		secrets[key] = &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: key.Namespace, Name: name, UID: types.UID("uid-" + name), ResourceVersion: "1"}, Data: data}
+	}
+	live := &liveSecrets{secrets: secrets}
+	in := Inputs{Config: DefaultConfig(), Version: "v1.0.0", SignerImage: "signer", TunnelImage: "tunnel", EtcdDruidVersion: "v0.39.0", EtcdDruidNamespace: "druid", OperatorNamespace: "lodia"}
+	c := newControllers(managerOf{cache: cacheOf{secrets: secrets}, reader: live}, in, "v1.0.0+0")
+
+	for name, got := range map[string]client.Reader{"tenant": c.tenant.Secrets, "health": c.health.Secrets, "health-nodes": c.nodes.Secrets} {
+		if got != c.secrets {
+			t.Errorf("%s reads Secrets through %T, want the one reader", name, got)
+		}
+	}
+	etcd := &druidv1alpha1.Etcd{ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: "team-a"}}
+	etcd.Spec.Etcd.ClientUrlTLS = &druidv1alpha1.TLSConfig{
+		TLSCASecretRef:     druidv1alpha1.SecretReference{SecretReference: corev1.SecretReference{Name: "dev-etcd-ca"}},
+		ClientTLSSecretRef: corev1.SecretReference{Name: "dev-etcd-client"},
+	}
+	for name, dial := range map[string]func(context.Context, *druidv1alpha1.Etcd) (*clientv3.Client, error){
+		"the datastore controller": c.datastore.EtcdClient, "the backup reconciler": c.backup.EtcdClient, "the etcd sampler": c.sampler.EtcdClient,
+	} {
+		dialled, err := dial(t.Context(), etcd)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		_ = dialled.Close()
+	}
+	if got := live.reads.Load(); got != 2 {
+		t.Errorf("3 dials of the etcd sent %d reads of a Secret, want the 2 of the first, which the others did not repeat", got)
 	}
 }

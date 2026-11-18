@@ -651,7 +651,7 @@ func applyStatus(t *testing.T, k8s client.Client, cp *lodiav1alpha1.ControlPlane
 	}
 }
 
-func TestTheSecretsOfTheAccessAreReadThroughOneReaderTenantHealthAndTheEtcdSamplerShare(t *testing.T) {
+func TestTheSecretsOfTheAccessAreReadThroughOneReaderHealthAndTheEtcdSamplerShare(t *testing.T) {
 	cfg := start(t)
 	var named atomic.Int32
 	cfg.Wrap(func(next http.RoundTripper) http.RoundTripper {
@@ -679,7 +679,7 @@ func TestTheSecretsOfTheAccessAreReadThroughOneReaderTenantHealthAndTheEtcdSampl
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, got := range map[string]client.Reader{"health": sources.Health.Secrets, "health-nodes": sources.Nodes.Secrets, "tenant": sources.Tenant.Secrets} {
+	for name, got := range map[string]client.Reader{"health": sources.Health.Secrets, "health-nodes": sources.Nodes.Secrets} {
 		if got != sources.Secrets {
 			t.Errorf("%s reads Secrets through %T, want the reader Setup returns", name, got)
 		}
