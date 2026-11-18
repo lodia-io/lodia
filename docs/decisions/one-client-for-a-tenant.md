@@ -50,8 +50,10 @@ Built; `internal/tenantclient` and `internal/secretcache` hold it.
   The content a lagging copy can serve is one its writer still honours: PKI renews a leaf at two thirds of its life and never replaces the cluster CA while its bundle or its key Secret exists (`ca` in `internal/controller/pki/secrets.go`), so the copy of `<cp>-ca-bundle` is the API server's, a generation of etcd's Secrets is immutable and the next has Secrets of new names, and a Secret the cache does not hold yet is read from the API server.
   A wait is never decided on a copy: where a copy would make Tenant, `health` or `health-nodes` wait or report a Secret unusable, because another owner keeps it, this `ControlPlane` does not control it or it holds no certificate or key pair, the pass reads that Secret from the API server and decides on what it holds.
   A pass that waits sends that read, and a tenant at rest never does.
-- **At rest the operator sends the API server no read of a Secret.**
-  Three in each pass of `health` and one in each of `health-nodes`, every 5 s, and the two of `DialEtcd` in the sampler's pass once a minute were its only requests, 833 a second at 1,000 tenants, and the cache already knows each Secret's `resourceVersion`, since PKI's `Owns(&corev1.Secret{}, builder.OnlyMetadata)` holds the metadata of the Secrets under the operator's label selector.
+- **At rest the operator sends the API server no `get` of a Secret.**
+  Before this change it sent three in each pass of `health` and one in each of `health-nodes`, every 5 s, and the two of `DialEtcd` in the sampler's pass once a minute, 833 a second at 1,000 tenants, and Tenant's three every 10 minutes beside them, 5 a second.
+  PKI's two lists of the namespace's Secrets in its pass over each tenant every 10 minutes, the labelled ones whole and every one's metadata, are as they were, about 3.3 a second at 1,000 tenants ([operations](../operations.md#scale)).
+  The cache already knows each Secret's `resourceVersion`, since PKI's `Owns(&corev1.Secret{}, builder.OnlyMetadata)` holds the metadata of the Secrets under the operator's label selector.
 
 ## Rejected
 
