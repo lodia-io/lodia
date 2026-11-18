@@ -254,10 +254,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - The fleet's etcd-druid is a stand-in, so etcd-druid's own scale is still unmeasured (above, "From the design").
 - A Gateway's route writes run one at a time, each waiting for the cache to show it: the 150 writes of 50 gateway tenants created beside 3,000 routes were done 11.5 to 12.2 s after they began, about 80 ms a write, and the 3,000 of the creation of 1,000 tenants took about 4.7 minutes, about 94 ms a write with the API server busier ([Scale](docs/operations.md#scale)): Lodia's routes hold one hostname each, so a fence for each hostname, with the Gateway's first read from the API server, would let the writes of different hostnames run at once.
 
-## From the one client for a tenant (2026-11-18)
-
-- The sizing of the operator's memory limit in [Capacity](docs/operations.md#capacity) counts Health's worst case and the resident set; Tenant's and PKI's passes, 20 reads of 25.9 MiB at their default workers, 0.51 GiB, are now in the derivation but not in the table's rule, under which the 300-tenant row, 10 GiB over a resident set of 877 MiB at its most on the Mac, has 20% of room.
-
 ## For the release that first drops a minor
 
 - A minor dropped from the version table stays renderable for one more release, as the source of an upgrade ([upgrades-and-maintenance-windows](docs/decisions/upgrades-and-maintenance-windows.md), "End of support"): build it in the release that first drops one, since no minor is dropped yet and the flag would have no data and no test that means anything.
