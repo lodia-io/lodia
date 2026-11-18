@@ -61,11 +61,7 @@ func TestACacheWithoutHealthsConditionsLeavesTheServers(t *testing.T) {
 		}
 	}
 	pass("at its generation")
-	paused := get(t, cp)
-	paused.Spec.Paused = true
-	if err := k8s.Update(t.Context(), paused); err != nil {
-		t.Fatal(err)
-	}
+	pause(t, cp)
 	pass("at an earlier generation")
 }
 

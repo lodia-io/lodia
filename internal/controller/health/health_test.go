@@ -687,11 +687,7 @@ func TestAKeptConditionIsDecidedFromTheServer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	paused := get(t, cp)
-	paused.Spec.Paused = true
-	if err := k8s.Update(t.Context(), paused); err != nil {
-		t.Fatal(err)
-	}
+	pause(t, cp)
 	stale := get(t, cp)
 	pass := func(at *lodiav1alpha1.ControlPlane, reader client.Reader, mayWrite bool) error {
 		held := at.DeepCopy()
