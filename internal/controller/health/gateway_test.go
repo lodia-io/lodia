@@ -640,6 +640,27 @@ func TestATunnelClientThatIsMissingOrKeptElsewhereWaitsForCertificates(t *testin
 	}
 }
 
+func TestAGatewayCABundleKeptElsewhereWaitsForCertificatesBesideAUsablePair(t *testing.T) {
+	f := newGateway(t)
+	f.publishWorking(t)
+	testenv.Eventually(t, func() error {
+		return expect(t, f.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, f.allAnswered())
+	})
+	name := lodiav1alpha1.CABundleSecret.Name(f.cp.Name)
+	bundle := &corev1.Secret{}
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: f.cp.Namespace, Name: name}, bundle); err != nil {
+		t.Fatal(err)
+	}
+	bundle.OwnerReferences = []metav1.OwnerReference{{APIVersion: "external-secrets.io/v1", Kind: "ExternalSecret", Name: "stranger", UID: "abc", Controller: new(true)}}
+	if err := k8s.Update(t.Context(), bundle); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, f.probe(2*time.Second), f.cp)
+	if err := expect(t, f.cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "Secret "+name+" is kept by ExternalSecret stranger with UID abc"); err != nil {
+		t.Error(err)
+	}
+}
+
 func TestAGatewayEndpointWithoutTheTunnelWaitsForIt(t *testing.T) {
 	f := newGateway(t)
 	publishGateway(t, f.cp, f.apiAddress(), f.konnectivity, "")
