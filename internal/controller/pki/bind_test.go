@@ -168,6 +168,7 @@ func bindingOf(t *testing.T, namespace string, reconciler *pki.Reconciler) (*lod
 }
 
 func TestATenantThatCompletesTLSAndNeverAnswersEndsTheBindWithinTenSeconds(t *testing.T) {
+	t.Parallel()
 	r := newReconciler(time.Hour)
 	cp, request := bindingOf(t, "pki-bind-no-answer", r)
 	r.Dial = standingInForTheTenant(t, cp, false, func(_ int, _ http.ResponseWriter, req *http.Request) { <-req.Context().Done() }).dial
@@ -186,6 +187,7 @@ func TestATenantThatCompletesTLSAndNeverAnswersEndsTheBindWithinTenSeconds(t *te
 }
 
 func TestAHandshakeHeldPastTheBindTimeoutGivesItsPlaceBackAndTheNextBindDialsAfterwards(t *testing.T) {
+	t.Parallel()
 	r := newReconciler(time.Hour)
 	cp, request := bindingOf(t, "pki-bind-handshake", r)
 	stand := standingInForTheTenant(t, cp, true, func(_ int, w http.ResponseWriter, req *http.Request) { answers(w, req) })
@@ -208,6 +210,7 @@ func TestAHandshakeHeldPastTheBindTimeoutGivesItsPlaceBackAndTheNextBindDialsAft
 }
 
 func TestTheBindThroughTheBootstrapEndsWithinTwentySeconds(t *testing.T) {
+	t.Parallel()
 	r := newReconciler(time.Hour)
 	cp, request := bindingOf(t, "pki-bind-bootstrap-silent", r)
 	r.Dial = standingInForTheTenant(t, cp, false, func(n int, w http.ResponseWriter, req *http.Request) {
