@@ -41,7 +41,7 @@ func standingIn(t *testing.T, handler http.Handler) tenantAPI {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return tenantAPI{client: c}
+	return tenantAPI{client: c, timeout: time.Minute}
 }
 
 func kubeconfigFor(t *testing.T, server string) []byte {
@@ -385,7 +385,7 @@ func TestAnUpdateUnderLodiasManagerNameIsNotLodiasApply(t *testing.T) {
 
 func TestTenantsClientHasOneConnectionAndItsHandshakeEndsWithinTheDeliveryTimeout(t *testing.T) {
 	r := &Reconciler{}
-	api, err := r.reach(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfigFor(t, "https://dev-kube-apiserver.team-a.svc:443"))
+	api, err := r.reach(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfigFor(t, "https://dev-kube-apiserver.team-a.svc:443"), applyTimeout)
 	if err != nil {
 		t.Fatal(err)
 	}

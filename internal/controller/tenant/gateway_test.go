@@ -9,11 +9,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -909,36 +911,109 @@ func answersNothing(t *testing.T, cp *lodiav1alpha1.ControlPlane) dialFunc {
 	return stand.dial
 }
 
-func answersSlowly(t *testing.T, cp *lodiav1alpha1.ControlPlane, delay time.Duration, listed []string) *tenantStand {
+type slowTenant struct {
+	*tenantStand
+	delay     atomic.Int64
+	delivered atomic.Bool
+	mu        sync.Mutex
+	inventory string
+	log       []string
+}
+
+func answersSlowly(t *testing.T, cp *lodiav1alpha1.ControlPlane, delay time.Duration, listed []string) *slowTenant {
 	t.Helper()
 	object := `{"metadata":{"uid":"7a3c","resourceVersion":"42","managedFields":[{"manager":"` + tenant.FieldManager + `","operation":"Apply"}]}`
-	entries := make([]string, 0, len(listed))
-	for _, name := range listed {
-		entries = append(entries, `{"version":"v1","kind":"ConfigMap","namespace":"kube-system","name":"`+name+`"}`)
+	s := &slowTenant{}
+	s.delay.Store(int64(delay))
+	if len(listed) > 0 {
+		entries := make([]string, 0, len(listed))
+		for _, name := range listed {
+			entries = append(entries, `{"version":"v1","kind":"ConfigMap","namespace":"kube-system","name":"`+name+`"}`)
+		}
+		s.inventory = "[" + strings.Join(entries, ",") + "]"
 	}
-	inventory, err := json.Marshal("[" + strings.Join(entries, ",") + "]")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return tenantServing(t, cp, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	s.tenantStand = tenantServing(t, cp, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		s.mu.Lock()
+		s.log = append(s.log, r.Method+" "+r.URL.Path)
+		s.mu.Unlock()
 		select {
-		case <-time.After(delay):
+		case <-time.After(time.Duration(s.delay.Load())):
 		case <-r.Context().Done():
 			return
 		}
+		inventory := strings.HasSuffix(r.URL.Path, "/lodia-inventory")
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/lodia-inventory") && len(listed) > 0:
-			_, _ = w.Write([]byte(object + `,"data":{"objects":` + string(inventory) + `}}`))
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/lodia-inventory"):
-			w.WriteHeader(http.StatusNotFound)
-			_, _ = w.Write([]byte(`{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"NotFound","code":404}`))
+		case inventory && r.Method == http.MethodPatch:
+			var cm struct {
+				Data map[string]string `json:"data"`
+			}
+			_ = json.Unmarshal(body, &cm)
+			s.mu.Lock()
+			s.inventory = cm.Data["objects"]
+			s.mu.Unlock()
+			_, _ = w.Write([]byte(`{}`))
+		case inventory && r.Method == http.MethodGet:
+			s.mu.Lock()
+			stored := s.inventory
+			s.mu.Unlock()
+			if stored == "" {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"NotFound","code":404}`))
+				return
+			}
+			quoted, _ := json.Marshal(stored)
+			_, _ = w.Write([]byte(object + `,"data":{"objects":` + string(quoted) + `}}`))
 		case r.Method == http.MethodGet:
 			_, _ = w.Write([]byte(object + `}`))
 		default:
+			if r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/"+clientSecret) {
+				s.delivered.Store(true)
+			}
 			_, _ = w.Write([]byte(`{}`))
 		}
 	}))
+	return s
+}
+
+func (s *slowTenant) sent() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.log)
+}
+
+func slowSetUp(t *testing.T, namespace string, gateway, held bool, delay time.Duration) (*tenant.Reconciler, *lodiav1alpha1.ControlPlane, *slowTenant) {
+	t.Helper()
+	mode, published := func(*lodiav1alpha1.ControlPlane) {}, publish
+	if gateway {
+		mode, published = gatewayMode, publishGateway
+	}
+	cp := controlPlane(t, namespace, mode)
+	published(t, cp)
+	reconcilePKI(t, gatewayIssuer(), cp)
+	pause(t, cp)
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	var listed []string
+	if held {
+		setTarget(t, cp, version, previous)
+		listed = []string{"cm-0", "cm-1", "cm-2", "cm-3", "cm-4", "cm-5", "cm-6", "cm-7"}
+	}
+	refresh(t, cp)
+	s := answersSlowly(t, cp, delay, listed)
+	return &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, Secrets: k8s, Revision: revision, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: s.dial}, cp, s
+}
+
+func slowPass(t *testing.T, r *tenant.Reconciler, cp *lodiav1alpha1.ControlPlane, s *slowTenant) (time.Duration, []string, error) {
+	t.Helper()
+	s.mu.Lock()
+	s.log = nil
+	s.mu.Unlock()
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+	return time.Since(start), s.sent(), err
 }
 
 func TestATenantThatAnswersNothingCostsThePassItsTimeoutsAndThePassReports(t *testing.T) {
@@ -992,54 +1067,132 @@ func TestATenantThatAnswersNothingCostsThePassItsTimeoutsAndThePassReports(t *te
 	}
 }
 
-func TestATenantThatAnswersEveryRequestSlowlyCostsThePassItsPhasesAndThePassReports(t *testing.T) {
+func TestATenantThatAnswersEveryRequestSlowlyHasItsPassEndedByTheMinuteAndItsStatusWrittenAfterIt(t *testing.T) {
 	t.Parallel()
-	listed := []string{"cm-0", "cm-1", "cm-2", "cm-3", "cm-4", "cm-5", "cm-6", "cm-7"}
 	for _, c := range []struct {
 		namespace string
-		mode      func(*lodiav1alpha1.ControlPlane)
-		published func(*testing.T, *lodiav1alpha1.ControlPlane)
+		gateway   bool
 		held      bool
-		took      time.Duration
 	}{
-		{"tenant-slow-gateway", gatewayMode, publishGateway, false, 40 * time.Second},
-		{"tenant-slow-load-balancer", func(*lodiav1alpha1.ControlPlane) {}, publish, false, 30 * time.Second},
-		{"tenant-slow-held", func(*lodiav1alpha1.ControlPlane) {}, publish, true, 30 * time.Second},
+		{"tenant-slow-gateway", true, false},
+		{"tenant-slow-load-balancer", false, false},
+		{"tenant-slow-held", false, true},
 	} {
 		t.Run(c.namespace, func(t *testing.T) {
 			t.Parallel()
-			cp := controlPlane(t, c.namespace, c.mode)
-			c.published(t, cp)
-			reconcilePKI(t, gatewayIssuer(), cp)
-			pause(t, cp)
-			setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
-			reads := []string(nil)
-			if c.held {
-				setTarget(t, cp, version, previous)
-				reads = listed
-			}
-			refresh(t, cp)
-			r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, Secrets: k8s, Revision: revision, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: answersSlowly(t, cp, 9*time.Second, reads).dial}
-			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-			defer cancel()
-			start := time.Now()
-			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
-			elapsed := time.Since(start)
+			r, cp, s := slowSetUp(t, c.namespace, c.gateway, c.held, 9*time.Second)
+			elapsed, _, err := slowPass(t, r, cp, s)
 			t.Logf("the pass took %s", elapsed)
 			if err == nil {
-				t.Error("a pass cut by its deadline succeeded")
+				t.Error("a pass cut by its minute succeeded")
 			}
-			if elapsed < c.took || elapsed > c.took+5*time.Second {
-				t.Errorf("the pass took %s, want the deadlines of its phases, %s", elapsed, c.took)
-			}
-			if c.held {
-				return
+			if elapsed < time.Minute || elapsed > time.Minute+5*time.Second {
+				t.Errorf("the pass took %s, want the minute and the status write after it", elapsed)
 			}
 			for _, conditionType := range []string{lodiav1alpha1.ConditionAddonsApplied, lodiav1alpha1.ConditionAddonsAvailable} {
+				if c.held {
+					if got := condition(t, cp, conditionType); got.Reason == lodiav1alpha1.ReasonApplying {
+						t.Errorf("%s says %s %q, but a held pass writes no status when its reads fail", conditionType, got.Reason, got.Message)
+					}
+					continue
+				}
 				expectNow(t, cp, conditionType, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying)
 				if got := condition(t, cp, conditionType); !strings.Contains(got.Message, "does not answer") {
 					t.Errorf("%s says %q", conditionType, got.Message)
 				}
+			}
+		})
+	}
+}
+
+func TestATenantAtRestThatAnswersEveryRequestIn900msCompletesItsPass(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		namespace string
+		gateway   bool
+	}{
+		{"tenant-at-rest-slow-defaults", false},
+		{"tenant-at-rest-slow-gateway", true},
+	} {
+		t.Run(c.namespace, func(t *testing.T) {
+			t.Parallel()
+			r, cp, s := slowSetUp(t, c.namespace, c.gateway, false, 0)
+			if _, _, err := slowPass(t, r, cp, s); err != nil {
+				t.Fatal(err)
+			}
+			s.delay.Store(int64(900 * time.Millisecond))
+			elapsed, sent, err := slowPass(t, r, cp, s)
+			if err != nil {
+				t.Errorf("a pass at rest on a tenant that answers every request in 900ms sent %d requests in %s and failed: %v", len(sent), elapsed, err)
+			}
+		})
+	}
+}
+
+func TestAFreshTenantThatAnswersEveryRequestIn900msConvergesWithinTwoPasses(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		namespace string
+		gateway   bool
+	}{
+		{"tenant-fresh-slow-defaults", false},
+		{"tenant-fresh-slow-gateway", true},
+	} {
+		t.Run(c.namespace, func(t *testing.T) {
+			t.Parallel()
+			r, cp, s := slowSetUp(t, c.namespace, c.gateway, false, 900*time.Millisecond)
+			var err error
+			for pass := 1; pass <= 2; pass++ {
+				var elapsed time.Duration
+				var sent []string
+				elapsed, sent, err = slowPass(t, r, cp, s)
+				t.Logf("pass %d sent %d requests in %s and returned %v", pass, len(sent), elapsed, err)
+			}
+			if err != nil {
+				t.Errorf("the second pass on a fresh tenant that answers every request in 900ms failed: %v", err)
+			}
+			if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+}
+
+func TestThePairIsDeliveredToATenantThatAnswersEveryRequestIn6s(t *testing.T) {
+	t.Parallel()
+	r, cp, s := slowSetUp(t, "tenant-delivery-slow", true, false, 6*time.Second)
+	elapsed, sent, err := slowPass(t, r, cp, s)
+	t.Logf("the pass sent %d requests in %s and returned %v", len(sent), elapsed, err)
+	if !s.delivered.Load() {
+		t.Error("the tunnel's pair was not delivered to a tenant that answers its read and its apply in 6 s each")
+	}
+}
+
+func TestAPassSendsTheRequestsTheTimeoutsAreSizedFor(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		namespace               string
+		gateway                 bool
+		beforeInventory, atRest int
+	}{
+		{"tenant-requests-defaults", false, 37, 39},
+		{"tenant-requests-gateway", true, 42, 45},
+	} {
+		t.Run(c.namespace, func(t *testing.T) {
+			t.Parallel()
+			r, cp, s := slowSetUp(t, c.namespace, c.gateway, false, 0)
+			_, sent, err := slowPass(t, r, cp, s)
+			if err != nil {
+				t.Fatal(err)
+			}
+			written := slices.IndexFunc(sent, func(request string) bool {
+				return strings.HasPrefix(request, http.MethodPatch) && strings.HasSuffix(request, "/lodia-inventory")
+			}) + 1
+			if written != c.beforeInventory {
+				t.Errorf("a fresh pass wrote the inventory with its request %d, want %d", written, c.beforeInventory)
+			}
+			if _, sent, err = slowPass(t, r, cp, s); err != nil || len(sent) != c.atRest {
+				t.Errorf("a pass at rest sent %d requests and returned %v, want %d", len(sent), err, c.atRest)
 			}
 		})
 	}
