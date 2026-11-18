@@ -47,6 +47,7 @@ import (
 	"go.lodia.io/lodia/internal/certs"
 	"go.lodia.io/lodia/internal/controller/pki"
 	"go.lodia.io/lodia/internal/controller/tenant"
+	"go.lodia.io/lodia/internal/secretcache"
 	"go.lodia.io/lodia/internal/testenv"
 )
 
@@ -109,6 +110,7 @@ func TestMain(m *testing.M) {
 	r := &tenant.Reconciler{
 		Client:      managerReads,
 		Reader:      mgr.GetAPIReader(),
+		Secrets:     secretcache.New(mgr.GetCache(), mgr.GetAPIReader()),
 		ApplyPeriod: 2 * time.Second,
 		TunnelImage: tunnelImage,
 		Revision:    revision,
@@ -213,7 +215,7 @@ func TestAWaitOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
 	})
 	pause(t, cp)
 	pass := func(at *lodiav1alpha1.ControlPlane, reader client.Reader) error {
-		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: at}, Reader: reader, Revision: revision}
+		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: at}, Reader: reader, Secrets: reader, Revision: revision}
 		_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 		return err
 	}
@@ -275,7 +277,7 @@ func TestAConditionKeptWithoutAnAnswerOnAStaleReadIsDecidedFromTheServer(t *test
 		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable, cp.Generation),
 	}})
 	pass := func(reader client.Reader) error {
-		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: reader, Revision: revision, ApplyPeriod: time.Hour, Dial: unreachable}
+		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: reader, Secrets: reader, Revision: revision, ApplyPeriod: time.Hour, Dial: unreachable}
 		_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 		return err
 	}
@@ -337,7 +339,7 @@ func TestAPassCancelledBeforeTheTenantAnswersWritesNothing(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	var dialed atomic.Bool
-	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: func(context.Context, string, string) (net.Conn, error) {
+	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, Secrets: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: func(context.Context, string, string) (net.Conn, error) {
 		dialed.Store(true)
 		cancel()
 		return nil, context.Canceled
@@ -379,7 +381,7 @@ func TestARolloutReadThatFailsOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
 		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable, cp.Generation),
 	}})
 	pass := func(reader client.Reader) error {
-		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: reader, Revision: revision, ApplyPeriod: time.Hour, Dial: *dial.Load()}
+		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: reader, Secrets: reader, Revision: revision, ApplyPeriod: time.Hour, Dial: *dial.Load()}
 		_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 		return err
 	}
@@ -436,7 +438,7 @@ func TestARefusedApplyStopsThePass(t *testing.T) {
 		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, cp.Generation-1),
 	}})
 	refresh(t, cp)
-	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: *dial.Load()}
+	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, Secrets: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: *dial.Load()}
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apierrors.IsForbidden(err) {
 		t.Errorf("a pass whose apply was refused returned %v, want the refusal", err)
 	}
@@ -491,7 +493,7 @@ func TestAnotherOwnersObjectStaysReportedThoughTheRolloutReadFails(t *testing.T)
 		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable, cp.Generation-1),
 	}})
 	refresh(t, cp)
-	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: *dial.Load()}
+	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, Secrets: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: *dial.Load()}
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apierrors.IsForbidden(err) {
 		t.Errorf("a pass whose rollout read was refused returned %v, want the refusal", err)
 	}
@@ -528,7 +530,7 @@ func TestAWaitComparesItsWriteWithTheServer(t *testing.T) {
 		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation),
 		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable, cp.Generation),
 	}})
-	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: k8s, Revision: revision}
+	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: k8s, Secrets: k8s, Revision: revision}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 		t.Fatal(err)
 	}
@@ -562,7 +564,7 @@ func TestAFailedSyncComparesItsWriteWithTheServer(t *testing.T) {
 		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, cp.Generation),
 		conditionAt(lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, cp.Generation),
 	}})
-	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: unreachable}
+	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: k8s, Secrets: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: unreachable}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
 		t.Fatal("a pass that could not reach the tenant succeeded")
 	}
@@ -586,7 +588,7 @@ func TestAPassTheTenantDoesNotAnswerKeepsARefusalAndAnotherOwnersObject(t *testi
 		before := *condition(t, cp, lodiav1alpha1.ConditionAddonsApplied)
 		stale := cp.DeepCopy()
 		meta.SetStatusCondition(&stale.Status.Conditions, metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonApplying, ObservedGeneration: cp.Generation})
-		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: unreachable}
+		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: k8s, Secrets: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: unreachable}
 		if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
 			t.Fatalf("%s: a pass that could not reach the tenant succeeded", reason)
 		}
@@ -1061,7 +1063,7 @@ func TestATenantThatDoesNotAnswerAtANewGenerationKeepsWhatItDescribed(t *testing
 	dial.Store(&unreachable)
 	setReplicas(t, cp, 2)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
-	r := &tenant.Reconciler{Client: k8s, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: unreachable}
+	r := &tenant.Reconciler{Client: k8s, Reader: k8s, Secrets: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: unreachable}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
 		t.Fatal("a pass that could not reach the tenant succeeded")
 	}

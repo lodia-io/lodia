@@ -436,6 +436,7 @@ Deletion takes no final snapshot, so the last snapshots of a deleted `ControlPla
 
 Built so far: the probes of the public endpoint and the in-namespace Service, the leader Leases, a restored `ControlPlane`'s release, the sampling of the nodes and Health's metrics.
 Every `health.period`, 5 seconds by default, Health asks `https://<status.endpoint.apiServer>/readyz` without credentials, which the API server's authentication allows for its health paths, and verifies it against `<cp>-ca-bundle`.
+Health, like Tenant, reads that Secret, `<cp>-tunnel-client` and `<cp>-lodia-kubeconfig` from memory for as long as their `resourceVersion` stays, so that a tenant at rest costs the API server no read of them ([decision](decisions/one-client-for-a-tenant.md)).
 It asks `https://<cp>-kube-apiserver.<namespace>.svc/readyz` the same way, through the in-namespace Service, which tells an API server that is down from a broken path to it.
 In `gateway` mode a probe also reads `/readyz` through the tunnel, the outer TLS with `<cp>-tunnel-client`, the inner verified against the bundle, and completes a TLS handshake with the konnectivity host; a tenant whose `<cp>-tunnel-client` is missing or another owner's reads `WaitingForCertificates`.
 The probes of a pass run at once, each within the timeout, the dial and the TLS handshake included, so a dead path holds a worker for one timeout.

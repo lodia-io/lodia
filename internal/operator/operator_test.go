@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -53,6 +55,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/certs"
 	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/controller/datastore"
 	"go.lodia.io/lodia/internal/controller/health"
@@ -619,7 +622,7 @@ func TestTheMetricsServeTheCountsOfTheSourcesHealthNodes(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	nodes := &health.NodesReconciler{Client: k8s, Reader: k8s, Timeout: 5 * time.Second, MaxNodes: 5000, Clock: clock.RealClock{}}
+	nodes := &health.NodesReconciler{Client: k8s, Reader: k8s, Secrets: k8s, Timeout: 5 * time.Second, MaxNodes: 5000, Clock: clock.RealClock{}}
 	if _, err := nodes.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 		t.Fatal(err)
 	}
@@ -645,5 +648,111 @@ func applyStatus(t *testing.T, k8s client.Client, cp *lodiav1alpha1.ControlPlane
 	}}
 	if err := k8s.Status().Apply(t.Context(), client.ApplyConfigurationFromUnstructured(u), client.FieldOwner(owner), client.ForceOwnership); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestTheSecretsOfTheAccessAreReadThroughOneReaderTenantHealthAndTheEtcdSamplerShare(t *testing.T) {
+	cfg := start(t)
+	var named atomic.Int32
+	cfg.Wrap(func(next http.RoundTripper) http.RoundTripper {
+		return roundTripper(func(req *http.Request) (*http.Response, error) {
+			if parts := strings.Split(strings.Trim(req.URL.Path, "/"), "/"); req.Method == http.MethodGet && len(parts) == 6 && parts[2] == "namespaces" && parts[4] == "secrets" {
+				named.Add(1)
+			}
+			return next.RoundTrip(req)
+		})
+	})
+	options, err := operator.Cache(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+		Scheme:     operator.Scheme(),
+		Metrics:    metricsserver.Options{BindAddress: "0"},
+		Cache:      options,
+		Controller: config.Controller{SkipNameValidation: new(true), CacheSyncTimeout: cacheSyncTimeout},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources, err := operator.Setup(mgr, testInputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, got := range map[string]client.Reader{"health": sources.Health.Secrets, "health-nodes": sources.Nodes.Secrets, "tenant": sources.Tenant.Secrets} {
+		if got != sources.Secrets {
+			t.Errorf("%s reads Secrets through %T, want the reader Setup returns", name, got)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan error, 1)
+	go func() { stopped <- mgr.Start(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-stopped; err != nil {
+			t.Errorf("manager: %v", err)
+		}
+	})
+
+	k8s, err := client.New(cfg, client.Options{Scheme: operator.Scheme()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp := createControlPlane(t, k8s)
+	ca, err := certs.NewCA("etcd", time.Now(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := ca.Issue(certs.Profile{CommonName: "client", Usages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}, time.Now(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caPEM, err := certs.CertPEM(ca.Cert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM, err := certs.CertPEM(leaf.Cert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM, err := certs.KeyPEM(leaf.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	labels := map[string]string{lodiav1alpha1.ControlPlaneLabel: cp.Name}
+	for _, secret := range []*corev1.Secret{
+		{ObjectMeta: metav1.ObjectMeta{Namespace: cp.Namespace, Name: "dev-etcd-client", Labels: labels}, Data: map[string][]byte{corev1.TLSCertKey: certPEM, corev1.TLSPrivateKeyKey: keyPEM}},
+		{ObjectMeta: metav1.ObjectMeta{Namespace: cp.Namespace, Name: "dev-etcd-ca", Labels: labels}, Data: map[string][]byte{lodiav1alpha1.CACertKey: caPEM}},
+	} {
+		if err := k8s.Create(t.Context(), secret); err != nil {
+			t.Fatal(err)
+		}
+	}
+	testenv.Eventually(t, func() error {
+		for _, name := range []string{"dev-etcd-client", "dev-etcd-ca"} {
+			held := &metav1.PartialObjectMetadata{}
+			held.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Secret"))
+			if err := mgr.GetCache().Get(t.Context(), client.ObjectKey{Namespace: cp.Namespace, Name: name}, held); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	etcd := &druidv1alpha1.Etcd{ObjectMeta: metav1.ObjectMeta{Name: contract.EtcdName(cp.Name), Namespace: cp.Namespace}}
+	etcd.Spec.Etcd.ClientUrlTLS = &druidv1alpha1.TLSConfig{
+		TLSCASecretRef:     druidv1alpha1.SecretReference{SecretReference: corev1.SecretReference{Name: "dev-etcd-ca"}},
+		ClientTLSSecretRef: corev1.SecretReference{Name: "dev-etcd-client"},
+	}
+	named.Store(0)
+	for range 3 {
+		c, err := sources.Etcd.EtcdClient(t.Context(), etcd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = c.Close()
+	}
+	if got := named.Load(); got != 2 {
+		t.Errorf("3 dials of the etcd sent %d reads of a Secret, want the 2 of the first, which the others did not repeat", got)
 	}
 }

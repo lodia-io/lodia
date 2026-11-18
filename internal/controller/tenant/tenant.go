@@ -58,10 +58,11 @@ const (
 
 type Reconciler struct {
 	client.Client
-	// Reader reads the Secrets the cache holds the metadata of only, and
-	// AddonsApplied and AddonsAvailable when Tenant waits for access or keeps
-	// them.
+	// Reader reads AddonsApplied and AddonsAvailable when Tenant waits for
+	// access or keeps them, from the API server.
 	Reader client.Reader
+	// Secrets reads the Secrets the cache holds the metadata of only.
+	Secrets client.Reader
 	// Events records the transitions of the conditions it writes;
 	// SetupWithManager sets it.
 	Events events.EventRecorder
@@ -121,7 +122,7 @@ func inputs(cp *lodiav1alpha1.ControlPlane) string {
 
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/status,verbs=patch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -335,7 +336,7 @@ func (r *Reconciler) credentials(ctx context.Context, cp *lodiav1alpha1.ControlP
 func (r *Reconciler) readSecrets(ctx context.Context, cp *lodiav1alpha1.ControlPlane, reads []secretRead) (string, error) {
 	for _, read := range reads {
 		obj, name := read.obj, read.secret.Name(cp.Name)
-		err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: name}, obj)
+		err := r.Secrets.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: name}, obj)
 		if apierrors.IsNotFound(err) {
 			return fmt.Sprintf("Secret %s does not exist", name), nil
 		}

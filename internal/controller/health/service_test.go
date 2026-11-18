@@ -168,7 +168,7 @@ func blackHole(ctx context.Context, _, _ string) (net.Conn, error) {
 }
 
 func newReconciler(timeout time.Duration) *health.Reconciler {
-	return &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: timeout, Clock: clock.RealClock{}}
+	return &health.Reconciler{Client: k8s, Reader: k8s, Secrets: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: timeout, Clock: clock.RealClock{}}
 }
 
 func settled(t *testing.T, before int) {

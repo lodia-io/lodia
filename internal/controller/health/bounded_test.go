@@ -49,7 +49,7 @@ func TestAResponseLongerThanTheBoundIsAListThatCouldNotBeRead(t *testing.T) {
 		writeOversizeList(w, "v1", "ServiceList")
 		return true
 	}))
-	reconcile(t, &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, Period: time.Hour, Timeout: 2 * time.Second, Clock: clock.RealClock{}}, cp)
+	reconcile(t, &health.Reconciler{Client: k8s, Reader: k8s, Secrets: k8s, FailuresBeforeFalse: failuresBeforeFalse, Period: time.Hour, Timeout: 2 * time.Second, Clock: clock.RealClock{}}, cp)
 	if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonAwaitingRelease, actsOn+"Services could not be listed; 0 PersistentVolumes with reclaimPolicy Delete"+
 		"; 0 pending PersistentVolumeClaims; 0 webhooks that call a URL or fail closed; 0 APIServices served by a Service; 0 CronJobs not suspended"); err != nil {
 		t.Error(err)
@@ -698,7 +698,7 @@ func TestAListOfAHeldRestoreBeyondItsBoundsIsAKindThatCouldNotBeListed(t *testin
 				}
 				return ok
 			}))
-			reconcile(t, &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, Period: time.Hour, Timeout: 2 * time.Second, Clock: clock.RealClock{}}, cp)
+			reconcile(t, &health.Reconciler{Client: k8s, Reader: k8s, Secrets: k8s, FailuresBeforeFalse: failuresBeforeFalse, Period: time.Hour, Timeout: 2 * time.Second, Clock: clock.RealClock{}}, cp)
 			if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonAwaitingRelease, actsOn+c.want); err != nil {
 				t.Error(err)
 			}

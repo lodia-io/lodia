@@ -63,7 +63,7 @@ func taken(n, of int, percent string) string {
 
 func nodesReconciler(now clock.PassiveClock) *health.NodesReconciler {
 	return &health.NodesReconciler{
-		Client: k8s, Reader: k8s, Period: 5 * time.Second, Timeout: 2 * time.Second,
+		Client: k8s, Reader: k8s, Secrets: k8s, Period: 5 * time.Second, Timeout: 2 * time.Second,
 		SilentAfter: 20 * time.Second, HoldFraction: 600, ReleaseAfter: 2 * time.Minute, MaxNodes: 5000, Clock: now,
 	}
 }
@@ -337,7 +337,7 @@ func TestANodeNamedLikeALeaderLeaseSharesNoClockWithIt(t *testing.T) {
 	now := clocktesting.NewFakePassiveClock(start)
 	nodes := nodesReconciler(now)
 	nodes.HoldFraction = 1000
-	leaders := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: 5 * time.Second, Timeout: 2 * time.Second, Clock: now}
+	leaders := &health.Reconciler{Client: k8s, Reader: k8s, Secrets: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: 5 * time.Second, Timeout: 2 * time.Second, Clock: now}
 	joined(t, contract.SchedulerLease, corev1.ConditionTrue, start)
 	removeLeases(t)
 	renew(t, contract.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", start)
@@ -730,7 +730,7 @@ func TestReconcilingIsAppliedBeforeATenantThatNeverAnswersIsCalled(t *testing.T)
 	}
 	writeKubeconfig(t, cp, tenantKubeconfig)
 	r := nodesReconciler(clock.RealClock{})
-	r.Reader = kubeconfigOverride{Reader: k8s, key: client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.LodiaKubeconfigSecret.Name(cp.Name)}, kubeconfig: kubeconfig}
+	r.Secrets = kubeconfigOverride{Reader: k8s, key: client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.LodiaKubeconfigSecret.Name(cp.Name)}, kubeconfig: kubeconfig}
 	r.Timeout = 500 * time.Millisecond
 	started := time.Now()
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
@@ -903,7 +903,7 @@ func TestAFailingPassReturnsNoError(t *testing.T) {
 		{"the status apply", failingApply, k8s},
 	} {
 		r := nodesReconciler(now)
-		r.Client, r.Reader = c.client, c.reader
+		r.Client, r.Reader, r.Secrets = c.client, c.reader, c.reader
 		sample(t, r, cp)
 		if t.Failed() {
 			t.Fatalf("a pass whose %s failed", c.failing)
@@ -1086,8 +1086,9 @@ func TestATenantWhoseAPIServerHangsDoesNotStopAnothersSamples(t *testing.T) {
 	const timeout = 5 * time.Second
 	startNodes(t, []string{hanging, healthy}, func(mgr ctrl.Manager) error {
 		return (&health.NodesReconciler{
-			Client: mgr.GetClient(), Reader: kubeconfigOverride{Reader: mgr.GetAPIReader(), key: client.ObjectKey{Namespace: hung.Namespace, Name: lodiav1alpha1.LodiaKubeconfigSecret.Name(hung.Name)}, kubeconfig: kubeconfig},
-			Period: 100 * time.Millisecond, Timeout: timeout,
+			Client: mgr.GetClient(), Reader: mgr.GetAPIReader(),
+			Secrets: kubeconfigOverride{Reader: mgr.GetAPIReader(), key: client.ObjectKey{Namespace: hung.Namespace, Name: lodiav1alpha1.LodiaKubeconfigSecret.Name(hung.Name)}, kubeconfig: kubeconfig},
+			Period:  100 * time.Millisecond, Timeout: timeout,
 			SilentAfter: time.Second, HoldFraction: 600, ReleaseAfter: time.Minute, MaxNodes: 5000, Clock: clock.RealClock{},
 		}).SetupWithManager(mgr, 2)
 	})
@@ -1116,7 +1117,7 @@ func TestAPassDoesNotDependOnThePublicEndpoint(t *testing.T) {
 	var dialing, dialed atomic.Int32
 	startNodes(t, []string{ns}, func(mgr ctrl.Manager) error {
 		if err := (&health.Reconciler{
-			Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), FailuresBeforeFalse: failuresBeforeFalse,
+			Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Secrets: mgr.GetAPIReader(), FailuresBeforeFalse: failuresBeforeFalse,
 			DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 				dialing.Add(1)
 				defer dialed.Add(1)
@@ -1127,7 +1128,7 @@ func TestAPassDoesNotDependOnThePublicEndpoint(t *testing.T) {
 			return err
 		}
 		return (&health.NodesReconciler{
-			Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Period: time.Hour, Timeout: 10 * time.Second,
+			Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Secrets: mgr.GetAPIReader(), Period: time.Hour, Timeout: 10 * time.Second,
 			SilentAfter: 20 * time.Second, HoldFraction: 600, MaxNodes: 5000, Clock: clock.RealClock{},
 		}).SetupWithManager(mgr, 1)
 	})

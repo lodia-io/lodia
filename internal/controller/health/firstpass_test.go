@@ -31,7 +31,7 @@ func TestACacheWithoutHealthsConditionsLeavesTheServers(t *testing.T) {
 	testenv.Eventually(t, func() error {
 		return expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200")
 	})
-	r := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: 2 * time.Second, Clock: clock.RealClock{}}
+	r := &health.Reconciler{Client: k8s, Reader: k8s, Secrets: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: 2 * time.Second, Clock: clock.RealClock{}}
 	reconcile(t, r, cp)
 	if err := expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
 		t.Fatal(err)

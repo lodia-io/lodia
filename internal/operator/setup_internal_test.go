@@ -14,7 +14,7 @@ func TestHealthRunsOnTheFilesValues(t *testing.T) {
 	cfg := DefaultConfig().Health
 	cfg.Period = metav1.Duration{Duration: 7 * time.Second}
 	cfg.FailuresBeforeFalse = 4
-	got := newHealth(nil, nil, cfg)
+	got := newHealth(nil, nil, nil, cfg)
 	if got.Period != 7*time.Second {
 		t.Errorf("Period = %s, want 7s", got.Period)
 	}
@@ -29,7 +29,7 @@ func TestHealthNodesRunOnTheFilesValues(t *testing.T) {
 	cfg.SilentAfter = metav1.Duration{Duration: 25 * time.Second}
 	cfg.HoldFraction = 750
 	cfg.MaxNodes = 120
-	got := newNodes(nil, nil, cfg)
+	got := newNodes(nil, nil, nil, cfg)
 	if got.Period != 7*time.Second {
 		t.Errorf("Period = %s, want 7s", got.Period)
 	}
@@ -42,7 +42,7 @@ func TestHealthNodesRunOnTheFilesValues(t *testing.T) {
 	if got.MaxNodes != 120 {
 		t.Errorf("MaxNodes = %d, want 120", got.MaxNodes)
 	}
-	if want := newHealth(nil, nil, cfg).Timeout; got.Timeout != want {
+	if want := newHealth(nil, nil, nil, cfg).Timeout; got.Timeout != want {
 		t.Errorf("Timeout = %s, want Health's %s", got.Timeout, want)
 	}
 }
@@ -56,7 +56,7 @@ func TestLifecycleRunsOnTheFilesValues(t *testing.T) {
 	cfg.Health.FailuresBeforeFalse = 4
 	cfg.Fleet.MaxConcurrentRollouts = 2
 	got := newLifecycle(nil, nil, cfg, "v1.0.0+0")
-	if want := 4*(7*time.Second+newHealth(nil, nil, cfg.Health).Timeout) + 15*time.Second; got.Settling != want {
+	if want := 4*(7*time.Second+newHealth(nil, nil, nil, cfg.Health).Timeout) + 15*time.Second; got.Settling != want {
 		t.Errorf("Settling = %s, want %s", got.Settling, want)
 	}
 	if got.MaxConcurrentRollouts != 2 || got.Revision != "v1.0.0+0" {
@@ -71,7 +71,7 @@ func TestTheMetricsRunOnTheFilesLimitAndTheRevisionLifecycleGrants(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := Metrics(nil, nil, in, &Sources{Health: newHealth(nil, nil, in.Config.Health), Nodes: newNodes(nil, nil, in.Config.Health)})
+	got, err := Metrics(nil, nil, in, &Sources{Health: newHealth(nil, nil, nil, in.Config.Health), Nodes: newNodes(nil, nil, nil, in.Config.Health)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestTheMetricsRunOnTheFilesLimitAndTheRevisionLifecycleGrants(t *testing.T)
 func TestTheMetricsServeTheHoldFractionOfTheSourcesHealthNodes(t *testing.T) {
 	in := Inputs{Config: DefaultConfig(), Version: "v1.0.0"}
 	in.Config.Health.HoldFraction = 750
-	sources := &Sources{Health: newHealth(nil, nil, in.Config.Health), Nodes: newNodes(nil, nil, in.Config.Health)}
+	sources := &Sources{Health: newHealth(nil, nil, nil, in.Config.Health), Nodes: newNodes(nil, nil, nil, in.Config.Health)}
 	got, err := Metrics(nil, nil, in, sources)
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +101,7 @@ func TestTheMetricsServeTheHoldFractionOfTheSourcesHealthNodes(t *testing.T) {
 
 func TestTheMetricsServeTheCounterAndHistogramOfTheSources(t *testing.T) {
 	in := Inputs{Config: DefaultConfig(), Version: "v1.0.0"}
-	sources := &Sources{Health: newHealth(nil, nil, in.Config.Health), Nodes: newNodes(nil, nil, in.Config.Health)}
+	sources := &Sources{Health: newHealth(nil, nil, nil, in.Config.Health), Nodes: newNodes(nil, nil, nil, in.Config.Health)}
 	got, err := Metrics(nil, nil, in, sources)
 	if err != nil {
 		t.Fatal(err)

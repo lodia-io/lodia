@@ -41,6 +41,7 @@ import (
 	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/controller/health"
 	"go.lodia.io/lodia/internal/operator"
+	"go.lodia.io/lodia/internal/secretcache"
 	"go.lodia.io/lodia/internal/testenv"
 )
 
@@ -73,7 +74,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		env.Fatal("manager", err)
 	}
-	if err := (&health.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: 2 * time.Second, Clock: clock.RealClock{}}).SetupWithManager(mgr, 1); err != nil {
+	if err := (&health.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Secrets: secretcache.New(mgr.GetCache(), mgr.GetAPIReader()), FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: 2 * time.Second, Clock: clock.RealClock{}}).SetupWithManager(mgr, 1); err != nil {
 		env.Fatal("controller", err)
 	}
 	env.StartManager(mgr)
@@ -118,7 +119,7 @@ func TestReachableFollowsTheProbe(t *testing.T) {
 	})
 
 	const failures = 4
-	probe := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failures, DialContext: dialService, Period: time.Hour, Timeout: 300 * time.Millisecond}
+	probe := &health.Reconciler{Client: k8s, Reader: k8s, Secrets: k8s, FailuresBeforeFalse: failures, DialContext: dialService, Period: time.Hour, Timeout: 300 * time.Millisecond}
 	writeBundle(t, cp, e)
 	reconcile(t, probe, cp)
 	if err := expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
@@ -170,7 +171,7 @@ func TestACABundleKeptElsewhereOrWithoutACertificateWaitsForCertificates(t *test
 	if err := k8s.Create(t.Context(), foreign); err != nil {
 		t.Fatal(err)
 	}
-	probe := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: 300 * time.Millisecond}
+	probe := &health.Reconciler{Client: k8s, Reader: k8s, Secrets: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: 300 * time.Millisecond}
 	reconcile(t, probe, cp)
 	if err := expect(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "Secret "+name+" is kept by ExternalSecret stranger with UID abc"); err != nil {
 		t.Fatal(err)
@@ -196,7 +197,7 @@ func TestAPassThatChangesNothingWritesNothing(t *testing.T) {
 		return expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200")
 	})
 
-	reconcile(t, &health.Reconciler{Client: noControlPlaneWrite(t, k8s), Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: time.Second}, cp)
+	reconcile(t, &health.Reconciler{Client: noControlPlaneWrite(t, k8s), Reader: k8s, Secrets: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: time.Second}, cp)
 }
 
 func TestAFailedReadLeavesTheStatus(t *testing.T) {
@@ -217,7 +218,7 @@ func TestAFailedReadLeavesTheStatus(t *testing.T) {
 			return c.Get(ctx, key, obj, opts...)
 		},
 	})
-	probe := &health.Reconciler{Client: noControlPlaneWrite(t, k8s), Reader: failing, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: time.Second}
+	probe := &health.Reconciler{Client: noControlPlaneWrite(t, k8s), Reader: failing, Secrets: failing, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: time.Second}
 	for range failuresBeforeFalse {
 		if _, err := probe.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
 			t.Fatal("a pass whose read of the CA bundle failed returned no error")
@@ -258,6 +259,7 @@ func TestAPassThatFailsAfterAFailedProbeCountsNoFailure(t *testing.T) {
 				return c.Get(ctx, key, obj, opts...)
 			},
 		})
+		probe.Secrets = probe.Reader
 		for range failuresBeforeFalse - 1 {
 			if _, err := probe.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !errors.Is(err, injected) {
 				t.Fatalf("a pass whose read of %s failed returned %v, want the read's error", failed.read, err)
@@ -265,7 +267,7 @@ func TestAPassThatFailsAfterAFailedProbeCountsNoFailure(t *testing.T) {
 		}
 	}
 
-	probe.Reader = k8s
+	probe.Reader, probe.Secrets = k8s, k8s
 	reconcile(t, probe, cp)
 	if err := expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
 		t.Errorf("one failed probe after passes that failed after theirs: %v", err)
@@ -281,7 +283,7 @@ func TestAPassThatFailsKeepsTheCountOfFailedProbes(t *testing.T) {
 		return expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200")
 	})
 	e.code.Store(http.StatusServiceUnavailable)
-	probe := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
+	probe := &health.Reconciler{Client: k8s, Reader: k8s, Secrets: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
 	reconcile(t, probe, cp)
 	injected := errors.New("injected")
 	probe.Reader = interceptor.NewClient(k8s, interceptor.Funcs{
@@ -320,7 +322,7 @@ func TestAFailedApplyAfterAFailedProbeCountsNoFailure(t *testing.T) {
 
 	e.code.Store(http.StatusServiceUnavailable)
 	injected := errors.New("injected: the status apply failed")
-	probe := &health.Reconciler{Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
+	probe := &health.Reconciler{Reader: k8s, Secrets: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
 	probe.Client = interceptor.NewClient(k8s, interceptor.Funcs{
 		SubResourceApply: func(context.Context, client.Client, string, runtime.ApplyConfiguration, ...client.SubResourceApplyOption) error {
 			return injected
@@ -346,7 +348,7 @@ func TestAFailedProbeOfAReachableThatIsNotTrueIsAFailure(t *testing.T) {
 	testenv.Eventually(t, func() error {
 		return expect(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the CA bundle dev-ca-bundle")
 	})
-	probe := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
+	probe := &health.Reconciler{Client: k8s, Reader: k8s, Secrets: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
 	writeBundle(t, cp, e)
 	reconcile(t, probe, cp)
 	if err := expect(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonExternalProbeFailed, e.url+" answered 503"); err != nil {
@@ -363,7 +365,7 @@ func TestASuccessfulProbeClearsTheCountInAPassThatFails(t *testing.T) {
 	testenv.Eventually(t, func() error {
 		return expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200")
 	})
-	probe := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
+	probe := &health.Reconciler{Client: k8s, Reader: k8s, Secrets: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
 	e.code.Store(http.StatusServiceUnavailable)
 	for range failuresBeforeFalse - 1 {
 		reconcile(t, probe, cp)
@@ -381,10 +383,11 @@ func TestASuccessfulProbeClearsTheCountInAPassThatFails(t *testing.T) {
 			return c.Get(ctx, key, obj, opts...)
 		},
 	})
+	probe.Secrets = probe.Reader
 	if _, err := probe.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !errors.Is(err, injected) {
 		t.Fatalf("a pass whose read of Lodia's kubeconfig failed returned %v, want the read's error", err)
 	}
-	probe.Reader = k8s
+	probe.Reader, probe.Secrets = k8s, k8s
 	e.code.Store(http.StatusServiceUnavailable)
 	reconcile(t, probe, cp)
 	if err := expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
@@ -400,7 +403,7 @@ func TestAPassOverATenantThatHangsEverywhereHoldsItsWorkerForOneTimeout(t *testi
 	setAccess(t, cp)
 	writeKubeconfig(t, cp, tenantKubeconfig)
 	const timeout = 500 * time.Millisecond
-	r := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: blackHole, Period: time.Hour, Timeout: timeout, Clock: clock.RealClock{}}
+	r := &health.Reconciler{Client: k8s, Reader: k8s, Secrets: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: blackHole, Period: time.Hour, Timeout: timeout, Clock: clock.RealClock{}}
 	for pass := range failuresBeforeFalse + 1 {
 		start := time.Now()
 		reconcile(t, r, cp)
@@ -426,7 +429,7 @@ func TestAPassWhoseServiceHangsStillWaitsForAccessAndForgetsTheLeases(t *testing
 	var hanging atomic.Bool
 	const timeout = 500 * time.Millisecond
 	now := clocktesting.NewFakePassiveClock(start)
-	r := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, Period: 10 * time.Second, Timeout: timeout, Clock: now,
+	r := &health.Reconciler{Client: k8s, Reader: k8s, Secrets: k8s, FailuresBeforeFalse: failuresBeforeFalse, Period: 10 * time.Second, Timeout: timeout, Clock: now,
 		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 			if hanging.Load() {
 				return blackHole(ctx, network, address)
@@ -504,7 +507,7 @@ func TestControllersLeadingFollowsTheLeaderLeases(t *testing.T) {
 	})
 	start := time.Now().Truncate(time.Second)
 	now := clocktesting.NewFakePassiveClock(start)
-	r := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: 5 * time.Second, Timeout: 2 * time.Second, Clock: now}
+	r := &health.Reconciler{Client: k8s, Reader: k8s, Secrets: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: 5 * time.Second, Timeout: 2 * time.Second, Clock: now}
 	writeKubeconfig(t, cp, tenantKubeconfig)
 	removeLeases(t)
 	reconcile(t, r, cp)
@@ -582,7 +585,7 @@ func TestAFailedLeaseReadKeepsControllersLeading(t *testing.T) {
 	})
 	start := time.Now().Truncate(time.Second)
 	now := clocktesting.NewFakePassiveClock(start)
-	r := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: 10 * time.Second, Timeout: 2 * time.Second, Clock: now}
+	r := &health.Reconciler{Client: k8s, Reader: k8s, Secrets: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: 10 * time.Second, Timeout: 2 * time.Second, Clock: now}
 	writeKubeconfig(t, cp, tenantKubeconfig)
 	renew(t, contract.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", start)
 	renew(t, contract.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
@@ -624,7 +627,7 @@ func TestAKeptConditionIsWrittenAtTheObjectsGeneration(t *testing.T) {
 	start := time.Now().Truncate(time.Second)
 	renew(t, contract.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", start)
 	renew(t, contract.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
-	r := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: 10 * time.Second, Timeout: 2 * time.Second, Clock: clocktesting.NewFakePassiveClock(start)}
+	r := &health.Reconciler{Client: k8s, Reader: k8s, Secrets: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: 10 * time.Second, Timeout: 2 * time.Second, Clock: clocktesting.NewFakePassiveClock(start)}
 	reconcile(t, r, cp)
 	const leading = "the leader Leases of kube-controller-manager and kube-scheduler are renewed"
 	if err := expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
@@ -668,7 +671,7 @@ func TestAKeptConditionIsDecidedFromTheServer(t *testing.T) {
 	renew(t, contract.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
 	const leading = "the leader Leases of kube-controller-manager and kube-scheduler are renewed"
 	now := clocktesting.NewFakePassiveClock(start)
-	r := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: 10 * time.Second, Timeout: 2 * time.Second, Clock: now}
+	r := &health.Reconciler{Client: k8s, Reader: k8s, Secrets: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: 10 * time.Second, Timeout: 2 * time.Second, Clock: now}
 	reconcile(t, r, cp)
 	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, leading); err != nil {
 		t.Fatal(err)
@@ -778,7 +781,7 @@ func TestControllersLeadingWaitsForAccessReadyAtAnyGeneration(t *testing.T) {
 	})
 	start := time.Now().Truncate(time.Second)
 	now := clocktesting.NewFakePassiveClock(start)
-	r := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: 10 * time.Second, Timeout: 2 * time.Second, Clock: now}
+	r := &health.Reconciler{Client: k8s, Reader: k8s, Secrets: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: 10 * time.Second, Timeout: 2 * time.Second, Clock: now}
 	writeKubeconfig(t, cp, tenantKubeconfig)
 	renew(t, contract.ControllerManagerLease, "dev-kube-controller-manager-7d9_1", start)
 	renew(t, contract.SchedulerLease, "dev-kube-scheduler-5c4_2", start)

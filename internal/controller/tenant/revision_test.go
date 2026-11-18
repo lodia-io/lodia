@@ -49,7 +49,7 @@ func (c unpaused) Get(ctx context.Context, key client.ObjectKey, obj client.Obje
 }
 
 func runningOperator() *tenant.Reconciler {
-	return &tenant.Reconciler{Client: unpaused{k8s}, Reader: k8s, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Revision: revision, Dial: *dial.Load()}
+	return &tenant.Reconciler{Client: unpaused{k8s}, Reader: k8s, Secrets: k8s, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Revision: revision, Dial: *dial.Load()}
 }
 
 func passWith(t *testing.T, r *tenant.Reconciler, cp *lodiav1alpha1.ControlPlane) error {
@@ -756,7 +756,7 @@ func TestAWaitAtANewGenerationKeepsBothConditions(t *testing.T) {
 		refresh(t, cp)
 		written := cp.ResourceVersion
 		r := runningOperator()
-		r.Reader, r.Dial = c.reader, unreachable
+		r.Reader, r.Secrets, r.Dial = c.reader, c.reader, unreachable
 		if err := passWith(t, r, cp); err != nil {
 			t.Errorf("when %s, the pass returned %v, which a wait does not", c.name, err)
 		}
@@ -780,7 +780,7 @@ func TestAWaitAtANewGenerationLeavesAHeldPassNoTrueToWriteThere(t *testing.T) {
 		setTarget(t, cp, version, granted)
 		applied, available := *condition(t, cp, lodiav1alpha1.ConditionAddonsApplied), *condition(t, cp, lodiav1alpha1.ConditionAddonsAvailable)
 		r := runningOperator()
-		r.Reader = hidingSecret{Reader: k8s, name: "dev-ca-bundle"}
+		r.Secrets = hidingSecret{Reader: k8s, name: "dev-ca-bundle"}
 		if err := passWith(t, r, cp); err != nil {
 			t.Fatal(err)
 		}

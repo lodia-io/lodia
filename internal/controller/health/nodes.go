@@ -77,9 +77,10 @@ const (
 // Timeout, delays no sample (docs/decisions/controller-manager-hold.md).
 type NodesReconciler struct {
 	client.Client
-	// Reader reads Lodia's kubeconfig, whose data the cache does not hold, and
-	// the status NodesReconciler keeps.
+	// Reader reads the status NodesReconciler keeps from the API server.
 	Reader client.Reader
+	// Secrets reads Lodia's kubeconfig, whose data the cache does not hold.
+	Secrets client.Reader
 	// Events records the transitions of the conditions it writes;
 	// SetupWithManager sets it.
 	Events events.EventRecorder
@@ -208,7 +209,7 @@ func accessChanged() predicate.Funcs {
 
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/status,verbs=patch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=list
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
@@ -285,7 +286,7 @@ func (r *NodesReconciler) sample(ctx context.Context, cp *lodiav1alpha1.ControlP
 			}
 		}
 	}
-	kubeconfig, waiting, err := lodiaKubeconfig(ctx, r.Reader, cp)
+	kubeconfig, waiting, err := lodiaKubeconfig(ctx, r.Secrets, cp)
 	if err != nil {
 		// No list stands behind this pass, so it clears the count; a failed read
 		// of a management Secret says nothing about the kubelets, so the clock runs on.

@@ -75,9 +75,11 @@ const (
 
 type Reconciler struct {
 	client.Client
-	// Reader reads the CA bundle and Lodia's kubeconfig, whose data the cache
-	// does not hold, and a condition Health keeps.
+	// Reader reads a condition Health keeps from the API server.
 	Reader client.Reader
+	// Secrets reads the CA bundle, the tunnel's client pair and Lodia's
+	// kubeconfig, whose data the cache does not hold.
+	Secrets client.Reader
 	// Events records the transitions of the conditions it writes;
 	// SetupWithManager sets it.
 	Events events.EventRecorder
@@ -147,7 +149,7 @@ func access(cp *lodiav1alpha1.ControlPlane) bool {
 
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/status,verbs=patch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -204,7 +206,7 @@ func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPla
 	}
 	name := lodiav1alpha1.CABundleSecret.Name(cp.Name)
 	secret := &corev1.Secret{}
-	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: name}, secret); err != nil {
+	if err := r.Secrets.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: name}, secret); err != nil {
 		if apierrors.IsNotFound(err) {
 			return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the CA bundle "+name), "", nil
 		}
@@ -218,7 +220,7 @@ func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPla
 	if gateway {
 		pair = &corev1.Secret{}
 		pairName := lodiav1alpha1.TunnelClientSecret.Name(cp.Name)
-		if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: pairName}, pair); err != nil {
+		if err := r.Secrets.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: pairName}, pair); err != nil {
 			if apierrors.IsNotFound(err) {
 				return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the tunnel's client certificate "+pairName), "", nil
 			}
@@ -345,7 +347,7 @@ func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 		r.forget(key)
 		return newCondition(cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, accessNotTrue), nil
 	}
-	kubeconfig, waiting, err := lodiaKubeconfig(ctx, r.Reader, cp)
+	kubeconfig, waiting, err := lodiaKubeconfig(ctx, r.Secrets, cp)
 	if err != nil {
 		return nil, err
 	}

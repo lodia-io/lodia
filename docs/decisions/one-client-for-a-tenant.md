@@ -1,7 +1,7 @@
-# Every request to a tenant goes through `internal/tenantclient`
+# Every request to a tenant goes through `internal/tenantclient`, and the data of its access Secrets is read by `resourceVersion`
 
 Decided 2026-11-18.
-Built; `internal/tenantclient` holds it.
+Built; `internal/tenantclient` and `internal/secretcache` hold it.
 
 ## Decision
 
@@ -15,6 +15,15 @@ Built; `internal/tenantclient` holds it.
   Every kind of the render is in it, and one that leaves the render stays, so that the prune deletes what earlier revisions wrote.
   An inventory entry of a kind outside the table is of a kind no longer served, and an entry at another version is addressed at the table's.
   Writes are server-side applies as `lodia/tenant` that force, deletes carry the UID and `resourceVersion` the prune read and propagate in the background, and reads decode a UID, a `resourceVersion`, whether one of the `managedFields` entries is Lodia's apply, the first ten sorted names of the others, a workload's rollout fields and the inventory's entries, counted up to 256.
+- **The data of the Secrets of a tenant's access is read from memory for as long as their `resourceVersion` stays.**
+  `internal/secretcache` is a `client.Reader` that the operator builds once, and that Tenant, `health`, `health-nodes` and `DialEtcd` read through: each reconciler has it as its field `Secrets`, so that `Reader` keeps meaning a live read ([conditions](../../.claude/rules/conditions.md)).
+  A `Get` of a `*corev1.Secret` reads its metadata from the manager's cache.
+  When the cache holds it at the UID and `resourceVersion` of the copy in memory, the reader returns a deep copy of that copy and sends nothing.
+  Otherwise it reads the Secret from the API server and returns that, and keeps the result only when the cache, read again under the lock that guards the copies, holds that same UID and `resourceVersion`.
+  A Secret the cache does not hold, missing or unlabelled or deleted, is read from the API server every time and its copy dropped.
+  The informer's delete events, tombstones included, drop a copy.
+  Every other `Get` and every `List` goes to the API server unchanged.
+  PKI reads its own Secrets from the API server, since it writes them.
 - **A request takes its deadline from its context**: 10 s for the delivery of the tunnel's pair and 30 s for the apply pass in Tenant, 10 s for PKI's bindings, and 10 s for every dial and handshake of both.
 
 ## Why
@@ -27,18 +36,28 @@ Built; `internal/tenantclient` holds it.
 - **A client that follows `Retry-After` is not a bound.**
   client-go sends a request up to ten times on a 429 or a 5xx that carries `Retry-After` ([request.go](https://github.com/kubernetes/client-go/blob/v0.37.1/rest/request.go#L167)), each wait as long as the server says; a request now goes once and its pass returns the error, which controller-runtime requeues with its backoff, 5 ms doubling to 1,000 s ([controller.go](https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/controller/controller.go#L275), [default_rate_limiters.go](https://github.com/kubernetes/client-go/blob/v0.37.1/util/workqueue/default_rate_limiters.go#L50-L56)).
 
+- **A Secret's data read from memory is as old as the cache.**
+  The cache serves a copy older than the API server's by its lag, the time its watch takes to deliver a write, and never one older than a copy this reader has served: a copy is kept only at the `resourceVersion` the cache holds, and the cache's `resourceVersion` of a Secret only moves forward.
+  Every reader of these Secrets tolerates that: it is the read a few milliseconds earlier, which a pass that ran just before the write would have made, and the pass after the write's event reads the new one.
+- **At rest the operator sends the API server no read of a Secret.**
+  They were its only requests, 4.16 for each tenant in 5 s, 833 a second at 1,000 tenants ([operations](../operations.md#scale)), and the cache already knows each Secret's `resourceVersion`, since PKI's `Owns(&corev1.Secret{}, builder.OnlyMetadata)` holds the metadata of the Secrets under the operator's label selector.
+
 ## Rejected
 
 - **A client shared by the controllers:** its cap would couple them, one controller's slow tenant holding the places another's reads wait for.
 - **Discovery under bounds:** no kind Tenant writes needs it, and it would give a tenant's server a say in the version and scope Lodia writes at.
+- **A full informer of Secrets for the three Secrets:** it needs a label of its own on them to hold only those, a second informer of the kind beside PKI's of metadata, and every cached `Get` of a Secret answered from a subset.
 
 ## Consequences
 
 - A tenant that answers 429 or 5xx with `Retry-After` is no longer waited for inside a pass: the pass fails, and the next one is the retry.
 - A tenant keeps up to four idle connections, one of each client, and Tenant's and PKI's close 90 s after a pass, where their client of each pass left about 7 for each tenant after its creation ([operations](../operations.md#scale)).
 - An answer of a tenant is read within the bounds of [operations](../operations.md#capacity) whichever controller reads it.
+- The copies of a tenant's five Secrets, the three of its access and the two `DialEtcd` reads, hold 13 KiB of live heap on envtest's PKI, 64 KiB by the rule of [Capacity](../operations.md#capacity) (`TestMeasureWhatTheCopiesOfATenantsAccessSecretsHold`).
+- A tenant that is deleted leaves no copy, and a Secret the cache lacks is read from the API server each time, as it was before.
 
 ## Code
 
 - `internal/tenantclient` — `client.go` builds a client from a `rest.Config` and keeps the clients of a controller; `bounded.go` is the cap on a response, its headers and its connections; `read.go` sends a request once and reads a failed answer; `fields.go` holds the bounds of what every reader keeps.
+- `internal/secretcache` — the reader, whose tests count the reads that reach the API server for a hit, a changed `resourceVersion`, a recreated Secret, a Secret outside the cache, a failed read, a read newer than the cache and one the cache overtook, a delete and a tombstone and a cancelled context, and, against envtest's informer, a delete in the cluster; `internal/operator` builds it once and its test finds Tenant, `health`, `health-nodes` and `DialEtcd` reading through it.
 - `internal/controller/tenant` — `table.go` is the table of kinds, `api.go` reaches the tenant by it, `reads.go` holds what Tenant keeps of an answer; `table_test.go` ties the table to the goldens of the render, and `hijacked_internal_test.go` puts a server of the test's own where the tenant's is.

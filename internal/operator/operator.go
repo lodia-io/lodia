@@ -39,6 +39,7 @@ import (
 	"go.lodia.io/lodia/internal/controller/workloads"
 	"go.lodia.io/lodia/internal/fence"
 	"go.lodia.io/lodia/internal/metrics"
+	"go.lodia.io/lodia/internal/secretcache"
 )
 
 const healthTimeout = 5 * time.Second
@@ -135,11 +136,15 @@ type Inputs struct {
 // Sources are the controllers Setup registers whose memory Lodia's metrics
 // serve: Health, with its counter of failed probes, health-nodes, with its
 // histogram of lag and its counts of the nodes, and the etcd sampler, with its
-// samples. No registry holds the counter or the histogram.
+// samples. No registry holds the counter or the histogram. Secrets is the
+// reader of the access Secrets' data that Tenant, Health, health-nodes and the
+// etcd sampler share.
 type Sources struct {
-	Health *health.Reconciler
-	Nodes  *health.NodesReconciler
-	Etcd   *datastore.SampleReconciler
+	Health  *health.Reconciler
+	Nodes   *health.NodesReconciler
+	Etcd    *datastore.SampleReconciler
+	Tenant  *tenant.Reconciler
+	Secrets client.Reader
 }
 
 // Setup registers every controller with the manager and returns the Sources
@@ -154,6 +159,7 @@ func Setup(mgr ctrl.Manager, in Inputs) (*Sources, error) {
 		return nil, err
 	}
 	workers := in.Config.Controllers
+	secrets := secretcache.New(mgr.GetCache(), mgr.GetAPIReader())
 	if err := (&pki.Reconciler{
 		Client:              mgr.GetClient(),
 		Reader:              mgr.GetAPIReader(),
@@ -171,7 +177,7 @@ func Setup(mgr ctrl.Manager, in Inputs) (*Sources, error) {
 		return nil, fmt.Errorf("set up the kubeconfig request reconciler: %w", err)
 	}
 	dialEtcd := func(ctx context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client, error) {
-		return datastore.DialEtcd(ctx, mgr.GetAPIReader(), etcd)
+		return datastore.DialEtcd(ctx, secrets, etcd)
 	}
 	if err := (&datastore.Reconciler{
 		Client:              mgr.GetClient(),
@@ -196,10 +202,11 @@ func Setup(mgr ctrl.Manager, in Inputs) (*Sources, error) {
 	if err := newLifecycle(mgr.GetClient(), mgr.GetAPIReader(), in.Config, revision).SetupWithManager(mgr, workers.Lifecycle.Workers); err != nil {
 		return nil, fmt.Errorf("set up the lifecycle controller: %w", err)
 	}
-	if err := (&tenant.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), ApplyPeriod: 10 * time.Minute, TunnelImage: in.TunnelImage, Revision: revision, Dial: in.Dial}).SetupWithManager(mgr, workers.Tenant.Workers); err != nil {
+	tenants := &tenant.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Secrets: secrets, ApplyPeriod: 10 * time.Minute, TunnelImage: in.TunnelImage, Revision: revision, Dial: in.Dial}
+	if err := tenants.SetupWithManager(mgr, workers.Tenant.Workers); err != nil {
 		return nil, fmt.Errorf("set up the tenant controller: %w", err)
 	}
-	sources := &Sources{Health: newHealth(mgr.GetClient(), mgr.GetAPIReader(), in.Config.Health), Nodes: newNodes(mgr.GetClient(), mgr.GetAPIReader(), in.Config.Health), Etcd: sampler}
+	sources := &Sources{Health: newHealth(mgr.GetClient(), mgr.GetAPIReader(), secrets, in.Config.Health), Nodes: newNodes(mgr.GetClient(), mgr.GetAPIReader(), secrets, in.Config.Health), Etcd: sampler, Tenant: tenants, Secrets: secrets}
 	sources.Health.DialContext, sources.Nodes.DialContext = in.Dial, in.Dial
 	if err := sources.Health.SetupWithManager(mgr, workers.Health.Workers); err != nil {
 		return nil, fmt.Errorf("set up the health controller: %w", err)
@@ -239,13 +246,13 @@ func newLifecycle(c client.Client, reader client.Reader, cfg Config, revision st
 	}
 }
 
-func newHealth(c client.Client, reader client.Reader, cfg HealthConfig) *health.Reconciler {
-	return &health.Reconciler{Client: c, Reader: reader, Period: cfg.Period.Duration, FailuresBeforeFalse: cfg.FailuresBeforeFalse, Timeout: healthTimeout, Clock: clock.RealClock{}, ProbeFailures: metrics.NewProbeFailures()}
+func newHealth(c client.Client, reader, secrets client.Reader, cfg HealthConfig) *health.Reconciler {
+	return &health.Reconciler{Client: c, Reader: reader, Secrets: secrets, Period: cfg.Period.Duration, FailuresBeforeFalse: cfg.FailuresBeforeFalse, Timeout: healthTimeout, Clock: clock.RealClock{}, ProbeFailures: metrics.NewProbeFailures()}
 }
 
-func newNodes(c client.Client, reader client.Reader, cfg HealthConfig) *health.NodesReconciler {
+func newNodes(c client.Client, reader, secrets client.Reader, cfg HealthConfig) *health.NodesReconciler {
 	return &health.NodesReconciler{
-		Client: c, Reader: reader, Period: cfg.Period.Duration, Timeout: healthTimeout,
+		Client: c, Reader: reader, Secrets: secrets, Period: cfg.Period.Duration, Timeout: healthTimeout,
 		SilentAfter: cfg.SilentAfter.Duration, HoldFraction: int(cfg.HoldFraction), ReleaseAfter: cfg.ReleaseAfter.Duration, MaxNodes: cfg.MaxNodes, Clock: clock.RealClock{},
 		SampleLag: metrics.NewSampleLag(),
 	}

@@ -66,7 +66,7 @@ func (w recording) Apply(ctx context.Context, obj runtime.ApplyConfiguration, op
 func pass(t *testing.T, cp, cached *lodiav1alpha1.ControlPlane, dial dialFunc, fail error) ([]lodiav1alpha1.ControlPlaneStatus, error) {
 	t.Helper()
 	var made []lodiav1alpha1.ControlPlaneStatus
-	r := &tenant.Reconciler{Client: recorder{Client: snapshot{Client: k8s, cp: cached}, made: &made, fail: fail}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: dial}
+	r := &tenant.Reconciler{Client: recorder{Client: snapshot{Client: k8s, cp: cached}, made: &made, fail: fail}, Reader: k8s, Secrets: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: dial}
 	_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 	return made, err
 }
@@ -388,7 +388,7 @@ func TestAPassThatCannotReadTheAddonsLiveWritesNothing(t *testing.T) {
 	expired, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
 	defer cancel()
 	var made []lodiav1alpha1.ControlPlaneStatus
-	r := &tenant.Reconciler{Client: recorder{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, made: &made}, Reader: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: unreachable}
+	r := &tenant.Reconciler{Client: recorder{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, made: &made}, Reader: k8s, Secrets: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: unreachable}
 	if _, err := r.Reconcile(expired, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("a pass whose deadline is spent returned %v", err)
 	}

@@ -301,7 +301,7 @@ func (f *gatewayFixture) allAnswered() string {
 }
 
 func (f *gatewayFixture) probe(timeout time.Duration) *health.Reconciler {
-	return &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: timeout, Clock: clock.RealClock{}}
+	return &health.Reconciler{Client: k8s, Reader: k8s, Secrets: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: timeout, Clock: clock.RealClock{}}
 }
 
 func (f *gatewayFixture) probeAt(t *testing.T, timeout time.Duration, tunnel, konnectivity string) *health.Reconciler {
@@ -318,7 +318,7 @@ func (f *gatewayFixture) probeAt(t *testing.T, timeout time.Duration, tunnel, ko
 			return nil
 		},
 	})
-	return &health.Reconciler{Client: pointed, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: timeout, Clock: clock.RealClock{}}
+	return &health.Reconciler{Client: pointed, Reader: k8s, Secrets: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: timeout, Clock: clock.RealClock{}}
 }
 
 func addressOf(t *testing.T, address string) lodiav1alpha1.HostPort {
@@ -624,7 +624,7 @@ func TestATunnelClientThatIsMissingOrKeptElsewhereWaitsForCertificates(t *testin
 	if err := k8s.Create(t.Context(), foreign); err != nil {
 		t.Fatal(err)
 	}
-	probe := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: 300 * time.Millisecond}
+	probe := &health.Reconciler{Client: k8s, Reader: k8s, Secrets: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: 300 * time.Millisecond}
 	reconcile(t, probe, cp)
 	if err := expect(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "Secret "+name+" is kept by ExternalSecret stranger with UID abc"); err != nil {
 		t.Fatal(err)
@@ -709,7 +709,7 @@ func TestTheOtherModesAreProbedAsBefore(t *testing.T) {
 			return expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200")
 		})
 		reader, reads := readsOf(t)
-		probe := &health.Reconciler{Client: k8s, Reader: reader, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
+		probe := &health.Reconciler{Client: k8s, Reader: reader, Secrets: reader, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
 		reconcile(t, probe, cp)
 		if got := strings.Join(*reads, ","); got != lodiav1alpha1.CABundleSecret.Name(cp.Name) {
 			t.Errorf("%+v: the pass read the Secrets [%s], want only the CA bundle", endpoint, got)
@@ -734,7 +734,7 @@ func TestGatewayModeReadsTheTunnelClientOncePerPass(t *testing.T) {
 		return expect(t, f.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, f.allAnswered())
 	})
 	reader, reads := readsOf(t)
-	r := &health.Reconciler{Client: k8s, Reader: reader, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
+	r := &health.Reconciler{Client: k8s, Reader: reader, Secrets: reader, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(f.cp)}); err != nil {
 		t.Fatal(err)
 	}
@@ -759,7 +759,7 @@ func TestAFailedReadOfTheTunnelClientLeavesTheStatus(t *testing.T) {
 			return c.Get(ctx, key, obj, opts...)
 		},
 	})
-	probe := &health.Reconciler{Client: noControlPlaneWrite(t, k8s), Reader: failing, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
+	probe := &health.Reconciler{Client: noControlPlaneWrite(t, k8s), Reader: failing, Secrets: failing, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: time.Second, Clock: clock.RealClock{}}
 	for range failuresBeforeFalse {
 		if _, err := probe.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(f.cp)}); err == nil {
 			t.Fatalf("a pass whose read of %s failed returned no error", name)

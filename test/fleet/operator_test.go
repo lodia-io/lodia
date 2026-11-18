@@ -116,7 +116,7 @@ func operate(s operatorSettings) error {
 	if err != nil {
 		return err
 	}
-	sources.Etcd.EtcdClient = sampleEtcd(mgr.GetAPIReader(), s.Etcd)
+	sources.Etcd.EtcdClient = sampleEtcd(sources.Secrets, s.Etcd)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return err
