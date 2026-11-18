@@ -25,7 +25,7 @@ Built; `internal/tenantclient` and `internal/secretcache` hold it.
   Every other `Get` and every `List` goes to the API server unchanged.
   PKI reads its own Secrets from the API server, since it writes them.
 - **Each request of Tenant takes its own deadline in `tenantAPI.do`, through which every request of the tenant API goes**: 10 s in the delivery of the tunnel's pair, 30 s in the apply pass; PKI's three bindings share 10 s; every dial and handshake of both takes 10 s.
-  A pass sends its requests one after another and ends at controller-runtime's minute, and the status write has `internal/statusapply`'s own 10 s after it, so a pass that is not held still reports after the minute, and a held pass whose reads fail returns its error and writes no status.
+  A pass sends its requests one after another and ends at controller-runtime's minute, and the status write has `internal/statusapply`'s own 10 s after it, so a pass that is not held still reports after the minute, and a held pass that a deadline cuts, in its reads or its applies, returns its error and writes no status.
   A pass that a deadline cuts stops where a failed request stops it, which the inventory allows anywhere ([tenant-resources-by-inventory](tenant-resources-by-inventory.md#consequences)).
   A pass completes while the tenant answers each request in under 60 s over the requests it sends.
   At rest the defaults send 39 (the inventory's read, 35 applies, 3 reads of workloads), so 1.54 s each; a gateway tenant sends 45 (the delivery's 2, then 1, 38 and 4), so 1.33 s.
