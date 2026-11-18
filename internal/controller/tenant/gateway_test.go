@@ -859,41 +859,56 @@ func TestDeliveryUsesOnlyWhatThisControlPlaneControls(t *testing.T) {
 	}
 }
 
-func tenantServing(t *testing.T, cp *lodiav1alpha1.ControlPlane, handler http.Handler) dialFunc {
+type tenantStand struct {
+	dial dialFunc
+	open atomic.Int32
+}
+
+func tenantServing(t *testing.T, cp *lodiav1alpha1.ControlPlane, handler http.Handler) *tenantStand {
 	t.Helper()
 	serving := get(t, k8s, &corev1.Secret{}, cp.Namespace, "dev-apiserver-serving")
 	pair, err := tls.X509KeyPair(serving.Data["tls.crt"], serving.Data["tls.key"])
 	if err != nil {
 		t.Fatal(err)
 	}
+	stand := &tenantStand{}
 	server := httptest.NewUnstartedServer(handler)
 	server.EnableHTTP2 = true
 	server.TLS = &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		switch state {
+		case http.StateNew:
+			stand.open.Add(1)
+		case http.StateClosed, http.StateHijacked:
+			stand.open.Add(-1)
+		}
+	}
 	server.StartTLS()
 	t.Cleanup(func() {
 		server.CloseClientConnections()
 		server.Close()
 	})
 	address := server.Listener.Addr().String()
-	return func(ctx context.Context, network, _ string) (net.Conn, error) {
+	stand.dial = func(ctx context.Context, network, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, network, address)
 	}
+	return stand
 }
 
 func answersNothing(t *testing.T, cp *lodiav1alpha1.ControlPlane) dialFunc {
 	t.Helper()
 	release := make(chan struct{})
-	reaches := tenantServing(t, cp, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	stand := tenantServing(t, cp, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 		case <-release:
 		}
 	}))
 	t.Cleanup(func() { close(release) })
-	return reaches
+	return stand.dial
 }
 
-func answersSlowly(t *testing.T, cp *lodiav1alpha1.ControlPlane, delay time.Duration, listed []string) dialFunc {
+func answersSlowly(t *testing.T, cp *lodiav1alpha1.ControlPlane, delay time.Duration, listed []string) *tenantStand {
 	t.Helper()
 	object := `{"metadata":{"uid":"7a3c","resourceVersion":"42","managedFields":[{"manager":"` + tenant.FieldManager + `","operation":"Apply"}]}`
 	entries := make([]string, 0, len(listed))
@@ -1003,7 +1018,7 @@ func TestATenantThatAnswersEveryRequestSlowlyCostsThePassItsPhasesAndThePassRepo
 				reads = listed
 			}
 			refresh(t, cp)
-			r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, Secrets: k8s, Revision: revision, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: answersSlowly(t, cp, 9*time.Second, reads)}
+			r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, Secrets: k8s, Revision: revision, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: answersSlowly(t, cp, 9*time.Second, reads).dial}
 			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 			defer cancel()
 			start := time.Now()
@@ -1088,4 +1103,43 @@ func TestACopyOfASecretThatLagsMakesNoPassWaitAndAPassThatWaitsReadsItLive(t *te
 			}
 		}
 	}
+}
+
+type goneControlPlane struct {
+	client.Client
+}
+
+func (c goneControlPlane) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if _, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
+		return apierrors.NewNotFound(lodiav1alpha1.GroupVersion.WithResource("controlplanes").GroupResource(), key.Name)
+	}
+	return c.Client.Get(ctx, key, obj, opts...)
+}
+
+func TestAControlPlaneThatIsGoneLeavesNoClientAndNoConnectionOfTenant(t *testing.T) {
+	cp := controlPlane(t, "tenant-forgotten", gatewayMode)
+	publishGateway(t, cp)
+	reconcilePKI(t, gatewayIssuer(), cp)
+	pause(t, cp)
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	refresh(t, cp)
+	stand := answersSlowly(t, cp, 0, nil)
+	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, Secrets: k8s, Revision: revision, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: stand.dial}
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}
+	if _, err := r.Reconcile(t.Context(), request); err != nil {
+		t.Fatal(err)
+	}
+	if got := stand.open.Load(); got != 1 {
+		t.Fatalf("the pass left %d connections open, want its kept client's one", got)
+	}
+	r.Client = goneControlPlane{Client: k8s}
+	if _, err := r.Reconcile(t.Context(), request); err != nil {
+		t.Fatal(err)
+	}
+	testenv.Eventually(t, func() error {
+		if got := stand.open.Load(); got != 0 {
+			return fmt.Errorf("%d connections are open after the ControlPlane is gone", got)
+		}
+		return nil
+	})
 }

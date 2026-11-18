@@ -22,6 +22,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	crzap "sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -36,8 +37,17 @@ func standingIn(t *testing.T, handler http.Handler) tenantAPI {
 	t.Helper()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
+	c, err := tenantclient.NewClients(tenantclient.Options{Connections: 1, Timeout: time.Minute}).Of(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfigFor(t, server.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tenantAPI{client: c}
+}
+
+func kubeconfigFor(t *testing.T, server string) []byte {
+	t.Helper()
 	kubeconfig, err := clientcmd.Write(clientcmdapi.Config{
-		Clusters:       map[string]*clientcmdapi.Cluster{"tenant": {Server: server.URL}},
+		Clusters:       map[string]*clientcmdapi.Cluster{"tenant": {Server: server}},
 		AuthInfos:      map[string]*clientcmdapi.AuthInfo{"lodia": {}},
 		Contexts:       map[string]*clientcmdapi.Context{"tenant": {Cluster: "tenant", AuthInfo: "lodia"}},
 		CurrentContext: "tenant",
@@ -45,11 +55,7 @@ func standingIn(t *testing.T, handler http.Handler) tenantAPI {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := tenantclient.NewClients(tenantclient.Options{Connections: 1, Timeout: time.Minute}).Of(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfig)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return tenantAPI{client: c}
+	return kubeconfig
 }
 
 func answering(body []byte) http.Handler {
@@ -342,5 +348,60 @@ func TestAKindOutsideTheTableIsNeverSentAndAnEntryOfAnotherScopeIsNone(t *testin
 	}
 	if n := sent.Load(); n != 0 {
 		t.Errorf("%d requests were sent for entries Tenant does not address", n)
+	}
+}
+
+func TestAnInventoryOfManySmallEntriesIsCountedAndNotDecodedWhole(t *testing.T) {
+	const most = 4 << 20
+	text := "[" + strings.Repeat("{},", 340000) + "{}]"
+	body, err := json.Marshal(map[string]any{"data": map[string]string{inventoryKey: text}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	_, err = tenantclient.Decode(body, nil, inventoryFrom)
+	runtime.ReadMemStats(&after)
+	if !errors.Is(err, errTooMany) {
+		t.Fatalf("an inventory of 340,001 entries was read as %v, want the error of the bound", err)
+	}
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > most {
+		t.Errorf("reading an inventory of %d bytes allocated %d bytes, want at most %d", len(text), allocated, most)
+	}
+}
+
+func TestAnUpdateUnderLodiasManagerNameIsNotLodiasApply(t *testing.T) {
+	for operation, want := range map[string]bool{"Apply": true, "Update": false} {
+		o, err := tenantclient.Decode([]byte(`{"metadata":{"uid":"7a3c","managedFields":[{"manager":"`+FieldManager+`","operation":"`+operation+`"}]}}`), nil, objectOf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if o.applied != want {
+			t.Errorf("an entry of %s under %s is Lodia's apply: %t, want %t", operation, FieldManager, o.applied, want)
+		}
+	}
+}
+
+func TestTenantsClientHasOneConnectionAndItsHandshakeEndsWithinTheDeliveryTimeout(t *testing.T) {
+	r := &Reconciler{}
+	api, err := r.reach(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfigFor(t, "https://dev-kube-apiserver.team-a.svc:443"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bottom := api.client.HTTP().Transport
+	for {
+		wrapped, ok := bottom.(utilnet.RoundTripperWrapper)
+		if !ok {
+			break
+		}
+		bottom = wrapped.WrappedRoundTripper()
+	}
+	transport, ok := bottom.(*http.Transport)
+	if !ok {
+		t.Fatalf("the transport below Tenant's client is a %T, want an *http.Transport", bottom)
+	}
+	if transport.MaxConnsPerHost != 1 || transport.TLSHandshakeTimeout != deliveryTimeout {
+		t.Errorf("Tenant's client has %d connections and a handshake of %s, want 1 and %s", transport.MaxConnsPerHost, transport.TLSHandshakeTimeout, deliveryTimeout)
 	}
 }
