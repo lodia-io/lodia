@@ -108,6 +108,7 @@ type managers struct {
 
 func (m *managers) add(name string) {
 	m.total++
+	name = tenantclient.Cut(name, tenantclient.MaxName)
 	at, found := slices.BinarySearch(m.names, name)
 	switch {
 	case found:
@@ -118,7 +119,7 @@ func (m *managers) add(name string) {
 	case len(m.names) == maxManagers:
 		m.names, m.counts = m.names[:maxManagers-1], m.counts[:maxManagers-1]
 	}
-	m.names, m.counts = slices.Insert(m.names, at, tenantclient.Cut(name, tenantclient.MaxName)), slices.Insert(m.counts, at, 1)
+	m.names, m.counts = slices.Insert(m.names, at, name), slices.Insert(m.counts, at, 1)
 }
 
 func (m managers) more() int {

@@ -5,7 +5,10 @@ package tenant
 
 import (
 	"slices"
+	"strings"
 	"testing"
+
+	"go.lodia.io/lodia/internal/tenantclient"
 )
 
 func TestAnObjectAtAnotherVersionIsNotStale(t *testing.T) {
@@ -32,5 +35,19 @@ func TestAnotherOwnersObjectIsNamedWithItsFieldManagers(t *testing.T) {
 	}
 	if got, want := (foreignObject{}).owners(), "it has no field manager"; got != want {
 		t.Errorf("an object without a field manager is named %q, want %q", got, want)
+	}
+}
+
+func TestAManagerNameBeyondItsBoundIsKeptAndSearchedCut(t *testing.T) {
+	long := strings.Repeat("m", 300)
+	var managers managers
+	for _, name := range []string{"helm", long, long, long + "x", "helm"} {
+		managers.add(name)
+	}
+	if want := []string{"helm", long[:tenantclient.MaxName+1]}; !slices.Equal(managers.names, want) {
+		t.Errorf("kept %d names, want helm and one name cut to %d bytes", len(managers.names), tenantclient.MaxName+1)
+	}
+	if managers.total != 5 || managers.more() != 0 {
+		t.Errorf("counted %d entries, %d more than the names", managers.total, managers.more())
 	}
 }
