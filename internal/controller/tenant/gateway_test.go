@@ -911,20 +911,24 @@ func answersNothing(t *testing.T, cp *lodiav1alpha1.ControlPlane) dialFunc {
 	return stand.dial
 }
 
+const notFound = `{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"NotFound","code":404}`
+
 type slowTenant struct {
 	*tenantStand
 	delay     atomic.Int64
 	delivered atomic.Bool
 	holding   atomic.Pointer[string]
+	onlySent  atomic.Bool
 	mu        sync.Mutex
 	inventory string
+	kept      map[string]bool
 	log       []string
 }
 
 func answersSlowly(t *testing.T, cp *lodiav1alpha1.ControlPlane, delay time.Duration, listed []string) *slowTenant {
 	t.Helper()
 	object := `{"metadata":{"uid":"7a3c","resourceVersion":"42","managedFields":[{"manager":"` + tenant.FieldManager + `","operation":"Apply"}]}`
-	s := &slowTenant{}
+	s := &slowTenant{kept: map[string]bool{}}
 	s.delay.Store(int64(delay))
 	if len(listed) > 0 {
 		entries := make([]string, 0, len(listed))
@@ -965,14 +969,27 @@ func answersSlowly(t *testing.T, cp *lodiav1alpha1.ControlPlane, delay time.Dura
 			s.mu.Unlock()
 			if stored == "" {
 				w.WriteHeader(http.StatusNotFound)
-				_, _ = w.Write([]byte(`{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"NotFound","code":404}`))
+				_, _ = w.Write([]byte(notFound))
 				return
 			}
 			quoted, _ := json.Marshal(stored)
 			_, _ = w.Write([]byte(object + `,"data":{"objects":` + string(quoted) + `}}`))
 		case r.Method == http.MethodGet:
+			s.mu.Lock()
+			absent := s.onlySent.Load() && !s.kept[r.URL.Path]
+			s.mu.Unlock()
+			if absent {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(notFound))
+				return
+			}
 			_, _ = w.Write([]byte(object + `}`))
 		default:
+			if r.Method == http.MethodPatch {
+				s.mu.Lock()
+				s.kept[r.URL.Path] = true
+				s.mu.Unlock()
+			}
 			if r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/"+clientSecret) {
 				s.delivered.Store(true)
 			}
@@ -986,6 +1003,10 @@ func (s *slowTenant) sent() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return slices.Clone(s.log)
+}
+
+func (s *slowTenant) holdsOnlyWhatItIsSent() {
+	s.onlySent.Store(true)
 }
 
 func (s *slowTenant) holds(method string) {
@@ -1220,11 +1241,12 @@ func TestAPassSendsTheRequestsTheTimeoutsAreSizedFor(t *testing.T) {
 		beforeInventory, atRest int
 	}{
 		{"tenant-requests-defaults", false, 37, 39},
-		{"tenant-requests-gateway", true, 42, 45},
+		{"tenant-requests-gateway", true, 41, 45},
 	} {
 		t.Run(c.namespace, func(t *testing.T) {
 			t.Parallel()
 			r, cp, s := slowSetUp(t, c.namespace, c.gateway, false, 0)
+			s.holdsOnlyWhatItIsSent()
 			_, sent, err := slowPass(t, r, cp, s)
 			if err != nil {
 				t.Fatal(err)

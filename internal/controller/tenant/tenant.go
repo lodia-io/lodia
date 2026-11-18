@@ -57,7 +57,7 @@ const waitPeriod = time.Minute
 // the requests it sends. At rest those are 39 for the defaults (the
 // inventory's read, 35 applies, 3 reads of workloads), 1.54 s each, and 45 for
 // a gateway tenant (the delivery's 2, then 1, 38 and 4), 1.33 s. A fresh
-// tenant's first pass writes the inventory with its request 37, or 42, and its
+// tenant's first pass writes the inventory with its request 37, or 41, and its
 // second is a pass at rest, so it converges in two passes within the same
 // figures.
 const (
