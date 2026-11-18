@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -24,13 +25,16 @@ var key = client.ObjectKey{Namespace: "team-a", Name: "dev-lodia-kubeconfig"}
 
 type store struct {
 	cache.Cache
-	mu       sync.Mutex
-	server   *corev1.Secret
-	seen     *metav1.PartialObjectMetadata
-	reads    atomic.Int32
-	failNext error
-	handler  toolscache.ResourceEventHandler
-	onRead   func()
+	mu         sync.Mutex
+	server     *corev1.Secret
+	seen       *metav1.PartialObjectMetadata
+	reads      atomic.Int32
+	failNext   error
+	handler    toolscache.ResourceEventHandler
+	handlers   atomic.Int32
+	onRead     func()
+	cacheReads int
+	afterCache func(n int)
 }
 
 func secret(uid types.UID, version, data string) *corev1.Secret {
@@ -63,12 +67,19 @@ func (s *store) observe(seen *corev1.Secret) {
 
 func (s *store) Get(_ context.Context, k client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.cacheReads++
+	n := s.cacheReads
+	var err error
 	if s.seen == nil || k != client.ObjectKeyFromObject(s.seen) {
-		return apierrors.NewNotFound(schema.GroupResource{Resource: "secrets"}, k.Name)
+		err = apierrors.NewNotFound(schema.GroupResource{Resource: "secrets"}, k.Name)
+	} else {
+		s.seen.DeepCopyInto(obj.(*metav1.PartialObjectMetadata))
 	}
-	s.seen.DeepCopyInto(obj.(*metav1.PartialObjectMetadata))
-	return nil
+	s.mu.Unlock()
+	if s.afterCache != nil {
+		s.afterCache(n)
+	}
+	return err
 }
 
 func (s *store) GetInformer(context.Context, client.Object, ...cache.InformerGetOption) (cache.Informer, error) {
@@ -82,6 +93,7 @@ type informer struct {
 
 func (i informer) AddEventHandler(h toolscache.ResourceEventHandler) (toolscache.ResourceEventHandlerRegistration, error) {
 	i.s.handler = h
+	i.s.handlers.Add(1)
 	return nil, nil
 }
 
@@ -89,6 +101,10 @@ type api struct{ s *store }
 
 func (a api) Get(_ context.Context, k client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
 	a.s.reads.Add(1)
+	if configMap, ok := obj.(*corev1.ConfigMap); ok {
+		configMap.Name, configMap.Data = k.Name, map[string]string{"read": "live"}
+		return nil
+	}
 	if a.s.onRead != nil {
 		a.s.onRead()
 	}
@@ -289,5 +305,58 @@ func TestEveryOtherReadGoesToTheAPIServer(t *testing.T) {
 	r, s := start(secret("a", "1", "first"))
 	if err := r.List(t.Context(), &corev1.SecretList{}); err != nil || s.reads.Load() != 100 {
 		t.Errorf("a List sent %d requests and returned %v, want the live reader's", s.reads.Load(), err)
+	}
+	s.reads.Store(0)
+	configMap := &corev1.ConfigMap{}
+	if err := r.Get(t.Context(), key, configMap); err != nil || s.reads.Load() != 1 || configMap.Data["read"] != "live" {
+		t.Errorf("a Get of a ConfigMap sent %d requests and returned %v with %v, want the live reader's answer", s.reads.Load(), err, configMap.Data)
+	}
+}
+
+func TestACallerThatChangesWhatALiveReadReturnedLeavesTheCopyAsItWas(t *testing.T) {
+	r, _ := start(secret("a", "1", "first"))
+	got := read(t, r)
+	got.Data["kubeconfig"][0] = 'X'
+	if again := read(t, r); string(again.Data["kubeconfig"]) != "first" {
+		t.Errorf("a caller's change to what a live read returned reached the copy: %q", again.Data["kubeconfig"])
+	}
+}
+
+func TestTheReaderAddsOneDeleteHandlerForItsLife(t *testing.T) {
+	r, s := start(secret("a", "1", "first"))
+	for range 3 {
+		read(t, r)
+	}
+	if err := r.Get(t.Context(), client.ObjectKey{Namespace: "team-a", Name: "other"}, &corev1.Secret{}); err == nil {
+		t.Fatal("a Secret that does not exist was read")
+	}
+	if n := s.handlers.Load(); n != 1 {
+		t.Errorf("the informer has %d handlers after 4 reads, want 1", n)
+	}
+}
+
+func TestTheCacheIsReadAgainUnderTheLockThatGuardsTheCopies(t *testing.T) {
+	r, s := start(secret("a", "1", "first"))
+	deleted := make(chan struct{})
+	s.afterCache = func(n int) {
+		if n != 2 {
+			return
+		}
+		s.observe(nil)
+		go func() {
+			defer close(deleted)
+			s.handler.OnDelete(metadata(secret("a", "1", "")))
+		}()
+		select {
+		case <-deleted:
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	read(t, r)
+	<-deleted
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.copies) != 0 {
+		t.Errorf("a delete that reached the cache and its handler between the second read and the store left %d copies", len(r.copies))
 	}
 }
