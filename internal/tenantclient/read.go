@@ -57,7 +57,7 @@ func (c *Client) Do(ctx context.Context, request *rest.Request) ([]byte, error) 
 	return body, err
 }
 
-const NoStatusMessage = "the answer is no Status Health can read"
+const NoStatusMessage = "the answer is no Status Lodia can read"
 
 // noStatus is the error client-go built of a failed answer that is no Status
 // within the bounds, without the tenant's text: its code, reason and

@@ -560,8 +560,8 @@ func TestABlockingDialCostsDeliveryItsTimeoutAndThePassReports(t *testing.T) {
 		t.Error("a pass that could not reach the tenant succeeded")
 	}
 	t.Logf("a pass that applies took %s", elapsed)
-	if elapsed < 35*time.Second || elapsed >= time.Minute {
-		t.Errorf("a pass that applies took %s, want the delivery's 10 s and the ordinary client's 30 s dial", elapsed)
+	if elapsed < 19*time.Second || elapsed > 25*time.Second {
+		t.Errorf("a pass that applies took %s, want the delivery's 10 s and the dial of the apply, bounded by the same 10 s", elapsed)
 	}
 	expectNow(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying)
 	expectNow(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying)

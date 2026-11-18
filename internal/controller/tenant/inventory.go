@@ -11,17 +11,14 @@ import (
 	"slices"
 	"strings"
 
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	corev1ac "k8s.io/client-go/applyconfigurations/core/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/apistatus"
+	"go.lodia.io/lodia/internal/tenantclient"
 )
 
 const (
@@ -93,14 +90,6 @@ func stale(previous, desired []entry) []entry {
 	return out
 }
 
-// appliedByLodia reads managedFields: the managed-by label is on PKI's
-// bindings in the tenant too.
-func appliedByLodia(obj metav1.Object) bool {
-	return slices.ContainsFunc(obj.GetManagedFields(), func(f metav1.ManagedFieldsEntry) bool {
-		return f.Manager == FieldManager && f.Operation == metav1.ManagedFieldsOperationApply
-	})
-}
-
 // failure is an object a pass could not read or write, with the reason and
 // the verdict to report, empty when the tenant did not answer.
 type failure struct {
@@ -129,22 +118,22 @@ func inventoryEntry() entry {
 	return entry{Version: "v1", Kind: "ConfigMap", Namespace: metav1.NamespaceSystem, Name: inventoryName}
 }
 
-func readInventory(ctx context.Context, c client.Client) ([]entry, error) {
-	cm := &corev1.ConfigMap{}
-	if err := c.Get(ctx, client.ObjectKey{Namespace: metav1.NamespaceSystem, Name: inventoryName}, cm); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, nil
-		}
+func readInventory(ctx context.Context, a tenantAPI) ([]entry, error) {
+	body, err := a.read(ctx, inventoryEntry())
+	if err != nil {
 		return nil, failed(inventoryEntry(), err)
 	}
-	var entries []entry
-	if err := json.Unmarshal([]byte(cm.Data[inventoryKey]), &entries); err != nil {
+	if body == nil {
+		return nil, nil
+	}
+	stored, err := tenantclient.Decode(body, nil, inventoryFrom)
+	if err != nil {
 		return nil, &failure{entry: inventoryEntry(), reason: lodiav1alpha1.ReasonApplying, verdict: "cannot be read: delete it, and every object is applied again", err: err}
 	}
-	return entries, nil
+	return stored.entries, nil
 }
 
-func writeInventory(ctx context.Context, c client.Client, entries []entry) error {
+func writeInventory(ctx context.Context, a tenantAPI, entries []entry) error {
 	data, err := json.Marshal(entries)
 	if err != nil {
 		return err
@@ -152,7 +141,11 @@ func writeInventory(ctx context.Context, c client.Client, entries []entry) error
 	cm := corev1ac.ConfigMap(inventoryName, metav1.NamespaceSystem).
 		WithLabels(map[string]string{lodiav1alpha1.ManagedByLabel: lodiav1alpha1.ManagedBy}).
 		WithData(map[string]string{inventoryKey: string(data)})
-	if err := c.Apply(ctx, cm, client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
+	body, err := json.Marshal(cm)
+	if err != nil {
+		return err
+	}
+	if err := a.apply(ctx, inventoryEntry(), body); err != nil {
 		return failed(inventoryEntry(), err)
 	}
 	return nil
@@ -162,27 +155,21 @@ func writeInventory(ctx context.Context, c client.Client, entries []entry) error
 // manager, another owner's, with the field managers it has.
 type foreignObject struct {
 	entry
-	managers []string
+	managers managers
 }
 
 // owners names the field managers, which tell a person whether deleting the
-// object helps: one a tool applies comes back.
+// object helps: one a tool applies comes back. Of a great many it names the
+// first that sort and counts the entries of the others.
 func (o foreignObject) owners() string {
-	if len(o.managers) == 0 {
+	if len(o.managers.names) == 0 {
 		return "it has no field manager"
 	}
-	return "its field managers are " + strings.Join(o.managers, ", ")
-}
-
-func fieldManagers(obj metav1.Object) []string {
-	var managers []string
-	for _, f := range obj.GetManagedFields() {
-		if f.Manager != "" {
-			managers = append(managers, f.Manager)
-		}
+	named := "its field managers are " + strings.Join(o.managers.names, ", ")
+	if more := o.managers.more(); more > 0 {
+		named += fmt.Sprintf(" and %d more entries", more)
 	}
-	slices.Sort(managers)
-	return slices.Compact(managers)
+	return named
 }
 
 func isForeign(others []foreignObject, e entry) bool {
@@ -191,44 +178,28 @@ func isForeign(others []foreignObject, e entry) bool {
 
 // foreign returns the objects of the render no inventory lists yet that
 // exist without Lodia's field manager: another owner's.
-func foreign(ctx context.Context, c client.Client, objects []*unstructured.Unstructured, previous []entry) ([]foreignObject, error) {
+func foreign(ctx context.Context, a tenantAPI, objects []*unstructured.Unstructured, previous []entry) ([]foreignObject, error) {
 	var others []foreignObject
 	for _, obj := range objects {
 		e := entryOf(obj)
 		if contains(previous, e) {
 			continue
 		}
-		existing := &unstructured.Unstructured{}
-		existing.SetGroupVersionKind(obj.GroupVersionKind())
-		err := c.Get(ctx, client.ObjectKey{Namespace: e.Namespace, Name: e.Name}, existing)
+		existing, err := readEntry(ctx, a, e)
 		switch {
-		case apierrors.IsNotFound(err):
 		case err != nil:
-			return nil, failed(e, err)
-		case !appliedByLodia(existing):
-			others = append(others, foreignObject{entry: e, managers: fieldManagers(existing)})
+			return nil, err
+		case existing != nil && !existing.applied:
+			others = append(others, foreignObject{entry: e, managers: existing.managers})
 		}
 	}
 	slices.SortFunc(others, func(a, b foreignObject) int { return compareEntries(a.entry, b.entry) })
 	return others, nil
 }
 
-// readEntry reads the object an entry names at the version the tenant serves,
-// nil when it is gone or of a kind no longer served.
-func readEntry(ctx context.Context, c client.Client, e entry) (*unstructured.Unstructured, error) {
-	mapping, err := c.RESTMapper().RESTMapping(schema.GroupKind{Group: e.Group, Kind: e.Kind})
-	if meta.IsNoMatchError(err) {
-		return nil, nil
-	}
+func readEntry(ctx context.Context, a tenantAPI, e entry) (*object, error) {
+	existing, err := a.readObject(ctx, e)
 	if err != nil {
-		return nil, failed(e, err)
-	}
-	existing := &unstructured.Unstructured{}
-	existing.SetGroupVersionKind(mapping.GroupVersionKind)
-	if err := c.Get(ctx, client.ObjectKey{Namespace: e.Namespace, Name: e.Name}, existing); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, nil
-		}
 		return nil, failed(e, err)
 	}
 	return existing, nil
@@ -237,14 +208,12 @@ func readEntry(ctx context.Context, c client.Client, e entry) (*unstructured.Uns
 // prune deletes an entry that left the render if Lodia wrote it, under the
 // UID and resourceVersion it read; an entry it did not write, or one gone or
 // of a kind no longer served, only leaves the inventory.
-func prune(ctx context.Context, c client.Client, e entry) error {
-	existing, err := readEntry(ctx, c, e)
-	if err != nil || existing == nil || !appliedByLodia(existing) {
+func prune(ctx context.Context, a tenantAPI, e entry) error {
+	existing, err := readEntry(ctx, a, e)
+	if err != nil || existing == nil || !existing.applied {
 		return err
 	}
-	uid, version := existing.GetUID(), existing.GetResourceVersion()
-	err = c.Delete(ctx, existing, client.Preconditions{UID: &uid, ResourceVersion: &version}, client.PropagationPolicy(metav1.DeletePropagationBackground))
-	if client.IgnoreNotFound(err) != nil {
+	if err := a.delete(ctx, e, existing); err != nil && !apierrors.IsNotFound(err) {
 		return failed(e, err)
 	}
 	return nil
@@ -254,13 +223,13 @@ func prune(ctx context.Context, c client.Client, e entry) error {
 // then prunes what the previous inventory lists and they do not. The
 // inventory names an object before Lodia first writes it, so a pass that
 // stops anywhere leaves nothing a later pass cannot prune.
-func applyInventory(ctx context.Context, c client.Client, objects []*unstructured.Unstructured) ([]foreignObject, error) {
-	previous, err := readInventory(ctx, c)
+func applyInventory(ctx context.Context, a tenantAPI, objects []*unstructured.Unstructured) ([]foreignObject, error) {
+	previous, err := readInventory(ctx, a)
 	if err != nil {
 		return nil, err
 	}
 	previous = union(previous)
-	others, err := foreign(ctx, c, objects, previous)
+	others, err := foreign(ctx, a, objects, previous)
 	if err != nil {
 		return nil, err
 	}
@@ -274,29 +243,33 @@ func applyInventory(ctx context.Context, c client.Client, objects []*unstructure
 	desired = union(desired)
 	stored := previous
 	if both := union(desired, previous); !slices.Equal(both, previous) {
-		if err := writeInventory(ctx, c, both); err != nil {
+		if err := writeInventory(ctx, a, both); err != nil {
 			return nil, err
 		}
 		stored = both
 	}
 	for _, obj := range writes {
-		if err := apply(ctx, c, obj); err != nil {
+		if err := apply(ctx, a, obj); err != nil {
 			return nil, err
 		}
 	}
 	for _, e := range stale(previous, desired) {
-		if err := prune(ctx, c, e); err != nil {
+		if err := prune(ctx, a, e); err != nil {
 			return nil, err
 		}
 	}
 	if !slices.Equal(desired, stored) {
-		return others, writeInventory(ctx, c, desired)
+		return others, writeInventory(ctx, a, desired)
 	}
 	return others, nil
 }
 
-func apply(ctx context.Context, c client.Client, obj *unstructured.Unstructured) error {
-	if err := c.Apply(ctx, client.ApplyConfigurationFromUnstructured(obj), client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
+func apply(ctx context.Context, a tenantAPI, obj *unstructured.Unstructured) error {
+	body, err := obj.MarshalJSON()
+	if err != nil {
+		return failed(entryOf(obj), err)
+	}
+	if err := a.apply(ctx, entryOf(obj), body); err != nil {
 		return failed(entryOf(obj), err)
 	}
 	return nil
@@ -307,8 +280,8 @@ func apply(ctx context.Context, c client.Client, obj *unstructured.Unstructured)
 // applied: it lists something, every object it lists is stored with Lodia's
 // apply but those missing ones, and no object of the render it does not list
 // is another owner's. Without a render, nil objects, only the inventory is read.
-func heldInventory(ctx context.Context, c client.Client, objects []*unstructured.Unstructured) ([]entry, []*unstructured.Unstructured, bool, error) {
-	listed, err := readInventory(ctx, c)
+func heldInventory(ctx context.Context, a tenantAPI, objects []*unstructured.Unstructured) ([]entry, []*unstructured.Unstructured, bool, error) {
+	listed, err := readInventory(ctx, a)
 	if err != nil || objects == nil {
 		return union(listed), nil, false, err
 	}
@@ -316,7 +289,7 @@ func heldInventory(ctx context.Context, c client.Client, objects []*unstructured
 	applied := len(listed) > 0
 	var missing []*unstructured.Unstructured
 	for _, e := range listed {
-		existing, err := readEntry(ctx, c, e)
+		existing, err := readEntry(ctx, a, e)
 		if err != nil {
 			return nil, nil, false, err
 		}
@@ -324,11 +297,11 @@ func heldInventory(ctx context.Context, c client.Client, objects []*unstructured
 		switch {
 		case existing == nil && i >= 0:
 			missing = append(missing, objects[i])
-		case existing == nil || !appliedByLodia(existing):
+		case existing == nil || !existing.applied:
 			applied = false
 		}
 	}
-	others, err := foreign(ctx, c, objects, listed)
+	others, err := foreign(ctx, a, objects, listed)
 	if err != nil {
 		return nil, nil, false, err
 	}

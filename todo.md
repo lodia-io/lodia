@@ -78,7 +78,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - Nothing watches `<cp>-ca-bundle`: a rotated cluster CA reaches `cluster-info` within the apply period; the CA rotation of phase 3 should bring a Tenant pass.
 - A tenant's own admission webhook that fails with a 5xx counts as no answer, so a True `AddonsApplied` stays while it keeps an object out.
 - The one-minute requeue while the rollout is pending runs the full apply, not only the rollout read.
-- Every pass builds a new tenant client, transport and RESTMapper.
 - `--agent-identifiers=ipv4=$(HOST_IP)` names an agent by its node's IPv4 address only; IPv6 and dual-stack nodes need `ipv6=`.
 - `AddonsAvailable` is not read again while applies are refused: the rollout read before stays.
 - CoreDNS's replicas are Lodia's: an autoscaler is set back on every apply; a later phase lets one own them.
