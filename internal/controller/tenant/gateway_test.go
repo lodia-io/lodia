@@ -989,9 +989,9 @@ func answersSlowly(t *testing.T, cp *lodiav1alpha1.ControlPlane, delay time.Dura
 				s.mu.Lock()
 				s.kept[r.URL.Path] = true
 				s.mu.Unlock()
-			}
-			if r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/"+clientSecret) {
-				s.delivered.Store(true)
+				if strings.HasSuffix(r.URL.Path, "/"+clientSecret) {
+					s.delivered.Store(true)
+				}
 			}
 			_, _ = w.Write([]byte(`{}`))
 		}
