@@ -132,6 +132,7 @@ func standingInForTheTenant(t *testing.T, cp *lodiav1alpha1.ControlPlane, holdFi
 			stand.open.Add(1)
 		case http.StateClosed, http.StateHijacked:
 			stand.open.Add(-1)
+		default:
 		}
 	}
 	server.TLS = &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12, ClientAuth: tls.RequestClientCert}

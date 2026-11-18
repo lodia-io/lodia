@@ -121,6 +121,7 @@ func TestAForgottenControlPlaneAndAReplacedKubeconfigCloseTheIdleConnectionsOfTh
 			open.Add(1)
 		case http.StateClosed, http.StateHijacked:
 			open.Add(-1)
+		default:
 		}
 	}
 	server.Start()

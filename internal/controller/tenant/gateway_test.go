@@ -881,6 +881,7 @@ func tenantServing(t *testing.T, cp *lodiav1alpha1.ControlPlane, handler http.Ha
 			stand.open.Add(1)
 		case http.StateClosed, http.StateHijacked:
 			stand.open.Add(-1)
+		default:
 		}
 	}
 	server.StartTLS()
