@@ -24,7 +24,8 @@ Built; `internal/tenantclient` and `internal/secretcache` hold it.
   The informer's delete events, tombstones included, drop a copy.
   Every other `Get` and every `List` goes to the API server unchanged.
   PKI reads its own Secrets from the API server, since it writes them.
-- **A request takes its deadline from its context**: 10 s for the delivery of the tunnel's pair and 30 s for the apply pass in Tenant, 10 s for PKI's bindings, and 10 s for every dial and handshake of both.
+- **A phase takes its deadline from the pass's context, as a whole**: 10 s for Tenant's delivery of the tunnel's pair, 30 s for its apply phase, from the inventory's read through the rollout and a held pass's reads included, 10 s for PKI's three bindings, and 10 s for every dial and handshake of both.
+  A pass that a deadline cuts stops where a failed request stops it, which the inventory allows anywhere ([tenant-resources-by-inventory](tenant-resources-by-inventory.md#consequences)), and the status write keeps the pass's context, with the 20 s of the minute that Tenant's two phases leave it.
 
 ## Why
 

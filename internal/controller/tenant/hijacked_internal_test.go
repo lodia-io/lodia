@@ -49,7 +49,7 @@ func standingIn(t *testing.T, handler http.Handler) tenantAPI {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return tenantAPI{client: c, timeout: time.Minute}
+	return tenantAPI{client: c}
 }
 
 func answering(body []byte) http.Handler {

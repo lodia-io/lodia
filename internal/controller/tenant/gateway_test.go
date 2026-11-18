@@ -6,6 +6,7 @@ package tenant_test
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -858,25 +859,18 @@ func TestDeliveryUsesOnlyWhatThisControlPlaneControls(t *testing.T) {
 	}
 }
 
-func answersNothing(t *testing.T, cp *lodiav1alpha1.ControlPlane) dialFunc {
+func tenantServing(t *testing.T, cp *lodiav1alpha1.ControlPlane, handler http.Handler) dialFunc {
 	t.Helper()
 	serving := get(t, k8s, &corev1.Secret{}, cp.Namespace, "dev-apiserver-serving")
 	pair, err := tls.X509KeyPair(serving.Data["tls.crt"], serving.Data["tls.key"])
 	if err != nil {
 		t.Fatal(err)
 	}
-	release := make(chan struct{})
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		select {
-		case <-r.Context().Done():
-		case <-release:
-		}
-	}))
+	server := httptest.NewUnstartedServer(handler)
 	server.EnableHTTP2 = true
 	server.TLS = &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}
 	server.StartTLS()
 	t.Cleanup(func() {
-		close(release)
 		server.CloseClientConnections()
 		server.Close()
 	})
@@ -884,6 +878,51 @@ func answersNothing(t *testing.T, cp *lodiav1alpha1.ControlPlane) dialFunc {
 	return func(ctx context.Context, network, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, network, address)
 	}
+}
+
+func answersNothing(t *testing.T, cp *lodiav1alpha1.ControlPlane) dialFunc {
+	t.Helper()
+	release := make(chan struct{})
+	reaches := tenantServing(t, cp, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	t.Cleanup(func() { close(release) })
+	return reaches
+}
+
+func answersSlowly(t *testing.T, cp *lodiav1alpha1.ControlPlane, delay time.Duration, listed []string) dialFunc {
+	t.Helper()
+	object := `{"metadata":{"uid":"7a3c","resourceVersion":"42","managedFields":[{"manager":"` + tenant.FieldManager + `","operation":"Apply"}]}`
+	entries := make([]string, 0, len(listed))
+	for _, name := range listed {
+		entries = append(entries, `{"version":"v1","kind":"ConfigMap","namespace":"kube-system","name":"`+name+`"}`)
+	}
+	inventory, err := json.Marshal("[" + strings.Join(entries, ",") + "]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tenantServing(t, cp, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(delay):
+		case <-r.Context().Done():
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/lodia-inventory") && len(listed) > 0:
+			_, _ = w.Write([]byte(object + `,"data":{"objects":` + string(inventory) + `}}`))
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/lodia-inventory"):
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"NotFound","code":404}`))
+		case r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(object + `}`))
+		default:
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
 }
 
 func TestATenantThatAnswersNothingCostsThePassItsTimeoutsAndThePassReports(t *testing.T) {
@@ -926,6 +965,59 @@ func TestATenantThatAnswersNothingCostsThePassItsTimeoutsAndThePassReports(t *te
 			t.Logf("the pass took %s", elapsed)
 			if elapsed < c.timeouts || elapsed > c.timeouts+5*time.Second {
 				t.Errorf("the pass took %s, want its timeouts' %s", elapsed, c.timeouts)
+			}
+			for _, conditionType := range []string{lodiav1alpha1.ConditionAddonsApplied, lodiav1alpha1.ConditionAddonsAvailable} {
+				expectNow(t, cp, conditionType, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying)
+				if got := condition(t, cp, conditionType); !strings.Contains(got.Message, "does not answer") {
+					t.Errorf("%s says %q", conditionType, got.Message)
+				}
+			}
+		})
+	}
+}
+
+func TestATenantThatAnswersEveryRequestSlowlyCostsThePassItsPhasesAndThePassReports(t *testing.T) {
+	t.Parallel()
+	listed := []string{"cm-0", "cm-1", "cm-2", "cm-3", "cm-4", "cm-5", "cm-6", "cm-7"}
+	for _, c := range []struct {
+		namespace string
+		mode      func(*lodiav1alpha1.ControlPlane)
+		published func(*testing.T, *lodiav1alpha1.ControlPlane)
+		held      bool
+		took      time.Duration
+	}{
+		{"tenant-slow-gateway", gatewayMode, publishGateway, false, 40 * time.Second},
+		{"tenant-slow-load-balancer", func(*lodiav1alpha1.ControlPlane) {}, publish, false, 30 * time.Second},
+		{"tenant-slow-held", func(*lodiav1alpha1.ControlPlane) {}, publish, true, 30 * time.Second},
+	} {
+		t.Run(c.namespace, func(t *testing.T) {
+			t.Parallel()
+			cp := controlPlane(t, c.namespace, c.mode)
+			c.published(t, cp)
+			reconcilePKI(t, gatewayIssuer(), cp)
+			pause(t, cp)
+			setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+			reads := []string(nil)
+			if c.held {
+				setTarget(t, cp, version, previous)
+				reads = listed
+			}
+			refresh(t, cp)
+			r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: k8s, Secrets: k8s, Revision: revision, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: answersSlowly(t, cp, 9*time.Second, reads)}
+			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+			defer cancel()
+			start := time.Now()
+			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+			elapsed := time.Since(start)
+			t.Logf("the pass took %s", elapsed)
+			if err == nil {
+				t.Error("a pass cut by its deadline succeeded")
+			}
+			if elapsed < c.took || elapsed > c.took+5*time.Second {
+				t.Errorf("the pass took %s, want the deadlines of its phases, %s", elapsed, c.took)
+			}
+			if c.held {
+				return
 			}
 			for _, conditionType := range []string{lodiav1alpha1.ConditionAddonsApplied, lodiav1alpha1.ConditionAddonsAvailable} {
 				expectNow(t, cp, conditionType, metav1.ConditionFalse, lodiav1alpha1.ReasonApplying)

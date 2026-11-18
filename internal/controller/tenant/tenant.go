@@ -47,10 +47,11 @@ const (
 // this ControlPlane does not control.
 const waitPeriod = time.Minute
 
-// deliveryTimeout and applyTimeout bound each request of a tenant client, and
-// deliveryTimeout the dial and the handshake of every request. Delivery's is
-// short of the 30 s dial of a tenant that drops packets, and the two leave a
-// pass on a tenant that answers nothing its status write inside its minute.
+// deliveryTimeout bounds the delivery of the tunnel's pair and applyTimeout the
+// apply phase, each as a whole, and deliveryTimeout the dial and the handshake
+// of every request. Delivery's is short of the 30 s dial of a tenant that drops
+// packets, and the two leave the status write the rest of the pass's minute,
+// whatever the tenant answers.
 const (
 	deliveryTimeout = 10 * time.Second
 	applyTimeout    = 30 * time.Second
@@ -185,19 +186,21 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			return ctrl.Result{}, err
 		}
 	}
-	tenant, err := r.reach(client.ObjectKeyFromObject(cp), kubeconfig, applyTimeout)
+	tenant, err := r.reach(client.ObjectKeyFromObject(cp), kubeconfig)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	phase, cancel := context.WithTimeout(ctx, applyTimeout)
+	defer cancel()
 	if held {
-		return r.hold(ctx, cp, tenant, objects, applied, available)
+		return r.hold(ctx, phase, cp, tenant, objects, applied, available)
 	}
 
-	others, applyErr := applyInventory(ctx, tenant, objects)
+	others, applyErr := applyInventory(phase, tenant, objects)
 	syncErr := applyErr
 	var rolled metav1.Condition
 	if applyErr == nil {
-		rolled, syncErr = rollout(ctx, tenant, cp, entriesOf(objects), others)
+		rolled, syncErr = rollout(phase, tenant, cp, entriesOf(objects), others)
 	}
 	switch reason, message, answered := outcome(applyErr); {
 	case applyErr == nil && len(others) > 0:
@@ -232,14 +235,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 // creates what the stored inventory lists and the tenant lacks, with an apply
 // since appliedByLodia counts only that, writes nothing else, and reports what
 // runs, each condition at the generation it describes. objects is nil when the
-// running operator cannot render.
-func (r *Reconciler) hold(ctx context.Context, cp *lodiav1alpha1.ControlPlane, tenant tenantAPI, objects []*unstructured.Unstructured, applied, available metav1.Condition) (ctrl.Result, error) {
-	listed, missing, complete, err := heldInventory(ctx, tenant, objects)
+// running operator cannot render. Its requests to the tenant take phase, the
+// status writes ctx.
+func (r *Reconciler) hold(ctx, phase context.Context, cp *lodiav1alpha1.ControlPlane, tenant tenantAPI, objects []*unstructured.Unstructured, applied, available metav1.Condition) (ctrl.Result, error) {
+	listed, missing, complete, err := heldInventory(phase, tenant, objects)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	for _, obj := range missing {
-		if err := apply(ctx, tenant, obj); err != nil {
+		if err := apply(phase, tenant, obj); err != nil {
 			if reason, message, _ := outcome(err); reason == lodiav1alpha1.ReasonRefused {
 				err = errors.Join(err, r.applyStatus(ctx, cp, cp.Status.Addons, at(newCondition(cp, applied.Type, metav1.ConditionFalse, reason, message), applied.ObservedGeneration), available))
 			}
@@ -253,7 +257,7 @@ func (r *Reconciler) hold(ctx context.Context, cp *lodiav1alpha1.ControlPlane, t
 			fmt.Sprintf("the %d objects the inventory lists are applied; waiting for Lifecycle to grant the running operator revision %s", len(listed), r.Revision)), applied.ObservedGeneration)
 	}
 	if slices.ContainsFunc(listed, isWorkload) {
-		rolled, err := rollout(ctx, tenant, cp, listed, nil)
+		rolled, err := rollout(phase, tenant, cp, listed, nil)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -372,7 +376,9 @@ func (r *Reconciler) deliverTunnelClient(ctx context.Context, cp *lodiav1alpha1.
 }
 
 func (r *Reconciler) applyTunnelClient(ctx context.Context, key types.NamespacedName, kubeconfig []byte, pair *corev1.Secret) error {
-	tenant, err := r.reach(key, kubeconfig, deliveryTimeout)
+	ctx, cancel := context.WithTimeout(ctx, deliveryTimeout)
+	defer cancel()
+	tenant, err := r.reach(key, kubeconfig)
 	if err != nil {
 		return err
 	}
@@ -388,9 +394,9 @@ func (r *Reconciler) applyTunnelClient(ctx context.Context, key types.Namespaced
 	return tenant.apply(ctx, e, body)
 }
 
-// reach returns the client of the ControlPlane under key with each request
-// within timeout; a pass sends its requests one after another.
-func (r *Reconciler) reach(key types.NamespacedName, kubeconfig []byte, timeout time.Duration) (tenantAPI, error) {
+// reach returns the client of the ControlPlane under key; a pass sends its
+// requests one after another.
+func (r *Reconciler) reach(key types.NamespacedName, kubeconfig []byte) (tenantAPI, error) {
 	r.mu.Lock()
 	if r.clients == nil {
 		r.clients = tenantclient.NewClients(tenantclient.Options{Connections: 1, Timeout: deliveryTimeout, Dial: r.Dial})
@@ -398,7 +404,7 @@ func (r *Reconciler) reach(key types.NamespacedName, kubeconfig []byte, timeout 
 	clients := r.clients
 	r.mu.Unlock()
 	c, err := clients.Of(key, kubeconfig)
-	return tenantAPI{client: c, timeout: timeout}, err
+	return tenantAPI{client: c}, err
 }
 
 func (r *Reconciler) forget(key types.NamespacedName) {
