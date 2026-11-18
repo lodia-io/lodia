@@ -436,7 +436,7 @@ Deletion takes no final snapshot, so the last snapshots of a deleted `ControlPla
 
 Built so far: the probes of the public endpoint and the in-namespace Service, the leader Leases, a restored `ControlPlane`'s release, the sampling of the nodes and Health's metrics.
 Every `health.period`, 5 seconds by default, Health asks `https://<status.endpoint.apiServer>/readyz` without credentials, which the API server's authentication allows for its health paths, and verifies it against `<cp>-ca-bundle`.
-Health, like Tenant, reads that Secret, `<cp>-tunnel-client` and `<cp>-lodia-kubeconfig` from memory for as long as their `resourceVersion` stays, so that a tenant at rest costs the API server no read of them ([decision](decisions/one-client-for-a-tenant.md)).
+Health reads that Secret, `<cp>-tunnel-client` and `<cp>-lodia-kubeconfig` from memory for as long as their `resourceVersion` stays ([decision](decisions/one-client-for-a-tenant.md)).
 It asks `https://<cp>-kube-apiserver.<namespace>.svc/readyz` the same way, through the in-namespace Service, which tells an API server that is down from a broken path to it.
 In `gateway` mode a probe also reads `/readyz` through the tunnel, the outer TLS with `<cp>-tunnel-client`, the inner verified against the bundle, and completes a TLS handshake with the konnectivity host; a tenant whose `<cp>-tunnel-client` is missing or another owner's reads `WaitingForCertificates`.
 The probes of a pass run at once, each within the timeout, the dial and the TLS handshake included, so a dead path holds a worker for one timeout.
@@ -642,5 +642,6 @@ Each controller records an event for every transition of a condition it writes (
 - [short-lived-kubeconfigs](decisions/short-lived-kubeconfigs.md) — `KubeconfigRequest` for the requester's own key and name, from a CA of its own; the standing admin credential is a group RBAC governs, not `system:masters`.
 - [e2e-on-a-named-cluster](decisions/e2e-on-a-named-cluster.md) — e2e refuses the current context; conformance nightly.
 - [releases-and-support](decisions/releases-and-support.md) — ko, cosign, attestations, the chart in GHCR; the three maintained Kubernetes minors.
-- [tenant-clients-speak-http1](decisions/tenant-clients-speak-http1.md) — Health reads a tenant over HTTP/1.1 with no compression and no redirect, a dial and a handshake within `Timeout`, at most as many connections as a pass has reads in flight, and one connection idle between passes.
+- [tenant-clients-speak-http1](decisions/tenant-clients-speak-http1.md) — Lodia's four clients of a tenant speak HTTP/1.1 with no compression and no redirect, a dial and a handshake within `Timeout`, at most as many connections as a pass has reads in flight, and one connection idle between passes.
+- [one-client-for-a-tenant](decisions/one-client-for-a-tenant.md) — every request to a tenant goes through `internal/tenantclient`, by path and into the fields it keeps; the access Secrets' data is read from memory while its `resourceVersion` stays.
 - [who-is-trusted](decisions/who-is-trusted.md) — the management cluster is the platform's and no tenant reaches its API; a tenant's administrator is untrusted inside the tenant; deleting a `ControlPlane` needs a confirmation.
