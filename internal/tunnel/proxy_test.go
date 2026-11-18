@@ -888,6 +888,7 @@ func TestAnExpiredClientPairIsRefusedUntilItsRenewalLoads(t *testing.T) {
 	writeVolume(t, f.proxy.certDir, pairFiles(t, expired(t, f.server.tunnelCA, certs.Profile{
 		CommonName: "lodia-tunnel-client", Usages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	})))
+	eventually(t, "the loaded pair", func() bool { return f.proxy.logs.count("loaded") >= 3 })
 	eventually(t, "the expired pair's refusal", func() bool { return tripThrough(t, f.proxy.Listen) != nil })
 
 	writeVolume(t, f.proxy.certDir, pairFiles(t, client(t, f.server.tunnelCA)))
