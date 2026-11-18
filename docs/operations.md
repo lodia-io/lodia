@@ -800,7 +800,7 @@ A tenant at the default `health.maxNodes` of 5,000 keeps 5,000 of each, 3.4 MiB 
 A tenant has two clients of Health's, `health-nodes`' and `health`'s, and each keeps one connection idle between passes: 2 in all, each 2 MiB by the rule of the derivation.
 Tenant's client and PKI's keep one each for the 90 s after a pass, which each makes every 10 minutes.
 A tenant at rest keeps at most 4 MiB of summaries, 4 MiB of connections and 0.1 MiB of the copies of its access Secrets and of the clients Tenant and PKI keep, 8.1 MiB, and 4 MiB of connections more for 90 s of every 10 minutes.
-The copies of its five Secrets hold 13,766 to 13,948 bytes on envtest's PKI (`TestMeasureWhatTheCopiesOfATenantsAccessSecretsHold`, 200 tenants, three runs, live heap after a collection) and each of the two clients 10,560 to 10,606 bytes, 10.3 KiB, the kubeconfig it was built from, 2,148 to 2,156 bytes, included (`TestMeasureWhatAKeptClientOfATenantHolds`, 200 tenants, three runs): 34 KiB in all, 10.0 MiB at 300 tenants, which the figure rounds up with room for the bundle that holds two CAs in a rotation.
+The copies of its five Secrets hold 13,766 to 13,948 bytes on envtest's PKI (`TestMeasureWhatTheCopiesOfATenantsAccessSecretsHold`, 200 tenants, three runs, live heap after a collection) and each of the two clients 10,560 to 10,606 bytes, 10.3 KiB, the kubeconfig it was built from, 2,148 to 2,156 bytes, included (`TestMeasureWhatAKeptClientOfATenantHolds`, 200 tenants, three runs): 34 KiB in all, 10.0 MiB at 300 tenants.
 The connections of a pass are those 2 and the ones it dials: the figure of a pass counts them with its reads, and the figure at rest counts them idle, so that no connection is counted twice.
 
 ## Scale
