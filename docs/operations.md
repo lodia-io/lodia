@@ -734,6 +734,7 @@ The memory of a pass follows from the reads it has in flight at once, each with 
 - a pass of `health-nodes` reads the controller manager's Lease, then lists the Leases and then the Nodes, then sends the hold's write, whose patch carries the read's `resourceVersion`, 384 bytes at most, and reads its answer: one read at a time, 25.9 MiB, and the summaries the pass builds beside the sampling, up to `health.maxNodes` Lease versions and Node summaries, 4 MiB (3.72 MiB measured, with names of 253 bytes: a Lease version takes up to 112 bytes of map slot, its name of 256 and 24 bytes of the slice it is built from, a Node summary 72 bytes, 256 and 80, 3.8 MiB for 5,000 of each; `TestWhatAPassBuildsBesideTheSamplingIsUnderSummariesAtMost`): 29.9 MiB;
 - a pass of `health` over a held restore lists seven kinds at once, each with a head and a connection of its own: seven reads, 181.3 MiB, and at most 10 such passes list at once, whatever the workers, 1.78 GiB;
 - any other pass of `health` first runs its probes at once, three heads of at most 3.5 MiB, the probes' transports cutting them at 64 KiB as the clients' do, and five connections, the tunnel's two TLS sessions counted as two, 20.5 MiB, and then reads its two leader Leases one after the other, one read, 25.9 MiB: 25.9 MiB;
+- a pass of Tenant or PKI sends its requests one after another, so it holds one read at a time, 25.9 MiB, and their 10 workers each by default hold 20 passes at once, 0.51 GiB, beside Health's below;
 - the 100 workers of `health-nodes`, by default, hold 100 passes at once, 2.92 GiB at most, and the 100 workers of `health` 10 held restores and 90 other passes, 4.05 GiB: 6.97 GiB in all; `controllers.<name>.workers` scales each, by 29.9 MiB and 25.9 MiB a worker.
 
 At the default `GOGC` the heap in use may grow to about twice the live heap; the operator's memory limit and `GOMEMLIMIT` are in [Scale](#scale).
@@ -796,8 +797,9 @@ The tenant's administrator can have any server answer the lists, so the pass bou
 
 With every string at its bound a Lease version takes a name of 253 bytes and a map slot of 48 bytes (key header, digest and time), and a Node summary 72 bytes, a name of 253 bytes and a kubelet version of 64.
 A tenant at the default `health.maxNodes` of 5,000 keeps 5,000 of each, 3.4 MiB of live heap (3.43 to 3.44) as `TestWhatASamplingKeepsRestsOnItsOwnBoundsAndNotOnWhatTheServerAnswers` measures in three runs with names of 253 bytes and versions at their raw bounds: what the lists answer does not change it.
-A tenant has two clients, `health-nodes`' and `health`'s, and each keeps one connection idle between passes: 2 in all, each 2 MiB by the rule of the derivation.
-A tenant at rest keeps at most 4 MiB of summaries and 4 MiB of connections, 8.0 MiB.
+A tenant has two clients of Health's, `health-nodes`' and `health`'s, and each keeps one connection idle between passes: 2 in all, each 2 MiB by the rule of the derivation.
+Tenant's client and PKI's keep one each for the 90 s after a pass, which each makes every 10 minutes.
+A tenant at rest keeps at most 4 MiB of summaries and 4 MiB of connections, 8.0 MiB, and 4 MiB of connections more for 90 s of every 10 minutes.
 The connections of a pass are those 2 and the ones it dials: the figure of a pass counts them with its reads, and the figure at rest counts them idle, so that no connection is counted twice.
 
 ## Scale
@@ -890,8 +892,8 @@ What the numbers answer:
 The operator's memory:
 - At rest on Linux the operator holds about 0.64 MiB of heap in use for each tenant beside about 20 MiB of its own, and 0.79 MiB of resident set beside about 90 MiB; macOS keeps memory the heap gave back in the resident set, which makes its figure larger.
 - An idle connection holds 26 to 53 KiB of live heap and stacks, measured by the drop when every answer closes its connection, and a handshake more costs 0.5 to 1.7 ms of CPU.
-  Each tenant client keeps one connection idle between passes and closes the others as they are given back, for client-go's 90 s at most: 2 for a tenant at rest, about 0.1 MiB, where 9 were possible before, and a held restore's pass dials six, 3 to 10 ms of CPU each pass; keeping none would cost every tenant two handshakes every 5 s, about 0.7 of a CPU at 1,000 tenants by the measure there.
-  By the rule of [Capacity](#capacity), 2 MiB for each connection, a tenant at rest keeps at most 8.0 MiB, 4 of them summaries of `health.maxNodes` Nodes.
+  Each tenant client keeps one connection idle between passes and closes the others as they are given back, for client-go's 90 s at most: 2 for a tenant at rest, about 0.1 MiB, where 9 were possible before, and a held restore's pass dials six, 3 to 10 ms of CPU each pass; keeping none would cost every tenant two handshakes every 5 s, about 0.7 of a CPU at 1,000 tenants by the measure there; Tenant's client and PKI's keep one each for 90 s after a pass every 10 minutes.
+  By the rule of [Capacity](#capacity), 2 MiB for each connection, a tenant at rest keeps at most 8.0 MiB, 4 of them summaries of `health.maxNodes` Nodes, and 12.0 MiB for 90 s of every 10 minutes.
 - Each pass of `health-nodes` reads its two lists one after the other, which halves the worst case of 100 passes at once at Health's bounds: 2.92 GiB, 29.9 MiB a pass, where the two lists at once make 5.45 GiB; the 100 passes measured 0.90 to 0.93 GiB of heap in use ([Capacity](#capacity)).
   It costs a tenant of 5,000 Nodes about 25 ms every 30 s: a first pass over it took 295 to 305 ms, and 270 to 285 ms with the two lists at once, three runs each.
   Fewer workers would cost every tenant the samples that hanging tenants delay, and a shared bound on responses in flight would still leave the heads and the margins of every read in flight, 5.5 MiB each, unbounded, and let as many slow tenants as it has places stall every other read.

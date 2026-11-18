@@ -117,12 +117,12 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 	r.Dial = dialer(t, tenantCfg.Host)
 	reconcile(t, r, cp)
 	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionTrue, lodiav1alpha1.ReasonBound)
-	r.Dial = unreachable
-	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+	restarted := newReconciler(time.Hour)
+	restarted.Dial = unreachable
+	if _, err := restarted.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
 		t.Fatal("a pass that could not reach the tenant succeeded")
 	}
 	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionTrue, lodiav1alpha1.ReasonBound)
-	r.Dial = dialer(t, tenantCfg.Host)
 	for _, b := range []struct {
 		name, kind, role string
 	}{
@@ -229,14 +229,14 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 	if cp.Generation == stale {
 		t.Fatal("the generation did not move")
 	}
-	r.Dial = func(context.Context, string, string) (net.Conn, error) {
+	restarted = newReconciler(time.Hour)
+	restarted.Dial = func(context.Context, string, string) (net.Conn, error) {
 		t.Error("the tenant was dialed on an APIServerReady of an older generation")
 		return nil, errors.New("not dialed")
 	}
-	reconcile(t, r, cp)
+	reconcile(t, restarted, cp)
 	expectConditionAt(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionTrue, lodiav1alpha1.ReasonBound, stale)
 	setAPIServerReady(t, cp)
-	r.Dial = dialer(t, tenantCfg.Host)
 	reconcile(t, r, cp)
 	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionTrue, lodiav1alpha1.ReasonBound)
 
