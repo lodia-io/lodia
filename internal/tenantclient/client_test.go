@@ -7,6 +7,9 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -107,4 +110,60 @@ func TestTheProductionDialerOfAClientIsBoundByTimeoutWhenNoDialFunctionIsSet(t *
 			t.Errorf("a dial of a Timeout of %v to a listener that answers ended in %v, want a connection: %t", c.timeout, err, c.connects)
 		}
 	}
+}
+
+func TestAForgottenControlPlaneAndAReplacedKubeconfigCloseTheIdleConnectionsOfTheirClient(t *testing.T) {
+	var open atomic.Int32
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{}`)) }))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		switch state {
+		case http.StateNew:
+			open.Add(1)
+		case http.StateClosed, http.StateHijacked:
+			open.Add(-1)
+		}
+	}
+	server.Start()
+	defer server.Close()
+	kubeconfig := func(token string) []byte {
+		t.Helper()
+		out, err := clientcmd.Write(clientcmdapi.Config{
+			Clusters:       map[string]*clientcmdapi.Cluster{"tenant": {Server: server.URL}},
+			AuthInfos:      map[string]*clientcmdapi.AuthInfo{"lodia": {Token: token}},
+			Contexts:       map[string]*clientcmdapi.Context{"tenant": {Cluster: "tenant", AuthInfo: "lodia"}},
+			CurrentContext: "tenant",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	clients := NewClients(Options{Connections: 1, Timeout: time.Minute})
+	key := types.NamespacedName{Namespace: "team-a", Name: "dev"}
+	read := func(token string) {
+		t.Helper()
+		c, err := clients.Of(key, kubeconfig(token))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Do(t.Context(), c.Get().AbsPath("/healthz")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	idle := func(want int32, what string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for open.Load() != want {
+			if time.Now().After(deadline) {
+				t.Fatalf("%d connections are open %s, want %d", open.Load(), what, want)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	read("first")
+	idle(1, "after a read")
+	read("second")
+	idle(1, "after a read through a replaced kubeconfig: the first client's must close")
+	clients.Forget(key)
+	idle(0, "after the ControlPlane is forgotten")
 }
