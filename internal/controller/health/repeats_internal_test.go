@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"go.lodia.io/lodia/internal/tenantclient"
 )
 
 func nextSliceCap(newLen, oldCap int) int {
@@ -336,7 +338,7 @@ func bruteDearest(s *searchedTail, valueLines func(announced int) (least, most i
 	for n := range s.block {
 		least, most := valueLines(n)
 		for lines := least; lines <= most; lines++ {
-			room := maxResponseHeaderBytes - headFixed - announcedBytes(n) - trailerLineBytes*(lines-1)
+			room := tenantclient.MaxResponseHeaderBytes - headFixed - announcedBytes(n) - trailerLineBytes*(lines-1)
 			if room < 0 {
 				break
 			}

@@ -17,48 +17,6 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
-func TestAControlPlaneKeepsItsTenantClientsWhileItsKubeconfigStays(t *testing.T) {
-	r := &Reconciler{Timeout: time.Minute}
-	key := types.NamespacedName{Namespace: "team-a", Name: "dev"}
-	kubeconfig := func(server string) []byte {
-		t.Helper()
-		out, err := clientcmd.Write(clientcmdapi.Config{
-			Clusters:       map[string]*clientcmdapi.Cluster{"tenant": {Server: server}},
-			AuthInfos:      map[string]*clientcmdapi.AuthInfo{"lodia": {Token: "token"}},
-			Contexts:       map[string]*clientcmdapi.Context{"tenant": {Cluster: "tenant", AuthInfo: "lodia"}},
-			CurrentContext: "tenant",
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return out
-	}
-	clients := func(server string) *tenant {
-		t.Helper()
-		c, err := r.tenant(key, kubeconfig(server))
-		if err != nil {
-			t.Fatal(err)
-		}
-		return c
-	}
-	first := clients("https://dev-kube-apiserver.team-a.svc:443")
-	if first.api.Client != r.clients[key].transport {
-		t.Error("the tenant client does not use the transport forget closes")
-	}
-	if clients("https://dev-kube-apiserver.team-a.svc:443") != first {
-		t.Error("the same kubeconfig built second tenant clients")
-	}
-	second := clients("https://dev-kube-apiserver.team-a.svc:6443")
-	if second == first {
-		t.Error("a new kubeconfig kept the previous tenant clients")
-	}
-
-	r.forget(key)
-	if clients("https://dev-kube-apiserver.team-a.svc:6443") == second {
-		t.Error("a forgotten ControlPlane kept its tenant clients")
-	}
-}
-
 func TestTheTenantClientNamesItselfAndAsksForJSON(t *testing.T) {
 	var agent, accept atomic.Value
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {

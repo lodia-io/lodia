@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/tenantclient"
 )
 
 func TestStatusNodesFollowsTheKubeletsVersions(t *testing.T) {
@@ -105,15 +106,23 @@ func TestADeletedControlPlaneIsForgotten(t *testing.T) {
 	r := &NodesReconciler{
 		Client:  fake.NewClientBuilder().WithScheme(scheme).Build(),
 		Clock:   clock.RealClock{},
+		Timeout: time.Minute,
 		samples: map[types.NamespacedName]*sampling{key: {uid: "gone"}},
-		clients: map[types.NamespacedName]*tenantClients{key: {}},
+	}
+	kept, err := r.tenant(key, kubeconfigFor(t, "http://127.0.0.1:1"))
+	if err != nil {
+		t.Fatal(err)
 	}
 	result, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key})
 	if err != nil || result.RequeueAfter != 0 {
 		t.Errorf("Reconcile = %+v, %v, want no requeue and no error", result, err)
 	}
-	if len(r.samples) != 0 || len(r.clients) != 0 {
-		t.Errorf("kept %d samples and %d clients of a deleted ControlPlane", len(r.samples), len(r.clients))
+	again, err := r.tenant(key, kubeconfigFor(t, "http://127.0.0.1:1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.samples) != 0 || again.client == kept.client {
+		t.Errorf("kept %d samples and the client of a deleted ControlPlane: %t", len(r.samples), again.client == kept.client)
 	}
 }
 
@@ -141,13 +150,13 @@ func memberOf(name, kubelet string, ready corev1.ConditionStatus) nodeObject {
 	var n nodeObject
 	n.Metadata.Name = name
 	n.Status.NodeInfo.KubeletVersion = kubelet
-	n.Status.Conditions.items = []nodeCondition{{Type: corev1.NodeReady, Status: ready}}
+	n.Status.Conditions.Items = []nodeCondition{{Type: corev1.NodeReady, Status: ready}}
 	return n
 }
 
 func TestALeaseOrANodeNamedBeyondTheBoundIsNotKept(t *testing.T) {
 	sizedForTheBounds(t)
-	atBound := strings.Repeat("a", maxName)
+	atBound := strings.Repeat("a", tenantclient.MaxName)
 	lease := func(name string) leaseItem {
 		var l leaseItem
 		l.Metadata.Name, l.Metadata.ResourceVersion = name, "1"
@@ -155,11 +164,11 @@ func TestALeaseOrANodeNamedBeyondTheBoundIsNotKept(t *testing.T) {
 	}
 	leases := leaseVersions([]leaseItem{lease(atBound), lease(atBound + "a"), lease(strings.Repeat("a", 80000)), lease("short")})
 	if len(leases) != 2 || leases[0].name != atBound || leases[1].name != "short" {
-		t.Errorf("leaseVersions kept %d Leases, want the one of %d bytes and the short one", len(leases), maxName)
+		t.Errorf("leaseVersions kept %d Leases, want the one of %d bytes and the short one", len(leases), tenantclient.MaxName)
 	}
 	nodes, end := summarize([]nodeObject{memberOf(atBound, "", ""), memberOf(atBound+"a", "", ""), memberOf(strings.Repeat("a", 80000), "", ""), memberOf("short", "", "")})
 	if end != listEnded || len(nodes) != 2 || nodes[0].name != atBound || nodes[1].name != "short" {
-		t.Errorf("summarize kept %d Nodes, want the one of %d bytes and the short one", len(nodes), maxName)
+		t.Errorf("summarize kept %d Nodes, want the one of %d bytes and the short one", len(nodes), tenantclient.MaxName)
 	}
 }
 

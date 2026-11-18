@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"go.lodia.io/lodia/internal/tenantclient"
 )
 
 func retained(build func() any) (any, uint64) {
@@ -40,16 +42,16 @@ func TestWhatTheTypesKeepAtTheRawBoundsIsUnderKeptAtMost(t *testing.T) {
 		{"invalid UTF-8", func(n int) string { return strings.Repeat("\xff", n) }},
 	} {
 		s := kind.of
-		ready := `{"type":"Ready","status":"` + s(maxWordRaw) + `","lastTransitionTime":"2026-11-13T10:00:00Z"}`
-		node := `{"metadata":{"name":"` + s(maxNameRaw) + `"},"status":{"nodeInfo":{"kubeletVersion":"` + s(maxKubeletRaw) + `"},"conditions":[` + repeated(maxConditions, ready) + `]}}`
-		lease := `{"metadata":{"name":"` + s(maxNameRaw) + `","resourceVersion":"` + s(maxVersionRaw) + `"}}`
-		svc := `{"metadata":{"namespace":"` + s(maxNameRaw) + `","name":"` + s(maxNameRaw) + `"},"spec":{"type":"` + s(maxWordRaw) + `"}}`
-		pvc := `{"metadata":{"namespace":"` + s(maxNameRaw) + `","name":"` + s(maxNameRaw) + `"},"status":{"phase":"` + s(maxWordRaw) + `"}}`
-		pv := `{"metadata":{"name":"` + s(maxNameRaw) + `"},"spec":{"persistentVolumeReclaimPolicy":"` + s(maxWordRaw) + `"}}`
-		cron := `{"metadata":{"namespace":"` + s(maxNameRaw) + `","name":"` + s(maxNameRaw) + `"},"spec":{"suspend":false}}`
-		hook := `{"name":"` + s(maxNameRaw) + `","failurePolicy":"` + s(maxWordRaw) + `","clientConfig":{"url":"x"}}`
-		config := `{"metadata":{"name":"` + s(maxNameRaw) + `"},"webhooks":[` + repeated(maxWebhooks, hook) + `]}`
-		status := `{"kind":"Status","status":"Failure","reason":"` + s(maxReasonRaw) + `","message":"` + s(maxMessageRaw) + `","code":500,"details":{"causes":[` + repeated(maxCauses, `{"reason":"`+s(maxReasonRaw)+`"}`) + `]}}`
+		ready := `{"type":"Ready","status":"` + s(tenantclient.MaxWordRaw) + `","lastTransitionTime":"2026-11-13T10:00:00Z"}`
+		node := `{"metadata":{"name":"` + s(tenantclient.MaxNameRaw) + `"},"status":{"nodeInfo":{"kubeletVersion":"` + s(maxKubeletRaw) + `"},"conditions":[` + repeated(maxConditions, ready) + `]}}`
+		lease := `{"metadata":{"name":"` + s(tenantclient.MaxNameRaw) + `","resourceVersion":"` + s(tenantclient.MaxVersionRaw) + `"}}`
+		svc := `{"metadata":{"namespace":"` + s(tenantclient.MaxNameRaw) + `","name":"` + s(tenantclient.MaxNameRaw) + `"},"spec":{"type":"` + s(tenantclient.MaxWordRaw) + `"}}`
+		pvc := `{"metadata":{"namespace":"` + s(tenantclient.MaxNameRaw) + `","name":"` + s(tenantclient.MaxNameRaw) + `"},"status":{"phase":"` + s(tenantclient.MaxWordRaw) + `"}}`
+		pv := `{"metadata":{"name":"` + s(tenantclient.MaxNameRaw) + `"},"spec":{"persistentVolumeReclaimPolicy":"` + s(tenantclient.MaxWordRaw) + `"}}`
+		cron := `{"metadata":{"namespace":"` + s(tenantclient.MaxNameRaw) + `","name":"` + s(tenantclient.MaxNameRaw) + `"},"spec":{"suspend":false}}`
+		hook := `{"name":"` + s(tenantclient.MaxNameRaw) + `","failurePolicy":"` + s(tenantclient.MaxWordRaw) + `","clientConfig":{"url":"x"}}`
+		config := `{"metadata":{"name":"` + s(tenantclient.MaxNameRaw) + `"},"webhooks":[` + repeated(maxWebhooks, hook) + `]}`
+		status := `{"kind":"Status","status":"Failure","reason":"` + s(tenantclient.MaxReasonRaw) + `","message":"` + s(tenantclient.MaxMessageRaw) + `","code":500,"details":{"causes":[` + repeated(tenantclient.MaxCauses, `{"reason":"`+s(tenantclient.MaxReasonRaw)+`"}`) + `]}}`
 		list := func(n int, item string) []byte {
 			return []byte(`{"metadata":{"continue":""},"items":[` + repeated(n, item) + `]}`)
 		}
@@ -66,15 +68,15 @@ func TestWhatTheTypesKeepAtTheRawBoundsIsUnderKeptAtMost(t *testing.T) {
 			{"500 CronJobs", list(listLimit, cron), func(b []byte) (any, error) { return listFrom(b, listLimit, cronJobOf) }},
 			{"one webhook configuration of 256 webhooks", []byte(config), func(b []byte) (any, error) { return webhookConfigurationOf(b) }},
 			{"a Status of 64 causes", []byte(status), func(b []byte) (any, error) {
-				failure, ok := failureOf(b)
+				failure, ok := tenantclient.FailureOf(b)
 				if !ok {
-					return nil, errors.New(noStatusMessage)
+					return nil, errors.New(tenantclient.NoStatusMessage)
 				}
 				return failure, nil
 			}},
 		} {
 			t.Run(c.name+", "+kind.name, func(t *testing.T) {
-				if len(c.body) > maxResponseBytes {
+				if len(c.body) > tenantclient.MaxResponseBytes {
 					t.Fatalf("a body of %d bytes", len(c.body))
 				}
 				var err error
@@ -100,7 +102,7 @@ func TestWhatAPassBuildsBesideTheSamplingIsUnderSummariesAtMost(t *testing.T) {
 	inTheStepWithoutEnvtest(t)
 	sizedForTheBounds(t)
 	const nodes = 5000
-	name := func(i int) string { return fmt.Sprintf("%05d", i) + strings.Repeat("n", maxName-5) }
+	name := func(i int) string { return fmt.Sprintf("%05d", i) + strings.Repeat("n", tenantclient.MaxName-5) }
 	v, kept := retained(func() any {
 		var leases []leaseVersion
 		var summaries []node
@@ -124,7 +126,7 @@ func TestWhatAPassBuildsBesideTheSamplingIsUnderSummariesAtMost(t *testing.T) {
 		return []any{leases, seen(nil, leases, time.Time{}), summaries}
 	})
 	runtime.KeepAlive(v)
-	t.Logf("%d Leases and %d Nodes named with %d bytes: the summaries a pass builds hold %.2f MiB", nodes, nodes, maxName, mib(kept))
+	t.Logf("%d Leases and %d Nodes named with %d bytes: the summaries a pass builds hold %.2f MiB", nodes, nodes, tenantclient.MaxName, mib(kept))
 	if kept > summariesAtMost {
 		t.Errorf("the summaries hold %.2f MiB, want at most summariesAtMost, %.2f MiB", mib(kept), mib(summariesAtMost))
 	}

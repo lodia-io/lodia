@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"go.lodia.io/lodia/internal/tenantclient"
 )
 
 const (
@@ -88,15 +90,15 @@ func TestATallyCountsEveryObjectAndKeepsTheThreeThatSortFirst(t *testing.T) {
 
 func TestATallyJoinsTheNamespaceAndTheNameAndKeepsNoPartOverMaxName(t *testing.T) {
 	sizedForTheBounds(t)
-	long := strings.Repeat("a", maxName+1)
-	exact := strings.Repeat("b", maxName)
+	long := strings.Repeat("a", tenantclient.MaxName+1)
+	exact := strings.Repeat("b", tenantclient.MaxName)
 	for _, c := range []struct {
 		name  string
 		parts [][]string
 		want  string
 	}{
 		{"a namespace and a name", [][]string{{"ns", "svc"}}, "1 things (ns/svc)"},
-		{"parts of exactly maxName", [][]string{{exact, exact}}, "1 things (" + exact + "/" + exact + ")"},
+		{"parts of exactly tenantclient.MaxName", [][]string{{exact, exact}}, "1 things (" + exact + "/" + exact + ")"},
 		{"a name one byte over", [][]string{{"ns", long}}, "1 things"},
 		{"a namespace one byte over", [][]string{{long, "svc"}}, "1 things"},
 		{"a name over, among names", [][]string{{"ns", "b"}, {"ns", long}, {"ns", "a"}}, "3 things (ns/a, ns/b…)"},
@@ -135,7 +137,7 @@ func TestATallyBuildsNoNameForAnObjectThatDoesNotQualify(t *testing.T) {
 	inTheStepWithoutEnvtest(t)
 	sizedForTheBounds(t)
 	const webhooks = 128_000
-	config := strings.Repeat("c", maxName)
+	config := strings.Repeat("c", tenantclient.MaxName)
 	names := make([]string, webhooks)
 	for i := range names {
 		names[i] = nameOf("w", i, 8)
@@ -184,8 +186,8 @@ func TestAPageOf128000EmptyWebhooksIsACountAndThreeNamesInEachKindOfConfiguratio
 		nameLen int
 		kept    string
 	}{
-		{"configurations named with maxName bytes", maxName, "(" + nameOf("c", 0, maxName) + "/, " + nameOf("c", 0, maxName) + "/, " + nameOf("c", 0, maxName) + "/…)"},
-		{"configurations named past maxName", maxName + 1, ""},
+		{"configurations named with tenantclient.MaxName bytes", tenantclient.MaxName, "(" + nameOf("c", 0, tenantclient.MaxName) + "/, " + nameOf("c", 0, tenantclient.MaxName) + "/, " + nameOf("c", 0, tenantclient.MaxName) + "/…)"},
+		{"configurations named past tenantclient.MaxName", tenantclient.MaxName + 1, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			page := emptyWebhooks(configurations, c.nameLen)
@@ -231,8 +233,8 @@ func TestTheMessageOfAHeldRestoreStaysUnderTheSchemasBoundWhateverTheTenantAnswe
 		nameLen int
 		quoted  bool
 	}{
-		{"names of maxName bytes", maxName, true},
-		{"names of one byte more", maxName + 1, false},
+		{"names of tenantclient.MaxName bytes", tenantclient.MaxName, true},
+		{"names of one byte more", tenantclient.MaxName + 1, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			namespace := func(i int) string { return nameOf("n", i, c.nameLen) }
@@ -303,7 +305,7 @@ func TestMeasureTheLiveHeapOfAPassOverAPageOf128000EmptyWebhooks(t *testing.T) {
 			return map[string][]byte{validatingPath: page, mutatingPath: page}
 		}, 2},
 	} {
-		for _, nameLen := range []int{maxName, maxNameRaw} {
+		for _, nameLen := range []int{tenantclient.MaxName, tenantclient.MaxNameRaw} {
 			t.Run(fmt.Sprintf("%s named with %d bytes", c.name, nameLen), func(t *testing.T) {
 				page := emptyWebhooks(configurations, nameLen)
 				tenant := servingOverTLS(t, c.answers(page), func() {})
@@ -311,7 +313,7 @@ func TestMeasureTheLiveHeapOfAPassOverAPageOf128000EmptyWebhooks(t *testing.T) {
 				begun := time.Now()
 				peaks := measureLiveHeap(func() { message = (&Reconciler{Timeout: 10 * time.Minute}).actedOn(t.Context(), tenant) })
 				t.Logf("%d webhooks in a page of %d bytes, %d pages at once, took %v: live heap %.1f MiB, %.2f responses; heap in use %.1f MiB; a message of %d bytes",
-					configurations*maxWebhooks, len(page), c.kinds, time.Since(begun).Round(time.Millisecond), mib(peaks.live), float64(peaks.live)/maxResponseBytes, mib(peaks.inUse), len(message))
+					configurations*maxWebhooks, len(page), c.kinds, time.Since(begun).Round(time.Millisecond), mib(peaks.live), float64(peaks.live)/tenantclient.MaxResponseBytes, mib(peaks.inUse), len(message))
 			})
 		}
 	}

@@ -13,6 +13,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"go.lodia.io/lodia/internal/tenantclient"
 )
 
 const (
@@ -27,8 +29,8 @@ const (
 	oneByteNames        = 256
 	oneByteFieldNames   = 77
 	twoByteFieldNames   = oneByteFieldNames * oneByteFieldNames
-	announcedNamesHTTP1 = oneByteNames + (maxResponseHeaderBytes-2*oneByteNames)/3
-	fieldLinesHTTP1     = oneByteFieldNames + twoByteFieldNames + (maxResponseHeaderBytes-3*oneByteFieldNames-4*twoByteFieldNames)/5
+	announcedNamesHTTP1 = oneByteNames + (tenantclient.MaxResponseHeaderBytes-2*oneByteNames)/3
+	fieldLinesHTTP1     = oneByteFieldNames + twoByteFieldNames + (tenantclient.MaxResponseHeaderBytes-3*oneByteFieldNames-4*twoByteFieldNames)/5
 	trailerBlockHTTP1   = 4096 - 3
 	trailerFieldsHTTP1  = oneByteFieldNames + (trailerBlockHTTP1-3*oneByteFieldNames)/4
 )
@@ -97,7 +99,7 @@ func TestEveryFigureOfTheDerivationIsTheSumOfItsTermsRoundedUp(t *testing.T) {
 		healthWorkers    = 100
 	)
 	pass := readsBound(nodesReads) + summariesAtMost
-	atRest := uint64(summariesAtMost + 2*idleConnections*connectionMargin)
+	atRest := uint64(summariesAtMost + 2*tenantclient.IdleConnections*connectionMargin)
 	probes := uint64(probeHeads*headAndTrailersHTTP1 + probeConnections*connectionMargin)
 	probing := max(probes, readsBound(1))
 	healthWorst := heldRestores*readsBound(restoreReads) + (healthWorkers-heldRestores)*probing
@@ -112,7 +114,7 @@ func TestEveryFigureOfTheDerivationIsTheSumOfItsTermsRoundedUp(t *testing.T) {
 		{"the read of a pass of health-nodes, MiB", mib(readsBound(nodesReads)), 1, 25.9},
 		{"a pass of health-nodes, MiB", mib(pass), 1, 29.9},
 		{"a pass of health over a held restore, MiB", mib(readsBound(restoreReads)), 1, 181.3},
-		{"the connections of a tenant at rest, MiB", mib(uint64(2 * idleConnections * connectionMargin)), 1, 4},
+		{"the connections of a tenant at rest, MiB", mib(uint64(2 * tenantclient.IdleConnections * connectionMargin)), 1, 4},
 		{"a tenant at rest, MiB", mib(atRest), 1, 8},
 		{"100 passes of health-nodes, GiB", 100 * float64(pass) / gibibyte, 2, 2.92},
 		{"the held restores' lists at once, GiB", heldRestores * float64(readsBound(restoreReads)) / gibibyte, 2, 1.78},

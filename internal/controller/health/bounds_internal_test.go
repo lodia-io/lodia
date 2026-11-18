@@ -14,6 +14,8 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	crzap "sigs.k8s.io/controller-runtime/pkg/log/zap"
+
+	"go.lodia.io/lodia/internal/tenantclient"
 )
 
 func readNamed(t *testing.T, name string) tenantRead {
@@ -138,9 +140,9 @@ func TestAStatusIsReadAtTheBoundsOfItsFieldsAndNeverPastThem(t *testing.T) {
 		most int
 		past string
 	}{
-		{"a reason", func(n int) string { return status(quotedOf(n), `"m"`, "500", `"c"`) }, maxReasonRaw, ""},
-		{"a cause's reason", func(n int) string { return status(`"r"`, `"m"`, "500", quotedOf(n)) }, maxReasonRaw, ""},
-		{"a message", func(n int) string { return status(`"r"`, quotedOf(n), "500", `"c"`) }, 1024, longMessage},
+		{"a reason", func(n int) string { return status(quotedOf(n), `"m"`, "500", `"c"`) }, tenantclient.MaxReasonRaw, ""},
+		{"a cause's reason", func(n int) string { return status(`"r"`, `"m"`, "500", quotedOf(n)) }, tenantclient.MaxReasonRaw, ""},
+		{"a message", func(n int) string { return status(`"r"`, quotedOf(n), "500", `"c"`) }, 1024, tenantclient.LongMessage},
 		{"a code", func(n int) string { return status(`"r"`, `"m"`, integerOfLength(n), `"c"`) }, 11, ""},
 	} {
 		for _, past := range []bool{false, true} {
@@ -172,8 +174,8 @@ func TestAStatusIsReadAtTheBoundsOfItsFieldsAndNeverPastThem(t *testing.T) {
 						t.Errorf("the error says %q, want %q", got, c.past)
 					}
 				default:
-					if got := err.Error(); got != noStatusMessage {
-						t.Errorf("the error says %q, want Health's own, %q", got, noStatusMessage)
+					if got := err.Error(); got != tenantclient.NoStatusMessage {
+						t.Errorf("the error says %q, want Health's own, %q", got, tenantclient.NoStatusMessage)
 					}
 				}
 			})
@@ -187,9 +189,9 @@ func TestAKeyOfAnyKindIsSkippedAndKeepsNothingOfTheTenant(t *testing.T) {
 		name string
 		key  string
 	}{
-		{"letters", strings.Repeat("a", maxResponseBytes/4)},
-		{"invalid UTF-8", strings.Repeat("\xff", maxResponseBytes/4)},
-		{"escapes past the bound", strings.Repeat(`\n`, maxResponseBytes/8)},
+		{"letters", strings.Repeat("a", tenantclient.MaxResponseBytes/4)},
+		{"invalid UTF-8", strings.Repeat("\xff", tenantclient.MaxResponseBytes/4)},
+		{"escapes past the bound", strings.Repeat(`\n`, tenantclient.MaxResponseBytes/8)},
 		{"escapes at the bound", strings.Repeat(`\n`, 128)},
 		{"escapes one byte past the bound", strings.Repeat(`\n`, 128) + `a`},
 	} {
@@ -231,8 +233,8 @@ func TestAnErrorLoggedByTheOperatorsLoggerCarriesNothingOfTheValue(t *testing.T)
 		read func(context *testing.T, r *NodesReconciler, tenant *tenant) error
 	}{
 		{"a time that does not parse", `{"metadata":{},"items":[{"metadata":{"name":"n"},"status":{"conditions":[{"type":"Ready","status":"True","lastTransitionTime":"` + strings.Repeat(marker, 10) + `"}]}}]}`, listNodesError},
-		{"a time of 8 MiB", `{"metadata":{},"items":[{"metadata":{"name":"n"},"status":{"conditions":[{"type":"Ready","status":"True","lastTransitionTime":"` + strings.Repeat(marker, maxResponseBytes/2/len(marker)) + `"}]}}]}`, listNodesError},
-		{"a time of invalid UTF-8", `{"metadata":{},"items":[{"metadata":{"name":"n"},"status":{"conditions":[{"type":"Ready","status":"True","lastTransitionTime":"` + strings.Repeat("\xff", maxResponseBytes/2) + `"}]}}]}`, listNodesError},
+		{"a time of 8 MiB", `{"metadata":{},"items":[{"metadata":{"name":"n"},"status":{"conditions":[{"type":"Ready","status":"True","lastTransitionTime":"` + strings.Repeat(marker, tenantclient.MaxResponseBytes/2/len(marker)) + `"}]}}]}`, listNodesError},
+		{"a time of invalid UTF-8", `{"metadata":{},"items":[{"metadata":{"name":"n"},"status":{"conditions":[{"type":"Ready","status":"True","lastTransitionTime":"` + strings.Repeat("\xff", tenantclient.MaxResponseBytes/2) + `"}]}}]}`, listNodesError},
 		{"a name past its bound", `{"metadata":{},"items":[{"metadata":{"name":"` + strings.Repeat(marker, 1000) + `"}}]}`, listLeasesStop},
 		{"a number that is no integer", `{"metadata":{"resourceVersion":"1"},"spec":{"leaseTransitions":1.` + strings.Repeat("5", 8) + `}}`, leaderLeaseError},
 		{"a renew time that does not parse", `{"metadata":{"resourceVersion":"1"},"spec":{"renewTime":"` + strings.Repeat(marker, 10) + `"}}`, leaderLeaseError},
@@ -341,7 +343,7 @@ func TestAKeptFieldThatIsNullIsAbsent(t *testing.T) {
 		}},
 		{"a Ready condition", readerOf(func(data []byte) (nodeCondition, error) {
 			n, err := nodeOf([]byte(`{"status":{"conditions":[` + string(data) + `]}}`))
-			return n.Status.Conditions.items[0], err
+			return n.Status.Conditions.Items[0], err
 		}), `{"type":"Ready"}`, []string{`{"type":"Ready","status":null,"lastTransitionTime":null}`}},
 		{"a condition", readerOf(nodeConditionOf), `{}`, []string{`{"type":null,"status":null,"lastTransitionTime":null}`}},
 		{"a Service", readerOf(serviceOf), `{}`, []string{
@@ -372,11 +374,11 @@ func TestAKeptFieldThatIsNullIsAbsent(t *testing.T) {
 			`{"metadata":{"namespace":null,"name":null},"spec":{"suspend":null}}`,
 			`{"metadata":null,"spec":null}`,
 		}},
-		{"a Status", readerOf(statusFrom), `{}`, []string{
+		{"a Status", readerOf(tenantclient.StatusFrom), `{}`, []string{
 			`{"status":null,"message":null,"reason":null,"code":null,"details":{"causes":null}}`,
 			`{"details":null}`,
 		}},
-		{"a cause", readerOf(causeOf), `{}`, []string{`{"reason":null}`}},
+		{"a cause", readerOf(tenantclient.CauseOf), `{}`, []string{`{"reason":null}`}},
 	} {
 		absent, err := c.read([]byte(c.absent))
 		if err != nil {

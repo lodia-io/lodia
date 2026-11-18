@@ -1,7 +1,7 @@
 // Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-package health
+package tenantclient
 
 import (
 	"errors"
@@ -12,25 +12,25 @@ import (
 )
 
 const (
-	// maxResponseBytes is the longest response body Health reads from a tenant,
-	// whose administrator writes the objects it lists.
-	maxResponseBytes = 8 << 20
+	// MaxResponseBytes is the longest response body Lodia reads from a tenant,
+	// whose administrator writes the objects it reads.
+	MaxResponseBytes = 8 << 20
 
-	// maxResponseHeaderBytes is the most bytes of status line and headers
-	// Health reads of a response; net/http reads up to 10 MiB of them
+	// MaxResponseHeaderBytes is the most bytes of status line and headers
+	// Lodia reads of a response; net/http reads up to 10 MiB of them
 	// otherwise. A kube-apiserver's are under 512 bytes (envtest, 1.35.0).
-	maxResponseHeaderBytes = 64 << 10
+	MaxResponseHeaderBytes = 64 << 10
 
-	// idleConnections is how many connections a tenant client keeps idle
+	// IdleConnections is how many connections a tenant client keeps idle
 	// between passes (docs/operations.md, Capacity).
-	idleConnections = 1
+	IdleConnections = 1
 )
 
-var errResponseTooLong = fmt.Errorf("the response is longer than maxResponseBytes, %d bytes", maxResponseBytes)
+var ErrResponseTooLong = fmt.Errorf("the response is longer than maxResponseBytes, %d bytes", MaxResponseBytes)
 
-// capResponses cuts every body at maxResponseBytes, so that the client's read
+// capResponses cuts every body at MaxResponseBytes, so that the client's read
 // of it fails before anything is decoded, and the headers of every response at
-// maxResponseHeaderBytes. A request that wants to know the cut carries a *bool
+// MaxResponseHeaderBytes. A request that wants to know the cut carries a *bool
 // under cutKey: client-go replaces the error of the read with the status error
 // for a response outside 2xx. next is the transport client-go builds for this
 // tenant alone, since its config sets a proxy, which it never caches. It has at
@@ -41,9 +41,9 @@ var errResponseTooLong = fmt.Errorf("the response is longer than maxResponseByte
 // ends within timeout.
 func capResponses(next http.RoundTripper, connections int, timeout time.Duration) http.RoundTripper {
 	if transport, ok := next.(*http.Transport); ok {
-		transport.MaxResponseHeaderBytes = maxResponseHeaderBytes
+		transport.MaxResponseHeaderBytes = MaxResponseHeaderBytes
 		transport.MaxConnsPerHost = connections
-		transport.MaxIdleConnsPerHost = idleConnections
+		transport.MaxIdleConnsPerHost = IdleConnections
 		transport.TLSHandshakeTimeout = timeout
 	}
 	return cappedTransport{next}
@@ -60,7 +60,7 @@ func (c cappedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	cut, _ := req.Context().Value(cutKey{}).(*bool)
-	resp.Body = cappedBody{http.MaxBytesReader(nil, resp.Body, maxResponseBytes), cut}
+	resp.Body = cappedBody{http.MaxBytesReader(nil, resp.Body, MaxResponseBytes), cut}
 	return resp, nil
 }
 
@@ -76,7 +76,7 @@ type cappedBody struct {
 func (b cappedBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
 	if tooLong := new(http.MaxBytesError); errors.As(err, &tooLong) {
-		err = errResponseTooLong
+		err = ErrResponseTooLong
 		if b.cut != nil {
 			*b.cut = true
 		}

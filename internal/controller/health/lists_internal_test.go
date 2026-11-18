@@ -20,6 +20,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+
+	"go.lodia.io/lodia/internal/tenantclient"
 )
 
 type listRequest struct {
@@ -100,7 +102,7 @@ func (f *servedTenant) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	annotations := map[string]string(nil)
 	if f.oversize[req.URL.Path] == page {
-		annotations = map[string]string{"pad": strings.Repeat("x", maxResponseBytes)}
+		annotations = map[string]string{"pad": strings.Repeat("x", tenantclient.MaxResponseBytes)}
 	}
 	meta := func(i int) metav1.ObjectMeta {
 		m := metav1.ObjectMeta{Name: padded(fmt.Sprintf("n%05d", i), f.nameLen), ResourceVersion: padded("1", f.versionLen)}
@@ -160,8 +162,8 @@ func listTenant(t *testing.T, f *servedTenant, maxNodes int) listed {
 	if err != nil {
 		t.Fatal(err)
 	}
-	read := &counting{next: r.clients[key].transport.Transport}
-	r.clients[key].transport.Transport = read
+	read := &counting{next: tenant.client.HTTP().Transport}
+	tenant.client.HTTP().Transport = read
 	if f.wrap != nil {
 		f.wrap(tenant)
 	}
@@ -229,8 +231,8 @@ func TestAListStopsOnceItHasReadMoreThanMaxNodes(t *testing.T) {
 			if got.s.stopped() != c.stopped {
 				t.Errorf("stopped %q, want %q", got.s.stopped(), c.stopped)
 			}
-			if pages := int64(c.leaseAsks + c.nodeAsks); got.read.bytes.Load() > pages*maxResponseBytes {
-				t.Errorf("the list read %d bytes in %d pages, more than %d each", got.read.bytes.Load(), pages, maxResponseBytes)
+			if pages := int64(c.leaseAsks + c.nodeAsks); got.read.bytes.Load() > pages*tenantclient.MaxResponseBytes {
+				t.Errorf("the list read %d bytes in %d pages, more than %d each", got.read.bytes.Load(), pages, tenantclient.MaxResponseBytes)
 			}
 		})
 	}
@@ -273,8 +275,8 @@ func TestAResponseOverTheBoundStopsTheListAfterTheBytesOfThePagesItRead(t *testi
 				t.Errorf("stopped %q, want %q", got.s.stopped(), c.stopped)
 			}
 			pages := int64(c.leaseAsks + c.nodeAsks)
-			if read := got.read.bytes.Load(); read < maxResponseBytes || read > pages*maxResponseBytes {
-				t.Errorf("the list read %d bytes in %d pages, want from one %d to %d", read, pages, maxResponseBytes, pages*maxResponseBytes)
+			if read := got.read.bytes.Load(); read < tenantclient.MaxResponseBytes || read > pages*tenantclient.MaxResponseBytes {
+				t.Errorf("the list read %d bytes in %d pages, want from one %d to %d", read, pages, tenantclient.MaxResponseBytes, pages*tenantclient.MaxResponseBytes)
 			}
 		})
 	}
@@ -378,10 +380,10 @@ func TestAContinueTokenOverItsBoundEndsTheListWithoutBeingSentBack(t *testing.T)
 	}{
 		{"Leases with a token of 4,096 bytes", nodeLeasesPath, 4096, 3, 1, 1201, 3, "", 4096},
 		{"Leases with a token of 4,097 bytes", nodeLeasesPath, 4097, 1, 1, 0, 3, leasesStop, 0},
-		{"Leases with a token of 4 MiB", nodeLeasesPath, maxResponseBytes / 2, 1, 1, 0, 3, leasesStop, 0},
+		{"Leases with a token of 4 MiB", nodeLeasesPath, tenantclient.MaxResponseBytes / 2, 1, 1, 0, 3, leasesStop, 0},
 		{"Nodes with a token of 4,096 bytes", nodesPath, 4096, 1, 3, 3, 250, "", 4096},
 		{"Nodes with a token of 4,097 bytes", nodesPath, 4097, 1, 1, 3, 0, nodesStop, 0},
-		{"Nodes with a token of 4 MiB", nodesPath, maxResponseBytes / 2, 1, 1, 3, 0, nodesStop, 0},
+		{"Nodes with a token of 4 MiB", nodesPath, tenantclient.MaxResponseBytes / 2, 1, 1, 3, 0, nodesStop, 0},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := &servedTenant{leases: 1201, nodes: 250, tokenLen: map[string]int{c.path: c.tokenLen}}
@@ -469,9 +471,9 @@ func TestWhatASamplingKeepsRestsOnItsOwnBoundsAndNotOnWhatTheServerAnswers(t *te
 		kept                            int
 		retainedUnder                   int64
 	}{
-		{"names at the raw bound", maxNameRaw, maxVersionRaw, maxKubeletRaw, 0, 1 << 20},
-		{"names of 254 bytes", maxName + 1, 1, 1, 0, 1 << 20},
-		{"names of 253 bytes, versions at the raw bound and kubelet versions of 65 to 384 bytes", maxName, maxVersionRaw, maxKubeletRaw, maxNodes, 5 << 20},
+		{"names at the raw bound", tenantclient.MaxNameRaw, tenantclient.MaxVersionRaw, maxKubeletRaw, 0, 1 << 20},
+		{"names of 254 bytes", tenantclient.MaxName + 1, 1, 1, 0, 1 << 20},
+		{"names of 253 bytes, versions at the raw bound and kubelet versions of 65 to 384 bytes", tenantclient.MaxName, tenantclient.MaxVersionRaw, maxKubeletRaw, maxNodes, 5 << 20},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := &servedTenant{leases: maxNodes, nodes: maxNodes, nameLen: c.nameLen, versionLen: c.versionLen, kubeletLen: c.kubeletLen}
@@ -488,12 +490,12 @@ func TestWhatASamplingKeepsRestsOnItsOwnBoundsAndNotOnWhatTheServerAnswers(t *te
 				t.Errorf("the sampling keeps %d Lease versions and %d Node summaries, want %d each", len(got.s.leases), len(got.s.nodes), c.kept)
 			}
 			for name := range got.s.leases {
-				if len(name) > maxName {
+				if len(name) > tenantclient.MaxName {
 					t.Fatalf("the sampling keeps a Lease named with %d bytes", len(name))
 				}
 			}
 			for _, n := range got.s.nodes {
-				if len(n.name) > maxName || len(n.kubelet) > maxKubeletVersion {
+				if len(n.name) > tenantclient.MaxName || len(n.kubelet) > maxKubeletVersion {
 					t.Fatalf("the sampling keeps a Node named with %d bytes with a kubelet version of %d", len(n.name), len(n.kubelet))
 				}
 			}

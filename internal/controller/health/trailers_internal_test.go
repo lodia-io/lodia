@@ -18,6 +18,8 @@ import (
 
 	"k8s.io/apimachinery/pkg/types"
 	utilnet "k8s.io/apimachinery/pkg/util/net"
+
+	"go.lodia.io/lodia/internal/tenantclient"
 )
 
 func distinctCanonical(alphabet []byte, length int) []string {
@@ -77,10 +79,11 @@ func rawTenantClient(t *testing.T, url string) *http.Client {
 	t.Helper()
 	key := types.NamespacedName{Namespace: "team-a", Name: "dev"}
 	r := &NodesReconciler{Timeout: time.Minute, MaxNodes: 5000}
-	if _, err := r.tenant(key, kubeconfigFor(t, url)); err != nil {
+	tenant, err := r.tenant(key, kubeconfigFor(t, url))
+	if err != nil {
 		t.Fatal(err)
 	}
-	client := r.clients[key].transport
+	client := tenant.client.HTTP()
 	t.Cleanup(func() { utilnet.CloseIdleConnectionsFor(client.Transport) })
 	return client
 }
@@ -124,10 +127,10 @@ func TestAnHTTP1HeadOfFieldLinesEndingInALineFeedIsHeldAtMostHeadAndTrailersHTTP
 	sizedForTheBounds(t)
 	const body = `{"metadata":{"resourceVersion":"1"}}`
 	start := "HTTP/1.1 200 OK\nContent-Type: application/json\nContent-Length: " + strconv.Itoa(len(body)) + "\n"
-	names := canonicalFieldNames(maxResponseHeaderBytes - len(start) - len("\n"))
+	names := canonicalFieldNames(tenantclient.MaxResponseHeaderBytes - len(start) - len("\n"))
 	head := start + strings.Join(names, ":\n") + ":\n\n"
-	if len(head) > maxResponseHeaderBytes || len(head) < maxResponseHeaderBytes-4 {
-		t.Fatalf("the head has %d bytes, want it at the bound of %d", len(head), maxResponseHeaderBytes)
+	if len(head) > tenantclient.MaxResponseHeaderBytes || len(head) < tenantclient.MaxResponseHeaderBytes-4 {
+		t.Fatalf("the head has %d bytes, want it at the bound of %d", len(head), tenantclient.MaxResponseHeaderBytes)
 	}
 	url, _ := answerOnTCP(t, head, body)
 	var keys keysRead
@@ -155,11 +158,11 @@ func TestAnHTTP1HeadOfNamesAndFieldLinesTogetherWithTheTrailerValueIsHeldAtMostH
 	}
 	fields := strings.Join(lines, ":\n") + ":\n"
 	const trailer, suffix = "Trailer: ", "\n\n"
-	names := announcedNamesOfAHead(maxResponseHeaderBytes - len(prefix) - len(fields) - len(trailer) - len(suffix))
+	names := announcedNamesOfAHead(tenantclient.MaxResponseHeaderBytes - len(prefix) - len(fields) - len(trailer) - len(suffix))
 	value := strings.Join(names, ",")
 	head := prefix + fields + trailer + value + suffix
-	if len(head) > maxResponseHeaderBytes || len(head) < maxResponseHeaderBytes-4 {
-		t.Fatalf("the head has %d bytes, want it at the bound of %d", len(head), maxResponseHeaderBytes)
+	if len(head) > tenantclient.MaxResponseHeaderBytes || len(head) < tenantclient.MaxResponseHeaderBytes-4 {
+		t.Fatalf("the head has %d bytes, want it at the bound of %d", len(head), tenantclient.MaxResponseHeaderBytes)
 	}
 	const body = `{"metadata":{"resourceVersion":"1"}}`
 	url, _ := answerOnTCP(t, head, fmt.Sprintf("%x\r\n%s\r\n0\r\n\r\n", len(body), body))
@@ -248,7 +251,7 @@ func headOfAMix(t *testing.T, prefix, lineBreak string, announced int, trailers 
 func headOfAMixOnLines(t *testing.T, prefix, lineBreak string, announced int, trailers []string, valueLines int) realizedHead {
 	t.Helper()
 	const trailer = "Trailer: "
-	names := announcedNamesApartFrom(trailers, announced, maxResponseHeaderBytes)
+	names := announcedNamesApartFrom(trailers, announced, tenantclient.MaxResponseHeaderBytes)
 	if len(names) != announced {
 		t.Fatalf("a head of %d announced names is asked for, and %d fit", announced, len(names))
 	}
@@ -257,15 +260,15 @@ func headOfAMixOnLines(t *testing.T, prefix, lineBreak string, announced int, tr
 		lines = append(lines, trailer+strings.Join(names[line*announced/valueLines:(line+1)*announced/valueLines], ","))
 	}
 	value := strings.Join(lines, "\n")
-	room := maxResponseHeaderBytes - len(prefix) - len(value) - len(lineBreak)
+	room := tenantclient.MaxResponseHeaderBytes - len(prefix) - len(value) - len(lineBreak)
 	fields := canonicalFieldNames(room)
 	text := prefix
 	if len(fields) > 0 {
 		text += strings.Join(fields, ":\n") + ":\n"
 	}
 	text += value + lineBreak
-	if len(text) > maxResponseHeaderBytes {
-		t.Fatalf("the head has %d bytes, want at most the bound of %d", len(text), maxResponseHeaderBytes)
+	if len(text) > tenantclient.MaxResponseHeaderBytes {
+		t.Fatalf("the head has %d bytes, want at most the bound of %d", len(text), tenantclient.MaxResponseHeaderBytes)
 	}
 	return realizedHead{text, len(fields), len(names), len(strings.Join(names, ",")) + 1, len(trailers), valueLines}
 }
@@ -307,7 +310,7 @@ func TestTheMostAHeadOfDistinctNamesAndFieldLinesWithItsTrailersHoldsIsFoundBySc
 	inTheStepWithoutEnvtest(t)
 	sizedForTheBounds(t)
 	trailers, block := theTrailersOfAFullBlock()
-	carried := len(announcedNamesApartFrom(trailers, math.MaxInt, maxResponseHeaderBytes-len(headOfAMixPrefix)-len("Trailer: ")-len("\n\n")))
+	carried := len(announcedNamesApartFrom(trailers, math.MaxInt, tenantclient.MaxResponseHeaderBytes-len(headOfAMixPrefix)-len("Trailer: ")-len("\n\n")))
 	var most, mostNames, mostLines int64
 	var scanned, first, last int
 	for announced := 0; announced <= carried; announced += 200 {

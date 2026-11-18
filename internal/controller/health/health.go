@@ -28,10 +28,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	utilnet "k8s.io/apimachinery/pkg/util/net"
-	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
@@ -49,6 +45,7 @@ import (
 	"go.lodia.io/lodia/internal/ownership"
 	"go.lodia.io/lodia/internal/restore"
 	"go.lodia.io/lodia/internal/statusapply"
+	"go.lodia.io/lodia/internal/tenantclient"
 )
 
 const (
@@ -103,19 +100,8 @@ type Reconciler struct {
 	mu       sync.Mutex
 	failures map[types.NamespacedName]int
 	renewals map[types.NamespacedName]map[string]renewal
-	clients  map[types.NamespacedName]*tenantClients
+	clients  *tenantclient.Clients
 	restores *semaphore.Weighted
-}
-
-// tenantClients are the clients of one tenant over one transport, and the
-// kubeconfig they were built from.
-type tenantClients struct {
-	kubeconfig  []byte
-	tenant      *tenant
-	transport   *http.Client
-	connections int
-	timeout     time.Duration
-	dial        func(ctx context.Context, network, address string) (net.Conn, error)
 }
 
 // prober holds what a control plane's probes verify and present: the client
@@ -466,7 +452,7 @@ func (r *Reconciler) actedOn(ctx context.Context, t *tenant) string {
 				return tally{}, err
 			}
 			found := tally{more: l.Metadata.Continue != ""}
-			for _, s := range l.Items.items {
+			for _, s := range l.Items.Items {
 				if s.Spec.Type == corev1.ServiceTypeLoadBalancer {
 					found.add(s.Metadata.Namespace, s.Metadata.Name)
 				}
@@ -479,7 +465,7 @@ func (r *Reconciler) actedOn(ctx context.Context, t *tenant) string {
 				return tally{}, err
 			}
 			found := tally{more: l.Metadata.Continue != ""}
-			for _, v := range l.Items.items {
+			for _, v := range l.Items.Items {
 				if v.Spec.PersistentVolumeReclaimPolicy == corev1.PersistentVolumeReclaimDelete {
 					found.add(v.Metadata.Name)
 				}
@@ -492,7 +478,7 @@ func (r *Reconciler) actedOn(ctx context.Context, t *tenant) string {
 				return tally{}, err
 			}
 			found := tally{more: l.Metadata.Continue != ""}
-			for _, c := range l.Items.items {
+			for _, c := range l.Items.Items {
 				if c.Status.Phase == corev1.ClaimPending {
 					found.add(c.Metadata.Namespace, c.Metadata.Name)
 				}
@@ -513,7 +499,7 @@ func (r *Reconciler) actedOn(ctx context.Context, t *tenant) string {
 				return tally{}, err
 			}
 			found := tally{more: l.Metadata.Continue != ""}
-			for _, a := range l.Items.items {
+			for _, a := range l.Items.Items {
 				if a.Spec.Service {
 					found.add(a.Metadata.Name)
 				}
@@ -526,7 +512,7 @@ func (r *Reconciler) actedOn(ctx context.Context, t *tenant) string {
 				return tally{}, err
 			}
 			found := tally{more: l.Metadata.Continue != ""}
-			for _, j := range l.Items.items {
+			for _, j := range l.Items.Items {
 				if !ptr.Deref(j.Spec.Suspend, false) {
 					found.add(j.Metadata.Namespace, j.Metadata.Name)
 				}
@@ -596,10 +582,10 @@ func outsideWebhooks(ctx context.Context, t *tenant, path string) (tally, error)
 		if err != nil {
 			return struct{}{}, err
 		}
-		if c.Webhooks.over {
+		if c.Webhooks.Over {
 			return struct{}{}, errOverBound
 		}
-		for _, w := range c.Webhooks.items {
+		for _, w := range c.Webhooks.Items {
 			if w.actsOutside() {
 				found.add(c.Metadata.Name, w.Name)
 			}
@@ -616,7 +602,7 @@ func outsideWebhooks(ctx context.Context, t *tenant, path string) (tally, error)
 const shown = 3
 
 // tally counts what a held restore's controller manager acts on in one kind,
-// and keeps the shown names that sort first. A name with a part over maxName is
+// and keeps the shown names that sort first. A name with a part over tenantclient.MaxName is
 // counted and not kept, so that the message stays under the schema's bound
 // (32,768 bytes) whatever the tenant answers; the kept names reuse their
 // buffers, so that no name is built for one that does not qualify.
@@ -628,10 +614,10 @@ type tally struct {
 
 func (t *tally) add(parts ...string) {
 	t.n++
-	var buf [2*maxName + 1]byte
+	var buf [2*tenantclient.MaxName + 1]byte
 	name := buf[:0]
 	for i, part := range parts {
-		if len(part) > maxName {
+		if len(part) > tenantclient.MaxName {
 			return
 		}
 		if i > 0 {
@@ -655,7 +641,7 @@ func (t *tally) keep(name []byte) {
 		slot = t.names[shown-1][:0]
 		t.names = t.names[:shown-1]
 	} else {
-		slot = make([]byte, 0, 2*maxName+1)
+		slot = make([]byte, 0, 2*tenantclient.MaxName+1)
 	}
 	t.names = slices.Insert(t.names, at, append(slot, name...))
 }
@@ -725,10 +711,9 @@ func (r *Reconciler) forget(key types.NamespacedName) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.renewals, key)
-	if c := r.clients[key]; c != nil && c.transport != nil {
-		utilnet.CloseIdleConnectionsFor(c.transport.Transport)
+	if r.clients != nil {
+		r.clients.Forget(key)
 	}
-	delete(r.clients, key)
 }
 
 func (r *Reconciler) restoreLists() *semaphore.Weighted {
@@ -753,7 +738,7 @@ func (r *Reconciler) prober(bundle []byte, pair *corev1.Secret) *prober {
 		TLSClientConfig:        &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
 		TLSHandshakeTimeout:    r.Timeout,
 		DisableKeepAlives:      true,
-		MaxResponseHeaderBytes: maxResponseHeaderBytes,
+		MaxResponseHeaderBytes: tenantclient.MaxResponseHeaderBytes,
 	}
 	p := &prober{direct: &http.Client{Transport: direct, CheckRedirect: noRedirects}, roots: roots}
 	if pair != nil {
@@ -781,83 +766,16 @@ func noRedirects(*http.Request, []*http.Request) error {
 
 func (r *Reconciler) tenant(key types.NamespacedName, kubeconfig []byte) (*tenant, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.clients == nil {
-		r.clients = map[types.NamespacedName]*tenantClients{}
+		r.clients = tenantclient.NewClients(tenantclient.Options{Connections: restoreReads, Timeout: r.Timeout, Dial: r.DialContext})
 	}
-	if r.clients[key] == nil {
-		r.clients[key] = &tenantClients{connections: restoreReads, timeout: r.Timeout, dial: r.DialContext}
-	}
-	return r.clients[key].of(kubeconfig)
-}
-
-// of returns the clients that read inside the tenant as Lodia, through the
-// in-namespace Service, which is never behind a proxy from the environment. The
-// clients of a previous kubeconfig close their idle connections.
-func (c *tenantClients) of(kubeconfig []byte) (*tenant, error) {
-	if c.tenant != nil && bytes.Equal(c.kubeconfig, kubeconfig) {
-		return c.tenant, nil
-	}
-	cfg, err := clientcmd.RESTConfigFromKubeConfig(kubeconfig)
+	clients := r.clients
+	r.mu.Unlock()
+	client, err := clients.Of(key, kubeconfig)
 	if err != nil {
 		return nil, err
 	}
-	cfg.Proxy = http.ProxyURL(nil)
-	cfg.UserAgent = rest.DefaultKubernetesUserAgent()
-	// A QPS below zero turns client-go's limiter off. Its default, 5 requests a
-	// second with a burst of 10, stops a list of the Nodes at about 34 pages
-	// inside Timeout. Without it, since tenant.do sends a request once, a pass of
-	// health-nodes sends at most maxPages requests for each of the two lists and
-	// the hold's: a read of the controller manager's Lease, then up to
-	// retry.DefaultRetry's five patches, each after the first preceded by a read
-	// of the Lease again (5 patches and 5 reads when every patch conflicts); a
-	// pass of health sends the reads of the two leader Leases, or one page of each
-	// of a held restore's seven lists. capResponses cuts the headers and the body
-	// of every answer; the tenant's API server limits what it serves itself
-	// (https://kubernetes.io/docs/concepts/cluster-administration/flow-control/).
-	cfg.QPS = -1
-	cfg.Wrap(func(next http.RoundTripper) http.RoundTripper { return capResponses(next, c.connections, c.timeout) })
-	// Leaving h2 out of NextProtos keeps client-go from configuring HTTP/2
-	// (https://github.com/kubernetes/apimachinery/blob/v0.37.1/pkg/util/net/http.go#L196-L208):
-	// the transport counts and caps its connections, which an HTTP/2 pool does
-	// not.
-	cfg.NextProtos = []string{"http/1.1"}
-	// net/http then asks for no gzip and decodes none (https://github.com/golang/go/blob/go1.26.11/src/net/http/transport.go#L2845-L2862),
-	// so no gzip reader is made, whose pool keeps one past the read.
-	cfg.DisableCompression = true
-	cfg.Dial = c.dialContext
-	cfg.AcceptContentTypes, cfg.ContentType = "application/json", "application/json"
-	// client-go asks for a serializer, and DoRaw never uses it: no response is
-	// decoded into the API's types.
-	cfg.NegotiatedSerializer = scheme.Codecs.WithoutConversion()
-	transport, err := rest.HTTPClientFor(cfg)
-	if err != nil {
-		return nil, err
-	}
-	transport.CheckRedirect = noRedirects
-	api, err := rest.UnversionedRESTClientForConfigAndClient(cfg, transport)
-	if err != nil {
-		return nil, err
-	}
-	if c.transport != nil {
-		utilnet.CloseIdleConnectionsFor(c.transport.Transport)
-	}
-	c.kubeconfig, c.transport, c.tenant = kubeconfig, transport, newTenant(api)
-	return c.tenant, nil
-}
-
-// dialContext ends a dial within timeout, since net/http dials on a context
-// detached from the request's, as dial says; the TLS handshake that follows
-// has its own bound in capResponses. dial, when set, replaces the dialer in
-// tests.
-func (c *tenantClients) dialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
-	dial := c.dial
-	if dial == nil {
-		dial = (&net.Dialer{}).DialContext
-	}
-	return dial(ctx, network, address)
+	return newTenant(client), nil
 }
 
 // probe returns the status code the endpoint answered with, or 0 for none, and
@@ -895,7 +813,7 @@ func (r *Reconciler) throughTunnel(p *prober, tunnel lodiav1alpha1.HostPort) *ht
 			TLSClientConfig:        &tls.Config{RootCAs: p.roots, MinVersion: tls.VersionTLS12},
 			TLSHandshakeTimeout:    r.Timeout,
 			DisableKeepAlives:      true,
-			MaxResponseHeaderBytes: maxResponseHeaderBytes,
+			MaxResponseHeaderBytes: tenantclient.MaxResponseHeaderBytes,
 		},
 		CheckRedirect: noRedirects,
 	}

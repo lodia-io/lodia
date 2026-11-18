@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	"go.lodia.io/lodia/internal/apistatus"
+	"go.lodia.io/lodia/internal/tenantclient"
 )
 
 func TestAnArrayKeepsItsBoundAndSaysThereWasMore(t *testing.T) {
@@ -41,9 +42,9 @@ func TestAnArrayKeepsItsBoundAndSaysThereWasMore(t *testing.T) {
 		{"an element of the wrong type", `[{"type":"Ready"},"x"]`, 1, false, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			got, err := arrayOf("conditions", []byte(c.json), maxConditions, nodeConditionOf)
-			if c.fail != (err != nil) || len(got.items) != c.kept || got.over != c.over {
-				t.Errorf("decoded %d elements, over %t, error %v; want %d, %t, failing %t", len(got.items), got.over, err, c.kept, c.over, c.fail)
+			got, err := tenantclient.ArrayOf("conditions", []byte(c.json), maxConditions, nodeConditionOf)
+			if c.fail != (err != nil) || len(got.Items) != c.kept || got.Over != c.over {
+				t.Errorf("decoded %d elements, over %t, error %v; want %d, %t, failing %t", len(got.Items), got.Over, err, c.kept, c.over, c.fail)
 			}
 		})
 	}
@@ -53,8 +54,8 @@ func TestAnArrayKeepsItsBoundAndSaysThereWasMore(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(n.Status.Conditions.items) != maxConditions || !n.Status.Conditions.over {
-			t.Errorf("decoded %d elements, over %t, want the last key's %d and true", len(n.Status.Conditions.items), n.Status.Conditions.over, maxConditions)
+		if len(n.Status.Conditions.Items) != maxConditions || !n.Status.Conditions.Over {
+			t.Errorf("decoded %d elements, over %t, want the last key's %d and true", len(n.Status.Conditions.Items), n.Status.Conditions.Over, maxConditions)
 		}
 	})
 }
@@ -69,8 +70,8 @@ func TestAFieldTheTypeLacksIsSkippedAndKeepsNothing(t *testing.T) {
 	want := nodeObject{}
 	want.Metadata.Name = "n"
 	want.Status.NodeInfo.KubeletVersion = "v1.35.0"
-	want.Status.Conditions.items = []nodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue, LastTransitionTime: metav1.NewTime(since)}}
-	if n.Metadata != want.Metadata || n.Status.NodeInfo != want.Status.NodeInfo || len(n.Status.Conditions.items) != 1 || !n.Status.Conditions.items[0].LastTransitionTime.Equal(&want.Status.Conditions.items[0].LastTransitionTime) || n.Status.Conditions.items[0].Type != corev1.NodeReady || n.Status.Conditions.items[0].Status != corev1.ConditionTrue {
+	want.Status.Conditions.Items = []nodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue, LastTransitionTime: metav1.NewTime(since)}}
+	if n.Metadata != want.Metadata || n.Status.NodeInfo != want.Status.NodeInfo || len(n.Status.Conditions.Items) != 1 || !n.Status.Conditions.Items[0].LastTransitionTime.Equal(&want.Status.Conditions.Items[0].LastTransitionTime) || n.Status.Conditions.Items[0].Type != corev1.NodeReady || n.Status.Conditions.Items[0].Status != corev1.ConditionTrue {
 		t.Errorf("decoded %+v, want %+v", n, want)
 	}
 }
@@ -99,7 +100,7 @@ func TestAFailedRequestIsTheStatusTheServerSentAndNeverMoreThanItsFields(t *test
 		{"a namespace being deleted", http.StatusForbidden, terminating(0), apierrors.IsForbidden, "terminating", false},
 		{"a namespace being deleted at the last cause it keeps", http.StatusForbidden, terminating(63), apierrors.IsForbidden, "terminating", false},
 		{"a namespace being deleted past the causes it keeps", http.StatusForbidden, terminating(64), apierrors.IsForbidden, "terminating", true},
-		{"a Status that is no failure", http.StatusInternalServerError, `{"kind":"Status","status":"Success","code":500,"message":"fine"}`, apierrors.IsInternalError, noStatusMessage, false},
+		{"a Status that is no failure", http.StatusInternalServerError, `{"kind":"Status","status":"Success","code":500,"message":"fine"}`, apierrors.IsInternalError, tenantclient.NoStatusMessage, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -130,7 +131,7 @@ func TestAFailedRequestIsTheStatusTheServerSentAndNeverMoreThanItsFields(t *test
 func TestAFailedRequestKeepsNoMoreThan64OfAnyNumberOfCauses(t *testing.T) {
 	for _, causes := range []int{1, 63, 64, 65, 1000, 100_000} {
 		body := `{"kind":"Status","status":"Failure","reason":"Invalid","code":422,"details":{"causes":[` + strings.TrimSuffix(strings.Repeat(`{"reason":"FieldValueInvalid"},`, causes), ",") + `]}}`
-		failure, ok := failureOf([]byte(body))
+		failure, ok := tenantclient.FailureOf([]byte(body))
 		if kept := len(failure.Details.Causes); !ok || kept != min(causes, 64) {
 			t.Errorf("a Status of %d causes keeps %d, want %d", causes, kept, min(causes, 64))
 		}

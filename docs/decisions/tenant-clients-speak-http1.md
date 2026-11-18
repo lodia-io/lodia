@@ -52,6 +52,7 @@ Built; `internal/controller/health` holds it.
 
 ## Code
 
-- `internal/controller/health` — `health.go` sets `NextProtos`, `DisableCompression`, the dial and `CheckRedirect` of each client and gives it the cap and the `Timeout` of its reconciler, `restoreReads` and `nodesReads`; `bounded.go` sets `MaxConnsPerHost`, `MaxIdleConnsPerHost` and `TLSHandshakeTimeout` beside the cap on a response.
+- `internal/tenantclient` — `client.go` sets `NextProtos`, `DisableCompression`, the dial and `CheckRedirect` of each client and takes the cap and the `Timeout` of its controller; `bounded.go` sets `MaxConnsPerHost`, `MaxIdleConnsPerHost` and `TLSHandshakeTimeout` beside the cap on a response.
+- `internal/controller/health` — `health.go` and `nodes.go` give each client the cap and the `Timeout` of its reconciler, `restoreReads` and `nodesReads`.
   `cap_internal_test.go` holds the protocol against a server that offers HTTP/2 first, the cap with the next read waiting and failing at its deadline, what a pass leaves open after a server closes it and after a deadline cuts it, the pages of a list on the connections of the pages before them, the one connection a pass leaves idle, the passes of both clients needing no more sockets than the cap against a server, a read waiting for a dial that is still in flight, the passes against a real kube-apiserver failing no read under the cap, and a changed kubeconfig.
   `settings_internal_test.go` holds the request that asks for no compression, a gzip answer sent unasked, a redirect refused, and a dial and a handshake held past `Timeout`.

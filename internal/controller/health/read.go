@@ -5,23 +5,18 @@ package health
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"net/url"
-	"strconv"
 	"time"
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/rest"
 	"k8s.io/utils/ptr"
 
 	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/jsonscan"
+	"go.lodia.io/lodia/internal/tenantclient"
 )
 
 // Every response Health reads from a tenant is projected onto the types below
@@ -32,17 +27,15 @@ const (
 	nodeLeasesPath   = coordinationPath + corev1.NamespaceNodeLease + "/leases"
 	nodesPath        = "/api/v1/nodes"
 
-	// maxConditions, maxWebhooks and maxCauses bound the arrays inside one
-	// object: a Node's conditions, a webhook configuration's webhooks and a
-	// Status's causes.
+	// maxConditions and maxWebhooks bound the arrays inside one object: a
+	// Node's conditions and a webhook configuration's webhooks.
 	maxConditions = 64
 	maxWebhooks   = 256
-	maxCauses     = 64
 )
 
 type listOf[T any] struct {
 	Metadata struct{ Continue string }
-	Items    array[T]
+	Items    tenantclient.Array[T]
 }
 
 type (
@@ -62,7 +55,7 @@ func listFrom[T any](data []byte, most int, element func([]byte) (T, error)) (*l
 				return err
 			})
 		case "items":
-			out.Items, err = arrayOf("items", value, most, element)
+			out.Items, err = tenantclient.ArrayOf("items", value, most, element)
 		}
 		return err
 	})
@@ -75,11 +68,11 @@ func metadata(data []byte, name, namespace, resourceVersion *string) error {
 	return jsonscan.Walk("metadata", data, func(key, value []byte) (err error) {
 		switch {
 		case string(key) == "name" && name != nil:
-			*name, err = objectName("metadata.name", value)
+			*name, err = tenantclient.ObjectName("metadata.name", value)
 		case string(key) == "namespace" && namespace != nil:
-			*namespace, err = objectName("metadata.namespace", value)
+			*namespace, err = tenantclient.ObjectName("metadata.namespace", value)
 		case string(key) == "resourceVersion" && resourceVersion != nil:
-			*resourceVersion, err = jsonscan.Text("metadata.resourceVersion", value, maxVersionRaw)
+			*resourceVersion, err = jsonscan.Text("metadata.resourceVersion", value, tenantclient.MaxVersionRaw)
 		}
 		return err
 	})
@@ -121,13 +114,13 @@ func leaderLeaseFrom(data []byte) (*leaderLease, error) {
 				case "holderIdentity":
 					l.Spec.HolderIdentity, err = optionalText("spec.holderIdentity", value, maxHolderRaw)
 				case "leaseDurationSeconds":
-					l.Spec.LeaseDurationSeconds, err = jsonscan.Integer("spec.leaseDurationSeconds", value, maxNumberRaw)
+					l.Spec.LeaseDurationSeconds, err = jsonscan.Integer("spec.leaseDurationSeconds", value, tenantclient.MaxNumberRaw)
 				case "acquireTime":
 					l.Spec.AcquireTime, err = optionalMicroTime("spec.acquireTime", value)
 				case "renewTime":
 					l.Spec.RenewTime, err = optionalMicroTime("spec.renewTime", value)
 				case "leaseTransitions":
-					l.Spec.LeaseTransitions, err = jsonscan.Integer("spec.leaseTransitions", value, maxNumberRaw)
+					l.Spec.LeaseTransitions, err = jsonscan.Integer("spec.leaseTransitions", value, tenantclient.MaxNumberRaw)
 				}
 				return err
 			})
@@ -141,7 +134,7 @@ type nodeObject struct {
 	Metadata struct{ Name string }
 	Status   struct {
 		NodeInfo   struct{ KubeletVersion string }
-		Conditions array[nodeCondition]
+		Conditions tenantclient.Array[nodeCondition]
 	}
 }
 
@@ -158,12 +151,12 @@ func nodeOf(data []byte) (n nodeObject, err error) {
 						if string(key) == "kubeletVersion" {
 							var version string
 							version, err = jsonscan.Text("status.nodeInfo.kubeletVersion", value, maxKubeletRaw)
-							n.Status.NodeInfo.KubeletVersion = cut(version, maxKubeletVersion)
+							n.Status.NodeInfo.KubeletVersion = tenantclient.Cut(version, maxKubeletVersion)
 						}
 						return err
 					})
 				case "conditions":
-					n.Status.Conditions, err = arrayOf("status.conditions", value, maxConditions, nodeConditionOf)
+					n.Status.Conditions, err = tenantclient.ArrayOf("status.conditions", value, maxConditions, nodeConditionOf)
 				}
 				return err
 			})
@@ -182,7 +175,7 @@ type nodeCondition struct {
 // nodeConditionOf reads a Ready condition's status and time and keeps nothing
 // of a condition of another type, which it counts and no more. A Node's writer
 // chooses the type, and the API server accepts one of any length, so a type past
-// maxWordRaw is another type and is not decoded.
+// tenantclient.MaxWordRaw is another type and is not decoded.
 func nodeConditionOf(data []byte) (nodeCondition, error) {
 	var c nodeCondition
 	var status, since []byte
@@ -190,7 +183,7 @@ func nodeConditionOf(data []byte) (nodeCondition, error) {
 		switch string(key) {
 		case "type":
 			var s string
-			s, err = jsonscan.Word("status.conditions.type", value, maxWordRaw)
+			s, err = jsonscan.Word("status.conditions.type", value, tenantclient.MaxWordRaw)
 			c.Type = corev1.NodeConditionType(s)
 		case "status":
 			status = value
@@ -204,7 +197,7 @@ func nodeConditionOf(data []byte) (nodeCondition, error) {
 	}
 	if status != nil {
 		var s string
-		if s, err = jsonscan.Word("status.conditions.status", status, maxWordRaw); err != nil {
+		if s, err = jsonscan.Word("status.conditions.status", status, tenantclient.MaxWordRaw); err != nil {
 			return nodeCondition{}, err
 		}
 		c.Status = corev1.ConditionStatus(s)
@@ -236,7 +229,7 @@ func serviceOf(data []byte) (s service, err error) {
 			return jsonscan.Walk("spec", value, func(key, value []byte) (err error) {
 				if string(key) == "type" {
 					var t string
-					t, err = jsonscan.Word("spec.type", value, maxWordRaw)
+					t, err = jsonscan.Word("spec.type", value, tenantclient.MaxWordRaw)
 					s.Spec.Type = corev1.ServiceType(t)
 				}
 				return err
@@ -263,7 +256,7 @@ func persistentVolumeOf(data []byte) (v persistentVolume, err error) {
 			return jsonscan.Walk("spec", value, func(key, value []byte) (err error) {
 				if string(key) == "persistentVolumeReclaimPolicy" {
 					var p string
-					p, err = jsonscan.Word("spec.persistentVolumeReclaimPolicy", value, maxWordRaw)
+					p, err = jsonscan.Word("spec.persistentVolumeReclaimPolicy", value, tenantclient.MaxWordRaw)
 					v.Spec.PersistentVolumeReclaimPolicy = corev1.PersistentVolumeReclaimPolicy(p)
 				}
 				return err
@@ -290,7 +283,7 @@ func persistentVolumeClaimOf(data []byte) (c persistentVolumeClaim, err error) {
 			return jsonscan.Walk("status", value, func(key, value []byte) (err error) {
 				if string(key) == "phase" {
 					var p string
-					p, err = jsonscan.Word("status.phase", value, maxWordRaw)
+					p, err = jsonscan.Word("status.phase", value, tenantclient.MaxWordRaw)
 					c.Status.Phase = corev1.PersistentVolumeClaimPhase(p)
 				}
 				return err
@@ -303,7 +296,7 @@ func persistentVolumeClaimOf(data []byte) (c persistentVolumeClaim, err error) {
 
 type webhookConfiguration struct {
 	Metadata named
-	Webhooks array[webhook]
+	Webhooks tenantclient.Array[webhook]
 }
 
 func webhookConfigurationOf(data []byte) (c webhookConfiguration, err error) {
@@ -312,7 +305,7 @@ func webhookConfigurationOf(data []byte) (c webhookConfiguration, err error) {
 		case "metadata":
 			err = metadata(value, &c.Metadata.Name, nil, nil)
 		case "webhooks":
-			c.Webhooks, err = arrayOf("webhooks", value, maxWebhooks, webhookOf)
+			c.Webhooks, err = tenantclient.ArrayOf("webhooks", value, maxWebhooks, webhookOf)
 		}
 		return err
 	})
@@ -329,7 +322,7 @@ func webhookOf(data []byte) (w webhook, err error) {
 	err = jsonscan.Walk("a webhook", data, func(key, value []byte) (err error) {
 		switch string(key) {
 		case "name":
-			w.Name, err = objectName("webhooks.name", value)
+			w.Name, err = tenantclient.ObjectName("webhooks.name", value)
 		case "clientConfig":
 			err = jsonscan.Walk("webhooks.clientConfig", value, func(key, value []byte) error {
 				if string(key) == "url" {
@@ -340,7 +333,7 @@ func webhookOf(data []byte) (w webhook, err error) {
 		case "failurePolicy":
 			if !jsonscan.Null(value) {
 				var p string
-				p, err = jsonscan.Word("webhooks.failurePolicy", value, maxWordRaw)
+				p, err = jsonscan.Word("webhooks.failurePolicy", value, tenantclient.MaxWordRaw)
 				w.FailurePolicy = new(admissionregistrationv1.FailurePolicyType(p))
 			}
 		}
@@ -406,13 +399,13 @@ func cronJobOf(data []byte) (j cronJob, err error) {
 // of the two lists the pass samples are fields so that a test can watch what
 // they decode.
 type tenant struct {
-	api       *rest.RESTClient
+	client    *tenantclient.Client
 	leasePage func(context.Context, metav1.ListOptions) (*leaseList, error)
 	nodePage  func(context.Context, metav1.ListOptions) (*nodeList, error)
 }
 
-func newTenant(api *rest.RESTClient) *tenant {
-	t := &tenant{api: api}
+func newTenant(client *tenantclient.Client) *tenant {
+	t := &tenant{client: client}
 	t.leasePage = func(ctx context.Context, options metav1.ListOptions) (*leaseList, error) {
 		return readList(ctx, t, nodeLeasesPath, options, leasePage, leaseItemOf)
 	}
@@ -422,180 +415,34 @@ func newTenant(api *rest.RESTClient) *tenant {
 	return t
 }
 
-var (
-	errOverBound = errors.New("the response has more elements in an array than Health reads")
-	errNotJSON   = errors.New("the response is not JSON")
-
-	// longMessage is a Status's message past maxMessageRaw.
-	longMessage = "the server's message is longer than " + strconv.Itoa(maxMessageRaw) + " bytes"
-)
+var errOverBound = errors.New("the response has more elements in an array than Health reads")
 
 func readList[T any](ctx context.Context, t *tenant, path string, options metav1.ListOptions, most int, element func([]byte) (T, error)) (*listOf[T], error) {
-	body, err := t.do(ctx, t.api.Get().AbsPath(path).VersionedParams(&options, metav1.ParameterCodec))
-	return decode(body, err, func(body []byte) (*listOf[T], error) { return listFrom(body, most, element) })
+	body, err := t.client.Do(ctx, t.client.Get().AbsPath(path).VersionedParams(&options, metav1.ParameterCodec))
+	return tenantclient.Decode(body, err, func(body []byte) (*listOf[T], error) { return listFrom(body, most, element) })
 }
 
 // firstPage reads the first page of the list at path, which is no answer of a
 // kube-apiserver when it holds more than listLimit items.
 func firstPage[T any](ctx context.Context, t *tenant, path string, element func([]byte) (T, error)) (*listOf[T], error) {
 	page, err := readList(ctx, t, path, metav1.ListOptions{Limit: listLimit}, listLimit, element)
-	if err == nil && page.Items.over {
+	if err == nil && page.Items.Over {
 		err = errOverBound
 	}
 	return page, err
 }
 
 func (t *tenant) getLease(ctx context.Context, name string) (*leaderLease, error) {
-	body, err := t.do(ctx, t.api.Get().AbsPath(coordinationPath, contract.LeaderElectionNamespace, "leases", name))
-	return decode(body, err, leaderLeaseFrom)
+	body, err := t.client.Do(ctx, t.client.Get().AbsPath(coordinationPath, contract.LeaderElectionNamespace, "leases", name))
+	return tenantclient.Decode(body, err, leaderLeaseFrom)
 }
 
 func (t *tenant) createLease(ctx context.Context, body []byte) (*leaderLease, error) {
-	answer, err := t.do(ctx, t.api.Post().AbsPath(coordinationPath, contract.LeaderElectionNamespace, "leases").SetHeader("Content-Type", "application/json").Body(body))
-	return decode(answer, err, leaderLeaseFrom)
+	answer, err := t.client.Do(ctx, t.client.Post().AbsPath(coordinationPath, contract.LeaderElectionNamespace, "leases").SetHeader("Content-Type", "application/json").Body(body))
+	return tenantclient.Decode(answer, err, leaderLeaseFrom)
 }
 
 func (t *tenant) patchLease(ctx context.Context, patch []byte) (*leaderLease, error) {
-	body, err := t.do(ctx, t.api.Patch(types.MergePatchType).AbsPath(coordinationPath, contract.LeaderElectionNamespace, "leases", contract.ControllerManagerLease).Body(patch))
-	return decode(body, err, leaderLeaseFrom)
-}
-
-// do sends the request once, which asks for JSON, and returns the body of the
-// answer: client-go sends a request again up to ten times on a 429 or a 5xx
-// that carries Retry-After, and the next pass is Health's retry. A body cut at
-// maxResponseBytes is errResponseTooLong whatever the status. A Status of
-// Failure is the error of a failed request, as client-go's Result.Error reads
-// it, but into the fields Health reads. Any other body of a failed answer is
-// the tenant's text, which client-go puts in its error, and which no log or
-// message of Health may carry: see noStatus. A request that fails before the
-// head of its answer is read returns net/http's error, whose URL carries the
-// query, and with it the continue token of a later page, up to 36,883 bytes:
-// the error is the same with the path in the place of the URL.
-func (t *tenant) do(ctx context.Context, request *rest.Request) ([]byte, error) {
-	var cut bool
-	body, err := request.MaxRetries(0).DoRaw(context.WithValue(ctx, cutKey{}, &cut))
-	if cut {
-		return nil, errResponseTooLong
-	}
-	if failed := new(url.Error); errors.As(err, &failed) {
-		return nil, &url.Error{Op: failed.Op, URL: request.URL().Path, Err: failed.Err}
-	}
-	if apierrors.IsUnexpectedServerError(err) {
-		if failure, ok := failureOf(body); ok {
-			return nil, &apierrors.StatusError{ErrStatus: failure}
-		}
-		return nil, noStatus(err)
-	}
-	return body, err
-}
-
-const noStatusMessage = "the answer is no Status Health can read"
-
-// noStatus is the error client-go built of a failed answer that is no Status
-// within Health's bounds, without the tenant's text: its code, reason and
-// Retry-After, and a message of Health's own, in the place of the body.
-func noStatus(err error) error {
-	var answered apierrors.APIStatus
-	errors.As(err, &answered)
-	status := answered.Status()
-	return &apierrors.StatusError{ErrStatus: metav1.Status{
-		Status:  metav1.StatusFailure,
-		Code:    status.Code,
-		Reason:  status.Reason,
-		Message: noStatusMessage,
-		Details: &metav1.StatusDetails{
-			Causes:            []metav1.StatusCause{{Type: metav1.CauseTypeUnexpectedServerResponse}},
-			RetryAfterSeconds: status.Details.RetryAfterSeconds,
-		},
-	}}
-}
-
-type statusBody struct {
-	Status, Message string
-	Reason          metav1.StatusReason
-	Code            int32
-	Details         struct {
-		Causes array[metav1.CauseType]
-	}
-}
-
-func statusFrom(data []byte) (s statusBody, err error) {
-	err = jsonscan.Walk("the Status", data, func(key, value []byte) (err error) {
-		switch string(key) {
-		case "status":
-			s.Status, err = jsonscan.Word("status", value, maxWordRaw)
-		case "message":
-			s.Message, err = jsonscan.Text("message", value, maxMessageRaw)
-			if tooLong := new(jsonscan.TooLong); errors.As(err, &tooLong) {
-				s.Message, err = longMessage, nil
-			}
-		case "reason":
-			var reason string
-			reason, err = jsonscan.Text("reason", value, maxReasonRaw)
-			s.Reason = metav1.StatusReason(reason)
-		case "code":
-			var code *int32
-			if code, err = jsonscan.Integer("code", value, maxNumberRaw); code != nil {
-				s.Code = *code
-			}
-		case "details":
-			err = jsonscan.Walk("details", value, func(key, value []byte) (err error) {
-				if string(key) == "causes" {
-					s.Details.Causes, err = arrayOf("details.causes", value, maxCauses, causeOf)
-				}
-				return err
-			})
-		}
-		return err
-	})
-	return s, err
-}
-
-// causeOf reads a cause's type, which a kube-apiserver writes under the key
-// reason (metav1.StatusCause).
-func causeOf(data []byte) (c metav1.CauseType, err error) {
-	err = jsonscan.Walk("a cause", data, func(key, value []byte) (err error) {
-		if string(key) == "reason" {
-			var reason string
-			reason, err = jsonscan.Text("details.causes.reason", value, maxReasonRaw)
-			c = metav1.CauseType(reason)
-		}
-		return err
-	})
-	return c, err
-}
-
-func failureOf(body []byte) (metav1.Status, bool) {
-	if !json.Valid(body) {
-		return metav1.Status{}, false
-	}
-	s, err := statusFrom(body)
-	if err != nil || s.Status != metav1.StatusFailure {
-		return metav1.Status{}, false
-	}
-	failure := metav1.Status{Status: s.Status, Message: s.Message, Reason: s.Reason, Code: s.Code}
-	for _, cause := range s.Details.Causes.items {
-		if failure.Details == nil {
-			failure.Details = &metav1.StatusDetails{}
-		}
-		failure.Details.Causes = append(failure.Details.Causes, metav1.StatusCause{Type: cause})
-	}
-	return failure, true
-}
-
-// decode reads a body, which encoding/json validates and nothing decodes, with
-// the projection of its kind. A projection that fails returns what it read
-// before the failure, with the error.
-func decode[T any](body []byte, err error, project func([]byte) (*T, error)) (*T, error) {
-	if err != nil {
-		return nil, err
-	}
-	if !json.Valid(body) {
-		return nil, errNotJSON
-	}
-	out, err := project(body)
-	if err != nil {
-		return out, fmt.Errorf("read the response: %w", err)
-	}
-	return out, nil
+	body, err := t.client.Do(ctx, t.client.Patch(types.MergePatchType).AbsPath(coordinationPath, contract.LeaderElectionNamespace, "leases", contract.ControllerManagerLease).Body(patch))
+	return tenantclient.Decode(body, err, leaderLeaseFrom)
 }

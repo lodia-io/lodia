@@ -47,14 +47,14 @@ func TestNoDecodedPageIsReachableWhenTheNextOneIsRequested(t *testing.T) {
 		tn.leasePage = func(ctx context.Context, options metav1.ListOptions) (*leaseList, error) {
 			page, err := leases(ctx, options)
 			if err == nil {
-				decoded.add(nodeLeasesPath, weakly(page), weakly(&page.Items.items[0]))
+				decoded.add(nodeLeasesPath, weakly(page), weakly(&page.Items.Items[0]))
 			}
 			return page, err
 		}
 		tn.nodePage = func(ctx context.Context, options metav1.ListOptions) (*nodeList, error) {
 			page, err := nodes(ctx, options)
 			if err == nil {
-				decoded.add(nodesPath, weakly(page), weakly(&page.Items.items[0]))
+				decoded.add(nodesPath, weakly(page), weakly(&page.Items.Items[0]))
 			}
 			return page, err
 		}

@@ -562,7 +562,7 @@ func TestAPassLeavesOneConnectionIdleWhateverItHadInFlight(t *testing.T) {
 
 func transportOf(t *testing.T, tenant *tenant) *http.Transport {
 	t.Helper()
-	bottom := tenant.api.Client.Transport
+	bottom := tenant.client.HTTP().Transport
 	for {
 		wrapped, ok := bottom.(utilnet.RoundTripperWrapper)
 		if !ok {

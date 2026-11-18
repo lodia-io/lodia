@@ -21,7 +21,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/apimachinery/pkg/util/version"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/clock"
@@ -37,6 +36,7 @@ import (
 	"go.lodia.io/lodia/internal/jsonscan"
 	"go.lodia.io/lodia/internal/live"
 	"go.lodia.io/lodia/internal/statusapply"
+	"go.lodia.io/lodia/internal/tenantclient"
 )
 
 const (
@@ -62,8 +62,6 @@ const (
 
 	// maxKubeletVersion is status.nodes.oldestKubelet's schema bound.
 	maxKubeletVersion = 64
-
-	maxName = 253
 
 	// maxContinue is the longest continue token Health reads, in raw bytes. The
 	// next request carries it decoded, up to three times as long when every byte
@@ -111,7 +109,7 @@ type NodesReconciler struct {
 
 	mu      sync.Mutex
 	samples map[types.NamespacedName]*sampling
-	clients map[types.NamespacedName]*tenantClients
+	clients *tenantclient.Clients
 	// counts is what each control plane's last pass counted, for Counts, which
 	// reads it under mu, since a pass writes its sampling without.
 	counts map[types.NamespacedName]nodeCount
@@ -129,7 +127,7 @@ type nodeCount struct {
 // each, and each string in them is bounded here, since the tenant's
 // administrator can have any server answer the lists
 // (docs/review-checklist.md, item 10): leaseVersions and summarize keep no
-// object whose name is over maxName; a Lease's resourceVersion is kept as a
+// object whose name is over tenantclient.MaxName; a Lease's resourceVersion is kept as a
 // digest of 8 bytes; summarize keeps no kubelet version over maxKubeletVersion
 // and no Ready status but the three a condition has.
 type sampling struct {
@@ -334,10 +332,10 @@ func (r *NodesReconciler) listLeases(ctx context.Context, tenant *tenant) ([]lea
 			return nil, "", listEnded, err
 		}
 		end := listEnded
-		if page.Items.over {
+		if page.Items.Over {
 			end = pageTooLong
 		}
-		return leaseVersions(page.Items.items), page.Metadata.Continue, end, err
+		return leaseVersions(page.Items.Items), page.Metadata.Continue, end, err
 	})
 	stop, err := r.stop("Leases of "+corev1.NamespaceNodeLease, leasePage, end, err)
 	return leases, stop, err
@@ -349,8 +347,8 @@ func (r *NodesReconciler) listNodes(ctx context.Context, tenant *tenant) ([]node
 		if page == nil {
 			return nil, "", listEnded, err
 		}
-		nodes, end := summarize(page.Items.items)
-		if end == listEnded && page.Items.over {
+		nodes, end := summarize(page.Items.Items)
+		if end == listEnded && page.Items.Over {
 			end = pageTooLong
 		}
 		return nodes, page.Metadata.Continue, end, err
@@ -413,13 +411,13 @@ func listPages[T any](ctx context.Context, size int64, most int, page func(conte
 // stop says why the list of what ended before its end, or nothing when it did
 // not: it saw more than MaxNodes items or a page after maxPages, a page of more
 // than size items or a Node of more than maxConditions conditions, a field
-// longer than its bound, or a response of it was longer than maxResponseBytes.
+// longer than its bound, or a response of it was longer than tenantclient.MaxResponseBytes.
 // Another failure of the list is returned.
 func (r *NodesReconciler) stop(what string, size int64, end listEnd, err error) (string, error) {
 	var tooLong *jsonscan.TooLong
 	switch {
-	case errors.Is(err, errResponseTooLong):
-		return "a response listing the " + what + " is longer than " + strconv.Itoa(maxResponseBytes) + " bytes", nil
+	case errors.Is(err, tenantclient.ErrResponseTooLong):
+		return "a response listing the " + what + " is longer than " + strconv.Itoa(tenantclient.MaxResponseBytes) + " bytes", nil
 	case errors.As(err, &tooLong):
 		return tooLong.Field + " in the " + what + " is longer than " + strconv.Itoa(tooLong.Most) + " bytes", nil
 	case err != nil:
@@ -452,7 +450,7 @@ func versionOf(resourceVersion string) uint64 {
 func leaseVersions(leases []leaseItem) []leaseVersion {
 	out := make([]leaseVersion, 0, len(leases))
 	for _, l := range leases {
-		if len(l.Metadata.Name) <= maxName {
+		if len(l.Metadata.Name) <= tenantclient.MaxName {
 			out = append(out, leaseVersion{l.Metadata.Name, versionOf(l.Metadata.ResourceVersion)})
 		}
 	}
@@ -478,17 +476,17 @@ func seen(previous map[string]renewal, leases []leaseVersion, now time.Time) map
 func summarize(nodes []nodeObject) ([]node, listEnd) {
 	out := make([]node, 0, len(nodes))
 	for _, n := range nodes {
-		if n.Status.Conditions.over {
+		if n.Status.Conditions.Over {
 			return out, nodeTooLarge
 		}
-		if len(n.Metadata.Name) > maxName {
+		if len(n.Metadata.Name) > tenantclient.MaxName {
 			continue
 		}
 		summary := node{name: n.Metadata.Name}
 		if len(n.Status.NodeInfo.KubeletVersion) <= maxKubeletVersion {
 			summary.kubelet = n.Status.NodeInfo.KubeletVersion
 		}
-		for _, c := range n.Status.Conditions.items {
+		for _, c := range n.Status.Conditions.Items {
 			if c.Type == corev1.NodeReady {
 				summary.ready, summary.since = conditionStatus(c.Status), c.LastTransitionTime.Time
 			}
@@ -636,14 +634,16 @@ func (r *NodesReconciler) sampling(key types.NamespacedName, uid types.UID) *sam
 
 func (r *NodesReconciler) tenant(key types.NamespacedName, kubeconfig []byte) (*tenant, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.clients == nil {
-		r.clients = map[types.NamespacedName]*tenantClients{}
+		r.clients = tenantclient.NewClients(tenantclient.Options{Connections: nodesReads, Timeout: r.Timeout, Dial: r.DialContext})
 	}
-	if r.clients[key] == nil {
-		r.clients[key] = &tenantClients{connections: nodesReads, timeout: r.Timeout, dial: r.DialContext}
+	clients := r.clients
+	r.mu.Unlock()
+	client, err := clients.Of(key, kubeconfig)
+	if err != nil {
+		return nil, err
 	}
-	return r.clients[key].of(kubeconfig)
+	return newTenant(client), nil
 }
 
 // publish makes the pass's count the one Counts returns, or leaves none.
@@ -691,8 +691,7 @@ func (r *NodesReconciler) forget(key types.NamespacedName) {
 	defer r.mu.Unlock()
 	delete(r.samples, key)
 	delete(r.counts, key)
-	if c := r.clients[key]; c != nil && c.transport != nil {
-		utilnet.CloseIdleConnectionsFor(c.transport.Transport)
+	if r.clients != nil {
+		r.clients.Forget(key)
 	}
-	delete(r.clients, key)
 }
